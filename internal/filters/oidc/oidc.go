@@ -54,6 +54,8 @@ type Config struct {
 	Scopes           []string          `json:"scopes"`
 	RedirectPath     string            `json:"redirect_path"`
 	LogoutPath       string            `json:"logout_path"`
+	FrontChannelPath string            `json:"frontchannel_logout_path"`
+	RevokedMax       int               `json:"revoked_max"`
 	LogoutRedirect   string            `json:"logout_redirect"`
 	ExternalURL      string            `json:"external_url"`
 	CookieName       string            `json:"cookie_name"`
@@ -115,13 +117,22 @@ func parse(opts filter.Options) (*Config, error) {
 	if c.LogoutPath == "" {
 		c.LogoutPath = "/oauth2/logout"
 	}
-	for _, p := range []string{c.RedirectPath, c.LogoutPath} {
+	if c.FrontChannelPath == "" {
+		c.FrontChannelPath = "/oauth2/frontchannel-logout"
+	}
+	for _, p := range []string{c.RedirectPath, c.LogoutPath, c.FrontChannelPath} {
 		if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "?#") {
 			errs = append(errs, fmt.Errorf("%q is not a path", p))
 		}
 	}
-	if c.RedirectPath == c.LogoutPath {
-		errs = append(errs, errors.New("redirect_path and logout_path must differ"))
+	if c.RedirectPath == c.LogoutPath || c.RedirectPath == c.FrontChannelPath || c.LogoutPath == c.FrontChannelPath {
+		errs = append(errs, errors.New("redirect_path, logout_path and frontchannel_logout_path must differ"))
+	}
+	if c.RevokedMax == 0 {
+		c.RevokedMax = 65536
+	}
+	if c.RevokedMax < 1 || c.RevokedMax > 10_000_000 {
+		errs = append(errs, errors.New("revoked_max: must be between 1 and 10000000"))
 	}
 	if c.LogoutRedirect == "" {
 		c.LogoutRedirect = "/"
@@ -198,8 +209,13 @@ type oidcFilter struct {
 	discTried time.Time
 	verifier  atomic.Pointer[jwt.Provider]
 
+	// revoked holds provider session ids ended by front channel logout
+	// until the sessions that carry them would have expired anyway.
+	revokedMu sync.Mutex
+	revoked   map[string]time.Time
+
 	// counters
-	Logins, Callbacks, Failures atomic.Uint64
+	Logins, Callbacks, Failures, Logouts atomic.Uint64
 }
 
 func newFilter(name string, c *Config, log *slog.Logger) (*oidcFilter, error) {
@@ -232,7 +248,7 @@ func newFilter(name string, c *Config, log *slog.Logger) (*oidcFilter, error) {
 		}
 		tc.RootCAs = pool
 	}
-	f := &oidcFilter{name: name, cfg: c, log: log, secret: []byte(strings.TrimSpace(string(secret))), aead: aead,
+	f := &oidcFilter{name: name, cfg: c, log: log, secret: []byte(strings.TrimSpace(string(secret))), aead: aead, revoked: map[string]time.Time{},
 		client: &http.Client{
 			Timeout:       10 * time.Second,
 			Transport:     &http.Transport{TLSClientConfig: tc, Proxy: nil, MaxIdleConns: 4, ResponseHeaderTimeout: 5 * time.Second, DisableCompression: true},
@@ -342,9 +358,61 @@ type instance struct {
 // session is the encrypted cookie payload.
 type session struct {
 	Sub    string         `json:"sub"`
+	Sid    string         `json:"sid,omitempty"` // the provider's session id, for front channel logout
 	Exp    int64          `json:"exp"`
 	Iat    int64          `json:"iat"`
 	Claims map[string]any `json:"c,omitempty"`
+}
+
+// revoke records a provider session id until exp; the index is bounded
+// and swept on insert.
+func (f *oidcFilter) revoke(sid string, exp time.Time) {
+	f.revokedMu.Lock()
+	defer f.revokedMu.Unlock()
+	now := time.Now()
+	if len(f.revoked) >= f.cfg.RevokedMax {
+		for k, e := range f.revoked {
+			if now.After(e) {
+				delete(f.revoked, k)
+			}
+		}
+		if len(f.revoked) >= f.cfg.RevokedMax {
+			// Full of live entries: drop the soonest to expire rather
+			// than refuse a logout.
+			var oldest string
+			var oldestExp time.Time
+			for k, e := range f.revoked {
+				if oldest == "" || e.Before(oldestExp) {
+					oldest, oldestExp = k, e
+				}
+			}
+			delete(f.revoked, oldest)
+		}
+	}
+	f.revoked[sid] = exp
+}
+
+func (f *oidcFilter) isRevoked(sid string) bool {
+	if sid == "" {
+		return false
+	}
+	f.revokedMu.Lock()
+	defer f.revokedMu.Unlock()
+	exp, ok := f.revoked[sid]
+	if !ok {
+		return false
+	}
+	if time.Now().After(exp) {
+		delete(f.revoked, sid)
+		return false
+	}
+	return true
+}
+
+func (f *oidcFilter) revokedCount() int {
+	f.revokedMu.Lock()
+	defer f.revokedMu.Unlock()
+	return len(f.revoked)
 }
 
 // loginState is the short lived state cookie of a login in progress.
@@ -371,6 +439,8 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		return f.callback(r, in)
 	case f.cfg.LogoutPath:
 		return f.logout(r, in)
+	case f.cfg.FrontChannelPath:
+		return f.frontChannelLogout(r, in)
 	}
 	if s, ok := f.session(r); ok {
 		in.user = s.Sub
@@ -415,10 +485,43 @@ func (f *oidcFilter) session(r *http.Request) (*session, bool) {
 		return nil, false
 	}
 	now := time.Now().Unix()
-	if s.Sub == "" || s.Exp <= now || s.Iat > now+60 {
+	if s.Sub == "" || s.Exp <= now || s.Iat > now+60 || f.isRevoked(s.Sid) {
 		return nil, false
 	}
 	return &s, true
+}
+
+// frontChannelLogout is the OpenID Connect Front-Channel Logout
+// endpoint the provider loads (in an iframe or by redirect) when the
+// user logs out elsewhere: the provider's session id from the query is
+// revoked so every session carrying it stops working, and the cookie
+// is cleared when the request carries one. The request is cross site
+// and normally arrives without our cookie, which is why the revocation
+// index exists.
+func (f *oidcFilter) frontChannelLogout(r *http.Request, in *instance) filter.Verdict {
+	fail := func(detail string) filter.Verdict {
+		f.Failures.Add(1)
+		return filter.Verdict{Deny: true, Status: http.StatusBadRequest, Reason: f.name, Detail: detail}
+	}
+	if r.Method != http.MethodGet {
+		return fail("frontchannel_method")
+	}
+	q := r.URL.Query()
+	sid, iss := q.Get("sid"), q.Get("iss")
+	if sid == "" || len(sid) > 256 {
+		return fail("frontchannel_sid")
+	}
+	if iss != "" && strings.TrimSuffix(iss, "/") != strings.TrimSuffix(f.cfg.Issuer, "/") {
+		return fail("frontchannel_issuer")
+	}
+	f.revoke(sid, time.Now().Add(f.cfg.ttl))
+	f.Logouts.Add(1)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}}
+	resp.Header.Set("Content-Type", "text/html; charset=utf-8")
+	resp.Header.Add("Set-Cookie", f.cookie(f.cfg.CookieName, "", -1, f.secure(r, in.info)).String())
+	resp.Body = io.NopCloser(strings.NewReader("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Logged out</title></head><body>Logged out.</body></html>\n"))
+	return filter.Verdict{Deny: true, Silent: true, Status: http.StatusOK, Reason: f.name, Detail: "frontchannel_logout", Response: resp,
+		Attrs: []any{"oidc_sid", sanitize(sid)}}
 }
 
 // login starts the authorization code flow with PKCE and a nonce.
@@ -515,8 +618,9 @@ func (f *oidcFilter) callback(r *http.Request, in *instance) filter.Verdict {
 		}
 	}
 	sub, _ := claims["sub"].(string)
+	sid, _ := claims["sid"].(string)
 	now := time.Now()
-	s := session{Sub: sub, Iat: now.Unix(), Exp: now.Add(f.cfg.ttl).Unix(), Claims: map[string]any{"sub": sub}}
+	s := session{Sub: sub, Sid: sid, Iat: now.Unix(), Exp: now.Add(f.cfg.ttl).Unix(), Claims: map[string]any{"sub": sub}}
 	for _, claim := range f.cfg.ForwardHeaders {
 		if v, ok := claims[claim]; ok {
 			s.Claims[claim] = v
@@ -544,6 +648,10 @@ func (f *oidcFilter) callback(r *http.Request, in *instance) filter.Verdict {
 // logout clears the session and sends the browser on: to the provider's
 // end session endpoint when it has one, else to logout_redirect.
 func (f *oidcFilter) logout(r *http.Request, in *instance) filter.Verdict {
+	f.Logouts.Add(1)
+	if s, ok := f.session(r); ok && s.Sid != "" {
+		f.revoke(s.Sid, time.Unix(s.Exp, 0)) // other browsers sharing the provider session end too
+	}
 	loc := f.cfg.LogoutRedirect
 	if d := f.disc.Load(); d != nil && d.EndSessionEndpoint != "" {
 		q := url.Values{"client_id": {f.cfg.ClientID}, "post_logout_redirect_uri": {f.base(r, in.info) + f.cfg.LogoutRedirect}}
@@ -712,11 +820,14 @@ type Status struct {
 	Logins     uint64 `json:"logins"`
 	Callbacks  uint64 `json:"callbacks"`
 	Failures   uint64 `json:"failures"`
+	Logouts    uint64 `json:"logouts"`
+	Revoked    int    `json:"revoked"`
 }
 
 // Status reports discovery state and counters.
 func (f *oidcFilter) Status() Status {
-	st := Status{Issuer: f.cfg.Issuer, Discovered: f.disc.Load() != nil, Logins: f.Logins.Load(), Callbacks: f.Callbacks.Load(), Failures: f.Failures.Load()}
+	st := Status{Issuer: f.cfg.Issuer, Discovered: f.disc.Load() != nil, Logins: f.Logins.Load(), Callbacks: f.Callbacks.Load(), Failures: f.Failures.Load(),
+		Logouts: f.Logouts.Load(), Revoked: f.revokedCount()}
 	if p := f.verifier.Load(); p != nil {
 		st.Keys = p.KeyCount()
 	}

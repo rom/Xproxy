@@ -16,6 +16,9 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 - WebAssembly ABI body access: `get` kinds 13 to 15 and `set_body`
   behind a per filter `body_limit`; bodies over the limit stream
   through unexposed.
+- OIDC front channel logout: sessions carry the provider's `sid`,
+  `frontchannel_logout_path` revokes it into a bounded index, a logout
+  at the proxy revokes it too; `logouts` and `revoked` in the status.
 
 ### Added (1.2)
 - GeoIP policy: `geoip` section with a built-in MaxMind DB reader (no

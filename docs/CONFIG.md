@@ -809,6 +809,8 @@ redirects are not security events; failed callbacks are, with reason
 | `redirect_path` | path | `/oauth2/callback` | Registered at the provider as `external_url` + path |
 | `logout_path` | path | `/oauth2/logout` | Clears the session and sends the browser to the provider's end session endpoint (when it has one) with `logout_redirect` as the return, else to `logout_redirect` |
 | `logout_redirect` | path | `/` | |
+| `frontchannel_logout_path` | path | `/oauth2/frontchannel-logout` | OpenID Connect Front-Channel Logout endpoint: register `external_url` + path as the `frontchannel_logout_uri` at the provider; a `GET` with `sid` (and `iss`, checked against `issuer`) revokes that provider session so every session carrying it stops working, and clears the cookie when present |
+| `revoked_max` | int | `65536` | Bound of the revoked session id index; entries expire with the sessions they end, and over the bound the soonest to expire is dropped |
 | `external_url` | URL | derived | `scheme://host` the browser reaches the proxy on; derived from the request (`Host`, TLS or `X-Forwarded-Proto`) when unset |
 | `cookie_name` | token | `XPOIDC` | The state cookie is `<cookie_name>_state`, ten minutes |
 | `cookie_domain` | string | host only | |
@@ -821,7 +823,11 @@ redirects are not security events; failed callbacks are, with reason
 | `allow_http` | bool | `false` | Permit a plain `http://` issuer and external URL |
 
 The access log carries `oidc_user` for requests with a session and
-`flow: <name>:login`, `login_complete` or `logout` for the redirects.
+`flow: <name>:login`, `login_complete`, `logout` or
+`frontchannel_logout` for the flow steps. Sessions record the ID
+token's `sid` claim when the provider sends one; a logout at the proxy
+revokes it as well, so other browsers sharing that provider session
+end too.
 
 ### Kind `wasm`
 

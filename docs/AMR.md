@@ -1150,8 +1150,8 @@ carries a purpose string as associated data so a state cookie is never
 accepted as a session. There is no server side session table, so
 nothing to bound or replicate, and every node with the key file
 accepts every session. Revocation before expiry is by rotating the key
-file (a reload) or by a short `session_ttl`; per user revocation is
-not offered. The ID token is verified with the existing JWT provider
+file (a reload) or by a short `session_ttl`; per session revocation
+comes from the provider through front channel logout (1.3). The ID token is verified with the existing JWT provider
 so the two features share one set of algorithms, key handling and
 clock rules.
 
@@ -1159,7 +1159,12 @@ clock rules.
 share; the cluster gossip is for counters, not sessions); storing the
 ID token itself in the cookie (rejected: size, and the application
 would receive a bearer credential); front channel logout support
-(deferred: needs an endpoint the provider calls and a session index).
+(deferred at 1.2, delivered in 1.3: the session records the provider's
+`sid`, and the front channel endpoint revokes a `sid` into a bounded
+index that expires with the sessions it ends; the index is the one
+piece of server side session state and holds only ended sessions, so
+it needs no replication to be safe: a node that missed the revocation
+still expires the session on time).
 
 **Consequences.** Cookie size bounds what can be forwarded (4 KiB);
 the filter refuses to seal a larger session. Clock skew between nodes

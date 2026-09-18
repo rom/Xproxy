@@ -79,7 +79,7 @@ func newFakeOP(t *testing.T) *fakeOP {
 		}
 		now := time.Now().Unix()
 		idt := signRS256(t, key, map[string]any{"iss": op.srv.URL, "aud": "xproxy", "sub": "alice", "email": "alice@example.com",
-			"hd": op.hd.Load().(string), "nonce": nonce, "iat": now, "exp": now + 300})
+			"hd": op.hd.Load().(string), "nonce": nonce, "sid": fmt.Sprintf("provider-session-%d", op.authz.Load()), "iat": now, "exp": now + 300})
 		_ = json.NewEncoder(w).Encode(map[string]any{"id_token": idt, "access_token": "at", "token_type": "Bearer"})
 	})
 	mux.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
@@ -168,6 +168,34 @@ routes:
 	if backend.last.Load().Header.Get("X-Remote-User") != "alice" || op.authz.Load() != 1 {
 		t.Fatal("session not reused or header not replaced")
 	}
+	// Front channel logout from the provider (no cookie: a cross site
+	// iframe) revokes the provider session id; the browser's next request
+	// is a fresh login.
+	if fr, err := http.Get(base + "/oauth2/frontchannel-logout?sid=nope"); err != nil || fr.StatusCode != 200 {
+		t.Fatalf("unknown sid: %v %v", fr, err)
+	}
+	if fr, err := http.Get(base + "/oauth2/frontchannel-logout?iss=https://other.test&sid=provider-session-1"); err != nil || fr.StatusCode != 400 {
+		t.Fatalf("wrong issuer: %v %v", fr, err)
+	}
+	if fr, err := http.Get(base + "/oauth2/frontchannel-logout"); err != nil || fr.StatusCode != 400 {
+		t.Fatalf("missing sid: %v %v", fr, err)
+	}
+	fr, err := http.Get(base + "/oauth2/frontchannel-logout?iss=" + url.QueryEscape(op.srv.URL) + "&sid=provider-session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = fr.Body.Close()
+	if fr.StatusCode != 200 || fr.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("front channel logout: %d %v", fr.StatusCode, fr.Header)
+	}
+	resp, err = c.Get(base + "/app/after-fc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if op.authz.Load() != 2 || resp.StatusCode != 200 {
+		t.Fatalf("after front channel logout: authz %d status %d", op.authz.Load(), resp.StatusCode)
+	}
 	// Logout goes through the provider and clears the session.
 	resp, err = c.Get(base + "/oauth2/logout")
 	if err != nil {
@@ -188,7 +216,7 @@ routes:
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
-	if op.authz.Load() != 2 || resp.StatusCode != 200 {
+	if op.authz.Load() != 3 || resp.StatusCode != 200 {
 		t.Fatalf("relogin: authz %d status %d", op.authz.Load(), resp.StatusCode)
 	}
 	// A tampered cookie is a fresh login, not an error.
@@ -199,7 +227,7 @@ routes:
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
-	if op.authz.Load() != 3 || resp.StatusCode != 200 {
+	if op.authz.Load() != 4 || resp.StatusCode != 200 {
 		t.Fatalf("tampered cookie: authz %d status %d", op.authz.Load(), resp.StatusCode)
 	}
 	// Callback with a state that does not match the cookie.

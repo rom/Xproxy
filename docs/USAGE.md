@@ -457,7 +457,10 @@ routes:
 ```
 
 Register `https://intranet.example.com/oauth2/callback` as the redirect
-URI at the provider. The first visit bounces through the provider and
+URI at the provider, and
+`https://intranet.example.com/oauth2/frontchannel-logout` as the front
+channel logout URI so that a logout at the provider (or at another
+application) ends the session here too. The first visit bounces through the provider and
 comes back to the page that was asked for; after that the browser
 carries an encrypted cookie and the application receives the user in
 `X-Remote-User`, never a cookie it could misuse. `/oauth2/logout` ends

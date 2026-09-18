@@ -201,7 +201,8 @@ procedure is in RELEASING.md.
 - HTTP/2 CONNECT on forward listeners: delivered (AMR-036 update)
 - Body access in the WebAssembly ABI: delivered (`body_limit`, AMR-042
   update)
-- OIDC front channel logout (AMR-040)
+- OIDC front channel logout: delivered (`frontchannel_logout_path`,
+  AMR-040 update)
 - OpenTelemetry exporter behind the metrics snapshot (AMR-014)
 - DNS over TLS and HTTPS to upstream resolvers, DNS over HTTPS for
   clients on an http listener (AMR-041)

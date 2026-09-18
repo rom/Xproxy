@@ -257,6 +257,8 @@ to report a vulnerability. The threat analysis behind the controls is in
   from clients are removed before the session's are set.
 - Return URLs are same-origin paths only; the client secret and cookie
   key files must not be world readable.
+- Front channel logout revokes provider session ids into a bounded
+  index checked on every request; the issuer in the request must match.
 
 ### Honeypots
 
