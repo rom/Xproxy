@@ -24,9 +24,13 @@ Do not add `AmbientCapabilities`; if a port below 1024 is needed, add a
 
 ## 2. SELinux enforcing with the xproxy module
 
-Load the module from `deploy/selinux`, label the paths, add upstream ports
-that are not `http_port_t` to `xproxy_upstream_port_t`. Run the domain
-permissive during the first day and inspect AVCs, then switch to enforcing.
+Install `xproxy-selinux` (or load the module from `deploy/selinux`), label
+the ports the configuration uses (`xproxy_upstream_port_t`,
+`xproxy_cluster_port_t`, `xproxy_metrics_port_t`, `xproxy_admin_port_t`),
+and leave `xproxy_connect_any` off. Run the domain permissive during the
+first day and inspect AVCs, then switch to enforcing. The GUI runs in its
+own domain `xproxy_admin_t`; turn `xproxy_admin_manage_service` off if the
+restart button is not wanted.
 
 Verify:
 
@@ -109,6 +113,17 @@ listener. If the GUI must be reachable on an internal network, bind it
 with a server certificate and a client CA (the process refuses anything
 else), give operators client certificates, and keep viewers to the
 `viewer` role.
+
+## 6a. Descriptor and memory budget
+
+Plan one descriptor per client connection and one per idle upstream
+connection (at most `max_idle_conns_per_host` per endpoint), plus about
+15 KiB of memory per idle upstream connection and 1.5 KiB per endpoint
+for its health loop. The unit sets `LimitNOFILE=1048576`; a source
+install without the unit must raise the limit (`ulimit -n`) or the
+proxy will refuse connections under load. Above a few thousand endpoints
+set `metrics.endpoint_series: false`. PERFORMANCE.md has the measured
+figures.
 
 ## 7. Configuration choices that matter
 

@@ -363,7 +363,17 @@ dedicated upstream port type. The policy source lives in `deploy/selinux`
 from the first commit so it evolves with the code; it is validated on a
 Fedora host in the release checklist until CI has a Fedora runner.
 
-**Status.** Accepted (interview).
+**Update (phase 3).** Delivered as a full module: a second domain
+`xproxy_admin_t` for the GUI, a unit file type so the GUI's restart is
+limited to `xproxy.service` on the SELinux side as well as by polkit, port
+types for cluster, metrics and the GUI, booleans instead of broad grants,
+and an interface file. The module is written against Fedora's policy and
+uses `ifdef` fallbacks for the few interface names that differ in upstream
+reference policy, so it compiles in both and CI can check it in a Fedora
+container. Port labelling stays an operator step because loadable modules
+cannot carry `portcon`.
+
+**Status.** Accepted (interview); delivered.
 
 ---
 
@@ -783,6 +793,40 @@ is already the Fedora mechanism for exactly this.
 the policy in phase 3 adds `xproxy_admin_t` it runs in the unit's default
 domain with the systemd sandbox. Browser support is current Firefox and
 Chromium (fetch metadata, `EventSource`, canvas); no legacy browsers.
+
+**Status.** Accepted.
+
+---
+
+## AMR-031: RPM packaging from a vendored tarball
+
+**Context.** ASR-C2 makes Fedora the primary platform; operators expect
+packages, not `make install`. Go builds in Fedora's build system must not
+reach the network.
+
+**Decision.** One spec in `deploy/rpm` producing `xproxy`, `xproxy-admin`
+and `xproxy-selinux`. `make dist` creates a tarball from `git archive`
+plus `go mod vendor`; the spec builds with `-mod=vendor` and
+`GOTOOLCHAIN=local`, so the build is reproducible and offline. Users come
+from a `sysusers.d` file, directories are owned by the package with the
+same modes systemd applies, the configuration is `%config(noreplace)`,
+and the SELinux subpackage uses the distribution's `%selinux_*` macros.
+The version is the `VERSION` file with a `0.<date>git<hash>` release
+unless the checkout is on a tag, so development builds sort below the
+release. The binaries stay static and stripped; there is no debuginfo
+package.
+
+**Alternatives.** Fedora's `go-rpm-macros` with unbundled dependencies:
+appropriate for distribution packages, but the module set includes Coraza
+and quic-go versions Fedora does not ship, and the licence is
+proprietary, so this is not a distribution package. A container image:
+planned as an addition, not a replacement (the SELinux and systemd
+integration is the product).
+
+**Consequences.** `make rpm` needs `rpm-build`, `selinux-policy-devel`
+and `systemd-rpm-macros`. The `.rpmlintrc` filters the known and intended
+findings (proprietary licence, static binaries, package owned directories
+with non-default owners).
 
 **Status.** Accepted.
 

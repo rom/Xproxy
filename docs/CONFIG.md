@@ -214,6 +214,8 @@ Memory: at most 64 x 8192 buckets per policy.
 | `healthy_threshold` | int | `2` | Consecutive successes to mark healthy |
 | `unhealthy_threshold` | int | `3` | Consecutive failures to mark unhealthy |
 | `expected_status` | list of int | `[200]` | |
+| `max_concurrent` | int | `32` | Probes in flight per pool; 1 to 4096. Bounds the burst when a pool has thousands of endpoints |
+| `keep_alive` | bool | `false` | Reuse pooled connections for probes. Off opens a fresh connection per probe (verifies the whole connect path, no descriptor held between probes); on saves the handshake at the cost of one idle connection per endpoint |
 
 ### upstreams[].outlier_ejection
 
@@ -272,6 +274,7 @@ endpoint for scrapers and sizes the series buffer.
 | `tls.cert_file`, `tls.key_file` | path | | Make the endpoint HTTPS |
 | `tls.client_ca_file` | path | | Require client certificates from this CA (mutual TLS) |
 | `per_route` | bool | `true` | Expose `xproxy_route_requests_total{route,outcome}` (one series per route and outcome) |
+| `endpoint_series` | bool | `true` | Expose five series per upstream endpoint (`xproxy_upstream_endpoint_*`). About 1 KiB per endpoint per scrape; turn off above a few thousand endpoints and rely on the per-pool `xproxy_upstream_endpoints_healthy` |
 | `sample_interval` | duration | `10s` | Series sampling period; 1s to 5m |
 | `retention` | duration | `1h` | Series kept in memory; at most 100000 points |
 

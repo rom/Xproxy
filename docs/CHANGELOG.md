@@ -10,6 +10,27 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 ### Phase 3: 1.0 (in progress)
 
 #### Added
+- Scale validation: `TestScale` at 1000 hosts and 10 000 endpoints
+  (`make scale`), routing benchmarks at 1000 hosts (`make bench`),
+  `test/load` with a backend, vegeta and k6 scripts and a soak script
+  (`make load`), results in `docs/PERFORMANCE.md`. Health checks:
+  `max_concurrent` per pool, a process-wide cap of 512 probes in flight,
+  `keep_alive` (default off: fresh connection per probe). Superseded
+  generations stop probing at the swap. `metrics.endpoint_series` to drop
+  per-endpoint series; per-pool `xproxy_upstream_endpoints` and
+  `xproxy_upstream_endpoints_healthy`; `go_goroutines`,
+  `go_memstats_heap_alloc_bytes`, `go_memstats_sys_bytes`,
+  `go_gc_cycles_total`, `process_open_fds`.
+- SELinux policy: confined domains `xproxy_t` and `xproxy_admin_t`, types
+  for configuration, logs, runtime, state and unit files, port types for
+  upstreams, cluster, metrics and the GUI, booleans `xproxy_connect_any`
+  and `xproxy_admin_manage_service`, interface file for other policies;
+  compiles against Fedora and reference policy headers.
+- RPM packaging: `xproxy`, `xproxy-admin` and `xproxy-selinux` built
+  offline from a vendored tarball (`make dist`, `make rpm`, `make
+  rpmlint`); sysusers, units, sysctl, logrotate, polkit and documentation
+  installed; the policy loaded and paths relabelled on install. `VERSION`
+  file for the package version. Fedora container job in CI.
 - Web GUI `xproxy-admin`: separate process and service user; users file
   with PBKDF2 hashes (`user add|del|list`, `passwd`), viewer and operator
   roles, client certificate login on a mutual TLS listener, loopback only

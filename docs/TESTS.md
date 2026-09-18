@@ -59,6 +59,7 @@ drive it with `net/http` and raw TCP.
 | `TestRetryOnDeadEndpoint` | Retry to a second endpoint, outlier ejection of the dead one, no replay of POST |
 | `TestReload` | Generation swap changes routing, listener change refused, reload counters |
 | `TestTLSAndRedirect` | HTTP to HTTPS 308 preserving path and query, TLS 1.3 with HTTP/2 negotiated, `X-Forwarded-Proto`, TLS 1.2 refused when the minimum is 1.3 |
+| `TestScale` | A generated table of 100 hosts and 1000 endpoints (1000 hosts and 10 000 endpoints with `XPROXY_SCALE=full`, `make scale`) with active health checks against a backend in a child process: parse, build and start timings, heap, goroutine and descriptor growth bounds, routing across the table, unknown host 404, management views and both metrics expositions, reload timing and old generation drain, traffic over random hosts with latency percentiles, no unhealthy endpoints |
 | `TestACMEEndToEnd` | A listener with only ACME groups against the in-process fake CA (`internal/acme/acmetest`): no certificate before issuance, unknown challenge token 404, forced renewal through the manager joins the start-up order, both hosts served with a chain that verifies against the CA, `acme-tls/1` refused without a pending challenge; run for `http-01` and `tls-alpn-01` |
 | `TestConnectionLimits` | Concurrency 503 on a live connection, third connection dropped at accept, counters |
 | `TestSlowHeaderTimeout` | Slowloris connection closed by the header timeout |
@@ -90,6 +91,26 @@ drive it with `net/http` and raw TCP.
 | `netutil.FuzzHost` | host header | never panics |
 
 Fuzz corpora that find failures are committed under `testdata/fuzz`.
+
+### Scale and load
+
+`make scale` runs `TestScale` at the 1.0 target size and prints the
+measurements; `make bench` runs the routing, limiter and metrics
+benchmarks; `make load` starts the load backend and a proxy on loopback
+and drives vegeta at `RATE` for `DURATION`. `test/load/README.md` has the
+procedure and the rules for a comparable number; `docs/PERFORMANCE.md`
+records the results.
+
+### Packaging and policy (CI `package` job)
+
+Runs in a Fedora container: `make selinux` compiles the module against the
+Fedora policy headers (which catches interface names that only exist in
+upstream reference policy), `make rpm` builds the three packages offline
+from the vendored tarball, `make rpmlint` checks them against
+`deploy/rpm/xproxy.rpmlintrc`, the packages are installed with `dnf` and
+the three binaries print their version. What the container cannot do is
+load the module or run with SELinux enforcing; that is the Fedora VM item
+under planned additions and the release checklist.
 
 ### Static and supply chain
 
@@ -208,9 +229,9 @@ Phase 2:
 - Cluster convergence bounds under load and a three node partition test
   (the two node functional tests exist; see above).
 - HTTP/3 interoperability with `quic-go` clients and a curl build.
-- Load tests under `test/load` using k6 and vegeta with published baseline
-  numbers for the reference hardware; soak test of 24 hours with leak
-  detection through `runtime.MemStats` sampling.
+- Load tests on the reference hardware (8 cores, remote generator); the
+  `test/load` suite, the container baseline and the soak script exist,
+  the 24 hour soak and the 8 core numbers are still to be run.
 - Fuzz targets for ICAP framing, WAF transaction building, redaction rules
   and the cluster wire format.
 - ACME against Pebble in a container in CI (the fake CA in
@@ -227,7 +248,8 @@ Phase 3:
   an upstream mid-response.
 - Coverage gate at 80 percent on core packages; mutation testing pass with
   `gremlins` or equivalent on `limits`, `router` and `netutil`.
-- Fedora CI runner: install RPM, enable units, run traffic, assert no AVC
-  denials and a passing `systemd-analyze security` band.
+- Fedora VM runner: install the RPMs, enable units, run traffic, assert no
+  AVC denials and a passing `systemd-analyze security` band (the container
+  job covers build, lint and install).
 - Automated browser job for the GUI (the DevTools procedure above) on the
   same runner.

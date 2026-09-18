@@ -1,0 +1,31 @@
+# Load test configuration: one plaintext listener, one pool of four
+# endpoints on the load backend, no WAF (measure the proxy path first; add
+# waf and rate limits to measure their cost separately).
+version: 1
+server:
+  listeners:
+    - name: main
+      address: "127.0.0.1:18080"
+  limits:
+    max_connections: 100000
+    max_concurrent_requests: 20000
+management:
+  socket: /tmp/xproxy-load/mgmt.sock
+logging:
+  directory: /tmp/xproxy-load/logs
+  access: {enabled: false}       # enable to measure the access log cost
+bans:
+  state_file: /tmp/xproxy-load/bans.db
+upstreams:
+  - name: app
+    max_idle_conns_per_host: 256
+    health_check: {path: /healthz, interval: 5s, timeout: 1s}
+    endpoints:
+      - {address: 127.0.0.1:9001}
+      - {address: 127.0.0.2:9001}
+      - {address: 127.0.0.3:9001}
+      - {address: 127.0.0.4:9001}
+routes:
+  - name: all
+    paths: ["/"]
+    upstream: app

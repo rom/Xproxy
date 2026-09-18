@@ -9,8 +9,8 @@ level checklist and [USAGE.md](USAGE.md) for operation.
 
 - Fedora 40 or newer (any current release), systemd, SELinux enforcing
 - Go 1.25 or newer to build from source (no runtime dependency)
-- `checkmodule` and `semodule_package` from `checkpolicy` and
-  `policycoreutils` for the SELinux module
+- `selinux-policy-devel` to build the SELinux module, `rpm-build`,
+  `rpmlint` and `systemd-rpm-macros` to build the packages
 
 ## Build
 
@@ -24,7 +24,44 @@ make check          # fmt, vet, race tests, lint
 `CGO_ENABLED=0` is set by the Makefile. The binaries have no shared library
 dependencies.
 
-## Install
+## Install from RPM (recommended on Fedora)
+
+Build the packages once, on any Fedora host with the build tools, from a
+checkout:
+
+```sh
+dnf install golang rpm-build rpmlint selinux-policy-devel systemd-rpm-macros bzip2
+make rpm            # rpmbuild/RPMS/{x86_64,noarch}/xproxy-*.rpm, offline from a vendored tarball
+make rpmlint
+```
+
+Three packages come out:
+
+| Package | Content |
+|---------|---------|
+| `xproxy` | `xproxy`, `xproxyctl`, the four units, sysctl profile, logrotate, sysusers, example configuration, documentation |
+| `xproxy-admin` | `xproxy-admin`, its unit and the polkit rule |
+| `xproxy-selinux` | the policy module (loaded on install, relabels the paths) and the interface file for other policies |
+
+Install and start:
+
+```sh
+dnf install ./rpmbuild/RPMS/x86_64/xproxy-*.rpm ./rpmbuild/RPMS/noarch/xproxy-selinux-*.rpm
+vi /etc/xproxy/xproxy.yaml               # or drop in your own; %config(noreplace)
+xproxyctl validate
+systemctl enable --now xproxy.socket xproxy-https.socket
+systemctl status xproxy.service
+```
+
+The packages create the `xproxy` and `xproxy-admin` users through
+`sysusers.d`, own `/etc/xproxy`, `/var/log/xproxy` and `/var/lib/xproxy`
+with the right modes, apply the sysctl profile, and load the SELinux
+module with `semodule` and relabel on install. Upgrades restart the
+service (`%systemd_postun_with_restart`); the socket stays open so no
+connection is refused. The version is `VERSION` plus a git suffix unless
+the checkout is on a tag.
+
+## Install from source
 
 As root:
 
@@ -99,7 +136,7 @@ a compromise of the data plane cannot write its configuration, and it owns
 the configuration file so that operators can edit it from the browser:
 
 ```sh
-useradd --system --gid xproxy --home-dir /var/lib/xproxy --shell /usr/sbin/nologin xproxy-admin
+useradd --system --gid xproxy --home-dir /var/lib/xproxy --shell /usr/sbin/nologin xproxy-admin   # already exists with the RPM (sysusers)
 chown xproxy-admin:xproxy /etc/xproxy/xproxy.yaml && chmod 0640 /etc/xproxy/xproxy.yaml
 sudo -u xproxy-admin xproxy-admin user add admin -role operator
 systemctl enable --now xproxy-admin
@@ -123,27 +160,58 @@ the service afterwards to end that user's sessions.
 
 ## SELinux
 
-Build and load the policy module:
+The `xproxy-selinux` package loads the module and relabels on install. From
+a source install, build and load it by hand:
 
 ```sh
-dnf install checkpolicy policycoreutils-python-utils
-make selinux
+dnf install selinux-policy-devel policycoreutils-python-utils
+make selinux                                  # deploy/selinux/xproxy.pp
 semodule -i deploy/selinux/xproxy.pp
-semanage port -a -t xproxy_upstream_port_t -p tcp 8080     # each upstream port not already http_port_t
-restorecon -Rv /usr/local/bin/xproxy /etc/xproxy /var/log/xproxy /run/xproxy /var/lib/xproxy
+restorecon -Rv /usr/local/bin/xproxy* /etc/xproxy /var/log/xproxy /run/xproxy /var/lib/xproxy
 systemctl restart xproxy.service
 ausearch -m AVC -ts recent
 ```
 
-The module confines the daemon to `xproxy_t`: read `xproxy_conf_t`, append
-`xproxy_log_t`, manage `xproxy_var_run_t` and `xproxy_var_lib_t`, bind
-`http_port_t`, connect to `http_port_t` and `xproxy_upstream_port_t`. Any
-other access is denied and shows up in the audit log. The policy is a
-skeleton in this release and is finalised in 1.0 (AMR-017); run in
-permissive mode for the domain first if you deploy it now:
+Ports are labelled by the operator because they depend on the
+configuration (modules cannot carry `portcon` rules):
+
+```sh
+semanage port -a -t xproxy_upstream_port_t -p tcp 8080    # each upstream port that is not http_port_t (80, 443, 8008, 8009, 8443, 9000)
+semanage port -a -t xproxy_cluster_port_t  -p tcp 7946    # cluster listener
+semanage port -a -t xproxy_metrics_port_t  -p tcp 9100    # TCP metrics listener
+semanage port -a -t xproxy_admin_port_t    -p tcp 8443    # web GUI listener (8443 may already be http_port_t; then nothing to do)
+```
+
+What the module allows:
+
+| Domain | Files | Network | Other |
+|--------|-------|---------|-------|
+| `xproxy_t` (data plane) | read `xproxy_conf_t` and system certificates; create, append, rename `xproxy_log_t`; manage `xproxy_var_run_t` (socket) and `xproxy_var_lib_t` (bans, ACME, challenge key) | bind `http_port_t` and `xproxy_cluster_port_t`, `xproxy_metrics_port_t`; connect to `http_port_t`, `xproxy_upstream_port_t`, `xproxy_cluster_port_t`, `syslogd_port_t`; DNS | journald and syslog sockets, systemd notify and socket activation, read its own process state, urandom. No capabilities, no exec |
+| `xproxy_admin_t` (GUI) | read and write `xproxy_conf_t`; read `xproxy_log_t`; connect to the socket in `xproxy_var_run_t` | bind `xproxy_admin_port_t` | `systemctl` over D-Bus for `xproxy_unit_file_t` (start, stop, status, reload) when the boolean below is on |
+
+Booleans:
+
+| Boolean | Default | Effect |
+|---------|---------|--------|
+| `xproxy_connect_any` | off | Let the data plane connect to any TCP port instead of labelling upstream ports |
+| `xproxy_admin_manage_service` | on | Let the GUI restart the data plane through systemd |
+
+```sh
+setsebool -P xproxy_connect_any on
+```
+
+Other policies (log shippers, configuration management) can use the
+interfaces in `xproxy.if`: `xproxy_stream_connect`, `xproxy_read_config`,
+`xproxy_manage_config`, `xproxy_read_log`, `xproxy_admin`.
+
+Any access outside these rules is denied and shows up in the audit log.
+For the first deployment of a new configuration feature, run the domain
+permissive for a day and review the denials before enforcing:
 
 ```sh
 semanage permissive -a xproxy_t
+ausearch -m AVC -c xproxy -ts today
+semanage permissive -d xproxy_t
 ```
 
 ## HTTP/3

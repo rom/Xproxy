@@ -241,9 +241,9 @@ to report a vulnerability. The threat analysis behind the controls is in
 
 Phase 2 (remaining): TUI.
 
-Phase 3 (ICAP, ACME and the GUI delivered): full SELinux policy in an RPM
-including a domain for `xproxy-admin`, coverage and mutation gates,
-external security review.
+Phase 3 (ICAP, ACME, the GUI, the SELinux policy and the RPMs delivered):
+coverage and mutation gates, external security review, AVC validation on
+a Fedora VM in CI.
 
 ## Secure development
 

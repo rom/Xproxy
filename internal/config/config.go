@@ -77,6 +77,10 @@ type Metrics struct {
 	// PerRoute exposes request counters per route (one series per route
 	// and status class). Default true.
 	PerRoute *bool `yaml:"per_route"`
+	// EndpointSeries exposes five series per upstream endpoint. Default
+	// true; turn off above a few thousand endpoints (about 1 KiB per
+	// endpoint per scrape).
+	EndpointSeries *bool `yaml:"endpoint_series"`
 	// SampleInterval and Retention size the time series buffer. Defaults
 	// 10s and 1h.
 	SampleInterval Duration `yaml:"sample_interval"`
@@ -102,6 +106,11 @@ type Server struct {
 	ServerHeader string `yaml:"server_header"`
 	// ShutdownTimeout bounds graceful drain on stop or reload.
 	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
+}
+
+// EndpointSeriesEnabled reports whether per-endpoint series are exposed.
+func (m *Metrics) EndpointSeriesEnabled() bool {
+	return m.EndpointSeries == nil || *m.EndpointSeries
 }
 
 // Protocol identifies an application protocol a listener accepts.
@@ -366,6 +375,14 @@ type HealthCheck struct {
 	HealthyThreshold   int      `yaml:"healthy_threshold"`
 	UnhealthyThreshold int      `yaml:"unhealthy_threshold"`
 	ExpectedStatus     []int    `yaml:"expected_status"`
+	// MaxConcurrent bounds probes in flight per pool so that a pool with
+	// thousands of endpoints does not burst. Default 32.
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// KeepAlive reuses pooled connections for probes. Off (the default)
+	// opens a fresh connection per probe, which verifies the whole connect
+	// path and holds no descriptor between probes; on saves the handshake
+	// at the cost of one idle connection per endpoint.
+	KeepAlive bool `yaml:"keep_alive"`
 }
 
 // UpstreamTimeout bounds each phase of an upstream exchange.

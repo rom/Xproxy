@@ -1,0 +1,122 @@
+## <summary>xproxy secure reverse proxy, load balancer and WAF.</summary>
+
+########################################
+## <summary>
+##	Connect to the xproxy management socket (xproxyctl, monitoring).
+## </summary>
+## <param name="domain">
+##	<summary>Domain allowed access.</summary>
+## </param>
+#
+interface(`xproxy_stream_connect',`
+	gen_require(`
+		type xproxy_t, xproxy_var_run_t;
+	')
+
+	ifdef(`files_search_runtime',`
+
+		files_search_runtime($1)
+
+	',`
+
+		files_search_pids($1)
+
+	')
+	allow $1 xproxy_var_run_t:dir list_dir_perms;
+	allow $1 xproxy_var_run_t:sock_file write_sock_file_perms;
+	allow $1 xproxy_t:unix_stream_socket connectto;
+')
+
+########################################
+## <summary>
+##	Read the xproxy configuration.
+## </summary>
+## <param name="domain">
+##	<summary>Domain allowed access.</summary>
+## </param>
+#
+interface(`xproxy_read_config',`
+	gen_require(`
+		type xproxy_conf_t;
+	')
+
+	files_search_etc($1)
+	allow $1 xproxy_conf_t:dir list_dir_perms;
+	allow $1 xproxy_conf_t:file read_file_perms;
+')
+
+########################################
+## <summary>
+##	Manage the xproxy configuration (configuration management tools).
+## </summary>
+## <param name="domain">
+##	<summary>Domain allowed access.</summary>
+## </param>
+#
+interface(`xproxy_manage_config',`
+	gen_require(`
+		type xproxy_conf_t;
+	')
+
+	files_search_etc($1)
+	allow $1 xproxy_conf_t:dir manage_dir_perms;
+	allow $1 xproxy_conf_t:file manage_file_perms;
+')
+
+########################################
+## <summary>
+##	Read the xproxy log files (log shippers).
+## </summary>
+## <param name="domain">
+##	<summary>Domain allowed access.</summary>
+## </param>
+#
+interface(`xproxy_read_log',`
+	gen_require(`
+		type xproxy_log_t;
+	')
+
+	logging_search_logs($1)
+	allow $1 xproxy_log_t:dir list_dir_perms;
+	allow $1 xproxy_log_t:file read_file_perms;
+')
+
+########################################
+## <summary>
+##	All of the rules required to administrate xproxy.
+## </summary>
+## <param name="domain">
+##	<summary>Domain allowed access.</summary>
+## </param>
+## <param name="role">
+##	<summary>Role allowed access.</summary>
+## </param>
+#
+interface(`xproxy_admin',`
+	gen_require(`
+		type xproxy_t, xproxy_admin_t, xproxy_conf_t, xproxy_log_t;
+		type xproxy_var_run_t, xproxy_var_lib_t, xproxy_unit_file_t;
+	')
+
+	allow $1 { xproxy_t xproxy_admin_t }:process { ptrace signal_perms };
+	ps_process_pattern($1, xproxy_t)
+	ps_process_pattern($1, xproxy_admin_t)
+
+	files_search_etc($1)
+	admin_pattern($1, xproxy_conf_t)
+	logging_search_logs($1)
+	admin_pattern($1, xproxy_log_t)
+	ifdef(`files_search_runtime',`
+		files_search_runtime($1)
+	',`
+		files_search_pids($1)
+	')
+	admin_pattern($1, xproxy_var_run_t)
+	files_search_var_lib($1)
+	admin_pattern($1, xproxy_var_lib_t)
+
+	xproxy_stream_connect($1)
+
+	allow $1 xproxy_unit_file_t:file read_file_perms;
+	allow $1 xproxy_unit_file_t:service { start stop status reload };
+')

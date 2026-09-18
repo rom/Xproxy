@@ -498,9 +498,11 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.challenger.Store(nil)
 	}
 	s.stats.Reloads.Add(1)
-	// Give in-flight requests on the old generation time to finish before
-	// tearing down its pools; the transport keeps serving until then.
+	// The old generation stops probing at once (its health state is no
+	// longer consulted); in-flight requests on it get the drain period to
+	// finish before its pools are torn down.
 	go func(old *runtime) {
+		old.stopChecks()
 		time.Sleep(cfg.Server.ShutdownTimeout.D())
 		old.stop()
 	}(old)

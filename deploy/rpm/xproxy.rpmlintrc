@@ -1,0 +1,10 @@
+# rpmlint configuration for xproxy.
+# Proprietary licence (see LICENSE); not an OSI identifier.
+addFilter(r'invalid-license Proprietary')
+# Static Go binaries: no ELF dependencies, no debug package.
+addFilter(r'statically-linked-binary')
+addFilter(r'unstripped-binary-or-object')
+addFilter(r'no-manual-page-for-binary')
+# The daemon owns its directories; systemd also creates them.
+addFilter(r'non-standard-(uid|gid)')
+addFilter(r'non-standard-dir-perm')

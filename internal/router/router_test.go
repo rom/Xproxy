@@ -1,6 +1,7 @@
 package router
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/rom/xproxy/internal/config"
@@ -71,5 +72,35 @@ func BenchmarkMatch(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		r.Match("example.com", "/api/v2/users/123", "GET")
+	}
+}
+
+// manyHostRoutes builds n exact host routes with three paths each, the
+// shape of a large virtual hosting configuration.
+func manyHostRoutes(n int) []config.Route {
+	rs := make([]config.Route, 0, n)
+	for i := 0; i < n; i++ {
+		host := fmt.Sprintf("site-%d.example.test", i)
+		rs = append(rs, config.Route{Name: fmt.Sprintf("r%d", i), Hosts: []string{host}, Paths: []string{"/", "/api/", "/static/"}, Upstream: "u"})
+	}
+	return rs
+}
+
+func BenchmarkMatch1000Hosts(b *testing.B) {
+	r := New(manyHostRoutes(1000))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if r.Match("site-731.example.test", "/api/v2/users/123", "GET") == nil {
+			b.Fatal("no match")
+		}
+	}
+}
+
+func BenchmarkNew1000Hosts(b *testing.B) {
+	rs := manyHostRoutes(1000)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		New(rs)
 	}
 }
