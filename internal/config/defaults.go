@@ -412,6 +412,14 @@ func applyDefaults(c *Config) {
 		if r.Respond != nil && r.Respond.Status == 0 {
 			r.Respond.Status = 200
 		}
+		if hp := r.Honeypot; hp != nil {
+			setInt(&hp.Status, 200)
+			setStr(&hp.ContentType, "text/html; charset=utf-8")
+			setDur(&hp.Mark, time.Hour)
+			if hp.Decoy == "" && hp.Body == "" && hp.BodyFile == "" {
+				hp.Decoy = "admin-login"
+			}
+		}
 	}
 }
 

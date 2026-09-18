@@ -43,6 +43,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   and ban reasons, `xproxy_forward_*` metrics.
 - Ban triggers accept the reasons `geo`, `tcp_no_route`,
   `forward_denied` and `forward_auth`.
+- Honeypot routes: `routes[].honeypot` serves a built-in decoy
+  (`wp-login`, `env`, `git-config`, `phpinfo`, `admin-login`, `robots`),
+  an inline body or a file, with a tarpit delay; hits are `honeypot`
+  security events and a ban reason, the client is marked for `mark` and
+  its later requests carry `honeypot_marked` in the access log and
+  `Info.HoneypotMarked` in filters; `GET/DELETE /v1/honeypot`,
+  `xproxyctl honeypot`, `xproxy_honeypot_*` metrics.
 
 ## 1.0.0 - 2026-09-18
 

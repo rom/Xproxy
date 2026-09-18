@@ -309,6 +309,17 @@ shutdown exceeds its context. Plain requests go through one
 headers removed both ways and the response body bounded. Refusals are
 security events with a `forward_` reason and feed the ban list.
 
+### Honeypots
+
+A honeypot is a route action next to redirect and respond. The compiled
+route holds the decoy bytes (built-in, inline or read from a file at
+generation build, so a missing file fails a reload). Serving one
+records a security event, adds the address to a bounded mark table
+owned by the `Server` (not a generation, so marks survive reloads),
+observes the `honeypot` ban reason and answers; a delay is spent in a
+tarpit slot after the request slot is released. The mark is read once
+per request after routing and exposed to the access log and to filters.
+
 ### Response cache
 
 `internal/cache` is a byte bounded LRU of stored responses keyed by a

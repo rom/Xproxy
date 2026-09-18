@@ -44,6 +44,7 @@ type Server struct {
 
 	concurrency *limits.Concurrency
 	tarpits     *limits.Concurrency // bound on requests held in a tarpit
+	marks       *marks              // clients that hit a honeypot
 	// fingerprints holds the TLS fingerprint of every open TLS connection.
 	fingerprints *tlsconf.FingerprintTable
 	// cache is the response cache, kept across reloads; nil when the
@@ -83,6 +84,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 			UpstreamTTFB:    metrics.NewHistogram(metrics.DurationBuckets)},
 		concurrency:  limits.NewConcurrency(cfg.Server.Limits.MaxConcurrentRequests),
 		tarpits:      limits.NewConcurrency(cfg.Server.Limits.MaxTarpits),
+		marks:        newMarks(),
 		fingerprints: tlsconf.NewFingerprintTable(max(cfg.Server.Limits.MaxConnections, 1024)),
 		connLimiter:  limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
 	}
@@ -185,6 +187,7 @@ func (s *Server) Stats() Snapshot {
 	snap.OpenConnections = s.connLimiter.Open()
 	snap.RejectedConns = s.connLimiter.Rejected.Load()
 	snap.InFlight = s.concurrency.InFlight()
+	snap.HoneypotMarked = len(s.marks.list(time.Now()))
 	if bl := s.bans.Load(); bl != nil {
 		snap.BansActive, snap.BansTotal = bl.Stats()
 	}

@@ -179,11 +179,15 @@ procedure is in RELEASING.md.
 - Forward proxy mode with CONNECT and authentication: delivered
   (`kind: forward` listeners, AMR-036)
 
-## After 1.1 (candidates, unranked)
+## 1.2 (in progress)
+
+- Honeypot routes and decoy responses: delivered (`routes[].honeypot`,
+  AMR-037)
+
+## After 1.2 (candidates, unranked)
 
 - WebAssembly extension ABI (AMR-013)
 - OIDC login flows with session cookies
-- Honeypot routes and decoy responses
 - Request mirroring and replay for testing
 - gRPC aware routing and health checks
 - Kubernetes ingress controller mode

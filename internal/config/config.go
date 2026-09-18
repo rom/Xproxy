@@ -518,6 +518,8 @@ type Route struct {
 	Redirect *Redirect `yaml:"redirect"`
 	// Respond answers with a static status instead of proxying.
 	Respond *Respond `yaml:"respond"`
+	// Honeypot serves a decoy and marks the client instead of proxying.
+	Honeypot *Honeypot `yaml:"honeypot"`
 
 	StripPrefix string `yaml:"strip_prefix"`
 	RewritePath string `yaml:"rewrite_path"`
@@ -639,6 +641,29 @@ type Redirect struct {
 type Respond struct {
 	Status int    `yaml:"status"`
 	Body   string `yaml:"body"`
+}
+
+// Honeypot is a decoy action: the response looks like a real page of the
+// chosen kind, the client is logged as a security event, marked for
+// `mark` so later requests on any route carry the label, and counted
+// towards the `honeypot` ban reason.
+type Honeypot struct {
+	// Decoy names a built-in body: wp-login, env, git-config, phpinfo,
+	// admin-login or robots. Exclusive with body and body_file.
+	Decoy string `yaml:"decoy"`
+	// Status of the decoy response. Default 200.
+	Status int `yaml:"status"`
+	// ContentType of body or body_file. Default text/html; charset=utf-8.
+	ContentType string `yaml:"content_type"`
+	// Body is an inline decoy, at most 64 KiB.
+	Body string `yaml:"body"`
+	// BodyFile is a decoy read at load and reload, at most 1 MiB.
+	BodyFile string `yaml:"body_file"`
+	// Delay holds the connection before answering, in a tarpit slot.
+	// Default 0, at most 60s.
+	Delay Duration `yaml:"delay"`
+	// Mark is how long the client stays marked. Default 1h.
+	Mark Duration `yaml:"mark"`
 }
 
 // HeaderOps describes header mutations.

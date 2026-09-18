@@ -25,6 +25,7 @@
 //	icap           show ICAP services and counters
 //	filters        list middleware kinds and configured filters
 //	geoip          show the country database and lookup counters
+//	honeypot       list clients marked by honeypots; honeypot forget IP removes one
 //	cache          show cache statistics; "cache purge [HOST [PATH-PREFIX]]" removes entries
 //	htpasswd FILE NAME  add or replace a basic_auth user (password on stdin)
 //	metrics        print the Prometheus exposition
@@ -41,6 +42,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,6 +54,7 @@ import (
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds for validate
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/passwd"
+	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tui"
 	"github.com/rom/xproxy/internal/upstream"
@@ -260,6 +263,35 @@ func run(args []string, out, errOut io.Writer) int {
 			return fail(err)
 		}
 		_, _ = out.Write(b)
+		return 0
+	case "honeypot":
+		if fs.NArg() >= 3 && fs.Arg(1) == "forget" {
+			var res struct {
+				Removed bool `json:"removed"`
+			}
+			if err := c.Do("DELETE", "/v1/honeypot?ip="+url.QueryEscape(fs.Arg(2)), nil, &res); err != nil {
+				return fail(err)
+			}
+			_, _ = fmt.Fprintf(out, "removed: %v\n", res.Removed)
+			return 0
+		}
+		var hv struct {
+			Marks  []proxy.Mark `json:"marks"`
+			Decoys []string     `json:"decoys"`
+		}
+		if err := c.Do("GET", "/v1/honeypot", nil, &hv); err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, hv)
+		}
+		_, _ = fmt.Fprintf(out, "decoys: %s\n\n", strings.Join(hv.Decoys, ", "))
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "ADDRESS\tROUTE\tHITS\tFIRST\tLAST\tEXPIRES")
+		for _, m := range hv.Marks {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n", m.Address, m.Route, m.Hits, m.First.Format(time.RFC3339), m.Last.Format(time.RFC3339), m.Expires.Format(time.RFC3339))
+		}
+		_ = tw.Flush()
 		return 0
 	case "filters":
 		fv, err := c.Filters()

@@ -835,8 +835,41 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 			v.errf("%s.respond.body: exceeds 64 KiB", p)
 		}
 	}
+	if hp := r.Honeypot; hp != nil {
+		actions++
+		if hp.Status < 200 || hp.Status > 599 {
+			v.errf("%s.honeypot.status: %d is not a valid status", p, hp.Status)
+		}
+		sources := 0
+		for _, set := range []bool{hp.Decoy != "", hp.Body != "", hp.BodyFile != ""} {
+			if set {
+				sources++
+			}
+		}
+		if sources != 1 {
+			v.errf("%s.honeypot: exactly one of decoy, body or body_file is required", p)
+		}
+		if hp.Decoy != "" && !HoneypotDecoys[hp.Decoy] {
+			v.errf("%s.honeypot.decoy: unknown decoy %q", p, hp.Decoy)
+		}
+		if len(hp.Body) > 64<<10 {
+			v.errf("%s.honeypot.body: exceeds 64 KiB", p)
+		}
+		if hp.BodyFile != "" && !strings.HasPrefix(hp.BodyFile, "/") {
+			v.errf("%s.honeypot.body_file: must be an absolute path", p)
+		}
+		if strings.ContainsAny(hp.ContentType, "\r\n") {
+			v.errf("%s.honeypot.content_type: invalid", p)
+		}
+		if hp.Delay < 0 || hp.Delay > Duration(60*time.Second) {
+			v.errf("%s.honeypot.delay: must be between 0 and 60s", p)
+		}
+		if hp.Mark <= 0 || hp.Mark > Duration(30*24*time.Hour) {
+			v.errf("%s.honeypot.mark: must be positive and at most 720h", p)
+		}
+	}
 	if actions != 1 {
-		v.errf("%s: exactly one of upstream, redirect or respond is required", p)
+		v.errf("%s: exactly one of upstream, redirect, respond or honeypot is required", p)
 	}
 	if r.StripPrefix != "" && !strings.HasPrefix(r.StripPrefix, "/") {
 		v.errf("%s.strip_prefix: must start with /", p)
@@ -875,8 +908,11 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
-	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true,
+	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true,
 }
+
+// HoneypotDecoys are the built-in decoy names (bodies live in the proxy).
+var HoneypotDecoys = map[string]bool{"wp-login": true, "env": true, "git-config": true, "phpinfo": true, "admin-login": true, "robots": true}
 
 func (v *validator) bans(b *Bans) {
 	if b.StateFile != "" && !strings.HasPrefix(b.StateFile, "/") {

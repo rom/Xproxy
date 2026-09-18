@@ -317,9 +317,10 @@ wins); then configuration order.
 | `paths` | list | `["/"]` | Prefixes on segment boundaries |
 | `methods` | list | `[]` (any) | Upper-case tokens |
 | `priority` | int | `0` | Tie breaker |
-| `upstream` | name | | Exactly one of `upstream`, `redirect`, `respond` |
+| `upstream` | name | | Exactly one of `upstream`, `redirect`, `respond`, `honeypot` |
 | `redirect` | `{to, status}` | status `308` | `to` is a URL or path; status 301, 302, 303, 307 or 308 |
 | `respond` | `{status, body}` | status `200` | Static response, body up to 64 KiB |
+| `honeypot` | object | | Decoy action; see `routes[].honeypot` |
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
@@ -394,7 +395,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -434,6 +435,33 @@ set fails the reload.
 | `directives` | string | `""` | Inline SecLang loaded in the same position, at most 1 MiB |
 
 A profile needs at least one of `crs`, `directive_files` or `directives`.
+
+### routes[].honeypot
+
+A honeypot route answers with a decoy that looks like the real thing
+(a WordPress login, a leaked `.env`, a `.git/config`) and records the
+client: a `honeypot` security event with the full request line, a mark
+on the address for `mark` so that its later requests on every route are
+logged with `honeypot_marked: true` and reach filters as
+`Info.HoneypotMarked`, and a count towards the `honeypot` ban reason.
+Nothing is proxied. Put honeypots on paths no legitimate client uses.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `decoy` | name | `admin-login` when nothing else is set | Built-in body: `wp-login`, `env`, `git-config`, `phpinfo`, `admin-login`, `robots`; sets the content type |
+| `body` | string | | Inline decoy, at most 64 KiB; exclusive with `decoy` and `body_file` |
+| `body_file` | path | | Decoy read at load and on reload (a missing file fails the reload), at most 1 MiB |
+| `status` | int | `200` | Response status |
+| `content_type` | string | `text/html; charset=utf-8` | For `body` and `body_file` |
+| `delay` | duration | `0` | Hold the connection before answering, in a tarpit slot (`max_tarpits`), never in a request slot; at most 60s |
+| `mark` | duration | `1h` | How long the client stays marked; at most 720h |
+
+`response_headers` apply, so a decoy can carry a `Server` header of its
+own. `GET /v1/honeypot` lists marked clients (address, route, hits,
+first, last, expires) and the decoy names; `DELETE /v1/honeypot?ip=` and
+`xproxyctl honeypot forget IP` remove a mark. The mark table holds at
+most 65536 addresses. Counters: `honeypot_hits`, `honeypot_marked`;
+metrics `xproxy_honeypot_hits_total`, `xproxy_honeypot_marked`.
 
 ### routes[].waf
 

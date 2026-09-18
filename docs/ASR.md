@@ -29,6 +29,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F15 | Response caching with per route key policies | S | 1.1 (delivered) | In-process store bounded in bytes; hits pass the admission pipeline; no shared cache between nodes |
 | ASR-F14 | Bot classification from TLS fingerprints, headers and behaviour, with log, challenge and deny actions | S | 1.1 (delivered) | Fingerprints observed in the TLS handshake and carried to the request; classification is a filter so it composes with the challenge and the ban list |
 | ASR-F13 | Country based policy: allow, deny and rate by country | S | 1.1 (delivered) | Country lookup in the admission pipeline from a local database, no network lookups on the request path, no new dependency |
+| ASR-F16 | Honeypot routes with decoy responses that mark and ban probing clients | C | 1.2 (delivered) | A route action outside the proxy path; a bounded mark table on the server; bans only through triggers |
 
 ## 2. Security
 
@@ -119,6 +120,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F15 | `internal/cache`, `internal/proxy/cache.go` | `TestStoreAndBounds`, `TestVary`, `TestHelpers`, `TestResponseCache` |
 | ASR-F14 | `tlsconf.Compute`, `internal/filters/botscore` | `TestFingerprint`, `TestSignals`, `TestBehaviour`, `TestBotScoreOverTLS` |
 | ASR-F13 | `internal/geoip`, `routes[].geo`, rate key `country` | `TestMMDB`, `TestCSVAndDB`, `TestGeoPolicy` |
+| ASR-F16 | `internal/proxy/honeypot.go`, `routes[].honeypot` | `TestHoneypot`, `TestHoneypotMarks` |
 | ASR-Q2 | `test/covergate`, `.gremlins.yaml`, `internal/proxy/chaos_test.go` | CI `test` job (`make cover-gate`), CI `mutate` job, `TestChaos*` |
 | ASR-O6 | `internal/filter` registry, `internal/filters` | `TestRegistry`, `TestFilters`, `TestFiltersConfig`, EXTENDING.md |
 | ASR-P1 | `internal/router`, `internal/upstream` health bounds, `internal/proxy` generations | `TestScale` (`make scale`), `BenchmarkMatch1000Hosts`, PERFORMANCE.md |

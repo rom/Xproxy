@@ -38,6 +38,9 @@ type Info struct {
 	// ChallengeVerified is true when the client carries a valid browser
 	// challenge cookie (false when no challenge is configured).
 	ChallengeVerified bool
+	// HoneypotMarked is true when the client hit a honeypot route within
+	// its mark window.
+	HoneypotMarked bool
 }
 
 // Verdict is a filter decision.
