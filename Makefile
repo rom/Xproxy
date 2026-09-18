@@ -154,6 +154,7 @@ release: build dist
 	cp $(BIN)/xproxy $(BIN)/xproxyctl $(BIN)/xproxy-admin LICENSE README.md VERSION $(DIST)/$(RELNAME)/
 	cp -r deploy docs $(DIST)/$(RELNAME)/
 	tar -C $(DIST) -czf $(DIST)/$(RELNAME).tar.gz $(RELNAME) && rm -rf $(DIST)/$(RELNAME)
+	$(MAKE) dist-darwin
 	cp $(RPMDIR)/SOURCES/xproxy-$(BASE_VERSION).tar.gz $(DIST)/xproxy-$(BASE_VERSION)-src.tar.gz
 	$(GO) version -m $(BIN)/xproxy > $(DIST)/xproxy-$(BASE_VERSION).sbom.txt
 	@if command -v rpmbuild >/dev/null 2>&1 && [ -f /usr/lib/rpm/macros.d/macros.systemd ]; then \

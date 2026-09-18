@@ -16,8 +16,9 @@ it, what each layer is responsible for and what is added in later phases.
 | `make fuzz FUZZTIME=30s` | Runs every `Fuzz*` target for the given budget |
 | `make lint` | `golangci-lint` with the configuration in `.golangci.yml` |
 | `make vet`, `make fmt` | `go vet`, formatting check |
+| `make vet-all` | `go vet` for Linux amd64 and arm64 and macOS arm64 and amd64, so the macOS port cannot rot |
 | `make vuln` | `govulncheck` |
-| `make check` | fmt, vet, race tests, lint |
+| `make check` | fmt, vet-all, race tests, lint |
 | `go test -run TestProxyBasics -v ./internal/proxy/` | One test with output |
 | `go test -bench . -benchmem ./internal/router/ ./internal/waf/ ./internal/dns/ ./internal/netutil/` | Benchmarks: routing, a clean request through the CRS with and without statistics, DNS message parsing, PROXY header parsing |
 | `go test ./internal/config -run TestExampleDumpGolden -update` | Regenerate the golden dump of the example configuration after an intended default change |

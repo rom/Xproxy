@@ -106,7 +106,7 @@ record.
 | `github.com/corazawaf/coraza-coreruleset/v4` | Apache 2.0 | OWASP CRS embedded as a file system, no network fetch | phase 2 |
 | `go.etcd.io/bbolt` | MIT | Embedded state store for bans (AMR-012) | phase 2 |
 | `github.com/quic-go/quic-go` (with `qpack`) | MIT | HTTP/3 (AMR-002, AMR-024); pinned to the newest release that builds with the minimum toolchain | phase 2 |
-| `golang.org/x/*` | BSD | Extended standard library (`net`, `crypto`, `sys`, `time`); `x/crypto/ocsp` and `x/crypto/cryptobyte` are imported directly since 1.3 for OCSP stapling and SCT verification | as needed |
+| `golang.org/x/*` | BSD | Extended standard library (`net`, `crypto`, `sys`, `time`); `x/crypto/ocsp` and `x/crypto/cryptobyte` are imported directly since 1.3 for OCSP stapling and SCT verification, `x/sys/unix` since 1.3 for Landlock, seccomp, capabilities and the macOS peer credentials (AMR-044, AMR-045) | as needed |
 | `github.com/tetratelabs/wazero` | Apache 2.0 | WebAssembly runtime for the `wasm` filter kind (AMR-013, AMR-042); pure Go, no cgo | 1.2 |
 | `golang.org/x/term` | BSD | Raw terminal mode for the TUI (AMR-027); replaces the bubbletea plan | phase 2 |
 

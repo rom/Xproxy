@@ -104,6 +104,9 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S5, O1 | `internal/config` | `internal/config/config_test.go`, `FuzzParse` |
 | ASR-S6, S7 | `internal/netutil` | `internal/netutil/netutil_test.go`, `TestProxyBasics` |
 | ASR-S8 | `deploy/systemd`, `deploy/selinux`, `deploy/rpm` | CI `package` job (policy compile, RPM build, rpmlint, install); AVC check on a Fedora host per the release checklist |
+| ASR-S8 (in process) | `internal/sandbox` (Landlock, seccomp, capabilities, no_new_privs, non dumpable), `deploy/macos` (launchd, Seatbelt, pf) | `internal/sandbox` tests including the confined child, `TestApplyDisabledAndStrict`, `xproxyctl sandbox` in the checklists |
+| ASR-O3 (CLI) | `cmd/xproxyctl` | `cmd/xproxyctl/main_test.go` (every command against a live management server) |
+| ASR-Q1, Q2 (documentation and examples) | `examples/`, `docs/` | `test/examples`, `TestDocsYAMLSyntax`, `TestConfigReferenceComplete`, `TestExampleDumpGolden` |
 | ASR-F6 | `internal/waf`, `internal/filter` | `internal/waf/waf_test.go`, `TestWAFIntegration` |
 | ASR-S2 (bans) | `internal/ban`, accept hook in `internal/limits` | `internal/ban/ban_test.go`, `TestBanIntegration`, `TestConnLimiterBanned` |
 | ASR-O5 | `internal/ban` persistence (bbolt) | `TestPersistence` |
