@@ -1,13 +1,17 @@
 package mgmt
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
+
+	"github.com/rom/xproxy/internal/ban"
 )
 
 // Client talks to the management API over the Unix socket.
@@ -30,11 +34,26 @@ func NewClient(path string) *Client {
 }
 
 func (c *Client) do(method, path string, out any) error {
+	return c.doBody(method, path, nil, out)
+}
+
+func (c *Client) doBody(method, path string, payload any, out any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, "http://xproxy"+path, http.NoBody)
+	var rd io.Reader = http.NoBody
+	if payload != nil {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://xproxy"+path, rd)
 	if err != nil {
 		return err
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -77,4 +96,21 @@ func (c *Client) Raw(path string) ([]byte, error) {
 // Post triggers an action endpoint.
 func (c *Client) Post(path string) error {
 	return c.do("POST", path, nil)
+}
+
+// Bans lists active bans.
+func (c *Client) Bans() ([]ban.Entry, error) {
+	var out []ban.Entry
+	return out, c.do("GET", "/v1/bans", &out)
+}
+
+// Ban adds a ban.
+func (c *Client) Ban(target, duration, reason string) (*ban.Entry, error) {
+	var e ban.Entry
+	return &e, c.doBody("POST", "/v1/bans", BanRequest{Target: target, Duration: duration, Reason: reason}, &e)
+}
+
+// Unban removes a ban.
+func (c *Client) Unban(target string) error {
+	return c.do("DELETE", "/v1/bans?target="+url.QueryEscape(target), nil)
 }

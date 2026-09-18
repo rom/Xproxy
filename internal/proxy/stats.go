@@ -27,6 +27,9 @@ type Stats struct {
 	DeniedNoRoute     atomic.Uint64
 	DeniedWebSocket   atomic.Uint64
 	DeniedBadHost     atomic.Uint64
+	DeniedBan         atomic.Uint64
+	DeniedWAF         atomic.Uint64
+	WAFDetected       atomic.Uint64
 	UpstreamErrors    atomic.Uint64
 	UpstreamTimeouts  atomic.Uint64
 	UpstreamNoHealthy atomic.Uint64
@@ -56,6 +59,11 @@ type Snapshot struct {
 	DeniedNoRoute     uint64    `json:"denied_no_route"`
 	DeniedWebSocket   uint64    `json:"denied_websocket"`
 	DeniedBadHost     uint64    `json:"denied_bad_host"`
+	DeniedBan         uint64    `json:"denied_ban"`
+	DeniedWAF         uint64    `json:"denied_waf"`
+	WAFDetected       uint64    `json:"waf_detected"`
+	BansActive        int       `json:"bans_active"`
+	BansTotal         uint64    `json:"bans_total"`
 	UpstreamErrors    uint64    `json:"upstream_errors"`
 	UpstreamTimeouts  uint64    `json:"upstream_timeouts"`
 	UpstreamNoHealthy uint64    `json:"upstream_no_healthy"`
@@ -87,6 +95,9 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedNoRoute:     s.DeniedNoRoute.Load(),
 		DeniedWebSocket:   s.DeniedWebSocket.Load(),
 		DeniedBadHost:     s.DeniedBadHost.Load(),
+		DeniedBan:         s.DeniedBan.Load(),
+		DeniedWAF:         s.DeniedWAF.Load(),
+		WAFDetected:       s.WAFDetected.Load(),
 		UpstreamErrors:    s.UpstreamErrors.Load(),
 		UpstreamTimeouts:  s.UpstreamTimeouts.Load(),
 		UpstreamNoHealthy: s.UpstreamNoHealthy.Load(),

@@ -86,9 +86,19 @@ func (v *validator) config(c *Config) {
 	for i := range c.Upstreams {
 		v.upstream(i, &c.Upstreams[i], upstreams)
 	}
+	if c.Bans != nil {
+		v.bans(c.Bans)
+	}
+	profiles := map[string]bool{}
+	if c.WAF != nil {
+		v.waf(c.WAF, profiles)
+	}
 	routes := map[string]bool{}
 	for i := range c.Routes {
 		v.route(i, &c.Routes[i], routes, upstreams, rateLimits)
+		if c.Routes[i].WAF != nil {
+			v.routeWAF(i, c.Routes[i].WAF, c.WAF, profiles)
+		}
 	}
 	if len(c.Server.Listeners) == 0 {
 		v.errf("server.listeners: at least one listener is required")
@@ -494,6 +504,125 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	}
 	v.headerOps(p+".request_headers", r.RequestHeaders)
 	v.headerOps(p+".response_headers", r.ResponseHeaders)
+}
+
+var denyReasons = map[string]bool{
+	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
+	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true,
+}
+
+func (v *validator) bans(b *Bans) {
+	if b.StateFile != "" && !strings.HasPrefix(b.StateFile, "/") {
+		v.errf("bans.state_file: must be an absolute path")
+	}
+	if b.MaxEntries < 1 || b.MaxEntries > 10_000_000 {
+		v.errf("bans.max_entries: must be between 1 and 10000000")
+	}
+	for i, c := range b.ExemptCIDRs {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("bans.exempt_cidrs[%d]: %q is not a CIDR", i, c)
+		}
+	}
+	switch b.Action {
+	case "drop", "reject":
+	default:
+		v.errf("bans.action: must be drop or reject")
+	}
+	names := map[string]bool{}
+	for i, t := range b.Triggers {
+		p := fmt.Sprintf("bans.triggers[%d]", i)
+		if !nameRE.MatchString(t.Name) {
+			v.errf("%s.name: %q is not a valid name", p, t.Name)
+		} else if names[t.Name] {
+			v.errf("%s.name: duplicate %q", p, t.Name)
+		}
+		names[t.Name] = true
+		for j, r := range t.Reasons {
+			if !denyReasons[r] {
+				v.errf("%s.reasons[%d]: unknown reason %q", p, j, r)
+			}
+		}
+		if t.Threshold < 1 {
+			v.errf("%s.threshold: must be at least 1", p)
+		}
+		if t.Window <= 0 || t.Window > Duration(24*3600*1e9) {
+			v.errf("%s.window: must be positive and at most 24h", p)
+		}
+		if t.Duration <= 0 {
+			v.errf("%s.duration: must be positive", p)
+		}
+		if t.Escalation < 1 || t.Escalation > 100 {
+			v.errf("%s.escalation: must be between 1 and 100", p)
+		}
+		if t.MaxDuration < t.Duration {
+			v.errf("%s.max_duration: must be at least duration", p)
+		}
+	}
+}
+
+func wafModeOK(m string) bool { return m == "off" || m == "detect" || m == "block" }
+
+func (v *validator) waf(w *WAF, profiles map[string]bool) {
+	if !wafModeOK(w.DefaultMode) {
+		v.errf("waf.default_mode: must be off, detect or block")
+	}
+	if w.RequestBodyLimit < 1024 || w.RequestBodyLimit > 1<<30 {
+		v.errf("waf.request_body_limit: must be between 1024 and 1 GiB")
+	}
+	switch w.RequestBodyLimitAction {
+	case "reject", "partial":
+	default:
+		v.errf("waf.request_body_limit_action: must be reject or partial")
+	}
+	if w.ResponseBodyLimit < 1024 || w.ResponseBodyLimit > 1<<30 {
+		v.errf("waf.response_body_limit: must be between 1024 and 1 GiB")
+	}
+	if len(w.Profiles) == 0 {
+		v.errf("waf.profiles: at least one profile is required")
+	}
+	for i, p := range w.Profiles {
+		pp := fmt.Sprintf("waf.profiles[%d]", i)
+		if !nameRE.MatchString(p.Name) {
+			v.errf("%s.name: %q is not a valid name", pp, p.Name)
+		} else if profiles[p.Name] {
+			v.errf("%s.name: duplicate %q", pp, p.Name)
+		}
+		profiles[p.Name] = true
+		if p.CRS == nil && len(p.DirectiveFiles) == 0 && strings.TrimSpace(p.Directives) == "" {
+			v.errf("%s: a profile needs crs, directive_files or directives", pp)
+		}
+		if crs := p.CRS; crs != nil {
+			if crs.ParanoiaLevel < 1 || crs.ParanoiaLevel > 4 {
+				v.errf("%s.crs.paranoia_level: must be 1 to 4", pp)
+			}
+			if crs.InboundThreshold < 1 || crs.OutboundThreshold < 1 {
+				v.errf("%s.crs: thresholds must be at least 1", pp)
+			}
+		}
+		for j, f := range p.DirectiveFiles {
+			v.file(fmt.Sprintf("%s.directive_files[%d]", pp, j), f)
+		}
+		if len(p.Directives) > 1<<20 {
+			v.errf("%s.directives: exceeds 1 MiB", pp)
+		}
+	}
+	if w.DefaultMode != "off" && !profiles[w.DefaultProfile] {
+		v.errf("waf.default_profile: unknown profile %q", w.DefaultProfile)
+	}
+}
+
+func (v *validator) routeWAF(i int, rw *RouteWAF, w *WAF, profiles map[string]bool) {
+	p := fmt.Sprintf("routes[%d].waf", i)
+	if w == nil {
+		v.errf("%s: set but there is no top-level waf section", p)
+		return
+	}
+	if !wafModeOK(rw.Mode) {
+		v.errf("%s.mode: must be off, detect or block", p)
+	}
+	if rw.Mode != "off" && !profiles[rw.Profile] {
+		v.errf("%s.profile: unknown profile %q", p, rw.Profile)
+	}
 }
 
 func (v *validator) headerOps(p string, h HeaderOps) {

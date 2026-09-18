@@ -21,6 +21,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/proxy"
@@ -60,6 +61,9 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("POST /v1/reload", s.reload)
 	mux.HandleFunc("POST /v1/reload-certs", s.reloadCerts)
 	mux.HandleFunc("POST /v1/logs/reopen", s.reopenLogs)
+	mux.HandleFunc("GET /v1/bans", s.listBans)
+	mux.HandleFunc("POST /v1/bans", s.addBan)
+	mux.HandleFunc("DELETE /v1/bans", s.removeBan)
 	s.http = &http.Server{
 		Handler:           http.MaxBytesHandler(mux, 1<<20),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -213,6 +217,81 @@ func (s *Server) audited(name string, fn func() error) http.HandlerFunc {
 		s.logs.Audit.Info("management action", attrs...)
 		writeJSON(w, 200, result{OK: true})
 	}
+}
+
+// BanRequest is the body of POST /v1/bans.
+type BanRequest struct {
+	Target   string `json:"target"`   // address or CIDR
+	Duration string `json:"duration"` // Go duration, e.g. "1h"
+	Reason   string `json:"reason"`
+}
+
+func (s *Server) listBans(w http.ResponseWriter, _ *http.Request) {
+	bl := s.proxy.Bans()
+	if bl == nil {
+		writeJSON(w, 404, result{Error: "bans are not configured"})
+		return
+	}
+	entries := bl.Entries()
+	if entries == nil {
+		entries = []ban.Entry{}
+	}
+	writeJSON(w, 200, entries)
+}
+
+func (s *Server) addBan(w http.ResponseWriter, r *http.Request) {
+	bl := s.proxy.Bans()
+	if bl == nil {
+		writeJSON(w, 404, result{Error: "bans are not configured"})
+		return
+	}
+	var req BanRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		writeJSON(w, 400, result{Error: "bad request body"})
+		return
+	}
+	d, err := time.ParseDuration(req.Duration)
+	if err != nil {
+		writeJSON(w, 400, result{Error: "bad duration"})
+		return
+	}
+	if len(req.Reason) > 256 {
+		writeJSON(w, 400, result{Error: "reason too long"})
+		return
+	}
+	peer := peerFromContext(r.Context())
+	e, err := bl.Ban(req.Target, d, req.Reason)
+	attrs := []any{"action", "ban", "target", req.Target, "duration", req.Duration, "reason", req.Reason, "peer_uid", peer.UID, "peer_gid", peer.GID, "peer_pid", peer.PID, "peer_known", peer.OK}
+	if err != nil {
+		s.logs.Audit.Warn("management action failed", append(attrs, "err", err.Error())...)
+		writeJSON(w, 400, result{Error: err.Error()})
+		return
+	}
+	s.logs.Audit.Info("management action", attrs...)
+	writeJSON(w, 200, e)
+}
+
+func (s *Server) removeBan(w http.ResponseWriter, r *http.Request) {
+	bl := s.proxy.Bans()
+	if bl == nil {
+		writeJSON(w, 404, result{Error: "bans are not configured"})
+		return
+	}
+	target := r.URL.Query().Get("target")
+	peer := peerFromContext(r.Context())
+	err := bl.Unban(target)
+	attrs := []any{"action", "unban", "target", target, "peer_uid", peer.UID, "peer_gid", peer.GID, "peer_pid", peer.PID, "peer_known", peer.OK}
+	if err != nil {
+		s.logs.Audit.Warn("management action failed", append(attrs, "err", err.Error())...)
+		status := 400
+		if errors.Is(err, ban.ErrNotFound) {
+			status = 404
+		}
+		writeJSON(w, status, result{Error: err.Error()})
+		return
+	}
+	s.logs.Audit.Info("management action", attrs...)
+	writeJSON(w, 200, result{OK: true})
 }
 
 func (s *Server) reload(w http.ResponseWriter, r *http.Request) {

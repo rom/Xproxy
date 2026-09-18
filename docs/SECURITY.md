@@ -63,6 +63,36 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Environment proxy variables ignored for upstream connections.
 - No response decompression, so no decompression bombs in the proxy.
 
+### Web application firewall
+
+- OWASP Core Rule Set (bundled, no network fetch) through the Coraza
+  engine, anomaly scoring with configurable paranoia level and thresholds.
+- Per route `block`, `detect` (shadow) or `off`; profiles per route so an
+  API can run a stricter paranoia level than a marketing site.
+- Request headers and bodies inspected; bodies above the limit are
+  rejected with 413 by default, or inspected partially when configured.
+  Inspected bodies are replayed to the upstream unchanged.
+- Optional response inspection for data leakage rules, bounded by a size
+  limit; larger bodies pass uninspected and that fact is visible in the
+  configuration, never silent.
+- Operator exclusions and custom SecLang rules load between CRS setup and
+  CRS rules; a rule set that fails to compile fails the reload.
+- Every block and every detection is logged with matched rule identifiers,
+  the CRS total score and the WAF phase.
+
+### Ban list
+
+- Repeated denies (WAF, rate limit, ACL and others, selectable per
+  trigger) within a window ban the client address for an escalating
+  duration with a cap.
+- Banned peers are closed at accept before any byte is read, or answered
+  403 when the client address is derived from a trusted proxy chain.
+- Exempt ranges can never be banned. Loopback, unspecified and overly wide
+  prefixes are refused.
+- Tables are bounded; bans optionally persist across restarts in a
+  `0600` bbolt file in the state directory.
+- Operators ban and unban through the audited management API.
+
 ### Upstreams
 
 - Connect, response header, idle and total timeouts per pool.
@@ -101,10 +131,10 @@ to report a vulnerability. The threat analysis behind the controls is in
 
 ## Planned controls (see ROADMAP.md)
 
-Phase 2: WAF with OWASP CRS and shadow mode, temporary bans with decay and
-cluster sharing, adaptive shedding with priority classes, HTTP/3 with
-address validation, mutual TLS to upstreams, JWT validation, PII redaction
-rules, journald and syslog sinks.
+Phase 2 (remaining): cluster sharing of limits and bans, adaptive shedding
+with priority classes, challenge page, HTTP/3 with address validation,
+mutual TLS to upstreams, JWT validation, PII redaction rules, journald and
+syslog sinks, Prometheus metrics, TUI.
 
 Phase 3: ICAP scanning, ACME, full SELinux policy in an RPM, GUI with role
 separation, coverage and mutation gates, external security review.
@@ -119,7 +149,9 @@ separation, coverage and mutation gates, external security review.
 - **Race detector.** All tests run with `-race` in CI.
 - **Fuzzing.** Every custom parser and matcher has a native fuzz target
   (`FuzzParse`, `FuzzMatch`, `FuzzCleanPath`, `FuzzHost`); CI runs each for
-  a short budget, and longer runs are part of the release checklist.
+  a short budget, and longer runs are part of the release checklist. The
+  WAF engine and rule parser are third party (Coraza) and are fuzzed
+  upstream; xproxy fuzzes its own glue through the configuration fuzzer.
 - **Vulnerability scanning.** `govulncheck` in CI fails the build on a
   reachable vulnerability.
 - **Dependency review.** New modules require an AMR record and a review of

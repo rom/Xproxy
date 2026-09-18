@@ -2,6 +2,7 @@ package limits
 
 import (
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 )
@@ -73,6 +74,39 @@ func TestConcurrency(t *testing.T) {
 	}
 	if c.Rejected.Load() != 1 {
 		t.Fatal("rejected count")
+	}
+}
+
+func TestConnLimiterBanned(t *testing.T) {
+	base, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lim := NewConnLimiter(10, 10)
+	reasons := make(chan string, 1)
+	lim.Banned = func(netip.Addr) bool { return true }
+	lim.OnReject = func(_ netip.Addr, r string) { reasons <- r }
+	ln := lim.Wrap(base)
+	defer ln.Close()
+	go func() {
+		for {
+			if _, err := ln.Accept(); err != nil {
+				return
+			}
+		}
+	}()
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := c.Read(make([]byte, 1)); err == nil {
+		t.Fatal("banned connection was not closed")
+	}
+	reason := <-reasons
+	if lim.Rejected.Load() != 1 || reason != "banned" || lim.Open() != 0 {
+		t.Fatalf("rejected=%d reason=%q open=%d", lim.Rejected.Load(), reason, lim.Open())
 	}
 }
 

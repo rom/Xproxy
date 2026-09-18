@@ -1,12 +1,12 @@
-# xproxy
+# Xproxy
 
-A security focused HTTP reverse proxy, load balancer and (from phase 2)
-web application firewall, written in Go for Fedora Linux. Single static
+A security focused HTTP reverse proxy, load balancer and web application
+firewall, written in Go for Fedora Linux. Single static
 binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
-Status: **phase 1 (MVP)**. See [docs/ROADMAP.md](docs/ROADMAP.md) for what
-is in this release and what follows.
+Status: **phase 2 in progress** (WAF and ban list delivered). See
+[docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today
 
@@ -16,6 +16,11 @@ is in this release and what follows.
 - Upstream pools with round robin, weighted, least connections and
   consistent hashing; active health checks; outlier ejection; retries;
   signed cookie session affinity
+- Web application firewall: bundled OWASP Core Rule Set through Coraza,
+  block or detect per route, custom rules and exclusions, bounded request
+  and response inspection
+- Ban list: repeated denies become escalating temporary bans, dropped at
+  accept, persisted across restarts, managed from the CLI
 - Defences: connection limits at accept, concurrency ceiling, slowloris and
   body timeouts, size limits, keyed rate limits with reject or tarpit, CIDR
   allow and deny lists, trusted proxy handling, WebSocket opt-in
@@ -73,9 +78,11 @@ make cover          # coverage under race
 make fuzz           # all fuzz targets, 20s each
 ```
 
-Go 1.24 or newer. No cgo. Dependencies are listed and justified in
+Go 1.25 or newer. No cgo. Dependencies are listed and justified in
 [docs/AMR.md](docs/AMR.md) (AMR-004).
 
 ## Licence
 
-Not yet chosen; see the open items in docs/AMR.md.
+Xproxy is proprietary, commercially licensed software. Copyright (c) 2026
+Sysctl AB. All rights reserved. See [LICENSE](LICENSE). Third party
+components keep their own licences, listed in [docs/AMR.md](docs/AMR.md).

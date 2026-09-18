@@ -54,7 +54,7 @@ explicitly out of scope. This document is reviewed at every phase exit
 
 | Threat | Mitigation |
 |--------|------------|
-| Attacker activity not attributable | Every request has an identifier returned to the client, sent upstream and logged; denies go to the security stream with client address, method, host, path and user agent |
+| Attacker activity not attributable | Every request has an identifier returned to the client, sent upstream and logged; denies go to the security stream with client address, method, host, path and user agent; WAF events carry matched rule identifiers and scores; bans carry their trigger and count |
 
 ### Information disclosure
 
@@ -78,7 +78,9 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Large bodies | `max_body_bytes` globally and per route, checked on `Content-Length` and enforced by `MaxBytesReader` |
 | Long URIs and huge headers | `max_uri_length` (414), `max_header_bytes` (431) |
 | Health check amplification against upstreams | Jittered probes, bounded drain of probe responses |
-| Regular expression denial of service | No user supplied regular expressions in MVP; 1.0 WAF rules are compiled once and the CRS is curated; Go's `regexp` is linear time |
+| Regular expression denial of service | Operator supplied regular expressions exist only in WAF rules; they compile once at load, the CRS is curated, and Go's `regexp` is linear time |
+| WAF body buffering as a memory attack | Request bodies are inspected up to `waf.request_body_limit` (default 1 MiB) and rejected or partially inspected above it; response inspection is bounded by `waf.response_body_limit`; both sit under the global body and concurrency limits |
+| Ban table exhaustion by spoofed sources | Bans key on the derived client address; tables are bounded with eviction of the soonest expiring entries; trigger windows are bounded per trigger |
 | Decompression bombs | The proxy never decompresses; `DisableCompression` on the transport passes encodings through |
 | QUIC amplification (1.0) | Retry tokens and address validation enabled; UDP receive buffer bounds |
 
@@ -125,7 +127,8 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Rate limit buckets reset on reload | Accepted; a flood cannot exploit it without also triggering reloads, which require operator access |
 | Volumetric attacks above the host's link capacity | Out of scope; requires upstream scrubbing or anycast |
 | A full rate limit table fails open for the rate dimension | Accepted and documented; connection and concurrency ceilings still hold; table size is generous |
-| No WAF in MVP | Phase 2 |
+| WAF false positives can block legitimate traffic | Mitigated by `detect` mode for roll-out, per route profiles and exclusion files; residual risk is operational |
+| An attacker can get a shared NAT address banned | Accepted; `exempt_cidrs` for known shared egress, `reject` action and short durations reduce impact; bans never apply to exempt ranges |
 | `WriteTimeout` may cut long downloads | Operator tunes per deployment; 1.0 adds per route write deadlines |
 | Certificate private keys readable by the service user | Inherent in a single process design (AMR-005); mitigated by file modes, SELinux and no shell in the unit |
 

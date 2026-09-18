@@ -49,6 +49,9 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `reload-certs` | Re-read certificate files |
 | `reopen-logs` | Reopen log files |
 | `tail STREAM` | Follow `access`, `error`, `security` or `audit` |
+| `bans` | List active bans with expiry, source and count |
+| `ban TARGET` | Ban an address or CIDR; `-duration 1h`, `-reason text` |
+| `unban TARGET` | Remove a ban |
 | `version` | Print version |
 
 `-json` switches `status`, `stats` and `upstreams` to machine readable
@@ -63,6 +66,9 @@ xproxyctl -json stats | jq .denied_rate_limit
 xproxyctl upstreams
 xproxyctl tail security | jq -c '{t:.time, ip:.client_ip, r:.reason, p:.path}'
 xproxyctl reload
+xproxyctl bans
+xproxyctl ban -duration 24h -reason "credential stuffing" 203.0.113.0/24
+xproxyctl unban 203.0.113.0/24
 ```
 
 ## Configuration patterns
@@ -210,6 +216,68 @@ upstreams:
 Active checks mark endpoints unhealthy; passive ejection reacts to real
 traffic failures with growing back-off. At most half the pool is ejected.
 
+### Web application firewall
+
+Enable the bundled OWASP Core Rule Set and roll it out in detect mode
+first:
+
+```yaml
+waf:
+  default_mode: detect
+  profiles:
+    - name: default
+      crs: {paranoia_level: 1}
+```
+
+Watch the security log for `waf_detected` entries and the access log for
+`waf_matched`. Add exclusions for legitimate traffic in a SecLang file,
+then switch to block:
+
+```yaml
+waf:
+  default_mode: block
+  inspect_responses: true
+  profiles:
+    - name: default
+      crs: {paranoia_level: 1}
+      directive_files: [/etc/xproxy/waf/exclusions.conf]
+    - name: strict
+      crs: {paranoia_level: 2}
+routes:
+  - {name: api,    hosts: [api.example.com], upstream: api, waf: {profile: strict}}
+  - {name: upload, hosts: [example.com], paths: [/upload], upstream: web, waf: {mode: off}}
+  - {name: web,    hosts: [example.com], upstream: web}
+```
+
+Example exclusion file:
+
+```
+# Rich text editor posts HTML in the "body" field of /posts.
+SecRule REQUEST_URI "@beginsWith /posts" \
+  "id:10001,phase:1,pass,nolog,ctl:ruleRemoveTargetById=941100;ARGS:body,ctl:ruleRemoveTargetById=941160;ARGS:body"
+```
+
+Custom rules without the CRS work the same way through `directives`.
+
+### Ban list
+
+```yaml
+bans:
+  state_file: /var/lib/xproxy/bans.db
+  action: drop
+  exempt_cidrs: [10.0.0.0/8]
+  triggers:
+    - {name: waf-repeat, reasons: [waf], threshold: 5, window: 1m, duration: 15m}
+    - {name: brute,      reasons: [rate_limit, acl], threshold: 20, window: 5m, duration: 1h, escalation: 2, max_duration: 24h}
+```
+
+A client that trips the WAF five times in a minute is banned for fifteen
+minutes; a second ban within the escalation memory doubles it. With
+`action: drop` the connection is closed at accept, which costs the proxy
+nothing per attempt. Use `reject` when the proxy sits behind a load
+balancer that sets `X-Forwarded-For`, because at accept only the balancer's
+address is visible.
+
 ## Logs
 
 All streams are JSON lines with `time`, `level`, `msg` and `stream`.
@@ -235,7 +303,13 @@ One line per deny, tarpit or dropped connection:
 
 Reasons: `concurrency`, `uri_length`, `bad_host`, `no_route`, `acl_deny`,
 `acl_allow`, `rate_limit`, `rate_limit:<name>` (tarpit), `body_size`,
-`websocket`, `max_connections`, `max_connections_per_ip`.
+`websocket`, `waf`, `banned`, `max_connections`, `max_connections_per_ip`.
+
+WAF entries add `waf_profile`, `waf_mode`, `waf_matched` (rule ids),
+`waf_message`, `waf_score`, `waf_rule` (the interrupting rule), `waf_phase`.
+Detections in `detect` mode appear on the access line with
+`waf_detected: true`. Bans and unbans are logged with `msg: "client banned"`
+and `"client unbanned"`, including trigger name, duration and count.
 
 ### error
 
@@ -252,7 +326,8 @@ Management actions with the caller's uid, gid and pid, and every reload.
 Prometheus endpoint). Names match the JSON fields: `requests`,
 `responses_2xx` to `responses_5xx`, `bytes_in`, `bytes_out`, `denied_*`,
 `tarpitted`, `upstream_errors`, `upstream_timeouts`, `upstream_no_healthy`,
-`client_aborts`, `reloads`, `reload_failures`, `open_connections`,
+`client_aborts`, `denied_ban`, `denied_waf`, `waf_detected`, `bans_active`,
+`bans_total`, `reloads`, `reload_failures`, `open_connections`,
 `rejected_connections`, `in_flight`.
 
 ## Troubleshooting
@@ -262,6 +337,9 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 | `config: ... no such file or directory` | Certificate or CA paths; `xproxy -validate` lists all problems at once |
 | 404 for a host you configured | Host matching is exact or single label wildcard; check the `host` field in the access log |
 | 403 with `reason: acl_allow` | The client address is not in `allow_cidrs`; if behind a proxy, set `trusted_proxies` |
+| 403 with `reason: waf` | A rule blocked the request; `waf_matched` names the rules. Add an exclusion or lower the paranoia level for that route |
+| 403 with `reason: banned` or connections closed immediately | `xproxyctl bans`; unban or add the range to `exempt_cidrs` |
+| Reload fails with a WAF compile error | The error names the file and line of the bad directive; the old rules stay active |
 | 413 immediately | `Content-Length` above `max_body_bytes` |
 | 429 with `Retry-After` | Rate limit; `denied` names the policy |
 | 502 | Upstream connection failed; see `upstream_error` in access and the error log |

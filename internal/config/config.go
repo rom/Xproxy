@@ -37,6 +37,11 @@ type Config struct {
 	RateLimits []RateLimit `yaml:"rate_limits"`
 	Upstreams  []Upstream  `yaml:"upstreams"`
 	Routes     []Route     `yaml:"routes"`
+
+	// Bans enables the ban list when present.
+	Bans *Bans `yaml:"bans"`
+	// WAF enables the web application firewall when present.
+	WAF *WAF `yaml:"waf"`
 }
 
 // Server holds listener and global limit settings for the data plane.
@@ -276,6 +281,8 @@ type Route struct {
 	Timeout Duration `yaml:"timeout"`
 	// WebSocket allows Upgrade: websocket to be forwarded. Default false.
 	WebSocket bool `yaml:"websocket"`
+	// WAF overrides the global WAF mode and profile for this route.
+	WAF *RouteWAF `yaml:"waf"`
 }
 
 // Redirect is a static redirect action.
@@ -328,3 +335,91 @@ func (d Duration) D() time.Duration { return time.Duration(d) }
 
 // Enabled reports whether a stream is enabled (default true).
 func (s LogStream) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
+
+// Bans configures the ban list: addresses that are refused outright for a
+// period after repeated security denies or by operator action.
+type Bans struct {
+	// StateFile persists bans across restarts (bbolt). Empty keeps them in
+	// memory only.
+	StateFile string `yaml:"state_file"`
+	// MaxEntries bounds the number of banned addresses. Default 100000.
+	MaxEntries int `yaml:"max_entries"`
+	// ExemptCIDRs are never banned (monitoring, office ranges).
+	ExemptCIDRs []string `yaml:"exempt_cidrs"`
+	// Action is drop (close connections at accept and answer 403 when the
+	// client is derived from a trusted proxy) or reject (403 only). Default
+	// drop.
+	Action string `yaml:"action"`
+	// Triggers turn repeated denies into bans.
+	Triggers []BanTrigger `yaml:"triggers"`
+}
+
+// BanTrigger bans a client after Threshold denies within Window.
+type BanTrigger struct {
+	Name string `yaml:"name"`
+	// Reasons restricts which deny reasons count (acl, rate_limit, waf,
+	// body_size, uri_length, bad_host, no_route, websocket, concurrency).
+	// Empty counts every deny.
+	Reasons   []string `yaml:"reasons"`
+	Threshold int      `yaml:"threshold"`
+	Window    Duration `yaml:"window"`
+	Duration  Duration `yaml:"duration"`
+	// Escalation multiplies the duration for every repeat ban of the same
+	// address. Default 2. MaxDuration caps it, default 24h.
+	Escalation  float64  `yaml:"escalation"`
+	MaxDuration Duration `yaml:"max_duration"`
+}
+
+// WAF configures the web application firewall engine.
+type WAF struct {
+	Profiles []WAFProfile `yaml:"profiles"`
+	// DefaultMode applies to routes without a waf block: off, detect or
+	// block. Default block when the section is present.
+	DefaultMode string `yaml:"default_mode"`
+	// DefaultProfile applies to routes without a waf block. Default
+	// "default".
+	DefaultProfile string `yaml:"default_profile"`
+	// RequestBodyLimit bounds the request body inspected. Default 1 MiB.
+	RequestBodyLimit int64 `yaml:"request_body_limit"`
+	// RequestBodyLimitAction is reject (413) or partial (inspect the first
+	// RequestBodyLimit bytes and pass the rest). Default reject.
+	RequestBodyLimitAction string `yaml:"request_body_limit_action"`
+	// InspectResponses enables response header and body inspection.
+	InspectResponses bool `yaml:"inspect_responses"`
+	// ResponseBodyLimit bounds the response body inspected. Default 512 KiB;
+	// larger bodies are passed uninspected.
+	ResponseBodyLimit int64 `yaml:"response_body_limit"`
+	// ResponseMIMETypes lists content types whose bodies are inspected.
+	ResponseMIMETypes []string `yaml:"response_mime_types"`
+}
+
+// WAFProfile is a named rule set.
+type WAFProfile struct {
+	Name string `yaml:"name"`
+	// CRS enables the OWASP Core Rule Set bundled with the binary.
+	CRS *CRS `yaml:"crs"`
+	// DirectiveFiles are SecLang files loaded after the CRS setup and before
+	// the CRS rules (the right place for exclusions).
+	DirectiveFiles []string `yaml:"directive_files"`
+	// Directives is inline SecLang loaded in the same position.
+	Directives string `yaml:"directives"`
+}
+
+// CRS tunes the Core Rule Set.
+type CRS struct {
+	// ParanoiaLevel 1 to 4. Default 1.
+	ParanoiaLevel int `yaml:"paranoia_level"`
+	// InboundThreshold is the anomaly score at which a request is blocked.
+	// Default 5 (one critical rule).
+	InboundThreshold int `yaml:"inbound_threshold"`
+	// OutboundThreshold is the anomaly score at which a response is
+	// blocked. Default 4.
+	OutboundThreshold int `yaml:"outbound_threshold"`
+}
+
+// RouteWAF selects the WAF profile and mode for a route.
+type RouteWAF struct {
+	// Mode is off, detect or block.
+	Mode    string `yaml:"mode"`
+	Profile string `yaml:"profile"`
+}

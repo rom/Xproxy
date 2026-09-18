@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/tlsconf"
 )
@@ -36,7 +37,14 @@ type reqState struct {
 	attempts int
 	denied   string
 	upErr    string
+	extra    []any // filter attributes for the access log
 }
+
+// filterDenied carries a response phase verdict through ReverseProxy's
+// error path.
+type filterDenied struct{ v filter.Verdict }
+
+func (e *filterDenied) Error() string { return "filter denied: " + e.v.Reason }
 
 func newRequestID() string {
 	var b [12]byte
@@ -71,6 +79,13 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+
+	if bl := s.bans.Load(); bl != nil && bl.Banned(st.clientIP) {
+		s.stats.DeniedBan.Add(1)
+		st.denied = "banned"
+		s.deny(rw, r, st, http.StatusForbidden, "banned")
+		return
+	}
 
 	if h.ln.RedirectToHTTPS {
 		host := netutil.Host(r.Host)
@@ -159,6 +174,20 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Per-route filters (WAF). Instances live for the whole exchange.
+	var instances filter.Instances
+	if len(cr.filters) > 0 {
+		instances = cr.filters.Begin(r.Context(), &filter.Info{
+			RequestID: st.id, ClientIP: st.clientIP, Route: cr.cfg.Name,
+			Host: st.host, Path: st.path, TLS: r.TLS != nil,
+		})
+		defer func() { st.extra = append(st.extra, instances.End()...) }()
+		if v := instances.Request(r); v.Deny {
+			s.filterDeny(rw, r, st, v)
+			return
+		}
+	}
+
 	// Per-route timeout.
 	ctx := r.Context()
 	if cr.cfg.Timeout > 0 {
@@ -184,11 +213,49 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, _ = rw.Write([]byte(cr.cfg.Respond.Body))
 		}
 	default:
-		s.proxyTo(rw, r, st, cr)
+		s.proxyTo(rw, r, st, cr, instances)
 	}
 }
 
-func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *compiledRoute) {
+// filterDeny handles a deny verdict from the filter chain.
+func (s *Server) filterDeny(rw *responseWriter, r *http.Request, st *reqState, v filter.Verdict) {
+	st.denied = v.Reason
+	if v.Detail != "" {
+		st.denied += ":" + v.Detail
+	}
+	switch v.Reason {
+	case "waf":
+		s.stats.DeniedWAF.Add(1)
+	case "body_size":
+		s.stats.DeniedBodySize.Add(1)
+	}
+	s.logs.SecurityEvent(r.Context(), "deny", v.Reason, append([]any{
+		"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
+		"host", r.Host, "path", r.URL.Path, "route", st.route, "status", v.Status,
+		"detail", v.Detail, "user_agent", r.UserAgent()}, v.Attrs...)...)
+	if bl := s.bans.Load(); bl != nil {
+		bl.Observe(st.clientIP, banCategory(v.Reason))
+	}
+	if rw.wrote {
+		return
+	}
+	s.plainStatus(rw, r, v.Status)
+}
+
+// banCategory maps a deny reason to the trigger category in the
+// configuration.
+func banCategory(reason string) string {
+	switch {
+	case reason == "acl_deny", reason == "acl_allow":
+		return "acl"
+	case strings.HasPrefix(reason, "rate_limit"):
+		return "rate_limit"
+	default:
+		return reason
+	}
+}
+
+func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *compiledRoute, instances filter.Instances) {
 	pool := cr.pool
 	st.upstream = pool.Name
 
@@ -232,6 +299,9 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 					MaxAge:   int(pool.Cfg.Affinity.TTL.D().Seconds()),
 					HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode,
 				})
+			}
+			if v := instances.Response(resp); v.Deny {
+				return &filterDenied{v: v}
 			}
 			applyHeaderOps(resp.Header, cr.cfg.ResponseHeaders)
 			if s.cfg().Server.ServerHeader == "" {
@@ -303,6 +373,11 @@ func (s *Server) upstreamError(rw *responseWriter, r *http.Request, st *reqState
 	}
 	st.attempts = pi.attempts
 	pi.mu.Unlock()
+	var fd *filterDenied
+	if errors.As(err, &fd) {
+		s.filterDeny(rw, r, st, fd.v)
+		return
+	}
 	st.upErr = err.Error()
 	status := http.StatusBadGateway
 	switch {
@@ -341,6 +416,9 @@ func (s *Server) deny(rw *responseWriter, r *http.Request, st *reqState, status 
 		"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
 		"host", r.Host, "path", r.URL.Path, "route", st.route, "status", status,
 		"user_agent", r.UserAgent())
+	if bl := s.bans.Load(); bl != nil && reason != "banned" {
+		bl.Observe(st.clientIP, banCategory(reason))
+	}
 	s.plainStatus(rw, r, status)
 }
 
@@ -351,6 +429,9 @@ func (s *Server) tarpit(rw *responseWriter, r *http.Request, st *reqState, rl *c
 	s.logs.SecurityEvent(r.Context(), "tarpit", "rate_limit:"+rl.Name,
 		"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
 		"host", r.Host, "path", r.URL.Path, "route", st.route, "delay", rl.TarpitDelay.D().String())
+	if bl := s.bans.Load(); bl != nil {
+		bl.Observe(st.clientIP, "rate_limit")
+	}
 	select {
 	case <-time.After(rl.TarpitDelay.D()):
 	case <-r.Context().Done():
@@ -414,6 +495,14 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	}
 	if st.upErr != "" {
 		attrs = append(attrs, "upstream_error", st.upErr)
+	}
+	if len(st.extra) > 0 {
+		attrs = append(attrs, st.extra...)
+		for i := 0; i+1 < len(st.extra); i += 2 {
+			if st.extra[i] == "waf_detected" {
+				s.stats.WAFDetected.Add(1)
+			}
+		}
 	}
 	s.logs.Access.Info("request", attrs...)
 }

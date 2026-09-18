@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
@@ -32,6 +33,7 @@ type Server struct {
 
 	concurrency *limits.Concurrency
 	connLimiter *limits.ConnLimiter
+	bans        atomic.Pointer[ban.List]
 
 	mu        sync.Mutex
 	listeners []*boundListener
@@ -58,13 +60,30 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	s.connLimiter.OnReject = func(addr netip.Addr, reason string) {
 		s.logs.SecurityEvent(context.Background(), "drop_connection", reason, "client_ip", addr.String())
 	}
+	if cfg.Bans != nil {
+		bl, err := ban.New(cfg.Bans, logs.Security)
+		if err != nil {
+			return nil, err
+		}
+		s.bans.Store(bl)
+	}
+	s.connLimiter.Banned = func(addr netip.Addr) bool {
+		bl := s.bans.Load()
+		return bl != nil && bl.DropsConnections() && bl.Banned(addr)
+	}
 	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error)
 	if err != nil {
+		if bl := s.bans.Load(); bl != nil {
+			bl.Close()
+		}
 		return nil, err
 	}
 	s.rt.Store(rt)
 	return s, nil
 }
+
+// Bans returns the ban list, or nil when bans are not configured.
+func (s *Server) Bans() *ban.List { return s.bans.Load() }
 
 func (s *Server) cfg() *config.Config { return s.rt.Load().cfg }
 
@@ -77,6 +96,9 @@ func (s *Server) Stats() Snapshot {
 	snap.OpenConnections = s.connLimiter.Open()
 	snap.RejectedConns = s.connLimiter.Rejected.Load()
 	snap.InFlight = s.concurrency.InFlight()
+	if bl := s.bans.Load(); bl != nil {
+		snap.BansActive, snap.BansTotal = bl.Stats()
+	}
 	return snap
 }
 
@@ -212,6 +234,33 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
+	// Ban list: reconfigure in place so active bans survive; create or
+	// drop it when the section appears or disappears.
+	oldBans := s.bans.Load()
+	var newBans *ban.List
+	switch {
+	case cfg.Bans != nil && oldBans != nil:
+		if oldBans.StateFile() == cfg.Bans.StateFile {
+			oldBans.Reconfigure(cfg.Bans)
+			newBans = oldBans
+		} else {
+			bl, err := ban.New(cfg.Bans, s.logs.Security)
+			if err != nil {
+				rt.stop()
+				s.stats.ReloadFailures.Add(1)
+				return err
+			}
+			newBans = bl
+		}
+	case cfg.Bans != nil:
+		bl, err := ban.New(cfg.Bans, s.logs.Security)
+		if err != nil {
+			rt.stop()
+			s.stats.ReloadFailures.Add(1)
+			return err
+		}
+		newBans = bl
+	}
 	// Reload certificates before switching so a bad certificate aborts the
 	// reload as a whole.
 	s.mu.Lock()
@@ -235,6 +284,12 @@ func (s *Server) Reload(cfg *config.Config) error {
 	rt.start()
 	s.connLimiter.SetLimits(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP)
 	s.rt.Store(rt)
+	if newBans != oldBans {
+		s.bans.Store(newBans)
+		if oldBans != nil {
+			oldBans.Close()
+		}
+	}
 	s.stats.Reloads.Add(1)
 	// Give in-flight requests on the old generation time to finish before
 	// tearing down its pools; the transport keeps serving until then.
@@ -305,6 +360,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	wg.Wait()
 	s.rt.Load().stop()
+	if bl := s.bans.Load(); bl != nil {
+		bl.Close()
+	}
 	return firstErr
 }
 

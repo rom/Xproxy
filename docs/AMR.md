@@ -89,22 +89,34 @@ test. A zero timeout means "default", never "disabled" (see
 from this list, each with a reason. Adding a module requires a new AMR
 record.
 
-| Module | Reason | Phase |
-|--------|--------|-------|
-| `gopkg.in/yaml.v3` | Configuration parsing with `KnownFields` | MVP |
-| `github.com/quic-go/quic-go` | HTTP/3 (AMR-002) | 1.0 |
-| `go.etcd.io/bbolt` | Embedded state store for bans and statistics (AMR-012) | 1.0 |
-| `github.com/corazawaf/coraza/v3` | WAF engine with OWASP CRS compatibility (AMR-008) | 1.0 |
-| `golang.org/x/*` | Extended standard library (`net`, `crypto`, `sys`, `time`) | as needed |
-| `github.com/charmbracelet/bubbletea` and `lipgloss` | TUI (AMR-011) in the management binary only | 1.0 |
+| Module | Licence | Reason | Phase |
+|--------|---------|--------|-------|
+| `gopkg.in/yaml.v3` | MIT / Apache 2.0 | Configuration parsing with `KnownFields` | MVP |
+| `github.com/corazawaf/coraza/v3` | Apache 2.0 | WAF engine, SecLang compatible (AMR-008) | phase 2 |
+| `github.com/corazawaf/coraza-coreruleset/v4` | Apache 2.0 | OWASP CRS embedded as a file system, no network fetch | phase 2 |
+| `go.etcd.io/bbolt` | MIT | Embedded state store for bans (AMR-012) | phase 2 |
+| `github.com/quic-go/quic-go` | MIT | HTTP/3 (AMR-002) | 1.0 |
+| `golang.org/x/*` | BSD | Extended standard library (`net`, `crypto`, `sys`, `time`) | as needed |
+| `github.com/charmbracelet/bubbletea` and `lipgloss` | MIT | TUI (AMR-011) in the management binary only | 1.0 |
+
+Coraza brings a transitive set that is larger than the rest of the binary
+combined: `libinjection-go`, `aho-corasick`, `binaryregexp`, `gjson`,
+`goccy/go-json` and `goccy/go-yaml`, `kaptinlin/jsonschema` with its i18n
+helpers, `ocsf-schema-golang`, `magefile/mage` and `google.golang.org/protobuf`.
+All are permissively licensed and none requires cgo. They are accepted as
+the price of a maintained SecLang engine, pinned, and covered by
+`govulncheck` on every commit. A future record may replace the JSON body
+processor's dependencies if a lighter path appears upstream.
 
 Everything else, including HTTP clients, logging, metrics and JWT, is
 implemented on the standard library. `CGO_ENABLED=0` is mandatory; any module
 requiring cgo is rejected.
 
-**Consequences.** The data plane binary depends on `yaml.v3` today and will
-add `quic-go`, `bbolt` and `coraza`. The management GUI does not pull a
-JavaScript build chain: static assets are hand written and embedded.
+**Consequences.** The data plane binary depends on `yaml.v3`, `coraza`,
+`coraza-coreruleset` and `bbolt`, and will add `quic-go`. Coraza requires
+Go 1.25, which is therefore the minimum toolchain. The management GUI does
+not pull a JavaScript build chain: static assets are hand written and
+embedded.
 
 **Status.** Accepted.
 
@@ -344,10 +356,91 @@ Fedora host in the release checklist until CI has a Fedora runner.
 
 ---
 
+## AMR-019: Ban list design
+
+**Context.** ASR-S2 asks for temporary bans with decay; the interview asked
+for deflection, not only limiting.
+
+**Decision.** A ban list owned by the server (not by the configuration
+generation, so reloads keep bans) with three inputs: triggers that count
+denies per address and category inside a sliding window, manual bans over
+the audited management API, and (in the cluster phase) peers. Durations
+escalate geometrically per repeat with a cap. Enforcement happens at accept
+when the peer address is the client (`action: drop`), otherwise in the
+handler on the derived address. Tables are bounded with eviction of the
+soonest expiring entries. Persistence is optional and uses bbolt.
+
+**Alternatives.** Kernel level bans through nftables sets: faster, but
+requires privilege the process does not have (AMR-005); the hardening guide
+shows an nftables layer the operator can drive from the security log.
+Unbounded tables: rejected by AMR-007.
+
+**Consequences.** A shared NAT address can be banned by one abusive user
+behind it; `exempt_cidrs`, `reject` mode and short durations are the
+operator's tools. Loopback, unspecified and prefixes wider than /8 (IPv4)
+or /32 (IPv6) are refused so an operator error cannot ban the world.
+
+**Status.** Accepted.
+
+---
+
+## AMR-020: WAF integration details
+
+**Context.** AMR-008 chose Coraza and the CRS. Integration choices affect
+performance, memory bounds and operability.
+
+**Decision.**
+
+- The CRS is embedded in the binary through `coraza-coreruleset`; no rule
+  download at run time, and rule set upgrades are release upgrades.
+- A profile compiles into separate blocking and detection-only Coraza
+  instances, only for the modes routes actually use, because Coraza's
+  engine mode is per instance. Detection-only doubles as shadow mode.
+- Compilation happens at load and reload; a failing rule set fails the
+  reload and the previous generation stays active (ASR-S5).
+- Request bodies are read into the transaction up to a configured limit and
+  replayed from Coraza's buffer, so the upstream sees the exact bytes.
+  Over the limit the default is 413; `partial` is available where large
+  uploads share a route with inspected traffic.
+- Response inspection is off by default, bounded by size and content type,
+  and passes larger bodies through uninspected (never buffers a stream to
+  disk).
+- xproxy writes its own security and access log entries from the matched
+  rules; Coraza's audit engine is off so there is one log format.
+- Operator exclusions load between CRS setup and CRS rules, the position
+  the CRS documents for `ctl:ruleRemove*` directives.
+
+**Consequences.** Memory per compiled instance is tens of megabytes; with
+two modes and several profiles this is the dominant memory cost of the
+process and is documented in SETUP.md. Body inspection adds one copy of the
+body; the limit bounds it.
+
+**Status.** Accepted.
+
+---
+
+## AMR-018: Licence and name
+
+**Context.** The open items on licence and name were decided by the
+project owner at the start of phase 2.
+
+**Decision.** Xproxy is proprietary, commercially licensed software owned by
+Sysctl AB (see `LICENSE`). The product name is "Xproxy"; binaries, users,
+directories and units keep the lower-case Unix name `xproxy`. Third party
+components are used under their own licences (permissive licences only:
+Apache 2.0, MIT, BSD) and are listed in AMR-004; copyleft licences are not
+accepted into the dependency set.
+
+**Consequences.** Every dependency added under AMR-004 records its licence.
+No contributor licence agreement is needed for internal work; external
+contributions require an agreement with Sysctl AB.
+
+**Status.** Accepted (project owner).
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |
 |------|-------|-----------|
-| Product licence (Apache 2.0 or MIT recommended) | project owner | before first public release |
-| Final product name (repository is `Xproxy`, binaries are `xproxy`) | project owner | before 1.0 |
 | Fedora CI runner for SELinux and systemd tests | maintainers | phase 3 |

@@ -1,0 +1,28 @@
+Xproxy
+Copyright (c) 2026 Sysctl AB. All rights reserved.
+
+PROPRIETARY AND CONFIDENTIAL
+
+This software and its accompanying documentation (the "Software") are the
+proprietary property of Sysctl AB and are protected by copyright law and
+international treaties.
+
+The Software is licensed, not sold. No part of the Software may be used,
+copied, modified, merged, published, distributed, sublicensed, sold,
+reverse engineered, decompiled or disassembled, in whole or in part,
+except under the terms of a written commercial licence agreement executed
+with Sysctl AB. Possession of or access to the Software does not by itself
+grant any licence.
+
+Unless otherwise agreed in writing, the Software is provided "AS IS",
+without warranty of any kind, express or implied, including but not
+limited to the warranties of merchantability, fitness for a particular
+purpose and non-infringement. In no event shall Sysctl AB be liable for
+any claim, damages or other liability arising from or in connection with
+the Software or its use.
+
+Third party components included in or linked with the Software remain
+subject to their own licences; see docs/AMR.md (AMR-004) for the list of
+such components.
+
+For licensing enquiries contact Sysctl AB.

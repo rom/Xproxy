@@ -107,6 +107,7 @@ routes:
     strip_prefix: /v1
     rate_limits: [per-ip]
     upstream: api
+    waf: {profile: api-strict, mode: block}
     request_headers:
       remove: [Cookie]
     response_headers:
@@ -134,4 +135,49 @@ routes:
 
   - name: default
     priority: -100
+    waf: {mode: detect}
     respond: {status: 404, body: "not found\n"}
+
+# Ban list: repeated denies turn into temporary bans with escalation.
+bans:
+  state_file: /var/lib/xproxy/bans.db
+  action: drop                      # close connections from banned peers at accept
+  exempt_cidrs: [10.0.0.0/8]        # monitoring and office ranges
+  triggers:
+    - name: waf-repeat
+      reasons: [waf]
+      threshold: 5
+      window: 1m
+      duration: 15m
+      escalation: 2
+      max_duration: 24h
+    - name: brute-force
+      reasons: [rate_limit, acl]
+      threshold: 20
+      window: 5m
+      duration: 1h
+
+# Web application firewall: OWASP Core Rule Set, blocking by default.
+# Start new deployments with default_mode: detect, review security.log,
+# add exclusions to directive_files, then switch to block.
+waf:
+  default_mode: block
+  default_profile: default
+  request_body_limit: 1048576       # 1 MiB inspected
+  request_body_limit_action: reject
+  inspect_responses: true
+  response_body_limit: 524288
+  profiles:
+    - name: default
+      crs:
+        paranoia_level: 1
+        inbound_threshold: 5
+        outbound_threshold: 4
+      # directive_files: [/etc/xproxy/waf/exclusions.conf]
+    - name: api-strict
+      crs:
+        paranoia_level: 2
+      directives: |
+        # Allow JSON bodies only on the API profile.
+        SecRule REQUEST_HEADERS:Content-Type "!@rx ^application/json" \
+          "id:100100,phase:1,deny,status:415,msg:'API accepts JSON only'"

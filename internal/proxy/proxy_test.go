@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -537,4 +538,15 @@ routes:
 	if n > 0 && !strings.Contains(string(buf[:n]), "408") {
 		t.Fatalf("unexpected response %q", buf[:n])
 	}
+}
+
+func mustAddr(s string) netip.Addr { return netip.MustParseAddr(s) }
+
+func mustParse(t *testing.T, yaml string) *config.Config {
+	t.Helper()
+	cfg, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
 }
