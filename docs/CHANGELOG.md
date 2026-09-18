@@ -13,6 +13,9 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   unique across the set.
 - HTTP/2 CONNECT on TLS forward listeners that list `h2`: the stream
   carries the tunnel.
+- WebAssembly ABI body access: `get` kinds 13 to 15 and `set_body`
+  behind a per filter `body_limit`; bodies over the limit stream
+  through unexposed.
 
 ### Added (1.2)
 - GeoIP policy: `geoip` section with a built-in MaxMind DB reader (no

@@ -840,6 +840,7 @@ module or a wrong ABI version is a load error.
 | `memory_limit_pages` | int | `256` | 64 KiB pages per instance (16 MiB); 1 to 16384 |
 | `instances` | int | `16` | Pooled instances; more are created on demand and dropped after use |
 | `on_error` | `deny`, `allow` | `deny` | What a trap, timeout or bad result means: 500 with the filter name as reason, or continue with `wasm_error: allowed` in the access log |
+| `body_limit` | int | `65536` | Bytes of a request or response body a module may read or set; a larger body is not exposed and streams through; 0 disables body access; at most 16 MiB |
 
 Denies carry the status, reason and detail the module set with
 `deny`; `log_attr` values appear in the access log as `wasm_<key>`.

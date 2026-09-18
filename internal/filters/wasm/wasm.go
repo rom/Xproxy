@@ -15,12 +15,15 @@
 //	      memory_limit_pages: 256        # 16 MiB per instance
 //	      instances: 16                  # pooled instances
 //	      on_error: deny                 # or allow
+//	      body_limit: 65536              # bytes of body a module may read or set; 0 disables
 package wasm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -55,7 +58,9 @@ type Config struct {
 	MemoryLimitPages int    `json:"memory_limit_pages"`
 	Instances        int    `json:"instances"`
 	OnError          string `json:"on_error"`
+	BodyLimit        *int64 `json:"body_limit"`
 	timeout          time.Duration
+	bodyLimit        int64
 }
 
 func parse(opts filter.Options) (*Config, error) {
@@ -104,6 +109,14 @@ func parse(opts filter.Options) (*Config, error) {
 	default:
 		errs = append(errs, errors.New("on_error: must be deny or allow"))
 	}
+	c.bodyLimit = 64 << 10
+	if c.BodyLimit != nil {
+		if *c.BodyLimit < 0 || *c.BodyLimit > 16<<20 {
+			errs = append(errs, errors.New("body_limit: must be between 0 and 16 MiB"))
+		} else {
+			c.bodyLimit = *c.BodyLimit
+		}
+	}
 	return &c, errors.Join(errs...)
 }
 
@@ -130,6 +143,59 @@ type call struct {
 	verdict filter.Verdict
 	attrs   []any
 	ops     int
+	// bodies are buffered on first access, once per phase.
+	reqBody  *bodyState
+	respBody *bodyState
+}
+
+// bodyState is a buffered body: data when it fit the limit, tooLarge
+// when it did not (the original stream then continues untouched).
+type bodyState struct {
+	data     []byte
+	tooLarge bool
+}
+
+// bufferBody reads at most limit bytes of body; over the limit the
+// stream is restored with what was read in front of the rest.
+func bufferBody(rc io.ReadCloser, limit int64) (*bodyState, io.ReadCloser) {
+	if rc == nil || rc == http.NoBody {
+		return &bodyState{}, rc
+	}
+	buf, err := io.ReadAll(io.LimitReader(rc, limit+1))
+	if err != nil {
+		return &bodyState{tooLarge: true}, io.NopCloser(io.MultiReader(bytes.NewReader(buf), &errReader{err}))
+	}
+	if int64(len(buf)) > limit {
+		return &bodyState{tooLarge: true}, &restoredBody{Reader: io.MultiReader(bytes.NewReader(buf), rc), Closer: rc}
+	}
+	_ = rc.Close()
+	return &bodyState{data: buf}, io.NopCloser(bytes.NewReader(buf))
+}
+
+type restoredBody struct {
+	io.Reader
+	io.Closer
+}
+
+type errReader struct{ err error }
+
+func (e *errReader) Read([]byte) (int, error) { return 0, e.err }
+
+func (c *call) requestBody() *bodyState {
+	if c.reqBody == nil {
+		c.reqBody, c.req.Body = bufferBody(c.req.Body, c.f.cfg.bodyLimit)
+	}
+	return c.reqBody
+}
+
+func (c *call) responseBody() *bodyState {
+	if c.respBody == nil && c.resp != nil {
+		c.respBody, c.resp.Body = bufferBody(c.resp.Body, c.f.cfg.bodyLimit)
+	}
+	if c.respBody == nil {
+		return &bodyState{}
+	}
+	return c.respBody
 }
 
 type callKey struct{}
@@ -232,6 +298,7 @@ func (f *wasmFilter) hostModule(ctx context.Context) error {
 	b.NewFunctionBuilder().WithFunc(hostDeny).Export("deny")
 	b.NewFunctionBuilder().WithFunc(hostLog).Export("log")
 	b.NewFunctionBuilder().WithFunc(hostLogAttr).Export("log_attr")
+	b.NewFunctionBuilder().WithFunc(hostSetBody).Export("set_body")
 	_, err := b.Instantiate(ctx)
 	return err
 }
@@ -281,7 +348,9 @@ const (
 	getJA4
 	getResponseHeader
 	getResponseStatus
-	getRequestIDAgain = 100
+	getRequestBody
+	getResponseBody
+	getBodyState
 )
 
 func hostGet(ctx context.Context, m api.Module, kind, ptr, n uint32) uint64 {
@@ -328,8 +397,79 @@ func hostGet(ctx context.Context, m api.Module, kind, ptr, n uint32) uint64 {
 		if c.resp != nil {
 			v = strconv.Itoa(c.resp.StatusCode)
 		}
+	case getRequestBody:
+		if c.f.cfg.bodyLimit > 0 {
+			if b := c.requestBody(); !b.tooLarge {
+				return writeBytes(ctx, m, b.data)
+			}
+		}
+	case getResponseBody:
+		if c.f.cfg.bodyLimit > 0 && c.resp != nil {
+			if b := c.responseBody(); !b.tooLarge {
+				return writeBytes(ctx, m, b.data)
+			}
+		}
+	case getBodyState:
+		switch {
+		case c.f.cfg.bodyLimit == 0:
+			v = "disabled"
+		case c.resp != nil && c.responseBody().tooLarge, c.resp == nil && c.requestBody().tooLarge:
+			v = "too_large"
+		default:
+			v = "ok"
+		}
 	}
 	return writeString(ctx, m, v)
+}
+
+// writeBytes is writeString for a body, bounded by the body limit
+// instead of the string bound.
+func writeBytes(ctx context.Context, m api.Module, b []byte) uint64 {
+	if len(b) == 0 {
+		return 0
+	}
+	res, err := m.ExportedFunction("xproxy_alloc").Call(ctx, uint64(len(b)))
+	if err != nil || len(res) != 1 {
+		return 0
+	}
+	ptr := uint32(res[0]) //nolint:gosec // wasm32 pointer
+	if !m.Memory().Write(ptr, b) {
+		return 0
+	}
+	return uint64(ptr)<<32 | uint64(len(b))
+}
+
+// hostSetBody replaces the request (target 0) or response (target 1)
+// body with guest bytes, bounded by body_limit, and fixes the length.
+func hostSetBody(ctx context.Context, m api.Module, target, ptr, n uint32) {
+	c := callOf(ctx)
+	if c == nil || c.f.cfg.bodyLimit == 0 || int64(n) > c.f.cfg.bodyLimit {
+		return
+	}
+	data, ok := m.Memory().Read(ptr, n)
+	if !ok {
+		return
+	}
+	body := append([]byte(nil), data...)
+	switch {
+	case target == 0:
+		if c.req.Body != nil {
+			_ = c.req.Body.Close()
+		}
+		c.req.Body = io.NopCloser(bytes.NewReader(body))
+		c.req.ContentLength = int64(len(body))
+		c.req.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		c.reqBody = &bodyState{data: body}
+	case target == 1 && c.resp != nil:
+		if c.resp.Body != nil {
+			_ = c.resp.Body.Close()
+		}
+		c.resp.Body = io.NopCloser(bytes.NewReader(body))
+		c.resp.ContentLength = int64(len(body))
+		c.resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		c.resp.Header.Del("Content-Encoding")
+		c.respBody = &bodyState{data: body}
+	}
 }
 
 func headerOK(name, value string) bool {
@@ -538,6 +678,7 @@ func (in *instance) outcome(code int32, err error) filter.Verdict {
 func (in *instance) Request(r *http.Request) filter.Verdict {
 	in.c.req = r
 	in.c.verdict = filter.Verdict{}
+	in.c.reqBody = nil
 	code, err := in.c.f.run(in.c, "xproxy_on_request")
 	return in.outcome(code, err)
 }
@@ -549,6 +690,7 @@ func (in *instance) Response(resp *http.Response) filter.Verdict {
 	}
 	in.c.resp = resp
 	in.c.verdict = filter.Verdict{}
+	in.c.respBody = nil
 	code, err := f.run(in.c, "xproxy_on_response", uint64(resp.StatusCode)) //nolint:gosec // status
 	v := in.outcome(code, err)
 	if v.Deny && v.Headers != nil {

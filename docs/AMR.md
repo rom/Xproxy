@@ -1230,11 +1230,14 @@ without a JIT that maps executable pages from the network.
 **Alternatives.** proxy-wasm compatibility (rejected for 1.2: a
 large surface to implement faithfully and a dependency on its SDKs;
 the small ABI can be wrapped by an adapter module later); bodies in
-version 1 (deferred until there is a use that the WAF and ICAP do not
-serve); Go plugins (never, AMR-013).
+version 1 (deferred at 1.2, delivered in 1.3 as two `get` kinds and
+`set_body` behind a per filter `body_limit`: a body that fits is
+buffered once and copied to the guest, a larger one is never exposed
+and streams through, so the cost is bounded by configuration rather
+than by the client); Go plugins (never, AMR-013).
 
-**Consequences.** Modules cannot inspect bodies or call the network,
-by design. The ABI grows by adding `get` kinds and imports; the
+**Consequences.** Modules cannot call the network, by design, and see
+bodies only within `body_limit`. The ABI grows by adding `get` kinds and imports; the
 version number changes only when a table entry changes meaning. A
 module written for version 1 keeps working.
 
