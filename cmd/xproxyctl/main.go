@@ -70,7 +70,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache htpasswd spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {

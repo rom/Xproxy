@@ -60,6 +60,10 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `filters` | Middleware API version, registered kinds, configured filters with routes and deny counts |
 | `geoip` | Country database kind, path, build date, lookup and unknown counters |
 | `cache` | Cache entries, bytes and counters; `cache purge [HOST [PATH-PREFIX]]` removes entries |
+| `honeypot` | Clients marked by honeypot routes and the decoy names; `honeypot forget IP` removes a mark |
+| `dns` | DNS listener counters (queries, cache, blocked, refused, dropped, upstream failures); `dns purge` empties the caches |
+| `ingress` | Kubernetes ingress controller status: syncs, watches, counts, warnings |
+| `otlp` | OpenTelemetry exporter status: pushes, failures, last error |
 | `htpasswd FILE NAME` | Add or replace a `basic_auth` user; the password is read from stdin |
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
@@ -84,6 +88,21 @@ xproxyctl unban 203.0.113.0/24
 ```
 
 ## Configuration patterns
+
+### Minimal
+
+```yaml
+version: 1
+server:
+  listeners:
+    - {name: http, address: ":8080"}
+upstreams:
+  - name: app
+    endpoints: [{address: 127.0.0.1:3000}]
+routes:
+  - name: all
+    upstream: app
+```
 
 ### Pushing metrics to an OpenTelemetry collector
 
@@ -129,21 +148,6 @@ never weaken a defence. Files are appended in lexical order, names must
 be unique across all of them, and `xproxyctl validate` checks the whole
 set. A reload re-reads every fragment.
 
-
-### Minimal
-
-```yaml
-version: 1
-server:
-  listeners:
-    - {name: http, address: ":8080"}
-upstreams:
-  - name: app
-    endpoints: [{address: 127.0.0.1:3000}]
-routes:
-  - name: all
-    upstream: app
-```
 
 ### TLS edge with HTTP redirect
 

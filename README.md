@@ -10,7 +10,7 @@ WebAssembly extensions). It is one static Go binary with no cgo, runs
 unprivileged under a hardened systemd unit confined by SELinux, and is
 managed over a local socket from a CLI, a terminal UI and a web GUI.
 
-Status: 1.2 in development on top of the **1.0.0** release
+Status: 1.3 in development on top of the **1.0.0** release
 ([release notes](docs/RELEASE_NOTES_1.0.md), [how a release is
 cut](docs/RELEASING.md)). [docs/ROADMAP.md](docs/ROADMAP.md) lists what
 each version delivered and what is planned;
