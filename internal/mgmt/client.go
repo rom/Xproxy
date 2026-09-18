@@ -14,6 +14,7 @@ import (
 
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/cluster"
+	"github.com/rom/xproxy/internal/upstream"
 )
 
 // Client talks to the management API over the Unix socket.
@@ -104,6 +105,12 @@ func (c *Client) Post(path string) error {
 func (c *Client) ClusterStatus() (*cluster.Status, error) {
 	var st cluster.Status
 	return &st, c.do("GET", "/v1/cluster", &st)
+}
+
+// Upstreams fetches endpoint statistics per upstream.
+func (c *Client) Upstreams() (map[string][]upstream.Stats, error) {
+	var out map[string][]upstream.Stats
+	return out, c.do("GET", "/v1/upstreams", &out)
 }
 
 // Metrics fetches the Prometheus exposition.

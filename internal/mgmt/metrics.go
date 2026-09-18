@@ -32,10 +32,11 @@ func (s *Server) serveMetrics(w http.ResponseWriter, _ *http.Request) {
 type SeriesResponse struct {
 	IntervalSeconds float64       `json:"interval_seconds"`
 	Names           []string      `json:"names"`
-	Points          []seriesPoint `json:"points"`
+	Points          []SeriesPoint `json:"points"`
 }
 
-type seriesPoint struct {
+// SeriesPoint is one sample.
+type SeriesPoint struct {
 	Time   time.Time `json:"t"`
 	Values []float64 `json:"v"`
 }
@@ -66,9 +67,9 @@ func (s *Server) serveSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	ser := s.proxy.Series()
 	pts := ser.Since(since, limit)
-	out := SeriesResponse{IntervalSeconds: ser.Interval().Seconds(), Names: ser.Names(), Points: make([]seriesPoint, len(pts))}
+	out := SeriesResponse{IntervalSeconds: ser.Interval().Seconds(), Names: ser.Names(), Points: make([]SeriesPoint, len(pts))}
 	for i, p := range pts {
-		out.Points[i] = seriesPoint{Time: p.Time, Values: p.Values}
+		out.Points[i] = SeriesPoint{Time: p.Time, Values: p.Values}
 	}
 	writeJSON(w, 200, out)
 }

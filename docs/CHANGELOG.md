@@ -7,9 +7,13 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
-### Phase 2: Defence (in progress)
+### Phase 2: Defence (complete)
 
 #### Added
+- TUI: `xproxyctl tui` with overview, upstreams, bans (ban and unban),
+  cluster, graphs and security log screens, refreshed from the management
+  socket; colours honour `NO_COLOR`. Built on `golang.org/x/term` instead
+  of the planned bubbletea (AMR-027).
 - Metrics: Prometheus text exposition at `/metrics` on the management
   socket and on an optional TCP listener with allow list and mutual TLS
   (`metrics` section); request duration and upstream time to first byte

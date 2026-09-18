@@ -96,7 +96,7 @@ record.
 | `go.etcd.io/bbolt` | MIT | Embedded state store for bans (AMR-012) | phase 2 |
 | `github.com/quic-go/quic-go` (with `qpack`) | MIT | HTTP/3 (AMR-002, AMR-024); pinned to the newest release that builds with the minimum toolchain | phase 2 |
 | `golang.org/x/*` | BSD | Extended standard library (`net`, `crypto`, `sys`, `time`) | as needed |
-| `github.com/charmbracelet/bubbletea` and `lipgloss` | MIT | TUI (AMR-011) in the management binary only | 1.0 |
+| `golang.org/x/term` | BSD | Raw terminal mode for the TUI (AMR-027); replaces the bubbletea plan | phase 2 |
 
 Coraza brings a transitive set that is larger than the rest of the binary
 combined: `libinjection-go`, `aho-corasick`, `binaryregexp`, `gjson`,
@@ -250,7 +250,7 @@ directory when configured, otherwise it is ephemeral.
 
 **Decision.** The data plane exposes one JSON API on a Unix domain socket with
 kernel verified peer credentials and an audit log. `xproxyctl` (CLI) exists at
-MVP. The TUI is a mode of `xproxyctl`. The GUI is a separate binary,
+MVP. The TUI is a mode of `xproxyctl` (delivered in phase 2, AMR-027). The GUI is a separate binary,
 `xproxy-admin`, that serves embedded static assets on localhost or a Unix
 socket, requires mTLS when bound to TCP, and talks to the same API. The data
 plane never serves management traffic on a data listener.
@@ -632,6 +632,31 @@ boundary and an OTLP exporter can be added behind the same snapshot.
 cardinality is bounded by configuration by construction. Counters that
 live in the configuration generation (per-route) reset on reload, which
 Prometheus rate functions handle.
+
+**Status.** Accepted.
+
+---
+
+## AMR-027: Terminal UI without a framework
+
+**Context.** AMR-004 reserved bubbletea and lipgloss for the TUI. Those
+modules bring a transitive tree (charmbracelet/x, muesli, mattn and
+others) into the management binary, and the views needed are tables,
+counters and sparklines.
+
+**Decision.** Implement the TUI on `golang.org/x/term` for raw mode and
+terminal size, with hand written ANSI rendering. The renderer is a pure
+function from data and state to lines, unit tested at several sizes for
+fit and content; the loop handles keys, refresh, pause and prompts. Six
+screens: overview, upstreams, bans (with audited ban and unban), cluster,
+graphs from the sampled series, and the security log tail.
+
+**Alternatives.** bubbletea: mature and pleasant to extend, rejected for
+dependency weight against the modest UI. tview or termui: same concern.
+
+**Consequences.** No mouse, no widgets beyond what is written here; the
+GUI (1.0) is where richer interaction belongs. Future screens are added as
+render functions.
 
 **Status.** Accepted.
 
