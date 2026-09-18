@@ -107,6 +107,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   endpoints `POST /v1/reload?dry_run=1`, `GET /v1/diff`, `GET
   /v1/history`, `POST /v1/rollback`. `xproxyctl config` and the history
   use one self-contained dump (`config.Dump`).
+- Key rotation: secret files for affinity, the challenge, OIDC cookies
+  and log pseudonyms accept a keyring (`internal/secret`), the first
+  key signs and seals and every key verifies; `xproxyctl rotate-secret
+  FILE` adds a fresh primary key and keeps a bounded number of old
+  ones; the challenge re-reads its ring on reload.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

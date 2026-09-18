@@ -51,6 +51,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `diff [FROM] [TO]` | Compare `active`, `file` or a history id (default `active file`); exit status 1 when they differ |
 | `history` | Recorded configurations with generation, time, note and size (needs `management.history_dir`) |
 | `rollback ID` | Apply a recorded configuration (audited; becomes a new history entry) |
+| `rotate-secret FILE` | Add a fresh primary key to a secret file (affinity, challenge, OIDC cookie, redaction hash), keeping `-keep 2` previous keys for verification; then `reload` |
 | `reload-certs` | Re-read certificate files |
 | `reopen-logs` | Reopen log files |
 | `tail STREAM` | Follow `access`, `error`, `security` or `audit` |
@@ -338,6 +339,27 @@ connection from any other peer is served as before, so nobody outside
 the balancer range can choose an address. Layer 4 listeners (`kind:
 tcp`) do the opposite: their `proxy_protocol` sends the header to the
 upstream.
+
+### Rotating secrets
+
+```
+$ xproxyctl rotate-secret /var/lib/xproxy/challenge.key
+/var/lib/xproxy/challenge.key: new primary key, 3 key(s) in the ring; run xproxyctl reload to apply
+$ xproxyctl reload
+```
+
+Secret files (`affinity.secret_file`, `challenge.secret_file`, the
+OIDC `cookie_secret_file`, `logging.redaction.hash_secret_file`) hold a
+single raw key when created and become a keyring on the first rotation:
+a text file whose first key signs and seals and whose other keys only
+verify and open. Cookies and sessions issued under a kept key stay
+valid until a later rotation drops it (`-keep 0` drops everything at
+once). A rotation takes effect on the next reload for the challenge,
+affinity and OIDC keys and at the next restart for the redaction key,
+whose pseudonyms then start a new series. In a cluster rotate the same
+file on every node within the retention window, or copy the ring; the
+ring is the whole secret, so keep it `0600` and out of backups that are
+not encrypted. Copy a ring rather than a raw key when moving a node.
 
 ### Previewing, comparing and rolling back configuration
 

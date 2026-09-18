@@ -5,12 +5,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/secret"
 )
 
 func testCfg(bal string, addrs ...string) *config.Upstream {
@@ -157,6 +159,34 @@ func TestAffinity(t *testing.T) {
 	}
 	if p.aff.verify("", time.Now()) != -1 || p.aff.verify(strings.Repeat("A", 100), time.Now()) != -1 {
 		t.Fatal("garbage accepted")
+	}
+}
+
+func TestAffinityRotation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aff")
+	c := testCfg("round_robin", "a:1", "b:1")
+	c.Affinity = &config.Affinity{CookieName: "s", TTL: config.Duration(time.Hour), SecretFile: path}
+	p1, err := NewPool(c, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, cookie := p1.Pick("", "", nil, CanaryAny)
+	if _, err := secret.Rotate(path, 1); err != nil {
+		t.Fatal(err)
+	}
+	p2, err := NewPool(c, nolog) // a reload builds new pools from the rotated ring
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e2, fresh := p2.Pick("", cookie, nil, CanaryAny); e2.Address != e.Address || fresh != "" {
+		t.Fatalf("old cookie not honoured after rotation: %v %q", e2, fresh)
+	}
+	if _, err := secret.Rotate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	p3, _ := NewPool(c, nolog)
+	if _, fresh := p3.Pick("", cookie, nil, CanaryAny); fresh == "" {
+		t.Fatal("cookie under a dropped key still accepted")
 	}
 }
 

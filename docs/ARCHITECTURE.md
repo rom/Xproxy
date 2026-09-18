@@ -61,6 +61,7 @@ internal/filter     middleware interface, kind registry, options decoding; filte
 internal/filters    built-in kinds (header_guard, basic_auth, body_rewrite, bot_score, oidc, wasm) and the registration list
 internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
+internal/secret     keyring files for the symmetric secrets, rotation with retained keys
 internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/proxy/tcp.go  kind: tcp listeners (SNI routing, PROXY v2, splice)

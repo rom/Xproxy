@@ -264,6 +264,11 @@ to report a vulnerability. The threat analysis behind the controls is in
 - ID tokens are verified for signature, issuer, audience, expiry and
   nonce; `require_claims` refuses logins with 403; identity headers
   from clients are removed before the session's are set.
+- Every symmetric secret file (affinity, challenge, OIDC cookie,
+  redaction hash) is a keyring: `xproxyctl rotate-secret` adds a fresh
+  primary key and keeps a bounded number of old ones for verification,
+  so keys rotate on a schedule without logging users out or dropping
+  sessions; files are written `0600` through a rename.
 - Return URLs are same-origin paths only; the client secret and cookie
   key files must not be world readable.
 - Front channel logout revokes provider session ids into a bounded

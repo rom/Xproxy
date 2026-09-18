@@ -3,6 +3,7 @@ package oidc
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -128,6 +129,33 @@ func (b *fakeBus) Subscribe(kind string, fn func(filter.Event)) {
 		b.subs = map[string][]func(filter.Event){}
 	}
 	b.subs[kind] = append(b.subs[kind], fn)
+}
+
+func TestSealAcrossRotation(t *testing.T) {
+	newAEAD := func(seed byte) cipher.AEAD {
+		sum := sha256.Sum256([]byte{seed})
+		block, _ := aes.NewCipher(sum[:])
+		a, _ := cipher.NewGCM(block)
+		return a
+	}
+	oldKey, newKey := newAEAD(1), newAEAD(2)
+	before := &oidcFilter{aead: oldKey}
+	sealed, err := before.seal(map[string]string{"sub": "x"}, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := &oidcFilter{aead: newKey, olderAEADs: []cipher.AEAD{oldKey}}
+	var got map[string]string
+	if err := after.open(sealed, "session", &got); err != nil || got["sub"] != "x" {
+		t.Fatalf("old cookie after rotation: %v %v", err, got)
+	}
+	dropped := &oidcFilter{aead: newKey}
+	if err := dropped.open(sealed, "session", &got); err == nil {
+		t.Fatal("cookie under a dropped key opened")
+	}
+	if err := after.open(sealed, "state", &got); err == nil {
+		t.Fatal("purpose not bound")
+	}
 }
 
 func TestRevocationShared(t *testing.T) {

@@ -15,6 +15,7 @@
 //	diff [FROM] [TO]  compare configurations: active, file or a history id (default active file)
 //	history        list recorded configurations
 //	rollback ID    apply a recorded configuration
+//	rotate-secret FILE  add a fresh primary key to a secret file (-keep 2 old keys)
 //	reload-certs   re-read TLS certificate files
 //	reopen-logs    reopen log files after rotation
 //	tail STREAM    follow a log stream (access, error, security, audit)
@@ -62,6 +63,7 @@ import (
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/secret"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tui"
 	"github.com/rom/xproxy/internal/upstream"
@@ -74,7 +76,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas config validate reload diff history rollback reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp htpasswd spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas config validate reload diff history rollback rotate-secret reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -282,6 +284,20 @@ func run(args []string, out, errOut io.Writer) int {
 			return fail(err)
 		}
 		_, _ = fmt.Fprintln(out, "reloaded")
+		return 0
+	case "rotate-secret":
+		rs := flag.NewFlagSet("rotate-secret", flag.ContinueOnError)
+		rs.SetOutput(errOut)
+		keep := rs.Int("keep", 2, "previous keys kept for verification")
+		if err := rs.Parse(fs.Args()[1:]); err != nil || rs.NArg() != 1 {
+			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl rotate-secret [-keep 2] FILE")
+			return 2
+		}
+		ring, err := secret.Rotate(rs.Arg(0), *keep)
+		if err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintf(out, "%s: new primary key, %d key(s) in the ring; run xproxyctl reload to apply\n", rs.Arg(0), ring.Len())
 		return 0
 	case "diff":
 		from, to := "active", "file"

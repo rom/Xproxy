@@ -282,7 +282,7 @@ and syslog all receive the same redacted record.
 | `enabled` | bool | `true` | |
 | `streams` | list | `[access, security, error]` | The audit stream keeps full detail unless listed |
 | `client_ip` | `keep`, `truncate`, `hash` | `truncate` | `truncate` masks to /24 (IPv4) or /48 (IPv6); `hash` writes a keyed pseudonym (`h:` + 16 hex) that is stable per key and lets you correlate one client across lines without storing the address |
-| `hash_secret_file` | path | ephemeral | Key for `hash`; set it so pseudonyms survive restarts and match across nodes |
+| `hash_secret_file` | path | ephemeral | Key (or the primary key of a keyring) for `hash`; set it so pseudonyms survive restarts and match across nodes. Rotating it starts a new series of pseudonyms at the next restart |
 | `user_agent` | `keep`, `drop` | `keep` | |
 | `referer` | `keep`, `origin`, `drop` | `origin` | `origin` keeps scheme and host only |
 | `claims` | `keep`, `hash`, `drop` | `hash` | Applies to `jwt_*` (except `jwt_provider`) and `client_cn` |
@@ -416,7 +416,7 @@ the access log with `upstream_error: circuit_open`.
 |-----|------|---------|-------------|
 | `cookie_name` | token | `XPSESS` | |
 | `ttl` | duration | `1h` | Cookie and signature lifetime |
-| `secret_file` | path | ephemeral | HMAC key, created `0600` on first use if absent |
+| `secret_file` | path | ephemeral | HMAC key or keyring, created `0600` on first use if absent; rotate with `xproxyctl rotate-secret` (cookies signed with kept keys stay valid) |
 
 ## routes[]
 
@@ -976,7 +976,7 @@ redirects are not security events; failed callbacks are, with reason
 | `issuer` | URL | required | `https://` (plain `http://` only with `allow_http`, for tests) |
 | `client_id` | string | required | |
 | `client_secret_file` | path | required | Not world readable; sent as `client_secret_basic` (`token_auth: post` sends it in the form) |
-| `cookie_secret_file` | path | required | 32 or more random bytes, created `0600` if absent; sessions survive reloads and restarts while the key stays |
+| `cookie_secret_file` | path | required | 32 or more random bytes or a keyring, created `0600` if absent; sessions survive reloads and restarts while the key stays, and a rotation with `xproxyctl rotate-secret` keeps sessions sealed under the kept keys |
 | `scopes` | list | `[openid]` | Must include `openid` |
 | `redirect_path` | path | `/oauth2/callback` | Registered at the provider as `external_url` + path |
 | `logout_path` | path | `/oauth2/logout` | Clears the session and sends the browser to the provider's end session endpoint (when it has one) with `logout_redirect` as the return, else to `logout_redirect` |
@@ -1254,7 +1254,7 @@ host before routing.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `secret_file` | path | ephemeral | HMAC key for nonces and cookies; set it so cookies survive restarts and are valid across a cluster |
+| `secret_file` | path | ephemeral | HMAC key or keyring for nonces and cookies; set it so cookies survive restarts and are valid across a cluster; a rotation is picked up on reload and cookies under the kept keys stay valid |
 | `difficulty` | int | `16` | Leading zero bits required; 8 to 24. 16 is roughly 65 000 hashes, under a second in a browser |
 | `ttl` | duration | `1h` | Validity of a passed challenge; at least 1m |
 | `bind_ip` | bool | `true` | Cookie and nonce are bound to the client address |

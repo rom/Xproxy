@@ -43,6 +43,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/jwt"
+	"github.com/rom/xproxy/internal/secret"
 )
 
 // Config is the options schema.
@@ -202,7 +203,9 @@ type oidcFilter struct {
 	log    *slog.Logger
 	secret []byte
 	aead   cipher.AEAD
-	client *http.Client
+	// olderAEADs open cookies sealed under keys rotated out of the primary slot.
+	olderAEADs []cipher.AEAD
+	client     *http.Client
 
 	discMu    sync.Mutex
 	disc      atomic.Pointer[discovery]
@@ -221,23 +224,28 @@ type oidcFilter struct {
 }
 
 func newFilter(name string, c *Config, log *slog.Logger) (*oidcFilter, error) {
-	secret, err := os.ReadFile(c.ClientSecretFile) //nolint:gosec // validated configuration path
+	clientSecret, err := os.ReadFile(c.ClientSecretFile) //nolint:gosec // validated configuration path
 	if err != nil {
 		return nil, err
 	}
-	key, err := loadOrCreateKey(c.CookieSecretFile)
+	ring, err := secret.LoadOrCreate(c.CookieSecretFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cookie secret: %w", err)
 	}
-	sum := sha256.Sum256(key)
-	block, err := aes.NewCipher(sum[:])
-	if err != nil {
-		return nil, err
+	aeads := make([]cipher.AEAD, 0, ring.Len())
+	for _, key := range ring.All() {
+		sum := sha256.Sum256(key)
+		block, err := aes.NewCipher(sum[:])
+		if err != nil {
+			return nil, err
+		}
+		a, err := cipher.NewGCM(block)
+		if err != nil {
+			return nil, err
+		}
+		aeads = append(aeads, a)
 	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
+	aead := aeads[0]
 	tc := &tls.Config{MinVersion: tls.VersionTLS12}
 	if c.CAFile != "" {
 		pem, err := os.ReadFile(c.CAFile) //nolint:gosec // validated configuration path
@@ -250,7 +258,7 @@ func newFilter(name string, c *Config, log *slog.Logger) (*oidcFilter, error) {
 		}
 		tc.RootCAs = pool
 	}
-	f := &oidcFilter{name: name, cfg: c, log: log, secret: []byte(strings.TrimSpace(string(secret))), aead: aead, revoked: map[string]time.Time{},
+	f := &oidcFilter{name: name, cfg: c, log: log, secret: []byte(strings.TrimSpace(string(clientSecret))), aead: aead, olderAEADs: aeads[1:], revoked: map[string]time.Time{},
 		client: &http.Client{
 			Timeout:       10 * time.Second,
 			Transport:     &http.Transport{TLSClientConfig: tc, Proxy: nil, MaxIdleConns: 4, ResponseHeaderTimeout: 5 * time.Second, DisableCompression: true},
@@ -260,25 +268,6 @@ func newFilter(name string, c *Config, log *slog.Logger) (*oidcFilter, error) {
 		log.Warn("oidc discovery failed at load; will retry", "issuer", c.Issuer, "err", err.Error())
 	}
 	return f, nil
-}
-
-func loadOrCreateKey(path string) ([]byte, error) {
-	if b, err := os.ReadFile(path); err == nil { //nolint:gosec // operator configured path
-		if len(b) < 32 {
-			return nil, fmt.Errorf("cookie secret %s is shorter than 32 bytes", path)
-		}
-		return b, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("read cookie secret: %w", err)
-	}
-	k := make([]byte, 32)
-	if _, err := rand.Read(k); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(path, k, 0o600); err != nil {
-		return nil, fmt.Errorf("create cookie secret: %w", err)
-	}
-	return k, nil
 }
 
 // discover fetches the provider metadata once and builds the ID token
@@ -791,6 +780,14 @@ func (f *oidcFilter) open(s, purpose string, v any) error {
 	}
 	ns := f.aead.NonceSize()
 	plain, err := f.aead.Open(nil, raw[:ns], raw[ns:], []byte(purpose))
+	for _, a := range f.olderAEADs {
+		if err == nil {
+			break
+		}
+		// Sealed under a key that was since rotated out of the primary
+		// slot: still valid until the operator drops it from the ring.
+		plain, err = a.Open(nil, raw[:ns], raw[ns:], []byte(purpose))
+	}
 	if err != nil {
 		return err
 	}
