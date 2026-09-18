@@ -190,6 +190,50 @@ upstream `total` for those. 0-RTT is never enabled.
 | `client_auth` | `none`, `request`, `require` | `none` | Client certificates; `request` verifies if presented |
 | `client_ca_file` | path | | Required for `request` and `require` |
 | `cipher_suites` | list of names | ECDHE AEAD suites | TLS 1.2 suites, crypto/tls names. Insecure suites are rejected. TLS 1.3 suites are not configurable. |
+| `ocsp_stapling` | object | none | Fetch OCSP responses for the served certificates in the background and staple them into handshakes; see below |
+| `ct` | object | none | Check the Certificate Transparency SCTs embedded in file certificates at load; see below |
+
+#### server.listeners[].tls.ocsp_stapling
+
+A stapled OCSP response spares clients the responder round trip and
+keeps working when the responder is down or firewalled from them. The
+proxy fetches a response for every served certificate (file and ACME
+alike) from the responder named in the certificate, using the issuer
+that follows the leaf in the chain file, and refreshes it at half its
+validity, at `refresh` at the latest, and one minute after a failure.
+A handshake never waits: it carries the current response when there is
+one and none otherwise, and a still valid response is kept through
+fetch failures. A `revoked` answer is stapled as well, since clients
+must see it, and logged as an error. `xproxyctl tls` and `GET /v1/tls`
+show the state per certificate.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Switch for the section |
+| `timeout` | duration | `5s` | One responder request (1s to 1m) |
+| `refresh` | duration | `1h` | Longest interval between fetches (5m to 24h) |
+
+#### server.listeners[].tls.ct
+
+Browsers refuse certificates that were not logged in Certificate
+Transparency logs; a certificate issued without the signed certificate
+timestamps (SCTs) then breaks a site quietly at the next reload. The
+proxy parses the SCTs embedded in every file certificate at load and,
+with a log list, verifies each signature over the precertificate entry
+(the certificate without its SCT extension and the issuer's key hash)
+against the log's key. The verdict appears in `xproxyctl tls`; a
+shortfall is a security log event, or a failed load with `enforce`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `require` | int | `0` (report only) | Embedded SCTs a certificate must carry, verified ones when `log_list_file` is set (0 to 10) |
+| `log_list_file` | path | none | A log list in the JSON format Google publishes (`log_list.json`, v3 with `operators[].logs[]` and `tiled_logs[]`); the logs' keys verify the SCT signatures |
+| `enforce` | bool | `false` | Fail the load or reload of a certificate below `require` instead of logging it |
+
+SCTs delivered through the TLS extension or the OCSP response rather
+than embedded are not counted. ACME certificates are reported but not
+checked at load (the ACME client already requires embedded SCTs from a
+public CA).
 
 ### server.limits
 

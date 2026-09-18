@@ -112,6 +112,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   key signs and seals and every key verifies; `xproxyctl rotate-secret
   FILE` adds a fresh primary key and keeps a bounded number of old
   ones; the challenge re-reads its ring on reload.
+- OCSP stapling: `tls.ocsp_stapling` fetches responses in the
+  background for file and ACME certificates and staples them without
+  blocking handshakes; `GET /v1/tls` and `xproxyctl tls` show the state.
+- Certificate Transparency checks: `tls.ct` parses embedded SCTs at
+  load, verifies their signatures against a log list file and reports,
+  logs or (with `enforce`) refuses certificates below `require`.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

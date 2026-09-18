@@ -39,6 +39,12 @@ to report a vulnerability. The threat analysis behind the controls is in
   connection are bounded, and QUIC connections count against the same
   connection ceilings and ban list as TCP.
 - SNI based certificate selection; certificates reload without restart.
+- OCSP stapling per listener: responses fetched in the background from
+  the responder the certificate names, refreshed at half their validity,
+  never blocking a handshake, revoked answers stapled and logged.
+- Certificate Transparency: embedded SCTs parsed at load and verified
+  against a configured log list (RFC 6962 precertificate entry); a
+  shortfall is logged or, with `enforce`, refuses the certificate.
 - ACME issued certificates: ES256 account key and P-256 certificate keys
   generated in the process and stored `0600` in a `0700` state directory;
   the returned chain is verified against the configured hosts before use;

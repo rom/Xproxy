@@ -8,6 +8,7 @@ require (
 	github.com/quic-go/quic-go v0.61.0
 	github.com/tetratelabs/wazero v1.12.0
 	go.etcd.io/bbolt v1.5.0
+	golang.org/x/crypto v0.54.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -28,7 +29,6 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/valllabh/ocsf-schema-golang v1.0.3 // indirect
-	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

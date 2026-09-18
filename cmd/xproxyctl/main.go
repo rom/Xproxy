@@ -16,6 +16,7 @@
 //	history        list recorded configurations
 //	rollback ID    apply a recorded configuration
 //	rotate-secret FILE  add a fresh primary key to a secret file (-keep 2 old keys)
+//	tls            served certificates with expiry, OCSP staple and Certificate Transparency state
 //	reload-certs   re-read TLS certificate files
 //	reopen-logs    reopen log files after rotation
 //	tail STREAM    follow a log stream (access, error, security, audit)
@@ -76,7 +77,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas config validate reload diff history rollback rotate-secret reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp htpasswd spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas config validate reload diff history rollback rotate-secret tls reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -284,6 +285,50 @@ func run(args []string, out, errOut io.Writer) int {
 			return fail(err)
 		}
 		_, _ = fmt.Fprintln(out, "reloaded")
+		return 0
+	case "tls":
+		b, err := c.Raw("/v1/tls")
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			_, _ = out.Write(b)
+			return 0
+		}
+		var certs map[string][]tlsconf.CertInfo
+		if err := json.Unmarshal(b, &certs); err != nil {
+			return fail(err)
+		}
+		names := make([]string, 0, len(certs))
+		for n := range certs {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "LISTENER\tNAMES\tISSUER\tEXPIRES\tSOURCE\tOCSP\tCT")
+		for _, n := range names {
+			for _, ci := range certs[n] {
+				source := "file"
+				if ci.Managed {
+					source = "acme"
+				}
+				ocspCol := ci.OCSP.Status
+				if ci.OCSP.Error != "" && ci.OCSP.Status != "disabled" {
+					ocspCol += " (" + ci.OCSP.Error + ")"
+				} else if !ci.OCSP.NextUpdate.IsZero() {
+					ocspCol += " until " + ci.OCSP.NextUpdate.Local().Format("01-02 15:04")
+				}
+				ctCol := fmt.Sprintf("%d scts", ci.CT.Embedded)
+				if ci.CT.Verified > 0 {
+					ctCol = fmt.Sprintf("%d/%d verified", ci.CT.Verified, ci.CT.Embedded)
+				}
+				if !ci.CT.OK {
+					ctCol += " FAIL: " + ci.CT.Error
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n, strings.Join(ci.Names, ","), dash(ci.Issuer), ci.NotAfter.Local().Format(time.RFC3339), source, ocspCol, ctCol)
+			}
+		}
+		_ = tw.Flush()
 		return 0
 	case "rotate-secret":
 		rs := flag.NewFlagSet("rotate-secret", flag.ContinueOnError)

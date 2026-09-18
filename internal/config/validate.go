@@ -470,6 +470,25 @@ func (v *validator) server(s *Server) {
 }
 
 func (v *validator) tls(p string, t *TLS) {
+	if o := t.OCSPStapling; o != nil {
+		if o.Timeout < Duration(time.Second) || o.Timeout > Duration(time.Minute) {
+			v.errf("%s.ocsp_stapling.timeout: must be between 1s and 1m", p)
+		}
+		if o.Refresh < Duration(5*time.Minute) || o.Refresh > Duration(24*time.Hour) {
+			v.errf("%s.ocsp_stapling.refresh: must be between 5m and 24h", p)
+		}
+	}
+	if c := t.CT; c != nil {
+		if c.Require < 0 || c.Require > 10 {
+			v.errf("%s.ct.require: must be between 0 and 10", p)
+		}
+		if c.LogListFile != "" {
+			v.file(p+".ct.log_list_file", c.LogListFile)
+		}
+		if c.Enforce && c.Require == 0 {
+			v.errf("%s.ct.enforce: needs require above 0", p)
+		}
+	}
 	if len(t.Certificates) == 0 && len(t.ACME) == 0 {
 		v.errf("%s: certificates or acme is required", p)
 	}

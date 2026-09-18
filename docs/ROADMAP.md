@@ -235,6 +235,8 @@ procedure is in RELEASING.md.
   beyond the previous file: delivered
 - Key rotation for the affinity, OIDC and challenge secrets (keyring
   files, `xproxyctl rotate-secret`): delivered
+- OCSP stapling and Certificate Transparency log checks
+  (`tls.ocsp_stapling`, `tls.ct`, `xproxyctl tls`): delivered
 
 ## After 1.3 (candidates, unranked)
 

@@ -314,6 +314,18 @@ pending challenge such a handshake is refused rather than answered with a
 real certificate. Listeners with ACME groups add `acme-tls/1` to their
 ALPN list.
 
+With `ocsp_stapling`, a `stapler` goroutine per listener fetches an OCSP
+response for every served certificate (file and managed) and keeps them
+in a map by leaf digest; `GetCertificate` returns a copy of the selected
+certificate with the current response attached, so the shared
+certificate is never written and a handshake never waits. Fetches use
+`golang.org/x/crypto/ocsp`, the issuer from the chain file, a bounded
+client and a refresh at half the response validity. With `ct`, `Load`
+parses the SCT extension of each file certificate (`internal/tlsconf/ct.go`),
+rebuilds the precertificate TBS with `cryptobyte` and verifies each SCT
+signature against the log list; the verdict is kept per certificate for
+`GET /v1/tls` and, with `enforce`, fails the load.
+
 ### Layer 4 passthrough
 
 A `kind: tcp` listener (`internal/proxy/tcp.go`) accepts through the same
@@ -613,6 +625,7 @@ Endpoints:
 | GET | `/v1/stats` | counters |
 | GET | `/v1/upstreams` | endpoint health and load |
 | GET | `/v1/pools` | pool level state: circuit breaker, concurrency gate and queue |
+| GET | `/v1/tls` | served certificates per listener with OCSP staple and CT state |
 | GET | `/v1/quotas` | usage per tenant, route and rate limit policy; `?top=N` consumers per policy |
 | GET | `/v1/config` | active configuration as YAML |
 | POST | `/v1/reload` | validate and apply the configuration file; `?dry_run=1` returns the changes without applying |

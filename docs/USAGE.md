@@ -51,6 +51,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `diff [FROM] [TO]` | Compare `active`, `file` or a history id (default `active file`); exit status 1 when they differ |
 | `history` | Recorded configurations with generation, time, note and size (needs `management.history_dir`) |
 | `rollback ID` | Apply a recorded configuration (audited; becomes a new history entry) |
+| `tls` | Served certificates per listener: names, issuer, expiry, source (file or ACME), OCSP staple state and Certificate Transparency verdict |
 | `rotate-secret FILE` | Add a fresh primary key to a secret file (affinity, challenge, OIDC cookie, redaction hash), keeping `-keep 2` previous keys for verification; then `reload` |
 | `reload-certs` | Re-read certificate files |
 | `reopen-logs` | Reopen log files |
@@ -158,6 +159,30 @@ saved and loaded as a main file without expanding the fragments twice.
 The Kubernetes ingress merge works on the expanded document the same
 way.
 
+
+### OCSP stapling and Certificate Transparency checks
+
+```yaml
+server:
+  listeners:
+    - name: public
+      address: ":443"
+      tls:
+        certificates: [{cert_file: /etc/xproxy/tls/www.pem, key_file: /etc/xproxy/tls/www-key.pem}]
+        ocsp_stapling: {refresh: 1h}
+        ct: {require: 2, log_list_file: /etc/xproxy/ct/log_list.json, enforce: true}
+```
+
+The chain file must hold the issuer after the leaf: the OCSP request
+and the SCT verification both need it. `xproxyctl tls` shows every
+certificate with its staple (`good until 09-18 14:00`, or the fetch
+error) and its SCTs (`2/2 verified`). With `enforce`, a reload that
+brings in a certificate with fewer than two verifiable SCTs is refused
+and the previous certificate keeps serving, which is the outcome you
+want when a CA misissues without logging. Download `log_list.json`
+from the Chrome CT policy site into the path above and refresh it with
+your certificate tooling; a log that is not in the list leaves its SCT
+unverified.
 
 ### TLS edge with HTTP redirect
 

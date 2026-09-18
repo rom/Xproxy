@@ -47,8 +47,9 @@ an identifier from the access log to the upstream.
 **Termination and transport**
 
 - TLS 1.2 and 1.3 with hardened defaults, SNI, hot reload of
-  certificates, client certificates (request or require), ACME issuance
-  and renewal (HTTP-01 and TLS-ALPN-01)
+  certificates, OCSP stapling, Certificate Transparency checks, client
+  certificates (request or require), ACME issuance and renewal (HTTP-01
+  and TLS-ALPN-01)
 - HTTP/1.1, HTTP/2 (ALPN, or `h2c` on trusted networks) and HTTP/3 over
   QUIC with address validation and Alt-Svc advertisement
 - Mutual TLS and public key pinning to upstreams; PROXY protocol

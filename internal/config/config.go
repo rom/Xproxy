@@ -413,6 +413,38 @@ type TLS struct {
 	// each (one certificate per group, hosts as SANs). Requires the
 	// top-level acme section.
 	ACME []ACMEGroup `yaml:"acme"`
+	// OCSPStapling fetches OCSP responses for the served certificates
+	// and staples them into handshakes.
+	OCSPStapling *OCSPStapling `yaml:"ocsp_stapling"`
+	// CT checks the signed certificate timestamps embedded in the file
+	// certificates at load.
+	CT *CT `yaml:"ct"`
+}
+
+// OCSPStapling configures the background OCSP fetcher of a listener.
+type OCSPStapling struct {
+	Enabled *bool `yaml:"enabled"`
+	// Timeout of one responder request. Default 5s.
+	Timeout Duration `yaml:"timeout"`
+	// Refresh is the longest interval between fetches; responses are
+	// also refreshed at half their validity. Default 1h.
+	Refresh Duration `yaml:"refresh"`
+}
+
+// IsEnabled reports whether stapling is on.
+func (o *OCSPStapling) IsEnabled() bool { return o != nil && (o.Enabled == nil || *o.Enabled) }
+
+// CT is the Certificate Transparency policy for file certificates.
+type CT struct {
+	// Require is the number of embedded SCTs a certificate must carry
+	// (verified ones when LogListFile is set). 0 only reports.
+	Require int `yaml:"require"`
+	// LogListFile is a log list in Google's JSON format with the logs'
+	// keys; with it SCT signatures are verified.
+	LogListFile string `yaml:"log_list_file"`
+	// Enforce fails the load or reload of a certificate below Require
+	// instead of logging it.
+	Enforce bool `yaml:"enforce"`
 }
 
 // ACMEGroup is one automatically managed certificate.

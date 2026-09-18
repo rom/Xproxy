@@ -252,6 +252,20 @@ func (s *Server) CertificateExpiry() map[string]time.Time {
 	return out
 }
 
+// Certificates lists the served certificates per TLS listener with their
+// OCSP staple and Certificate Transparency state.
+func (s *Server) Certificates() map[string][]tlsconf.CertInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string][]tlsconf.CertInfo{}
+	for _, bl := range s.listeners {
+		if bl.tlsReload != nil {
+			out[bl.cfg.Name] = bl.tlsReload.Certificates()
+		}
+	}
+	return out
+}
+
 // Cache returns the response cache, or nil when none is configured.
 func (s *Server) Cache() *cache.Cache { return s.cache.Load() }
 
@@ -453,6 +467,10 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 			rl.Challenge = s.acme.TLSALPN01
 		}
 		rl.Fingerprints = s.fingerprints
+		for _, w := range rl.CTWarnings() {
+			s.logs.Security.Warn("certificate transparency", "listener", lc.Name, "issue", w)
+		}
+		rl.StartStapling(s.logs.Error)
 		bl.httpSrv.ConnState = func(c net.Conn, st http.ConnState) {
 			if st == http.StateClosed || st == http.StateHijacked {
 				s.fingerprints.Delete(c.RemoteAddr().String())
@@ -776,6 +794,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 				return
 			}
 			err := bl.httpSrv.Shutdown(ctx)
+			if bl.tlsReload != nil {
+				bl.tlsReload.Close()
+			}
 			if bl.forward != nil {
 				bl.forward.shutdown(ctx)
 			}

@@ -169,6 +169,12 @@ func applyDefaults(c *Config) {
 	}
 
 	setInt(&c.Management.HistoryKeep, 20)
+	for i := range c.Server.Listeners {
+		if t := c.Server.Listeners[i].TLS; t != nil && t.OCSPStapling != nil {
+			setDur(&t.OCSPStapling.Timeout, 5*time.Second)
+			setDur(&t.OCSPStapling.Refresh, time.Hour)
+		}
+	}
 	if c.Management.SocketMode == "" {
 		c.Management.SocketMode = DefaultSocketMode
 	}
