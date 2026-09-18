@@ -5,8 +5,9 @@ firewall, written in Go for Fedora Linux. Single static
 binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
-Status: **phase 3 in progress** (ICAP, ACME and the web GUI delivered;
-SELinux policy, packaging and scale validation remain). Phases 1 and 2 are complete. See
+Status: **phase 3 in progress** (ICAP, ACME, the web GUI, the SELinux
+policy and RPM packaging delivered; scale validation, coverage gates and
+the security review remain). Phases 1 and 2 are complete. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today

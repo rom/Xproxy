@@ -91,6 +91,17 @@ drive it with `net/http` and raw TCP.
 
 Fuzz corpora that find failures are committed under `testdata/fuzz`.
 
+### Packaging and policy (CI `package` job)
+
+Runs in a Fedora container: `make selinux` compiles the module against the
+Fedora policy headers (which catches interface names that only exist in
+upstream reference policy), `make rpm` builds the three packages offline
+from the vendored tarball, `make rpmlint` checks them against
+`deploy/rpm/xproxy.rpmlintrc`, the packages are installed with `dnf` and
+the three binaries print their version. What the container cannot do is
+load the module or run with SELinux enforcing; that is the Fedora VM item
+under planned additions and the release checklist.
+
 ### Static and supply chain
 
 `golangci-lint` (errcheck, gosec, staticcheck, govet, bodyclose, noctx,
@@ -227,7 +238,8 @@ Phase 3:
   an upstream mid-response.
 - Coverage gate at 80 percent on core packages; mutation testing pass with
   `gremlins` or equivalent on `limits`, `router` and `netutil`.
-- Fedora CI runner: install RPM, enable units, run traffic, assert no AVC
-  denials and a passing `systemd-analyze security` band.
+- Fedora VM runner: install the RPMs, enable units, run traffic, assert no
+  AVC denials and a passing `systemd-analyze security` band (the container
+  job covers build, lint and install).
 - Automated browser job for the GUI (the DevTools procedure above) on the
   same runner.

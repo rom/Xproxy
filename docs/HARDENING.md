@@ -24,9 +24,13 @@ Do not add `AmbientCapabilities`; if a port below 1024 is needed, add a
 
 ## 2. SELinux enforcing with the xproxy module
 
-Load the module from `deploy/selinux`, label the paths, add upstream ports
-that are not `http_port_t` to `xproxy_upstream_port_t`. Run the domain
-permissive during the first day and inspect AVCs, then switch to enforcing.
+Install `xproxy-selinux` (or load the module from `deploy/selinux`), label
+the ports the configuration uses (`xproxy_upstream_port_t`,
+`xproxy_cluster_port_t`, `xproxy_metrics_port_t`, `xproxy_admin_port_t`),
+and leave `xproxy_connect_any` off. Run the domain permissive during the
+first day and inspect AVCs, then switch to enforcing. The GUI runs in its
+own domain `xproxy_admin_t`; turn `xproxy_admin_manage_service` off if the
+restart button is not wanted.
 
 Verify:
 

@@ -1,36 +1,54 @@
-# SELinux policy module for xproxy (Fedora targeted policy).
+# SELinux policy module for xproxy (Fedora targeted policy; also compiles
+# against upstream reference policy headers, which the ifdef() fallbacks
+# below account for).
 #
 # Build and install:
-#   checkmodule -M -m -o xproxy.mod xproxy.te
-#   semodule_package -o xproxy.pp -m xproxy.mod -f xproxy.fc
-#   semodule -i xproxy.pp
-#   restorecon -Rv /usr/local/bin/xproxy* /etc/xproxy /var/log/xproxy /run/xproxy /var/lib/xproxy
+#   make selinux                       (uses /usr/share/selinux/devel)
+#   semodule -i deploy/selinux/xproxy.pp
+#   restorecon -Rv /usr/bin/xproxy* /usr/local/bin/xproxy* /etc/xproxy /var/log/xproxy /run/xproxy /var/lib/xproxy
+#   semanage port -a -t xproxy_upstream_port_t -p tcp 8080     # each upstream port that is not http_port_t
+#   semanage port -a -t xproxy_cluster_port_t  -p tcp 7946     # cluster listener, if used
+#   semanage port -a -t xproxy_metrics_port_t  -p tcp 9100     # TCP metrics listener, if used
 #
-# The domain is confined: it may bind http ports, connect to upstream ports
-# labelled http_port_t / xproxy_upstream_port_t, read its config and
-# certificates, and append to its logs. Nothing else.
-policy_module(xproxy, 0.1.0)
+# Domains:
+#   xproxy_t        the data plane. Reads its configuration and certificates,
+#                   appends to its logs, manages its runtime and state
+#                   directories, binds http ports (or receives sockets from
+#                   systemd), connects to upstreams on http_port_t and
+#                   xproxy_upstream_port_t, sends logs to journald and syslog.
+#                   No capabilities, no execution of other programs.
+#   xproxy_admin_t  the web GUI. Reads and writes the configuration file,
+#                   reads the logs, connects to the management socket, binds
+#                   xproxy_admin_port_t, and may restart xproxy.service
+#                   through systemd when the boolean below is on.
+#
+# Booleans:
+#   xproxy_connect_any           let the data plane connect to any TCP port
+#                                (instead of http_port_t and
+#                                xproxy_upstream_port_t only). Default off.
+#   xproxy_admin_manage_service  let the GUI start, stop and restart
+#                                xproxy.service through systemctl. Default on.
+policy_module(xproxy, 1.0.0)
 
-require {
-	type http_port_t;
-	type cert_t;
-	type node_t;
-	type net_conf_t;
-	type init_t;
-	type systemd_unit_file_t;
-	class tcp_socket { name_bind name_connect accept listen bind connect create getattr getopt setopt read write shutdown };
-	class udp_socket { create connect read write getattr setopt };
-	class unix_stream_socket { create bind listen accept connect read write getattr setopt shutdown };
-	class file { read open getattr map execute execute_no_trans append create write rename unlink lock ioctl };
-	class dir { search read open getattr write add_name remove_name create };
-	class sock_file { create unlink write getattr setattr };
-	class process { setrlimit signal signull sigkill };
-	class capability { };
-}
+########################################
+#
+# Declarations
+#
+
+gen_require(`
+	class service { start stop status reload };
+')
+
+gen_tunable(xproxy_connect_any, false)
+gen_tunable(xproxy_admin_manage_service, true)
 
 type xproxy_t;
 type xproxy_exec_t;
 init_daemon_domain(xproxy_t, xproxy_exec_t)
+
+type xproxy_admin_t;
+type xproxy_admin_exec_t;
+init_daemon_domain(xproxy_admin_t, xproxy_admin_exec_t)
 
 type xproxy_conf_t;
 files_config_file(xproxy_conf_t)
@@ -39,55 +57,188 @@ type xproxy_log_t;
 logging_log_file(xproxy_log_t)
 
 type xproxy_var_run_t;
-files_pid_file(xproxy_var_run_t)
+ifdef(`files_pid_file',`
+	files_pid_file(xproxy_var_run_t)
+',`
+	files_runtime_file(xproxy_var_run_t)
+')
 
 type xproxy_var_lib_t;
 files_type(xproxy_var_lib_t)
 
+type xproxy_unit_file_t;
+ifdef(`systemd_unit_file',`
+	systemd_unit_file(xproxy_unit_file_t)
+',`
+	init_unit_file(xproxy_unit_file_t)
+')
+
 type xproxy_upstream_port_t;
 corenet_port(xproxy_upstream_port_t)
 
+type xproxy_cluster_port_t;
+corenet_port(xproxy_cluster_port_t)
+
+type xproxy_metrics_port_t;
+corenet_port(xproxy_metrics_port_t)
+
+type xproxy_admin_port_t;
+corenet_port(xproxy_admin_port_t)
+
+########################################
+#
+# Data plane: xproxy_t
+#
+
 # Configuration and certificates: read only.
-allow xproxy_t xproxy_conf_t:dir { search read open getattr };
-allow xproxy_t xproxy_conf_t:file { read open getattr map };
+allow xproxy_t xproxy_conf_t:dir list_dir_perms;
+allow xproxy_t xproxy_conf_t:file { read_file_perms map };
+allow xproxy_t xproxy_conf_t:lnk_file read_lnk_file_perms;
 miscfiles_read_generic_certs(xproxy_t)
+files_read_etc_files(xproxy_t)
 
-# Logs: append and rotate within the log directory.
-allow xproxy_t xproxy_log_t:dir { search read open getattr write add_name remove_name };
-allow xproxy_t xproxy_log_t:file { read open getattr append create write rename unlink lock };
+# Logs: create, append, rotate and reopen within the log directory.
+allow xproxy_t xproxy_log_t:dir { list_dir_perms add_entry_dir_perms del_entry_dir_perms };
+allow xproxy_t xproxy_log_t:file { create_file_perms append_file_perms read_file_perms rename_file_perms delete_file_perms lock };
 logging_log_filetrans(xproxy_t, xproxy_log_t, { file dir })
+logging_search_logs(xproxy_t)
 
-# Management socket and state.
-allow xproxy_t xproxy_var_run_t:dir { search read open getattr write add_name remove_name create };
-allow xproxy_t xproxy_var_run_t:sock_file { create unlink write getattr setattr };
-allow xproxy_t xproxy_var_lib_t:dir { search read open getattr write add_name remove_name create };
-allow xproxy_t xproxy_var_lib_t:file { read open getattr create write append rename unlink lock };
-allow xproxy_t self:unix_stream_socket { create bind listen accept connect read write getattr setopt shutdown };
+# Runtime directory: the management socket.
+allow xproxy_t xproxy_var_run_t:dir { manage_dir_perms };
+allow xproxy_t xproxy_var_run_t:sock_file { manage_sock_file_perms };
+ifdef(`files_search_runtime',`
+	files_search_runtime(xproxy_t)
+',`
+	files_search_pids(xproxy_t)
+')
 
-# Network: listen on http ports (or receive sockets from systemd), connect
-# to upstreams on http ports and on the dedicated upstream port type.
-allow xproxy_t self:tcp_socket { create getattr getopt setopt read write shutdown accept listen bind connect };
-allow xproxy_t self:udp_socket { create connect read write getattr setopt bind ioctl sendto recvfrom };
+# State: ban database, ACME account and certificates, challenge key.
+allow xproxy_t xproxy_var_lib_t:dir manage_dir_perms;
+allow xproxy_t xproxy_var_lib_t:file manage_file_perms;
+files_search_var_lib(xproxy_t)
+
+# Sockets of its own.
+allow xproxy_t self:unix_stream_socket { create_stream_socket_perms connectto };
+allow xproxy_t self:unix_dgram_socket create_socket_perms;
+allow xproxy_t self:tcp_socket { create_stream_socket_perms accept };
+allow xproxy_t self:udp_socket create_socket_perms;
+allow xproxy_t self:fifo_file rw_fifo_file_perms;
+
+# Network: bind http ports (or receive the sockets from systemd), connect
+# to upstreams, resolve names, talk to ACME and JWKS servers over https.
+corenet_all_recvfrom_unlabeled(xproxy_t)
+corenet_all_recvfrom_netlabel(xproxy_t)
+corenet_tcp_sendrecv_generic_if(xproxy_t)
+corenet_udp_sendrecv_generic_if(xproxy_t)
+corenet_tcp_sendrecv_generic_node(xproxy_t)
+corenet_udp_sendrecv_generic_node(xproxy_t)
 corenet_tcp_bind_generic_node(xproxy_t)
 corenet_udp_bind_generic_node(xproxy_t)
 corenet_tcp_bind_http_port(xproxy_t)
 corenet_udp_bind_http_port(xproxy_t)
 corenet_tcp_connect_http_port(xproxy_t)
 allow xproxy_t xproxy_upstream_port_t:tcp_socket name_connect;
+allow xproxy_t xproxy_cluster_port_t:tcp_socket { name_bind name_connect };
+allow xproxy_t xproxy_metrics_port_t:tcp_socket name_bind;
+corenet_tcp_connect_syslogd_port(xproxy_t)
 sysnet_dns_name_resolve(xproxy_t)
 sysnet_read_config(xproxy_t)
 
-# systemd notify socket and socket activation.
+tunable_policy(`xproxy_connect_any',`
+	corenet_tcp_connect_all_ports(xproxy_t)
+')
+
+# Log sinks: journald native socket and /dev/log.
+logging_send_syslog_msg(xproxy_t)
+
+# systemd: notify socket and socket activation.
 init_dgram_send(xproxy_t)
 init_rw_stream_sockets(xproxy_t)
+init_rw_inherited_stream_socket(xproxy_t)
+init_use_fds(xproxy_t)
+ifdef(`init_named_socket_activation',`
+	init_named_socket_activation(xproxy_t, xproxy_var_run_t)
+')
 
-# Process housekeeping.
-allow xproxy_t self:process { setrlimit signal signull };
+# Process housekeeping: rlimits at start, signals to itself, runtime
+# introspection by the Go runtime, randomness for TLS and challenges.
+allow xproxy_t self:process { setrlimit signal signull getsched setsched };
 kernel_read_system_state(xproxy_t)
 kernel_read_network_state(xproxy_t)
+kernel_read_net_sysctls(xproxy_t)
+kernel_read_vm_sysctls(xproxy_t)
+kernel_read_crypto_sysctls(xproxy_t)
 dev_read_urand(xproxy_t)
+dev_read_sysfs(xproxy_t)
 fs_getattr_all_fs(xproxy_t)
 miscfiles_read_localization(xproxy_t)
 
-# Deliberately absent: no capability grants, no execution of other
-# binaries, no write access outside the four labelled directories.
+# Deliberately absent: capabilities, execution of other programs, write
+# access outside the three writable directories, ptrace, module loading.
+
+########################################
+#
+# Web GUI: xproxy_admin_t
+#
+
+# Configuration: read and write (the GUI user owns the file; saves are
+# atomic through a temporary file and rename, and keep a .bak).
+allow xproxy_admin_t xproxy_conf_t:dir { list_dir_perms add_entry_dir_perms del_entry_dir_perms };
+allow xproxy_admin_t xproxy_conf_t:file manage_file_perms;
+allow xproxy_admin_t xproxy_conf_t:lnk_file read_lnk_file_perms;
+miscfiles_read_generic_certs(xproxy_admin_t)
+files_read_etc_files(xproxy_admin_t)
+
+# Logs: read only (tail and follow).
+allow xproxy_admin_t xproxy_log_t:dir list_dir_perms;
+allow xproxy_admin_t xproxy_log_t:file read_file_perms;
+logging_search_logs(xproxy_admin_t)
+
+# Management socket of the data plane.
+allow xproxy_admin_t xproxy_var_run_t:dir list_dir_perms;
+allow xproxy_admin_t xproxy_var_run_t:sock_file write_sock_file_perms;
+allow xproxy_admin_t xproxy_t:unix_stream_socket connectto;
+ifdef(`files_search_runtime',`
+	files_search_runtime(xproxy_admin_t)
+',`
+	files_search_pids(xproxy_admin_t)
+')
+
+# Its own listener (loopback by default, or mutual TLS on an internal
+# address) and outbound to nothing.
+allow xproxy_admin_t self:unix_stream_socket create_stream_socket_perms;
+allow xproxy_admin_t self:tcp_socket { create_stream_socket_perms accept };
+allow xproxy_admin_t self:fifo_file rw_fifo_file_perms;
+corenet_all_recvfrom_unlabeled(xproxy_admin_t)
+corenet_all_recvfrom_netlabel(xproxy_admin_t)
+corenet_tcp_sendrecv_generic_if(xproxy_admin_t)
+corenet_tcp_sendrecv_generic_node(xproxy_admin_t)
+corenet_tcp_bind_generic_node(xproxy_admin_t)
+allow xproxy_admin_t xproxy_admin_port_t:tcp_socket name_bind;
+allow xproxy_admin_t xproxy_var_run_t:sock_file create_sock_file_perms;
+sysnet_read_config(xproxy_admin_t)
+
+# Restart of the data plane through systemctl (the polkit rule limits the
+# verb and unit on the D-Bus side; this limits it on the SELinux side).
+tunable_policy(`xproxy_admin_manage_service',`
+	allow xproxy_admin_t xproxy_unit_file_t:file read_file_perms;
+	allow xproxy_admin_t xproxy_unit_file_t:service { start stop status reload };
+')
+optional_policy(`
+	tunable_policy(`xproxy_admin_manage_service',`
+		systemd_exec_systemctl(xproxy_admin_t)
+		init_dbus_chat(xproxy_admin_t)
+	')
+	dbus_system_bus_client(xproxy_admin_t)
+')
+
+# Housekeeping.
+allow xproxy_admin_t self:process { signal signull getsched setsched };
+kernel_read_system_state(xproxy_admin_t)
+kernel_read_vm_sysctls(xproxy_admin_t)
+dev_read_urand(xproxy_admin_t)
+dev_read_sysfs(xproxy_admin_t)
+fs_getattr_all_fs(xproxy_admin_t)
+miscfiles_read_localization(xproxy_admin_t)
+logging_send_syslog_msg(xproxy_admin_t)
+init_dgram_send(xproxy_admin_t)

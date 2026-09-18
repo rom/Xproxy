@@ -70,7 +70,7 @@ internal/metrics    Prometheus text encoder, histogram, sampled series
 internal/tui        terminal UI of xproxyctl (pure renderer plus a raw-mode loop)
 internal/admin      web GUI server: users file, sessions, API over the management client, static/ assets
 internal/version    build information
-deploy/             systemd units, sysctl, SELinux, logrotate, example config
+deploy/             systemd units, sysusers, sysctl, SELinux policy, polkit, logrotate, RPM spec, example config
 docs/               this documentation
 test/               cross package and binary level tests (grows in 1.0)
 ```

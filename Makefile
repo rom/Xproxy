@@ -9,11 +9,18 @@ COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 PKG        = github.com/rom/xproxy/internal/version
 LDFLAGS    = -s -w -buildid= -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).BuildDate=$(DATE)
-GOFLAGS    = -trimpath -mod=mod
+GOMODFLAG ?= -mod=mod
+GOFLAGS    = -trimpath $(GOMODFLAG)
+
+# Package version: VERSION file plus a git suffix unless HEAD is tagged.
+BASE_VERSION := $(shell cat VERSION)
+GIT_TAG      := $(shell git describe --tags --exact-match 2>/dev/null)
+RPM_RELEASE  ?= $(if $(GIT_TAG),1,0.$(shell date -u +%Y%m%d)git$(COMMIT))
+RPMDIR       ?= $(CURDIR)/rpmbuild
 
 BIN = bin
 
-.PHONY: all build test test-race cover fuzz lint vet fmt check clean install selinux sbom vuln
+.PHONY: all build test test-race cover fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint
 
 all: build
 
@@ -64,7 +71,7 @@ sbom:
 check: fmt vet test-race lint
 
 clean:
-	rm -rf $(BIN) coverage.out
+	rm -rf $(BIN) coverage.out $(RPMDIR) deploy/selinux/xproxy.pp deploy/selinux/xproxy.pp.bz2 deploy/selinux/tmp
 
 # Install onto the local host (run as root). See docs/SETUP.md.
 PREFIX ?= /usr/local
@@ -81,6 +88,35 @@ install: build
 	install -D -m 0644 deploy/sysctl/90-xproxy.conf $(DESTDIR)/etc/sysctl.d/90-xproxy.conf
 	install -D -m 0644 deploy/logrotate/xproxy $(DESTDIR)/etc/logrotate.d/xproxy
 	install -D -m 0640 -b deploy/config/xproxy.yaml $(DESTDIR)/etc/xproxy/xproxy.yaml
+	install -D -m 0644 deploy/sysusers/xproxy.conf $(DESTDIR)/usr/lib/sysusers.d/xproxy.conf
 
+# SELinux module. Uses the policy development headers when present (the
+# module uses reference policy interfaces and needs them); falls back to
+# the raw checkmodule path for a syntax check without interfaces.
 selinux:
-	cd deploy/selinux && checkmodule -M -m -o xproxy.mod xproxy.te && semodule_package -o xproxy.pp -m xproxy.mod -f xproxy.fc
+	@if [ -f /usr/share/selinux/devel/Makefile ]; then \
+	  $(MAKE) -C deploy/selinux -f /usr/share/selinux/devel/Makefile xproxy.pp && rm -rf deploy/selinux/tmp; \
+	else \
+	  echo "selinux-policy-devel (Fedora) or selinux-policy-dev (Debian) is required"; exit 1; \
+	fi
+
+# Source tarball with vendored modules for offline RPM builds.
+dist:
+	rm -rf $(RPMDIR)/SOURCES/xproxy-$(BASE_VERSION) && mkdir -p $(RPMDIR)/SOURCES
+	git archive --format=tar --prefix=xproxy-$(BASE_VERSION)/ HEAD | tar -x -C $(RPMDIR)/SOURCES
+	cd $(RPMDIR)/SOURCES/xproxy-$(BASE_VERSION) && $(GO) mod vendor && echo $(COMMIT) > .git-commit
+	tar -C $(RPMDIR)/SOURCES -czf $(RPMDIR)/SOURCES/xproxy-$(BASE_VERSION).tar.gz xproxy-$(BASE_VERSION)
+	rm -rf $(RPMDIR)/SOURCES/xproxy-$(BASE_VERSION)
+	@echo "$(RPMDIR)/SOURCES/xproxy-$(BASE_VERSION).tar.gz"
+
+RPMDEFS = --define "_topdir $(RPMDIR)" --define "xproxy_version $(BASE_VERSION)" --define "xproxy_release $(RPM_RELEASE)" --define "xproxy_commit $(COMMIT)"
+
+srpm: dist
+	rpmbuild -bs $(RPMDEFS) deploy/rpm/xproxy.spec
+
+rpm: dist
+	rpmbuild -ba $(RPMDEFS) deploy/rpm/xproxy.spec
+	@ls -1 $(RPMDIR)/RPMS/*/*.rpm $(RPMDIR)/SRPMS/*.rpm
+
+rpmlint:
+	rpmlint -f deploy/rpm/xproxy.rpmlintrc deploy/rpm/xproxy.spec $(RPMDIR)/RPMS/*/*.rpm $(RPMDIR)/SRPMS/*.rpm

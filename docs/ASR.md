@@ -38,7 +38,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S5 | Fail closed: a configuration error or a missing security control must stop the proxy from starting or reloading, never silently degrade | M | MVP | Strict YAML with unknown field rejection; all validation errors reported at once; reload keeps the previous generation on any failure |
 | ASR-S6 | Do not trust forwarding headers from arbitrary peers | M | MVP | `trusted_proxies` list; right-most untrusted X-Forwarded-For algorithm; forged headers dropped before forwarding |
 | ASR-S7 | Route decisions must be immune to path normalisation tricks | M | MVP | Routing uses a cleaned path (dot segments and duplicate slashes resolved); the original path is forwarded unless the route rewrites it |
-| ASR-S8 | Run unprivileged on Fedora with systemd hardening and a confined SELinux domain | M | MVP unit, SELinux at 1.0 | Socket activation removes the need for any capability; policy module confines file and network access to four labelled directories and http ports |
+| ASR-S8 | Run unprivileged on Fedora with systemd hardening and a confined SELinux domain | M | MVP unit, SELinux policy and RPM delivered in phase 3 | Socket activation removes the need for any capability; policy module confines file and network access to four labelled directories and http ports |
 | ASR-S9 | Every deny, ban, tarpit and management action is logged with enough context to investigate | M | MVP | Dedicated security and audit streams; request identifiers propagate to upstream and back; kernel peer credentials on the management socket |
 | ASR-S10 | Logs must not leak secrets or more personal data than configured | M | 1.0 (delivered in phase 2) | Query strings are not logged by default; redaction rules for addresses, user agents, referers, claims and named fields, switchable per stream |
 | ASR-S11 | TLS configuration is secure by default and cannot be made insecure by accident | M | MVP | TLS 1.2 minimum, AEAD suites with forward secrecy only, renegotiation disabled, insecure suites rejected by validation, upstream verification skip requires a double opt-in |
@@ -94,7 +94,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S1, S2 | `internal/limits`, server timeouts in `internal/proxy/server.go` | `internal/limits/limits_test.go`, `TestConnectionLimits`, `TestSlowHeaderTimeout` |
 | ASR-S5, O1 | `internal/config` | `internal/config/config_test.go`, `FuzzParse` |
 | ASR-S6, S7 | `internal/netutil` | `internal/netutil/netutil_test.go`, `TestProxyBasics` |
-| ASR-S8 | `deploy/systemd`, `deploy/selinux` | manual, see SETUP.md |
+| ASR-S8 | `deploy/systemd`, `deploy/selinux`, `deploy/rpm` | CI `package` job (policy compile, RPM build, rpmlint, install); AVC check on a Fedora host per the release checklist |
 | ASR-F6 | `internal/waf`, `internal/filter` | `internal/waf/waf_test.go`, `TestWAFIntegration` |
 | ASR-S2 (bans) | `internal/ban`, accept hook in `internal/limits` | `internal/ban/ban_test.go`, `TestBanIntegration`, `TestConnLimiterBanned` |
 | ASR-O5 | `internal/ban` persistence (bbolt) | `TestPersistence` |

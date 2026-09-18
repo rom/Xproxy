@@ -20,6 +20,26 @@ jobs:
       - run: make cover
       - run: make build
       - run: ./bin/xproxy -version && ./bin/xproxyctl version && ./bin/xproxy-admin version
+  package:
+    # Builds the RPMs and the SELinux module against the real Fedora policy
+    # headers, lints them and installs them. The container has no SELinux
+    # kernel support, so loading the module and AVC checks stay on the
+    # release checklist until a Fedora VM runner exists.
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - run: dnf install -y git make golang rpm-build rpmlint selinux-policy-devel systemd-rpm-macros bzip2 tar
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: go version
+      - run: make selinux
+      - run: make rpm
+      - run: make rpmlint
+      - run: dnf install -y ./rpmbuild/RPMS/*/xproxy-[0-9]*.rpm ./rpmbuild/RPMS/*/xproxy-admin-*.rpm
+      - run: xproxy -version && xproxyctl version && xproxy-admin version
+      - run: xproxy -config /etc/xproxy/xproxy.yaml -validate || true   # example config references certificate files that do not exist here
+      - run: systemd-analyze verify /usr/lib/systemd/system/xproxy.service /usr/lib/systemd/system/xproxy-admin.service || true
+      - run: rpm -q --scripts xproxy xproxy-admin && rpm -qlp ./rpmbuild/RPMS/noarch/xproxy-selinux-*.rpm
   lint:
     runs-on: ubuntu-latest
     steps:

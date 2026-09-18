@@ -115,11 +115,17 @@ Delivered so far:
   reload, restart through polkit, graphs from the series buffer, ban
   management, live logs (ASR-O3, AMR-011, AMR-030)
 
+- SELinux policy with two domains (`xproxy_t`, `xproxy_admin_t`), file,
+  port and unit types, two booleans and an interface file; RPM packaging
+  (`xproxy`, `xproxy-admin`, `xproxy-selinux`) from a vendored tarball
+  with sysusers, units, sysctl, logrotate and polkit; a Fedora container
+  job in CI that compiles the policy against the Fedora headers, builds,
+  lints and installs the packages (ASR-S8, AMR-017, AMR-031)
+
 Remaining:
 
-- Full SELinux policy validated on Fedora (including a domain for
-  `xproxy-admin`), RPM packaging with the units, policy and sysctl
-  profile, a Fedora CI runner (ASR-S8, AMR-017)
+- Fedora VM runner with SELinux enforcing for AVC checks and
+  `systemd-analyze security` (the container job cannot load policy)
 - Scale validation: 1000 hosts and 10 000 endpoints in configuration and
   in tests, published throughput and latency numbers (ASR-P1, P2)
 - Stable middleware interface and registry (ASR-O6, AMR-013)

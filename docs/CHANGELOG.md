@@ -10,6 +10,16 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 ### Phase 3: 1.0 (in progress)
 
 #### Added
+- SELinux policy: confined domains `xproxy_t` and `xproxy_admin_t`, types
+  for configuration, logs, runtime, state and unit files, port types for
+  upstreams, cluster, metrics and the GUI, booleans `xproxy_connect_any`
+  and `xproxy_admin_manage_service`, interface file for other policies;
+  compiles against Fedora and reference policy headers.
+- RPM packaging: `xproxy`, `xproxy-admin` and `xproxy-selinux` built
+  offline from a vendored tarball (`make dist`, `make rpm`, `make
+  rpmlint`); sysusers, units, sysctl, logrotate, polkit and documentation
+  installed; the policy loaded and paths relabelled on install. `VERSION`
+  file for the package version. Fedora container job in CI.
 - Web GUI `xproxy-admin`: separate process and service user; users file
   with PBKDF2 hashes (`user add|del|list`, `passwd`), viewer and operator
   roles, client certificate login on a mutual TLS listener, loopback only
