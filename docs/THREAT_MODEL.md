@@ -149,6 +149,24 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Challenge path used to reach the application | `/.well-known/acme-challenge/` never reaches routing: known tokens get the key authorisation, anything else a 404, both before the WAF and upstreams |
 | State directory disclosure | `0700` directory and `0600` files under `StateDirectory`; `ProtectSystem=strict` limits writes to it; SELinux confines the process |
 
+## Boundary 2d: Web GUI
+
+The GUI is reachable by browsers, which brings the web attack classes to a
+management surface. It is therefore a separate process and user, and the
+data plane does not trust it more than any other socket client.
+
+| Threat | Mitigation |
+|--------|------------|
+| Exposure to untrusted networks | Loopback only by default; a non-loopback bind is refused without server TLS and a client CA (mutual TLS); the unit's `IPAddressAllow=localhost` |
+| Password guessing | PBKDF2-HMAC-SHA256 at 600 000 iterations, twelve character minimum, per-source lockout after five failures, uniform timing for unknown users, bounded concurrent verifications |
+| Session theft | 256 bit random tokens, `HttpOnly`, `SameSite=Strict`, `Secure` and `__Host-` over TLS, idle and absolute expiry, in-memory store lost on restart |
+| Cross-site request forgery | Custom header required on every state change, `Sec-Fetch-Site` and `Origin` checked, `SameSite=Strict` cookie |
+| Cross-site scripting and injection | No inline script or style, `script-src 'self'` only, all data rendered through `textContent`, JSON responses `nosniff`, `frame-ancestors 'none'` |
+| Viewer escalates to operator | Roles enforced on the server by method: non-`GET` requires the operator role, independent of anything in the page |
+| Compromised GUI process edits the configuration | Accepted within the design: the GUI user owns the file for that purpose; every save is validated, atomic, backed up and audited; the data plane still validates on reload and keeps the old generation on error; listeners, cluster and ACME changes need a restart the polkit rule limits to one verb on one unit |
+| Compromised GUI process reaches the data plane | Only through the same socket and API as `xproxyctl`, with its own uid in the audit log; it cannot bind data ports, read the account key or change the units |
+| Log disclosure through the GUI | Logs are readable by viewers by design (same as the `xproxy` group); redaction applies before the file is written, so the GUI sees redacted data |
+
 ## Boundary 3: Management plane
 
 | Threat | Mitigation |

@@ -41,6 +41,7 @@ server.
 | `internal/cluster` | `TestTwoNodes`, `TestRejectsUnauthenticated`, `TestProtocolErrors` | Bans and unbans propagate, sources are rewritten, rates arrive as rates, late joiner gets a snapshot, peer removal on reconfigure, status; connections without a certificate, with a foreign CA or outside `allowed_names` are rejected and counted; bad JSON, messages before hello, wrong version, unknown type and oversized lines close the connection while a valid session is applied |
 | `internal/jwt` | `TestVerifyAlgorithms`, `TestVerifyRejections`, `TestHMAC`, `TestJWKSURLAndRotation`, `TestJWKSParsing`, `TestFilter`, `TestClaimString` | RS256, PS256, ES256 and EdDSA accepted with and without key ids; expiry, skew, `nbf`, issuer, audience (string and list), missing and required claims, `alg: none`, disallowed algorithms, HMAC against an asymmetric provider, unknown key, wrong key, algorithm and key type mismatch, tampered payload, malformed and oversized tokens; HMAC secret handling; JWKS over HTTPS with a pinned CA, rotation through on-demand refresh, rate limiting of refreshes, unpinned CA fails closed; malformed and symmetric keys skipped when parsing; filter behaviour for missing, optional, valid, invalid tokens, header spoof removal, cookie and header sources with stripping |
 | `internal/tui` | `TestRenderAllViewsFit`, `TestRenderContent`, `TestHelpers`, `TestKeys`, `TestRunRequiresTerminal` | Every screen renders to exactly the terminal height and within its width at three sizes with and without colour; expected content per screen including selection, errors and prompts; ANSI-aware width and clipping; key handling for navigation, interval, pause, ban prompt with editing, unban confirmation and API errors, escape; refusal to run without a terminal |
+| `internal/admin` | `TestPasswordHashing`, `TestUsersFile`, `TestOptionsPolicy`, `TestAuthAndRoles`, `TestLoginLockout`, `TestLogs`, `TestSplitProblems` | Hash format and verification including malformed hashes; users file round trip, mode, bad roles and names; listener policy (loopback and Unix allowed, non-loopback needs mutual TLS); against a fake management socket: anonymous 401, security headers, login without the CSRF header refused, wrong password, unknown and certificate-only users, viewer can read but not act, cookie attributes, logout, operator actions forwarded (reload, ban with the audit prefix, unban, restart command), cross-origin and cross-site fetch metadata refused, series parameter validation, configuration file read, validate with problems, invalid save refused without touching the file, stale entity tag 409, atomic save with backup and preserved mode, idle expiry; five failures lock the source out; log tail and server-sent event follow |
 | `internal/icap` | `TestOptionsAndReqmod`, `TestRespmodAndErrors`, `TestUnreachable`, `TestHeaderBlocks` | Against a fake ICAP server (`icaptest`): OPTIONS parsing, preview then `100 Continue` then `204`, block on preview with the encapsulated page, small and empty bodies, modified request, connection reuse, RESPMOD clean, blocked and rewritten, server error and timeout counted with recovery, unreachable service, header block rendering without hop-by-hop or injected headers |
 | `internal/metrics` | `TestEncoder`, `TestHistogram`, `TestSeriesAndSampler` | Text format with escaping and sorted labels, histogram buckets, sum and count; atomic histogram bucketing; ring buffer order, retention, since and limit, per-second rates from counters, counter reset handling, start and stop |
 | `internal/shed` | `TestInflightLevel`, `TestLatencyLevelAndDrain`, `TestReconfigureKeepsSamples` | Class thresholds against the in-flight ratio, hysteresis, latency level from windowed samples, drain after an idle window, reconfiguration |
@@ -160,6 +161,28 @@ proxy (a Python `pty.fork` of `xproxyctl tui`, sending `2`, `3`, `5`,
 that each screen shows live data (upstream address, a ban, sparklines,
 security events) and that the process exits with status 0.
 
+### Browser check of the GUI
+
+Run the smoke set-up above, create users and start the GUI:
+
+```sh
+echo 'operator-password-1' | ./bin/xproxy-admin user add op -role operator -users /tmp/admin-users
+./bin/xproxy-admin serve -listen 127.0.0.1:18203 -socket /tmp/xproxy-smoke/mgmt.sock -config /tmp/xproxy-smoke/xproxy.yaml -users /tmp/admin-users
+```
+
+Then drive headless Chromium over the DevTools protocol (a Node script
+with the built-in `WebSocket`, no packages): navigate to the page, submit
+the login form, switch `location.hash` through every screen, run
+*Validate* on a broken edit and *Validate and save* on a good one, unban,
+switch the log view to `access` and request a page through the proxy. The
+expected result is every screen rendered with data, the problems list
+naming the bad key, the saved file with `.bak` next to it, the new access
+line arriving through the event stream, and no Content Security Policy
+violation or script error in the browser log (the only console errors are
+the deliberate 401 before login and the 502 for a feature the smoke
+configuration does not enable). This procedure was run on the reference
+build; it becomes an automated job once the Fedora runner exists.
+
 ### Browser check of the challenge
 
 The challenge script is verified in a real browser before release, using
@@ -206,3 +229,5 @@ Phase 3:
   `gremlins` or equivalent on `limits`, `router` and `netutil`.
 - Fedora CI runner: install RPM, enable units, run traffic, assert no AVC
   denials and a passing `systemd-analyze security` band.
+- Automated browser job for the GUI (the DevTools procedure above) on the
+  same runner.

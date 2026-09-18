@@ -1,6 +1,7 @@
 # File contexts for xproxy.
 /usr/local/bin/xproxy		--	gen_context(system_u:object_r:xproxy_exec_t,s0)
 /usr/local/bin/xproxyctl	--	gen_context(system_u:object_r:bin_t,s0)
+/usr/local/bin/xproxy-admin	--	gen_context(system_u:object_r:bin_t,s0)
 /etc/xproxy(/.*)?			gen_context(system_u:object_r:xproxy_conf_t,s0)
 /var/log/xproxy(/.*)?			gen_context(system_u:object_r:xproxy_log_t,s0)
 /run/xproxy(/.*)?			gen_context(system_u:object_r:xproxy_var_run_t,s0)

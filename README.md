@@ -5,8 +5,8 @@ firewall, written in Go for Fedora Linux. Single static
 binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
-Status: **phase 3 in progress** (ICAP and ACME delivered; GUI, SELinux,
-packaging and scale validation remain). Phases 1 and 2 are complete. See
+Status: **phase 3 in progress** (ICAP, ACME and the web GUI delivered;
+SELinux policy, packaging and scale validation remain). Phases 1 and 2 are complete. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today
@@ -38,6 +38,9 @@ packaging and scale validation remain). Phases 1 and 2 are complete. See
 - Four JSON log streams (access, error, security, audit) with a request
   identifier end to end, delivered to files, journald or syslog, with
   per-stream redaction of personal data
+- Management over a local socket from a CLI, a terminal UI and a web GUI
+  with viewer and operator roles, configuration editing with validation,
+  graphs and live logs
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
   status, upstreams, reload, certificate reload, log reopen, tail, bans,
   cluster, metrics, sampled series, and a full-screen TUI

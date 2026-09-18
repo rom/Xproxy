@@ -109,14 +109,17 @@ Delivered so far:
 - ACME with http-01 and tls-alpn-01, one certificate per host group,
   automatic renewal with back-off, state directory, status and forced
   renewal on the management socket (ASR-F11, AMR-029)
+- Web GUI (`xproxy-admin`): separate process and user, viewer and
+  operator roles, password or client certificate login, every screen of
+  the TUI plus configuration editing with validation, atomic save and
+  reload, restart through polkit, graphs from the series buffer, ban
+  management, live logs (ASR-O3, AMR-011, AMR-030)
 
 Remaining:
 
-- Web GUI (`xproxy-admin`) with configuration editing and validation,
-  restart and reload, graphs from the metrics ring buffer, ban management,
-  role separation between viewer and operator (ASR-O3, AMR-011)
-- Full SELinux policy validated on Fedora, RPM packaging with the units,
-  policy and sysctl profile, a Fedora CI runner (ASR-S8, AMR-017)
+- Full SELinux policy validated on Fedora (including a domain for
+  `xproxy-admin`), RPM packaging with the units, policy and sysctl
+  profile, a Fedora CI runner (ASR-S8, AMR-017)
 - Scale validation: 1000 hosts and 10 000 endpoints in configuration and
   in tests, published throughput and latency numbers (ASR-P1, P2)
 - Stable middleware interface and registry (ASR-O6, AMR-013)

@@ -10,6 +10,16 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 ### Phase 3: 1.0 (in progress)
 
 #### Added
+- Web GUI `xproxy-admin`: separate process and service user; users file
+  with PBKDF2 hashes (`user add|del|list`, `passwd`), viewer and operator
+  roles, client certificate login on a mutual TLS listener, loopback only
+  otherwise; screens for overview, upstreams, bans (add and remove),
+  graphs from the series buffer, cluster, certificates (with renew), ICAP,
+  configuration (active view, editor with validation, atomic save with
+  backup and entity tag, reload) and live logs; restart through a
+  configurable command with a polkit rule; strict Content Security Policy,
+  CSRF checks, login lockout, audited actions. `xproxy-admin.service` and
+  `50-xproxy-admin.rules` in `deploy/`.
 - ACME (RFC 8555): `acme` section and `tls.acme` host groups on listeners;
   `http-01` answered on plaintext listeners ahead of the redirect and
   `tls-alpn-01` on the TLS listener; one certificate per group with

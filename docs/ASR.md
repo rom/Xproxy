@@ -61,7 +61,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 |----|-------------|------|---------|---------------------------|
 | ASR-O1 | Single YAML configuration file, validated before use | M | MVP | Schema in Go types; `xproxy -validate` and `xproxyctl validate` |
 | ASR-O2 | Four log streams (access, error, security, audit) as JSON, to files, journald and syslog | M | MVP files, sinks delivered in phase 2 | Sink abstraction behind `log/slog` handlers; native journald datagram protocol and RFC 5424 syslog without cgo |
-| ASR-O3 | Management via CLI, TUI and web GUI | M | MVP CLI, TUI delivered in phase 2, GUI at 1.0 | One management API on a Unix socket serves all three; GUI is a separate binary serving embedded static assets over the same API, never inside the data plane |
+| ASR-O3 | Management via CLI, TUI and web GUI | M | MVP CLI, TUI delivered in phase 2, GUI delivered in phase 3 | One management API on a Unix socket serves all three; GUI is a separate binary serving embedded static assets over the same API, never inside the data plane |
 | ASR-O4 | Metrics for graphs and statistics | M | 1.0 (delivered in phase 2) | Prometheus text endpoint on the management socket and an optional TCP endpoint, plus a local ring buffer of time series for the GUI without external storage |
 | ASR-O5 | Persisted state for bans and statistics across restarts | S | 1.0 | Embedded key-value store (bbolt) in the state directory |
 | ASR-O6 | Extensible without recompiling the core for common cases | S | 1.0 interface, 1.x WASM | Middleware interface with a registry at 1.0; WebAssembly extension ABI in 1.x; never Go plugins |
@@ -105,6 +105,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F7 | `internal/icap` | `internal/icap/icap_test.go`, `TestICAPIntegration`, `TestICAPFailOpen` |
 | ASR-F11 | `internal/acme`, `internal/tlsconf` | `internal/acme/acme_test.go`, `TestACMEEndToEnd` |
 | ASR-O3 (TUI) | `internal/tui`, `xproxyctl tui` | `internal/tui/render_test.go`, pseudo terminal check in TESTS.md |
+| ASR-O3 (GUI) | `internal/admin`, `cmd/xproxy-admin` | `internal/admin/admin_test.go`, browser check in TESTS.md |
 | ASR-O4 | `internal/metrics`, `Server.WriteMetrics`, `mgmt.MetricsListener` | `internal/metrics/metrics_test.go`, `TestWriteMetrics`, `TestMetricsEndpoints`, `TestMetricsListener` |
 | ASR-F10 | `internal/jwt` | `internal/jwt/jwt_test.go`, `TestJWTRoutes`, `TestJWTFromJWKSURL` |
 | ASR-S2 (shedding, challenge) | `internal/shed`, `internal/challenge` | `internal/shed/shed_test.go`, `internal/challenge/challenge_test.go`, `TestAdaptiveShedding`, `TestChallengeGate` |

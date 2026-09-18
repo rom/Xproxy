@@ -1,0 +1,375 @@
+/* xproxy admin: a small single page application over /api. No inline
+   scripts, no external assets, no innerHTML with data (strict CSP). */
+'use strict';
+
+const $ = (sel, root) => (root || document).querySelector(sel);
+const view = $('#view');
+let me = null;
+let timer = null;
+let es = null;
+
+// ---- DOM helpers ----
+function h(tag, attrs, ...children) {
+  const el = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') el.className = v;
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined) el.setAttribute(k, v);
+  }
+  for (const c of children.flat()) {
+    if (c === null || c === undefined) continue;
+    el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return el;
+}
+function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+function table(headers, rows) {
+  return h('table', null,
+    h('thead', null, h('tr', null, headers.map(x => h('th', { class: x.num ? 'num' : null }, x.label || x)))),
+    h('tbody', null, rows.map(r => h('tr', null, r.map((c, i) => h('td', { class: headers[i] && headers[i].num ? 'num' : null }, c))))));
+}
+function fmtNum(v) {
+  if (v === null || v === undefined) return '-';
+  if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(1) + 'G';
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (Math.abs(v) >= 1e4) return (v / 1e3).toFixed(1) + 'k';
+  return Number.isInteger(v) ? String(v) : v.toFixed(2);
+}
+function fmtBytes(b) {
+  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB']; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return (i ? b.toFixed(1) : b) + ' ' + u[i];
+}
+function fmtDur(s) {
+  s = Math.floor(s); const d = Math.floor(s / 86400); s -= d * 86400;
+  const hh = Math.floor(s / 3600); s -= hh * 3600; const mm = Math.floor(s / 60);
+  return (d ? d + 'd ' : '') + hh + 'h ' + mm + 'm';
+}
+function fmtTime(t) { return t ? new Date(t).toLocaleString() : '-'; }
+function flash(msg, kind) {
+  const f = $('#flash'); clear(f); f.append(msg); f.className = kind || '';
+  clearTimeout(flash.t); flash.t = setTimeout(() => f.classList.add('hidden'), 6000);
+}
+
+// ---- API ----
+async function api(method, path, body) {
+  const opts = { method, headers: { 'X-Xproxy-Admin': '1' }, credentials: 'same-origin' };
+  if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const r = await fetch(path, opts);
+  if (r.status === 401 && path !== '/api/login') { showLogin(); throw new Error('not logged in'); }
+  const ct = r.headers.get('content-type') || '';
+  const data = ct.includes('json') ? await r.json() : await r.text();
+  if (!r.ok) {
+    const err = new Error((data && data.error) || ('HTTP ' + r.status)); err.data = data; err.status = r.status; throw err;
+  }
+  return data;
+}
+const get = p => api('GET', p);
+const post = (p, b) => api('POST', p, b === undefined ? {} : b);
+
+// ---- session ----
+async function boot() {
+  try { me = await get('/api/me'); showApp(); } catch (e) { showLogin(); }
+}
+function showLogin() {
+  stopRefresh(); me = null;
+  $('#app').classList.add('hidden'); $('#login').classList.remove('hidden');
+}
+function showApp() {
+  $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
+  $('#who').textContent = me.user + ' (' + me.role + (me.via === 'certificate' ? ', certificate' : '') + ')';
+  $('#footer-version').textContent = 'xproxy-admin ' + me.version;
+  route();
+}
+$('#login-form').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const f = ev.target; $('#login-error').textContent = '';
+  try {
+    me = await post('/api/login', { user: f.user.value, password: f.password.value });
+    f.password.value = ''; showApp();
+  } catch (e) { $('#login-error').textContent = e.message; }
+});
+$('#logout').addEventListener('click', async () => { try { await post('/api/logout'); } catch (e) { /* ignore */ } showLogin(); });
+
+// ---- routing and refresh ----
+const views = {};
+function route() {
+  const name = (location.hash || '#overview').slice(1);
+  for (const a of $('#nav').querySelectorAll('a')) a.classList.toggle('active', a.getAttribute('href') === '#' + name);
+  stopRefresh(); clear(view);
+  const v = views[name] || views.overview;
+  const period = v.refresh || 0;
+  const run = async () => {
+    try { await v.render(); $('#refresh-state').textContent = period ? 'refreshed ' + new Date().toLocaleTimeString() : ''; }
+    catch (e) { if (e.message !== 'not logged in') flash(e.message, 'bad'); }
+  };
+  run();
+  if (period) timer = setInterval(run, period);
+}
+function stopRefresh() { if (timer) clearInterval(timer); timer = null; if (es) { es.close(); es = null; } }
+window.addEventListener('hashchange', route);
+const operator = () => me && me.role === 'operator';
+
+// ---- views ----
+views.overview = { refresh: 5000, async render() {
+  const st = await get('/api/status'); const s = st.stats;
+  const denied = s.denied_acl + s.denied_rate_limit + s.tarpitted + s.denied_concurrency + s.denied_body_size + s.denied_uri_length + s.denied_no_route + s.denied_websocket + s.denied_bad_host + s.denied_ban + s.denied_waf + s.denied_jwt + s.denied_icap;
+  const stats = [
+    ['Version', st.version], ['Uptime', fmtDur(s.uptime_seconds)], ['Generation', st.generation], ['Routes / upstreams', st.routes + ' / ' + st.upstreams],
+    ['Requests', fmtNum(s.requests)], ['2xx', fmtNum(s.responses_2xx)], ['4xx', fmtNum(s.responses_4xx)], ['5xx', fmtNum(s.responses_5xx)],
+    ['Open connections', s.open_connections], ['Bytes in', fmtBytes(s.bytes_in)], ['Bytes out', fmtBytes(s.bytes_out)], ['Denied', fmtNum(denied)],
+    ['Bans active', s.bans_active], ['WAF blocked / detected', fmtNum(s.denied_waf) + ' / ' + fmtNum(s.waf_detected)], ['Rate limited / tarpitted', fmtNum(s.denied_rate_limit) + ' / ' + fmtNum(s.tarpitted)], ['Shed', fmtNum(s.shed)],
+    ['Load level', s.load_level.toFixed(2) + (s.shedding_classes && s.shedding_classes.length ? ' shedding ' + s.shedding_classes.join(',') : '')], ['Upstream latency', s.upstream_latency_ms.toFixed(1) + ' ms'], ['Upstream errors / timeouts', fmtNum(s.upstream_errors) + ' / ' + fmtNum(s.upstream_timeouts)], ['Cluster', s.cluster_connected + ' / ' + s.cluster_peers + ' peers'],
+    ['Challenges issued / passed', fmtNum(s.challenges_issued) + ' / ' + fmtNum(s.challenges_passed)], ['Reloads / failures', s.reloads + ' / ' + s.reload_failures], ['Log drops (syslog / journald)', s.log_syslog_dropped + ' / ' + s.log_journald_dropped], ['Redaction', s.log_redaction ? 'on' : 'off'],
+  ];
+  const denies = Object.entries(s).filter(([k, v]) => k.startsWith('denied_') && v > 0).sort((a, b) => b[1] - a[1]);
+  clear(view);
+  view.append(
+    h('div', { class: 'grid' }, stats.map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+    h('div', { class: 'card mt' }, h('h2', null, 'Listeners'),
+      table(['Name', 'Address'], Object.entries(st.listeners).map(([k, v]) => [k, v]))),
+    h('div', { class: 'card' }, h('h2', null, 'Denials by reason'),
+      denies.length ? table(['Reason', { label: 'Count', num: true }], denies.map(([k, v]) => [k.replace('denied_', ''), fmtNum(v)])) : h('p', { class: 'muted' }, 'none')),
+    operator() ? h('div', { class: 'card' }, h('h2', null, 'Actions'), h('div', { class: 'row' },
+      actionButton('Reload configuration', '/api/reload'), actionButton('Reload certificates', '/api/reload-certs'), actionButton('Reopen logs', '/api/reopen-logs'),
+      me.can_restart ? actionButton('Restart data plane', '/api/restart', 'danger', 'Restart the xproxy service? Open connections are drained by systemd.') : null)) : null);
+}};
+
+function actionButton(label, path, cls, confirmText) {
+  const b = h('button', { class: cls || 'secondary' }, label);
+  b.addEventListener('click', async () => {
+    if (confirmText && !confirm(confirmText)) return;
+    b.disabled = true;
+    try { const r = await post(path); flash(label + ': done' + (r.output ? ' (' + r.output + ')' : ''), 'ok'); }
+    catch (e) { flash(label + ': ' + e.message + (e.data && e.data.output ? ' ' + e.data.output : ''), 'bad'); }
+    b.disabled = false;
+  });
+  return b;
+}
+
+views.upstreams = { refresh: 5000, async render() {
+  const ups = await get('/api/upstreams');
+  clear(view);
+  const names = Object.keys(ups).sort();
+  if (!names.length) view.append(h('p', { class: 'muted' }, 'no upstreams'));
+  for (const n of names) {
+    view.append(h('div', { class: 'card' }, h('h2', null, n),
+      table(['Address', { label: 'Weight', num: true }, 'Health', { label: 'Active', num: true }, { label: 'Requests', num: true }, { label: 'Errors', num: true }, { label: 'Ejections', num: true }],
+        ups[n].map(e => [e.address, e.weight, e.ejected ? h('span', { class: 'bad' }, 'ejected') : e.healthy ? h('span', { class: 'ok' }, 'healthy') : h('span', { class: 'bad' }, 'unhealthy'), e.active, fmtNum(e.requests), fmtNum(e.errors), e.ejections]))));
+  }
+}};
+
+views.bans = { refresh: 10000, async render() {
+  const bans = await get('/api/bans');
+  clear(view);
+  if (operator()) {
+    const target = h('input', { placeholder: '203.0.113.7 or 203.0.113.0/24', size: 28 });
+    const dur = h('input', { value: '1h', size: 6 });
+    const reason = h('input', { placeholder: 'reason', size: 30 });
+    const btn = h('button', null, 'Ban');
+    btn.addEventListener('click', async () => {
+      try { await post('/api/bans', { target: target.value.trim(), duration: dur.value.trim(), reason: reason.value }); flash('banned ' + target.value, 'ok'); target.value = ''; route(); }
+      catch (e) { flash(e.message, 'bad'); }
+    });
+    view.append(h('div', { class: 'card' }, h('h2', null, 'Add a ban'), h('div', { class: 'row' }, target, dur, reason, btn)));
+  }
+  const rows = (bans || []).map(b => [b.target, fmtTime(b.until), b.reason, b.source, b.count,
+    operator() ? unbanButton(b.target) : '']);
+  view.append(h('div', { class: 'card' }, h('h2', null, 'Active bans (' + rows.length + ')'),
+    rows.length ? table(['Target', 'Until', 'Reason', 'Source', { label: 'Count', num: true }, ''], rows) : h('p', { class: 'muted' }, 'none')));
+}};
+function unbanButton(target) {
+  const b = h('button', { class: 'secondary' }, 'Unban');
+  b.addEventListener('click', async () => {
+    try { await api('DELETE', '/api/bans?target=' + encodeURIComponent(target)); flash('unbanned ' + target, 'ok'); route(); }
+    catch (e) { flash(e.message, 'bad'); }
+  });
+  return b;
+}
+
+views.cluster = { refresh: 5000, async render() {
+  let c;
+  try { c = await get('/api/cluster'); } catch (e) { clear(view); view.append(h('p', { class: 'muted' }, 'cluster not configured (' + e.message + ')')); return; }
+  clear(view);
+  view.append(
+    h('div', { class: 'grid' }, [['Node', c.node_id], ['Listen', c.listen], ['Rates sent / received', fmtNum(c.rates_sent) + ' / ' + fmtNum(c.rates_received)], ['Keys received', fmtNum(c.keys_received)],
+      ['Bans sent / received', fmtNum(c.bans_sent) + ' / ' + fmtNum(c.bans_received)], ['Rejected connections', c.rejected_connections], ['Dropped updates', c.dropped_updates]]
+      .map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+    h('div', { class: 'card mt' }, h('h2', null, 'Peers'),
+      table(['Address', 'Node', 'State', 'Since', { label: 'Messages', num: true }, { label: 'Reconnects', num: true }, 'Last error'],
+        (c.peers || []).map(p => [p.address, p.node_id || '-', p.connected ? h('span', { class: 'ok' }, 'connected') : h('span', { class: 'bad' }, 'down'), p.connected ? fmtTime(p.connected_at) : '-', fmtNum(p.messages_out), p.reconnects, p.last_error || '']))),
+    h('div', { class: 'card' }, h('h2', null, 'Inbound'),
+      table(['Remote', 'Node', 'Certificate', 'Since', 'Last seen'], (c.inbound || []).map(i => [i.remote, i.node_id || '-', i.cert_name, fmtTime(i.since), fmtTime(i.last_seen)]))));
+}};
+
+views.certificates = { refresh: 30000, async render() {
+  let certs;
+  try { certs = await get('/api/acme'); } catch (e) { clear(view); view.append(h('p', { class: 'muted' }, 'ACME not configured (' + e.message + ')')); return; }
+  clear(view);
+  const now = Date.now();
+  view.append(h('div', { class: 'card' }, h('h2', null, 'Managed certificates'),
+    table(['Name', 'Hosts', 'State', 'Expires', 'Issuer', { label: 'Issued', num: true }, 'Last error'],
+      certs.map(c => {
+        const days = c.present ? Math.floor((new Date(c.not_after) - now) / 86400000) : null;
+        const state = c.renewing ? h('span', { class: 'warn' }, 'renewing') : !c.present ? h('span', { class: 'bad' }, 'missing') : days < 7 ? h('span', { class: 'bad' }, days + ' days left') : days < 30 ? h('span', { class: 'warn' }, days + ' days left') : h('span', { class: 'ok' }, days + ' days left');
+        return [c.name, c.hosts.join(', '), state, c.present ? fmtTime(c.not_after) : '-', c.issuer || '-', c.issued, c.last_error || ''];
+      })),
+    operator() ? h('div', { class: 'row mt-s' }, actionButton('Renew all now', '/api/acme/renew', 'secondary', 'Force renewal of every managed certificate?')) : null));
+}};
+
+views.icap = { refresh: 10000, async render() {
+  let svc;
+  try { svc = await get('/api/icap'); } catch (e) { clear(view); view.append(h('p', { class: 'muted' }, 'ICAP not configured (' + e.message + ')')); return; }
+  clear(view);
+  view.append(h('div', { class: 'card' }, h('h2', null, 'ICAP services'),
+    table(['Name', 'URL', 'State', 'ISTag', { label: 'Preview', num: true }, { label: 'Requests', num: true }, { label: 'Unmodified', num: true }, { label: 'Modified', num: true }, { label: 'Blocked', num: true }, { label: 'Errors', num: true }, { label: 'Bypassed', num: true }],
+      svc.map(s => [s.name, s.url, s.reachable ? h('span', { class: 'ok' }, 'reachable') : h('span', { class: 'bad' }, 'unreachable'), s.istag || '-', s.preview, fmtNum(s.requests), fmtNum(s.unmodified), fmtNum(s.modified), fmtNum(s.replacements), fmtNum(s.errors), fmtNum(s.bypassed)]))));
+}};
+
+// ---- graphs ----
+const chartDefs = [
+  { title: 'Requests per second', series: ['requests', 'responses_2xx', 'responses_4xx', 'responses_5xx'] },
+  { title: 'Denied and shed per second', series: ['denied', 'shed', 'upstream_errors'] },
+  { title: 'Bytes per second', series: ['bytes_in', 'bytes_out'], bytes: true },
+  { title: 'Connections and in-flight', series: ['open_connections', 'in_flight'] },
+  { title: 'Load level', series: ['load_level'] },
+  { title: 'Upstream latency (ms)', series: ['upstream_latency_ms'] },
+  { title: 'Bans active', series: ['bans_active'] },
+  { title: 'Cluster peers connected', series: ['cluster_connected'] },
+];
+const palette = ['#1f5fbf', '#1a7f37', '#b7791f', '#b42318', '#7c3aed'];
+let graphSince = '30m';
+views.graphs = { refresh: 10000, async render() {
+  const data = await get('/api/series?since=' + encodeURIComponent(graphSince));
+  if (!view.firstChild || !view.firstChild.classList || !view.firstChild.classList.contains('charts-wrap')) {
+    clear(view);
+    const sel = h('select', null, ['10m', '30m', '1h', '3h', '6h', '12h', '24h'].map(v => h('option', { value: v, selected: v === graphSince ? '' : null }, v)));
+    sel.addEventListener('change', () => { graphSince = sel.value; clear(view); route(); });
+    const wrap = h('div', { class: 'charts-wrap' }, h('div', { class: 'row' }, h('span', { class: 'muted' }, 'window'), sel, h('span', { class: 'muted', id: 'series-info' })), h('div', { class: 'charts' }));
+    view.append(wrap);
+    for (const d of chartDefs) {
+      const c = h('canvas', { class: 'chart' }); c.chartDef = d;
+      $('.charts', wrap).append(h('div', { class: 'card' }, h('h2', null, d.title), c, h('div', { class: 'legend' }, d.series.map((s, i) => h('span', null, h('span', { class: 'swatch c' + i }), s)))));
+    }
+  }
+  $('#series-info').textContent = (data.points || []).length + ' samples, ' + data.interval_seconds + 's interval';
+  for (const c of view.querySelectorAll('canvas.chart')) drawChart(c, data, c.chartDef);
+}};
+function drawChart(canvas, data, def) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, hgt = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = hgt * dpr;
+  const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
+  const cs = getComputedStyle(document.documentElement);
+  ctx.clearRect(0, 0, w, hgt);
+  const pts = data.points || [];
+  const idx = def.series.map(s => data.names.indexOf(s));
+  const padL = 46, padR = 8, padT = 6, padB = 18;
+  let max = 0;
+  for (const p of pts) for (const i of idx) if (i >= 0 && p.v[i] > max) max = p.v[i];
+  if (max === 0) max = 1;
+  max *= 1.1;
+  ctx.strokeStyle = cs.getPropertyValue('--line'); ctx.lineWidth = 1;
+  ctx.fillStyle = cs.getPropertyValue('--muted'); ctx.font = '11px system-ui';
+  for (let g = 0; g <= 4; g++) {
+    const y = padT + (hgt - padT - padB) * g / 4;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    const val = max * (1 - g / 4);
+    ctx.fillText(def.bytes ? fmtBytes(val) : fmtNum(val), 2, y + 4);
+  }
+  if (pts.length) {
+    const t0 = new Date(pts[0].t).getTime(), t1 = new Date(pts[pts.length - 1].t).getTime() || t0 + 1;
+    const xOf = t => padL + (w - padL - padR) * (t1 === t0 ? 1 : (t - t0) / (t1 - t0));
+    ctx.fillText(new Date(t0).toLocaleTimeString(), padL, hgt - 4);
+    const lbl = new Date(t1).toLocaleTimeString(); ctx.fillText(lbl, w - padR - ctx.measureText(lbl).width, hgt - 4);
+    idx.forEach((si, k) => {
+      if (si < 0) return;
+      ctx.strokeStyle = palette[k]; ctx.lineWidth = 1.5; ctx.beginPath();
+      pts.forEach((p, j) => {
+        const x = xOf(new Date(p.t).getTime()), y = padT + (hgt - padT - padB) * (1 - p.v[si] / max);
+        if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    });
+  } else {
+    ctx.fillText('no samples yet', padL + 8, hgt / 2);
+  }
+}
+
+// ---- configuration ----
+views.config = { async render() {
+  clear(view);
+  const active = h('button', { class: 'secondary' }, 'Show active configuration');
+  const activePre = h('pre', { class: 'hidden' });
+  active.addEventListener('click', async () => {
+    try { activePre.textContent = await get('/api/active-config'); activePre.classList.toggle('hidden'); } catch (e) { flash(e.message, 'bad'); }
+  });
+  view.append(h('div', { class: 'card' }, h('h2', null, 'Active configuration (as loaded by the data plane)'), active, activePre));
+  if (!me.can_edit_file) {
+    view.append(h('p', { class: 'muted' }, operator() ? 'no configuration file configured for editing' : 'editing requires the operator role'));
+    return;
+  }
+  const f = await get('/api/config/file');
+  const ta = h('textarea', { class: 'code', spellcheck: 'false' }); ta.value = f.text;
+  ta.addEventListener('keydown', ev => { if (ev.key === 'Tab') { ev.preventDefault(); const s = ta.selectionStart; ta.setRangeText('  ', s, ta.selectionEnd, 'end'); } });
+  let etag = f.etag;
+  const problems = h('ul', { class: 'problems' });
+  const status = h('span', { class: 'muted' }, f.path + ' (mode ' + f.mode + ')');
+  const show = v => { clear(problems); if (v.ok) { flash('valid: ' + v.routes + ' routes, ' + v.upstreams + ' upstreams', 'ok'); } else { for (const p of v.problems) problems.append(h('li', null, p)); flash(v.problems.length + ' problem(s)', 'bad'); } };
+  const validateBtn = h('button', { class: 'secondary' }, 'Validate');
+  validateBtn.addEventListener('click', async () => { try { show(await post('/api/config/validate', { text: ta.value })); } catch (e) { flash(e.message, 'bad'); } });
+  const saveBtn = h('button', null, 'Validate and save');
+  saveBtn.addEventListener('click', async () => {
+    try { const r = await api('PUT', '/api/config/file', { text: ta.value, etag }); etag = r.etag; clear(problems); flash('saved ' + r.path + '; reload to apply', 'ok'); }
+    catch (e) { if (e.data && e.data.problems) show(e.data); else flash(e.message, 'bad'); }
+  });
+  const reloadBtn = actionButton('Reload data plane', '/api/reload', 'secondary');
+  const revert = h('button', { class: 'secondary' }, 'Revert');
+  revert.addEventListener('click', () => route());
+  view.append(h('div', { class: 'card' }, h('h2', null, 'Configuration file'), h('div', { class: 'row' }, validateBtn, saveBtn, reloadBtn, revert, status), problems, ta,
+    h('p', { class: 'muted' }, 'Save writes the file atomically and keeps the previous version in ', h('code', null, f.path + '.bak'), '. Listener, cluster and ACME changes need a restart; everything else applies on reload.')));
+}};
+
+// ---- logs ----
+let logStream = 'security';
+views.logs = { async render() {
+  clear(view);
+  const sel = h('select', null, ['access', 'error', 'security', 'audit'].map(v => h('option', { value: v, selected: v === logStream ? '' : null }, v)));
+  const filter = h('input', { placeholder: 'filter (substring)', size: 30 });
+  const pause = h('button', { class: 'secondary' }, 'Pause');
+  const box = h('div', { class: 'log' });
+  let paused = false;
+  pause.addEventListener('click', () => { paused = !paused; pause.textContent = paused ? 'Resume' : 'Pause'; });
+  const add = line => {
+    if (filter.value && !line.includes(filter.value)) return;
+    box.append(h('div', null, compact(line)));
+    while (box.childElementCount > 2000) box.removeChild(box.firstChild);
+    if (!paused) box.scrollTop = box.scrollHeight;
+  };
+  const start = async () => {
+    if (es) { es.close(); es = null; }
+    clear(box);
+    try {
+      const t = await get('/api/logs/' + logStream + '?lines=200');
+      for (const l of t.lines) add(l);
+    } catch (e) { flash(e.message, 'bad'); return; }
+    es = new EventSource('/api/logs/' + logStream + '/follow');
+    es.onmessage = ev => { if (!paused) add(ev.data); };
+    es.onerror = () => { $('#refresh-state').textContent = 'log stream disconnected'; };
+  };
+  sel.addEventListener('change', () => { logStream = sel.value; start(); });
+  view.append(h('div', { class: 'row' }, h('span', { class: 'muted' }, 'stream'), sel, filter, pause), box);
+  await start();
+}};
+function compact(line) {
+  try {
+    const o = JSON.parse(line);
+    const keys = ['ts', 'level', 'msg', 'client_ip', 'method', 'host', 'path', 'status', 'reason', 'route', 'upstream', 'duration_ms', 'request_id', 'action', 'user', 'target', 'err'];
+    const parts = [];
+    for (const k of keys) if (o[k] !== undefined) parts.push(k === 'ts' || k === 'msg' ? String(o[k]) : k + '=' + JSON.stringify(o[k]));
+    for (const [k, v] of Object.entries(o)) if (!keys.includes(k) && k !== 'stream') parts.push(k + '=' + JSON.stringify(v));
+    return parts.join(' ');
+  } catch (e) { return line; }
+}
+
+boot();

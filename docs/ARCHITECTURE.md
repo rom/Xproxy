@@ -18,8 +18,8 @@ records are in [AMR.md](AMR.md); requirements in [ASR.md](ASR.md).
                         | accept (systemd owned sockets)
             +-----------v-----------+        +-------------------+
             |        xproxy         |<-------| xproxyctl (CLI,   |
-            |  data plane process   | unix   |  TUI), GUI (1.0)  |
-            |  user: xproxy         | socket |                   |
+            |  data plane process   | unix   |  TUI), xproxy-    |
+            |  user: xproxy         | socket |  admin (web GUI)  |
             +--+------+------+------+        +-------------------+
                |      |      |
         access | err  | sec  | audit      -> files, journald, syslog
@@ -46,7 +46,8 @@ Trust boundaries:
 
 ```
 cmd/xproxy          data plane daemon (flags, signals, systemd notify)
-cmd/xproxyctl       management CLI (and TUI in 1.0)
+cmd/xproxyctl       management CLI and TUI
+cmd/xproxy-admin    web GUI process (users, sessions, embedded assets)
 internal/config     schema, defaults, loader, validation
 internal/router     host and path matching
 internal/netutil    client IP derivation, path cleaning, host normalisation
@@ -67,6 +68,7 @@ internal/jwt        JSON Web Token validation on the standard library
 internal/icap       ICAP client (RFC 3507) as a filter; icaptest fake server
 internal/metrics    Prometheus text encoder, histogram, sampled series
 internal/tui        terminal UI of xproxyctl (pure renderer plus a raw-mode loop)
+internal/admin      web GUI server: users file, sessions, API over the management client, static/ assets
 internal/version    build information
 deploy/             systemd units, sysctl, SELinux, logrotate, example config
 docs/               this documentation
@@ -74,7 +76,7 @@ test/               cross package and binary level tests (grows in 1.0)
 ```
 
 Packages under `internal/` cannot be imported from outside the module, which
-keeps the API surface at exactly two binaries.
+keeps the API surface at exactly three binaries.
 
 Dependency direction (arrows point at the importer's dependency):
 
@@ -93,7 +95,8 @@ cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logg
 ```
 
 No package imports `proxy` except `mgmt` and the commands. `config` imports
-nothing from the module.
+nothing from the module. `admin` imports only `mgmt` (the client), `config`
+(validation of edited files) and `tlsconf`; it never links the data plane.
 
 ## 3. Process model
 
@@ -351,8 +354,41 @@ and therefore the same audited API for bans.
 
 An optional TCP listener (`metrics.listen`) serves `/metrics` only, with a
 source allow list and optional TLS with client certificates; it never
-carries the management API. 1.0 adds configuration editing with validation
-on the socket.
+carries the management API.
+
+### Web GUI
+
+`xproxy-admin` (`internal/admin`) is the third front end and the only one
+that is itself a network service, so it is built as a separate process
+with its own user, and the data plane knows nothing about it. It serves
+embedded static assets (one HTML page, one stylesheet, one script, no
+framework and no external resource) under a strict Content Security
+Policy (`default-src 'none'`, scripts and styles from `'self'` only, no
+inline code, `frame-ancestors 'none'`), and a JSON API under `/api/` that
+forwards to the management client: read endpoints pass the socket's
+responses through unchanged, actions post to the same audited endpoints,
+and the two things the socket does not offer, editing the configuration
+file and following log files, are done by the GUI process itself on files
+it owns or may read. Configuration edits go through the full validator
+with file checks before anything is written; writes are atomic with a
+`.bak` of the previous content and an entity tag so two operators cannot
+silently overwrite each other. Restart is an operator configured command
+run without a shell (under systemd, `systemctl restart` authorised by a
+polkit rule).
+
+Authentication is a users file of PBKDF2-HMAC-SHA256 hashes (600 000
+iterations, standard library) or, on a mutual TLS listener, the client
+certificate's common name. Sessions are random 256 bit tokens in an
+`HttpOnly`, `SameSite=Strict` cookie (`__Host-` prefixed over TLS) with
+idle and absolute limits. Cross-site request forgery is refused by three
+independent checks on every state change: a custom request header that a
+cross-origin page cannot add without a preflight the server never
+permits, the `Sec-Fetch-Site` metadata when the browser sends it, and the
+`Origin` header when present. Roles are enforced server side by method:
+viewers may only `GET`. Failed logins are rate limited per source and
+password checks are bounded in concurrency so the hash cost cannot be
+turned against the process. A non-loopback listener is refused unless
+server certificate, key and client CA are all configured.
 
 ### Metrics and series
 
