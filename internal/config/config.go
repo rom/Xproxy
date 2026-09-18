@@ -484,6 +484,14 @@ type LogStream struct {
 	// Sinks lists where the stream goes: file, journald, syslog. Default
 	// [file].
 	Sinks []string `yaml:"sinks"`
+	// Format is json (default), or for the access stream common
+	// (Common Log Format), combined (NCSA combined) or custom with
+	// Template. The other streams are structured and stay JSON.
+	Format string `yaml:"format"`
+	// Template is the line for format custom: literal text with {field}
+	// placeholders naming access log attributes plus time_clf, time_iso,
+	// time_unix, request, user and bytes_out_clf; a missing field prints "-".
+	Template string `yaml:"template"`
 }
 
 // Journald is the native journald sink.

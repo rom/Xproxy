@@ -187,6 +187,7 @@ func applyDefaults(c *Config) {
 		if len(s.Sinks) == 0 {
 			s.Sinks = []string{"file"}
 		}
+		setStr(&s.Format, "json")
 	}
 	if j := lg.Journald; j != nil {
 		setStr(&j.Socket, "/run/systemd/journal/socket")

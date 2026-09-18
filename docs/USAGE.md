@@ -276,6 +276,35 @@ routes:
 Deny lists are evaluated before allow lists. Client addresses come from the
 peer unless it is in `trusted_proxies`.
 
+### Access log in Common Log Format
+
+```yaml
+logging:
+  access: {format: combined}
+```
+
+Tools built for Apache and nginx logs (GoAccess, AWStats, fail2ban
+filters) read the access stream directly:
+
+```
+203.0.113.9 - - [18/Sep/2026:10:12:01 +0000] "GET /index.html HTTP/2.0" 200 2326 "https://www.example.com/" "Mozilla/5.0 ..."
+```
+
+`format: common` drops the two quoted fields; `format: custom` with a
+`template` picks any access log attribute, so a line can carry the
+route, the upstream endpoint, the duration or the bot score:
+
+```yaml
+logging:
+  access:
+    format: custom
+    template: '{time_iso} {client_ip} {country} "{request}" {status} {duration_ms}ms route={route} endpoint={endpoint} denied={denied}'
+```
+
+Redaction (`logging.redaction`) still applies before the line is
+rendered, and the other streams stay JSON, since their records vary by
+event. The query string is never logged in any format.
+
 ### Behind a load balancer that sets X-Forwarded-For
 
 ```yaml

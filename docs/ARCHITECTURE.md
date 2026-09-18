@@ -559,7 +559,10 @@ disabled with two flags (`insecure_skip_verify` and `allow_insecure`).
 ## 9. Logging
 
 Four `slog` loggers with a `stream` attribute. Each stream is a handler
-chain:
+chain (the access stream swaps the JSON handler for `textHandler` when a
+text `format` is configured; it renders the record's attributes through
+the format's template with Apache style escaping and feeds the same
+sinks):
 
 ```
 logger -> [redactHandler] -> multiHandler -> JSON handler -> file (0640, rotated), stdout

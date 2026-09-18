@@ -73,6 +73,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `retries` budget for replayable requests, counted as passive
   failures; `upstream_retries` and `upstream_status_retries` counters
   and `xproxy_upstream_retries_total` by reason.
+- Access log text formats: `logging.access.format` `common` (Common
+  Log Format), `combined` and `custom` with a `template` of `{field}`
+  placeholders over every access log attribute plus derived `time_clf`,
+  `request`, `user` and `bytes_out_clf`; Apache style escaping; the
+  same line to every sink.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

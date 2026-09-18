@@ -73,6 +73,7 @@ func Open(cfg config.Logging) (*Logs, error) {
 			return slog.New(slog.NewJSONHandler(io.Discard, nil)), nil
 		}
 		var handlers multiHandler
+		tmpl := TemplateFor(s.Format, s.Template)
 		sinks := s.Sinks
 		if len(sinks) == 0 {
 			sinks = []string{"file"}
@@ -94,19 +95,35 @@ func Open(cfg config.Logging) (*Logs, error) {
 				if cfg.Stdout {
 					w = io.MultiWriter(fw, os.Stdout)
 				}
-				handlers = append(handlers, slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl}))
+				if tmpl != "" {
+					handlers = append(handlers, newTextHandler(w, nil, tmpl, lvl))
+				} else {
+					handlers = append(handlers, slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl}))
+				}
 			case "journald":
 				if l.journald != nil {
-					handlers = append(handlers, newLineHandler(l.journald, lvl))
+					if tmpl != "" {
+						handlers = append(handlers, newTextHandler(nil, l.journald, tmpl, lvl))
+					} else {
+						handlers = append(handlers, newLineHandler(l.journald, lvl))
+					}
 				}
 			case "syslog":
 				if l.syslog != nil {
-					handlers = append(handlers, newLineHandler(l.syslog, lvl))
+					if tmpl != "" {
+						handlers = append(handlers, newTextHandler(nil, l.syslog, tmpl, lvl))
+					} else {
+						handlers = append(handlers, newLineHandler(l.syslog, lvl))
+					}
 				}
 			}
 		}
 		if len(handlers) == 0 && cfg.Stdout {
-			handlers = append(handlers, slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+			if tmpl != "" {
+				handlers = append(handlers, newTextHandler(os.Stdout, nil, tmpl, lvl))
+			} else {
+				handlers = append(handlers, slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+			}
 		}
 		var h slog.Handler = handlers
 		if len(handlers) == 1 {

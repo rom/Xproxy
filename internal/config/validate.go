@@ -585,6 +585,29 @@ func (v *validator) logging(l *Logging) {
 			v.errf("logging.journald.identifier: %q is not a valid identifier", j.Identifier)
 		}
 	}
+	for name, s := range map[string]*LogStream{"access": &l.Access, "error": &l.Error, "security": &l.Security, "audit": &l.Audit} {
+		switch s.Format {
+		case "json":
+			if s.Template != "" {
+				v.errf("logging.%s.template: only for format custom", name)
+			}
+		case "common", "combined", "custom":
+			if name != "access" {
+				v.errf("logging.%s.format: only the access stream has text formats", name)
+			}
+			if s.Format == "custom" {
+				if s.Template == "" || len(s.Template) > 1024 {
+					v.errf("logging.%s.template: required for format custom, at most 1024 bytes", name)
+				} else if err := templateOK(s.Template); err != nil {
+					v.errf("logging.%s.template: %v", name, err)
+				}
+			} else if s.Template != "" {
+				v.errf("logging.%s.template: only for format custom", name)
+			}
+		default:
+			v.errf("logging.%s.format: must be json, common, combined or custom", name)
+		}
+	}
 	if s := l.Syslog; s != nil {
 		switch s.Network {
 		case "unix":
@@ -1920,4 +1943,24 @@ func cookieNameOK(n string) bool {
 		}
 	}
 	return true
+}
+
+// templateOK checks a custom access log template: every { closes and
+// names a field.
+func templateOK(t string) error {
+	for len(t) > 0 {
+		i := strings.IndexByte(t, '{')
+		if i < 0 {
+			return nil
+		}
+		j := strings.IndexByte(t[i:], '}')
+		if j < 0 {
+			return fmt.Errorf("unclosed { at offset %d", i)
+		}
+		if name := t[i+1 : i+j]; name == "" || strings.ContainsAny(name, " {\"\\") {
+			return fmt.Errorf("bad field name %q", name)
+		}
+		t = t[i+j+1:]
+	}
+	return nil
 }

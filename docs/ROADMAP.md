@@ -221,6 +221,8 @@ procedure is in RELEASING.md.
 - Regular expression, header and cookie routing (`path_regex`,
   `headers`, `cookies`): delivered
 - `retry_on` status policy for upstream retries: delivered
+- Access log formats beyond JSON (`common`, `combined`, `custom`
+  template): delivered
 
 ## After 1.3 (candidates, unranked)
 
