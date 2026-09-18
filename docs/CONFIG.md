@@ -60,7 +60,8 @@ upstream `total` for those. 0-RTT is never enabled.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `certificates` | list | required, at least one | `{cert_file, key_file}` PEM pairs; selected by SNI, first is the fallback |
+| `certificates` | list | one of `certificates` or `acme` | `{cert_file, key_file}` PEM pairs; selected by SNI, first is the fallback |
+| `acme` | list | | `{hosts: [...]}` groups issued and renewed through the top-level `acme` section; one certificate per group, named after its first host. Hosts are fully qualified names without wildcards and unique across the listener. Selected by SNI after the file certificates |
 | `min_version` | `"1.2"` or `"1.3"` | `"1.2"` | TLS 1.0 and 1.1 cannot be configured |
 | `client_auth` | `none`, `request`, `require` | `none` | Client certificates; `request` verifies if presented |
 | `client_ca_file` | path | | Required for `request` and `require` |
@@ -482,6 +483,31 @@ answers.
 Blocks are logged with reason `icap` and feed ban triggers under the
 `icap` category. The ICAP filter runs after JWT and WAF on the same route.
 
+## acme
+
+Required when any listener has `tls.acme` groups. One account per proxy;
+the account key, account URL and issued certificates live under
+`state_dir` (mode `0700`, files `0600`), so a restart serves the existing
+certificates immediately and only renews what is due.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `directory` | `https://` URL | required | The CA's directory (RFC 8555) |
+| `email` | address | required | Account contact |
+| `accept_terms` | bool | must be `true` | Agree to the CA's terms on registration |
+| `ca_file` | path | system pool | Pins the CA of the directory server (private CAs, tests) |
+| `state_dir` | absolute path | `/var/lib/xproxy/acme` | Account and certificates; must be writable by the service (it is under `StateDirectory` in the shipped unit) |
+| `challenge` | `http-01`, `tls-alpn-01` | `http-01` | `http-01` answers `/.well-known/acme-challenge/` on every plaintext listener before the HTTPS redirect and routing; `tls-alpn-01` answers the `acme-tls/1` ALPN on the TLS listener |
+| `renew_before` | duration | `720h` | Renew when less than this remains; 24h to 89 days |
+| `check_interval` | duration | `12h` | How often expiry is checked; 1m to 7d. A failed order backs off one hour |
+
+Orders use a fresh P-256 key per certificate and an ES256 account key.
+A certificate is installed only after the returned chain is verified to
+cover every host in the group. Status is at `GET /v1/acme` and
+`xproxyctl acme`; `xproxyctl acme renew` forces renewal of every group
+and waits for the outcome (a renewal already running is joined, not
+duplicated).
+
 ## shedding
 
 Present means enabled. The load level is the larger of the in-flight
@@ -554,7 +580,6 @@ listeners, certificate files, WAF profiles and modes, ban triggers and
 exemptions (active bans are kept; changing `bans.state_file` opens a new
 list), cluster peers, intervals and sharing flags, shedding thresholds,
 challenge settings (the key is kept), priority classes. Requires restart: any
-change under `server.listeners` other than certificate file contents,
-`management.socket`, and cluster `listen`, `node_id` or `tls`. Requires restart: any change under
-`server.listeners` other than certificate file contents, and
-`management.socket`.
+change under `server.listeners` other than certificate file contents
+(including the `tls.acme` groups), `management.socket`, cluster `listen`,
+`node_id` or `tls`, and the `acme` section.

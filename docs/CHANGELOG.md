@@ -10,6 +10,13 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 ### Phase 3: 1.0 (in progress)
 
 #### Added
+- ACME (RFC 8555): `acme` section and `tls.acme` host groups on listeners;
+  `http-01` answered on plaintext listeners ahead of the redirect and
+  `tls-alpn-01` on the TLS listener; one certificate per group with
+  automatic renewal, hourly back-off, verified chains and a state directory
+  under `/var/lib/xproxy/acme`; `/v1/acme`, `/v1/acme/renew`,
+  `xproxyctl acme` and `xproxyctl acme renew`; fake CA for tests
+  (`internal/acme/acmetest`).
 - ICAP client (RFC 3507): `icap.services` with `icap://` and `icaps://`
   transports, OPTIONS probing, preview, REQMOD and RESPMOD, block pages,
   modified requests with protected headers, body limits with reject or

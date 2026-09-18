@@ -39,6 +39,13 @@ to report a vulnerability. The threat analysis behind the controls is in
   connection are bounded, and QUIC connections count against the same
   connection ceilings and ban list as TCP.
 - SNI based certificate selection; certificates reload without restart.
+- ACME issued certificates: ES256 account key and P-256 certificate keys
+  generated in the process and stored `0600` in a `0700` state directory;
+  the returned chain is verified against the configured hosts before use;
+  the `http-01` responder answers only known tokens with `GET` and returns
+  404 otherwise; the `acme-tls/1` ALPN is answered only while a challenge
+  is pending and never with a production certificate; the directory server
+  can be pinned to a CA file; responses are size bounded.
 - Optional client certificate verification (`request` or `require`) against
   a configured CA bundle.
 - Upstream TLS verifies against the system pool or a pinned `ca_file`,
@@ -225,8 +232,8 @@ to report a vulnerability. The threat analysis behind the controls is in
 
 Phase 2 (remaining): TUI.
 
-Phase 3: ICAP scanning, ACME, full SELinux policy in an RPM, GUI with role
-separation, coverage and mutation gates, external security review.
+Phase 3 (ICAP and ACME delivered): full SELinux policy in an RPM, GUI with
+role separation, coverage and mutation gates, external security review.
 
 ## Secure development
 

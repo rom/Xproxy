@@ -65,6 +65,25 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("POST /v1/bans", s.addBan)
 	mux.HandleFunc("DELETE /v1/bans", s.removeBan)
 	mux.HandleFunc("GET /v1/cluster", s.clusterStatus)
+	mux.HandleFunc("GET /v1/acme", func(w http.ResponseWriter, _ *http.Request) {
+		if s.proxy.ACME() == nil {
+			writeJSON(w, 404, result{Error: "acme is not configured"})
+			return
+		}
+		writeJSON(w, 200, s.proxy.ACME().Status())
+	})
+	mux.HandleFunc("POST /v1/acme/renew", func(w http.ResponseWriter, r *http.Request) {
+		m := s.proxy.ACME()
+		if m == nil {
+			writeJSON(w, 404, result{Error: "acme is not configured"})
+			return
+		}
+		s.audited("acme_renew", func() error {
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+			defer cancel()
+			return m.Renew(ctx)
+		})(w, r)
+	})
 	mux.HandleFunc("GET /v1/icap", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.ICAP()) })
 	mux.HandleFunc("GET /metrics", s.serveMetrics)
 	mux.HandleFunc("GET /v1/series", s.serveSeries)

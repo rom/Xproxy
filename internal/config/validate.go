@@ -101,6 +101,18 @@ func (v *validator) config(c *Config) {
 		v.shedding(c.Shedding)
 	}
 	v.metrics(&c.Metrics)
+	acmeUsed := false
+	for _, ln := range c.Server.Listeners {
+		if ln.TLS != nil && len(ln.TLS.ACME) > 0 {
+			acmeUsed = true
+		}
+	}
+	if acmeUsed && c.ACME == nil {
+		v.errf("acme: listeners use tls.acme but there is no top-level acme section")
+	}
+	if c.ACME != nil {
+		v.acme(c.ACME)
+	}
 	if c.Challenge != nil {
 		v.challenge(c.Challenge)
 	}
@@ -270,8 +282,24 @@ func (v *validator) server(s *Server) {
 }
 
 func (v *validator) tls(p string, t *TLS) {
-	if len(t.Certificates) == 0 {
-		v.errf("%s.certificates: at least one certificate is required", p)
+	if len(t.Certificates) == 0 && len(t.ACME) == 0 {
+		v.errf("%s: certificates or acme is required", p)
+	}
+	seen := map[string]bool{}
+	for i, g := range t.ACME {
+		gp := fmt.Sprintf("%s.acme[%d]", p, i)
+		if len(g.Hosts) == 0 || len(g.Hosts) > 100 {
+			v.errf("%s.hosts: 1 to 100 host names", gp)
+		}
+		for j, h := range g.Hosts {
+			if !hostPatternOK(h) || strings.HasPrefix(h, "*.") || !strings.Contains(h, ".") {
+				v.errf("%s.hosts[%d]: %q must be a fully qualified host name without wildcard (dns-01 is not supported)", gp, j, h)
+			}
+			if seen[h] {
+				v.errf("%s.hosts[%d]: %q appears in more than one group", gp, j, h)
+			}
+			seen[h] = true
+		}
 	}
 	for i, c := range t.Certificates {
 		if c.CertFile == "" || c.KeyFile == "" {
@@ -800,6 +828,33 @@ func (v *validator) cluster(c *Cluster) {
 	}
 	if c.MaxKeysPerReport < 1 || c.MaxKeysPerReport > 65536 {
 		v.errf("cluster.max_keys_per_report: must be 1..65536")
+	}
+}
+
+func (v *validator) acme(a *ACME) {
+	if u, err := url.Parse(a.Directory); err != nil || u.Scheme != "https" || u.Host == "" {
+		v.errf("acme.directory: must be an https URL")
+	}
+	if !a.AcceptTerms {
+		v.errf("acme.accept_terms: must be true to register with the CA")
+	}
+	if a.Email != "" && (!strings.Contains(a.Email, "@") || strings.ContainsAny(a.Email, " <>,")) {
+		v.errf("acme.email: %q is not an address", a.Email)
+	}
+	if !strings.HasPrefix(a.StateDir, "/") {
+		v.errf("acme.state_dir: must be an absolute path")
+	}
+	if a.CAFile != "" {
+		v.file("acme.ca_file", a.CAFile)
+	}
+	if a.Challenge != "http-01" && a.Challenge != "tls-alpn-01" {
+		v.errf("acme.challenge: must be http-01 or tls-alpn-01")
+	}
+	if a.RenewBefore < Duration(24*3600*1e9) || a.RenewBefore > Duration(89*24*3600*1e9) {
+		v.errf("acme.renew_before: must be between 24h and 89 days")
+	}
+	if a.CheckInterval < Duration(60*1e9) || a.CheckInterval > Duration(7*24*3600*1e9) {
+		v.errf("acme.check_interval: must be between 1m and 7d")
 	}
 }
 

@@ -23,6 +23,8 @@ linters:
         linters: [gosec, errcheck, noctx, bodyclose, unparam]
       - path: internal/icap/icaptest/
         linters: [gosec, errcheck, noctx, bodyclose, unparam, staticcheck]
+      - path: internal/acme/acmetest/
+        linters: [gosec, errcheck, noctx, bodyclose, unparam, staticcheck]
 formatters:
   enable:
     - gofmt

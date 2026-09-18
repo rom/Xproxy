@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
@@ -98,6 +99,20 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.stats.DeniedBan.Add(1)
 		st.denied = "banned"
 		s.deny(rw, r, st, http.StatusForbidden, "banned")
+		return
+	}
+
+	// http-01 challenge responses come before any redirect or routing.
+	if s.acme != nil && strings.HasPrefix(r.URL.Path, acme.HTTP01Path) {
+		st.route = "_acme"
+		if ka, ok := s.acme.HTTP01(strings.TrimPrefix(r.URL.Path, acme.HTTP01Path)); ok && r.Method == http.MethodGet {
+			rw.Header().Set("Content-Type", "text/plain")
+			rw.Header().Set("Cache-Control", "no-store")
+			rw.WriteHeader(http.StatusOK)
+			_, _ = rw.Write([]byte(ka))
+			return
+		}
+		s.plainStatus(rw, r, http.StatusNotFound)
 		return
 	}
 

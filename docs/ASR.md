@@ -24,7 +24,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F8 | WebSocket passthrough only where a route allows it | M | MVP | Upgrade requests are refused unless `websocket: true`; hijack path bypasses body limits so it is opt-in |
 | ASR-F9 | Mutual TLS to clients and to upstreams | M | 1.0 (client CA at MVP, upstream side delivered in phase 2) | `crypto/tls` client auth modes; certificate identity exposed to routing and logging; upstream client certificate reloadable, SPKI pins |
 | ASR-F10 | JWT validation at the edge | S | 1.0 (delivered in phase 2) | Key set loading from file or JWKS URL with pinned CA; algorithm allow list; no `none` |
-| ASR-F11 | ACME certificate issuance (HTTP-01, TLS-ALPN-01) | S | 1.0 | Separate account key storage; challenge responder inside the listener; renewals on a timer with reload of `Reloadable` certificates |
+| ASR-F11 | ACME certificate issuance (HTTP-01, TLS-ALPN-01) | S | 1.0 (delivered in phase 3) | Separate account key storage; challenge responder inside the listener; renewals on a timer with reload of `Reloadable` certificates |
 | ASR-F12 | Forward proxy and L4 TCP/TLS passthrough | C | 1.x | Not in the request pipeline; separate listener kinds |
 
 ## 2. Security
@@ -103,6 +103,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F9 (upstream) | `tlsconf.Client`, `Pool.ReloadClientCertificate` | `TestUpstreamMutualTLS`, `TestUpstreamSPKIPin` |
 | ASR-O2, ASR-S10 | `internal/logging` (redact.go, sinks.go, journald.go, syslog.go) | `internal/logging/sinks_test.go`, `TestRedactedAccessLog` |
 | ASR-F7 | `internal/icap` | `internal/icap/icap_test.go`, `TestICAPIntegration`, `TestICAPFailOpen` |
+| ASR-F11 | `internal/acme`, `internal/tlsconf` | `internal/acme/acme_test.go`, `TestACMEEndToEnd` |
 | ASR-O3 (TUI) | `internal/tui`, `xproxyctl tui` | `internal/tui/render_test.go`, pseudo terminal check in TESTS.md |
 | ASR-O4 | `internal/metrics`, `Server.WriteMetrics`, `mgmt.MetricsListener` | `internal/metrics/metrics_test.go`, `TestWriteMetrics`, `TestMetricsEndpoints`, `TestMetricsListener` |
 | ASR-F10 | `internal/jwt` | `internal/jwt/jwt_test.go`, `TestJWTRoutes`, `TestJWTFromJWKSURL` |

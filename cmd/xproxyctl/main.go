@@ -21,6 +21,7 @@
 //	cluster        show cluster peers and counters
 //	spki FILE      print the spki_pins value for a PEM certificate
 //	tui            full-screen live view (-refresh 2s, -no-color)
+//	acme           show managed certificates; "acme renew" forces renewal
 //	icap           show ICAP services and counters
 //	metrics        print the Prometheus exposition
 //	series         print sampled series (-since 10m -last 20)
@@ -38,6 +39,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -55,7 +57,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster icap spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -196,6 +198,32 @@ func run(args []string, out, errOut io.Writer) int {
 		if err := tui.Run(src, act, tui.Options{Refresh: *refresh, Color: !*noColor}); err != nil {
 			return fail(err)
 		}
+		return 0
+	case "acme":
+		if fs.NArg() == 2 && fs.Arg(1) == "renew" {
+			if err := c.Post("/v1/acme/renew"); err != nil {
+				return fail(err)
+			}
+			_, _ = fmt.Fprintln(out, "renewal completed")
+			return 0
+		}
+		sts, err := c.ACME()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, sts)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "CERTIFICATE\tHOSTS\tPRESENT\tEXPIRES\tISSUER\tISSUED\tRENEWING\tLAST ERROR")
+		for _, st := range sts {
+			exp := ""
+			if st.Present {
+				exp = st.NotAfter.Format("2006-01-02")
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%v\t%s\t%s\t%d\t%v\t%s\n", st.Name, strings.Join(st.Hosts, ","), st.Present, exp, st.Issuer, st.Issued, st.Renewing, st.LastError)
+		}
+		_ = tw.Flush()
 		return 0
 	case "icap":
 		sts, err := c.ICAP()

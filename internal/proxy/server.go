@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/cluster"
@@ -46,6 +47,7 @@ type Server struct {
 	shedder     atomic.Pointer[shed.Shedder]
 	challenger  atomic.Pointer[challenge.Challenger]
 	sampler     *metrics.Sampler
+	acme        *acme.Manager
 
 	mu        sync.Mutex
 	listeners []*boundListener
@@ -108,6 +110,28 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	}
 	s.rt.Store(rt)
 	s.sampler = metrics.NewSampler(seriesCounters, seriesGauges, cfg.Metrics.SampleInterval.D(), cfg.Metrics.Retention.D(), s.sample)
+	if cfg.ACME != nil {
+		var groups [][]string
+		for _, ln := range cfg.Server.Listeners {
+			if ln.TLS != nil {
+				for _, g := range ln.TLS.ACME {
+					groups = append(groups, g.Hosts)
+				}
+			}
+		}
+		if len(groups) > 0 {
+			m, err := acme.New(*cfg.ACME, groups, logs.Error)
+			if err != nil {
+				rt.stop()
+				if bl := s.bans.Load(); bl != nil {
+					bl.Close()
+				}
+				return nil, err
+			}
+			m.OnChange(func() { s.logs.Audit.Info("acme certificates updated") })
+			s.acme = m
+		}
+	}
 	if cfg.Cluster != nil {
 		node, err := cluster.New(cfg.Cluster, rateSource{s: s}, logs.Error)
 		if err != nil {
@@ -175,6 +199,9 @@ func (s *Server) Stats() Snapshot {
 	snap.LogSyslogSent, snap.LogSyslogDropped, snap.LogJournalDropped, snap.LogRedaction = ls.SyslogSent, ls.SyslogDropped, ls.JournalDropped, ls.Redaction
 	return snap
 }
+
+// ACME returns the certificate manager, or nil when not configured.
+func (s *Server) ACME() *acme.Manager { return s.acme }
 
 // ICAP returns the status of every configured ICAP service.
 func (s *Server) ICAP() []icap.Status {
@@ -248,6 +275,9 @@ func (s *Server) Start() error {
 	}
 	s.rt.Load().start()
 	s.sampler.Start()
+	if s.acme != nil {
+		s.acme.Start()
+	}
 	for _, bl := range s.listeners {
 		go s.serve(bl)
 		if bl.h3 != nil {
@@ -282,6 +312,10 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		if err != nil {
 			_ = ln.Close()
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		if s.acme != nil && len(lc.TLS.ACME) > 0 {
+			rl.Managed = s.acme.Certificates
+			rl.Challenge = s.acme.TLSALPN01
 		}
 		bl.httpSrv.TLSConfig = tc
 		bl.tlsReload = rl
@@ -501,7 +535,7 @@ func listenersCompatible(old, new_ []config.Listener) error {
 			return fmt.Errorf("reload: listener %s changed; restart required", o.Name)
 		}
 		if o.TLS != nil {
-			if o.TLS.MinVersion != n.TLS.MinVersion || o.TLS.ClientAuth != n.TLS.ClientAuth || o.TLS.ClientCAFile != n.TLS.ClientCAFile || fmt.Sprint(o.TLS.CipherSuites) != fmt.Sprint(n.TLS.CipherSuites) || fmt.Sprint(o.Protocols) != fmt.Sprint(n.Protocols) {
+			if o.TLS.MinVersion != n.TLS.MinVersion || o.TLS.ClientAuth != n.TLS.ClientAuth || o.TLS.ClientCAFile != n.TLS.ClientCAFile || fmt.Sprint(o.TLS.CipherSuites) != fmt.Sprint(n.TLS.CipherSuites) || fmt.Sprint(o.Protocols) != fmt.Sprint(n.Protocols) || fmt.Sprint(o.TLS.ACME) != fmt.Sprint(n.TLS.ACME) {
 				return fmt.Errorf("reload: listener %s TLS settings changed; restart required", o.Name)
 			}
 		}
@@ -562,6 +596,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	wg.Wait()
 	if s.started {
 		s.sampler.Stop()
+		if s.acme != nil {
+			s.acme.Stop()
+		}
 	}
 	if node := s.cluster.Load(); node != nil {
 		node.Stop()

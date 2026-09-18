@@ -256,6 +256,36 @@ Certificates live behind an atomic pointer read by `GetCertificate`, which
 selects by SNI and falls back to the first certificate. Client CA and auth
 mode are fixed for the life of a listener.
 
+`GetCertificate` consults three sources in order: the file certificates,
+the `Managed` callback (certificates issued by ACME, read from the ACME
+manager's own atomic snapshot) and, only for a handshake whose ALPN is
+`acme-tls/1`, the `Challenge` callback that returns the self-signed
+validation certificate for a pending `tls-alpn-01` challenge; without a
+pending challenge such a handshake is refused rather than answered with a
+real certificate. Listeners with ACME groups add `acme-tls/1` to their
+ALPN list.
+
+### ACME
+
+`internal/acme` is a small RFC 8555 client on the standard library
+(`internal/acme/jose` does the ES256 JWS, thumbprint and key
+authorisation). The `Manager` owns one account per process, one
+certificate per host group, the state directory
+(`account.key`, `account.url`, `certs/<name>.pem` and `-key.pem`, all
+written to a temporary file and renamed) and the challenge tables that the
+data plane answers from: `HTTP01(token)` for the handler's
+`/.well-known/acme-challenge/` path, served before the HTTPS redirect,
+routing and every filter, and `TLSALPN01(serverName)` for the ALPN hook.
+A check runs at start and every `check_interval`; a group is due when its
+certificate is missing or inside `renew_before`, with an hour of back-off
+after a failure. Callers arriving while an order for the same group is in
+flight join it and receive its outcome, so a forced renewal from the
+management socket never races the timer. An issued chain is verified
+against the group's hosts before it is installed and published to every
+listener through `OnChange`. Requests are bounded (1 MiB responses, the
+directory CA can be pinned) and a `badNonce` is retried once with the
+nonce from the error response.
+
 `tlsconf.Client` produces the upstream configuration: minimum version,
 pinned CA, an optional client certificate served through
 `GetClientCertificate` from an atomic pointer so `reload-certs` rotates it
@@ -309,6 +339,7 @@ Endpoints:
 | POST | `/v1/logs/reopen` | reopen log files |
 | GET | `/v1/bans`, POST `/v1/bans`, DELETE `/v1/bans?target=` | ban list |
 | GET | `/v1/cluster` | cluster peers and counters |
+| GET | `/v1/acme`, POST `/v1/acme/renew` | managed certificate status; forced renewal (audited) |
 | GET | `/metrics` | Prometheus exposition |
 | GET | `/v1/series?since=10m&limit=60` | sampled series for graphs |
 

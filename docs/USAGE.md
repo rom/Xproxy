@@ -54,6 +54,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `unban TARGET` | Remove a ban |
 | `cluster` | Peers, inbound connections and gossip counters |
 | `spki CERT.pem` | Print the `spki_pins` value of a certificate |
+| `acme` | Managed certificates with expiry, issuer, last error; `acme renew` forces renewal and waits |
 | `icap` | ICAP services with reachability, preview size, ISTag and counters |
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
@@ -108,6 +109,41 @@ server:
 ```
 
 Add more certificates to the list; SNI selects the matching one.
+
+### Automatic certificates (ACME)
+
+```yaml
+server:
+  listeners:
+    - {name: public-http, address: ":80", redirect_to_https: true}
+    - name: public
+      address: ":443"
+      tls:
+        acme:
+          - hosts: [shop.example.com, www.shop.example.com]
+          - hosts: [api.example.com]
+
+acme:
+  directory: https://acme-v02.api.letsencrypt.org/directory
+  email: hostmaster@example.com
+  accept_terms: true
+```
+
+Each `hosts` group becomes one certificate. With the default `http-01`
+challenge the plaintext listener answers the validation requests before
+the HTTPS redirect; with `challenge: tls-alpn-01` only port 443 is needed.
+File certificates and ACME groups can be mixed on the same listener. The
+first order runs at start; watch it with:
+
+```sh
+xproxyctl acme
+xproxyctl tail error | jq -c 'select(.component=="acme")'
+xproxyctl acme renew      # force, for example after changing hosts
+```
+
+Certificates and the account live under `/var/lib/xproxy/acme`; back that
+directory up with the configuration. Adding or removing a group is a
+listener change and needs a restart.
 
 ### HTTP/3
 

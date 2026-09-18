@@ -56,8 +56,17 @@ install -m 0640 -o root -g xproxy fullchain.pem /etc/xproxy/certs/example.com.pe
 install -m 0640 -o root -g xproxy privkey.pem   /etc/xproxy/certs/example.com-key.pem
 ```
 
-The service user needs read access; nothing else does. ACME automation
-arrives in 1.0; until then, run `xproxyctl reload-certs` after renewal.
+The service user needs read access; nothing else does. Run
+`xproxyctl reload-certs` after replacing the files.
+
+Alternatively let the proxy obtain certificates itself: put an `acme`
+section in the configuration and `tls.acme` groups on the listener (see
+[USAGE.md](USAGE.md)). The state lives in `/var/lib/xproxy/acme`, which
+the unit's `StateDirectory=xproxy` creates with mode `0700`; nothing else
+needs to be installed. The CA must reach port 80 (`http-01`) or 443
+(`tls-alpn-01`) of this host from the Internet, so with a firewall or a
+socket activated setup make sure the plaintext listener is bound even when
+it only redirects.
 
 ## Configure
 

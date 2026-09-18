@@ -106,10 +106,12 @@ Delivered so far:
 - ICAP client with REQMOD and RESPMOD, preview, block pages, modified
   requests with protected headers, body limits and fail policies, per
   service status and metrics (ASR-F7, AMR-015, AMR-028)
+- ACME with http-01 and tls-alpn-01, one certificate per host group,
+  automatic renewal with back-off, state directory, status and forced
+  renewal on the management socket (ASR-F11, AMR-029)
 
 Remaining:
 
-- ACME with HTTP-01 and TLS-ALPN-01, automatic renewal (ASR-F11)
 - Web GUI (`xproxy-admin`) with configuration editing and validation,
   restart and reload, graphs from the metrics ring buffer, ban management,
   role separation between viewer and operator (ASR-O3, AMR-011)

@@ -712,6 +712,35 @@ contributions require an agreement with Sysctl AB.
 
 ---
 
+## AMR-029: ACME client on the standard library
+
+**Context.** ASR-F11 asks for automatic certificates. The candidates were
+`golang.org/x/crypto/acme` (with `autocert`), a third party client such as
+lego, or a small client of our own. `autocert` issues per SNI on demand,
+which lets any client trigger orders for arbitrary names and does not fit
+a configured set of hosts; lego brings a large DNS provider tree
+(AMR-004).
+
+**Decision.** Implement the subset of RFC 8555 the proxy needs in
+`internal/acme` (about 700 lines): ES256 account key, JWS with `jwk` and
+`kid`, nonce handling, orders for a fixed host group, `http-01` and
+`tls-alpn-01` (RFC 8737), finalize with a P-256 CSR, chain download and
+verification. Groups are configured, never derived from SNI. The data
+plane answers challenges from tables the manager owns; the TLS layer
+exposes `Managed` and `Challenge` hooks rather than knowing about ACME.
+A fake CA (`internal/acme/acmetest`) validates real challenges over HTTP
+and TLS in tests.
+
+**Consequences.** No new dependency. DNS-01 and external account binding
+are not implemented (candidates after 1.0). Only one account per process;
+the state directory format (`account.key`, `account.url`,
+`certs/<first host>.pem`) is part of the operator contract and is
+documented in CONFIG.md.
+
+**Status.** Accepted.
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |
