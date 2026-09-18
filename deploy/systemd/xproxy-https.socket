@@ -1,0 +1,15 @@
+[Unit]
+Description=xproxy HTTPS listening socket
+PartOf=xproxy.socket
+
+[Socket]
+ListenStream=0.0.0.0:443
+ListenStream=[::]:443
+FileDescriptorName=public
+Service=xproxy.service
+Backlog=4096
+NoDelay=true
+ReusePort=true
+
+[Install]
+WantedBy=sockets.target

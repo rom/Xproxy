@@ -1,0 +1,117 @@
+# Roadmap
+
+Phases to 1.0 and the candidate list beyond it. Each phase has an exit
+criterion; a phase is not done until its tests and documentation are in.
+Requirement identifiers refer to [ASR.md](ASR.md), decisions to [AMR.md](AMR.md).
+
+## Phase 1: MVP (this branch)
+
+Goal: a hardened reverse proxy an operator can put in front of a web
+application today, with the security posture that later phases build on.
+
+Delivered:
+
+- HTTP/1.1 and HTTP/2 listeners, TLS 1.2 and 1.3 with hardened defaults, SNI
+  certificate selection, certificate hot reload, optional client
+  certificates (ASR-F1, ASR-S11, ASR-P4)
+- Host and longest prefix routing with method filters and priorities,
+  redirects and static responses, path stripping and rewriting, header
+  operations (ASR-F1, ASR-S7)
+- Upstream pools with round robin, weighted, least connections and
+  consistent hashing; active health checks; passive outlier ejection with
+  back-off; retries on connection failure for replayable requests; signed
+  cookie session affinity (ASR-F3, F4, F5)
+- Limits: connection limits at accept, concurrency ceiling, header, body,
+  idle and write timeouts, URI length, body size per route, keyed token
+  bucket rate limits with reject or tarpit (ASR-S1, S2, AMR-007)
+- Trusted proxy handling for forwarding headers, CIDR allow and deny lists
+  per route, WebSocket opt-in (ASR-S6, F8)
+- Four JSON log streams with rotation and a request identifier end to end
+  (ASR-S9, O2)
+- Management API on a Unix socket with peer credentials and an audit log;
+  `xproxyctl` with status, stats, upstreams, config, validate, reload,
+  reload-certs, reopen-logs and tail (ASR-O3)
+- Strict configuration with exhaustive validation, hot reload by SIGHUP or
+  API, graceful shutdown, systemd socket activation and `Type=notify`
+  (ASR-O1, S5, P3, P5)
+- Hardened systemd unit, sysctl profile, SELinux policy skeleton, logrotate
+  configuration, example configuration (ASR-S8)
+- Unit, integration and fuzz tests; CI with race detector, lint, vulnerability
+  scan and fuzz smoke; documentation set (ASR-Q1, Q3, Q5)
+
+Exit criterion: `make check` is green, the example configuration validates,
+and a manual deployment on Fedora following SETUP.md serves traffic under
+the hardened unit.
+
+## Phase 2: Defence
+
+Goal: the proxy detects and deflects attacks, not only limits them.
+
+- WAF engine (Coraza) with OWASP CRS, anomaly scoring, per route thresholds,
+  detect and block modes, shadow mode for rule roll-out, bounded body
+  inspection (ASR-F6, AMR-008)
+- Temporary bans with decay, ban list persistence in bbolt, manual ban and
+  unban through the management API (ASR-S2, AMR-012)
+- Distributed rate limiting and ban sharing over an mTLS cluster listener
+  (ASR-S3, AMR-009)
+- Adaptive load shedding with priority classes per route; static challenge
+  page for browsers (AMR-016)
+- HTTP/3 over QUIC with address validation and Alt-Svc (ASR-F2, AMR-002)
+- Mutual TLS to upstreams, JWT validation, upstream HTTP/2 tuning (ASR-F9,
+  F10)
+- Prometheus metrics endpoint and an in-process time series ring buffer for
+  graphs (ASR-O4)
+- journald and syslog sinks; PII redaction rules per stream (ASR-O2, S10,
+  AMR-014)
+- TUI mode of `xproxyctl` (AMR-011)
+- Fuzz targets for every new parser (WAF transaction, ICAP framing, QUIC
+  configuration), WAF regression corpus, load test scripts (ASR-Q1, Q4)
+
+Exit criterion: the WAF blocks the CRS test corpus at the documented
+threshold with no false positives on the sample application suite; a two
+node cluster shares limits; HTTP/3 interoperates with Firefox and Chromium.
+
+## Phase 3: 1.0
+
+Goal: operable at fleet scale by a team, packaged for Fedora, reviewed.
+
+- ICAP client with REQMOD and RESPMOD, preview, fail policies (ASR-F7,
+  AMR-015)
+- ACME with HTTP-01 and TLS-ALPN-01, automatic renewal (ASR-F11)
+- Web GUI (`xproxy-admin`) with configuration editing and validation,
+  restart and reload, graphs from the metrics ring buffer, ban management,
+  role separation between viewer and operator (ASR-O3, AMR-011)
+- Full SELinux policy validated on Fedora, RPM packaging with the units,
+  policy and sysctl profile, a Fedora CI runner (ASR-S8, AMR-017)
+- Scale validation: 1000 hosts and 10 000 endpoints in configuration and
+  in tests, published throughput and latency numbers (ASR-P1, P2)
+- Stable middleware interface and registry (ASR-O6, AMR-013)
+- Coverage gate at 80 percent under race, mutation testing pass on the
+  limiters and the router, chaos tests (upstream flaps, certificate
+  expiry, disk full on logs) (ASR-Q2)
+- Security review against THREAT_MODEL.md, hardening guide, config
+  reference generator, changelog, release signing
+
+Exit criterion: release checklist in SECURITY.md complete; all ASR entries
+marked 1.0 satisfied and traced to tests.
+
+## After 1.0 (candidates, unranked)
+
+- Forward proxy mode with CONNECT and authentication (ASR-F12)
+- L4 TCP and TLS passthrough with SNI routing
+- WebAssembly extension ABI (AMR-013)
+- OIDC login flows with session cookies
+- Bot classification with JA3 and JA4 fingerprints and behavioural scoring
+- Honeypot routes and decoy responses
+- GeoIP policy (allow, deny, rate by country)
+- Request mirroring and replay for testing
+- gRPC aware routing and health checks
+- Kubernetes ingress controller mode
+- Response caching with cache key policies
+
+## Not planned
+
+- Go plugins (AMR-013)
+- TLS 1.0 and 1.1
+- Management endpoints on data plane listeners (ASR-C4)
+- cgo dependencies (ASR-C3)

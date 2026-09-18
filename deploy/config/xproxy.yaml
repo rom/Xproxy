@@ -1,0 +1,137 @@
+# Example xproxy configuration. Every omitted value takes a conservative
+# default; see docs/CONFIG.md for the full reference.
+version: 1
+
+server:
+  listeners:
+    - name: public-http
+      address: ":80"
+      redirect_to_https: true
+    - name: public
+      address: ":443"
+      protocols: [h1, h2]
+      tls:
+        min_version: "1.2"
+        certificates:
+          - cert_file: /etc/xproxy/certs/example.com.pem
+            key_file: /etc/xproxy/certs/example.com-key.pem
+  limits:
+    max_header_bytes: 65536
+    max_body_bytes: 10485760        # 10 MiB
+    read_header_timeout: 10s
+    read_timeout: 60s
+    write_timeout: 60s
+    idle_timeout: 120s
+    max_connections: 65536
+    max_connections_per_ip: 256
+    max_concurrent_requests: 16384
+  shutdown_timeout: 30s
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+logging:
+  directory: /var/log/xproxy
+  level: info
+  access:   {file: access.log,   max_size_mb: 512, max_files: 10}
+  error:    {file: error.log,    max_size_mb: 64,  max_files: 5}
+  security: {file: security.log, max_size_mb: 256, max_files: 10}
+  audit:    {file: audit.log,    max_size_mb: 64,  max_files: 20}
+
+# Only these peers may set X-Forwarded-For. Leave empty when xproxy is the
+# edge.
+trusted_proxies: []
+
+rate_limits:
+  - name: per-ip
+    key: client_ip
+    rate: 50          # requests per second
+    burst: 100
+  - name: login
+    key: client_ip
+    rate: 0.2         # one attempt per five seconds
+    burst: 5
+    action: tarpit
+    tarpit_delay: 10s
+
+upstreams:
+  - name: web
+    balancer: least_conn
+    endpoints:
+      - {address: 10.0.1.10:8080, weight: 1}
+      - {address: 10.0.1.11:8080, weight: 1}
+    health_check:
+      path: /healthz
+      interval: 5s
+      timeout: 2s
+      healthy_threshold: 2
+      unhealthy_threshold: 3
+    outlier_ejection:
+      consecutive_failures: 5
+      base_ejection_time: 30s
+      max_ejection_percent: 50
+    affinity:
+      cookie_name: XPSESS
+      ttl: 1h
+      secret_file: /var/lib/xproxy/affinity.key
+    timeouts:
+      connect: 5s
+      response_header: 30s
+      total: 5m
+    retries: 1
+
+  - name: api
+    balancer: hash
+    hash_on: header:X-Tenant
+    scheme: https
+    tls:
+      server_name: api.internal
+      ca_file: /etc/xproxy/certs/internal-ca.pem
+    endpoints:
+      - {address: 10.0.2.10:8443}
+      - {address: 10.0.2.11:8443}
+
+routes:
+  - name: login
+    hosts: [example.com, www.example.com]
+    paths: [/login]
+    methods: [POST]
+    rate_limits: [login, per-ip]
+    max_body_bytes: 16384
+    upstream: web
+
+  - name: api
+    hosts: [api.example.com]
+    paths: [/v1]
+    strip_prefix: /v1
+    rate_limits: [per-ip]
+    upstream: api
+    request_headers:
+      remove: [Cookie]
+    response_headers:
+      set:
+        Strict-Transport-Security: "max-age=63072000; includeSubDomains"
+        X-Content-Type-Options: nosniff
+
+  - name: admin
+    hosts: [example.com]
+    paths: [/admin]
+    allow_cidrs: [10.0.0.0/8, 192.168.0.0/16]
+    upstream: web
+
+  - name: web
+    hosts: [example.com, www.example.com]
+    rate_limits: [per-ip]
+    websocket: true
+    upstream: web
+    response_headers:
+      set:
+        Strict-Transport-Security: "max-age=63072000; includeSubDomains"
+        X-Content-Type-Options: nosniff
+        X-Frame-Options: DENY
+        Referrer-Policy: strict-origin-when-cross-origin
+
+  - name: default
+    priority: -100
+    respond: {status: 404, body: "not found\n"}
