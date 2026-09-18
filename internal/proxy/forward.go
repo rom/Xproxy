@@ -1,0 +1,536 @@
+package proxy
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/netip"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/passwd"
+)
+
+// forwardServer serves a kind: forward listener: an explicit proxy that
+// tunnels CONNECT requests and relays absolute-URI http requests to
+// destinations the policy allows. TLS between the client and the
+// destination is never terminated. The policy is compiled from the
+// listener configuration and replaced on reload.
+type forwardServer struct {
+	s      *Server
+	name   string
+	policy atomic.Pointer[forwardPolicy]
+	tr     *http.Transport
+
+	open atomic.Int64
+	wg   sync.WaitGroup
+	mu   sync.Mutex
+	cons map[net.Conn]struct{}
+	once sync.Once
+	done chan struct{}
+
+	authMu    sync.Mutex
+	authCache map[[32]byte]time.Time
+	authSem   chan struct{}
+}
+
+type forwardPolicy struct {
+	cfg   config.ForwardListener
+	ports map[int]bool
+	allow []destRule
+	deny  []destRule
+	users map[string]string
+}
+
+// destRule matches a destination by name (exact or *.suffix) or by
+// resolved address (prefix).
+type destRule struct {
+	name     string
+	wildcard bool
+	prefix   netip.Prefix
+	isPrefix bool
+}
+
+const (
+	forwardAuthTTL        = 5 * time.Minute
+	forwardResponseHeader = 60 * time.Second
+)
+
+type forwardDialKey struct{}
+
+func newForwardServer(s *Server, lc config.Listener) (*forwardServer, error) {
+	f := &forwardServer{s: s, name: lc.Name, cons: map[net.Conn]struct{}{}, done: make(chan struct{}),
+		authCache: map[[32]byte]time.Time{}, authSem: make(chan struct{}, 4)}
+	if err := f.apply(lc.Forward); err != nil {
+		return nil, err
+	}
+	f.tr = &http.Transport{
+		Proxy:                 nil,
+		DialContext:           f.dialChecked,
+		DisableCompression:    true,
+		MaxIdleConnsPerHost:   8,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: forwardResponseHeader,
+		ForceAttemptHTTP2:     false,
+	}
+	return f, nil
+}
+
+// apply compiles a listener configuration (start and reload).
+func (f *forwardServer) apply(fc *config.ForwardListener) error {
+	p := &forwardPolicy{cfg: *fc, ports: map[int]bool{}}
+	for _, port := range fc.Ports {
+		p.ports[port] = true
+	}
+	var err error
+	if p.allow, err = compileDestRules(fc.Allow); err != nil {
+		return fmt.Errorf("forward allow: %w", err)
+	}
+	if p.deny, err = compileDestRules(fc.Deny); err != nil {
+		return fmt.Errorf("forward deny: %w", err)
+	}
+	if fc.Auth != nil {
+		users, err := passwd.LoadUsers(fc.Auth.UsersFile)
+		if err != nil {
+			return fmt.Errorf("forward auth: %w", err)
+		}
+		p.users = users
+	}
+	f.policy.Store(p)
+	f.authMu.Lock()
+	f.authCache = map[[32]byte]time.Time{}
+	f.authMu.Unlock()
+	return nil
+}
+
+func compileDestRules(list []string) ([]destRule, error) {
+	rules := make([]destRule, 0, len(list))
+	for _, d := range list {
+		if pfx, err := netip.ParsePrefix(d); err == nil {
+			rules = append(rules, destRule{prefix: pfx.Masked(), isPrefix: true})
+			continue
+		}
+		if a, err := netip.ParseAddr(d); err == nil {
+			a = a.Unmap()
+			rules = append(rules, destRule{prefix: netip.PrefixFrom(a, a.BitLen()), isPrefix: true})
+			continue
+		}
+		name := strings.ToLower(strings.TrimSuffix(d, "."))
+		switch {
+		case strings.HasPrefix(name, "*."):
+			rules = append(rules, destRule{name: name[1:], wildcard: true})
+		case name != "":
+			rules = append(rules, destRule{name: name})
+		default:
+			return nil, errors.New("empty destination")
+		}
+	}
+	return rules, nil
+}
+
+func (r destRule) matches(host string, ips []netip.Addr) bool {
+	if r.isPrefix {
+		for _, ip := range ips {
+			if r.prefix.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	if r.wildcard {
+		return strings.HasSuffix(host, r.name) && len(host) > len(r.name)
+	}
+	return host == r.name
+}
+
+func anyRule(rules []destRule, host string, ips []netip.Addr) bool {
+	for _, r := range rules {
+		if r.matches(host, ips) {
+			return true
+		}
+	}
+	return false
+}
+
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+
+// privateAddr reports addresses a forward proxy must not reach unless
+// allow_private is set: loopback, link local, RFC 1918, CGNAT, unique
+// local, multicast and unspecified.
+func privateAddr(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() || cgnat.Contains(ip)
+}
+
+// check applies the destination policy and returns the addresses to
+// dial, or the deny reason.
+func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, host string, port int) ([]netip.Addr, string) {
+	if !p.ports[port] {
+		return nil, "port"
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" {
+		return nil, "host"
+	}
+	var ips []netip.Addr
+	if a, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		ips = []netip.Addr{a.Unmap()}
+	} else {
+		rctx, cancel := context.WithTimeout(ctx, p.cfg.ConnectTimeout.D())
+		defer cancel()
+		found, err := net.DefaultResolver.LookupNetIP(rctx, "ip", host)
+		if err != nil || len(found) == 0 {
+			return nil, "resolve"
+		}
+		ips = make([]netip.Addr, 0, len(found))
+		for _, a := range found {
+			ips = append(ips, a.Unmap())
+		}
+	}
+	if !p.cfg.AllowPrivate {
+		for _, ip := range ips {
+			if privateAddr(ip) {
+				return nil, "private"
+			}
+		}
+	}
+	if anyRule(p.deny, host, ips) {
+		return nil, "deny"
+	}
+	if len(p.allow) > 0 && !anyRule(p.allow, host, ips) {
+		return nil, "not_allowed"
+	}
+	return ips, ""
+}
+
+// dialChecked dials the addresses that check approved (carried in ctx)
+// rather than the name, so a rebinding between check and dial cannot
+// redirect the connection.
+func (f *forwardServer) dialChecked(ctx context.Context, network, addr string) (net.Conn, error) {
+	ips, _ := ctx.Value(forwardDialKey{}).([]netip.Addr)
+	if len(ips) == 0 {
+		return nil, errors.New("forward: destination not checked")
+	}
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	p := f.policy.Load()
+	d := net.Dialer{Timeout: p.cfg.ConnectTimeout.D()}
+	var last error
+	for _, ip := range ips {
+		c, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), portStr))
+		if err == nil {
+			return c, nil
+		}
+		last = err
+	}
+	return nil, last
+}
+
+// authenticate checks Proxy-Authorization Basic against the users file.
+func (f *forwardServer) authenticate(p *forwardPolicy, r *http.Request) (string, bool) {
+	h := r.Header.Get("Proxy-Authorization")
+	scheme, cred, ok := strings.Cut(h, " ")
+	if !ok || !strings.EqualFold(scheme, "Basic") {
+		return "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(cred))
+	if err != nil {
+		return "", false
+	}
+	user, pass, ok := strings.Cut(string(raw), ":")
+	if !ok || user == "" {
+		return "", false
+	}
+	hash, known := p.users[user]
+	if !known {
+		return "", false
+	}
+	key := sha256.Sum256([]byte(user + "\x00" + pass))
+	now := time.Now()
+	f.authMu.Lock()
+	exp, hit := f.authCache[key]
+	f.authMu.Unlock()
+	if hit && now.Before(exp) {
+		return user, true
+	}
+	f.authSem <- struct{}{}
+	ok = passwd.Verify(hash, pass)
+	<-f.authSem
+	if !ok {
+		return "", false
+	}
+	f.authMu.Lock()
+	if len(f.authCache) >= 4096 {
+		f.authCache = map[[32]byte]time.Time{}
+	}
+	f.authCache[key] = now.Add(forwardAuthTTL)
+	f.authMu.Unlock()
+	return user, true
+}
+
+// hopByHop are removed in both directions (RFC 9110 7.6.1) together
+// with the headers named by Connection.
+var hopByHop = []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "TE", "Trailer", "Transfer-Encoding", "Upgrade"}
+
+func stripHopByHop(h http.Header) {
+	for _, c := range h.Values("Connection") {
+		for _, name := range strings.Split(c, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				h.Del(name)
+			}
+		}
+	}
+	for _, name := range hopByHop {
+		h.Del(name)
+	}
+}
+
+func (f *forwardServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s := f.s
+	p := f.policy.Load()
+	start := time.Now()
+	ip := netutil.RemoteAddr(r)
+	s.stats.ForwardRequests.Add(1)
+	user := ""
+	if p.cfg.Auth != nil {
+		u, ok := f.authenticate(p, r)
+		if !ok {
+			s.stats.ForwardAuthFailed.Add(1)
+			w.Header().Set("Proxy-Authenticate", `Basic realm="`+p.cfg.Auth.Realm+`", charset="UTF-8"`)
+			f.deny(w, r, ip, "", http.StatusProxyAuthRequired, "auth", start)
+			return
+		}
+		user = u
+		r.Header.Del("Proxy-Authorization")
+	}
+	if r.Method == http.MethodConnect {
+		f.connect(w, r, p, ip, user, start)
+		return
+	}
+	if !r.URL.IsAbs() {
+		f.deny(w, r, ip, user, http.StatusBadRequest, "not_absolute", start)
+		return
+	}
+	if r.URL.Scheme != "http" {
+		f.deny(w, r, ip, user, http.StatusBadRequest, "scheme", start)
+		return
+	}
+	f.plain(w, r, p, ip, user, start)
+}
+
+// deny answers a refused request and records it. Policy refusals are
+// security events and count toward the forward_denied ban reason.
+func (f *forwardServer) deny(w http.ResponseWriter, r *http.Request, ip netip.Addr, user string, status int, reason string, start time.Time) {
+	s := f.s
+	dest := r.URL.Host
+	if r.Method == http.MethodConnect {
+		dest = r.Host
+	}
+	switch status {
+	case http.StatusForbidden:
+		s.stats.ForwardDenied.Add(1)
+		s.logs.SecurityEvent(r.Context(), "deny", "forward_"+reason, "listener", f.name, "client_ip", ip.String(), "user", user, "method", r.Method, "destination", dest)
+		if bl := s.bans.Load(); bl != nil {
+			bl.Observe(ip, "forward_denied")
+		}
+	case http.StatusProxyAuthRequired:
+		if bl := s.bans.Load(); bl != nil {
+			bl.Observe(ip, "forward_auth")
+		}
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_, _ = fmt.Fprintf(w, "%d %s: %s\n", status, http.StatusText(status), reason)
+	f.log(r, ip, user, dest, status, 0, 0, start, reason)
+}
+
+func (f *forwardServer) log(r *http.Request, ip netip.Addr, user, dest string, status int, in, out int64, start time.Time, reason string) {
+	attrs := []any{"listener", f.name, "client_ip", ip.String(), "user", user, "method", r.Method, "destination", dest,
+		"status", status, "bytes_in", in, "bytes_out", out, "duration_ms", float64(time.Since(start).Microseconds()) / 1000}
+	if reason != "" {
+		attrs = append(attrs, "reason", reason)
+	}
+	f.s.logs.Access.Info("forward", attrs...)
+}
+
+// connect opens a tunnel: policy check, dial the checked address, then
+// splice the hijacked client connection with an idle timeout.
+func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwardPolicy, ip netip.Addr, user string, start time.Time) {
+	s := f.s
+	host, portStr, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		f.deny(w, r, ip, user, http.StatusBadRequest, "authority", start)
+		return
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		f.deny(w, r, ip, user, http.StatusBadRequest, "authority", start)
+		return
+	}
+	ips, reason := f.check(r.Context(), p, host, port)
+	if reason != "" {
+		f.deny(w, r, ip, user, http.StatusForbidden, reason, start)
+		return
+	}
+	select {
+	case <-f.done:
+		f.deny(w, r, ip, user, http.StatusServiceUnavailable, "shutting_down", start)
+		return
+	default:
+	}
+	if f.open.Add(1) > int64(p.cfg.MaxTunnels) {
+		f.open.Add(-1)
+		s.stats.ForwardRejected.Add(1)
+		f.deny(w, r, ip, user, http.StatusServiceUnavailable, "tunnel_limit", start)
+		return
+	}
+	defer f.open.Add(-1)
+	ctx := context.WithValue(r.Context(), forwardDialKey{}, ips)
+	dst, err := f.dialChecked(ctx, "tcp", r.Host)
+	if err != nil {
+		s.stats.ForwardErrors.Add(1)
+		f.deny(w, r, ip, user, http.StatusBadGateway, "dial", start)
+		return
+	}
+	rc := http.NewResponseController(w)
+	client, bufrw, err := rc.Hijack()
+	if err != nil {
+		_ = dst.Close()
+		s.stats.ForwardErrors.Add(1)
+		f.deny(w, r, ip, user, http.StatusInternalServerError, "hijack", start)
+		return
+	}
+	s.stats.ForwardTunnels.Add(1)
+	s.stats.ForwardTunnelsOpen.Add(1)
+	defer s.stats.ForwardTunnelsOpen.Add(-1)
+	f.track(client, true)
+	f.wg.Add(1)
+	defer f.wg.Done()
+	defer f.track(client, false)
+	_ = client.SetDeadline(time.Time{})
+	_, err = bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+	if err == nil {
+		err = bufrw.Flush()
+	}
+	if err != nil {
+		_ = client.Close()
+		_ = dst.Close()
+		return
+	}
+	var early int64
+	if n := bufrw.Reader.Buffered(); n > 0 { // bytes the client sent before our reply
+		b, _ := bufrw.Peek(n)
+		if _, err := dst.Write(b); err != nil {
+			_ = client.Close()
+			_ = dst.Close()
+			return
+		}
+		early = int64(n)
+	}
+	in, out := splice(client, dst, p.cfg.IdleTimeout.D())
+	in += early
+	s.stats.ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
+	s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+	f.log(r, ip, user, r.Host, http.StatusOK, in, out, start, "")
+}
+
+// plain relays an absolute-URI http request through the checked dialer
+// and copies the response back, bounded by max_response_bytes.
+func (f *forwardServer) plain(w http.ResponseWriter, r *http.Request, p *forwardPolicy, ip netip.Addr, user string, start time.Time) {
+	s := f.s
+	host := r.URL.Hostname()
+	port := 80
+	if ps := r.URL.Port(); ps != "" {
+		n, err := strconv.Atoi(ps)
+		if err != nil {
+			f.deny(w, r, ip, user, http.StatusBadRequest, "port", start)
+			return
+		}
+		port = n
+	}
+	ips, reason := f.check(r.Context(), p, host, port)
+	if reason != "" {
+		f.deny(w, r, ip, user, http.StatusForbidden, reason, start)
+		return
+	}
+	ctx := context.WithValue(r.Context(), forwardDialKey{}, ips)
+	out := r.Clone(ctx)
+	out.RequestURI = ""
+	out.Host = r.URL.Host
+	stripHopByHop(out.Header)
+	out.Header.Add("Via", "1.1 xproxy")
+	if out.Header.Get("X-Forwarded-For") != "" {
+		out.Header.Del("X-Forwarded-For") // never relay a client supplied chain
+	}
+	resp, err := f.tr.RoundTrip(out)
+	if err != nil {
+		s.stats.ForwardErrors.Add(1)
+		f.deny(w, r, ip, user, http.StatusBadGateway, "upstream", start)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	stripHopByHop(resp.Header)
+	for k, v := range resp.Header {
+		w.Header()[k] = v
+	}
+	w.Header().Add("Via", "1.1 xproxy")
+	w.WriteHeader(resp.StatusCode)
+	var body io.Reader = resp.Body
+	if p.cfg.MaxResponseBytes > 0 {
+		body = io.LimitReader(resp.Body, p.cfg.MaxResponseBytes+1)
+	}
+	n, _ := io.Copy(w, body)
+	if p.cfg.MaxResponseBytes > 0 && n > p.cfg.MaxResponseBytes {
+		s.stats.ForwardErrors.Add(1)
+		// Cut the connection so the client sees a truncated response
+		// rather than a complete looking one.
+		if c, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			_ = c.Close()
+		}
+	}
+	s.stats.ForwardBytesOut.Add(uint64(n)) //nolint:gosec // non-negative
+	f.log(r, ip, user, r.URL.Host, resp.StatusCode, r.ContentLength, n, start, "")
+}
+
+func (f *forwardServer) track(c net.Conn, add bool) {
+	f.mu.Lock()
+	if add {
+		f.cons[c] = struct{}{}
+	} else {
+		delete(f.cons, c)
+	}
+	f.mu.Unlock()
+}
+
+// shutdown waits for tunnels up to ctx, then closes the rest. The HTTP
+// server's own Shutdown has already stopped accepting.
+func (f *forwardServer) shutdown(ctx context.Context) {
+	f.once.Do(func() { close(f.done) })
+	f.tr.CloseIdleConnections()
+	finished := make(chan struct{})
+	go func() { f.wg.Wait(); close(finished) }()
+	select {
+	case <-finished:
+	case <-ctx.Done():
+		f.mu.Lock()
+		for c := range f.cons {
+			_ = c.Close()
+		}
+		f.mu.Unlock()
+		<-finished
+	}
+}

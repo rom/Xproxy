@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acme"
+	"github.com/rom/xproxy/internal/cache"
 	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
@@ -44,6 +45,10 @@ type reqState struct {
 	denied   string
 	upErr    string
 	extra    []any // filter attributes for the access log
+	country  string
+	ja4      string
+	cache    string // hit, miss or bypass on a cached route
+	cacheKey string
 }
 
 // filterDenied carries a response phase verdict through ReverseProxy's
@@ -177,6 +182,17 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	st.route = cr.cfg.Name
 	route = cr
 
+	// Country lookup and policy (after the address ACL, which is cheaper).
+	if rt.geo != nil && rt.geoNeeded {
+		st.country = rt.geo.Country(st.clientIP)
+	}
+	if !cr.geoAllowed(st.country) {
+		s.stats.DeniedGeo.Add(1)
+		st.denied = "geo:" + st.country
+		s.deny(rw, r, st, http.StatusForbidden, "geo")
+		return
+	}
+
 	// Access control.
 	if len(cr.deny) > 0 && netutil.Contains(cr.deny, st.clientIP) {
 		s.stats.DeniedACL.Add(1)
@@ -266,19 +282,41 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Per-route filters (WAF). Instances live for the whole exchange.
+	// Per-route filters. Instances live for the whole exchange.
 	var instances filter.Instances
 	if len(cr.filters) > 0 {
-		instances = cr.filters.Begin(r.Context(), &filter.Info{
+		info := &filter.Info{
 			RequestID: st.id, ClientIP: st.clientIP, Route: cr.cfg.Name,
-			Host: st.host, Path: st.path, Method: r.Method, TLS: r.TLS != nil,
-		})
+			Host: st.host, Path: st.path, Method: r.Method, TLS: r.TLS != nil, Country: st.country,
+		}
+		if fp, ok := s.fingerprints.Get(r.RemoteAddr); ok && r.TLS != nil {
+			info.JA3, info.JA4, info.ALPN = fp.JA3, fp.JA4, fp.ALPN
+			st.ja4 = fp.JA4
+		}
+		if ch := s.challenger.Load(); ch != nil {
+			info.ChallengeVerified = ch.Verified(r, st.clientIP)
+		}
+		instances = cr.filters.Begin(r.Context(), info)
 		defer func() { st.extra = append(st.extra, instances.End()...) }()
 		if v := instances.Request(r); v.Deny {
+			if v.Challenge {
+				if ch := s.challenger.Load(); ch != nil && !ch.Exempt(st.clientIP) {
+					if ch.Verified(r, st.clientIP) {
+						goto admitted
+					}
+					s.stats.Challenged.Add(1)
+					st.denied = "challenge:" + v.Reason
+					s.logs.SecurityEvent(r.Context(), "challenge", v.Reason, append([]any{
+						"request_id", st.id, "client_ip", st.clientIP.String(), "route", st.route, "detail", v.Detail}, v.Attrs...)...)
+					ch.Serve(rw, r, st.clientIP)
+					return
+				}
+			}
 			s.filterDeny(rw, r, st, v)
 			return
 		}
 	}
+admitted:
 
 	// Per-route timeout.
 	ctx := r.Context()
@@ -305,6 +343,20 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, _ = rw.Write([]byte(cr.cfg.Respond.Body))
 		}
 	default:
+		if rc := cr.cfg.Cache; rc != nil {
+			if c := s.cache.Load(); c != nil {
+				if key := cacheKey(rc, r, st.host, st.path); key != "" {
+					if e, ok := c.Get(key, r.Header); ok {
+						s.serveCached(rw, r, st, e)
+						return
+					}
+					st.cacheKey = key
+					st.cache = "miss"
+				} else {
+					st.cache = "bypass"
+				}
+			}
+		}
 		s.proxyTo(rw, r, st, cr, instances)
 	}
 }
@@ -434,6 +486,24 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 				return &filterDenied{v: v}
 			}
 			applyHeaderOps(resp.Header, cr.cfg.ResponseHeaders)
+			if st.cache != "" {
+				resp.Header.Set("X-Cache", strings.ToUpper(st.cache))
+			}
+			if st.cacheKey != "" && r.Method == http.MethodGet {
+				if c := s.cache.Load(); c != nil {
+					if ttl, ok := storable(cr.cfg.Cache, r, resp, c.MaxObject()); ok {
+						hdr := cache.StorableHeader(resp.Header)
+						vary, _ := cache.VaryNames(resp.Header.Values("Vary"))
+						status, key, host, path, reqHdr := resp.StatusCode, st.cacheKey, st.host, st.path, r.Header.Clone()
+						resp.Body = &cachingBody{ReadCloser: resp.Body, limit: c.MaxObject(), store: func(body []byte) {
+							now := time.Now()
+							e := &cache.Entry{Status: status, Header: hdr, Body: append([]byte(nil), body...), Stored: now, Expires: now.Add(ttl), Host: host, Path: path}
+							e.SetVary(vary)
+							c.Put(key, reqHdr, e)
+						}}
+					}
+				}
+			}
 			if s.cfg().Server.ServerHeader == "" {
 				resp.Header.Del("Server")
 			} else {
@@ -625,6 +695,15 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 			attrs = append(attrs, "client_cn", r.TLS.PeerCertificates[0].Subject.CommonName)
 		}
 	}
+	if st.country != "" {
+		attrs = append(attrs, "country", st.country)
+	}
+	if st.ja4 != "" {
+		attrs = append(attrs, "ja4", st.ja4)
+	}
+	if st.cache != "" {
+		attrs = append(attrs, "cache", st.cache)
+	}
 	if st.denied != "" {
 		attrs = append(attrs, "denied", st.denied)
 	}
@@ -674,6 +753,11 @@ func rateKey(rl *config.RateLimit, r *http.Request, st *reqState) string {
 		return st.clientIP.String()
 	case rl.Key == "route":
 		return st.route
+	case rl.Key == "country":
+		if st.country == "" {
+			return "ip:" + st.clientIP.String()
+		}
+		return "c:" + st.country
 	case strings.HasPrefix(rl.Key, "header:"):
 		v := r.Header.Get(rl.Key[len("header:"):])
 		if v == "" {

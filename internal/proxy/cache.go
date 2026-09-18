@@ -1,0 +1,175 @@
+package proxy
+
+import (
+	"bytes"
+	"io"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/rom/xproxy/internal/cache"
+	"github.com/rom/xproxy/internal/config"
+)
+
+// cacheKey builds the primary key for a request under a route policy, or
+// "" when the request is not cacheable at all.
+func cacheKey(rc *config.RouteCache, r *http.Request, host, path string) string {
+	ok := false
+	for _, m := range rc.Methods {
+		if m == r.Method {
+			ok = true
+		}
+	}
+	if !ok || r.Header.Get("Authorization") != "" || r.Header.Get("Range") != "" {
+		return ""
+	}
+	if !rc.Cookies && r.Header.Get("Cookie") != "" {
+		return ""
+	}
+	query := ""
+	switch rc.Query {
+	case "all":
+		query = r.URL.RawQuery
+	case "listed":
+		q := r.URL.Query()
+		names := append([]string(nil), rc.QueryParams...)
+		sort.Strings(names)
+		var b strings.Builder
+		for _, n := range names {
+			for _, v := range q[n] {
+				b.WriteString(url.QueryEscape(n) + "=" + url.QueryEscape(v) + "&")
+			}
+		}
+		query = b.String()
+	}
+	vals := make([]string, 0, len(rc.Headers))
+	for _, h := range rc.Headers {
+		vals = append(vals, strings.Join(r.Header.Values(h), ","))
+	}
+	// HEAD shares GET's entry.
+	return cache.Key("GET", host, path, query, vals)
+}
+
+// serveCached writes a hit. Conditional requests get 304.
+func (s *Server) serveCached(rw *responseWriter, r *http.Request, st *reqState, e *cache.Entry) {
+	h := rw.Header()
+	for k, vs := range e.Header {
+		h[k] = vs
+	}
+	now := time.Now()
+	h.Set("Age", strconv.Itoa(e.Age(now)))
+	h.Set("X-Cache", "HIT")
+	st.cache = "hit"
+	if etag := e.Header.Get("Etag"); etag != "" && etagMatches(r.Header.Get("If-None-Match"), etag) {
+		rw.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if lm := e.Header.Get("Last-Modified"); lm != "" {
+		if ims := r.Header.Get("If-Modified-Since"); ims != "" {
+			if t1, err1 := http.ParseTime(lm); err1 == nil {
+				if t2, err2 := http.ParseTime(ims); err2 == nil && !t1.After(t2) {
+					rw.WriteHeader(http.StatusNotModified)
+					return
+				}
+			}
+		}
+	}
+	h.Set("Content-Length", strconv.Itoa(len(e.Body)))
+	rw.WriteHeader(e.Status)
+	if r.Method != http.MethodHead {
+		_, _ = rw.Write(e.Body)
+	}
+}
+
+func etagMatches(inm, etag string) bool {
+	if inm == "" {
+		return false
+	}
+	if inm == "*" {
+		return true
+	}
+	for _, t := range strings.Split(inm, ",") {
+		if strings.TrimSpace(t) == etag {
+			return true
+		}
+	}
+	return false
+}
+
+// storable decides whether an upstream response may be cached under the
+// route policy and returns its lifetime.
+func storable(rc *config.RouteCache, r *http.Request, resp *http.Response, maxObject int64) (time.Duration, bool) {
+	ok := false
+	for _, st := range rc.Statuses {
+		if st == resp.StatusCode {
+			ok = true
+		}
+	}
+	if !ok || resp.Header.Get("Set-Cookie") != "" {
+		return 0, false
+	}
+	if resp.ContentLength > maxObject {
+		return 0, false
+	}
+	if _, ok := cache.VaryNames(resp.Header.Values("Vary")); !ok {
+		return 0, false
+	}
+	ttl := rc.TTL.D()
+	if rc.IgnoreCacheControl {
+		return ttl, true
+	}
+	d := cache.ParseCacheControl(resp.Header.Values("Cache-Control"))
+	if d.NoStore || d.NoCache || (d.Private && !d.Public) {
+		return 0, false
+	}
+	if r.Header.Get("Authorization") != "" && !d.Public {
+		return 0, false
+	}
+	switch {
+	case d.SMaxAge >= 0:
+		ttl = time.Duration(d.SMaxAge) * time.Second
+	case d.MaxAge >= 0:
+		ttl = time.Duration(d.MaxAge) * time.Second
+	default:
+		if exp := resp.Header.Get("Expires"); exp != "" {
+			if t, err := http.ParseTime(exp); err == nil {
+				ttl = time.Until(t)
+			}
+		}
+	}
+	if ttl <= 0 {
+		return 0, false
+	}
+	return ttl, true
+}
+
+// cachingBody buffers an upstream body as it streams to the client and
+// stores the entry when the body ends cleanly within the object bound.
+type cachingBody struct {
+	io.ReadCloser
+	buf   bytes.Buffer
+	limit int64
+	over  bool
+	done  bool
+	store func(body []byte)
+}
+
+func (b *cachingBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 && !b.over {
+		if int64(b.buf.Len()+n) > b.limit {
+			b.over = true
+			b.buf.Reset()
+		} else {
+			b.buf.Write(p[:n])
+		}
+	}
+	if err == io.EOF && !b.over && !b.done {
+		b.done = true
+		b.store(b.buf.Bytes())
+	}
+	return n, err
+}

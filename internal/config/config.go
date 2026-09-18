@@ -60,6 +60,11 @@ type Config struct {
 	// Filters are middleware instances of registered kinds (see
 	// docs/EXTENDING.md) that routes attach by name.
 	Filters []FilterConfig `yaml:"filters"`
+	// GeoIP names the country database used by routes[].geo and by rate
+	// limits keyed on country.
+	GeoIP *GeoIP `yaml:"geoip"`
+	// Cache sizes the in-memory response cache used by routes[].cache.
+	Cache *Cache `yaml:"cache"`
 	// ACME configures automatic certificates for listeners with tls.acme.
 	ACME *ACME `yaml:"acme"`
 }
@@ -140,6 +145,84 @@ type Listener struct {
 	RedirectToHTTPS bool `yaml:"redirect_to_https"`
 	// H3 tunes HTTP/3 when the protocols include h3.
 	H3 *H3 `yaml:"h3"`
+	// Kind is http (default), tcp (an L4 listener that forwards
+	// connections by TLS server name without terminating TLS) or forward
+	// (an explicit HTTP proxy for clients: CONNECT tunnels and absolute
+	// URI requests to destinations the policy allows).
+	Kind string `yaml:"kind"`
+	// TCP configures a kind: tcp listener.
+	TCP *TCPListener `yaml:"tcp"`
+	// Forward configures a kind: forward listener.
+	Forward *ForwardListener `yaml:"forward"`
+}
+
+// ForwardListener is an explicit forward proxy: clients send CONNECT
+// host:port for tunnels (TLS stays end to end) or absolute http:// URIs
+// for plain requests. Destinations are policy checked by name, resolved
+// address and port; private and loopback addresses are refused unless
+// allow_private is set, and the checked address is the one dialled.
+type ForwardListener struct {
+	// Ports destinations may be reached on (CONNECT and plain). Default
+	// [80, 443].
+	Ports []int `yaml:"ports"`
+	// Allow restricts destinations to these names (exact or *.suffix),
+	// addresses or CIDRs. Empty allows any destination not denied.
+	Allow []string `yaml:"allow"`
+	// Deny refuses destinations matching these names, addresses or
+	// CIDRs. Deny wins over allow and is checked against the resolved
+	// addresses too.
+	Deny []string `yaml:"deny"`
+	// AllowPrivate permits loopback, link local, private and unique
+	// local destination addresses. Default false.
+	AllowPrivate bool `yaml:"allow_private"`
+	// Auth requires Proxy-Authorization Basic credentials.
+	Auth *ForwardAuth `yaml:"auth"`
+	// ConnectTimeout bounds the dial to the destination. Default 10s.
+	ConnectTimeout Duration `yaml:"connect_timeout"`
+	// IdleTimeout closes a tunnel with no bytes in either direction.
+	// Default 10m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// MaxTunnels bounds open CONNECT tunnels on this listener. Default
+	// 10000.
+	MaxTunnels int `yaml:"max_tunnels"`
+	// MaxResponseBytes bounds the body of a plain (non CONNECT) response
+	// relayed to the client. Default 64 MiB; 0 disables.
+	MaxResponseBytes int64 `yaml:"max_response_bytes"`
+}
+
+// ForwardAuth is the credential source of a forward listener.
+type ForwardAuth struct {
+	// UsersFile holds name:hash lines from xproxyctl htpasswd. Re-read on
+	// reload.
+	UsersFile string `yaml:"users_file"`
+	// Realm is sent in Proxy-Authenticate. Default "proxy".
+	Realm string `yaml:"realm"`
+}
+
+// TCPListener routes raw connections to upstream pools. TLS connections
+// are routed by the server name of the ClientHello (peeked, never
+// terminated); other connections and unmatched names go to the default
+// upstream when one is set and are closed otherwise.
+type TCPListener struct {
+	Routes []TCPRoute `yaml:"routes"`
+	// Default is the upstream for connections without a matching SNI
+	// (including non-TLS ones).
+	Default string `yaml:"default"`
+	// IdleTimeout closes a connection with no bytes in either direction.
+	// Default 10m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// ProxyProtocol sends a PROXY protocol v2 header to the upstream with
+	// the client address.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// MaxConnections bounds open connections on this listener (in
+	// addition to the global limits). Default 10000.
+	MaxConnections int `yaml:"max_connections"`
+}
+
+// TCPRoute maps server names (exact or *.suffix) to an upstream.
+type TCPRoute struct {
+	SNI      []string `yaml:"sni"`
+	Upstream string   `yaml:"upstream"`
 }
 
 // H3 configures the QUIC listener of a TLS listener (AMR-024).
@@ -471,6 +554,58 @@ type Route struct {
 	// Filters names entries of the top-level filters list, run in the
 	// listed order within their stage.
 	Filters []string `yaml:"filters"`
+	// Geo allows or denies by client country (needs the geoip section).
+	Geo *RouteGeo `yaml:"geo"`
+	// Cache stores responses of this route (needs the cache section).
+	Cache *RouteCache `yaml:"cache"`
+}
+
+// Cache bounds the response cache. Default 64 MiB total, 1 MiB per
+// object.
+type Cache struct {
+	MaxBytes       int64 `yaml:"max_bytes"`
+	MaxObjectBytes int64 `yaml:"max_object_bytes"`
+}
+
+// RouteCache is a route's caching policy.
+type RouteCache struct {
+	// TTL is the lifetime of a stored response when the response carries
+	// no max-age (or when ignore_cache_control is set). Default 60s.
+	TTL Duration `yaml:"ttl"`
+	// Methods cached. Default [GET, HEAD].
+	Methods []string `yaml:"methods"`
+	// Statuses cached. Default [200, 203, 204, 300, 301, 404, 410].
+	Statuses []int `yaml:"statuses"`
+	// Query is "all" (default), "none" (ignore the query string in the
+	// key) or "listed" (only the names in query_params, sorted).
+	Query       string   `yaml:"query"`
+	QueryParams []string `yaml:"query_params"`
+	// Headers are request headers whose values join the key (for example
+	// Accept-Encoding when the upstream does not send Vary).
+	Headers []string `yaml:"headers"`
+	// Cookies allows caching requests that carry a Cookie header. Default
+	// false: such requests bypass the cache.
+	Cookies bool `yaml:"cookies"`
+	// IgnoreCacheControl stores responses regardless of Cache-Control and
+	// applies ttl. Default false.
+	IgnoreCacheControl bool `yaml:"ignore_cache_control"`
+}
+
+// GeoIP configures the country database: a MaxMind DB file (GeoLite2 or
+// GeoIP2 Country, or any MMDB with country.iso_code) or a CSV of
+// "network,country" lines.
+type GeoIP struct {
+	Database string `yaml:"database"`
+	CSV      string `yaml:"csv"`
+}
+
+// RouteGeo is a country policy. Deny is evaluated first; a non-empty
+// Allow admits only the listed countries. Unknown says what happens to
+// an address the database does not know: allow (default) or deny.
+type RouteGeo struct {
+	Allow   []string `yaml:"allow"`
+	Deny    []string `yaml:"deny"`
+	Unknown string   `yaml:"unknown"`
 }
 
 // FilterConfig is one middleware instance.

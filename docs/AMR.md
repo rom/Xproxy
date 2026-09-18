@@ -846,6 +846,174 @@ with non-default owners).
 
 ---
 
+## AMR-032: Country lookups from a local database with a built-in reader
+
+**Context.** ASR-F13 asks for policy by country on an internet facing
+proxy. The common data sources are MaxMind format files (GeoLite2, DB-IP)
+and CSV prefix tables.
+
+**Decision.** `internal/geoip` implements the subset of the MaxMind DB
+format needed for a country lookup (search tree with 24, 28 and 32 bit
+records, the data section decoder, metadata) rather than adding
+`maxminddb-golang`, and also loads CSV tables. Lookups happen in the
+admission pipeline after the address ACL, are cached per address in a
+bounded table, and never touch the network. Policy is a per route allow
+and deny list plus a choice for unknown addresses; per country rate
+limiting is a rate limit key. The reader is tested against files
+produced by a small writer of the real format, including nested
+prefixes, IPv4 under the IPv6 tree and corrupt input.
+
+**Alternatives.** `maxminddb-golang` (well maintained, but a dependency
+for about 400 lines of format handling and it maps files with mmap,
+which the sandbox and SELinux policy would need to allow); an external
+lookup service (a network call on the request path).
+
+**Consequences.** City level and ASN data are not decoded; the reader
+returns the full record, so they can be. Database updates are file
+replacements plus a reload.
+
+**Status.** Accepted.
+
+---
+
+## AMR-033: Bot classification as a filter over observed TLS fingerprints
+
+**Context.** ASR-F14. Scripted clients that copy a browser's user agent
+are the bulk of abusive traffic; the TLS ClientHello is harder to forge
+than headers, and behaviour over time separates crawlers from people.
+
+**Decision.** Fingerprints are computed in `GetConfigForClient` (which
+sees the ClientHello for every TLS and QUIC connection) with the JA3 and
+JA4 definitions over `crypto/tls.ClientHelloInfo`, which since Go 1.24
+exposes the extension list; no raw handshake parsing. They are kept per
+connection in a bounded table and handed to filters through `Info`.
+Classification is the `bot_score` filter kind: additive signal weights,
+allow and deny lists, and three thresholds (log, challenge, deny). The
+challenge action is a new verdict flag that the data plane resolves
+against the existing challenge and its cookie, so a client that solved
+the proof of work is not scored into it again. Behaviour is a per
+address window in the filter with the same bounding discipline as the
+ban list.
+
+**Alternatives.** A machine learned classifier (data the project does
+not have; opaque to operators); an external bot management service (a
+network call per request, and the proxy's point is to not depend on
+one); fingerprinting at the TCP level (needs raw sockets and
+capabilities the unit does not grant).
+
+**Consequences.** JA3's legacy version field is fixed at 0x0303 because
+Go does not expose it, which matches every modern hello. Plaintext
+listeners have no fingerprint and score on headers and behaviour only.
+Weights are heuristics; the documented roll-out is to log first.
+
+**Status.** Accepted.
+
+---
+
+## AMR-034: An in-process response cache that hits still pass admission
+
+**Context.** ASR-F15. Caching at the edge cuts upstream load for
+public content, but a cache in a security proxy must not become a way
+around its checks or a way to serve one client's response to another.
+
+**Decision.** `internal/cache` is an in-memory LRU bounded in bytes with
+a per object bound, owned by the server so reloads keep it. The lookup
+happens after every admission stage and the request phase of filters,
+so a hit is served only to a request that would have reached the
+upstream; response filters do not run on hits because they ran when the
+entry was stored. Keys are derived from host, path and an explicit
+query and header policy, `Vary` creates one entry per combination, and
+the RFC 9111 rules that matter (`no-store`, `no-cache`, `private`,
+`Set-Cookie`, `Authorization`) are enforced with no operator override
+except `ignore_cache_control`, which is documented as the upstream's
+headers being wrong. Storage is a body tee: the client is never delayed
+by caching, and an object that exceeds the bound is dropped mid stream.
+
+**Alternatives.** A disk cache (larger, but the state directory is
+SELinux confined and the win at the edge is in hot objects); a shared
+cache across the cluster (a consistency protocol the cluster does not
+have; nodes cache independently); caching before admission for speed
+(rejected: bans, ACLs and rate limits must see every request).
+
+**Consequences.** Cache hit rates are per node. Purges are per node
+too (`xproxyctl cache purge` on each), a cluster wide purge is a 1.x
+item.
+
+**Status.** Accepted.
+
+---
+
+## AMR-035: Layer 4 passthrough as a listener kind, not a route action
+
+**Context.** ASR-F12 asks for TCP and TLS passthrough. It could have
+been a route action ("proxy this host's TLS without terminating") on
+the HTTP listener, which is how some proxies present it.
+
+**Decision.** Passthrough is a separate listener kind. An HTTP listener
+terminates TLS on port 443 and a passthrough listener cannot share that
+socket, so mixing the two on one port would need a first-byte demux
+that decides per connection whether to terminate; keeping them apart
+keeps the HTTP pipeline free of a mode. The tcp listener reuses the
+accept limiter, the upstream pools (balancers, health, ejection) and
+the access log, and adds only what layer 4 needs: a defensive SNI peek,
+a splice with idle deadline, PROXY v2 and a connection bound. Server
+names route by exact match or `*.suffix`, like HTTP hosts.
+
+**Alternatives.** Route action on the HTTP listener (rejected above);
+a generic TCP proxy without SNI (covered by `default`); UDP relay (not
+asked for; QUIC passthrough would need it and is a 1.x candidate).
+
+**Consequences.** No inspection of passthrough traffic; the security
+log records connections, not requests. Health checks on such upstreams
+are HTTP by construction, so an HTTPS upstream behind passthrough needs
+an `https` scheme pool for checks to work.
+
+**Status.** Accepted.
+
+---
+
+## AMR-036: Forward proxy with a resolve-then-dial destination policy
+
+**Context.** ASR-F12 asks for a forward proxy with CONNECT. A forward
+proxy is the opposite trust shape of everything else in Xproxy: the
+client names the destination, so the risks are being an open relay and
+being a hop into the operator's own network (SSRF against link-local
+metadata services, loopback management ports, RFC 1918 hosts).
+
+**Decision.** The forward proxy is a listener kind with its own handler
+outside the request pipeline (routes, WAF, filters and cache do not
+apply; a tunnel is opaque). Destinations pass a policy before any
+connection: port allow list (default 80 and 443), private ranges
+refused unless `allow_private`, deny then allow by name, address or
+CIDR checked against the name and every resolved address, and the
+approved addresses are what the dialer connects to, so a DNS answer
+that changes between check and dial cannot redirect the connection.
+Credentials are Basic against the same users file format as
+`basic_auth`, with a digest cache so the PBKDF2 cost is paid once per
+session, and the file is re-read on reload. Refusals and credential
+failures are security events and ban reasons so the existing triggers
+cover probing. Tunnels are bounded per listener with an idle deadline
+and are force closed when shutdown exceeds its context. Plain requests
+use one transport per listener with the checked dialer and a bounded
+response body.
+
+**Alternatives.** Resolving inside the dialer only (rejected: the
+policy would see the name and not the addresses); checking the name and
+dialling the name (rejected: rebinding); refusing plain `http://`
+requests and supporting CONNECT only (rejected: clients and tooling
+send both and the relay is small); HTTP/2 CONNECT (deferred: h1 only
+keeps hijack semantics simple and every client speaks it to a proxy).
+
+**Consequences.** No inspection or caching of tunnelled traffic; the
+security log records destinations, not content. A forward listener
+without `auth` on a reachable address is an open relay, which the
+documentation says in as many words. IPv6 destinations are dialled when
+the resolver returns them; there is no preference knob.
+
+**Status.** Accepted.
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |

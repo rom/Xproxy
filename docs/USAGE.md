@@ -58,6 +58,8 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `acme` | Managed certificates with expiry, issuer, last error; `acme renew` forces renewal and waits |
 | `icap` | ICAP services with reachability, preview size, ISTag and counters |
 | `filters` | Middleware API version, registered kinds, configured filters with routes and deny counts |
+| `geoip` | Country database kind, path, build date, lookup and unknown counters |
+| `cache` | Cache entries, bytes and counters; `cache purge [HOST [PATH-PREFIX]]` removes entries |
 | `htpasswd FILE NAME` | Add or replace a `basic_auth` user; the password is read from stdin |
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
@@ -450,6 +452,134 @@ own block page, is logged with reason `icap`, and counts towards ban
 triggers. `xproxyctl icap` shows whether each service answered its last
 exchange, the preview size it advertised, and how many exchanges were
 unmodified, modified, replaced, failed or bypassed.
+
+### TLS passthrough by server name (layer 4)
+
+```yaml
+server:
+  listeners:
+    - name: passthrough
+      address: ":8443"
+      kind: tcp
+      tcp:
+        routes:
+          - {sni: [mail.example.com, "*.mail.example.com"], upstream: mail}
+          - {sni: [legacy.example.com], upstream: legacy}
+        default: legacy           # non-TLS and unknown names
+        proxy_protocol: true      # the upstream sees the client address
+upstreams:
+  - name: mail
+    health_check: {path: /healthz}     # for https upstreams checks still use HTTP
+    endpoints: [{address: 10.0.3.10:443}, {address: 10.0.3.11:443}]
+  - name: legacy
+    endpoints: [{address: 10.0.3.20:443}]
+```
+
+The upstream keeps its own certificates and the WAF does not see the
+traffic (it is encrypted end to end); use an `http` listener with TLS
+termination where inspection is wanted.
+
+### Forward proxy for outbound clients (CONNECT)
+
+```yaml
+server:
+  listeners:
+    - name: egress
+      address: "10.0.0.5:3128"
+      kind: forward
+      forward:
+        ports: [80, 443]
+        allow: ["*.example.com", "api.partner.test", "203.0.113.0/24"]
+        deny: ["admin.example.com"]
+        auth: {users_file: /etc/xproxy/egress.htpasswd, realm: egress}
+        max_tunnels: 2000
+bans:
+  triggers:
+    - {name: egress-abuse, reasons: [forward_denied, forward_auth], threshold: 20, window: 1m, duration: 10m}
+```
+
+```sh
+xproxyctl htpasswd /etc/xproxy/egress.htpasswd build-agent   # prompts for the passphrase
+HTTPS_PROXY=http://build-agent:passphrase@10.0.0.5:3128 curl https://api.example.com/
+```
+
+Clients send `CONNECT api.example.com:443` and the proxy tunnels the
+bytes after the destination passed the policy: the port is listed, the
+resolved address is public (private ranges are refused unless
+`allow_private: true`), it is not denied and it matches the allow list.
+Plain `http://` URLs are relayed as requests with hop-by-hop headers
+removed. Every request is one `forward` line in the access log with the
+user and destination; refusals are security events and, with the
+trigger above, ban a client that keeps probing. Keep the listener on an
+internal address or in front of `tls` with client certificates; a
+forward proxy reachable from the Internet without `auth` is an open
+relay.
+
+### Response caching
+
+```yaml
+cache: {max_bytes: 268435456, max_object_bytes: 2097152}
+routes:
+  - name: assets
+    hosts: [www.example.com]
+    paths: [/static/]
+    cache: {ttl: 1h, headers: [Accept-Encoding]}
+    upstream: web
+  - name: api-public
+    hosts: [api.example.com]
+    paths: [/v1/public/]
+    cache: {ttl: 10s, query: listed, query_params: [page, lang]}
+    upstream: api
+```
+
+The upstream stays in control through `Cache-Control`; `xproxyctl cache
+purge www.example.com /static/` drops entries after a deploy.
+
+### Country policy (GeoIP)
+
+```yaml
+geoip: {database: /var/lib/xproxy/GeoLite2-Country.mmdb}   # or csv: /etc/xproxy/geo.csv
+rate_limits:
+  - {name: per-country, key: country, rate: 500, burst: 1000}
+routes:
+  - name: shop
+    hosts: [shop.example.com]
+    geo: {allow: [SE, NO, DK, FI], unknown: deny}
+    rate_limits: [per-country]
+    upstream: shop
+  - name: api
+    hosts: [api.example.com]
+    geo: {deny: [KP]}
+    upstream: api
+```
+
+`xproxyctl geoip` shows the database, its build date and lookup
+counters. The database file is owned by root, group `xproxy`, mode
+`0640`, and replaced atomically before `xproxyctl reload`.
+
+### Bot classification
+
+```yaml
+challenge: {secret_file: /var/lib/xproxy/challenge.key}
+filters:
+  - name: bots
+    kind: bot_score
+    options:
+      challenge_at: 50          # scripted clients solve the proof of work first
+      deny_at: 85               # scanners and denied fingerprints are refused
+      header: X-Bot-Score       # let the application decide on the rest
+      ja4_allow: [t13d1516h2_8daaf6152771_b0da82dd1658]   # the monitoring probe
+routes:
+  - name: web
+    hosts: [www.example.com]
+    filters: [bots]
+    upstream: web
+```
+
+Start with `deny_at` and `challenge_at` at 0 and `log_at: 1` for a day:
+the access log then carries `bot_score`, `bot_signals` and `ja4` for
+every request, which gives the fingerprints of your own tools for
+`ja4_allow` and the score distribution for the thresholds.
 
 ### Header policy and basic authentication (filters)
 

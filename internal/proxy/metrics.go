@@ -20,7 +20,7 @@ var (
 func (s *Server) sample() metrics.Sample {
 	sn := s.Stats()
 	denied := sn.DeniedACL + sn.DeniedRateLimit + sn.Tarpitted + sn.DeniedConcurrency + sn.DeniedBodySize + sn.DeniedURILength +
-		sn.DeniedNoRoute + sn.DeniedWebSocket + sn.DeniedBadHost + sn.DeniedBan + sn.DeniedWAF + sn.DeniedJWT + sn.DeniedICAP + sn.DeniedFilter
+		sn.DeniedNoRoute + sn.DeniedWebSocket + sn.DeniedBadHost + sn.DeniedBan + sn.DeniedWAF + sn.DeniedJWT + sn.DeniedICAP + sn.DeniedFilter + sn.DeniedGeo
 	return metrics.Sample{
 		Counters: []float64{float64(sn.Requests), float64(sn.Responses2xx), float64(sn.Responses4xx), float64(sn.Responses5xx),
 			float64(denied), float64(sn.Shed), float64(sn.BytesIn), float64(sn.BytesOut), float64(sn.UpstreamErrors)},
@@ -55,7 +55,7 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 	}{
 		{"acl", sn.DeniedACL}, {"rate_limit", sn.DeniedRateLimit}, {"tarpit", sn.Tarpitted}, {"concurrency", sn.DeniedConcurrency},
 		{"body_size", sn.DeniedBodySize}, {"uri_length", sn.DeniedURILength}, {"no_route", sn.DeniedNoRoute}, {"websocket", sn.DeniedWebSocket},
-		{"bad_host", sn.DeniedBadHost}, {"ban", sn.DeniedBan}, {"waf", sn.DeniedWAF}, {"jwt", sn.DeniedJWT}, {"icap", sn.DeniedICAP}, {"filter", sn.DeniedFilter}, {"shed", sn.Shed},
+		{"bad_host", sn.DeniedBadHost}, {"ban", sn.DeniedBan}, {"waf", sn.DeniedWAF}, {"jwt", sn.DeniedJWT}, {"icap", sn.DeniedICAP}, {"filter", sn.DeniedFilter}, {"geo", sn.DeniedGeo}, {"shed", sn.Shed},
 	}
 	for _, d := range denied {
 		e.Counter("xproxy_denied_total", "Requests refused by the proxy, by reason.", L{"reason": d.reason}, float64(d.v))
@@ -122,6 +122,34 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 		for _, n := range names {
 			e.Gauge("xproxy_certificate_expiry_seconds", "Seconds until the earliest file certificate of the listener expires.", L{"listener": n}, time.Until(exp[n]).Seconds())
 		}
+	}
+	e.Counter("xproxy_tcp_connections_total", "Connections accepted on tcp listeners.", nil, float64(sn.TCPConnections))
+	e.Counter("xproxy_tcp_rejected_total", "Connections on tcp listeners closed without a route or over the listener bound.", nil, float64(sn.TCPRejected))
+	e.Counter("xproxy_tcp_errors_total", "tcp listener connections that found no reachable endpoint.", nil, float64(sn.TCPErrors))
+	e.Counter("xproxy_tcp_bytes_total", "Bytes relayed by tcp listeners.", L{"direction": "in"}, float64(sn.TCPBytesIn))
+	e.Counter("xproxy_tcp_bytes_total", "Bytes relayed by tcp listeners.", L{"direction": "out"}, float64(sn.TCPBytesOut))
+	e.Counter("xproxy_forward_requests_total", "Requests received on forward listeners (CONNECT and plain).", nil, float64(sn.ForwardRequests))
+	e.Counter("xproxy_forward_tunnels_total", "CONNECT tunnels opened by forward listeners.", nil, float64(sn.ForwardTunnels))
+	e.Gauge("xproxy_forward_tunnels_open", "Open CONNECT tunnels.", nil, float64(sn.ForwardTunnelsOpen))
+	e.Counter("xproxy_forward_denied_total", "Forward requests refused by the destination policy.", nil, float64(sn.ForwardDenied))
+	e.Counter("xproxy_forward_auth_failures_total", "Forward requests without valid proxy credentials.", nil, float64(sn.ForwardAuthFailed))
+	e.Counter("xproxy_forward_rejected_total", "CONNECT requests refused by the tunnel bound.", nil, float64(sn.ForwardRejected))
+	e.Counter("xproxy_forward_errors_total", "Forward requests whose destination failed (dial, response, size).", nil, float64(sn.ForwardErrors))
+	e.Counter("xproxy_forward_bytes_total", "Bytes relayed by forward listeners.", L{"direction": "in"}, float64(sn.ForwardBytesIn))
+	e.Counter("xproxy_forward_bytes_total", "Bytes relayed by forward listeners.", L{"direction": "out"}, float64(sn.ForwardBytesOut))
+	if c := s.cache.Load(); c != nil {
+		cs := c.Stats()
+		e.Counter("xproxy_cache_hits_total", "Responses served from the cache.", nil, float64(cs.Hits))
+		e.Counter("xproxy_cache_misses_total", "Cacheable requests not found in the cache.", nil, float64(cs.Misses))
+		e.Counter("xproxy_cache_stores_total", "Responses stored.", nil, float64(cs.Stores))
+		e.Counter("xproxy_cache_evictions_total", "Entries evicted for space.", nil, float64(cs.Evictions))
+		e.Gauge("xproxy_cache_entries", "Entries in the cache.", nil, float64(cs.Entries))
+		e.Gauge("xproxy_cache_bytes", "Bytes held by the cache.", nil, float64(cs.Bytes))
+	}
+	if rt.geo != nil {
+		gs := rt.geo.Status()
+		e.Counter("xproxy_geoip_lookups_total", "Country lookups.", nil, float64(gs.Lookups))
+		e.Counter("xproxy_geoip_unknown_total", "Country lookups without a result.", nil, float64(gs.Unknown))
 	}
 	for _, fs := range rt.filterStatus() {
 		e.Counter("xproxy_filter_denied_total", "Requests denied by a configured filter.", L{"filter": fs.Name, "kind": fs.Kind}, float64(fs.Denied))

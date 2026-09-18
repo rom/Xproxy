@@ -6,7 +6,43 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
-Nothing yet.
+### Added
+- GeoIP policy: `geoip` section with a built-in MaxMind DB reader (no
+  external library) or a CSV prefix table; `routes[].geo` allow and deny
+  lists with an `unknown` choice; rate limits keyed on `country`;
+  `country` in the access log and in `filter.Info`; `denied_geo`,
+  `xproxy_geoip_*` metrics; `GET /v1/geoip`, `xproxyctl geoip`.
+- Bot classification: JA3 and JA4 fingerprints computed from every
+  ClientHello (`tlsconf.Compute`), logged as `ja4` and passed to filters;
+  the `bot_score` filter kind scores user agent, browser headers,
+  fingerprint mismatch and behaviour (error rate, path spread, timing
+  regularity, rate) with configurable weights, JA4 allow and deny lists,
+  and log, challenge or deny thresholds; the score can be forwarded in a
+  header. Middleware API additions: `Info.Country`, `Info.JA3`,
+  `Info.JA4`, `Info.ALPN`, `Info.ChallengeVerified`, `Verdict.Challenge`.
+- Response caching: `cache` section (byte bound, object bound) and
+  `routes[].cache` (ttl, methods, statuses, query and header key policy,
+  cookies, ignore_cache_control); `Cache-Control`, `Expires` and `Vary`
+  honoured; conditional requests answered with 304; `X-Cache` and `Age`
+  headers, `cache` in the access log; `GET /v1/cache`, `DELETE
+  /v1/cache`, `xproxyctl cache` and `cache purge`; `xproxy_cache_*`
+  metrics. The cache survives reloads.
+- Layer 4 passthrough: `kind: tcp` listeners route TLS connections by
+  server name (peeked, not terminated) to upstream pools, with a default
+  for non-TLS and unmatched connections, PROXY protocol v2 to the
+  upstream, idle timeout, per listener connection bound, pool accounting
+  and retries across endpoints, a `tcp` access log line per connection
+  and `xproxy_tcp_*` metrics.
+- Forward proxy: `kind: forward` listeners accept `CONNECT` tunnels and
+  absolute `http://` requests from clients, with a destination policy
+  (ports, allow and deny by name, address or CIDR, private ranges
+  refused by default, the checked address dialled), optional
+  `Proxy-Authorization` Basic credentials from a users file re-read on
+  reload, tunnel bound, idle timeout, response size bound, `Via`, a
+  `forward` access log line per request, `forward_*` security events
+  and ban reasons, `xproxy_forward_*` metrics.
+- Ban triggers accept the reasons `geo`, `tcp_no_route`,
+  `forward_denied` and `forward_auth`.
 
 ## 1.0.0 - 2026-09-18
 

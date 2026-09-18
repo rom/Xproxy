@@ -5,6 +5,7 @@
 package passwd
 
 import (
+	"bufio"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -87,4 +89,33 @@ func Verify(hash, password string) bool {
 func IsHash(s string) bool {
 	parts := strings.Split(s, "$")
 	return len(parts) == 4 && parts[0] == prefix
+}
+
+// LoadUsers reads a users file of name:hash lines (blank lines and #
+// comments ignored) as written by xproxyctl htpasswd.
+func LoadUsers(path string) (map[string]string, error) {
+	f, err := os.Open(path) //nolint:gosec // operator supplied path, validated at load
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	users := map[string]string{}
+	sc := bufio.NewScanner(f)
+	line := 0
+	for sc.Scan() {
+		line++
+		t := strings.TrimSpace(sc.Text())
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		name, hash, ok := strings.Cut(t, ":")
+		if !ok || name == "" || !IsHash(hash) {
+			return nil, fmt.Errorf("%s:%d: expected name:pbkdf2 hash (use xproxyctl htpasswd)", path, line)
+		}
+		users[name] = hash
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return users, nil
 }

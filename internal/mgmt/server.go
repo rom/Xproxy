@@ -86,6 +86,32 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		})(w, r)
 	})
 	mux.HandleFunc("GET /v1/icap", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.ICAP()) })
+	mux.HandleFunc("GET /v1/cache", func(w http.ResponseWriter, _ *http.Request) {
+		if c := s.proxy.Cache(); c != nil {
+			writeJSON(w, 200, c.Stats())
+			return
+		}
+		writeJSON(w, 404, result{Error: "cache is not configured"})
+	})
+	mux.HandleFunc("DELETE /v1/cache", func(w http.ResponseWriter, r *http.Request) {
+		c := s.proxy.Cache()
+		if c == nil {
+			writeJSON(w, 404, result{Error: "cache is not configured"})
+			return
+		}
+		host, prefix := r.URL.Query().Get("host"), r.URL.Query().Get("path")
+		n := c.Purge(host, prefix)
+		peer := peerFromContext(r.Context())
+		s.logs.Audit.Info("management action", "action", "cache-purge", "host", host, "path", prefix, "removed", n, "peer_uid", peer.UID, "peer_gid", peer.GID, "peer_pid", peer.PID, "peer_known", peer.OK)
+		writeJSON(w, 200, map[string]any{"ok": true, "removed": n})
+	})
+	mux.HandleFunc("GET /v1/geoip", func(w http.ResponseWriter, _ *http.Request) {
+		if st := s.proxy.GeoIP(); st != nil {
+			writeJSON(w, 200, st)
+			return
+		}
+		writeJSON(w, 404, result{Error: "geoip is not configured"})
+	})
 	mux.HandleFunc("GET /v1/filters", func(w http.ResponseWriter, _ *http.Request) {
 		kinds := filter.Kinds()
 		ks := make([]FilterKind, 0, len(kinds))

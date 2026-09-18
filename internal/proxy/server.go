@@ -19,9 +19,11 @@ import (
 
 	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/ban"
+	"github.com/rom/xproxy/internal/cache"
 	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/geoip"
 	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/limits"
@@ -42,6 +44,11 @@ type Server struct {
 
 	concurrency *limits.Concurrency
 	tarpits     *limits.Concurrency // bound on requests held in a tarpit
+	// fingerprints holds the TLS fingerprint of every open TLS connection.
+	fingerprints *tlsconf.FingerprintTable
+	// cache is the response cache, kept across reloads; nil when the
+	// configuration has no cache section.
+	cache       atomic.Pointer[cache.Cache]
 	connLimiter *limits.ConnLimiter
 	bans        atomic.Pointer[ban.List]
 	cluster     atomic.Pointer[cluster.Node]
@@ -63,6 +70,8 @@ type boundListener struct {
 	tlsReload *tlsconf.Reloadable
 	activated bool
 	h3        *h3.Server
+	tcp       *tcpServer     // kind: tcp listeners
+	forward   *forwardServer // kind: forward listeners
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -72,9 +81,10 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		stats: &Stats{StartedAt: time.Now(),
 			RequestDuration: metrics.NewHistogram(metrics.DurationBuckets),
 			UpstreamTTFB:    metrics.NewHistogram(metrics.DurationBuckets)},
-		concurrency: limits.NewConcurrency(cfg.Server.Limits.MaxConcurrentRequests),
-		tarpits:     limits.NewConcurrency(cfg.Server.Limits.MaxTarpits),
-		connLimiter: limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
+		concurrency:  limits.NewConcurrency(cfg.Server.Limits.MaxConcurrentRequests),
+		tarpits:      limits.NewConcurrency(cfg.Server.Limits.MaxTarpits),
+		fingerprints: tlsconf.NewFingerprintTable(max(cfg.Server.Limits.MaxConnections, 1024)),
+		connLimiter:  limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
 	}
 	s.connLimiter.OnReject = func(addr netip.Addr, reason string) {
 		s.logs.SecurityEvent(context.Background(), "drop_connection", reason, "client_ip", addr.String())
@@ -133,6 +143,9 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 			m.OnChange(func() { s.logs.Audit.Info("acme certificates updated") })
 			s.acme = m
 		}
+	}
+	if cfg.Cache != nil {
+		s.cache.Store(cache.New(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes))
 	}
 	if cfg.Cluster != nil {
 		node, err := cluster.New(cfg.Cluster, rateSource{s: s}, logs.Error)
@@ -222,6 +235,19 @@ func (s *Server) CertificateExpiry() map[string]time.Time {
 		}
 	}
 	return out
+}
+
+// Cache returns the response cache, or nil when none is configured.
+func (s *Server) Cache() *cache.Cache { return s.cache.Load() }
+
+// GeoIP returns the country database status, or nil when none is configured.
+func (s *Server) GeoIP() *geoip.Status {
+	rt := s.rt.Load()
+	if rt.geo == nil {
+		return nil
+	}
+	st := rt.geo.Status()
+	return &st
 }
 
 // Filters returns the configured middleware instances.
@@ -318,9 +344,23 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 	}
 	lim := s.cfg().Server.Limits
 	bl := &boundListener{cfg: lc, ln: s.connLimiter.Wrap(ln), activated: act}
+	if lc.Kind == "tcp" {
+		bl.tcp = newTCPServer(s, lc, bl.ln)
+		return bl, nil
+	}
 	h := &listenerHandler{srv: s, ln: &bl.cfg}
+	var handler http.Handler = h
+	if lc.Kind == "forward" {
+		fw, err := newForwardServer(s, lc)
+		if err != nil {
+			_ = ln.Close()
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		bl.forward = fw
+		handler = fw
+	}
 	bl.httpSrv = &http.Server{
-		Handler:           h,
+		Handler:           handler,
 		ReadHeaderTimeout: lim.ReadHeaderTimeout.D(),
 		ReadTimeout:       lim.ReadTimeout.D(),
 		WriteTimeout:      lim.WriteTimeout.D(),
@@ -339,6 +379,12 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		if s.acme != nil && len(lc.TLS.ACME) > 0 {
 			rl.Managed = s.acme.Certificates
 			rl.Challenge = s.acme.TLSALPN01
+		}
+		rl.Fingerprints = s.fingerprints
+		bl.httpSrv.ConnState = func(c net.Conn, st http.ConnState) {
+			if st == http.StateClosed || st == http.StateHijacked {
+				s.fingerprints.Delete(c.RemoteAddr().String())
+			}
 		}
 		bl.httpSrv.TLSConfig = tc
 		bl.tlsReload = rl
@@ -388,7 +434,11 @@ func hasProto(ps []config.Protocol, p config.Protocol) bool {
 
 func (s *Server) serve(bl *boundListener) {
 	var err error
-	s.logs.Error.Info("listening", "listener", bl.cfg.Name, "address", bl.ln.Addr().String(), "tls", bl.cfg.TLS != nil, "socket_activated", bl.activated)
+	s.logs.Error.Info("listening", "listener", bl.cfg.Name, "address", bl.ln.Addr().String(), "tls", bl.cfg.TLS != nil, "kind", bl.cfg.Kind, "socket_activated", bl.activated)
+	if bl.tcp != nil {
+		bl.tcp.serve()
+		return
+	}
 	if bl.cfg.TLS != nil {
 		err = bl.httpSrv.ServeTLS(bl.ln, "", "")
 	} else {
@@ -465,6 +515,18 @@ func (s *Server) Reload(cfg *config.Config) error {
 	// reload as a whole.
 	s.mu.Lock()
 	for _, bl := range s.listeners {
+		if bl.forward != nil {
+			for i := range cfg.Server.Listeners {
+				if cfg.Server.Listeners[i].Name == bl.cfg.Name {
+					if err := bl.forward.apply(cfg.Server.Listeners[i].Forward); err != nil {
+						s.mu.Unlock()
+						rt.stop()
+						s.stats.ReloadFailures.Add(1)
+						return fmt.Errorf("listener %s: %w", bl.cfg.Name, err)
+					}
+				}
+			}
+		}
 		if bl.tlsReload == nil {
 			continue
 		}
@@ -520,6 +582,14 @@ func (s *Server) Reload(cfg *config.Config) error {
 	case ch != nil:
 		s.challenger.Store(nil)
 	}
+	switch c := s.cache.Load(); {
+	case cfg.Cache != nil && c != nil:
+		c.Resize(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes)
+	case cfg.Cache != nil:
+		s.cache.Store(cache.New(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes))
+	case c != nil:
+		s.cache.Store(nil)
+	}
 	s.stats.Reloads.Add(1)
 	// The old generation stops probing at once (its health state is no
 	// longer consulted); in-flight requests on it get the drain period to
@@ -556,7 +626,7 @@ func listenersCompatible(old, new_ []config.Listener) error {
 	}
 	for i := range old {
 		o, n := old[i], new_[i]
-		if o.Name != n.Name || o.Address != n.Address || (o.TLS == nil) != (n.TLS == nil) || o.ProxyProtocol != n.ProxyProtocol || o.RedirectToHTTPS != n.RedirectToHTTPS {
+		if o.Name != n.Name || o.Address != n.Address || (o.TLS == nil) != (n.TLS == nil) || o.ProxyProtocol != n.ProxyProtocol || o.RedirectToHTTPS != n.RedirectToHTTPS || o.Kind != n.Kind || fmt.Sprint(o.TCP) != fmt.Sprint(n.TCP) {
 			return fmt.Errorf("reload: listener %s changed; restart required", o.Name)
 		}
 		if o.TLS != nil {
@@ -603,7 +673,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		wg.Add(1)
 		go func(bl *boundListener) {
 			defer wg.Done()
+			if bl.tcp != nil {
+				bl.tcp.shutdown(ctx)
+				return
+			}
 			err := bl.httpSrv.Shutdown(ctx)
+			if bl.forward != nil {
+				bl.forward.shutdown(ctx)
+			}
 			if bl.h3 != nil {
 				if err3 := bl.h3.Shutdown(ctx); err == nil {
 					err = err3

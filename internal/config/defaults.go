@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"time"
 )
 
@@ -86,11 +87,36 @@ func applyDefaults(c *Config) {
 	setInt(&l.MaxTarpits, DefaultMaxTarpits)
 
 	for i := range s.Listeners {
+		setStr(&s.Listeners[i].Kind, "http")
+		if t := s.Listeners[i].TCP; t != nil {
+			setDur(&t.IdleTimeout, 10*time.Minute)
+			setInt(&t.MaxConnections, 10000)
+		}
+		if f := s.Listeners[i].Forward; f != nil {
+			if len(f.Ports) == 0 {
+				f.Ports = []int{80, 443}
+			}
+			setDur(&f.ConnectTimeout, 10*time.Second)
+			setDur(&f.IdleTimeout, 10*time.Minute)
+			setInt(&f.MaxTunnels, 10000)
+			if f.MaxResponseBytes == 0 {
+				f.MaxResponseBytes = 64 << 20
+			}
+			if f.Auth != nil {
+				setStr(&f.Auth.Realm, "proxy")
+			}
+		}
 		ln := &s.Listeners[i]
+		if ln.Kind == "tcp" {
+			continue // no HTTP protocol or TLS defaults on a passthrough listener
+		}
 		if len(ln.Protocols) == 0 {
-			if ln.TLS != nil {
+			switch {
+			case ln.Kind == "forward":
+				ln.Protocols = []Protocol{ProtocolH1}
+			case ln.TLS != nil:
 				ln.Protocols = []Protocol{ProtocolH1, ProtocolH2}
-			} else {
+			default:
 				ln.Protocols = []Protocol{ProtocolH1}
 			}
 		}
@@ -323,6 +349,35 @@ func applyDefaults(c *Config) {
 	}
 	for i := range c.Filters {
 		setStr(&c.Filters[i].Stage, StageAfterAuth)
+	}
+	if c.Cache != nil {
+		if c.Cache.MaxBytes == 0 {
+			c.Cache.MaxBytes = 64 << 20
+		}
+		if c.Cache.MaxObjectBytes == 0 {
+			c.Cache.MaxObjectBytes = 1 << 20
+		}
+	}
+	for i := range c.Routes {
+		if rc := c.Routes[i].Cache; rc != nil {
+			setDur(&rc.TTL, 60*time.Second)
+			if len(rc.Methods) == 0 {
+				rc.Methods = []string{"GET", "HEAD"}
+			}
+			if len(rc.Statuses) == 0 {
+				rc.Statuses = []int{200, 203, 204, 300, 301, 404, 410}
+			}
+			setStr(&rc.Query, "all")
+		}
+		if g := c.Routes[i].Geo; g != nil {
+			setStr(&g.Unknown, "allow")
+			for j := range g.Allow {
+				g.Allow[j] = strings.ToUpper(g.Allow[j])
+			}
+			for j := range g.Deny {
+				g.Deny[j] = strings.ToUpper(g.Deny[j])
+			}
+		}
 	}
 	setDur(&c.Metrics.SampleInterval, 10*time.Second)
 	setDur(&c.Metrics.Retention, time.Hour)

@@ -60,6 +60,10 @@ internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
 internal/filters    built-in kinds (header_guard, basic_auth) and the registration list
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
+internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
+internal/cache      in-memory response cache (LRU, byte bound, Vary)
+internal/proxy/tcp.go  kind: tcp listeners (SNI routing, PROXY v2, splice)
+internal/proxy/forward.go  kind: forward listeners (CONNECT tunnels, plain relay, destination policy)
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
@@ -270,6 +274,64 @@ validation certificate for a pending `tls-alpn-01` challenge; without a
 pending challenge such a handshake is refused rather than answered with a
 real certificate. Listeners with ACME groups add `acme-tls/1` to their
 ALPN list.
+
+### Layer 4 passthrough
+
+A `kind: tcp` listener (`internal/proxy/tcp.go`) accepts through the same
+limiter as every listener (bans, per address and global connection
+limits), peeks the first record with `netutil.ClientHelloSNI` (a
+defensive parser that never copies and checks every length), resolves
+the upstream by name or default, dials an endpoint chosen by the pool's
+balancer with retries across endpoints, optionally writes a PROXY v2
+header, replays the peeked bytes and splices both directions with an
+idle deadline and half-close. Connections are accounted on the pool like
+requests so ejection and health apply. The listener has its own
+connection bound and is drained on shutdown like the HTTP servers.
+
+### Forward proxy
+
+A `kind: forward` listener (`internal/proxy/forward.go`) is an
+`http.Server` on the same accept limiter whose handler is the forward
+server instead of the request pipeline. The policy (ports, allow and
+deny rules compiled to name matchers and prefixes, users) is an
+immutable value swapped on reload. A request is authenticated first
+(`Proxy-Authorization` Basic against the users file, verified
+credentials cached by digest, at most four verifications at once), then
+the destination is checked: port listed, name resolved with the connect
+timeout, resolved addresses not private, deny then allow. The approved
+addresses travel in the request context to the dialer, which connects
+to them rather than to the name. CONNECT hijacks the client connection,
+writes `200 Connection Established`, forwards any bytes the client sent
+early and splices with the same idle deadline and half-close as the tcp
+listener; tunnels are counted per listener and force closed when a
+shutdown exceeds its context. Plain requests go through one
+`http.Transport` per listener with the checked dialer, hop-by-hop
+headers removed both ways and the response body bounded. Refusals are
+security events with a `forward_` reason and feed the ban list.
+
+### Response cache
+
+`internal/cache` is a byte bounded LRU of stored responses keyed by a
+hash of method, host, path, the selected query and header values, with a
+second level per `Vary` combination. The handler consults it after the
+request filters and before the proxy action, so every admission rule
+and the WAF request phase apply to hits too; a miss proxies as usual and
+`ModifyResponse` wraps the body so that a response that turns out
+storable (status, `Cache-Control`, no `Set-Cookie`, within the object
+bound) is captured as it streams to the client and stored on a clean
+end. The cache belongs to the `Server`, not to a generation, so reloads
+resize rather than empty it.
+
+### TLS fingerprints
+
+`GetConfigForClient` observes every ClientHello without changing the
+configuration and records the JA3 and JA4 fingerprints
+(`tlsconf.Compute`, GREASE values ignored, JA4 marked `q` on QUIC) in a
+bounded table keyed by remote address; the connection state hook removes
+the entry when the connection closes. The handler passes the fingerprint
+to filters through `Info.JA3`, `Info.JA4` and `Info.ALPN` and logs `ja4`.
+The `bot_score` kind uses it for the fingerprint mismatch signal and the
+allow and deny lists.
 
 ### ACME
 

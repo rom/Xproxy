@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/rom/xproxy/internal/filter"
+	"time"
 
 	"crypto/tls"
 	"encoding/base64"
@@ -130,12 +131,100 @@ func (v *validator) config(c *Config) {
 	for i := range c.Filters {
 		v.filter(i, &c.Filters[i], filters)
 	}
+	if g := c.GeoIP; g != nil {
+		if (g.Database == "") == (g.CSV == "") {
+			v.errf("geoip: exactly one of database or csv is required")
+		}
+		if g.Database != "" {
+			v.file("geoip.database", g.Database)
+		}
+		if g.CSV != "" {
+			v.file("geoip.csv", g.CSV)
+		}
+	}
+	if cc := c.Cache; cc != nil {
+		if cc.MaxBytes < 1<<20 || cc.MaxBytes > 64<<30 {
+			v.errf("cache.max_bytes: must be between 1 MiB and 64 GiB")
+		}
+		if cc.MaxObjectBytes < 1024 || cc.MaxObjectBytes > cc.MaxBytes {
+			v.errf("cache.max_object_bytes: must be between 1024 and max_bytes")
+		}
+	}
+	for i := range c.RateLimits {
+		if c.RateLimits[i].Key == "country" && c.GeoIP == nil {
+			v.errf("rate_limits[%d].key: country needs a geoip section", i)
+		}
+	}
+	for i := range c.Server.Listeners {
+		if t := c.Server.Listeners[i].TCP; t != nil {
+			p := fmt.Sprintf("server.listeners[%d].tcp", i)
+			if t.Default != "" && !upstreams[t.Default] {
+				v.errf("%s.default: unknown upstream %q", p, t.Default)
+			}
+			for j, r := range t.Routes {
+				if r.Upstream != "" && !upstreams[r.Upstream] {
+					v.errf("%s.routes[%d].upstream: unknown upstream %q", p, j, r.Upstream)
+				}
+			}
+		}
+	}
 	routes := map[string]bool{}
 	for i := range c.Routes {
 		v.route(i, &c.Routes[i], routes, upstreams, rateLimits)
 		for j, name := range c.Routes[i].Filters {
 			if !filters[name] {
 				v.errf("routes[%d].filters[%d]: unknown filter %q", i, j, name)
+			}
+		}
+		if rc := c.Routes[i].Cache; rc != nil {
+			p := fmt.Sprintf("routes[%d].cache", i)
+			if c.Cache == nil {
+				v.errf("%s: set but there is no cache section", p)
+			}
+			if c.Routes[i].Upstream == "" {
+				v.errf("%s: only proxied routes can be cached", p)
+			}
+			if rc.TTL <= 0 || rc.TTL > Duration(365*24*time.Hour) {
+				v.errf("%s.ttl: must be positive and at most a year", p)
+			}
+			for _, m := range rc.Methods {
+				if m != "GET" && m != "HEAD" {
+					v.errf("%s.methods: only GET and HEAD can be cached", p)
+				}
+			}
+			for _, st := range rc.Statuses {
+				if st < 200 || st > 599 || st == 206 {
+					v.errf("%s.statuses: %d cannot be cached", p, st)
+				}
+			}
+			switch rc.Query {
+			case "all", "none", "listed":
+			default:
+				v.errf("%s.query: must be all, none or listed", p)
+			}
+			for _, h := range rc.Headers {
+				if !headerNameOK(h) {
+					v.errf("%s.headers: %q is not a header name", p, h)
+				}
+			}
+		}
+		if g := c.Routes[i].Geo; g != nil {
+			p := fmt.Sprintf("routes[%d].geo", i)
+			if c.GeoIP == nil {
+				v.errf("%s: set but there is no geoip section", p)
+			}
+			if len(g.Allow) == 0 && len(g.Deny) == 0 {
+				v.errf("%s: allow or deny must list at least one country", p)
+			}
+			for _, list := range [][]string{g.Allow, g.Deny} {
+				for _, cc := range list {
+					if len(cc) != 2 || strings.ToUpper(cc) != cc || strings.Trim(cc, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
+						v.errf("%s: %q is not a two letter country code", p, cc)
+					}
+				}
+			}
+			if g.Unknown != "allow" && g.Unknown != "deny" {
+				v.errf("%s.unknown: must be allow or deny", p)
 			}
 		}
 		if c.Routes[i].WAF != nil {
@@ -221,6 +310,35 @@ func (v *validator) server(s *Server) {
 			default:
 				v.errf("%s.protocols: unknown protocol %q", p, proto)
 			}
+		}
+		switch ln.Kind {
+		case "http":
+			if ln.TCP != nil {
+				v.errf("%s.tcp: set on an http listener (kind: tcp)", p)
+			}
+			if ln.Forward != nil {
+				v.errf("%s.forward: set on an http listener (kind: forward)", p)
+			}
+		case "tcp":
+			if ln.TLS != nil || len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.Forward != nil {
+				v.errf("%s: a tcp listener takes no tls, protocols, h3, redirect_to_https or forward", p)
+			}
+			if ln.TCP == nil {
+				v.errf("%s.tcp: required for kind tcp", p)
+			} else {
+				v.tcpListener(p+".tcp", ln.TCP)
+			}
+		case "forward":
+			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || hasProtocol(ln.Protocols, ProtocolH2) {
+				v.errf("%s: a forward listener takes no tcp or redirect_to_https and speaks h1 only", p)
+			}
+			if ln.Forward == nil {
+				v.errf("%s.forward: required for kind forward", p)
+			} else {
+				v.forwardListener(p+".forward", ln.Forward)
+			}
+		default:
+			v.errf("%s.kind: must be http, tcp or forward", p)
 		}
 		if ln.TLS == nil {
 			for _, proto := range ln.Protocols {
@@ -505,10 +623,10 @@ func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 	}
 	seen[r.Name] = true
 	switch {
-	case r.Key == "client_ip", r.Key == "route":
+	case r.Key == "client_ip", r.Key == "route", r.Key == "country":
 	case strings.HasPrefix(r.Key, "header:") && len(r.Key) > len("header:"):
 	default:
-		v.errf("%s.key: must be client_ip, route or header:<name>", p)
+		v.errf("%s.key: must be client_ip, route, country or header:<name>", p)
 	}
 	if r.Rate <= 0 {
 		v.errf("%s.rate: must be positive", p)
@@ -757,6 +875,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
+	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true,
 }
 
 func (v *validator) bans(b *Bans) {
@@ -957,6 +1076,103 @@ func (v *validator) filter(i int, f *FilterConfig, seen map[string]bool) {
 		for _, line := range strings.Split(err.Error(), "\n") {
 			v.errf("%s.options: %s", p, line)
 		}
+	}
+}
+
+// tcpListener validates an L4 listener; upstream references are checked
+// after the upstreams are known (see validate).
+func (v *validator) tcpListener(p string, t *TCPListener) {
+	if len(t.Routes) == 0 && t.Default == "" {
+		v.errf("%s: routes or default is required", p)
+	}
+	seen := map[string]bool{}
+	for i, r := range t.Routes {
+		rp := fmt.Sprintf("%s.routes[%d]", p, i)
+		if len(r.SNI) == 0 {
+			v.errf("%s.sni: at least one server name is required", rp)
+		}
+		for _, n := range r.SNI {
+			if !hostPatternOK(n) {
+				v.errf("%s.sni: %q is not a valid name or *.suffix pattern", rp, n)
+			}
+			if seen[n] {
+				v.errf("%s.sni: %q listed twice", rp, n)
+			}
+			seen[n] = true
+		}
+		if r.Upstream == "" {
+			v.errf("%s.upstream: required", rp)
+		}
+	}
+	if t.IdleTimeout <= 0 || t.IdleTimeout > Duration(24*time.Hour) {
+		v.errf("%s.idle_timeout: must be positive and at most 24h", p)
+	}
+	if t.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be positive", p)
+	}
+}
+
+func hasProtocol(ps []Protocol, p Protocol) bool {
+	for _, x := range ps {
+		if x == p {
+			return true
+		}
+	}
+	return false
+}
+
+// destinationPatternOK accepts a host name, *.suffix pattern, IP address
+// or CIDR for forward proxy allow and deny lists.
+func destinationPatternOK(d string) bool {
+	if _, err := netip.ParsePrefix(d); err == nil {
+		return true
+	}
+	if _, err := netip.ParseAddr(d); err == nil {
+		return true
+	}
+	return hostPatternOK(d)
+}
+
+func (v *validator) forwardListener(p string, f *ForwardListener) {
+	seen := map[int]bool{}
+	for _, port := range f.Ports {
+		if port < 1 || port > 65535 {
+			v.errf("%s.ports: %d is not a port", p, port)
+		}
+		if seen[port] {
+			v.errf("%s.ports: %d listed twice", p, port)
+		}
+		seen[port] = true
+	}
+	for _, d := range f.Allow {
+		if !destinationPatternOK(d) {
+			v.errf("%s.allow: %q is not a name, *.suffix, address or CIDR", p, d)
+		}
+	}
+	for _, d := range f.Deny {
+		if !destinationPatternOK(d) {
+			v.errf("%s.deny: %q is not a name, *.suffix, address or CIDR", p, d)
+		}
+	}
+	if f.Auth != nil {
+		if f.Auth.UsersFile == "" {
+			v.errf("%s.auth.users_file: required", p)
+		}
+		if strings.ContainsAny(f.Auth.Realm, "\"\r\n") {
+			v.errf("%s.auth.realm: must not contain quotes or line breaks", p)
+		}
+	}
+	if f.ConnectTimeout <= 0 || f.ConnectTimeout > Duration(5*time.Minute) {
+		v.errf("%s.connect_timeout: must be positive and at most 5m", p)
+	}
+	if f.IdleTimeout <= 0 || f.IdleTimeout > Duration(24*time.Hour) {
+		v.errf("%s.idle_timeout: must be positive and at most 24h", p)
+	}
+	if f.MaxTunnels < 1 {
+		v.errf("%s.max_tunnels: must be positive", p)
+	}
+	if f.MaxResponseBytes < 0 {
+		v.errf("%s.max_response_bytes: must not be negative", p)
 	}
 }
 
