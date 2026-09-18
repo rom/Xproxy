@@ -32,6 +32,8 @@ const (
 	DefaultHealthyCount    = 2
 	DefaultUnhealthyCount  = 3
 	DefaultHealthCheckPath = "/"
+	// DefaultHealthMaxConcurrent bounds health probes in flight per pool.
+	DefaultHealthMaxConcurrent = 32
 
 	DefaultAffinityCookie = "XPSESS"
 	DefaultAffinityTTL    = time.Hour
@@ -205,6 +207,7 @@ func applyDefaults(c *Config) {
 			setDur(&hc.Timeout, DefaultHealthTimeout)
 			setInt(&hc.HealthyThreshold, DefaultHealthyCount)
 			setInt(&hc.UnhealthyThreshold, DefaultUnhealthyCount)
+			setInt(&hc.MaxConcurrent, DefaultHealthMaxConcurrent)
 			if len(hc.ExpectedStatus) == 0 {
 				hc.ExpectedStatus = []int{200}
 			}

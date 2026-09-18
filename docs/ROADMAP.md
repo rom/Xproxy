@@ -122,10 +122,21 @@ Delivered so far:
   job in CI that compiles the policy against the Fedora headers, builds,
   lints and installs the packages (ASR-S8, AMR-017, AMR-031)
 
+- Scale validation: `TestScale` at 1000 hosts and 10 000 endpoints with
+  timings, memory, descriptor and goroutine bounds; routing benchmarks at
+  1000 hosts; `test/load` suite (backend, vegeta, k6, soak) with measured
+  throughput and latency in PERFORMANCE.md; health probe bounds
+  (`max_concurrent`, process-wide cap, `keep_alive`), old generations stop
+  probing at the swap, `metrics.endpoint_series`, runtime metrics
+  (ASR-P1, ASR-P2 in part)
+
 Remaining:
 
 - Fedora VM runner with SELinux enforcing for AVC checks and
   `systemd-analyze security` (the container job cannot load policy)
+- The 8 core reference throughput number with a remote load generator,
+  TLS, HTTP/2, HTTP/3 and WAF cost per request, the 24 hour soak
+  (ASR-P2)
 - Scale validation: 1000 hosts and 10 000 endpoints in configuration and
   in tests, published throughput and latency numbers (ASR-P1, P2)
 - Stable middleware interface and registry (ASR-O6, AMR-013)

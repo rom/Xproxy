@@ -49,7 +49,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 
 | ID | Requirement | Prio | Release | Architectural consequence |
 |----|-------------|------|---------|---------------------------|
-| ASR-P1 | 1000 virtual hosts and 10 000 upstream endpoints in one configuration | M | 1.0 | Hash based host tables, per host sorted prefix lists; per pool transports; health checks jittered and bounded in concurrency |
+| ASR-P1 | 1000 virtual hosts and 10 000 upstream endpoints in one configuration | M | 1.0 (validated in phase 3) | Hash based host tables, per host sorted prefix lists; per pool transports; health checks jittered and bounded in concurrency |
 | ASR-P2 | Sustained high request rates on commodity hardware (target: 100k requests per second on 8 cores for small responses) | M | 1.0 | Zero allocation routing path; atomic counters; no locks on the hot path except sharded limiter buckets; connection pooling to upstreams |
 | ASR-P3 | Configuration reload without dropping connections | M | MVP | Immutable runtime generation swapped atomically; old generation drained on a timer |
 | ASR-P4 | Certificate reload without restart | M | MVP | `GetCertificate` reads an atomic pointer |
@@ -111,5 +111,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S2 (shedding, challenge) | `internal/shed`, `internal/challenge` | `internal/shed/shed_test.go`, `internal/challenge/challenge_test.go`, `TestAdaptiveShedding`, `TestChallengeGate` |
 | ASR-S9, O2 | `internal/logging`, `internal/mgmt` | `internal/logging/logging_test.go`, `internal/mgmt/mgmt_test.go` |
 | ASR-S11, P4 | `internal/tlsconf` | `internal/tlsconf/tlsconf_test.go`, `TestTLSAndRedirect` |
+| ASR-P1 | `internal/router`, `internal/upstream` health bounds, `internal/proxy` generations | `TestScale` (`make scale`), `BenchmarkMatch1000Hosts`, PERFORMANCE.md |
+| ASR-P2 | handler path, `test/load` | `make load` baseline in PERFORMANCE.md; 8 core reference run open |
 | ASR-P3 | `Server.Reload` | `TestReload` |
 | ASR-Q1 | `Fuzz*` functions | `make fuzz` |

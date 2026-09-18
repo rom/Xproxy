@@ -584,6 +584,9 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		if hc.Timeout <= 0 || hc.Timeout >= hc.Interval {
 			v.errf("%s.health_check.timeout: must be positive and shorter than interval", p)
 		}
+		if hc.MaxConcurrent < 1 || hc.MaxConcurrent > 4096 {
+			v.errf("%s.health_check.max_concurrent: must be between 1 and 4096", p)
+		}
 		if hc.HealthyThreshold < 1 || hc.UnhealthyThreshold < 1 {
 			v.errf("%s.health_check: thresholds must be at least 1", p)
 		}

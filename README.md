@@ -6,8 +6,8 @@ binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
 Status: **phase 3 in progress** (ICAP, ACME, the web GUI, the SELinux
-policy and RPM packaging delivered; scale validation, coverage gates and
-the security review remain). Phases 1 and 2 are complete. See
+policy, RPM packaging and scale validation delivered; coverage gates, the
+security review and the reference hardware numbers remain). Phases 1 and 2 are complete. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today
@@ -86,6 +86,7 @@ curl -i http://127.0.0.1:8080/
 | [docs/CONFIG.md](docs/CONFIG.md) | Configuration reference |
 | [docs/USAGE.md](docs/USAGE.md) | Operating the proxy and the control tool |
 | [docs/SETUP.md](docs/SETUP.md) | Installation on Fedora |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured scale and throughput |
 | [docs/HARDENING.md](docs/HARDENING.md) | Host hardening checklist |
 | [docs/TESTS.md](docs/TESTS.md) | Test harness and coverage |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases to 1.0 and beyond |

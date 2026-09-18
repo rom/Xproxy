@@ -114,6 +114,17 @@ with a server certificate and a client CA (the process refuses anything
 else), give operators client certificates, and keep viewers to the
 `viewer` role.
 
+## 6a. Descriptor and memory budget
+
+Plan one descriptor per client connection and one per idle upstream
+connection (at most `max_idle_conns_per_host` per endpoint), plus about
+15 KiB of memory per idle upstream connection and 1.5 KiB per endpoint
+for its health loop. The unit sets `LimitNOFILE=1048576`; a source
+install without the unit must raise the limit (`ulimit -n`) or the
+proxy will refuse connections under load. Above a few thousand endpoints
+set `metrics.endpoint_series: false`. PERFORMANCE.md has the measured
+figures.
+
 ## 7. Configuration choices that matter
 
 - `trusted_proxies` empty when xproxy is the edge. Never `0.0.0.0/0`.

@@ -207,6 +207,17 @@ func (rt *runtime) start() {
 	}
 }
 
+// stopChecks ends background probing of a superseded generation; its
+// transports keep serving in-flight requests until stop.
+func (rt *runtime) stopChecks() {
+	for _, p := range rt.pools {
+		p.StopChecks()
+	}
+	for _, p := range rt.jwt {
+		p.Stop()
+	}
+}
+
 func (rt *runtime) stop() {
 	for _, p := range rt.pools {
 		p.Stop()

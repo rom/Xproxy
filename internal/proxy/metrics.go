@@ -110,17 +110,37 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 		}
 	}
 
+	// Process and Go runtime, for capacity planning and soak tests.
+	rm := runtimeSample()
+	e.Gauge("go_goroutines", "Goroutines.", nil, rm.goroutines)
+	e.Gauge("go_memstats_heap_alloc_bytes", "Heap bytes in use.", nil, rm.heapAlloc)
+	e.Gauge("go_memstats_sys_bytes", "Bytes obtained from the OS.", nil, rm.sys)
+	e.Counter("go_gc_cycles_total", "Completed garbage collection cycles.", nil, rm.gcCycles)
+	e.Gauge("process_open_fds", "Open file descriptors, or -1 when unknown.", nil, float64(openFDs()))
+
 	e.Histogram("xproxy_request_duration_seconds", "Time from request start to response end.", nil, s.stats.RequestDuration.Snapshot())
 	e.Histogram("xproxy_upstream_ttfb_seconds", "Upstream time to first byte.", nil, s.stats.UpstreamTTFB.Snapshot())
 
-	// Upstream endpoints.
+	// Upstream pools and endpoints.
 	names := make([]string, 0, len(rt.pools))
 	for name := range rt.pools {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		for _, ep := range rt.pools[name].Stats() {
+		eps := rt.pools[name].Stats()
+		healthy := 0
+		for _, ep := range eps {
+			if ep.Healthy && !ep.Ejected {
+				healthy++
+			}
+		}
+		e.Gauge("xproxy_upstream_endpoints", "Configured endpoints in the pool.", L{"upstream": name}, float64(len(eps)))
+		e.Gauge("xproxy_upstream_endpoints_healthy", "Endpoints passing health checks and not ejected.", L{"upstream": name}, float64(healthy))
+		if !rt.cfg.Metrics.EndpointSeriesEnabled() {
+			continue
+		}
+		for _, ep := range eps {
 			l := L{"upstream": name, "endpoint": ep.Address}
 			e.Gauge("xproxy_upstream_endpoint_healthy", "1 when the endpoint passes health checks.", l, b2f(ep.Healthy))
 			e.Gauge("xproxy_upstream_endpoint_ejected", "1 while the endpoint is ejected as an outlier.", l, b2f(ep.Ejected))

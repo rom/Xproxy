@@ -20,7 +20,7 @@ RPMDIR       ?= $(CURDIR)/rpmbuild
 
 BIN = bin
 
-.PHONY: all build test test-race cover fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint
+.PHONY: all build test test-race cover fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint scale bench load
 
 all: build
 
@@ -52,6 +52,27 @@ fuzz:
 	    $(GO) test -run '^$$' -fuzz "^$$f$$" -fuzztime $(FUZZTIME) $$pkg || exit 1; \
 	  done; \
 	done
+
+# Scale validation at the 1.0 target (1000 hosts, 10 000 endpoints) and
+# the routing benchmarks. See docs/PERFORMANCE.md.
+scale:
+	XPROXY_SCALE=full $(GO) test -count=1 -run 'TestScale$$' -v ./internal/proxy/ | grep -v '^==='
+
+bench:
+	$(GO) test -run '^$$' -bench . -benchmem ./internal/router/ ./internal/limits/ ./internal/metrics/
+
+# External load test: starts the backend and a proxy on loopback and runs
+# vegeta at RATE for DURATION (see test/load/README.md).
+RATE     ?= 5000
+DURATION ?= 30s
+load: build
+	@mkdir -p /tmp/xproxy-load/logs
+	@$(GO) run ./test/load/backend -listen 0.0.0.0:9001 & echo $$! > /tmp/xproxy-load/backend.pid
+	@$(BIN)/xproxy -config test/load/xproxy.yaml & echo $$! > /tmp/xproxy-load/xproxy.pid
+	@sleep 1
+	@test/load/vegeta.sh $(RATE) $(DURATION) || true
+	@$(BIN)/xproxyctl -socket /tmp/xproxy-load/mgmt.sock stats | head -20 || true
+	@kill $$(cat /tmp/xproxy-load/xproxy.pid) $$(cat /tmp/xproxy-load/backend.pid) 2>/dev/null || true
 
 vet:
 	$(GO) vet ./...

@@ -559,21 +559,35 @@ size come from the listener limits; 0-RTT is disabled. Requests arrive as
 `HTTP/3.0` with `r.TLS` set, so logging, forwarding headers and every
 pipeline stage behave as for HTTP/2.
 
-## 15. Scale considerations for 1.0 targets
+## 15. Scale properties (measured, see PERFORMANCE.md)
 
-1000 hosts and 10 000 endpoints (ASR-P1) drive these properties:
+1000 hosts and 10 000 endpoints (ASR-P1) are validated by `TestScale` at
+full size and rest on these properties:
 
-- Host lookup is two map probes (exact, then wildcard suffix); path match is
-  a linear scan of that host's prefixes, which are few per host.
-- Health checks: 10 000 goroutines sleeping on timers is acceptable in Go,
-  but the 1.0 implementation will move to a shared timer wheel with a
-  concurrency cap so that a fleet of proxies does not probe in bursts.
-- Transports are per pool, not per endpoint, so idle connection pools are
-  bounded by `max_idle_conns_per_host * endpoints`.
-- Configuration parse and validation are linear in the number of objects
-  and run off the hot path.
+- Host lookup is two map probes (exact, then wildcard suffix); path match
+  is a linear scan of that host's prefixes, which are few per host. 22 ns
+  and no allocation per match at 1000 hosts.
+- Configuration parse, validation and generation build are linear in the
+  number of objects and run off the hot path: 46 ms and 22 ms at the
+  target size; a reload is a pointer swap plus background drain, 9 ms.
+- Health checks are one goroutine per endpoint (about 1.5 KiB each, 15 MiB
+  at 10 000), jittered at start, bounded by `max_concurrent` per pool and
+  by a process-wide cap of 512 probes in flight, and open a fresh
+  connection per probe unless `keep_alive` is set, so probing holds no
+  descriptors between runs. A superseded generation stops probing at the
+  swap; only its in-flight requests are drained.
+- Transports are per pool, not per endpoint, so idle upstream connections
+  are bounded by `max_idle_conns_per_host * endpoints` and released after
+  `timeouts.idle`; under traffic they dominate memory (about 15 KiB and
+  one descriptor each).
+- Management views stay proportional to the table: 1.2 MiB for the
+  endpoint list; the Prometheus exposition drops from 10.6 MiB to 229 KiB
+  with `metrics.endpoint_series: false`, which is the setting above a few
+  thousand endpoints.
 
-Performance work in 1.0 (ASR-P2) focuses on allocation in the handler
-(header map copies in `ReverseProxy`), on making the access log writer
-asynchronous with a bounded buffer that drops with a counter rather than
-blocking the request, and on `GOMAXPROCS` and `GOGC` guidance.
+Throughput on the reference container (ASR-P2) is 10 000 req/s at p99
+under 10 ms with the load generator on the same four cores; the 8 core
+figure with a remote generator is still to be measured. Remaining
+performance work: allocation in the handler (header map copies in
+`ReverseProxy`), an asynchronous access log writer with a bounded buffer
+and drop counter, and `GOMAXPROCS` and `GOGC` guidance.

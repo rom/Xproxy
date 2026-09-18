@@ -31,6 +31,11 @@ type Pool struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	now    func() time.Time
+	// hcSem bounds health probes in flight (HealthCheck.MaxConcurrent).
+	hcSem chan struct{}
+	// hcTransport carries probes: the pool transport with keep_alive, or a
+	// dedicated one that opens a fresh connection per probe.
+	hcTransport *http.Transport
 }
 
 // NewPool builds a pool from configuration. Call Start to begin health
@@ -85,6 +90,17 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 		MaxResponseHeaderBytes: 64 << 10,
 		DisableCompression:     true, // pass encodings through untouched
 	}
+	if hc := cfg.HealthCheck; hc != nil {
+		if hc.KeepAlive {
+			p.hcTransport = p.Transport
+		} else {
+			t := p.Transport.Clone()
+			t.DisableKeepAlives = true
+			t.MaxIdleConns = 0
+			t.MaxIdleConnsPerHost = 0
+			p.hcTransport = t
+		}
+	}
 	return p, nil
 }
 
@@ -95,18 +111,26 @@ func (p *Pool) Start() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
+	p.hcSem = make(chan struct{}, max(p.Cfg.HealthCheck.MaxConcurrent, 1))
 	for _, e := range p.endpoints {
 		p.wg.Add(1)
 		go p.healthLoop(ctx, e)
 	}
 }
 
-// Stop ends health checks and closes idle connections.
-func (p *Pool) Stop() {
+// StopChecks ends health checking without touching the transport, so a
+// superseded generation stops probing at once while its in-flight requests
+// finish.
+func (p *Pool) StopChecks() {
 	if p.cancel != nil {
 		p.cancel()
 	}
 	p.wg.Wait()
+}
+
+// Stop ends health checks and closes idle connections.
+func (p *Pool) Stop() {
+	p.StopChecks()
 	p.Transport.CloseIdleConnections()
 }
 

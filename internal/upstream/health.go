@@ -8,13 +8,21 @@ import (
 	"time"
 )
 
+// MaxProbesInFlight bounds health probes across every pool of the process,
+// on top of the per pool bound. With ten thousand endpoints the per pool
+// bound alone still allows thousands of simultaneous probes when a backend
+// stalls; this keeps descriptors and goroutines in check.
+var MaxProbesInFlight = 512
+
+var globalProbes = make(chan struct{}, MaxProbesInFlight)
+
 // healthLoop probes one endpoint until ctx is cancelled. Probes are jittered
 // so that a fleet of proxies does not hit a backend in lock-step.
 func (p *Pool) healthLoop(ctx context.Context, e *Endpoint) {
 	defer p.wg.Done()
 	hc := p.Cfg.HealthCheck
 	client := &http.Client{
-		Transport: p.Transport,
+		Transport: p.hcTransport,
 		Timeout:   hc.Timeout.D(),
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -31,7 +39,22 @@ func (p *Pool) healthLoop(ctx context.Context, e *Endpoint) {
 	t := time.NewTicker(hc.Interval.D())
 	defer t.Stop()
 	for {
+		// Bound probes in flight per pool: with thousands of endpoints the
+		// jitter spreads them out on average, the semaphore caps the peaks.
+		select {
+		case p.hcSem <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		select {
+		case globalProbes <- struct{}{}:
+		case <-ctx.Done():
+			<-p.hcSem
+			return
+		}
 		healthy := p.probe(ctx, client, url)
+		<-globalProbes
+		<-p.hcSem
 		if healthy {
 			bad = 0
 			ok++
