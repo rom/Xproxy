@@ -98,6 +98,8 @@ type FilterStatus struct {
 type rateLimit struct {
 	cfg *config.RateLimit
 	lim *limits.KeyedLimiter
+	// allowed and denied count decisions for quota reporting.
+	allowed, denied atomic.Uint64
 }
 
 // compiledRoute caches per-route derived data.
@@ -117,6 +119,9 @@ type compiledRoute struct {
 	class        shed.Class
 	challenge    *config.RouteChallenge // nil or mode off means no gate
 	counts       [5]atomic.Uint64       // 2xx, 3xx, 4xx, 5xx, denied
+	bytesIn      atomic.Uint64
+	bytesOut     atomic.Uint64
+	rateLimited  atomic.Uint64
 	geoAllow     map[string]bool
 	geoDeny      map[string]bool
 	geoUnknown   string

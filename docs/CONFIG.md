@@ -437,6 +437,7 @@ not match is skipped and the next candidate is tried.
 | `cookies` | list | `[]` | The same conditions on cookies by name |
 | `methods` | list | `[]` (any) | Upper-case tokens |
 | `priority` | int | `0` | Tie breaker |
+| `tenant` | name | none | Free label grouping routes for quota reporting (`xproxyctl quotas`, `GET /v1/quotas`) and added as a `tenant` label to the per route metrics |
 | `upstream` | name | | Exactly one of `upstream`, `redirect`, `respond`, `honeypot`, `doh`, `static` |
 | `redirect` | `{to, status}` | status `308` | `to` is a URL or path; status 301, 302, 303, 307 or 308 |
 | `respond` | `{status, body}` | status `200` | Static response, body up to 64 KiB |

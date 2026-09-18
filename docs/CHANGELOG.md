@@ -92,6 +92,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   (header, cookie, values, percent, fallback) sends selected requests
   to the canary endpoints of a pool and keeps the rest away; `canary`
   in the access log, endpoint stats and `GET /v1/pools`.
+- Quota reporting: `routes[].tenant` label, `GET /v1/quotas` and
+  `xproxyctl quotas` with usage per tenant, per route (status classes,
+  denied, rate limited, bytes) and per rate limit policy (decisions,
+  top consumers with tokens left), request share per upstream; metrics
+  `xproxy_route_bytes_total`, `xproxy_route_rate_limited_total`,
+  `xproxy_rate_limit_decisions_total`, `xproxy_rate_limit_keys` and a
+  `tenant` label on per route counters.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

@@ -81,7 +81,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var route *compiledRoute
 	defer func() {
 		if route != nil {
-			route.observe(rw.Status(), st.denied != "")
+			route.observe(rw.Status(), st.denied != "", r.ContentLength, rw.bytes)
 		}
 	}()
 	if r.ContentLength > 0 {
@@ -265,8 +265,11 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, rl := range cr.rateLimits {
 		key := rateKey(rl.cfg, r, st)
 		if rl.lim.AllowFallback(key, "ip:"+st.clientIP.String(), 1) {
+			rl.allowed.Add(1)
 			continue
 		}
+		rl.denied.Add(1)
+		cr.rateLimited.Add(1)
 		st.denied = "rate_limit:" + rl.cfg.Name
 		if rl.cfg.Action == "tarpit" {
 			// A tarpit does no work, so it must not hold a concurrency slot

@@ -139,6 +139,13 @@ routes:
 	if len(b) == 0 {
 		t.Fatal("config empty")
 	}
+	b, err = c.Raw("/v1/quotas?top=3")
+	if err != nil || !strings.Contains(string(b), `"routes"`) || !strings.Contains(string(b), `"rate_limits"`) {
+		t.Fatalf("quotas: %v %s", err, b)
+	}
+	if b, err = c.Raw("/v1/pools"); err != nil || !strings.Contains(string(b), `"u"`) {
+		t.Fatalf("pools: %v %s", err, b)
+	}
 	// Cluster is not configured in this server.
 	if _, err := c.ClusterStatus(); err == nil {
 		t.Fatal("cluster status should be unavailable")

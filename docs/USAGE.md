@@ -44,6 +44,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `status` | Version, pid, generation, listeners, counters |
 | `stats` | Counters only |
 | `upstreams` | Table of endpoints with health, ejection, active requests, request and error counts |
+| `quotas` | Usage per tenant, per route (requests by class, denied, rate limited, bytes) and per rate limit policy (decisions, top consumers with tokens left, `-top 10`), plus request share per upstream |
 | `config` | Active configuration as YAML, defaults filled in |
 | `validate` | Validate the configuration file locally |
 | `reload` | Validate locally, then ask the daemon to reload |
@@ -334,6 +335,27 @@ connection from any other peer is served as before, so nobody outside
 the balancer range can choose an address. Layer 4 listeners (`kind:
 tcp`) do the opposite: their `proxy_protocol` sends the header to the
 upstream.
+
+### Usage per tenant and route
+
+```yaml
+routes:
+  - {name: shop-web, hosts: [shop.example.com], tenant: shop, upstream: shop}
+  - {name: shop-api, hosts: [api.shop.example.com], tenant: shop, rate_limits: [api], upstream: shop-api}
+  - {name: blog, hosts: [blog.example.com], tenant: blog, upstream: blog}
+```
+
+`xproxyctl quotas` then prints one line per tenant (requests, denied,
+rate limited, bytes in and out over the routes that carry the label),
+one per route with the status classes, and one per rate limit policy
+with its decisions and the keys that consumed the most tokens together
+with the tokens they have left, so the client hitting a limit is
+visible without reading logs. `GET /v1/quotas?top=N` returns the same
+as JSON for billing or capacity scripts, and the per route metrics
+carry a `tenant` label with `xproxy_route_bytes_total` and
+`xproxy_rate_limit_decisions_total` next to the request counters.
+Counters restart with each configuration generation; the metrics
+exporter keeps the long history.
 
 ### Retrying failed responses on another endpoint
 

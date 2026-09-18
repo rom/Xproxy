@@ -612,6 +612,7 @@ Endpoints:
 | GET | `/v1/stats` | counters |
 | GET | `/v1/upstreams` | endpoint health and load |
 | GET | `/v1/pools` | pool level state: circuit breaker, concurrency gate and queue |
+| GET | `/v1/quotas` | usage per tenant, route and rate limit policy; `?top=N` consumers per policy |
 | GET | `/v1/config` | active configuration as YAML |
 | POST | `/v1/reload` | validate and apply the configuration file |
 | POST | `/v1/reload-certs` | re-read certificates |

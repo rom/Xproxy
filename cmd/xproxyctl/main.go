@@ -31,6 +31,7 @@
 //	otlp           show the OpenTelemetry exporter status
 //	cache          show cache statistics; "cache purge [HOST [PATH-PREFIX]]" removes entries
 //	htpasswd FILE NAME  add or replace a basic_auth user (password on stdin)
+//	quotas         usage per tenant, route and rate limit policy (-top 10)
 //	metrics        print the Prometheus exposition
 //	series         print sampled series (-since 10m -last 20)
 //	version        print version
@@ -70,7 +71,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp htpasswd spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -188,6 +189,60 @@ func run(args []string, out, errOut io.Writer) int {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n, circuit, failures, opens, refused, inFlight, waiting, queued, timeouts, full)
 		}
 		_ = tw.Flush()
+		return 0
+	case "quotas":
+		qfs := flag.NewFlagSet("quotas", flag.ContinueOnError)
+		qfs.SetOutput(errOut)
+		top := qfs.Int("top", 10, "consumers listed per rate limit policy")
+		if err := qfs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		b, err := c.Raw(fmt.Sprintf("/v1/quotas?top=%d", *top))
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			_, _ = out.Write(b)
+			return 0
+		}
+		var q proxy.QuotaReport
+		if err := json.Unmarshal(b, &q); err != nil {
+			return fail(err)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		if len(q.Tenants) > 0 {
+			_, _ = fmt.Fprintln(tw, "TENANT\tROUTES\tREQUESTS\tDENIED\tRATE-LIMITED\tBYTES-IN\tBYTES-OUT")
+			for _, t := range q.Tenants {
+				_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\n", t.Tenant, t.Routes, t.Requests, t.Denied, t.RateLimited, t.BytesIn, t.BytesOut)
+			}
+			_ = tw.Flush()
+			_, _ = fmt.Fprintln(out)
+		}
+		_, _ = fmt.Fprintln(tw, "ROUTE\tTENANT\tUPSTREAM\tREQUESTS\t2XX\t3XX\t4XX\t5XX\tDENIED\tRATE-LIMITED\tBYTES-IN\tBYTES-OUT")
+		for _, r := range q.Routes {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Route, dash(r.Tenant), dash(r.Upstream), r.Requests, r.Status2xx, r.Status3xx, r.Status4xx, r.Status5xx, r.Denied, r.RateLimited, r.BytesIn, r.BytesOut)
+		}
+		_ = tw.Flush()
+		if len(q.RateLimits) > 0 {
+			_, _ = fmt.Fprintln(out)
+			_, _ = fmt.Fprintln(tw, "POLICY\tKEY\tRATE\tBURST\tKEYS\tALLOWED\tDENIED\tTOP CONSUMERS (key=total/tokens left)")
+			for _, p := range q.RateLimits {
+				tops := make([]string, 0, len(p.Top))
+				for _, u := range p.Top {
+					tops = append(tops, fmt.Sprintf("%s=%.0f/%.1f", u.Key, u.Total, u.Tokens))
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%g\t%d\t%d\t%d\t%d\t%s\n", p.Policy, p.Key, p.Rate, p.Burst, p.Keys, p.Allowed, p.Denied, dash(strings.Join(tops, " ")))
+			}
+			_ = tw.Flush()
+		}
+		if len(q.Upstreams) > 0 {
+			_, _ = fmt.Fprintln(out)
+			_, _ = fmt.Fprintln(tw, "UPSTREAM\tREQUESTS\tERRORS\tACTIVE")
+			for _, u := range q.Upstreams {
+				_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\n", u.Upstream, u.Requests, u.Errors, u.Active)
+			}
+			_ = tw.Flush()
+		}
 		return 0
 	case "config":
 		b, err := c.Raw("/v1/config")
@@ -676,4 +731,12 @@ func tail(cfgPath, stream string, out, errOut io.Writer) int {
 			return 1
 		}
 	}
+}
+
+// dash prints "-" for an empty cell.
+func dash(v string) string {
+	if v == "" {
+		return "-"
+	}
+	return v
 }

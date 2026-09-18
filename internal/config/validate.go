@@ -974,6 +974,9 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 			v.errf("%s.methods[%d]: %q must be an upper-case token", p, j, m)
 		}
 	}
+	if r.Tenant != "" && (len(r.Tenant) > 64 || !nameRE.MatchString(r.Tenant)) {
+		v.errf("%s.tenant: %q is not a valid name", p, r.Tenant)
+	}
 	if len(r.PathRegex) > 32 {
 		v.errf("%s.path_regex: at most 32 patterns", p)
 	}

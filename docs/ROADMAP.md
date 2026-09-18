@@ -229,6 +229,8 @@ procedure is in RELEASING.md.
   limits and request queueing with deadlines: delivered
 - Canary by header or cookie beyond weights (`upstreams[].canary`):
   delivered
+- Per tenant and per route quota reporting (`tenant`, `/v1/quotas`,
+  `xproxyctl quotas`): delivered
 
 ## After 1.3 (candidates, unranked)
 

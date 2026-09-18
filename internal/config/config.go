@@ -742,6 +742,9 @@ type Route struct {
 	// without at the same path length (more conditions first).
 	Headers []HeaderMatch `yaml:"headers"`
 	Cookies []HeaderMatch `yaml:"cookies"`
+	// Tenant is a free label that groups routes for quota reporting
+	// (GET /v1/quotas, xproxyctl quotas) and the per route metrics.
+	Tenant string `yaml:"tenant"`
 	// Priority breaks ties between routes with identical specificity. Higher
 	// wins. Default 0.
 	Priority int `yaml:"priority"`

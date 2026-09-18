@@ -66,6 +66,13 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("GET /v1/stats", s.stats)
 	mux.HandleFunc("GET /v1/upstreams", s.upstreams)
 	mux.HandleFunc("GET /v1/pools", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Pools()) })
+	mux.HandleFunc("GET /v1/quotas", func(w http.ResponseWriter, r *http.Request) {
+		top := 10
+		if v, err := strconv.Atoi(r.URL.Query().Get("top")); err == nil && v >= 0 && v <= 1000 {
+			top = v
+		}
+		writeJSON(w, 200, s.proxy.Quotas(top))
+	})
 	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("POST /v1/reload", s.reload)
 	mux.HandleFunc("POST /v1/reload-certs", s.reloadCerts)
