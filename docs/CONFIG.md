@@ -189,6 +189,103 @@ wins); then configuration order.
 | `timeout` | duration | none | Whole request deadline for this route |
 | `websocket` | bool | `false` | Allow `Upgrade` requests |
 
+## bans
+
+Present means enabled. Bans apply before routing; banned peers are closed
+at accept when `action` is `drop`, and answered 403 when the client address
+comes from a trusted proxy chain or `action` is `reject`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `state_file` | path | `""` (memory only) | bbolt file that persists bans across restarts |
+| `max_entries` | int | `100000` | Bound on banned addresses; the soonest expiring are evicted when full |
+| `exempt_cidrs` | list | `[]` | Never banned, by trigger or by operator |
+| `action` | `drop`, `reject` | `drop` | Close at accept, or answer 403 only |
+| `triggers` | list | `[]` | Automatic bans; see below |
+
+### bans.triggers[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency` |
+| `threshold` | int | required | Denies within `window` that trigger the ban |
+| `window` | duration | required | At most 24h |
+| `duration` | duration | required | First ban length |
+| `escalation` | float | `2` | Multiplier applied for each repeat ban of the same address |
+| `max_duration` | duration | `24h` | Cap on escalated duration; at least `duration` |
+
+Manual bans (`xproxyctl ban`) accept addresses and CIDRs no wider than /8
+(IPv4) or /32 (IPv6); loopback and unspecified addresses are refused.
+
+## waf
+
+Present means enabled. Routes without a `waf` block use `default_mode` and
+`default_profile`. Profiles compile at load and at reload; a broken rule
+set fails the reload.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `profiles` | list | required, at least one | Rule sets; see below |
+| `default_mode` | `off`, `detect`, `block` | `block` | `detect` logs what `block` would have done |
+| `default_profile` | name | `default` | |
+| `request_body_limit` | int | `1048576` | Bytes of request body inspected; 1024 to 1 GiB |
+| `request_body_limit_action` | `reject`, `partial` | `reject` | 413 above the limit, or inspect the first bytes and pass the rest |
+| `inspect_responses` | bool | `false` | Enable response header and body rules (data leakage) |
+| `response_body_limit` | int | `524288` | Larger response bodies pass uninspected |
+| `response_mime_types` | list | text and JSON/XML types | Bodies with other content types are not inspected |
+
+### waf.profiles[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required, unique | |
+| `crs` | object | none | Enable the bundled OWASP Core Rule Set |
+| `crs.paranoia_level` | int | `1` | 1 to 4 |
+| `crs.inbound_threshold` | int | `5` | Anomaly score that blocks a request |
+| `crs.outbound_threshold` | int | `4` | Anomaly score that blocks a response |
+| `directive_files` | list of paths | `[]` | SecLang files loaded after CRS setup and before CRS rules (exclusions go here) |
+| `directives` | string | `""` | Inline SecLang loaded in the same position, at most 1 MiB |
+
+A profile needs at least one of `crs`, `directive_files` or `directives`.
+
+### routes[].waf
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | `off`, `detect`, `block` | `waf.default_mode` | |
+| `profile` | name | `waf.default_profile` | |
+
+## cluster
+
+Present means enabled. Nodes exchange rate limit consumption and ban
+changes over mutual TLS (AMR-009, AMR-021). Every node listens and dials
+every peer; there is no leader. Enabling or disabling the section, and
+changing `listen`, `node_id` or `tls`, require a restart. Peers, intervals
+and sharing flags reload.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `node_id` | name | host name | Identity announced to peers and used as the ban source (`peer:<node_id>`) |
+| `listen` | host:port | required | Cluster listener. Must be a specific internal address, not all interfaces |
+| `peers` | list of host:port | `[]` | Cluster addresses of the other nodes |
+| `tls.cert_file`, `tls.key_file` | path | required | This node's certificate, used for both directions |
+| `tls.ca_file` | path | required | Cluster CA; every peer must present a certificate from it |
+| `tls.allowed_names` | list | `[]` (any name from the CA) | Restrict peers to these certificate common names or DNS SANs |
+| `gossip_interval` | duration | `1s` | How often consumption and ban batches are sent; 100ms to 60s |
+| `peer_stale` | duration | 3 x `gossip_interval` | How long a peer report keeps reducing local refill after its last update; at least 2 x the interval |
+| `share_rate_limits` | bool | `true` | Exchange consumption reports |
+| `share_bans` | bool | `true` | Exchange bans and unbans, and send a snapshot to a newly connected peer |
+| `max_keys_per_report` | int | `4096` | Largest consumers kept per report |
+
+Semantics: with sharing on, a rate limit policy's `rate` becomes an
+approximate cluster wide rate per key. Each node refills a key's bucket at
+`rate` minus the sum of fresh peer consumption for that key; `burst` stays
+per node. Accuracy is bounded by one gossip interval of delay and reports
+expire after `peer_stale`, so losing a peer degrades to local limiting.
+
+The cluster listener can be socket activated with `FileDescriptorName=cluster`.
+
 ## Headers set on forwarded requests
 
 | Header | Value |
@@ -205,6 +302,10 @@ wins); then configuration order.
 
 Changed by `SIGHUP` or `xproxyctl reload` without restart: routes,
 upstreams, rate limits, trusted proxies, logging levels, limits other than
-listeners, certificate files. Requires restart: any change under
+listeners, certificate files, WAF profiles and modes, ban triggers and
+exemptions (active bans are kept; changing `bans.state_file` opens a new
+list), cluster peers, intervals and sharing flags. Requires restart: any
+change under `server.listeners` other than certificate file contents,
+`management.socket`, and cluster `listen`, `node_id` or `tls`. Requires restart: any change under
 `server.listeners` other than certificate file contents, and
 `management.socket`.

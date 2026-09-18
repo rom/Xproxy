@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/ban"
+	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
@@ -32,6 +34,8 @@ type Server struct {
 
 	concurrency *limits.Concurrency
 	connLimiter *limits.ConnLimiter
+	bans        atomic.Pointer[ban.List]
+	cluster     atomic.Pointer[cluster.Node]
 
 	mu        sync.Mutex
 	listeners []*boundListener
@@ -58,13 +62,51 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	s.connLimiter.OnReject = func(addr netip.Addr, reason string) {
 		s.logs.SecurityEvent(context.Background(), "drop_connection", reason, "client_ip", addr.String())
 	}
+	if cfg.Bans != nil {
+		bl, err := ban.New(cfg.Bans, logs.Security)
+		if err != nil {
+			return nil, err
+		}
+		s.bans.Store(bl)
+	}
+	s.connLimiter.Banned = func(addr netip.Addr) bool {
+		bl := s.bans.Load()
+		return bl != nil && bl.DropsConnections() && bl.Banned(addr)
+	}
 	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error)
 	if err != nil {
+		if bl := s.bans.Load(); bl != nil {
+			bl.Close()
+		}
 		return nil, err
 	}
 	s.rt.Store(rt)
+	if cfg.Cluster != nil {
+		node, err := cluster.New(cfg.Cluster, rateSource{s: s}, logs.Error)
+		if err != nil {
+			rt.stop()
+			if bl := s.bans.Load(); bl != nil {
+				bl.Close()
+			}
+			return nil, err
+		}
+		node.AttachBans(banStore(s.bans.Load()))
+		s.cluster.Store(node)
+	}
 	return s, nil
 }
+
+// banStore converts a possibly nil *ban.List into a cluster.BanStore
+// without the typed-nil interface trap.
+func banStore(bl *ban.List) cluster.BanStore {
+	if bl == nil {
+		return nil
+	}
+	return bl
+}
+
+// Bans returns the ban list, or nil when bans are not configured.
+func (s *Server) Bans() *ban.List { return s.bans.Load() }
 
 func (s *Server) cfg() *config.Config { return s.rt.Load().cfg }
 
@@ -77,6 +119,13 @@ func (s *Server) Stats() Snapshot {
 	snap.OpenConnections = s.connLimiter.Open()
 	snap.RejectedConns = s.connLimiter.Rejected.Load()
 	snap.InFlight = s.concurrency.InFlight()
+	if bl := s.bans.Load(); bl != nil {
+		snap.BansActive, snap.BansTotal = bl.Stats()
+	}
+	if node := s.cluster.Load(); node != nil {
+		snap.ClusterPeers = len(node.Status().Peers)
+		snap.ClusterConnected = node.ConnectedPeers()
+	}
 	return snap
 }
 
@@ -114,6 +163,15 @@ func (s *Server) Start() error {
 			return err
 		}
 		s.listeners = append(s.listeners, bl)
+	}
+	if node := s.cluster.Load(); node != nil {
+		ln, act, err := listenerFor(activated, "cluster", cfg.Cluster.Listen)
+		if err != nil {
+			s.closeListenersLocked()
+			return fmt.Errorf("cluster listener: %w", err)
+		}
+		s.logs.Error.Info("cluster listener bound", "address", ln.Addr().String(), "socket_activated", act)
+		node.Start(ln)
 	}
 	for name := range activated {
 		s.logs.Error.Warn("unused socket from systemd", "name", name)
@@ -207,10 +265,41 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
+	if err := clusterCompatible(old.cfg.Cluster, cfg.Cluster); err != nil {
+		s.stats.ReloadFailures.Add(1)
+		return err
+	}
 	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error)
 	if err != nil {
 		s.stats.ReloadFailures.Add(1)
 		return err
+	}
+	// Ban list: reconfigure in place so active bans survive; create or
+	// drop it when the section appears or disappears.
+	oldBans := s.bans.Load()
+	var newBans *ban.List
+	switch {
+	case cfg.Bans != nil && oldBans != nil:
+		if oldBans.StateFile() == cfg.Bans.StateFile {
+			oldBans.Reconfigure(cfg.Bans)
+			newBans = oldBans
+		} else {
+			bl, err := ban.New(cfg.Bans, s.logs.Security)
+			if err != nil {
+				rt.stop()
+				s.stats.ReloadFailures.Add(1)
+				return err
+			}
+			newBans = bl
+		}
+	case cfg.Bans != nil:
+		bl, err := ban.New(cfg.Bans, s.logs.Security)
+		if err != nil {
+			rt.stop()
+			s.stats.ReloadFailures.Add(1)
+			return err
+		}
+		newBans = bl
 	}
 	// Reload certificates before switching so a bad certificate aborts the
 	// reload as a whole.
@@ -235,6 +324,18 @@ func (s *Server) Reload(cfg *config.Config) error {
 	rt.start()
 	s.connLimiter.SetLimits(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP)
 	s.rt.Store(rt)
+	if newBans != oldBans {
+		s.bans.Store(newBans)
+		if oldBans != nil {
+			oldBans.Close()
+		}
+	}
+	if node := s.cluster.Load(); node != nil {
+		node.Reconfigure(cfg.Cluster)
+		if newBans != oldBans {
+			node.AttachBans(banStore(newBans))
+		}
+	}
 	s.stats.Reloads.Add(1)
 	// Give in-flight requests on the old generation time to finish before
 	// tearing down its pools; the transport keeps serving until then.
@@ -244,6 +345,22 @@ func (s *Server) Reload(cfg *config.Config) error {
 	}(old)
 	s.logs.Error.Info("configuration reloaded", "generation", rt.generation, "routes", len(cfg.Routes), "upstreams", len(cfg.Upstreams))
 	s.logs.Audit.Info("reload", "generation", rt.generation)
+	return nil
+}
+
+// clusterCompatible rejects cluster changes that need a restart: enabling
+// or disabling clustering, the listen address, the node identity and the
+// TLS material.
+func clusterCompatible(old, new_ *config.Cluster) error {
+	if (old == nil) != (new_ == nil) {
+		return errors.New("reload: cluster enabled or disabled; restart required")
+	}
+	if old == nil {
+		return nil
+	}
+	if old.Listen != new_.Listen || old.NodeID != new_.NodeID || fmt.Sprint(old.TLS) != fmt.Sprint(new_.TLS) {
+		return errors.New("reload: cluster listen, node_id or tls changed; restart required")
+	}
 	return nil
 }
 
@@ -304,7 +421,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}(bl)
 	}
 	wg.Wait()
+	if node := s.cluster.Load(); node != nil {
+		node.Stop()
+	}
 	s.rt.Load().stop()
+	if bl := s.bans.Load(); bl != nil {
+		bl.Close()
+	}
 	return firstErr
 }
 

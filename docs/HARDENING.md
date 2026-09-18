@@ -65,6 +65,8 @@ table inet xproxy {
     tcp dport { 80, 443 } ct state new ip saddr @ratelimited drop
     tcp dport { 80, 443 } accept
     tcp dport 22 ip saddr 10.0.0.0/8 accept
+    # cluster port: peers only
+    tcp dport 7946 ip saddr { 10.0.0.2, 10.0.0.3 } accept
   }
 }
 ```
@@ -86,6 +88,14 @@ from a lab address.
 xproxy refuses a world writable configuration file. Nothing under
 `/etc/xproxy` should be writable by the service user; the unit mounts it
 read only.
+
+## 5b. Cluster
+
+Use a dedicated private CA for cluster certificates, never the public web
+CA. Set `allowed_names` to the exact node names. Bind `listen` to the
+internal interface and restrict the port with nftables to the peers.
+Rotate node certificates by installing the new files and restarting one
+node at a time; the others keep serving with local limits meanwhile.
 
 ## 6. Management access
 

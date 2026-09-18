@@ -32,11 +32,14 @@ server.
 | `internal/config` | `TestMinimalDefaults`, `TestRejects` (25 rejection cases), `TestMultipleErrorsReported`, `TestZeroTimeoutMeansDefault`, `TestDuration`, `TestRateLimitDefaults`, `TestHostPattern`, `TestExampleConfig` | Defaults, every validation rule, error aggregation, the shipped example |
 | `internal/router` | `TestMatch`, `TestNoMatch`, `BenchmarkMatch` | Exact versus wildcard host precedence, longest prefix, segment boundaries, methods, priority |
 | `internal/netutil` | `TestClientIP`, `TestCleanPath`, `TestHost` | Trusted proxy algorithm including malformed hops and IPv4 mapped addresses; traversal normalisation; host normalisation |
-| `internal/limits` | `TestKeyedLimiter`, `TestKeyedLimiterBound`, `TestConcurrency`, `TestConnLimiter` | Refill arithmetic with a fake clock, memory bound and eviction, release idempotency, real sockets dropped at accept |
+| `internal/limits` | `TestKeyedLimiter`, `TestKeyedLimiterBound`, `TestPeerRates`, `TestConcurrency`, `TestConnLimiter`, `TestConnLimiterBanned` | Refill arithmetic with a fake clock, memory bound and eviction, peer reports reduce refill and expire, flush and its cap, release idempotency, real sockets dropped at accept, banned peers closed at accept |
 | `internal/tlsconf` | `TestServer`, `TestClient` | SNI selection, hardening flags, insecure suite rejection, double opt-in |
 | `internal/upstream` | `TestRoundRobin`, `TestWeighted`, `TestLeastConn`, `TestHashRing`, `TestAffinity`, `TestOutlierEjection`, `TestActiveHealthCheck` | Balancer semantics including smooth weighting and minimal key movement on the ring; cookie tamper and expiry; ejection percentage; health state transitions against a real HTTP server |
 | `internal/logging` | `TestOpenAndWrite`, `TestRotate` | JSON single line, level filter, file mode, injection safety, rotation chain |
-| `internal/mgmt` | `TestManagementAPI` | Socket mode, status, actions, error propagation, 501 for missing actions, in-use socket refusal |
+| `internal/mgmt` | `TestManagementAPI`, `TestBanAPI` | Socket mode, status, actions, error propagation, 501 for missing actions, in-use socket refusal; ban list, add, refuse loopback and bad durations, remove, counters |
+| `internal/ban` | `TestTriggerAndEscalation`, `TestWindowReset`, `TestExemptAndManual`, `TestBound`, `TestPersistence`, `TestReconfigure` | Trigger thresholds and reason filters, escalation and cap with a fake clock, window reset, exemptions, refusal of loopback and wide prefixes, CIDR bans, IPv4 mapped lookups, table bound, bbolt round trip including expiry and unban, reconfiguration keeps state |
+| `internal/cluster` | `TestTwoNodes`, `TestRejectsUnauthenticated`, `TestProtocolErrors` | Bans and unbans propagate, sources are rewritten, rates arrive as rates, late joiner gets a snapshot, peer removal on reconfigure, status; connections without a certificate, with a foreign CA or outside `allowed_names` are rejected and counted; bad JSON, messages before hello, wrong version, unknown type and oversized lines close the connection while a valid session is applied |
+| `internal/waf` | `TestBlockSQLi`, `TestDetectMode`, `TestCleanRequestPasses`, `TestBodyInspectionAndReplay`, `TestBodyLimitReject`, `TestResponseInspection`, `TestCustomDirectivesAndBadRules`, `TestOnlyNeededModesCompiled` | CRS blocks injection in query and body, detect mode logs without denying, clean traffic produces no attributes, inspected bodies are replayed intact, 413 above the body limit, response leakage blocked and clean or oversize responses pass intact, custom SecLang rules, compile errors surface, lazy compilation per mode |
 
 ### Integration tests (in `internal/proxy`)
 
@@ -51,6 +54,11 @@ drive it with `net/http` and raw TCP.
 | `TestTLSAndRedirect` | HTTP to HTTPS 308 preserving path and query, TLS 1.3 with HTTP/2 negotiated, `X-Forwarded-Proto`, TLS 1.2 refused when the minimum is 1.3 |
 | `TestConnectionLimits` | Concurrency 503 on a live connection, third connection dropped at accept, counters |
 | `TestSlowHeaderTimeout` | Slowloris connection closed by the header timeout |
+| `TestWAFIntegration` | Block, detect and off modes per route, custom profile status, body inspected and forwarded, injection in body blocked, counters |
+| `TestBanIntegration` | WAF denies trigger a ban that applies before routing, other clients unaffected, exempt range never banned, rate limit denies feed the catch-all trigger, manual CIDR ban and unban |
+| `TestBanDropsConnectionAtAccept` | Accept hook sees bans; loopback refusal |
+| `TestBansSurviveReload` | Reload keeps active bans; removing the section drops the list |
+| `TestClusterSharesLimitsAndBans` | Two full servers peer over mTLS; a client's consumption on one node holds its bucket at zero on the other, other clients unaffected, recovery after reports go stale, ban propagation, listen change refused on reload |
 
 ### Fuzz targets
 
@@ -78,10 +86,13 @@ Current statement coverage from `make cover` (race enabled):
 | `internal/router` | 96 % |
 | `internal/limits` | 94 % |
 | `internal/netutil` | 92 % |
+| `internal/cluster` | 87 % |
+| `internal/waf` | 85 % |
 | `internal/upstream` | 84 % |
-| `internal/mgmt` | 82 % |
-| `internal/proxy` | 71 % |
-| `internal/config` | 66 % |
+| `internal/mgmt` | 84 % |
+| `internal/ban` | 80 % |
+| `internal/proxy` | 73 % |
+| `internal/config` | 72 % |
 | `internal/logging` | 66 % |
 | `internal/tlsconf` | 56 % |
 
@@ -123,9 +134,10 @@ Phase 2:
 
 - WAF corpus tests: the CRS regression suite run through the proxy in
   detect mode, asserting scores per rule family; a false positive suite from
-  sample applications.
-- Cluster tests: two in-process nodes exchanging counters over loopback
-  mTLS, asserting convergence bounds and behaviour when a peer is lost.
+  sample applications. (The engine level tests above cover the integration;
+  the corpus run is still open.)
+- Cluster convergence bounds under load and a three node partition test
+  (the two node functional tests exist; see above).
 - HTTP/3 interoperability with `quic-go` clients and a curl build.
 - Load tests under `test/load` using k6 and vegeta with published baseline
   numbers for the reference hardware; soak test of 24 hours with leak

@@ -43,17 +43,29 @@ Exit criterion: `make check` is green, the example configuration validates,
 and a manual deployment on Fedora following SETUP.md serves traffic under
 the hardened unit.
 
-## Phase 2: Defence
+## Phase 2: Defence (in progress)
 
 Goal: the proxy detects and deflects attacks, not only limits them.
 
-- WAF engine (Coraza) with OWASP CRS, anomaly scoring, per route thresholds,
-  detect and block modes, shadow mode for rule roll-out, bounded body
-  inspection (ASR-F6, AMR-008)
-- Temporary bans with decay, ban list persistence in bbolt, manual ban and
-  unban through the management API (ASR-S2, AMR-012)
-- Distributed rate limiting and ban sharing over an mTLS cluster listener
-  (ASR-S3, AMR-009)
+Delivered so far:
+
+- Filter (middleware) interface with per request instances, request and
+  response phases and access log attributes (AMR-013 groundwork)
+- WAF engine (Coraza) with the bundled OWASP CRS, anomaly scoring, paranoia
+  level and thresholds per profile, `block`, `detect` and `off` per route,
+  operator exclusions and custom rules, bounded request body inspection
+  with replay, optional bounded response inspection, compile-at-load so a
+  bad rule set fails the reload (ASR-F6, AMR-008, AMR-020)
+- Ban list with triggers per deny category, sliding windows, escalating
+  durations with a cap, exemptions, drop at accept or 403, bounded tables,
+  bbolt persistence, survival across reloads, management API and CLI
+  (ASR-S2, AMR-012, AMR-019)
+- Cluster: mutual TLS peer connections, consumption reports that make rate
+  limits approximately cluster wide, ban and unban propagation with
+  snapshots for new peers, bounded protocol, reload of peers in place,
+  management view (ASR-S3, AMR-009, AMR-021)
+
+Remaining:
 - Adaptive load shedding with priority classes per route; static challenge
   page for browsers (AMR-016)
 - HTTP/3 over QUIC with address validation and Alt-Svc (ASR-F2, AMR-002)

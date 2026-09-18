@@ -63,6 +63,52 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Environment proxy variables ignored for upstream connections.
 - No response decompression, so no decompression bombs in the proxy.
 
+### Web application firewall
+
+- OWASP Core Rule Set (bundled, no network fetch) through the Coraza
+  engine, anomaly scoring with configurable paranoia level and thresholds.
+- Per route `block`, `detect` (shadow) or `off`; profiles per route so an
+  API can run a stricter paranoia level than a marketing site.
+- Request headers and bodies inspected; bodies above the limit are
+  rejected with 413 by default, or inspected partially when configured.
+  Inspected bodies are replayed to the upstream unchanged.
+- Optional response inspection for data leakage rules, bounded by a size
+  limit; larger bodies pass uninspected and that fact is visible in the
+  configuration, never silent.
+- Operator exclusions and custom SecLang rules load between CRS setup and
+  CRS rules; a rule set that fails to compile fails the reload.
+- Every block and every detection is logged with matched rule identifiers,
+  the CRS total score and the WAF phase.
+
+### Ban list
+
+- Repeated denies (WAF, rate limit, ACL and others, selectable per
+  trigger) within a window ban the client address for an escalating
+  duration with a cap.
+- Banned peers are closed at accept before any byte is read, or answered
+  403 when the client address is derived from a trusted proxy chain.
+- Exempt ranges can never be banned. Loopback, unspecified and overly wide
+  prefixes are refused.
+- Tables are bounded; bans optionally persist across restarts in a
+  `0600` bbolt file in the state directory.
+- Operators ban and unban through the audited management API.
+
+### Cluster
+
+- Mutual TLS 1.3 only; every peer must present a certificate from the
+  cluster CA, optionally restricted to named identities. No other
+  credential exists, so there is no shared secret to leak.
+- The listener must bind a specific internal address; validation refuses
+  all-interfaces binds.
+- Messages are size bounded (1 MiB), count bounded (keys and bans per
+  message), version checked and rejected on the first malformed line;
+  inbound connections are capped and idle peers are disconnected.
+- Peer input can only tighten local limits (refill is reduced, never
+  increased) and add or remove bans; exemptions still apply to peer bans,
+  loopback and wide prefixes are refused as for manual bans.
+- Losing every peer degrades to local limiting; stale reports expire after
+  `peer_stale`.
+
 ### Upstreams
 
 - Connect, response header, idle and total timeouts per pool.
@@ -101,10 +147,10 @@ to report a vulnerability. The threat analysis behind the controls is in
 
 ## Planned controls (see ROADMAP.md)
 
-Phase 2: WAF with OWASP CRS and shadow mode, temporary bans with decay and
-cluster sharing, adaptive shedding with priority classes, HTTP/3 with
-address validation, mutual TLS to upstreams, JWT validation, PII redaction
-rules, journald and syslog sinks.
+Phase 2 (remaining): adaptive shedding with priority classes, challenge
+page, HTTP/3 with address validation, mutual TLS to upstreams, JWT
+validation, PII redaction rules, journald and syslog sinks, Prometheus
+metrics, TUI.
 
 Phase 3: ICAP scanning, ACME, full SELinux policy in an RPM, GUI with role
 separation, coverage and mutation gates, external security review.
@@ -119,7 +165,9 @@ separation, coverage and mutation gates, external security review.
 - **Race detector.** All tests run with `-race` in CI.
 - **Fuzzing.** Every custom parser and matcher has a native fuzz target
   (`FuzzParse`, `FuzzMatch`, `FuzzCleanPath`, `FuzzHost`); CI runs each for
-  a short budget, and longer runs are part of the release checklist.
+  a short budget, and longer runs are part of the release checklist. The
+  WAF engine and rule parser are third party (Coraza) and are fuzzed
+  upstream; xproxy fuzzes its own glue through the configuration fuzzer.
 - **Vulnerability scanning.** `govulncheck` in CI fails the build on a
   reachable vulnerability.
 - **Dependency review.** New modules require an AMR record and a review of

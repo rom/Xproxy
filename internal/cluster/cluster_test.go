@@ -1,0 +1,269 @@
+package cluster
+
+import (
+	"crypto/tls"
+	"io"
+	"log/slog"
+	"net"
+	"net/netip"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/rom/xproxy/internal/ban"
+	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/limits"
+	"github.com/rom/xproxy/internal/testutil"
+)
+
+var nolog = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+// fakeRates records reports and serves queued flushes.
+type fakeRates struct {
+	mu      sync.Mutex
+	pending map[string]map[string]float64
+	reports []report
+}
+
+type report struct {
+	peer, policy string
+	reports      []limits.PeerReport
+}
+
+func (f *fakeRates) Flush(int) map[string]map[string]float64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := f.pending
+	f.pending = nil
+	return out
+}
+
+func (f *fakeRates) Report(peer, policy string, rs []limits.PeerReport) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reports = append(f.reports, report{peer, policy, rs})
+}
+
+func (f *fakeRates) queue(policy, key string, n float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pending == nil {
+		f.pending = map[string]map[string]float64{}
+	}
+	if f.pending[policy] == nil {
+		f.pending[policy] = map[string]float64{}
+	}
+	f.pending[policy][key] += n
+}
+
+func (f *fakeRates) got() []report {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]report(nil), f.reports...)
+}
+
+type testNode struct {
+	node  *Node
+	rates *fakeRates
+	bans  *ban.List
+	addr  string
+}
+
+func clusterCfg(id, cert, key, ca string, peers []string, allowed ...string) *config.Cluster {
+	return &config.Cluster{
+		NodeID: id, Listen: "127.0.0.1:0", Peers: peers,
+		TLS:            config.ClusterTLS{CertFile: cert, KeyFile: key, CAFile: ca, AllowedNames: allowed},
+		GossipInterval: config.Duration(100 * time.Millisecond),
+		PeerStale:      config.Duration(time.Second), MaxKeysPerReport: 100,
+	}
+}
+
+func startNode(t *testing.T, cfg *config.Cluster) *testNode {
+	t.Helper()
+	rates := &fakeRates{}
+	n, err := New(cfg, rates, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bl, err := ban.New(&config.Bans{MaxEntries: 1000, Action: "reject"}, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.AttachBans(bl)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.Start(ln)
+	t.Cleanup(func() { n.Stop(); bl.Close() })
+	return &testNode{node: n, rates: rates, bans: bl, addr: ln.Addr().String()}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %s", what)
+}
+
+func TestTwoNodes(t *testing.T) {
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	ac, ak := ca.Issue(t, dir, "node-a")
+	bc, bk := ca.Issue(t, dir, "node-b")
+
+	a := startNode(t, clusterCfg("a", ac, ak, ca.Path, nil))
+	b := startNode(t, clusterCfg("b", bc, bk, ca.Path, []string{a.addr}))
+	a.node.Reconfigure(clusterCfg("a", ac, ak, ca.Path, []string{b.addr}))
+
+	waitFor(t, "connections", func() bool { return a.node.ConnectedPeers() == 1 && b.node.ConnectedPeers() == 1 })
+
+	// Bans propagate both ways, including a snapshot to a late joiner.
+	if _, err := a.bans.Ban("203.0.113.10", time.Hour, "from-a"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "ban a->b", func() bool { return b.bans.Banned(netip.MustParseAddr("203.0.113.10")) })
+	for _, e := range b.bans.Entries() {
+		if e.Target == "203.0.113.10" && e.Source != "peer:a" {
+			t.Fatalf("source %q", e.Source)
+		}
+	}
+	if err := a.bans.Unban("203.0.113.10"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "unban a->b", func() bool { return !b.bans.Banned(netip.MustParseAddr("203.0.113.10")) })
+
+	// Rates: consumption queued on a reaches b as a rate.
+	a.rates.queue("per-ip", "198.51.100.1", 20)
+	waitFor(t, "rates a->b", func() bool { return len(b.rates.got()) > 0 })
+	r := b.rates.got()[0]
+	if r.peer != "a" || r.policy != "per-ip" || len(r.reports) != 1 || r.reports[0].Key != "198.51.100.1" || r.reports[0].Rate < 50 {
+		t.Fatalf("report %+v", r)
+	}
+
+	// Late joiner receives the ban snapshot.
+	if _, err := b.bans.Ban("203.0.113.11", time.Hour, "from-b"); err != nil {
+		t.Fatal(err)
+	}
+	cc, ck := ca.Issue(t, dir, "node-c")
+	c := startNode(t, clusterCfg("c", cc, ck, ca.Path, nil))
+	b.node.Reconfigure(clusterCfg("b", bc, bk, ca.Path, []string{a.addr, c.addr}))
+	waitFor(t, "snapshot b->c", func() bool { return c.bans.Banned(netip.MustParseAddr("203.0.113.11")) })
+
+	st := a.node.Status()
+	if st.NodeID != "a" || len(st.Peers) != 1 || !st.Peers[0].Connected || len(st.Inbound) != 1 || st.Inbound[0].NodeID != "b" || st.BansSent < 2 || st.RatesSent < 1 {
+		t.Fatalf("status %+v", st)
+	}
+
+	// Dropping a peer from the configuration closes it.
+	b.node.Reconfigure(clusterCfg("b", bc, bk, ca.Path, []string{c.addr}))
+	waitFor(t, "peer removed", func() bool { return len(a.node.Status().Inbound) == 0 })
+}
+
+func TestRejectsUnauthenticated(t *testing.T) {
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	ac, ak := ca.Issue(t, dir, "node-a")
+	a := startNode(t, clusterCfg("a", ac, ak, ca.Path, nil, "node-a", "node-b"))
+
+	// No client certificate.
+	conn, err := tls.Dial("tcp", a.addr, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}) //nolint:gosec // test
+	if err == nil {
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		_, err = conn.Write([]byte(`{"t":"ping"}` + "\n"))
+		if err == nil {
+			_, err = conn.Read(make([]byte, 1))
+		}
+		conn.Close()
+		if err == nil {
+			t.Fatal("connection without client certificate survived")
+		}
+	}
+	// Certificate from another CA.
+	other := testutil.WriteCA(t, dir)
+	oc, ok := other.Issue(t, dir, "node-b")
+	cert, _ := tls.LoadX509KeyPair(oc, ok)
+	conn, err = tls.Dial("tcp", a.addr, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}}) //nolint:gosec // test
+	if err == nil {
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		_, err = conn.Write([]byte(`{"t":"ping"}` + "\n"))
+		if err == nil {
+			_, err = conn.Read(make([]byte, 1))
+		}
+		conn.Close()
+		if err == nil {
+			t.Fatal("foreign CA accepted")
+		}
+	}
+	// Right CA, wrong name.
+	xc, xk := ca.Issue(t, dir, "node-x")
+	x := startNode(t, clusterCfg("x", xc, xk, ca.Path, []string{a.addr}))
+	time.Sleep(500 * time.Millisecond)
+	if x.node.ConnectedPeers() != 0 && len(a.node.Status().Inbound) != 0 {
+		t.Fatal("peer outside allowed_names accepted")
+	}
+	waitFor(t, "rejection counted", func() bool { return a.node.Status().Rejected >= 2 })
+}
+
+func TestProtocolErrors(t *testing.T) {
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	ac, ak := ca.Issue(t, dir, "node-a")
+	bc, bk := ca.Issue(t, dir, "node-b")
+	a := startNode(t, clusterCfg("a", ac, ak, ca.Path, nil))
+	cert, _ := tls.LoadX509KeyPair(bc, bk)
+	dial := func() *tls.Conn {
+		c, err := tls.Dial("tcp", a.addr, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}}) //nolint:gosec // test
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+		return c
+	}
+	expectClosed := func(c *tls.Conn, payload string) {
+		t.Helper()
+		if _, err := c.Write([]byte(payload)); err != nil {
+			return
+		}
+		if _, err := c.Read(make([]byte, 1)); err == nil {
+			t.Fatalf("connection survived %q", payload)
+		}
+		c.Close()
+	}
+	expectClosed(dial(), "not json\n")
+	expectClosed(dial(), `{"t":"rates","rates":{}}`+"\n")                     // before hello
+	expectClosed(dial(), `{"t":"hello","node":"b","ver":99}`+"\n")            // wrong version
+	expectClosed(dial(), `{"t":"hello","node":"b","ver":1}{"t":"nope"}`+"\n") // unknown type after hello on one line is bad json
+	c := dial()
+	if _, err := c.Write([]byte(`{"t":"hello","node":"b","ver":1}` + "\n" + `{"t":"bogus"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Read(make([]byte, 1)); err == nil {
+		t.Fatal("unknown type accepted")
+	}
+	c.Close()
+	// Oversized line.
+	c = dial()
+	big := make([]byte, MaxMessageBytes+10)
+	for i := range big {
+		big[i] = 'a'
+	}
+	expectClosed(c, string(big)+"\n")
+	// Valid session with rates and bans is accepted and applied.
+	c = dial()
+	msgs := `{"t":"hello","node":"b","ver":1}` + "\n" +
+		`{"t":"rates","interval_ms":1000,"rates":{"p":{"k":5}}}` + "\n" +
+		`{"t":"bans","bans":[{"target":"203.0.113.77","until":"2999-01-01T00:00:00Z","reason":"x"}],"removed":["203.0.113.78"]}` + "\n"
+	if _, err := c.Write([]byte(msgs)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "applied", func() bool {
+		return len(a.rates.got()) == 1 && a.bans.Banned(netip.MustParseAddr("203.0.113.77"))
+	})
+	c.Close()
+}

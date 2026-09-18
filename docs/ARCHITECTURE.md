@@ -56,6 +56,10 @@ internal/upstream   endpoints, balancers, health checks, affinity, ejection
 internal/proxy      server, listeners, handler pipeline, transport, stats
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
+internal/filter     per-route middleware interface (Filter, Instance, Chain)
+internal/waf        Coraza + OWASP CRS engine as a filter
+internal/ban        ban list with triggers, escalation and persistence
+internal/cluster    peer sharing of limits and bans over mutual TLS
 internal/version    build information
 deploy/             systemd units, sysctl, SELinux, logrotate, example config
 docs/               this documentation
@@ -68,7 +72,10 @@ keeps the API surface at exactly two binaries.
 Dependency direction (arrows point at the importer's dependency):
 
 ```
-cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config}
+cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster}
+                       cluster  -> {ban, limits, config}
+                       waf      -> {filter, config}
+                       ban      -> {netutil, config}
                        upstream -> {tlsconf, config}
                        router   -> config
                        logging  -> config
@@ -124,7 +131,9 @@ the `denied` reason.
 |---|-------|--------------|---------|
 | 0 | Accept: `ConnLimiter.Wrap` closes connections beyond `max_connections` or `max_connections_per_ip` before any byte is read | connection closed | `rejected_connections` |
 | 1 | `net/http` reads headers under `read_header_timeout` and `max_header_bytes` | 408 / 431 by the server | (server) |
+| 0b | Accept: banned peers are closed when `bans.action` is `drop` | connection closed | `rejected_connections` |
 | 2 | Concurrency: `Concurrency.Acquire` | 503 + `Retry-After` | `denied_concurrency` |
+| 2b | Ban list lookup on the derived client address | 403 | `denied_ban` |
 | 3 | Plaintext redirect listener: 308 to https | 308 | |
 | 4 | URI length | 414 | `denied_uri_length` |
 | 5 | Host normalisation (`netutil.Host`) | 400 | `denied_bad_host` |
@@ -132,16 +141,21 @@ the `denied` reason.
 | 7 | CIDR deny then allow | 403 | `denied_acl` |
 | 8 | Rate limits in route order; reject or tarpit | 429 | `denied_rate_limit`, `tarpitted` |
 | 9 | Body limit: declared length checked, then `MaxBytesReader` | 413 | `denied_body_size` |
+| 9b | Filter chain request phase (WAF): headers, then body, which is buffered and replayed to the upstream | 403 or rule status | `denied_waf`, `waf_detected` |
 | 10 | Route timeout context | 504 | `upstream_timeouts` |
 | 11 | Action: redirect, respond, or proxy | | |
 | 12 | Proxy: WebSocket gate | 403 | `denied_websocket` |
 | 13 | Proxy: `httputil.ReverseProxy` with `poolTransport` | 502 / 503 / 504 | `upstream_*` |
+| 13b | Filter chain response phase (WAF response rules when `inspect_responses`) | 403 | `denied_waf` |
 | 14 | Response: header operations, `Server` removal, affinity cookie | | |
 | 15 | Access log | | `responses_*`, `bytes_*` |
 
-Planned stages (1.0): WAF request phase between 9 and 10, ICAP REQMOD after
-the WAF, WAF response phase and ICAP RESPMOD in `ModifyResponse`, ban check
-before 7, adaptive shedding at 2.
+Every deny at stages 2 to 13 is reported to the ban list (`Observe`) with
+its category, so triggers can turn repeated denies into bans.
+
+Planned stages (1.0): ICAP REQMOD after the WAF request phase and ICAP
+RESPMOD after the WAF response phase, JWT validation before the filter
+chain, adaptive shedding at 2.
 
 ### Client address
 
@@ -205,6 +219,9 @@ an endpoint moves only its keys (`TestHashRing` asserts this).
   Keys per shard are capped; on a full shard, buckets that have fully
   refilled are evicted; if none can be, the request is allowed without
   tracking. Memory is therefore bounded at `64 * maxKeys` buckets per policy.
+  With clustering, each bucket also holds up to 64 peer rate reports with
+  timestamps; refill uses `rate - sum(fresh peer rates)`, clamped at zero,
+  and `Flush` returns and resets per key consumption for gossip.
 - `ConnLimiter`: wraps the listener; counts per IP in a map guarded by one
   mutex (accept rate, not request rate) and globally with an atomic. Limits
   are adjustable on reload.
@@ -258,16 +275,92 @@ Endpoints:
 1.0 adds `/metrics` (Prometheus), ban management, the time series ring
 buffer and configuration editing with validation, all on the same socket.
 
-## 11. Extension points
+## 11. Filters (middleware)
 
-Today: the pipeline is a fixed sequence in `listenerHandler.ServeHTTP`. The
-1.0 middleware interface will expose `OnRequest(ctx, *Request) Decision` and
-`OnResponse(ctx, *Response) Decision` with a registry keyed by name and
-configured per route. WAF, ICAP, JWT and the ban list are implemented as the
-first middlewares so that the interface is proven by internal use before it
-is stable (AMR-013).
+`internal/filter` defines the per-route middleware interface:
 
-## 12. Scale considerations for 1.0 targets
+```
+Filter    Name() ; Begin(ctx, *Info) Instance         shared state, built per generation
+Instance  Request(*http.Request) Verdict              runs after limits, before the action
+          Response(*http.Response) Verdict            runs in ModifyResponse
+          End() []any                                 always called; returns access log attributes
+Chain     []Filter with Begin -> Instances
+Verdict   Deny, Status, Reason, Detail, Attrs
+```
+
+A route's chain is compiled into `compiledRoute.filters`. The handler
+begins instances once per request, runs the request phase before the route
+action, the response phase inside the reverse proxy's `ModifyResponse`
+(a deny there travels through the error handler as `filterDenied`), and
+always calls `End`, whose attributes land in the access log line.
+
+The WAF is the first filter. ICAP and JWT follow in 1.0; the interface is
+declared stable for external middleware once those exist (AMR-013).
+
+### WAF filter
+
+One `waf.Engine` per generation compiles each profile that some route uses
+into a blocking Coraza instance, a detection-only instance, or both. The
+SecLang is assembled in a fixed order: Coraza recommended settings, body
+limits from the configuration, CRS setup, paranoia level and thresholds,
+operator directive files and inline directives (exclusions), CRS rules,
+and finally the engine mode. Per request the instance mirrors Coraza's own
+middleware: connection and URI, request headers, request body read into
+the transaction and replayed to the upstream from Coraza's buffer, then
+optionally response headers and a bounded response body. Matched attack
+rules, the blocking rule's total score and the interruption are logged;
+initialisation and reporting rules are filtered out.
+
+### Ban list
+
+`ban.List` is owned by the `Server`, not by the runtime, so bans survive
+reloads. It is consulted twice: in the accept path through
+`ConnLimiter.Banned` (only when `action` is `drop`, because at accept only
+the TCP peer is known) and in the handler on the derived client address.
+Triggers keep a bounded per-address window per trigger; reaching the
+threshold bans the address for `duration` multiplied by `escalation` for
+each earlier ban within twice `max_duration`. Entries live in a map for
+addresses and a small slice for CIDRs; both are bounded and purged every
+minute. With `state_file` set, every ban and unban is written to bbolt and
+live entries are loaded on start.
+
+## 12. Cluster
+
+```
+ node A                                   node B
+ +-----------------------------+          +-----------------------------+
+ | limiters  --Flush--> gossip |--mTLS--> | accept -> Report -> limiters|
+ | ban list  --OnChange-> queue|  (A->B)  |          Apply  -> ban list |
+ |                             |          |                             |
+ | accept <-Report/Apply       | <--mTLS--| gossip <--Flush/OnChange    |
+ +-----------------------------+  (B->A)  +-----------------------------+
+```
+
+Each node dials every configured peer and sends on that connection; it
+receives on the connections peers dialled to it. Both directions are TLS
+1.3 with client certificates from the cluster CA, optionally restricted to
+`allowed_names`. Messages are newline-delimited JSON, at most 1 MiB, with
+bounded counts of keys and bans per message and a read deadline of
+`peer_stale` plus five seconds; a silent peer is disconnected and
+redialled with back-off.
+
+Every `gossip_interval` the node flushes consumption from all limiters of
+the live generation (policy, key, tokens) and sends one `rates` message
+carrying the measured interval; the receiver converts counts to rates and
+calls `ReportPeer` on the matching policy. Buckets refill at the configured
+rate minus the sum of fresh peer rates (section 7), which makes the
+configured rate approximately cluster wide. Ban changes originating locally
+(manual or trigger) are queued by the ban list's change hook and sent in
+the same cycle; peers apply them with source `peer:<node>` and never
+re-announce them, so there are no loops. A newly connected peer receives a
+snapshot of all active bans. Idle cycles send a ping so deadlines hold.
+
+The node is owned by the `Server` like the ban list and reads limiters
+through the live runtime pointer, so reloads neither detach it nor lose
+peer state. Listen address, node identity and TLS material need a restart;
+peers and intervals reload in place.
+
+## 13. Scale considerations for 1.0 targets
 
 1000 hosts and 10 000 endpoints (ASR-P1) drive these properties:
 

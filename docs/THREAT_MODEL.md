@@ -27,7 +27,7 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Compromised upstream | Arbitrary responses, slow responses, connection abuse |
 | Local unprivileged user on the host | Can reach files and sockets their permissions allow |
 | Operator | Trusted; mistakes are in scope, malice is out of scope |
-| Peer proxy in a cluster (1.0) | Holds a cluster certificate |
+| Peer proxy in a cluster | Holds a cluster certificate |
 
 ## Boundary 1: Internet to data plane
 
@@ -54,7 +54,7 @@ explicitly out of scope. This document is reviewed at every phase exit
 
 | Threat | Mitigation |
 |--------|------------|
-| Attacker activity not attributable | Every request has an identifier returned to the client, sent upstream and logged; denies go to the security stream with client address, method, host, path and user agent |
+| Attacker activity not attributable | Every request has an identifier returned to the client, sent upstream and logged; denies go to the security stream with client address, method, host, path and user agent; WAF events carry matched rule identifiers and scores; bans carry their trigger and count |
 
 ### Information disclosure
 
@@ -78,7 +78,9 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Large bodies | `max_body_bytes` globally and per route, checked on `Content-Length` and enforced by `MaxBytesReader` |
 | Long URIs and huge headers | `max_uri_length` (414), `max_header_bytes` (431) |
 | Health check amplification against upstreams | Jittered probes, bounded drain of probe responses |
-| Regular expression denial of service | No user supplied regular expressions in MVP; 1.0 WAF rules are compiled once and the CRS is curated; Go's `regexp` is linear time |
+| Regular expression denial of service | Operator supplied regular expressions exist only in WAF rules; they compile once at load, the CRS is curated, and Go's `regexp` is linear time |
+| WAF body buffering as a memory attack | Request bodies are inspected up to `waf.request_body_limit` (default 1 MiB) and rejected or partially inspected above it; response inspection is bounded by `waf.response_body_limit`; both sit under the global body and concurrency limits |
+| Ban table exhaustion by spoofed sources | Bans key on the derived client address; tables are bounded with eviction of the soonest expiring entries; trigger windows are bounded per trigger |
 | Decompression bombs | The proxy never decompresses; `DisableCompression` on the transport passes encodings through |
 | QUIC amplification (1.0) | Retry tokens and address validation enabled; UDP receive buffer bounds |
 
@@ -99,6 +101,17 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Upstream impersonation | HTTPS with CA pinning via `ca_file`, `server_name`; verification skip requires double opt-in and is logged |
 | Upstream pushes a backend into a poisoned state | Outlier ejection removes failing endpoints; `max_ejection_percent` prevents ejecting everything and stampeding the rest |
 | Credentials leaking to the wrong upstream | Route level `request_headers.remove` (for example `Cookie` on an API route) |
+
+## Boundary 2b: Cluster peers
+
+| Threat | Mitigation |
+|--------|------------|
+| Rogue host joins the cluster | TLS 1.3 with client certificates from the cluster CA required; `allowed_names` pins identities; the listener is bound to an internal address |
+| Compromised peer relaxes limits | Impossible by construction: peer reports only reduce refill; there is no message that raises a limit or unbans except an explicit removal, which is visible in logs with the peer identity |
+| Compromised peer bans legitimate users | Accepted risk within the trust domain; exemptions still apply, wide prefixes and loopback are refused, `xproxyctl bans` shows `peer:<node>` sources, and `share_bans: false` disables the channel |
+| Compromised peer floods the listener | Message size, key and ban counts bounded; inbound connection cap; oversized or malformed input closes the connection |
+| Client addresses cross the network in reports | Reports carry rate limit keys (addresses or header values) under mTLS between hosts of the same operator; documented in AMR-021 |
+| Peer identity spoofing in messages | The `node` field is informational; authorisation is the certificate, and the certificate name is logged next to it |
 
 ## Boundary 3: Management plane
 
@@ -125,7 +138,8 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Rate limit buckets reset on reload | Accepted; a flood cannot exploit it without also triggering reloads, which require operator access |
 | Volumetric attacks above the host's link capacity | Out of scope; requires upstream scrubbing or anycast |
 | A full rate limit table fails open for the rate dimension | Accepted and documented; connection and concurrency ceilings still hold; table size is generous |
-| No WAF in MVP | Phase 2 |
+| WAF false positives can block legitimate traffic | Mitigated by `detect` mode for roll-out, per route profiles and exclusion files; residual risk is operational |
+| An attacker can get a shared NAT address banned | Accepted; `exempt_cidrs` for known shared egress, `reject` action and short durations reduce impact; bans never apply to exempt ranges |
 | `WriteTimeout` may cut long downloads | Operator tunes per deployment; 1.0 adds per route write deadlines |
 | Certificate private keys readable by the service user | Inherent in a single process design (AMR-005); mitigated by file modes, SELinux and no shell in the unit |
 

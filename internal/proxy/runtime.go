@@ -6,10 +6,12 @@ import (
 	"net/netip"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/router"
 	"github.com/rom/xproxy/internal/upstream"
+	"github.com/rom/xproxy/internal/waf"
 )
 
 // runtime is everything derived from one configuration generation. The
@@ -24,6 +26,7 @@ type runtime struct {
 	rateLimits map[string]*rateLimit
 	trusted    []netip.Prefix
 	routes     []*compiledRoute
+	waf        *waf.Engine
 }
 
 type rateLimit struct {
@@ -38,6 +41,19 @@ type compiledRoute struct {
 	rateLimits []*rateLimit
 	allow      []netip.Prefix
 	deny       []netip.Prefix
+	filters    filter.Chain
+	wafMode    string
+}
+
+// wafSelection returns the WAF profile and mode for a route.
+func wafSelection(cfg *config.Config, r *config.Route) (profile string, mode waf.Mode) {
+	if cfg.WAF == nil {
+		return "", waf.ModeOff
+	}
+	if r.WAF != nil {
+		return r.WAF.Profile, waf.Mode(r.WAF.Mode)
+	}
+	return cfg.WAF.DefaultProfile, waf.Mode(cfg.WAF.DefaultMode)
 }
 
 func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runtime, error) {
@@ -64,7 +80,30 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 		// Bound tracked keys so that a distributed source cannot grow memory
 		// without limit: 64 shards * 8192 keys * ~64 bytes ≈ 32 MiB worst case
 		// per policy.
-		rt.rateLimits[rl.Name] = &rateLimit{cfg: rl, lim: limits.NewKeyedLimiter(rl.Rate, rl.Burst, 8192)}
+		lim := limits.NewKeyedLimiter(rl.Rate, rl.Burst, 8192)
+		if cfg.Cluster != nil && cfg.Cluster.SharesRateLimits() {
+			lim.SetPeerStale(cfg.Cluster.PeerStale.D())
+		}
+		rt.rateLimits[rl.Name] = &rateLimit{cfg: rl, lim: lim}
+	}
+	if cfg.WAF != nil {
+		need := waf.Need{}
+		for i := range cfg.Routes {
+			p, m := wafSelection(cfg, &cfg.Routes[i])
+			if m == waf.ModeOff {
+				continue
+			}
+			if need[p] == nil {
+				need[p] = map[waf.Mode]bool{}
+			}
+			need[p][m] = true
+		}
+		engine, err := waf.New(cfg.WAF, need, log)
+		if err != nil {
+			rt.stop()
+			return nil, err
+		}
+		rt.waf = engine
 	}
 	for i := range cfg.Routes {
 		r := &cfg.Routes[i]
@@ -88,6 +127,15 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 				return nil, fmt.Errorf("route %s: unknown rate limit %s", r.Name, name)
 			}
 			cr.rateLimits = append(cr.rateLimits, rl)
+		}
+		if p, m := wafSelection(cfg, r); m != waf.ModeOff {
+			f, err := rt.waf.Filter(p, m)
+			if err != nil {
+				rt.stop()
+				return nil, fmt.Errorf("route %s: %w", r.Name, err)
+			}
+			cr.filters = append(cr.filters, f)
+			cr.wafMode = string(m)
 		}
 		rt.routes[i] = cr
 	}

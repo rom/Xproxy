@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"os"
+	"time"
+)
 
 // Default values. They are deliberately conservative: an operator has to
 // raise a limit on purpose, never lower one by accident.
@@ -38,6 +41,16 @@ const (
 	DefaultOutlierMaxEjectP = 50
 
 	DefaultTarpitDelay = 10 * time.Second
+
+	DefaultBanMaxEntries  = 100000
+	DefaultBanEscalation  = 2.0
+	DefaultBanMaxDuration = 24 * time.Hour
+
+	DefaultWAFRequestBodyLimit  = 1 << 20
+	DefaultWAFResponseBodyLimit = 512 << 10
+	DefaultCRSParanoia          = 1
+	DefaultCRSInbound           = 5
+	DefaultCRSOutbound          = 4
 
 	DefaultLogDirectory = "/var/log/xproxy"
 	DefaultLogLevel     = "info"
@@ -156,8 +169,62 @@ func applyDefaults(c *Config) {
 		}
 	}
 
+	if b := c.Bans; b != nil {
+		setInt(&b.MaxEntries, DefaultBanMaxEntries)
+		setStr(&b.Action, "drop")
+		for i := range b.Triggers {
+			t := &b.Triggers[i]
+			if t.Escalation == 0 {
+				t.Escalation = DefaultBanEscalation
+			}
+			setDur(&t.MaxDuration, DefaultBanMaxDuration)
+		}
+	}
+	if w := c.WAF; w != nil {
+		setStr(&w.DefaultMode, "block")
+		setStr(&w.DefaultProfile, "default")
+		if w.RequestBodyLimit == 0 {
+			w.RequestBodyLimit = DefaultWAFRequestBodyLimit
+		}
+		setStr(&w.RequestBodyLimitAction, "reject")
+		if w.ResponseBodyLimit == 0 {
+			w.ResponseBodyLimit = DefaultWAFResponseBodyLimit
+		}
+		if len(w.ResponseMIMETypes) == 0 {
+			w.ResponseMIMETypes = []string{"text/plain", "text/html", "text/xml", "application/json", "application/xml"}
+		}
+		for i := range w.Profiles {
+			if crs := w.Profiles[i].CRS; crs != nil {
+				setInt(&crs.ParanoiaLevel, DefaultCRSParanoia)
+				setInt(&crs.InboundThreshold, DefaultCRSInbound)
+				setInt(&crs.OutboundThreshold, DefaultCRSOutbound)
+			}
+		}
+	}
+
+	if cl := c.Cluster; cl != nil {
+		if cl.NodeID == "" {
+			if h, err := os.Hostname(); err == nil {
+				cl.NodeID = h
+			} else {
+				cl.NodeID = "xproxy"
+			}
+		}
+		setDur(&cl.GossipInterval, time.Second)
+		if cl.PeerStale == 0 {
+			cl.PeerStale = cl.GossipInterval * 3
+		}
+		setInt(&cl.MaxKeysPerReport, 4096)
+	}
+
 	for i := range c.Routes {
 		r := &c.Routes[i]
+		if r.WAF != nil {
+			if c.WAF != nil {
+				setStr(&r.WAF.Mode, c.WAF.DefaultMode)
+				setStr(&r.WAF.Profile, c.WAF.DefaultProfile)
+			}
+		}
 		if len(r.Paths) == 0 {
 			r.Paths = []string{"/"}
 		}

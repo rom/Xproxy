@@ -22,6 +22,9 @@ type ConnLimiter struct {
 	// OnReject is called with the peer address of every rejected
 	// connection (for security logging). May be nil.
 	OnReject func(addr netip.Addr, reason string)
+	// Banned, when set, is consulted for every accepted connection; a true
+	// result closes it immediately with reason "banned".
+	Banned func(addr netip.Addr) bool
 }
 
 // NewConnLimiter creates a limiter with the given bounds.
@@ -96,6 +99,14 @@ func (l *limitedListener) Accept() (net.Conn, error) {
 			return nil, err
 		}
 		addr := addrOf(conn)
+		if l.lim.Banned != nil && l.lim.Banned(addr) {
+			l.lim.Rejected.Add(1)
+			if l.lim.OnReject != nil {
+				l.lim.OnReject(addr, "banned")
+			}
+			_ = conn.Close()
+			continue
+		}
 		ok, reason := l.lim.acquire(addr)
 		if !ok {
 			l.lim.Rejected.Add(1)

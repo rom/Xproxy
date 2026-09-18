@@ -13,6 +13,63 @@ import (
 	"github.com/rom/xproxy/internal/proxy"
 )
 
+func TestBanAPI(t *testing.T) {
+	cfg, err := config.Parse([]byte(`
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+bans: {action: reject}
+upstreams:
+  - name: u
+    endpoints: [{address: "127.0.0.1:1"}]
+routes:
+  - name: r
+    upstream: u
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := proxy.New(cfg, logging.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(t.TempDir(), "m.sock")
+	m := New(config.Management{Socket: sock, SocketMode: "0600"}, p, logging.Discard(), Actions{})
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Shutdown(context.Background())
+	c := NewClient(sock)
+	es, err := c.Bans()
+	if err != nil || len(es) != 0 {
+		t.Fatalf("empty list: %v %v", es, err)
+	}
+	e, err := c.Ban("203.0.113.7", "1h", "scanner")
+	if err != nil || e.Target != "203.0.113.7" || e.Source != "manual" {
+		t.Fatalf("ban: %+v %v", e, err)
+	}
+	if _, err := c.Ban("127.0.0.1", "1h", "x"); err == nil {
+		t.Fatal("loopback ban accepted")
+	}
+	if _, err := c.Ban("203.0.113.8", "soon", "x"); err == nil {
+		t.Fatal("bad duration accepted")
+	}
+	es, _ = c.Bans()
+	if len(es) != 1 {
+		t.Fatalf("list: %+v", es)
+	}
+	if err := c.Unban("203.0.113.7"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Unban("203.0.113.7"); err == nil {
+		t.Fatal("second unban should fail")
+	}
+	st, _ := c.Status()
+	if st.Stats.BansTotal != 1 || st.Stats.BansActive != 0 {
+		t.Fatalf("stats: %+v", st.Stats)
+	}
+}
+
 func TestManagementAPI(t *testing.T) {
 	cfg, err := config.Parse([]byte(`
 version: 1
@@ -74,6 +131,14 @@ routes:
 	b, _ = c.Raw("/v1/config")
 	if len(b) == 0 {
 		t.Fatal("config empty")
+	}
+	// Cluster is not configured in this server.
+	if _, err := c.ClusterStatus(); err == nil {
+		t.Fatal("cluster status should be unavailable")
+	}
+	// Bans are not configured in this server.
+	if _, err := c.Bans(); err == nil {
+		t.Fatal("bans should be unavailable")
 	}
 	// Second start on the same socket is refused.
 	m2 := New(config.Management{Socket: sock, SocketMode: "0600"}, p, logging.Discard(), Actions{})
