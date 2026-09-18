@@ -138,6 +138,17 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Client addresses cross the network in reports | Reports carry rate limit keys (addresses or header values) under mTLS between hosts of the same operator; documented in AMR-021 |
 | Peer identity spoofing in messages | The `node` field is informational; authorisation is the certificate, and the certificate name is logged next to it |
 
+## Boundary 2c: ACME certificate authority
+
+| Threat | Mitigation |
+|--------|------------|
+| Attacker answers a challenge for a name the proxy serves | `http-01` responses come only from the manager's token table for orders the proxy itself placed; `tls-alpn-01` certificates are minted per challenge and forgotten when the authorization completes; the account key never leaves the state directory |
+| Rogue or spoofed CA directory | `https` required; the CA of the directory can be pinned with `ca_file`; the issued chain must cover exactly the group's hosts or it is discarded |
+| CA compromise or mis-issuance | Outside the proxy's control; issuance is logged on the error stream (component `acme`) with the issuer and expiry, and the audit stream records every certificate change so CT monitoring can be reconciled |
+| Denial of service against renewal (CA outage, rate limits) | Existing certificates keep serving; renewal starts `renew_before` (30 days by default) ahead with hourly back-off, status carries the last error, and `xproxyctl acme` exposes it for alerting |
+| Challenge path used to reach the application | `/.well-known/acme-challenge/` never reaches routing: known tokens get the key authorisation, anything else a 404, both before the WAF and upstreams |
+| State directory disclosure | `0700` directory and `0600` files under `StateDirectory`; `ProtectSystem=strict` limits writes to it; SELinux confines the process |
+
 ## Boundary 3: Management plane
 
 | Threat | Mitigation |

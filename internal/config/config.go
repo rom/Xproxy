@@ -57,6 +57,8 @@ type Config struct {
 	Metrics Metrics `yaml:"metrics"`
 	// ICAP configures external scanning services referenced by routes.
 	ICAP *ICAP `yaml:"icap"`
+	// ACME configures automatic certificates for listeners with tls.acme.
+	ACME *ACME `yaml:"acme"`
 }
 
 // Metrics configures Prometheus exposition and sampled series (AMR-026).
@@ -155,6 +157,15 @@ type TLS struct {
 	// not configurable in Go). Names as in crypto/tls, e.g.
 	// TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256.
 	CipherSuites []string `yaml:"cipher_suites"`
+	// ACME lists host groups that get an automatically issued certificate
+	// each (one certificate per group, hosts as SANs). Requires the
+	// top-level acme section.
+	ACME []ACMEGroup `yaml:"acme"`
+}
+
+// ACMEGroup is one automatically managed certificate.
+type ACMEGroup struct {
+	Hosts []string `yaml:"hosts"`
 }
 
 // Certificate references a PEM certificate chain and private key on disk.
@@ -778,3 +789,25 @@ func (r *RouteICAP) ScansRequests() bool { return r.Request == nil || *r.Request
 
 // ScansResponses reports whether RESPMOD is enabled.
 func (r *RouteICAP) ScansResponses() bool { return r.Response != nil && *r.Response }
+
+// ACME configures the certificate authority account (RFC 8555; AMR-029).
+type ACME struct {
+	// Directory is the CA's directory URL.
+	Directory string `yaml:"directory"`
+	// Email is the account contact.
+	Email string `yaml:"email"`
+	// AcceptTerms must be true; the CA's terms are agreed on registration.
+	AcceptTerms bool `yaml:"accept_terms"`
+	// CAFile pins the CA of the directory server (private CAs, tests).
+	CAFile string `yaml:"ca_file"`
+	// StateDir holds the account key and issued certificates. Default
+	// /var/lib/xproxy/acme.
+	StateDir string `yaml:"state_dir"`
+	// Challenge is http-01 (needs a plaintext listener on port 80) or
+	// tls-alpn-01 (needs the TLS listener on port 443). Default http-01.
+	Challenge string `yaml:"challenge"`
+	// RenewBefore renews when less than this remains. Default 720h (30 days).
+	RenewBefore Duration `yaml:"renew_before"`
+	// CheckInterval is how often expiry is checked. Default 12h.
+	CheckInterval Duration `yaml:"check_interval"`
+}

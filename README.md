@@ -5,15 +5,15 @@ firewall, written in Go for Fedora Linux. Single static
 binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
-Status: **phase 3 in progress** (ICAP delivered; ACME, GUI, SELinux,
+Status: **phase 3 in progress** (ICAP and ACME delivered; GUI, SELinux,
 packaging and scale validation remain). Phases 1 and 2 are complete. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today
 
 - HTTP/1.1, HTTP/2 and HTTP/3 termination with TLS 1.2/1.3 hardened
-  defaults, SNI, certificate hot reload, client certificates, QUIC address
-  validation
+  defaults, SNI, certificate hot reload, ACME issued certificates with
+  automatic renewal, client certificates, QUIC address validation
 - Host and path routing, redirects, static responses, header rewriting
 - Upstream pools with round robin, weighted, least connections and
   consistent hashing; active health checks; outlier ejection; retries;

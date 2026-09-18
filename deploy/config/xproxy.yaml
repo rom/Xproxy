@@ -18,6 +18,11 @@ server:
         certificates:
           - cert_file: /etc/xproxy/certs/example.com.pem
             key_file: /etc/xproxy/certs/example.com-key.pem
+        # Certificates obtained and renewed automatically (needs the acme
+        # section below). One certificate per group, selected by SNI like
+        # the file based ones.
+        acme:
+          - hosts: [shop.example.com, www.shop.example.com]
   limits:
     max_header_bytes: 65536
     max_body_bytes: 10485760        # 10 MiB
@@ -265,6 +270,18 @@ jwt:
       jwks_refresh: 1h
       forward_claims: {X-User: sub, X-Scopes: scope}
       log_claims: [sub]
+
+# ACME account for the tls.acme groups above. http-01 answers on every
+# plaintext listener before the redirect; tls-alpn-01 answers on the TLS
+# listener itself.
+acme:
+  directory: https://acme-v02.api.letsencrypt.org/directory
+  email: hostmaster@example.com
+  accept_terms: true
+  challenge: http-01
+  state_dir: /var/lib/xproxy/acme
+  renew_before: 720h                 # 30 days
+  check_interval: 12h
 
 # External scanning over ICAP (anti-virus, data loss prevention).
 icap:

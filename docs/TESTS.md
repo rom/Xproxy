@@ -58,6 +58,7 @@ drive it with `net/http` and raw TCP.
 | `TestRetryOnDeadEndpoint` | Retry to a second endpoint, outlier ejection of the dead one, no replay of POST |
 | `TestReload` | Generation swap changes routing, listener change refused, reload counters |
 | `TestTLSAndRedirect` | HTTP to HTTPS 308 preserving path and query, TLS 1.3 with HTTP/2 negotiated, `X-Forwarded-Proto`, TLS 1.2 refused when the minimum is 1.3 |
+| `TestACMEEndToEnd` | A listener with only ACME groups against the in-process fake CA (`internal/acme/acmetest`): no certificate before issuance, unknown challenge token 404, forced renewal through the manager joins the start-up order, both hosts served with a chain that verifies against the CA, `acme-tls/1` refused without a pending challenge; run for `http-01` and `tls-alpn-01` |
 | `TestConnectionLimits` | Concurrency 503 on a live connection, third connection dropped at accept, counters |
 | `TestSlowHeaderTimeout` | Slowloris connection closed by the header timeout |
 | `TestWAFIntegration` | Block, detect and off modes per route, custom profile status, body inspected and forwarded, injection in body blocked, counters |
@@ -189,6 +190,9 @@ Phase 2:
   detection through `runtime.MemStats` sampling.
 - Fuzz targets for ICAP framing, WAF transaction building, redaction rules
   and the cluster wire format.
+- ACME against Pebble in a container in CI (the fake CA in
+  `acmetest` covers the protocol; Pebble adds its deliberate failures and
+  nonce rejection).
 
 Phase 3:
 

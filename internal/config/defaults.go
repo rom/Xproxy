@@ -310,6 +310,12 @@ func applyDefaults(c *Config) {
 			setStr(&s.Preview, "auto")
 		}
 	}
+	if a := c.ACME; a != nil {
+		setStr(&a.StateDir, "/var/lib/xproxy/acme")
+		setStr(&a.Challenge, "http-01")
+		setDur(&a.RenewBefore, 30*24*time.Hour)
+		setDur(&a.CheckInterval, 12*time.Hour)
+	}
 	setDur(&c.Metrics.SampleInterval, 10*time.Second)
 	setDur(&c.Metrics.Retention, time.Hour)
 	if ch := c.Challenge; ch != nil {

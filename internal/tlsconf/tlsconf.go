@@ -18,13 +18,24 @@ import (
 	"github.com/rom/xproxy/internal/config"
 )
 
-// Reloadable holds certificates that can be swapped atomically.
+// Reloadable holds certificates that can be swapped atomically. Managed
+// certificates (ACME) come from a source consulted on every lookup, and a
+// challenge hook can answer tls-alpn-01 validations.
 type Reloadable struct {
 	certs atomic.Pointer[[]tls.Certificate]
 	cfgs  []config.Certificate
+	// Managed returns additional certificates (for example from ACME).
+	Managed func() []tls.Certificate
+	// Challenge returns a validation certificate for a server name when a
+	// tls-alpn-01 challenge is pending.
+	Challenge func(serverName string) (*tls.Certificate, bool)
 }
 
-// Load parses all configured certificate pairs.
+// ACMEALPN is the ALPN protocol of tls-alpn-01 (RFC 8737).
+const ACMEALPN = "acme-tls/1"
+
+// Load parses all configured certificate pairs. An empty list is valid
+// when managed certificates are configured.
 func (r *Reloadable) Load() error {
 	certs := make([]tls.Certificate, 0, len(r.cfgs))
 	for _, c := range r.cfgs {
@@ -43,21 +54,41 @@ func (r *Reloadable) Load() error {
 	return nil
 }
 
-// getCertificate selects a certificate by SNI, falling back to the first.
+// getCertificate selects a certificate by SNI, falling back to the first
+// file certificate. A tls-alpn-01 handshake is answered from the
+// challenge hook before anything else.
 func (r *Reloadable) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	certs := r.certs.Load()
-	if certs == nil || len(*certs) == 0 {
-		return nil, errors.New("no certificates loaded")
-	}
-	if len(*certs) == 1 {
-		return &(*certs)[0], nil
-	}
-	for i := range *certs {
-		if err := hello.SupportsCertificate(&(*certs)[i]); err == nil {
-			return &(*certs)[i], nil
+	if r.Challenge != nil {
+		for _, p := range hello.SupportedProtos {
+			if p == ACMEALPN {
+				if c, ok := r.Challenge(hello.ServerName); ok {
+					return c, nil
+				}
+				return nil, errors.New("no pending tls-alpn-01 challenge for " + hello.ServerName)
+			}
 		}
 	}
-	return &(*certs)[0], nil
+	var all []tls.Certificate
+	if certs := r.certs.Load(); certs != nil {
+		all = *certs
+	}
+	if r.Managed != nil {
+		if m := r.Managed(); len(m) > 0 {
+			all = append(append([]tls.Certificate{}, all...), m...)
+		}
+	}
+	if len(all) == 0 {
+		return nil, errors.New("no certificates loaded")
+	}
+	if len(all) == 1 {
+		return &all[0], nil
+	}
+	for i := range all {
+		if err := hello.SupportsCertificate(&all[i]); err == nil {
+			return &all[i], nil
+		}
+	}
+	return &all[0], nil
 }
 
 // Server builds a server tls.Config for a listener. The returned Reloadable
@@ -97,6 +128,9 @@ func Server(cfg *config.TLS, protocols []config.Protocol) (*tls.Config, *Reloada
 		if p == config.ProtocolH1 {
 			tc.NextProtos = append(tc.NextProtos, "http/1.1")
 		}
+	}
+	if len(cfg.ACME) > 0 {
+		tc.NextProtos = append(tc.NextProtos, ACMEALPN)
 	}
 	switch cfg.ClientAuth {
 	case "request", "require":

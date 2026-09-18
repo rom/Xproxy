@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/icap"
@@ -26,7 +27,7 @@ type Client struct {
 // NewClient creates a client for the socket at path.
 func NewClient(path string) *Client {
 	return &Client{http: &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 6 * time.Minute,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				var d net.Dialer
@@ -112,6 +113,12 @@ func (c *Client) ClusterStatus() (*cluster.Status, error) {
 func (c *Client) Upstreams() (map[string][]upstream.Stats, error) {
 	var out map[string][]upstream.Stats
 	return out, c.do("GET", "/v1/upstreams", &out)
+}
+
+// ACME fetches managed certificate status.
+func (c *Client) ACME() ([]acme.CertStatus, error) {
+	var out []acme.CertStatus
+	return out, c.do("GET", "/v1/acme", &out)
 }
 
 // ICAP fetches the status of ICAP services.
