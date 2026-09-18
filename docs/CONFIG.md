@@ -41,7 +41,7 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Reserved (PROXY protocol parsing arrives in 1.0) |
-| `kind` | `http`, `tcp`, `forward` | `http` | `tcp` is a layer 4 listener and `forward` an explicit proxy for clients; see below |
+| `kind` | `http`, `tcp`, `forward`, `dns` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients and `dns` a DNS proxy; see below |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 
 ### server.listeners[].tcp (kind: tcp)
@@ -112,6 +112,46 @@ Counters: `forward_requests`, `forward_tunnels`, `forward_tunnels_open`,
 `forward_errors`, `forward_bytes_in`, `forward_bytes_out`;
 `xproxy_forward_*` metrics. The policy and the users file reload; the
 address and TLS settings need a restart like every listener.
+
+### server.listeners[].dns (kind: dns)
+
+A `kind: dns` listener is a forwarding DNS proxy on the listener address
+over UDP and TCP. Queries are answered from a bounded cache when they
+can be, refused or blocked by policy, and otherwise forwarded to the
+upstream resolvers with a fresh transaction id on a fresh socket
+(random source port) per query; the answer must echo the id and the
+question. A truncated UDP answer is retried over TCP to the upstream,
+and an answer larger than the client's UDP size (512 bytes or its EDNS
+advertisement) is truncated so the client retries over TCP. Only one
+question per query and the QUERY opcode are handled (FORMERR and
+NOTIMP otherwise); responses arriving as queries and packets from
+banned clients are dropped. A dns listener takes only `address` and
+`dns`; bans and the global connection limits apply to TCP clients as
+on every listener. The policy, upstreams and cache bounds reload (the
+cache is kept); the address needs a restart.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstreams` | list of host:port | required | Resolvers tried in turn, rotating the first choice per query |
+| `timeout` | duration | `2s` | One upstream attempt; at most 30s |
+| `allow_clients` | list of CIDR | `[]` (any) | Other clients get REFUSED |
+| `block` | list | `[]` | `name` blocks the name and its subdomains, `*.suffix` subdomains only, `=name` that name only |
+| `block_file` | path | none | Names added from a file: one per line, `#` comments, hosts file lines (`0.0.0.0 name`) accepted; read at load and reload, a missing file fails the reload; at most 2 million entries |
+| `block_action` | `nxdomain`, `refuse`, `sinkhole` | `nxdomain` | A blocked query is a `dns_blocked` security event and ban reason whatever the action |
+| `sinkhole_ipv4` | address | `0.0.0.0` | A answer for blocked names with `sinkhole` (TTL 60) |
+| `sinkhole_ipv6` | address | `::` | AAAA answer for blocked names with `sinkhole`; other types get an empty answer |
+| `cache.max_entries` | int | `10000` | LRU bound |
+| `cache.min_ttl` | duration | `5s` | Floor applied to upstream TTLs |
+| `cache.max_ttl` | duration | `1h` | Ceiling applied to upstream TTLs; at most 168h |
+| `cache.negative_ttl` | duration | `60s` | NXDOMAIN and empty answers; 0 disables |
+| `rate_limit` | `{qps, burst}` | none | Per client token bucket (defaults 50 and 100 when the section is present); over it queries are dropped, not answered |
+| `max_in_flight` | int | `1024` | Queries being handled at once; beyond it UDP queries are dropped |
+| `log_queries` | bool | `false` | One `dns` access log line per query (client, name, type, rcode, source, bytes, duration). Query logs are personal data; leave off unless needed |
+
+`GET /v1/dns` and `xproxyctl dns` show per listener counters (queries,
+cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated,
+upstream failures); `DELETE /v1/dns` and `xproxyctl dns purge` empty
+the caches. Metrics: `xproxy_dns_*{listener}`.
 
 ### server.listeners[].h3
 
@@ -401,7 +441,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

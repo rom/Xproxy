@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/geoip"
 	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/icap"
@@ -73,6 +75,7 @@ type boundListener struct {
 	h3        *h3.Server
 	tcp       *tcpServer     // kind: tcp listeners
 	forward   *forwardServer // kind: forward listeners
+	dns       *dns.Server    // kind: dns listeners
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -188,6 +191,7 @@ func (s *Server) Stats() Snapshot {
 	snap.RejectedConns = s.connLimiter.Rejected.Load()
 	snap.InFlight = s.concurrency.InFlight()
 	snap.HoneypotMarked = len(s.marks.list(time.Now()))
+	s.dnsTotals(&snap)
 	if bl := s.bans.Load(); bl != nil {
 		snap.BansActive, snap.BansTotal = bl.Stats()
 	}
@@ -351,6 +355,27 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		bl.tcp = newTCPServer(s, lc, bl.ln)
 		return bl, nil
 	}
+	if lc.Kind == "dns" {
+		// UDP on the same port as TCP, also when the port was chosen by
+		// the system (":0" in tests).
+		udpAddr := lc.Address
+		if strings.HasSuffix(lc.Address, ":0") {
+			udpAddr = ln.Addr().String()
+		}
+		pc, _, err := packetFor(activated, lc.Name, udpAddr)
+		if err != nil {
+			_ = ln.Close()
+			return nil, fmt.Errorf("listener %s: udp: %w", lc.Name, err)
+		}
+		d, err := s.newDNSServer(lc, pc, bl.ln)
+		if err != nil {
+			_ = ln.Close()
+			_ = pc.Close()
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		bl.dns = d
+		return bl, nil
+	}
 	h := &listenerHandler{srv: s, ln: &bl.cfg}
 	var handler http.Handler = h
 	if lc.Kind == "forward" {
@@ -450,6 +475,10 @@ func (s *Server) serve(bl *boundListener) {
 		bl.tcp.serve()
 		return
 	}
+	if bl.dns != nil {
+		bl.dns.Serve()
+		return
+	}
 	if bl.cfg.TLS != nil {
 		err = bl.httpSrv.ServeTLS(bl.ln, "", "")
 	} else {
@@ -535,6 +564,20 @@ func (s *Server) Reload(cfg *config.Config) error {
 						s.stats.ReloadFailures.Add(1)
 						return fmt.Errorf("listener %s: %w", bl.cfg.Name, err)
 					}
+				}
+			}
+		}
+		if bl.dns != nil {
+			for i := range cfg.Server.Listeners {
+				if lc := cfg.Server.Listeners[i]; lc.Name == bl.cfg.Name && lc.DNS != nil {
+					p, err := dnsPolicy(lc.DNS)
+					if err != nil {
+						s.mu.Unlock()
+						rt.stop()
+						s.stats.ReloadFailures.Add(1)
+						return fmt.Errorf("listener %s: %w", bl.cfg.Name, err)
+					}
+					bl.dns.Apply(p, lc.DNS.Cache.MaxEntries)
 				}
 			}
 		}
@@ -686,6 +729,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			defer wg.Done()
 			if bl.tcp != nil {
 				bl.tcp.shutdown(ctx)
+				return
+			}
+			if bl.dns != nil {
+				bl.dns.Shutdown(ctx)
 				return
 			}
 			err := bl.httpSrv.Shutdown(ctx)

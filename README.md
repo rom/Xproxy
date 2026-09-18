@@ -63,6 +63,8 @@ for how a release is cut). Phases 1 and 2 are complete. See
   health service
 - OpenID Connect login with PKCE, sealed session cookies and identity
   headers for applications
+- DNS proxy listeners with a cache, block lists, sinkholes and per
+  client controls
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
   status, upstreams, reload, certificate reload, log reopen, tail, bans,
   cluster, metrics, sampled series, and a full-screen TUI

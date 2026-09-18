@@ -316,6 +316,9 @@ func (v *validator) server(s *Server) {
 			if ln.TCP != nil {
 				v.errf("%s.tcp: set on an http listener (kind: tcp)", p)
 			}
+			if ln.DNS != nil {
+				v.errf("%s.dns: set on an http listener (kind: dns)", p)
+			}
 			if ln.H2C && ln.TLS != nil {
 				v.errf("%s.h2c: only for plaintext listeners (TLS negotiates HTTP/2 with ALPN)", p)
 			}
@@ -331,6 +334,15 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.tcpListener(p+".tcp", ln.TCP)
 			}
+		case "dns":
+			if ln.TLS != nil || len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.H2C {
+				v.errf("%s: a dns listener takes only address and dns", p)
+			}
+			if ln.DNS == nil {
+				v.errf("%s.dns: required for kind dns", p)
+			} else {
+				v.dnsListener(p+".dns", ln.DNS)
+			}
 		case "forward":
 			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || ln.H2C || hasProtocol(ln.Protocols, ProtocolH2) {
 				v.errf("%s: a forward listener takes no tcp or redirect_to_https and speaks h1 only", p)
@@ -341,7 +353,7 @@ func (v *validator) server(s *Server) {
 				v.forwardListener(p+".forward", ln.Forward)
 			}
 		default:
-			v.errf("%s.kind: must be http, tcp or forward", p)
+			v.errf("%s.kind: must be http, tcp, forward or dns", p)
 		}
 		if ln.TLS == nil {
 			for _, proto := range ln.Protocols {
@@ -978,7 +990,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
-	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true,
+	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true,
 }
 
 // HoneypotDecoys are the built-in decoy names (bodies live in the proxy).
@@ -1251,6 +1263,64 @@ func destinationPatternOK(d string) bool {
 		return true
 	}
 	return hostPatternOK(d)
+}
+
+func (v *validator) dnsListener(p string, d *DNSListener) {
+	if len(d.Upstreams) == 0 {
+		v.errf("%s.upstreams: at least one resolver is required", p)
+	}
+	for i, u := range d.Upstreams {
+		if host, port, err := net.SplitHostPort(u); err != nil || host == "" || port == "" {
+			v.errf("%s.upstreams[%d]: %q must be host:port", p, i, u)
+		}
+	}
+	if d.Timeout <= 0 || d.Timeout > Duration(30*time.Second) {
+		v.errf("%s.timeout: must be positive and at most 30s", p)
+	}
+	for i, c := range d.AllowClients {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR", p, i, c)
+		}
+	}
+	for i, b := range d.Block {
+		name := strings.TrimPrefix(strings.TrimPrefix(b, "*."), "=")
+		if !hostPatternOK(strings.ToLower(strings.TrimSuffix(name, "."))) {
+			v.errf("%s.block[%d]: %q is not a name, *.suffix or =name", p, i, b)
+		}
+	}
+	if d.BlockFile != "" && !strings.HasPrefix(d.BlockFile, "/") {
+		v.errf("%s.block_file: must be an absolute path", p)
+	}
+	switch d.BlockAction {
+	case "nxdomain", "refuse", "sinkhole":
+	default:
+		v.errf("%s.block_action: must be nxdomain, refuse or sinkhole", p)
+	}
+	if a, err := netip.ParseAddr(d.SinkholeIPv4); err != nil || !a.Is4() {
+		v.errf("%s.sinkhole_ipv4: %q is not an IPv4 address", p, d.SinkholeIPv4)
+	}
+	if a, err := netip.ParseAddr(d.SinkholeIPv6); err != nil || !a.Is6() || a.Is4In6() {
+		v.errf("%s.sinkhole_ipv6: %q is not an IPv6 address", p, d.SinkholeIPv6)
+	}
+	if c := d.Cache; c != nil {
+		if c.MaxEntries < 1 || c.MaxEntries > 10_000_000 {
+			v.errf("%s.cache.max_entries: must be between 1 and 10000000", p)
+		}
+		if c.MinTTL < 0 || c.MaxTTL <= 0 || c.MinTTL > c.MaxTTL || c.MaxTTL > Duration(7*24*time.Hour) {
+			v.errf("%s.cache: min_ttl must not exceed max_ttl, max_ttl at most 168h", p)
+		}
+		if c.NegativeTTL < 0 || c.NegativeTTL > Duration(24*time.Hour) {
+			v.errf("%s.cache.negative_ttl: must be between 0 and 24h", p)
+		}
+	}
+	if rl := d.RateLimit; rl != nil {
+		if rl.QPS <= 0 || rl.QPS > 1_000_000 || rl.Burst < 1 {
+			v.errf("%s.rate_limit: qps must be positive and burst at least 1", p)
+		}
+	}
+	if d.MaxInFlight < 1 || d.MaxInFlight > 1_000_000 {
+		v.errf("%s.max_in_flight: must be between 1 and 1000000", p)
+	}
 }
 
 func (v *validator) forwardListener(p string, f *ForwardListener) {

@@ -86,6 +86,10 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 			return m.Renew(ctx)
 		})(w, r)
 	})
+	mux.HandleFunc("GET /v1/dns", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.DNS()) })
+	mux.HandleFunc("DELETE /v1/dns", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, map[string]int{"purged": s.proxy.PurgeDNS()})
+	})
 	mux.HandleFunc("GET /v1/honeypot", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "decoys": proxy.DecoyNames()})
 	})

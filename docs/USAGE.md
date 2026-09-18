@@ -512,6 +512,36 @@ The upstream keeps its own certificates and the WAF does not see the
 traffic (it is encrypted end to end); use an `http` listener with TLS
 termination where inspection is wanted.
 
+### DNS proxy with a block list
+
+```yaml
+server:
+  listeners:
+    - name: resolver
+      address: "10.0.0.5:53"
+      kind: dns
+      dns:
+        upstreams: ["9.9.9.9:53", "149.112.112.112:53"]
+        allow_clients: [10.0.0.0/8]
+        block: [tracker.example, "*.ads.example"]
+        block_file: /etc/xproxy/blocklist.txt      # hosts file format accepted
+        block_action: sinkhole
+        sinkhole_ipv4: 10.0.0.5                     # a local page explaining the block
+        cache: {max_entries: 100000, max_ttl: 6h}
+        rate_limit: {qps: 20, burst: 200}
+bans:
+  triggers:
+    - {name: dns-abuse, reasons: [dns_blocked], threshold: 500, window: 10m, duration: 1h}
+```
+
+Clients on the internal network resolve through the proxy, which
+answers repeated questions from its cache, replaces blocked names with
+the sinkhole address, refuses everyone else, drops floods per client
+and forwards the rest to the upstream resolvers with a fresh
+transaction id and source port per query. `xproxyctl dns` shows the
+counters; `log_queries: true` writes every question to the access log
+when an investigation needs it.
+
 ### Forward proxy for outbound clients (CONNECT)
 
 ```yaml

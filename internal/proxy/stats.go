@@ -102,6 +102,13 @@ type Snapshot struct {
 	HoneypotHits       uint64     `json:"honeypot_hits"`
 	MirrorSent         uint64     `json:"mirror_sent"`
 	GRPCStatus         [17]uint64 `json:"grpc_status"`
+	DNSQueries         uint64     `json:"dns_queries"`
+	DNSCacheHits       uint64     `json:"dns_cache_hits"`
+	DNSCacheEntries    int        `json:"dns_cache_entries"`
+	DNSBlocked         uint64     `json:"dns_blocked"`
+	DNSRefused         uint64     `json:"dns_refused"`
+	DNSDropped         uint64     `json:"dns_dropped"`
+	DNSServFail        uint64     `json:"dns_servfail"`
 	MirrorDropped      uint64     `json:"mirror_dropped"`
 	MirrorSkipped      uint64     `json:"mirror_skipped"`
 	MirrorFailed       uint64     `json:"mirror_failed"`

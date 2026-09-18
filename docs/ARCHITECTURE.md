@@ -64,6 +64,8 @@ internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/proxy/tcp.go  kind: tcp listeners (SNI routing, PROXY v2, splice)
 internal/proxy/forward.go  kind: forward listeners (CONNECT tunnels, plain relay, destination policy)
+internal/dns        DNS proxy: message framing, cache, block list, resolver, UDP and TCP server
+internal/proxy/dnslistener.go  kind: dns listeners bound to the proxy's logs and bans
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
@@ -287,6 +289,24 @@ header, replays the peeked bytes and splices both directions with an
 idle deadline and half-close. Connections are accounted on the pool like
 requests so ejection and health apply. The listener has its own
 connection bound and is drained on shutdown like the HTTP servers.
+
+### DNS proxy
+
+`internal/dns` handles messages as bytes. The parser reads the header,
+the single question (with compression pointers that may only point
+backwards, never into the header, at most sixteen hops) and the
+framing of resource records (to find TTLs, the OPT record's UDP size
+and where a message can be cut); it never decodes record data. The
+server serves one UDP socket and one TCP listener with a shared
+semaphore on queries in flight; each query passes bans, the per client
+rate limit, the client allow list, the block list (exact and suffix
+lookups per label), then the cache (responses stored with TTLs adjusted
+by age on the way out) and finally the resolver, which forwards with a
+fresh id on a fresh socket and accepts only an answer that echoes the
+id and the question. A `kind: dns` listener wraps this in
+`internal/proxy/dnslistener.go`, binding the access log, security
+events and the ban list; its policy is an immutable value swapped on
+reload while the cache survives.
 
 ### Forward proxy
 

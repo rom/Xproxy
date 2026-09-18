@@ -136,6 +136,18 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 			e.Counter("xproxy_grpc_responses_total", "gRPC responses relayed by grpc-status code.", L{"code": strconv.Itoa(code)}, float64(n))
 		}
 	}
+	for _, d := range s.DNS() {
+		l := L{"listener": d.Listener}
+		e.Counter("xproxy_dns_queries_total", "DNS queries received.", l, float64(d.Queries))
+		e.Counter("xproxy_dns_cache_hits_total", "DNS queries answered from the cache.", l, float64(d.CacheHits))
+		e.Gauge("xproxy_dns_cache_entries", "DNS cache entries.", l, float64(d.CacheEntries))
+		e.Counter("xproxy_dns_blocked_total", "DNS queries for blocked names.", l, float64(d.Blocked))
+		e.Counter("xproxy_dns_refused_total", "DNS queries refused by the client policy.", l, float64(d.Refused))
+		e.Counter("xproxy_dns_dropped_total", "DNS queries dropped (banned, rate limited, malformed, over the in-flight bound).", l, float64(d.Dropped))
+		e.Counter("xproxy_dns_servfail_total", "DNS queries answered SERVFAIL (no upstream answer).", l, float64(d.ServFail))
+		e.Counter("xproxy_dns_truncated_total", "DNS answers truncated for UDP clients.", l, float64(d.Truncated))
+		e.Counter("xproxy_dns_upstream_failures_total", "DNS upstream attempts without an answer.", l, float64(d.UpstreamFail))
+	}
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "sent"}, float64(sn.MirrorSent))
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "dropped"}, float64(sn.MirrorDropped))
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "skipped"}, float64(sn.MirrorSkipped))

@@ -106,9 +106,31 @@ func applyDefaults(c *Config) {
 				setStr(&f.Auth.Realm, "proxy")
 			}
 		}
+		if d := s.Listeners[i].DNS; d != nil {
+			setDur(&d.Timeout, 2*time.Second)
+			setStr(&d.BlockAction, "nxdomain")
+			setStr(&d.SinkholeIPv4, "0.0.0.0")
+			setStr(&d.SinkholeIPv6, "::")
+			if d.Cache == nil {
+				d.Cache = &DNSCache{}
+			}
+			setInt(&d.Cache.MaxEntries, 10000)
+			setDur(&d.Cache.MinTTL, 5*time.Second)
+			setDur(&d.Cache.MaxTTL, time.Hour)
+			if d.Cache.NegativeTTL == 0 {
+				d.Cache.NegativeTTL = Duration(60 * time.Second)
+			}
+			setInt(&d.MaxInFlight, 1024)
+			if d.RateLimit != nil {
+				if d.RateLimit.QPS == 0 {
+					d.RateLimit.QPS = 50
+				}
+				setInt(&d.RateLimit.Burst, 100)
+			}
+		}
 		ln := &s.Listeners[i]
-		if ln.Kind == "tcp" {
-			continue // no HTTP protocol or TLS defaults on a passthrough listener
+		if ln.Kind == "tcp" || ln.Kind == "dns" {
+			continue // no HTTP protocol or TLS defaults on a non-HTTP listener
 		}
 		if len(ln.Protocols) == 0 {
 			switch {

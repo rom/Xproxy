@@ -69,6 +69,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   upstream, checks `require_claims`, logs out through the provider.
   `Verdict.Silent` lets a filter answer flow redirects without
   security bookkeeping.
+- DNS proxy: `kind: dns` listeners answer over UDP and TCP from a
+  bounded cache, apply a block list (inline and file, NXDOMAIN, REFUSED
+  or sinkhole), a client allow list and per client rate limits, and
+  forward to upstream resolvers with a fresh id and source port per
+  query; `dns_blocked` security events and ban reason; `GET/DELETE
+  /v1/dns`, `xproxyctl dns`, `xproxy_dns_*` metrics.
 
 ## 1.0.0 - 2026-09-18
 

@@ -1150,6 +1150,41 @@ are `Verdict.Silent`, which the middleware contract gained for this.
 
 ---
 
+## AMR-041: The DNS proxy parses framing only and never trusts an answer it did not ask for
+
+**Context.** A DNS proxy could be a full resolver (recursion, DNSSEC
+validation) or a forwarder. Either way the classic attacks are cache
+poisoning by guessed transaction ids and source ports, and abuse as an
+open resolver or amplifier.
+
+**Decision.** Xproxy forwards. Every upstream query carries a fresh
+random transaction id and leaves from a fresh socket, so the source
+port is random too, and an answer is accepted only if it echoes the id
+and the question. The parser decodes the header, the question and the
+framing of records (names, types, TTLs, lengths) and nothing inside
+record data, which keeps the attack surface to a few hundred lines
+with every length checked. The cache stores whole answers and ages
+their TTLs on the way out. The listener has the client controls the
+rest of the proxy has (bans, allow lists, rate limits that drop rather
+than answer, an in-flight bound) so it cannot be turned into an
+amplifier by design. Blocking is a policy of names with three shapes,
+loadable from hosts style files, and acts as NXDOMAIN, REFUSED or a
+sinkhole address.
+
+**Alternatives.** A resolver library (rejected: recursion and DNSSEC
+are a different product; a large dependency for a proxy); DNS over
+TLS or HTTPS to upstreams (deferred: worth adding, the resolver is the
+one place to change); DNS over HTTPS for clients on an http listener
+(deferred: a 1.x candidate).
+
+**Consequences.** No DNSSEC validation; clients that need it validate
+themselves (the proxy passes records through untouched). Cached
+answers are served with the RD and AA bits the upstream set.
+
+**Status.** Accepted.
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |

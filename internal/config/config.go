@@ -158,6 +158,62 @@ type Listener struct {
 	TCP *TCPListener `yaml:"tcp"`
 	// Forward configures a kind: forward listener.
 	Forward *ForwardListener `yaml:"forward"`
+	// DNS configures a kind: dns listener.
+	DNS *DNSListener `yaml:"dns"`
+}
+
+// DNSListener is a forwarding DNS proxy on the listener address over UDP
+// and TCP: a bounded cache, a block policy and forwarding to upstream
+// resolvers with fresh transaction ids and source ports. The policy,
+// upstreams and cache bounds reload; the address needs a restart.
+type DNSListener struct {
+	// Upstreams are host:port resolvers tried in turn. Required.
+	Upstreams []string `yaml:"upstreams"`
+	// Timeout bounds one upstream attempt. Default 2s.
+	Timeout Duration `yaml:"timeout"`
+	// AllowClients restricts clients to these CIDRs (others get
+	// REFUSED). Empty allows any client.
+	AllowClients []string `yaml:"allow_clients"`
+	// Block lists names: a bare name blocks it and its subdomains,
+	// *.suffix only subdomains, =name only that name.
+	Block []string `yaml:"block"`
+	// BlockFile adds names from a file (one per line, hosts file lines
+	// accepted), read at load and reload.
+	BlockFile string `yaml:"block_file"`
+	// BlockAction is nxdomain (default), refuse or sinkhole.
+	BlockAction string `yaml:"block_action"`
+	// SinkholeIPv4 and SinkholeIPv6 answer A and AAAA for blocked names
+	// with block_action sinkhole. Default 0.0.0.0 and ::.
+	SinkholeIPv4 string `yaml:"sinkhole_ipv4"`
+	SinkholeIPv6 string `yaml:"sinkhole_ipv6"`
+	// Cache bounds the response cache.
+	Cache *DNSCache `yaml:"cache"`
+	// RateLimit bounds queries per client; over it queries are dropped.
+	RateLimit *DNSRateLimit `yaml:"rate_limit"`
+	// MaxInFlight bounds queries being handled. Default 1024.
+	MaxInFlight int `yaml:"max_in_flight"`
+	// LogQueries writes one dns line per query to the access log.
+	// Default false (query logs are personal data).
+	LogQueries bool `yaml:"log_queries"`
+}
+
+// DNSCache bounds the cache of a dns listener.
+type DNSCache struct {
+	// MaxEntries. Default 10000.
+	MaxEntries int `yaml:"max_entries"`
+	// MinTTL and MaxTTL clamp what upstream answers say. Default 5s and
+	// 1h.
+	MinTTL Duration `yaml:"min_ttl"`
+	MaxTTL Duration `yaml:"max_ttl"`
+	// NegativeTTL caches NXDOMAIN and empty answers. Default 60s; 0
+	// disables.
+	NegativeTTL Duration `yaml:"negative_ttl"`
+}
+
+// DNSRateLimit is a per client token bucket.
+type DNSRateLimit struct {
+	QPS   float64 `yaml:"qps"`
+	Burst int     `yaml:"burst"`
 }
 
 // ForwardListener is an explicit forward proxy: clients send CONNECT

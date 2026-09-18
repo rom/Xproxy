@@ -206,6 +206,16 @@ to report a vulnerability. The threat analysis behind the controls is in
   security events and ban reasons. Tunnels are bounded and idle closed;
   plain responses are size bounded.
 
+### DNS
+
+- Fresh transaction id and source port per upstream query; answers
+  must match id and question; TC answers are refetched over TCP.
+- Compression pointers only backwards, bounded hops; every length
+  checked; no record data decoded.
+- Client allow list, per client rate limit that drops, in-flight
+  bound, truncation to the client's UDP size: no open resolver, no
+  amplification.
+
 ### gRPC and HTTP/2 cleartext
 
 - `h2c` is opt-in on listeners and upstreams and meant for trusted

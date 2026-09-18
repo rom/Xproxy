@@ -188,6 +188,7 @@ procedure is in RELEASING.md.
   `h2c`, `health_check.type: grpc`, AMR-039)
 - OIDC login flows with session cookies: delivered (`oidc` filter
   kind, AMR-040)
+- DNS proxy: delivered (`kind: dns` listeners, AMR-041)
 
 ## After 1.2 (candidates, unranked)
 
