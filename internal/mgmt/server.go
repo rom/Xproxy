@@ -27,6 +27,7 @@ import (
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/sandbox"
 	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/version"
 )
@@ -53,6 +54,9 @@ type Actions struct {
 	// Diff compares two configurations named "active", "file" or a
 	// history id.
 	Diff func(from, to string) (*config.Changes, error)
+	// Sandbox reports the in-process hardening status, nil before it is
+	// applied or when the process runs without it (tests).
+	Sandbox func() *sandbox.Status
 }
 
 // Server serves the management API.
@@ -95,6 +99,13 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		_, _ = io.WriteString(w, s.proxy.WAFExclusions())
 	})
 	mux.HandleFunc("POST /v1/waf/reset", s.audited("waf_reset", func() error { s.proxy.WAFReset(); return nil }))
+	mux.HandleFunc("GET /v1/sandbox", func(w http.ResponseWriter, _ *http.Request) {
+		if st := s.sandbox(); st != nil {
+			writeJSON(w, 200, st)
+			return
+		}
+		writeJSON(w, 404, result{Error: "sandbox status not available"})
+	})
 	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("POST /v1/reload", s.reload)
 	mux.HandleFunc("GET /v1/history", func(w http.ResponseWriter, _ *http.Request) {
@@ -318,6 +329,16 @@ type Status struct {
 	Routes     int               `json:"routes"`
 	Upstreams  int               `json:"upstreams"`
 	Stats      proxy.Snapshot    `json:"stats"`
+	// Sandbox summarises the in-process hardening; nil when not applied.
+	Sandbox *sandbox.Status `json:"sandbox,omitempty"`
+}
+
+// sandbox returns the hardening status, or nil.
+func (s *Server) sandbox() *sandbox.Status {
+	if s.actions.Sandbox == nil {
+		return nil
+	}
+	return s.actions.Sandbox()
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -348,6 +369,7 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 		Routes:     len(cfg.Routes),
 		Upstreams:  len(cfg.Upstreams),
 		Stats:      s.proxy.Stats(),
+		Sandbox:    s.sandbox(),
 	})
 }
 

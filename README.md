@@ -1,6 +1,6 @@
 # Xproxy
 
-Xproxy is a security focused edge proxy for Fedora Linux: an HTTP/1.1,
+Xproxy is a security focused edge proxy for Fedora Linux and macOS: an HTTP/1.1,
 HTTP/2 and HTTP/3 reverse proxy and load balancer with a web
 application firewall, a ban list, rate limiting and load shedding at
 its core, plus the listener kinds an edge needs around it (layer 4 TLS
@@ -129,6 +129,9 @@ an identifier from the access log to the upstream.
   become routes, upstreams and certificates, reloaded within a second
   of a change through watches; manifests and a container build
   included
+- Fedora is the reference platform (RPM, systemd, SELinux); macOS is
+  supported with launchd jobs, a Seatbelt profile, a pf anchor and an
+  installer, cross compiled by the same build
 
 **Operations**
 
@@ -150,6 +153,10 @@ an identifier from the access log to the upstream.
 - Hot reload, graceful shutdown, systemd socket activation and notify;
   hardened unit, sysctl profile, SELinux policy, logrotate configuration,
   RPM packaging
+- An in-process sandbox applied after start: Landlock rules derived from
+  the configuration, a seccomp deny list, no capabilities, no new
+  privileges, non dumpable; on macOS debugger denial plus the Seatbelt
+  profile; its state visible in `xproxyctl sandbox`
 
 ## Quick start
 
@@ -185,6 +192,8 @@ every feature above.
 | [docs/USAGE.md](docs/USAGE.md) | Operating the proxy: an example per feature, the control tool, logging |
 | [docs/CONFIG.md](docs/CONFIG.md) | Configuration reference, every key with its default |
 | [docs/SETUP.md](docs/SETUP.md) | Installation on Fedora |
+| [docs/SETUP_MACOS.md](docs/SETUP_MACOS.md) | Installation on macOS |
+| [docs/HARDENING_MACOS.md](docs/HARDENING_MACOS.md) | Host hardening on macOS |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, request path, data flows |
 | [docs/SECURITY.md](docs/SECURITY.md) | Security posture, controls, secure development, reporting |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | STRIDE analysis per trust boundary |

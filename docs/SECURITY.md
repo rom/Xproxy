@@ -315,6 +315,23 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Socket activation removes the need for any privilege to bind ports.
 - A start as root is logged on the security stream as a warning.
 
+### Process confinement
+
+- After start the daemon confines itself (`sandbox`, on by default):
+  Landlock rules derived from the configuration leave only the
+  configured directories reachable and refuse new TCP binds; a seccomp
+  deny list on every thread refuses tracing, module loading, mounts,
+  namespaces, keyrings, BPF, io_uring, identity changes and exec; every
+  capability set is cleared; `no_new_privs` is set; the process is non
+  dumpable with no core files. `strict` makes an unavailable mechanism a
+  failed start. A reload naming a file outside the rules is refused.
+- On macOS the process denies debugger attachment and core files; the
+  launchd job runs it under a Seatbelt profile with the same file
+  system view, as a hidden system user, and pf fronts it
+  (docs/HARDENING_MACOS.md).
+- The WebAssembly engine uses the interpreter wherever executable memory
+  is refused, so W^X policies never have to be relaxed for a filter.
+
 ### Management and logging
 
 - Management API only on a Unix domain socket; directory `0750`, socket mode

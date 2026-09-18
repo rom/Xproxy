@@ -193,6 +193,12 @@ routes:
 	if err := c.Post("/v1/waf/reset"); err != nil {
 		t.Fatalf("waf reset: %v", err)
 	}
+	if _, err := c.Raw("/v1/sandbox"); err == nil {
+		t.Fatal("sandbox status without the action should be 404")
+	}
+	if st, err := c.Status(); err != nil || st.Sandbox != nil {
+		t.Fatalf("status sandbox: %+v %v", st, err)
+	}
 	// Cluster is not configured in this server.
 	if _, err := c.ClusterStatus(); err == nil {
 		t.Fatal("cluster status should be unavailable")

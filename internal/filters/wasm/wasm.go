@@ -59,8 +59,14 @@ type Config struct {
 	Instances        int    `json:"instances"`
 	OnError          string `json:"on_error"`
 	BodyLimit        *int64 `json:"body_limit"`
-	timeout          time.Duration
-	bodyLimit        int64
+	// Engine is compiler, interpreter or auto (default). The compiler
+	// emits machine code into executable memory, which a process under
+	// MemoryDenyWriteExecute (the shipped systemd unit) or the macOS
+	// hardened runtime cannot map; auto probes once and falls back to
+	// the interpreter, which never needs executable pages.
+	Engine    string `json:"engine"`
+	timeout   time.Duration
+	bodyLimit int64
 }
 
 func parse(opts filter.Options) (*Config, error) {
@@ -101,6 +107,13 @@ func parse(opts filter.Options) (*Config, error) {
 	}
 	if c.Instances < 1 || c.Instances > 1024 {
 		errs = append(errs, errors.New("instances: must be between 1 and 1024"))
+	}
+	switch c.Engine {
+	case "":
+		c.Engine = "auto"
+	case "auto", "compiler", "interpreter":
+	default:
+		errs = append(errs, errors.New("engine: must be auto, compiler or interpreter"))
 	}
 	switch c.OnError {
 	case "":
@@ -210,8 +223,20 @@ func newFilter(ctx context.Context, name string, c *Config, log *slog.Logger) (*
 	if err != nil {
 		return nil, err
 	}
-	rc := wazero.NewRuntimeConfig().WithMemoryLimitPages(uint32(c.MemoryLimitPages)).WithCloseOnContextDone(true) //nolint:gosec // validated range
+	engine := c.Engine
+	if engine == "auto" {
+		engine = "compiler"
+		if !compilerUsable() {
+			engine = "interpreter"
+		}
+	}
+	rc := wazero.NewRuntimeConfigCompiler()
+	if engine == "interpreter" {
+		rc = wazero.NewRuntimeConfigInterpreter()
+	}
+	rc = rc.WithMemoryLimitPages(uint32(c.MemoryLimitPages)).WithCloseOnContextDone(true) //nolint:gosec // validated range
 	rt := wazero.NewRuntimeWithConfig(ctx, rc)
+	log.Info("wasm engine", "engine", engine, "module", c.Module)
 	f := &wasmFilter{name: name, cfg: c, log: log, rt: rt, pool: make(chan api.Module, c.Instances)}
 	if err := f.hostModule(ctx); err != nil {
 		_ = rt.Close(ctx)

@@ -26,7 +26,9 @@ import (
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/mgmt"
+	"github.com/rom/xproxy/internal/paths"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/sandbox"
 	"github.com/rom/xproxy/internal/version"
 )
 
@@ -36,7 +38,7 @@ func main() {
 
 func run(args []string) int {
 	fs := flag.NewFlagSet("xproxy", flag.ContinueOnError)
-	cfgPath := fs.String("config", "/etc/xproxy/xproxy.yaml", "configuration file")
+	cfgPath := fs.String("config", paths.ConfigFile, "configuration file")
 	validate := fs.Bool("validate", false, "validate the configuration and exit")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
@@ -135,13 +137,23 @@ func run(args []string) int {
 	}
 	record(cfg, "start")
 
+	// sb is the sandbox status once applied; a reload must stay within
+	// its file system rules.
+	var sb *sandbox.Status
 	// candidate loads the file the way a reload would, without applying it.
 	candidate := func() (*config.Config, error) {
 		c, err := config.Load(*cfgPath)
 		if err != nil {
 			return nil, err
 		}
-		return effective(c)
+		c, err = effective(c)
+		if err != nil {
+			return nil, err
+		}
+		if err := sb.Check(c, *cfgPath); err != nil {
+			return nil, err
+		}
+		return c, nil
 	}
 	apply := func(c *config.Config, note string) error {
 		if err := srv.Reload(c); err != nil {
@@ -219,6 +231,7 @@ func run(args []string) int {
 	if ctrl != nil {
 		actions.Ingress = func() any { return ctrl.Status() }
 	}
+	actions.Sandbox = func() *sandbox.Status { return sb }
 	var otlp *metrics.OTLPExporter
 	if o := cfg.Metrics.OTLP; o != nil {
 		ex, err := metrics.NewOTLPExporter(metrics.OTLPConfig{Endpoint: o.Endpoint, Interval: o.Interval.D(), Timeout: o.Timeout.D(), Headers: o.Headers,
@@ -256,6 +269,19 @@ func run(args []string) int {
 		_ = srv.Shutdown(ctx)
 		return 1
 	}
+	// Everything is open: confine the process. The sandbox is the last
+	// step before READY so that a strict failure is a failed start, not a
+	// running daemon with fewer controls than configured.
+	sb, err = sandbox.Apply(cfg, *cfgPath, logs.Security)
+	if err != nil {
+		logs.Error.Error("sandbox failed", "err", err.Error())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = m.Shutdown(ctx)
+		_ = ml.Shutdown(ctx)
+		_ = srv.Shutdown(ctx)
+		return 1
+	}
 	sdNotify("READY=1")
 
 	sigs := make(chan os.Signal, 4)
@@ -263,7 +289,8 @@ func run(args []string) int {
 	for sig := range sigs {
 		switch sig {
 		case syscall.SIGHUP:
-			sdNotify("RELOADING=1")
+			// Type=notify-reload requires the monotonic time stamp.
+			sdNotify(fmt.Sprintf("RELOADING=1\nMONOTONIC_USEC=%d", monotonicUSec()))
 			_ = reload()
 			sdNotify("READY=1")
 		case syscall.SIGUSR1:

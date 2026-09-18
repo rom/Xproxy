@@ -64,7 +64,9 @@ import (
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds for validate
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/passwd"
+	"github.com/rom/xproxy/internal/paths"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/sandbox"
 	"github.com/rom/xproxy/internal/secret"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tui"
@@ -78,14 +80,14 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas waf config validate reload diff history rollback rotate-secret tls reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp telemetry htpasswd spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas waf sandbox config validate reload diff history rollback rotate-secret tls reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp telemetry htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("xproxyctl", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	socket := fs.String("socket", "/run/xproxy/mgmt.sock", "management socket")
-	cfgPath := fs.String("config", "/etc/xproxy/xproxy.yaml", "configuration file (validate, tail)")
+	socket := fs.String("socket", paths.Socket, "management socket")
+	cfgPath := fs.String("config", paths.ConfigFile, "configuration file (validate, tail)")
 	asJSON := fs.Bool("json", false, "machine readable output")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -129,6 +131,9 @@ func run(args []string, out, errOut io.Writer) int {
 			_, _ = fmt.Fprintf(out, "listener %-12s %s\n", n, st.Listeners[n])
 		}
 		printStats(out, st.Stats)
+		if sb := st.Sandbox; sb != nil {
+			_, _ = fmt.Fprintln(out, "sandbox", sandboxSummary(sb))
+		}
 		return 0
 	case "stats":
 		st, err := c.Status()
@@ -289,6 +294,40 @@ func run(args []string, out, errOut io.Writer) int {
 		return 0
 	case "waf":
 		return cmdWAF(c, fs.Args()[1:], *asJSON, out, errOut)
+	case "sandbox":
+		b, err := c.Raw("/v1/sandbox")
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			_, _ = out.Write(b)
+			return 0
+		}
+		var sb sandbox.Status
+		if err := json.Unmarshal(b, &sb); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintf(out, "platform %s  enabled %v  strict %v", sb.Platform, sb.Enabled, sb.Strict)
+		if !sb.AppliedAt.IsZero() {
+			_, _ = fmt.Fprintf(out, "  applied %s", sb.AppliedAt.Local().Format(time.RFC3339))
+		}
+		_, _ = fmt.Fprintln(out)
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "MECHANISM\tSTATE\tDETAIL")
+		for _, m := range sb.Mechanism {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", m.Name, m.State, dash(m.Detail))
+		}
+		_ = tw.Flush()
+		if sb.Landlocked {
+			_, _ = fmt.Fprintf(out, "landlock ABI %d\n", sb.LandlockABI)
+			for _, p := range sb.ReadPaths {
+				_, _ = fmt.Fprintf(out, "  read   %s\n", p)
+			}
+			for _, p := range sb.WritePaths {
+				_, _ = fmt.Fprintf(out, "  write  %s\n", p)
+			}
+		}
+		return 0
 	case "tls":
 		b, err := c.Raw("/v1/tls")
 		if err != nil {
@@ -999,6 +1038,27 @@ func cmdWAF(c *mgmt.Client, args []string, asJSON bool, out, errOut io.Writer) i
 		_, _ = fmt.Fprintln(out, "review the directives with: xproxyctl waf exclusions")
 	}
 	return 0
+}
+
+// sandboxSummary is the one line form used by status: applied mechanisms
+// first, then the rest with their state.
+func sandboxSummary(sb *sandbox.Status) string {
+	if !sb.Enabled {
+		return "disabled"
+	}
+	var applied, other []string
+	for _, m := range sb.Mechanism {
+		if m.State == sandbox.StateApplied {
+			applied = append(applied, m.Name)
+		} else {
+			other = append(other, m.Name+"="+m.State)
+		}
+	}
+	s := "applied " + dash(strings.Join(applied, ","))
+	if len(other) > 0 {
+		s += "  " + strings.Join(other, " ")
+	}
+	return s
 }
 
 func onOff(b bool) string {

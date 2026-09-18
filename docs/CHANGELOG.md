@@ -145,6 +145,27 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   directory so rules update with a reload instead of a rebuild;
   `GET /v1/waf`, `GET /v1/waf/exclusions`, `POST /v1/waf/reset`,
   `xproxyctl waf [rules|proposals|exclusions|reset]`.
+- In-process sandbox (`sandbox` section, on by default): Landlock file
+  system rules derived from the configuration with TCP bind refusal on
+  ABI 4, a seccomp deny list on every thread, capability clearing,
+  `no_new_privs`, non dumpable with no core files; strict mode; a
+  reload naming a path outside the rules is refused; `GET /v1/sandbox`,
+  `xproxyctl sandbox`, a `sandbox` summary in `status`.
+- systemd unit: `Type=notify-reload` with `ReloadSignal=SIGHUP` (no
+  helper binary in the sandbox), `NoExecPaths=/` with the binary as the
+  only `ExecPaths=`, `KeyringMode=private`, `PrivateMounts=yes`,
+  `RestrictFileSystems=`, `@clock @keyring @pkey` filtered; an optional
+  `SocketBindDeny` drop-in.
+- macOS as a target platform: `make build-darwin`, `dist-darwin` and
+  `install-macos`; launchd jobs under hidden system users, a Seatbelt
+  profile, a pf anchor, newsyslog rotation and an installer in
+  `deploy/macos`; platform defaults under `/usr/local`; management peer
+  credentials through `LOCAL_PEERCRED`; debugger denial and core limit
+  in process; `make check` type checks the macOS targets.
+- `wasm` filter `engine` option (`auto`, `compiler`, `interpreter`):
+  `auto` probes the compiler once and falls back to the interpreter
+  where executable memory is refused (`MemoryDenyWriteExecute`, the
+  macOS hardened runtime).
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

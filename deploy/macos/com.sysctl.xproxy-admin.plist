@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  xproxy-admin web GUI as a launchd daemon: its own user, loopback only.
+  Reach it through an SSH tunnel (ssh -L 8443:127.0.0.1:8443 host). The
+  restart action uses launchctl, which the _xproxy-admin user may run
+  through the sudoers fragment installed by install.sh.
+
+  Install:  sudo cp com.sysctl.xproxy-admin.plist /Library/LaunchDaemons/
+            sudo launchctl bootstrap system /Library/LaunchDaemons/com.sysctl.xproxy-admin.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sysctl.xproxy-admin</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/xproxy-admin</string>
+    <string>serve</string>
+    <string>-listen</string>
+    <string>127.0.0.1:8443</string>
+    <string>-socket</string>
+    <string>/usr/local/var/run/xproxy/mgmt.sock</string>
+    <string>-config</string>
+    <string>/usr/local/etc/xproxy/xproxy.yaml</string>
+    <string>-users</string>
+    <string>/usr/local/etc/xproxy/admin-users</string>
+    <string>-restart-cmd</string>
+    <string>/usr/bin/sudo -n /bin/launchctl kickstart -k system/com.sysctl.xproxy</string>
+  </array>
+  <key>UserName</key>
+  <string>_xproxy-admin</string>
+  <key>GroupName</key>
+  <string>_xproxy</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>2</integer>
+  <key>Umask</key>
+  <integer>23</integer>
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>Core</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/usr/local/var/log/xproxy/admin-launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/usr/local/var/log/xproxy/admin-launchd.log</string>
+</dict>
+</plist>

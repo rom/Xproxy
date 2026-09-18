@@ -73,6 +73,11 @@ type Config struct {
 	// Ingress turns Kubernetes Ingress resources into routes, upstreams
 	// and certificates (ingress controller mode).
 	Ingress *Ingress `yaml:"ingress"`
+	// Sandbox configures the in-process hardening applied once the
+	// listeners are bound: Landlock file system rules, a seccomp system
+	// call filter, capability dropping and debugger denial on Linux;
+	// debugger denial and core dump suppression on macOS. On by default.
+	Sandbox Sandbox `yaml:"sandbox"`
 	// Cache sizes the in-memory response cache used by routes[].cache.
 	Cache *Cache `yaml:"cache"`
 	// Compression enables gzip of eligible responses on every route
@@ -1229,6 +1234,75 @@ type BanTrigger struct {
 	Escalation  float64  `yaml:"escalation"`
 	MaxDuration Duration `yaml:"max_duration"`
 }
+
+// Sandbox configures the in-process hardening (docs/HARDENING.md). Every
+// mechanism is applied after the listeners, log files, state files and
+// the management socket are open, so the rules describe what the process
+// still needs afterwards: the directories of every configured file for
+// reading, the log, state and history directories for writing. A reload
+// that names a file outside those directories is refused with a message
+// to restart, because Landlock rules cannot be widened once applied.
+type Sandbox struct {
+	// Enabled applies the sandbox. Default true.
+	Enabled *bool `yaml:"enabled"`
+	// Strict refuses to start when a mechanism the platform should
+	// offer is unavailable (old kernel, container without the syscall)
+	// instead of logging and continuing. Default false.
+	Strict bool `yaml:"strict"`
+	// Landlock restricts file system access to the derived directories
+	// (Linux 5.13 or newer) and, on ABI 4 or newer, refuses new TCP
+	// binds.
+	Landlock SandboxLandlock `yaml:"landlock"`
+	// Seccomp installs a system call deny list: process tracing,
+	// module loading, mounts, namespaces, keyrings, BPF, io_uring,
+	// identity changes, exec and the kernel administration calls
+	// return EPERM (Linux).
+	Seccomp SandboxSeccomp `yaml:"seccomp"`
+	// Capabilities clears the bounding, ambient, permitted, effective
+	// and inheritable sets (Linux). Default true.
+	Capabilities SandboxCapabilities `yaml:"capabilities"`
+	// NoNewPrivs sets PR_SET_NO_NEW_PRIVS so that no later exec (there
+	// is none) could regain privileges; Landlock and unprivileged
+	// seccomp require it. Default true.
+	NoNewPrivs *bool `yaml:"no_new_privs"`
+	// Debuggable keeps the process attachable by a debugger and able to
+	// dump core. Default false: the process is made non dumpable and
+	// the core size limit is set to zero, so memory holding keys and
+	// request data cannot be read by another process of the same user
+	// or written to disk.
+	Debuggable bool `yaml:"debuggable"`
+}
+
+// SandboxLandlock tunes the Landlock rules.
+type SandboxLandlock struct {
+	// Enabled applies Landlock when the kernel offers it. Default true.
+	Enabled *bool `yaml:"enabled"`
+	// ReadPaths are extra files or directories the process may read
+	// (a filter that opens files of its own, a certificate directory
+	// that reloads will add files to).
+	ReadPaths []string `yaml:"read_paths"`
+	// WritePaths are extra directories the process may write.
+	WritePaths []string `yaml:"write_paths"`
+	// Bind refuses TCP binds after start (Landlock ABI 4, Linux 6.7 or
+	// newer). Listeners are bound before the sandbox; a reload that adds
+	// a listener requires a restart in any case. Default true.
+	Bind *bool `yaml:"bind"`
+}
+
+// SandboxSeccomp tunes the system call filter.
+type SandboxSeccomp struct {
+	// Enabled installs the filter. Default true.
+	Enabled *bool `yaml:"enabled"`
+}
+
+// SandboxCapabilities tunes capability handling.
+type SandboxCapabilities struct {
+	// Drop clears every capability set. Default true.
+	Drop *bool `yaml:"drop"`
+}
+
+// On reports whether the sandbox applies.
+func (s *Sandbox) On() bool { return s.Enabled == nil || *s.Enabled }
 
 // WAF configures the web application firewall engine.
 type WAF struct {

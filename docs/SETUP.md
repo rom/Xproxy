@@ -7,7 +7,10 @@ level checklist and [USAGE.md](USAGE.md) for operation.
 
 ## Requirements
 
-- Fedora 40 or newer (any current release), systemd, SELinux enforcing
+- Fedora 40 or newer (any current release), systemd 253 or newer
+  (`Type=notify-reload`), SELinux enforcing; a kernel with Landlock
+  (Fedora's has it) for the in-process file system rules
+- macOS 13 or newer is supported as well: see [SETUP_MACOS.md](SETUP_MACOS.md)
 - Go 1.25 or newer to build from source (no runtime dependency)
 - `selinux-policy-devel` to build the SELinux module, `rpm-build`,
   `rpmlint` and `systemd-rpm-macros` to build the packages
@@ -264,7 +267,13 @@ systemd-analyze security xproxy.service     # expect a score in the OK band
 systemctl show xproxy.service -p CapabilityBoundingSet -p NoNewPrivileges
 ss -ltnp | grep xproxy                       # sockets owned by systemd (pid 1)
 ls -la /run/xproxy/mgmt.sock                 # srw-rw---- xproxy xproxy
+xproxyctl sandbox                            # landlock, seccomp, capabilities: applied
 ```
+
+`xproxyctl sandbox` lists the in-process layer the daemon applies after
+start; `unavailable` next to `landlock` means the kernel lacks the LSM
+and the unit's mount namespace is the only file system confinement.
+[HARDENING.md](HARDENING.md) section 1a explains each line.
 
 ## Upgrading
 

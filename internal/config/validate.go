@@ -108,6 +108,7 @@ func (v *validator) config(c *Config) {
 	if c.Cluster != nil {
 		v.cluster(c.Cluster)
 	}
+	v.sandbox(&c.Sandbox)
 	if c.Shedding != nil {
 		v.shedding(c.Shedding)
 	}
@@ -2020,6 +2021,23 @@ func (v *validator) file(p, path string) {
 	}
 	if st.IsDir() {
 		v.errf("%s: %s is a directory", p, path)
+	}
+}
+
+// sandbox checks the extra Landlock paths.
+func (v *validator) sandbox(s *Sandbox) {
+	for i, p := range s.Landlock.ReadPaths {
+		if !strings.HasPrefix(p, "/") || strings.Contains(p, "\x00") {
+			v.errf("sandbox.landlock.read_paths[%d]: must be an absolute path", i)
+		}
+	}
+	for i, p := range s.Landlock.WritePaths {
+		if !strings.HasPrefix(p, "/") || strings.Contains(p, "\x00") {
+			v.errf("sandbox.landlock.write_paths[%d]: must be an absolute path", i)
+		}
+	}
+	if len(s.Landlock.ReadPaths)+len(s.Landlock.WritePaths) > 256 {
+		v.errf("sandbox.landlock: at most 256 extra paths")
 	}
 }
 

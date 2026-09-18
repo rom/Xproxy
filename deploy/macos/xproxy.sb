@@ -1,0 +1,82 @@
+;; Seatbelt profile for the xproxy data plane (sandbox-exec -f xproxy.sb).
+;;
+;; Deny by default. The daemon needs: its binary, the configuration and
+;; certificate directory (read), the log, run and state directories
+;; (write), the system resolver and trust store, and the network. It never
+;; executes another program, never talks to system services beyond the
+;; ones every process needs, and cannot read the rest of the file system.
+;;
+;; Test a change with:
+;;   sandbox-exec -f xproxy.sb /usr/local/bin/xproxy -config /usr/local/etc/xproxy/xproxy.yaml -validate
+;; and watch `log stream --predicate 'sender == "Sandbox"'` for denials.
+;;
+;; Paths follow deploy/macos/install.sh; adjust them together with the
+;; configuration if certificates or logs live elsewhere.
+
+(version 1)
+(deny default)
+
+;; Process basics.
+(allow process-exec (literal "/usr/local/bin/xproxy"))
+(allow process-fork)
+(allow signal (target self))
+(allow sysctl-read)
+(allow mach-lookup
+  (global-name "com.apple.system.logger")
+  (global-name "com.apple.system.notification_center")
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.trustd")
+  (global-name "com.apple.trustd.agent")
+  (global-name "com.apple.dnssd.service")
+  (global-name "com.apple.system.opendirectoryd.libinfo")
+  (global-name "com.apple.system.opendirectoryd.membership"))
+(allow ipc-posix-shm-read-data (ipc-posix-name-regex #"^apple\.shm\.notification_center"))
+
+;; Shared libraries and the dynamic linker (the binary is static, but the
+;; loader and libSystem still map).
+(allow file-read*
+  (subpath "/usr/lib")
+  (subpath "/System/Library")
+  (subpath "/usr/share/zoneinfo")
+  (subpath "/private/var/db/timezone")
+  (literal "/dev/null")
+  (literal "/dev/urandom")
+  (literal "/dev/random")
+  (literal "/dev/dtracehelper")
+  (literal "/private/etc/hosts")
+  (literal "/private/etc/resolv.conf")
+  (literal "/private/etc/services")
+  (literal "/private/etc/protocols")
+  (literal "/private/etc/localtime")
+  (literal "/private/var/run/resolv.conf")
+  (subpath "/private/etc/ssl")
+  (subpath "/private/var/db/mds")
+  (subpath "/System/Library/Keychains")
+  (subpath "/Library/Keychains")
+  (subpath "/private/var/protected/trustd"))
+(allow file-read-metadata)
+(allow file-write-data (literal "/dev/null") (literal "/dev/dtracehelper"))
+(allow file-ioctl (literal "/dev/dtracehelper"))
+
+;; xproxy itself.
+(allow file-read* (literal "/usr/local/bin/xproxy"))
+(allow file-read* (subpath "/usr/local/etc/xproxy"))
+(allow file-read* (subpath "/usr/local/share/xproxy"))
+(allow file-read* (subpath "/usr/local/etc/openssl@3/certs") (subpath "/usr/local/etc/ca-certificates"))
+(allow file-read* file-write* (subpath "/usr/local/var/log/xproxy"))
+(allow file-read* file-write* (subpath "/usr/local/var/run/xproxy"))
+(allow file-read* file-write* (subpath "/usr/local/var/lib/xproxy"))
+;; Static file roots: add one line per routes[].static.root.
+;; (allow file-read* (subpath "/usr/local/var/www"))
+
+;; Network: listeners and upstreams. Narrow the ports to what the
+;; configuration uses once it is settled, for example
+;; (allow network-bind (local tcp "*:443") (local tcp "*:80")).
+(allow network-bind (local ip "*:*"))
+(allow network-inbound (local ip "*:*"))
+(allow network-outbound (remote ip "*:*"))
+(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))
+(allow network-outbound (remote unix-socket (path-literal "/private/var/run/syslog")))
+(allow network-outbound (remote unix-socket (path-literal "/private/var/run/asl_input")))
+(allow network-inbound (local unix-socket (subpath "/usr/local/var/run/xproxy")))
+(allow system-socket)

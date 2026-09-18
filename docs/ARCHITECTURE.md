@@ -119,7 +119,27 @@ One process, one user, no capabilities. systemd passes the listening sockets
 (`LISTEN_FDS`), the process matches them to configured listeners by name or
 address and binds any listener that was not passed. Datagram sockets are
 matched the same way (name `<listener>-udp` or address) for HTTP/3. The process sends
-`READY=1`, `RELOADING=1` and `STOPPING=1` over `NOTIFY_SOCKET`.
+`READY=1`, `RELOADING=1` (with `MONOTONIC_USEC`, as `Type=notify-reload`
+requires) and `STOPPING=1` over `NOTIFY_SOCKET`.
+
+Start order: configuration, logs, ingress controller, proxy runtime and
+listeners, configuration history, management socket, metrics listener,
+then the sandbox (`internal/sandbox`), then `READY=1`. The sandbox is
+last because it can only narrow what the process may do afterwards: on
+Linux it derives Landlock rules from the configuration (the directory of
+every configured file for reading; log, state, history and certificate
+directories for writing; the resolver and trust store paths the standard
+library opens), installs them together with a refusal of new TCP binds,
+installs a seccomp deny list on every thread, clears the capability
+sets, sets `no_new_privs` and makes the process non dumpable. On macOS
+it denies debugger attachment and core files, and reports the Seatbelt
+profile the launchd job runs it under. Each mechanism records applied,
+unavailable, failed or disabled; `strict` turns unavailable into a
+failed start. Because Landlock cannot be widened, the reload path checks
+a candidate configuration against the rules in force and refuses one
+that names a path outside them with "restart to apply". Tests never
+apply the sandbox: it lives in `cmd/xproxy`, and the package's own test
+confines a child process instead.
 
 Signals: `SIGHUP` reloads the configuration, `SIGUSR1` reopens log files,
 `SIGTERM` and `SIGINT` drain and stop within `server.shutdown_timeout`.
@@ -670,6 +690,7 @@ Endpoints:
 | GET | `/v1/waf` | WAF profiles, route assignments, per rule statistics (`?top=N`) and learned exclusion proposals |
 | GET | `/v1/waf/exclusions` | the proposals as a SecLang file (text/plain) |
 | POST | `/v1/waf/reset` | clear WAF statistics and the learning table (audited) |
+| GET | `/v1/sandbox` | in-process hardening: mechanisms with state, Landlock rules and ABI |
 | GET | `/v1/config` | active configuration as YAML |
 | POST | `/v1/reload` | validate and apply the configuration file; `?dry_run=1` returns the changes without applying |
 | GET | `/v1/diff` | compare `from` and `to` (`active`, `file` or a history id) |

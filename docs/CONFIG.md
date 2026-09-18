@@ -1147,6 +1147,7 @@ module or a wrong ABI version is a load error.
 | `memory_limit_pages` | int | `256` | 64 KiB pages per instance (16 MiB); 1 to 16384 |
 | `instances` | int | `16` | Pooled instances; more are created on demand and dropped after use |
 | `on_error` | `deny`, `allow` | `deny` | What a trap, timeout or bad result means: 500 with the filter name as reason, or continue with `wasm_error: allowed` in the access log |
+| `engine` | `auto`, `compiler`, `interpreter` | `auto` | The compiler emits machine code into executable memory, which the shipped systemd unit (`MemoryDenyWriteExecute=yes`) and the macOS hardened runtime refuse; `auto` probes once per process and falls back to the interpreter, which needs no executable pages and is several times slower per call |
 | `body_limit` | int | `65536` | Bytes of a request or response body a module may read or set; a larger body is not exposed and streams through; 0 disables body access; at most 16 MiB |
 
 Denies carry the status, reason and detail the module set with
@@ -1427,6 +1428,30 @@ host before routing.
 | `level` | float | `0.5` | Activation level for `load` mode |
 
 The challenge is for browser-facing routes: API clients cannot solve it.
+
+## sandbox
+
+In-process hardening applied once the listeners, log files, state files
+and the management socket are open (docs/HARDENING.md section 1a,
+docs/HARDENING_MACOS.md on macOS). On by default; `GET /v1/sandbox` and
+`xproxyctl sandbox` show what was applied. The Landlock rules are derived
+from the configuration: the directory of every configured file is
+readable, the log, state, history and certificate directories are
+writable, and nothing else is reachable. A reload that names a file
+outside those directories is refused with a message to restart.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Apply the sandbox |
+| `strict` | bool | `false` | Refuse to start when a mechanism the platform should offer is unavailable or fails, instead of logging a warning |
+| `landlock.enabled` | bool | `true` | Landlock file system rules (Linux 5.13 or newer with the LSM enabled) |
+| `landlock.read_paths` | list of paths | `[]` | Extra files or directories the process may read (a compiled-in filter that opens files, a directory that reloads will add files to) |
+| `landlock.write_paths` | list of paths | `[]` | Extra directories the process may write |
+| `landlock.bind` | bool | `true` | Refuse TCP binds after start (Landlock ABI 4, Linux 6.7 or newer); listeners are bound before the sandbox and adding one needs a restart anyway |
+| `seccomp.enabled` | bool | `true` | System call deny list: tracing, module loading, mounts, namespaces, keyrings, BPF, io_uring, identity changes, exec and kernel administration return EPERM (Linux amd64 and arm64) |
+| `capabilities.drop` | bool | `true` | Clear the bounding, ambient, permitted, effective and inheritable sets (Linux) |
+| `no_new_privs` | bool | `true` | Set PR_SET_NO_NEW_PRIVS (required by Landlock and unprivileged seccomp; systemd's `NoNewPrivileges=` sets it too) |
+| `debuggable` | bool | `false` | Keep the process attachable by a debugger and able to dump core; the default makes it non dumpable with a zero core size limit (Linux), or denies debugger attachment with a zero core size limit (macOS) |
 
 ## Headers set on forwarded requests
 

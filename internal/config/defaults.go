@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/rom/xproxy/internal/paths"
 	"os"
 	"strings"
 	"time"
@@ -60,7 +61,7 @@ const (
 	DefaultCRSInbound            = 5
 	DefaultCRSOutbound           = 4
 
-	DefaultLogDirectory = "/var/log/xproxy"
+	DefaultLogDirectory = paths.LogDir
 	DefaultLogLevel     = "info"
 	DefaultSocketMode   = "0660"
 )
@@ -412,7 +413,7 @@ func applyDefaults(c *Config) {
 		}
 	}
 	if a := c.ACME; a != nil {
-		setStr(&a.StateDir, "/var/lib/xproxy/acme")
+		setStr(&a.StateDir, paths.StateDir+"/acme")
 		setStr(&a.Challenge, "http-01")
 		setDur(&a.RenewBefore, 30*24*time.Hour)
 		setDur(&a.CheckInterval, 12*time.Hour)
@@ -526,7 +527,7 @@ func ingressDefaults(c *Config) {
 	setStr(&in.TokenFile, "/var/run/secrets/kubernetes.io/serviceaccount/token")
 	setStr(&in.CAFile, "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
 	setStr(&in.Class, "xproxy")
-	setStr(&in.CertDir, "/var/lib/xproxy/ingress")
+	setStr(&in.CertDir, paths.StateDir+"/ingress")
 	setDur(&in.Resync, 30*time.Second)
 	setDur(&in.Timeout, 10*time.Second)
 	setDur(&in.Debounce, 500*time.Millisecond)

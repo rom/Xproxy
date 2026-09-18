@@ -34,6 +34,7 @@ import (
 
 	"github.com/rom/xproxy/internal/admin"
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds
+	"github.com/rom/xproxy/internal/paths"
 	"github.com/rom/xproxy/internal/version"
 )
 
@@ -75,9 +76,9 @@ func serve(args []string, errOut io.Writer, fail func(error) int) int {
 	fs.SetOutput(errOut)
 	var o admin.Options
 	fs.StringVar(&o.Listen, "listen", "127.0.0.1:8443", "listen address (host:port or unix:/path); non-loopback needs -tls-cert, -tls-key and -client-ca")
-	fs.StringVar(&o.Socket, "socket", "/run/xproxy/mgmt.sock", "management socket of the data plane")
-	fs.StringVar(&o.ConfigFile, "config", "/etc/xproxy/xproxy.yaml", "data plane configuration file (edited by operators; empty disables editing and logs)")
-	fs.StringVar(&o.UsersFile, "users", "/etc/xproxy/admin-users", "users file")
+	fs.StringVar(&o.Socket, "socket", paths.Socket, "management socket of the data plane")
+	fs.StringVar(&o.ConfigFile, "config", paths.ConfigFile, "data plane configuration file (edited by operators; empty disables editing and logs)")
+	fs.StringVar(&o.UsersFile, "users", paths.UsersFile, "users file")
 	fs.StringVar(&o.TLS.CertFile, "tls-cert", "", "server certificate (PEM)")
 	fs.StringVar(&o.TLS.KeyFile, "tls-key", "", "server key (PEM)")
 	fs.StringVar(&o.TLS.ClientCAFile, "client-ca", "", "require client certificates from this CA; the common name logs the user in")
@@ -116,7 +117,7 @@ func user(args []string, in io.Reader, out, errOut io.Writer, fail func(error) i
 	sub := args[0]
 	fs := flag.NewFlagSet("xproxy-admin user "+sub, flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	path := fs.String("users", "/etc/xproxy/admin-users", "users file")
+	path := fs.String("users", paths.UsersFile, "users file")
 	role := fs.String("role", "viewer", "viewer or operator")
 	certOnly := fs.Bool("cert-only", false, "no password; the user logs in with a client certificate")
 	rest := args[1:]
@@ -180,7 +181,7 @@ func user(args []string, in io.Reader, out, errOut io.Writer, fail func(error) i
 func passwd(args []string, in io.Reader, out, errOut io.Writer, fail func(error) int) int {
 	fs := flag.NewFlagSet("xproxy-admin passwd", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	path := fs.String("users", "/etc/xproxy/admin-users", "users file")
+	path := fs.String("users", paths.UsersFile, "users file")
 	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
 		_, _ = fmt.Fprintln(errOut, "error: user name required")
 		return 2

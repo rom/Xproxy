@@ -245,6 +245,9 @@ procedure is in RELEASING.md.
 - WAF operations: learning mode with exclusion proposals, per rule
   statistics, rule set updates from a directory (`waf.learning`,
   `crs.dir`, `xproxyctl waf`): delivered
+- In-process sandbox (Landlock, seccomp, capabilities, no_new_privs,
+  non dumpable), systemd unit additions, macOS target with launchd,
+  Seatbelt and pf: delivered (AMR-044, AMR-045)
 
 ## After 1.3 (candidates, unranked)
 

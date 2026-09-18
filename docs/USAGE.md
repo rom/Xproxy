@@ -29,7 +29,11 @@ Signals:
 | `SIGUSR1` | Reopen log files (after external rotation) |
 | `SIGTERM`, `SIGINT` | Drain within `server.shutdown_timeout`, then exit |
 
-Under systemd use `systemctl reload xproxy` and `systemctl restart xproxy`.
+Under systemd use `systemctl reload xproxy` and `systemctl restart xproxy`;
+on macOS `launchctl kill HUP system/com.sysctl.xproxy` and `launchctl
+kickstart -k system/com.sysctl.xproxy`. A reload that names a file
+outside the directories the sandbox admitted at start is refused with
+"restart to apply"; `xproxyctl sandbox` lists those directories.
 With socket activation a restart does not lose the listening socket, so
 listener changes (which reload refuses) cost only the drain time.
 
@@ -52,6 +56,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `history` | Recorded configurations with generation, time, note and size (needs `management.history_dir`) |
 | `rollback ID` | Apply a recorded configuration (audited; becomes a new history entry) |
 | `tls` | Served certificates per listener: names, issuer, expiry, source (file or ACME), OCSP staple state and Certificate Transparency verdict |
+| `sandbox` | In-process hardening: platform, each mechanism (Landlock, seccomp, capabilities, no_new_privs, debuggable; Seatbelt on macOS) with applied, unavailable, failed or disabled and a detail, the Landlock ABI and the read and write rules in force |
 | `waf [rules\|proposals\|exclusions\|reset]` | WAF profiles with rule set source and version, route assignments, counters and the most matched rules (`-top 20`); `proposals` lists learned exclusion candidates, `exclusions` prints them as SecLang for review, `reset` clears the statistics (audited) |
 | `rotate-secret FILE` | Add a fresh primary key to a secret file (affinity, challenge, OIDC cookie, redaction hash), keeping `-keep 2` previous keys for verification; then `reload` |
 | `reload-certs` | Re-read certificate files |
