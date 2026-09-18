@@ -135,7 +135,7 @@ func applyDefaults(c *Config) {
 		}
 		if len(ln.Protocols) == 0 {
 			switch {
-			case ln.Kind == "forward":
+			case ln.Kind == "forward" && ln.TLS == nil:
 				ln.Protocols = []Protocol{ProtocolH1}
 			case ln.TLS != nil:
 				ln.Protocols = []Protocol{ProtocolH1, ProtocolH2}

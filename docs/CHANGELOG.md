@@ -6,7 +6,15 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
-### Added
+### Added (1.3)
+- Configuration includes: `includes` globs of fragment files whose
+  `upstreams`, `routes`, `rate_limits` and `filters` are appended in
+  lexical order; fragments may contain nothing else and names must be
+  unique across the set.
+- HTTP/2 CONNECT on TLS forward listeners that list `h2`: the stream
+  carries the tunnel.
+
+### Added (1.2)
 - GeoIP policy: `geoip` section with a built-in MaxMind DB reader (no
   external library) or a CSV prefix table; `routes[].geo` allow and deny
   lists with an `unknown` choice; rate limits keyed on `country`;

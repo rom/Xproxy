@@ -13,6 +13,7 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `version` | int | required | Schema version. Must be `1`. |
+| `includes` | list of globs | `[]` | Absolute paths or globs of fragment files whose `upstreams`, `routes`, `rate_limits` and `filters` are appended in lexical order of path; a fragment may contain nothing else, names must not repeat, a pattern that matches no file is an error, fragments must not be world writable; read at every load and reload |
 | `server` | object | | Listeners and global limits |
 | `management` | object | | Control socket |
 | `logging` | object | | Log streams |
@@ -87,8 +88,11 @@ check is the one dialled, so a name cannot rebind between check and
 connect. Refusals answer 403, are logged as security events
 (`forward_port`, `forward_private`, `forward_deny`, `forward_not_allowed`,
 `forward_resolve`) and count towards the `forward_denied` ban reason.
-A forward listener may terminate TLS from the client (`tls`) and speaks
-HTTP/1.1 only; it takes no `tcp` or `redirect_to_https`. Bans, the
+A forward listener may terminate TLS from the client (`tls`), and with
+TLS may list `h2` so clients tunnel `CONNECT` over an HTTP/2 stream
+(the stream carries the tunnel, one per request, ending when the
+destination closes or the client resets); it takes no `tcp`,
+`redirect_to_https`, `h3` or `h2c`. Bans, the
 connection limits and the header timeouts apply as on every listener.
 
 | Key | Type | Default | Description |

@@ -194,8 +194,26 @@ procedure is in RELEASING.md.
 - Kubernetes ingress controller mode: delivered (`ingress` section,
   `deploy/kubernetes`, AMR-043)
 
-## After 1.2 (candidates, unranked)
+## 1.3 (in progress)
 
+- Configuration directory with includes: delivered (`includes`,
+  AMR-003 update)
+- HTTP/2 CONNECT on forward listeners: delivered (AMR-036 update)
+- Body access in the WebAssembly ABI (AMR-042)
+- OIDC front channel logout (AMR-040)
+- OpenTelemetry exporter behind the metrics snapshot (AMR-014)
+- DNS over TLS and HTTPS to upstream resolvers, DNS over HTTPS for
+  clients on an http listener (AMR-041)
+- Kubernetes Gateway API next to the Ingress translator, and API
+  watches instead of polling (AMR-043)
+- QUIC passthrough on layer 4 listeners with a UDP relay (AMR-035)
+
+## After 1.3 (candidates, unranked)
+
+- gRPC-web translation for browsers and a `grpc_method` rate limit key
+  (AMR-039)
+- A request replay tool from the access log, if the log policy ever
+  admits bodies (AMR-038)
 
 ## Not planned
 

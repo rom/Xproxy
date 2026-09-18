@@ -363,3 +363,74 @@ func TestForwardPolicy(t *testing.T) {
 		t.Fatalf("strip: %v", h)
 	}
 }
+
+// TestForwardConnectH2 tunnels a CONNECT request over an HTTP/2 stream
+// on a TLS forward listener: the stream carries a request to a plain
+// origin and its response back, and the tunnel is counted.
+func TestForwardConnectH2(t *testing.T) {
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	cert, key := ca.Issue(t, dir, "proxy.test")
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "plain:%s", r.URL.Path)
+	}))
+	t.Cleanup(plain.Close)
+	_, plainPort, _ := net.SplitHostPort(strings.TrimPrefix(plain.URL, "http://"))
+	yaml := `
+version: 1
+server:
+  listeners:
+    - name: fwd
+      address: "127.0.0.1:0"
+      kind: forward
+      protocols: [h1, h2]
+      tls: {certificates: [{cert_file: %s, key_file: %s}]}
+      forward:
+        ports: [%s]
+        allow_private: true
+logging:
+  access: {enabled: false}
+upstreams:
+  - name: unused
+    endpoints: [{address: 127.0.0.1:1}]
+routes: []
+`
+	s, _ := startServer(t, fmt.Sprintf(yaml, cert, key, plainPort))
+	pool := x509.NewCertPool()
+	pool.AddCert(ca.Cert)
+	tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "proxy.test", MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true}
+	pr, pw := io.Pipe()
+	req := &http.Request{Method: http.MethodConnect, URL: &url.URL{Scheme: "https", Host: s.Addrs()["fwd"]}, Host: "localhost:" + plainPort, Body: pr, Header: http.Header{}}
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 || resp.ProtoMajor != 2 {
+		t.Fatalf("connect over h2: %d %s", resp.StatusCode, resp.Proto)
+	}
+	go func() {
+		_, _ = fmt.Fprintf(pw, "GET /via-h2 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+	}()
+	data, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(data), "plain:/via-h2") {
+		t.Fatalf("through the h2 tunnel: %q", data)
+	}
+	_ = pw.Close()
+	for i := 0; i < 100 && s.Stats().ForwardTunnelsOpen != 0; i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if sn := s.Stats(); sn.ForwardTunnels != 1 || sn.ForwardTunnelsOpen != 0 || sn.ForwardBytesOut == 0 {
+		t.Fatalf("counters: %+v", sn)
+	}
+	// A refused destination over h2 is a plain 403 on the stream.
+	req = &http.Request{Method: http.MethodConnect, URL: &url.URL{Scheme: "https", Host: s.Addrs()["fwd"]}, Host: "localhost:1", Body: http.NoBody, Header: http.Header{}}
+	resp, err = tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatalf("refused over h2: %d", resp.StatusCode)
+	}
+}

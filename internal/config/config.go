@@ -25,6 +25,13 @@ const CurrentVersion = 1
 type Config struct {
 	// Version is the schema version. Must equal CurrentVersion.
 	Version int `yaml:"version"`
+	// Includes are absolute glob patterns of fragment files whose
+	// upstreams, routes, rate_limits and filters are appended to this
+	// document, in lexical order of path. Fragments may contain nothing
+	// else; names must not repeat. Read at every load and reload.
+	Includes []string `yaml:"includes"`
+	// IncludedFiles lists the fragments the last load read.
+	IncludedFiles []string `yaml:"-"`
 
 	Server     Server     `yaml:"server"`
 	Management Management `yaml:"management"`

@@ -85,6 +85,34 @@ xproxyctl unban 203.0.113.0/24
 
 ## Configuration patterns
 
+### Splitting the configuration into fragments
+
+```yaml
+# /etc/xproxy/xproxy.yaml
+version: 1
+includes: ["/etc/xproxy/conf.d/*.yaml"]
+server: {listeners: [{name: https, address: ":443", tls: {certificates: [...]}}]}
+```
+
+```yaml
+# /etc/xproxy/conf.d/10-shop.yaml
+upstreams:
+  - name: shop
+    endpoints: [{address: 10.0.1.10:8080}]
+routes:
+  - name: shop
+    hosts: [shop.example.com]
+    upstream: shop
+```
+
+Fragments hold only `upstreams`, `routes`, `rate_limits` and `filters`;
+everything that controls the process (listeners, limits, logging,
+management) stays in the main file, so a fragment can add a site but
+never weaken a defence. Files are appended in lexical order, names must
+be unique across all of them, and `xproxyctl validate` checks the whole
+set. A reload re-reads every fragment.
+
+
 ### Minimal
 
 ```yaml

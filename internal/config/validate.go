@@ -351,8 +351,8 @@ func (v *validator) server(s *Server) {
 				v.dnsListener(p+".dns", ln.DNS)
 			}
 		case "forward":
-			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || ln.H2C || hasProtocol(ln.Protocols, ProtocolH2) {
-				v.errf("%s: a forward listener takes no tcp or redirect_to_https and speaks h1 only", p)
+			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || ln.H2C {
+				v.errf("%s: a forward listener takes no tcp, redirect_to_https, h3 or h2c", p)
 			}
 			if ln.Forward == nil {
 				v.errf("%s.forward: required for kind forward", p)
@@ -1249,15 +1249,6 @@ func grpcNameOK(s string) bool {
 		}
 	}
 	return true
-}
-
-func hasProtocol(ps []Protocol, p Protocol) bool {
-	for _, x := range ps {
-		if x == p {
-			return true
-		}
-	}
-	return false
 }
 
 // destinationPatternOK accepts a host name, *.suffix pattern, IP address
