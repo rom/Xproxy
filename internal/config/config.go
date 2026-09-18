@@ -179,8 +179,13 @@ type Listener struct {
 // resolvers with fresh transaction ids and source ports. The policy,
 // upstreams and cache bounds reload; the address needs a restart.
 type DNSListener struct {
-	// Upstreams are host:port resolvers tried in turn. Required.
+	// Upstreams are resolvers tried in turn: host:port (UDP with TCP
+	// fallback), tls://host:port (DNS over TLS) or https://host/path
+	// (DNS over HTTPS). Required.
 	Upstreams []string `yaml:"upstreams"`
+	// UpstreamCAFile pins the CA of tls:// and https:// upstreams.
+	// Default: system pool.
+	UpstreamCAFile string `yaml:"upstream_ca_file"`
 	// Timeout bounds one upstream attempt. Default 2s.
 	Timeout Duration `yaml:"timeout"`
 	// AllowClients restricts clients to these CIDRs (others get
@@ -706,6 +711,15 @@ type Route struct {
 	// GRPC restricts the route to gRPC requests, optionally to listed
 	// services or methods.
 	GRPC *RouteGRPC `yaml:"grpc"`
+	// DoH answers DNS over HTTPS on this route through a dns listener.
+	DoH *RouteDoH `yaml:"doh"`
+}
+
+// RouteDoH is the DNS over HTTPS action (RFC 8484): GET with a base64url
+// dns parameter or POST with an application/dns-message body, answered
+// by the named kind: dns listener's policy and cache.
+type RouteDoH struct {
+	Listener string `yaml:"listener"`
 }
 
 // RouteGRPC matches gRPC requests (content type application/grpc) by

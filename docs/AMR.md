@@ -1200,9 +1200,13 @@ sinkhole address.
 
 **Alternatives.** A resolver library (rejected: recursion and DNSSEC
 are a different product; a large dependency for a proxy); DNS over
-TLS or HTTPS to upstreams (deferred: worth adding, the resolver is the
-one place to change); DNS over HTTPS for clients on an http listener
-(deferred: a 1.x candidate).
+TLS or HTTPS to upstreams (deferred at 1.2, delivered in 1.3 in the
+resolver alone: `tls://` upstreams reuse a small connection pool,
+`https://` upstreams post through one client, both against a pinned
+CA, and the answer check is the same); DNS over HTTPS for clients on an
+http listener (delivered in 1.3 as the `doh` route action, which hands
+the decoded query to a dns listener so one policy and cache serve UDP,
+TCP and HTTPS clients).
 
 **Consequences.** No DNSSEC validation; clients that need it validate
 themselves (the proxy passes records through untouched). Cached

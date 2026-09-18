@@ -136,7 +136,8 @@ cache is kept); the address needs a restart.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `upstreams` | list of host:port | required | Resolvers tried in turn, rotating the first choice per query |
+| `upstreams` | list | required | Resolvers tried in turn, rotating the first choice per query: `host:port` (UDP, TCP on truncation), `tls://host:port` (DNS over TLS, connections reused), `https://host[:port]/path` (DNS over HTTPS, POST `application/dns-message` with id 0) |
+| `upstream_ca_file` | path | system pool | Pins the CA of `tls://` and `https://` upstreams; the host in the upstream string is the name verified |
 | `timeout` | duration | `2s` | One upstream attempt; at most 30s |
 | `allow_clients` | list of CIDR | `[]` (any) | Other clients get REFUSED |
 | `block` | list | `[]` | `name` blocks the name and its subdomains, `*.suffix` subdomains only, `=name` that name only |
@@ -371,6 +372,7 @@ wins); then configuration order.
 | `honeypot` | object | | Decoy action; see `routes[].honeypot` |
 | `mirror` | object | | Copy requests to a second upstream; see `routes[].mirror` |
 | `grpc` | `{services, methods}` | | Restrict the route to gRPC requests; see `routes[].grpc` |
+| `doh` | `{listener}` | | DNS over HTTPS action; see `routes[].doh` |
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
@@ -603,6 +605,25 @@ The access log carries `mirror: sent`, `dropped` or `body_too_large`.
 Counters: `mirror_sent`, `mirror_dropped`, `mirror_skipped`,
 `mirror_failed`; metric `xproxy_mirror_total{outcome}`. Mirror
 responses appear in the error log at debug level with their status.
+
+### routes[].doh
+
+A `doh` route answers DNS over HTTPS (RFC 8484) for clients: `GET`
+with the query in the `dns` parameter (base64url without padding) or
+`POST` with an `application/dns-message` body. The query goes through
+the named `kind: dns` listener's policy and cache (bans, client allow
+list, rate limit, block list) as if it had arrived over UDP, and the
+answer is returned as `application/dns-message` with `Cache-Control:
+max-age` set to the smallest TTL in it. A query the policy drops
+answers 403; bad requests 400, a wrong content type 415, other methods
+405. The route's own admission pipeline (rate limits, ACLs, WAF) applies
+first, so a DoH endpoint can be limited like any other route.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `listener` | name | required | A `kind: dns` listener whose policy and cache answer |
+
+The access log line carries `dns_rcode`.
 
 ### routes[].grpc
 

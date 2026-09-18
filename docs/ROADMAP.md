@@ -206,7 +206,8 @@ procedure is in RELEASING.md.
 - OpenTelemetry exporter behind the metrics snapshot: delivered
   (`metrics.otlp`, AMR-026 update)
 - DNS over TLS and HTTPS to upstream resolvers, DNS over HTTPS for
-  clients on an http listener (AMR-041)
+  clients on an http listener: delivered (`tls://`, `https://`
+  upstreams, `routes[].doh`, AMR-041 update)
 - Kubernetes Gateway API next to the Ingress translator, and API
   watches instead of polling (AMR-043)
 - QUIC passthrough on layer 4 listeners with a UDP relay (AMR-035)

@@ -349,6 +349,8 @@ admitted:
 		http.Redirect(rw, r, cr.cfg.Redirect.To, cr.cfg.Redirect.Status)
 	case cr.cfg.Honeypot != nil:
 		s.honeypot(rw, r, st, cr, release)
+	case cr.cfg.DoH != nil:
+		s.doh(rw, r, st, cr)
 	case cr.cfg.Respond != nil:
 		applyHeaderOps(rw.Header(), cr.cfg.ResponseHeaders)
 		if rw.Header().Get("Content-Type") == "" {

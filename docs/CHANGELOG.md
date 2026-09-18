@@ -16,6 +16,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 - WebAssembly ABI body access: `get` kinds 13 to 15 and `set_body`
   behind a per filter `body_limit`; bodies over the limit stream
   through unexposed.
+- DNS over TLS and HTTPS: dns listener `upstreams` accept
+  `tls://host:port` and `https://host/path` with `upstream_ca_file`;
+  a `doh` route action answers RFC 8484 for clients through a dns
+  listener's policy and cache.
 - OpenTelemetry exporter: `metrics.otlp` pushes every metric family as
   OTLP/HTTP with JSON encoding on an interval, with headers, pinned CA,
   resource attributes and gzip; `GET /v1/otlp`, `xproxyctl otlp`.

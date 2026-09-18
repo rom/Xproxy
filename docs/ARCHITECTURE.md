@@ -331,10 +331,18 @@ rate limit, the client allow list, the block list (exact and suffix
 lookups per label), then the cache (responses stored with TTLs adjusted
 by age on the way out) and finally the resolver, which forwards with a
 fresh id on a fresh socket and accepts only an answer that echoes the
-id and the question. A `kind: dns` listener wraps this in
+id and the question; `tls://` upstreams keep a small pool of DNS over
+TLS connections per server and `https://` upstreams post
+`application/dns-message` through one HTTP client with the pinned CA.
+A `kind: dns` listener wraps this in
 `internal/proxy/dnslistener.go`, binding the access log, security
 events and the ban list; its policy is an immutable value swapped on
 reload while the cache survives.
+
+A `doh` route (`internal/proxy/doh.go`) decodes an RFC 8484 request on
+an http listener and hands the query to the named dns listener's
+`Handle`, so DNS over HTTPS clients get the same policy and cache as
+UDP clients plus the route's own admission pipeline.
 
 ### Forward proxy
 

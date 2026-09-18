@@ -1,9 +1,13 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -136,5 +140,112 @@ routes:
 	}
 	if err := s.Reload(cfg); err == nil || !strings.Contains(err.Error(), "block_file") {
 		t.Fatalf("reload with a missing block file: %v", err)
+	}
+}
+
+// TestDoHRoute answers RFC 8484 GET and POST on an http route through
+// a dns listener's policy and cache.
+func TestDoHRoute(t *testing.T) {
+	up, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = up.Close() })
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, addr, err := up.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			h, _ := dns.ParseHeader(buf[:n])
+			q, qEnd, err := dns.ParseQuestion(buf[:n])
+			if err != nil {
+				continue
+			}
+			_, _ = up.WriteTo(dns.AnswerA(buf[:n], qEnd, h, q, []byte{192, 0, 2, 9}, 90), addr)
+		}
+	}()
+	yaml := `
+version: 1
+server:
+  listeners:
+    - {name: main, address: "127.0.0.1:0"}
+    - name: resolver
+      address: "127.0.0.1:0"
+      kind: dns
+      dns:
+        upstreams: ["%s"]
+        block: [blocked.test]
+logging:
+  access: {enabled: false}
+upstreams:
+  - name: app
+    endpoints: [{address: 127.0.0.1:1}]
+routes:
+  - name: doh
+    paths: [/dns-query]
+    doh: {listener: resolver}
+  - name: rest
+    upstream: app
+`
+	s, base := startServer(t, fmt.Sprintf(yaml, up.LocalAddr().String()))
+	q, _ := dns.Query(7, "www.example.test", dns.TypeA)
+	resp, err := http.Get(base + "/dns-query?dns=" + base64.RawURLEncoding.EncodeToString(q))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "application/dns-message" || resp.Header.Get("Cache-Control") != "max-age=90" {
+		t.Fatalf("GET: %d %v", resp.StatusCode, resp.Header)
+	}
+	if h, _ := dns.ParseHeader(body); h.ID != 7 || h.Rcode() != dns.RcodeNoError || h.ANCount != 1 {
+		t.Fatalf("GET answer: %+v", h)
+	}
+	pr, err := http.Post(base+"/dns-query", "application/dns-message", bytes.NewReader(q))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pb, _ := io.ReadAll(pr.Body)
+	_ = pr.Body.Close()
+	if pr.StatusCode != 200 || len(pb) != len(body) || s.Stats().DNSCacheHits != 1 {
+		t.Fatalf("POST: %d len %d hits %d", pr.StatusCode, len(pb), s.Stats().DNSCacheHits)
+	}
+	bq, _ := dns.Query(8, "x.blocked.test", dns.TypeA)
+	resp, err = http.Get(base + "/dns-query?dns=" + base64.RawURLEncoding.EncodeToString(bq))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if h, _ := dns.ParseHeader(body); resp.StatusCode != 200 || h.Rcode() != dns.RcodeNXDomain || resp.Header.Get("Cache-Control") != "max-age=0" {
+		t.Fatalf("blocked over DoH: %d %+v %v", resp.StatusCode, h, resp.Header)
+	}
+	for _, tc := range []struct {
+		method, path, ct, body string
+		want                   int
+	}{
+		{"GET", "/dns-query", "", "", 400},
+		{"GET", "/dns-query?dns=%%%", "", "", 400},
+		{"GET", "/dns-query?dns=AAAA", "", "", 400},
+		{"POST", "/dns-query", "text/plain", "x", 415},
+		{"PUT", "/dns-query", "", "", 405},
+	} {
+		req, _ := http.NewRequest(tc.method, base+tc.path, strings.NewReader(tc.body))
+		if tc.ct != "" {
+			req.Header.Set("Content-Type", tc.ct)
+		}
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = r.Body.Close()
+		if r.StatusCode != tc.want {
+			t.Errorf("%s %s: got %d want %d", tc.method, tc.path, r.StatusCode, tc.want)
+		}
+	}
+	if st := s.DNS(); len(st) != 1 || st[0].Queries < 3 || st[0].Blocked != 1 {
+		t.Fatalf("listener status: %+v", st)
 	}
 }

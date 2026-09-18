@@ -625,11 +625,35 @@ bans:
     - {name: dns-abuse, reasons: [dns_blocked], threshold: 500, window: 10m, duration: 1h}
 ```
 
+```yaml
+# Encrypted upstreams and DNS over HTTPS for clients
+server:
+  listeners:
+    - name: resolver
+      address: "127.0.0.1:53"
+      kind: dns
+      dns:
+        upstreams: ["tls://dns.quad9.net:853", "https://dns.quad9.net/dns-query"]
+        upstream_ca_file: /etc/pki/tls/certs/ca-bundle.crt
+    - name: https
+      address: ":443"
+      tls: {certificates: [{cert_file: /etc/xproxy/dns.pem, key_file: /etc/xproxy/dns.key}]}
+routes:
+  - name: doh
+    hosts: [dns.example.com]
+    paths: [/dns-query]
+    doh: {listener: resolver}
+    rate_limits: [doh-clients]
+```
+
 Clients on the internal network resolve through the proxy, which
 answers repeated questions from its cache, replaces blocked names with
 the sinkhole address, refuses everyone else, drops floods per client
 and forwards the rest to the upstream resolvers with a fresh
-transaction id and source port per query. `xproxyctl dns` shows the
+transaction id and source port per query, or over TLS or HTTPS with
+reused connections when the upstream string says so. Browsers and
+phones can use the `doh` route as their DNS over HTTPS resolver, with
+the same block list and cache. `xproxyctl dns` shows the
 counters; `log_queries: true` writes every question to the access log
 when an investigation needs it.
 

@@ -226,6 +226,8 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Client allow list, per client rate limit that drops, in-flight
   bound, truncation to the client's UDP size: no open resolver, no
   amplification.
+- DNS over TLS and HTTPS upstreams with a pinned CA; DoH for clients
+  behind the route pipeline, bodies and parameters bounded.
 
 ### gRPC and HTTP/2 cleartext
 

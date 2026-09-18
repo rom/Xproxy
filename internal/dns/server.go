@@ -106,7 +106,7 @@ func (s *Server) Status() Status {
 			st.BlockEntries = p.Block.Len()
 		}
 		if p.Resolver != nil {
-			st.Upstreams = p.Resolver.servers
+			st.Upstreams = p.Resolver.Servers()
 			st.UpstreamFail = p.Resolver.Failures.Load()
 		}
 	}
@@ -341,8 +341,11 @@ func (s *Server) Handle(query []byte, client netip.Addr, tcp bool) []byte {
 			return s.finish(query, qEnd, h, q, client, proto, start, "cache", s.fit(query, qEnd, h, resp, rEnd, tcp))
 		}
 	}
+	// Upstream transport is the resolver's business: UDP first with TCP
+	// on truncation for plain servers whatever the client used, so a
+	// stream client (TCP, DoH) does not force a TCP dial per query.
 	ctx, cancel := context.WithTimeout(context.Background(), p.Resolver.timeout*time.Duration(max(len(p.Resolver.servers), 1)))
-	resp, err := p.Resolver.Exchange(ctx, query, qEnd, q, tcp)
+	resp, err := p.Resolver.Exchange(ctx, query, qEnd, q, len(query) > maxUDP)
 	cancel()
 	if err != nil {
 		s.ServFail.Add(1)

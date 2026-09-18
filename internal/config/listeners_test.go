@@ -44,7 +44,7 @@ routes:
       address: ":5353"
       kind: dns
       dns:
-        upstreams: ["9.9.9.9:53", "[2620:fe::fe]:53"]
+        upstreams: ["9.9.9.9:53", "[2620:fe::fe]:53", "tls://dns.quad9.net:853", "https://dns.quad9.net/dns-query"]
         block: [ads.test, "*.tracker.test", =exact.test]
         rate_limit: {}
 `
@@ -105,6 +105,10 @@ routes:
 		{"dns with tls", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"]}, h2c: true}\n", "takes only address and dns"},
 		{"dns no upstreams", "    - {name: x, address: \":1\", kind: dns, dns: {}}\n", "at least one resolver"},
 		{"dns bad upstream", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9\"]}}\n", "must be host:port"},
+		{"dns tls upstream", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"tls://9.9.9.9\"]}}\n", "tls://host:port"},
+		{"dns https upstream", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"https://dns.test\"]}}\n", "https://host"},
+		{"dns transport", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"quic://dns.test:853\"]}}\n", "unknown transport"},
+		{"dns ca", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"tls://9.9.9.9:853\"], upstream_ca_file: rel.pem}}\n", "upstream_ca_file"},
 		{"dns timeout", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"], timeout: 1m}}\n", "dns.timeout"},
 		{"dns client cidr", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"], allow_clients: [x]}}\n", "allow_clients"},
 		{"dns block entry", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"], block: [\"a b\"]}}\n", "dns.block"},
@@ -194,7 +198,7 @@ routes:
 		t.Fatalf("honeypot defaults: %+v", hp)
 	}
 	cases := []struct{ name, snippet, want string }{
-		{"two actions", "upstream: app\n    honeypot: {decoy: env}", "exactly one of upstream, redirect, respond or honeypot"},
+		{"two actions", "upstream: app\n    honeypot: {decoy: env}", "exactly one of upstream, redirect, respond, honeypot or doh"},
 		{"two sources", "honeypot: {decoy: env, body: x}", "exactly one of decoy, body or body_file"},
 		{"unknown decoy", "honeypot: {decoy: nope}", "unknown decoy"},
 		{"status", "honeypot: {decoy: env, status: 99}", "honeypot.status"},
@@ -213,6 +217,9 @@ routes:
 		{"grpc service", "upstream: app\n    grpc: {services: [\"a/b\"]}", "grpc.services"},
 		{"grpc method", "upstream: app\n    grpc: {methods: [nomethod]}", "grpc.methods"},
 		{"grpc without upstream", "respond: {status: 200}\n    grpc: {}", "only a route with an upstream"},
+		{"doh without listener", "doh: {}", "doh.listener: required"},
+		{"doh unknown listener", "doh: {listener: main}", "not a kind: dns listener"},
+		{"doh and upstream", "upstream: app\n    doh: {listener: main}", "exactly one of"},
 	}
 	for _, tc := range cases {
 		_, err := Parse([]byte(strings.Replace(base, "%s", tc.snippet, 1)))

@@ -175,9 +175,18 @@ func (v *validator) config(c *Config) {
 			}
 		}
 	}
+	dnsListeners := map[string]bool{}
+	for _, ln := range c.Server.Listeners {
+		if ln.Kind == "dns" {
+			dnsListeners[ln.Name] = true
+		}
+	}
 	routes := map[string]bool{}
 	for i := range c.Routes {
 		v.route(i, &c.Routes[i], routes, upstreams, rateLimits)
+		if d := c.Routes[i].DoH; d != nil && d.Listener != "" && !dnsListeners[d.Listener] {
+			v.errf("routes[%d].doh.listener: %q is not a kind: dns listener", i, d.Listener)
+		}
 		for j, name := range c.Routes[i].Filters {
 			if !filters[name] {
 				v.errf("routes[%d].filters[%d]: unknown filter %q", i, j, name)
@@ -911,8 +920,14 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 			v.errf("%s.honeypot.mark: must be positive and at most 720h", p)
 		}
 	}
+	if r.DoH != nil {
+		actions++
+		if r.DoH.Listener == "" {
+			v.errf("%s.doh.listener: required", p)
+		}
+	}
 	if actions != 1 {
-		v.errf("%s: exactly one of upstream, redirect, respond or honeypot is required", p)
+		v.errf("%s: exactly one of upstream, redirect, respond, honeypot or doh is required", p)
 	}
 	if g := r.GRPC; g != nil {
 		for j, sv := range g.Services {
@@ -1340,9 +1355,12 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 		v.errf("%s.upstreams: at least one resolver is required", p)
 	}
 	for i, u := range d.Upstreams {
-		if host, port, err := net.SplitHostPort(u); err != nil || host == "" || port == "" {
-			v.errf("%s.upstreams[%d]: %q must be host:port", p, i, u)
+		if err := dnsUpstreamOK(u); err != nil {
+			v.errf("%s.upstreams[%d]: %v", p, i, err)
 		}
+	}
+	if d.UpstreamCAFile != "" {
+		v.file(p+".upstream_ca_file", d.UpstreamCAFile)
 	}
 	if d.Timeout <= 0 || d.Timeout > Duration(30*time.Second) {
 		v.errf("%s.timeout: must be positive and at most 30s", p)
@@ -1391,6 +1409,30 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 	if d.MaxInFlight < 1 || d.MaxInFlight > 1_000_000 {
 		v.errf("%s.max_in_flight: must be between 1 and 1000000", p)
 	}
+}
+
+// dnsUpstreamOK mirrors dns.ParseUpstream without importing the package.
+func dnsUpstreamOK(s string) error {
+	switch {
+	case strings.HasPrefix(s, "tls://"):
+		host, port, err := net.SplitHostPort(strings.TrimPrefix(s, "tls://"))
+		if err != nil || host == "" || port == "" {
+			return fmt.Errorf("%q must be tls://host:port", s)
+		}
+	case strings.HasPrefix(s, "https://"):
+		u, err := url.Parse(s)
+		if err != nil || u.Host == "" || u.Path == "" || u.RawQuery != "" || u.User != nil {
+			return fmt.Errorf("%q must be https://host[:port]/path", s)
+		}
+	case strings.Contains(s, "://"):
+		return fmt.Errorf("%q: unknown transport (use host:port, tls:// or https://)", s)
+	default:
+		host, port, err := net.SplitHostPort(s)
+		if err != nil || host == "" || port == "" {
+			return fmt.Errorf("%q must be host:port", s)
+		}
+	}
+	return nil
 }
 
 func (v *validator) forwardListener(p string, f *ForwardListener) {
