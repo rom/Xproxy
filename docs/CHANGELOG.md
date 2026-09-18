@@ -62,6 +62,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   route `compress` override; `Vary`, weak `ETag`s, pre-encoded bodies,
   ranges and `no-transform` handled; `encoding` in the access log,
   `compressed` and `compressed_raw_bytes` counters and metrics.
+- Routing by regular expression (`routes[].path_regex`, anchored RE2
+  on the whole path, ranked by literal prefix) and by request header
+  and cookie conditions (`routes[].headers`, `routes[].cookies` with
+  `exact`, `prefix`, `regex` and `present`); conditioned routes rank
+  before plain routes on the same path. Gateway API `RegularExpression`
+  paths and header matches now translate instead of warning.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

@@ -165,7 +165,7 @@ the `denied` reason.
 | 4 | URI length | 414 | `denied_uri_length` |
 | 5 | Host normalisation (`netutil.Host`) | 400 | `denied_bad_host` |
 | 5b | Reserved paths `/.xproxy/challenge` (proof verification) and `/.xproxy/challenge.js` | 303 / 403 | `challenges_*` |
-| 6 | Path cleaning (`netutil.CleanPath`) and route match | 404 | `denied_no_route` |
+| 6 | Path cleaning (`netutil.CleanPath`) and route match (host, path prefix or anchored pattern, method, header and cookie conditions) | 404 | `denied_no_route` |
 | 7 | CIDR deny then allow | 403 | `denied_acl` |
 | 7b | Challenge gate: unverified clients on routes with `challenge` (always, or in `load` mode above the level) receive the page | 503 page | `challenges_issued` |
 | 7c | Adaptive shedding: the route's priority class against the load level | 503 + `Retry-After` | `shed` |

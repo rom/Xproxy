@@ -882,6 +882,26 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 			v.errf("%s.methods[%d]: %q must be an upper-case token", p, j, m)
 		}
 	}
+	if len(r.PathRegex) > 32 {
+		v.errf("%s.path_regex: at most 32 patterns", p)
+	}
+	for j, re := range r.PathRegex {
+		switch {
+		case re == "" || len(re) > 512:
+			v.errf("%s.path_regex[%d]: must be 1 to 512 bytes", p, j)
+		case !strings.HasPrefix(re, "/") && !strings.HasPrefix(re, "^/") && !strings.HasPrefix(re, "\\/"):
+			v.errf("%s.path_regex[%d]: %q must start with / (patterns match the whole path)", p, j, re)
+		default:
+			if _, err := regexp.Compile("^(?:" + re + ")$"); err != nil {
+				v.errf("%s.path_regex[%d]: %v", p, j, err)
+			}
+		}
+	}
+	if len(r.Headers)+len(r.Cookies) > 16 {
+		v.errf("%s: at most 16 header and cookie conditions", p)
+	}
+	v.headerMatches(p+".headers", r.Headers, false)
+	v.headerMatches(p+".cookies", r.Cookies, true)
 
 	actions := 0
 	if r.Upstream != "" {
@@ -1701,6 +1721,40 @@ func (v *validator) challenge(c *Challenge) {
 }
 
 func wafModeOK(m string) bool { return m == "off" || m == "detect" || m == "block" }
+
+// headerMatches validates request conditions.
+func (v *validator) headerMatches(p string, ms []HeaderMatch, cookie bool) {
+	for j, m := range ms {
+		q := fmt.Sprintf("%s[%d]", p, j)
+		switch {
+		case m.Name == "" || len(m.Name) > 128:
+			v.errf("%s.name: required, at most 128 bytes", q)
+		case !cookie && !headerNameOK(m.Name):
+			v.errf("%s.name: %q is not a header name", q, m.Name)
+		case cookie && strings.ContainsAny(m.Name, " \t;=,\r\n"):
+			v.errf("%s.name: %q is not a cookie name", q, m.Name)
+		}
+		set := 0
+		for _, on := range []bool{m.Exact != "", m.Prefix != "", m.Regex != "", m.Present != nil} {
+			if on {
+				set++
+			}
+		}
+		if set != 1 {
+			v.errf("%s: exactly one of exact, prefix, regex or present is required", q)
+		}
+		if m.Regex != "" {
+			if len(m.Regex) > 512 {
+				v.errf("%s.regex: at most 512 bytes", q)
+			} else if _, err := regexp.Compile("^(?:" + m.Regex + ")$"); err != nil {
+				v.errf("%s.regex: %v", q, err)
+			}
+		}
+		if len(m.Exact) > 1024 || len(m.Prefix) > 1024 {
+			v.errf("%s: values are at most 1024 bytes", q)
+		}
+	}
+}
 
 func (v *validator) waf(w *WAF, profiles map[string]bool) {
 	if !wafModeOK(w.DefaultMode) {

@@ -203,6 +203,13 @@ routes:
 	cases := []struct{ name, snippet, want string }{
 		{"two actions", "upstream: app\n    honeypot: {decoy: env}", "exactly one of upstream, redirect, respond, honeypot, doh or static"},
 		{"two sources", "honeypot: {decoy: env, body: x}", "exactly one of decoy, body or body_file"},
+		{"regex without slash", "upstream: app\n    path_regex: ['api/.*']", "must start with /"},
+		{"regex invalid", "upstream: app\n    path_regex: ['/api/(']", "path_regex[0]"},
+		{"header match two kinds", "upstream: app\n    headers: [{name: X-A, exact: a, prefix: b}]", "exactly one of exact, prefix, regex or present"},
+		{"header match none", "upstream: app\n    headers: [{name: X-A}]", "exactly one of exact, prefix, regex or present"},
+		{"header match bad name", "upstream: app\n    headers: [{name: 'X A', exact: a}]", "not a header name"},
+		{"header match bad regex", "upstream: app\n    headers: [{name: X-A, regex: '('}]", "headers[0].regex"},
+		{"cookie bad name", "upstream: app\n    cookies: [{name: 'a=b', exact: a}]", "not a cookie name"},
 		{"unknown decoy", "honeypot: {decoy: nope}", "unknown decoy"},
 		{"status", "honeypot: {decoy: env, status: 99}", "honeypot.status"},
 		{"relative file", "honeypot: {body_file: rel.html}", "absolute path"},

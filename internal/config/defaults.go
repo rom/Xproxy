@@ -444,7 +444,7 @@ func applyDefaults(c *Config) {
 				setStr(&r.WAF.Profile, c.WAF.DefaultProfile)
 			}
 		}
-		if len(r.Paths) == 0 {
+		if len(r.Paths) == 0 && len(r.PathRegex) == 0 {
 			r.Paths = []string{"/"}
 		}
 		if r.Redirect != nil && r.Redirect.Status == 0 {

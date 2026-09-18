@@ -1,7 +1,10 @@
 // Package router matches incoming requests to configured routes.
 //
-// Matching is host first, then longest path prefix, then method, then
-// priority. Host matching supports exact names and single-label wildcards
+// Matching is host first, then longest path prefix (a regular expression
+// counts as its literal prefix and, at equal length, beats a plain
+// prefix), then the number of header and cookie conditions (more first),
+// then priority. Methods and conditions are filters: an entry whose
+// method set or conditions do not match is skipped. Host matching supports exact names and single-label wildcards
 // ("*.example.com" matches "a.example.com" but not "example.com" or
 // "a.b.example.com"). Exact hosts win over wildcards, and both win over
 // catch-all routes with no hosts.
@@ -11,6 +14,8 @@
 package router
 
 import (
+	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -24,11 +29,90 @@ type Route struct {
 }
 
 type entry struct {
-	path     string
+	path     string          // prefix, or the literal prefix of regex
+	regex    *regexp.Regexp  // non-nil: the whole path must match
+	conds    []condition     // header and cookie conditions, all must hold
 	methods  map[string]bool // nil means any
 	priority int
 	route    *Route
 	grpc     *grpcMatch // non-nil restricts the entry to gRPC requests
+}
+
+// condition is one compiled header or cookie match.
+type condition struct {
+	name   string
+	cookie bool
+	kind   condKind
+	value  string
+	re     *regexp.Regexp
+}
+
+type condKind int
+
+const (
+	condExact condKind = iota
+	condPrefix
+	condRegex
+	condPresent
+	condAbsent
+)
+
+func compileConds(ms []config.HeaderMatch, cookie bool) []condition {
+	out := make([]condition, 0, len(ms))
+	for _, m := range ms {
+		c := condition{name: m.Name, cookie: cookie}
+		if !cookie {
+			c.name = http.CanonicalHeaderKey(m.Name)
+		}
+		switch {
+		case m.Exact != "":
+			c.kind, c.value = condExact, m.Exact
+		case m.Prefix != "":
+			c.kind, c.value = condPrefix, m.Prefix
+		case m.Regex != "":
+			c.kind, c.re = condRegex, regexp.MustCompile("^(?:"+m.Regex+")$") // validated
+		case m.Present != nil && !*m.Present:
+			c.kind = condAbsent
+		default:
+			c.kind = condPresent
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// holds evaluates the condition against the request headers.
+func (c *condition) holds(hdr http.Header) bool {
+	var v string
+	var present bool
+	if c.cookie {
+		if ck, err := (&http.Request{Header: hdr}).Cookie(c.name); err == nil {
+			v, present = ck.Value, true
+		}
+	} else if vs := hdr[c.name]; len(vs) > 0 {
+		v, present = vs[0], true
+	}
+	switch c.kind {
+	case condExact:
+		return present && v == c.value
+	case condPrefix:
+		return present && strings.HasPrefix(v, c.value)
+	case condRegex:
+		return present && c.re.MatchString(v)
+	case condAbsent:
+		return !present
+	default:
+		return present
+	}
+}
+
+func condsHold(cs []condition, hdr http.Header) bool {
+	for i := range cs {
+		if !cs[i].holds(hdr) {
+			return false
+		}
+	}
+	return true
 }
 
 // grpcMatch selects gRPC requests by service or Service/Method. Empty
@@ -105,11 +189,21 @@ func New(routes []config.Route) *Router {
 			}
 		}
 		tables := r.tablesFor(rc.Hosts)
-		for _, p := range rc.Paths {
-			e := entry{path: normalisePath(p), methods: methods, priority: rc.Priority, route: cr, grpc: gm}
+		conds := append(compileConds(rc.Headers, false), compileConds(rc.Cookies, true)...)
+		add := func(e entry) {
+			e.conds, e.methods, e.priority, e.route, e.grpc = conds, methods, rc.Priority, cr, gm
 			for _, t := range tables {
 				t.entries = append(t.entries, e)
 			}
+		}
+		for _, p := range rc.Paths {
+			add(entry{path: normalisePath(p)})
+		}
+		for _, p := range rc.PathRegex {
+			// The literal prefix comes from the bare pattern: a leading
+			// anchor hides it from LiteralPrefix.
+			lit, _ := regexp.MustCompile("(?:" + strings.TrimPrefix(p, "^") + ")").LiteralPrefix() // validated
+			add(entry{path: lit, regex: regexp.MustCompile("^(?:" + p + ")$")})
 		}
 	}
 	for _, t := range r.exact {
@@ -151,6 +245,12 @@ func sortEntries(es []entry) {
 		if len(es[i].path) != len(es[j].path) {
 			return len(es[i].path) > len(es[j].path)
 		}
+		if len(es[i].conds) != len(es[j].conds) {
+			return len(es[i].conds) > len(es[j].conds) // conditioned entries first
+		}
+		if (es[i].regex != nil) != (es[j].regex != nil) {
+			return es[i].regex != nil // a pattern is more specific than its literal prefix
+		}
 		if es[i].priority != es[j].priority {
 			return es[i].priority > es[j].priority
 		}
@@ -169,38 +269,45 @@ func (r *Router) Len() int { return r.count }
 // host must already be lower-cased and stripped of any port. path must be
 // the cleaned request path (see netutil.CleanPath).
 func (r *Router) Match(host, path, method string) *Route {
-	return r.MatchRequest(host, path, method, false)
+	return r.MatchRequest(host, path, method, false, nil)
 }
 
-// MatchRequest is Match with the gRPC flag of the request: routes with
+// MatchRequest is Match with the gRPC flag of the request (routes with
 // a grpc section only match gRPC requests, and only for their services
-// and methods.
-func (r *Router) MatchRequest(host, path, method string, grpc bool) *Route {
+// and methods) and its headers for header and cookie conditions.
+func (r *Router) MatchRequest(host, path, method string, grpc bool, hdr http.Header) *Route {
 	if t, ok := r.exact[host]; ok {
-		if m := t.match(path, method, grpc); m != nil {
+		if m := t.match(path, method, grpc, hdr); m != nil {
 			return m
 		}
 	}
 	if i := strings.IndexByte(host, '.'); i > 0 && i < len(host)-1 {
 		if t, ok := r.wildcard[host[i+1:]]; ok {
-			if m := t.match(path, method, grpc); m != nil {
+			if m := t.match(path, method, grpc, hdr); m != nil {
 				return m
 			}
 		}
 	}
-	return r.catchAll.match(path, method, grpc)
+	return r.catchAll.match(path, method, grpc, hdr)
 }
 
-func (t *hostTable) match(path, method string, grpc bool) *Route {
+func (t *hostTable) match(path, method string, grpc bool, hdr http.Header) *Route {
 	for i := range t.entries {
 		e := &t.entries[i]
-		if !prefixMatch(path, e.path) {
+		if e.regex != nil {
+			if !strings.HasPrefix(path, e.path) || !e.regex.MatchString(path) {
+				continue
+			}
+		} else if !prefixMatch(path, e.path) {
 			continue
 		}
 		if e.methods != nil && !e.methods[method] {
 			continue
 		}
 		if e.grpc != nil && (!grpc || !e.grpc.matches(path)) {
+			continue
+		}
+		if len(e.conds) > 0 && !condsHold(e.conds, hdr) {
 			continue
 		}
 		return e.route

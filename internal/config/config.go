@@ -673,8 +673,18 @@ type Route struct {
 	// Empty matches any host.
 	Hosts []string `yaml:"hosts"`
 	// Paths are prefixes. "/" matches everything. Longest prefix wins.
-	Paths   []string `yaml:"paths"`
-	Methods []string `yaml:"methods"`
+	Paths []string `yaml:"paths"`
+	// PathRegex lists RE2 patterns that must match the whole cleaned
+	// path (anchored at both ends by the proxy). A regex entry ranks by
+	// the length of its literal prefix; at equal length it beats a
+	// prefix entry. With PathRegex set, Paths has no default.
+	PathRegex []string `yaml:"path_regex"`
+	Methods   []string `yaml:"methods"`
+	// Headers and Cookies are conditions on the request: every listed
+	// match must hold. Entries with conditions rank above entries
+	// without at the same path length (more conditions first).
+	Headers []HeaderMatch `yaml:"headers"`
+	Cookies []HeaderMatch `yaml:"cookies"`
 	// Priority breaks ties between routes with identical specificity. Higher
 	// wins. Default 0.
 	Priority int `yaml:"priority"`
@@ -738,6 +748,22 @@ type Route struct {
 	// Compress overrides the compression section for this route: false
 	// turns it off, true requires the section.
 	Compress *bool `yaml:"compress"`
+}
+
+// HeaderMatch is one condition on a request header or cookie: exactly
+// one of Exact, Prefix, Regex or Present. Header names are matched case
+// insensitively and the first value is used; cookie names are exact.
+type HeaderMatch struct {
+	Name string `yaml:"name"`
+	// Exact requires the value to equal this string.
+	Exact string `yaml:"exact"`
+	// Prefix requires the value to start with this string.
+	Prefix string `yaml:"prefix"`
+	// Regex is an RE2 pattern matched against the whole value.
+	Regex string `yaml:"regex"`
+	// Present true requires the header or cookie to exist with any
+	// value; false requires it to be absent.
+	Present *bool `yaml:"present"`
 }
 
 // RouteStatic serves files from a directory. Paths are resolved inside
