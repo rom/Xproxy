@@ -1283,13 +1283,23 @@ Gateway API (deferred: a larger model; a translator for it would sit
 next to this one); a separate controller process writing the file
 (rejected: two processes to run and a file to race on).
 
-**Consequences.** Propagation latency is up to `resync`. Regular
-expression paths and Exact semantics beyond priority are not
-supported. Pod addresses are used directly, so the proxy must run
-inside the cluster network. Watches and the Gateway API are 1.x
-candidates.
+**Consequences.** Regular expression paths and Exact semantics beyond
+priority are not supported. Pod addresses are used directly, so the
+proxy must run inside the cluster network.
 
-**Status.** Accepted.
+**Update (1.3).** Watches and the Gateway API are delivered without
+changing the shape of the decision. Watches are used only as a
+trigger: a stream per collection is decoded for event kinds and any
+event kicks a debounced full sync, so translation is still a function
+of one consistent list and the resync poll remains the fallback; the
+bookkeeping of resource versions and partial updates that informers
+carry is not needed for that. The Gateway API translator sits next to
+the Ingress one and shares its endpoint resolver; what the
+configuration language cannot express (header matches, regular
+expression paths, scheme-only redirects) is warned about rather than
+approximated.
+
+**Status.** Accepted; watches and the Gateway API delivered in 1.3.
 
 ---
 

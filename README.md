@@ -115,9 +115,10 @@ an identifier from the access log to the upstream.
 - A stable middleware interface for compiled-in filters, and a
   WebAssembly ABI that runs sandboxed modules per request with memory
   and time bounds
-- Kubernetes ingress controller mode: Ingress resources become routes,
-  upstreams and certificates, reloaded on change; manifests and a
-  container build included
+- Kubernetes ingress controller mode: Ingress and Gateway API resources
+  become routes, upstreams and certificates, reloaded within a second
+  of a change through watches; manifests and a container build
+  included
 
 **Operations**
 

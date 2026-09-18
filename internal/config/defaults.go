@@ -476,6 +476,7 @@ func ingressDefaults(c *Config) {
 	setStr(&in.CertDir, "/var/lib/xproxy/ingress")
 	setDur(&in.Resync, 30*time.Second)
 	setDur(&in.Timeout, 10*time.Second)
+	setDur(&in.Debounce, 500*time.Millisecond)
 }
 
 func setInt(p *int, v int) {

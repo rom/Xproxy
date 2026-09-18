@@ -389,15 +389,18 @@ wins); then configuration order.
 
 Kubernetes ingress controller mode. When enabled, the proxy reads the
 Ingress, Service, EndpointSlice and TLS Secret resources of one ingress
-class from the API server with the pod's service account (no client
-library), translates them and appends the result to this file's
-routes, upstreams and certificates: the running configuration is the
-file plus the cluster. The file's own routes and upstreams are kept
-and a name collision is an error. Resources are polled every `resync`
-and a change reloads the proxy like a SIGHUP; a SIGHUP or `xproxyctl
-reload` re-reads the file and merges the latest snapshot. The API
-server being unreachable at start is a warning, not a failure: the
-file configuration serves until the first successful sync.
+class, and the Gateway API resources (Gateway, HTTPRoute) of the same
+class when the cluster has them, from the API server with the pod's
+service account (no client library), translates them and appends the
+result to this file's routes, upstreams and certificates: the running
+configuration is the file plus the cluster. The file's own routes and
+upstreams are kept and a name collision is an error. Watch streams on
+the resources trigger a sync within `debounce` of a change, with a
+full poll every `resync` as the fallback; a change reloads the proxy
+like a SIGHUP, and a SIGHUP or `xproxyctl reload` re-reads the file
+and merges the latest snapshot. The API server being unreachable at
+start is a warning, not a failure: the file configuration serves until
+the first successful sync.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -410,8 +413,10 @@ file configuration serves until the first successful sync.
 | `namespaces` | list | `[]` (all) | Namespaces read |
 | `listener` | name | none | TLS `http` listener that receives certificates from Ingress TLS secrets; without it TLS secrets are ignored |
 | `cert_dir` | path | `/var/lib/xproxy/ingress` | Certificate files written `0600` per secret (`namespace--name.crt/.key`); files of secrets no longer referenced are removed |
-| `resync` | duration | `30s` | Polling interval; 1s to 1h |
+| `resync` | duration | `30s` | Full poll interval, 1s to 1h; with watches the fallback, without them the propagation delay |
 | `timeout` | duration | `10s` | One API request |
+| `watch` | bool | `true` | Open watch streams on Ingresses, Services, EndpointSlices, Secrets, Gateways and HTTPRoutes; streams reconnect with backoff, a resource the cluster does not serve is retried every five minutes |
+| `debounce` | duration | `500ms` | A burst of watch events becomes one sync; 50ms to 1m |
 
 Translation: every `rules[].http.paths[]` entry becomes a route named
 `k8s-<namespace>-<ingress>-<n>` with the rule's host, the path as a
@@ -427,9 +432,27 @@ with the prefix `xproxy.sysctl.se/` set route options: `websocket`
 (`"true"`), `priority-class`, `rate-limits` and `filters` (comma
 separated names from this file), `timeout`, `max-body-bytes`,
 `strip-prefix` (`"true"` strips the matched path), `host-header`.
-Names over 64 bytes are shortened with a digest. `GET /v1/ingress` and
-`xproxyctl ingress` show syncs, errors, counts and the translation
-warnings. `deploy/kubernetes/xproxy.yaml` is a complete deployment
+Names over 64 bytes are shortened with a digest.
+
+Gateway API: Gateways whose `gatewayClassName` is `class` and the
+HTTPRoutes whose `parentRefs` name them translate as well. Route
+hostnames come from the HTTPRoute or, when it has none, from the
+parent listeners' hostnames (wildcards allowed). Each rule and match
+becomes a route `k8s-gw-<namespace>-<httproute>-<rule>-<match>`:
+`PathPrefix` and `Exact` paths (priority 10 for exact), a `method`
+match; header matches are not supported and are ignored with a
+warning, as are `RegularExpression` paths. Filters: `RequestHeaderModifier`
+and `ResponseHeaderModifier` become header operations, `URLRewrite`
+with `ReplaceFullPath` becomes `rewrite_path`, with `ReplacePrefixMatch: /`
+`strip_prefix`, and a `hostname` `host_header`; `RequestRedirect` with a
+`hostname` becomes a redirect action (a redirect without a hostname is
+not supported). A rule with one backend uses that service; several
+`backendRefs` become one `weighted` upstream over all their endpoints
+with the reference weights (weight 0 excluded). Listener
+`certificateRefs` install the secrets like Ingress TLS. `GET /v1/ingress`
+and `xproxyctl ingress` show syncs, errors, watch streams and events,
+counts (Ingresses, Gateways, HTTPRoutes, routes, upstreams,
+certificates) and the translation warnings. `deploy/kubernetes/xproxy.yaml` is a complete deployment
 with RBAC, an IngressClass and a ConfigMap; `deploy/kubernetes/Containerfile`
 builds the image.
 

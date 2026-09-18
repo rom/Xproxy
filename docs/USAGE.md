@@ -595,11 +595,42 @@ spec:
             backend: {service: {name: api, port: {name: http}}}
 ```
 
-The proxy pods read Ingress resources of class `xproxy` with their
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata: {name: edge, namespace: infra}
+spec:
+  gatewayClassName: xproxy
+  listeners:
+    - name: https
+      hostname: "*.example.com"
+      port: 443
+      protocol: HTTPS
+      tls: {certificateRefs: [{name: wildcard-tls}]}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: shop, namespace: shop}
+spec:
+  parentRefs: [{name: edge, namespace: infra}]
+  hostnames: [shop.example.com]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /api}}]
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier: {set: [{name: X-Tenant, value: shop}]}
+      backendRefs:
+        - {name: api-v1, port: 80, weight: 90}
+        - {name: api-v2, port: 80, weight: 10}
+```
+
+The proxy pods read Ingress resources of class `xproxy`, and Gateway
+API resources of the same class where the cluster has them, with their
 service account, turn them into routes and upstreams (pod addresses
-from EndpointSlices, so traffic goes to pods directly), install TLS
-secrets on the `https` listener and reload within `resync` of a
-change. Everything else in the ConfigMap's `xproxy.yaml` (bans, rate
+from EndpointSlices, so traffic goes to pods directly; weighted
+backends become a weighted pool), install TLS secrets on the `https`
+listener and reload within a second of a change through watch
+streams, with a full poll every `resync` as the fallback. Everything else in the ConfigMap's `xproxy.yaml` (bans, rate
 limits, filters, WAF) applies to the generated routes through the
 annotations. `xproxyctl ingress` in a pod shows the controller state.
 

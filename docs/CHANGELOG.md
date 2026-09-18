@@ -16,6 +16,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 - WebAssembly ABI body access: `get` kinds 13 to 15 and `set_body`
   behind a per filter `body_limit`; bodies over the limit stream
   through unexposed.
+- Kubernetes Gateway API: Gateways and HTTPRoutes of the ingress class
+  translate next to Ingress resources (hostnames, prefix and exact
+  paths, methods, header modifiers, URL rewrite, redirects, weighted
+  backends, listener certificates); watch streams on every collection
+  trigger a debounced sync so changes propagate within a second, with
+  the resync poll as fallback; `watch` and `debounce` settings,
+  `gateway_api`, `watching` and `watch_events` in the status.
 - DNS over TLS and HTTPS: dns listener `upstreams` accept
   `tls://host:port` and `https://host/path` with `upstream_ca_file`;
   a `doh` route action answers RFC 8484 for clients through a dns

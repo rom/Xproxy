@@ -255,7 +255,7 @@ routes:
 	}
 	in := cfg.Ingress
 	if in.APIServer != "https://kubernetes.default.svc" || in.Class != "xproxy" || in.CertDir != "/var/lib/xproxy/ingress" || in.Resync.D() != 30*time.Second ||
-		in.Timeout.D() != 10*time.Second || !strings.HasSuffix(in.TokenFile, "/token") || !strings.HasSuffix(in.CAFile, "/ca.crt") {
+		in.Timeout.D() != 10*time.Second || !strings.HasSuffix(in.TokenFile, "/token") || !strings.HasSuffix(in.CAFile, "/ca.crt") || !in.Watches() || in.Debounce.D() != 500*time.Millisecond {
 		t.Fatalf("ingress defaults: %+v", in)
 	}
 	cases := []struct{ name, snippet, want string }{
@@ -269,6 +269,7 @@ routes:
 		{"cert dir", "  cert_dir: certs", "cert_dir"},
 		{"resync", "  resync: 2h", "ingress.resync"},
 		{"timeout", "  timeout: 10m", "ingress.timeout"},
+		{"debounce", "  debounce: 5m", "ingress.debounce"},
 	}
 	for _, tc := range cases {
 		_, err := ParseWith([]byte(strings.Replace(base, "%s", tc.snippet, 1)), false)

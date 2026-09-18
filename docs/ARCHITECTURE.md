@@ -309,14 +309,20 @@ small REST client with the service account token and CA lists
 Ingresses, Services and EndpointSlices (and fetches referenced TLS
 Secrets), `Translate` turns them into `config.Route` and
 `config.Upstream` values plus certificate material as a pure function
-with per object warnings, the controller writes certificate files
-atomically into `cert_dir` and removes stale ones, and `Merge` appends
-the snapshot to the operator's configuration and runs the result
-through the ordinary parser (YAML round trip) so every default and
-validation rule applies. The main binary computes the effective
-configuration as file plus snapshot at start and on every reload; the
-controller asks for a reload when the snapshot's digest changes. The
-data plane knows nothing about Kubernetes.
+with per object warnings (Ingress rules and, through `translateGateway`
+sharing the same endpoint resolver, Gateway API Gateways and
+HTTPRoutes), the controller writes certificate files atomically into
+`cert_dir` and removes stale ones, and `Merge` appends the snapshot to
+the operator's configuration and runs the result through the ordinary
+parser (YAML round trip) so every default and validation rule applies.
+The main binary computes the effective configuration as file plus
+snapshot at start and on every reload; the controller asks for a
+reload when the snapshot's digest changes. Change detection is a watch
+stream per collection (JSON events decoded and counted, never
+interpreted: any event kicks a debounced full sync) reconnecting with
+backoff, with the resync poll as the fallback, so translation stays a
+function of one consistent list. The data plane knows nothing about
+Kubernetes.
 
 ### DNS proxy
 

@@ -261,11 +261,21 @@ type Ingress struct {
 	// CertDir receives the certificate files. Default
 	// /var/lib/xproxy/ingress.
 	CertDir string `yaml:"cert_dir"`
-	// Resync is the polling interval. Default 30s.
+	// Resync is the polling interval. Default 30s. With watches on it
+	// is the fallback; with them off it is the propagation delay.
 	Resync Duration `yaml:"resync"`
 	// Timeout bounds one API request. Default 10s.
 	Timeout Duration `yaml:"timeout"`
+	// Watch opens watch streams on the resources so that a change syncs
+	// within debounce instead of resync. Default true.
+	Watch *bool `yaml:"watch"`
+	// Debounce collects a burst of watch events into one sync. Default
+	// 500ms.
+	Debounce Duration `yaml:"debounce"`
 }
+
+// Watches reports whether watch streams are used.
+func (i *Ingress) Watches() bool { return i.Watch == nil || *i.Watch }
 
 // OTLP is the OpenTelemetry push exporter: every interval the metric
 // families are sent as OTLP/HTTP with JSON encoding to a collector

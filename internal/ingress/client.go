@@ -212,6 +212,78 @@ func (c *client) endpointSlices(ctx context.Context, ns string) ([]EndpointSlice
 	return l.Items, c.get(ctx, path, &l)
 }
 
+func (c *client) gateways(ctx context.Context, ns string) ([]Gateway, error) {
+	var l list[Gateway]
+	path := "/apis/gateway.networking.k8s.io/v1/gateways"
+	if ns != "" {
+		path = "/apis/gateway.networking.k8s.io/v1/namespaces/" + ns + "/gateways"
+	}
+	return l.Items, c.get(ctx, path, &l)
+}
+
+func (c *client) httpRoutes(ctx context.Context, ns string) ([]HTTPRoute, error) {
+	var l list[HTTPRoute]
+	path := "/apis/gateway.networking.k8s.io/v1/httproutes"
+	if ns != "" {
+		path = "/apis/gateway.networking.k8s.io/v1/namespaces/" + ns + "/httproutes"
+	}
+	return l.Items, c.get(ctx, path, &l)
+}
+
+// errNotFound marks a list of a resource the cluster does not serve
+// (the Gateway API CRDs are optional).
+var errNotFound = errors.New("not found")
+
+func isNotFound(err error) bool {
+	return err != nil && (errors.Is(err, errNotFound) || strings.Contains(err.Error(), "HTTP 404"))
+}
+
+// watch opens a watch stream on path and calls fn for every event until
+// ctx ends or the stream breaks. It uses a client without an overall
+// timeout: the server ends the stream on its own schedule.
+func (c *client) watch(ctx context.Context, path string, fn func(kind string)) error {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path+sep+"watch=1&allowWatchBookmarks=true&timeoutSeconds=300", http.NoBody)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "xproxy-ingress/1")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	wc := &http.Client{Transport: c.http.Transport, CheckRedirect: c.http.CheckRedirect}
+	resp, err := wc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("watch %s: HTTP %d", path, resp.StatusCode)
+	}
+	dec := json.NewDecoder(io.LimitReader(resp.Body, 1<<30))
+	for {
+		var ev struct {
+			Type   string          `json:"type"`
+			Object json.RawMessage `json:"object"`
+		}
+		if err := dec.Decode(&ev); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		if ev.Type == "" {
+			continue
+		}
+		fn(ev.Type)
+	}
+}
+
 func (c *client) secret(ctx context.Context, ns, name string) (*Secret, error) {
 	var s Secret
 	if err := c.get(ctx, "/api/v1/namespaces/"+ns+"/secrets/"+name, &s); err != nil {

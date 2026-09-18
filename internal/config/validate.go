@@ -1348,6 +1348,9 @@ func (v *validator) ingress(in *Ingress, listeners map[string]*Listener) {
 	if in.Timeout <= 0 || in.Timeout > Duration(5*time.Minute) {
 		v.errf("ingress.timeout: must be positive and at most 5m")
 	}
+	if in.Debounce < Duration(50*time.Millisecond) || in.Debounce > Duration(time.Minute) {
+		v.errf("ingress.debounce: must be between 50ms and 1m")
+	}
 }
 
 func (v *validator) dnsListener(p string, d *DNSListener) {
