@@ -39,6 +39,9 @@ type Verdict struct {
 	Attrs []any
 	// Headers are set on the deny response (for example WWW-Authenticate).
 	Headers map[string]string
+	// Response, when set on a deny, is sent to the client as is (status,
+	// headers and a bounded body), for example a scanner's block page.
+	Response *http.Response
 }
 
 // Continue is the verdict that lets a request proceed.

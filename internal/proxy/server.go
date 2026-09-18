@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/h3"
+	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
@@ -172,6 +174,17 @@ func (s *Server) Stats() Snapshot {
 	ls := s.logs.Stats()
 	snap.LogSyslogSent, snap.LogSyslogDropped, snap.LogJournalDropped, snap.LogRedaction = ls.SyslogSent, ls.SyslogDropped, ls.JournalDropped, ls.Redaction
 	return snap
+}
+
+// ICAP returns the status of every configured ICAP service.
+func (s *Server) ICAP() []icap.Status {
+	rt := s.rt.Load()
+	out := make([]icap.Status, 0, len(rt.icap))
+	for _, svc := range rt.icap {
+		out = append(out, svc.Status())
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // Shedder returns the load shedder, or nil when shedding is not configured.

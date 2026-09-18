@@ -8,6 +8,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/jwt"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
@@ -31,6 +32,7 @@ type runtime struct {
 	routes     []*compiledRoute
 	waf        *waf.Engine
 	jwt        map[string]*jwt.Provider
+	icap       map[string]*icap.Service
 }
 
 type rateLimit struct {
@@ -105,6 +107,21 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 			rt.jwt[pc.Name] = p
 		}
 	}
+	if cfg.ICAP != nil {
+		rt.icap = make(map[string]*icap.Service, len(cfg.ICAP.Services))
+		for i := range cfg.ICAP.Services {
+			sc := cfg.ICAP.Services[i]
+			svc, err := icap.NewService(sc)
+			if err != nil {
+				rt.stop()
+				return nil, err
+			}
+			if !svc.Status().Reachable {
+				log.Warn("icap service unreachable at load", "service", sc.Name, "url", sc.URL, "fail", sc.Fail)
+			}
+			rt.icap[sc.Name] = svc
+		}
+	}
 	if cfg.WAF != nil {
 		need := waf.Need{}
 		for i := range cfg.Routes {
@@ -168,6 +185,14 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 			cr.filters = append(cr.filters, f)
 			cr.wafMode = string(m)
 		}
+		if r.ICAP != nil {
+			svc, ok := rt.icap[r.ICAP.Service]
+			if !ok {
+				rt.stop()
+				return nil, fmt.Errorf("route %s: unknown icap service %s", r.Name, r.ICAP.Service)
+			}
+			cr.filters = append(cr.filters, svc.Filter(r.ICAP))
+		}
 		rt.routes[i] = cr
 	}
 	return rt, nil
@@ -188,5 +213,8 @@ func (rt *runtime) stop() {
 	}
 	for _, p := range rt.jwt {
 		p.Stop()
+	}
+	for _, s := range rt.icap {
+		s.Close()
 	}
 }

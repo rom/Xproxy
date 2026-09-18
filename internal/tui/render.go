@@ -62,15 +62,15 @@ func Render(d Data, st State, sty Style) []string {
 	var content []string
 	switch st.View {
 	case ViewUpstreams:
-		content = renderUpstreams(d, sty, w)
+		content = renderUpstreams(d, sty)
 	case ViewBans:
-		content = renderBans(d, st, sty, w)
+		content = renderBans(d, st, sty)
 	case ViewCluster:
-		content = renderCluster(d, sty, w)
+		content = renderCluster(d, sty)
 	case ViewGraphs:
 		content = renderGraphs(d, sty, w, body)
 	case ViewLog:
-		content = renderLog(d, w, body)
+		content = renderLog(d, body)
 	default:
 		content = renderOverview(d, sty, w)
 	}
@@ -130,8 +130,7 @@ func header(d Data, st State, sty Style, w int) string {
 
 func footer(st State, sty Style, w int) string {
 	keys := "1-6/tab views  r refresh  p pause  +/- interval  q quit"
-	switch st.View {
-	case ViewBans:
+	if st.View == ViewBans {
 		keys = "j/k select  u unban  b ban  " + keys
 	}
 	return sty.Dim + clip(keys, w) + sty.Reset
@@ -152,7 +151,7 @@ func renderOverview(d Data, sty Style, w int) []string {
 		return []string{sty.Red + "management API unavailable" + sty.Reset}
 	}
 	s := d.Status.Stats
-	var out []string
+	out := make([]string, 0, 32)
 	out = append(out, sty.Bold+"xproxy "+d.Status.Version+sty.Reset+fmt.Sprintf("  pid %d  routes %d  upstreams %d", d.Status.PID, d.Status.Routes, d.Status.Upstreams))
 	names := make([]string, 0, len(d.Status.Listeners))
 	for n := range d.Status.Listeners {
@@ -191,7 +190,7 @@ func renderOverview(d Data, sty Style, w int) []string {
 	return out
 }
 
-func renderUpstreams(d Data, sty Style, w int) []string {
+func renderUpstreams(d Data, sty Style) []string {
 	if d.Upstreams == nil {
 		return []string{"no upstream data"}
 	}
@@ -217,7 +216,7 @@ func renderUpstreams(d Data, sty Style, w int) []string {
 	return out
 }
 
-func renderBans(d Data, st State, sty Style, w int) []string {
+func renderBans(d Data, st State, sty Style) []string {
 	out := []string{sty.Bold + fmt.Sprintf("  %-40s %-12s %-18s %5s  %s", "TARGET", "EXPIRES", "SOURCE", "COUNT", "REASON") + sty.Reset}
 	if len(d.Bans) == 0 {
 		return append(out, "  no active bans")
@@ -236,7 +235,7 @@ func renderBans(d Data, st State, sty Style, w int) []string {
 	return out
 }
 
-func renderCluster(d Data, sty Style, w int) []string {
+func renderCluster(d Data, sty Style) []string {
 	if d.Cluster == nil {
 		return []string{"cluster not configured"}
 	}
@@ -269,7 +268,7 @@ func renderGraphs(d Data, sty Style, w, h int) []string {
 	if d.Series == nil || len(d.Series.Points) < 2 {
 		return []string{"no samples yet"}
 	}
-	var out []string
+	out := make([]string, 0, 14)
 	span := d.Series.Points[len(d.Series.Points)-1].Time.Sub(d.Series.Points[0].Time).Round(time.Second)
 	out = append(out, fmt.Sprintf("  last %s, %d points every %.0fs", span, len(d.Series.Points), d.Series.IntervalSeconds))
 	for _, name := range []string{"requests", "responses_4xx", "responses_5xx", "denied", "shed", "bytes_out", "open_connections", "in_flight", "load_level", "upstream_latency_ms", "bans_active", "upstream_errors"} {
@@ -285,7 +284,7 @@ func renderGraphs(d Data, sty Style, w, h int) []string {
 	return out
 }
 
-func renderLog(d Data, w, h int) []string {
+func renderLog(d Data, h int) []string {
 	if len(d.LogLines) == 0 {
 		return []string{"  no security events (or the log file is not readable from here)"}
 	}

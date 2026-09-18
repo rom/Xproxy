@@ -108,6 +108,10 @@ func (v *validator) config(c *Config) {
 	if c.JWT != nil {
 		v.jwt(c.JWT, jwtProviders)
 	}
+	icapServices := map[string]bool{}
+	if c.ICAP != nil {
+		v.icap(c.ICAP, icapServices)
+	}
 	routes := map[string]bool{}
 	for i := range c.Routes {
 		v.route(i, &c.Routes[i], routes, upstreams, rateLimits)
@@ -118,6 +122,17 @@ func (v *validator) config(c *Config) {
 		case "low", "normal", "high", "critical":
 		default:
 			v.errf("routes[%d].priority_class: must be low, normal, high or critical", i)
+		}
+		if ri := c.Routes[i].ICAP; ri != nil {
+			p := fmt.Sprintf("routes[%d].icap", i)
+			if c.ICAP == nil {
+				v.errf("%s: set but there is no top-level icap section", p)
+			} else if !icapServices[ri.Service] {
+				v.errf("%s.service: unknown service %q", p, ri.Service)
+			}
+			if !ri.ScansRequests() && !ri.ScansResponses() {
+				v.errf("%s: request and response are both disabled", p)
+			}
 		}
 		if rj := c.Routes[i].JWT; rj != nil {
 			p := fmt.Sprintf("routes[%d].jwt", i)
@@ -696,7 +711,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 
 var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
-	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true,
+	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 }
 
 func (v *validator) bans(b *Bans) {
@@ -844,6 +859,54 @@ func (v *validator) shedding(s *Shedding) {
 	}
 	if s.RetryAfter <= 0 {
 		v.errf("shedding.retry_after: must be positive")
+	}
+}
+
+func (v *validator) icap(ic *ICAP, seen map[string]bool) {
+	if len(ic.Services) == 0 {
+		v.errf("icap.services: at least one service is required")
+	}
+	for i := range ic.Services {
+		s := &ic.Services[i]
+		p := fmt.Sprintf("icap.services[%d]", i)
+		if !nameRE.MatchString(s.Name) {
+			v.errf("%s.name: %q is not a valid name", p, s.Name)
+		} else if seen[s.Name] {
+			v.errf("%s.name: duplicate %q", p, s.Name)
+		}
+		seen[s.Name] = true
+		u, err := url.Parse(s.URL)
+		if err != nil || (u.Scheme != "icap" && u.Scheme != "icaps") || u.Host == "" || u.Path == "" {
+			v.errf("%s.url: must be icap://host[:port]/service or icaps://...", p)
+		}
+		if s.TLS != nil {
+			if u != nil && u.Scheme != "icaps" {
+				v.errf("%s.tls: set only with an icaps:// url", p)
+			}
+			if s.TLS.CAFile != "" {
+				v.file(p+".tls.ca_file", s.TLS.CAFile)
+			}
+		}
+		if s.ConnectTimeout <= 0 || s.Timeout <= 0 || s.Timeout > Duration(120_000_000_000) {
+			v.errf("%s: connect_timeout and timeout must be positive (timeout at most 2m)", p)
+		}
+		if s.MaxConns < 1 || s.MaxConns > 1024 {
+			v.errf("%s.max_conns: must be 1..1024", p)
+		}
+		if s.MaxBody < 1024 || s.MaxBody > 1<<30 {
+			v.errf("%s.max_body: must be between 1024 and 1 GiB", p)
+		}
+		if s.BodyLimitAction != "bypass" && s.BodyLimitAction != "reject" {
+			v.errf("%s.body_limit_action: must be bypass or reject", p)
+		}
+		if s.Fail != "open" && s.Fail != "closed" {
+			v.errf("%s.fail: must be open or closed", p)
+		}
+		if s.Preview != "auto" && s.Preview != "off" {
+			if n, err := strconv.Atoi(s.Preview); err != nil || n < 0 || n > 1<<20 {
+				v.errf("%s.preview: must be auto, off or a byte count up to 1 MiB", p)
+			}
+		}
 	}
 }
 

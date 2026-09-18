@@ -116,6 +116,17 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Upstream pushes a backend into a poisoned state | Outlier ejection removes failing endpoints; `max_ejection_percent` prevents ejecting everything and stampeding the rest |
 | Credentials leaking to the wrong upstream | Route level `request_headers.remove` (for example `Cookie` on an API route) |
 
+## Boundary 2a: ICAP scanners
+
+| Threat | Mitigation |
+|--------|------------|
+| Scanner redirects a request to another host | `Host` and the forwarding headers are protected from modification; only method, path, unprotected headers and body can change |
+| Scanner strips or injects credentials | `Authorization` and `Cookie` are protected |
+| Scanner returns an oversized or malformed answer | Encapsulated header blocks and bodies are size bounded; parse errors close the connection and count as errors |
+| Scanner outage | Per-service `fail: closed` (default) answers 502 with `Retry-After`; `fail: open` passes and counts `bypassed` so it is visible |
+| Large uploads used to exhaust the scanner or the proxy | `max_body` per service with reject or bypass; bodies are buffered once, in memory, bounded |
+| Eavesdropping on the scanner link | `icaps://` with a pinned CA |
+
 ## Boundary 2b: Cluster peers
 
 | Threat | Mitigation |

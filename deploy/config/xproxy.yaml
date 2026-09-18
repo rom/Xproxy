@@ -153,6 +153,14 @@ routes:
     priority_class: critical
     upstream: web
 
+  - name: upload
+    hosts: [example.com, www.example.com]
+    paths: [/upload]
+    methods: [POST, PUT]
+    rate_limits: [per-ip]
+    icap: {service: av}                   # scan uploads before the application sees them
+    upstream: web
+
   - name: web
     hosts: [example.com, www.example.com]
     rate_limits: [per-ip]
@@ -257,3 +265,15 @@ jwt:
       jwks_refresh: 1h
       forward_claims: {X-User: sub, X-Scopes: scope}
       log_claims: [sub]
+
+# External scanning over ICAP (anti-virus, data loss prevention).
+icap:
+  services:
+    - name: av
+      url: icaps://scanner.internal:11344/avscan
+      tls: {ca_file: /etc/xproxy/certs/internal-ca.pem}
+      timeout: 5s
+      max_body: 52428800
+      body_limit_action: reject
+      fail: closed
+      preview: auto

@@ -119,6 +119,20 @@ to report a vulnerability. The threat analysis behind the controls is in
   `0600` bbolt file in the state directory.
 - Operators ban and unban through the audited management API.
 
+### External scanning (ICAP)
+
+- Requests and responses can be handed to anti-virus or data loss
+  prevention scanners over ICAP, with preview so most traffic costs a few
+  bytes, and TLS with a pinned CA for the scanner link.
+- The scanner can block (its page is returned) or modify, but never change
+  the origin: `Host`, the forwarding headers, `Authorization` and `Cookie`
+  are protected from modification.
+- Bodies are bounded; over the limit the route rejects or bypasses as
+  configured, and a scanner failure fails closed by default. Every bypass
+  is counted and visible, so a misbehaving scanner is never silent.
+- Encapsulated responses are size bounded (4 MiB) and parsed with the
+  standard library; malformed answers close the connection.
+
 ### Load shedding and challenge
 
 - Under pressure, routes are shed by priority class with immediate 503 and

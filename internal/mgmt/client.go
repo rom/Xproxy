@@ -14,6 +14,7 @@ import (
 
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/cluster"
+	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
@@ -111,6 +112,12 @@ func (c *Client) ClusterStatus() (*cluster.Status, error) {
 func (c *Client) Upstreams() (map[string][]upstream.Stats, error) {
 	var out map[string][]upstream.Stats
 	return out, c.do("GET", "/v1/upstreams", &out)
+}
+
+// ICAP fetches the status of ICAP services.
+func (c *Client) ICAP() ([]icap.Status, error) {
+	var out []icap.Status
+	return out, c.do("GET", "/v1/icap", &out)
 }
 
 // Metrics fetches the Prometheus exposition.

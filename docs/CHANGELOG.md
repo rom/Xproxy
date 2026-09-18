@@ -7,6 +7,16 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Phase 3: 1.0 (in progress)
+
+#### Added
+- ICAP client (RFC 3507): `icap.services` with `icap://` and `icaps://`
+  transports, OPTIONS probing, preview, REQMOD and RESPMOD, block pages,
+  modified requests with protected headers, body limits with reject or
+  bypass, fail open or closed, connection pooling; `routes[].icap`;
+  `/v1/icap`, `xproxyctl icap`, `denied_icap`, `xproxy_icap_*` metrics,
+  `icap` ban category.
+
 ### Phase 2: Defence (complete)
 
 #### Added
