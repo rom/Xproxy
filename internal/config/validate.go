@@ -932,8 +932,38 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 			v.errf("%s.doh.listener: required", p)
 		}
 	}
+	if st := r.Static; st != nil {
+		actions++
+		switch {
+		case st.Root == "":
+			v.errf("%s.static.root: required", p)
+		case !strings.HasPrefix(st.Root, "/"):
+			v.errf("%s.static.root: must be an absolute path", p)
+		case v.fileCheck:
+			if info, err := os.Stat(st.Root); err != nil {
+				v.errf("%s.static.root: %v", p, err)
+			} else if !info.IsDir() {
+				v.errf("%s.static.root: %s is not a directory", p, st.Root)
+			}
+		}
+		if idx := st.IndexFile(); strings.ContainsAny(idx, "/\\") || idx == "." || idx == ".." {
+			v.errf("%s.static.index: must be a file name", p)
+		}
+		if st.Fallback != "" && (!strings.HasPrefix(st.Fallback, "/") || strings.Contains(st.Fallback, "..")) {
+			v.errf("%s.static.fallback: must be an absolute path inside root", p)
+		}
+		if strings.ContainsAny(st.CacheControl, "\r\n") {
+			v.errf("%s.static.cache_control: invalid", p)
+		}
+		if st.MaxFileBytes < 0 {
+			v.errf("%s.static.max_file_bytes: must not be negative", p)
+		}
+		if r.Cache != nil || r.Mirror != nil || r.GRPC != nil || r.WebSocket {
+			v.errf("%s.static: cache, mirror, grpc and websocket do not apply to a static route", p)
+		}
+	}
 	if actions != 1 {
-		v.errf("%s: exactly one of upstream, redirect, respond, honeypot or doh is required", p)
+		v.errf("%s: exactly one of upstream, redirect, respond, honeypot, doh or static is required", p)
 	}
 	if g := r.GRPC; g != nil {
 		for j, sv := range g.Services {

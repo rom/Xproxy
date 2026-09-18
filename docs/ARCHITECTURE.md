@@ -68,6 +68,7 @@ internal/proxy/forward.go  kind: forward listeners (CONNECT tunnels, plain relay
 internal/dns        DNS proxy: message framing, cache, block list, resolver, UDP and TCP server
 internal/ingress    Kubernetes ingress controller: API client, translation, merge, polling
 internal/proxy/dnslistener.go  kind: dns listeners bound to the proxy's logs and bans
+internal/proxy/static.go  routes[].static: files through os.Root, index, listing, fallback
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
@@ -423,6 +424,19 @@ claims, issue and expiry times) with AES-GCM under a purpose string
 that keeps state and session ciphertexts apart. Redirects are
 `Verdict.Silent` denies: sent as responses without the security
 bookkeeping of a refusal.
+
+### Static files
+
+A `static` route (`internal/proxy/static.go`) holds an `os.Root` opened
+at generation build (a missing directory fails the reload) and closed
+with the generation. Every open goes through the root, so the kernel
+refuses paths that escape it through symbolic links, and the request
+path is cleaned before it arrives; dot segments are refused in the
+handler. Regular files are served with `http.ServeContent` (ranges,
+conditional requests, HEAD) under a weak `ETag` from size and
+modification time and a fixed content type table; directories serve
+their index, a listing or 404; any open failure is a 404. A single page
+fallback is one more open inside the same root.
 
 ### Honeypots
 

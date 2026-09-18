@@ -373,13 +373,14 @@ wins); then configuration order.
 | `paths` | list | `["/"]` | Prefixes on segment boundaries |
 | `methods` | list | `[]` (any) | Upper-case tokens |
 | `priority` | int | `0` | Tie breaker |
-| `upstream` | name | | Exactly one of `upstream`, `redirect`, `respond`, `honeypot` |
+| `upstream` | name | | Exactly one of `upstream`, `redirect`, `respond`, `honeypot`, `doh`, `static` |
 | `redirect` | `{to, status}` | status `308` | `to` is a URL or path; status 301, 302, 303, 307 or 308 |
 | `respond` | `{status, body}` | status `200` | Static response, body up to 64 KiB |
 | `honeypot` | object | | Decoy action; see `routes[].honeypot` |
 | `mirror` | object | | Copy requests to a second upstream; see `routes[].mirror` |
 | `grpc` | `{services, methods}` | | Restrict the route to gRPC requests; see `routes[].grpc` |
 | `doh` | `{listener}` | | DNS over HTTPS action; see `routes[].doh` |
+| `static` | object | | Serve files from a directory; see `routes[].static` |
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
@@ -635,6 +636,39 @@ The access log carries `mirror: sent`, `dropped` or `body_too_large`.
 Counters: `mirror_sent`, `mirror_dropped`, `mirror_skipped`,
 `mirror_failed`; metric `xproxy_mirror_total{outcome}`. Mirror
 responses appear in the error log at debug level with their status.
+
+### routes[].static
+
+A `static` route serves files from a directory: assets next to an
+application, a maintenance page, a single page application. The request
+path after `strip_prefix` or `rewrite_path` selects the file. Files are
+opened through `os.Root`, so neither `..` (removed earlier by path
+cleaning) nor a symbolic link pointing outside the root can leave it;
+names starting with a dot (`.env`, `.git`) are refused unless
+`dot_files` is set; anything that is not a regular file or directory
+answers 404, as does every failure to open, so the tree's shape leaks
+nothing. `GET` and `HEAD` only (405 otherwise). Responses carry a weak
+`ETag` from size and modification time, honour `If-None-Match`,
+`If-Modified-Since` and `Range`, and set the content type from a fixed
+table for the common web types (`text/javascript`, `text/css`,
+`image/svg+xml`, `application/wasm`, ...) with `X-Content-Type-Options:
+nosniff`. A directory without a trailing slash redirects to it (301),
+then serves `index`, then a listing when enabled, else 404. The route's
+admission pipeline (bans, limits, ACLs, WAF, filters) applies before the
+file is opened, and `response_headers` apply to every answer.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `root` | path | required | Absolute directory; must exist at load (a missing root fails the reload and the previous generation keeps serving) |
+| `index` | file name | `index.html` | Served for a directory; `""` disables |
+| `listing` | bool | `false` | Render a directory without an index as an HTML list (dot files hidden unless `dot_files`) |
+| `fallback` | path | none | File inside the root served when the requested one does not exist, for single page applications (`/index.html`); assets that do exist are served as themselves |
+| `cache_control` | string | none | Sent as `Cache-Control` with every file |
+| `dot_files` | bool | `false` | Serve names starting with a dot |
+| `max_file_bytes` | int | `0` (no bound) | Larger files answer 404 |
+
+`cache`, `mirror`, `grpc` and `websocket` cannot be combined with
+`static`.
 
 ### routes[].doh
 

@@ -27,8 +27,8 @@ management plane for other protocols.
 ```
 client ──▶ listener (accept limits, bans) ──▶ admission pipeline ──▶ route action ──▶ upstream pool
               http | tcp | forward | dns        concurrency, host and       proxy, redirect,      balancer, health,
-                                                path checks, route match,   respond, honeypot     ejection, retries,
-                                                country, ACL, challenge,                          affinity, mirror
+                                                path checks, route match,   respond, honeypot,    ejection, retries,
+                                                country, ACL, challenge,    static files          affinity, mirror
                                                 shedding, rate limits,
                                                 body limit, filters
                                                 (auth, WAF, ICAP, yours),

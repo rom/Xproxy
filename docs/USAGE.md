@@ -833,6 +833,35 @@ checks use the standard health service, so an endpoint that reports
 a rate limited call is refused with `RESOURCE_EXHAUSTED` rather than a
 text page a gRPC client cannot read.
 
+### Static files and single page applications
+
+```yaml
+routes:
+  - name: assets
+    hosts: [app.example.com]
+    paths: [/static]
+    strip_prefix: /static
+    static: {root: /srv/app/static, cache_control: "public, max-age=86400, immutable"}
+  - name: spa
+    hosts: [app.example.com]
+    paths: [/]
+    static: {root: /srv/app/dist, fallback: /index.html}
+  - name: api
+    hosts: [app.example.com]
+    paths: [/api]
+    upstream: api
+```
+
+Requests for `/static/app.js` serve `/srv/app/static/app.js` with an
+`ETag`, ranges and conditional requests; anything under `/` that is not
+a file in `/srv/app/dist` serves `index.html`, so client side routes
+deep link; the API is proxied. Files are opened inside the root only,
+dot files are never served, and a root that disappears fails the reload
+rather than the site. Give the `xproxy` user read access to the tree
+and, under SELinux, label it `httpd_sys_content_t` or the policy's
+equivalent (SETUP.md). `static_served` and `static_not_found` count the
+answers.
+
 ### Request mirroring
 
 ```yaml

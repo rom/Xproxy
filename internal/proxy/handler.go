@@ -351,6 +351,8 @@ admitted:
 		s.honeypot(rw, r, st, cr, release)
 	case cr.cfg.DoH != nil:
 		s.doh(rw, r, st, cr)
+	case cr.cfg.Static != nil:
+		s.static(rw, r, st, cr)
 	case cr.cfg.Respond != nil:
 		applyHeaderOps(rw.Header(), cr.cfg.ResponseHeaders)
 		if rw.Header().Get("Content-Type") == "" {

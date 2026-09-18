@@ -51,6 +51,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   facts with cluster peers (middleware API version 1, additive).
 - `bot_score` signal `honeypot_marked` (weight 40) for clients marked
   by a honeypot here or on a peer.
+- Static file serving: `routes[].static` serves a directory through
+  `os.Root` with index files, optional listings, a single page
+  application fallback, `Cache-Control`, dot file refusal, a size
+  bound, weak `ETag`s, ranges and conditional requests;
+  `static_served`, `static_not_found`, `xproxy_static_responses_total`.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

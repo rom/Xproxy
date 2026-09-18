@@ -106,6 +106,7 @@ type compiledRoute struct {
 	pool         *upstream.Pool
 	honeypotBody []byte
 	honeypotType string
+	static       *staticSite
 	mirror       *mirror
 	rateLimits   []*rateLimit
 	allow        []netip.Prefix
@@ -307,6 +308,14 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 				cr.honeypotBody = []byte(hp.Body)
 			}
 		}
+		if r.Static != nil {
+			ss, err := openStatic(r.Static)
+			if err != nil {
+				rt.stop()
+				return nil, fmt.Errorf("route %s: static root: %w", r.Name, err)
+			}
+			cr.static = ss
+		}
 		if r.Upstream != "" {
 			p, ok := rt.pools[r.Upstream]
 			if !ok {
@@ -424,6 +433,11 @@ func (rt *runtime) stop() {
 	for _, cf := range rt.filters {
 		if c, ok := cf.f.(filter.Closer); ok {
 			_ = c.Close()
+		}
+	}
+	for _, cr := range rt.routes {
+		if cr != nil { // a failed build leaves later slots empty
+			cr.static.close()
 		}
 	}
 }

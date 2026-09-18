@@ -201,7 +201,7 @@ routes:
 		t.Fatalf("honeypot defaults: %+v", hp)
 	}
 	cases := []struct{ name, snippet, want string }{
-		{"two actions", "upstream: app\n    honeypot: {decoy: env}", "exactly one of upstream, redirect, respond, honeypot or doh"},
+		{"two actions", "upstream: app\n    honeypot: {decoy: env}", "exactly one of upstream, redirect, respond, honeypot, doh or static"},
 		{"two sources", "honeypot: {decoy: env, body: x}", "exactly one of decoy, body or body_file"},
 		{"unknown decoy", "honeypot: {decoy: nope}", "unknown decoy"},
 		{"status", "honeypot: {decoy: env, status: 99}", "honeypot.status"},

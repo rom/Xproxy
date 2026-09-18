@@ -730,6 +730,37 @@ type Route struct {
 	GRPC *RouteGRPC `yaml:"grpc"`
 	// DoH answers DNS over HTTPS on this route through a dns listener.
 	DoH *RouteDoH `yaml:"doh"`
+	// Static serves files from a directory instead of proxying.
+	Static *RouteStatic `yaml:"static"`
+}
+
+// RouteStatic serves files from a directory. Paths are resolved inside
+// Root with os.Root, so neither ".." nor a symbolic link can leave it.
+type RouteStatic struct {
+	// Root is the absolute directory served.
+	Root string `yaml:"root"`
+	// Index is the file served for a directory. Default index.html; empty
+	// string disables ("" in YAML).
+	Index *string `yaml:"index"`
+	// Listing renders a directory without an index. Default false.
+	Listing bool `yaml:"listing"`
+	// Fallback is a path inside Root served when the requested file does
+	// not exist (single page applications: /index.html). Default none.
+	Fallback string `yaml:"fallback"`
+	// CacheControl is sent with every file. Default none.
+	CacheControl string `yaml:"cache_control"`
+	// DotFiles serves names starting with a dot. Default false.
+	DotFiles bool `yaml:"dot_files"`
+	// MaxFileBytes refuses larger files with 404. Default 0 (no bound).
+	MaxFileBytes int64 `yaml:"max_file_bytes"`
+}
+
+// IndexFile returns the index file name with the default applied.
+func (r *RouteStatic) IndexFile() string {
+	if r.Index == nil {
+		return "index.html"
+	}
+	return *r.Index
 }
 
 // RouteDoH is the DNS over HTTPS action (RFC 8484): GET with a base64url
