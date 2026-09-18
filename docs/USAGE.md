@@ -54,6 +54,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `unban TARGET` | Remove a ban |
 | `cluster` | Peers, inbound connections and gossip counters |
 | `spki CERT.pem` | Print the `spki_pins` value of a certificate |
+| `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
 | `series` | Print sampled series; `-since 10m`, `-last 30`, `-json` |
 | `version` | Print version |
@@ -404,6 +405,24 @@ requires one only while the load level is at or above 0.5, so a flood of
 plain HTTP clients is turned away with a static page while browsers carry
 on after a short delay. Do not gate API routes: clients without JavaScript
 cannot pass. Give monitoring systems `exempt_cidrs`.
+
+## Live terminal view
+
+`xproxyctl tui` opens a full-screen view that refreshes from the
+management socket:
+
+| Screen | Content |
+|--------|---------|
+| 1 Overview | Version, listeners, counters, shedding state, request and denied sparklines |
+| 2 Upstreams | Endpoint health, ejection, in-flight, requests and errors |
+| 3 Bans | Active bans; `j`/`k` select, `u` unban (confirm with `y`), `b` ban with `address [duration] [reason]` |
+| 4 Cluster | Peers, inbound connections, message counters |
+| 5 Graphs | Sparklines of the sampled series over the retention window |
+| 6 Security log | Last events from the security log file (needs `-config` to locate it) |
+
+Keys: `1` to `6` or `tab` and `shift-tab` switch screens, `r` refreshes,
+`p` pauses, `+` and `-` change the interval, `q` quits. Bans and unbans
+from the TUI go through the same audited API as the CLI.
 
 ## Metrics and graphs
 

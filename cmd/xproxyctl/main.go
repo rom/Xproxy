@@ -20,6 +20,7 @@
 //	unban TARGET   remove a ban
 //	cluster        show cluster peers and counters
 //	spki FILE      print the spki_pins value for a PEM certificate
+//	tui            full-screen live view (-refresh 2s, -no-color)
 //	metrics        print the Prometheus exposition
 //	series         print sampled series (-since 10m -last 20)
 //	version        print version
@@ -42,6 +43,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/tlsconf"
+	"github.com/rom/xproxy/internal/tui"
 	"github.com/rom/xproxy/internal/upstream"
 	"github.com/rom/xproxy/internal/version"
 )
@@ -52,7 +54,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster spki metrics series version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -176,6 +178,24 @@ func run(args []string, out, errOut io.Writer) int {
 			return 2
 		}
 		return tail(*cfgPath, fs.Arg(1), out, errOut)
+	case "tui":
+		tf := flag.NewFlagSet("tui", flag.ContinueOnError)
+		tf.SetOutput(errOut)
+		refresh := tf.Duration("refresh", 2*time.Second, "refresh interval")
+		noColor := tf.Bool("no-color", os.Getenv("NO_COLOR") != "", "disable colours")
+		if err := tf.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		cfg, _ := config.Load(*cfgPath) // optional: only for the log path
+		src := tui.NewSource(c, cfg)
+		act := tui.Actions{
+			Ban:   func(target, dur, reason string) error { _, err := c.Ban(target, dur, reason); return err },
+			Unban: c.Unban,
+		}
+		if err := tui.Run(src, act, tui.Options{Refresh: *refresh, Color: !*noColor}); err != nil {
+			return fail(err)
+		}
+		return 0
 	case "metrics":
 		b, err := c.Metrics()
 		if err != nil {
