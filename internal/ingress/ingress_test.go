@@ -32,6 +32,23 @@ type fakeAPI struct {
 	secrets   map[string]any
 	token     string
 	requests  int
+	// Gateway API
+	gatewayAPI bool
+	gateways   []any
+	httpRoutes []any
+	watchers   []chan string
+}
+
+// event notifies every open watch stream.
+func (f *fakeAPI) event(kind string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, ch := range f.watchers {
+		select {
+		case ch <- kind:
+		default:
+		}
+	}
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -45,6 +62,24 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			http.Error(w, `{"message":"Unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
+		if r.URL.Query().Get("watch") == "1" {
+			// Hold the stream and relay events until the client leaves.
+			ch := make(chan string, 8)
+			f.watchers = append(f.watchers, ch)
+			f.mu.Unlock()
+			defer f.mu.Lock()
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			for {
+				select {
+				case <-r.Context().Done():
+					return
+				case ev := <-ch:
+					_, _ = fmt.Fprintf(w, `{"type":%q,"object":{}}`+"\n", ev)
+					w.(http.Flusher).Flush()
+				}
+			}
+		}
 		var items []any
 		switch {
 		case r.URL.Path == "/apis/networking.k8s.io/v1/ingresses":
@@ -53,6 +88,14 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			items = f.services
 		case r.URL.Path == "/apis/discovery.k8s.io/v1/endpointslices":
 			items = f.slices
+		case r.URL.Path == "/apis/gateway.networking.k8s.io/v1/gateways":
+			if !f.gatewayAPI {
+				http.Error(w, `{"message":"the server could not find the requested resource"}`, http.StatusNotFound)
+				return
+			}
+			items = f.gateways
+		case r.URL.Path == "/apis/gateway.networking.k8s.io/v1/httproutes":
+			items = f.httpRoutes
 		case strings.HasPrefix(r.URL.Path, "/api/v1/namespaces/") && strings.Contains(r.URL.Path, "/secrets/"):
 			parts := strings.Split(r.URL.Path, "/")
 			s, ok := f.secrets[parts[4]+"/"+parts[6]]
@@ -361,5 +404,188 @@ routes:
 	off.Ingress = nil
 	if _, err := Merge(&off, snap, nil); err != ErrNotEnabled { //nolint:errorlint // sentinel
 		t.Fatal("merge with ingress off")
+	}
+}
+
+func TestGatewayAPI(t *testing.T) {
+	ready := true
+	in := Input{Secrets: map[string]*Secret{}}
+	raw := map[string]any{"items": []any{
+		map[string]any{"metadata": map[string]any{"name": "edge", "namespace": "infra"},
+			"spec": map[string]any{"gatewayClassName": "xproxy", "listeners": []any{
+				map[string]any{"name": "https", "hostname": "*.example.com", "port": 443, "protocol": "HTTPS",
+					"tls": map[string]any{"certificateRefs": []any{map[string]any{"name": "wild-tls"}}}},
+			}}},
+		map[string]any{"metadata": map[string]any{"name": "other", "namespace": "infra"}, "spec": map[string]any{"gatewayClassName": "nginx"}},
+	}}
+	b, _ := json.Marshal(raw)
+	var gl list[Gateway]
+	_ = json.Unmarshal(b, &gl)
+	in.Gateways = gl.Items
+	routes := map[string]any{"items": []any{
+		map[string]any{"metadata": map[string]any{"name": "shop", "namespace": "shop"}, "spec": map[string]any{
+			"parentRefs": []any{map[string]any{"name": "edge", "namespace": "infra"}},
+			"hostnames":  []any{"shop.example.com"},
+			"rules": []any{
+				map[string]any{
+					"matches": []any{
+						map[string]any{"path": map[string]any{"type": "PathPrefix", "value": "/api"}, "method": "GET"},
+						map[string]any{"path": map[string]any{"type": "Exact", "value": "/health"}, "headers": []any{map[string]any{"name": "X-A", "value": "1"}}},
+						map[string]any{"path": map[string]any{"type": "RegularExpression", "value": "/x.*"}},
+					},
+					"filters": []any{
+						map[string]any{"type": "RequestHeaderModifier", "requestHeaderModifier": map[string]any{"set": []any{map[string]any{"name": "X-Tenant", "value": "shop"}}, "remove": []any{"X-Debug"}}},
+						map[string]any{"type": "URLRewrite", "urlRewrite": map[string]any{"hostname": "api.internal", "path": map[string]any{"type": "ReplacePrefixMatch", "replacePrefixMatch": "/"}}},
+					},
+					"backendRefs": []any{
+						map[string]any{"name": "api-v1", "port": 80, "weight": 90},
+						map[string]any{"name": "api-v2", "port": 80, "weight": 10},
+						map[string]any{"name": "api-off", "port": 80, "weight": 0},
+					},
+				},
+				map[string]any{
+					"filters":     []any{map[string]any{"type": "RequestRedirect", "requestRedirect": map[string]any{"hostname": "www.example.com", "statusCode": 301, "path": map[string]any{"type": "ReplaceFullPath", "replaceFullPath": "/new"}}}},
+					"backendRefs": []any{map[string]any{"name": "api-v1", "port": 80}},
+				},
+				map[string]any{"backendRefs": []any{map[string]any{"name": "missing", "port": 80}}},
+			},
+		}},
+		map[string]any{"metadata": map[string]any{"name": "nohost", "namespace": "shop"}, "spec": map[string]any{
+			"parentRefs": []any{map[string]any{"name": "edge", "namespace": "infra"}},
+			"rules":      []any{map[string]any{"backendRefs": []any{map[string]any{"name": "api-v1", "port": 80}}}},
+		}},
+		map[string]any{"metadata": map[string]any{"name": "foreign", "namespace": "shop"}, "spec": map[string]any{
+			"parentRefs": []any{map[string]any{"name": "other", "namespace": "infra"}},
+			"rules":      []any{map[string]any{"backendRefs": []any{map[string]any{"name": "api-v1", "port": 80}}}},
+		}},
+	}}
+	b, _ = json.Marshal(routes)
+	var rl list[HTTPRoute]
+	_ = json.Unmarshal(b, &rl)
+	in.HTTPRoutes = rl.Items
+	sb, _ := json.Marshal(map[string]any{"items": []any{serviceObj("shop", "api-v1", 80, "http", 8080), serviceObj("shop", "api-v2", 80, "http", 8080), serviceObj("shop", "api-off", 80, "http", 8080)}})
+	var sl list[Service]
+	_ = json.Unmarshal(sb, &sl)
+	in.Services = sl.Items
+	eb, _ := json.Marshal(map[string]any{"items": []any{sliceObj("shop", "api-v1", "http", 8080, ready, "10.1.0.1", "10.1.0.2"), sliceObj("shop", "api-v2", "http", 8080, ready, "10.1.0.3")}})
+	var el list[EndpointSlice]
+	_ = json.Unmarshal(eb, &el)
+	in.Slices = el.Items
+	in.Secrets["infra/wild-tls"] = &Secret{Data: map[string]string{"tls.crt": base64.StdEncoding.EncodeToString([]byte("C")), "tls.key": base64.StdEncoding.EncodeToString([]byte("K"))}}
+
+	snap := Translate(in, "xproxy")
+	if snap.Gateways != 1 || snap.HTTPRoutes != 2 {
+		t.Fatalf("counts: gateways %d routes %d", snap.Gateways, snap.HTTPRoutes)
+	}
+	byName := map[string]config.Route{}
+	for _, r := range snap.Routes {
+		byName[r.Name] = r
+	}
+	api := byName["k8s-gw-shop-shop-0-0"]
+	if api.Hosts[0] != "shop.example.com" || api.Paths[0] != "/api" || api.Methods[0] != "GET" || api.StripPrefix != "/api" || api.HostHeader != "api.internal" ||
+		api.RequestHeaders.Set["X-Tenant"] != "shop" || api.RequestHeaders.Remove[0] != "X-Debug" || api.Upstream != "k8s-gw-shop-shop-0" {
+		t.Fatalf("api route: %+v", api)
+	}
+	if h := byName["k8s-gw-shop-shop-0-1"]; h.Paths[0] != "/health" || h.Priority != 10 || h.StripPrefix != "/health" {
+		t.Fatalf("exact route: %+v", h)
+	}
+	if _, ok := byName["k8s-gw-shop-shop-0-2"]; ok {
+		t.Fatal("regular expression match translated")
+	}
+	if rd := byName["k8s-gw-shop-shop-1-0"]; rd.Redirect == nil || rd.Redirect.To != "https://www.example.com/new" || rd.Redirect.Status != 301 || rd.Upstream != "" {
+		t.Fatalf("redirect route: %+v", rd)
+	}
+	if _, ok := byName["k8s-gw-shop-shop-2-0"]; ok {
+		t.Fatal("rule with a missing service translated")
+	}
+	if nh := byName["k8s-gw-shop-nohost-0-0"]; len(nh.Hosts) != 1 || nh.Hosts[0] != "*.example.com" || nh.Paths[0] != "/" {
+		t.Fatalf("listener hostname route: %+v", nh)
+	}
+	var weighted *config.Upstream
+	for i := range snap.Upstreams {
+		if snap.Upstreams[i].Name == "k8s-gw-shop-shop-0" {
+			weighted = &snap.Upstreams[i]
+		}
+	}
+	if weighted == nil || weighted.Balancer != "weighted" || len(weighted.Endpoints) != 3 || weighted.Endpoints[0].Weight != 90 || weighted.Endpoints[2].Weight != 10 {
+		t.Fatalf("weighted upstream: %+v", weighted)
+	}
+	if len(snap.Certificates) != 1 || snap.Certificates[0].Name != "wild-tls" || snap.Certificates[0].Hosts[0] != "*.example.com" {
+		t.Fatalf("certs: %+v", snap.Certificates)
+	}
+	joined := strings.Join(snap.Warnings, "\n")
+	for _, want := range []string{"header matches are not supported", "RegularExpression", "service missing not found"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warning %q missing in:\n%s", want, joined)
+		}
+	}
+	// Merged into a configuration, the result validates.
+	base, err := config.Parse([]byte(`
+version: 1
+server:
+  listeners: [{name: main, address: ":8080"}]
+ingress: {enabled: true, api_server: "http://127.0.0.1:1", allow_http: true, token_file: /t, cert_dir: /tmp/x}
+upstreams: [{name: app, endpoints: [{address: 127.0.0.1:1}]}]
+routes: [{name: app, upstream: app}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Merge(base, snap, nil); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+}
+
+// TestWatches syncs on a watch event well before the resync interval
+// and reports the streams and events.
+func TestWatches(t *testing.T) {
+	api := newFakeAPI(t)
+	api.gatewayAPI = true
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "token")
+	_ = os.WriteFile(tokenFile, []byte("sa-token"), 0o600)
+	cfg := config.Ingress{Enabled: true, APIServer: api.srv.URL, AllowHTTP: true, TokenFile: tokenFile, Class: "xproxy",
+		CertDir: filepath.Join(dir, "certs"), Resync: config.Duration(time.Hour), Timeout: config.Duration(5 * time.Second), Debounce: config.Duration(100 * time.Millisecond)}
+	var mu sync.Mutex
+	reloads := 0
+	ctrl, err := New(cfg, slog.New(slog.DiscardHandler), func() { mu.Lock(); reloads++; mu.Unlock() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ctrl.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctrl.Start()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && ctrl.Status().Watching < len(watchPaths) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if st := ctrl.Status(); st.Watching != len(watchPaths) || !st.GatewayAPI {
+		t.Fatalf("watch streams: %+v", st)
+	}
+	api.mu.Lock()
+	api.ingresses = []any{ingressObj("shop", "web", "xproxy", "shop.example.com", "/", "web", 80, nil, "")}
+	api.services = []any{serviceObj("shop", "web", 80, "http", 8080)}
+	api.mu.Unlock()
+	api.event("ADDED")
+	api.event("MODIFIED")
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := reloads
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	ctrl.Stop()
+	mu.Lock()
+	defer mu.Unlock()
+	if reloads != 1 {
+		t.Fatalf("reloads after a burst of events: %d", reloads)
+	}
+	if st := ctrl.Status(); st.WatchEvents < 2 || st.Routes != 1 || st.Watching != 0 {
+		t.Fatalf("status: %+v", st)
 	}
 }

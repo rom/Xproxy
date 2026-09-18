@@ -92,6 +92,7 @@ func applyDefaults(c *Config) {
 		if t := s.Listeners[i].TCP; t != nil {
 			setDur(&t.IdleTimeout, 10*time.Minute)
 			setInt(&t.MaxConnections, 10000)
+			setDur(&t.QUICIdleTimeout, 30*time.Second)
 		}
 		if f := s.Listeners[i].Forward; f != nil {
 			if len(f.Ports) == 0 {
@@ -135,7 +136,7 @@ func applyDefaults(c *Config) {
 		}
 		if len(ln.Protocols) == 0 {
 			switch {
-			case ln.Kind == "forward":
+			case ln.Kind == "forward" && ln.TLS == nil:
 				ln.Protocols = []Protocol{ProtocolH1}
 			case ln.TLS != nil:
 				ln.Protocols = []Protocol{ProtocolH1, ProtocolH2}
@@ -405,6 +406,15 @@ func applyDefaults(c *Config) {
 	}
 	setDur(&c.Metrics.SampleInterval, 10*time.Second)
 	setDur(&c.Metrics.Retention, time.Hour)
+	if o := c.Metrics.OTLP; o != nil {
+		setDur(&o.Interval, 30*time.Second)
+		setDur(&o.Timeout, 10*time.Second)
+		setStr(&o.ServiceName, "xproxy")
+		if o.Compress == nil {
+			t := true
+			o.Compress = &t
+		}
+	}
 	if ch := c.Challenge; ch != nil {
 		setInt(&ch.Difficulty, 16)
 		setDur(&ch.TTL, time.Hour)
@@ -467,6 +477,7 @@ func ingressDefaults(c *Config) {
 	setStr(&in.CertDir, "/var/lib/xproxy/ingress")
 	setDur(&in.Resync, 30*time.Second)
 	setDur(&in.Timeout, 10*time.Second)
+	setDur(&in.Debounce, 500*time.Millisecond)
 }
 
 func setInt(p *int, v int) {

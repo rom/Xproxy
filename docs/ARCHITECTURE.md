@@ -291,6 +291,25 @@ header, replays the peeked bytes and splices both directions with an
 idle deadline and half-close. Connections are accounted on the pool like
 requests so ejection and health apply. The listener has its own
 connection bound and is drained on shutdown like the HTTP servers.
+With `quic` the listener also owns a UDP socket: `netutil.QUICCryptoData`
+decrypts a version 1 Initial packet with the keys derived from its
+destination connection id (HKDF over the published salt, header
+protection removed, AES-GCM opened, frames walked), a
+`QUICHelloAssembler` reassembles CRYPTO data across the client's first
+datagrams, the server name is read with the same ClientHello parser,
+and the relay keeps one flow per client address (an upstream UDP
+socket and a pump goroutine) until it is idle. Datagrams after the
+Initial are forwarded without being read.
+
+### Metrics collection and export
+
+`Server.Collect` runs one collection of every metric family into a
+`metrics.Collector`; the Prometheus encoder implements it for
+`/metrics`, and the OTLP exporter implements it to build an
+OTLP/HTTP JSON request (counters as cumulative monotonic sums from the
+process start time, gauges, histograms with explicit bounds) that it
+pushes on an interval with a bounded client, gzip and pinned CA. No
+metrics library is linked on either path.
 
 ### Kubernetes ingress mode
 
@@ -299,14 +318,20 @@ small REST client with the service account token and CA lists
 Ingresses, Services and EndpointSlices (and fetches referenced TLS
 Secrets), `Translate` turns them into `config.Route` and
 `config.Upstream` values plus certificate material as a pure function
-with per object warnings, the controller writes certificate files
-atomically into `cert_dir` and removes stale ones, and `Merge` appends
-the snapshot to the operator's configuration and runs the result
-through the ordinary parser (YAML round trip) so every default and
-validation rule applies. The main binary computes the effective
-configuration as file plus snapshot at start and on every reload; the
-controller asks for a reload when the snapshot's digest changes. The
-data plane knows nothing about Kubernetes.
+with per object warnings (Ingress rules and, through `translateGateway`
+sharing the same endpoint resolver, Gateway API Gateways and
+HTTPRoutes), the controller writes certificate files atomically into
+`cert_dir` and removes stale ones, and `Merge` appends the snapshot to
+the operator's configuration and runs the result through the ordinary
+parser (YAML round trip) so every default and validation rule applies.
+The main binary computes the effective configuration as file plus
+snapshot at start and on every reload; the controller asks for a
+reload when the snapshot's digest changes. Change detection is a watch
+stream per collection (JSON events decoded and counted, never
+interpreted: any event kicks a debounced full sync) reconnecting with
+backoff, with the resync poll as the fallback, so translation stays a
+function of one consistent list. The data plane knows nothing about
+Kubernetes.
 
 ### DNS proxy
 
@@ -321,10 +346,18 @@ rate limit, the client allow list, the block list (exact and suffix
 lookups per label), then the cache (responses stored with TTLs adjusted
 by age on the way out) and finally the resolver, which forwards with a
 fresh id on a fresh socket and accepts only an answer that echoes the
-id and the question. A `kind: dns` listener wraps this in
+id and the question; `tls://` upstreams keep a small pool of DNS over
+TLS connections per server and `https://` upstreams post
+`application/dns-message` through one HTTP client with the pinned CA.
+A `kind: dns` listener wraps this in
 `internal/proxy/dnslistener.go`, binding the access log, security
 events and the ban list; its policy is an immutable value swapped on
 reload while the cache survives.
+
+A `doh` route (`internal/proxy/doh.go`) decodes an RFC 8484 request on
+an http listener and hands the query to the named dns listener's
+`Handle`, so DNS over HTTPS clients get the same policy and cache as
+UDP clients plus the route's own admission pipeline.
 
 ### Forward proxy
 

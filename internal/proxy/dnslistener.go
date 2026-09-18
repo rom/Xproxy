@@ -24,10 +24,14 @@ func dnsPolicy(cfg *config.DNSListener) (*dns.Policy, error) {
 			return nil, fmt.Errorf("block_file: %w", err)
 		}
 	}
+	resolver, err := dns.NewResolverTLS(cfg.Upstreams, cfg.Timeout.D(), cfg.UpstreamCAFile)
+	if err != nil {
+		return nil, err
+	}
 	p := &dns.Policy{
 		Block: block, BlockAction: cfg.BlockAction, SinkholeTTL: 60,
 		AllowClients: netutil.ParsePrefixes(cfg.AllowClients),
-		Resolver:     dns.NewResolver(cfg.Upstreams, cfg.Timeout.D()),
+		Resolver:     resolver,
 		MinTTL:       cfg.Cache.MinTTL.D(), MaxTTL: cfg.Cache.MaxTTL.D(), NegativeTTL: cfg.Cache.NegativeTTL.D(),
 		LogQueries: cfg.LogQueries,
 	}

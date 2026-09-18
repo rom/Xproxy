@@ -23,8 +23,10 @@ type Snapshot struct {
 	Certificates []CertPEM
 	// Warnings are per object problems that did not stop the rest.
 	Warnings []string
-	// Ingresses counted after class filtering.
-	Ingresses int
+	// Ingresses, Gateways and HTTPRoutes counted after class filtering.
+	Ingresses  int
+	Gateways   int
+	HTTPRoutes int
 }
 
 // CertPEM is a TLS secret's material, written to files by the controller.
@@ -38,10 +40,89 @@ type CertPEM struct {
 
 // Input is everything Translate needs, fetched by the controller.
 type Input struct {
-	Ingresses []Ingress
-	Services  []Service
-	Slices    []EndpointSlice
-	Secrets   map[string]*Secret // "namespace/name"
+	Ingresses  []Ingress
+	Gateways   []Gateway
+	HTTPRoutes []HTTPRoute
+	Services   []Service
+	Slices     []EndpointSlice
+	Secrets    map[string]*Secret // "namespace/name"
+}
+
+// endpointResolver maps a service port to ready endpoints.
+type endpointResolver struct {
+	services map[string]*Service
+	slices   map[string][]*EndpointSlice
+}
+
+func newEndpointResolver(in Input) *endpointResolver {
+	r := &endpointResolver{services: map[string]*Service{}, slices: map[string][]*EndpointSlice{}}
+	for i := range in.Services {
+		s := &in.Services[i]
+		r.services[s.Metadata.Namespace+"/"+s.Metadata.Name] = s
+	}
+	for i := range in.Slices {
+		s := &in.Slices[i]
+		key := s.Metadata.Namespace + "/" + s.Metadata.Labels["kubernetes.io/service-name"]
+		r.slices[key] = append(r.slices[key], s)
+	}
+	return r
+}
+
+// resolve returns the ready endpoints of service ns/svc on the port
+// given by number or name (a service with one port needs neither) and
+// the service port number; a service without ready endpoints yields an
+// unreachable placeholder so the route answers 503 rather than vanish.
+func (r *endpointResolver) resolve(ns, svc string, port int, portName string) ([]config.Endpoint, int, error) {
+	s, ok := r.services[ns+"/"+svc]
+	if !ok {
+		return nil, 0, fmt.Errorf("service %s not found", svc)
+	}
+	epName, epPort, found := "", 0, false
+	for _, p := range s.Spec.Ports {
+		if (port != 0 && p.Port == port) || (portName != "" && p.Name == portName) {
+			epName, epPort, found = p.Name, p.Port, true
+			break
+		}
+	}
+	if !found && len(s.Spec.Ports) == 1 && port == 0 && portName == "" {
+		epName, epPort, found = s.Spec.Ports[0].Name, s.Spec.Ports[0].Port, true
+	}
+	if !found {
+		return nil, 0, fmt.Errorf("service %s has no port %d%s", svc, port, portName)
+	}
+	var eps []config.Endpoint
+	seen := map[string]bool{}
+	for _, sl := range r.slices[ns+"/"+svc] {
+		if sl.AddressType != "IPv4" && sl.AddressType != "IPv6" {
+			continue
+		}
+		target := 0
+		for _, p := range sl.Ports {
+			if p.Name == epName && (p.Protocol == "" || p.Protocol == "TCP") {
+				target = p.Port
+			}
+		}
+		if target == 0 {
+			continue
+		}
+		for _, e := range sl.Endpoints {
+			if e.Conditions.Ready != nil && !*e.Conditions.Ready {
+				continue
+			}
+			for _, a := range e.Addresses {
+				addr := net.JoinHostPort(a, strconv.Itoa(target))
+				if !seen[addr] {
+					seen[addr] = true
+					eps = append(eps, config.Endpoint{Address: addr})
+				}
+			}
+		}
+	}
+	if len(eps) == 0 {
+		eps = []config.Endpoint{{Address: "127.0.0.1:1"}}
+	}
+	sort.Slice(eps, func(i, j int) bool { return eps[i].Address < eps[j].Address })
+	return eps, epPort, nil
 }
 
 var labelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
@@ -65,17 +146,7 @@ func Translate(in Input, class string) Snapshot {
 	warn := func(ing *Ingress, format string, args ...any) {
 		snap.Warnings = append(snap.Warnings, fmt.Sprintf("%s/%s: ", ing.Metadata.Namespace, ing.Metadata.Name)+fmt.Sprintf(format, args...))
 	}
-	services := map[string]*Service{}
-	for i := range in.Services {
-		s := &in.Services[i]
-		services[s.Metadata.Namespace+"/"+s.Metadata.Name] = s
-	}
-	slices := map[string][]*EndpointSlice{}
-	for i := range in.Slices {
-		s := &in.Slices[i]
-		key := s.Metadata.Namespace + "/" + s.Metadata.Labels["kubernetes.io/service-name"]
-		slices[key] = append(slices[key], s)
-	}
+	resolver := newEndpointResolver(in)
 	upstreams := map[string]*config.Upstream{}
 	var upstreamOrder []string
 	upstreamFor := func(ing *Ingress, b *backend) (string, bool) {
@@ -84,65 +155,18 @@ func Translate(in Input, class string) Snapshot {
 			return "", false
 		}
 		ns := ing.Metadata.Namespace
-		svc, ok := services[ns+"/"+b.Service.Name]
-		if !ok {
-			warn(ing, "service %s not found", b.Service.Name)
-			return "", false
-		}
-		// Resolve the service port to its name, then the name to the
-		// endpoint port in the slices.
-		portName, portNumber := "", 0
-		found := false
-		for _, p := range svc.Spec.Ports {
-			if (b.Service.Port.Number != 0 && p.Port == b.Service.Port.Number) || (b.Service.Port.Name != "" && p.Name == b.Service.Port.Name) {
-				portName, portNumber, found = p.Name, p.Port, true
-				break
-			}
-		}
-		if !found && len(svc.Spec.Ports) == 1 && b.Service.Port.Number == 0 && b.Service.Port.Name == "" {
-			portName, portNumber, found = svc.Spec.Ports[0].Name, svc.Spec.Ports[0].Port, true
-		}
-		if !found {
-			warn(ing, "service %s has no port %d%s", b.Service.Name, b.Service.Port.Number, b.Service.Port.Name)
+		eps, portNumber, err := resolver.resolve(ns, b.Service.Name, b.Service.Port.Number, b.Service.Port.Name)
+		if err != nil {
+			warn(ing, "%v", err)
 			return "", false
 		}
 		name := objName(ns, b.Service.Name, strconv.Itoa(portNumber))
 		if _, ok := upstreams[name]; ok {
 			return name, true
 		}
-		var eps []config.Endpoint
-		seen := map[string]bool{}
-		for _, sl := range slices[ns+"/"+b.Service.Name] {
-			if sl.AddressType != "IPv4" && sl.AddressType != "IPv6" {
-				continue
-			}
-			target := 0
-			for _, p := range sl.Ports {
-				if p.Name == portName && (p.Protocol == "" || p.Protocol == "TCP") {
-					target = p.Port
-				}
-			}
-			if target == 0 {
-				continue
-			}
-			for _, e := range sl.Endpoints {
-				if e.Conditions.Ready != nil && !*e.Conditions.Ready {
-					continue
-				}
-				for _, a := range e.Addresses {
-					addr := net.JoinHostPort(a, strconv.Itoa(target))
-					if !seen[addr] {
-						seen[addr] = true
-						eps = append(eps, config.Endpoint{Address: addr})
-					}
-				}
-			}
-		}
-		if len(eps) == 0 {
+		if len(eps) == 1 && eps[0].Address == "127.0.0.1:1" {
 			warn(ing, "service %s has no ready endpoints; using an unreachable placeholder", b.Service.Name)
-			eps = []config.Endpoint{{Address: "127.0.0.1:1"}}
 		}
-		sort.Slice(eps, func(i, j int) bool { return eps[i].Address < eps[j].Address })
 		upstreams[name] = &config.Upstream{Name: name, Endpoints: eps, Scheme: "http"}
 		upstreamOrder = append(upstreamOrder, name)
 		return name, true
@@ -234,6 +258,10 @@ func Translate(in Input, class string) Snapshot {
 	for _, name := range upstreamOrder {
 		snap.Upstreams = append(snap.Upstreams, *upstreams[name])
 	}
+	translateGateway(in, class, &snap, func(ns, svc string, port int, portName string) ([]config.Endpoint, error) {
+		eps, _, err := resolver.resolve(ns, svc, port, portName)
+		return eps, err
+	})
 	return snap
 }
 

@@ -406,6 +406,10 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 		f.deny(w, r, ip, user, http.StatusBadGateway, "dial", start)
 		return
 	}
+	if r.ProtoMajor == 2 {
+		f.connectH2(w, r, p, dst, ip, user, start)
+		return
+	}
 	rc := http.NewResponseController(w)
 	client, bufrw, err := rc.Hijack()
 	if err != nil {
@@ -446,6 +450,77 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 	s.stats.ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
 	s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 	f.log(r, ip, user, r.Host, http.StatusOK, in, out, start, "")
+}
+
+// connectH2 tunnels a CONNECT request that arrived on an HTTP/2 stream:
+// the request body is the client to destination direction and the
+// response body the other, flushed per write. The stream is bounded by
+// the idle timeout on the destination side and by the client closing
+// its half.
+func (f *forwardServer) connectH2(w http.ResponseWriter, r *http.Request, p *forwardPolicy, dst net.Conn, ip netip.Addr, user string, start time.Time) {
+	s := f.s
+	rc := http.NewResponseController(w)
+	s.stats.ForwardTunnels.Add(1)
+	s.stats.ForwardTunnelsOpen.Add(1)
+	defer s.stats.ForwardTunnelsOpen.Add(-1)
+	f.track(dst, true)
+	f.wg.Add(1)
+	defer f.wg.Done()
+	defer f.track(dst, false)
+	defer func() { _ = dst.Close() }()
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	if err := rc.Flush(); err != nil {
+		return
+	}
+	idle := p.cfg.IdleTimeout.D()
+	var in atomic.Int64
+	var out int64
+	go func() {
+		// Ends when the client closes its half or, after the handler
+		// returns, when the server closes the request body.
+		buf := make([]byte, 32<<10)
+		for {
+			n, err := r.Body.Read(buf)
+			if n > 0 {
+				_ = dst.SetWriteDeadline(time.Now().Add(idle))
+				wn, werr := dst.Write(buf[:n])
+				in.Add(int64(wn))
+				if werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				if tc, ok := dst.(interface{ CloseWrite() error }); ok {
+					_ = tc.CloseWrite()
+				}
+				return
+			}
+		}
+	}()
+	buf := make([]byte, 32<<10)
+	for {
+		_ = dst.SetReadDeadline(time.Now().Add(idle))
+		n, err := dst.Read(buf)
+		if n > 0 {
+			wn, werr := w.Write(buf[:n])
+			out += int64(wn)
+			if werr != nil {
+				break
+			}
+			if err := rc.Flush(); err != nil {
+				break
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	_ = dst.Close() // the destination is done: end the stream without waiting for the client's half
+	n := in.Load()
+	s.stats.ForwardBytesIn.Add(uint64(n))    //nolint:gosec // non-negative
+	s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+	f.log(r, ip, user, r.Host, http.StatusOK, n, out, start, "")
 }
 
 // plain relays an absolute-URI http request through the checked dialer

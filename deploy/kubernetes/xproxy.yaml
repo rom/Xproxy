@@ -26,6 +26,9 @@ rules:
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gatewayclasses", "gateways", "httproutes"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -46,6 +49,16 @@ metadata:
   name: xproxy
 spec:
   controller: sysctl.se/xproxy
+---
+# Optional: the Gateway API class (needs the Gateway API CRDs installed).
+# Gateways with gatewayClassName xproxy and their HTTPRoutes are served
+# next to Ingress resources.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: xproxy
+spec:
+  controllerName: sysctl.se/xproxy
 ---
 apiVersion: v1
 kind: ConfigMap

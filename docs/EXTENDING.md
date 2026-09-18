@@ -243,11 +243,23 @@ length in the low 32 bits, `0` when absent.
 | `deny` | `(status: i32, reason_ptr, reason_len, detail_ptr, detail_len)` | Sets the verdict; `status` 400 to 599 (403 otherwise), `reason` a token (the filter name otherwise) |
 | `log` | `(level: i32, ptr, len)` | Error log at debug 0, info 1, warn 2, error 3, tagged with the request id and route |
 | `log_attr` | `(key_ptr, key_len, value_ptr, value_len)` | Adds `wasm_<key>` to the access log line (at most 32) |
+| `set_body` | `(target: i32, ptr, len)` | Replaces the request (0) or response (1) body with guest bytes up to `body_limit`; sets the length and drops `Content-Encoding` on a response |
 
 `get` kinds: 0 method, 1 path, 2 host, 3 query, 4 request header by
 name, 5 client address, 6 route, 7 request id, 8 the `config` option,
 9 country, 10 JA4, 11 response header by name, 12 response status
-(response phase only).
+(response phase only), 13 request body, 14 response body (response
+phase only), 15 body state: `ok`, `too_large` or `disabled`.
+
+Bodies (added in 1.3): the first `get` of a body reads it into memory up
+to `body_limit` (default 64 KiB) and hands the guest a copy; the
+upstream or client then reads the buffered bytes, or what `set_body`
+replaced them with. A body over the limit is never exposed (`get`
+returns 0, the state says `too_large`) and streams through untouched,
+so a module can only inspect what fits its bound; `body_limit: 0`
+turns body access off. Reading a body costs a copy and, for requests,
+delays forwarding until it has arrived; keep the limit to what the
+policy needs.
 
 ### Rules
 
@@ -304,7 +316,9 @@ Version 1 guarantees:
   `Env`, new optional interfaces a filter may implement (as `Closer`),
   new stages. Version 1 gained `Info.Country`, `Info.JA3`, `Info.JA4`,
   `Info.ALPN`, `Info.ChallengeVerified` and `Verdict.Challenge` in 1.1
-  this way, and `Info.HoneypotMarked` and `Verdict.Silent` in 1.2.
+  this way, and `Info.HoneypotMarked` and `Verdict.Silent` in 1.2. The
+  WebAssembly ABI gained body `get` kinds and `set_body` in 1.3 at
+  version 1.
 - Incompatible changes bump `APIVersion`, are recorded in CHANGELOG.md
   and AMR.md, and keep the previous version's semantics for one release.
 

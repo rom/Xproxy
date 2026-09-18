@@ -44,7 +44,7 @@ routes:
       address: ":5353"
       kind: dns
       dns:
-        upstreams: ["9.9.9.9:53", "[2620:fe::fe]:53"]
+        upstreams: ["9.9.9.9:53", "[2620:fe::fe]:53", "tls://dns.quad9.net:853", "https://dns.quad9.net/dns-query"]
         block: [ads.test, "*.tracker.test", =exact.test]
         rate_limit: {}
 `
@@ -53,7 +53,7 @@ routes:
 		t.Fatal(err)
 	}
 	l4, fwd := cfg.Server.Listeners[1], cfg.Server.Listeners[2]
-	if l4.TCP.IdleTimeout.D().Minutes() != 10 || l4.TCP.MaxConnections != 10000 || len(l4.Protocols) != 0 {
+	if l4.TCP.IdleTimeout.D().Minutes() != 10 || l4.TCP.MaxConnections != 10000 || len(l4.Protocols) != 0 || l4.TCP.QUICIdleTimeout.D() != 30*time.Second {
 		t.Fatalf("tcp defaults: %+v protocols %v", l4.TCP, l4.Protocols)
 	}
 	f := fwd.Forward
@@ -86,9 +86,12 @@ routes:
 		{"tcp unknown upstream", "    - {name: x, address: \":1\", kind: tcp, tcp: {default: nope}}\n", "nope"},
 		{"tcp idle", "    - {name: x, address: \":1\", kind: tcp, tcp: {default: app, idle_timeout: 48h}}\n", "idle_timeout"},
 		{"tcp max", "    - {name: x, address: \":1\", kind: tcp, tcp: {default: app, max_connections: -1}}\n", "max_connections"},
+		{"tcp quic idle", "    - {name: x, address: \":1\", kind: tcp, tcp: {default: app, quic: true, quic_idle_timeout: 2h}}\n", "quic_idle_timeout"},
+		{"tcp quic proxy protocol", "    - {name: x, address: \":1\", kind: tcp, tcp: {default: app, quic: true, proxy_protocol: true}}\n", "disable proxy_protocol or quic"},
 		{"forward without section", "    - {name: x, address: \":1\", kind: forward}\n", "required for kind forward"},
-		{"forward with tcp", "    - {name: x, address: \":1\", kind: forward, forward: {}, tcp: {default: app}}\n", "speaks h1 only"},
-		{"forward h2", "    - {name: x, address: \":1\", kind: forward, forward: {}, protocols: [h1, h2]}\n", "speaks h1 only"},
+		{"forward with tcp", "    - {name: x, address: \":1\", kind: forward, forward: {}, tcp: {default: app}}\n", "takes no tcp"},
+		{"forward h2 without tls", "    - {name: x, address: \":1\", kind: forward, forward: {}, protocols: [h1, h2]}\n", "requires tls"},
+		{"forward h3", "    - {name: x, address: \":1\", kind: forward, forward: {}, protocols: [h1, h3], tls: {certificates: [{cert_file: /c, key_file: /k}]}}\n", "takes no tcp, redirect_to_https, h3"},
 		{"forward port", "    - {name: x, address: \":1\", kind: forward, forward: {ports: [0]}}\n", "not a port"},
 		{"forward port twice", "    - {name: x, address: \":1\", kind: forward, forward: {ports: [443, 443]}}\n", "listed twice"},
 		{"forward allow", "    - {name: x, address: \":1\", kind: forward, forward: {allow: [\"a*b\"]}}\n", "allow"},
@@ -104,6 +107,10 @@ routes:
 		{"dns with tls", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"]}, h2c: true}\n", "takes only address and dns"},
 		{"dns no upstreams", "    - {name: x, address: \":1\", kind: dns, dns: {}}\n", "at least one resolver"},
 		{"dns bad upstream", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9\"]}}\n", "must be host:port"},
+		{"dns tls upstream", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"tls://9.9.9.9\"]}}\n", "tls://host:port"},
+		{"dns https upstream", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"https://dns.test\"]}}\n", "https://host"},
+		{"dns transport", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"quic://dns.test:853\"]}}\n", "unknown transport"},
+		{"dns ca", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"tls://9.9.9.9:853\"], upstream_ca_file: rel.pem}}\n", "upstream_ca_file"},
 		{"dns timeout", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"], timeout: 1m}}\n", "dns.timeout"},
 		{"dns client cidr", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"], allow_clients: [x]}}\n", "allow_clients"},
 		{"dns block entry", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"], block: [\"a b\"]}}\n", "dns.block"},
@@ -193,7 +200,7 @@ routes:
 		t.Fatalf("honeypot defaults: %+v", hp)
 	}
 	cases := []struct{ name, snippet, want string }{
-		{"two actions", "upstream: app\n    honeypot: {decoy: env}", "exactly one of upstream, redirect, respond or honeypot"},
+		{"two actions", "upstream: app\n    honeypot: {decoy: env}", "exactly one of upstream, redirect, respond, honeypot or doh"},
 		{"two sources", "honeypot: {decoy: env, body: x}", "exactly one of decoy, body or body_file"},
 		{"unknown decoy", "honeypot: {decoy: nope}", "unknown decoy"},
 		{"status", "honeypot: {decoy: env, status: 99}", "honeypot.status"},
@@ -212,6 +219,9 @@ routes:
 		{"grpc service", "upstream: app\n    grpc: {services: [\"a/b\"]}", "grpc.services"},
 		{"grpc method", "upstream: app\n    grpc: {methods: [nomethod]}", "grpc.methods"},
 		{"grpc without upstream", "respond: {status: 200}\n    grpc: {}", "only a route with an upstream"},
+		{"doh without listener", "doh: {}", "doh.listener: required"},
+		{"doh unknown listener", "doh: {listener: main}", "not a kind: dns listener"},
+		{"doh and upstream", "upstream: app\n    doh: {listener: main}", "exactly one of"},
 	}
 	for _, tc := range cases {
 		_, err := Parse([]byte(strings.Replace(base, "%s", tc.snippet, 1)))
@@ -247,7 +257,7 @@ routes:
 	}
 	in := cfg.Ingress
 	if in.APIServer != "https://kubernetes.default.svc" || in.Class != "xproxy" || in.CertDir != "/var/lib/xproxy/ingress" || in.Resync.D() != 30*time.Second ||
-		in.Timeout.D() != 10*time.Second || !strings.HasSuffix(in.TokenFile, "/token") || !strings.HasSuffix(in.CAFile, "/ca.crt") {
+		in.Timeout.D() != 10*time.Second || !strings.HasSuffix(in.TokenFile, "/token") || !strings.HasSuffix(in.CAFile, "/ca.crt") || !in.Watches() || in.Debounce.D() != 500*time.Millisecond {
 		t.Fatalf("ingress defaults: %+v", in)
 	}
 	cases := []struct{ name, snippet, want string }{
@@ -261,6 +271,7 @@ routes:
 		{"cert dir", "  cert_dir: certs", "cert_dir"},
 		{"resync", "  resync: 2h", "ingress.resync"},
 		{"timeout", "  timeout: 10m", "ingress.timeout"},
+		{"debounce", "  debounce: 5m", "ingress.debounce"},
 	}
 	for _, tc := range cases {
 		_, err := ParseWith([]byte(strings.Replace(base, "%s", tc.snippet, 1)), false)
@@ -271,5 +282,54 @@ routes:
 	// Disabled sections are not checked.
 	if _, err := ParseWith([]byte(strings.Replace(strings.Replace(base, "enabled: true", "enabled: false", 1), "%s", "  resync: 2h", 1)), false); err != nil {
 		t.Fatalf("disabled ingress validated: %v", err)
+	}
+}
+
+// TestOTLPConfig covers the exporter section's defaults and rules.
+func TestOTLPConfig(t *testing.T) {
+	base := `
+version: 1
+server:
+  listeners:
+    - {name: main, address: ":8080"}
+metrics:
+  otlp:
+    endpoint: %s
+%s
+upstreams:
+  - name: app
+    endpoints: [{address: 127.0.0.1:9000}]
+routes:
+  - name: r
+    upstream: app
+`
+	cfg, err := ParseWith([]byte(fmt.Sprintf(base, "https://otel.test:4318/v1/metrics", "")), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := cfg.Metrics.OTLP
+	if o.Interval.D() != 30*time.Second || o.Timeout.D() != 10*time.Second || o.ServiceName != "xproxy" || o.Compress == nil || !*o.Compress {
+		t.Fatalf("otlp defaults: %+v", o)
+	}
+	cases := []struct{ name, endpoint, extra, want string }{
+		{"http", "http://otel.test/v1/metrics", "", "otlp.endpoint"},
+		{"http allowed", "http://otel.test/v1/metrics", "    allow_http: true\n    interval: 0s", ""},
+		{"interval", "https://otel.test/v1/metrics", "    interval: 2h", "otlp.interval"},
+		{"timeout", "https://otel.test/v1/metrics", "    timeout: 1m", "otlp.timeout"},
+		{"header", "https://otel.test/v1/metrics", "    headers: {\"a b\": x}", "otlp.headers"},
+		{"ca", "https://otel.test/v1/metrics", "    ca_file: rel.pem", "otlp.ca_file"},
+		{"service", "https://otel.test/v1/metrics", "    service_name: " + strings.Repeat("s", 256), "otlp.service_name"},
+	}
+	for _, tc := range cases {
+		_, err := ParseWith([]byte(fmt.Sprintf(base, tc.endpoint, tc.extra)), false)
+		if tc.want == "" {
+			if err != nil {
+				t.Errorf("%s: %v", tc.name, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
 	}
 }

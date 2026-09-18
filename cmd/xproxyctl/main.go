@@ -28,6 +28,7 @@
 //	honeypot       list clients marked by honeypots; honeypot forget IP removes one
 //	dns            show dns listener counters; "dns purge" empties the caches
 //	ingress        show the Kubernetes ingress controller status
+//	otlp           show the OpenTelemetry exporter status
 //	cache          show cache statistics; "cache purge [HOST [PATH-PREFIX]]" removes entries
 //	htpasswd FILE NAME  add or replace a basic_auth user (password on stdin)
 //	metrics        print the Prometheus exposition
@@ -69,7 +70,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache htpasswd spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -262,6 +263,13 @@ func run(args []string, out, errOut io.Writer) int {
 	case "geoip":
 		var b []byte
 		if err := c.Do("GET", "/v1/geoip", nil, &b); err != nil {
+			return fail(err)
+		}
+		_, _ = out.Write(b)
+		return 0
+	case "otlp":
+		var b []byte
+		if err := c.Do("GET", "/v1/otlp", nil, &b); err != nil {
 			return fail(err)
 		}
 		_, _ = out.Write(b)

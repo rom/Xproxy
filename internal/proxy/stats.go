@@ -52,6 +52,8 @@ type Stats struct {
 	TCPErrors          atomic.Uint64
 	TCPBytesIn         atomic.Uint64
 	TCPBytesOut        atomic.Uint64
+	QUICFlows          atomic.Uint64
+	QUICRejected       atomic.Uint64
 	ForwardRequests    atomic.Uint64
 	ForwardTunnels     atomic.Uint64
 	ForwardTunnelsOpen atomic.Int64
@@ -118,6 +120,9 @@ type Snapshot struct {
 	TCPErrors          uint64     `json:"tcp_errors"`
 	TCPBytesIn         uint64     `json:"tcp_bytes_in"`
 	TCPBytesOut        uint64     `json:"tcp_bytes_out"`
+	QUICFlows          uint64     `json:"quic_flows"`
+	QUICRejected       uint64     `json:"quic_rejected"`
+	QUICFlowsOpen      int        `json:"quic_flows_open"`
 	ForwardRequests    uint64     `json:"forward_requests"`
 	ForwardTunnels     uint64     `json:"forward_tunnels"`
 	ForwardTunnelsOpen int64      `json:"forward_tunnels_open"`
@@ -194,6 +199,8 @@ func (s *Stats) snapshot() Snapshot {
 		TCPErrors:          s.TCPErrors.Load(),
 		TCPBytesIn:         s.TCPBytesIn.Load(),
 		TCPBytesOut:        s.TCPBytesOut.Load(),
+		QUICFlows:          s.QUICFlows.Load(),
+		QUICRejected:       s.QUICRejected.Load(),
 		ForwardRequests:    s.ForwardRequests.Load(),
 		ForwardTunnels:     s.ForwardTunnels.Load(),
 		ForwardTunnelsOpen: s.ForwardTunnelsOpen.Load(),

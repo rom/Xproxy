@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
@@ -28,6 +29,11 @@ type Status struct {
 	Syncs        uint64    `json:"syncs"`
 	Errors       uint64    `json:"errors"`
 	Ingresses    int       `json:"ingresses"`
+	Gateways     int       `json:"gateways"`
+	HTTPRoutes   int       `json:"httproutes"`
+	GatewayAPI   bool      `json:"gateway_api"`
+	Watching     int       `json:"watching"`
+	WatchEvents  uint64    `json:"watch_events"`
 	Routes       int       `json:"routes"`
 	Upstreams    int       `json:"upstreams"`
 	Certificates int       `json:"certificates"`
@@ -50,6 +56,12 @@ type Controller struct {
 	stop chan struct{}
 	wg   sync.WaitGroup
 	once sync.Once
+
+	// kick is signalled by watch events; Start debounces it into a Sync.
+	kick     chan struct{}
+	watching atomic.Int32
+	events   atomic.Uint64
+	gwAPI    atomic.Bool
 }
 
 // New builds a controller; Sync and Start do the work.
@@ -62,7 +74,7 @@ func New(cfg config.Ingress, log *slog.Logger, onChange func()) (*Controller, er
 		return nil, fmt.Errorf("cert_dir: %w", err)
 	}
 	return &Controller{cfg: cfg, client: c, log: log.With("component", "ingress"), onChange: onChange, stop: make(chan struct{}),
-		status: Status{Enabled: true, Class: cfg.Class}}, nil
+		kick: make(chan struct{}, 1), status: Status{Enabled: true, Class: cfg.Class}}, nil
 }
 
 // Snapshot returns the latest translation and the certificate files
@@ -79,32 +91,105 @@ func (c *Controller) Status() Status {
 	defer c.mu.Unlock()
 	st := c.status
 	st.Warnings = append([]string(nil), c.snap.Warnings...)
+	st.Watching = int(c.watching.Load())
+	st.WatchEvents = c.events.Load()
+	st.GatewayAPI = c.gwAPI.Load()
 	return st
 }
 
-// Start polls every resync until Stop.
+// watchPaths are the collections whose events trigger a sync.
+var watchPaths = []string{
+	"/apis/networking.k8s.io/v1/ingresses",
+	"/api/v1/services",
+	"/apis/discovery.k8s.io/v1/endpointslices",
+	"/api/v1/secrets",
+	"/apis/gateway.networking.k8s.io/v1/gateways",
+	"/apis/gateway.networking.k8s.io/v1/httproutes",
+}
+
+// Start syncs on watch events (debounced) and every resync as a
+// fallback, until Stop. Watches reconnect with backoff; a collection
+// the cluster does not serve is retried slowly.
 func (c *Controller) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	if c.cfg.Watches() {
+		for _, p := range watchPaths {
+			c.wg.Add(1)
+			go c.watchLoop(ctx, p)
+		}
+	}
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
+		defer cancel()
 		t := time.NewTicker(c.cfg.Resync.D())
 		defer t.Stop()
+		var debounce <-chan time.Time
 		for {
 			select {
 			case <-c.stop:
 				return
+			case <-c.kick:
+				if debounce == nil {
+					debounce = time.After(c.cfg.Debounce.D())
+				}
+				continue
+			case <-debounce:
+				debounce = nil
 			case <-t.C:
-				changed, err := c.Sync(context.Background())
-				if err != nil {
-					c.log.Warn("ingress sync failed", "err", err.Error())
-					continue
-				}
-				if changed && c.onChange != nil {
-					c.onChange()
-				}
+			}
+			changed, err := c.Sync(context.Background())
+			if err != nil {
+				c.log.Warn("ingress sync failed", "err", err.Error())
+				continue
+			}
+			if changed && c.onChange != nil {
+				c.onChange()
 			}
 		}
 	}()
+}
+
+func (c *Controller) watchLoop(ctx context.Context, path string) {
+	defer c.wg.Done()
+	backoff := time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		c.watching.Add(1)
+		start := time.Now()
+		err := c.client.watch(ctx, path, func(kind string) {
+			if kind == "BOOKMARK" {
+				return
+			}
+			c.events.Add(1)
+			select {
+			case c.kick <- struct{}{}:
+			default:
+			}
+		})
+		c.watching.Add(-1)
+		if ctx.Err() != nil {
+			return
+		}
+		switch {
+		case err == nil || time.Since(start) > time.Minute:
+			backoff = time.Second // a stream that lived a while ended normally
+		case isNotFound(err):
+			backoff = 5 * time.Minute // the resource is not served here
+		default:
+			backoff = min(backoff*2, 30*time.Second)
+			c.log.Debug("ingress watch ended", "path", path, "err", err.Error(), "retry_in", backoff.String())
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+	}
 }
 
 // Stop ends polling.
@@ -137,7 +222,8 @@ func (c *Controller) Sync(ctx context.Context) (bool, error) {
 	changed := h != c.hash
 	c.snap, c.certs, c.hash = snap, certs, h
 	c.status.LastError = ""
-	c.status.Ingresses, c.status.Routes, c.status.Upstreams, c.status.Certificates = snap.Ingresses, len(snap.Routes), len(snap.Upstreams), len(certs)
+	c.status.Ingresses, c.status.Gateways, c.status.HTTPRoutes = snap.Ingresses, snap.Gateways, snap.HTTPRoutes
+	c.status.Routes, c.status.Upstreams, c.status.Certificates = len(snap.Routes), len(snap.Upstreams), len(certs)
 	if changed {
 		c.status.LastChange = time.Now()
 		c.log.Info("ingress snapshot changed", "ingresses", snap.Ingresses, "routes", len(snap.Routes), "upstreams", len(snap.Upstreams), "certificates", len(certs), "warnings", len(snap.Warnings))
@@ -177,25 +263,66 @@ func (c *Controller) fetch(ctx context.Context) (Input, error) {
 			return in, fmt.Errorf("endpointslices: %w", err)
 		}
 		in.Slices = append(in.Slices, sl...)
+		// The Gateway API is optional: a cluster without its CRDs answers
+		// 404, which is not an error.
+		gws, err := c.client.gateways(ctx, ns)
+		switch {
+		case isNotFound(err):
+			c.gwAPI.Store(false)
+		case err != nil:
+			return in, fmt.Errorf("gateways: %w", err)
+		default:
+			c.gwAPI.Store(true)
+			in.Gateways = append(in.Gateways, gws...)
+			hrs, err := c.client.httpRoutes(ctx, ns)
+			if err != nil && !isNotFound(err) {
+				return in, fmt.Errorf("httproutes: %w", err)
+			}
+			in.HTTPRoutes = append(in.HTTPRoutes, hrs...)
+		}
 	}
 	in.Secrets = map[string]*Secret{}
+	want := func(ns, name string) {
+		key := ns + "/" + name
+		if name == "" {
+			return
+		}
+		if _, seen := in.Secrets[key]; seen {
+			return
+		}
+		s, err := c.client.secret(ctx, ns, name)
+		if err != nil {
+			c.log.Warn("ingress tls secret", "namespace", ns, "secret", name, "err", err.Error())
+			in.Secrets[key] = nil
+			return
+		}
+		in.Secrets[key] = s
+	}
 	for i := range in.Ingresses {
 		ing := &in.Ingresses[i]
 		if !matchesClass(ing, c.cfg.Class) {
 			continue
 		}
 		for _, t := range ing.Spec.TLS {
-			key := ing.Metadata.Namespace + "/" + t.SecretName
-			if t.SecretName == "" || in.Secrets[key] != nil {
+			want(ing.Metadata.Namespace, t.SecretName)
+		}
+	}
+	for i := range in.Gateways {
+		g := &in.Gateways[i]
+		if g.Spec.GatewayClassName != c.cfg.Class {
+			continue
+		}
+		for _, l := range g.Spec.Listeners {
+			if l.TLS == nil {
 				continue
 			}
-			s, err := c.client.secret(ctx, ing.Metadata.Namespace, t.SecretName)
-			if err != nil {
-				c.log.Warn("ingress tls secret", "namespace", ing.Metadata.Namespace, "secret", t.SecretName, "err", err.Error())
-				in.Secrets[key] = nil
-				continue
+			for _, ref := range l.TLS.CertificateRefs {
+				ns := ref.Namespace
+				if ns == "" {
+					ns = g.Metadata.Namespace
+				}
+				want(ns, ref.Name)
 			}
-			in.Secrets[key] = s
 		}
 	}
 	return in, nil
@@ -269,12 +396,12 @@ func decodeB64(s string) ([]byte, error) {
 func hashSnapshot(s Snapshot) string {
 	h := sha256.New()
 	for _, r := range s.Routes {
-		_, _ = fmt.Fprintf(h, "route %s %v %v %s %d %v %s %v %v %v %d %s %s\n", r.Name, r.Hosts, r.Paths, r.Upstream, r.Priority, r.WebSocket, r.PriorityClass, r.RateLimits, r.Filters, r.Timeout, deref(r.MaxBodyBytes), r.StripPrefix, r.HostHeader)
+		_, _ = fmt.Fprintf(h, "route %s %v %v %v %s %d %v %s %v %v %v %d %s %s %s %v %v %v\n", r.Name, r.Hosts, r.Paths, r.Methods, r.Upstream, r.Priority, r.WebSocket, r.PriorityClass, r.RateLimits, r.Filters, r.Timeout, deref(r.MaxBodyBytes), r.StripPrefix, r.RewritePath, r.HostHeader, r.Redirect, r.RequestHeaders, r.ResponseHeaders)
 	}
 	for _, u := range s.Upstreams {
-		_, _ = fmt.Fprintf(h, "upstream %s", u.Name)
+		_, _ = fmt.Fprintf(h, "upstream %s %s", u.Name, u.Balancer)
 		for _, e := range u.Endpoints {
-			_, _ = fmt.Fprintf(h, " %s", e.Address)
+			_, _ = fmt.Fprintf(h, " %s/%d", e.Address, e.Weight)
 		}
 		_, _ = fmt.Fprintln(h)
 	}

@@ -6,7 +6,39 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
-### Added
+### Added (1.3)
+- Configuration includes: `includes` globs of fragment files whose
+  `upstreams`, `routes`, `rate_limits` and `filters` are appended in
+  lexical order; fragments may contain nothing else and names must be
+  unique across the set.
+- HTTP/2 CONNECT on TLS forward listeners that list `h2`: the stream
+  carries the tunnel.
+- WebAssembly ABI body access: `get` kinds 13 to 15 and `set_body`
+  behind a per filter `body_limit`; bodies over the limit stream
+  through unexposed.
+- QUIC passthrough: `kind: tcp` listeners with `quic: true` relay QUIC
+  flows by the server name read from the version 1 Initial packet,
+  with `quic_idle_timeout`, `quic_*` counters and `xproxy_quic_*`
+  metrics.
+- Kubernetes Gateway API: Gateways and HTTPRoutes of the ingress class
+  translate next to Ingress resources (hostnames, prefix and exact
+  paths, methods, header modifiers, URL rewrite, redirects, weighted
+  backends, listener certificates); watch streams on every collection
+  trigger a debounced sync so changes propagate within a second, with
+  the resync poll as fallback; `watch` and `debounce` settings,
+  `gateway_api`, `watching` and `watch_events` in the status.
+- DNS over TLS and HTTPS: dns listener `upstreams` accept
+  `tls://host:port` and `https://host/path` with `upstream_ca_file`;
+  a `doh` route action answers RFC 8484 for clients through a dns
+  listener's policy and cache.
+- OpenTelemetry exporter: `metrics.otlp` pushes every metric family as
+  OTLP/HTTP with JSON encoding on an interval, with headers, pinned CA,
+  resource attributes and gzip; `GET /v1/otlp`, `xproxyctl otlp`.
+- OIDC front channel logout: sessions carry the provider's `sid`,
+  `frontchannel_logout_path` revokes it into a bounded index, a logout
+  at the proxy revokes it too; `logouts` and `revoked` in the status.
+
+### Added (1.2)
 - GeoIP policy: `geoip` section with a built-in MaxMind DB reader (no
   external library) or a CSV prefix table; `routes[].geo` allow and deny
   lists with an `unknown` choice; rate limits keyed on `country`;

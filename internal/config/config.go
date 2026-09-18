@@ -25,6 +25,13 @@ const CurrentVersion = 1
 type Config struct {
 	// Version is the schema version. Must equal CurrentVersion.
 	Version int `yaml:"version"`
+	// Includes are absolute glob patterns of fragment files whose
+	// upstreams, routes, rate_limits and filters are appended to this
+	// document, in lexical order of path. Fragments may contain nothing
+	// else; names must not repeat. Read at every load and reload.
+	Includes []string `yaml:"includes"`
+	// IncludedFiles lists the fragments the last load read.
+	IncludedFiles []string `yaml:"-"`
 
 	Server     Server     `yaml:"server"`
 	Management Management `yaml:"management"`
@@ -96,6 +103,8 @@ type Metrics struct {
 	// 10s and 1h.
 	SampleInterval Duration `yaml:"sample_interval"`
 	Retention      Duration `yaml:"retention"`
+	// OTLP pushes the same metrics to an OpenTelemetry collector.
+	OTLP *OTLP `yaml:"otlp"`
 }
 
 // MetricsTLS is the metrics listener certificate and optional client CA.
@@ -170,8 +179,13 @@ type Listener struct {
 // resolvers with fresh transaction ids and source ports. The policy,
 // upstreams and cache bounds reload; the address needs a restart.
 type DNSListener struct {
-	// Upstreams are host:port resolvers tried in turn. Required.
+	// Upstreams are resolvers tried in turn: host:port (UDP with TCP
+	// fallback), tls://host:port (DNS over TLS) or https://host/path
+	// (DNS over HTTPS). Required.
 	Upstreams []string `yaml:"upstreams"`
+	// UpstreamCAFile pins the CA of tls:// and https:// upstreams.
+	// Default: system pool.
+	UpstreamCAFile string `yaml:"upstream_ca_file"`
 	// Timeout bounds one upstream attempt. Default 2s.
 	Timeout Duration `yaml:"timeout"`
 	// AllowClients restricts clients to these CIDRs (others get
@@ -247,10 +261,46 @@ type Ingress struct {
 	// CertDir receives the certificate files. Default
 	// /var/lib/xproxy/ingress.
 	CertDir string `yaml:"cert_dir"`
-	// Resync is the polling interval. Default 30s.
+	// Resync is the polling interval. Default 30s. With watches on it
+	// is the fallback; with them off it is the propagation delay.
 	Resync Duration `yaml:"resync"`
 	// Timeout bounds one API request. Default 10s.
 	Timeout Duration `yaml:"timeout"`
+	// Watch opens watch streams on the resources so that a change syncs
+	// within debounce instead of resync. Default true.
+	Watch *bool `yaml:"watch"`
+	// Debounce collects a burst of watch events into one sync. Default
+	// 500ms.
+	Debounce Duration `yaml:"debounce"`
+}
+
+// Watches reports whether watch streams are used.
+func (i *Ingress) Watches() bool { return i.Watch == nil || *i.Watch }
+
+// OTLP is the OpenTelemetry push exporter: every interval the metric
+// families are sent as OTLP/HTTP with JSON encoding to a collector
+// (counters as cumulative monotonic sums, gauges, histograms as
+// cumulative explicit bucket histograms).
+type OTLP struct {
+	// Endpoint is the collector's metrics URL, for example
+	// https://otel.example.com:4318/v1/metrics.
+	Endpoint string `yaml:"endpoint"`
+	// AllowHTTP permits a plain http endpoint.
+	AllowHTTP bool `yaml:"allow_http"`
+	// Interval between pushes. Default 30s; 1s to 1h.
+	Interval Duration `yaml:"interval"`
+	// Timeout of one push. Default 10s.
+	Timeout Duration `yaml:"timeout"`
+	// Headers added to every request (for example Authorization).
+	Headers map[string]string `yaml:"headers"`
+	// CAFile pins the collector's CA. Default: system pool.
+	CAFile string `yaml:"ca_file"`
+	// ServiceName is the service.name resource attribute. Default xproxy.
+	ServiceName string `yaml:"service_name"`
+	// Attributes are extra resource attributes.
+	Attributes map[string]string `yaml:"attributes"`
+	// Compress gzips the request body. Default true.
+	Compress *bool `yaml:"compress"`
 }
 
 // ForwardListener is an explicit forward proxy: clients send CONNECT
@@ -314,6 +364,13 @@ type TCPListener struct {
 	// MaxConnections bounds open connections on this listener (in
 	// addition to the global limits). Default 10000.
 	MaxConnections int `yaml:"max_connections"`
+	// QUIC also relays QUIC (UDP on the same address): the ClientHello
+	// of each flow is read from the Initial packet and routed by server
+	// name to the same upstreams. Default false.
+	QUIC bool `yaml:"quic"`
+	// QUICIdleTimeout ends a QUIC flow with no datagrams either way.
+	// Default 30s.
+	QUICIdleTimeout Duration `yaml:"quic_idle_timeout"`
 }
 
 // TCPRoute maps server names (exact or *.suffix) to an upstream.
@@ -671,6 +728,15 @@ type Route struct {
 	// GRPC restricts the route to gRPC requests, optionally to listed
 	// services or methods.
 	GRPC *RouteGRPC `yaml:"grpc"`
+	// DoH answers DNS over HTTPS on this route through a dns listener.
+	DoH *RouteDoH `yaml:"doh"`
+}
+
+// RouteDoH is the DNS over HTTPS action (RFC 8484): GET with a base64url
+// dns parameter or POST with an application/dns-message body, answered
+// by the named kind: dns listener's policy and cache.
+type RouteDoH struct {
+	Listener string `yaml:"listener"`
 }
 
 // RouteGRPC matches gRPC requests (content type application/grpc) by

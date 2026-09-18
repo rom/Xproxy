@@ -1,6 +1,7 @@
 package wasm
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -126,5 +127,66 @@ func TestLoadErrors(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: got %v want %q", tc.name, err, tc.want)
 		}
+	}
+}
+
+// TestBodies reads, echoes and replaces bodies within the limit and
+// leaves a body over the limit untouched.
+func TestBodies(t *testing.T) {
+	mod := writeModule(t, 1, true)
+	f, err := filtertest.Build("wasm", "bodies", filter.Options{"module": mod, "body_limit": 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.(filter.Closer).Close() })
+	// Read and echo back: the upstream sees the same bytes and the marker.
+	r := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader("hello body"))
+	r.Header.Set("X-Body", "1")
+	res := filtertest.Run(f, r, nil)
+	got, _ := io.ReadAll(r.Body)
+	if res.Request.Deny || string(got) != "hello body" || r.Header.Get("X-Body-Seen") != "1" || r.Header.Get("X-Body-State") != "ok" || r.ContentLength != 10 {
+		t.Fatalf("echo: %+v body=%q hdr=%v len=%d", res.Request, got, r.Header, r.ContentLength)
+	}
+	// Over the limit: nothing exposed, the stream passes through whole.
+	r = httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(strings.Repeat("z", 40)))
+	r.Header.Set("X-Body", "1")
+	res = filtertest.Run(f, r, nil)
+	got, _ = io.ReadAll(r.Body)
+	if res.Request.Deny || len(got) != 40 || r.Header.Get("X-Body-Seen") != "" || r.Header.Get("X-Body-State") != "too_large" {
+		t.Fatalf("too large: %+v body=%d hdr=%v", res.Request, len(got), r.Header)
+	}
+	// Replace the request body.
+	r = httptest.NewRequest(http.MethodPost, "/x", strings.NewReader("original"))
+	r.Header.Set("X-Swap", "1")
+	res = filtertest.Run(f, r, nil)
+	got, _ = io.ReadAll(r.Body)
+	if res.Request.Deny || string(got) != "swapped" || r.ContentLength != 7 || r.Header.Get("Content-Length") != "7" {
+		t.Fatalf("swap: %+v body=%q", res.Request, got)
+	}
+	// Replace the response body.
+	r = httptest.NewRequest(http.MethodGet, "/x", nil)
+	r.Header.Set("X-Resp-Swap", "1")
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Encoding": {"gzip"}}, Body: io.NopCloser(strings.NewReader("upstream"))}
+	res = filtertest.Run(f, r, resp)
+	got, _ = io.ReadAll(resp.Body)
+	if res.Response.Deny || string(got) != "resp-swapped" || resp.ContentLength != 12 || resp.Header.Get("Content-Encoding") != "" {
+		t.Fatalf("response swap: %+v body=%q %v", res.Response, got, resp.Header)
+	}
+	// Body access disabled: the state says so and set_body is a no-op.
+	fd, err := filtertest.Build("wasm", "nobody", filter.Options{"module": mod, "body_limit": 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fd.(filter.Closer).Close() })
+	r = httptest.NewRequest(http.MethodPost, "/x", strings.NewReader("keep"))
+	r.Header.Set("X-Body", "1")
+	r.Header.Set("X-Swap", "1")
+	filtertest.Run(fd, r, nil)
+	got, _ = io.ReadAll(r.Body)
+	if string(got) != "keep" || r.Header.Get("X-Body-State") != "disabled" || r.Header.Get("X-Body-Seen") != "" {
+		t.Fatalf("disabled: %q %v", got, r.Header)
+	}
+	if _, err := filtertest.Build("wasm", "x", filter.Options{"module": mod, "body_limit": 1 << 30}); err == nil || !strings.Contains(err.Error(), "body_limit") {
+		t.Fatalf("limit bound: %v", err)
 	}
 }

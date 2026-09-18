@@ -175,9 +175,18 @@ func (v *validator) config(c *Config) {
 			}
 		}
 	}
+	dnsListeners := map[string]bool{}
+	for _, ln := range c.Server.Listeners {
+		if ln.Kind == "dns" {
+			dnsListeners[ln.Name] = true
+		}
+	}
 	routes := map[string]bool{}
 	for i := range c.Routes {
 		v.route(i, &c.Routes[i], routes, upstreams, rateLimits)
+		if d := c.Routes[i].DoH; d != nil && d.Listener != "" && !dnsListeners[d.Listener] {
+			v.errf("routes[%d].doh.listener: %q is not a kind: dns listener", i, d.Listener)
+		}
 		for j, name := range c.Routes[i].Filters {
 			if !filters[name] {
 				v.errf("routes[%d].filters[%d]: unknown filter %q", i, j, name)
@@ -351,8 +360,8 @@ func (v *validator) server(s *Server) {
 				v.dnsListener(p+".dns", ln.DNS)
 			}
 		case "forward":
-			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || ln.H2C || hasProtocol(ln.Protocols, ProtocolH2) {
-				v.errf("%s: a forward listener takes no tcp or redirect_to_https and speaks h1 only", p)
+			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || ln.H2C {
+				v.errf("%s: a forward listener takes no tcp, redirect_to_https, h3 or h2c", p)
 			}
 			if ln.Forward == nil {
 				v.errf("%s.forward: required for kind forward", p)
@@ -911,8 +920,14 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 			v.errf("%s.honeypot.mark: must be positive and at most 720h", p)
 		}
 	}
+	if r.DoH != nil {
+		actions++
+		if r.DoH.Listener == "" {
+			v.errf("%s.doh.listener: required", p)
+		}
+	}
 	if actions != 1 {
-		v.errf("%s: exactly one of upstream, redirect, respond or honeypot is required", p)
+		v.errf("%s: exactly one of upstream, redirect, respond, honeypot or doh is required", p)
 	}
 	if g := r.GRPC; g != nil {
 		for j, sv := range g.Services {
@@ -1144,6 +1159,35 @@ func (v *validator) metrics(m *Metrics) {
 			v.file("metrics.tls.client_ca_file", t.ClientCAFile)
 		}
 	}
+	if o := m.OTLP; o != nil {
+		u, err := url.Parse(o.Endpoint)
+		schemeOK := u.Scheme == "https" || (u.Scheme == "http" && o.AllowHTTP)
+		if err != nil || u.Host == "" || !schemeOK {
+			v.errf("metrics.otlp.endpoint: must be an https URL (http only with allow_http)")
+		}
+		if o.Interval < Duration(time.Second) || o.Interval > Duration(time.Hour) {
+			v.errf("metrics.otlp.interval: must be between 1s and 1h")
+		}
+		if o.Timeout <= 0 || o.Timeout > o.Interval {
+			v.errf("metrics.otlp.timeout: must be positive and at most interval")
+		}
+		for k, val := range o.Headers {
+			if k == "" || strings.ContainsAny(k, " :\r\n") || strings.ContainsAny(val, "\r\n") {
+				v.errf("metrics.otlp.headers: %q is not a header", k)
+			}
+		}
+		if o.CAFile != "" {
+			v.file("metrics.otlp.ca_file", o.CAFile)
+		}
+		if o.ServiceName == "" || len(o.ServiceName) > 255 {
+			v.errf("metrics.otlp.service_name: must be 1 to 255 characters")
+		}
+		for k := range o.Attributes {
+			if k == "" || len(k) > 255 {
+				v.errf("metrics.otlp.attributes: empty or overlong key")
+			}
+		}
+	}
 	if m.SampleInterval < Duration(1_000_000_000) || m.SampleInterval > Duration(300_000_000_000) {
 		v.errf("metrics.sample_interval: must be between 1s and 5m")
 	}
@@ -1235,6 +1279,12 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	if t.MaxConnections < 1 {
 		v.errf("%s.max_connections: must be positive", p)
 	}
+	if t.QUICIdleTimeout <= 0 || t.QUICIdleTimeout > Duration(time.Hour) {
+		v.errf("%s.quic_idle_timeout: must be positive and at most 1h", p)
+	}
+	if t.QUIC && t.ProxyProtocol {
+		v.errf("%s.quic: the PROXY protocol header cannot be sent on a datagram flow; disable proxy_protocol or quic", p)
+	}
 }
 
 // grpcNameOK accepts protobuf identifiers with dots (package.Service).
@@ -1249,15 +1299,6 @@ func grpcNameOK(s string) bool {
 		}
 	}
 	return true
-}
-
-func hasProtocol(ps []Protocol, p Protocol) bool {
-	for _, x := range ps {
-		if x == p {
-			return true
-		}
-	}
-	return false
 }
 
 // destinationPatternOK accepts a host name, *.suffix pattern, IP address
@@ -1313,6 +1354,9 @@ func (v *validator) ingress(in *Ingress, listeners map[string]*Listener) {
 	if in.Timeout <= 0 || in.Timeout > Duration(5*time.Minute) {
 		v.errf("ingress.timeout: must be positive and at most 5m")
 	}
+	if in.Debounce < Duration(50*time.Millisecond) || in.Debounce > Duration(time.Minute) {
+		v.errf("ingress.debounce: must be between 50ms and 1m")
+	}
 }
 
 func (v *validator) dnsListener(p string, d *DNSListener) {
@@ -1320,9 +1364,12 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 		v.errf("%s.upstreams: at least one resolver is required", p)
 	}
 	for i, u := range d.Upstreams {
-		if host, port, err := net.SplitHostPort(u); err != nil || host == "" || port == "" {
-			v.errf("%s.upstreams[%d]: %q must be host:port", p, i, u)
+		if err := dnsUpstreamOK(u); err != nil {
+			v.errf("%s.upstreams[%d]: %v", p, i, err)
 		}
+	}
+	if d.UpstreamCAFile != "" {
+		v.file(p+".upstream_ca_file", d.UpstreamCAFile)
 	}
 	if d.Timeout <= 0 || d.Timeout > Duration(30*time.Second) {
 		v.errf("%s.timeout: must be positive and at most 30s", p)
@@ -1371,6 +1418,30 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 	if d.MaxInFlight < 1 || d.MaxInFlight > 1_000_000 {
 		v.errf("%s.max_in_flight: must be between 1 and 1000000", p)
 	}
+}
+
+// dnsUpstreamOK mirrors dns.ParseUpstream without importing the package.
+func dnsUpstreamOK(s string) error {
+	switch {
+	case strings.HasPrefix(s, "tls://"):
+		host, port, err := net.SplitHostPort(strings.TrimPrefix(s, "tls://"))
+		if err != nil || host == "" || port == "" {
+			return fmt.Errorf("%q must be tls://host:port", s)
+		}
+	case strings.HasPrefix(s, "https://"):
+		u, err := url.Parse(s)
+		if err != nil || u.Host == "" || u.Path == "" || u.RawQuery != "" || u.User != nil {
+			return fmt.Errorf("%q must be https://host[:port]/path", s)
+		}
+	case strings.Contains(s, "://"):
+		return fmt.Errorf("%q: unknown transport (use host:port, tls:// or https://)", s)
+	default:
+		host, port, err := net.SplitHostPort(s)
+		if err != nil || host == "" || port == "" {
+			return fmt.Errorf("%q must be host:port", s)
+		}
+	}
+	return nil
 }
 
 func (v *validator) forwardListener(p string, f *ForwardListener) {

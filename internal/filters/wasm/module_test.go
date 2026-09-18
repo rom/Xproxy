@@ -65,19 +65,22 @@ func i64c(v int64) []byte { return append([]byte{0x42}, sleb(v)...) }
 func callOp(i int) []byte { return append([]byte{0x10}, uleb(uint64(i))...) }
 
 var (
-	opEnd    = []byte{0x0b}
-	opIf     = []byte{0x04, 0x40}
-	opLoop   = []byte{0x03, 0x40}
-	opBr0    = []byte{0x0c, 0x00}
-	opReturn = []byte{0x0f}
-	opLocal0 = []byte{0x20, 0x00}
-	opGGet0  = []byte{0x23, 0x00}
-	opGSet0  = []byte{0x24, 0x00}
-	opAdd    = []byte{0x6a}
-	opEq     = []byte{0x46}
-	opI64And = []byte{0x83}
-	opWrap   = []byte{0xa7}
-	opDrop   = []byte{0x1a}
+	opEnd       = []byte{0x0b}
+	opIf        = []byte{0x04, 0x40}
+	opLoop      = []byte{0x03, 0x40}
+	opBr0       = []byte{0x0c, 0x00}
+	opReturn    = []byte{0x0f}
+	opLocal0    = []byte{0x20, 0x00}
+	opGGet0     = []byte{0x23, 0x00}
+	opGSet0     = []byte{0x24, 0x00}
+	opAdd       = []byte{0x6a}
+	opEq        = []byte{0x46}
+	opI64And    = []byte{0x83}
+	opWrap      = []byte{0xa7}
+	opDrop      = []byte{0x1a}
+	opI64ShrU   = []byte{0x88}
+	opLocalGet0 = []byte{0x20, 0x00}
+	opLocalSet0 = []byte{0x21, 0x00}
 )
 
 func cat(parts ...[]byte) []byte {
@@ -100,7 +103,8 @@ var lenOf = cat(i64c(0xffffffff), opI64And, opWrap)
 // are returned so tests know them. abi is the version the module
 // reports.
 func testModule(abi int64, withResponse bool) []byte {
-	strs := []string{"x-block", "x-wasm", "1", "wasm_block", "header", "x-hide", "wasm_seen", "x-slow", "hello", "wasm_resp", "x-cfg"}
+	strs := []string{"x-block", "x-wasm", "1", "wasm_block", "header", "x-hide", "wasm_seen", "x-slow", "hello", "wasm_resp", "x-cfg",
+		"x-body", "x-body-seen", "x-swap", "swapped", "x-resp-swap", "resp-swapped", "x-body-state"}
 	off := map[string]int64{}
 	var data []byte
 	for _, s := range strs {
@@ -119,8 +123,8 @@ func testModule(abi int64, withResponse bool) []byte {
 		funcType([]byte{i32, i32, i32, i32}, nil),      // 5: log_attr
 	})
 	imp := func(name string, typ byte) []byte { return cat(str("xproxy"), str(name), []byte{0x00, typ}) }
-	imports := vec([][]byte{imp("get", 2), imp("set_header", 3), imp("remove_header", 4), imp("deny", 3), imp("log", 4), imp("log_attr", 5)})
-	// Defined functions: 6 abi_version(t0), 7 alloc(t1), 8 on_request(t0), 9 on_response(t1)
+	imports := vec([][]byte{imp("get", 2), imp("set_header", 3), imp("remove_header", 4), imp("deny", 3), imp("log", 4), imp("log_attr", 5), imp("set_body", 4)})
+	// Defined functions: 7 abi_version(t0), 8 alloc(t1), 9 on_request(t0), 10 on_response(t1)
 	funcs := [][]byte{{0}, {1}, {0}}
 	if withResponse {
 		funcs = append(funcs, []byte{1})
@@ -130,18 +134,34 @@ func testModule(abi int64, withResponse bool) []byte {
 	globals := vec([][]byte{cat([]byte{i32, 0x01}, i32c(4096), opEnd)})
 	exps := [][]byte{
 		cat(str("memory"), []byte{0x02, 0x00}),
-		cat(str("xproxy_abi_version"), []byte{0x00}, uleb(6)),
-		cat(str("xproxy_alloc"), []byte{0x00}, uleb(7)),
-		cat(str("xproxy_on_request"), []byte{0x00}, uleb(8)),
+		cat(str("xproxy_abi_version"), []byte{0x00}, uleb(7)),
+		cat(str("xproxy_alloc"), []byte{0x00}, uleb(8)),
+		cat(str("xproxy_on_request"), []byte{0x00}, uleb(9)),
 	}
 	if withResponse {
-		exps = append(exps, cat(str("xproxy_on_response"), []byte{0x00}, uleb(9)))
+		exps = append(exps, cat(str("xproxy_on_response"), []byte{0x00}, uleb(10)))
 	}
 	exports := vec(exps)
 
 	abiVersion := body(uleb(0), cat(i32c(abi), opEnd))
 	alloc := body(uleb(0), cat(opGGet0, opGGet0, opLocal0, opAdd, opGSet0, opEnd))
-	onRequest := body(uleb(0), cat(
+	onRequest := body(cat(uleb(1), uleb(1), []byte{i64}), cat( // one i64 local
+		// x-body header: r = get(request body); if len(r) != 0 { set_body(0, ptr(r), len(r)); set_header("x-body-seen", "1") }
+		// and publish the body state in a header either way
+		i32c(getRequestHeader), o("x-body"), l("x-body"), callOp(0), lenOf,
+		opIf,
+		i32c(getRequestBody), i32c(0), i32c(0), callOp(0), opLocalSet0,
+		opLocalGet0, lenOf,
+		opIf,
+		i32c(0), opLocalGet0, i64c(32), opI64ShrU, opWrap, opLocalGet0, lenOf, callOp(6),
+		i32c(0), o("x-body-seen"), l("x-body-seen"), o("1"), l("1"), callOp(1),
+		opEnd,
+		i32c(getBodyState), i32c(0), i32c(0), callOp(0), opLocalSet0,
+		i32c(0), o("x-body-state"), l("x-body-state"), opLocalGet0, i64c(32), opI64ShrU, opWrap, opLocalGet0, lenOf, callOp(1),
+		opEnd,
+		// x-swap header: set_body(0, "swapped")
+		i32c(getRequestHeader), o("x-swap"), l("x-swap"), callOp(0), lenOf,
+		opIf, i32c(0), o("swapped"), l("swapped"), callOp(6), opEnd,
 		// x-block header present -> deny(451, "wasm_block", "header"); return 1
 		i32c(getRequestHeader), o("x-block"), l("x-block"), callOp(0), lenOf,
 		opIf, i32c(451), o("wasm_block"), l("wasm_block"), o("header"), l("header"), callOp(3), i32c(1), opReturn, opEnd,
@@ -158,6 +178,9 @@ func testModule(abi int64, withResponse bool) []byte {
 		i32c(0), opEnd,
 	))
 	onResponse := body(uleb(0), cat(
+		// x-resp-swap request header: set_body(1, "resp-swapped")
+		i32c(getRequestHeader), o("x-resp-swap"), l("x-resp-swap"), callOp(0), lenOf,
+		opIf, i32c(1), o("resp-swapped"), l("resp-swapped"), callOp(6), opEnd,
 		// x-hide response header present -> remove it
 		i32c(getResponseHeader), o("x-hide"), l("x-hide"), callOp(0), lenOf,
 		opIf, i32c(1), o("x-hide"), l("x-hide"), callOp(2), opEnd,

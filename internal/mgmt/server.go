@@ -26,6 +26,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/logging"
+	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/version"
 )
@@ -40,6 +41,8 @@ type Actions struct {
 	ReopenLogs func() error
 	// Ingress reports the ingress controller status, or nil when off.
 	Ingress func() any
+	// OTLP reports the OpenTelemetry exporter status, or nil when off.
+	OTLP func() metrics.OTLPStatus
 }
 
 // Server serves the management API.
@@ -87,6 +90,13 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 			defer cancel()
 			return m.Renew(ctx)
 		})(w, r)
+	})
+	mux.HandleFunc("GET /v1/otlp", func(w http.ResponseWriter, _ *http.Request) {
+		if s.actions.OTLP == nil {
+			writeJSON(w, 200, map[string]bool{"enabled": false})
+			return
+		}
+		writeJSON(w, 200, s.actions.OTLP())
 	})
 	mux.HandleFunc("GET /v1/ingress", func(w http.ResponseWriter, _ *http.Request) {
 		if s.actions.Ingress == nil {

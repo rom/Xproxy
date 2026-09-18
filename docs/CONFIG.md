@@ -13,6 +13,7 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `version` | int | required | Schema version. Must be `1`. |
+| `includes` | list of globs | `[]` | Absolute paths or globs of fragment files whose `upstreams`, `routes`, `rate_limits` and `filters` are appended in lexical order of path; a fragment may contain nothing else, names must not repeat, a pattern that matches no file is an error, fragments must not be world writable; read at every load and reload |
 | `server` | object | | Listeners and global limits |
 | `management` | object | | Control socket |
 | `logging` | object | | Log streams |
@@ -61,15 +62,22 @@ accept as on every listener.
 | `default` | upstream | none | Upstream for unmatched and non-TLS connections; without it they are closed and logged as `tcp_no_route` (a ban category) |
 | `idle_timeout` | duration | `10m` | Close after no bytes in either direction; at most 24h |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the upstream |
-| `max_connections` | int | `10000` | Open connections on this listener |
+| `max_connections` | int | `10000` | Open connections on this listener; also bounds QUIC flows |
+| `quic` | bool | `false` | Also relay QUIC: UDP on the same address, the ClientHello read from the version 1 Initial packet (decrypted with the Initial keys every observer can derive), the flow routed by server name to the same upstreams and every later datagram of that client address forwarded unread; not with `proxy_protocol` |
+| `quic_idle_timeout` | duration | `30s` | End a QUIC flow with no datagrams either way; at most 1h |
 
 Endpoints are picked with the upstream's balancer (hash on the client
 address for `hash`), dial failures try the next endpoint and feed outlier
 ejection; active health checks run as configured on the upstream. Every
 connection writes one `tcp` line to the access log with the name,
-upstream, endpoint, bytes and duration. Counters: `tcp_connections`,
-`tcp_rejected`, `tcp_errors`, `tcp_bytes_in`, `tcp_bytes_out`;
-`xproxy_tcp_*` metrics. Changing a tcp listener needs a restart.
+upstream, endpoint, bytes and duration (`proto: quic` for QUIC flows).
+Counters: `tcp_connections`, `tcp_rejected`, `tcp_errors`,
+`tcp_bytes_in`, `tcp_bytes_out`, `quic_flows`, `quic_rejected`,
+`quic_flows_open`; `xproxy_tcp_*` and `xproxy_quic_*` metrics. QUIC
+flows are keyed by client address, so a client that migrates to a new
+address starts a new flow (its first packet is not an Initial and is
+dropped; the client falls back or retries); QUIC versions other than 1
+are dropped. Changing a tcp listener needs a restart.
 
 ### server.listeners[].forward (kind: forward)
 
@@ -87,8 +95,11 @@ check is the one dialled, so a name cannot rebind between check and
 connect. Refusals answer 403, are logged as security events
 (`forward_port`, `forward_private`, `forward_deny`, `forward_not_allowed`,
 `forward_resolve`) and count towards the `forward_denied` ban reason.
-A forward listener may terminate TLS from the client (`tls`) and speaks
-HTTP/1.1 only; it takes no `tcp` or `redirect_to_https`. Bans, the
+A forward listener may terminate TLS from the client (`tls`), and with
+TLS may list `h2` so clients tunnel `CONNECT` over an HTTP/2 stream
+(the stream carries the tunnel, one per request, ending when the
+destination closes or the client resets); it takes no `tcp`,
+`redirect_to_https`, `h3` or `h2c`. Bans, the
 connection limits and the header timeouts apply as on every listener.
 
 | Key | Type | Default | Description |
@@ -132,7 +143,8 @@ cache is kept); the address needs a restart.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `upstreams` | list of host:port | required | Resolvers tried in turn, rotating the first choice per query |
+| `upstreams` | list | required | Resolvers tried in turn, rotating the first choice per query: `host:port` (UDP, TCP on truncation), `tls://host:port` (DNS over TLS, connections reused), `https://host[:port]/path` (DNS over HTTPS, POST `application/dns-message` with id 0) |
+| `upstream_ca_file` | path | system pool | Pins the CA of `tls://` and `https://` upstreams; the host in the upstream string is the name verified |
 | `timeout` | duration | `2s` | One upstream attempt; at most 30s |
 | `allow_clients` | list of CIDR | `[]` (any) | Other clients get REFUSED |
 | `block` | list | `[]` | `name` blocks the name and its subdomains, `*.suffix` subdomains only, `=name` that name only |
@@ -367,6 +379,7 @@ wins); then configuration order.
 | `honeypot` | object | | Decoy action; see `routes[].honeypot` |
 | `mirror` | object | | Copy requests to a second upstream; see `routes[].mirror` |
 | `grpc` | `{services, methods}` | | Restrict the route to gRPC requests; see `routes[].grpc` |
+| `doh` | `{listener}` | | DNS over HTTPS action; see `routes[].doh` |
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
@@ -383,15 +396,18 @@ wins); then configuration order.
 
 Kubernetes ingress controller mode. When enabled, the proxy reads the
 Ingress, Service, EndpointSlice and TLS Secret resources of one ingress
-class from the API server with the pod's service account (no client
-library), translates them and appends the result to this file's
-routes, upstreams and certificates: the running configuration is the
-file plus the cluster. The file's own routes and upstreams are kept
-and a name collision is an error. Resources are polled every `resync`
-and a change reloads the proxy like a SIGHUP; a SIGHUP or `xproxyctl
-reload` re-reads the file and merges the latest snapshot. The API
-server being unreachable at start is a warning, not a failure: the
-file configuration serves until the first successful sync.
+class, and the Gateway API resources (Gateway, HTTPRoute) of the same
+class when the cluster has them, from the API server with the pod's
+service account (no client library), translates them and appends the
+result to this file's routes, upstreams and certificates: the running
+configuration is the file plus the cluster. The file's own routes and
+upstreams are kept and a name collision is an error. Watch streams on
+the resources trigger a sync within `debounce` of a change, with a
+full poll every `resync` as the fallback; a change reloads the proxy
+like a SIGHUP, and a SIGHUP or `xproxyctl reload` re-reads the file
+and merges the latest snapshot. The API server being unreachable at
+start is a warning, not a failure: the file configuration serves until
+the first successful sync.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -404,8 +420,10 @@ file configuration serves until the first successful sync.
 | `namespaces` | list | `[]` (all) | Namespaces read |
 | `listener` | name | none | TLS `http` listener that receives certificates from Ingress TLS secrets; without it TLS secrets are ignored |
 | `cert_dir` | path | `/var/lib/xproxy/ingress` | Certificate files written `0600` per secret (`namespace--name.crt/.key`); files of secrets no longer referenced are removed |
-| `resync` | duration | `30s` | Polling interval; 1s to 1h |
+| `resync` | duration | `30s` | Full poll interval, 1s to 1h; with watches the fallback, without them the propagation delay |
 | `timeout` | duration | `10s` | One API request |
+| `watch` | bool | `true` | Open watch streams on Ingresses, Services, EndpointSlices, Secrets, Gateways and HTTPRoutes; streams reconnect with backoff, a resource the cluster does not serve is retried every five minutes |
+| `debounce` | duration | `500ms` | A burst of watch events becomes one sync; 50ms to 1m |
 
 Translation: every `rules[].http.paths[]` entry becomes a route named
 `k8s-<namespace>-<ingress>-<n>` with the rule's host, the path as a
@@ -421,9 +439,27 @@ with the prefix `xproxy.sysctl.se/` set route options: `websocket`
 (`"true"`), `priority-class`, `rate-limits` and `filters` (comma
 separated names from this file), `timeout`, `max-body-bytes`,
 `strip-prefix` (`"true"` strips the matched path), `host-header`.
-Names over 64 bytes are shortened with a digest. `GET /v1/ingress` and
-`xproxyctl ingress` show syncs, errors, counts and the translation
-warnings. `deploy/kubernetes/xproxy.yaml` is a complete deployment
+Names over 64 bytes are shortened with a digest.
+
+Gateway API: Gateways whose `gatewayClassName` is `class` and the
+HTTPRoutes whose `parentRefs` name them translate as well. Route
+hostnames come from the HTTPRoute or, when it has none, from the
+parent listeners' hostnames (wildcards allowed). Each rule and match
+becomes a route `k8s-gw-<namespace>-<httproute>-<rule>-<match>`:
+`PathPrefix` and `Exact` paths (priority 10 for exact), a `method`
+match; header matches are not supported and are ignored with a
+warning, as are `RegularExpression` paths. Filters: `RequestHeaderModifier`
+and `ResponseHeaderModifier` become header operations, `URLRewrite`
+with `ReplaceFullPath` becomes `rewrite_path`, with `ReplacePrefixMatch: /`
+`strip_prefix`, and a `hostname` `host_header`; `RequestRedirect` with a
+`hostname` becomes a redirect action (a redirect without a hostname is
+not supported). A rule with one backend uses that service; several
+`backendRefs` become one `weighted` upstream over all their endpoints
+with the reference weights (weight 0 excluded). Listener
+`certificateRefs` install the secrets like Ingress TLS. `GET /v1/ingress`
+and `xproxyctl ingress` show syncs, errors, watch streams and events,
+counts (Ingresses, Gateways, HTTPRoutes, routes, upstreams,
+certificates) and the translation warnings. `deploy/kubernetes/xproxy.yaml` is a complete deployment
 with RBAC, an IngressClass and a ConfigMap; `deploy/kubernetes/Containerfile`
 builds the image.
 
@@ -443,6 +479,22 @@ endpoint for scrapers and sizes the series buffer.
 | `endpoint_series` | bool | `true` | Expose five series per upstream endpoint (`xproxy_upstream_endpoint_*`). About 1 KiB per endpoint per scrape; turn off above a few thousand endpoints and rely on the per-pool `xproxy_upstream_endpoints_healthy` |
 | `sample_interval` | duration | `10s` | Series sampling period; 1s to 5m |
 | `retention` | duration | `1h` | Series kept in memory; at most 100000 points |
+| `otlp.endpoint` | URL | none | Enables the OpenTelemetry push exporter: the collector's metrics URL (`https://otel.example.com:4318/v1/metrics`); `http://` only with `otlp.allow_http` |
+| `otlp.allow_http` | bool | `false` | |
+| `otlp.interval` | duration | `30s` | Push period; 1s to 1h. The last push happens at shutdown |
+| `otlp.timeout` | duration | `10s` | One push; at most `interval` |
+| `otlp.headers` | map | `{}` | Request headers, for example `Authorization` |
+| `otlp.ca_file` | path | system pool | Pins the collector's CA |
+| `otlp.service_name` | string | `xproxy` | `service.name` resource attribute; `service.version` and `host.name` are added |
+| `otlp.attributes` | map | `{}` | Extra resource attributes |
+| `otlp.compress` | bool | `true` | gzip the request body |
+
+The OTLP exporter sends the same families as OTLP/HTTP with JSON
+encoding: counters as cumulative monotonic sums since process start,
+gauges as gauges, histograms as cumulative explicit bucket histograms;
+labels become data point attributes. `GET /v1/otlp` and `xproxyctl
+otlp` show pushes, failures, the last error and the size of the last
+request.
 
 Exposed families: `xproxy_requests_total`, `xproxy_responses_total{class}`,
 `xproxy_denied_total{reason}`, `xproxy_bytes_in_total`,
@@ -583,6 +635,25 @@ The access log carries `mirror: sent`, `dropped` or `body_too_large`.
 Counters: `mirror_sent`, `mirror_dropped`, `mirror_skipped`,
 `mirror_failed`; metric `xproxy_mirror_total{outcome}`. Mirror
 responses appear in the error log at debug level with their status.
+
+### routes[].doh
+
+A `doh` route answers DNS over HTTPS (RFC 8484) for clients: `GET`
+with the query in the `dns` parameter (base64url without padding) or
+`POST` with an `application/dns-message` body. The query goes through
+the named `kind: dns` listener's policy and cache (bans, client allow
+list, rate limit, block list) as if it had arrived over UDP, and the
+answer is returned as `application/dns-message` with `Cache-Control:
+max-age` set to the smallest TTL in it. A query the policy drops
+answers 403; bad requests 400, a wrong content type 415, other methods
+405. The route's own admission pipeline (rate limits, ACLs, WAF) applies
+first, so a DoH endpoint can be limited like any other route.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `listener` | name | required | A `kind: dns` listener whose policy and cache answer |
+
+The access log line carries `dns_rcode`.
 
 ### routes[].grpc
 
@@ -805,6 +876,8 @@ redirects are not security events; failed callbacks are, with reason
 | `redirect_path` | path | `/oauth2/callback` | Registered at the provider as `external_url` + path |
 | `logout_path` | path | `/oauth2/logout` | Clears the session and sends the browser to the provider's end session endpoint (when it has one) with `logout_redirect` as the return, else to `logout_redirect` |
 | `logout_redirect` | path | `/` | |
+| `frontchannel_logout_path` | path | `/oauth2/frontchannel-logout` | OpenID Connect Front-Channel Logout endpoint: register `external_url` + path as the `frontchannel_logout_uri` at the provider; a `GET` with `sid` (and `iss`, checked against `issuer`) revokes that provider session so every session carrying it stops working, and clears the cookie when present |
+| `revoked_max` | int | `65536` | Bound of the revoked session id index; entries expire with the sessions they end, and over the bound the soonest to expire is dropped |
 | `external_url` | URL | derived | `scheme://host` the browser reaches the proxy on; derived from the request (`Host`, TLS or `X-Forwarded-Proto`) when unset |
 | `cookie_name` | token | `XPOIDC` | The state cookie is `<cookie_name>_state`, ten minutes |
 | `cookie_domain` | string | host only | |
@@ -817,7 +890,11 @@ redirects are not security events; failed callbacks are, with reason
 | `allow_http` | bool | `false` | Permit a plain `http://` issuer and external URL |
 
 The access log carries `oidc_user` for requests with a session and
-`flow: <name>:login`, `login_complete` or `logout` for the redirects.
+`flow: <name>:login`, `login_complete`, `logout` or
+`frontchannel_logout` for the flow steps. Sessions record the ID
+token's `sid` claim when the provider sends one; a logout at the proxy
+revokes it as well, so other browsers sharing that provider session
+end too.
 
 ### Kind `wasm`
 
@@ -836,6 +913,7 @@ module or a wrong ABI version is a load error.
 | `memory_limit_pages` | int | `256` | 64 KiB pages per instance (16 MiB); 1 to 16384 |
 | `instances` | int | `16` | Pooled instances; more are created on demand and dropped after use |
 | `on_error` | `deny`, `allow` | `deny` | What a trap, timeout or bad result means: 500 with the filter name as reason, or continue with `wasm_error: allowed` in the access log |
+| `body_limit` | int | `65536` | Bytes of a request or response body a module may read or set; a larger body is not exposed and streams through; 0 disables body access; at most 16 MiB |
 
 Denies carry the status, reason and detail the module set with
 `deny`; `log_attr` values appear in the access log as `wasm_<key>`.

@@ -2,8 +2,12 @@ package dns
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/binary"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -14,6 +18,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/limits"
+	"github.com/rom/xproxy/internal/testutil"
 )
 
 // fakeUpstream answers A queries under example.test with 10.0.0.x, TTL
@@ -509,5 +514,124 @@ func TestResolverNoUpstream(t *testing.T) {
 	r = NewResolver([]string{"127.0.0.1:1"}, 200*time.Millisecond)
 	if _, err := r.Exchange(context.Background(), q, qEnd, qu, true); err == nil || r.Failures.Load() != 1 {
 		t.Fatalf("dead upstream: %v", err)
+	}
+}
+
+// serveDoT answers DNS over TLS with the fake upstream's logic.
+func serveDoT(t *testing.T, up *fakeUpstream, cert, key string) string {
+	t.Helper()
+	pair, err := tls.LoadX509KeyPair(cert, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = c.Close() }()
+				for {
+					q, err := ReadTCP(c, MaxMessage)
+					if err != nil {
+						return
+					}
+					up.tcpQ.Add(1)
+					if resp := up.answer(q, true); resp != nil {
+						_ = WriteTCP(c, resp)
+					}
+				}
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func TestEncryptedUpstreams(t *testing.T) {
+	up := newFakeUpstream(t)
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	cert, key := ca.Issue(t, dir, "dns.test")
+	dot := serveDoT(t, up, cert, key)
+	var dohHits atomic.Int64
+	doh := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dohHits.Add(1)
+		if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/dns-message" {
+			http.Error(w, "bad", http.StatusBadRequest)
+			return
+		}
+		q, _ := io.ReadAll(r.Body)
+		if h, _ := ParseHeader(q); h.ID != 0 {
+			http.Error(w, "id must be 0", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(up.answer(q, true))
+	}))
+	pair, _ := tls.LoadX509KeyPair(cert, key)
+	doh.TLS = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
+	doh.StartTLS()
+	t.Cleanup(doh.Close)
+	_, dotPort, _ := net.SplitHostPort(dot)
+	_, dohPort, _ := net.SplitHostPort(strings.TrimPrefix(doh.URL, "https://"))
+	// Name resolution of dns.test must reach loopback: dial by address
+	// but verify the name, which the resolver does through ServerName.
+	r, err := NewResolverTLS([]string{"tls://127.0.0.1:" + dotPort, "https://127.0.0.1:" + dohPort + "/dns-query"}, 2*time.Second, ca.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The certificate names dns.test, not 127.0.0.1: pin the name by
+	// rewriting the parsed hosts (what an operator gets from a resolvable
+	// upstream name).
+	for _, s := range r.servers {
+		s.host = "dns.test"
+	}
+	q := mustQuery(t, 1, "a.example.test", TypeA)
+	qu, qEnd, _ := ParseQuestion(q)
+	for i := 0; i < 4; i++ { // round robin over both transports
+		resp, err := r.Exchange(context.Background(), q, qEnd, qu, false)
+		if err != nil {
+			t.Fatalf("exchange %d: %v", i, err)
+		}
+		if h, rq, ip := answerIP(t, resp); h.ID != 1 || rq != qu || len(ip) != 4 {
+			t.Fatalf("answer %d: %+v %+v %v", i, h, rq, ip)
+		}
+	}
+	if up.tcpQ.Load() < 2 || dohHits.Load() < 2 {
+		t.Fatalf("transports used: dot %d doh %d", up.tcpQ.Load(), dohHits.Load())
+	}
+	if len(r.servers[0].idle) != 1 {
+		t.Fatalf("dot connection not reused: %d idle", len(r.servers[0].idle))
+	}
+	if got := r.Servers(); len(got) != 2 || !strings.HasPrefix(got[0], "tls://") {
+		t.Fatalf("servers: %v", got)
+	}
+	r.Close()
+	if len(r.servers[0].idle) != 0 {
+		t.Fatal("close left idle connections")
+	}
+	// The wrong CA refuses both transports.
+	other := testutil.WriteCA(t, t.TempDir())
+	bad, err := NewResolverTLS([]string{"tls://127.0.0.1:" + dotPort}, time.Second, other.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad.servers[0].host = "dns.test"
+	if _, err := bad.Exchange(context.Background(), q, qEnd, qu, false); err == nil {
+		t.Fatal("wrong CA accepted")
+	}
+	for _, s := range []string{"ftp://x:53", "tls://nohost", "https://h.test", "https://h.test/q?x=1", "1.2.3.4"} {
+		if _, err := ParseUpstream(s); err == nil {
+			t.Errorf("%q accepted", s)
+		}
+	}
+	if _, err := NewResolverTLS([]string{"9.9.9.9:53"}, time.Second, "/nonexistent.pem"); err == nil {
+		t.Fatal("missing ca accepted")
 	}
 }

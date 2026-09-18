@@ -36,6 +36,13 @@ func (s *Server) Series() *metrics.Series { return s.sampler.Series() }
 // WriteMetrics writes the Prometheus exposition of the whole process.
 func (s *Server) WriteMetrics(w io.Writer) error {
 	e := metrics.NewEncoder(w)
+	s.Collect(e)
+	return e.Flush()
+}
+
+// Collect runs one collection of every metric family into c (the
+// Prometheus encoder or the OTLP exporter).
+func (s *Server) Collect(e metrics.Collector) {
 	sn := s.Stats()
 	rt := s.rt.Load()
 	type L = metrics.Labels
@@ -129,6 +136,9 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 	e.Counter("xproxy_tcp_errors_total", "tcp listener connections that found no reachable endpoint.", nil, float64(sn.TCPErrors))
 	e.Counter("xproxy_tcp_bytes_total", "Bytes relayed by tcp listeners.", L{"direction": "in"}, float64(sn.TCPBytesIn))
 	e.Counter("xproxy_tcp_bytes_total", "Bytes relayed by tcp listeners.", L{"direction": "out"}, float64(sn.TCPBytesOut))
+	e.Counter("xproxy_quic_flows_total", "QUIC flows relayed by tcp listeners.", nil, float64(sn.QUICFlows))
+	e.Counter("xproxy_quic_rejected_total", "QUIC flows without a route or over the listener bound.", nil, float64(sn.QUICRejected))
+	e.Gauge("xproxy_quic_flows_open", "Open QUIC flows.", nil, float64(sn.QUICFlowsOpen))
 	e.Counter("xproxy_honeypot_hits_total", "Requests answered by a honeypot route.", nil, float64(sn.HoneypotHits))
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
 	for code, n := range sn.GRPCStatus {
@@ -229,7 +239,6 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 			}
 		}
 	}
-	return e.Flush()
 }
 
 var routeClasses = [...]string{"2xx", "3xx", "4xx", "5xx", "denied"}

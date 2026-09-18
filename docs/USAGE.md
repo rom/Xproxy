@@ -60,6 +60,10 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `filters` | Middleware API version, registered kinds, configured filters with routes and deny counts |
 | `geoip` | Country database kind, path, build date, lookup and unknown counters |
 | `cache` | Cache entries, bytes and counters; `cache purge [HOST [PATH-PREFIX]]` removes entries |
+| `honeypot` | Clients marked by honeypot routes and the decoy names; `honeypot forget IP` removes a mark |
+| `dns` | DNS listener counters (queries, cache, blocked, refused, dropped, upstream failures); `dns purge` empties the caches |
+| `ingress` | Kubernetes ingress controller status: syncs, watches, counts, warnings |
+| `otlp` | OpenTelemetry exporter status: pushes, failures, last error |
 | `htpasswd FILE NAME` | Add or replace a `basic_auth` user; the password is read from stdin |
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
@@ -99,6 +103,51 @@ routes:
   - name: all
     upstream: app
 ```
+
+### Pushing metrics to an OpenTelemetry collector
+
+```yaml
+metrics:
+  otlp:
+    endpoint: https://otel.example.internal:4318/v1/metrics
+    interval: 15s
+    headers: {Authorization: "Bearer replace-me"}
+    ca_file: /etc/xproxy/otel-ca.pem
+    service_name: edge
+    attributes: {deployment.environment: production}
+```
+
+Every family in `/metrics` reaches the collector as OTLP with the same
+names, so dashboards built on the Prometheus exposition carry over;
+`xproxyctl otlp` shows whether pushes succeed.
+
+### Splitting the configuration into fragments
+
+```yaml
+# /etc/xproxy/xproxy.yaml
+version: 1
+includes: ["/etc/xproxy/conf.d/*.yaml"]
+server: {listeners: [{name: https, address: ":443", tls: {certificates: [...]}}]}
+```
+
+```yaml
+# /etc/xproxy/conf.d/10-shop.yaml
+upstreams:
+  - name: shop
+    endpoints: [{address: 10.0.1.10:8080}]
+routes:
+  - name: shop
+    hosts: [shop.example.com]
+    upstream: shop
+```
+
+Fragments hold only `upstreams`, `routes`, `rate_limits` and `filters`;
+everything that controls the process (listeners, limits, logging,
+management) stays in the main file, so a fragment can add a site but
+never weaken a defence. Files are appended in lexical order, names must
+be unique across all of them, and `xproxyctl validate` checks the whole
+set. A reload re-reads every fragment.
+
 
 ### TLS edge with HTTP redirect
 
@@ -429,7 +478,10 @@ routes:
 ```
 
 Register `https://intranet.example.com/oauth2/callback` as the redirect
-URI at the provider. The first visit bounces through the provider and
+URI at the provider, and
+`https://intranet.example.com/oauth2/frontchannel-logout` as the front
+channel logout URI so that a logout at the provider (or at another
+application) ends the session here too. The first visit bounces through the provider and
 comes back to the page that was asked for; after that the browser
 carries an encrypted cookie and the application receives the user in
 `X-Remote-User`, never a cookie it could misuse. `/oauth2/logout` ends
@@ -499,7 +551,7 @@ server:
           - {sni: [mail.example.com, "*.mail.example.com"], upstream: mail}
           - {sni: [legacy.example.com], upstream: legacy}
         default: legacy           # non-TLS and unknown names
-        proxy_protocol: true      # the upstream sees the client address
+        quic: true                # also relay HTTP/3 (UDP 8443) by server name
 upstreams:
   - name: mail
     health_check: {path: /healthz}     # for https upstreams checks still use HTTP
@@ -510,7 +562,11 @@ upstreams:
 
 The upstream keeps its own certificates and the WAF does not see the
 traffic (it is encrypted end to end); use an `http` listener with TLS
-termination where inspection is wanted.
+termination where inspection is wanted. With `quic: true` the same
+routes relay QUIC (HTTP/3) datagrams: the server name is read from the
+client's Initial packet and every later datagram of that client goes
+to the chosen endpoint. `proxy_protocol` applies to TCP connections
+only and cannot be combined with `quic`.
 
 ### Kubernetes ingress controller
 
@@ -547,11 +603,42 @@ spec:
             backend: {service: {name: api, port: {name: http}}}
 ```
 
-The proxy pods read Ingress resources of class `xproxy` with their
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata: {name: edge, namespace: infra}
+spec:
+  gatewayClassName: xproxy
+  listeners:
+    - name: https
+      hostname: "*.example.com"
+      port: 443
+      protocol: HTTPS
+      tls: {certificateRefs: [{name: wildcard-tls}]}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: shop, namespace: shop}
+spec:
+  parentRefs: [{name: edge, namespace: infra}]
+  hostnames: [shop.example.com]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /api}}]
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier: {set: [{name: X-Tenant, value: shop}]}
+      backendRefs:
+        - {name: api-v1, port: 80, weight: 90}
+        - {name: api-v2, port: 80, weight: 10}
+```
+
+The proxy pods read Ingress resources of class `xproxy`, and Gateway
+API resources of the same class where the cluster has them, with their
 service account, turn them into routes and upstreams (pod addresses
-from EndpointSlices, so traffic goes to pods directly), install TLS
-secrets on the `https` listener and reload within `resync` of a
-change. Everything else in the ConfigMap's `xproxy.yaml` (bans, rate
+from EndpointSlices, so traffic goes to pods directly; weighted
+backends become a weighted pool), install TLS secrets on the `https`
+listener and reload within a second of a change through watch
+streams, with a full poll every `resync` as the fallback. Everything else in the ConfigMap's `xproxy.yaml` (bans, rate
 limits, filters, WAF) applies to the generated routes through the
 annotations. `xproxyctl ingress` in a pod shows the controller state.
 
@@ -577,11 +664,35 @@ bans:
     - {name: dns-abuse, reasons: [dns_blocked], threshold: 500, window: 10m, duration: 1h}
 ```
 
+```yaml
+# Encrypted upstreams and DNS over HTTPS for clients
+server:
+  listeners:
+    - name: resolver
+      address: "127.0.0.1:53"
+      kind: dns
+      dns:
+        upstreams: ["tls://dns.quad9.net:853", "https://dns.quad9.net/dns-query"]
+        upstream_ca_file: /etc/pki/tls/certs/ca-bundle.crt
+    - name: https
+      address: ":443"
+      tls: {certificates: [{cert_file: /etc/xproxy/dns.pem, key_file: /etc/xproxy/dns.key}]}
+routes:
+  - name: doh
+    hosts: [dns.example.com]
+    paths: [/dns-query]
+    doh: {listener: resolver}
+    rate_limits: [doh-clients]
+```
+
 Clients on the internal network resolve through the proxy, which
 answers repeated questions from its cache, replaces blocked names with
 the sinkhole address, refuses everyone else, drops floods per client
 and forwards the rest to the upstream resolvers with a fresh
-transaction id and source port per query. `xproxyctl dns` shows the
+transaction id and source port per query, or over TLS or HTTPS with
+reused connections when the upstream string says so. Browsers and
+phones can use the `doh` route as their DNS over HTTPS resolver, with
+the same block list and cache. `xproxyctl dns` shows the
 counters; `log_queries: true` writes every question to the access log
 when an investigation needs it.
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rom/xproxy/internal/filter"
 )
@@ -112,5 +113,21 @@ func TestSealOpen(t *testing.T) {
 	}
 	if sanitize("ok\x01"+strings.Repeat("x", 100)) != "ok?"+strings.Repeat("x", 61) {
 		t.Fatal("sanitize")
+	}
+}
+
+func TestRevocation(t *testing.T) {
+	f := &oidcFilter{cfg: &Config{RevokedMax: 3, ttl: time.Hour}, revoked: map[string]time.Time{}}
+	now := time.Now()
+	f.revoke("a", now.Add(time.Hour))
+	f.revoke("b", now.Add(-time.Second)) // already expired
+	if !f.isRevoked("a") || f.isRevoked("b") || f.isRevoked("") || f.isRevoked("zzz") {
+		t.Fatal("membership")
+	}
+	f.revoke("c", now.Add(2*time.Hour))
+	f.revoke("d", now.Add(3*time.Hour))
+	f.revoke("e", now.Add(4*time.Hour)) // over the bound: the soonest to expire (a) goes
+	if f.revokedCount() != 3 || f.isRevoked("a") || !f.isRevoked("e") {
+		t.Fatalf("bound: %d", f.revokedCount())
 	}
 }
