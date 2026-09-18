@@ -56,6 +56,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   application fallback, `Cache-Control`, dot file refusal, a size
   bound, weak `ETag`s, ranges and conditional requests;
   `static_served`, `static_not_found`, `xproxy_static_responses_total`.
+- Response compression: a `compression` section gzips eligible
+  responses of every kind the proxy writes (proxied, cached, static,
+  respond) with a level, a size floor, a media type list and a per
+  route `compress` override; `Vary`, weak `ETag`s, pre-encoded bodies,
+  ranges and `no-transform` handled; `encoding` in the access log,
+  `compressed` and `compressed_raw_bytes` counters and metrics.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

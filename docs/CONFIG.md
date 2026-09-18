@@ -21,6 +21,7 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `rate_limits` | list | `[]` | Named rate limit policies |
 | `upstreams` | list | `[]` | Named endpoint pools |
 | `routes` | list | `[]` | Request matching and actions |
+| `compression` | object | none | gzip of eligible responses; see `compression` |
 
 ## server
 
@@ -381,6 +382,7 @@ wins); then configuration order.
 | `grpc` | `{services, methods}` | | Restrict the route to gRPC requests; see `routes[].grpc` |
 | `doh` | `{listener}` | | DNS over HTTPS action; see `routes[].doh` |
 | `static` | object | | Serve files from a directory; see `routes[].static` |
+| `compress` | bool | follows `compression` | `false` leaves this route's responses as they are; `true` needs an enabled `compression` section |
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
@@ -990,6 +992,47 @@ every TLS request is logged as `ja4`.
 
 A list of filter names, run in the listed order within each stage. A
 route may combine them with `jwt`, `waf` and `icap`.
+
+## compression
+
+gzip for the responses the proxy writes: proxied, cached, static and
+`respond` bodies alike. The decision is made per response when its
+header is committed: the client must list `gzip` (or `*`) in
+`Accept-Encoding` with a non-zero quality, the request must not be
+`HEAD`, an upgrade or gRPC, the status must carry a body (not 1xx, 204,
+206, 304), the response must carry no `Content-Encoding` or
+`Content-Range`, no `Cache-Control: no-transform`, and a media type from
+`types`. A known `Content-Length` below `min_bytes` passes as it is;
+without a known length the body is held up to `min_bytes` before
+deciding, and a flush (a streamed response, which is how proxied bodies
+arrive) decides at once for compression when the type matches.
+Compressed responses lose `Content-Length`, gain `Content-Encoding:
+gzip`, and a strong `ETag` becomes weak; every response of an eligible
+type gains `Vary: Accept-Encoding` so caches keep the variants apart.
+Bodies the upstream already encoded pass through untouched. Only gzip
+is offered (the standard library has no Brotli); a client that prefers
+Brotli still receives gzip when it accepts it. The access log has
+`encoding: gzip`; `compressed` and `compressed_raw_bytes` count.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Switch for the section |
+| `level` | int | `5` | gzip level 1 (fastest) to 9 (smallest) |
+| `min_bytes` | int | `1024` | Bodies below this length are not compressed; 0 to 1 MiB |
+| `types` | list | text, script, style, JSON, XML, SVG, wasm and font types | Media types compressed, without parameters |
+
+The default `types` are `text/html`, `text/plain`, `text/css`,
+`text/csv`, `text/xml`, `text/javascript`, `application/javascript`,
+`application/json`, `application/ld+json`,
+`application/manifest+json`, `application/xml`,
+`application/xhtml+xml`, `application/rss+xml`,
+`application/atom+xml`, `image/svg+xml`, `application/wasm`,
+`font/ttf`, `font/otf` and `application/vnd.api+json`. Images, video,
+archives and fonts in `woff2` are already compressed and are never
+listed by default. Compressing responses that mix a secret with
+attacker-controlled input in one body exposes the BREACH class of
+attacks; keep `compress: false` on routes that render CSRF tokens next
+to reflected parameters, or make sure the application masks its tokens.
 
 ## cache
 

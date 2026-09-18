@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/rom/xproxy/internal/filter"
+	"mime"
 	"time"
 
 	"crypto/tls"
@@ -153,6 +154,24 @@ func (v *validator) config(c *Config) {
 		}
 		if g.CSV != "" {
 			v.file("geoip.csv", g.CSV)
+		}
+	}
+	if cp := c.Compression; cp != nil {
+		if cp.Level < 1 || cp.Level > 9 {
+			v.errf("compression.level: must be between 1 and 9")
+		}
+		if cp.MinBytes < 0 || cp.MinBytes > 1<<20 {
+			v.errf("compression.min_bytes: must be between 0 and 1048576")
+		}
+		for j, t := range cp.Types {
+			if mt, _, err := mime.ParseMediaType(t); err != nil || mt != strings.ToLower(t) {
+				v.errf("compression.types[%d]: %q is not a media type without parameters", j, t)
+			}
+		}
+	}
+	for i := range c.Routes {
+		if r := &c.Routes[i]; r.Compress != nil && *r.Compress && !c.Compression.Enable() {
+			v.errf("routes[%d].compress: true needs an enabled compression section", i)
 		}
 	}
 	if cc := c.Cache; cc != nil {

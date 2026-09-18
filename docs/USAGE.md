@@ -833,6 +833,29 @@ checks use the standard health service, so an endpoint that reports
 a rate limited call is refused with `RESOURCE_EXHAUSTED` rather than a
 text page a gRPC client cannot read.
 
+### Response compression
+
+```yaml
+compression: {level: 5, min_bytes: 1024}
+routes:
+  - name: api
+    hosts: [api.example.com]
+    upstream: api                      # JSON compressed on the way out
+  - name: account
+    hosts: [www.example.com]
+    paths: [/account]
+    compress: false                    # pages with tokens: leave as they are
+    upstream: web
+```
+
+One section turns gzip on for every route; a route opts out with
+`compress: false`. Bodies the upstream already compressed, images,
+ranges and `no-transform` responses pass through, small bodies are left
+alone, and `Vary: Accept-Encoding` is set on everything that could be
+compressed so shared caches stay correct. The access log shows
+`encoding: gzip` on compressed answers and `xproxyctl status` counts
+them.
+
 ### Static files and single page applications
 
 ```yaml

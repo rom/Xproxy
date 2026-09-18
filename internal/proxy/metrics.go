@@ -143,6 +143,8 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "served"}, float64(sn.StaticServed))
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "not_found"}, float64(sn.StaticNotFound))
+	e.Counter("xproxy_compressed_responses_total", "Responses the proxy compressed with gzip.", nil, float64(sn.Compressed))
+	e.Counter("xproxy_compressed_raw_bytes_total", "Uncompressed size of the responses the proxy compressed.", nil, float64(sn.CompressedRawBytes))
 	for code, n := range sn.GRPCStatus {
 		if n > 0 {
 			e.Counter("xproxy_grpc_responses_total", "gRPC responses relayed by grpc-status code.", L{"code": strconv.Itoa(code)}, float64(n))

@@ -107,6 +107,7 @@ type compiledRoute struct {
 	honeypotBody []byte
 	honeypotType string
 	static       *staticSite
+	compress     *compressPolicy
 	mirror       *mirror
 	rateLimits   []*rateLimit
 	allow        []netip.Prefix
@@ -265,6 +266,10 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		}
 		rt.waf = engine
 	}
+	var compressPol *compressPolicy
+	if cfg.Compression.Enable() {
+		compressPol = newCompressPolicy(cfg.Compression)
+	}
 	for i := range cfg.Routes {
 		r := &cfg.Routes[i]
 		cr := &compiledRoute{
@@ -307,6 +312,9 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 			default:
 				cr.honeypotBody = []byte(hp.Body)
 			}
+		}
+		if on := cfg.Compression.Enable(); on && (r.Compress == nil || *r.Compress) {
+			cr.compress = compressPol
 		}
 		if r.Static != nil {
 			ss, err := openStatic(r.Static)

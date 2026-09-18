@@ -75,6 +75,9 @@ type Config struct {
 	Ingress *Ingress `yaml:"ingress"`
 	// Cache sizes the in-memory response cache used by routes[].cache.
 	Cache *Cache `yaml:"cache"`
+	// Compression enables gzip of eligible responses on every route
+	// (routes[].compress overrides per route).
+	Compression *Compression `yaml:"compression"`
 	// ACME configures automatic certificates for listeners with tls.acme.
 	ACME *ACME `yaml:"acme"`
 }
@@ -732,6 +735,9 @@ type Route struct {
 	DoH *RouteDoH `yaml:"doh"`
 	// Static serves files from a directory instead of proxying.
 	Static *RouteStatic `yaml:"static"`
+	// Compress overrides the compression section for this route: false
+	// turns it off, true requires the section.
+	Compress *bool `yaml:"compress"`
 }
 
 // RouteStatic serves files from a directory. Paths are resolved inside
@@ -809,6 +815,35 @@ type Cache struct {
 	MaxBytes       int64 `yaml:"max_bytes"`
 	MaxObjectBytes int64 `yaml:"max_object_bytes"`
 }
+
+// Compression is the gzip policy for responses the proxy writes: proxied,
+// cached, static and respond bodies alike. Responses the upstream already
+// encoded, ranges, `no-transform` and unlisted media types pass through.
+type Compression struct {
+	// Enabled defaults to true when the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Level is the gzip level 1 (fastest) to 9 (smallest). Default 5.
+	Level int `yaml:"level"`
+	// MinBytes is the smallest body compressed when its length is known
+	// or once that much has been buffered. Default 1024.
+	MinBytes int `yaml:"min_bytes"`
+	// Types lists the media types compressed (without parameters).
+	// Default: the common text, script, style, JSON, XML, SVG and wasm
+	// types.
+	Types []string `yaml:"types"`
+}
+
+// DefaultCompressionTypes are the media types compressed unless
+// compression.types is set.
+var DefaultCompressionTypes = []string{
+	"text/html", "text/plain", "text/css", "text/csv", "text/xml", "text/javascript",
+	"application/javascript", "application/json", "application/ld+json", "application/manifest+json",
+	"application/xml", "application/xhtml+xml", "application/rss+xml", "application/atom+xml",
+	"image/svg+xml", "application/wasm", "font/ttf", "font/otf", "application/vnd.api+json",
+}
+
+// Enable reports whether the section is active.
+func (c *Compression) Enable() bool { return c != nil && (c.Enabled == nil || *c.Enabled) }
 
 // RouteCache is a route's caching policy.
 type RouteCache struct {

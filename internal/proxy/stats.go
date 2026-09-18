@@ -44,6 +44,8 @@ type Stats struct {
 	HoneypotHits       atomic.Uint64
 	StaticServed       atomic.Uint64
 	StaticNotFound     atomic.Uint64
+	Compressed         atomic.Uint64
+	CompressedRawBytes atomic.Uint64
 	MirrorSent         atomic.Uint64
 	GRPCStatus         [17]atomic.Uint64 // responses by grpc-status code
 	MirrorDropped      atomic.Uint64
@@ -106,6 +108,8 @@ type Snapshot struct {
 	HoneypotHits       uint64     `json:"honeypot_hits"`
 	StaticServed       uint64     `json:"static_served"`
 	StaticNotFound     uint64     `json:"static_not_found"`
+	Compressed         uint64     `json:"compressed"`
+	CompressedRawBytes uint64     `json:"compressed_raw_bytes"`
 	MirrorSent         uint64     `json:"mirror_sent"`
 	GRPCStatus         [17]uint64 `json:"grpc_status"`
 	DNSQueries         uint64     `json:"dns_queries"`
@@ -195,6 +199,8 @@ func (s *Stats) snapshot() Snapshot {
 		HoneypotHits:       s.HoneypotHits.Load(),
 		StaticServed:       s.StaticServed.Load(),
 		StaticNotFound:     s.StaticNotFound.Load(),
+		Compressed:         s.Compressed.Load(),
+		CompressedRawBytes: s.CompressedRawBytes.Load(),
 		MirrorSent:         s.MirrorSent.Load(),
 		GRPCStatus:         grpcSnapshot(&s.GRPCStatus),
 		MirrorDropped:      s.MirrorDropped.Load(),

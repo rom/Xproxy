@@ -217,6 +217,7 @@ procedure is in RELEASING.md.
 - Cluster sharing of honeypot marks and OIDC revocations (protocol
   version 2, `filter.Env.Events`): delivered (AMR-021 update)
 - Static file serving (`routes[].static`): delivered
+- Response compression (`compression`, `routes[].compress`): delivered
 
 ## After 1.3 (candidates, unranked)
 
