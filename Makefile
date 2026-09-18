@@ -20,7 +20,7 @@ RPMDIR       ?= $(CURDIR)/rpmbuild
 
 BIN = bin
 
-.PHONY: all build test test-race cover cover-gate mutate fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint scale bench load
+.PHONY: all build test test-race cover cover-gate mutate fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint scale bench load release
 
 all: build
 
@@ -107,6 +107,25 @@ vuln:
 
 sbom:
 	$(GO) version -m $(BIN)/xproxy
+
+# Release artefacts in dist/: binaries tarball, vendored source tarball,
+# RPMs when rpmbuild is available, SBOM and SHA256SUMS, optionally signed
+# with an SSH key (SIGN_KEY). See docs/RELEASING.md.
+DIST     = dist
+RELNAME  = xproxy-$(BASE_VERSION)-linux-amd64
+release: build dist
+	rm -rf $(DIST) && mkdir -p $(DIST)/$(RELNAME)
+	cp $(BIN)/xproxy $(BIN)/xproxyctl $(BIN)/xproxy-admin LICENSE README.md VERSION $(DIST)/$(RELNAME)/
+	cp -r deploy docs $(DIST)/$(RELNAME)/
+	tar -C $(DIST) -czf $(DIST)/$(RELNAME).tar.gz $(RELNAME) && rm -rf $(DIST)/$(RELNAME)
+	cp $(RPMDIR)/SOURCES/xproxy-$(BASE_VERSION).tar.gz $(DIST)/xproxy-$(BASE_VERSION)-src.tar.gz
+	$(GO) version -m $(BIN)/xproxy > $(DIST)/xproxy-$(BASE_VERSION).sbom.txt
+	@if command -v rpmbuild >/dev/null 2>&1 && [ -f /usr/lib/rpm/macros.d/macros.systemd ]; then \
+	  $(MAKE) rpm && cp $(RPMDIR)/RPMS/*/*.rpm $(RPMDIR)/SRPMS/*.rpm $(DIST)/; \
+	else echo "rpmbuild with the Fedora macros not found: RPMs not built"; fi
+	cd $(DIST) && sha256sum * > SHA256SUMS
+	@if [ -n "$(SIGN_KEY)" ]; then ssh-keygen -Y sign -f $(SIGN_KEY) -n xproxy-release $(DIST)/SHA256SUMS && echo "signed $(DIST)/SHA256SUMS.sig"; fi
+	@ls -l $(DIST)
 
 check: fmt vet test-race lint
 

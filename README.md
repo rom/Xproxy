@@ -5,10 +5,9 @@ firewall, written in Go for Fedora Linux. Single static
 binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
-Status: **phase 3 in progress** (ICAP, ACME, the web GUI, the SELinux
-policy, RPM packaging, scale validation, the middleware interface, the
-quality gates and the internal security review delivered; the Fedora VM
-runner, the reference hardware numbers and the external review remain). Phases 1 and 2 are complete. See
+Status: **1.0.0** (see [docs/RELEASE_NOTES_1.0.md](docs/RELEASE_NOTES_1.0.md)
+for highlights and known limitations, [docs/RELEASING.md](docs/RELEASING.md)
+for how a release is cut). Phases 1 and 2 are complete. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today
@@ -92,6 +91,8 @@ curl -i http://127.0.0.1:8080/
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured scale and throughput |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Writing middleware against the stable interface |
 | [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md) | Findings of the phase 3 security review |
+| [docs/RELEASE_NOTES_1.0.md](docs/RELEASE_NOTES_1.0.md) | What 1.0.0 contains and does not claim |
+| [docs/RELEASING.md](docs/RELEASING.md) | Release procedure: verify, tag, build, sign, publish |
 | [docs/HARDENING.md](docs/HARDENING.md) | Host hardening checklist |
 | [docs/TESTS.md](docs/TESTS.md) | Test harness and coverage |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases to 1.0 and beyond |

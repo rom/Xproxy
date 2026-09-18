@@ -176,5 +176,8 @@ fi
 %ghost %verify(not md5 size mode mtime) %{_sharedstatedir}/selinux/%{selinuxtype}/active/modules/200/%{modulename}
 
 %changelog
+* Fri Sep 18 2026 Sysctl AB <hostmaster@sysctl.se> - 1.0.0-1
+- First release (see RELEASE_NOTES_1.0.md).
+
 * Fri Sep 18 2026 Sysctl AB <hostmaster@sysctl.se> - 0.9.0-1
 - Initial packaging: data plane, CLI, web GUI, SELinux policy module.

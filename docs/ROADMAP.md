@@ -97,7 +97,7 @@ node cluster shares limits (tested in process and with real binaries);
 HTTP/3 is tested with a QUIC client and browser interoperability is a
 phase 3 checklist item; the challenge was verified in headless Chromium.
 
-## Phase 3: 1.0 (in progress)
+## Phase 3: 1.0 (released as 1.0.0)
 
 Goal: operable at fleet scale by a team, packaged for Fedora, reviewed.
 
@@ -158,6 +158,13 @@ Remaining:
 
 Exit criterion: release checklist in SECURITY.md complete; all ASR entries
 marked 1.0 satisfied and traced to tests.
+
+Status at 1.0.0: every item above is delivered except the three under
+"Remaining", which need resources outside the development environment (a
+Fedora host with SELinux enforcing, dedicated reference hardware, an
+external reviewer). They are recorded as known limitations in
+RELEASE_NOTES_1.0.md and stay at the top of the 1.x list. The release
+procedure is in RELEASING.md.
 
 ## After 1.0 (candidates, unranked)
 

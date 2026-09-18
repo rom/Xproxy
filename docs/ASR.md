@@ -38,7 +38,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S5 | Fail closed: a configuration error or a missing security control must stop the proxy from starting or reloading, never silently degrade | M | MVP | Strict YAML with unknown field rejection; all validation errors reported at once; reload keeps the previous generation on any failure |
 | ASR-S6 | Do not trust forwarding headers from arbitrary peers | M | MVP | `trusted_proxies` list; right-most untrusted X-Forwarded-For algorithm; forged headers dropped before forwarding |
 | ASR-S7 | Route decisions must be immune to path normalisation tricks | M | MVP | Routing uses a cleaned path (dot segments and duplicate slashes resolved); the original path is forwarded unless the route rewrites it |
-| ASR-S8 | Run unprivileged on Fedora with systemd hardening and a confined SELinux domain | M | MVP unit, SELinux policy and RPM delivered in phase 3 | Socket activation removes the need for any capability; policy module confines file and network access to four labelled directories and http ports |
+| ASR-S8 | Run unprivileged on Fedora with systemd hardening and a confined SELinux domain | M | MVP unit, SELinux policy and RPM delivered in phase 3; AVC validation on an enforcing host is a known limitation of 1.0.0 | Socket activation removes the need for any capability; policy module confines file and network access to four labelled directories and http ports |
 | ASR-S9 | Every deny, ban, tarpit and management action is logged with enough context to investigate | M | MVP | Dedicated security and audit streams; request identifiers propagate to upstream and back; kernel peer credentials on the management socket |
 | ASR-S10 | Logs must not leak secrets or more personal data than configured | M | 1.0 (delivered in phase 2) | Query strings are not logged by default; redaction rules for addresses, user agents, referers, claims and named fields, switchable per stream |
 | ASR-S11 | TLS configuration is secure by default and cannot be made insecure by accident | M | MVP | TLS 1.2 minimum, AEAD suites with forward secrecy only, renegotiation disabled, insecure suites rejected by validation, upstream verification skip requires a double opt-in |
@@ -50,7 +50,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ID | Requirement | Prio | Release | Architectural consequence |
 |----|-------------|------|---------|---------------------------|
 | ASR-P1 | 1000 virtual hosts and 10 000 upstream endpoints in one configuration | M | 1.0 (validated in phase 3) | Hash based host tables, per host sorted prefix lists; per pool transports; health checks jittered and bounded in concurrency |
-| ASR-P2 | Sustained high request rates on commodity hardware (target: 100k requests per second on 8 cores for small responses) | M | 1.0 | Zero allocation routing path; atomic counters; no locks on the hot path except sharded limiter buckets; connection pooling to upstreams |
+| ASR-P2 | Sustained high request rates on commodity hardware (target: 100k requests per second on 8 cores for small responses) | M | 1.0 (10 000 req/s at p99 under 10 ms measured on a shared 4 core container in phase 3; the 8 core reference number is open, RELEASE_NOTES_1.0.md) | Zero allocation routing path; atomic counters; no locks on the hot path except sharded limiter buckets; connection pooling to upstreams |
 | ASR-P3 | Configuration reload without dropping connections | M | MVP | Immutable runtime generation swapped atomically; old generation drained on a timer |
 | ASR-P4 | Certificate reload without restart | M | MVP | `GetCertificate` reads an atomic pointer |
 | ASR-P5 | Graceful shutdown and restart without losing the listening socket | M | MVP | systemd socket activation, `Type=notify`, drain within `shutdown_timeout` |
@@ -63,7 +63,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-O2 | Four log streams (access, error, security, audit) as JSON, to files, journald and syslog | M | MVP files, sinks delivered in phase 2 | Sink abstraction behind `log/slog` handlers; native journald datagram protocol and RFC 5424 syslog without cgo |
 | ASR-O3 | Management via CLI, TUI and web GUI | M | MVP CLI, TUI delivered in phase 2, GUI delivered in phase 3 | One management API on a Unix socket serves all three; GUI is a separate binary serving embedded static assets over the same API, never inside the data plane |
 | ASR-O4 | Metrics for graphs and statistics | M | 1.0 (delivered in phase 2) | Prometheus text endpoint on the management socket and an optional TCP endpoint, plus a local ring buffer of time series for the GUI without external storage |
-| ASR-O5 | Persisted state for bans and statistics across restarts | S | 1.0 | Embedded key-value store (bbolt) in the state directory |
+| ASR-O5 | Persisted state for bans and statistics across restarts | S | 1.0 for bans (delivered in phase 2); statistics moved to 1.x | Embedded key-value store (bbolt) in the state directory |
 | ASR-O6 | Extensible without recompiling the core for common cases | S | 1.0 interface (delivered in phase 3), 1.x WASM | Middleware interface with a registry at 1.0; WebAssembly extension ABI in 1.x; never Go plugins |
 
 ## 5. Quality
@@ -73,7 +73,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-Q1 | Every parser and matcher has a fuzz target | M | MVP | Go native fuzzing; targets run in CI |
 | ASR-Q2 | Core packages hold at least 80 percent statement coverage, measured under the race detector | M | 1.0 (delivered in phase 3) | Coverage gate in CI (`make cover-gate`), mutation testing on the admission packages, chaos tests |
 | ASR-Q3 | End-to-end tests drive the real binary | M | MVP (in package tests), binary tests at 1.0 | Tests start listeners on port 0 and read back addresses from the server |
-| ASR-Q4 | Load and soak tests with published numbers | S | 1.0 | k6 or vegeta scripts in `test/load`; results in TESTS.md |
+| ASR-Q4 | Load and soak tests with published numbers | S | 1.0 (scripts and container baseline delivered in phase 3, PERFORMANCE.md; reference hardware and the 24 hour soak open) | k6 or vegeta scripts in `test/load`; results in TESTS.md |
 | ASR-Q5 | Documentation is part of the definition of done | M | MVP | `docs/` is versioned with the code; CONFIG.md is checked against the example configuration by a test |
 
 ## 6. Constraints
