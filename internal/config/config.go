@@ -42,6 +42,9 @@ type Config struct {
 	Bans *Bans `yaml:"bans"`
 	// WAF enables the web application firewall when present.
 	WAF *WAF `yaml:"waf"`
+	// Cluster enables sharing of rate limit consumption and bans between
+	// proxies when present.
+	Cluster *Cluster `yaml:"cluster"`
 }
 
 // Server holds listener and global limit settings for the data plane.
@@ -423,3 +426,44 @@ type RouteWAF struct {
 	Mode    string `yaml:"mode"`
 	Profile string `yaml:"profile"`
 }
+
+// Cluster configures peer to peer sharing over mutual TLS (AMR-009).
+type Cluster struct {
+	// NodeID identifies this node to peers. Default: host name.
+	NodeID string `yaml:"node_id"`
+	// Listen is the address of the cluster listener (TCP, mTLS). Bind it to
+	// an internal interface.
+	Listen string `yaml:"listen"`
+	// Peers are the cluster addresses of the other nodes.
+	Peers []string   `yaml:"peers"`
+	TLS   ClusterTLS `yaml:"tls"`
+	// GossipInterval is how often consumption reports are sent. Default 1s.
+	GossipInterval Duration `yaml:"gossip_interval"`
+	// PeerStale is how long a peer report keeps influencing local limits
+	// after the last update. Default 3 x gossip_interval.
+	PeerStale Duration `yaml:"peer_stale"`
+	// ShareRateLimits and ShareBans select what is exchanged. Both default
+	// to true.
+	ShareRateLimits *bool `yaml:"share_rate_limits"`
+	ShareBans       *bool `yaml:"share_bans"`
+	// MaxKeysPerReport bounds one report. Default 4096.
+	MaxKeysPerReport int `yaml:"max_keys_per_report"`
+}
+
+// ClusterTLS holds the node certificate and the cluster CA. Every peer
+// must present a certificate from this CA; there is no other
+// authentication.
+type ClusterTLS struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	CAFile   string `yaml:"ca_file"`
+	// AllowedNames optionally restricts peers to these certificate common
+	// names or DNS SANs.
+	AllowedNames []string `yaml:"allowed_names"`
+}
+
+// Sharing helpers with defaults applied.
+func (c *Cluster) SharesRateLimits() bool { return c.ShareRateLimits == nil || *c.ShareRateLimits }
+
+// SharesBans reports whether bans are exchanged.
+func (c *Cluster) SharesBans() bool { return c.ShareBans == nil || *c.ShareBans }

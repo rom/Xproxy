@@ -181,3 +181,17 @@ waf:
         # Allow JSON bodies only on the API profile.
         SecRule REQUEST_HEADERS:Content-Type "!@rx ^application/json" \
           "id:100100,phase:1,deny,status:415,msg:'API accepts JSON only'"
+
+# Cluster: share rate limit consumption and bans with the other proxies.
+# Remove this section on a single node. Listen on the internal interface
+# and firewall the port to the peers.
+cluster:
+  node_id: edge-1
+  listen: 10.0.0.1:7946
+  peers: [10.0.0.2:7946, 10.0.0.3:7946]
+  gossip_interval: 1s
+  tls:
+    cert_file: /etc/xproxy/cluster/edge-1.pem
+    key_file: /etc/xproxy/cluster/edge-1-key.pem
+    ca_file: /etc/xproxy/cluster/ca.pem
+    allowed_names: [edge-1, edge-2, edge-3]

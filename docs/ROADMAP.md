@@ -60,10 +60,12 @@ Delivered so far:
   durations with a cap, exemptions, drop at accept or 403, bounded tables,
   bbolt persistence, survival across reloads, management API and CLI
   (ASR-S2, AMR-012, AMR-019)
+- Cluster: mutual TLS peer connections, consumption reports that make rate
+  limits approximately cluster wide, ban and unban propagation with
+  snapshots for new peers, bounded protocol, reload of peers in place,
+  management view (ASR-S3, AMR-009, AMR-021)
 
 Remaining:
-- Distributed rate limiting and ban sharing over an mTLS cluster listener
-  (ASR-S3, AMR-009)
 - Adaptive load shedding with priority classes per route; static challenge
   page for browsers (AMR-016)
 - HTTP/3 over QUIC with address validation and Alt-Svc (ASR-F2, AMR-002)

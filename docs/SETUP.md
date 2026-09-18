@@ -107,6 +107,16 @@ permissive mode for the domain first if you deploy it now:
 semanage permissive -a xproxy_t
 ```
 
+## Cluster
+
+For several proxies, create a private CA and one certificate per node,
+install them under `/etc/xproxy/cluster` (`root:xproxy`, `0640`), add the
+`cluster` section (see CONFIG.md) with `listen` on the internal interface
+and every other node in `peers`, and open the port to the peers only. To
+socket activate the cluster port add a `ListenStream=10.0.0.1:7946` with
+`FileDescriptorName=cluster` to the socket unit. Check with
+`xproxyctl cluster` that every peer shows `connected: true`.
+
 ## WAF roll-out
 
 Each compiled WAF profile costs tens of megabytes of memory per mode. Plan

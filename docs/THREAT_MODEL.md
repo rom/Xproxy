@@ -27,7 +27,7 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Compromised upstream | Arbitrary responses, slow responses, connection abuse |
 | Local unprivileged user on the host | Can reach files and sockets their permissions allow |
 | Operator | Trusted; mistakes are in scope, malice is out of scope |
-| Peer proxy in a cluster (1.0) | Holds a cluster certificate |
+| Peer proxy in a cluster | Holds a cluster certificate |
 
 ## Boundary 1: Internet to data plane
 
@@ -101,6 +101,17 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Upstream impersonation | HTTPS with CA pinning via `ca_file`, `server_name`; verification skip requires double opt-in and is logged |
 | Upstream pushes a backend into a poisoned state | Outlier ejection removes failing endpoints; `max_ejection_percent` prevents ejecting everything and stampeding the rest |
 | Credentials leaking to the wrong upstream | Route level `request_headers.remove` (for example `Cookie` on an API route) |
+
+## Boundary 2b: Cluster peers
+
+| Threat | Mitigation |
+|--------|------------|
+| Rogue host joins the cluster | TLS 1.3 with client certificates from the cluster CA required; `allowed_names` pins identities; the listener is bound to an internal address |
+| Compromised peer relaxes limits | Impossible by construction: peer reports only reduce refill; there is no message that raises a limit or unbans except an explicit removal, which is visible in logs with the peer identity |
+| Compromised peer bans legitimate users | Accepted risk within the trust domain; exemptions still apply, wide prefixes and loopback are refused, `xproxyctl bans` shows `peer:<node>` sources, and `share_bans: false` disables the channel |
+| Compromised peer floods the listener | Message size, key and ban counts bounded; inbound connection cap; oversized or malformed input closes the connection |
+| Client addresses cross the network in reports | Reports carry rate limit keys (addresses or header values) under mTLS between hosts of the same operator; documented in AMR-021 |
+| Peer identity spoofing in messages | The `node` field is informational; authorisation is the certificate, and the certificate name is logged next to it |
 
 ## Boundary 3: Management plane
 

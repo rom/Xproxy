@@ -18,6 +18,7 @@
 //	bans           list active bans
 //	ban TARGET     ban an address or CIDR (-duration 1h -reason text)
 //	unban TARGET   remove a ban
+//	cluster        show cluster peers and counters
 //	version        print version
 package main
 
@@ -44,7 +45,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -168,6 +169,36 @@ func run(args []string, out, errOut io.Writer) int {
 			return 2
 		}
 		return tail(*cfgPath, fs.Arg(1), out, errOut)
+	case "cluster":
+		st, err := c.ClusterStatus()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, st)
+		}
+		_, _ = fmt.Fprintf(out, "node %s  listen %s\n", st.NodeID, st.Listen)
+		_, _ = fmt.Fprintf(out, "rates sent %d received %d (keys %d)  bans sent %d received %d  rejected %d dropped %d\n",
+			st.RatesSent, st.RatesReceived, st.KeysReceived, st.BansSent, st.BansReceived, st.Rejected, st.Dropped)
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "PEER\tCONNECTED\tSINCE\tMESSAGES\tRECONNECTS\tLAST ERROR")
+		for _, p := range st.Peers {
+			since := ""
+			if p.Connected {
+				since = time.Since(p.ConnectedAt).Round(time.Second).String()
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%v\t%s\t%d\t%d\t%s\n", p.Address, p.Connected, since, p.MessagesOut, p.Reconnects, p.LastError)
+		}
+		_ = tw.Flush()
+		if len(st.Inbound) > 0 {
+			tw = tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+			_, _ = fmt.Fprintln(tw, "INBOUND\tNODE\tCERT\tLAST SEEN\tMESSAGES")
+			for _, in := range st.Inbound {
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s ago\t%d\n", in.Remote, in.NodeID, in.CertName, time.Since(in.LastSeen).Round(time.Second), in.MessagesIn)
+			}
+			_ = tw.Flush()
+		}
+		return 0
 	case "bans":
 		es, err := c.Bans()
 		if err != nil {

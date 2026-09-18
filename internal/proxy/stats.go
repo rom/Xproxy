@@ -64,6 +64,8 @@ type Snapshot struct {
 	WAFDetected       uint64    `json:"waf_detected"`
 	BansActive        int       `json:"bans_active"`
 	BansTotal         uint64    `json:"bans_total"`
+	ClusterPeers      int       `json:"cluster_peers"`
+	ClusterConnected  int       `json:"cluster_connected"`
 	UpstreamErrors    uint64    `json:"upstream_errors"`
 	UpstreamTimeouts  uint64    `json:"upstream_timeouts"`
 	UpstreamNoHealthy uint64    `json:"upstream_no_healthy"`

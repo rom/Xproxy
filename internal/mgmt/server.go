@@ -64,6 +64,7 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("GET /v1/bans", s.listBans)
 	mux.HandleFunc("POST /v1/bans", s.addBan)
 	mux.HandleFunc("DELETE /v1/bans", s.removeBan)
+	mux.HandleFunc("GET /v1/cluster", s.clusterStatus)
 	s.http = &http.Server{
 		Handler:           http.MaxBytesHandler(mux, 1<<20),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -292,6 +293,15 @@ func (s *Server) removeBan(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logs.Audit.Info("management action", attrs...)
 	writeJSON(w, 200, result{OK: true})
+}
+
+func (s *Server) clusterStatus(w http.ResponseWriter, _ *http.Request) {
+	node := s.proxy.Cluster()
+	if node == nil {
+		writeJSON(w, 404, result{Error: "cluster is not configured"})
+		return
+	}
+	writeJSON(w, 200, node.Status())
 }
 
 func (s *Server) reload(w http.ResponseWriter, r *http.Request) {

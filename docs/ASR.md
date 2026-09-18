@@ -33,7 +33,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 |----|-------------|------|---------|---------------------------|
 | ASR-S1 | Withstand malicious clients: no input may cause unbounded memory, CPU or goroutine growth | M | MVP | Every table is bounded (rate limit keys, connection table); every read has a limit and a deadline; no queueing on overload, immediate rejection |
 | ASR-S2 | DDoS protection is a central feature: the proxy must degrade gracefully under connection floods, request floods and slow clients | M | MVP, extended in 1.0 | Connection limits at accept time, global and per IP; concurrency ceiling; header, body and idle timeouts; tarpit; temporary bans with decay; adaptive shedding and priority classes in 1.0 |
-| ASR-S3 | Distributed rate limiting and shared ban state across a fleet of proxies | M | 1.0 | Peer gossip over mTLS with approximate counters; no external datastore; local limiter stays authoritative when peers are unreachable |
+| ASR-S3 | Distributed rate limiting and shared ban state across a fleet of proxies | M | 1.0 (delivered in phase 2) | Peer gossip over mTLS with approximate counters; no external datastore; local limiter stays authoritative when peers are unreachable |
 | ASR-S4 | Minimal attack surface | M | MVP | Standard library first; short dependency allow list; no cgo; static binary; management plane on a Unix socket, never on a data plane listener; no dynamic plugin loading |
 | ASR-S5 | Fail closed: a configuration error or a missing security control must stop the proxy from starting or reloading, never silently degrade | M | MVP | Strict YAML with unknown field rejection; all validation errors reported at once; reload keeps the previous generation on any failure |
 | ASR-S6 | Do not trust forwarding headers from arbitrary peers | M | MVP | `trusted_proxies` list; right-most untrusted X-Forwarded-For algorithm; forged headers dropped before forwarding |
@@ -98,6 +98,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F6 | `internal/waf`, `internal/filter` | `internal/waf/waf_test.go`, `TestWAFIntegration` |
 | ASR-S2 (bans) | `internal/ban`, accept hook in `internal/limits` | `internal/ban/ban_test.go`, `TestBanIntegration`, `TestConnLimiterBanned` |
 | ASR-O5 | `internal/ban` persistence (bbolt) | `TestPersistence` |
+| ASR-S3 | `internal/cluster`, peer accounting in `internal/limits` | `internal/cluster/cluster_test.go`, `TestPeerRates`, `TestClusterSharesLimitsAndBans` |
 | ASR-S9, O2 | `internal/logging`, `internal/mgmt` | `internal/logging/logging_test.go`, `internal/mgmt/mgmt_test.go` |
 | ASR-S11, P4 | `internal/tlsconf` | `internal/tlsconf/tlsconf_test.go`, `TestTLSAndRedirect` |
 | ASR-P3 | `Server.Reload` | `TestReload` |

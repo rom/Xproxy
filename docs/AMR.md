@@ -419,6 +419,56 @@ body; the limit bounds it.
 
 ---
 
+## AMR-021: Cluster protocol and rate sharing algorithm
+
+**Context.** AMR-009 chose peer gossip over mTLS. The algorithm decides how
+accurate "cluster wide" is and what a compromised or lost peer can do.
+
+**Decision.**
+
+- Topology: every node dials every peer and sends on the connections it
+  dialled; it receives on the connections it accepted. No leader, no
+  membership protocol, no agreement needed. A lost peer is redialled with
+  exponential back-off up to 30 s.
+- Transport: TLS 1.3, client certificates from a dedicated cluster CA,
+  optional pinning of names, ALPN `xproxy-cluster/1`. The listener must be
+  bound to a specific address.
+- Wire format: newline-delimited JSON. Chosen over a binary encoding
+  because volumes are small (one message per interval per peer, largest
+  consumers only), the encoder is in the standard library, and every
+  field is bounded and validated on receipt. A message is at most 1 MiB;
+  keys per report and bans per message are capped.
+- Rate sharing: each node periodically flushes tokens consumed per policy
+  and key and sends them with the measured interval. Receivers convert to
+  a rate and store it on the key's bucket with a timestamp. A bucket
+  refills at `rate - sum(fresh peer rates)`, clamped at zero; reports
+  expire after `peer_stale`. In symmetric steady state with N nodes each
+  node admits `rate / N` per key, so the aggregate is `rate`; with one node
+  under attack that node admits `rate` and others admit nothing for that
+  key. Burst remains per node. Peer input can only reduce refill, so a
+  malicious or buggy peer cannot loosen a limit.
+- Ban sharing: local ban and unban events (manual or trigger) are queued
+  by a change hook and sent each interval; peers apply them with source
+  `peer:<node>` and do not re-announce, which prevents loops. A new
+  connection receives a snapshot of active bans. Exemptions apply to peer
+  bans too.
+
+**Alternatives.** Central counters (Redis): rejected in AMR-009. Exact
+distributed token buckets with leases: accuracy not worth the coordination
+cost for abuse limits. Sending only hashed keys: rejected because the
+receiver must address its own buckets by key; the channel is mTLS within
+one operator's hosts and the keys are addresses the peer also sees in its
+own logs.
+
+**Consequences.** Accuracy is bounded by one gossip interval plus
+`peer_stale`; documented in CONFIG.md. Memory per bucket grows by up to 64
+peer entries. Listen address, node identity and TLS material need a
+restart; peers and intervals reload.
+
+**Status.** Accepted.
+
+---
+
 ## AMR-018: Licence and name
 
 **Context.** The open items on licence and name were decided by the

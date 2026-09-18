@@ -132,6 +132,10 @@ routes:
 	if len(b) == 0 {
 		t.Fatal("config empty")
 	}
+	// Cluster is not configured in this server.
+	if _, err := c.ClusterStatus(); err == nil {
+		t.Fatal("cluster status should be unavailable")
+	}
 	// Bans are not configured in this server.
 	if _, err := c.Bans(); err == nil {
 		t.Fatal("bans should be unavailable")

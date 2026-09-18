@@ -256,6 +256,36 @@ A profile needs at least one of `crs`, `directive_files` or `directives`.
 | `mode` | `off`, `detect`, `block` | `waf.default_mode` | |
 | `profile` | name | `waf.default_profile` | |
 
+## cluster
+
+Present means enabled. Nodes exchange rate limit consumption and ban
+changes over mutual TLS (AMR-009, AMR-021). Every node listens and dials
+every peer; there is no leader. Enabling or disabling the section, and
+changing `listen`, `node_id` or `tls`, require a restart. Peers, intervals
+and sharing flags reload.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `node_id` | name | host name | Identity announced to peers and used as the ban source (`peer:<node_id>`) |
+| `listen` | host:port | required | Cluster listener. Must be a specific internal address, not all interfaces |
+| `peers` | list of host:port | `[]` | Cluster addresses of the other nodes |
+| `tls.cert_file`, `tls.key_file` | path | required | This node's certificate, used for both directions |
+| `tls.ca_file` | path | required | Cluster CA; every peer must present a certificate from it |
+| `tls.allowed_names` | list | `[]` (any name from the CA) | Restrict peers to these certificate common names or DNS SANs |
+| `gossip_interval` | duration | `1s` | How often consumption and ban batches are sent; 100ms to 60s |
+| `peer_stale` | duration | 3 x `gossip_interval` | How long a peer report keeps reducing local refill after its last update; at least 2 x the interval |
+| `share_rate_limits` | bool | `true` | Exchange consumption reports |
+| `share_bans` | bool | `true` | Exchange bans and unbans, and send a snapshot to a newly connected peer |
+| `max_keys_per_report` | int | `4096` | Largest consumers kept per report |
+
+Semantics: with sharing on, a rate limit policy's `rate` becomes an
+approximate cluster wide rate per key. Each node refills a key's bucket at
+`rate` minus the sum of fresh peer consumption for that key; `burst` stays
+per node. Accuracy is bounded by one gossip interval of delay and reports
+expire after `peer_stale`, so losing a peer degrades to local limiting.
+
+The cluster listener can be socket activated with `FileDescriptorName=cluster`.
+
 ## Headers set on forwarded requests
 
 | Header | Value |
@@ -274,6 +304,8 @@ Changed by `SIGHUP` or `xproxyctl reload` without restart: routes,
 upstreams, rate limits, trusted proxies, logging levels, limits other than
 listeners, certificate files, WAF profiles and modes, ban triggers and
 exemptions (active bans are kept; changing `bans.state_file` opens a new
-list). Requires restart: any change under
+list), cluster peers, intervals and sharing flags. Requires restart: any
+change under `server.listeners` other than certificate file contents,
+`management.socket`, and cluster `listen`, `node_id` or `tls`. Requires restart: any change under
 `server.listeners` other than certificate file contents, and
 `management.socket`.

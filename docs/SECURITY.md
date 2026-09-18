@@ -93,6 +93,22 @@ to report a vulnerability. The threat analysis behind the controls is in
   `0600` bbolt file in the state directory.
 - Operators ban and unban through the audited management API.
 
+### Cluster
+
+- Mutual TLS 1.3 only; every peer must present a certificate from the
+  cluster CA, optionally restricted to named identities. No other
+  credential exists, so there is no shared secret to leak.
+- The listener must bind a specific internal address; validation refuses
+  all-interfaces binds.
+- Messages are size bounded (1 MiB), count bounded (keys and bans per
+  message), version checked and rejected on the first malformed line;
+  inbound connections are capped and idle peers are disconnected.
+- Peer input can only tighten local limits (refill is reduced, never
+  increased) and add or remove bans; exemptions still apply to peer bans,
+  loopback and wide prefixes are refused as for manual bans.
+- Losing every peer degrades to local limiting; stale reports expire after
+  `peer_stale`.
+
 ### Upstreams
 
 - Connect, response header, idle and total timeouts per pool.
@@ -131,10 +147,10 @@ to report a vulnerability. The threat analysis behind the controls is in
 
 ## Planned controls (see ROADMAP.md)
 
-Phase 2 (remaining): cluster sharing of limits and bans, adaptive shedding
-with priority classes, challenge page, HTTP/3 with address validation,
-mutual TLS to upstreams, JWT validation, PII redaction rules, journald and
-syslog sinks, Prometheus metrics, TUI.
+Phase 2 (remaining): adaptive shedding with priority classes, challenge
+page, HTTP/3 with address validation, mutual TLS to upstreams, JWT
+validation, PII redaction rules, journald and syslog sinks, Prometheus
+metrics, TUI.
 
 Phase 3: ICAP scanning, ACME, full SELinux policy in an RPM, GUI with role
 separation, coverage and mutation gates, external security review.

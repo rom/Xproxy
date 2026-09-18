@@ -66,7 +66,13 @@ type List struct {
 
 	// Total counts bans ever applied by this process.
 	total uint64
+
+	onChange func(e Entry, removed bool)
 }
+
+// PeerSource is the prefix of the source field for bans received from a
+// cluster peer. Such bans are not re-announced.
+const PeerSource = "peer:"
 
 type history struct {
 	count int
@@ -117,6 +123,68 @@ func New(cfg *config.Bans, log *slog.Logger) (*List, error) {
 	l.wg.Add(1)
 	go l.purgeLoop()
 	return l, nil
+}
+
+// OnChange registers a callback invoked after every locally originated ban
+// or unban (manual or trigger, never peer). It is used by the cluster
+// layer to announce changes.
+func (l *List) OnChange(fn func(e Entry, removed bool)) {
+	l.mu.Lock()
+	l.onChange = fn
+	l.mu.Unlock()
+}
+
+func (l *List) notify(e *Entry, removed bool) {
+	l.mu.RLock()
+	fn := l.onChange
+	l.mu.RUnlock()
+	if fn != nil && !strings.HasPrefix(e.Source, PeerSource) {
+		fn(*e, removed)
+	}
+}
+
+// Apply inserts or removes a ban received from a peer. Expired entries are
+// ignored; exemptions still hold. The entry's source is rewritten to
+// PeerSource + peer.
+func (l *List) Apply(e Entry, removed bool, peer string) error {
+	parsed, err := parseTarget(e.Target)
+	if err != nil {
+		return err
+	}
+	now := l.now()
+	if removed {
+		l.mu.Lock()
+		if parsed.isNet {
+			for i, p := range l.prefixes {
+				if p.prefix == parsed.prefix {
+					l.prefixes = append(l.prefixes[:i], l.prefixes[i+1:]...)
+					break
+				}
+			}
+		} else {
+			delete(l.addrs, parsed.addr)
+		}
+		l.mu.Unlock()
+		l.persist(parsed, true)
+		return nil
+	}
+	if !e.Until.After(now) {
+		return nil
+	}
+	e.addr, e.prefix, e.isNet = parsed.addr, parsed.prefix, parsed.isNet
+	e.Source = PeerSource + peer
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = now
+	}
+	l.mu.Lock()
+	if !e.isNet && netutil.Contains(l.exempt, e.addr) {
+		l.mu.Unlock()
+		return nil
+	}
+	l.insertLocked(&e, now)
+	l.mu.Unlock()
+	l.persist(&e, false)
+	return nil
 }
 
 // StateFile returns the configured persistence path ("" for memory only).
@@ -262,6 +330,7 @@ func (l *List) applyTrigger(t *trigger, addr netip.Addr, reason string, now time
 	l.mu.Unlock()
 	l.persist(e, false)
 	l.log.Warn("client banned", "target", e.Target, "reason", reason, "trigger", t.cfg.Name, "duration", dur.String(), "count", h.count)
+	l.notify(e, false)
 	return e
 }
 
@@ -289,6 +358,7 @@ func (l *List) Ban(target string, d time.Duration, reason string) (*Entry, error
 	l.mu.Unlock()
 	l.persist(e, false)
 	l.log.Warn("client banned", "target", e.Target, "reason", reason, "source", "manual", "duration", d.String())
+	l.notify(e, false)
 	return e, nil
 }
 
@@ -319,6 +389,8 @@ func (l *List) Unban(target string) error {
 	}
 	l.persist(e, true)
 	l.log.Info("client unbanned", "target", e.Target)
+	e.Source = "manual"
+	l.notify(e, true)
 	return nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/ban"
+	"github.com/rom/xproxy/internal/cluster"
 )
 
 // Client talks to the management API over the Unix socket.
@@ -96,6 +97,12 @@ func (c *Client) Raw(path string) ([]byte, error) {
 // Post triggers an action endpoint.
 func (c *Client) Post(path string) error {
 	return c.do("POST", path, nil)
+}
+
+// ClusterStatus fetches /v1/cluster.
+func (c *Client) ClusterStatus() (*cluster.Status, error) {
+	var st cluster.Status
+	return &st, c.do("GET", "/v1/cluster", &st)
 }
 
 // Bans lists active bans.

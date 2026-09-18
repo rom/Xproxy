@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"os"
+	"time"
+)
 
 // Default values. They are deliberately conservative: an operator has to
 // raise a limit on purpose, never lower one by accident.
@@ -197,6 +200,21 @@ func applyDefaults(c *Config) {
 				setInt(&crs.OutboundThreshold, DefaultCRSOutbound)
 			}
 		}
+	}
+
+	if cl := c.Cluster; cl != nil {
+		if cl.NodeID == "" {
+			if h, err := os.Hostname(); err == nil {
+				cl.NodeID = h
+			} else {
+				cl.NodeID = "xproxy"
+			}
+		}
+		setDur(&cl.GossipInterval, time.Second)
+		if cl.PeerStale == 0 {
+			cl.PeerStale = cl.GossipInterval * 3
+		}
+		setInt(&cl.MaxKeysPerReport, 4096)
 	}
 
 	for i := range c.Routes {

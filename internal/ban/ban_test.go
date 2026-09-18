@@ -195,6 +195,57 @@ func TestPersistence(t *testing.T) {
 	}
 }
 
+func TestOnChangeAndApply(t *testing.T) {
+	l, now := newList(t, cfg())
+	type ev struct {
+		target  string
+		removed bool
+	}
+	var events []ev
+	l.OnChange(func(e Entry, removed bool) { events = append(events, ev{e.Target, removed}) })
+	if _, err := l.Ban("192.0.2.30", time.Hour, "x"); err != nil {
+		t.Fatal(err)
+	}
+	ip := netip.MustParseAddr("203.0.113.30")
+	for i := 0; i < 3; i++ {
+		l.Observe(ip, "waf")
+	}
+	if err := l.Unban("192.0.2.30"); err != nil {
+		t.Fatal(err)
+	}
+	// Peer applied bans do not echo.
+	if err := l.Apply(Entry{Target: "192.0.2.31", Until: now.Add(time.Hour), Reason: "r"}, false, "nodeB"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Apply(Entry{Target: "192.0.2.32", Until: now.Add(-time.Hour)}, false, "nodeB"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Apply(Entry{Target: "10.1.1.1", Until: now.Add(time.Hour)}, false, "nodeB"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Apply(Entry{Target: "garbage"}, false, "nodeB"); err == nil {
+		t.Fatal("garbage applied")
+	}
+	if len(events) != 3 || events[0] != (ev{"192.0.2.30", false}) || events[1] != (ev{"203.0.113.30", false}) || events[2] != (ev{"192.0.2.30", true}) {
+		t.Fatalf("events %+v", events)
+	}
+	if !l.Banned(netip.MustParseAddr("192.0.2.31")) || l.Banned(netip.MustParseAddr("192.0.2.32")) || l.Banned(netip.MustParseAddr("10.1.1.1")) {
+		t.Fatal("apply semantics")
+	}
+	var src string
+	for _, e := range l.Entries() {
+		if e.Target == "192.0.2.31" {
+			src = e.Source
+		}
+	}
+	if src != "peer:nodeB" {
+		t.Fatalf("source %q", src)
+	}
+	if err := l.Apply(Entry{Target: "192.0.2.31"}, true, "nodeB"); err != nil || l.Banned(netip.MustParseAddr("192.0.2.31")) {
+		t.Fatal("peer unban")
+	}
+}
+
 func TestReconfigure(t *testing.T) {
 	l, _ := newList(t, cfg())
 	ip := netip.MustParseAddr("203.0.113.9")

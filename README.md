@@ -5,7 +5,7 @@ firewall, written in Go for Fedora Linux. Single static
 binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
-Status: **phase 2 in progress** (WAF and ban list delivered). See
+Status: **phase 2 in progress** (WAF, ban list and cluster delivered). See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today
@@ -21,6 +21,8 @@ Status: **phase 2 in progress** (WAF and ban list delivered). See
   and response inspection
 - Ban list: repeated denies become escalating temporary bans, dropped at
   accept, persisted across restarts, managed from the CLI
+- Cluster: proxies share rate limit consumption and bans over mutual TLS,
+  making limits approximately cluster wide with no external datastore
 - Defences: connection limits at accept, concurrency ceiling, slowloris and
   body timeouts, size limits, keyed rate limits with reject or tarpit, CIDR
   allow and deny lists, trusted proxy handling, WebSocket opt-in

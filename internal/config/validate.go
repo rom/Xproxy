@@ -93,6 +93,9 @@ func (v *validator) config(c *Config) {
 	if c.WAF != nil {
 		v.waf(c.WAF, profiles)
 	}
+	if c.Cluster != nil {
+		v.cluster(c.Cluster)
+	}
 	routes := map[string]bool{}
 	for i := range c.Routes {
 		v.route(i, &c.Routes[i], routes, upstreams, rateLimits)
@@ -557,6 +560,46 @@ func (v *validator) bans(b *Bans) {
 		if t.MaxDuration < t.Duration {
 			v.errf("%s.max_duration: must be at least duration", p)
 		}
+	}
+}
+
+func (v *validator) cluster(c *Cluster) {
+	if !nameRE.MatchString(c.NodeID) {
+		v.errf("cluster.node_id: %q is not a valid name", c.NodeID)
+	}
+	if c.Listen == "" {
+		v.errf("cluster.listen: required")
+	} else if host, port, err := net.SplitHostPort(c.Listen); err != nil {
+		v.errf("cluster.listen: %q: %v", c.Listen, err)
+	} else if host == "" || host == "0.0.0.0" || host == "::" {
+		if port != "0" {
+			v.errf("cluster.listen: bind to an internal interface address, not all interfaces")
+		}
+	}
+	seen := map[string]bool{}
+	for i, p := range c.Peers {
+		if _, _, err := net.SplitHostPort(p); err != nil {
+			v.errf("cluster.peers[%d]: %q must be host:port", i, p)
+		} else if seen[p] {
+			v.errf("cluster.peers[%d]: duplicate %q", i, p)
+		}
+		seen[p] = true
+	}
+	if c.TLS.CertFile == "" || c.TLS.KeyFile == "" || c.TLS.CAFile == "" {
+		v.errf("cluster.tls: cert_file, key_file and ca_file are all required (mutual TLS is mandatory)")
+	} else {
+		v.file("cluster.tls.cert_file", c.TLS.CertFile)
+		v.file("cluster.tls.key_file", c.TLS.KeyFile)
+		v.file("cluster.tls.ca_file", c.TLS.CAFile)
+	}
+	if c.GossipInterval < Duration(100_000_000) || c.GossipInterval > Duration(60_000_000_000) {
+		v.errf("cluster.gossip_interval: must be between 100ms and 60s")
+	}
+	if c.PeerStale < c.GossipInterval*2 {
+		v.errf("cluster.peer_stale: must be at least twice gossip_interval")
+	}
+	if c.MaxKeysPerReport < 1 || c.MaxKeysPerReport > 65536 {
+		v.errf("cluster.max_keys_per_report: must be 1..65536")
 	}
 }
 

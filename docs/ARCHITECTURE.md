@@ -59,6 +59,7 @@ internal/mgmt       management API server and client
 internal/filter     per-route middleware interface (Filter, Instance, Chain)
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
+internal/cluster    peer sharing of limits and bans over mutual TLS
 internal/version    build information
 deploy/             systemd units, sysctl, SELinux, logrotate, example config
 docs/               this documentation
@@ -71,7 +72,8 @@ keeps the API surface at exactly two binaries.
 Dependency direction (arrows point at the importer's dependency):
 
 ```
-cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban}
+cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster}
+                       cluster  -> {ban, limits, config}
                        waf      -> {filter, config}
                        ban      -> {netutil, config}
                        upstream -> {tlsconf, config}
@@ -217,6 +219,9 @@ an endpoint moves only its keys (`TestHashRing` asserts this).
   Keys per shard are capped; on a full shard, buckets that have fully
   refilled are evicted; if none can be, the request is allowed without
   tracking. Memory is therefore bounded at `64 * maxKeys` buckets per policy.
+  With clustering, each bucket also holds up to 64 peer rate reports with
+  timestamps; refill uses `rate - sum(fresh peer rates)`, clamped at zero,
+  and `Flush` returns and resets per key consumption for gossip.
 - `ConnLimiter`: wraps the listener; counts per IP in a map guarded by one
   mutex (accept rate, not request rate) and globally with an atomic. Limits
   are adjustable on reload.
@@ -319,7 +324,43 @@ addresses and a small slice for CIDRs; both are bounded and purged every
 minute. With `state_file` set, every ban and unban is written to bbolt and
 live entries are loaded on start.
 
-## 12. Scale considerations for 1.0 targets
+## 12. Cluster
+
+```
+ node A                                   node B
+ +-----------------------------+          +-----------------------------+
+ | limiters  --Flush--> gossip |--mTLS--> | accept -> Report -> limiters|
+ | ban list  --OnChange-> queue|  (A->B)  |          Apply  -> ban list |
+ |                             |          |                             |
+ | accept <-Report/Apply       | <--mTLS--| gossip <--Flush/OnChange    |
+ +-----------------------------+  (B->A)  +-----------------------------+
+```
+
+Each node dials every configured peer and sends on that connection; it
+receives on the connections peers dialled to it. Both directions are TLS
+1.3 with client certificates from the cluster CA, optionally restricted to
+`allowed_names`. Messages are newline-delimited JSON, at most 1 MiB, with
+bounded counts of keys and bans per message and a read deadline of
+`peer_stale` plus five seconds; a silent peer is disconnected and
+redialled with back-off.
+
+Every `gossip_interval` the node flushes consumption from all limiters of
+the live generation (policy, key, tokens) and sends one `rates` message
+carrying the measured interval; the receiver converts counts to rates and
+calls `ReportPeer` on the matching policy. Buckets refill at the configured
+rate minus the sum of fresh peer rates (section 7), which makes the
+configured rate approximately cluster wide. Ban changes originating locally
+(manual or trigger) are queued by the ban list's change hook and sent in
+the same cycle; peers apply them with source `peer:<node>` and never
+re-announce them, so there are no loops. A newly connected peer receives a
+snapshot of all active bans. Idle cycles send a ping so deadlines hold.
+
+The node is owned by the `Server` like the ban list and reads limiters
+through the live runtime pointer, so reloads neither detach it nor lose
+peer state. Listen address, node identity and TLS material need a restart;
+peers and intervals reload in place.
+
+## 13. Scale considerations for 1.0 targets
 
 1000 hosts and 10 000 endpoints (ASR-P1) drive these properties:
 

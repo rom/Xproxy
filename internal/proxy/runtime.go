@@ -80,7 +80,11 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 		// Bound tracked keys so that a distributed source cannot grow memory
 		// without limit: 64 shards * 8192 keys * ~64 bytes ≈ 32 MiB worst case
 		// per policy.
-		rt.rateLimits[rl.Name] = &rateLimit{cfg: rl, lim: limits.NewKeyedLimiter(rl.Rate, rl.Burst, 8192)}
+		lim := limits.NewKeyedLimiter(rl.Rate, rl.Burst, 8192)
+		if cfg.Cluster != nil && cfg.Cluster.SharesRateLimits() {
+			lim.SetPeerStale(cfg.Cluster.PeerStale.D())
+		}
+		rt.rateLimits[rl.Name] = &rateLimit{cfg: rl, lim: lim}
 	}
 	if cfg.WAF != nil {
 		need := waf.Need{}

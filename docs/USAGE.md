@@ -52,6 +52,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `bans` | List active bans with expiry, source and count |
 | `ban TARGET` | Ban an address or CIDR; `-duration 1h`, `-reason text` |
 | `unban TARGET` | Remove a ban |
+| `cluster` | Peers, inbound connections and gossip counters |
 | `version` | Print version |
 
 `-json` switches `status`, `stats` and `upstreams` to machine readable
@@ -278,6 +279,29 @@ nothing per attempt. Use `reject` when the proxy sits behind a load
 balancer that sets `X-Forwarded-For`, because at accept only the balancer's
 address is visible.
 
+### Cluster of proxies
+
+Issue one certificate per node from a private cluster CA, then on every
+node:
+
+```yaml
+cluster:
+  node_id: edge-1
+  listen: 10.0.0.1:7946          # internal interface
+  peers: [10.0.0.2:7946, 10.0.0.3:7946]
+  tls:
+    cert_file: /etc/xproxy/cluster/edge-1.pem
+    key_file: /etc/xproxy/cluster/edge-1-key.pem
+    ca_file: /etc/xproxy/cluster/ca.pem
+    allowed_names: [edge-1, edge-2, edge-3]
+```
+
+With this in place every `rate_limits` policy is approximately cluster
+wide per key and every ban (manual or triggered) reaches all nodes within
+a gossip interval. `xproxyctl cluster` shows connection state; a peer with
+`connected: false` and a `last_error` is being redialled with back-off.
+Firewall the cluster port to the peers' addresses (HARDENING.md).
+
 ## Logs
 
 All streams are JSON lines with `time`, `level`, `msg` and `stream`.
@@ -327,8 +351,8 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 `responses_2xx` to `responses_5xx`, `bytes_in`, `bytes_out`, `denied_*`,
 `tarpitted`, `upstream_errors`, `upstream_timeouts`, `upstream_no_healthy`,
 `client_aborts`, `denied_ban`, `denied_waf`, `waf_detected`, `bans_active`,
-`bans_total`, `reloads`, `reload_failures`, `open_connections`,
-`rejected_connections`, `in_flight`.
+`bans_total`, `cluster_peers`, `cluster_connected`, `reloads`,
+`reload_failures`, `open_connections`, `rejected_connections`, `in_flight`.
 
 ## Troubleshooting
 
