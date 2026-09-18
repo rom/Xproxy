@@ -55,6 +55,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   in body size, time and copies in flight; the client never sees the
   mirror's response; `mirror` in the access log, `mirror_*` counters
   and `xproxy_mirror_total{outcome}`.
+- gRPC: `routes[].grpc` matches gRPC requests by service or method with
+  precedence over plain routes on the same path; proxy errors on gRPC
+  requests are trailers-only responses with a mapped `grpc-status`;
+  `grpc-timeout` tightens the route deadline; `listeners[].h2c` accepts
+  HTTP/2 without TLS and `upstreams[].h2c` speaks it to backends;
+  `health_check.type: grpc` probes the standard health service;
+  `grpc_status` in the access log and `xproxy_grpc_responses_total`.
 
 ## 1.0.0 - 2026-09-18
 

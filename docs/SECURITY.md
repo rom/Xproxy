@@ -206,6 +206,13 @@ to report a vulnerability. The threat analysis behind the controls is in
   security events and ban reasons. Tunnels are bounded and idle closed;
   plain responses are size bounded.
 
+### gRPC and HTTP/2 cleartext
+
+- `h2c` is opt-in on listeners and upstreams and meant for trusted
+  networks; streams per connection and frame size are bounded.
+- gRPC health probes and error responses are hand encoded with bounded
+  reads; no protobuf library is linked.
+
 ### Honeypots
 
 - Decoy routes never proxy; built-in decoys contain fabricated values

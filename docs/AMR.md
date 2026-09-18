@@ -1080,6 +1080,40 @@ mirror pool's endpoints (health, ejection) like live traffic.
 
 ---
 
+## AMR-039: gRPC without a gRPC library
+
+**Context.** gRPC awareness could mean linking a gRPC implementation
+and a protobuf runtime to parse messages, or treating gRPC as what it
+is on the wire: HTTP/2 with a content type, a path convention and
+trailers.
+
+**Decision.** The proxy stays a byte relay for gRPC. Routing reads the
+service and method from the path and the content type; errors the
+proxy produces are trailers-only responses with the status mapping
+from the gRPC specification; deadlines come from `grpc-timeout`. The
+health check encodes the one-field `HealthCheckRequest` and decodes
+the one-field `HealthCheckResponse` by hand (about fifty lines with
+bounds on every length). HTTP/2 cleartext is opt-in per listener and
+per upstream because gRPC deployments inside a cluster run without
+TLS; it is off by default and documented as a trusted network feature.
+
+**Alternatives.** Link `google.golang.org/grpc` (rejected: a large
+dependency with its own connection management, for a proxy that must
+not parse application messages); gRPC-web translation (deferred: a
+different protocol on the browser side; a candidate for 1.x); per
+method rate limits keyed on the gRPC method (possible today with a
+rate limit keyed on a header the client sets; a `grpc_method` key is
+a small follow-up).
+
+**Consequences.** No message level inspection, so the WAF sees a
+binary body on gRPC routes and should run in a mode that suits that.
+Streaming works because the reverse proxy flushes immediately and
+relays trailers.
+
+**Status.** Accepted.
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |

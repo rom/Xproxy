@@ -145,6 +145,10 @@ type Listener struct {
 	RedirectToHTTPS bool `yaml:"redirect_to_https"`
 	// H3 tunes HTTP/3 when the protocols include h3.
 	H3 *H3 `yaml:"h3"`
+	// H2C accepts HTTP/2 without TLS (prior knowledge and Upgrade) on a
+	// plaintext http listener, for gRPC clients inside a trusted network.
+	// Default false.
+	H2C bool `yaml:"h2c"`
 	// Kind is http (default), tcp (an L4 listener that forwards
 	// connections by TLS server name without terminating TLS) or forward
 	// (an explicit HTTP proxy for clients: CONNECT tunnels and absolute
@@ -412,7 +416,10 @@ type Upstream struct {
 	Balancer  string     `yaml:"balancer"`
 	Endpoints []Endpoint `yaml:"endpoints"`
 	// Scheme is http or https. Default http.
-	Scheme      string          `yaml:"scheme"`
+	Scheme string `yaml:"scheme"`
+	// H2C speaks HTTP/2 without TLS to http endpoints (gRPC backends).
+	// Default false.
+	H2C         bool            `yaml:"h2c"`
 	TLS         *UpstreamTLS    `yaml:"tls"`
 	HealthCheck *HealthCheck    `yaml:"health_check"`
 	Timeouts    UpstreamTimeout `yaml:"timeouts"`
@@ -459,6 +466,12 @@ type UpstreamTLS struct {
 
 // HealthCheck configures active health probing of an upstream.
 type HealthCheck struct {
+	// Type is http (GET path, expected_status) or grpc (the standard
+	// grpc.health.v1 Check over HTTP/2, needs h2c or https). Default http.
+	Type string `yaml:"type"`
+	// GRPCService is the service name asked in a grpc check. Default ""
+	// (the server as a whole).
+	GRPCService        string   `yaml:"grpc_service"`
 	Path               string   `yaml:"path"`
 	Interval           Duration `yaml:"interval"`
 	Timeout            Duration `yaml:"timeout"`
@@ -562,6 +575,20 @@ type Route struct {
 	Cache *RouteCache `yaml:"cache"`
 	// Mirror copies requests of this route to a second upstream.
 	Mirror *RouteMirror `yaml:"mirror"`
+	// GRPC restricts the route to gRPC requests, optionally to listed
+	// services or methods.
+	GRPC *RouteGRPC `yaml:"grpc"`
+}
+
+// RouteGRPC matches gRPC requests (content type application/grpc) by
+// the service and method in the path (/package.Service/Method). Empty
+// lists match every gRPC request. Denials and proxy errors on such a
+// route are answered as gRPC statuses.
+type RouteGRPC struct {
+	// Services are fully qualified service names.
+	Services []string `yaml:"services"`
+	// Methods are Service/Method pairs.
+	Methods []string `yaml:"methods"`
 }
 
 // RouteMirror sends a copy of each request (sampled by percent) to

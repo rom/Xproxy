@@ -230,6 +230,7 @@ func applyDefaults(c *Config) {
 			setInt(&u.Endpoints[j].Weight, 1)
 		}
 		if hc := u.HealthCheck; hc != nil {
+			setStr(&hc.Type, "http")
 			setStr(&hc.Path, DefaultHealthCheckPath)
 			setDur(&hc.Interval, DefaultHealthInterval)
 			setDur(&hc.Timeout, DefaultHealthTimeout)

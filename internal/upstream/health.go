@@ -21,14 +21,21 @@ var globalProbes = make(chan struct{}, MaxProbesInFlight)
 func (p *Pool) healthLoop(ctx context.Context, e *Endpoint) {
 	defer p.wg.Done()
 	hc := p.Cfg.HealthCheck
+	var hcTransport http.RoundTripper = p.hcTransport
+	if p.h2c != nil {
+		hcTransport = p.h2c // probes share the h2c connection like requests
+	}
 	client := &http.Client{
-		Transport: p.hcTransport,
+		Transport: hcTransport,
 		Timeout:   hc.Timeout.D(),
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 	url := p.Scheme + "://" + e.Address + hc.Path
+	if hc.Type == "grpc" {
+		url = p.Scheme + "://" + e.Address
+	}
 	var ok, bad int
 	// Initial jitter of up to one interval.
 	select {
@@ -52,7 +59,12 @@ func (p *Pool) healthLoop(ctx context.Context, e *Endpoint) {
 			<-p.hcSem
 			return
 		}
-		healthy := p.probe(ctx, client, url)
+		var healthy bool
+		if hc.Type == "grpc" {
+			healthy = p.probeGRPC(ctx, client, url)
+		} else {
+			healthy = p.probe(ctx, client, url)
+		}
 		<-globalProbes
 		<-p.hcSem
 		if healthy {

@@ -15,6 +15,37 @@ func routes() []config.Route {
 		{Name: "exact-api-post", Hosts: []string{"example.com"}, Paths: []string{"/api"}, Methods: []string{"POST"}, Priority: 10, Upstream: "c"},
 		{Name: "wild", Hosts: []string{"*.example.com"}, Paths: []string{"/"}, Upstream: "d"},
 		{Name: "deep", Hosts: []string{"example.com"}, Paths: []string{"/api/v2/"}, Upstream: "e"},
+		{Name: "grpc-any", Hosts: []string{"rpc.test"}, Paths: []string{"/"}, Upstream: "g", GRPC: &config.RouteGRPC{}},
+		{Name: "grpc-echo", Hosts: []string{"rpc.test"}, Paths: []string{"/"}, Upstream: "h", GRPC: &config.RouteGRPC{Services: []string{"echo.Echo"}, Methods: []string{"a.B/Do"}}},
+		{Name: "rpc-web", Hosts: []string{"rpc.test"}, Paths: []string{"/"}, Upstream: "i"},
+	}
+}
+
+func TestMatchGRPC(t *testing.T) {
+	r := New(routes())
+	cases := []struct {
+		path string
+		grpc bool
+		want string
+	}{
+		{"/echo.Echo/Say", true, "grpc-echo"},
+		{"/a.B/Do", true, "grpc-echo"},
+		{"/a.B/Other", true, "grpc-any"},
+		{"/x.Y/Z", true, "grpc-any"},
+		{"/echo.Echo/Say", false, "rpc-web"},
+		{"/", true, "grpc-any"},
+	}
+	for _, c := range cases {
+		got := r.MatchRequest("rpc.test", c.path, "POST", c.grpc)
+		if got == nil || got.Cfg.Name != c.want {
+			t.Errorf("%s grpc=%v: got %v want %s", c.path, c.grpc, got, c.want)
+		}
+	}
+	g := &grpcMatch{services: map[string]bool{"s.S": true}, methods: map[string]bool{}}
+	for _, bad := range []string{"/s.S", "/s.S/", "//m", "/s.S/m/x", "/"} {
+		if g.matches(bad) {
+			t.Errorf("%q matched", bad)
+		}
 	}
 }
 

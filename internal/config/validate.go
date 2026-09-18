@@ -316,6 +316,9 @@ func (v *validator) server(s *Server) {
 			if ln.TCP != nil {
 				v.errf("%s.tcp: set on an http listener (kind: tcp)", p)
 			}
+			if ln.H2C && ln.TLS != nil {
+				v.errf("%s.h2c: only for plaintext listeners (TLS negotiates HTTP/2 with ALPN)", p)
+			}
 			if ln.Forward != nil {
 				v.errf("%s.forward: set on an http listener (kind: forward)", p)
 			}
@@ -329,7 +332,7 @@ func (v *validator) server(s *Server) {
 				v.tcpListener(p+".tcp", ln.TCP)
 			}
 		case "forward":
-			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || hasProtocol(ln.Protocols, ProtocolH2) {
+			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || ln.H2C || hasProtocol(ln.Protocols, ProtocolH2) {
 				v.errf("%s: a forward listener takes no tcp or redirect_to_https and speaks h1 only", p)
 			}
 			if ln.Forward == nil {
@@ -672,6 +675,9 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			v.errf("%s.tls: set only when scheme is https", p)
 		}
 	case "https":
+		if u.H2C {
+			v.errf("%s.h2c: only for scheme http (https negotiates HTTP/2 with ALPN)", p)
+		}
 		if u.TLS != nil {
 			v.upstreamTLS(p+".tls", u.TLS)
 		}
@@ -707,6 +713,24 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		v.errf("%s.max_idle_conns_per_host: must not be negative", p)
 	}
 	if hc := u.HealthCheck; hc != nil {
+		switch hc.Type {
+		case "http":
+			if hc.GRPCService != "" {
+				v.errf("%s.health_check.grpc_service: only for type grpc", p)
+			}
+		case "grpc":
+			if !u.H2C && u.Scheme != "https" {
+				v.errf("%s.health_check.type: grpc needs h2c or scheme https", p)
+			}
+			if hc.Path != DefaultHealthCheckPath {
+				v.errf("%s.health_check.path: not used by type grpc", p)
+			}
+			if len(hc.GRPCService) > 253 || strings.ContainsAny(hc.GRPCService, " /\r\n") {
+				v.errf("%s.health_check.grpc_service: %q is not a service name", p, hc.GRPCService)
+			}
+		default:
+			v.errf("%s.health_check.type: must be http or grpc", p)
+		}
 		if !strings.HasPrefix(hc.Path, "/") {
 			v.errf("%s.health_check.path: must start with /", p)
 		}
@@ -870,6 +894,22 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	}
 	if actions != 1 {
 		v.errf("%s: exactly one of upstream, redirect, respond or honeypot is required", p)
+	}
+	if g := r.GRPC; g != nil {
+		for j, sv := range g.Services {
+			if !grpcNameOK(sv) || strings.Contains(sv, "/") {
+				v.errf("%s.grpc.services[%d]: %q is not a service name", p, j, sv)
+			}
+		}
+		for j, m := range g.Methods {
+			sv, mn, ok := strings.Cut(m, "/")
+			if !ok || !grpcNameOK(sv) || !grpcNameOK(mn) || strings.Contains(mn, "/") {
+				v.errf("%s.grpc.methods[%d]: %q is not Service/Method", p, j, m)
+			}
+		}
+		if r.Redirect != nil || r.Respond != nil || r.Honeypot != nil {
+			v.errf("%s.grpc: only a route with an upstream can match gRPC", p)
+		}
 	}
 	if m := r.Mirror; m != nil {
 		if r.Upstream == "" {
@@ -1176,6 +1216,20 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	if t.MaxConnections < 1 {
 		v.errf("%s.max_connections: must be positive", p)
 	}
+}
+
+// grpcNameOK accepts protobuf identifiers with dots (package.Service).
+func grpcNameOK(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	for _, c := range s {
+		ok := c == '.' || c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func hasProtocol(ps []Protocol, p Protocol) bool {

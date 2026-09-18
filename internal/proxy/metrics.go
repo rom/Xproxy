@@ -3,6 +3,7 @@ package proxy
 import (
 	"io"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/rom/xproxy/internal/metrics"
@@ -130,6 +131,11 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 	e.Counter("xproxy_tcp_bytes_total", "Bytes relayed by tcp listeners.", L{"direction": "out"}, float64(sn.TCPBytesOut))
 	e.Counter("xproxy_honeypot_hits_total", "Requests answered by a honeypot route.", nil, float64(sn.HoneypotHits))
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
+	for code, n := range sn.GRPCStatus {
+		if n > 0 {
+			e.Counter("xproxy_grpc_responses_total", "gRPC responses relayed by grpc-status code.", L{"code": strconv.Itoa(code)}, float64(n))
+		}
+	}
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "sent"}, float64(sn.MirrorSent))
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "dropped"}, float64(sn.MirrorDropped))
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "skipped"}, float64(sn.MirrorSkipped))

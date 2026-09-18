@@ -14,7 +14,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 
 | ID | Requirement | Prio | Release | Architectural consequence |
 |----|-------------|------|---------|---------------------------|
-| ASR-F1 | Act as an L7 HTTP reverse proxy for HTTP/1.1 and HTTP/2 clients, HTTP/1.1 and HTTP/2 upstreams | M | MVP | Built on `net/http`; protocol selection via TLS ALPN only, no h2c |
+| ASR-F1 | Act as an L7 HTTP reverse proxy for HTTP/1.1 and HTTP/2 clients, HTTP/1.1 and HTTP/2 upstreams | M | MVP | Built on `net/http`; protocol selection via TLS ALPN; h2c only where a listener or upstream opts in (1.2) |
 | ASR-F2 | Serve HTTP/3 over QUIC on the same certificates as TLS listeners | M | 1.0 (delivered in phase 2) | UDP listener per TLS listener, `quic-go` dependency, Alt-Svc advertisement, shared handler pipeline |
 | ASR-F3 | Load balance across upstream endpoints with round robin, weighted, least connections and consistent hashing | M | MVP | Balancer interface per pool; ring hash with virtual nodes so endpoint loss moves only that endpoint's keys |
 | ASR-F4 | Session affinity by cookie | M | MVP | Cookie carries a signed endpoint index, never an address; HMAC key per pool, persisted in the state directory |
@@ -31,6 +31,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F13 | Country based policy: allow, deny and rate by country | S | 1.1 (delivered) | Country lookup in the admission pipeline from a local database, no network lookups on the request path, no new dependency |
 | ASR-F16 | Honeypot routes with decoy responses that mark and ban probing clients | C | 1.2 (delivered) | A route action outside the proxy path; a bounded mark table on the server; bans only through triggers |
 | ASR-F17 | Mirror sampled requests to a second upstream without affecting the client | C | 1.2 (delivered) | Copies are asynchronous, bounded and fire-and-forget; bodies are buffered up to a bound so both requests can read them |
+| ASR-F18 | Route gRPC by service and method, answer errors as gRPC statuses, probe the standard health service | S | 1.2 (delivered) | gRPC rank in the router; h2c opt-in on listeners and upstreams; health protocol hand encoded, no protobuf dependency |
 
 ## 2. Security
 
@@ -123,6 +124,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F13 | `internal/geoip`, `routes[].geo`, rate key `country` | `TestMMDB`, `TestCSVAndDB`, `TestGeoPolicy` |
 | ASR-F16 | `internal/proxy/honeypot.go`, `routes[].honeypot` | `TestHoneypot`, `TestHoneypotMarks` |
 | ASR-F17 | `internal/proxy/mirror.go`, `routes[].mirror` | `TestMirror`, `TestRouteActions` |
+| ASR-F18 | `internal/proxy/grpc.go`, `internal/upstream/grpchealth.go`, router gRPC rank | `TestGRPC`, `TestGRPCHelpers`, `TestMatchGRPC`, `TestGRPCHealthEncoding`, `TestGRPCConfig` |
 | ASR-Q2 | `test/covergate`, `.gremlins.yaml`, `internal/proxy/chaos_test.go` | CI `test` job (`make cover-gate`), CI `mutate` job, `TestChaos*` |
 | ASR-O6 | `internal/filter` registry, `internal/filters` | `TestRegistry`, `TestFilters`, `TestFiltersConfig`, EXTENDING.md |
 | ASR-P1 | `internal/router`, `internal/upstream` health bounds, `internal/proxy` generations | `TestScale` (`make scale`), `BenchmarkMatch1000Hosts`, PERFORMANCE.md |

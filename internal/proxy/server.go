@@ -373,6 +373,14 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		// Disable automatic h2c and keep protocol choice to TLS ALPN.
 		TLSNextProto: nil,
 	}
+	if lc.H2C {
+		// HTTP/2 without TLS (prior knowledge and Upgrade) with the
+		// stream and frame bounds of the TLS listeners.
+		bl.httpSrv.Protocols = new(http.Protocols)
+		bl.httpSrv.Protocols.SetHTTP1(true)
+		bl.httpSrv.Protocols.SetUnencryptedHTTP2(true)
+		bl.httpSrv.HTTP2 = &http.HTTP2Config{MaxConcurrentStreams: 250, MaxReadFrameSize: 1 << 20}
+	}
 	if lc.TLS != nil {
 		tc, rl, err := tlsconf.Server(lc.TLS, lc.Protocols)
 		if err != nil {

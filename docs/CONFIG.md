@@ -38,6 +38,7 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `address` | host:port | required | `":443"`, `"0.0.0.0:80"`, `"[::1]:8080"`. Port `0` picks a free port (tests). |
 | `protocols` | list | `[h1, h2]` with TLS, `[h1]` without | `h2` and `h3` require `tls`. `h3` adds a QUIC endpoint on UDP at the same port and requires `h1` or `h2` alongside it (clients discover HTTP/3 through `Alt-Svc`). |
 | `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
+| `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Reserved (PROXY protocol parsing arrives in 1.0) |
 | `kind` | `http`, `tcp`, `forward` | `http` | `tcp` is a layer 4 listener and `forward` an explicit proxy for clients; see below |
@@ -252,6 +253,7 @@ Memory: at most 64 x 8192 buckets per policy.
 | `hash_on` | `client_ip`, `header:<Name>`, `cookie:<Name>` | `client_ip` | For `hash`; missing input falls back to the client address |
 | `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000}` |
 | `scheme` | `http`, `https` | `http` | |
+| `h2c` | bool | `false` | Speak HTTP/2 without TLS to `http` endpoints (gRPC backends); `https` negotiates HTTP/2 with ALPN on its own |
 | `tls` | object | | Only with `https`; see below |
 | `health_check` | object | none | Active probing; see below |
 | `outlier_ejection` | object | none | Passive ejection; see below |
@@ -279,6 +281,8 @@ Memory: at most 64 x 8192 buckets per policy.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `type` | `http`, `grpc` | `http` | `grpc` calls the standard `grpc.health.v1.Health/Check` over HTTP/2 and needs `h2c` or `scheme: https`; `path` and `expected_status` are not used |
+| `grpc_service` | string | `""` | Service asked in a grpc check; empty asks about the server as a whole |
 | `path` | path | `/` | GET target |
 | `interval` | duration | `5s` | At least 500ms; start is jittered |
 | `timeout` | duration | `2s` | Must be shorter than `interval` |
@@ -322,6 +326,7 @@ wins); then configuration order.
 | `respond` | `{status, body}` | status `200` | Static response, body up to 64 KiB |
 | `honeypot` | object | | Decoy action; see `routes[].honeypot` |
 | `mirror` | object | | Copy requests to a second upstream; see `routes[].mirror` |
+| `grpc` | `{services, methods}` | | Restrict the route to gRPC requests; see `routes[].grpc` |
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
@@ -490,6 +495,35 @@ The access log carries `mirror: sent`, `dropped` or `body_too_large`.
 Counters: `mirror_sent`, `mirror_dropped`, `mirror_skipped`,
 `mirror_failed`; metric `xproxy_mirror_total{outcome}`. Mirror
 responses appear in the error log at debug level with their status.
+
+### routes[].grpc
+
+A route with a `grpc` section matches only gRPC requests (content type
+`application/grpc` or `application/grpc+...`), and with lists only the
+named services or `Service/Method` pairs read from the request path
+(`/package.Service/Method`). Among routes of equal path length and
+priority, one with named services wins over one with an empty `grpc`
+section, which wins over a plain route, so a gRPC catch-all and an
+HTTP catch-all can share `/`. Only routes with an `upstream` can match
+gRPC. Requests and responses stream through unchanged with their
+trailers; the client's `grpc-timeout` header tightens the route
+`timeout`. When the proxy cannot forward a gRPC request it answers as a
+gRPC client expects, a trailers-only response with HTTP 200 and a
+`grpc-status`: 7 PERMISSION_DENIED for 403, 16 UNAUTHENTICATED for
+401, 12 UNIMPLEMENTED for no route, 8 RESOURCE_EXHAUSTED for rate and
+size limits, 14 UNAVAILABLE for no healthy endpoint or a connection
+error, 4 DEADLINE_EXCEEDED for a timeout, 13 INTERNAL otherwise, with
+the proxy's own status in `grpc-message`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `services` | list | `[]` | Fully qualified service names, `package.Service` |
+| `methods` | list | `[]` | `package.Service/Method` pairs |
+
+The access log carries `grpc: true` and `grpc_status` from the
+response; `xproxy_grpc_responses_total{code}` counts responses by
+status. gRPC needs HTTP/2 end to end: a TLS listener with `h2`, or a
+plaintext listener with `h2c: true`, and an `https` or `h2c` upstream.
 
 ### routes[].waf
 

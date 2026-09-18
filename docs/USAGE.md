@@ -541,6 +541,46 @@ default: their later requests on every route carry
 `honeypot_marked: true` in the access log, and a `bot_score` filter can
 weigh the mark. `xproxyctl honeypot` lists the marks.
 
+### gRPC services
+
+```yaml
+server:
+  listeners:
+    - name: rpc
+      address: "10.0.0.5:8443"
+      tls: {certificates: [{cert_file: /etc/xproxy/rpc.pem, key_file: /etc/xproxy/rpc.key}]}
+    - name: rpc-internal
+      address: "10.0.0.5:8080"
+      h2c: true                     # plaintext HTTP/2 for in-cluster clients
+upstreams:
+  - name: orders
+    h2c: true                       # the gRPC servers listen without TLS
+    endpoints: [{address: 10.0.5.10:9000}, {address: 10.0.5.11:9000}]
+    health_check: {type: grpc, grpc_service: orders.v1.Orders, interval: 5s}
+  - name: catalog
+    scheme: https
+    endpoints: [{address: catalog.svc.internal:443}]
+    health_check: {type: grpc}
+routes:
+  - name: orders
+    grpc: {services: [orders.v1.Orders]}
+    upstream: orders
+    rate_limits: [api]
+  - name: catalog-read
+    grpc: {methods: [catalog.v1.Catalog/Get, catalog.v1.Catalog/List]}
+    upstream: catalog
+  - name: rpc-other
+    grpc: {}
+    respond: {status: 404}          # invalid: gRPC routes need an upstream
+```
+
+(Drop the last route: a request for an unlisted service gets
+`grpc-status: 12 UNIMPLEMENTED` from the proxy on its own.) Health
+checks use the standard health service, so an endpoint that reports
+`NOT_SERVING` is taken out of rotation before clients see errors, and
+a rate limited call is refused with `RESOURCE_EXHAUSTED` rather than a
+text page a gRPC client cannot read.
+
 ### Request mirroring
 
 ```yaml

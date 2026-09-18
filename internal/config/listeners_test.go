@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,41 @@ routes:
 	}
 }
 
+// TestGRPCConfig covers h2c and gRPC health check validation.
+func TestGRPCConfig(t *testing.T) {
+	base := `
+version: 1
+server:
+  listeners:
+    - {name: main, address: ":8080"%s}
+upstreams:
+  - name: app
+    %s
+    endpoints: [{address: 127.0.0.1:9000}]
+routes:
+  - name: r
+    upstream: app
+`
+	if _, err := Parse([]byte(fmt.Sprintf(base, ", h2c: true", "h2c: true\n    health_check: {type: grpc, grpc_service: a.B}"))); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct{ name, listener, upstream, want string }{
+		{"h2c with tls", ", h2c: true, tls: {certificates: [{cert_file: /c, key_file: /k}]}", "", "only for plaintext"},
+		{"h2c on https upstream", "", "scheme: https\n    h2c: true", "only for scheme http"},
+		{"grpc check needs h2", "", "health_check: {type: grpc}", "needs h2c or scheme https"},
+		{"grpc check path", "", "h2c: true\n    health_check: {type: grpc, path: /x}", "not used by type grpc"},
+		{"grpc service on http check", "", "health_check: {grpc_service: a}", "only for type grpc"},
+		{"bad grpc service", "", "h2c: true\n    health_check: {type: grpc, grpc_service: \"a b\"}", "not a service name"},
+		{"check type", "", "health_check: {type: tcp}", "must be http or grpc"},
+	}
+	for _, tc := range cases {
+		_, err := Parse([]byte(fmt.Sprintf(base, tc.listener, tc.upstream)))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}
+
 // TestRouteActions covers the honeypot action's validation.
 func TestRouteActions(t *testing.T) {
 	base := `
@@ -143,6 +179,9 @@ routes:
 		{"mirror body", "upstream: app\n    mirror: {upstream: shadow, max_body_bytes: 100000000}", "mirror.max_body_bytes"},
 		{"mirror timeout", "upstream: app\n    mirror: {upstream: shadow, timeout: 10m}", "mirror.timeout"},
 		{"mirror in flight", "upstream: app\n    mirror: {upstream: shadow, max_in_flight: -1}", "mirror.max_in_flight"},
+		{"grpc service", "upstream: app\n    grpc: {services: [\"a/b\"]}", "grpc.services"},
+		{"grpc method", "upstream: app\n    grpc: {methods: [nomethod]}", "grpc.methods"},
+		{"grpc without upstream", "respond: {status: 200}\n    grpc: {}", "only a route with an upstream"},
 	}
 	for _, tc := range cases {
 		_, err := Parse([]byte(strings.Replace(base, "%s", tc.snippet, 1)))

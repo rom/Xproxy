@@ -320,6 +320,27 @@ observes the `honeypot` ban reason and answers; a delay is spent in a
 tarpit slot after the request slot is released. The mark is read once
 per request after routing and exposed to the access log and to filters.
 
+### gRPC
+
+gRPC rides the ordinary pipeline. The router carries a gRPC rank per
+entry so that routes with a `grpc` section match only gRPC requests
+(by content type) and rank above plain routes on the same path; the
+service and method come from the request path. Plaintext HTTP/2 uses
+the standard library's `Protocols` setting: an `h2c` listener enables
+unencrypted HTTP/2 on its `http.Server` with the same stream and frame
+bounds as TLS listeners, and an `h2c` upstream gets a clone of the pool
+transport that speaks only unencrypted HTTP/2, which `Pool.RoundTripper`
+selects; no HTTP/2 library outside `net/http` is linked. The reverse
+proxy already relays `TE: trailers` and trailers, so streaming works
+without special casing. `plainStatus` answers a gRPC request over
+HTTP/2 with a trailers-only response and a mapped `grpc-status` instead
+of a text page; the client's `grpc-timeout` tightens the route
+deadline. Health checks of type `grpc` post a hand encoded
+`HealthCheckRequest` to `grpc.health.v1.Health/Check` and read the
+status from the response, so the standard health service works without
+a protobuf library. The upstream response's `grpc-status` is captured
+at end of body for the access log and a per code counter.
+
 ### Request mirroring
 
 `prepareMirror` runs in `proxyTo` before the live request is handed to
