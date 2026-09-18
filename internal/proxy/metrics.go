@@ -256,27 +256,33 @@ func (s *Server) Collect(e metrics.Collector) {
 	}
 
 	// Per route counters (bounded by the number of routes).
+	// Each family is emitted contiguously (the exposition declares a
+	// family once), so the routes are walked once per family.
 	if rt.cfg.Metrics.PerRouteEnabled() {
-		for _, cr := range rt.routes {
-			labels := func(extra ...string) L {
-				l := L{"route": cr.cfg.Name}
-				if cr.cfg.Tenant != "" {
-					l["tenant"] = cr.cfg.Tenant
-				}
-				for i := 0; i+1 < len(extra); i += 2 {
-					l[extra[i]] = extra[i+1]
-				}
-				return l
+		labels := func(cr *compiledRoute, extra ...string) L {
+			l := L{"route": cr.cfg.Name}
+			if cr.cfg.Tenant != "" {
+				l["tenant"] = cr.cfg.Tenant
 			}
+			for i := 0; i+1 < len(extra); i += 2 {
+				l[extra[i]] = extra[i+1]
+			}
+			return l
+		}
+		for _, cr := range rt.routes {
 			for i, class := range routeClasses {
 				if v := cr.counts[i].Load(); v > 0 || i == 0 {
-					e.Counter("xproxy_route_requests_total", "Requests per route and outcome.", labels("outcome", class), float64(v))
+					e.Counter("xproxy_route_requests_total", "Requests per route and outcome.", labels(cr, "outcome", class), float64(v))
 				}
 			}
-			e.Counter("xproxy_route_bytes_total", "Bytes per route and direction.", labels("direction", "in"), float64(cr.bytesIn.Load()))
-			e.Counter("xproxy_route_bytes_total", "Bytes per route and direction.", labels("direction", "out"), float64(cr.bytesOut.Load()))
+		}
+		for _, cr := range rt.routes {
+			e.Counter("xproxy_route_bytes_total", "Bytes per route and direction.", labels(cr, "direction", "in"), float64(cr.bytesIn.Load()))
+			e.Counter("xproxy_route_bytes_total", "Bytes per route and direction.", labels(cr, "direction", "out"), float64(cr.bytesOut.Load()))
+		}
+		for _, cr := range rt.routes {
 			if v := cr.rateLimited.Load(); v > 0 {
-				e.Counter("xproxy_route_rate_limited_total", "Requests refused by a rate limit per route.", labels(), float64(v))
+				e.Counter("xproxy_route_rate_limited_total", "Requests refused by a rate limit per route.", labels(cr), float64(v))
 			}
 		}
 		names := make([]string, 0, len(rt.rateLimits))
@@ -288,7 +294,9 @@ func (s *Server) Collect(e metrics.Collector) {
 			rl := rt.rateLimits[name]
 			e.Counter("xproxy_rate_limit_decisions_total", "Rate limit decisions per policy.", L{"policy": name, "outcome": "allowed"}, float64(rl.allowed.Load()))
 			e.Counter("xproxy_rate_limit_decisions_total", "Rate limit decisions per policy.", L{"policy": name, "outcome": "denied"}, float64(rl.denied.Load()))
-			e.Gauge("xproxy_rate_limit_keys", "Keys tracked per policy.", L{"policy": name}, float64(rl.lim.Len()))
+		}
+		for _, name := range names {
+			e.Gauge("xproxy_rate_limit_keys", "Keys tracked per policy.", L{"policy": name}, float64(rt.rateLimits[name].lim.Len()))
 		}
 	}
 }
