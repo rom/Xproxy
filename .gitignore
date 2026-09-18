@@ -7,3 +7,4 @@ testdata/fuzz/**/[!R]*
 rpmbuild/
 deploy/selinux/*.pp*
 deploy/selinux/tmp/
+dist/

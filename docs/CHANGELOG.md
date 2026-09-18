@@ -1,13 +1,19 @@
 # Changelog
 
-All notable changes to Xproxy. The format follows Keep a Changelog; the
-project uses semantic versioning once 1.0 is released. Until then every
-entry is under "Unreleased" and is grouped by the roadmap phase that
-delivered it (see [ROADMAP.md](ROADMAP.md)).
+All notable changes to Xproxy. The format follows Keep a Changelog and
+the project uses semantic versioning from 1.0.0. Entries are grouped by
+the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
-### Phase 3: 1.0 (in progress)
+Nothing yet.
+
+## 1.0.0 - 2026-09-18
+
+First release. Highlights and known limitations are in
+[RELEASE_NOTES_1.0.md](RELEASE_NOTES_1.0.md).
+
+### Phase 3: 1.0
 
 #### Security
 - SR-1: tarpitted requests no longer hold a concurrency slot; a separate

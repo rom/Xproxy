@@ -31,7 +31,7 @@ server.
 
 | Package | Tests | Focus |
 |---------|-------|-------|
-| `internal/config` | `TestMinimalDefaults`, `TestRejects` (25 rejection cases), `TestMultipleErrorsReported`, `TestZeroTimeoutMeansDefault`, `TestDuration`, `TestRateLimitDefaults`, `TestHostPattern`, `TestExampleConfig` | Defaults, every validation rule, error aggregation, the shipped example |
+| `internal/config` | `TestConfigReferenceComplete` (every YAML key of the schema is mentioned in CONFIG.md), `TestMinimalDefaults`, `TestRejects` (25 rejection cases), `TestMultipleErrorsReported`, `TestZeroTimeoutMeansDefault`, `TestDuration`, `TestRateLimitDefaults`, `TestHostPattern`, `TestExampleConfig` | Defaults, every validation rule, error aggregation, the shipped example |
 | `internal/router` | `TestMatch`, `TestNoMatch`, `BenchmarkMatch` | Exact versus wildcard host precedence, longest prefix, segment boundaries, methods, priority |
 | `internal/netutil` | `TestClientIP`, `TestCleanPath`, `TestHost` | Trusted proxy algorithm including malformed hops and IPv4 mapped addresses; traversal normalisation; host normalisation |
 | `internal/limits` | `TestAllowFallback` (full shard decides on the fallback key, no fallback bounded by burst, fallback equal to key), `TestKeyedLimiter`, `TestKeyedLimiterBound`, `TestPeerRates`, `TestConcurrency`, `TestConnLimiter`, `TestConnLimiterBanned` | Refill arithmetic with a fake clock, memory bound and eviction, peer reports reduce refill and expire, flush and its cap, release idempotency, real sockets dropped at accept, banned peers closed at accept |
