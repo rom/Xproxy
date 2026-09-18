@@ -1047,6 +1047,39 @@ the conservative failure.
 
 ---
 
+## AMR-038: Mirrored copies are fire-and-forget and bounded
+
+**Context.** Mirroring exists to test a candidate backend with real
+traffic. The tempting design compares the two responses and reports
+differences. It also couples the client's request to the slower of two
+backends.
+
+**Decision.** A copy is sent after the live request has been prepared
+and before it is proxied, in a goroutine with its own timeout, through
+the same endpoint selection as live traffic but without retries. Its
+response is discarded apart from a debug log line. Copies are bounded
+per route in flight (dropped beyond the bound, never queued), in body
+size (a larger request is proxied and not mirrored) and by sampling.
+The body is buffered once so the live request and the copy read the
+same bytes; the buffer bound is the mirror's, not the route's body
+limit. Copies carry `X-Xproxy-Mirror: 1` and the request id so that the
+candidate can tell and the two logs can be joined.
+
+**Alternatives.** Response comparison in the proxy (rejected: it holds
+both responses in memory and turns a testing aid into a latency
+source; join the logs by request id instead); synchronous copies
+(rejected: the client waits for the slower backend); a replay tool
+from the access log (deferred: needs bodies in the log, which the log
+policy forbids).
+
+**Consequences.** Non-idempotent requests are duplicated by design;
+operators choose `methods` accordingly. Mirrored copies count on the
+mirror pool's endpoints (health, ejection) like live traffic.
+
+**Status.** Accepted.
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |

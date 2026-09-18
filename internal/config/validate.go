@@ -871,6 +871,36 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	if actions != 1 {
 		v.errf("%s: exactly one of upstream, redirect, respond or honeypot is required", p)
 	}
+	if m := r.Mirror; m != nil {
+		if r.Upstream == "" {
+			v.errf("%s.mirror: only a route with an upstream can mirror", p)
+		}
+		switch {
+		case m.Upstream == "":
+			v.errf("%s.mirror.upstream: required", p)
+		case !upstreams[m.Upstream]:
+			v.errf("%s.mirror.upstream: unknown upstream %q", p, m.Upstream)
+		case m.Upstream == r.Upstream:
+			v.errf("%s.mirror.upstream: must differ from the route's upstream", p)
+		}
+		if m.Percent < 1 || m.Percent > 100 {
+			v.errf("%s.mirror.percent: must be between 1 and 100", p)
+		}
+		for j, x := range m.Methods {
+			if x == "" || strings.ToUpper(x) != x {
+				v.errf("%s.mirror.methods[%d]: %q must be an upper-case token", p, j, x)
+			}
+		}
+		if m.MaxBodyBytes < 0 || m.MaxBodyBytes > 64<<20 {
+			v.errf("%s.mirror.max_body_bytes: must be between 0 and 64 MiB", p)
+		}
+		if m.Timeout <= 0 || m.Timeout > Duration(5*time.Minute) {
+			v.errf("%s.mirror.timeout: must be positive and at most 5m", p)
+		}
+		if m.MaxInFlight < 1 || m.MaxInFlight > 10000 {
+			v.errf("%s.mirror.max_in_flight: must be between 1 and 10000", p)
+		}
+	}
 	if r.StripPrefix != "" && !strings.HasPrefix(r.StripPrefix, "/") {
 		v.errf("%s.strip_prefix: must start with /", p)
 	}

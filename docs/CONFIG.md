@@ -321,6 +321,7 @@ wins); then configuration order.
 | `redirect` | `{to, status}` | status `308` | `to` is a URL or path; status 301, 302, 303, 307 or 308 |
 | `respond` | `{status, body}` | status `200` | Static response, body up to 64 KiB |
 | `honeypot` | object | | Decoy action; see `routes[].honeypot` |
+| `mirror` | object | | Copy requests to a second upstream; see `routes[].mirror` |
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
@@ -462,6 +463,33 @@ first, last, expires) and the decoy names; `DELETE /v1/honeypot?ip=` and
 `xproxyctl honeypot forget IP` remove a mark. The mark table holds at
 most 65536 addresses. Counters: `honeypot_hits`, `honeypot_marked`;
 metrics `xproxy_honeypot_hits_total`, `xproxy_honeypot_marked`.
+
+### routes[].mirror
+
+A mirrored route sends a copy of each request (sampled by `percent`) to
+another upstream in the background while the live request proceeds as
+usual. The copy is built like the live outbound request (path rules,
+`host_header`, forwarding headers, `request_headers`) and carries
+`X-Xproxy-Mirror: 1` and the same `X-Request-Id`; its response is read
+and discarded, so a slow, failing or absent mirror never changes what
+the client sees. Bodies are buffered up to `max_body_bytes` so that
+both requests can read them; larger requests are proxied and not
+mirrored. Upgrade requests are never mirrored. Only routes with an
+`upstream` can mirror.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | name | required | Receives the copies; must differ from the route's upstream |
+| `percent` | int | `100` | Share of requests copied, 1 to 100 |
+| `methods` | list | `[]` (all) | Upper-case tokens; copies are limited to these methods |
+| `max_body_bytes` | int | `1048576` | Largest body buffered for mirroring; at most 64 MiB |
+| `timeout` | duration | `5s` | Bound on the copy including its response; at most 5m |
+| `max_in_flight` | int | `64` | Copies in flight for this route; beyond it copies are dropped and counted |
+
+The access log carries `mirror: sent`, `dropped` or `body_too_large`.
+Counters: `mirror_sent`, `mirror_dropped`, `mirror_skipped`,
+`mirror_failed`; metric `xproxy_mirror_total{outcome}`. Mirror
+responses appear in the error log at debug level with their status.
 
 ### routes[].waf
 

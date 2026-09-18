@@ -320,6 +320,18 @@ observes the `honeypot` ban reason and answers; a delay is spent in a
 tarpit slot after the request slot is released. The mark is read once
 per request after routing and exposed to the access log and to filters.
 
+### Request mirroring
+
+`prepareMirror` runs in `proxyTo` before the live request is handed to
+the reverse proxy: it samples, buffers the body up to the bound (the
+live request reads the buffer; over the bound the live request reads
+the prefix followed by the rest and no copy is made), and builds the
+copy through the same `rewrite` as the live request. `sendMirror`
+takes a slot from the route's in-flight semaphore or drops the copy,
+then delivers it in a goroutine through a `poolTransport` with no
+retries and its own timeout, discarding the response. Nothing on the
+mirror path can block or fail the client's request.
+
 ### Response cache
 
 `internal/cache` is a byte bounded LRU of stored responses keyed by a

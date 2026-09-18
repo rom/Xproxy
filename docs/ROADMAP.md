@@ -183,12 +183,12 @@ procedure is in RELEASING.md.
 
 - Honeypot routes and decoy responses: delivered (`routes[].honeypot`,
   AMR-037)
+- Request mirroring: delivered (`routes[].mirror`, AMR-038)
 
 ## After 1.2 (candidates, unranked)
 
 - WebAssembly extension ABI (AMR-013)
 - OIDC login flows with session cookies
-- Request mirroring and replay for testing
 - gRPC aware routing and health checks
 - Kubernetes ingress controller mode
 

@@ -56,6 +56,8 @@ for how a release is cut). Phases 1 and 2 are complete. See
   private ranges by default, and proxy credentials
 - Honeypot routes with built-in decoys that mark and, through triggers,
   ban probing clients
+- Request mirroring of sampled traffic to a candidate upstream, bounded
+  and invisible to clients
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
   status, upstreams, reload, certificate reload, log reopen, tail, bans,
   cluster, metrics, sampled series, and a full-screen TUI

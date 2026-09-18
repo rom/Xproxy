@@ -541,6 +541,27 @@ default: their later requests on every route carry
 `honeypot_marked: true` in the access log, and a `bot_score` filter can
 weigh the mark. `xproxyctl honeypot` lists the marks.
 
+### Request mirroring
+
+```yaml
+upstreams:
+  - name: api-v2
+    endpoints: [{address: 10.0.4.10:8080}]
+  - name: api-v3-candidate
+    endpoints: [{address: 10.0.4.50:8080}]
+routes:
+  - name: api
+    hosts: [api.example.com]
+    upstream: api-v2
+    mirror: {upstream: api-v3-candidate, percent: 10, methods: [GET], max_in_flight: 32}
+```
+
+One request in ten is copied to the candidate with `X-Xproxy-Mirror: 1`
+and the same `X-Request-Id` as the live request, so the two backends'
+logs can be joined. The client only ever sees the live response;
+copies are bounded in body size, time and number in flight, and
+dropped rather than queued when the candidate falls behind.
+
 ### Response caching
 
 ```yaml

@@ -50,6 +50,7 @@ type reqState struct {
 	cache    string // hit, miss or bypass on a cached route
 	cacheKey string
 	marked   bool   // client previously hit a honeypot
+	mirror   string // sent, dropped or body_too_large on a mirrored route
 	release  func() // concurrency slot; idempotent
 }
 
@@ -449,6 +450,10 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		return
 	}
 
+	var mirrored *http.Request
+	if cr.mirror != nil {
+		mirrored = s.prepareMirror(r, st, cr)
+	}
 	pi := &pickInfo{hashKey: hashKey(pool.Cfg, r, st)}
 	if name := pool.AffinityCookie(); name != "" {
 		if c, err := r.Cookie(name); err == nil {
@@ -521,6 +526,9 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
 			s.upstreamError(rw, req, st, pi, err)
 		},
+	}
+	if mirrored != nil {
+		s.sendMirror(mirrored, st, cr)
 	}
 	rp.ServeHTTP(rw, r)
 	pi.mu.Lock()
@@ -713,6 +721,9 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	}
 	if st.marked {
 		attrs = append(attrs, "honeypot_marked", true)
+	}
+	if st.mirror != "" {
+		attrs = append(attrs, "mirror", st.mirror)
 	}
 	if st.denied != "" {
 		attrs = append(attrs, "denied", st.denied)

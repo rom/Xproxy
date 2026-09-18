@@ -104,6 +104,8 @@ server:
 upstreams:
   - name: app
     endpoints: [{address: 127.0.0.1:9000}]
+  - name: shadow
+    endpoints: [{address: 127.0.0.1:9001}]
 routes:
   - name: r
     paths: [/x]
@@ -112,6 +114,13 @@ routes:
 	cfg, err := Parse([]byte(strings.Replace(base, "%s", "honeypot: {}", 1)))
 	if err != nil {
 		t.Fatal(err)
+	}
+	mcfg, err := Parse([]byte(strings.Replace(base, "%s", "upstream: app\n    mirror: {upstream: shadow}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := mcfg.Routes[0].Mirror; m.Percent != 100 || m.MaxBodyBytes != 1<<20 || m.Timeout.D() != 5*time.Second || m.MaxInFlight != 64 {
+		t.Fatalf("mirror defaults: %+v", m)
 	}
 	hp := cfg.Routes[0].Honeypot
 	if hp.Decoy != "admin-login" || hp.Status != 200 || hp.Mark.D() != time.Hour || hp.ContentType == "" {
@@ -126,6 +135,14 @@ routes:
 		{"delay", "honeypot: {decoy: env, delay: 2m}", "honeypot.delay"},
 		{"mark", "honeypot: {decoy: env, mark: 800h}", "honeypot.mark"},
 		{"content type", "honeypot: {body: x, content_type: \"a\\nb\"}", "content_type"},
+		{"mirror without upstream", "honeypot: {decoy: env}\n    mirror: {upstream: app}", "only a route with an upstream"},
+		{"mirror same upstream", "upstream: app\n    mirror: {upstream: app}", "must differ"},
+		{"mirror unknown upstream", "upstream: app\n    mirror: {upstream: nope}", "unknown upstream"},
+		{"mirror percent", "upstream: app\n    mirror: {upstream: shadow, percent: 101}", "mirror.percent"},
+		{"mirror method", "upstream: app\n    mirror: {upstream: shadow, methods: [get]}", "mirror.methods"},
+		{"mirror body", "upstream: app\n    mirror: {upstream: shadow, max_body_bytes: 100000000}", "mirror.max_body_bytes"},
+		{"mirror timeout", "upstream: app\n    mirror: {upstream: shadow, timeout: 10m}", "mirror.timeout"},
+		{"mirror in flight", "upstream: app\n    mirror: {upstream: shadow, max_in_flight: -1}", "mirror.max_in_flight"},
 	}
 	for _, tc := range cases {
 		_, err := Parse([]byte(strings.Replace(base, "%s", tc.snippet, 1)))

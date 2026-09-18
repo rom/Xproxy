@@ -42,6 +42,10 @@ type Stats struct {
 	DeniedFilter       atomic.Uint64
 	DeniedGeo          atomic.Uint64
 	HoneypotHits       atomic.Uint64
+	MirrorSent         atomic.Uint64
+	MirrorDropped      atomic.Uint64
+	MirrorSkipped      atomic.Uint64
+	MirrorFailed       atomic.Uint64
 	TCPConnections     atomic.Uint64
 	TCPRejected        atomic.Uint64
 	TCPErrors          atomic.Uint64
@@ -95,6 +99,10 @@ type Snapshot struct {
 	DeniedFilter       uint64    `json:"denied_filter"`
 	DeniedGeo          uint64    `json:"denied_geo"`
 	HoneypotHits       uint64    `json:"honeypot_hits"`
+	MirrorSent         uint64    `json:"mirror_sent"`
+	MirrorDropped      uint64    `json:"mirror_dropped"`
+	MirrorSkipped      uint64    `json:"mirror_skipped"`
+	MirrorFailed       uint64    `json:"mirror_failed"`
 	HoneypotMarked     int       `json:"honeypot_marked"`
 	TCPConnections     uint64    `json:"tcp_connections"`
 	TCPRejected        uint64    `json:"tcp_rejected"`
@@ -167,6 +175,10 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedFilter:       s.DeniedFilter.Load(),
 		DeniedGeo:          s.DeniedGeo.Load(),
 		HoneypotHits:       s.HoneypotHits.Load(),
+		MirrorSent:         s.MirrorSent.Load(),
+		MirrorDropped:      s.MirrorDropped.Load(),
+		MirrorSkipped:      s.MirrorSkipped.Load(),
+		MirrorFailed:       s.MirrorFailed.Load(),
 		TCPConnections:     s.TCPConnections.Load(),
 		TCPRejected:        s.TCPRejected.Load(),
 		TCPErrors:          s.TCPErrors.Load(),

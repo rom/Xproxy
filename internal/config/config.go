@@ -560,6 +560,30 @@ type Route struct {
 	Geo *RouteGeo `yaml:"geo"`
 	// Cache stores responses of this route (needs the cache section).
 	Cache *RouteCache `yaml:"cache"`
+	// Mirror copies requests of this route to a second upstream.
+	Mirror *RouteMirror `yaml:"mirror"`
+}
+
+// RouteMirror sends a copy of each request (sampled by percent) to
+// another upstream in the background. The copy carries the same path
+// rules, host and header operations as the live request plus
+// X-Xproxy-Mirror: 1; its response is discarded and never affects the
+// client. Bodies are buffered up to max_body_bytes; larger requests are
+// proxied but not mirrored.
+type RouteMirror struct {
+	Upstream string `yaml:"upstream"`
+	// Percent of requests copied. Default 100.
+	Percent int `yaml:"percent"`
+	// Methods restricts copies to these methods. Empty copies every
+	// method except upgrades.
+	Methods []string `yaml:"methods"`
+	// MaxBodyBytes bounds the buffered body. Default 1 MiB.
+	MaxBodyBytes int64 `yaml:"max_body_bytes"`
+	// Timeout bounds the copy including its response. Default 5s.
+	Timeout Duration `yaml:"timeout"`
+	// MaxInFlight bounds copies in flight for this route; beyond it
+	// copies are dropped and counted. Default 64.
+	MaxInFlight int `yaml:"max_in_flight"`
 }
 
 // Cache bounds the response cache. Default 64 MiB total, 1 MiB per

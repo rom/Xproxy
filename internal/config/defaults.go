@@ -412,6 +412,14 @@ func applyDefaults(c *Config) {
 		if r.Respond != nil && r.Respond.Status == 0 {
 			r.Respond.Status = 200
 		}
+		if m := r.Mirror; m != nil {
+			setInt(&m.Percent, 100)
+			if m.MaxBodyBytes == 0 {
+				m.MaxBodyBytes = 1 << 20
+			}
+			setDur(&m.Timeout, 5*time.Second)
+			setInt(&m.MaxInFlight, 64)
+		}
 		if hp := r.Honeypot; hp != nil {
 			setInt(&hp.Status, 200)
 			setStr(&hp.ContentType, "text/html; charset=utf-8")

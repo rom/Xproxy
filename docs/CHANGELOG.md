@@ -50,6 +50,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   its later requests carry `honeypot_marked` in the access log and
   `Info.HoneypotMarked` in filters; `GET/DELETE /v1/honeypot`,
   `xproxyctl honeypot`, `xproxy_honeypot_*` metrics.
+- Request mirroring: `routes[].mirror` copies sampled requests to a
+  second upstream in the background with `X-Xproxy-Mirror: 1`, bounded
+  in body size, time and copies in flight; the client never sees the
+  mirror's response; `mirror` in the access log, `mirror_*` counters
+  and `xproxy_mirror_total{outcome}`.
 
 ## 1.0.0 - 2026-09-18
 
