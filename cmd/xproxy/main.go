@@ -57,6 +57,7 @@ func run(args []string) int {
 		return 0
 	}
 
+	logging.Version = version.Version
 	logs, err := logging.Open(cfg.Logging)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

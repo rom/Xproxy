@@ -69,7 +69,8 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `honeypot` | Clients marked by honeypot routes and the decoy names; `honeypot forget IP` removes a mark |
 | `dns` | DNS listener counters (queries, cache, blocked, refused, dropped, upstream failures); `dns purge` empties the caches |
 | `ingress` | Kubernetes ingress controller status: syncs, watches, counts, warnings |
-| `otlp` | OpenTelemetry exporter status: pushes, failures, last error |
+| `otlp` | OpenTelemetry metrics exporter status: pushes, failures, last error |
+| `telemetry` | Every OpenTelemetry exporter (metrics, traces, logs) with sent, dropped, pushes, failures, queue depth and last error |
 | `htpasswd FILE NAME` | Add or replace a `basic_auth` user; the password is read from stdin |
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
@@ -126,6 +127,34 @@ metrics:
 Every family in `/metrics` reaches the collector as OTLP with the same
 names, so dashboards built on the Prometheus exposition carry over;
 `xproxyctl otlp` shows whether pushes succeed.
+
+### Distributed tracing and logs to an OpenTelemetry collector
+
+```yaml
+tracing:
+  sample_percent: 10
+  otlp: {endpoint: https://otel.example.internal:4318/v1/traces, headers: {Authorization: "Bearer replace-me"}}
+logging:
+  otlp: {endpoint: https://otel.example.internal:4318/v1/logs, headers: {Authorization: "Bearer replace-me"}}
+  access: {sinks: [file, otlp]}
+  security: {sinks: [file, otlp]}
+```
+
+Every request carries a `traceparent` to the upstream, so an
+application that already traces sees the proxy's server and upstream
+spans above its own; one request in ten is exported. The access and
+security streams reach the collector as log records with the trace id
+of their request, and the files keep receiving everything. Applications
+behind the proxy only need to read `traceparent` from the request (most
+frameworks do so out of the box). `xproxyctl telemetry` shows whether
+spans and records arrive:
+
+```
+SIGNAL   ENDPOINT                                       SENT   DROPPED  PUSHES  FAILED  QUEUED  LAST ERROR
+metrics  https://otel.example.internal:4318/v1/metrics  120    -        120     0       -       -
+traces   https://otel.example.internal:4318/v1/traces   9310   0        41      0       12      -
+logs     https://otel.example.internal:4318/v1/logs     93102  0        190     0       0       -
+```
 
 ### Splitting the configuration into fragments
 

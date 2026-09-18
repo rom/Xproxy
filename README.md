@@ -142,8 +142,9 @@ an identifier from the access log to the upstream.
   viewer and operator roles, configuration editing with validation,
   graphs and live logs
 - Prometheus exposition with latency histograms and per route counters,
-  on the socket or a hardened TCP endpoint, and an in-process series
-  buffer for graphs
+  on the socket or a hardened TCP endpoint, an in-process series buffer
+  for graphs, and OpenTelemetry export of metrics, traces (W3C trace
+  context propagated to upstreams) and logs
 - Hot reload, graceful shutdown, systemd socket activation and notify;
   hardened unit, sysctl profile, SELinux policy, logrotate configuration,
   RPM packaging

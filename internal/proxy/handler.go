@@ -20,7 +20,9 @@ import (
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/otlp"
 	"github.com/rom/xproxy/internal/tlsconf"
+	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
@@ -34,29 +36,32 @@ type listenerHandler struct {
 
 // reqState is the per-request bookkeeping used for logging.
 type reqState struct {
-	id       string
-	start    time.Time
-	clientIP netip.Addr
-	host     string
-	path     string
-	route    string
-	upstream string
-	endpoint string
-	attempts int
-	denied   string
-	upErr    string
-	extra    []any // filter attributes for the access log
-	country  string
-	ja4      string
-	cache    string // hit, miss or bypass on a cached route
-	encoding string // gzip when the proxy compressed the response
-	canary   bool   // the response came from a canary endpoint
-	cacheKey string
-	marked   bool   // client previously hit a honeypot
-	mirror   string // sent, dropped or body_too_large on a mirrored route
-	grpc     bool   // request is gRPC: errors are answered as gRPC statuses
-	grpcCode string // grpc-status of the upstream response
-	release  func() // concurrency slot; idempotent
+	id        string
+	start     time.Time
+	clientIP  netip.Addr
+	host      string
+	path      string
+	route     string
+	upstream  string
+	endpoint  string
+	attempts  int
+	denied    string
+	upErr     string
+	extra     []any // filter attributes for the access log
+	country   string
+	ja4       string
+	span      *tracing.Span // server span, nil without tracing
+	upSpan    *tracing.Span // client span of the upstream exchange
+	propagate bool
+	cache     string // hit, miss or bypass on a cached route
+	encoding  string // gzip when the proxy compressed the response
+	canary    bool   // the response came from a canary endpoint
+	cacheKey  string
+	marked    bool   // client previously hit a honeypot
+	mirror    string // sent, dropped or body_too_large on a mirrored route
+	grpc      bool   // request is gRPC: errors are answered as gRPC statuses
+	grpcCode  string // grpc-status of the upstream response
+	release   func() // concurrency slot; idempotent
 }
 
 // filterDenied carries a response phase verdict through ReverseProxy's
@@ -77,6 +82,10 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rw := &responseWriter{ResponseWriter: w}
 	st := &reqState{id: newRequestID(), start: time.Now()}
 	st.clientIP = netutil.ClientIP(r, rt.trusted)
+	if tr := s.tracer.Load(); tr != nil {
+		st.span = tr.StartServer(r, r.Method)
+		st.propagate = tr.Propagate()
+	}
 	s.stats.Requests.Add(1)
 	var route *compiledRoute
 	defer func() {
@@ -521,6 +530,10 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 	r = r.WithContext(ctx)
 
 	start := time.Now()
+	if st.span != nil {
+		st.upSpan = st.span.Child("upstream " + pool.Name)
+		st.upSpan.Set(otlp.String("xproxy.upstream", pool.Name))
+	}
 	rp := &httputil.ReverseProxy{
 		Transport:     &poolTransport{pool: pool, retries: *pool.Cfg.Retries, retryOn: pool.Cfg.RetryOn},
 		FlushInterval: -1,
@@ -540,6 +553,10 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 				st.canary = pi.endpoint.Canary
 			}
 			st.attempts = pi.attempts
+			if st.upSpan != nil {
+				st.upSpan.Set(otlp.String("server.address", st.endpoint), otlp.Int("http.response.status_code", int64(resp.StatusCode)), otlp.Int("xproxy.attempts", int64(pi.attempts)))
+				st.upSpan.Finish(resp.StatusCode >= 500)
+			}
 			cookie := pi.setCookie
 			retried := pi.attempts - 1
 			statusRetries := pi.statusRetries
@@ -628,6 +645,23 @@ func (s *Server) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 	out.Header.Set("X-Real-Ip", st.clientIP.String())
 	out.Header.Set("X-Request-Id", st.id)
 	out.Header.Del("Forwarded")
+	// Trace context: the upstream's spans hang under our client span; an
+	// incoming header from an untrusted client is replaced, never forwarded
+	// as is, when propagation is off.
+	out.Header.Del("Traceparent")
+	out.Header.Del("Tracestate")
+	if st.propagate {
+		parent := st.upSpan
+		if parent == nil {
+			parent = st.span
+		}
+		if parent != nil {
+			out.Header.Set("Traceparent", parent.Traceparent())
+			if parent.TraceState != "" {
+				out.Header.Set("Tracestate", parent.TraceState)
+			}
+		}
+	}
 	applyHeaderOps(out.Header, cr.cfg.RequestHeaders)
 }
 
@@ -671,6 +705,10 @@ func (s *Server) upstreamError(rw *responseWriter, r *http.Request, st *reqState
 		sh.Observe(time.Since(st.start))
 	}
 	st.upErr = err.Error()
+	if st.upSpan != nil {
+		st.upSpan.Set(otlp.String("error.type", err.Error()))
+		st.upSpan.Finish(true)
+	}
 	status := http.StatusBadGateway
 	switch {
 	case errors.Is(err, context.Canceled) && r.Context().Err() == context.Canceled:
@@ -833,6 +871,23 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	}
 	if st.canary {
 		attrs = append(attrs, "canary", true)
+	}
+	if st.span != nil {
+		attrs = append(attrs, "trace_id", st.span.TraceIDString(), "span_id", st.span.SpanIDString())
+		if st.span.Sampled {
+			attrs = append(attrs, "trace_sampled", true)
+		}
+		st.span.Set(otlp.String("http.request.method", r.Method), otlp.String("url.path", r.URL.Path), otlp.String("server.address", r.Host),
+			otlp.String("network.protocol.version", r.Proto), otlp.Int("http.response.status_code", int64(status)), otlp.String("client.address", st.clientIP.String()),
+			otlp.String("xproxy.request_id", st.id), otlp.String("xproxy.route", st.route))
+		if st.upstream != "" {
+			st.span.Set(otlp.String("xproxy.upstream", st.upstream))
+		}
+		if st.denied != "" {
+			st.span.Set(otlp.String("xproxy.denied", st.denied))
+		}
+		st.span.Name = r.Method + " " + st.route
+		defer st.span.Finish(status >= 500 || st.denied != "")
 	}
 	if st.encoding != "" {
 		attrs = append(attrs, "encoding", st.encoding)

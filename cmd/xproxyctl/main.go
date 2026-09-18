@@ -33,7 +33,8 @@
 //	honeypot       list clients marked by honeypots; honeypot forget IP removes one
 //	dns            show dns listener counters; "dns purge" empties the caches
 //	ingress        show the Kubernetes ingress controller status
-//	otlp           show the OpenTelemetry exporter status
+//	otlp           show the OpenTelemetry metrics exporter status
+//	telemetry      show every OpenTelemetry exporter: metrics, traces, logs
 //	cache          show cache statistics; "cache purge [HOST [PATH-PREFIX]]" removes entries
 //	htpasswd FILE NAME  add or replace a basic_auth user (password on stdin)
 //	quotas         usage per tenant, route and rate limit policy (-top 10)
@@ -77,7 +78,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas config validate reload diff history rollback rotate-secret tls reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp htpasswd spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas config validate reload diff history rollback rotate-secret tls reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp telemetry htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -493,6 +494,36 @@ func run(args []string, out, errOut io.Writer) int {
 			return fail(err)
 		}
 		_, _ = out.Write(b)
+		return 0
+	case "telemetry":
+		b, err := c.Raw("/v1/telemetry")
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			_, _ = out.Write(b)
+			return 0
+		}
+		var v mgmt.TelemetryView
+		if err := json.Unmarshal(b, &v); err != nil {
+			return fail(err)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "SIGNAL\tENDPOINT\tSENT\tDROPPED\tPUSHES\tFAILED\tQUEUED\tLAST ERROR")
+		if m := v.Metrics; m != nil {
+			_, _ = fmt.Fprintf(tw, "metrics\t%s\t%d\t-\t%d\t%d\t-\t%s\n", m.Endpoint, m.Sent, m.Sent+m.Failed, m.Failed, dash(m.LastError))
+		}
+		if t := v.Traces; t != nil {
+			_, _ = fmt.Fprintf(tw, "traces\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n", dash(t.Endpoint), t.Sent, t.Dropped, t.Pushes, t.Failed, t.Queued, dash(t.LastError))
+			_, _ = fmt.Fprintf(tw, "  spans\tstarted %d, sampled %d, sample %g%%, propagate %v\t\t\t\t\t\t\n", t.Started, t.Sampled, t.SamplePercent, t.Propagate)
+		}
+		if l := v.Logs; l != nil {
+			_, _ = fmt.Fprintf(tw, "logs\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n", l.Endpoint, l.Sent, l.Dropped, l.Pushes, l.Failed, l.Queued, dash(l.LastError))
+		}
+		if v.Metrics == nil && v.Traces == nil && v.Logs == nil {
+			_, _ = fmt.Fprintln(tw, "(no OpenTelemetry exporter configured)")
+		}
+		_ = tw.Flush()
 		return 0
 	case "ingress":
 		var b []byte

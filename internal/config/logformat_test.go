@@ -31,6 +31,11 @@ routes:
 		}
 	}
 	bad := []struct{ snippet, want string }{
+		{"access: {sinks: [otlp]}", "otlp requires a logging.otlp section"},
+		{"otlp: {endpoint: http://c:4318/v1/logs}", "https URL"},
+		{"otlp: {endpoint: https://c:4318/v1/logs, batch: -1}", "otlp.batch"},
+		{"otlp: {endpoint: https://c:4318/v1/logs, interval: 1ms}", "otlp.interval"},
+		{"otlp: {endpoint: https://c:4318/v1/logs, headers: {'bad key': x}}", "not a header"},
 		{"access: {format: apache}", "must be json, common, combined or custom"},
 		{"error: {format: common}", "only the access stream"},
 		{"access: {format: custom}", "required for format custom"},

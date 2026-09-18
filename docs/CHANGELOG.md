@@ -118,6 +118,15 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 - Certificate Transparency checks: `tls.ct` parses embedded SCTs at
   load, verifies their signatures against a log list file and reports,
   logs or (with `enforce`) refuses certificates below `require`.
+- Distributed tracing: `tracing` gives every request a W3C trace
+  context, propagates it to the upstream, records a server span and an
+  upstream client span and exports them as OTLP/HTTP JSON with local
+  sampling (`sample_percent`, `trust_incoming`); `trace_id`, `span_id`
+  and `trace_sampled` in the access log.
+- OTLP logs: `logging.otlp` and the `otlp` sink ship log records with
+  typed attributes and trace ids to a collector; `GET /v1/telemetry`
+  and `xproxyctl telemetry` show metrics, traces and logs exporters
+  together. The OTLP/HTTP client is shared (`internal/otlp`).
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

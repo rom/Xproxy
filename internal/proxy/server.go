@@ -33,6 +33,7 @@ import (
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/shed"
 	"github.com/rom/xproxy/internal/tlsconf"
+	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
@@ -57,6 +58,7 @@ type Server struct {
 	cluster     atomic.Pointer[cluster.Node]
 	shedder     atomic.Pointer[shed.Shedder]
 	challenger  atomic.Pointer[challenge.Challenger]
+	tracer      atomic.Pointer[tracing.Tracer]
 	sampler     *metrics.Sampler
 	acme        *acme.Manager
 
@@ -151,6 +153,14 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	}
 	if cfg.Cache != nil {
 		s.cache.Store(cache.New(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes))
+	}
+	if cfg.Tracing.IsEnabled() {
+		tr, err := newTracer(cfg.Tracing, logs.Error)
+		if err != nil {
+			rt.stop()
+			return nil, err
+		}
+		s.tracer.Store(tr)
 	}
 	if cfg.Cluster != nil {
 		node, err := cluster.New(cfg.Cluster, rateSource{s: s}, logs.Error)
@@ -250,6 +260,16 @@ func (s *Server) CertificateExpiry() map[string]time.Time {
 		}
 	}
 	return out
+}
+
+// Tracing returns the tracer status, or nil when tracing is off.
+func (s *Server) Tracing() *tracing.Status {
+	tr := s.tracer.Load()
+	if tr == nil {
+		return nil
+	}
+	st := tr.Status()
+	return &st
 }
 
 // Certificates lists the served certificates per TLS listener with their
@@ -677,6 +697,21 @@ func (s *Server) Reload(cfg *config.Config) error {
 	case sh != nil:
 		s.shedder.Store(nil)
 	}
+	// Tracing: rebuilt when its section changed, so a reload can move
+	// the collector or the sampling share.
+	if !sameTracing(old.cfg.Tracing, cfg.Tracing) {
+		var next *tracing.Tracer
+		if cfg.Tracing.IsEnabled() {
+			if tr, err := newTracer(cfg.Tracing, s.logs.Error); err == nil {
+				next = tr
+			} else {
+				s.logs.Error.Error("tracing exporter unavailable", "err", err.Error())
+			}
+		}
+		if prev := s.tracer.Swap(next); prev != nil {
+			go prev.Stop()
+		}
+	}
 	switch ch := s.challenger.Load(); {
 	case cfg.Challenge != nil && ch != nil:
 		ch.Reconfigure(cfg.Challenge)
@@ -820,6 +855,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if s.acme != nil {
 			s.acme.Stop()
 		}
+	}
+	if tr := s.tracer.Load(); tr != nil {
+		tr.Stop()
 	}
 	if node := s.cluster.Load(); node != nil {
 		node.Stop()

@@ -156,6 +156,14 @@ func (v *validator) config(c *Config) {
 			v.file("geoip.csv", g.CSV)
 		}
 	}
+	if t := c.Tracing; t != nil {
+		if p := t.Sample(); p < 0 || p > 100 {
+			v.errf("tracing.sample_percent: must be between 0 and 100")
+		}
+		if t.OTLP != nil {
+			v.otlpExport("tracing.otlp", t.OTLP)
+		}
+	}
 	if cp := c.Compression; cp != nil {
 		if cp.Level < 1 || cp.Level > 9 {
 			v.errf("compression.level: must be between 1 and 9")
@@ -597,8 +605,12 @@ func (v *validator) logging(l *Logging) {
 				if l.Syslog == nil {
 					v.errf("logging.%s.sinks[%d]: syslog requires a logging.syslog section", name, i)
 				}
+			case "otlp":
+				if l.OTLP == nil {
+					v.errf("logging.%s.sinks[%d]: otlp requires a logging.otlp section", name, i)
+				}
 			default:
-				v.errf("logging.%s.sinks[%d]: must be file, journald or syslog", name, i)
+				v.errf("logging.%s.sinks[%d]: must be file, journald, syslog or otlp", name, i)
 			}
 		}
 	}
@@ -609,6 +621,9 @@ func (v *validator) logging(l *Logging) {
 		if !nameRE.MatchString(j.Identifier) {
 			v.errf("logging.journald.identifier: %q is not a valid identifier", j.Identifier)
 		}
+	}
+	if l.OTLP != nil {
+		v.otlpExport("logging.otlp", l.OTLP)
 	}
 	for name, s := range map[string]*LogStream{"access": &l.Access, "error": &l.Error, "security": &l.Security, "audit": &l.Audit} {
 		switch s.Format {
@@ -2050,4 +2065,45 @@ func templateOK(t string) error {
 		t = t[i+j+1:]
 	}
 	return nil
+}
+
+// otlpExport validates a trace or log collector endpoint.
+func (v *validator) otlpExport(p string, o *OTLPExport) {
+	u, err := url.Parse(o.Endpoint)
+	switch {
+	case o.Endpoint == "" || err != nil || u.Host == "":
+		v.errf("%s.endpoint: must be a URL", p)
+	case u.Scheme == "https":
+	case u.Scheme == "http" && o.AllowHTTP:
+	default:
+		v.errf("%s.endpoint: must be an https URL (http only with allow_http)", p)
+	}
+	if o.Timeout <= 0 || o.Timeout > Duration(time.Minute) {
+		v.errf("%s.timeout: must be positive and at most 1m", p)
+	}
+	for k := range o.Headers {
+		if !headerNameOK(k) {
+			v.errf("%s.headers: %q is not a header", p, k)
+		}
+	}
+	if o.CAFile != "" {
+		v.file(p+".ca_file", o.CAFile)
+	}
+	if len(o.ServiceName) > 255 {
+		v.errf("%s.service_name: at most 255 characters", p)
+	}
+	for k := range o.Attributes {
+		if k == "" || len(k) > 255 {
+			v.errf("%s.attributes: empty or overlong key", p)
+		}
+	}
+	if o.Batch < 1 || o.Batch > 10000 {
+		v.errf("%s.batch: must be between 1 and 10000", p)
+	}
+	if o.Interval < Duration(100*time.Millisecond) || o.Interval > Duration(5*time.Minute) {
+		v.errf("%s.interval: must be between 100ms and 5m", p)
+	}
+	if o.Queue < 1 || o.Queue > 1_000_000 {
+		v.errf("%s.queue: must be between 1 and 1000000", p)
+	}
 }

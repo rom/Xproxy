@@ -237,6 +237,8 @@ procedure is in RELEASING.md.
   files, `xproxyctl rotate-secret`): delivered
 - OCSP stapling and Certificate Transparency log checks
   (`tls.ocsp_stapling`, `tls.ct`, `xproxyctl tls`): delivered
+- Distributed tracing (W3C trace context, OTLP spans) and OTLP for
+  logs (`tracing`, `logging.otlp`, `xproxyctl telemetry`): delivered
 
 ## After 1.3 (candidates, unranked)
 

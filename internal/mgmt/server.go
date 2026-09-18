@@ -27,6 +27,7 @@ import (
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/version"
 )
 
@@ -147,6 +148,14 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 			defer cancel()
 			return m.Renew(ctx)
 		})(w, r)
+	})
+	mux.HandleFunc("GET /v1/telemetry", func(w http.ResponseWriter, _ *http.Request) {
+		view := TelemetryView{Traces: s.proxy.Tracing(), Logs: s.logs.OTLP()}
+		if s.actions.OTLP != nil {
+			m := s.actions.OTLP()
+			view.Metrics = &m
+		}
+		writeJSON(w, 200, view)
 	})
 	mux.HandleFunc("GET /v1/otlp", func(w http.ResponseWriter, _ *http.Request) {
 		if s.actions.OTLP == nil {
@@ -374,6 +383,14 @@ func (s *Server) audited(name string, fn func() error) http.HandlerFunc {
 		s.logs.Audit.Info("management action", attrs...)
 		writeJSON(w, 200, result{OK: true})
 	}
+}
+
+// TelemetryView is the response of GET /v1/telemetry: every OpenTelemetry
+// exporter with its counters, nil when not configured.
+type TelemetryView struct {
+	Metrics *metrics.OTLPStatus `json:"metrics"`
+	Traces  *tracing.Status     `json:"traces"`
+	Logs    *logging.OTLPStatus `json:"logs"`
 }
 
 // FiltersView is the response of GET /v1/filters.

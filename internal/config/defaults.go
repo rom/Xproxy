@@ -169,6 +169,16 @@ func applyDefaults(c *Config) {
 	}
 
 	setInt(&c.Management.HistoryKeep, 20)
+	for _, o := range []*OTLPExport{c.Logging.OTLP, tracingOTLP(c.Tracing)} {
+		if o == nil {
+			continue
+		}
+		setDur(&o.Timeout, 10*time.Second)
+		setStr(&o.ServiceName, "xproxy")
+		setInt(&o.Batch, 512)
+		setDur(&o.Interval, 5*time.Second)
+		setInt(&o.Queue, 8192)
+	}
 	for i := range c.Server.Listeners {
 		if t := c.Server.Listeners[i].TLS; t != nil && t.OCSPStapling != nil {
 			setDur(&t.OCSPStapling.Timeout, 5*time.Second)
@@ -520,4 +530,11 @@ func setStr(p *string, v string) {
 	if *p == "" {
 		*p = v
 	}
+}
+
+func tracingOTLP(t *Tracing) *OTLPExport {
+	if t == nil {
+		return nil
+	}
+	return t.OTLP
 }

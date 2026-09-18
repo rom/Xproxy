@@ -62,6 +62,8 @@ internal/filters    built-in kinds (header_guard, basic_auth, body_rewrite, bot_
 internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/secret     keyring files for the symmetric secrets, rotation with retained keys
+internal/otlp       OTLP/HTTP JSON client shared by the metrics, trace and log exporters
+internal/tracing    W3C trace context, spans and the OTLP trace exporter
 internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/proxy/tcp.go  kind: tcp listeners (SNI routing, PROXY v2, splice)
@@ -358,6 +360,20 @@ process start time, gauges, histograms with explicit bounds) that it
 pushes on an interval with a bounded client, gzip and pinned CA. No
 metrics library is linked on either path.
 
+### Traces and logs export
+
+`internal/otlp` is the one OTLP/HTTP client (bounded, pinned CA, gzip,
+fixed headers) and the JSON attribute shapes; the metrics, trace and log
+exporters share it. `internal/tracing` parses and issues W3C trace
+context and keeps finished, sampled spans in a bounded queue that a
+goroutine batches by size and interval; the handler starts the server
+span with the request, the upstream client span in `proxyTo`, ends them
+in `ModifyResponse`, the error path and the access log, and `rewrite`
+sets `traceparent` on the outbound request. The `otlp` log sink
+(`internal/logging/otlp.go`) is a `lineSink` like journald and syslog:
+it turns the record's attributes into typed OTLP attributes and pushes
+batches the same way. All three report through `GET /v1/telemetry`.
+
 ### Kubernetes ingress mode
 
 `internal/ingress` is a polling controller with no client library: a
@@ -626,6 +642,7 @@ Endpoints:
 | GET | `/v1/upstreams` | endpoint health and load |
 | GET | `/v1/pools` | pool level state: circuit breaker, concurrency gate and queue |
 | GET | `/v1/tls` | served certificates per listener with OCSP staple and CT state |
+| GET | `/v1/telemetry` | OpenTelemetry exporters (metrics, traces, logs) with counters |
 | GET | `/v1/quotas` | usage per tenant, route and rate limit policy; `?top=N` consumers per policy |
 | GET | `/v1/config` | active configuration as YAML |
 | POST | `/v1/reload` | validate and apply the configuration file; `?dry_run=1` returns the changes without applying |

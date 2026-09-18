@@ -22,6 +22,7 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `upstreams` | list | `[]` | Named endpoint pools |
 | `routes` | list | `[]` | Request matching and actions |
 | `compression` | object | none | gzip of eligible responses; see `compression` |
+| `tracing` | object | none | W3C trace context and span export; see `tracing` |
 
 ## server
 
@@ -271,6 +272,7 @@ public CA).
 | `journald` | object | none | journald sink, used by streams listing `journald` |
 | `syslog` | object | none | syslog sink, used by streams listing `syslog` |
 | `redaction` | object | none | Personal data rules applied before every sink |
+| `otlp` | object | none | OpenTelemetry log sink, used by streams listing `otlp`; see `logging.otlp` |
 
 ### logging.<stream>
 
@@ -280,7 +282,7 @@ public CA).
 | `file` | file name | `access.log` etc. | Bare name inside `directory` |
 | `max_size_mb` | int | `0` (no internal rotation) | Rotate to `.1`, `.2`, ... when exceeded |
 | `max_files` | int | `5` | Archives kept |
-| `sinks` | list | `[file]` | Any of `file`, `journald`, `syslog`; a stream can go to several |
+| `sinks` | list | `[file]` | Any of `file`, `journald`, `syslog`, `otlp`; a stream can go to several |
 | `format` | `json`, `common`, `combined`, `custom` | `json` | Access stream only for the text formats: `common` is the Common Log Format (`%h %l %u %t "%r" %>s %b`), `combined` adds the quoted referer and user agent, `custom` uses `template`. The error, security and audit streams stay JSON. Text lines go to every sink of the stream; redaction runs before formatting |
 | `template` | string | | For `format: custom`: literal text with `{field}` placeholders. Fields are the access log attributes (`request_id`, `client_ip`, `method`, `host`, `path`, `query_len`, `proto`, `status`, `bytes_in`, `bytes_out`, `duration_ms`, `route`, `upstream`, `endpoint`, `attempts`, `user_agent`, `referer`, `tls`, `sni`, `client_cn`, `country`, `ja4`, `cache`, `encoding`, `honeypot_marked`, `mirror`, `grpc`, `grpc_status`, `denied`, `upstream_error`, filter attributes such as `jwt_sub`, `oidc_sub`, `bot_score`) plus `time_clf` (`10/Oct/2000:13:55:36 -0700`), `time_iso`, `time_unix`, `request` (`METHOD path PROTO`), `user` (the first of `oidc_sub`, `basic_user`, `jwt_sub`, `jwt_preferred_username`, else `-`) and `bytes_out_clf` (`-` for zero). A missing or empty field prints `-`. Values are escaped Apache style (`\"`, `\\`, `\n`, `\xHH`), so one request is always one line; at most 1024 bytes |
 
@@ -314,6 +316,33 @@ transports use RFC 6587 octet counting and reconnect with back-off.
 | `queue_size` | int | `8192` | Messages held for a slow collector; 64 to 1000000 |
 
 Datagram transports truncate messages at 8 KiB.
+
+### logging.otlp
+
+Ships log records to an OpenTelemetry collector as OTLP/HTTP with JSON
+encoding. Each record carries the time, the severity (`DEBUG` 5,
+`INFO` 9, `WARN` 13, `ERROR` 17), the message as the body, every
+attribute of the line (integers, booleans and floats typed, the rest as
+strings), `xproxy.stream`, and the trace and span ids of access lines
+when tracing is on, so a collector links logs to traces. Records queue
+without blocking the request path; a full queue drops and counts; a
+batching goroutine pushes by size and interval and flushes at shutdown.
+Redaction runs before the sink like for every other sink. `xproxyctl
+telemetry` and `GET /v1/telemetry` show the counters.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `endpoint` | URL | required | The collector's logs URL (`https://otel.example.com:4318/v1/logs`); `http://` only with `allow_http` |
+| `allow_http` | bool | `false` | |
+| `timeout` | duration | `10s` | One push; at most 1m |
+| `headers` | map | `{}` | Request headers, for example `Authorization` |
+| `ca_file` | path | system pool | Pins the collector's CA |
+| `service_name` | string | `xproxy` | `service.name` resource attribute; `service.version` and `host.name` are added |
+| `attributes` | map | `{}` | Extra resource attributes |
+| `compress` | bool | `true` | gzip the request body |
+| `batch` | int | `512` | Records per push (1 to 10000) |
+| `interval` | duration | `5s` | Longest wait before a push (100ms to 5m) |
+| `queue` | int | `8192` | Records held while a push is in flight; more are dropped and counted (1 to 1000000) |
 
 ### logging.redaction
 
@@ -1131,6 +1160,34 @@ runs before compression and after the WAF's response inspection, so
 the WAF sees the upstream's bytes and the client sees the rewritten
 ones. Put the filter on the routes that need it rather than on every
 route: buffering costs memory per request up to the bound.
+
+## tracing
+
+Every request gets a W3C trace context: an incoming `traceparent` is
+continued (its trace id kept, a fresh span id issued, `tracestate`
+passed through), otherwise a new trace starts. The proxy records one
+server span per request (method, path, host, protocol, status, client
+address, request id, route, upstream, denial reason) and one client
+span per upstream exchange (endpoint, status, attempts, or the error),
+sends `traceparent` and `tracestate` to the upstream so its spans hang
+under the client span, and writes `trace_id`, `span_id` and
+`trace_sampled` into the access log. Spans are exported as OTLP/HTTP
+JSON when `otlp` is set; without it the context is propagated and
+logged only. Sampling is decided locally by `sample_percent`; an
+incoming sampled flag is honoured only with `trust_incoming`, so a
+client cannot push every request into the exporter. `xproxyctl
+telemetry` and `GET /v1/telemetry` show the counters.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Switch for the section |
+| `sample_percent` | 0 to 100 | `100` | Share of traces recorded and exported; propagation happens regardless |
+| `propagate` | bool | `true` | Send `traceparent` and `tracestate` to the upstream; off, an incoming header is stripped |
+| `trust_incoming` | bool | `false` | Honour the sampled flag of an incoming `traceparent` (behind a trusted balancer that samples) |
+| `otlp` | object | none | Span exporter with the same keys as `logging.otlp` (`endpoint` is the traces URL, `/v1/traces`) |
+
+A reload that changes the section rebuilds the tracer; spans in flight
+finish on the old exporter, which is flushed and stopped.
 
 ## compression
 

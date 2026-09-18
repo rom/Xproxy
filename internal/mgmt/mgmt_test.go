@@ -178,6 +178,12 @@ routes:
 	if b, err = c.Raw("/v1/pools"); err != nil || !strings.Contains(string(b), `"u"`) {
 		t.Fatalf("pools: %v %s", err, b)
 	}
+	if b, err = c.Raw("/v1/telemetry"); err != nil || !strings.Contains(string(b), `"traces": null`) || !strings.Contains(string(b), `"logs": null`) {
+		t.Fatalf("telemetry: %v %s", err, b)
+	}
+	if b, err = c.Raw("/v1/tls"); err != nil || strings.TrimSpace(string(b)) != "{}" {
+		t.Fatalf("tls: %v %s", err, b)
+	}
 	// Cluster is not configured in this server.
 	if _, err := c.ClusterStatus(); err == nil {
 		t.Fatal("cluster status should be unavailable")

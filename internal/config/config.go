@@ -78,6 +78,8 @@ type Config struct {
 	// Compression enables gzip of eligible responses on every route
 	// (routes[].compress overrides per route).
 	Compression *Compression `yaml:"compression"`
+	// Tracing gives requests a W3C trace context and exports spans.
+	Tracing *Tracing `yaml:"tracing"`
 	// ACME configures automatic certificates for listeners with tls.acme.
 	ACME *ACME `yaml:"acme"`
 }
@@ -508,7 +510,73 @@ type Logging struct {
 	Syslog *Syslog `yaml:"syslog"`
 	// Redaction removes or pseudonymises personal data before any sink.
 	Redaction *Redaction `yaml:"redaction"`
+	// OTLP configures the OpenTelemetry log sink used by streams listing
+	// otlp in their sinks.
+	OTLP *OTLPExport `yaml:"otlp"`
 }
+
+// OTLPExport is a collector endpoint for traces or logs.
+type OTLPExport struct {
+	// Endpoint is the collector URL (/v1/traces or /v1/logs).
+	Endpoint string `yaml:"endpoint"`
+	// AllowHTTP permits a plain http endpoint.
+	AllowHTTP bool `yaml:"allow_http"`
+	// Timeout of one push. Default 10s.
+	Timeout Duration `yaml:"timeout"`
+	// Headers added to every request.
+	Headers map[string]string `yaml:"headers"`
+	// CAFile pins the collector's CA. Default: system pool.
+	CAFile string `yaml:"ca_file"`
+	// ServiceName is the service.name resource attribute. Default xproxy.
+	ServiceName string `yaml:"service_name"`
+	// Attributes are extra resource attributes.
+	Attributes map[string]string `yaml:"attributes"`
+	// Compress gzips the request body. Default true.
+	Compress *bool `yaml:"compress"`
+	// Batch is the largest number of items per push. Default 512.
+	Batch int `yaml:"batch"`
+	// Interval is the longest time an item waits before a push. Default 5s.
+	Interval Duration `yaml:"interval"`
+	// Queue bounds items waiting for a push. Default 8192.
+	Queue int `yaml:"queue"`
+}
+
+// Compresses reports the compress setting with its default.
+func (o *OTLPExport) Compresses() bool { return o.Compress == nil || *o.Compress }
+
+// Tracing configures W3C trace context handling and span export.
+type Tracing struct {
+	// Enabled defaults to true when the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// SamplePercent is the share of new traces (no incoming traceparent)
+	// that are recorded. Default 100.
+	SamplePercent *float64 `yaml:"sample_percent"`
+	// Propagate sends traceparent and tracestate to the upstream. Default
+	// true.
+	Propagate *bool `yaml:"propagate"`
+	// TrustIncoming honours the sampled flag of an incoming traceparent.
+	// Off (the default) the incoming trace id is continued for
+	// correlation but the sampling decision stays local, so a client
+	// cannot force every request into the exporter.
+	TrustIncoming bool `yaml:"trust_incoming"`
+	// OTLP exports spans; without it the context is only propagated and
+	// logged.
+	OTLP *OTLPExport `yaml:"otlp"`
+}
+
+// IsEnabled reports whether tracing is on.
+func (t *Tracing) IsEnabled() bool { return t != nil && (t.Enabled == nil || *t.Enabled) }
+
+// Sample returns the sampling share with its default.
+func (t *Tracing) Sample() float64 {
+	if t == nil || t.SamplePercent == nil {
+		return 100
+	}
+	return *t.SamplePercent
+}
+
+// Propagates reports whether trace context is forwarded.
+func (t *Tracing) Propagates() bool { return t != nil && (t.Propagate == nil || *t.Propagate) }
 
 // LogStream configures one stream.
 type LogStream struct {
