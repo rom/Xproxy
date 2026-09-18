@@ -1,6 +1,8 @@
 package config
 
 import (
+	"github.com/rom/xproxy/internal/filter"
+
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -124,9 +126,18 @@ func (v *validator) config(c *Config) {
 	if c.ICAP != nil {
 		v.icap(c.ICAP, icapServices)
 	}
+	filters := map[string]bool{}
+	for i := range c.Filters {
+		v.filter(i, &c.Filters[i], filters)
+	}
 	routes := map[string]bool{}
 	for i := range c.Routes {
 		v.route(i, &c.Routes[i], routes, upstreams, rateLimits)
+		for j, name := range c.Routes[i].Filters {
+			if !filters[name] {
+				v.errf("routes[%d].filters[%d]: unknown filter %q", i, j, name)
+			}
+		}
 		if c.Routes[i].WAF != nil {
 			v.routeWAF(i, c.Routes[i].WAF, c.WAF, profiles)
 		}
@@ -917,6 +928,32 @@ func (v *validator) shedding(s *Shedding) {
 	}
 	if s.RetryAfter <= 0 {
 		v.errf("shedding.retry_after: must be positive")
+	}
+}
+
+// filter validates one middleware instance against the registry.
+func (v *validator) filter(i int, f *FilterConfig, seen map[string]bool) {
+	p := fmt.Sprintf("filters[%d]", i)
+	if !nameRE.MatchString(f.Name) {
+		v.errf("%s.name: %q is not a valid name", p, f.Name)
+	} else if seen[f.Name] {
+		v.errf("%s.name: duplicate %q", p, f.Name)
+	}
+	seen[f.Name] = true
+	switch f.Stage {
+	case StageBeforeAuth, StageAfterAuth, StageAfterWAF, StageAfterScan:
+	default:
+		v.errf("%s.stage: %q must be before_auth, after_auth, after_waf or after_scan", p, f.Stage)
+	}
+	k, ok := filter.Lookup(f.Kind)
+	if !ok {
+		v.errf("%s.kind: %q is not a registered filter kind (registered: %s)", p, f.Kind, strings.Join(filter.KindNames(), ", "))
+		return
+	}
+	if err := k.Validate(filter.Options(f.Options)); err != nil {
+		for _, line := range strings.Split(err.Error(), "\n") {
+			v.errf("%s.options: %s", p, line)
+		}
 	}
 }
 

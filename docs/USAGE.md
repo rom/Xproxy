@@ -57,6 +57,8 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `spki CERT.pem` | Print the `spki_pins` value of a certificate |
 | `acme` | Managed certificates with expiry, issuer, last error; `acme renew` forces renewal and waits |
 | `icap` | ICAP services with reachability, preview size, ISTag and counters |
+| `filters` | Middleware API version, registered kinds, configured filters with routes and deny counts |
+| `htpasswd FILE NAME` | Add or replace a `basic_auth` user; the password is read from stdin |
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
 | `series` | Print sampled series; `-since 10m`, `-last 30`, `-json` |
@@ -448,6 +450,50 @@ own block page, is logged with reason `icap`, and counts towards ban
 triggers. `xproxyctl icap` shows whether each service answered its last
 exchange, the preview size it advertised, and how many exchanges were
 unmodified, modified, replaced, failed or bypassed.
+
+### Header policy and basic authentication (filters)
+
+Filters are middleware instances attached to routes; the built-in kinds
+are `header_guard` and `basic_auth` (`xproxyctl filters` lists what the
+binary has; [EXTENDING.md](EXTENDING.md) shows how to add one).
+
+```yaml
+filters:
+  - name: scanners
+    kind: header_guard
+    options:
+      deny: [{header: User-Agent, pattern: "(?i)sqlmap|nikto|masscan|zgrab"}]
+  - name: partner-key
+    kind: header_guard
+    options:
+      require: [{header: X-API-Key, pattern: "^pk_[A-Za-z0-9]{32}$"}]
+      status: 401
+  - name: staff
+    kind: basic_auth
+    stage: before_auth
+    options: {users_file: /etc/xproxy/staff.htpasswd, realm: staff, forward_user_header: X-Remote-User}
+
+routes:
+  - name: partner-api
+    hosts: [api.example.com]
+    paths: [/partner/]
+    filters: [scanners, partner-key]
+    upstream: api
+  - name: intranet
+    hosts: [intranet.example.com]
+    filters: [staff]
+    upstream: intranet
+```
+
+```sh
+echo 'correct horse battery staple' | xproxyctl htpasswd /etc/xproxy/staff.htpasswd alice
+chown root:xproxy /etc/xproxy/staff.htpasswd && chmod 0640 /etc/xproxy/staff.htpasswd
+xproxyctl reload
+xproxyctl filters
+```
+
+Denies are logged on the security stream with the filter name as reason
+and can drive ban triggers (`categories: [scanners]`).
 
 ### Browser challenge
 

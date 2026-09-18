@@ -64,7 +64,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-O3 | Management via CLI, TUI and web GUI | M | MVP CLI, TUI delivered in phase 2, GUI delivered in phase 3 | One management API on a Unix socket serves all three; GUI is a separate binary serving embedded static assets over the same API, never inside the data plane |
 | ASR-O4 | Metrics for graphs and statistics | M | 1.0 (delivered in phase 2) | Prometheus text endpoint on the management socket and an optional TCP endpoint, plus a local ring buffer of time series for the GUI without external storage |
 | ASR-O5 | Persisted state for bans and statistics across restarts | S | 1.0 | Embedded key-value store (bbolt) in the state directory |
-| ASR-O6 | Extensible without recompiling the core for common cases | S | 1.0 interface, 1.x WASM | Middleware interface with a registry at 1.0; WebAssembly extension ABI in 1.x; never Go plugins |
+| ASR-O6 | Extensible without recompiling the core for common cases | S | 1.0 interface (delivered in phase 3), 1.x WASM | Middleware interface with a registry at 1.0; WebAssembly extension ABI in 1.x; never Go plugins |
 
 ## 5. Quality
 
@@ -111,6 +111,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S2 (shedding, challenge) | `internal/shed`, `internal/challenge` | `internal/shed/shed_test.go`, `internal/challenge/challenge_test.go`, `TestAdaptiveShedding`, `TestChallengeGate` |
 | ASR-S9, O2 | `internal/logging`, `internal/mgmt` | `internal/logging/logging_test.go`, `internal/mgmt/mgmt_test.go` |
 | ASR-S11, P4 | `internal/tlsconf` | `internal/tlsconf/tlsconf_test.go`, `TestTLSAndRedirect` |
+| ASR-O6 | `internal/filter` registry, `internal/filters` | `TestRegistry`, `TestFilters`, `TestFiltersConfig`, EXTENDING.md |
 | ASR-P1 | `internal/router`, `internal/upstream` health bounds, `internal/proxy` generations | `TestScale` (`make scale`), `BenchmarkMatch1000Hosts`, PERFORMANCE.md |
 | ASR-P2 | handler path, `test/load` | `make load` baseline in PERFORMANCE.md; 8 core reference run open |
 | ASR-P3 | `Server.Reload` | `TestReload` |

@@ -1,9 +1,12 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/netip"
+	"sort"
 	"sync/atomic"
 
 	"github.com/rom/xproxy/internal/config"
@@ -33,6 +36,56 @@ type runtime struct {
 	waf        *waf.Engine
 	jwt        map[string]*jwt.Provider
 	icap       map[string]*icap.Service
+	filters    map[string]*customFilter
+}
+
+// customFilter wraps a configured middleware instance with its deny
+// counter and defaults the deny reason to the instance name.
+type customFilter struct {
+	cfg    *config.FilterConfig
+	f      filter.Filter
+	denied atomic.Uint64
+}
+
+func (c *customFilter) Name() string { return c.cfg.Name }
+
+func (c *customFilter) Begin(ctx context.Context, info *filter.Info) filter.Instance {
+	in := c.f.Begin(ctx, info)
+	if in == nil {
+		return nil
+	}
+	return &customInstance{c: c, in: in}
+}
+
+type customInstance struct {
+	c  *customFilter
+	in filter.Instance
+}
+
+func (ci *customInstance) fix(v filter.Verdict) filter.Verdict {
+	if v.Deny {
+		ci.c.denied.Add(1)
+		if v.Reason == "" {
+			v.Reason = ci.c.cfg.Name
+		}
+		if v.Status < 400 || v.Status > 599 {
+			v.Status = 403
+		}
+	}
+	return v
+}
+
+func (ci *customInstance) Request(r *http.Request) filter.Verdict   { return ci.fix(ci.in.Request(r)) }
+func (ci *customInstance) Response(r *http.Response) filter.Verdict { return ci.fix(ci.in.Response(r)) }
+func (ci *customInstance) End() []any                               { return ci.in.End() }
+
+// FilterStatus is the management view of one middleware instance.
+type FilterStatus struct {
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Stage  string `json:"stage"`
+	Routes int    `json:"routes"`
+	Denied uint64 `json:"denied"`
 }
 
 type rateLimit struct {
@@ -122,6 +175,23 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 			rt.icap[sc.Name] = svc
 		}
 	}
+	if len(cfg.Filters) > 0 {
+		rt.filters = make(map[string]*customFilter, len(cfg.Filters))
+		for i := range cfg.Filters {
+			fc := &cfg.Filters[i]
+			k, ok := filter.Lookup(fc.Kind)
+			if !ok {
+				rt.stop()
+				return nil, fmt.Errorf("filter %s: %w %q", fc.Name, filter.ErrUnknownKind, fc.Kind)
+			}
+			f, err := k.New(fc.Name, filter.Options(fc.Options), filter.Env{Log: log.With("filter", fc.Name, "kind", fc.Kind)})
+			if err != nil {
+				rt.stop()
+				return nil, fmt.Errorf("filter %s: %w", fc.Name, err)
+			}
+			rt.filters[fc.Name] = &customFilter{cfg: fc, f: f}
+		}
+	}
 	if cfg.WAF != nil {
 		need := waf.Need{}
 		for i := range cfg.Routes {
@@ -168,6 +238,24 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 			}
 			cr.rateLimits = append(cr.rateLimits, rl)
 		}
+		// Chain order: before_auth, JWT, after_auth, WAF, after_waf, ICAP,
+		// after_scan; custom filters keep their listed order within a stage.
+		stage := func(name string) error {
+			for _, fname := range r.Filters {
+				cf, ok := rt.filters[fname]
+				if !ok {
+					return fmt.Errorf("route %s: unknown filter %s", r.Name, fname)
+				}
+				if cf.cfg.Stage == name {
+					cr.filters = append(cr.filters, cf)
+				}
+			}
+			return nil
+		}
+		if err := stage(config.StageBeforeAuth); err != nil {
+			rt.stop()
+			return nil, err
+		}
 		if r.JWT != nil {
 			p, ok := rt.jwt[r.JWT.Provider]
 			if !ok {
@@ -175,6 +263,10 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 				return nil, fmt.Errorf("route %s: unknown jwt provider %s", r.Name, r.JWT.Provider)
 			}
 			cr.filters = append(cr.filters, p.Filter(r.JWT.IsRequired()))
+		}
+		if err := stage(config.StageAfterAuth); err != nil {
+			rt.stop()
+			return nil, err
 		}
 		if p, m := wafSelection(cfg, r); m != waf.ModeOff {
 			f, err := rt.waf.Filter(p, m)
@@ -185,6 +277,10 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 			cr.filters = append(cr.filters, f)
 			cr.wafMode = string(m)
 		}
+		if err := stage(config.StageAfterWAF); err != nil {
+			rt.stop()
+			return nil, err
+		}
 		if r.ICAP != nil {
 			svc, ok := rt.icap[r.ICAP.Service]
 			if !ok {
@@ -192,6 +288,10 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 				return nil, fmt.Errorf("route %s: unknown icap service %s", r.Name, r.ICAP.Service)
 			}
 			cr.filters = append(cr.filters, svc.Filter(r.ICAP))
+		}
+		if err := stage(config.StageAfterScan); err != nil {
+			rt.stop()
+			return nil, err
 		}
 		rt.routes[i] = cr
 	}
@@ -228,4 +328,27 @@ func (rt *runtime) stop() {
 	for _, s := range rt.icap {
 		s.Close()
 	}
+	for _, cf := range rt.filters {
+		if c, ok := cf.f.(filter.Closer); ok {
+			_ = c.Close()
+		}
+	}
+}
+
+// filterStatus lists the configured middleware instances.
+func (rt *runtime) filterStatus() []FilterStatus {
+	out := make([]FilterStatus, 0, len(rt.filters))
+	for _, cf := range rt.filters {
+		routes := 0
+		for _, cr := range rt.routes {
+			for _, name := range cr.cfg.Filters {
+				if name == cf.cfg.Name {
+					routes++
+				}
+			}
+		}
+		out = append(out, FilterStatus{Name: cf.cfg.Name, Kind: cf.cfg.Kind, Stage: cf.cfg.Stage, Routes: routes, Denied: cf.denied.Load()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }

@@ -262,7 +262,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(cr.filters) > 0 {
 		instances = cr.filters.Begin(r.Context(), &filter.Info{
 			RequestID: st.id, ClientIP: st.clientIP, Route: cr.cfg.Name,
-			Host: st.host, Path: st.path, TLS: r.TLS != nil,
+			Host: st.host, Path: st.path, Method: r.Method, TLS: r.TLS != nil,
 		})
 		defer func() { st.extra = append(st.extra, instances.End()...) }()
 		if v := instances.Request(r); v.Deny {
@@ -315,6 +315,8 @@ func (s *Server) filterDeny(rw *responseWriter, r *http.Request, st *reqState, v
 		s.stats.DeniedICAP.Add(1)
 	case "body_size":
 		s.stats.DeniedBodySize.Add(1)
+	default:
+		s.stats.DeniedFilter.Add(1)
 	}
 	s.logs.SecurityEvent(r.Context(), "deny", v.Reason, append([]any{
 		"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,

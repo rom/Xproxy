@@ -138,6 +138,7 @@ routes:
 
   - name: api
     hosts: [api.example.com]
+    filters: [scanners]
     paths: [/v1]
     strip_prefix: /v1
     rate_limits: [per-ip]
@@ -282,6 +283,14 @@ acme:
   state_dir: /var/lib/xproxy/acme
   renew_before: 720h                 # 30 days
   check_interval: 12h
+
+# Middleware instances (see docs/EXTENDING.md); routes attach them with
+# filters: [name]. xproxyctl filters lists the kinds in this binary.
+filters:
+  - name: scanners
+    kind: header_guard
+    options:
+      deny: [{header: User-Agent, pattern: "(?i)sqlmap|nikto|masscan|zgrab"}]
 
 # External scanning over ICAP (anti-virus, data loss prevention).
 icap:

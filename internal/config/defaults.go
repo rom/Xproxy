@@ -319,6 +319,9 @@ func applyDefaults(c *Config) {
 		setDur(&a.RenewBefore, 30*24*time.Hour)
 		setDur(&a.CheckInterval, 12*time.Hour)
 	}
+	for i := range c.Filters {
+		setStr(&c.Filters[i].Stage, StageAfterAuth)
+	}
 	setDur(&c.Metrics.SampleInterval, 10*time.Second)
 	setDur(&c.Metrics.Retention, time.Hour)
 	if ch := c.Challenge; ch != nil {

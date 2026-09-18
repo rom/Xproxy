@@ -23,6 +23,7 @@ import (
 
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/version"
@@ -85,6 +86,14 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		})(w, r)
 	})
 	mux.HandleFunc("GET /v1/icap", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.ICAP()) })
+	mux.HandleFunc("GET /v1/filters", func(w http.ResponseWriter, _ *http.Request) {
+		kinds := filter.Kinds()
+		ks := make([]FilterKind, 0, len(kinds))
+		for _, k := range kinds {
+			ks = append(ks, FilterKind{Name: k.Name, Description: k.Description})
+		}
+		writeJSON(w, 200, FiltersView{APIVersion: filter.APIVersion, Kinds: ks, Filters: s.proxy.Filters()})
+	})
 	mux.HandleFunc("GET /metrics", s.serveMetrics)
 	mux.HandleFunc("GET /v1/series", s.serveSeries)
 	s.http = &http.Server{
@@ -240,6 +249,19 @@ func (s *Server) audited(name string, fn func() error) http.HandlerFunc {
 		s.logs.Audit.Info("management action", attrs...)
 		writeJSON(w, 200, result{OK: true})
 	}
+}
+
+// FiltersView is the response of GET /v1/filters.
+type FiltersView struct {
+	APIVersion int                  `json:"api_version"`
+	Kinds      []FilterKind         `json:"kinds"`
+	Filters    []proxy.FilterStatus `json:"filters"`
+}
+
+// FilterKind is one registered kind.
+type FilterKind struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // BanRequest is the body of POST /v1/bans.

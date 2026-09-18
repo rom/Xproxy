@@ -23,12 +23,15 @@
 //	tui            full-screen live view (-refresh 2s, -no-color)
 //	acme           show managed certificates; "acme renew" forces renewal
 //	icap           show ICAP services and counters
+//	filters        list middleware kinds and configured filters
+//	htpasswd FILE NAME  add or replace a basic_auth user (password on stdin)
 //	metrics        print the Prometheus exposition
 //	series         print sampled series (-since 10m -last 20)
 //	version        print version
 package main
 
 import (
+	"bufio"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -44,7 +47,9 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds for validate
 	"github.com/rom/xproxy/internal/mgmt"
+	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tui"
 	"github.com/rom/xproxy/internal/upstream"
@@ -57,7 +62,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -225,6 +230,34 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_ = tw.Flush()
 		return 0
+	case "filters":
+		fv, err := c.Filters()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, fv)
+		}
+		_, _ = fmt.Fprintf(out, "middleware API version %d\n\nKINDS\n", fv.APIVersion)
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		for _, k := range fv.Kinds {
+			_, _ = fmt.Fprintf(tw, "  %s\t%s\n", k.Name, k.Description)
+		}
+		_ = tw.Flush()
+		_, _ = fmt.Fprintln(out, "\nCONFIGURED")
+		tw = tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "  NAME\tKIND\tSTAGE\tROUTES\tDENIED")
+		for _, f := range fv.Filters {
+			_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%d\t%d\n", f.Name, f.Kind, f.Stage, f.Routes, f.Denied)
+		}
+		_ = tw.Flush()
+		return 0
+	case "htpasswd":
+		if fs.NArg() < 3 {
+			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl htpasswd FILE NAME   (password read from stdin, one line)")
+			return 2
+		}
+		return htpasswd(fs.Arg(1), fs.Arg(2), os.Stdin, out, errOut)
 	case "icap":
 		sts, err := c.ICAP()
 		if err != nil {
@@ -401,6 +434,50 @@ func printStats(out io.Writer, s interface{}) {
 		}
 	}
 	_ = tw.Flush()
+}
+
+// htpasswd adds or replaces name in a basic_auth users file with a PBKDF2
+// hash of the password read from stdin. The file is written 0600 through a
+// temporary file so a reader never sees a partial line.
+func htpasswd(path, name string, in io.Reader, out, errOut io.Writer) int {
+	if name == "" || strings.ContainsAny(name, ":\r\n") {
+		_, _ = fmt.Fprintln(errOut, "error: user name must not contain ':'")
+		return 2
+	}
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	hash, err := passwd.Hash(strings.TrimRight(line, "\r\n"))
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	var lines []string
+	if data, err := os.ReadFile(path); err == nil { //nolint:gosec // operator supplied path
+		for _, l := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+			if l == "" || strings.HasPrefix(strings.TrimSpace(l), "#") || !strings.HasPrefix(l, name+":") {
+				lines = append(lines, l)
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	lines = append(lines, name+":"+hash)
+	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp")
+	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(out, "user %s written to %s\n", name, path)
+	return 0
 }
 
 // tail follows a log stream file, printing new lines as they appear. It is

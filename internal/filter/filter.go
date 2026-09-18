@@ -24,6 +24,7 @@ type Info struct {
 	Route     string
 	Host      string
 	Path      string
+	Method    string
 	TLS       bool
 }
 

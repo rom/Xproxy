@@ -42,6 +42,8 @@ security review and the reference hardware numbers remain). Phases 1 and 2 are c
 - Management over a local socket from a CLI, a terminal UI and a web GUI
   with viewer and operator roles, configuration editing with validation,
   graphs and live logs
+- Extensible with compiled-in middleware behind a stable interface
+  (header policy and basic authentication built in)
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
   status, upstreams, reload, certificate reload, log reopen, tail, bans,
   cluster, metrics, sampled series, and a full-screen TUI
@@ -87,6 +89,7 @@ curl -i http://127.0.0.1:8080/
 | [docs/USAGE.md](docs/USAGE.md) | Operating the proxy and the control tool |
 | [docs/SETUP.md](docs/SETUP.md) | Installation on Fedora |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured scale and throughput |
+| [docs/EXTENDING.md](docs/EXTENDING.md) | Writing middleware against the stable interface |
 | [docs/HARDENING.md](docs/HARDENING.md) | Host hardening checklist |
 | [docs/TESTS.md](docs/TESTS.md) | Test harness and coverage |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases to 1.0 and beyond |

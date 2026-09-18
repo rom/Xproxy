@@ -19,7 +19,7 @@ var (
 func (s *Server) sample() metrics.Sample {
 	sn := s.Stats()
 	denied := sn.DeniedACL + sn.DeniedRateLimit + sn.Tarpitted + sn.DeniedConcurrency + sn.DeniedBodySize + sn.DeniedURILength +
-		sn.DeniedNoRoute + sn.DeniedWebSocket + sn.DeniedBadHost + sn.DeniedBan + sn.DeniedWAF + sn.DeniedJWT
+		sn.DeniedNoRoute + sn.DeniedWebSocket + sn.DeniedBadHost + sn.DeniedBan + sn.DeniedWAF + sn.DeniedJWT + sn.DeniedICAP + sn.DeniedFilter
 	return metrics.Sample{
 		Counters: []float64{float64(sn.Requests), float64(sn.Responses2xx), float64(sn.Responses4xx), float64(sn.Responses5xx),
 			float64(denied), float64(sn.Shed), float64(sn.BytesIn), float64(sn.BytesOut), float64(sn.UpstreamErrors)},
@@ -54,7 +54,7 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 	}{
 		{"acl", sn.DeniedACL}, {"rate_limit", sn.DeniedRateLimit}, {"tarpit", sn.Tarpitted}, {"concurrency", sn.DeniedConcurrency},
 		{"body_size", sn.DeniedBodySize}, {"uri_length", sn.DeniedURILength}, {"no_route", sn.DeniedNoRoute}, {"websocket", sn.DeniedWebSocket},
-		{"bad_host", sn.DeniedBadHost}, {"ban", sn.DeniedBan}, {"waf", sn.DeniedWAF}, {"jwt", sn.DeniedJWT}, {"icap", sn.DeniedICAP}, {"shed", sn.Shed},
+		{"bad_host", sn.DeniedBadHost}, {"ban", sn.DeniedBan}, {"waf", sn.DeniedWAF}, {"jwt", sn.DeniedJWT}, {"icap", sn.DeniedICAP}, {"filter", sn.DeniedFilter}, {"shed", sn.Shed},
 	}
 	for _, d := range denied {
 		e.Counter("xproxy_denied_total", "Requests refused by the proxy, by reason.", L{"reason": d.reason}, float64(d.v))
@@ -108,6 +108,10 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 		for result, v := range map[string]uint64{"unmodified": st.Unmodified, "modified": st.Modified, "replaced": st.Replacements, "error": st.Errors, "bypassed": st.Bypassed} {
 			e.Counter("xproxy_icap_results_total", "ICAP exchanges by result.", L{"service": st.Name, "result": result}, float64(v))
 		}
+	}
+
+	for _, fs := range rt.filterStatus() {
+		e.Counter("xproxy_filter_denied_total", "Requests denied by a configured filter.", L{"filter": fs.Name, "kind": fs.Kind}, float64(fs.Denied))
 	}
 
 	// Process and Go runtime, for capacity planning and soak tests.

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/proxy"
