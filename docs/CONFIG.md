@@ -696,7 +696,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `bot_score`, `oidc`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -770,6 +770,27 @@ redirects are not security events; failed callbacks are, with reason
 
 The access log carries `oidc_user` for requests with a session and
 `flow: <name>:login`, `login_complete` or `logout` for the redirects.
+
+### Kind `wasm`
+
+Runs a WebAssembly module per request in a sandbox. The module follows
+the ABI in EXTENDING.md (exports `xproxy_abi_version`, `xproxy_alloc`,
+`xproxy_on_request`, optionally `xproxy_on_response`; imports `get`,
+`set_header`, `remove_header`, `deny`, `log`, `log_attr` from module
+`xproxy`). It is read and compiled at load and on reload; a broken
+module or a wrong ABI version is a load error.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `module` | path | required | Absolute path of the `.wasm` file, at most 64 MiB |
+| `config` | string | `""` | Free text the module reads with `get(config)`, at most 64 KiB |
+| `timeout` | duration | `50ms` | Per call bound; 1ms to 10s |
+| `memory_limit_pages` | int | `256` | 64 KiB pages per instance (16 MiB); 1 to 16384 |
+| `instances` | int | `16` | Pooled instances; more are created on demand and dropped after use |
+| `on_error` | `deny`, `allow` | `deny` | What a trap, timeout or bad result means: 500 with the filter name as reason, or continue with `wasm_error: allowed` in the access log |
+
+Denies carry the status, reason and detail the module set with
+`deny`; `log_attr` values appear in the access log as `wasm_<key>`.
 
 ### Kind `bot_score`
 

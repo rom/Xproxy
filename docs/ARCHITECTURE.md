@@ -58,7 +58,8 @@ internal/proxy      server, listeners, handler pipeline, transport, stats
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
-internal/filters    built-in kinds (header_guard, basic_auth, bot_score, oidc) and the registration list
+internal/filters    built-in kinds (header_guard, basic_auth, bot_score, oidc, wasm) and the registration list
+internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
@@ -328,6 +329,20 @@ shutdown exceeds its context. Plain requests go through one
 `http.Transport` per listener with the checked dialer, hop-by-hop
 headers removed both ways and the response body bounded. Refusals are
 security events with a `forward_` reason and feed the ban list.
+
+### WebAssembly filters
+
+The `wasm` kind (`internal/filters/wasm`) owns one wazero runtime per
+configured filter with a memory limit and close-on-context-done, the
+host module `xproxy`, WASI preview 1, and the compiled module. Guest
+instances are pooled; a call takes one (or instantiates a fresh one),
+runs the export under a deadline with the per request state in the
+context so host functions can reach the request, response and verdict,
+and returns the instance to the pool unless it trapped. Strings cross
+the boundary through the guest's `xproxy_alloc`, bounded at 64 KiB.
+The verdict the guest builds with `deny` is an ordinary
+`filter.Verdict`, so wasm denies are logged, counted and observed by
+the ban list like every other.
 
 ### OpenID Connect login
 

@@ -75,6 +75,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   forward to upstream resolvers with a fresh id and source port per
   query; `dns_blocked` security events and ban reason; `GET/DELETE
   /v1/dns`, `xproxyctl dns`, `xproxy_dns_*` metrics.
+- WebAssembly extension ABI version 1: the `wasm` filter kind runs a
+  module per request in a wazero sandbox with memory and time bounds;
+  guests export `xproxy_abi_version`, `xproxy_alloc`,
+  `xproxy_on_request` and optionally `xproxy_on_response` and import
+  `get`, `set_header`, `remove_header`, `deny`, `log` and `log_attr`
+  from module `xproxy`. New dependency `github.com/tetratelabs/wazero`.
 
 ## 1.0.0 - 2026-09-18
 

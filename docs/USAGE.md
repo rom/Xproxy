@@ -731,6 +731,31 @@ the access log then carries `bot_score`, `bot_signals` and `ja4` for
 every request, which gives the fingerprints of your own tools for
 `ja4_allow` and the score distribution for the thresholds.
 
+### WebAssembly filters
+
+```yaml
+filters:
+  - name: tenant-policy
+    kind: wasm
+    options:
+      module: /etc/xproxy/filters/tenant-policy.wasm
+      config: "allowed=acme,globex"
+      timeout: 20ms
+routes:
+  - name: api
+    hosts: [api.example.com]
+    upstream: api
+    filters: [tenant-policy]
+```
+
+The module decides per request from what it reads through the host
+functions (method, path, headers, client address, country, JA4, its
+own `config`), may add or remove headers in both directions, deny with
+a status and reason of its own, and annotate the access log. It runs
+with a memory bound and a deadline; a module that traps or overruns
+fails closed unless `on_error: allow`. Build it with any toolchain that
+targets WebAssembly; EXTENDING.md has the ABI and a minimal guest.
+
 ### Header policy and basic authentication (filters)
 
 Filters are middleware instances attached to routes; the built-in kinds

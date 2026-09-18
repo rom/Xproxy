@@ -9,4 +9,5 @@ import (
 	_ "github.com/rom/xproxy/internal/filters/botscore"    // bot_score
 	_ "github.com/rom/xproxy/internal/filters/headerguard" // header_guard
 	_ "github.com/rom/xproxy/internal/filters/oidc"        // oidc
+	_ "github.com/rom/xproxy/internal/filters/wasm"        // wasm
 )

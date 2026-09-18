@@ -96,6 +96,7 @@ record.
 | `go.etcd.io/bbolt` | MIT | Embedded state store for bans (AMR-012) | phase 2 |
 | `github.com/quic-go/quic-go` (with `qpack`) | MIT | HTTP/3 (AMR-002, AMR-024); pinned to the newest release that builds with the minimum toolchain | phase 2 |
 | `golang.org/x/*` | BSD | Extended standard library (`net`, `crypto`, `sys`, `time`) | as needed |
+| `github.com/tetratelabs/wazero` | Apache 2.0 | WebAssembly runtime for the `wasm` filter kind (AMR-013, AMR-042); pure Go, no cgo | 1.2 |
 | `golang.org/x/term` | BSD | Raw terminal mode for the TUI (AMR-027); replaces the bubbletea plan | phase 2 |
 
 Coraza brings a transitive set that is larger than the rest of the binary
@@ -297,7 +298,12 @@ in one place; the runtime wraps instances for counting and defaulting,
 so an extension cannot produce an unlogged or uncounted deny.
 `config` now imports `filter` (and nothing else from the module).
 
-**Status.** Accepted; interface delivered.
+**Update (1.2).** The WebAssembly ABI is delivered as the built-in
+`wasm` kind on wazero (AMR-042 for its shape). Both paths remain:
+compiled-in kinds for what needs the whole request and native speed,
+modules for what must be replaceable without a build.
+
+**Status.** Accepted; interface and WebAssembly ABI delivered.
 
 ---
 
@@ -1180,6 +1186,43 @@ one place to change); DNS over HTTPS for clients on an http listener
 **Consequences.** No DNSSEC validation; clients that need it validate
 themselves (the proxy passes records through untouched). Cached
 answers are served with the RD and AA bits the upstream set.
+
+**Status.** Accepted.
+
+---
+
+## AMR-042: The WebAssembly ABI is a small set of typed host calls, not a shared request structure
+
+**Context.** Proxy WebAssembly ABIs come in two shapes: proxy-wasm,
+where the host and guest exchange a large versioned surface of
+callbacks and serialised header maps, and small purpose built ABIs.
+Xproxy needs modules that decide and annotate, not a second data
+plane.
+
+**Decision.** ABI version 1 is six imports and three or four exports.
+The guest pulls what it needs through `get` (a kind number and an
+optional name, one value at a time), pushes changes with `set_header`,
+`remove_header` and `deny`, and writes logs with `log` and `log_attr`.
+Strings cross the boundary through the guest's own allocator so the
+host never guesses at the guest's memory layout, and a returned string
+is one packed `i64` so the ABI needs no multi-value support. There is
+no body access in version 1: bodies are where memory and time go, and
+the WAF and ICAP already cover inspection. Every call has a deadline
+and every instance a memory bound; failure is closed by default. The
+runtime is wazero because it is pure Go (the static Fedora build and
+the SELinux policy stay as they are) and interprets or compiles
+without a JIT that maps executable pages from the network.
+
+**Alternatives.** proxy-wasm compatibility (rejected for 1.2: a
+large surface to implement faithfully and a dependency on its SDKs;
+the small ABI can be wrapped by an adapter module later); bodies in
+version 1 (deferred until there is a use that the WAF and ICAP do not
+serve); Go plugins (never, AMR-013).
+
+**Consequences.** Modules cannot inspect bodies or call the network,
+by design. The ABI grows by adding `get` kinds and imports; the
+version number changes only when a table entry changes meaning. A
+module written for version 1 keeps working.
 
 **Status.** Accepted.
 

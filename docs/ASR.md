@@ -72,7 +72,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-O3 | Management via CLI, TUI and web GUI | M | MVP CLI, TUI delivered in phase 2, GUI delivered in phase 3 | One management API on a Unix socket serves all three; GUI is a separate binary serving embedded static assets over the same API, never inside the data plane |
 | ASR-O4 | Metrics for graphs and statistics | M | 1.0 (delivered in phase 2) | Prometheus text endpoint on the management socket and an optional TCP endpoint, plus a local ring buffer of time series for the GUI without external storage |
 | ASR-O5 | Persisted state for bans and statistics across restarts | S | 1.0 for bans (delivered in phase 2); statistics moved to 1.x | Embedded key-value store (bbolt) in the state directory |
-| ASR-O6 | Extensible without recompiling the core for common cases | S | 1.0 interface (delivered in phase 3), 1.x WASM | Middleware interface with a registry at 1.0; WebAssembly extension ABI in 1.x; never Go plugins |
+| ASR-O6 | Extensible without recompiling the core for common cases | S | 1.0 interface (delivered in phase 3), 1.2 WebAssembly (delivered) | Middleware interface with a registry at 1.0; WebAssembly ABI v1 on wazero at 1.2; never Go plugins |
 
 ## 5. Quality
 
@@ -130,7 +130,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F19 | `internal/filters/oidc`, `Verdict.Silent` | `TestOIDC`, `TestParse`, `TestSealOpen` |
 | ASR-F20 | `internal/dns`, `internal/proxy/dnslistener.go` | `TestMessages`, `TestBlockList`, `TestCache`, `TestServer`, `TestDNSListener` |
 | ASR-Q2 | `test/covergate`, `.gremlins.yaml`, `internal/proxy/chaos_test.go` | CI `test` job (`make cover-gate`), CI `mutate` job, `TestChaos*` |
-| ASR-O6 | `internal/filter` registry, `internal/filters` | `TestRegistry`, `TestFilters`, `TestFiltersConfig`, EXTENDING.md |
+| ASR-O6 | `internal/filter` registry, `internal/filters`, `internal/filters/wasm` | `TestRegistry`, `TestFilters`, `TestFiltersConfig`, `TestGuest`, `TestLoadErrors`, EXTENDING.md |
 | ASR-P1 | `internal/router`, `internal/upstream` health bounds, `internal/proxy` generations | `TestScale` (`make scale`), `BenchmarkMatch1000Hosts`, PERFORMANCE.md |
 | ASR-P2 | handler path, `test/load` | `make load` baseline in PERFORMANCE.md; 8 core reference run open |
 | ASR-P3 | `Server.Reload` | `TestReload` |

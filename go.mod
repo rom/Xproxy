@@ -6,6 +6,7 @@ require (
 	github.com/corazawaf/coraza-coreruleset/v4 v4.25.0
 	github.com/corazawaf/coraza/v3 v3.7.0
 	github.com/quic-go/quic-go v0.61.0
+	github.com/tetratelabs/wazero v1.12.0
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1

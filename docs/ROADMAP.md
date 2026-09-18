@@ -189,10 +189,11 @@ procedure is in RELEASING.md.
 - OIDC login flows with session cookies: delivered (`oidc` filter
   kind, AMR-040)
 - DNS proxy: delivered (`kind: dns` listeners, AMR-041)
+- WebAssembly extension ABI: delivered (`wasm` filter kind, ABI v1,
+  AMR-013 and AMR-042)
 
 ## After 1.2 (candidates, unranked)
 
-- WebAssembly extension ABI (AMR-013)
 - Kubernetes ingress controller mode
 
 ## Not planned

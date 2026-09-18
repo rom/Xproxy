@@ -223,6 +223,15 @@ to report a vulnerability. The threat analysis behind the controls is in
 - gRPC health probes and error responses are hand encoded with bounded
   reads; no protobuf library is linked.
 
+### WebAssembly filters
+
+- Modules run in wazero (pure Go, no cgo, no JIT escape to the host):
+  no file system, sockets or environment; memory bounded per instance;
+  every call under a deadline; traps and timeouts fail closed by
+  default and discard the instance.
+- The host reads and writes guest memory only through bounded,
+  validated strings; header names and values are checked.
+
 ### OpenID Connect
 
 - Authorization code flow only, with PKCE (S256) and a nonce; the

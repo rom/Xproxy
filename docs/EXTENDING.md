@@ -7,9 +7,13 @@ routes by name. This document is the contract: what a filter may rely on,
 what it must do, and how the interface evolves. The current API version
 is 1 (`filter.APIVersion`; `xproxyctl filters` prints it).
 
-Go plugins are never used, and a WebAssembly ABI is planned after 1.0
-(AMR-013). Until then an extension is source in the tree, built into the
-binary, and reviewed like any other code.
+Go plugins are never used. Since 1.2 there are two ways to extend the
+proxy: compiled-in kinds (this document's first part) and WebAssembly
+modules run by the built-in `wasm` kind in a sandbox (the ABI in the
+second part, AMR-013 and AMR-042). A compiled-in kind sees everything
+and runs at native speed; a module runs with a memory and time bound,
+sees the request through a small set of host functions, and can be
+shipped and replaced without a build of the proxy.
 
 ## The interface
 
@@ -191,6 +195,104 @@ res := filtertest.Run(f, req, nil)     // res.Request, res.Response, res.Attrs
 `internal/filters/headerguard` (stateless, patterns) and
 `internal/filters/basicauth` (a users file, a cache, deny headers) are
 the reference implementations with tests.
+
+## WebAssembly ABI (version 1)
+
+A `wasm` filter loads one module from disk and runs it per request in a
+wazero sandbox (pure Go, no cgo). The module is any WebAssembly binary
+whose exports and imports follow this contract; it can be written in
+Rust, C, Zig, TinyGo or Go (`GOOS=wasip1 GOARCH=wasm`, reactor mode with
+`//go:wasmexport`). WASI preview 1 imports are available (clock,
+random, no file system or sockets).
+
+```yaml
+filters:
+  - name: policy
+    kind: wasm
+    options:
+      module: /etc/xproxy/filters/policy.wasm
+      config: "tenant=acme"     # free text the module reads with get(config)
+      timeout: 50ms             # per call; a trap or timeout fails closed
+      memory_limit_pages: 256   # 64 KiB pages per instance (16 MiB)
+      instances: 16             # pooled instances
+      on_error: deny            # or allow
+```
+
+### Guest exports
+
+| Export | Signature | Meaning |
+|--------|-----------|---------|
+| `memory` | memory | Linear memory the host reads strings from and writes strings into |
+| `xproxy_abi_version` | `() -> i32` | Must return `1`; checked at load |
+| `xproxy_alloc` | `(size: i32) -> i32` | Returns a pointer to `size` writable bytes; the host calls it before writing a string. A bump allocator is enough: instances are pooled and the host never frees |
+| `xproxy_on_request` | `() -> i32` | Runs in the request phase; `0` continues, any other value denies (details from `deny`) |
+| `xproxy_on_response` | `(status: i32) -> i32` | Optional; runs in the response phase with the upstream status |
+| `_initialize` | `()` | Optional (WASI reactor); called once per instance |
+
+### Host imports (module `xproxy`)
+
+Strings are `(ptr, len)` pairs in guest memory, at most 64 KiB. A
+returned string is packed in an `i64`: pointer in the high 32 bits,
+length in the low 32 bits, `0` when absent.
+
+| Import | Signature | Meaning |
+|--------|-----------|---------|
+| `get` | `(kind: i32, name_ptr: i32, name_len: i32) -> i64` | Read a request value; `name` only for header kinds |
+| `set_header` | `(target: i32, name_ptr, name_len, value_ptr, value_len)` | `target` 0 request, 1 response (or the deny response during a request deny) |
+| `remove_header` | `(target: i32, name_ptr, name_len)` | |
+| `deny` | `(status: i32, reason_ptr, reason_len, detail_ptr, detail_len)` | Sets the verdict; `status` 400 to 599 (403 otherwise), `reason` a token (the filter name otherwise) |
+| `log` | `(level: i32, ptr, len)` | Error log at debug 0, info 1, warn 2, error 3, tagged with the request id and route |
+| `log_attr` | `(key_ptr, key_len, value_ptr, value_len)` | Adds `wasm_<key>` to the access log line (at most 32) |
+
+`get` kinds: 0 method, 1 path, 2 host, 3 query, 4 request header by
+name, 5 client address, 6 route, 7 request id, 8 the `config` option,
+9 country, 10 JA4, 11 response header by name, 12 response status
+(response phase only).
+
+### Rules
+
+- Every call runs with the configured `timeout`; a trap, an
+  out-of-bounds access or a timeout is a guest error. With `on_error:
+  deny` (the default) the request is refused with 500 and reason the
+  filter name; with `allow` it continues and the access log carries
+  `wasm_error: allowed`. The instance that failed is discarded.
+- Memory is bounded per instance by `memory_limit_pages`; strings that
+  cross the boundary are bounded at 64 KiB; header operations at 64 per
+  call; header names and values are checked for control characters.
+- Instances are pooled up to `instances`; a request that finds the
+  pool empty gets a fresh instance, so state kept in guest memory is
+  per instance and must not be relied on between requests.
+- The module is read and compiled at configuration load (`xproxyctl
+  validate` compiles it too) and on every reload; a broken module or
+  a wrong ABI version is a load error.
+- The ABI version changes only for incompatible changes to the tables
+  above; new `get` kinds and new imports are added compatibly.
+
+A guest that blocks requests carrying `X-Block`, written as
+WebAssembly text:
+
+```wat
+(module
+  (import "xproxy" "get"  (func $get  (param i32 i32 i32) (result i64)))
+  (import "xproxy" "deny" (func $deny (param i32 i32 i32 i32 i32)))
+  (memory (export "memory") 1)
+  (data (i32.const 0) "x-blockblocked")
+  (global $heap (mut i32) (i32.const 4096))
+  (func (export "xproxy_abi_version") (result i32) (i32.const 1))
+  (func (export "xproxy_alloc") (param $n i32) (result i32)
+    global.get $heap
+    global.get $heap local.get $n i32.add global.set $heap)
+  (func (export "xproxy_on_request") (result i32)
+    (i64.and (call $get (i32.const 4) (i32.const 0) (i32.const 7)) (i64.const 0xffffffff))
+    i32.wrap_i64
+    (if (then
+      (call $deny (i32.const 403) (i32.const 7) (i32.const 7) (i32.const 0) (i32.const 0))
+      (return (i32.const 1))))
+    (i32.const 0)))
+```
+
+The test guest in `internal/filters/wasm/module_test.go` is the same
+program assembled by hand and exercises every import.
 
 ## Stability
 
