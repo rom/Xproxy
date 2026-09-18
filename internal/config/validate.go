@@ -116,6 +116,13 @@ func (v *validator) config(c *Config) {
 	if c.ACME != nil {
 		v.acme(c.ACME)
 	}
+	if c.Ingress != nil {
+		byName := map[string]*Listener{}
+		for i := range c.Server.Listeners {
+			byName[c.Server.Listeners[i].Name] = &c.Server.Listeners[i]
+		}
+		v.ingress(c.Ingress, byName)
+	}
 	if c.Challenge != nil {
 		v.challenge(c.Challenge)
 	}
@@ -1263,6 +1270,49 @@ func destinationPatternOK(d string) bool {
 		return true
 	}
 	return hostPatternOK(d)
+}
+
+func (v *validator) ingress(in *Ingress, listeners map[string]*Listener) {
+	if !in.Enabled {
+		return
+	}
+	u, err := url.Parse(in.APIServer)
+	schemeOK := u.Scheme == "https" || (u.Scheme == "http" && in.AllowHTTP)
+	if err != nil || u.Host == "" || !schemeOK {
+		v.errf("ingress.api_server: must be an https URL (http only with allow_http)")
+	}
+	if in.TokenFile != "" && !strings.HasPrefix(in.TokenFile, "/") {
+		v.errf("ingress.token_file: must be an absolute path")
+	}
+	if in.CAFile != "" && !strings.HasPrefix(in.CAFile, "/") {
+		v.errf("ingress.ca_file: must be an absolute path")
+	}
+	if !nameRE.MatchString(in.Class) {
+		v.errf("ingress.class: %q is not a valid name", in.Class)
+	}
+	for i, ns := range in.Namespaces {
+		if !hostPatternOK(ns) || strings.Contains(ns, ".") || strings.Contains(ns, "*") {
+			v.errf("ingress.namespaces[%d]: %q is not a namespace", i, ns)
+		}
+	}
+	if in.Listener != "" {
+		ln, ok := listeners[in.Listener]
+		switch {
+		case !ok:
+			v.errf("ingress.listener: unknown listener %q", in.Listener)
+		case ln.Kind != "http" || ln.TLS == nil:
+			v.errf("ingress.listener: %q must be an http listener with tls", in.Listener)
+		}
+	}
+	if !strings.HasPrefix(in.CertDir, "/") {
+		v.errf("ingress.cert_dir: must be an absolute path")
+	}
+	if in.Resync < Duration(time.Second) || in.Resync > Duration(time.Hour) {
+		v.errf("ingress.resync: must be between 1s and 1h")
+	}
+	if in.Timeout <= 0 || in.Timeout > Duration(5*time.Minute) {
+		v.errf("ingress.timeout: must be positive and at most 5m")
+	}
 }
 
 func (v *validator) dnsListener(p string, d *DNSListener) {

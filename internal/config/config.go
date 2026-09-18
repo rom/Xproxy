@@ -63,6 +63,9 @@ type Config struct {
 	// GeoIP names the country database used by routes[].geo and by rate
 	// limits keyed on country.
 	GeoIP *GeoIP `yaml:"geoip"`
+	// Ingress turns Kubernetes Ingress resources into routes, upstreams
+	// and certificates (ingress controller mode).
+	Ingress *Ingress `yaml:"ingress"`
 	// Cache sizes the in-memory response cache used by routes[].cache.
 	Cache *Cache `yaml:"cache"`
 	// ACME configures automatic certificates for listeners with tls.acme.
@@ -214,6 +217,40 @@ type DNSCache struct {
 type DNSRateLimit struct {
 	QPS   float64 `yaml:"qps"`
 	Burst int     `yaml:"burst"`
+}
+
+// Ingress is Kubernetes ingress controller mode: the proxy reads
+// Ingress, Service, EndpointSlice and TLS Secret resources of one
+// ingress class from the API server with the pod's service account,
+// appends the resulting routes, upstreams and certificates to this
+// configuration and reloads when they change. Routes and upstreams in
+// this file are kept and take precedence by name.
+type Ingress struct {
+	Enabled bool `yaml:"enabled"`
+	// APIServer URL. Default https://kubernetes.default.svc.
+	APIServer string `yaml:"api_server"`
+	// TokenFile is the bearer token (the service account token). Default
+	// /var/run/secrets/kubernetes.io/serviceaccount/token.
+	TokenFile string `yaml:"token_file"`
+	// CAFile verifies the API server. Default
+	// /var/run/secrets/kubernetes.io/serviceaccount/ca.crt.
+	CAFile string `yaml:"ca_file"`
+	// AllowHTTP permits a plain http api_server (tests, kubectl proxy).
+	AllowHTTP bool `yaml:"allow_http"`
+	// Class is the ingressClassName served. Default xproxy.
+	Class string `yaml:"class"`
+	// Namespaces restricts the watch. Empty watches every namespace.
+	Namespaces []string `yaml:"namespaces"`
+	// Listener names the TLS listener that receives certificates from
+	// Ingress TLS secrets. Empty ignores TLS secrets.
+	Listener string `yaml:"listener"`
+	// CertDir receives the certificate files. Default
+	// /var/lib/xproxy/ingress.
+	CertDir string `yaml:"cert_dir"`
+	// Resync is the polling interval. Default 30s.
+	Resync Duration `yaml:"resync"`
+	// Timeout bounds one API request. Default 10s.
+	Timeout Duration `yaml:"timeout"`
 }
 
 // ForwardListener is an explicit forward proxy: clients send CONNECT

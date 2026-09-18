@@ -104,11 +104,16 @@ routes:
 	if s.Generation() < 200 {
 		t.Fatalf("generation %d", s.Generation())
 	}
+	// A leak of one goroutine per generation would show as hundreds; the
+	// tolerance covers idle client connections and other tests' goroutines
+	// winding down in the same process (the gate runs every package's
+	// tests with coverage instrumentation).
+	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 	deadline := time.Now().Add(10 * time.Second)
-	for goruntime.NumGoroutine() > g0+20 && time.Now().Before(deadline) {
+	for goruntime.NumGoroutine() > g0+40 && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
-	if n := goruntime.NumGoroutine(); n > g0+20 {
+	if n := goruntime.NumGoroutine(); n > g0+40 {
 		t.Fatalf("goroutines %d after storm (baseline %d): old generations not drained", n, g0)
 	}
 	t.Logf("served %d requests through 200 reloads, generation %d", served.Load(), s.Generation())

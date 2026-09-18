@@ -22,6 +22,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds
+	"github.com/rom/xproxy/internal/ingress"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/proxy"
@@ -66,6 +67,37 @@ func run(args []string) int {
 		logs.Security.Warn("running as root; use systemd socket activation and a dedicated user instead")
 	}
 
+	// Ingress controller mode: the running configuration is the file plus
+	// what the cluster's Ingress resources translate to.
+	var ctrl *ingress.Controller
+	var reload func() error
+	effective := func(c *config.Config) (*config.Config, error) {
+		if ctrl == nil {
+			return c, nil
+		}
+		snap, certs := ctrl.Snapshot()
+		return ingress.Merge(c, snap, certs)
+	}
+	if cfg.Ingress != nil && cfg.Ingress.Enabled {
+		c, err := ingress.New(*cfg.Ingress, logs.Error, func() { _ = reload() })
+		if err != nil {
+			logs.Error.Error("ingress controller failed", "err", err.Error())
+			return 1
+		}
+		ctrl = c
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.Ingress.Timeout.D()*4)
+		if _, err := ctrl.Sync(ctx); err != nil {
+			logs.Error.Warn("initial ingress sync failed; serving the file configuration until the API answers", "err", err.Error())
+		}
+		cancel()
+		merged, err := effective(cfg)
+		if err != nil {
+			logs.Error.Error("ingress merge failed", "err", err.Error())
+			return 1
+		}
+		cfg = merged
+	}
+
 	srv, err := proxy.New(cfg, logs)
 	if err != nil {
 		logs.Error.Error("initialisation failed", "err", err.Error())
@@ -75,10 +107,18 @@ func run(args []string) int {
 		logs.Error.Error("start failed", "err", err.Error())
 		return 1
 	}
+	if ctrl != nil {
+		ctrl.Start()
+		defer ctrl.Stop()
+	}
 
-	reload := func() error {
+	reload = func() error {
 		c, err := config.Load(*cfgPath)
 		if err != nil {
+			logs.Error.Error("reload rejected", "err", err.Error())
+			return err
+		}
+		if c, err = effective(c); err != nil {
 			logs.Error.Error("reload rejected", "err", err.Error())
 			return err
 		}
@@ -90,11 +130,15 @@ func run(args []string) int {
 	}
 	reopen := func() error { logs.Reopen(); logs.Audit.Info("logs reopened"); return nil }
 
-	m := mgmt.New(cfg.Management, srv, logs, mgmt.Actions{
+	actions := mgmt.Actions{
 		Reload:      reload,
 		ReloadCerts: srv.ReloadCertificates,
 		ReopenLogs:  reopen,
-	})
+	}
+	if ctrl != nil {
+		actions.Ingress = func() any { return ctrl.Status() }
+	}
+	m := mgmt.New(cfg.Management, srv, logs, actions)
 	if err := m.Start(); err != nil {
 		logs.Error.Error("management start failed", "err", err.Error())
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

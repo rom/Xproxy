@@ -1228,6 +1228,43 @@ module written for version 1 keeps working.
 
 ---
 
+## AMR-043: Ingress mode translates to the file configuration and polls
+
+**Context.** Kubernetes ingress controllers usually embed client-go,
+watch resources with informers and drive their own data plane
+configuration. Xproxy already has a configuration language, a parser
+with every validation rule, and a reload path that swaps generations
+atomically.
+
+**Decision.** Ingress mode is a translator. A small REST client with
+the service account reads the four resource kinds the job needs, a
+pure function turns them into `config.Route`, `config.Upstream` and
+certificate material, and a merge appends them to the operator's file
+and runs the result through the ordinary parser via a YAML round trip.
+The data plane, the management API and every feature (bans, rate
+limits, filters, WAF) apply to generated routes unchanged, and
+annotations can only reference what the file defines. The controller
+polls on a fixed interval and compares a digest; watches are avoided
+on purpose: they need resource version bookkeeping, reconnection and
+bookmark handling for a gain of a few seconds in propagation, and the
+reload is cheap. client-go is avoided because it is a very large
+dependency tree for a few list calls.
+
+**Alternatives.** client-go with informers (rejected above); the
+Gateway API (deferred: a larger model; a translator for it would sit
+next to this one); a separate controller process writing the file
+(rejected: two processes to run and a file to race on).
+
+**Consequences.** Propagation latency is up to `resync`. Regular
+expression paths and Exact semantics beyond priority are not
+supported. Pod addresses are used directly, so the proxy must run
+inside the cluster network. Watches and the Gateway API are 1.x
+candidates.
+
+**Status.** Accepted.
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |

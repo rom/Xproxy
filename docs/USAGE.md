@@ -512,6 +512,49 @@ The upstream keeps its own certificates and the WAF does not see the
 traffic (it is encrypted end to end); use an `http` listener with TLS
 termination where inspection is wanted.
 
+### Kubernetes ingress controller
+
+```sh
+podman build -f deploy/kubernetes/Containerfile -t registry.example.com/xproxy:1.2 .
+kubectl create namespace xproxy
+kubectl -n xproxy create secret tls xproxy-default-tls --cert=default.pem --key=default.key
+kubectl apply -f deploy/kubernetes/xproxy.yaml
+```
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+  namespace: shop
+  annotations:
+    xproxy.sysctl.se/rate-limits: "api"
+    xproxy.sysctl.se/websocket: "true"
+spec:
+  ingressClassName: xproxy
+  tls:
+    - hosts: [shop.example.com]
+      secretName: shop-tls
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: web, port: {number: 80}}}
+          - path: /api
+            pathType: Prefix
+            backend: {service: {name: api, port: {name: http}}}
+```
+
+The proxy pods read Ingress resources of class `xproxy` with their
+service account, turn them into routes and upstreams (pod addresses
+from EndpointSlices, so traffic goes to pods directly), install TLS
+secrets on the `https` listener and reload within `resync` of a
+change. Everything else in the ConfigMap's `xproxy.yaml` (bans, rate
+limits, filters, WAF) applies to the generated routes through the
+annotations. `xproxyctl ingress` in a pod shows the controller state.
+
 ### DNS proxy with a block list
 
 ```yaml

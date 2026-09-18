@@ -1,0 +1,159 @@
+# Xproxy as a Kubernetes ingress controller. Apply with
+#   kubectl apply -f deploy/kubernetes/xproxy.yaml
+# and give Ingress resources `ingressClassName: xproxy`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: xproxy
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: xproxy
+  namespace: xproxy
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: xproxy-ingress
+rules:
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "ingressclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services", "secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: xproxy-ingress
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: xproxy-ingress
+subjects:
+  - kind: ServiceAccount
+    name: xproxy
+    namespace: xproxy
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: xproxy
+spec:
+  controller: sysctl.se/xproxy
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xproxy-config
+  namespace: xproxy
+data:
+  xproxy.yaml: |
+    version: 1
+    server:
+      listeners:
+        - name: http
+          address: ":8080"
+        - name: https
+          address: ":8443"
+          tls:
+            certificates:
+              - cert_file: /etc/xproxy/default-tls/tls.crt   # fallback certificate (Secret xproxy-default-tls)
+                key_file: /etc/xproxy/default-tls/tls.key
+      limits:
+        max_body_bytes: 10485760
+    management:
+      socket: /run/xproxy/mgmt.sock
+    metrics:
+      listen: ":9100"
+      allow_cidrs: [0.0.0.0/0, "::/0"]
+    logging:
+      directory: /var/log/xproxy
+      access:   {sinks: [stdout]}
+      error:    {sinks: [stdout]}
+      security: {sinks: [stdout]}
+      audit:    {sinks: [stdout]}
+    ingress:
+      enabled: true
+      class: xproxy
+      listener: https
+      cert_dir: /var/lib/xproxy/ingress
+      resync: 30s
+    bans:
+      action: reject
+      triggers:
+        - {name: probes, reasons: [waf, no_route], threshold: 50, window: 1m, duration: 10m}
+    upstreams: []
+    routes: []
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xproxy
+  namespace: xproxy
+  labels: {app: xproxy}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: xproxy}
+  template:
+    metadata:
+      labels: {app: xproxy}
+    spec:
+      serviceAccountName: xproxy
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: xproxy
+          image: xproxy:1.2            # build with deploy/kubernetes/Containerfile
+          args: ["-config", "/etc/xproxy/xproxy.yaml"]
+          ports:
+            - {name: http, containerPort: 8080}
+            - {name: https, containerPort: 8443}
+            - {name: metrics, containerPort: 9100}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/xproxy/xproxy.yaml, subPath: xproxy.yaml, readOnly: true}
+            - {name: default-tls, mountPath: /etc/xproxy/default-tls, readOnly: true}
+            - {name: state, mountPath: /var/lib/xproxy}
+            - {name: run, mountPath: /run/xproxy}
+            - {name: logs, mountPath: /var/log/xproxy}
+          readinessProbe:
+            httpGet: {path: /metrics, port: metrics}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 250m, memory: 128Mi}
+            limits: {memory: 512Mi}
+      volumes:
+        - name: config
+          configMap: {name: xproxy-config}
+        - name: default-tls
+          secret: {secretName: xproxy-default-tls}
+        - name: state
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xproxy
+  namespace: xproxy
+spec:
+  type: LoadBalancer
+  selector: {app: xproxy}
+  ports:
+    - {name: http, port: 80, targetPort: http}
+    - {name: https, port: 443, targetPort: https}

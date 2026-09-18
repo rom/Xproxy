@@ -81,6 +81,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `xproxy_on_request` and optionally `xproxy_on_response` and import
   `get`, `set_header`, `remove_header`, `deny`, `log` and `log_attr`
   from module `xproxy`. New dependency `github.com/tetratelabs/wazero`.
+- Kubernetes ingress controller mode: the `ingress` section reads
+  Ingress, Service, EndpointSlice and TLS Secret resources of one class
+  with the pod's service account and merges routes, upstreams and
+  certificates into the file configuration, reloading on change;
+  `xproxy.sysctl.se/*` annotations set route options; `GET
+  /v1/ingress`, `xproxyctl ingress`; `deploy/kubernetes` manifests and
+  Containerfile.
 
 ## 1.0.0 - 2026-09-18
 

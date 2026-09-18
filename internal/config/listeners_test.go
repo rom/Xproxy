@@ -220,3 +220,56 @@ routes:
 		}
 	}
 }
+
+// TestIngressConfig covers the ingress section's defaults and rules.
+func TestIngressConfig(t *testing.T) {
+	base := `
+version: 1
+server:
+  listeners:
+    - {name: main, address: ":8080"}
+    - name: https
+      address: ":8443"
+      tls: {certificates: [{cert_file: /c.pem, key_file: /k.pem}]}
+ingress:
+  enabled: true
+%s
+upstreams:
+  - name: app
+    endpoints: [{address: 127.0.0.1:9000}]
+routes:
+  - name: r
+    upstream: app
+`
+	cfg, err := ParseWith([]byte(strings.Replace(base, "%s", "  listener: https", 1)), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := cfg.Ingress
+	if in.APIServer != "https://kubernetes.default.svc" || in.Class != "xproxy" || in.CertDir != "/var/lib/xproxy/ingress" || in.Resync.D() != 30*time.Second ||
+		in.Timeout.D() != 10*time.Second || !strings.HasSuffix(in.TokenFile, "/token") || !strings.HasSuffix(in.CAFile, "/ca.crt") {
+		t.Fatalf("ingress defaults: %+v", in)
+	}
+	cases := []struct{ name, snippet, want string }{
+		{"http api", "  api_server: http://localhost:8001", "api_server"},
+		{"relative token", "  token_file: token", "token_file"},
+		{"relative ca", "  ca_file: ca.crt", "ca_file"},
+		{"class", "  class: \"a b\"", "ingress.class"},
+		{"namespace", "  namespaces: [\"a.b\"]", "namespaces[0]"},
+		{"unknown listener", "  listener: nope", "unknown listener"},
+		{"plain listener", "  listener: main", "must be an http listener with tls"},
+		{"cert dir", "  cert_dir: certs", "cert_dir"},
+		{"resync", "  resync: 2h", "ingress.resync"},
+		{"timeout", "  timeout: 10m", "ingress.timeout"},
+	}
+	for _, tc := range cases {
+		_, err := ParseWith([]byte(strings.Replace(base, "%s", tc.snippet, 1)), false)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
+	}
+	// Disabled sections are not checked.
+	if _, err := ParseWith([]byte(strings.Replace(strings.Replace(base, "enabled: true", "enabled: false", 1), "%s", "  resync: 2h", 1)), false); err != nil {
+		t.Fatalf("disabled ingress validated: %v", err)
+	}
+}

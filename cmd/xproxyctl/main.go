@@ -27,6 +27,7 @@
 //	geoip          show the country database and lookup counters
 //	honeypot       list clients marked by honeypots; honeypot forget IP removes one
 //	dns            show dns listener counters; "dns purge" empties the caches
+//	ingress        show the Kubernetes ingress controller status
 //	cache          show cache statistics; "cache purge [HOST [PATH-PREFIX]]" removes entries
 //	htpasswd FILE NAME  add or replace a basic_auth user (password on stdin)
 //	metrics        print the Prometheus exposition
@@ -261,6 +262,13 @@ func run(args []string, out, errOut io.Writer) int {
 	case "geoip":
 		var b []byte
 		if err := c.Do("GET", "/v1/geoip", nil, &b); err != nil {
+			return fail(err)
+		}
+		_, _ = out.Write(b)
+		return 0
+	case "ingress":
+		var b []byte
+		if err := c.Do("GET", "/v1/ingress", nil, &b); err != nil {
 			return fail(err)
 		}
 		_, _ = out.Write(b)

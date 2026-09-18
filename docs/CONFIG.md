@@ -379,6 +379,54 @@ wins); then configuration order.
 | `timeout` | duration | none | Whole request deadline for this route |
 | `websocket` | bool | `false` | Allow `Upgrade` requests |
 
+## ingress
+
+Kubernetes ingress controller mode. When enabled, the proxy reads the
+Ingress, Service, EndpointSlice and TLS Secret resources of one ingress
+class from the API server with the pod's service account (no client
+library), translates them and appends the result to this file's
+routes, upstreams and certificates: the running configuration is the
+file plus the cluster. The file's own routes and upstreams are kept
+and a name collision is an error. Resources are polled every `resync`
+and a change reloads the proxy like a SIGHUP; a SIGHUP or `xproxyctl
+reload` re-reads the file and merges the latest snapshot. The API
+server being unreachable at start is a warning, not a failure: the
+file configuration serves until the first successful sync.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | |
+| `api_server` | URL | `https://kubernetes.default.svc` | `http://` only with `allow_http` (tests, `kubectl proxy`) |
+| `token_file` | path | the service account token | Bearer token |
+| `ca_file` | path | the service account CA | Verifies the API server |
+| `allow_http` | bool | `false` | |
+| `class` | name | `xproxy` | `ingressClassName` (or the `kubernetes.io/ingress.class` annotation) served; other classes are ignored |
+| `namespaces` | list | `[]` (all) | Namespaces read |
+| `listener` | name | none | TLS `http` listener that receives certificates from Ingress TLS secrets; without it TLS secrets are ignored |
+| `cert_dir` | path | `/var/lib/xproxy/ingress` | Certificate files written `0600` per secret (`namespace--name.crt/.key`); files of secrets no longer referenced are removed |
+| `resync` | duration | `30s` | Polling interval; 1s to 1h |
+| `timeout` | duration | `10s` | One API request |
+
+Translation: every `rules[].http.paths[]` entry becomes a route named
+`k8s-<namespace>-<ingress>-<n>` with the rule's host, the path as a
+prefix (`pathType: Exact` gets priority 10 so it wins over a prefix of
+the same length; regular expression paths are skipped with a
+warning), and an upstream `k8s-<namespace>-<service>-<port>` whose
+endpoints are the ready addresses of the service's EndpointSlices on
+the port the service maps to (a service without ready endpoints gets
+an unreachable placeholder so the route answers 503 rather than
+disappearing). `defaultBackend` becomes a hostless `/` route with
+priority -100; only the first Ingress with one counts. Annotations
+with the prefix `xproxy.sysctl.se/` set route options: `websocket`
+(`"true"`), `priority-class`, `rate-limits` and `filters` (comma
+separated names from this file), `timeout`, `max-body-bytes`,
+`strip-prefix` (`"true"` strips the matched path), `host-header`.
+Names over 64 bytes are shortened with a digest. `GET /v1/ingress` and
+`xproxyctl ingress` show syncs, errors, counts and the translation
+warnings. `deploy/kubernetes/xproxy.yaml` is a complete deployment
+with RBAC, an IngressClass and a ConfigMap; `deploy/kubernetes/Containerfile`
+builds the image.
+
 ## metrics
 
 The management socket always serves `/metrics` in Prometheus text format

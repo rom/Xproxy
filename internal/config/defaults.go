@@ -64,6 +64,7 @@ const (
 // applyDefaults fills zero values with their documented defaults. It must be
 // idempotent.
 func applyDefaults(c *Config) {
+	ingressDefaults(c)
 	if c.Version == 0 {
 		c.Version = CurrentVersion
 	}
@@ -452,6 +453,20 @@ func applyDefaults(c *Config) {
 			}
 		}
 	}
+}
+
+func ingressDefaults(c *Config) {
+	in := c.Ingress
+	if in == nil {
+		return
+	}
+	setStr(&in.APIServer, "https://kubernetes.default.svc")
+	setStr(&in.TokenFile, "/var/run/secrets/kubernetes.io/serviceaccount/token")
+	setStr(&in.CAFile, "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+	setStr(&in.Class, "xproxy")
+	setStr(&in.CertDir, "/var/lib/xproxy/ingress")
+	setDur(&in.Resync, 30*time.Second)
+	setDur(&in.Timeout, 10*time.Second)
 }
 
 func setInt(p *int, v int) {

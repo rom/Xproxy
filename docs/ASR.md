@@ -34,6 +34,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F18 | Route gRPC by service and method, answer errors as gRPC statuses, probe the standard health service | S | 1.2 (delivered) | gRPC rank in the router; h2c opt-in on listeners and upstreams; health protocol hand encoded, no protobuf dependency |
 | ASR-F19 | Log browsers in with OpenID Connect and carry the identity to applications as headers | S | 1.2 (delivered) | A filter kind, so it composes with routes and the ban list; stateless sealed cookies, no session store; the JWT verifier is reused for ID tokens |
 | ASR-F20 | Forwarding DNS proxy with cache, block policy and client controls | C | 1.2 (delivered) | A listener kind with its own byte level parser, no DNS library; the same bans and limits as every listener |
+| ASR-F21 | Serve Kubernetes Ingress resources as an ingress controller | C | 1.2 (delivered) | Polling controller with a minimal API client, translation to the ordinary configuration, merge through the parser; the data plane is unchanged |
 
 ## 2. Security
 
@@ -129,6 +130,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F18 | `internal/proxy/grpc.go`, `internal/upstream/grpchealth.go`, router gRPC rank | `TestGRPC`, `TestGRPCHelpers`, `TestMatchGRPC`, `TestGRPCHealthEncoding`, `TestGRPCConfig` |
 | ASR-F19 | `internal/filters/oidc`, `Verdict.Silent` | `TestOIDC`, `TestParse`, `TestSealOpen` |
 | ASR-F20 | `internal/dns`, `internal/proxy/dnslistener.go` | `TestMessages`, `TestBlockList`, `TestCache`, `TestServer`, `TestDNSListener` |
+| ASR-F21 | `internal/ingress`, `ingress` section, `deploy/kubernetes` | `TestTranslate`, `TestControllerAndProxy`, `TestIngressConfig` |
 | ASR-Q2 | `test/covergate`, `.gremlins.yaml`, `internal/proxy/chaos_test.go` | CI `test` job (`make cover-gate`), CI `mutate` job, `TestChaos*` |
 | ASR-O6 | `internal/filter` registry, `internal/filters`, `internal/filters/wasm` | `TestRegistry`, `TestFilters`, `TestFiltersConfig`, `TestGuest`, `TestLoadErrors`, EXTENDING.md |
 | ASR-P1 | `internal/router`, `internal/upstream` health bounds, `internal/proxy` generations | `TestScale` (`make scale`), `BenchmarkMatch1000Hosts`, PERFORMANCE.md |

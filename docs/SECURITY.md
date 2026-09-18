@@ -206,6 +206,17 @@ to report a vulnerability. The threat analysis behind the controls is in
   security events and ban reasons. Tunnels are bounded and idle closed;
   plain responses are size bounded.
 
+### Kubernetes ingress mode
+
+- Read-only cluster access (get, list, watch on Ingresses, Services,
+  EndpointSlices, Secrets) with the pod's service account; the proxy
+  never writes to the API.
+- Generated routes pass the same validation as the file; the file's
+  names win and collisions are errors; TLS secrets are written `0600`
+  into a controller owned directory and removed when unreferenced.
+- The container runs as a non root user on a scratch image with a read
+  only root file system and no capabilities.
+
 ### DNS
 
 - Fresh transaction id and source port per upstream query; answers

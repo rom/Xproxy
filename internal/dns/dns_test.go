@@ -26,16 +26,29 @@ type fakeUpstream struct {
 	tcpQ    atomic.Int64
 }
 
+// listenPair binds a UDP socket and a TCP listener on the same loopback
+// port, retrying when the port the system picked is taken by the other
+// protocol.
+func listenPair(t *testing.T) (net.PacketConn, net.Listener) {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		tcp, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		udp, err := net.ListenPacket("udp", tcp.Addr().String())
+		if err == nil {
+			return udp, tcp
+		}
+		_ = tcp.Close()
+	}
+	t.Fatal("no free port pair")
+	return nil, nil
+}
+
 func newFakeUpstream(t *testing.T) *fakeUpstream {
 	t.Helper()
-	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tcp, err := net.Listen("tcp", udp.LocalAddr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	udp, tcp := listenPair(t)
 	f := &fakeUpstream{udp: udp, tcp: tcp}
 	go func() {
 		buf := make([]byte, 4096)
@@ -339,14 +352,7 @@ func TestCache(t *testing.T) {
 
 func startServer(t *testing.T, p *Policy, hooks Hooks) (*Server, string) {
 	t.Helper()
-	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tcp, err := net.Listen("tcp", udp.LocalAddr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	udp, tcp := listenPair(t)
 	s := New("dns", udp, tcp, 100, 8, p, hooks)
 	s.Serve()
 	t.Cleanup(func() {

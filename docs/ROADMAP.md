@@ -191,10 +191,11 @@ procedure is in RELEASING.md.
 - DNS proxy: delivered (`kind: dns` listeners, AMR-041)
 - WebAssembly extension ABI: delivered (`wasm` filter kind, ABI v1,
   AMR-013 and AMR-042)
+- Kubernetes ingress controller mode: delivered (`ingress` section,
+  `deploy/kubernetes`, AMR-043)
 
 ## After 1.2 (candidates, unranked)
 
-- Kubernetes ingress controller mode
 
 ## Not planned
 

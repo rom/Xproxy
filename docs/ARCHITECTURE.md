@@ -66,6 +66,7 @@ internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/proxy/tcp.go  kind: tcp listeners (SNI routing, PROXY v2, splice)
 internal/proxy/forward.go  kind: forward listeners (CONNECT tunnels, plain relay, destination policy)
 internal/dns        DNS proxy: message framing, cache, block list, resolver, UDP and TCP server
+internal/ingress    Kubernetes ingress controller: API client, translation, merge, polling
 internal/proxy/dnslistener.go  kind: dns listeners bound to the proxy's logs and bans
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
@@ -290,6 +291,22 @@ header, replays the peeked bytes and splices both directions with an
 idle deadline and half-close. Connections are accounted on the pool like
 requests so ejection and health apply. The listener has its own
 connection bound and is drained on shutdown like the HTTP servers.
+
+### Kubernetes ingress mode
+
+`internal/ingress` is a polling controller with no client library: a
+small REST client with the service account token and CA lists
+Ingresses, Services and EndpointSlices (and fetches referenced TLS
+Secrets), `Translate` turns them into `config.Route` and
+`config.Upstream` values plus certificate material as a pure function
+with per object warnings, the controller writes certificate files
+atomically into `cert_dir` and removes stale ones, and `Merge` appends
+the snapshot to the operator's configuration and runs the result
+through the ordinary parser (YAML round trip) so every default and
+validation rule applies. The main binary computes the effective
+configuration as file plus snapshot at start and on every reload; the
+controller asks for a reload when the snapshot's digest changes. The
+data plane knows nothing about Kubernetes.
 
 ### DNS proxy
 
