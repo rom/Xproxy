@@ -41,6 +41,7 @@ type Server struct {
 	generation atomic.Uint64
 
 	concurrency *limits.Concurrency
+	tarpits     *limits.Concurrency // bound on requests held in a tarpit
 	connLimiter *limits.ConnLimiter
 	bans        atomic.Pointer[ban.List]
 	cluster     atomic.Pointer[cluster.Node]
@@ -72,6 +73,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 			RequestDuration: metrics.NewHistogram(metrics.DurationBuckets),
 			UpstreamTTFB:    metrics.NewHistogram(metrics.DurationBuckets)},
 		concurrency: limits.NewConcurrency(cfg.Server.Limits.MaxConcurrentRequests),
+		tarpits:     limits.NewConcurrency(cfg.Server.Limits.MaxTarpits),
 		connLimiter: limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
 	}
 	s.connLimiter.OnReject = func(addr netip.Addr, reason string) {
@@ -198,6 +200,7 @@ func (s *Server) Stats() Snapshot {
 	ls := s.logs.Stats()
 	snap.LogSyslogSent, snap.LogSyslogDropped, snap.LogJournalDropped, snap.LogRedaction = ls.SyslogSent, ls.SyslogDropped, ls.JournalDropped, ls.Redaction
 	snap.LogWriteErrors = ls.WriteErrors
+	snap.TarpitActive = s.tarpits.InFlight()
 	return snap
 }
 

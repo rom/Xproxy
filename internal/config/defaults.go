@@ -18,6 +18,7 @@ const (
 	DefaultMaxConnections        = 65536
 	DefaultMaxConnectionsPerIP   = 256
 	DefaultMaxConcurrentRequests = 16384
+	DefaultMaxTarpits            = 1024
 	DefaultShutdownTimeout       = 30 * time.Second
 
 	DefaultUpstreamConnect        = 5 * time.Second
@@ -82,6 +83,7 @@ func applyDefaults(c *Config) {
 	setInt(&l.MaxConnections, DefaultMaxConnections)
 	setInt(&l.MaxConnectionsPerIP, DefaultMaxConnectionsPerIP)
 	setInt(&l.MaxConcurrentRequests, DefaultMaxConcurrentRequests)
+	setInt(&l.MaxTarpits, DefaultMaxTarpits)
 
 	for i := range s.Listeners {
 		ln := &s.Listeners[i]

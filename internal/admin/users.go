@@ -180,12 +180,21 @@ func (u *Users) writeLocked() error {
 		x := u.byN[n]
 		fmt.Fprintf(&b, "%s:%s:%s\n", x.Name, x.Role, x.Hash)
 	}
-	tmp := filepath.Join(filepath.Dir(u.path), "."+filepath.Base(u.path)+".tmp")
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(u.path), "."+filepath.Base(u.path)+".*.tmp") // O_EXCL, never follows a link
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, u.path); err != nil {
-		_ = os.Remove(tmp)
+	if _, err := tmp.WriteString(b.String()); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), u.path); err != nil {
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 	return nil

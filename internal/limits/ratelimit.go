@@ -86,23 +86,35 @@ func (l *KeyedLimiter) Allow(key string) bool {
 
 // AllowN consumes n tokens for key.
 func (l *KeyedLimiter) AllowN(key string, n float64) bool {
+	return l.AllowFallback(key, "", n)
+}
+
+// AllowFallback consumes n tokens for key. When key is not tracked and its
+// shard is full of active keys, the decision is made on fallback instead
+// (the client address for a header keyed limit), so that a client rotating
+// key values cannot obtain a fresh burst per value once the table is full.
+// With no fallback the request is allowed untracked, bounded by burst; the
+// per-connection and concurrency limits still hold.
+func (l *KeyedLimiter) AllowFallback(key, fallback string, n float64) bool {
 	now := l.now()
 	sh := &l.shards[fnv(key)%uint32(len(l.shards))]
 	sh.mu.Lock()
-	defer sh.mu.Unlock()
 	b, ok := sh.buckets[key]
 	if !ok {
 		if len(sh.buckets) >= l.maxKeys {
 			l.evict(sh, now)
 		}
 		if len(sh.buckets) >= l.maxKeys {
-			// Still full: every tracked key is active. Allow but do not
-			// track; the per-connection and concurrency limits still hold.
+			sh.mu.Unlock()
+			if fallback != "" && fallback != key {
+				return l.AllowFallback(fallback, "", n)
+			}
 			return n <= l.burst
 		}
 		b = &bucket{tokens: l.burst, last: now}
 		sh.buckets[key] = b
 	}
+	defer sh.mu.Unlock()
 	l.refill(b, now)
 	if b.tokens >= n {
 		b.tokens -= n
@@ -240,3 +252,7 @@ func (l *KeyedLimiter) Len() int {
 	}
 	return n
 }
+
+// SetMaxKeysForTest lowers the per shard key bound; tests use it to fill
+// the table quickly.
+func (l *KeyedLimiter) SetMaxKeysForTest(n int) { l.maxKeys = n }

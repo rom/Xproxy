@@ -81,6 +81,7 @@ upstream `total` for those. 0-RTT is never enabled.
 | `max_connections` | int | `65536` | positive | Open connections across all listeners |
 | `max_connections_per_ip` | int | `256` | positive, at most `max_connections` | Per source address |
 | `max_concurrent_requests` | int | `16384` | positive | In-flight requests; 503 above |
+| `max_tarpits` | int | `1024` | 1 to 1000000 | Requests held in a tarpit at once. A tarpitted request releases its concurrency slot; above this bound it is rejected with 429 immediately (`tarpit_overflow` counts those) |
 
 ## management
 

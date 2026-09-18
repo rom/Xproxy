@@ -225,14 +225,23 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Rate limits.
 	for _, rl := range cr.rateLimits {
 		key := rateKey(rl.cfg, r, st)
-		if rl.lim.Allow(key) {
+		if rl.lim.AllowFallback(key, "ip:"+st.clientIP.String(), 1) {
 			continue
 		}
 		st.denied = "rate_limit:" + rl.cfg.Name
 		if rl.cfg.Action == "tarpit" {
-			s.stats.Tarpitted.Add(1)
-			s.tarpit(rw, r, st, rl.cfg)
-			return
+			// A tarpit does no work, so it must not hold a concurrency slot
+			// (an attacker could otherwise fill max_concurrent_requests with
+			// idle held requests); it holds a tarpit slot instead, and above
+			// that bound the request is rejected immediately.
+			if tpRelease, ok := s.tarpits.Acquire(); ok {
+				release()
+				s.stats.Tarpitted.Add(1)
+				s.tarpit(rw, r, st, rl.cfg)
+				tpRelease()
+				return
+			}
+			s.stats.TarpitOverflow.Add(1)
 		}
 		s.stats.DeniedRateLimit.Add(1)
 		rw.Header().Set("Retry-After", strconv.Itoa(int(retryAfter(rl.cfg))))

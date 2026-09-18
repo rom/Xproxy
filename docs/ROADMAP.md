@@ -141,15 +141,20 @@ Delivered so far:
   upstream death mid response, full log disk, certificate rotation) with
   the two observability fixes they produced (ASR-Q2)
 
+- Security review against THREAT_MODEL.md (SECURITY_REVIEW.md): five
+  findings, two medium (tarpits holding concurrency slots, header keyed
+  rate limit bypass by value rotation), fixed with regression tests;
+  residual risks recorded
+
 Remaining:
 
+- External security review and release signing (checksums and a signed
+  tag) at the 1.0 cut
 - Fedora VM runner with SELinux enforcing for AVC checks and
   `systemd-analyze security` (the container job cannot load policy)
 - The 8 core reference throughput number with a remote load generator,
   TLS, HTTP/2, HTTP/3 and WAF cost per request, the 24 hour soak
   (ASR-P2)
-- Security review against THREAT_MODEL.md, hardening guide, config
-  reference generator, changelog, release signing
 
 Exit criterion: release checklist in SECURITY.md complete; all ASR entries
 marked 1.0 satisfied and traced to tests.

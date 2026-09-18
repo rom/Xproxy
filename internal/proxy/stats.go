@@ -26,6 +26,7 @@ type Stats struct {
 	DeniedACL         atomic.Uint64
 	DeniedRateLimit   atomic.Uint64
 	Tarpitted         atomic.Uint64
+	TarpitOverflow    atomic.Uint64
 	DeniedConcurrency atomic.Uint64
 	DeniedBodySize    atomic.Uint64
 	DeniedURILength   atomic.Uint64
@@ -63,6 +64,8 @@ type Snapshot struct {
 	DeniedACL         uint64    `json:"denied_acl"`
 	DeniedRateLimit   uint64    `json:"denied_rate_limit"`
 	Tarpitted         uint64    `json:"tarpitted"`
+	TarpitOverflow    uint64    `json:"tarpit_overflow"`
+	TarpitActive      int64     `json:"tarpit_active"`
 	DeniedConcurrency uint64    `json:"denied_concurrency"`
 	DeniedBodySize    uint64    `json:"denied_body_size"`
 	DeniedURILength   uint64    `json:"denied_uri_length"`
@@ -116,6 +119,7 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedACL:         s.DeniedACL.Load(),
 		DeniedRateLimit:   s.DeniedRateLimit.Load(),
 		Tarpitted:         s.Tarpitted.Load(),
+		TarpitOverflow:    s.TarpitOverflow.Load(),
 		DeniedConcurrency: s.DeniedConcurrency.Load(),
 		DeniedBodySize:    s.DeniedBodySize.Load(),
 		DeniedURILength:   s.DeniedURILength.Load(),

@@ -287,6 +287,9 @@ func (v *validator) server(s *Server) {
 	if l.MaxConnections < 1 || l.MaxConnectionsPerIP < 1 || l.MaxConcurrentRequests < 1 {
 		v.errf("server.limits: connection and request limits must be positive")
 	}
+	if l.MaxTarpits < 1 || l.MaxTarpits > 1_000_000 {
+		v.errf("server.limits.max_tarpits: must be between 1 and 1000000")
+	}
 	if l.MaxConnectionsPerIP > l.MaxConnections {
 		v.errf("server.limits.max_connections_per_ip: exceeds max_connections")
 	}

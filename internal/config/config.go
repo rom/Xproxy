@@ -199,6 +199,10 @@ type Limits struct {
 	MaxConnections        int      `yaml:"max_connections"`
 	MaxConnectionsPerIP   int      `yaml:"max_connections_per_ip"`
 	MaxConcurrentRequests int      `yaml:"max_concurrent_requests"`
+	// MaxTarpits bounds requests held in a tarpit at once. A tarpitted
+	// request releases its concurrency slot first; above this bound the
+	// request is rejected at once instead of held. Default 1024.
+	MaxTarpits int `yaml:"max_tarpits"`
 }
 
 // Management configures the control plane listener used by xproxyctl.

@@ -9,6 +9,17 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 
 ### Phase 3: 1.0 (in progress)
 
+#### Security
+- SR-1: tarpitted requests no longer hold a concurrency slot; a separate
+  bound `server.limits.max_tarpits` (default 1024) applies and requests
+  above it are rejected immediately (`tarpit_overflow`, `tarpit_active`).
+- SR-2: a header keyed rate limit falls back to the client address once
+  its key table is full, so rotating header values cannot obtain a fresh
+  burst per value.
+- SR-3: the GUI's configuration backup and the users and htpasswd files
+  are written without following symbolic links.
+- The internal review is recorded in `docs/SECURITY_REVIEW.md`.
+
 #### Added
 - Quality gates: `make cover-gate` (whole suite coverage under race,
   `test/covergate` enforcing 80 % over the core packages and 60 % per

@@ -246,3 +246,32 @@ func TestConnPerIPBoundary(t *testing.T) {
 		t.Fatalf("second over total: %v %q", ok, reason)
 	}
 }
+
+// TestAllowFallback: once a shard is full of active keys, a new key is
+// judged on its fallback (the client address) rather than given a fresh
+// burst, so rotating header values does not bypass the limit.
+func TestAllowFallback(t *testing.T) {
+	now := time.Unix(0, 0)
+	l := NewKeyedLimiter(1, 2, 1) // one tracked key per shard, burst 2
+	l.now = func() time.Time { return now }
+	keys := sameShardKeys(6)
+	l.Allow(keys[0]) // fills the shard
+	ip := "ip:198.51.100.7"
+	allowed := 0
+	for _, k := range keys[1:] {
+		if l.AllowFallback(k, ip, 1) {
+			allowed++
+		}
+	}
+	if allowed != 2 {
+		t.Fatalf("rotating keys got %d requests through, want the fallback burst of 2", allowed)
+	}
+	// Without a fallback the untracked key is only bounded by burst.
+	if !l.AllowFallback(keys[1], "", 2) || l.AllowFallback(keys[1], "", 3) {
+		t.Fatal("no fallback: allow up to burst untracked")
+	}
+	// A fallback equal to the key does not recurse.
+	if !l.AllowFallback(keys[2], keys[2], 1) {
+		t.Fatal("fallback equal to key")
+	}
+}
