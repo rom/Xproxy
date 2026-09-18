@@ -1,0 +1,316 @@
+// Package proxy is the xproxy data plane: listeners, the request pipeline
+// and the reverse proxy engine.
+package proxy
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/netip"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/limits"
+	"github.com/rom/xproxy/internal/logging"
+	"github.com/rom/xproxy/internal/tlsconf"
+	"github.com/rom/xproxy/internal/upstream"
+)
+
+// Server runs the data plane for one configuration and supports hot reload.
+type Server struct {
+	logs  *logging.Logs
+	stats *Stats
+
+	rt         atomic.Pointer[runtime]
+	generation atomic.Uint64
+
+	concurrency *limits.Concurrency
+	connLimiter *limits.ConnLimiter
+
+	mu        sync.Mutex
+	listeners []*boundListener
+	started   bool
+	reloadMu  sync.Mutex
+}
+
+type boundListener struct {
+	cfg       config.Listener
+	ln        net.Listener
+	httpSrv   *http.Server
+	tlsReload *tlsconf.Reloadable
+	activated bool
+}
+
+// New creates a server for cfg. Listeners are not opened until Start.
+func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
+	s := &Server{
+		logs:        logs,
+		stats:       &Stats{StartedAt: time.Now()},
+		concurrency: limits.NewConcurrency(cfg.Server.Limits.MaxConcurrentRequests),
+		connLimiter: limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
+	}
+	s.connLimiter.OnReject = func(addr netip.Addr, reason string) {
+		s.logs.SecurityEvent(context.Background(), "drop_connection", reason, "client_ip", addr.String())
+	}
+	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error)
+	if err != nil {
+		return nil, err
+	}
+	s.rt.Store(rt)
+	return s, nil
+}
+
+func (s *Server) cfg() *config.Config { return s.rt.Load().cfg }
+
+// Config returns the active configuration.
+func (s *Server) Config() *config.Config { return s.cfg() }
+
+// Stats returns a snapshot of the counters.
+func (s *Server) Stats() Snapshot {
+	snap := s.stats.snapshot()
+	snap.OpenConnections = s.connLimiter.Open()
+	snap.RejectedConns = s.connLimiter.Rejected.Load()
+	snap.InFlight = s.concurrency.InFlight()
+	return snap
+}
+
+// Upstreams returns endpoint statistics per upstream.
+func (s *Server) Upstreams() map[string][]upstream.Stats {
+	rt := s.rt.Load()
+	out := make(map[string][]upstream.Stats, len(rt.pools))
+	for name, p := range rt.pools {
+		out[name] = p.Stats()
+	}
+	return out
+}
+
+// Generation returns the configuration generation counter.
+func (s *Server) Generation() uint64 { return s.rt.Load().generation }
+
+// Start opens all listeners and begins serving. It returns once every
+// listener is bound; serving continues in the background until Shutdown.
+func (s *Server) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started {
+		return errors.New("already started")
+	}
+	cfg := s.cfg()
+	activated, err := activatedListeners()
+	if err != nil {
+		return fmt.Errorf("socket activation: %w", err)
+	}
+	for i := range cfg.Server.Listeners {
+		lc := cfg.Server.Listeners[i]
+		bl, err := s.bind(lc, activated)
+		if err != nil {
+			s.closeListenersLocked()
+			return err
+		}
+		s.listeners = append(s.listeners, bl)
+	}
+	for name := range activated {
+		s.logs.Error.Warn("unused socket from systemd", "name", name)
+		_ = activated[name].Close()
+	}
+	s.rt.Load().start()
+	for _, bl := range s.listeners {
+		go s.serve(bl)
+	}
+	s.started = true
+	return nil
+}
+
+func (s *Server) bind(lc config.Listener, activated map[string]net.Listener) (*boundListener, error) {
+	ln, act, err := listenerFor(activated, lc.Name, lc.Address)
+	if err != nil {
+		return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+	}
+	lim := s.cfg().Server.Limits
+	bl := &boundListener{cfg: lc, ln: s.connLimiter.Wrap(ln), activated: act}
+	h := &listenerHandler{srv: s, ln: &bl.cfg}
+	bl.httpSrv = &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: lim.ReadHeaderTimeout.D(),
+		ReadTimeout:       lim.ReadTimeout.D(),
+		WriteTimeout:      lim.WriteTimeout.D(),
+		IdleTimeout:       lim.IdleTimeout.D(),
+		MaxHeaderBytes:    lim.MaxHeaderBytes,
+		ErrorLog:          slog.NewLogLogger(s.logs.Error.Handler(), slog.LevelDebug),
+		// Disable automatic h2c and keep protocol choice to TLS ALPN.
+		TLSNextProto: nil,
+	}
+	if lc.TLS != nil {
+		tc, rl, err := tlsconf.Server(lc.TLS, lc.Protocols)
+		if err != nil {
+			_ = ln.Close()
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		bl.httpSrv.TLSConfig = tc
+		bl.tlsReload = rl
+		if !hasProto(lc.Protocols, config.ProtocolH2) {
+			// Prevent the automatic HTTP/2 configuration.
+			bl.httpSrv.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){}
+		}
+	}
+	return bl, nil
+}
+
+func hasProto(ps []config.Protocol, p config.Protocol) bool {
+	for _, x := range ps {
+		if x == p {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) serve(bl *boundListener) {
+	var err error
+	s.logs.Error.Info("listening", "listener", bl.cfg.Name, "address", bl.ln.Addr().String(), "tls", bl.cfg.TLS != nil, "socket_activated", bl.activated)
+	if bl.cfg.TLS != nil {
+		err = bl.httpSrv.ServeTLS(bl.ln, "", "")
+	} else {
+		err = bl.httpSrv.Serve(bl.ln)
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		s.logs.Error.Error("listener stopped", "listener", bl.cfg.Name, "err", err.Error())
+	}
+}
+
+// Addrs returns the bound addresses by listener name (useful for tests and
+// for the status command when port 0 was configured).
+func (s *Server) Addrs() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]string, len(s.listeners))
+	for _, bl := range s.listeners {
+		out[bl.cfg.Name] = bl.ln.Addr().String()
+	}
+	return out
+}
+
+// Reload swaps in a new configuration. Listener addresses and TLS settings
+// other than the certificate files cannot change without a restart; such a
+// change is rejected and the old configuration stays active.
+func (s *Server) Reload(cfg *config.Config) error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	old := s.rt.Load()
+	if err := listenersCompatible(old.cfg.Server.Listeners, cfg.Server.Listeners); err != nil {
+		s.stats.ReloadFailures.Add(1)
+		return err
+	}
+	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error)
+	if err != nil {
+		s.stats.ReloadFailures.Add(1)
+		return err
+	}
+	// Reload certificates before switching so a bad certificate aborts the
+	// reload as a whole.
+	s.mu.Lock()
+	for _, bl := range s.listeners {
+		if bl.tlsReload == nil {
+			continue
+		}
+		for i := range cfg.Server.Listeners {
+			if cfg.Server.Listeners[i].Name == bl.cfg.Name {
+				bl.cfg.TLS.Certificates = cfg.Server.Listeners[i].TLS.Certificates
+			}
+		}
+		if err := bl.tlsReload.Load(); err != nil {
+			s.mu.Unlock()
+			rt.stop()
+			s.stats.ReloadFailures.Add(1)
+			return fmt.Errorf("listener %s: %w", bl.cfg.Name, err)
+		}
+	}
+	s.mu.Unlock()
+	rt.start()
+	s.connLimiter.SetLimits(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP)
+	s.rt.Store(rt)
+	s.stats.Reloads.Add(1)
+	// Give in-flight requests on the old generation time to finish before
+	// tearing down its pools; the transport keeps serving until then.
+	go func(old *runtime) {
+		time.Sleep(cfg.Server.ShutdownTimeout.D())
+		old.stop()
+	}(old)
+	s.logs.Error.Info("configuration reloaded", "generation", rt.generation, "routes", len(cfg.Routes), "upstreams", len(cfg.Upstreams))
+	s.logs.Audit.Info("reload", "generation", rt.generation)
+	return nil
+}
+
+func listenersCompatible(old, new_ []config.Listener) error {
+	if len(old) != len(new_) {
+		return errors.New("reload: listener set changed; restart required")
+	}
+	for i := range old {
+		o, n := old[i], new_[i]
+		if o.Name != n.Name || o.Address != n.Address || (o.TLS == nil) != (n.TLS == nil) || o.ProxyProtocol != n.ProxyProtocol || o.RedirectToHTTPS != n.RedirectToHTTPS {
+			return fmt.Errorf("reload: listener %s changed; restart required", o.Name)
+		}
+		if o.TLS != nil {
+			if o.TLS.MinVersion != n.TLS.MinVersion || o.TLS.ClientAuth != n.TLS.ClientAuth || o.TLS.ClientCAFile != n.TLS.ClientCAFile || fmt.Sprint(o.TLS.CipherSuites) != fmt.Sprint(n.TLS.CipherSuites) || fmt.Sprint(o.Protocols) != fmt.Sprint(n.Protocols) {
+				return fmt.Errorf("reload: listener %s TLS settings changed; restart required", o.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// ReloadCertificates re-reads certificate files without a full reload.
+func (s *Server) ReloadCertificates() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, bl := range s.listeners {
+		if bl.tlsReload != nil {
+			if err := bl.tlsReload.Load(); err != nil {
+				return fmt.Errorf("listener %s: %w", bl.cfg.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// Shutdown drains connections gracefully within ctx, then closes listeners
+// and upstream pools.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	lns := s.listeners
+	s.mu.Unlock()
+	var (
+		errMu    sync.Mutex
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	for _, bl := range lns {
+		wg.Add(1)
+		go func(bl *boundListener) {
+			defer wg.Done()
+			if err := bl.httpSrv.Shutdown(ctx); err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+			}
+		}(bl)
+	}
+	wg.Wait()
+	s.rt.Load().stop()
+	return firstErr
+}
+
+func (s *Server) closeListenersLocked() {
+	for _, bl := range s.listeners {
+		_ = bl.ln.Close()
+	}
+	s.listeners = nil
+}

@@ -1,0 +1,263 @@
+// Command xproxyctl manages a running xproxy through its Unix socket.
+//
+// Usage:
+//
+//	xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND
+//
+// Commands:
+//
+//	status         show version, listeners and counters
+//	stats          show counters
+//	upstreams      show endpoint health and load
+//	config         print the active configuration
+//	validate       validate the configuration file without applying it
+//	reload         validate and apply the configuration file
+//	reload-certs   re-read TLS certificate files
+//	reopen-logs    reopen log files after rotation
+//	tail STREAM    follow a log stream (access, error, security, audit)
+//	version        print version
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"text/tabwriter"
+	"time"
+
+	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/mgmt"
+	"github.com/rom/xproxy/internal/upstream"
+	"github.com/rom/xproxy/internal/version"
+)
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func usage(w io.Writer) {
+	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail version")
+}
+
+func run(args []string, out, errOut io.Writer) int {
+	fs := flag.NewFlagSet("xproxyctl", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	socket := fs.String("socket", "/run/xproxy/mgmt.sock", "management socket")
+	cfgPath := fs.String("config", "/etc/xproxy/xproxy.yaml", "configuration file (validate, tail)")
+	asJSON := fs.Bool("json", false, "machine readable output")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() < 1 {
+		usage(errOut)
+		return 2
+	}
+	c := mgmt.NewClient(*socket)
+	fail := func(err error) int {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	switch fs.Arg(0) {
+	case "version":
+		_, _ = fmt.Fprintln(out, "xproxyctl", version.String())
+		return 0
+	case "validate":
+		cfg, err := config.Load(*cfgPath)
+		if err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintf(out, "%s: OK (%d listeners, %d upstreams, %d routes)\n", *cfgPath, len(cfg.Server.Listeners), len(cfg.Upstreams), len(cfg.Routes))
+		return 0
+	case "status":
+		st, err := c.Status()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, st)
+		}
+		_, _ = fmt.Fprintf(out, "xproxy %s  pid %d  generation %d\n", st.Version, st.PID, st.Generation)
+		_, _ = fmt.Fprintf(out, "uptime %s  routes %d  upstreams %d\n", (time.Duration(st.Stats.UptimeSeconds) * time.Second).String(), st.Routes, st.Upstreams)
+		names := make([]string, 0, len(st.Listeners))
+		for n := range st.Listeners {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			_, _ = fmt.Fprintf(out, "listener %-12s %s\n", n, st.Listeners[n])
+		}
+		printStats(out, st.Stats)
+		return 0
+	case "stats":
+		st, err := c.Status()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, st.Stats)
+		}
+		printStats(out, st.Stats)
+		return 0
+	case "upstreams":
+		b, err := c.Raw("/v1/upstreams")
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			_, _ = out.Write(b)
+			return 0
+		}
+		var ups map[string][]upstream.Stats
+		if err := json.Unmarshal(b, &ups); err != nil {
+			return fail(err)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS")
+		names := make([]string, 0, len(ups))
+		for n := range ups {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			for _, e := range ups[n] {
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%d\t%d\t%d\n", n, e.Address, e.Weight, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors)
+			}
+		}
+		_ = tw.Flush()
+		return 0
+	case "config":
+		b, err := c.Raw("/v1/config")
+		if err != nil {
+			return fail(err)
+		}
+		_, _ = out.Write(b)
+		return 0
+	case "reload":
+		if _, err := config.Load(*cfgPath); err != nil {
+			_, _ = fmt.Fprintln(errOut, "refusing to reload: local validation failed")
+			return fail(err)
+		}
+		if err := c.Post("/v1/reload"); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintln(out, "reloaded")
+		return 0
+	case "reload-certs":
+		if err := c.Post("/v1/reload-certs"); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintln(out, "certificates reloaded")
+		return 0
+	case "reopen-logs":
+		if err := c.Post("/v1/logs/reopen"); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintln(out, "logs reopened")
+		return 0
+	case "tail":
+		if fs.NArg() != 2 {
+			usage(errOut)
+			return 2
+		}
+		return tail(*cfgPath, fs.Arg(1), out, errOut)
+	default:
+		usage(errOut)
+		return 2
+	}
+}
+
+func printJSON(out io.Writer, v any) int {
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(v)
+	return 0
+}
+
+func printStats(out io.Writer, s interface{}) {
+	b, _ := json.Marshal(s)
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		if k == "started_at" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	for _, k := range keys {
+		switch v := m[k].(type) {
+		case float64:
+			_, _ = fmt.Fprintf(tw, "%s\t%.0f\n", k, v)
+		default:
+			_, _ = fmt.Fprintf(tw, "%s\t%v\n", k, v)
+		}
+	}
+	_ = tw.Flush()
+}
+
+// tail follows a log stream file, printing new lines as they appear. It is
+// a plain follow: log lines are already JSON.
+func tail(cfgPath, stream string, out, errOut io.Writer) int {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	var s config.LogStream
+	switch stream {
+	case "access":
+		s = cfg.Logging.Access
+	case "error":
+		s = cfg.Logging.Error
+	case "security":
+		s = cfg.Logging.Security
+	case "audit":
+		s = cfg.Logging.Audit
+	default:
+		_, _ = fmt.Fprintln(errOut, "error: unknown stream", stream)
+		return 2
+	}
+	path := filepath.Join(cfg.Logging.Directory, s.File)
+	f, err := os.Open(path) //nolint:gosec // path derived from the operator's configuration
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := f.Read(buf)
+		if n > 0 {
+			_, _ = out.Write(buf[:n])
+		}
+		if err == io.EOF {
+			time.Sleep(250 * time.Millisecond)
+			// Follow rotation: reopen if the inode changed.
+			if st, err := os.Stat(path); err == nil {
+				if cur, err2 := f.Stat(); err2 == nil && !os.SameFile(st, cur) {
+					_ = f.Close()
+					if f, err = os.Open(path); err != nil { //nolint:gosec // same operator-owned path
+						_, _ = fmt.Fprintln(errOut, "error:", err)
+						return 1
+					}
+				}
+			}
+			continue
+		}
+		if err != nil {
+			_, _ = fmt.Fprintln(errOut, "error:", err)
+			return 1
+		}
+	}
+}

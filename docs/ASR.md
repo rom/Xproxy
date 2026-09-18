@@ -1,0 +1,101 @@
+# Architecturally Significant Requirements (ASR)
+
+This document lists the requirements that shape the architecture of xproxy.
+Each requirement has an identifier, a priority, the release in which it must be
+satisfied, and the design consequence it imposes. Requirements without an
+architectural consequence live in USAGE.md or the roadmap instead.
+
+Priorities: **M** must have, **S** should have, **C** could have.
+Releases: **MVP** (phase 1), **1.0** (phases 2 and 3), **1.x** (after 1.0).
+
+Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
+
+## 1. Functional scope
+
+| ID | Requirement | Prio | Release | Architectural consequence |
+|----|-------------|------|---------|---------------------------|
+| ASR-F1 | Act as an L7 HTTP reverse proxy for HTTP/1.1 and HTTP/2 clients, HTTP/1.1 and HTTP/2 upstreams | M | MVP | Built on `net/http`; protocol selection via TLS ALPN only, no h2c |
+| ASR-F2 | Serve HTTP/3 over QUIC on the same certificates as TLS listeners | M | 1.0 | UDP listener per TLS listener, `quic-go` dependency, Alt-Svc advertisement, shared handler pipeline |
+| ASR-F3 | Load balance across upstream endpoints with round robin, weighted, least connections and consistent hashing | M | MVP | Balancer interface per pool; ring hash with virtual nodes so endpoint loss moves only that endpoint's keys |
+| ASR-F4 | Session affinity by cookie | M | MVP | Cookie carries a signed endpoint index, never an address; HMAC key per pool, persisted in the state directory |
+| ASR-F5 | Active health checks and passive outlier ejection | M | MVP | Per endpoint goroutine with jitter; ejection with exponential back-off and a maximum ejection percentage |
+| ASR-F6 | Web application firewall with a rule set, anomaly scoring, shadow mode and per route thresholds | M | 1.0 | WAF is a pipeline stage with a bounded body buffer; rule engine behind an interface so the engine can be swapped |
+| ASR-F7 | ICAP client (RFC 3507) for REQMOD and RESPMOD against external scanners | M | 1.0 | Streaming ICAP encapsulation, preview support, fail-open or fail-closed per route, bounded body spooling |
+| ASR-F8 | WebSocket passthrough only where a route allows it | M | MVP | Upgrade requests are refused unless `websocket: true`; hijack path bypasses body limits so it is opt-in |
+| ASR-F9 | Mutual TLS to clients and to upstreams | M | 1.0 (client CA at MVP) | `crypto/tls` client auth modes; certificate identity exposed to routing and logging |
+| ASR-F10 | JWT validation at the edge | S | 1.0 | Key set loading from file or JWKS URL with pinned CA; algorithm allow list; no `none` |
+| ASR-F11 | ACME certificate issuance (HTTP-01, TLS-ALPN-01) | S | 1.0 | Separate account key storage; challenge responder inside the listener; renewals on a timer with reload of `Reloadable` certificates |
+| ASR-F12 | Forward proxy and L4 TCP/TLS passthrough | C | 1.x | Not in the request pipeline; separate listener kinds |
+
+## 2. Security
+
+| ID | Requirement | Prio | Release | Architectural consequence |
+|----|-------------|------|---------|---------------------------|
+| ASR-S1 | Withstand malicious clients: no input may cause unbounded memory, CPU or goroutine growth | M | MVP | Every table is bounded (rate limit keys, connection table); every read has a limit and a deadline; no queueing on overload, immediate rejection |
+| ASR-S2 | DDoS protection is a central feature: the proxy must degrade gracefully under connection floods, request floods and slow clients | M | MVP, extended in 1.0 | Connection limits at accept time, global and per IP; concurrency ceiling; header, body and idle timeouts; tarpit; temporary bans with decay; adaptive shedding and priority classes in 1.0 |
+| ASR-S3 | Distributed rate limiting and shared ban state across a fleet of proxies | M | 1.0 | Peer gossip over mTLS with approximate counters; no external datastore; local limiter stays authoritative when peers are unreachable |
+| ASR-S4 | Minimal attack surface | M | MVP | Standard library first; short dependency allow list; no cgo; static binary; management plane on a Unix socket, never on a data plane listener; no dynamic plugin loading |
+| ASR-S5 | Fail closed: a configuration error or a missing security control must stop the proxy from starting or reloading, never silently degrade | M | MVP | Strict YAML with unknown field rejection; all validation errors reported at once; reload keeps the previous generation on any failure |
+| ASR-S6 | Do not trust forwarding headers from arbitrary peers | M | MVP | `trusted_proxies` list; right-most untrusted X-Forwarded-For algorithm; forged headers dropped before forwarding |
+| ASR-S7 | Route decisions must be immune to path normalisation tricks | M | MVP | Routing uses a cleaned path (dot segments and duplicate slashes resolved); the original path is forwarded unless the route rewrites it |
+| ASR-S8 | Run unprivileged on Fedora with systemd hardening and a confined SELinux domain | M | MVP unit, SELinux at 1.0 | Socket activation removes the need for any capability; policy module confines file and network access to four labelled directories and http ports |
+| ASR-S9 | Every deny, ban, tarpit and management action is logged with enough context to investigate | M | MVP | Dedicated security and audit streams; request identifiers propagate to upstream and back; kernel peer credentials on the management socket |
+| ASR-S10 | Logs must not leak secrets or more personal data than configured | M | 1.0 (PII redaction) | Query strings are not logged by default; redaction rules for headers, cookies and body fields, switchable per stream |
+| ASR-S11 | TLS configuration is secure by default and cannot be made insecure by accident | M | MVP | TLS 1.2 minimum, AEAD suites with forward secrecy only, renegotiation disabled, insecure suites rejected by validation, upstream verification skip requires a double opt-in |
+| ASR-S12 | Response leakage control | M | MVP | Error pages are reason phrases only; `Server` header removed; upstream error text never reaches the client |
+| ASR-S13 | Reproducible, verifiable builds with a software bill of materials and vulnerability scanning | M | MVP | `-trimpath`, stripped, `CGO_ENABLED=0`, `govulncheck` in CI, module information embedded in the binary |
+
+## 3. Performance and scale
+
+| ID | Requirement | Prio | Release | Architectural consequence |
+|----|-------------|------|---------|---------------------------|
+| ASR-P1 | 1000 virtual hosts and 10 000 upstream endpoints in one configuration | M | 1.0 | Hash based host tables, per host sorted prefix lists; per pool transports; health checks jittered and bounded in concurrency |
+| ASR-P2 | Sustained high request rates on commodity hardware (target: 100k requests per second on 8 cores for small responses) | M | 1.0 | Zero allocation routing path; atomic counters; no locks on the hot path except sharded limiter buckets; connection pooling to upstreams |
+| ASR-P3 | Configuration reload without dropping connections | M | MVP | Immutable runtime generation swapped atomically; old generation drained on a timer |
+| ASR-P4 | Certificate reload without restart | M | MVP | `GetCertificate` reads an atomic pointer |
+| ASR-P5 | Graceful shutdown and restart without losing the listening socket | M | MVP | systemd socket activation, `Type=notify`, drain within `shutdown_timeout` |
+
+## 4. Operability
+
+| ID | Requirement | Prio | Release | Architectural consequence |
+|----|-------------|------|---------|---------------------------|
+| ASR-O1 | Single YAML configuration file, validated before use | M | MVP | Schema in Go types; `xproxy -validate` and `xproxyctl validate` |
+| ASR-O2 | Four log streams (access, error, security, audit) as JSON, to files, journald and syslog | M | MVP files, journald and syslog at 1.0 | Sink abstraction behind `log/slog` handlers; native journald datagram protocol and RFC 5424 syslog without cgo |
+| ASR-O3 | Management via CLI, TUI and web GUI | M | MVP CLI, TUI and GUI at 1.0 | One management API on a Unix socket serves all three; GUI is a separate binary serving embedded static assets over the same API, never inside the data plane |
+| ASR-O4 | Metrics for graphs and statistics | M | 1.0 | Prometheus text endpoint on the management socket, plus a local ring buffer of time series for the GUI without external storage |
+| ASR-O5 | Persisted state for bans and statistics across restarts | S | 1.0 | Embedded key-value store (bbolt) in the state directory |
+| ASR-O6 | Extensible without recompiling the core for common cases | S | 1.0 interface, 1.x WASM | Middleware interface with a registry at 1.0; WebAssembly extension ABI in 1.x; never Go plugins |
+
+## 5. Quality
+
+| ID | Requirement | Prio | Release | Architectural consequence |
+|----|-------------|------|---------|---------------------------|
+| ASR-Q1 | Every parser and matcher has a fuzz target | M | MVP | Go native fuzzing; targets run in CI |
+| ASR-Q2 | Core packages hold at least 80 percent statement coverage, measured under the race detector | M | 1.0 | Coverage gate in CI |
+| ASR-Q3 | End-to-end tests drive the real binary | M | MVP (in package tests), binary tests at 1.0 | Tests start listeners on port 0 and read back addresses from the server |
+| ASR-Q4 | Load and soak tests with published numbers | S | 1.0 | k6 or vegeta scripts in `test/load`; results in TESTS.md |
+| ASR-Q5 | Documentation is part of the definition of done | M | MVP | `docs/` is versioned with the code; CONFIG.md is checked against the example configuration by a test |
+
+## 6. Constraints
+
+| ID | Constraint |
+|----|------------|
+| ASR-C1 | Implementation language is Go, latest stable release, minimum the previous minor release. |
+| ASR-C2 | Primary platform is Fedora Linux with systemd and SELinux enforcing. Other Linux distributions must work but are not tested in CI. |
+| ASR-C3 | No cgo. The binaries must be statically linked. |
+| ASR-C4 | No component of the data plane may listen on a network port for management. |
+| ASR-C5 | Third party modules must be vetted and listed in AMR-004 with a reason; transitive additions require a decision record. |
+
+## Traceability
+
+| Requirement | Implemented in | Verified by |
+|-------------|----------------|-------------|
+| ASR-F1, F3, F4, F5, F8 | `internal/proxy`, `internal/upstream` | `internal/proxy/proxy_test.go`, `internal/upstream/upstream_test.go` |
+| ASR-S1, S2 | `internal/limits`, server timeouts in `internal/proxy/server.go` | `internal/limits/limits_test.go`, `TestConnectionLimits`, `TestSlowHeaderTimeout` |
+| ASR-S5, O1 | `internal/config` | `internal/config/config_test.go`, `FuzzParse` |
+| ASR-S6, S7 | `internal/netutil` | `internal/netutil/netutil_test.go`, `TestProxyBasics` |
+| ASR-S8 | `deploy/systemd`, `deploy/selinux` | manual, see SETUP.md |
+| ASR-S9, O2 | `internal/logging`, `internal/mgmt` | `internal/logging/logging_test.go`, `internal/mgmt/mgmt_test.go` |
+| ASR-S11, P4 | `internal/tlsconf` | `internal/tlsconf/tlsconf_test.go`, `TestTLSAndRedirect` |
+| ASR-P3 | `Server.Reload` | `TestReload` |
+| ASR-Q1 | `Fuzz*` functions | `make fuzz` |

@@ -1,0 +1,6 @@
+/bin/
+coverage.out
+*.pp
+*.mod.bin
+deploy/selinux/*.mod
+testdata/fuzz/**/[!R]*

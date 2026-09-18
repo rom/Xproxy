@@ -1,0 +1,91 @@
+# SELinux policy module for xproxy (Fedora targeted policy).
+#
+# Build and install:
+#   checkmodule -M -m -o xproxy.mod xproxy.te
+#   semodule_package -o xproxy.pp -m xproxy.mod -f xproxy.fc
+#   semodule -i xproxy.pp
+#   restorecon -Rv /usr/local/bin/xproxy* /etc/xproxy /var/log/xproxy /run/xproxy /var/lib/xproxy
+#
+# The domain is confined: it may bind http ports, connect to upstream ports
+# labelled http_port_t / xproxy_upstream_port_t, read its config and
+# certificates, and append to its logs. Nothing else.
+policy_module(xproxy, 0.1.0)
+
+require {
+	type http_port_t;
+	type cert_t;
+	type node_t;
+	type net_conf_t;
+	type init_t;
+	type systemd_unit_file_t;
+	class tcp_socket { name_bind name_connect accept listen bind connect create getattr getopt setopt read write shutdown };
+	class udp_socket { create connect read write getattr setopt };
+	class unix_stream_socket { create bind listen accept connect read write getattr setopt shutdown };
+	class file { read open getattr map execute execute_no_trans append create write rename unlink lock ioctl };
+	class dir { search read open getattr write add_name remove_name create };
+	class sock_file { create unlink write getattr setattr };
+	class process { setrlimit signal signull sigkill };
+	class capability { };
+}
+
+type xproxy_t;
+type xproxy_exec_t;
+init_daemon_domain(xproxy_t, xproxy_exec_t)
+
+type xproxy_conf_t;
+files_config_file(xproxy_conf_t)
+
+type xproxy_log_t;
+logging_log_file(xproxy_log_t)
+
+type xproxy_var_run_t;
+files_pid_file(xproxy_var_run_t)
+
+type xproxy_var_lib_t;
+files_type(xproxy_var_lib_t)
+
+type xproxy_upstream_port_t;
+corenet_port(xproxy_upstream_port_t)
+
+# Configuration and certificates: read only.
+allow xproxy_t xproxy_conf_t:dir { search read open getattr };
+allow xproxy_t xproxy_conf_t:file { read open getattr map };
+miscfiles_read_generic_certs(xproxy_t)
+
+# Logs: append and rotate within the log directory.
+allow xproxy_t xproxy_log_t:dir { search read open getattr write add_name remove_name };
+allow xproxy_t xproxy_log_t:file { read open getattr append create write rename unlink lock };
+logging_log_filetrans(xproxy_t, xproxy_log_t, { file dir })
+
+# Management socket and state.
+allow xproxy_t xproxy_var_run_t:dir { search read open getattr write add_name remove_name create };
+allow xproxy_t xproxy_var_run_t:sock_file { create unlink write getattr setattr };
+allow xproxy_t xproxy_var_lib_t:dir { search read open getattr write add_name remove_name create };
+allow xproxy_t xproxy_var_lib_t:file { read open getattr create write append rename unlink lock };
+allow xproxy_t self:unix_stream_socket { create bind listen accept connect read write getattr setopt shutdown };
+
+# Network: listen on http ports (or receive sockets from systemd), connect
+# to upstreams on http ports and on the dedicated upstream port type.
+allow xproxy_t self:tcp_socket { create getattr getopt setopt read write shutdown accept listen bind connect };
+allow xproxy_t self:udp_socket { create connect read write getattr setopt };
+corenet_tcp_bind_generic_node(xproxy_t)
+corenet_tcp_bind_http_port(xproxy_t)
+corenet_tcp_connect_http_port(xproxy_t)
+allow xproxy_t xproxy_upstream_port_t:tcp_socket name_connect;
+sysnet_dns_name_resolve(xproxy_t)
+sysnet_read_config(xproxy_t)
+
+# systemd notify socket and socket activation.
+init_dgram_send(xproxy_t)
+init_rw_stream_sockets(xproxy_t)
+
+# Process housekeeping.
+allow xproxy_t self:process { setrlimit signal signull };
+kernel_read_system_state(xproxy_t)
+kernel_read_network_state(xproxy_t)
+dev_read_urand(xproxy_t)
+fs_getattr_all_fs(xproxy_t)
+miscfiles_read_localization(xproxy_t)
+
+# Deliberately absent: no capability grants, no execution of other
+# binaries, no write access outside the four labelled directories.

@@ -1,0 +1,330 @@
+// Package config defines the xproxy configuration model, its loader and its
+// validation rules.
+//
+// Design rules for this package (see docs/AMR.md, decision AMR-007):
+//
+//   - The configuration is a single YAML document. Unknown fields are a hard
+//     error so that typos can never silently disable a security control.
+//   - Every value has a safe default. Omitting a section must never make the
+//     proxy more permissive than the documented default.
+//   - Validation is exhaustive and returns all problems at once, so operators
+//     do not iterate one error at a time.
+//   - Secrets are never inline. Certificates and keys are referenced by path.
+//   - The loaded Config is immutable after Load returns. Reload builds a new
+//     Config and the proxy swaps it atomically.
+package config
+
+import (
+	"time"
+)
+
+// CurrentVersion is the configuration schema version this build understands.
+const CurrentVersion = 1
+
+// Config is the root of the configuration document.
+type Config struct {
+	// Version is the schema version. Must equal CurrentVersion.
+	Version int `yaml:"version"`
+
+	Server     Server     `yaml:"server"`
+	Management Management `yaml:"management"`
+	Logging    Logging    `yaml:"logging"`
+
+	// TrustedProxies lists CIDRs whose X-Forwarded-For / Forwarded headers are
+	// trusted for client IP derivation. Empty means never trust such headers.
+	TrustedProxies []string `yaml:"trusted_proxies"`
+
+	RateLimits []RateLimit `yaml:"rate_limits"`
+	Upstreams  []Upstream  `yaml:"upstreams"`
+	Routes     []Route     `yaml:"routes"`
+}
+
+// Server holds listener and global limit settings for the data plane.
+type Server struct {
+	Listeners []Listener `yaml:"listeners"`
+	Limits    Limits     `yaml:"limits"`
+	// ServerHeader is the value sent in the Server response header. Empty
+	// removes the header entirely (the default) to avoid fingerprinting.
+	ServerHeader string `yaml:"server_header"`
+	// ShutdownTimeout bounds graceful drain on stop or reload.
+	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
+}
+
+// Protocol identifies an application protocol a listener accepts.
+type Protocol string
+
+const (
+	ProtocolH1 Protocol = "h1"
+	ProtocolH2 Protocol = "h2"
+	ProtocolH3 Protocol = "h3"
+)
+
+// Listener describes a single accepting socket.
+type Listener struct {
+	Name    string `yaml:"name"`
+	Address string `yaml:"address"`
+	// Protocols accepted. Defaults to [h1, h2] with TLS and [h1] without.
+	Protocols []Protocol `yaml:"protocols"`
+	TLS       *TLS       `yaml:"tls"`
+	// ProxyProtocol enables PROXY protocol v1/v2 parsing on accepted
+	// connections. Only enable behind a trusted L4 balancer.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// RedirectToHTTPS makes a plaintext listener answer every request with a
+	// 308 redirect to https. Useful for the :80 listener.
+	RedirectToHTTPS bool `yaml:"redirect_to_https"`
+}
+
+// TLS configures server side TLS for a listener.
+type TLS struct {
+	Certificates []Certificate `yaml:"certificates"`
+	// MinVersion is "1.2" or "1.3". Default "1.2".
+	MinVersion string `yaml:"min_version"`
+	// ClientAuth is one of none, request, require. Default none.
+	ClientAuth string `yaml:"client_auth"`
+	// ClientCAFile is a PEM bundle used to verify client certificates.
+	ClientCAFile string `yaml:"client_ca_file"`
+	// CipherSuites optionally restricts TLS 1.2 suites (TLS 1.3 suites are
+	// not configurable in Go). Names as in crypto/tls, e.g.
+	// TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256.
+	CipherSuites []string `yaml:"cipher_suites"`
+}
+
+// Certificate references a PEM certificate chain and private key on disk.
+type Certificate struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+}
+
+// Limits are the global resource protections of the data plane. Every limit
+// has a conservative default and can only be raised deliberately.
+type Limits struct {
+	MaxHeaderBytes        int      `yaml:"max_header_bytes"`
+	MaxBodyBytes          int64    `yaml:"max_body_bytes"`
+	MaxURILength          int      `yaml:"max_uri_length"`
+	ReadHeaderTimeout     Duration `yaml:"read_header_timeout"`
+	ReadTimeout           Duration `yaml:"read_timeout"`
+	WriteTimeout          Duration `yaml:"write_timeout"`
+	IdleTimeout           Duration `yaml:"idle_timeout"`
+	MaxConnections        int      `yaml:"max_connections"`
+	MaxConnectionsPerIP   int      `yaml:"max_connections_per_ip"`
+	MaxConcurrentRequests int      `yaml:"max_concurrent_requests"`
+}
+
+// Management configures the control plane listener used by xproxyctl.
+type Management struct {
+	// Socket is the path of the Unix domain socket. Empty disables management.
+	Socket string `yaml:"socket"`
+	// SocketMode is the octal permission mode of the socket, default 0660.
+	SocketMode string `yaml:"socket_mode"`
+}
+
+// Logging configures the four log streams.
+type Logging struct {
+	Directory string    `yaml:"directory"`
+	Access    LogStream `yaml:"access"`
+	Error     LogStream `yaml:"error"`
+	Security  LogStream `yaml:"security"`
+	Audit     LogStream `yaml:"audit"`
+	// Level is the minimum level for the error log: debug, info, warn, error.
+	Level string `yaml:"level"`
+	// Stdout mirrors all streams to standard output (useful under journald
+	// and in containers).
+	Stdout bool `yaml:"stdout"`
+}
+
+// LogStream configures one log file.
+type LogStream struct {
+	Enabled *bool  `yaml:"enabled"`
+	File    string `yaml:"file"`
+	// MaxSizeMB triggers rotation when the file exceeds this size. 0 disables
+	// internal rotation (use logrotate or journald instead).
+	MaxSizeMB int `yaml:"max_size_mb"`
+	MaxFiles  int `yaml:"max_files"`
+}
+
+// RateLimit is a named token bucket policy referenced by routes.
+type RateLimit struct {
+	Name string `yaml:"name"`
+	// Key selects the bucket identity: client_ip, route, or header:<name>.
+	Key string `yaml:"key"`
+	// Rate is tokens per second.
+	Rate float64 `yaml:"rate"`
+	// Burst is the bucket capacity.
+	Burst int `yaml:"burst"`
+	// Action is reject (429) or tarpit. Default reject.
+	Action string `yaml:"action"`
+	// TarpitDelay is how long a tarpitted request is held before rejection.
+	TarpitDelay Duration `yaml:"tarpit_delay"`
+}
+
+// Upstream is a named pool of endpoints.
+type Upstream struct {
+	Name string `yaml:"name"`
+	// Balancer is round_robin, weighted, least_conn or hash.
+	Balancer  string     `yaml:"balancer"`
+	Endpoints []Endpoint `yaml:"endpoints"`
+	// Scheme is http or https. Default http.
+	Scheme      string          `yaml:"scheme"`
+	TLS         *UpstreamTLS    `yaml:"tls"`
+	HealthCheck *HealthCheck    `yaml:"health_check"`
+	Timeouts    UpstreamTimeout `yaml:"timeouts"`
+	// MaxIdleConnsPerHost bounds the pooled connections per endpoint.
+	MaxIdleConnsPerHost int `yaml:"max_idle_conns_per_host"`
+	// Retries is the number of times an idempotent request is retried on a
+	// connection error against a different endpoint. Default 1.
+	Retries *int `yaml:"retries"`
+	// HashOn selects the hash input for the hash balancer: client_ip,
+	// header:<name> or cookie:<name>.
+	HashOn string `yaml:"hash_on"`
+	// Affinity enables signed cookie session affinity.
+	Affinity *Affinity `yaml:"affinity"`
+	// OutlierEjection removes endpoints that fail passively.
+	OutlierEjection *OutlierEjection `yaml:"outlier_ejection"`
+}
+
+// Endpoint is a single upstream address.
+type Endpoint struct {
+	Address string `yaml:"address"`
+	Weight  int    `yaml:"weight"`
+}
+
+// UpstreamTLS configures TLS towards upstream endpoints.
+type UpstreamTLS struct {
+	ServerName string `yaml:"server_name"`
+	CAFile     string `yaml:"ca_file"`
+	// ClientCertFile / ClientKeyFile enable mTLS to the upstream.
+	ClientCertFile string `yaml:"client_cert_file"`
+	ClientKeyFile  string `yaml:"client_key_file"`
+	// InsecureSkipVerify disables verification. Refused unless
+	// allow_insecure is also true; logged as a security warning at start.
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
+	AllowInsecure      bool `yaml:"allow_insecure"`
+}
+
+// HealthCheck configures active health probing of an upstream.
+type HealthCheck struct {
+	Path               string   `yaml:"path"`
+	Interval           Duration `yaml:"interval"`
+	Timeout            Duration `yaml:"timeout"`
+	HealthyThreshold   int      `yaml:"healthy_threshold"`
+	UnhealthyThreshold int      `yaml:"unhealthy_threshold"`
+	ExpectedStatus     []int    `yaml:"expected_status"`
+}
+
+// UpstreamTimeout bounds each phase of an upstream exchange.
+type UpstreamTimeout struct {
+	Connect        Duration `yaml:"connect"`
+	ResponseHeader Duration `yaml:"response_header"`
+	Idle           Duration `yaml:"idle"`
+	// Total bounds the complete upstream request including the body.
+	Total Duration `yaml:"total"`
+}
+
+// Affinity is signed cookie session affinity.
+type Affinity struct {
+	CookieName string   `yaml:"cookie_name"`
+	TTL        Duration `yaml:"ttl"`
+	// SecretFile holds the HMAC key. Generated at first start when absent
+	// and the directory is writable.
+	SecretFile string `yaml:"secret_file"`
+}
+
+// OutlierEjection configures passive health checking.
+type OutlierEjection struct {
+	ConsecutiveFailures int      `yaml:"consecutive_failures"`
+	BaseEjectionTime    Duration `yaml:"base_ejection_time"`
+	MaxEjectionPercent  int      `yaml:"max_ejection_percent"`
+}
+
+// Route maps a request to an upstream and attaches policies.
+type Route struct {
+	Name string `yaml:"name"`
+	// Hosts are exact host names or wildcard patterns ("*.example.com").
+	// Empty matches any host.
+	Hosts []string `yaml:"hosts"`
+	// Paths are prefixes. "/" matches everything. Longest prefix wins.
+	Paths   []string `yaml:"paths"`
+	Methods []string `yaml:"methods"`
+	// Priority breaks ties between routes with identical specificity. Higher
+	// wins. Default 0.
+	Priority int `yaml:"priority"`
+
+	Upstream string `yaml:"upstream"`
+	// Redirect answers with a redirect instead of proxying.
+	Redirect *Redirect `yaml:"redirect"`
+	// Respond answers with a static status instead of proxying.
+	Respond *Respond `yaml:"respond"`
+
+	StripPrefix string `yaml:"strip_prefix"`
+	RewritePath string `yaml:"rewrite_path"`
+	// HostHeader overrides the Host header sent upstream. Default keeps the
+	// client Host.
+	HostHeader string `yaml:"host_header"`
+
+	RequestHeaders  HeaderOps `yaml:"request_headers"`
+	ResponseHeaders HeaderOps `yaml:"response_headers"`
+
+	RateLimits []string `yaml:"rate_limits"`
+	// AllowCIDRs / DenyCIDRs implement simple IP access control. Deny is
+	// evaluated first. Empty allow means allow all.
+	AllowCIDRs []string `yaml:"allow_cidrs"`
+	DenyCIDRs  []string `yaml:"deny_cidrs"`
+	// MaxBodyBytes overrides the global body limit for this route (may only
+	// lower it unless allow_raise is set).
+	MaxBodyBytes *int64 `yaml:"max_body_bytes"`
+	// Timeout bounds the entire request on this route.
+	Timeout Duration `yaml:"timeout"`
+	// WebSocket allows Upgrade: websocket to be forwarded. Default false.
+	WebSocket bool `yaml:"websocket"`
+}
+
+// Redirect is a static redirect action.
+type Redirect struct {
+	To     string `yaml:"to"`
+	Status int    `yaml:"status"`
+}
+
+// Respond is a static response action.
+type Respond struct {
+	Status int    `yaml:"status"`
+	Body   string `yaml:"body"`
+}
+
+// HeaderOps describes header mutations.
+type HeaderOps struct {
+	Set    map[string]string `yaml:"set"`
+	Add    map[string]string `yaml:"add"`
+	Remove []string          `yaml:"remove"`
+}
+
+// Duration is a time.Duration that unmarshals from strings like "30s".
+type Duration time.Duration
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (d *Duration) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var s string
+	if err := unmarshal(&s); err != nil {
+		return err
+	}
+	if s == "" {
+		*d = 0
+		return nil
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	*d = Duration(v)
+	return nil
+}
+
+// MarshalYAML implements yaml.Marshaler.
+func (d Duration) MarshalYAML() (interface{}, error) {
+	return time.Duration(d).String(), nil
+}
+
+// D returns the value as a time.Duration.
+func (d Duration) D() time.Duration { return time.Duration(d) }
+
+// Enabled reports whether a stream is enabled (default true).
+func (s LogStream) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }

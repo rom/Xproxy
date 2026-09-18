@@ -1,0 +1,17 @@
+# Listening sockets for xproxy. The names in FileDescriptorName must match
+# the listener names in xproxy.yaml; xproxy also matches by address.
+[Unit]
+Description=xproxy listening sockets
+
+[Socket]
+ListenStream=0.0.0.0:80
+ListenStream=[::]:80
+FileDescriptorName=public-http
+Backlog=4096
+NoDelay=true
+ReusePort=true
+# A second [Socket] unit or additional ListenStream lines with their own
+# FileDescriptorName can be used for :443 (see docs/SETUP.md).
+
+[Install]
+WantedBy=sockets.target

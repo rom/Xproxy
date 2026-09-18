@@ -1,0 +1,494 @@
+package proxy
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"net/http"
+	"net/http/httputil"
+	"net/netip"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/tlsconf"
+)
+
+// listenerHandler is the http.Handler installed on one listener.
+type listenerHandler struct {
+	srv *Server
+	ln  *config.Listener
+}
+
+// reqState is the per-request bookkeeping used for logging.
+type reqState struct {
+	id       string
+	start    time.Time
+	clientIP netip.Addr
+	host     string
+	path     string
+	route    string
+	upstream string
+	endpoint string
+	attempts int
+	denied   string
+	upErr    string
+}
+
+func newRequestID() string {
+	var b [12]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s := h.srv
+	rt := s.rt.Load()
+	rw := &responseWriter{ResponseWriter: w}
+	st := &reqState{id: newRequestID(), start: time.Now()}
+	st.clientIP = netutil.ClientIP(r, rt.trusted)
+	s.stats.Requests.Add(1)
+	if r.ContentLength > 0 {
+		s.stats.BytesIn.Add(uint64(r.ContentLength)) //nolint:gosec // guarded by > 0 above
+	}
+	defer s.logAccess(rw, r, st)
+
+	// Never advertise ourselves.
+	if s.cfg().Server.ServerHeader != "" {
+		rw.Header().Set("Server", s.cfg().Server.ServerHeader)
+	}
+	rw.Header().Set("X-Request-Id", st.id)
+
+	release, ok := s.concurrency.Acquire()
+	if !ok {
+		s.stats.DeniedConcurrency.Add(1)
+		st.denied = "max_concurrent_requests"
+		rw.Header().Set("Retry-After", "1")
+		s.deny(rw, r, st, http.StatusServiceUnavailable, "concurrency")
+		return
+	}
+	defer release()
+
+	if h.ln.RedirectToHTTPS {
+		host := netutil.Host(r.Host)
+		if host == "" {
+			s.stats.DeniedBadHost.Add(1)
+			s.deny(rw, r, st, http.StatusBadRequest, "bad_host")
+			return
+		}
+		target := "https://" + strings.TrimSuffix(host, ":80") + r.URL.RequestURI()
+		http.Redirect(rw, r, target, http.StatusPermanentRedirect)
+		return
+	}
+
+	if len(r.RequestURI) > s.cfg().Server.Limits.MaxURILength {
+		s.stats.DeniedURILength.Add(1)
+		st.denied = "uri_too_long"
+		s.deny(rw, r, st, http.StatusRequestURITooLong, "uri_length")
+		return
+	}
+
+	st.host = netutil.Host(r.Host)
+	if st.host == "" && r.Host != "" {
+		s.stats.DeniedBadHost.Add(1)
+		st.denied = "bad_host"
+		s.deny(rw, r, st, http.StatusBadRequest, "bad_host")
+		return
+	}
+	st.path = netutil.CleanPath(r.URL.Path)
+
+	match := rt.router.Match(st.host, st.path, r.Method)
+	if match == nil {
+		s.stats.DeniedNoRoute.Add(1)
+		st.denied = "no_route"
+		s.deny(rw, r, st, http.StatusNotFound, "no_route")
+		return
+	}
+	cr := rt.routes[match.Index]
+	st.route = cr.cfg.Name
+
+	// Access control.
+	if len(cr.deny) > 0 && netutil.Contains(cr.deny, st.clientIP) {
+		s.stats.DeniedACL.Add(1)
+		st.denied = "deny_cidrs"
+		s.deny(rw, r, st, http.StatusForbidden, "acl_deny")
+		return
+	}
+	if len(cr.allow) > 0 && !netutil.Contains(cr.allow, st.clientIP) {
+		s.stats.DeniedACL.Add(1)
+		st.denied = "allow_cidrs"
+		s.deny(rw, r, st, http.StatusForbidden, "acl_allow")
+		return
+	}
+
+	// Rate limits.
+	for _, rl := range cr.rateLimits {
+		key := rateKey(rl.cfg, r, st)
+		if rl.lim.Allow(key) {
+			continue
+		}
+		st.denied = "rate_limit:" + rl.cfg.Name
+		if rl.cfg.Action == "tarpit" {
+			s.stats.Tarpitted.Add(1)
+			s.tarpit(rw, r, st, rl.cfg)
+			return
+		}
+		s.stats.DeniedRateLimit.Add(1)
+		rw.Header().Set("Retry-After", strconv.Itoa(int(retryAfter(rl.cfg))))
+		s.deny(rw, r, st, http.StatusTooManyRequests, "rate_limit")
+		return
+	}
+
+	// Body limit. The route may lower the global bound.
+	limit := s.cfg().Server.Limits.MaxBodyBytes
+	if cr.cfg.MaxBodyBytes != nil && *cr.cfg.MaxBodyBytes < limit {
+		limit = *cr.cfg.MaxBodyBytes
+	}
+	if limit > 0 {
+		if r.ContentLength > limit {
+			s.stats.DeniedBodySize.Add(1)
+			st.denied = "body_too_large"
+			s.deny(rw, r, st, http.StatusRequestEntityTooLarge, "body_size")
+			return
+		}
+		if r.Body != nil && r.Body != http.NoBody {
+			r.Body = http.MaxBytesReader(rw, r.Body, limit)
+		}
+	}
+
+	// Per-route timeout.
+	ctx := r.Context()
+	if cr.cfg.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cr.cfg.Timeout.D())
+		defer cancel()
+		r = r.WithContext(ctx)
+	}
+
+	// Actions.
+	switch {
+	case cr.cfg.Redirect != nil:
+		applyHeaderOps(rw.Header(), cr.cfg.ResponseHeaders)
+		http.Redirect(rw, r, cr.cfg.Redirect.To, cr.cfg.Redirect.Status)
+	case cr.cfg.Respond != nil:
+		applyHeaderOps(rw.Header(), cr.cfg.ResponseHeaders)
+		if rw.Header().Get("Content-Type") == "" {
+			rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		}
+		rw.Header().Set("X-Content-Type-Options", "nosniff")
+		rw.WriteHeader(cr.cfg.Respond.Status)
+		if r.Method != http.MethodHead {
+			_, _ = rw.Write([]byte(cr.cfg.Respond.Body))
+		}
+	default:
+		s.proxyTo(rw, r, st, cr)
+	}
+}
+
+func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *compiledRoute) {
+	pool := cr.pool
+	st.upstream = pool.Name
+
+	if isUpgrade(r) && !cr.cfg.WebSocket {
+		s.stats.DeniedWebSocket.Add(1)
+		st.denied = "websocket_not_allowed"
+		s.deny(rw, r, st, http.StatusForbidden, "websocket")
+		return
+	}
+
+	pi := &pickInfo{hashKey: hashKey(pool.Cfg, r, st)}
+	if name := pool.AffinityCookie(); name != "" {
+		if c, err := r.Cookie(name); err == nil {
+			pi.cookie = c.Value
+		}
+	}
+	ctx := withPick(r.Context(), pi)
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, pool.Cfg.Timeouts.Total.D())
+	defer cancel()
+	r = r.WithContext(ctx)
+
+	rp := &httputil.ReverseProxy{
+		Transport:     &poolTransport{pool: pool, retries: *pool.Cfg.Retries},
+		FlushInterval: -1,
+		ErrorLog:      nil,
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			s.rewrite(pr, st, cr)
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			pi.mu.Lock()
+			if pi.endpoint != nil {
+				st.endpoint = pi.endpoint.Address
+			}
+			st.attempts = pi.attempts
+			cookie := pi.setCookie
+			pi.mu.Unlock()
+			if cookie != "" {
+				http.SetCookie(rw, &http.Cookie{
+					Name: pool.AffinityCookie(), Value: cookie, Path: "/",
+					MaxAge:   int(pool.Cfg.Affinity.TTL.D().Seconds()),
+					HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode,
+				})
+			}
+			applyHeaderOps(resp.Header, cr.cfg.ResponseHeaders)
+			if s.cfg().Server.ServerHeader == "" {
+				resp.Header.Del("Server")
+			} else {
+				resp.Header.Set("Server", s.cfg().Server.ServerHeader)
+			}
+			return nil
+		},
+		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
+			s.upstreamError(rw, req, st, pi, err)
+		},
+	}
+	rp.ServeHTTP(rw, r)
+	pi.mu.Lock()
+	if pi.endpoint != nil {
+		st.endpoint = pi.endpoint.Address
+	}
+	if st.attempts == 0 {
+		st.attempts = pi.attempts
+	}
+	pi.mu.Unlock()
+}
+
+func (s *Server) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRoute) {
+	in, out := pr.In, pr.Out
+	rt := s.rt.Load()
+	out.URL.Scheme = cr.pool.Scheme
+	out.URL.Host = "pool" // replaced by poolTransport per attempt
+	out.URL.Path, out.URL.RawPath = rewritePath(in.URL.Path, in.URL.RawPath, cr.cfg)
+	if cr.cfg.HostHeader != "" {
+		out.Host = cr.cfg.HostHeader
+	} else {
+		out.Host = in.Host
+	}
+	// Forwarding headers: only a trusted peer's chain is preserved.
+	if netutil.Contains(rt.trusted, netutil.RemoteAddr(in)) {
+		out.Header["X-Forwarded-For"] = in.Header["X-Forwarded-For"]
+	}
+	pr.SetXForwarded()
+	out.Header.Set("X-Real-Ip", st.clientIP.String())
+	out.Header.Set("X-Request-Id", st.id)
+	out.Header.Del("Forwarded")
+	applyHeaderOps(out.Header, cr.cfg.RequestHeaders)
+}
+
+// rewritePath applies strip_prefix / rewrite_path to the outbound path.
+func rewritePath(path, rawPath string, rc *config.Route) (string, string) {
+	if rc.RewritePath != "" {
+		return rc.RewritePath, ""
+	}
+	if rc.StripPrefix != "" {
+		clean := netutil.CleanPath(path)
+		if strings.HasPrefix(clean, rc.StripPrefix) {
+			rest := strings.TrimPrefix(clean, rc.StripPrefix)
+			if rest == "" || rest[0] != '/' {
+				rest = "/" + rest
+			}
+			return rest, ""
+		}
+	}
+	return path, rawPath
+}
+
+func (s *Server) upstreamError(rw *responseWriter, r *http.Request, st *reqState, pi *pickInfo, err error) {
+	pi.mu.Lock()
+	if pi.endpoint != nil {
+		st.endpoint = pi.endpoint.Address
+	}
+	st.attempts = pi.attempts
+	pi.mu.Unlock()
+	st.upErr = err.Error()
+	status := http.StatusBadGateway
+	switch {
+	case errors.Is(err, context.Canceled) && r.Context().Err() == context.Canceled:
+		// Client went away; nothing to send.
+		s.stats.ClientAborts.Add(1)
+		rw.status = 499
+		rw.wrote = true
+		return
+	case errors.Is(err, context.DeadlineExceeded):
+		s.stats.UpstreamTimeouts.Add(1)
+		status = http.StatusGatewayTimeout
+	case errors.Is(err, errNoEndpoint):
+		s.stats.UpstreamNoHealthy.Add(1)
+		status = http.StatusServiceUnavailable
+		rw.Header().Set("Retry-After", "5")
+	default:
+		s.stats.UpstreamErrors.Add(1)
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			s.stats.DeniedBodySize.Add(1)
+			st.denied = "body_too_large"
+			status = http.StatusRequestEntityTooLarge
+		}
+	}
+	s.logs.Error.Warn("upstream error", "request_id", st.id, "route", st.route, "upstream", st.upstream, "endpoint", st.endpoint, "attempts", st.attempts, "err", err.Error())
+	if rw.wrote {
+		return
+	}
+	s.plainStatus(rw, r, status)
+}
+
+// deny writes a minimal error response and a security log entry.
+func (s *Server) deny(rw *responseWriter, r *http.Request, st *reqState, status int, reason string) {
+	s.logs.SecurityEvent(r.Context(), "deny", reason,
+		"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
+		"host", r.Host, "path", r.URL.Path, "route", st.route, "status", status,
+		"user_agent", r.UserAgent())
+	s.plainStatus(rw, r, status)
+}
+
+// tarpit holds the connection for the configured delay, then denies. The
+// hold is bounded by the client context so a disconnected attacker does not
+// pin a goroutine.
+func (s *Server) tarpit(rw *responseWriter, r *http.Request, st *reqState, rl *config.RateLimit) {
+	s.logs.SecurityEvent(r.Context(), "tarpit", "rate_limit:"+rl.Name,
+		"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
+		"host", r.Host, "path", r.URL.Path, "route", st.route, "delay", rl.TarpitDelay.D().String())
+	select {
+	case <-time.After(rl.TarpitDelay.D()):
+	case <-r.Context().Done():
+		s.stats.ClientAborts.Add(1)
+		rw.status = 499
+		rw.wrote = true
+		return
+	}
+	rw.Header().Set("Retry-After", strconv.Itoa(int(retryAfter(rl))))
+	s.plainStatus(rw, r, http.StatusTooManyRequests)
+}
+
+// plainStatus writes a terse status page. No body details are leaked: the
+// text is the standard reason phrase only.
+func (s *Server) plainStatus(rw *responseWriter, r *http.Request, status int) {
+	h := rw.Header()
+	h.Set("Content-Type", "text/plain; charset=utf-8")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cache-Control", "no-store")
+	if status >= 500 || status == http.StatusTooManyRequests {
+		h.Set("Connection", "close")
+	}
+	rw.WriteHeader(status)
+	if r.Method != http.MethodHead {
+		_, _ = rw.Write([]byte(strconv.Itoa(status) + " " + http.StatusText(status) + "\n"))
+	}
+}
+
+func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
+	status := rw.Status()
+	s.stats.countStatus(status)
+	s.stats.BytesOut.Add(uint64(max(rw.bytes, 0))) //nolint:gosec // non-negative
+	dur := time.Since(st.start)
+	attrs := []any{
+		"request_id", st.id,
+		"client_ip", st.clientIP.String(),
+		"method", r.Method,
+		"host", r.Host,
+		"path", r.URL.Path,
+		"query_len", len(r.URL.RawQuery),
+		"proto", r.Proto,
+		"status", status,
+		"bytes_in", r.ContentLength,
+		"bytes_out", rw.bytes,
+		"duration_ms", float64(dur.Microseconds()) / 1000,
+		"route", st.route,
+		"upstream", st.upstream,
+		"endpoint", st.endpoint,
+		"attempts", st.attempts,
+		"user_agent", r.UserAgent(),
+		"referer", r.Referer(),
+	}
+	if r.TLS != nil {
+		attrs = append(attrs, "tls", tlsconf.VersionName(r.TLS.Version), "sni", r.TLS.ServerName)
+		if len(r.TLS.PeerCertificates) > 0 {
+			attrs = append(attrs, "client_cn", r.TLS.PeerCertificates[0].Subject.CommonName)
+		}
+	}
+	if st.denied != "" {
+		attrs = append(attrs, "denied", st.denied)
+	}
+	if st.upErr != "" {
+		attrs = append(attrs, "upstream_error", st.upErr)
+	}
+	s.logs.Access.Info("request", attrs...)
+}
+
+func isUpgrade(r *http.Request) bool {
+	if r.Header.Get("Upgrade") == "" {
+		return false
+	}
+	for _, v := range r.Header.Values("Connection") {
+		for _, tok := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(tok), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func applyHeaderOps(h http.Header, ops config.HeaderOps) {
+	for _, k := range ops.Remove {
+		h.Del(k)
+	}
+	for k, v := range ops.Set {
+		h.Set(k, v)
+	}
+	for k, v := range ops.Add {
+		h.Add(k, v)
+	}
+}
+
+func rateKey(rl *config.RateLimit, r *http.Request, st *reqState) string {
+	switch {
+	case rl.Key == "client_ip":
+		return st.clientIP.String()
+	case rl.Key == "route":
+		return st.route
+	case strings.HasPrefix(rl.Key, "header:"):
+		v := r.Header.Get(rl.Key[len("header:"):])
+		if v == "" {
+			// Missing header falls back to the client IP so the limit can
+			// not be bypassed by omitting it.
+			return "ip:" + st.clientIP.String()
+		}
+		if len(v) > 256 {
+			v = v[:256]
+		}
+		return "h:" + v
+	}
+	return st.clientIP.String()
+}
+
+func hashKey(u *config.Upstream, r *http.Request, st *reqState) string {
+	if u.Balancer != "hash" {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(u.HashOn, "header:"):
+		if v := r.Header.Get(u.HashOn[7:]); v != "" {
+			return v
+		}
+	case strings.HasPrefix(u.HashOn, "cookie:"):
+		if c, err := r.Cookie(u.HashOn[7:]); err == nil && c.Value != "" {
+			return c.Value
+		}
+	}
+	return st.clientIP.String()
+}
+
+func retryAfter(rl *config.RateLimit) float64 {
+	if rl.Rate <= 0 {
+		return 1
+	}
+	s := 1 / rl.Rate
+	if s < 1 {
+		return 1
+	}
+	return s
+}
