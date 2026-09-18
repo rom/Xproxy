@@ -92,6 +92,7 @@ func applyDefaults(c *Config) {
 		if t := s.Listeners[i].TCP; t != nil {
 			setDur(&t.IdleTimeout, 10*time.Minute)
 			setInt(&t.MaxConnections, 10000)
+			setDur(&t.QUICIdleTimeout, 30*time.Second)
 		}
 		if f := s.Listeners[i].Forward; f != nil {
 			if len(f.Ports) == 0 {

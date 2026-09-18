@@ -53,7 +53,7 @@ routes:
 		t.Fatal(err)
 	}
 	l4, fwd := cfg.Server.Listeners[1], cfg.Server.Listeners[2]
-	if l4.TCP.IdleTimeout.D().Minutes() != 10 || l4.TCP.MaxConnections != 10000 || len(l4.Protocols) != 0 {
+	if l4.TCP.IdleTimeout.D().Minutes() != 10 || l4.TCP.MaxConnections != 10000 || len(l4.Protocols) != 0 || l4.TCP.QUICIdleTimeout.D() != 30*time.Second {
 		t.Fatalf("tcp defaults: %+v protocols %v", l4.TCP, l4.Protocols)
 	}
 	f := fwd.Forward
@@ -86,6 +86,8 @@ routes:
 		{"tcp unknown upstream", "    - {name: x, address: \":1\", kind: tcp, tcp: {default: nope}}\n", "nope"},
 		{"tcp idle", "    - {name: x, address: \":1\", kind: tcp, tcp: {default: app, idle_timeout: 48h}}\n", "idle_timeout"},
 		{"tcp max", "    - {name: x, address: \":1\", kind: tcp, tcp: {default: app, max_connections: -1}}\n", "max_connections"},
+		{"tcp quic idle", "    - {name: x, address: \":1\", kind: tcp, tcp: {default: app, quic: true, quic_idle_timeout: 2h}}\n", "quic_idle_timeout"},
+		{"tcp quic proxy protocol", "    - {name: x, address: \":1\", kind: tcp, tcp: {default: app, quic: true, proxy_protocol: true}}\n", "disable proxy_protocol or quic"},
 		{"forward without section", "    - {name: x, address: \":1\", kind: forward}\n", "required for kind forward"},
 		{"forward with tcp", "    - {name: x, address: \":1\", kind: forward, forward: {}, tcp: {default: app}}\n", "takes no tcp"},
 		{"forward h2 without tls", "    - {name: x, address: \":1\", kind: forward, forward: {}, protocols: [h1, h2]}\n", "requires tls"},

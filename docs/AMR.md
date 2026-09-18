@@ -979,8 +979,14 @@ a splice with idle deadline, PROXY v2 and a connection bound. Server
 names route by exact match or `*.suffix`, like HTTP hosts.
 
 **Alternatives.** Route action on the HTTP listener (rejected above);
-a generic TCP proxy without SNI (covered by `default`); UDP relay (not
-asked for; QUIC passthrough would need it and is a 1.x candidate).
+a generic TCP proxy without SNI (covered by `default`); UDP relay
+(deferred at 1.1, delivered in 1.3 as QUIC passthrough: the relay
+decrypts only the client's Initial packets, which QUIC protects with
+keys derived from public values precisely so that on-path elements can
+read them, reassembles the ClientHello, routes by the same server name
+rules and then forwards datagrams per client address without reading
+them; there is no generic UDP relay, since without a name there is
+nothing to route by).
 
 **Consequences.** No inspection of passthrough traffic; the security
 log records connections, not requests. Health checks on such upstreams

@@ -1279,6 +1279,12 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	if t.MaxConnections < 1 {
 		v.errf("%s.max_connections: must be positive", p)
 	}
+	if t.QUICIdleTimeout <= 0 || t.QUICIdleTimeout > Duration(time.Hour) {
+		v.errf("%s.quic_idle_timeout: must be positive and at most 1h", p)
+	}
+	if t.QUIC && t.ProxyProtocol {
+		v.errf("%s.quic: the PROXY protocol header cannot be sent on a datagram flow; disable proxy_protocol or quic", p)
+	}
 }
 
 // grpcNameOK accepts protobuf identifiers with dots (package.Service).

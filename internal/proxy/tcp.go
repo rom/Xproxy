@@ -28,6 +28,7 @@ type tcpServer struct {
 	wg   sync.WaitGroup
 	mu   sync.Mutex
 	once sync.Once
+	quic *quicRelay // when the listener relays QUIC too
 	cons map[net.Conn]struct{}
 	done chan struct{}
 }
@@ -92,6 +93,9 @@ func (t *tcpServer) shutdown(ctx context.Context) {
 		close(t.done)
 		_ = t.ln.Close()
 	})
+	if t.quic != nil {
+		t.quic.shutdown()
+	}
 	finished := make(chan struct{})
 	go func() { t.wg.Wait(); close(finished) }()
 	select {

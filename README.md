@@ -102,8 +102,8 @@ an identifier from the access log to the upstream.
 
 **Other listener kinds**
 
-- `kind: tcp`: layer 4 TLS passthrough routed by server name without
-  terminating TLS, with PROXY protocol v2 to the upstream
+- `kind: tcp`: layer 4 TLS and QUIC passthrough routed by server name
+  without terminating TLS, with PROXY protocol v2 to TCP upstreams
 - `kind: forward`: an explicit proxy for clients with CONNECT tunnels,
   a destination policy that refuses private ranges by default, and
   proxy credentials

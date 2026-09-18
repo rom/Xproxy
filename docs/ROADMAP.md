@@ -210,7 +210,8 @@ procedure is in RELEASING.md.
   upstreams, `routes[].doh`, AMR-041 update)
 - Kubernetes Gateway API next to the Ingress translator, and API
   watches instead of polling: delivered (AMR-043 update)
-- QUIC passthrough on layer 4 listeners with a UDP relay (AMR-035)
+- QUIC passthrough on layer 4 listeners with a UDP relay: delivered
+  (`tcp.quic`, AMR-035 update)
 
 ## After 1.3 (candidates, unranked)
 

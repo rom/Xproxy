@@ -62,15 +62,22 @@ accept as on every listener.
 | `default` | upstream | none | Upstream for unmatched and non-TLS connections; without it they are closed and logged as `tcp_no_route` (a ban category) |
 | `idle_timeout` | duration | `10m` | Close after no bytes in either direction; at most 24h |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the upstream |
-| `max_connections` | int | `10000` | Open connections on this listener |
+| `max_connections` | int | `10000` | Open connections on this listener; also bounds QUIC flows |
+| `quic` | bool | `false` | Also relay QUIC: UDP on the same address, the ClientHello read from the version 1 Initial packet (decrypted with the Initial keys every observer can derive), the flow routed by server name to the same upstreams and every later datagram of that client address forwarded unread; not with `proxy_protocol` |
+| `quic_idle_timeout` | duration | `30s` | End a QUIC flow with no datagrams either way; at most 1h |
 
 Endpoints are picked with the upstream's balancer (hash on the client
 address for `hash`), dial failures try the next endpoint and feed outlier
 ejection; active health checks run as configured on the upstream. Every
 connection writes one `tcp` line to the access log with the name,
-upstream, endpoint, bytes and duration. Counters: `tcp_connections`,
-`tcp_rejected`, `tcp_errors`, `tcp_bytes_in`, `tcp_bytes_out`;
-`xproxy_tcp_*` metrics. Changing a tcp listener needs a restart.
+upstream, endpoint, bytes and duration (`proto: quic` for QUIC flows).
+Counters: `tcp_connections`, `tcp_rejected`, `tcp_errors`,
+`tcp_bytes_in`, `tcp_bytes_out`, `quic_flows`, `quic_rejected`,
+`quic_flows_open`; `xproxy_tcp_*` and `xproxy_quic_*` metrics. QUIC
+flows are keyed by client address, so a client that migrates to a new
+address starts a new flow (its first packet is not an Initial and is
+dropped; the client falls back or retries); QUIC versions other than 1
+are dropped. Changing a tcp listener needs a restart.
 
 ### server.listeners[].forward (kind: forward)
 

@@ -547,7 +547,7 @@ server:
           - {sni: [mail.example.com, "*.mail.example.com"], upstream: mail}
           - {sni: [legacy.example.com], upstream: legacy}
         default: legacy           # non-TLS and unknown names
-        proxy_protocol: true      # the upstream sees the client address
+        quic: true                # also relay HTTP/3 (UDP 8443) by server name
 upstreams:
   - name: mail
     health_check: {path: /healthz}     # for https upstreams checks still use HTTP
@@ -558,7 +558,11 @@ upstreams:
 
 The upstream keeps its own certificates and the WAF does not see the
 traffic (it is encrypted end to end); use an `http` listener with TLS
-termination where inspection is wanted.
+termination where inspection is wanted. With `quic: true` the same
+routes relay QUIC (HTTP/3) datagrams: the server name is read from the
+client's Initial packet and every later datagram of that client goes
+to the chosen endpoint. `proxy_protocol` applies to TCP connections
+only and cannot be combined with `quic`.
 
 ### Kubernetes ingress controller
 

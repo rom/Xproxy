@@ -16,6 +16,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 - WebAssembly ABI body access: `get` kinds 13 to 15 and `set_body`
   behind a per filter `body_limit`; bodies over the limit stream
   through unexposed.
+- QUIC passthrough: `kind: tcp` listeners with `quic: true` relay QUIC
+  flows by the server name read from the version 1 Initial packet,
+  with `quic_idle_timeout`, `quic_*` counters and `xproxy_quic_*`
+  metrics.
 - Kubernetes Gateway API: Gateways and HTTPRoutes of the ingress class
   translate next to Ingress resources (hostnames, prefix and exact
   paths, methods, header modifiers, URL rewrite, redirects, weighted

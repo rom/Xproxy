@@ -197,6 +197,10 @@ to report a vulnerability. The threat analysis behind the controls is in
 
 - `kind: tcp` listeners reach only configured upstream endpoints; the
   ClientHello parser checks every length and reads at most 16 KiB.
+  QUIC relaying decrypts only the client's Initial packets (public
+  keys by construction), authenticates them, bounds the reassembled
+  ClientHello, and drops everything else that is not part of a known
+  flow; flows are bounded and idle closed.
 - `kind: forward` listeners check every destination before connecting:
   listed ports only, private and loopback ranges refused unless
   `allow_private`, deny and allow by name and by every resolved address,

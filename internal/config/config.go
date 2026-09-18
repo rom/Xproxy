@@ -364,6 +364,13 @@ type TCPListener struct {
 	// MaxConnections bounds open connections on this listener (in
 	// addition to the global limits). Default 10000.
 	MaxConnections int `yaml:"max_connections"`
+	// QUIC also relays QUIC (UDP on the same address): the ClientHello
+	// of each flow is read from the Initial packet and routed by server
+	// name to the same upstreams. Default false.
+	QUIC bool `yaml:"quic"`
+	// QUICIdleTimeout ends a QUIC flow with no datagrams either way.
+	// Default 30s.
+	QUICIdleTimeout Duration `yaml:"quic_idle_timeout"`
 }
 
 // TCPRoute maps server names (exact or *.suffix) to an upstream.

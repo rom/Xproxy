@@ -291,6 +291,15 @@ header, replays the peeked bytes and splices both directions with an
 idle deadline and half-close. Connections are accounted on the pool like
 requests so ejection and health apply. The listener has its own
 connection bound and is drained on shutdown like the HTTP servers.
+With `quic` the listener also owns a UDP socket: `netutil.QUICCryptoData`
+decrypts a version 1 Initial packet with the keys derived from its
+destination connection id (HKDF over the published salt, header
+protection removed, AES-GCM opened, frames walked), a
+`QUICHelloAssembler` reassembles CRYPTO data across the client's first
+datagrams, the server name is read with the same ClientHello parser,
+and the relay keeps one flow per client address (an upstream UDP
+socket and a pump goroutine) until it is idle. Datagrams after the
+Initial are forwarded without being read.
 
 ### Metrics collection and export
 

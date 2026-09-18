@@ -191,6 +191,13 @@ func (s *Server) Stats() Snapshot {
 	snap.RejectedConns = s.connLimiter.Rejected.Load()
 	snap.InFlight = s.concurrency.InFlight()
 	snap.HoneypotMarked = len(s.marks.list(time.Now()))
+	s.mu.Lock()
+	for _, bl := range s.listeners {
+		if bl.tcp != nil && bl.tcp.quic != nil {
+			snap.QUICFlowsOpen += bl.tcp.quic.open()
+		}
+	}
+	s.mu.Unlock()
 	s.dnsTotals(&snap)
 	if bl := s.bans.Load(); bl != nil {
 		snap.BansActive, snap.BansTotal = bl.Stats()
@@ -353,6 +360,18 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 	bl := &boundListener{cfg: lc, ln: s.connLimiter.Wrap(ln), activated: act}
 	if lc.Kind == "tcp" {
 		bl.tcp = newTCPServer(s, lc, bl.ln)
+		if lc.TCP.QUIC {
+			udpAddr := lc.Address
+			if strings.HasSuffix(lc.Address, ":0") {
+				udpAddr = ln.Addr().String()
+			}
+			pc, _, err := packetFor(activated, lc.Name, udpAddr)
+			if err != nil {
+				_ = ln.Close()
+				return nil, fmt.Errorf("listener %s: quic: %w", lc.Name, err)
+			}
+			bl.tcp.quic = newQUICRelay(bl.tcp, pc)
+		}
 		return bl, nil
 	}
 	if lc.Kind == "dns" {
@@ -472,6 +491,9 @@ func (s *Server) serve(bl *boundListener) {
 	var err error
 	s.logs.Error.Info("listening", "listener", bl.cfg.Name, "address", bl.ln.Addr().String(), "tls", bl.cfg.TLS != nil, "kind", bl.cfg.Kind, "socket_activated", bl.activated)
 	if bl.tcp != nil {
+		if bl.tcp.quic != nil {
+			go bl.tcp.quic.serve()
+		}
 		bl.tcp.serve()
 		return
 	}
