@@ -130,12 +130,47 @@ func (v *validator) config(c *Config) {
 	for i := range c.Filters {
 		v.filter(i, &c.Filters[i], filters)
 	}
+	if g := c.GeoIP; g != nil {
+		if (g.Database == "") == (g.CSV == "") {
+			v.errf("geoip: exactly one of database or csv is required")
+		}
+		if g.Database != "" {
+			v.file("geoip.database", g.Database)
+		}
+		if g.CSV != "" {
+			v.file("geoip.csv", g.CSV)
+		}
+	}
+	for i := range c.RateLimits {
+		if c.RateLimits[i].Key == "country" && c.GeoIP == nil {
+			v.errf("rate_limits[%d].key: country needs a geoip section", i)
+		}
+	}
 	routes := map[string]bool{}
 	for i := range c.Routes {
 		v.route(i, &c.Routes[i], routes, upstreams, rateLimits)
 		for j, name := range c.Routes[i].Filters {
 			if !filters[name] {
 				v.errf("routes[%d].filters[%d]: unknown filter %q", i, j, name)
+			}
+		}
+		if g := c.Routes[i].Geo; g != nil {
+			p := fmt.Sprintf("routes[%d].geo", i)
+			if c.GeoIP == nil {
+				v.errf("%s: set but there is no geoip section", p)
+			}
+			if len(g.Allow) == 0 && len(g.Deny) == 0 {
+				v.errf("%s: allow or deny must list at least one country", p)
+			}
+			for _, list := range [][]string{g.Allow, g.Deny} {
+				for _, cc := range list {
+					if len(cc) != 2 || strings.ToUpper(cc) != cc || strings.Trim(cc, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
+						v.errf("%s: %q is not a two letter country code", p, cc)
+					}
+				}
+			}
+			if g.Unknown != "allow" && g.Unknown != "deny" {
+				v.errf("%s.unknown: must be allow or deny", p)
 			}
 		}
 		if c.Routes[i].WAF != nil {
@@ -505,10 +540,10 @@ func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 	}
 	seen[r.Name] = true
 	switch {
-	case r.Key == "client_ip", r.Key == "route":
+	case r.Key == "client_ip", r.Key == "route", r.Key == "country":
 	case strings.HasPrefix(r.Key, "header:") && len(r.Key) > len("header:"):
 	default:
-		v.errf("%s.key: must be client_ip, route or header:<name>", p)
+		v.errf("%s.key: must be client_ip, route, country or header:<name>", p)
 	}
 	if r.Rate <= 0 {
 		v.errf("%s.rate: must be positive", p)

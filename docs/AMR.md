@@ -846,6 +846,70 @@ with non-default owners).
 
 ---
 
+## AMR-032: Country lookups from a local database with a built-in reader
+
+**Context.** ASR-F13 asks for policy by country on an internet facing
+proxy. The common data sources are MaxMind format files (GeoLite2, DB-IP)
+and CSV prefix tables.
+
+**Decision.** `internal/geoip` implements the subset of the MaxMind DB
+format needed for a country lookup (search tree with 24, 28 and 32 bit
+records, the data section decoder, metadata) rather than adding
+`maxminddb-golang`, and also loads CSV tables. Lookups happen in the
+admission pipeline after the address ACL, are cached per address in a
+bounded table, and never touch the network. Policy is a per route allow
+and deny list plus a choice for unknown addresses; per country rate
+limiting is a rate limit key. The reader is tested against files
+produced by a small writer of the real format, including nested
+prefixes, IPv4 under the IPv6 tree and corrupt input.
+
+**Alternatives.** `maxminddb-golang` (well maintained, but a dependency
+for about 400 lines of format handling and it maps files with mmap,
+which the sandbox and SELinux policy would need to allow); an external
+lookup service (a network call on the request path).
+
+**Consequences.** City level and ASN data are not decoded; the reader
+returns the full record, so they can be. Database updates are file
+replacements plus a reload.
+
+**Status.** Accepted.
+
+---
+
+## AMR-033: Bot classification as a filter over observed TLS fingerprints
+
+**Context.** ASR-F14. Scripted clients that copy a browser's user agent
+are the bulk of abusive traffic; the TLS ClientHello is harder to forge
+than headers, and behaviour over time separates crawlers from people.
+
+**Decision.** Fingerprints are computed in `GetConfigForClient` (which
+sees the ClientHello for every TLS and QUIC connection) with the JA3 and
+JA4 definitions over `crypto/tls.ClientHelloInfo`, which since Go 1.24
+exposes the extension list; no raw handshake parsing. They are kept per
+connection in a bounded table and handed to filters through `Info`.
+Classification is the `bot_score` filter kind: additive signal weights,
+allow and deny lists, and three thresholds (log, challenge, deny). The
+challenge action is a new verdict flag that the data plane resolves
+against the existing challenge and its cookie, so a client that solved
+the proof of work is not scored into it again. Behaviour is a per
+address window in the filter with the same bounding discipline as the
+ban list.
+
+**Alternatives.** A machine learned classifier (data the project does
+not have; opaque to operators); an external bot management service (a
+network call per request, and the proxy's point is to not depend on
+one); fingerprinting at the TCP level (needs raw sockets and
+capabilities the unit does not grant).
+
+**Consequences.** JA3's legacy version field is fixed at 0x0303 because
+Go does not expose it, which matches every modern hello. Plaintext
+listeners have no fingerprint and score on headers and behaviour only.
+Weights are heuristics; the documented roll-out is to log first.
+
+**Status.** Accepted.
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |

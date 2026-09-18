@@ -86,6 +86,13 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		})(w, r)
 	})
 	mux.HandleFunc("GET /v1/icap", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.ICAP()) })
+	mux.HandleFunc("GET /v1/geoip", func(w http.ResponseWriter, _ *http.Request) {
+		if st := s.proxy.GeoIP(); st != nil {
+			writeJSON(w, 200, st)
+			return
+		}
+		writeJSON(w, 404, result{Error: "geoip is not configured"})
+	})
 	mux.HandleFunc("GET /v1/filters", func(w http.ResponseWriter, _ *http.Request) {
 		kinds := filter.Kinds()
 		ks := make([]FilterKind, 0, len(kinds))

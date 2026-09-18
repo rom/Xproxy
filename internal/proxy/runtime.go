@@ -11,6 +11,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/geoip"
 	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/jwt"
 	"github.com/rom/xproxy/internal/limits"
@@ -37,6 +38,9 @@ type runtime struct {
 	jwt        map[string]*jwt.Provider
 	icap       map[string]*icap.Service
 	filters    map[string]*customFilter
+	geo        *geoip.DB
+	// geoNeeded is set when any route or rate limit consults the country.
+	geoNeeded bool
 }
 
 // customFilter wraps a configured middleware instance with its deny
@@ -105,6 +109,26 @@ type compiledRoute struct {
 	class      shed.Class
 	challenge  *config.RouteChallenge // nil or mode off means no gate
 	counts     [5]atomic.Uint64       // 2xx, 3xx, 4xx, 5xx, denied
+	geoAllow   map[string]bool
+	geoDeny    map[string]bool
+	geoUnknown string
+}
+
+// geoAllowed applies the route's country policy.
+func (cr *compiledRoute) geoAllowed(country string) bool {
+	if cr.geoAllow == nil && cr.geoDeny == nil {
+		return true
+	}
+	if country == "" {
+		return cr.geoUnknown != "deny"
+	}
+	if cr.geoDeny[country] {
+		return false
+	}
+	if len(cr.geoAllow) > 0 && !cr.geoAllow[country] {
+		return false
+	}
+	return true
 }
 
 // wafSelection returns the WAF profile and mode for a route.
@@ -175,6 +199,24 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 			rt.icap[sc.Name] = svc
 		}
 	}
+	if cfg.GeoIP != nil {
+		db, err := geoip.Open(cfg.GeoIP)
+		if err != nil {
+			rt.stop()
+			return nil, fmt.Errorf("geoip: %w", err)
+		}
+		rt.geo = db
+		for i := range cfg.Routes {
+			if cfg.Routes[i].Geo != nil {
+				rt.geoNeeded = true
+			}
+		}
+		for i := range cfg.RateLimits {
+			if cfg.RateLimits[i].Key == "country" {
+				rt.geoNeeded = true
+			}
+		}
+	}
 	if len(cfg.Filters) > 0 {
 		rt.filters = make(map[string]*customFilter, len(cfg.Filters))
 		for i := range cfg.Filters {
@@ -221,6 +263,21 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 		}
 		if r.Challenge != nil && r.Challenge.Mode != "off" && cfg.Challenge != nil {
 			cr.challenge = r.Challenge
+		}
+		if g := r.Geo; g != nil {
+			cr.geoUnknown = g.Unknown
+			if len(g.Allow) > 0 {
+				cr.geoAllow = make(map[string]bool, len(g.Allow))
+				for _, cc := range g.Allow {
+					cr.geoAllow[cc] = true
+				}
+			}
+			if len(g.Deny) > 0 {
+				cr.geoDeny = make(map[string]bool, len(g.Deny))
+				for _, cc := range g.Deny {
+					cr.geoDeny[cc] = true
+				}
+			}
 		}
 		if r.Upstream != "" {
 			p, ok := rt.pools[r.Upstream]

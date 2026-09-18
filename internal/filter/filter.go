@@ -26,6 +26,18 @@ type Info struct {
 	Path      string
 	Method    string
 	TLS       bool
+	// Country is the ISO code from the geoip database, or "" when there
+	// is no database or the address is unknown.
+	Country string
+	// JA3 and JA4 are the TLS client fingerprints of the connection, or
+	// "" for plaintext listeners.
+	JA3 string
+	JA4 string
+	// ALPN is the protocol list the client offered in its ClientHello.
+	ALPN []string
+	// ChallengeVerified is true when the client carries a valid browser
+	// challenge cookie (false when no challenge is configured).
+	ChallengeVerified bool
 }
 
 // Verdict is a filter decision.
@@ -43,6 +55,10 @@ type Verdict struct {
 	// Response, when set on a deny, is sent to the client as is (status,
 	// headers and a bounded body), for example a scanner's block page.
 	Response *http.Response
+	// Challenge asks the data plane to serve the browser challenge instead
+	// of the status page, when a challenge is configured and the client is
+	// not yet verified; otherwise the verdict is a plain deny.
+	Challenge bool
 }
 
 // Continue is the verdict that lets a request proceed.

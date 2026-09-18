@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"time"
 )
 
@@ -323,6 +324,17 @@ func applyDefaults(c *Config) {
 	}
 	for i := range c.Filters {
 		setStr(&c.Filters[i].Stage, StageAfterAuth)
+	}
+	for i := range c.Routes {
+		if g := c.Routes[i].Geo; g != nil {
+			setStr(&g.Unknown, "allow")
+			for j := range g.Allow {
+				g.Allow[j] = strings.ToUpper(g.Allow[j])
+			}
+			for j := range g.Deny {
+				g.Deny[j] = strings.ToUpper(g.Deny[j])
+			}
+		}
 	}
 	setDur(&c.Metrics.SampleInterval, 10*time.Second)
 	setDur(&c.Metrics.Retention, time.Hour)

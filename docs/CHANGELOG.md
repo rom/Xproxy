@@ -6,7 +6,20 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
-Nothing yet.
+### Added
+- GeoIP policy: `geoip` section with a built-in MaxMind DB reader (no
+  external library) or a CSV prefix table; `routes[].geo` allow and deny
+  lists with an `unknown` choice; rate limits keyed on `country`;
+  `country` in the access log and in `filter.Info`; `denied_geo`,
+  `xproxy_geoip_*` metrics; `GET /v1/geoip`, `xproxyctl geoip`.
+- Bot classification: JA3 and JA4 fingerprints computed from every
+  ClientHello (`tlsconf.Compute`), logged as `ja4` and passed to filters;
+  the `bot_score` filter kind scores user agent, browser headers,
+  fingerprint mismatch and behaviour (error rate, path spread, timing
+  regularity, rate) with configurable weights, JA4 allow and deny lists,
+  and log, challenge or deny thresholds; the score can be forwarded in a
+  header. Middleware API additions: `Info.Country`, `Info.JA3`,
+  `Info.JA4`, `Info.ALPN`, `Info.ChallengeVerified`, `Verdict.Challenge`.
 
 ## 1.0.0 - 2026-09-18
 

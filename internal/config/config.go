@@ -60,6 +60,9 @@ type Config struct {
 	// Filters are middleware instances of registered kinds (see
 	// docs/EXTENDING.md) that routes attach by name.
 	Filters []FilterConfig `yaml:"filters"`
+	// GeoIP names the country database used by routes[].geo and by rate
+	// limits keyed on country.
+	GeoIP *GeoIP `yaml:"geoip"`
 	// ACME configures automatic certificates for listeners with tls.acme.
 	ACME *ACME `yaml:"acme"`
 }
@@ -471,6 +474,25 @@ type Route struct {
 	// Filters names entries of the top-level filters list, run in the
 	// listed order within their stage.
 	Filters []string `yaml:"filters"`
+	// Geo allows or denies by client country (needs the geoip section).
+	Geo *RouteGeo `yaml:"geo"`
+}
+
+// GeoIP configures the country database: a MaxMind DB file (GeoLite2 or
+// GeoIP2 Country, or any MMDB with country.iso_code) or a CSV of
+// "network,country" lines.
+type GeoIP struct {
+	Database string `yaml:"database"`
+	CSV      string `yaml:"csv"`
+}
+
+// RouteGeo is a country policy. Deny is evaluated first; a non-empty
+// Allow admits only the listed countries. Unknown says what happens to
+// an address the database does not know: allow (default) or deny.
+type RouteGeo struct {
+	Allow   []string `yaml:"allow"`
+	Deny    []string `yaml:"deny"`
+	Unknown string   `yaml:"unknown"`
 }
 
 // FilterConfig is one middleware instance.

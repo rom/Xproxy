@@ -81,6 +81,7 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Request flood | `max_concurrent_requests` (503, no queue); keyed rate limits; tarpit bounded by the client context so a disconnected attacker frees the goroutine |
 | Tarpits used to fill the concurrency ceiling | A tarpitted request releases its concurrency slot and is bounded by `max_tarpits`; above that it is rejected immediately (SR-1, `TestTarpitDoesNotHoldConcurrency`) |
 | Memory exhaustion via many rate limit keys | Bounded shards with eviction (`TestKeyedLimiterBound`) |
+| Traffic from a country the service does not serve | `routes[].geo` allow and deny lists with a choice for unknown addresses; per country rate limits; evaluated after the address ACL and before the challenge, so the cost is one cached lookup. The country of a forged `X-Forwarded-For` is only trusted from trusted proxies, as the address itself |
 | Rate limit bypass by rotating a header keyed value | A missing header falls back to the client address; once a shard is full of active keys the client address decides instead of a fresh burst per value (SR-2, `TestHeaderRateLimitRotation`) |
 | Large bodies | `max_body_bytes` globally and per route, checked on `Content-Length` and enforced by `MaxBytesReader` |
 | Long URIs and huge headers | `max_uri_length` (414), `max_header_bytes` (431) |
@@ -94,6 +95,7 @@ explicitly out of scope. This document is reviewed at every phase exit
 | QUIC stream floods inside a connection | `h3.max_streams` per connection; header size and idle timeouts from the listener limits |
 | 0-RTT replay | 0-RTT is never enabled |
 | Upstream overload (slow backend, thundering herd) | Adaptive shedding by priority class keeps critical routes responsive and rejects low classes early with 503; the concurrency ceiling still bounds the rest |
+| Scripted clients impersonating browsers | `bot_score` filter: user agent and header consistency, JA3 and JA4 fingerprint of the connection against the claimed browser, behaviour over a window (error rate, path spread, timing regularity, rate), allow and deny lists of fingerprints; the verdict logs, challenges or denies by threshold, and the score can be forwarded to the application |
 | Bot floods on browser routes | Challenge gate (always or under load): unverified clients get a cheap static page and must spend CPU on a proof of work before being served |
 | Challenge bypass: replaying a solved proof or sharing a cookie | Nonces are signed, single use and expire; cookies are signed and bound to the client address by default; both use a per-installation key |
 | Challenge as a DoS vector against the proxy | Page is templated once, costs one HMAC; verification costs one HMAC and one SHA-256; the seen table is bounded; the reserved paths sit behind the connection and concurrency limits |

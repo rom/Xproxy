@@ -35,6 +35,10 @@ type Info struct {
     Path      string      // cleaned path
     Method    string
     TLS       bool
+    Country   string   // from the geoip database, "" when unknown or not configured
+    JA3, JA4  string   // TLS client fingerprints, "" on plaintext listeners
+    ALPN      []string // protocols the client offered
+    ChallengeVerified bool // the client carries a valid browser challenge cookie
 }
 
 type Verdict struct {
@@ -45,6 +49,7 @@ type Verdict struct {
     Attrs    []any             // extra slog attributes for the security event
     Headers  map[string]string // response headers on a deny (WWW-Authenticate, Retry-After)
     Response *http.Response    // full response to send instead of a status page (block pages)
+    Challenge bool             // serve the browser challenge instead of the status page (when configured and the client is unverified)
 }
 ```
 
@@ -191,7 +196,9 @@ Version 1 guarantees:
   `Info` and `Verdict`, the call order above, and the stage names.
 - Additions are compatible: new optional fields in `Info`, `Verdict` or
   `Env`, new optional interfaces a filter may implement (as `Closer`),
-  new stages.
+  new stages. Version 1 gained `Info.Country`, `Info.JA3`, `Info.JA4`,
+  `Info.ALPN`, `Info.ChallengeVerified` and `Verdict.Challenge` in 1.1
+  this way.
 - Incompatible changes bump `APIVersion`, are recorded in CHANGELOG.md
   and AMR.md, and keep the previous version's semantics for one release.
 

@@ -22,6 +22,7 @@ import (
 	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/geoip"
 	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/limits"
@@ -42,13 +43,15 @@ type Server struct {
 
 	concurrency *limits.Concurrency
 	tarpits     *limits.Concurrency // bound on requests held in a tarpit
-	connLimiter *limits.ConnLimiter
-	bans        atomic.Pointer[ban.List]
-	cluster     atomic.Pointer[cluster.Node]
-	shedder     atomic.Pointer[shed.Shedder]
-	challenger  atomic.Pointer[challenge.Challenger]
-	sampler     *metrics.Sampler
-	acme        *acme.Manager
+	// fingerprints holds the TLS fingerprint of every open TLS connection.
+	fingerprints *tlsconf.FingerprintTable
+	connLimiter  *limits.ConnLimiter
+	bans         atomic.Pointer[ban.List]
+	cluster      atomic.Pointer[cluster.Node]
+	shedder      atomic.Pointer[shed.Shedder]
+	challenger   atomic.Pointer[challenge.Challenger]
+	sampler      *metrics.Sampler
+	acme         *acme.Manager
 
 	mu        sync.Mutex
 	listeners []*boundListener
@@ -72,9 +75,10 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		stats: &Stats{StartedAt: time.Now(),
 			RequestDuration: metrics.NewHistogram(metrics.DurationBuckets),
 			UpstreamTTFB:    metrics.NewHistogram(metrics.DurationBuckets)},
-		concurrency: limits.NewConcurrency(cfg.Server.Limits.MaxConcurrentRequests),
-		tarpits:     limits.NewConcurrency(cfg.Server.Limits.MaxTarpits),
-		connLimiter: limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
+		concurrency:  limits.NewConcurrency(cfg.Server.Limits.MaxConcurrentRequests),
+		tarpits:      limits.NewConcurrency(cfg.Server.Limits.MaxTarpits),
+		fingerprints: tlsconf.NewFingerprintTable(max(cfg.Server.Limits.MaxConnections, 1024)),
+		connLimiter:  limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
 	}
 	s.connLimiter.OnReject = func(addr netip.Addr, reason string) {
 		s.logs.SecurityEvent(context.Background(), "drop_connection", reason, "client_ip", addr.String())
@@ -224,6 +228,16 @@ func (s *Server) CertificateExpiry() map[string]time.Time {
 	return out
 }
 
+// GeoIP returns the country database status, or nil when none is configured.
+func (s *Server) GeoIP() *geoip.Status {
+	rt := s.rt.Load()
+	if rt.geo == nil {
+		return nil
+	}
+	st := rt.geo.Status()
+	return &st
+}
+
 // Filters returns the configured middleware instances.
 func (s *Server) Filters() []FilterStatus { return s.rt.Load().filterStatus() }
 
@@ -339,6 +353,12 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		if s.acme != nil && len(lc.TLS.ACME) > 0 {
 			rl.Managed = s.acme.Certificates
 			rl.Challenge = s.acme.TLSALPN01
+		}
+		rl.Fingerprints = s.fingerprints
+		bl.httpSrv.ConnState = func(c net.Conn, st http.ConnState) {
+			if st == http.StateClosed || st == http.StateHijacked {
+				s.fingerprints.Delete(c.RemoteAddr().String())
+			}
 		}
 		bl.httpSrv.TLSConfig = tc
 		bl.tlsReload = rl

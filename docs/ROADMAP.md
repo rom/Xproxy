@@ -166,15 +166,23 @@ external reviewer). They are recorded as known limitations in
 RELEASE_NOTES_1.0.md and stay at the top of the 1.x list. The release
 procedure is in RELEASING.md.
 
-## After 1.0 (candidates, unranked)
+## 1.1 (in progress)
+
+- GeoIP policy: delivered (`geoip`, `routes[].geo`, rate by country,
+  AMR-032)
+- Bot classification with JA3 and JA4 fingerprints and behavioural
+  scoring: delivered (`bot_score` filter kind, AMR-033)
+- Response caching with cache key policies
+- L4 TCP and TLS passthrough with SNI routing
+- Forward proxy mode with CONNECT and authentication (ASR-F12)
+
+## After 1.1 (candidates, unranked)
 
 - Forward proxy mode with CONNECT and authentication (ASR-F12)
 - L4 TCP and TLS passthrough with SNI routing
 - WebAssembly extension ABI (AMR-013)
 - OIDC login flows with session cookies
-- Bot classification with JA3 and JA4 fingerprints and behavioural scoring
 - Honeypot routes and decoy responses
-- GeoIP policy (allow, deny, rate by country)
 - Request mirroring and replay for testing
 - gRPC aware routing and health checks
 - Kubernetes ingress controller mode

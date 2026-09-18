@@ -30,6 +30,20 @@ type Reloadable struct {
 	// Challenge returns a validation certificate for a server name when a
 	// tls-alpn-01 challenge is pending.
 	Challenge func(serverName string) (*tls.Certificate, bool)
+	// Fingerprints, when set, records the JA3 and JA4 fingerprint of every
+	// ClientHello by remote address (see Compute).
+	Fingerprints *FingerprintTable
+	// QUIC marks the config as serving HTTP/3 (JA4 prefix "q").
+	QUIC bool
+}
+
+// recordFingerprint is installed as GetConfigForClient; it never changes
+// the configuration, it only observes the hello.
+func (r *Reloadable) recordFingerprint(h *tls.ClientHelloInfo) (*tls.Config, error) {
+	if r.Fingerprints != nil && h.Conn != nil && h.Conn.RemoteAddr() != nil {
+		r.Fingerprints.Put(h.Conn.RemoteAddr().String(), Compute(h, r.QUIC))
+	}
+	return nil, nil //nolint:nilnil // nil config keeps the parent config
 }
 
 // ACMEALPN is the ALPN protocol of tls-alpn-01 (RFC 8737).
@@ -120,6 +134,7 @@ func Server(cfg *config.TLS, protocols []config.Protocol) (*tls.Config, *Reloada
 	tc := &tls.Config{
 		MinVersion:               tls.VersionTLS12,
 		GetCertificate:           r.getCertificate,
+		GetConfigForClient:       r.recordFingerprint,
 		CurvePreferences:         []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384},
 		Renegotiation:            tls.RenegotiateNever,
 		SessionTicketsDisabled:   false,

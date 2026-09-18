@@ -44,6 +44,10 @@ for how a release is cut). Phases 1 and 2 are complete. See
   graphs and live logs
 - Extensible with compiled-in middleware behind a stable interface
   (header policy and basic authentication built in)
+- Country policy from a local MaxMind or CSV database: allow, deny and
+  rate by country
+- Bot classification from JA3 and JA4 fingerprints, headers and
+  behaviour, with log, challenge and deny thresholds
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
   status, upstreams, reload, certificate reload, log reopen, tail, bans,
   cluster, metrics, sampled series, and a full-screen TUI

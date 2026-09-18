@@ -165,7 +165,7 @@ and syslog all receive the same redacted record.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes |
-| `key` | `client_ip`, `route`, `header:<Name>` | `client_ip` | Bucket identity. A missing header falls back to the client address. |
+| `key` | `client_ip`, `route`, `country`, `header:<Name>` | `client_ip` | Bucket identity. A missing header or an unknown country falls back to the client address. |
 | `rate` | float | required, positive | Tokens per second |
 | `burst` | int | `rate` rounded, at least 1 | Bucket capacity |
 | `action` | `reject`, `tarpit` | `reject` | `reject` answers 429 at once |
@@ -529,10 +529,69 @@ digest so the hash cost is paid once per client session.
 Denies answer 401 with `WWW-Authenticate` and reason `<filter name>`;
 the user name is added to the access log line as `auth_user`.
 
+### Kind `bot_score`
+
+Scores each request as automation from the user agent, the headers a
+browser always sends, the TLS fingerprint of the connection (JA3 and JA4,
+computed from the ClientHello) and the client's recent behaviour, then
+logs, challenges or denies by threshold.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `deny_at` | 0 to 100 | `0` (off) | Deny with 403 from this score |
+| `challenge_at` | 0 to 100 | `0` (off) | Serve the browser challenge from this score (needs a `challenge` section; must be below `deny_at`) |
+| `log_at` | 0 to 100 | `30` | Add `bot_score` and `bot_signals` to the access log line from this score |
+| `header` | header name | none | Forward the score to the upstream in this header |
+| `ja4_deny`, `ja4_allow` | lists of JA4 strings | | Fingerprints scored 100 or 0 regardless of other signals |
+| `window` | duration | `60s` | Behaviour window per client address (5s to 1h) |
+| `rate_per_window` | int | `300` | Requests in the window above which `high_rate` fires |
+| `weights` | mapping | see below | Override a signal's weight (0 to 100) |
+| `reason` | string | the filter name | Deny reason |
+
+Signals and default weights: `ua_bot` 40 (curl, wget, python, Go, Java,
+scanners, headless browsers and the like), `ua_missing` 30,
+`browser_headers_missing` 25 (a browser user agent without `Accept` or
+`Accept-Language`), `fingerprint_mismatch` 35 (a browser user agent on a
+hello without `h2` ALPN or with fewer than ten cipher suites),
+`error_rate` 30 (more than half of at least ten recent requests were
+4xx or denied), `path_spread` 15 (fifty or more distinct paths in the
+window), `regular_interval` 20 (eight or more requests with machine-like
+timing), `high_rate` 15. The score is the capped sum; a client that is
+already verified by the challenge is never challenged again. The JA4 of
+every TLS request is logged as `ja4`.
+
 ### routes[].filters
 
 A list of filter names, run in the listed order within each stage. A
 route may combine them with `jwt`, `waf` and `icap`.
+
+## geoip
+
+A country database for `routes[].geo` and for rate limits keyed on
+`country`. Exactly one source:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `database` | path | A MaxMind DB file with `country.iso_code` (GeoLite2 Country, GeoIP2 Country, DB-IP Lite in MMDB form). Read by the built-in reader, no external library |
+| `csv` | path | Lines of `network,country` (CIDR and ISO 3166-1 alpha-2), a header row allowed; longest prefix wins |
+
+The file is read at load and on every reload (replace the file and
+reload to update). Lookups are cached per address. Status: `xproxyctl
+geoip`, `xproxy_geoip_lookups_total`, `xproxy_geoip_unknown_total`. The
+country is written to the access log line as `country` and passed to
+filters in `Info.Country`.
+
+### routes[].geo
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `allow` | list of codes | | When set, only these countries are admitted |
+| `deny` | list of codes | | Denied first, before `allow` |
+| `unknown` | `allow`, `deny` | `allow` | Addresses the database does not know (private ranges, new allocations) |
+
+Denies answer 403 with reason `geo` and feed ban triggers under the `geo`
+category. A `rate_limits[].key` of `country` keeps one bucket per
+country; an unknown country falls back to the client address.
 
 ## acme
 

@@ -24,6 +24,7 @@
 //	acme           show managed certificates; "acme renew" forces renewal
 //	icap           show ICAP services and counters
 //	filters        list middleware kinds and configured filters
+//	geoip          show the country database and lookup counters
 //	htpasswd FILE NAME  add or replace a basic_auth user (password on stdin)
 //	metrics        print the Prometheus exposition
 //	series         print sampled series (-since 10m -last 20)
@@ -62,7 +63,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters htpasswd spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -229,6 +230,13 @@ func run(args []string, out, errOut io.Writer) int {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%v\t%s\t%s\t%d\t%v\t%s\n", st.Name, strings.Join(st.Hosts, ","), st.Present, exp, st.Issuer, st.Issued, st.Renewing, st.LastError)
 		}
 		_ = tw.Flush()
+		return 0
+	case "geoip":
+		var b []byte
+		if err := c.Do("GET", "/v1/geoip", nil, &b); err != nil {
+			return fail(err)
+		}
+		_, _ = out.Write(b)
 		return 0
 	case "filters":
 		fv, err := c.Filters()

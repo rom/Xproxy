@@ -25,7 +25,9 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F9 | Mutual TLS to clients and to upstreams | M | 1.0 (client CA at MVP, upstream side delivered in phase 2) | `crypto/tls` client auth modes; certificate identity exposed to routing and logging; upstream client certificate reloadable, SPKI pins |
 | ASR-F10 | JWT validation at the edge | S | 1.0 (delivered in phase 2) | Key set loading from file or JWKS URL with pinned CA; algorithm allow list; no `none` |
 | ASR-F11 | ACME certificate issuance (HTTP-01, TLS-ALPN-01) | S | 1.0 (delivered in phase 3) | Separate account key storage; challenge responder inside the listener; renewals on a timer with reload of `Reloadable` certificates |
-| ASR-F12 | Forward proxy and L4 TCP/TLS passthrough | C | 1.x | Not in the request pipeline; separate listener kinds |
+| ASR-F12 | Forward proxy and L4 TCP/TLS passthrough | C | 1.1 | Not in the request pipeline; separate listener kinds |
+| ASR-F14 | Bot classification from TLS fingerprints, headers and behaviour, with log, challenge and deny actions | S | 1.1 (delivered) | Fingerprints observed in the TLS handshake and carried to the request; classification is a filter so it composes with the challenge and the ban list |
+| ASR-F13 | Country based policy: allow, deny and rate by country | S | 1.1 (delivered) | Country lookup in the admission pipeline from a local database, no network lookups on the request path, no new dependency |
 
 ## 2. Security
 
@@ -111,6 +113,8 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S2 (shedding, challenge) | `internal/shed`, `internal/challenge` | `internal/shed/shed_test.go`, `internal/challenge/challenge_test.go`, `TestAdaptiveShedding`, `TestChallengeGate` |
 | ASR-S9, O2 | `internal/logging`, `internal/mgmt` | `internal/logging/logging_test.go`, `internal/mgmt/mgmt_test.go` |
 | ASR-S11, P4 | `internal/tlsconf` | `internal/tlsconf/tlsconf_test.go`, `TestTLSAndRedirect` |
+| ASR-F14 | `tlsconf.Compute`, `internal/filters/botscore` | `TestFingerprint`, `TestSignals`, `TestBehaviour`, `TestBotScoreOverTLS` |
+| ASR-F13 | `internal/geoip`, `routes[].geo`, rate key `country` | `TestMMDB`, `TestCSVAndDB`, `TestGeoPolicy` |
 | ASR-Q2 | `test/covergate`, `.gremlins.yaml`, `internal/proxy/chaos_test.go` | CI `test` job (`make cover-gate`), CI `mutate` job, `TestChaos*` |
 | ASR-O6 | `internal/filter` registry, `internal/filters` | `TestRegistry`, `TestFilters`, `TestFiltersConfig`, EXTENDING.md |
 | ASR-P1 | `internal/router`, `internal/upstream` health bounds, `internal/proxy` generations | `TestScale` (`make scale`), `BenchmarkMatch1000Hosts`, PERFORMANCE.md |

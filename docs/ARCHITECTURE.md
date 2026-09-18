@@ -60,6 +60,7 @@ internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
 internal/filters    built-in kinds (header_guard, basic_auth) and the registration list
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
+internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
@@ -270,6 +271,17 @@ validation certificate for a pending `tls-alpn-01` challenge; without a
 pending challenge such a handshake is refused rather than answered with a
 real certificate. Listeners with ACME groups add `acme-tls/1` to their
 ALPN list.
+
+### TLS fingerprints
+
+`GetConfigForClient` observes every ClientHello without changing the
+configuration and records the JA3 and JA4 fingerprints
+(`tlsconf.Compute`, GREASE values ignored, JA4 marked `q` on QUIC) in a
+bounded table keyed by remote address; the connection state hook removes
+the entry when the connection closes. The handler passes the fingerprint
+to filters through `Info.JA3`, `Info.JA4` and `Info.ALPN` and logs `ja4`.
+The `bot_score` kind uses it for the fingerprint mismatch signal and the
+allow and deny lists.
 
 ### ACME
 

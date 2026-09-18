@@ -58,6 +58,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `acme` | Managed certificates with expiry, issuer, last error; `acme renew` forces renewal and waits |
 | `icap` | ICAP services with reachability, preview size, ISTag and counters |
 | `filters` | Middleware API version, registered kinds, configured filters with routes and deny counts |
+| `geoip` | Country database kind, path, build date, lookup and unknown counters |
 | `htpasswd FILE NAME` | Add or replace a `basic_auth` user; the password is read from stdin |
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
@@ -450,6 +451,52 @@ own block page, is logged with reason `icap`, and counts towards ban
 triggers. `xproxyctl icap` shows whether each service answered its last
 exchange, the preview size it advertised, and how many exchanges were
 unmodified, modified, replaced, failed or bypassed.
+
+### Country policy (GeoIP)
+
+```yaml
+geoip: {database: /var/lib/xproxy/GeoLite2-Country.mmdb}   # or csv: /etc/xproxy/geo.csv
+rate_limits:
+  - {name: per-country, key: country, rate: 500, burst: 1000}
+routes:
+  - name: shop
+    hosts: [shop.example.com]
+    geo: {allow: [SE, NO, DK, FI], unknown: deny}
+    rate_limits: [per-country]
+    upstream: shop
+  - name: api
+    hosts: [api.example.com]
+    geo: {deny: [KP]}
+    upstream: api
+```
+
+`xproxyctl geoip` shows the database, its build date and lookup
+counters. The database file is owned by root, group `xproxy`, mode
+`0640`, and replaced atomically before `xproxyctl reload`.
+
+### Bot classification
+
+```yaml
+challenge: {secret_file: /var/lib/xproxy/challenge.key}
+filters:
+  - name: bots
+    kind: bot_score
+    options:
+      challenge_at: 50          # scripted clients solve the proof of work first
+      deny_at: 85               # scanners and denied fingerprints are refused
+      header: X-Bot-Score       # let the application decide on the rest
+      ja4_allow: [t13d1516h2_8daaf6152771_b0da82dd1658]   # the monitoring probe
+routes:
+  - name: web
+    hosts: [www.example.com]
+    filters: [bots]
+    upstream: web
+```
+
+Start with `deny_at` and `challenge_at` at 0 and `log_at: 1` for a day:
+the access log then carries `bot_score`, `bot_signals` and `ja4` for
+every request, which gives the fingerprints of your own tools for
+`ja4_allow` and the score distribution for the thresholds.
 
 ### Header policy and basic authentication (filters)
 

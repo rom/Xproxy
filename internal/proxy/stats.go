@@ -40,6 +40,7 @@ type Stats struct {
 	DeniedJWT         atomic.Uint64
 	DeniedICAP        atomic.Uint64
 	DeniedFilter      atomic.Uint64
+	DeniedGeo         atomic.Uint64
 	WAFDetected       atomic.Uint64
 	UpstreamErrors    atomic.Uint64
 	UpstreamTimeouts  atomic.Uint64
@@ -77,6 +78,7 @@ type Snapshot struct {
 	DeniedJWT         uint64    `json:"denied_jwt"`
 	DeniedICAP        uint64    `json:"denied_icap"`
 	DeniedFilter      uint64    `json:"denied_filter"`
+	DeniedGeo         uint64    `json:"denied_geo"`
 	WAFDetected       uint64    `json:"waf_detected"`
 	BansActive        int       `json:"bans_active"`
 	BansTotal         uint64    `json:"bans_total"`
@@ -132,6 +134,7 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedJWT:         s.DeniedJWT.Load(),
 		DeniedICAP:        s.DeniedICAP.Load(),
 		DeniedFilter:      s.DeniedFilter.Load(),
+		DeniedGeo:         s.DeniedGeo.Load(),
 		WAFDetected:       s.WAFDetected.Load(),
 		UpstreamErrors:    s.UpstreamErrors.Load(),
 		UpstreamTimeouts:  s.UpstreamTimeouts.Load(),
