@@ -1014,6 +1014,39 @@ the resolver returns them; there is no preference knob.
 
 ---
 
+## AMR-037: Honeypots mark and count; they never ban by themselves
+
+**Context.** A honeypot route is an attractive place to act
+decisively: the client asked for `/.env`, so ban it. Clients behind a
+shared address, security scanners the operator runs, and crawlers that
+follow a stale link would all be banned by the same rule.
+
+**Decision.** A honeypot hit is recorded three ways and acts in none:
+a security event, a mark on the address for a configured time, and an
+observation of the `honeypot` ban reason. Whether a hit bans is the
+ban trigger's decision, with the same thresholds, windows, exemptions
+and escalation as every other reason. The mark is a label available
+to the access log and to filters (`Info.HoneypotMarked`), so a
+`bot_score` policy or a custom filter can raise the cost for marked
+clients without cutting them off. Decoys are built in with fabricated
+content, or supplied by the operator inline or from a file read when a
+generation is built, so a broken file fails the reload rather than a
+request.
+
+**Alternatives.** Ban on hit (rejected above); a separate honeypot
+service outside the proxy (rejected: the value is in the proxy already
+seeing the request and holding the ban list); dynamic decoys that echo
+request details (rejected: reflection is an injection surface).
+
+**Consequences.** Operators who want an immediate ban write a trigger
+with threshold 1. The mark table is bounded; under a flood of distinct
+addresses new marks are dropped rather than old ones evicted, which is
+the conservative failure.
+
+**Status.** Accepted.
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |

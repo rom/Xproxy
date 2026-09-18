@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestListenerKinds covers the tcp and forward listener kinds: defaults,
@@ -84,6 +85,47 @@ routes:
 		{"forward idle", "    - {name: x, address: \":1\", kind: forward, forward: {idle_timeout: 48h}}\n", "idle_timeout"},
 		{"forward tunnels", "    - {name: x, address: \":1\", kind: forward, forward: {max_tunnels: -1}}\n", "max_tunnels"},
 		{"forward response bytes", "    - {name: x, address: \":1\", kind: forward, forward: {max_response_bytes: -1}}\n", "max_response_bytes"},
+	}
+	for _, tc := range cases {
+		_, err := Parse([]byte(strings.Replace(base, "%s", tc.snippet, 1)))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+// TestRouteActions covers the honeypot action's validation.
+func TestRouteActions(t *testing.T) {
+	base := `
+version: 1
+server:
+  listeners:
+    - {name: main, address: ":8080"}
+upstreams:
+  - name: app
+    endpoints: [{address: 127.0.0.1:9000}]
+routes:
+  - name: r
+    paths: [/x]
+    %s
+`
+	cfg, err := Parse([]byte(strings.Replace(base, "%s", "honeypot: {}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hp := cfg.Routes[0].Honeypot
+	if hp.Decoy != "admin-login" || hp.Status != 200 || hp.Mark.D() != time.Hour || hp.ContentType == "" {
+		t.Fatalf("honeypot defaults: %+v", hp)
+	}
+	cases := []struct{ name, snippet, want string }{
+		{"two actions", "upstream: app\n    honeypot: {decoy: env}", "exactly one of upstream, redirect, respond or honeypot"},
+		{"two sources", "honeypot: {decoy: env, body: x}", "exactly one of decoy, body or body_file"},
+		{"unknown decoy", "honeypot: {decoy: nope}", "unknown decoy"},
+		{"status", "honeypot: {decoy: env, status: 99}", "honeypot.status"},
+		{"relative file", "honeypot: {body_file: rel.html}", "absolute path"},
+		{"delay", "honeypot: {decoy: env, delay: 2m}", "honeypot.delay"},
+		{"mark", "honeypot: {decoy: env, mark: 800h}", "honeypot.mark"},
+		{"content type", "honeypot: {body: x, content_type: \"a\\nb\"}", "content_type"},
 	}
 	for _, tc := range cases {
 		_, err := Parse([]byte(strings.Replace(base, "%s", tc.snippet, 1)))

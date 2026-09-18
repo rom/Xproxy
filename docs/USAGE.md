@@ -515,6 +515,32 @@ internal address or in front of `tls` with client certificates; a
 forward proxy reachable from the Internet without `auth` is an open
 relay.
 
+### Honeypot routes and decoys
+
+```yaml
+routes:
+  - name: wp-probe
+    paths: [/wp-login.php, /xmlrpc.php]
+    honeypot: {decoy: wp-login, delay: 2s}
+    response_headers: {set: {Server: "Apache/2.4.41 (Ubuntu)"}}
+  - name: env-probe
+    paths: [/.env, /.git/config]
+    honeypot: {decoy: env}
+  - name: admin-probe
+    paths: [/admin]
+    honeypot: {body_file: /etc/xproxy/decoys/admin.html, status: 200}
+bans:
+  triggers:
+    - {name: probes, reasons: [honeypot], threshold: 1, window: 10m, duration: 24h}
+```
+
+A scanner that asks for `/.env` receives a plausible file and is banned
+on the spot; the security log records the request with reason
+`honeypot`. Clients that touched a honeypot stay marked for an hour by
+default: their later requests on every route carry
+`honeypot_marked: true` in the access log, and a `bot_score` filter can
+weigh the mark. `xproxyctl honeypot` lists the marks.
+
 ### Response caching
 
 ```yaml

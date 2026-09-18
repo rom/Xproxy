@@ -49,6 +49,8 @@ type reqState struct {
 	ja4      string
 	cache    string // hit, miss or bypass on a cached route
 	cacheKey string
+	marked   bool   // client previously hit a honeypot
+	release  func() // concurrency slot; idempotent
 }
 
 // filterDenied carries a response phase verdict through ReverseProxy's
@@ -91,6 +93,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	release, ok := s.concurrency.Acquire()
+	st.release = release
 	if !ok {
 		s.stats.DeniedConcurrency.Add(1)
 		st.denied = "max_concurrent_requests"
@@ -181,6 +184,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cr := rt.routes[match.Index]
 	st.route = cr.cfg.Name
 	route = cr
+	st.marked = s.marks.marked(st.clientIP, st.start)
 
 	// Country lookup and policy (after the address ACL, which is cheaper).
 	if rt.geo != nil && rt.geoNeeded {
@@ -288,6 +292,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		info := &filter.Info{
 			RequestID: st.id, ClientIP: st.clientIP, Route: cr.cfg.Name,
 			Host: st.host, Path: st.path, Method: r.Method, TLS: r.TLS != nil, Country: st.country,
+			HoneypotMarked: st.marked,
 		}
 		if fp, ok := s.fingerprints.Get(r.RemoteAddr); ok && r.TLS != nil {
 			info.JA3, info.JA4, info.ALPN = fp.JA3, fp.JA4, fp.ALPN
@@ -332,6 +337,8 @@ admitted:
 	case cr.cfg.Redirect != nil:
 		applyHeaderOps(rw.Header(), cr.cfg.ResponseHeaders)
 		http.Redirect(rw, r, cr.cfg.Redirect.To, cr.cfg.Redirect.Status)
+	case cr.cfg.Honeypot != nil:
+		s.honeypot(rw, r, st, cr, release)
 	case cr.cfg.Respond != nil:
 		applyHeaderOps(rw.Header(), cr.cfg.ResponseHeaders)
 		if rw.Header().Get("Content-Type") == "" {
@@ -703,6 +710,9 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	}
 	if st.cache != "" {
 		attrs = append(attrs, "cache", st.cache)
+	}
+	if st.marked {
+		attrs = append(attrs, "honeypot_marked", true)
 	}
 	if st.denied != "" {
 		attrs = append(attrs, "denied", st.denied)

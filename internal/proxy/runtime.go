@@ -99,19 +99,21 @@ type rateLimit struct {
 
 // compiledRoute caches per-route derived data.
 type compiledRoute struct {
-	cfg        *config.Route
-	pool       *upstream.Pool
-	rateLimits []*rateLimit
-	allow      []netip.Prefix
-	deny       []netip.Prefix
-	filters    filter.Chain
-	wafMode    string
-	class      shed.Class
-	challenge  *config.RouteChallenge // nil or mode off means no gate
-	counts     [5]atomic.Uint64       // 2xx, 3xx, 4xx, 5xx, denied
-	geoAllow   map[string]bool
-	geoDeny    map[string]bool
-	geoUnknown string
+	cfg          *config.Route
+	pool         *upstream.Pool
+	honeypotBody []byte
+	honeypotType string
+	rateLimits   []*rateLimit
+	allow        []netip.Prefix
+	deny         []netip.Prefix
+	filters      filter.Chain
+	wafMode      string
+	class        shed.Class
+	challenge    *config.RouteChallenge // nil or mode off means no gate
+	counts       [5]atomic.Uint64       // 2xx, 3xx, 4xx, 5xx, denied
+	geoAllow     map[string]bool
+	geoDeny      map[string]bool
+	geoUnknown   string
 }
 
 // geoAllowed applies the route's country policy.
@@ -277,6 +279,23 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 				for _, cc := range g.Deny {
 					cr.geoDeny[cc] = true
 				}
+			}
+		}
+		if hp := r.Honeypot; hp != nil {
+			cr.honeypotType = hp.ContentType
+			switch {
+			case hp.Decoy != "":
+				d := decoys[hp.Decoy]
+				cr.honeypotBody, cr.honeypotType = []byte(d.body), d.contentType
+			case hp.BodyFile != "":
+				b, err := readBounded(hp.BodyFile, 1<<20)
+				if err != nil {
+					rt.stop()
+					return nil, fmt.Errorf("route %s: honeypot body_file: %w", r.Name, err)
+				}
+				cr.honeypotBody = b
+			default:
+				cr.honeypotBody = []byte(hp.Body)
 			}
 		}
 		if r.Upstream != "" {

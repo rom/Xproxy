@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -84,6 +85,17 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 			defer cancel()
 			return m.Renew(ctx)
 		})(w, r)
+	})
+	mux.HandleFunc("GET /v1/honeypot", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "decoys": proxy.DecoyNames()})
+	})
+	mux.HandleFunc("DELETE /v1/honeypot", func(w http.ResponseWriter, r *http.Request) {
+		ip, err := netip.ParseAddr(r.URL.Query().Get("ip"))
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": "ip: not an address"})
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"removed": s.proxy.UnmarkHoneypot(ip)})
 	})
 	mux.HandleFunc("GET /v1/icap", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.ICAP()) })
 	mux.HandleFunc("GET /v1/cache", func(w http.ResponseWriter, _ *http.Request) {

@@ -41,6 +41,7 @@ type Stats struct {
 	DeniedICAP         atomic.Uint64
 	DeniedFilter       atomic.Uint64
 	DeniedGeo          atomic.Uint64
+	HoneypotHits       atomic.Uint64
 	TCPConnections     atomic.Uint64
 	TCPRejected        atomic.Uint64
 	TCPErrors          atomic.Uint64
@@ -93,6 +94,8 @@ type Snapshot struct {
 	DeniedICAP         uint64    `json:"denied_icap"`
 	DeniedFilter       uint64    `json:"denied_filter"`
 	DeniedGeo          uint64    `json:"denied_geo"`
+	HoneypotHits       uint64    `json:"honeypot_hits"`
+	HoneypotMarked     int       `json:"honeypot_marked"`
 	TCPConnections     uint64    `json:"tcp_connections"`
 	TCPRejected        uint64    `json:"tcp_rejected"`
 	TCPErrors          uint64    `json:"tcp_errors"`
@@ -163,6 +166,7 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedICAP:         s.DeniedICAP.Load(),
 		DeniedFilter:       s.DeniedFilter.Load(),
 		DeniedGeo:          s.DeniedGeo.Load(),
+		HoneypotHits:       s.HoneypotHits.Load(),
 		TCPConnections:     s.TCPConnections.Load(),
 		TCPRejected:        s.TCPRejected.Load(),
 		TCPErrors:          s.TCPErrors.Load(),

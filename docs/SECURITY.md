@@ -206,6 +206,12 @@ to report a vulnerability. The threat analysis behind the controls is in
   security events and ban reasons. Tunnels are bounded and idle closed;
   plain responses are size bounded.
 
+### Honeypots
+
+- Decoy routes never proxy; built-in decoys contain fabricated values
+  only. Hits are security events, marks are bounded and expire, delays
+  use tarpit slots, bans need a trigger.
+
 ### Configuration and process
 
 - Strict YAML: unknown fields, duplicate names, dangling references,
