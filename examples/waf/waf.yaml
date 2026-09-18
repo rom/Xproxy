@@ -1,0 +1,45 @@
+# WAF configuration example: two profiles, detect mode roll-out for the
+# marketing site, block mode with a stricter paranoia level for the API,
+# the exclusion and custom rule files from this directory, learning on.
+#
+# Validate: xproxy -config examples/waf/waf.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+waf:
+  default_mode: detect
+  default_profile: web
+  inspect_responses: true
+  learning: {enabled: true, min_hits: 10}
+  profiles:
+    - name: web
+      crs: {paranoia_level: 1}
+      directive_files:
+        - /etc/xproxy/waf/exclusions.conf
+        - /etc/xproxy/waf/custom-rules.conf
+    - name: api
+      crs: {paranoia_level: 2, inbound_threshold: 5}
+      directive_files:
+        - /etc/xproxy/waf/custom-rules.conf
+    - name: updated
+      # Rules from a directory in the release layout instead of the
+      # embedded copy: a new CRS release applies with a reload.
+      crs: {dir: /etc/xproxy/crs, paranoia_level: 1}
+upstreams:
+  - name: web
+    endpoints: [{address: "10.0.0.10:8080"}]
+  - name: api
+    endpoints: [{address: "10.0.0.20:8080"}]
+routes:
+  - {name: api, hosts: [api.example.com], upstream: api, waf: {mode: block, profile: api}}
+  - {name: uploads, hosts: [www.example.com], paths: [/files/upload], upstream: web, waf: {mode: off}}
+  - {name: web, hosts: [www.example.com], upstream: web}
+bans:
+  action: drop
+  triggers:
+    - {name: waf-repeat, reasons: [waf], threshold: 5, window: 1m, duration: 15m}

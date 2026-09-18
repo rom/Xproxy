@@ -1,0 +1,27 @@
+# DNS listener with a block list file, sinkhole action and DNSSEC
+# validation. Validate: xproxy -config examples/blocklists/dns.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: dns
+      kind: dns
+      address: "0.0.0.0:53"
+      dns:
+        upstreams: ["tls://9.9.9.9:853", "tls://149.112.112.112:853"]
+        allow_clients: [10.0.0.0/8, 192.168.0.0/16, fd00::/8]
+        block:
+          - ads.example.net
+          - "*.tracking.example.org"
+        block_file: /etc/xproxy/dns-blocklist.txt
+        block_action: sinkhole
+        sinkhole_ipv4: 10.255.255.254
+        dnssec: {enabled: true}
+        cache: {max_entries: 50000, max_ttl: 6h}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+bans:
+  action: drop
+  triggers:
+    - {name: dns-abuse, reasons: [dns_blocked, dns_bogus], threshold: 50, window: 1m, duration: 1h}

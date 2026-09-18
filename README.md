@@ -193,6 +193,7 @@ every feature above.
 | [docs/CONFIG.md](docs/CONFIG.md) | Configuration reference, every key with its default |
 | [docs/SETUP.md](docs/SETUP.md) | Installation on Fedora |
 | [docs/SETUP_MACOS.md](docs/SETUP_MACOS.md) | Installation on macOS |
+| [examples/](examples/) | WAF rules, block lists, filters, a WebAssembly module, rewriting and routing examples, all validated by tests |
 | [docs/HARDENING_MACOS.md](docs/HARDENING_MACOS.md) | Host hardening on macOS |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, request path, data flows |
 | [docs/SECURITY.md](docs/SECURITY.md) | Security posture, controls, secure development, reporting |

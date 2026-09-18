@@ -1,0 +1,25 @@
+# Example DNS block list for a kind: dns listener (block_file).
+#
+# One entry per line. Accepted forms:
+#   name              the name and every subdomain
+#   *.suffix          subdomains only, not the name itself
+#   =name             that exact name only
+#   0.0.0.0 name      hosts file lines (the address is ignored)
+#   127.0.0.1 name
+# Comments start with #; blank lines are skipped. At most 2 million
+# entries; the file is re-read at reload and a missing file fails it.
+
+# Telemetry and tracking endpoints.
+telemetry.example-vendor.net
+0.0.0.0 metrics.example-tracker.com
+127.0.0.1 beacon.example-ads.org
+
+# Known malware command and control (illustrative names).
+c2.example-malicious.top
+*.dyn.example-botnet.xyz
+
+# One exact host, but not its subdomains.
+=ads.example-cdn.com
+
+# A whole top level domain seen only in phishing for this organisation.
+*.zip

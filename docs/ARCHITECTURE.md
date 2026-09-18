@@ -856,7 +856,9 @@ table bounded by `max_entries`, with a bounded set of distinct clients
 and the first sample value. `Report` sorts rules by matches and turns
 entries at or above `min_hits` into proposals: a `SecRule REQUEST_URI
 "@beginsWith <path>"` with `ctl:ruleRemoveTargetById` when the route has
-a path prefix, otherwise `SecRuleUpdateTargetById`; ids are allocated
+a path prefix, otherwise an unconditional `SecAction` with the same
+`ctl` (directive files load before the CRS rules, where
+`SecRuleUpdateTargetById` would not find its rule); ids are allocated
 from 10000 upwards in sorted order so a saved file is stable.
 
 ### Ban list

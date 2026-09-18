@@ -1,0 +1,50 @@
+# Rewriting example: path rewrites, redirects and header rewriting.
+# Validate: xproxy -config examples/rewrites/paths.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: http, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: api
+    endpoints: [{address: "10.0.1.10:8080"}]
+  - name: docs
+    endpoints: [{address: "10.0.5.10:8080"}]
+  - name: web
+    endpoints: [{address: "10.0.3.10:8080"}]
+routes:
+  # Strip the public prefix: /api/v1/users -> /v1/users at the upstream.
+  - name: api
+    hosts: [www.example.com]
+    paths: [/api/]
+    rewrite_path: /
+    upstream: api
+  # Mount a documentation site under a sub path of the main host.
+  - name: docs
+    hosts: [www.example.com]
+    paths: [/docs/]
+    rewrite_path: /
+    request_headers:
+      set: {X-Forwarded-Prefix: /docs}
+    upstream: docs
+  # Permanent redirect of a retired path and of the bare domain.
+  - name: old-blog
+    hosts: [www.example.com]
+    paths: [/blog/]
+    redirect: {to: "https://blog.example.com/", status: 301}
+  - name: apex
+    hosts: [example.com]
+    redirect: {to: "https://www.example.com/", status: 308}
+  # Header rewriting on the way in and out.
+  - name: web
+    hosts: [www.example.com]
+    request_headers:
+      set: {X-Forwarded-Host: www.example.com}
+      remove: [Cookie-Debug]
+    response_headers:
+      set: {Cache-Control: "public, max-age=300"}
+      remove: [X-Powered-By, X-AspNet-Version]
+    upstream: web

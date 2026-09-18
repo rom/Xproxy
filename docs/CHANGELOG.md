@@ -162,12 +162,25 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `deploy/macos`; platform defaults under `/usr/local`; management peer
   credentials through `LOCAL_PEERCRED`; debugger denial and core limit
   in process; `make check` type checks the macOS targets.
+- `examples/` directory: WAF exclusions and custom rules, a DNS block
+  list with a sinkhole listener, CIDR and bad bot include fragments,
+  header policy, basic authentication, bot scoring, a WebAssembly
+  policy module with text source and generator, path and body
+  rewriting, advanced routing; every file validated by
+  `go test ./test/examples/`.
+- Documentation syntax test: every `yaml` block in the documentation is
+  checked against the configuration schema on each `make check`.
 - `wasm` filter `engine` option (`auto`, `compiler`, `interpreter`):
   `auto` probes the compiler once and falls back to the interpreter
   where executable memory is refused (`MemoryDenyWriteExecute`, the
   macOS hardened runtime).
 
 ### Fixed (1.3)
+- WAF learning proposals without a route path used
+  `SecRuleUpdateTargetById`, which does not compile in a directive file
+  loaded before the CRS rules; they are now an unconditional `SecAction`
+  with the same `ctl:ruleRemoveTargetById`, and the test compiles both
+  forms into an engine.
 - Ingress merge on a configuration with `includes` expanded the
   fragments a second time, failing the merge on duplicate names.
 - Reloading a dns listener's policy leaked the previous resolver's

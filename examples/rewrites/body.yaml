@@ -1,0 +1,44 @@
+# Rewriting example: request and response body rewriting with the
+# body_rewrite filter (no WebAssembly needed). Bodies are rewritten only
+# for the listed content types and up to max_bytes; larger bodies pass
+# through untouched. Rules run in order; "find" is a literal, "regex" an
+# RE2 pattern with ${1} groups in the replacement.
+# Validate: xproxy -config examples/rewrites/body.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+filters:
+  # Absolute links of the internal host name become public ones, and
+  # the upstream's tracking snippet is removed on the way out.
+  - name: public-links
+    kind: body_rewrite
+    options:
+      response:
+        types: [text/html, application/json, text/css]
+        max_bytes: 2097152
+        rules:
+          - {find: "http://intranet.example.internal:8080", replace: "https://www.example.com"}
+          - {regex: "<script src=\"/vendor/tracker[^\"]*\"></script>\\s*", replace: ""}
+          - {regex: "(?i)(\"internalId\"\\s*:\\s*)\"[0-9]+\"", replace: "${1}\"redacted\"", max: 100}
+  # An old client sends a legacy field name; the API accepts the new one.
+  - name: legacy-fields
+    kind: body_rewrite
+    options:
+      request:
+        types: [application/json]
+        max_bytes: 1048576
+        rules:
+          - {regex: "\"customer_no\"\\s*:", replace: "\"customerNumber\":"}
+upstreams:
+  - name: web
+    endpoints: [{address: "10.0.3.10:8080"}]
+  - name: api
+    endpoints: [{address: "10.0.1.10:8080"}]
+routes:
+  - {name: api, hosts: [api.example.com], filters: [legacy-fields], upstream: api}
+  - {name: web, hosts: [www.example.com], filters: [public-links], upstream: web}

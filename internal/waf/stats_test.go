@@ -147,12 +147,25 @@ func TestLearningProposals(t *testing.T) {
 	if !strings.HasPrefix(found.Directive, want) || !strings.Contains(found.Directive, "ctl:ruleRemoveTargetById=941100;ARGS:q") {
 		t.Fatalf("directive %q", found.Directive)
 	}
-	// Without a path the exclusion is profile wide.
+	// Without a path the exclusion is profile wide, still as a ctl action
+	// so that it compiles in a directive file loaded before the rules.
 	global := st.Proposals(nil)
+	var globalDirs strings.Builder
 	for _, p := range global {
-		if p.Rule == 941100 && p.Target == "ARGS:q" && p.Directive != `SecRuleUpdateTargetById 941100 "!ARGS:q"` {
+		if p.Rule == 941100 && p.Target == "ARGS:q" && !strings.HasPrefix(p.Directive, `SecAction "id:`) {
 			t.Fatalf("global directive %q", p.Directive)
 		}
+		globalDirs.WriteString(p.Directive + "\n")
+	}
+	globalCfg := wafConfig(nil)
+	globalCfg.Profiles[0].Directives = globalDirs.String()
+	eg, err := New(globalCfg, Need{"default": {ModeBlock: true}}, nil, nolog)
+	if err != nil {
+		t.Fatalf("global proposals do not compile: %v\n%s", err, globalDirs.String())
+	}
+	elsewhere := httptest.NewRequest("GET", "http://example.com/other?q=<script>alert(1)</script>", nil)
+	if v := runInfo(t, eg, ModeBlock, elsewhere, info()); v.Deny {
+		t.Fatalf("profile wide exclusion not applied: %+v", v)
 	}
 	// Generated ids are unique.
 	seen := map[string]bool{}

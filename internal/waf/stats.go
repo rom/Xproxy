@@ -346,11 +346,14 @@ const proposalBaseID = 10000
 
 // directive renders one proposal as SecLang. A proposal with a path is
 // scoped to requests under that prefix through a phase 1 ctl action; one
-// without applies to the whole profile.
+// without applies to every request of the profile through an
+// unconditional SecAction. Both forms are ctl actions, evaluated per
+// request, because directive files load before the CRS rules where a
+// SecRuleUpdateTargetById would not find its rule yet.
 func directive(p *Proposal, id int) string {
 	target := quoteTarget(p.Target)
 	if p.Path == "" {
-		return fmt.Sprintf("SecRuleUpdateTargetById %d \"!%s\"", p.Rule, target)
+		return fmt.Sprintf("SecAction \"id:%d,phase:1,pass,t:none,nolog,ctl:ruleRemoveTargetById=%d;%s\"", id, p.Rule, target)
 	}
 	return fmt.Sprintf("SecRule REQUEST_URI \"@beginsWith %s\" \"id:%d,phase:1,pass,t:none,nolog,ctl:ruleRemoveTargetById=%d;%s\"",
 		strings.ReplaceAll(p.Path, "\"", ""), id, p.Rule, target)

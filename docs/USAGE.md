@@ -168,7 +168,9 @@ logs     https://otel.example.internal:4318/v1/logs     93102  0        190     
 # /etc/xproxy/xproxy.yaml
 version: 1
 includes: ["/etc/xproxy/conf.d/*.yaml"]
-server: {listeners: [{name: https, address: ":443", tls: {certificates: [...]}}]}
+server:
+  listeners:
+    - {name: https, address: ":443", tls: {certificates: [{cert_file: /etc/xproxy/certs/site.pem, key_file: /etc/xproxy/certs/site.key}]}}
 ```
 
 ```yaml

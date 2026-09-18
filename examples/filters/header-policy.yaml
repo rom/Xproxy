@@ -1,0 +1,58 @@
+# Filters example: header policy with header_guard, attached per route.
+# Validate: xproxy -config examples/filters/header-policy.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+filters:
+  # API clients must send a version header with a known value and may
+  # not send hop-by-hop or spoofable headers.
+  - name: api-headers
+    kind: header_guard
+    stage: before_auth
+    options:
+      status: 400
+      reason: api_header_policy
+      require:
+        - {header: X-API-Version, pattern: "^(2023-10-01|2024-06-01)$"}
+        - {header: Accept, pattern: "application/json"}
+      deny:
+        - {header: X-Forwarded-User, pattern: "."}
+        - {header: X-Real-IP, pattern: "."}
+  # Browser routes: refuse requests that claim to be from a proxy we do
+  # not run.
+  - name: web-headers
+    kind: header_guard
+    options:
+      deny:
+        - {header: Via, pattern: "."}
+        - {header: X-Original-URL, pattern: "."}
+        - {header: X-Rewrite-URL, pattern: "."}
+upstreams:
+  - name: api
+    endpoints: [{address: "10.0.1.10:8080"}]
+  - name: web
+    endpoints: [{address: "10.0.3.10:8080"}]
+routes:
+  - name: api
+    hosts: [api.example.com]
+    filters: [api-headers]
+    request_headers:
+      set: {X-Request-Source: edge}
+      remove: [X-Debug]
+    upstream: api
+  - name: web
+    hosts: [www.example.com]
+    filters: [web-headers]
+    response_headers:
+      set:
+        Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options: nosniff
+        Referrer-Policy: strict-origin-when-cross-origin
+        Permissions-Policy: "camera=(), microphone=(), geolocation=()"
+      remove: [Server, X-Powered-By]
+    upstream: web
