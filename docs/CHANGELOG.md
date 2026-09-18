@@ -62,6 +62,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   HTTP/2 without TLS and `upstreams[].h2c` speaks it to backends;
   `health_check.type: grpc` probes the standard health service;
   `grpc_status` in the access log and `xproxy_grpc_responses_total`.
+- OpenID Connect login: the `oidc` filter kind runs the authorization
+  code flow with PKCE and a nonce against a discovered provider,
+  verifies the ID token with the JWT verifier, keeps an AES-GCM sealed
+  session cookie, forwards claims as headers, strips the cookie
+  upstream, checks `require_claims`, logs out through the provider.
+  `Verdict.Silent` lets a filter answer flow redirects without
+  security bookkeeping.
 
 ## 1.0.0 - 2026-09-18
 

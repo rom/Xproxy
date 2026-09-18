@@ -32,6 +32,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F16 | Honeypot routes with decoy responses that mark and ban probing clients | C | 1.2 (delivered) | A route action outside the proxy path; a bounded mark table on the server; bans only through triggers |
 | ASR-F17 | Mirror sampled requests to a second upstream without affecting the client | C | 1.2 (delivered) | Copies are asynchronous, bounded and fire-and-forget; bodies are buffered up to a bound so both requests can read them |
 | ASR-F18 | Route gRPC by service and method, answer errors as gRPC statuses, probe the standard health service | S | 1.2 (delivered) | gRPC rank in the router; h2c opt-in on listeners and upstreams; health protocol hand encoded, no protobuf dependency |
+| ASR-F19 | Log browsers in with OpenID Connect and carry the identity to applications as headers | S | 1.2 (delivered) | A filter kind, so it composes with routes and the ban list; stateless sealed cookies, no session store; the JWT verifier is reused for ID tokens |
 
 ## 2. Security
 
@@ -125,6 +126,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F16 | `internal/proxy/honeypot.go`, `routes[].honeypot` | `TestHoneypot`, `TestHoneypotMarks` |
 | ASR-F17 | `internal/proxy/mirror.go`, `routes[].mirror` | `TestMirror`, `TestRouteActions` |
 | ASR-F18 | `internal/proxy/grpc.go`, `internal/upstream/grpchealth.go`, router gRPC rank | `TestGRPC`, `TestGRPCHelpers`, `TestMatchGRPC`, `TestGRPCHealthEncoding`, `TestGRPCConfig` |
+| ASR-F19 | `internal/filters/oidc`, `Verdict.Silent` | `TestOIDC`, `TestParse`, `TestSealOpen` |
 | ASR-Q2 | `test/covergate`, `.gremlins.yaml`, `internal/proxy/chaos_test.go` | CI `test` job (`make cover-gate`), CI `mutate` job, `TestChaos*` |
 | ASR-O6 | `internal/filter` registry, `internal/filters` | `TestRegistry`, `TestFilters`, `TestFiltersConfig`, EXTENDING.md |
 | ASR-P1 | `internal/router`, `internal/upstream` health bounds, `internal/proxy` generations | `TestScale` (`make scale`), `BenchmarkMatch1000Hosts`, PERFORMANCE.md |

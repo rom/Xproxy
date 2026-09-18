@@ -656,7 +656,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `bot_score`, `oidc`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -688,6 +688,48 @@ digest so the hash cost is paid once per client session.
 
 Denies answer 401 with `WWW-Authenticate` and reason `<filter name>`;
 the user name is added to the access log line as `auth_user`.
+
+### Kind `oidc`
+
+Logs browsers in with OpenID Connect (authorization code flow with PKCE
+and a nonce) and keeps the result in an encrypted, HttpOnly, SameSite
+Lax session cookie. A request without a session is redirected to the
+provider; the callback exchanges the code at the token endpoint,
+verifies the ID token against the provider's JWKS (issuer, audience,
+expiry, signature, nonce), checks `require_claims`, sets the cookie and
+redirects to the page first asked for. Requests with a session carry
+the listed claims to the upstream as headers (client supplied values
+of those headers are always removed) and the cookie is stripped
+upstream. Provider metadata comes from
+`issuer/.well-known/openid-configuration`, fetched at load and retried
+on demand; while it is unavailable logins answer 503. Login and logout
+redirects are not security events; failed callbacks are, with reason
+`oidc` and a detail (`state_mismatch`, `nonce`, `id_token`, `exchange`,
+`claim:<name>`), and count towards ban triggers.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `issuer` | URL | required | `https://` (plain `http://` only with `allow_http`, for tests) |
+| `client_id` | string | required | |
+| `client_secret_file` | path | required | Not world readable; sent as `client_secret_basic` (`token_auth: post` sends it in the form) |
+| `cookie_secret_file` | path | required | 32 or more random bytes, created `0600` if absent; sessions survive reloads and restarts while the key stays |
+| `scopes` | list | `[openid]` | Must include `openid` |
+| `redirect_path` | path | `/oauth2/callback` | Registered at the provider as `external_url` + path |
+| `logout_path` | path | `/oauth2/logout` | Clears the session and sends the browser to the provider's end session endpoint (when it has one) with `logout_redirect` as the return, else to `logout_redirect` |
+| `logout_redirect` | path | `/` | |
+| `external_url` | URL | derived | `scheme://host` the browser reaches the proxy on; derived from the request (`Host`, TLS or `X-Forwarded-Proto`) when unset |
+| `cookie_name` | token | `XPOIDC` | The state cookie is `<cookie_name>_state`, ten minutes |
+| `cookie_domain` | string | host only | |
+| `session_ttl` | duration | `8h` | 1m to 720h; the cookie and its payload expire together |
+| `forward_headers` | map | `{}` | Header name to claim (for example `X-Remote-User: sub`) |
+| `require_claims` | map | `{}` | Claim to required value; a login whose ID token differs is refused with 403 |
+| `log_claims` | list | `[]` | Claims copied to the access log as `oidc_<claim>` |
+| `ca_file` | path | system pool | Pins the CA for the provider's endpoints |
+| `token_auth` | `basic`, `post` | `basic` | Client authentication at the token endpoint |
+| `allow_http` | bool | `false` | Permit a plain `http://` issuer and external URL |
+
+The access log carries `oidc_user` for requests with a session and
+`flow: <name>:login`, `login_complete` or `logout` for the redirects.
 
 ### Kind `bot_score`
 

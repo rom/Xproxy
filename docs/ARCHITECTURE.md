@@ -58,7 +58,7 @@ internal/proxy      server, listeners, handler pipeline, transport, stats
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
-internal/filters    built-in kinds (header_guard, basic_auth) and the registration list
+internal/filters    built-in kinds (header_guard, basic_auth, bot_score, oidc) and the registration list
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
@@ -308,6 +308,23 @@ shutdown exceeds its context. Plain requests go through one
 `http.Transport` per listener with the checked dialer, hop-by-hop
 headers removed both ways and the response body bounded. Refusals are
 security events with a `forward_` reason and feed the ban list.
+
+### OpenID Connect login
+
+The `oidc` filter kind (`internal/filters/oidc`) is a state machine
+over three paths. Any other path without a valid session cookie gets a
+302 to the provider's authorization endpoint with a PKCE challenge and
+a nonce; the verifier, nonce and return URL travel in a short lived
+state cookie encrypted with the cookie key, and the `state` parameter
+is a prefix of that cookie plus a digest of it, so the callback can
+bind the two without server side storage. The callback exchanges the
+code, verifies the ID token with a `jwt.Provider` built from the
+discovered JWKS (the same verifier as `routes[].jwt`), checks the
+nonce and required claims, and seals the session (subject, selected
+claims, issue and expiry times) with AES-GCM under a purpose string
+that keeps state and session ciphertexts apart. Redirects are
+`Verdict.Silent` denies: sent as responses without the security
+bookkeeping of a refusal.
 
 ### Honeypots
 

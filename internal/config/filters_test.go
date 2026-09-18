@@ -1,11 +1,29 @@
-package config
+package config_test
 
 import (
 	"strings"
 	"testing"
 
+	"github.com/rom/xproxy/internal/config"
 	_ "github.com/rom/xproxy/internal/filters" // registers the built-in kinds
 )
+
+// minimal mirrors the fixture of the internal tests; this file is an
+// external test package because the built-in kinds import config.
+const minimal = `
+version: 1
+server:
+  listeners:
+    - name: http
+      address: ":8080"
+upstreams:
+  - name: app
+    endpoints:
+      - address: 127.0.0.1:9000
+routes:
+  - name: all
+    upstream: app
+`
 
 const filtersYAML = `
 filters:
@@ -20,11 +38,11 @@ func withFilters(routeFilters string) string {
 }
 
 func TestFiltersConfig(t *testing.T) {
-	cfg, err := Parse([]byte(withFilters("scanners")))
+	cfg, err := config.Parse([]byte(withFilters("scanners")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Filters[0].Stage != StageAfterAuth {
+	if cfg.Filters[0].Stage != config.StageAfterAuth {
 		t.Fatalf("default stage %q", cfg.Filters[0].Stage)
 	}
 	cases := map[string]string{
@@ -37,9 +55,9 @@ func TestFiltersConfig(t *testing.T) {
 		"duplicate name":   withFilters("scanners") + "  - name: scanners\n    kind: header_guard\n    options: {deny: [{header: A, pattern: b}]}\n",
 	}
 	for name, y := range cases {
-		if _, err := Parse([]byte(y)); err == nil {
+		if _, err := config.Parse([]byte(y)); err == nil {
 			t.Errorf("%s: accepted", name)
-		} else if name == "unknown kind" && !strings.Contains(err.Error(), "registered: basic_auth, bot_score, header_guard") {
+		} else if name == "unknown kind" && !strings.Contains(err.Error(), "registered: basic_auth, bot_score, header_guard, oidc") {
 			t.Errorf("%s: error does not list kinds: %v", name, err)
 		}
 	}

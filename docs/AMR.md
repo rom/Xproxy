@@ -1114,6 +1114,42 @@ relays trailers.
 
 ---
 
+## AMR-040: OIDC sessions are sealed cookies, not a session store
+
+**Context.** A login flow needs to remember two things: a login in
+progress (nonce, PKCE verifier, where to return) and a finished login.
+Both could live in a server side table keyed by a cookie, which needs
+bounds, expiry, and sharing across a cluster.
+
+**Decision.** Both live in the browser as AES-GCM sealed cookies under
+a key file the operator owns. The state cookie is bound to the `state`
+parameter by a digest so the callback needs nothing from the server;
+the session cookie carries the subject, the claims the configuration
+forwards or logs, and its own issue and expiry times. Each ciphertext
+carries a purpose string as associated data so a state cookie is never
+accepted as a session. There is no server side session table, so
+nothing to bound or replicate, and every node with the key file
+accepts every session. Revocation before expiry is by rotating the key
+file (a reload) or by a short `session_ttl`; per user revocation is
+not offered. The ID token is verified with the existing JWT provider
+so the two features share one set of algorithms, key handling and
+clock rules.
+
+**Alternatives.** Server side sessions (rejected: state to bound and
+share; the cluster gossip is for counters, not sessions); storing the
+ID token itself in the cookie (rejected: size, and the application
+would receive a bearer credential); front channel logout support
+(deferred: needs an endpoint the provider calls and a session index).
+
+**Consequences.** Cookie size bounds what can be forwarded (4 KiB);
+the filter refuses to seal a larger session. Clock skew between nodes
+does not matter beyond the JWT verifier's allowance. Flow redirects
+are `Verdict.Silent`, which the middleware contract gained for this.
+
+**Status.** Accepted.
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |

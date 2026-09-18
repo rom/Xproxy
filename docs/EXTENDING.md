@@ -170,6 +170,10 @@ Rules for `Validate` and `New`:
   can act on it (`bans.triggers[].categories: [my_filter]`).
 - The reason defaults to the instance name and the status to 403 when
   the verdict leaves them empty.
+- `Verdict.Silent` marks a deny that is a step of a normal flow (a
+  login redirect, a logout): the response is sent, the access log gets
+  `flow: <reason>:<detail>`, and no security event, ban observation or
+  deny counter results. Use it for redirects, never for refusals.
 - `Verdict.Response` is sent as is (status, headers, body) with the
   proxy's own security headers added.
 - Request body limits apply before the chain; a filter that reads the
@@ -198,7 +202,7 @@ Version 1 guarantees:
   `Env`, new optional interfaces a filter may implement (as `Closer`),
   new stages. Version 1 gained `Info.Country`, `Info.JA3`, `Info.JA4`,
   `Info.ALPN`, `Info.ChallengeVerified` and `Verdict.Challenge` in 1.1
-  this way.
+  this way, and `Info.HoneypotMarked` and `Verdict.Silent` in 1.2.
 - Incompatible changes bump `APIVersion`, are recorded in CHANGELOG.md
   and AMR.md, and keep the previous version's semantics for one release.
 

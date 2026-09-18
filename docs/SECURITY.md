@@ -213,6 +213,21 @@ to report a vulnerability. The threat analysis behind the controls is in
 - gRPC health probes and error responses are hand encoded with bounded
   reads; no protobuf library is linked.
 
+### OpenID Connect
+
+- Authorization code flow only, with PKCE (S256) and a nonce; the
+  implicit flow is not supported.
+- Sessions are AES-GCM sealed cookies with an expiry inside the
+  payload, `HttpOnly`, `SameSite=Lax`, `Secure` on TLS; the state
+  cookie is bound to the `state` parameter by digest and lives ten
+  minutes; ciphertexts carry a purpose so one cannot stand in for the
+  other.
+- ID tokens are verified for signature, issuer, audience, expiry and
+  nonce; `require_claims` refuses logins with 403; identity headers
+  from clients are removed before the session's are set.
+- Return URLs are same-origin paths only; the client secret and cookie
+  key files must not be world readable.
+
 ### Honeypots
 
 - Decoy routes never proxy; built-in decoys contain fabricated values

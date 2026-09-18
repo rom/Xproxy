@@ -72,6 +72,7 @@ drive it with `net/http` and raw TCP.
 | `TestForwardProxy` | A `kind: forward` listener as the proxy of an `http.Client`: CONNECT tunnel to an HTTPS origin verified end to end, plain relay with hop-by-hop headers removed and `Via` both ways, refusals for an unlisted port, a denied name, a denied CIDR, an unresolvable name, an origin-form request and (on the default policy) a private address; 407 with `Proxy-Authenticate`, wrong password refused, the right one tunnels, a destination outside the allow list refused with credentials, a rotated users file takes effect on reload and a broken one fails the reload; the tunnel bound answers 503, bytes sent before the 200 reach the origin, idle tunnels close; counters and no tunnel left after shutdown |
 | `TestHoneypot` | Built-in decoy with a spoofed `Server` header, HEAD without body, a body file with a delay, the third hit trips a `honeypot` ban trigger, marks listed with hits and route, unmark, a vanished body file fails the reload |
 | `TestHoneypotMarks` | The mark table: repeat hits, expiry, invalid addresses ignored, the 65536 bound with a sweep, decoy lists in config and proxy agree |
+| `TestOIDC` | Against a fake provider (discovery, authorization, token endpoint checking PKCE and client credentials, JWKS, end session): login lands on the page first asked for with claims forwarded as headers and the cookie stripped upstream, a client supplied identity header is replaced, the session is reused, logout goes through the provider and clears the cookie, a tampered cookie is a fresh login, a forged `state` is 400, a provider error 401, a wrong nonce 401, a required claim mismatch 403, cookie key created `0600` |
 | `TestGRPC` | A hand rolled gRPC backend over h2c behind an `h2c: true` listener: echo with trailers relayed, a trailers-only backend error passed through, an unknown service answered `UNIMPLEMENTED` by the proxy, a plain request on a gRPC path not matching the gRPC route, ordinary routes over h2c, `grpc-timeout` shorter than the route timeout answered `DEADLINE_EXCEEDED`, status counters, a backend reporting `NOT_SERVING` ejected by the grpc health check and restored |
 | `TestGRPCHelpers` | `grpc-timeout` parsing, status mapping, content type detection |
 | `TestMirror` | Copies carry the rewritten path, `host_header`, marker and request id; bodies reach both; a body over the bound is proxied and not mirrored; unlisted methods are not mirrored; a stalled mirror drops the copy beyond `max_in_flight` without delaying the client; a dead mirror counts as failed and is invisible |
@@ -170,6 +171,7 @@ Current numbers from `make cover-gate` (whole suite, race enabled):
 | `internal/filter` | 96 % |
 | `internal/metrics` | 95 % |
 | `internal/netutil` | 95 % |
+| `internal/filters/oidc` | `TestParse`, `TestSealOpen` | Every option rule and default, no key file created by validation; seal and open with purpose binding, tampering and garbage refused, expired sessions refused, cookie stripping keeps other cookies, claim formatting |
 | `internal/filters/headerguard` | 92 % |
 | `internal/challenge` | 90 % |
 | `internal/config` | 89 % |

@@ -404,6 +404,39 @@ by replacing the files and running `xproxyctl reload-certs`; a broken pair
 is rejected and the old one stays in use. Keep two pins during an upstream
 key rotation.
 
+### Browser login with OpenID Connect
+
+```yaml
+filters:
+  - name: sso
+    kind: oidc
+    options:
+      issuer: https://login.example.com
+      client_id: intranet
+      client_secret_file: /etc/xproxy/sso.secret
+      cookie_secret_file: /etc/xproxy/sso.cookie
+      external_url: https://intranet.example.com
+      scopes: [openid, email, profile]
+      forward_headers: {X-Remote-User: sub, X-Remote-Email: email, X-Remote-Name: name}
+      require_claims: {hd: example.com}
+      log_claims: [email]
+      session_ttl: 12h
+routes:
+  - name: intranet
+    hosts: [intranet.example.com]
+    upstream: intranet
+    filters: [sso]
+```
+
+Register `https://intranet.example.com/oauth2/callback` as the redirect
+URI at the provider. The first visit bounces through the provider and
+comes back to the page that was asked for; after that the browser
+carries an encrypted cookie and the application receives the user in
+`X-Remote-User`, never a cookie it could misuse. `/oauth2/logout` ends
+the session at the proxy and at the provider. Put `basic_auth` or JWT
+in front of API paths instead; the OIDC filter is for people with
+browsers.
+
 ### JWT validation
 
 ```yaml

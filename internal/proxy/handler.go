@@ -380,6 +380,21 @@ admitted:
 
 // filterDeny handles a deny verdict from the filter chain.
 func (s *Server) filterDeny(rw *responseWriter, r *http.Request, st *reqState, v filter.Verdict) {
+	if v.Silent {
+		// A flow step, not a refusal: answer without the security bookkeeping.
+		st.extra = append(st.extra, "flow", v.Reason+":"+v.Detail)
+		if !rw.wrote {
+			for k, val := range v.Headers {
+				rw.Header().Set(k, val)
+			}
+			if v.Response != nil {
+				s.writeResponse(rw, r, v.Response)
+			} else {
+				s.plainStatus(rw, r, v.Status)
+			}
+		}
+		return
+	}
 	st.denied = v.Reason
 	if v.Detail != "" {
 		st.denied += ":" + v.Detail
