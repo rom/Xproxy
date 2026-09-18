@@ -479,6 +479,42 @@ The upstream keeps its own certificates and the WAF does not see the
 traffic (it is encrypted end to end); use an `http` listener with TLS
 termination where inspection is wanted.
 
+### Forward proxy for outbound clients (CONNECT)
+
+```yaml
+server:
+  listeners:
+    - name: egress
+      address: "10.0.0.5:3128"
+      kind: forward
+      forward:
+        ports: [80, 443]
+        allow: ["*.example.com", "api.partner.test", "203.0.113.0/24"]
+        deny: ["admin.example.com"]
+        auth: {users_file: /etc/xproxy/egress.htpasswd, realm: egress}
+        max_tunnels: 2000
+bans:
+  triggers:
+    - {name: egress-abuse, reasons: [forward_denied, forward_auth], threshold: 20, window: 1m, duration: 10m}
+```
+
+```sh
+xproxyctl htpasswd /etc/xproxy/egress.htpasswd build-agent   # prompts for the passphrase
+HTTPS_PROXY=http://build-agent:passphrase@10.0.0.5:3128 curl https://api.example.com/
+```
+
+Clients send `CONNECT api.example.com:443` and the proxy tunnels the
+bytes after the destination passed the policy: the port is listed, the
+resolved address is public (private ranges are refused unless
+`allow_private: true`), it is not denied and it matches the allow list.
+Plain `http://` URLs are relayed as requests with hop-by-hop headers
+removed. Every request is one `forward` line in the access log with the
+user and destination; refusals are security events and, with the
+trigger above, ban a client that keeps probing. Keep the listener on an
+internal address or in front of `tls` with client certificates; a
+forward proxy reachable from the Internet without `auth` is an open
+relay.
+
 ### Response caching
 
 ```yaml

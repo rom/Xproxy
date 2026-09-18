@@ -972,6 +972,48 @@ an `https` scheme pool for checks to work.
 
 ---
 
+## AMR-036: Forward proxy with a resolve-then-dial destination policy
+
+**Context.** ASR-F12 asks for a forward proxy with CONNECT. A forward
+proxy is the opposite trust shape of everything else in Xproxy: the
+client names the destination, so the risks are being an open relay and
+being a hop into the operator's own network (SSRF against link-local
+metadata services, loopback management ports, RFC 1918 hosts).
+
+**Decision.** The forward proxy is a listener kind with its own handler
+outside the request pipeline (routes, WAF, filters and cache do not
+apply; a tunnel is opaque). Destinations pass a policy before any
+connection: port allow list (default 80 and 443), private ranges
+refused unless `allow_private`, deny then allow by name, address or
+CIDR checked against the name and every resolved address, and the
+approved addresses are what the dialer connects to, so a DNS answer
+that changes between check and dial cannot redirect the connection.
+Credentials are Basic against the same users file format as
+`basic_auth`, with a digest cache so the PBKDF2 cost is paid once per
+session, and the file is re-read on reload. Refusals and credential
+failures are security events and ban reasons so the existing triggers
+cover probing. Tunnels are bounded per listener with an idle deadline
+and are force closed when shutdown exceeds its context. Plain requests
+use one transport per listener with the checked dialer and a bounded
+response body.
+
+**Alternatives.** Resolving inside the dialer only (rejected: the
+policy would see the name and not the addresses); checking the name and
+dialling the name (rejected: rebinding); refusing plain `http://`
+requests and supporting CONNECT only (rejected: clients and tooling
+send both and the relay is small); HTTP/2 CONNECT (deferred: h1 only
+keeps hijack semantics simple and every client speaks it to a proxy).
+
+**Consequences.** No inspection or caching of tunnelled traffic; the
+security log records destinations, not content. A forward listener
+without `auth` on a reachable address is an open relay, which the
+documentation says in as many words. IPv6 destinations are dialled when
+the resolver returns them; there is no preference knob.
+
+**Status.** Accepted.
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |

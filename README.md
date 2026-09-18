@@ -52,6 +52,8 @@ for how a release is cut). Phases 1 and 2 are complete. See
   requests
 - Layer 4 TLS passthrough by server name with PROXY protocol to the
   upstream
+- Forward proxy mode with CONNECT, a destination policy that refuses
+  private ranges by default, and proxy credentials
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
   status, upstreams, reload, certificate reload, log reopen, tail, bans,
   cluster, metrics, sampled series, and a full-screen TUI

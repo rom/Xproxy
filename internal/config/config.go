@@ -145,11 +145,58 @@ type Listener struct {
 	RedirectToHTTPS bool `yaml:"redirect_to_https"`
 	// H3 tunes HTTP/3 when the protocols include h3.
 	H3 *H3 `yaml:"h3"`
-	// Kind is http (default) or tcp: an L4 listener that forwards
-	// connections by TLS server name without terminating TLS.
+	// Kind is http (default), tcp (an L4 listener that forwards
+	// connections by TLS server name without terminating TLS) or forward
+	// (an explicit HTTP proxy for clients: CONNECT tunnels and absolute
+	// URI requests to destinations the policy allows).
 	Kind string `yaml:"kind"`
 	// TCP configures a kind: tcp listener.
 	TCP *TCPListener `yaml:"tcp"`
+	// Forward configures a kind: forward listener.
+	Forward *ForwardListener `yaml:"forward"`
+}
+
+// ForwardListener is an explicit forward proxy: clients send CONNECT
+// host:port for tunnels (TLS stays end to end) or absolute http:// URIs
+// for plain requests. Destinations are policy checked by name, resolved
+// address and port; private and loopback addresses are refused unless
+// allow_private is set, and the checked address is the one dialled.
+type ForwardListener struct {
+	// Ports destinations may be reached on (CONNECT and plain). Default
+	// [80, 443].
+	Ports []int `yaml:"ports"`
+	// Allow restricts destinations to these names (exact or *.suffix),
+	// addresses or CIDRs. Empty allows any destination not denied.
+	Allow []string `yaml:"allow"`
+	// Deny refuses destinations matching these names, addresses or
+	// CIDRs. Deny wins over allow and is checked against the resolved
+	// addresses too.
+	Deny []string `yaml:"deny"`
+	// AllowPrivate permits loopback, link local, private and unique
+	// local destination addresses. Default false.
+	AllowPrivate bool `yaml:"allow_private"`
+	// Auth requires Proxy-Authorization Basic credentials.
+	Auth *ForwardAuth `yaml:"auth"`
+	// ConnectTimeout bounds the dial to the destination. Default 10s.
+	ConnectTimeout Duration `yaml:"connect_timeout"`
+	// IdleTimeout closes a tunnel with no bytes in either direction.
+	// Default 10m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// MaxTunnels bounds open CONNECT tunnels on this listener. Default
+	// 10000.
+	MaxTunnels int `yaml:"max_tunnels"`
+	// MaxResponseBytes bounds the body of a plain (non CONNECT) response
+	// relayed to the client. Default 64 MiB; 0 disables.
+	MaxResponseBytes int64 `yaml:"max_response_bytes"`
+}
+
+// ForwardAuth is the credential source of a forward listener.
+type ForwardAuth struct {
+	// UsersFile holds name:hash lines from xproxyctl htpasswd. Re-read on
+	// reload.
+	UsersFile string `yaml:"users_file"`
+	// Realm is sent in Proxy-Authenticate. Default "proxy".
+	Realm string `yaml:"realm"`
 }
 
 // TCPListener routes raw connections to upstream pools. TLS connections

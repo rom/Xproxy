@@ -92,14 +92,31 @@ func applyDefaults(c *Config) {
 			setDur(&t.IdleTimeout, 10*time.Minute)
 			setInt(&t.MaxConnections, 10000)
 		}
+		if f := s.Listeners[i].Forward; f != nil {
+			if len(f.Ports) == 0 {
+				f.Ports = []int{80, 443}
+			}
+			setDur(&f.ConnectTimeout, 10*time.Second)
+			setDur(&f.IdleTimeout, 10*time.Minute)
+			setInt(&f.MaxTunnels, 10000)
+			if f.MaxResponseBytes == 0 {
+				f.MaxResponseBytes = 64 << 20
+			}
+			if f.Auth != nil {
+				setStr(&f.Auth.Realm, "proxy")
+			}
+		}
 		ln := &s.Listeners[i]
 		if ln.Kind == "tcp" {
 			continue // no HTTP protocol or TLS defaults on a passthrough listener
 		}
 		if len(ln.Protocols) == 0 {
-			if ln.TLS != nil {
+			switch {
+			case ln.Kind == "forward":
+				ln.Protocols = []Protocol{ProtocolH1}
+			case ln.TLS != nil:
 				ln.Protocols = []Protocol{ProtocolH1, ProtocolH2}
-			} else {
+			default:
 				ln.Protocols = []Protocol{ProtocolH1}
 			}
 		}

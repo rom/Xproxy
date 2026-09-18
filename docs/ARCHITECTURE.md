@@ -63,6 +63,7 @@ internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/proxy/tcp.go  kind: tcp listeners (SNI routing, PROXY v2, splice)
+internal/proxy/forward.go  kind: forward listeners (CONNECT tunnels, plain relay, destination policy)
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
@@ -286,6 +287,27 @@ header, replays the peeked bytes and splices both directions with an
 idle deadline and half-close. Connections are accounted on the pool like
 requests so ejection and health apply. The listener has its own
 connection bound and is drained on shutdown like the HTTP servers.
+
+### Forward proxy
+
+A `kind: forward` listener (`internal/proxy/forward.go`) is an
+`http.Server` on the same accept limiter whose handler is the forward
+server instead of the request pipeline. The policy (ports, allow and
+deny rules compiled to name matchers and prefixes, users) is an
+immutable value swapped on reload. A request is authenticated first
+(`Proxy-Authorization` Basic against the users file, verified
+credentials cached by digest, at most four verifications at once), then
+the destination is checked: port listed, name resolved with the connect
+timeout, resolved addresses not private, deny then allow. The approved
+addresses travel in the request context to the dialer, which connects
+to them rather than to the name. CONNECT hijacks the client connection,
+writes `200 Connection Established`, forwards any bytes the client sent
+early and splices with the same idle deadline and half-close as the tcp
+listener; tunnels are counted per listener and force closed when a
+shutdown exceeds its context. Plain requests go through one
+`http.Transport` per listener with the checked dialer, hop-by-hop
+headers removed both ways and the response body bounded. Refusals are
+security events with a `forward_` reason and feed the ban list.
 
 ### Response cache
 

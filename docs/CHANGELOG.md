@@ -33,6 +33,16 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   upstream, idle timeout, per listener connection bound, pool accounting
   and retries across endpoints, a `tcp` access log line per connection
   and `xproxy_tcp_*` metrics.
+- Forward proxy: `kind: forward` listeners accept `CONNECT` tunnels and
+  absolute `http://` requests from clients, with a destination policy
+  (ports, allow and deny by name, address or CIDR, private ranges
+  refused by default, the checked address dialled), optional
+  `Proxy-Authorization` Basic credentials from a users file re-read on
+  reload, tunnel bound, idle timeout, response size bound, `Via`, a
+  `forward` access log line per request, `forward_*` security events
+  and ban reasons, `xproxy_forward_*` metrics.
+- Ban triggers accept the reasons `geo`, `tcp_no_route`,
+  `forward_denied` and `forward_auth`.
 
 ## 1.0.0 - 2026-09-18
 

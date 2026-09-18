@@ -193,6 +193,19 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Affinity cookies are HMAC signed indexes with expiry, `HttpOnly`,
   `SameSite=Lax`, `Secure` on TLS.
 
+### Layer 4 and forward listeners
+
+- `kind: tcp` listeners reach only configured upstream endpoints; the
+  ClientHello parser checks every length and reads at most 16 KiB.
+- `kind: forward` listeners check every destination before connecting:
+  listed ports only, private and loopback ranges refused unless
+  `allow_private`, deny and allow by name and by every resolved address,
+  and the checked address is the one dialled. Proxy credentials are
+  PBKDF2 hashes from `xproxyctl htpasswd`, verified with a bounded
+  worker count and a digest cache. Refusals and credential failures are
+  security events and ban reasons. Tunnels are bounded and idle closed;
+  plain responses are size bounded.
+
 ### Configuration and process
 
 - Strict YAML: unknown fields, duplicate names, dangling references,

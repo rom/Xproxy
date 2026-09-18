@@ -15,7 +15,6 @@
 package basicauth
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -73,33 +72,6 @@ func parse(opts filter.Options) (*Config, error) {
 		errs = append(errs, fmt.Errorf("forward_user_header: %q is not a header name", h))
 	}
 	return &c, errors.Join(errs...)
-}
-
-func loadUsers(path string) (map[string]string, error) {
-	f, err := os.Open(path) //nolint:gosec // operator supplied path, validated at load
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	users := map[string]string{}
-	sc := bufio.NewScanner(f)
-	line := 0
-	for sc.Scan() {
-		line++
-		t := strings.TrimSpace(sc.Text())
-		if t == "" || strings.HasPrefix(t, "#") {
-			continue
-		}
-		name, hash, ok := strings.Cut(t, ":")
-		if !ok || name == "" || !passwd.IsHash(hash) {
-			return nil, fmt.Errorf("%s:%d: expected name:pbkdf2 hash (use xproxyctl htpasswd)", path, line)
-		}
-		users[name] = hash
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	return users, nil
 }
 
 type auth struct {
@@ -201,7 +173,7 @@ func init() {
 			if err != nil {
 				return err
 			}
-			_, err = loadUsers(c.UsersFile)
+			_, err = passwd.LoadUsers(c.UsersFile)
 			return err
 		},
 		New: func(name string, opts filter.Options, env filter.Env) (filter.Filter, error) {
@@ -209,7 +181,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			users, err := loadUsers(c.UsersFile)
+			users, err := passwd.LoadUsers(c.UsersFile)
 			if err != nil {
 				return nil, err
 			}

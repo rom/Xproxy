@@ -176,11 +176,11 @@ procedure is in RELEASING.md.
   `routes[].cache`, AMR-034)
 - L4 TCP and TLS passthrough with SNI routing: delivered (`kind: tcp`
   listeners, AMR-035)
-- Forward proxy mode with CONNECT and authentication (ASR-F12)
+- Forward proxy mode with CONNECT and authentication: delivered
+  (`kind: forward` listeners, AMR-036)
 
 ## After 1.1 (candidates, unranked)
 
-- Forward proxy mode with CONNECT and authentication (ASR-F12)
 - WebAssembly extension ABI (AMR-013)
 - OIDC login flows with session cookies
 - Honeypot routes and decoy responses

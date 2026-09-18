@@ -70,7 +70,8 @@ type boundListener struct {
 	tlsReload *tlsconf.Reloadable
 	activated bool
 	h3        *h3.Server
-	tcp       *tcpServer // kind: tcp listeners
+	tcp       *tcpServer     // kind: tcp listeners
+	forward   *forwardServer // kind: forward listeners
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -348,8 +349,18 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		return bl, nil
 	}
 	h := &listenerHandler{srv: s, ln: &bl.cfg}
+	var handler http.Handler = h
+	if lc.Kind == "forward" {
+		fw, err := newForwardServer(s, lc)
+		if err != nil {
+			_ = ln.Close()
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		bl.forward = fw
+		handler = fw
+	}
 	bl.httpSrv = &http.Server{
-		Handler:           h,
+		Handler:           handler,
 		ReadHeaderTimeout: lim.ReadHeaderTimeout.D(),
 		ReadTimeout:       lim.ReadTimeout.D(),
 		WriteTimeout:      lim.WriteTimeout.D(),
@@ -504,6 +515,18 @@ func (s *Server) Reload(cfg *config.Config) error {
 	// reload as a whole.
 	s.mu.Lock()
 	for _, bl := range s.listeners {
+		if bl.forward != nil {
+			for i := range cfg.Server.Listeners {
+				if cfg.Server.Listeners[i].Name == bl.cfg.Name {
+					if err := bl.forward.apply(cfg.Server.Listeners[i].Forward); err != nil {
+						s.mu.Unlock()
+						rt.stop()
+						s.stats.ReloadFailures.Add(1)
+						return fmt.Errorf("listener %s: %w", bl.cfg.Name, err)
+					}
+				}
+			}
+		}
 		if bl.tlsReload == nil {
 			continue
 		}
@@ -655,6 +678,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 				return
 			}
 			err := bl.httpSrv.Shutdown(ctx)
+			if bl.forward != nil {
+				bl.forward.shutdown(ctx)
+			}
 			if bl.h3 != nil {
 				if err3 := bl.h3.Shutdown(ctx); err == nil {
 					err = err3

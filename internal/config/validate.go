@@ -316,17 +316,29 @@ func (v *validator) server(s *Server) {
 			if ln.TCP != nil {
 				v.errf("%s.tcp: set on an http listener (kind: tcp)", p)
 			}
+			if ln.Forward != nil {
+				v.errf("%s.forward: set on an http listener (kind: forward)", p)
+			}
 		case "tcp":
-			if ln.TLS != nil || len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS {
-				v.errf("%s: a tcp listener takes no tls, protocols, h3 or redirect_to_https", p)
+			if ln.TLS != nil || len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.Forward != nil {
+				v.errf("%s: a tcp listener takes no tls, protocols, h3, redirect_to_https or forward", p)
 			}
 			if ln.TCP == nil {
 				v.errf("%s.tcp: required for kind tcp", p)
 			} else {
 				v.tcpListener(p+".tcp", ln.TCP)
 			}
+		case "forward":
+			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || hasProtocol(ln.Protocols, ProtocolH2) {
+				v.errf("%s: a forward listener takes no tcp or redirect_to_https and speaks h1 only", p)
+			}
+			if ln.Forward == nil {
+				v.errf("%s.forward: required for kind forward", p)
+			} else {
+				v.forwardListener(p+".forward", ln.Forward)
+			}
 		default:
-			v.errf("%s.kind: must be http or tcp", p)
+			v.errf("%s.kind: must be http, tcp or forward", p)
 		}
 		if ln.TLS == nil {
 			for _, proto := range ln.Protocols {
@@ -863,6 +875,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
+	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true,
 }
 
 func (v *validator) bans(b *Bans) {
@@ -1096,6 +1109,70 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	}
 	if t.MaxConnections < 1 {
 		v.errf("%s.max_connections: must be positive", p)
+	}
+}
+
+func hasProtocol(ps []Protocol, p Protocol) bool {
+	for _, x := range ps {
+		if x == p {
+			return true
+		}
+	}
+	return false
+}
+
+// destinationPatternOK accepts a host name, *.suffix pattern, IP address
+// or CIDR for forward proxy allow and deny lists.
+func destinationPatternOK(d string) bool {
+	if _, err := netip.ParsePrefix(d); err == nil {
+		return true
+	}
+	if _, err := netip.ParseAddr(d); err == nil {
+		return true
+	}
+	return hostPatternOK(d)
+}
+
+func (v *validator) forwardListener(p string, f *ForwardListener) {
+	seen := map[int]bool{}
+	for _, port := range f.Ports {
+		if port < 1 || port > 65535 {
+			v.errf("%s.ports: %d is not a port", p, port)
+		}
+		if seen[port] {
+			v.errf("%s.ports: %d listed twice", p, port)
+		}
+		seen[port] = true
+	}
+	for _, d := range f.Allow {
+		if !destinationPatternOK(d) {
+			v.errf("%s.allow: %q is not a name, *.suffix, address or CIDR", p, d)
+		}
+	}
+	for _, d := range f.Deny {
+		if !destinationPatternOK(d) {
+			v.errf("%s.deny: %q is not a name, *.suffix, address or CIDR", p, d)
+		}
+	}
+	if f.Auth != nil {
+		if f.Auth.UsersFile == "" {
+			v.errf("%s.auth.users_file: required", p)
+		}
+		if strings.ContainsAny(f.Auth.Realm, "\"\r\n") {
+			v.errf("%s.auth.realm: must not contain quotes or line breaks", p)
+		}
+	}
+	if f.ConnectTimeout <= 0 || f.ConnectTimeout > Duration(5*time.Minute) {
+		v.errf("%s.connect_timeout: must be positive and at most 5m", p)
+	}
+	if f.IdleTimeout <= 0 || f.IdleTimeout > Duration(24*time.Hour) {
+		v.errf("%s.idle_timeout: must be positive and at most 24h", p)
+	}
+	if f.MaxTunnels < 1 {
+		v.errf("%s.max_tunnels: must be positive", p)
+	}
+	if f.MaxResponseBytes < 0 {
+		v.errf("%s.max_response_bytes: must not be negative", p)
 	}
 }
 

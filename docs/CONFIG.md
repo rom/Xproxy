@@ -40,7 +40,7 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Reserved (PROXY protocol parsing arrives in 1.0) |
-| `kind` | `http`, `tcp` | `http` | `tcp` is a layer 4 listener, see below |
+| `kind` | `http`, `tcp`, `forward` | `http` | `tcp` is a layer 4 listener and `forward` an explicit proxy for clients; see below |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 
 ### server.listeners[].tcp (kind: tcp)
@@ -69,6 +69,48 @@ connection writes one `tcp` line to the access log with the name,
 upstream, endpoint, bytes and duration. Counters: `tcp_connections`,
 `tcp_rejected`, `tcp_errors`, `tcp_bytes_in`, `tcp_bytes_out`;
 `xproxy_tcp_*` metrics. Changing a tcp listener needs a restart.
+
+### server.listeners[].forward (kind: forward)
+
+A `kind: forward` listener is an explicit proxy that clients configure
+in their browser or `HTTPS_PROXY`. `CONNECT host:port` opens a tunnel
+(TLS stays end to end between the client and the destination; nothing
+is inspected) and absolute `http://` request lines are relayed with
+hop-by-hop headers removed and `Via: 1.1 xproxy` added. Requests that
+are neither (an ordinary origin-form request, an `https://` URI) get
+400. Every destination passes the policy below before a connection is
+made: the port must be listed, the name is resolved, the resolved
+addresses must not be private unless `allow_private` is set, `deny`
+wins, and a non-empty `allow` must match. The address that passed the
+check is the one dialled, so a name cannot rebind between check and
+connect. Refusals answer 403, are logged as security events
+(`forward_port`, `forward_private`, `forward_deny`, `forward_not_allowed`,
+`forward_resolve`) and count towards the `forward_denied` ban reason.
+A forward listener may terminate TLS from the client (`tls`) and speaks
+HTTP/1.1 only; it takes no `tcp` or `redirect_to_https`. Bans, the
+connection limits and the header timeouts apply as on every listener.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ports` | list of int | `[80, 443]` | Destination ports clients may reach, for CONNECT and plain requests alike |
+| `allow` | list | `[]` (any) | Destination names (exact or `*.suffix`), addresses or CIDRs; when set, a destination must match by name or by a resolved address |
+| `deny` | list | `[]` | Same forms; a match by name or by any resolved address refuses the request, before `allow` |
+| `allow_private` | bool | `false` | Permit loopback, link local, RFC 1918, CGNAT, unique local, multicast and unspecified destination addresses (the SSRF guard) |
+| `auth` | object | none | Require `Proxy-Authorization: Basic` credentials; without it the listener is open to every client the bans and limits admit |
+| `auth.users_file` | path | required | `name:hash` lines from `xproxyctl htpasswd`; re-read on reload and a bad file fails the reload; verified credentials are cached for five minutes and the cache is dropped on reload |
+| `auth.realm` | string | `proxy` | Sent in `Proxy-Authenticate` with 407 |
+| `connect_timeout` | duration | `10s` | Name resolution and dial bound per destination; at most 5m |
+| `idle_timeout` | duration | `10m` | Close a tunnel after no bytes in either direction; at most 24h |
+| `max_tunnels` | int | `10000` | Open CONNECT tunnels on this listener; over it CONNECT answers 503 |
+| `max_response_bytes` | int | `67108864` | Largest plain response body relayed; a larger one is cut off and the connection closed; 0 disables |
+
+Each request writes one `forward` line to the access log with the
+client address, user, method, destination, status, bytes and duration.
+Counters: `forward_requests`, `forward_tunnels`, `forward_tunnels_open`,
+`forward_denied`, `forward_auth_failed`, `forward_rejected`,
+`forward_errors`, `forward_bytes_in`, `forward_bytes_out`;
+`xproxy_forward_*` metrics. The policy and the users file reload; the
+address and TLS settings need a restart like every listener.
 
 ### server.listeners[].h3
 
@@ -352,7 +394,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
