@@ -170,6 +170,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `go test ./test/examples/`.
 - Documentation syntax test: every `yaml` block in the documentation is
   checked against the configuration schema on each `make check`.
+- Tests: `xproxyctl` exercised end to end against a management server
+  (every command), fuzz targets for the PROXY protocol header, access
+  log templates, DNS messages, trust anchors and the configuration
+  differ, benchmarks for the WAF, DNS parsing and PROXY parsing, a
+  golden test of the example configuration's dump.
 - `wasm` filter `engine` option (`auto`, `compiler`, `interpreter`):
   `auto` probes the compiler once and falls back to the interpreter
   where executable memory is refused (`MemoryDenyWriteExecute`, the

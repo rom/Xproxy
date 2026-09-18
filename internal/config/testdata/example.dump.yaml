@@ -1,0 +1,720 @@
+version: 1
+includes: []
+server:
+    listeners:
+        - name: public-http
+          address: :80
+          protocols:
+            - h1
+          tls: null
+          proxy_protocol: false
+          redirect_to_https: true
+          h3: null
+          h2c: false
+          kind: http
+          tcp: null
+          forward: null
+          dns: null
+        - name: public
+          address: :443
+          protocols:
+            - h1
+            - h2
+            - h3
+          tls:
+            certificates:
+                - cert_file: /etc/xproxy/certs/example.com.pem
+                  key_file: /etc/xproxy/certs/example.com-key.pem
+            min_version: "1.2"
+            client_auth: none
+            client_ca_file: ""
+            cipher_suites: []
+            acme:
+                - hosts:
+                    - shop.example.com
+                    - www.shop.example.com
+            ocsp_stapling: null
+            ct: null
+          proxy_protocol: false
+          redirect_to_https: false
+          h3:
+            max_streams: 100
+            validate_addresses: always
+            alt_svc_max_age: 24h0m0s
+          h2c: false
+          kind: http
+          tcp: null
+          forward: null
+          dns: null
+    limits:
+        max_header_bytes: 65536
+        max_body_bytes: 10485760
+        max_uri_length: 8192
+        read_header_timeout: 10s
+        read_timeout: 1m0s
+        write_timeout: 1m0s
+        idle_timeout: 2m0s
+        max_connections: 65536
+        max_connections_per_ip: 256
+        max_concurrent_requests: 16384
+        max_tarpits: 1024
+    server_header: ""
+    shutdown_timeout: 30s
+management:
+    socket: /run/xproxy/mgmt.sock
+    socket_mode: "0660"
+    history_dir: ""
+    history_keep: 20
+logging:
+    directory: /var/log/xproxy
+    access:
+        enabled: null
+        file: access.log
+        max_size_mb: 512
+        max_files: 10
+        sinks:
+            - file
+        format: json
+        template: ""
+    error:
+        enabled: null
+        file: error.log
+        max_size_mb: 64
+        max_files: 5
+        sinks:
+            - file
+            - journald
+        format: json
+        template: ""
+    security:
+        enabled: null
+        file: security.log
+        max_size_mb: 256
+        max_files: 10
+        sinks:
+            - file
+            - journald
+            - syslog
+        format: json
+        template: ""
+    audit:
+        enabled: null
+        file: audit.log
+        max_size_mb: 64
+        max_files: 20
+        sinks:
+            - file
+            - syslog
+        format: json
+        template: ""
+    level: info
+    stdout: false
+    journald:
+        socket: /run/systemd/journal/socket
+        identifier: xproxy
+    syslog:
+        network: tcp+tls
+        address: logs.example.internal:6514
+        format: rfc5424
+        facility: local3
+        app_name: xproxy
+        hostname: ""
+        ca_file: /etc/xproxy/certs/logs-ca.pem
+        cert_file: ""
+        key_file: ""
+        server_name: logs.example.internal
+        queue_size: 8192
+    redaction:
+        enabled: null
+        streams:
+            - access
+            - security
+            - error
+        client_ip: hash
+        hash_secret_file: /var/lib/xproxy/redaction.key
+        user_agent: keep
+        referer: origin
+        claims: hash
+        drop_fields: []
+    otlp: null
+trusted_proxies: []
+rate_limits:
+    - name: per-ip
+      key: client_ip
+      rate: 50
+      burst: 100
+      action: reject
+      tarpit_delay: 10s
+    - name: login
+      key: client_ip
+      rate: 0.2
+      burst: 5
+      action: tarpit
+      tarpit_delay: 10s
+upstreams:
+    - name: web
+      balancer: least_conn
+      endpoints:
+        - address: 10.0.1.10:8080
+          weight: 1
+          canary: false
+        - address: 10.0.1.11:8080
+          weight: 1
+          canary: false
+      scheme: http
+      h2c: false
+      tls: null
+      health_check:
+        type: http
+        grpc_service: ""
+        path: /healthz
+        interval: 5s
+        timeout: 2s
+        healthy_threshold: 2
+        unhealthy_threshold: 3
+        expected_status:
+            - 200
+        max_concurrent: 32
+        keep_alive: false
+      timeouts:
+        connect: 5s
+        response_header: 30s
+        idle: 1m30s
+        total: 5m0s
+      max_idle_conns_per_host: 64
+      retries: 1
+      retry_on: []
+      hash_on: ""
+      affinity:
+        cookie_name: XPSESS
+        ttl: 1h0m0s
+        secret_file: /var/lib/xproxy/affinity.key
+      outlier_ejection:
+        consecutive_failures: 5
+        base_ejection_time: 30s
+        max_ejection_percent: 50
+      circuit_breaker: null
+      max_concurrent: 0
+      queue: null
+      canary: null
+    - name: api
+      balancer: hash
+      endpoints:
+        - address: 10.0.2.10:8443
+          weight: 1
+          canary: false
+        - address: 10.0.2.11:8443
+          weight: 1
+          canary: false
+      scheme: https
+      h2c: false
+      tls:
+        server_name: api.internal
+        ca_file: /etc/xproxy/certs/internal-ca.pem
+        min_version: "1.3"
+        client_cert_file: /etc/xproxy/certs/edge.pem
+        client_key_file: /etc/xproxy/certs/edge-key.pem
+        spki_pins: []
+        insecure_skip_verify: false
+        allow_insecure: false
+      health_check: null
+      timeouts:
+        connect: 5s
+        response_header: 30s
+        idle: 1m30s
+        total: 5m0s
+      max_idle_conns_per_host: 64
+      retries: 1
+      retry_on: []
+      hash_on: header:X-Tenant
+      affinity: null
+      outlier_ejection: null
+      circuit_breaker: null
+      max_concurrent: 0
+      queue: null
+      canary: null
+routes:
+    - name: login
+      hosts:
+        - example.com
+        - www.example.com
+      paths:
+        - /login
+      path_regex: []
+      methods:
+        - POST
+      headers: []
+      cookies: []
+      tenant: ""
+      priority: 0
+      upstream: web
+      redirect: null
+      respond: null
+      honeypot: null
+      strip_prefix: ""
+      rewrite_path: ""
+      host_header: ""
+      request_headers:
+        set: {}
+        add: {}
+        remove: []
+      response_headers:
+        set: {}
+        add: {}
+        remove: []
+      rate_limits:
+        - login
+        - per-ip
+      allow_cidrs: []
+      deny_cidrs: []
+      max_body_bytes: 16384
+      timeout: 0s
+      websocket: false
+      waf: null
+      priority_class: high
+      challenge:
+        mode: always
+        level: 0.5
+      jwt: null
+      icap: null
+      filters: []
+      geo: null
+      cache: null
+      mirror: null
+      grpc: null
+      doh: null
+      static: null
+      compress: null
+    - name: api
+      hosts:
+        - api.example.com
+      paths:
+        - /v1
+      path_regex: []
+      methods: []
+      headers: []
+      cookies: []
+      tenant: ""
+      priority: 0
+      upstream: api
+      redirect: null
+      respond: null
+      honeypot: null
+      strip_prefix: /v1
+      rewrite_path: ""
+      host_header: ""
+      request_headers:
+        set: {}
+        add: {}
+        remove:
+            - Cookie
+      response_headers:
+        set:
+            Strict-Transport-Security: max-age=63072000; includeSubDomains
+            X-Content-Type-Options: nosniff
+        add: {}
+        remove: []
+      rate_limits:
+        - per-ip
+      allow_cidrs: []
+      deny_cidrs: []
+      max_body_bytes: null
+      timeout: 0s
+      websocket: false
+      waf:
+        mode: block
+        profile: api-strict
+      priority_class: normal
+      challenge: null
+      jwt:
+        provider: idp
+        required: null
+      icap: null
+      filters:
+        - scanners
+      geo: null
+      cache: null
+      mirror: null
+      grpc: null
+      doh: null
+      static: null
+      compress: null
+    - name: admin
+      hosts:
+        - example.com
+      paths:
+        - /admin
+      path_regex: []
+      methods: []
+      headers: []
+      cookies: []
+      tenant: ""
+      priority: 0
+      upstream: web
+      redirect: null
+      respond: null
+      honeypot: null
+      strip_prefix: ""
+      rewrite_path: ""
+      host_header: ""
+      request_headers:
+        set: {}
+        add: {}
+        remove: []
+      response_headers:
+        set: {}
+        add: {}
+        remove: []
+      rate_limits: []
+      allow_cidrs:
+        - 10.0.0.0/8
+        - 192.168.0.0/16
+      deny_cidrs: []
+      max_body_bytes: null
+      timeout: 0s
+      websocket: false
+      waf: null
+      priority_class: critical
+      challenge: null
+      jwt: null
+      icap: null
+      filters: []
+      geo: null
+      cache: null
+      mirror: null
+      grpc: null
+      doh: null
+      static: null
+      compress: null
+    - name: upload
+      hosts:
+        - example.com
+        - www.example.com
+      paths:
+        - /upload
+      path_regex: []
+      methods:
+        - POST
+        - PUT
+      headers: []
+      cookies: []
+      tenant: ""
+      priority: 0
+      upstream: web
+      redirect: null
+      respond: null
+      honeypot: null
+      strip_prefix: ""
+      rewrite_path: ""
+      host_header: ""
+      request_headers:
+        set: {}
+        add: {}
+        remove: []
+      response_headers:
+        set: {}
+        add: {}
+        remove: []
+      rate_limits:
+        - per-ip
+      allow_cidrs: []
+      deny_cidrs: []
+      max_body_bytes: null
+      timeout: 0s
+      websocket: false
+      waf: null
+      priority_class: normal
+      challenge: null
+      jwt: null
+      icap:
+        service: av
+        request: null
+        response: null
+      filters: []
+      geo: null
+      cache: null
+      mirror: null
+      grpc: null
+      doh: null
+      static: null
+      compress: null
+    - name: web
+      hosts:
+        - example.com
+        - www.example.com
+      paths:
+        - /
+      path_regex: []
+      methods: []
+      headers: []
+      cookies: []
+      tenant: ""
+      priority: 0
+      upstream: web
+      redirect: null
+      respond: null
+      honeypot: null
+      strip_prefix: ""
+      rewrite_path: ""
+      host_header: ""
+      request_headers:
+        set: {}
+        add: {}
+        remove: []
+      response_headers:
+        set:
+            Referrer-Policy: strict-origin-when-cross-origin
+            Strict-Transport-Security: max-age=63072000; includeSubDomains
+            X-Content-Type-Options: nosniff
+            X-Frame-Options: DENY
+        add: {}
+        remove: []
+      rate_limits:
+        - per-ip
+      allow_cidrs: []
+      deny_cidrs: []
+      max_body_bytes: null
+      timeout: 0s
+      websocket: true
+      waf: null
+      priority_class: normal
+      challenge:
+        mode: load
+        level: 0.5
+      jwt: null
+      icap: null
+      filters: []
+      geo: null
+      cache: null
+      mirror: null
+      grpc: null
+      doh: null
+      static: null
+      compress: null
+    - name: default
+      hosts: []
+      paths:
+        - /
+      path_regex: []
+      methods: []
+      headers: []
+      cookies: []
+      tenant: ""
+      priority: -100
+      upstream: ""
+      redirect: null
+      respond:
+        status: 404
+        body: |
+            not found
+      honeypot: null
+      strip_prefix: ""
+      rewrite_path: ""
+      host_header: ""
+      request_headers:
+        set: {}
+        add: {}
+        remove: []
+      response_headers:
+        set: {}
+        add: {}
+        remove: []
+      rate_limits: []
+      allow_cidrs: []
+      deny_cidrs: []
+      max_body_bytes: null
+      timeout: 0s
+      websocket: false
+      waf:
+        mode: detect
+        profile: default
+      priority_class: normal
+      challenge: null
+      jwt: null
+      icap: null
+      filters: []
+      geo: null
+      cache: null
+      mirror: null
+      grpc: null
+      doh: null
+      static: null
+      compress: null
+bans:
+    state_file: /var/lib/xproxy/bans.db
+    max_entries: 100000
+    exempt_cidrs:
+        - 10.0.0.0/8
+    action: drop
+    triggers:
+        - name: waf-repeat
+          reasons:
+            - waf
+          threshold: 5
+          window: 1m0s
+          duration: 15m0s
+          escalation: 2
+          max_duration: 24h0m0s
+        - name: brute-force
+          reasons:
+            - rate_limit
+            - acl
+          threshold: 20
+          window: 5m0s
+          duration: 1h0m0s
+          escalation: 2
+          max_duration: 24h0m0s
+waf:
+    profiles:
+        - name: default
+          crs:
+            dir: ""
+            paranoia_level: 1
+            inbound_threshold: 5
+            outbound_threshold: 4
+          directive_files: []
+          directives: ""
+        - name: api-strict
+          crs:
+            dir: ""
+            paranoia_level: 2
+            inbound_threshold: 5
+            outbound_threshold: 4
+          directive_files: []
+          directives: |
+            # Allow JSON bodies only on the API profile.
+            SecRule REQUEST_HEADERS:Content-Type "!@rx ^application/json" \
+              "id:100100,phase:1,deny,status:415,msg:'API accepts JSON only'"
+    default_mode: block
+    default_profile: default
+    request_body_limit: 1048576
+    request_body_limit_action: reject
+    inspect_responses: true
+    response_body_limit: 524288
+    response_mime_types:
+        - text/plain
+        - text/html
+        - text/xml
+        - application/json
+        - application/xml
+    learning: null
+cluster:
+    node_id: edge-1
+    listen: 10.0.0.1:7946
+    peers:
+        - 10.0.0.2:7946
+        - 10.0.0.3:7946
+    tls:
+        cert_file: /etc/xproxy/cluster/edge-1.pem
+        key_file: /etc/xproxy/cluster/edge-1-key.pem
+        ca_file: /etc/xproxy/cluster/ca.pem
+        allowed_names:
+            - edge-1
+            - edge-2
+            - edge-3
+    gossip_interval: 1s
+    peer_stale: 3s
+    share_rate_limits: null
+    share_bans: null
+    share_events: null
+    max_keys_per_report: 4096
+shedding:
+    target_latency: 250ms
+    window: 10s
+    low: 0.6
+    normal: 0.8
+    high: 0.95
+    hysteresis: 0.1
+    retry_after: 2s
+challenge:
+    secret_file: /var/lib/xproxy/challenge.key
+    difficulty: 16
+    ttl: 1h0m0s
+    bind_ip: null
+    cookie_name: XPCHAL
+    exempt_cidrs:
+        - 10.0.0.0/8
+    title: Checking your browser
+jwt:
+    providers:
+        - name: idp
+          issuer: https://idp.example.com/
+          audiences:
+            - api
+          algorithms:
+            - RS256
+            - ES256
+          jwks_file: ""
+          jwks_url: https://idp.example.com/.well-known/jwks.json
+          jwks_ca_file: /etc/xproxy/certs/idp-ca.pem
+          jwks_refresh: 1h0m0s
+          hmac_secret_file: ""
+          clock_skew: 30s
+          required_claims: []
+          source: bearer
+          forward_claims:
+            X-Scopes: scope
+            X-User: sub
+          strip_token: null
+          log_claims:
+            - sub
+metrics:
+    listen: 10.0.0.1:9100
+    allow_cidrs:
+        - 10.0.5.0/24
+    tls: null
+    per_route: null
+    endpoint_series: null
+    sample_interval: 10s
+    retention: 1h0m0s
+    otlp: null
+icap:
+    services:
+        - name: av
+          url: icaps://scanner.internal:11344/avscan
+          tls:
+            ca_file: /etc/xproxy/certs/internal-ca.pem
+            server_name: ""
+          connect_timeout: 2s
+          timeout: 5s
+          max_conns: 8
+          max_body: 52428800
+          body_limit_action: reject
+          fail: closed
+          preview: auto
+filters:
+    - name: scanners
+      kind: header_guard
+      stage: after_auth
+      options:
+        deny:
+            - header: User-Agent
+              pattern: (?i)sqlmap|nikto|masscan|zgrab
+geoip: null
+ingress: null
+sandbox:
+    enabled: null
+    strict: false
+    landlock:
+        enabled: null
+        read_paths: []
+        write_paths: []
+        bind: null
+    seccomp:
+        enabled: null
+    capabilities:
+        drop: null
+    no_new_privs: null
+    debuggable: false
+cache: null
+compression: null
+tracing: null
+acme:
+    directory: https://acme-v02.api.letsencrypt.org/directory
+    email: hostmaster@example.com
+    accept_terms: true
+    ca_file: ""
+    state_dir: /var/lib/xproxy/acme
+    challenge: http-01
+    renew_before: 720h0m0s
+    check_interval: 12h0m0s

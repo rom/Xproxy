@@ -19,7 +19,8 @@ it, what each layer is responsible for and what is added in later phases.
 | `make vuln` | `govulncheck` |
 | `make check` | fmt, vet, race tests, lint |
 | `go test -run TestProxyBasics -v ./internal/proxy/` | One test with output |
-| `go test -bench . -benchmem ./internal/router/` | Router benchmark |
+| `go test -bench . -benchmem ./internal/router/ ./internal/waf/ ./internal/dns/ ./internal/netutil/` | Benchmarks: routing, a clean request through the CRS with and without statistics, DNS message parsing, PROXY header parsing |
+| `go test ./internal/config -run TestExampleDumpGolden -update` | Regenerate the golden dump of the example configuration after an intended default change |
 
 Tests need no network access beyond loopback and no root. They pick free
 ports by listening on port 0 and reading the bound address back from the
@@ -98,6 +99,8 @@ drive it with `net/http` and raw TCP.
 | `TestConnectionLimits` | Concurrency 503 on a live connection, third connection dropped at accept, counters |
 | `TestSlowHeaderTimeout` | Slowloris connection closed by the header timeout |
 | `TestWAFIntegration` | Block, detect and off modes per route, custom profile status, body inspected and forwarded, injection in body blocked, counters |
+| `cmd/xproxyctl` `TestCommands`, `TestOptionalSubsystems`, `TestUnreachableSocket`, `TestHtpasswd`, `TestSandboxSummary` | Every command run against a live management server on a temporary socket: version, validate, status (text, JSON, sandbox summary), stats, upstreams, quotas, waf and its sub commands, sandbox (table, rules, JSON), tls, telemetry, config, reload and dry run, diff (exit 0 when equal), history and rollback without a history, certificate reload, log reopen, ban list, add, refuse loopback, remove, cluster and ACME unconfigured, metrics, series, filters, spki of a generated certificate, usage errors, tui without a terminal, unknown command; optional subsystems fail cleanly; an unreachable socket; the users file helper appends, replaces and refuses short passwords |
+| `internal/config` `TestExampleDumpGolden` | The dump of the shipped example with every default filled in matches `testdata/example.dump.yaml` and is a fixed point (dumping the loaded dump gives the same text), so a changed default shows up in review |
 | `internal/config` `TestDocsYAMLSyntax` | Every fenced `yaml` block of README, USAGE, CONFIG, EXTENDING, SETUP, SETUP_MACOS and HARDENING is decoded strictly against the configuration schema (unknown keys at any depth fail), complete documents are validated without file checks, list fragments and non configuration blocks are skipped and counted; a documentation example that drifts from the schema fails the build |
 | `test/examples` `TestYAMLDocuments`, `TestWAFExclusions`, `TestWAFCustomRules`, `TestDNSBlockList`, `TestHeaderPolicy`, `TestBadBots`, `TestBodyRewrite`, `TestWasmPolicy` | Every document under `examples/` parses (fragments through a main file that includes them); the exclusion file compiles with the CRS and lets the excluded field through while the same payload elsewhere is blocked and uploads skip body inspection; the custom rules deny the debug header, the virtual patched path, an IP host header, a secret path probe and a non JSON API write while clean traffic passes; the block list loads every line form and matches names, wildcards and exact entries only as documented; the header policy, bad bot and body rewriting filters behave on sample requests and bodies; the WebAssembly policy module denies with its reason, adds its response header and its log attribute |
 | `internal/sandbox` `TestDerive`, `TestGlobBase`, `TestCheck`, `TestBeneathAny`, `TestSeccompProgram`, `TestItoa`, `TestApplyLinux`, `TestApplyDisabledAndStrict` | Landlock rules derived from a configuration (certificates, includes, rule sets, static roots, filter modules, databases read; socket, logs, state, history, ACME, extra paths write; directories only, sorted, no overlap, relative values ignored); glob bases; a candidate configuration checked against the rules (new file under an admitted directory passes, outside read and write under a read directory refused, nil status passes); the seccomp program interpreted in the test: every denied number returns EPERM, the runtime's calls are allowed, a foreign architecture and the x32 ABI are killed, the list is sorted and unique; a confined child process reports each mechanism's state and probes it (reads inside and outside the rules, writes to read-only paths, unshare and ptrace under the filter, dumpable, core limit, capability sets, no_new_privs, bind after start), with assertions conditional on what the kernel offers; disabled sandbox |
@@ -145,6 +148,11 @@ drive it with `net/http` and raw TCP.
 | `router.FuzzMatch` | host, path, method | never panics on any strings |
 | `netutil.FuzzCleanPath` | path | output always starts with `/` |
 | `netutil.FuzzHost` | host header | never panics |
+| `netutil.FuzzReadProxyHeader` | bytes | never panics; a parsed header is version 1 or 2 and, unless LOCAL, carries two addresses of one family |
+| `logging.FuzzParseTemplate` | access log template | `ParseTemplate` and `ValidTemplate` agree; a non empty valid template yields tokens |
+| `dns.FuzzParseMessage` | wire message | never panics (compression loops included); record counts equal the header counts; the question end lies inside the message; names at most 253 bytes |
+| `dns.FuzzParseTrustAnchor` | DS or DNSKEY line | never panics; a parsed anchor names a zone |
+| `config.FuzzUnifiedDiff` | two texts | never panics; changed exactly when the line sequences differ; every hunk line comes from an input |
 
 Fuzz corpora that find failures are committed under `testdata/fuzz`.
 
