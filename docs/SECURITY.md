@@ -178,8 +178,11 @@ to report a vulnerability. The threat analysis behind the controls is in
   message), version checked and rejected on the first malformed line;
   inbound connections are capped and idle peers are disconnected.
 - Peer input can only tighten local limits (refill is reduced, never
-  increased) and add or remove bans; exemptions still apply to peer bans,
-  loopback and wide prefixes are refused as for manual bans.
+  increased), add or remove bans, mark or unmark honeypot clients and
+  revoke OIDC sessions; exemptions still apply to peer bans, loopback
+  and wide prefixes are refused as for manual bans, and every event is
+  bounded and applied within the receiver's own table limits. Each
+  channel has its own `share_*` switch.
 - Losing every peer degrades to local limiting; stale reports expire after
   `peer_stale`.
 

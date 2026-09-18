@@ -255,7 +255,12 @@ func (c *client) watch(ctx context.Context, path string, fn func(kind string)) e
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-	wc := &http.Client{Transport: c.http.Transport, CheckRedirect: c.http.CheckRedirect}
+	// No overall timeout (the server ends the stream on its schedule) but
+	// the response headers must arrive within the request timeout, so a
+	// black holed connection cannot hang the stream's loop.
+	tr := c.http.Transport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = c.timeout
+	wc := &http.Client{Transport: tr, CheckRedirect: c.http.CheckRedirect}
 	resp, err := wc.Do(req)
 	if err != nil {
 		return err

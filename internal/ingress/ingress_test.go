@@ -589,3 +589,30 @@ func TestWatches(t *testing.T) {
 		t.Fatalf("status: %+v", st)
 	}
 }
+
+// TestMergeWithIncludes keeps a configuration that uses includes
+// mergeable: the fragments are not expanded twice.
+func TestMergeWithIncludes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.yaml"), []byte("routes:\n  - {name: frag, hosts: [f.test], upstream: app}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base, err := config.Parse([]byte(`
+version: 1
+includes: ["` + dir + `/*.yaml"]
+server: {listeners: [{name: main, address: ":8080"}]}
+ingress: {enabled: true, api_server: "http://127.0.0.1:1", allow_http: true, token_file: /t, cert_dir: /tmp/x}
+upstreams: [{name: app, endpoints: [{address: 127.0.0.1:1}]}]
+routes: [{name: app, upstream: app}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := Merge(base, Snapshot{Routes: []config.Route{{Name: "k8s-x", Upstream: "app"}}}, nil)
+	if err != nil {
+		t.Fatalf("merge with includes: %v", err)
+	}
+	if len(merged.Routes) != 3 || merged.Routes[1].Name != "frag" {
+		t.Fatalf("routes: %v", merged.Routes)
+	}
+}

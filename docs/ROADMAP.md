@@ -212,6 +212,10 @@ procedure is in RELEASING.md.
   watches instead of polling: delivered (AMR-043 update)
 - QUIC passthrough on layer 4 listeners with a UDP relay: delivered
   (`tcp.quic`, AMR-035 update)
+- Inbound PROXY protocol on http listeners (reserved key since 0.x):
+  delivered
+- Cluster sharing of honeypot marks and OIDC revocations (protocol
+  version 2, `filter.Env.Events`): delivered (AMR-021 update)
 
 ## After 1.3 (candidates, unranked)
 

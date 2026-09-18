@@ -88,8 +88,18 @@ func New(name string, udp net.PacketConn, tcp net.Listener, cacheEntries, inFlig
 
 // Apply swaps the policy (reload). The cache is kept and resized.
 func (s *Server) Apply(p *Policy, cacheEntries int) {
-	s.policy.Store(p)
+	old := s.policy.Swap(p)
 	s.cache.Resize(cacheEntries)
+	if old != nil && old.Resolver != nil && old.Resolver != p.Resolver {
+		old.Resolver.Close() // idle encrypted connections of the previous policy
+	}
+}
+
+// Close releases the policy's resolver connections (after Shutdown).
+func (s *Server) Close() {
+	if p := s.policy.Load(); p != nil && p.Resolver != nil {
+		p.Resolver.Close()
+	}
 }
 
 // Purge empties the cache.

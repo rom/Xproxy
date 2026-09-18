@@ -1,5 +1,6 @@
-// Package cluster shares rate limit consumption and bans between xproxy
-// nodes (docs/AMR.md, AMR-009 and AMR-021).
+// Package cluster shares rate limit consumption, bans and security events
+// (honeypot marks, revoked sessions) between xproxy nodes (docs/AMR.md,
+// AMR-009 and AMR-021).
 //
 // Topology: every node listens on a mutual TLS port and dials every
 // configured peer. A node sends on the connections it dialled and receives
@@ -21,7 +22,12 @@ import (
 
 // Protocol constants.
 const (
-	ProtocolVersion = 1
+	ProtocolVersion = 2
+	// minProtocolVersion is the oldest hello accepted. Version 1 nodes
+	// send no events and ignore none: they close a connection that
+	// carries an events message, so mixed clusters set share_events:
+	// false until every node speaks version 2.
+	minProtocolVersion = 1
 	// MaxMessageBytes bounds one line on the wire.
 	MaxMessageBytes = 1 << 20
 	// MaxBansPerMessage bounds ban snapshots and batches.
@@ -30,6 +36,14 @@ const (
 	MaxInbound = 256
 	// banQueueSize bounds queued local ban changes awaiting broadcast.
 	banQueueSize = 8192
+	// MaxEventsPerMessage bounds one events batch.
+	MaxEventsPerMessage = 10000
+	// eventQueueSize bounds queued local events awaiting broadcast.
+	eventQueueSize = 8192
+	// Bounds on one event's fields.
+	maxEventKind = 128
+	maxEventKey  = 512
+	maxEventTTL  = 366 * 24 * time.Hour
 )
 
 // Message types.
@@ -38,7 +52,21 @@ const (
 	typeRates = "rates"
 	typeBans  = "bans"
 	typePing  = "ping"
+	// typeEvents carries security events (protocol version 2).
+	typeEvents = "events"
 )
+
+// Event is one shared fact: a client marked by a honeypot, a provider
+// session revoked by a logout. Kind names the fact and selects who
+// consumes it; Key identifies the subject; Until is when the fact stops
+// mattering; Route is optional context. Every field is bounded on the
+// wire and events are applied with the receiver's own limits.
+type Event struct {
+	Kind  string    `json:"kind"`
+	Key   string    `json:"key"`
+	Route string    `json:"route,omitempty"`
+	Until time.Time `json:"until"`
+}
 
 // message is the wire envelope.
 type message struct {
@@ -52,6 +80,8 @@ type message struct {
 	// Bans added and targets removed.
 	Bans    []ban.Entry `json:"bans,omitempty"`
 	Removed []string    `json:"removed,omitempty"`
+	// Events shared between nodes.
+	Events []Event `json:"events,omitempty"`
 }
 
 // PeerStatus describes one configured peer for the management API.
@@ -86,6 +116,9 @@ type Status struct {
 	KeysReceived  uint64          `json:"keys_received"`
 	BansSent      uint64          `json:"bans_sent"`
 	BansReceived  uint64          `json:"bans_received"`
+	EventsSent    uint64          `json:"events_sent"`
+	EventsRecv    uint64          `json:"events_received"`
+	Ignored       uint64          `json:"ignored_messages"`
 	Rejected      uint64          `json:"rejected_connections"`
 	Dropped       uint64          `json:"dropped_updates"`
 }

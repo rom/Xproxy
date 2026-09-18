@@ -199,6 +199,19 @@ kept only from trusted peers; otherwise it is replaced by the peer address.
 the proxy is behind a known chain and the strictest one when it is the
 edge.
 
+Listeners with `proxy_protocol: true` establish the peer one layer
+lower. `proxyListener` (`internal/proxy/proxyproto.go`) wraps the
+limited listener; its connections parse a PROXY protocol v1 or v2 header
+(`netutil.ReadProxyHeader`) lazily, on the first `Read` or `RemoteAddr`
+call, which `net/http` makes in the connection's own goroutine, so the
+accept loop never waits on a slow balancer. Only a peer inside
+`trusted_proxies` is parsed; the header's source becomes `RemoteAddr`,
+the connection limiter re-keys the per address count to it (`Rekey`),
+and everything above (TLS fingerprinting, `ClientIP`, bans, logs) sees
+the client. A trusted peer without a header, or with a bad one, gets its
+connection closed silently and a `drop_connection` event; the parse has
+a five second deadline.
+
 ### Path handling
 
 Routing uses `path.Clean` semantics on the request path so that
@@ -737,6 +750,21 @@ configured rate approximately cluster wide. Ban changes originating locally
 the same cycle; peers apply them with source `peer:<node>` and never
 re-announce them, so there are no loops. A newly connected peer receives a
 snapshot of all active bans. Idle cycles send a ping so deadlines hold.
+
+Protocol version 2 (1.3) adds an `events` message: bounded facts with a
+kind, a key, an optional route and an expiry. The server publishes
+honeypot marks and unmarks and applies peers' marks to its own table;
+filters reach the channel through `filter.Env.Events`, a per generation
+bus (`internal/proxy/events.go`) whose subscriptions die with the
+generation, so a reload never leaves a stale filter listening. The OIDC
+filter shares session revocations under the kind `oidc_revoke/<filter
+name>`. Events queue without blocking and are dropped and counted when
+the queue is full; a receiver applies them with its own bounds (the mark
+table size, the revocation index size, a lifetime clamp of one year).
+Unknown message types are now skipped and counted rather than closing
+the connection, so a newer node can join an older cluster; version 1
+nodes still close on an events message, hence `share_events: false`
+during a rolling upgrade.
 
 The node is owned by the `Server` like the ban list and reads limiters
 through the live runtime pointer, so reloads neither detach it nor lose

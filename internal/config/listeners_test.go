@@ -76,6 +76,7 @@ routes:
 		{"unknown kind", "    - {name: x, address: \":1\", kind: udp}\n", "must be http, tcp, forward or dns"},
 		{"tcp block on http", "    - {name: x, address: \":1\", tcp: {default: app}}\n", "set on an http listener"},
 		{"forward block on http", "    - {name: x, address: \":1\", forward: {}}\n", "set on an http listener"},
+		{"proxy protocol needs trusted proxies", "    - {name: x, address: \":1\", proxy_protocol: true}\n", "needs trusted_proxies"},
 		{"tcp without section", "    - {name: x, address: \":1\", kind: tcp}\n", "required for kind tcp"},
 		{"tcp with tls", "    - {name: x, address: \":1\", kind: tcp, tcp: {default: app}, redirect_to_https: true}\n", "takes no tls"},
 		{"tcp nothing to route", "    - {name: x, address: \":1\", kind: tcp, tcp: {}}\n", "routes or default is required"},

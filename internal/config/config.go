@@ -1018,10 +1018,12 @@ type Cluster struct {
 	// PeerStale is how long a peer report keeps influencing local limits
 	// after the last update. Default 3 x gossip_interval.
 	PeerStale Duration `yaml:"peer_stale"`
-	// ShareRateLimits and ShareBans select what is exchanged. Both default
-	// to true.
+	// ShareRateLimits, ShareBans and ShareEvents select what is exchanged.
+	// All default to true. Events are honeypot marks and revoked OIDC
+	// sessions; nodes older than 1.3 close a connection that carries them.
 	ShareRateLimits *bool `yaml:"share_rate_limits"`
 	ShareBans       *bool `yaml:"share_bans"`
+	ShareEvents     *bool `yaml:"share_events"`
 	// MaxKeysPerReport bounds one report. Default 4096.
 	MaxKeysPerReport int `yaml:"max_keys_per_report"`
 }
@@ -1043,6 +1045,9 @@ func (c *Cluster) SharesRateLimits() bool { return c.ShareRateLimits == nil || *
 
 // SharesBans reports whether bans are exchanged.
 func (c *Cluster) SharesBans() bool { return c.ShareBans == nil || *c.ShareBans }
+
+// SharesEvents reports whether security events are exchanged.
+func (c *Cluster) SharesEvents() bool { return c.ShareEvents == nil || *c.ShareEvents }
 
 // Shedding configures adaptive load shedding (AMR-022). The load level is
 // the larger of the in-flight ratio (in-flight requests over

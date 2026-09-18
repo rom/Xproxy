@@ -213,6 +213,8 @@ type oidcFilter struct {
 	// until the sessions that carry them would have expired anyway.
 	revokedMu sync.Mutex
 	revoked   map[string]time.Time
+	// events shares revocations with cluster peers; nil when absent.
+	events filter.Events
 
 	// counters
 	Logins, Callbacks, Failures, Logouts atomic.Uint64
@@ -362,6 +364,27 @@ type session struct {
 	Exp    int64          `json:"exp"`
 	Iat    int64          `json:"iat"`
 	Claims map[string]any `json:"c,omitempty"`
+}
+
+// eventKind is the cluster event kind of this filter's revocations.
+func (f *oidcFilter) eventKind() string { return "oidc_revoke/" + f.name }
+
+// attach joins the node's event bus: revocations from the other nodes of
+// a cluster land in the local index. The kind carries the filter name so
+// that providers stay apart. Nil leaves the filter alone.
+func (f *oidcFilter) attach(events filter.Events) {
+	f.events = events
+	if events != nil {
+		events.Subscribe(f.eventKind(), func(e filter.Event) { f.revoke(e.Key, e.Until) })
+	}
+}
+
+// revokeAndShare revokes locally and tells the other nodes.
+func (f *oidcFilter) revokeAndShare(sid string, exp time.Time) {
+	f.revoke(sid, exp)
+	if f.events != nil {
+		f.events.Publish(filter.Event{Kind: f.eventKind(), Key: sid, Until: exp})
+	}
 }
 
 // revoke records a provider session id until exp; the index is bounded
@@ -514,7 +537,7 @@ func (f *oidcFilter) frontChannelLogout(r *http.Request, in *instance) filter.Ve
 	if iss != "" && strings.TrimSuffix(iss, "/") != strings.TrimSuffix(f.cfg.Issuer, "/") {
 		return fail("frontchannel_issuer")
 	}
-	f.revoke(sid, time.Now().Add(f.cfg.ttl))
+	f.revokeAndShare(sid, time.Now().Add(f.cfg.ttl))
 	f.Logouts.Add(1)
 	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}}
 	resp.Header.Set("Content-Type", "text/html; charset=utf-8")
@@ -650,7 +673,7 @@ func (f *oidcFilter) callback(r *http.Request, in *instance) filter.Verdict {
 func (f *oidcFilter) logout(r *http.Request, in *instance) filter.Verdict {
 	f.Logouts.Add(1)
 	if s, ok := f.session(r); ok && s.Sid != "" {
-		f.revoke(s.Sid, time.Unix(s.Exp, 0)) // other browsers sharing the provider session end too
+		f.revokeAndShare(s.Sid, time.Unix(s.Exp, 0)) // other browsers sharing the provider session end too
 	}
 	loc := f.cfg.LogoutRedirect
 	if d := f.disc.Load(); d != nil && d.EndSessionEndpoint != "" {
@@ -847,7 +870,12 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			return newFilter(name, c, env.Log)
+			f, err := newFilter(name, c, env.Log)
+			if err != nil {
+				return nil, err
+			}
+			f.attach(env.Events)
+			return f, nil
 		},
 	})
 }

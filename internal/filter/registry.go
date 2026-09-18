@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"time"
 )
 
 // APIVersion is the version of the middleware contract in this package.
@@ -36,6 +37,32 @@ type Kind struct {
 type Env struct {
 	// Log is the error stream, already tagged with the filter name.
 	Log *slog.Logger
+	// Events is the node's event bus, on which a filter shares facts
+	// with the other nodes of a cluster (a revoked session) and learns
+	// theirs. Publish is a no-op and Subscribe never fires when the proxy
+	// runs alone. Nil in test harnesses that do not provide one.
+	Events Events
+}
+
+// Event is one fact shared between nodes: Kind names it and selects the
+// subscribers, Key identifies the subject, Until is when it stops
+// mattering. Both strings are bounded (128 and 512 bytes); longer events
+// are dropped.
+type Event struct {
+	Kind  string
+	Key   string
+	Until time.Time
+}
+
+// Events is the event bus a filter receives in Env.
+type Events interface {
+	// Publish shares an event with every peer. It never blocks and never
+	// delivers the event back to local subscribers.
+	Publish(e Event)
+	// Subscribe registers fn for events of one kind arriving from peers.
+	// fn runs on the cluster's receive goroutine and must return quickly.
+	// Subscriptions live as long as the generation that built the filter.
+	Subscribe(kind string, fn func(e Event))
 }
 
 // Closer is implemented by filters that hold resources (files, sockets,

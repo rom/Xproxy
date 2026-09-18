@@ -110,6 +110,10 @@ func (c *ConnLimiter) Admit(addr netip.Addr) (release func(), reason string) {
 	return func() { once.Do(func() { c.release(addr) }) }, ""
 }
 
+// Reject counts and reports a connection refused after accept for a
+// reason the limiter did not decide itself (a bad PROXY header).
+func (c *ConnLimiter) Reject(addr netip.Addr, reason string) { c.reject(addr, reason) }
+
 func (c *ConnLimiter) reject(addr netip.Addr, reason string) {
 	c.Rejected.Add(1)
 	if c.OnReject != nil {
@@ -123,21 +127,47 @@ func (l *limitedListener) Accept() (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		release, _ := l.lim.Admit(addrOf(conn))
+		addr := addrOf(conn)
+		release, _ := l.lim.Admit(addr)
 		if release == nil {
 			_ = conn.Close()
 			continue
 		}
-		return &limitedConn{Conn: conn, release: release}, nil
+		return &limitedConn{Conn: conn, lim: l.lim, addr: addr, release: release}, nil
 	}
 }
 
 type limitedConn struct {
 	net.Conn
+	lim     *ConnLimiter
+	mu      sync.Mutex
+	addr    netip.Addr
 	release func()
 }
 
 func (c *limitedConn) Close() error {
-	c.release()
+	c.mu.Lock()
+	rel := c.release
+	c.mu.Unlock()
+	rel()
 	return c.Conn.Close()
+}
+
+// Rekey moves the connection's per address count to another address
+// (the client behind a PROXY protocol header). It reports false when
+// that address is banned or at its limit; the caller then closes the
+// connection, which releases the original slot.
+func (c *limitedConn) Rekey(to netip.Addr) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if to == c.addr || !to.IsValid() {
+		return true
+	}
+	release, _ := c.lim.Admit(to)
+	if release == nil {
+		return false
+	}
+	c.release()
+	c.addr, c.release = to, release
+	return true
 }

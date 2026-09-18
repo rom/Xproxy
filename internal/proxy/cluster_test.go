@@ -28,6 +28,9 @@ upstreams:
   - name: a
     endpoints: [{address: "%s"}]
 routes:
+  - name: wp
+    paths: [/wp-login.php]
+    honeypot: {decoy: wp-login, mark: 1h}
   - name: r
     rate_limits: [shared]
     upstream: a
@@ -101,13 +104,36 @@ func TestClusterSharesLimitsAndBans(t *testing.T) {
 		t.Fatalf("ban did not reach B: %d", resp.StatusCode)
 	}
 
+	// Honeypot marks propagate, and so does forgetting one.
+	if resp, _ := getAs(t, urlA+"/wp-login.php", "x", "203.0.113.50"); resp.StatusCode != 200 {
+		t.Fatalf("decoy: %d", resp.StatusCode)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !b.marks.marked(mustAddr("203.0.113.50"), time.Now()) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	marksB := b.HoneypotMarks()
+	if len(marksB) != 1 || marksB[0].Address != "203.0.113.50" || marksB[0].Route != "peer:a/wp" || time.Until(marksB[0].Expires) < 50*time.Minute {
+		t.Fatalf("mark did not reach B: %+v", marksB)
+	}
+	if !a.UnmarkHoneypot(mustAddr("203.0.113.50")) {
+		t.Fatal("unmark on A")
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && b.marks.marked(mustAddr("203.0.113.50"), time.Now()) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(b.HoneypotMarks()) != 0 {
+		t.Fatalf("unmark did not reach B: %+v", b.HoneypotMarks())
+	}
+
 	// Cluster listen changes are refused on reload.
 	bad := mustParse(t, fmt.Sprintf(clusterYAML, "a", "", ac, ak, ca.Path, backend.addr()))
 	bad.Cluster.Listen = "127.0.0.1:1"
 	if err := a.Reload(bad); err == nil {
 		t.Fatal("cluster listen change accepted on reload")
 	}
-	if st := a.Cluster().Status(); st.BansSent < 1 || st.RatesSent < 1 {
+	if st := a.Cluster().Status(); st.BansSent < 1 || st.RatesSent < 1 || st.EventsSent < 2 {
 		t.Fatalf("status %+v", st)
 	}
 }

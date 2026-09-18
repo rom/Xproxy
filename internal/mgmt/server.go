@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -281,14 +282,23 @@ func (s *Server) upstreams(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, s.proxy.Upstreams())
 }
 
+// config dumps the active configuration as one self-contained document:
+// included fragments are already expanded into it, so `includes` is
+// cleared (a copy fed back would otherwise append them a second time) and
+// the files that were read are listed in a leading comment.
 func (s *Server) config(w http.ResponseWriter, _ *http.Request) {
-	b, err := yaml.Marshal(s.proxy.Config())
+	cfg := *s.proxy.Config()
+	cfg.Includes = nil
+	b, err := yaml.Marshal(&cfg)
 	if err != nil {
 		writeJSON(w, 500, result{Error: err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/yaml")
 	w.WriteHeader(200)
+	if files := s.proxy.Config().IncludedFiles; len(files) > 0 {
+		_, _ = fmt.Fprintf(w, "# includes expanded from: %s\n", strings.Join(files, ", "))
+	}
 	_, _ = w.Write(b)
 }
 

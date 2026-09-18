@@ -74,6 +74,12 @@ func (v *validator) config(c *Config) {
 		v.errf("version: got %d, this build supports %d", c.Version, CurrentVersion)
 	}
 	v.server(&c.Server)
+	for i := range c.Server.Listeners {
+		ln := &c.Server.Listeners[i]
+		if ln.ProxyProtocol && ln.Kind != "tcp" && len(c.TrustedProxies) == 0 {
+			v.errf("server.listeners[%d].proxy_protocol: needs trusted_proxies naming the balancers that send the header", i)
+		}
+	}
 	v.management(&c.Management)
 	v.logging(&c.Logging)
 	for i, cidr := range c.TrustedProxies {

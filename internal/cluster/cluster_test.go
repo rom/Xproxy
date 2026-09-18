@@ -165,6 +165,60 @@ func TestTwoNodes(t *testing.T) {
 	waitFor(t, "peer removed", func() bool { return len(a.node.Status().Inbound) == 0 })
 }
 
+func TestEvents(t *testing.T) {
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	ac, ak := ca.Issue(t, dir, "node-a")
+	bc, bk := ca.Issue(t, dir, "node-b")
+
+	a := startNode(t, clusterCfg("a", ac, ak, ca.Path, nil))
+	b := startNode(t, clusterCfg("b", bc, bk, ca.Path, nil))
+	var mu sync.Mutex
+	var got []Event
+	var peers []string
+	b.node.OnEvent(func(e Event, peer string) {
+		mu.Lock()
+		got = append(got, e)
+		peers = append(peers, peer)
+		mu.Unlock()
+	})
+	a.node.Reconfigure(clusterCfg("a", ac, ak, ca.Path, []string{b.addr}))
+	waitFor(t, "connection", func() bool { return a.node.ConnectedPeers() == 1 })
+
+	until := time.Now().Add(time.Hour).Truncate(time.Second)
+	a.node.PublishEvent(Event{Kind: "honeypot_mark", Key: "203.0.113.5", Route: "wp", Until: until})
+	a.node.PublishEvent(Event{Kind: "", Key: "x", Until: until})                               // no kind: dropped
+	a.node.PublishEvent(Event{Kind: "k", Key: "", Until: until})                               // no key: dropped
+	a.node.PublishEvent(Event{Kind: "k", Key: "expired", Until: time.Now().Add(-time.Second)}) // in the past: dropped
+	a.node.PublishEvent(Event{Kind: "forever", Key: "y", Until: time.Now().Add(10 * 365 * 24 * time.Hour)})
+	waitFor(t, "events a->b", func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 2 })
+	mu.Lock()
+	defer mu.Unlock()
+	if got[0].Kind != "honeypot_mark" || got[0].Key != "203.0.113.5" || got[0].Route != "wp" || !got[0].Until.Equal(until) || peers[0] != "a" {
+		t.Fatalf("event %+v from %q", got[0], peers[0])
+	}
+	if got[1].Until.After(time.Now().Add(maxEventTTL)) {
+		t.Fatalf("lifetime not clamped: %v", got[1].Until)
+	}
+	if st := a.node.Status(); st.EventsSent != 2 {
+		t.Fatalf("sent %+v", st)
+	}
+	if st := b.node.Status(); st.EventsRecv != 2 {
+		t.Fatalf("received %+v", st)
+	}
+
+	// share_events: false silences both directions.
+	off := false
+	cfg := clusterCfg("a", ac, ak, ca.Path, []string{b.addr})
+	cfg.ShareEvents = &off
+	a.node.Reconfigure(cfg)
+	a.node.PublishEvent(Event{Kind: "k", Key: "z", Until: until})
+	time.Sleep(300 * time.Millisecond)
+	if len(got) != 2 {
+		t.Fatalf("event sent while sharing is off: %+v", got)
+	}
+}
+
 func TestRejectsUnauthenticated(t *testing.T) {
 	dir := t.TempDir()
 	ca := testutil.WriteCA(t, dir)
@@ -239,12 +293,15 @@ func TestProtocolErrors(t *testing.T) {
 	expectClosed(dial(), `{"t":"rates","rates":{}}`+"\n")                     // before hello
 	expectClosed(dial(), `{"t":"hello","node":"b","ver":99}`+"\n")            // wrong version
 	expectClosed(dial(), `{"t":"hello","node":"b","ver":1}{"t":"nope"}`+"\n") // unknown type after hello on one line is bad json
+	// An unknown type after hello is skipped and counted so that a newer
+	// peer's messages do not tear the channel down.
 	c := dial()
-	if _, err := c.Write([]byte(`{"t":"hello","node":"b","ver":1}` + "\n" + `{"t":"bogus"}` + "\n")); err != nil {
+	if _, err := c.Write([]byte(`{"t":"hello","node":"b","ver":1}` + "\n" + `{"t":"bogus"}` + "\n" + `{"t":"ping"}` + "\n")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Read(make([]byte, 1)); err == nil {
-		t.Fatal("unknown type accepted")
+	waitFor(t, "ignored message counted", func() bool { return a.node.Status().Ignored == 1 })
+	if _, err := c.Write([]byte(`{"t":"ping"}` + "\n")); err != nil {
+		t.Fatalf("connection closed after an unknown type: %v", err)
 	}
 	c.Close()
 	// Oversized line.

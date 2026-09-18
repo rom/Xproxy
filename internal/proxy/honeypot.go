@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/rom/xproxy/internal/cluster"
 )
 
 // Decoys are the built-in honeypot bodies. Each looks like a real page
@@ -198,7 +200,13 @@ func (m *marks) remove(ip netip.Addr) bool {
 func (s *Server) HoneypotMarks() []Mark { return s.marks.list(time.Now()) }
 
 // UnmarkHoneypot forgets a marked client.
-func (s *Server) UnmarkHoneypot(ip netip.Addr) bool { return s.marks.remove(ip.Unmap()) }
+func (s *Server) UnmarkHoneypot(ip netip.Addr) bool {
+	ok := s.marks.remove(ip.Unmap())
+	if ok {
+		s.publishEvent(cluster.Event{Kind: eventHoneypotUnmark, Key: ip.Unmap().String(), Until: time.Now().Add(time.Minute)})
+	}
+	return ok
+}
 
 // honeypot serves a decoy. The client is recorded as a security event,
 // marked for the configured time and counted towards the honeypot ban
@@ -215,6 +223,7 @@ func (s *Server) honeypot(rw *responseWriter, r *http.Request, st *reqState, cr 
 		"host", r.Host, "path", r.URL.Path, "query_len", len(r.URL.RawQuery), "route", st.route,
 		"user_agent", r.UserAgent(), "referer", r.Referer(), "decoy", hp.Decoy)
 	s.marks.add(st.clientIP, cr.cfg.Name, hp.Mark.D(), now)
+	s.publishEvent(cluster.Event{Kind: eventHoneypotMark, Key: st.clientIP.String(), Route: cr.cfg.Name, Until: now.Add(hp.Mark.D())})
 	if bl := s.bans.Load(); bl != nil {
 		bl.Observe(st.clientIP, "honeypot")
 	}

@@ -17,7 +17,7 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `server` | object | | Listeners and global limits |
 | `management` | object | | Control socket |
 | `logging` | object | | Log streams |
-| `trusted_proxies` | list of CIDR | `[]` | Peers whose `X-Forwarded-For` is believed. Empty means never. |
+| `trusted_proxies` | list of CIDR | `[]` | Peers whose `X-Forwarded-For` is believed, and whose PROXY protocol header is parsed on listeners with `proxy_protocol: true`. Empty means never. |
 | `rate_limits` | list | `[]` | Named rate limit policies |
 | `upstreams` | list | `[]` | Named endpoint pools |
 | `routes` | list | `[]` | Request matching and actions |
@@ -41,7 +41,7 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
-| `proxy_protocol` | bool | `false` | Reserved (PROXY protocol parsing arrives in 1.0) |
+| `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; not on `kind: tcp` (which forwards a header instead) or `dns`. |
 | `kind` | `http`, `tcp`, `forward`, `dns` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients and `dns` a DNS proxy; see below |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 
@@ -711,6 +711,7 @@ and sharing flags reload.
 | `peer_stale` | duration | 3 x `gossip_interval` | How long a peer report keeps reducing local refill after its last update; at least 2 x the interval |
 | `share_rate_limits` | bool | `true` | Exchange consumption reports |
 | `share_bans` | bool | `true` | Exchange bans and unbans, and send a snapshot to a newly connected peer |
+| `share_events` | bool | `true` | Exchange security events: honeypot marks and unmarks (applied to the peer's mark table with route `peer:<node>/<route>`) and OIDC session revocations (per filter name). Events are bounded (128 byte kind, 512 byte key, lifetime clamped to a year), queued without blocking and dropped when the queue is full. Nodes older than 1.3 close a connection that carries them: set `false` during a rolling upgrade from 1.2 |
 | `max_keys_per_report` | int | `4096` | Largest consumers kept per report |
 
 Semantics: with sharing on, a rate limit policy's `rate` becomes an
@@ -945,7 +946,9 @@ hello without `h2` ALPN or with fewer than ten cipher suites),
 `error_rate` 30 (more than half of at least ten recent requests were
 4xx or denied), `path_spread` 15 (fifty or more distinct paths in the
 window), `regular_interval` 20 (eight or more requests with machine-like
-timing), `high_rate` 15. The score is the capped sum; a client that is
+timing), `high_rate` 15, `honeypot_marked` 40 (the client touched a
+honeypot route on this node or, with cluster sharing, on a peer). The
+score is the capped sum; a client that is
 already verified by the challenge is never challenged again. The JA4 of
 every TLS request is logged as `ja4`.
 

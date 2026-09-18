@@ -21,7 +21,9 @@
 // error_rate 30 (more than half of recent requests were 4xx or denied),
 // path_spread 15 (many distinct paths in the window), regular_interval 20
 // (machine-like request timing), high_rate 15 (more than rate_per_window
-// requests in the window). The score is the capped sum.
+// requests in the window), honeypot_marked 40 (the client touched a
+// honeypot route on this node or, in a cluster, on a peer). The score is
+// the capped sum.
 package botscore
 
 import (
@@ -59,7 +61,7 @@ type Config struct {
 
 var defaultWeights = map[string]int{
 	"ua_bot": 40, "ua_missing": 30, "browser_headers_missing": 25, "fingerprint_mismatch": 35,
-	"error_rate": 30, "path_spread": 15, "regular_interval": 20, "high_rate": 15,
+	"error_rate": 30, "path_spread": 15, "regular_interval": 20, "high_rate": 15, "honeypot_marked": 40,
 }
 
 // botUA matches user agents of common automation; a match is a strong
@@ -193,6 +195,9 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		total, errs, paths := h.total, h.errors, len(h.paths)
 		regular := regularInterval(h.times)
 		s.mu.Unlock()
+		if in.info.HoneypotMarked {
+			add("honeypot_marked")
+		}
 		if total >= 10 && errs*2 > total {
 			add("error_rate")
 		}
