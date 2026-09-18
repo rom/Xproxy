@@ -197,6 +197,7 @@ func (s *Server) Stats() Snapshot {
 	}
 	ls := s.logs.Stats()
 	snap.LogSyslogSent, snap.LogSyslogDropped, snap.LogJournalDropped, snap.LogRedaction = ls.SyslogSent, ls.SyslogDropped, ls.JournalDropped, ls.Redaction
+	snap.LogWriteErrors = ls.WriteErrors
 	return snap
 }
 
@@ -204,6 +205,22 @@ func (s *Server) Stats() Snapshot {
 func (s *Server) ACME() *acme.Manager { return s.acme }
 
 // ICAP returns the status of every configured ICAP service.
+// CertificateExpiry returns the earliest file certificate expiry per TLS
+// listener (listeners without file certificates are omitted).
+func (s *Server) CertificateExpiry() map[string]time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]time.Time{}
+	for _, bl := range s.listeners {
+		if bl.tlsReload != nil {
+			if t := bl.tlsReload.NotAfter(); !t.IsZero() {
+				out[bl.cfg.Name] = t
+			}
+		}
+	}
+	return out
+}
+
 // Filters returns the configured middleware instances.
 func (s *Server) Filters() []FilterStatus { return s.rt.Load().filterStatus() }
 

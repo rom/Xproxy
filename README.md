@@ -6,8 +6,9 @@ binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
 Status: **phase 3 in progress** (ICAP, ACME, the web GUI, the SELinux
-policy, RPM packaging and scale validation delivered; coverage gates, the
-security review and the reference hardware numbers remain). Phases 1 and 2 are complete. See
+policy, RPM packaging, scale validation, the middleware interface and the
+quality gates delivered; the security review and the reference hardware
+numbers remain). Phases 1 and 2 are complete. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today
@@ -99,7 +100,8 @@ curl -i http://127.0.0.1:8080/
 
 ```sh
 make check          # fmt, vet, race tests, lint
-make cover          # coverage under race
+make cover-gate     # coverage under race with the 80 % gate
+make mutate         # mutation testing on the admission packages
 make fuzz           # all fuzz targets, 20s each
 ```
 

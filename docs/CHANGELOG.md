@@ -10,6 +10,17 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 ### Phase 3: 1.0 (in progress)
 
 #### Added
+- Quality gates: `make cover-gate` (whole suite coverage under race,
+  `test/covergate` enforcing 80 % over the core packages and 60 % per
+  package, in CI), `make mutate` with gremlins on limits, router and
+  netutil (`.gremlins.yaml`, CI job), chaos tests for reload storms,
+  flapping endpoints, upstream death mid response, a full log disk and
+  certificate rotation. Log write failures are counted
+  (`log_write_errors`, `xproxy_log_write_errors_total`) and warned about
+  once a minute; `xproxy_certificate_expiry_seconds{listener}` exposes
+  the earliest file certificate expiry. Tests added for validation
+  branches, the GUI's listeners and certificate login, log rotation and
+  reopening, and the boundaries mutation testing found unobserved.
 - Middleware interface at API version 1 (`docs/EXTENDING.md`): kind
   registry with load-time validation and per-generation construction,
   `filters[]` with `stage` and kind specific `options`, `routes[].filters`,

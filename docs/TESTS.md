@@ -10,7 +10,9 @@ it, what each layer is responsible for and what is added in later phases.
 |---------|--------------|
 | `make test` | Unit and integration tests |
 | `make test-race` | Same under the race detector (the CI default) |
-| `make cover` | Coverage profile under race; prints total |
+| `make cover` | Coverage profile under race with cross-package instrumentation; prints total |
+| `make cover-gate` | `make cover` then the gate: core packages at least 80 % together, none below 60 % (`COVER_MIN`, `COVER_FLOOR`) |
+| `make mutate` | Mutation testing with gremlins on `limits`, `router` and `netutil` (`.gremlins.yaml` sets the thresholds) |
 | `make fuzz FUZZTIME=30s` | Runs every `Fuzz*` target for the given budget |
 | `make lint` | `golangci-lint` with the configuration in `.golangci.yml` |
 | `make vet`, `make fmt` | `go vet`, formatting check |
@@ -60,6 +62,11 @@ drive it with `net/http` and raw TCP.
 | `TestRetryOnDeadEndpoint` | Retry to a second endpoint, outlier ejection of the dead one, no replay of POST |
 | `TestReload` | Generation swap changes routing, listener change refused, reload counters |
 | `TestTLSAndRedirect` | HTTP to HTTPS 308 preserving path and query, TLS 1.3 with HTTP/2 negotiated, `X-Forwarded-Proto`, TLS 1.2 refused when the minimum is 1.3 |
+| `TestChaosReloadStorm` | 200 concurrent reloads across four configurations while eight clients hammer the proxy: every request 200, generation advanced, old generations drained (goroutines back to baseline) |
+| `TestChaosUpstreamFlap` | One of two endpoints behind a relay that drops connections in 300 ms on/off cycles, with retries, active checks and outlier ejection: every request 200, endpoint errors and an ejection recorded, the endpoint healthy again after the flapping stops |
+| `TestChaosUpstreamDiesMidResponse` | The upstream sends headers and part of a 100 KB body then closes: the client never receives a complete body, the request returns within five seconds, the next request on another pool succeeds |
+| `TestChaosLogDiskFull` | Every log file is `/dev/full` (ENOSPC on each write): requests are served, `log_write_errors` counts the drops, `xproxy_log_write_errors_total` is exposed, stderr carries one warning per minute |
+| `TestChaosCertificateRotation` | Certificate files replaced in place then `reload-certs`: new handshakes see the new certificate, the expiry gauge is exposed, a broken file fails the reload and the previous certificate keeps serving |
 | `TestFilters` | A `basic_auth` filter at `before_auth` and a `header_guard` at `after_auth` on two routes: open route passes and denies a scanner with the configured status, protected route challenges with 401, passes with credentials and forwards the user header without `Authorization`, denies a scanner after authentication; `denied_filter`, `Filters()` status per instance and the `xproxy_filter_denied_total` metric |
 | `TestFiltersConfig` (config) | Default stage; unknown kind (error lists the registered kinds), invalid and unknown options, bad stage, unknown filter on a route, bad and duplicate names |
 | `TestScale` | A generated table of 100 hosts and 1000 endpoints (1000 hosts and 10 000 endpoints with `XPROXY_SCALE=full`, `make scale`) with active health checks against a backend in a child process: parse, build and start timings, heap, goroutine and descriptor growth bounds, routing across the table, unknown host 404, management views and both metrics expositions, reload timing and old generation drain, traffic over random hosts with latency percentiles, no unhealthy endpoints |
@@ -123,31 +130,97 @@ CI (`.github/workflows/ci.yml`) on every push and pull request.
 
 ## Coverage
 
-Current statement coverage from `make cover` (race enabled):
+`make cover` instruments every package under `internal/` for every test
+binary (`-coverpkg=./internal/...`), so an integration test in
+`internal/proxy` counts towards the packages it exercises, and runs under
+the race detector. `make cover-gate` then applies two rules through
+`test/covergate`: the core packages together must reach 80 %, and no
+single package may fall below 60 %. Both numbers are Makefile variables.
+Excluded from the gate: the binaries (`cmd/`, covered by the smoke
+procedures), the test fakes (`acmetest`, `icaptest`, `filtertest`,
+`testutil`), `version` and the `filters` registration list. CI fails on
+either rule (ASR-Q2).
+
+Current numbers from `make cover-gate` (whole suite, race enabled):
 
 | Package | Coverage |
 |---------|----------|
-| `internal/router` | 96 % |
-| `internal/limits` | 94 % |
-| `internal/jwt` | 90 % |
-| `internal/netutil` | 92 % |
-| `internal/shed` | 88 % |
-| `internal/cluster` | 87 % |
-| `internal/challenge` | 86 % |
+| `internal/limits` | 99 % |
+| `internal/shed` | 99 % |
+| `internal/router` | 97 % |
+| `internal/filter` | 96 % |
+| `internal/metrics` | 95 % |
+| `internal/netutil` | 95 % |
+| `internal/filters/headerguard` | 92 % |
+| `internal/challenge` | 90 % |
+| `internal/config` | 89 % |
+| `internal/cluster` | 88 % |
+| `internal/upstream` | 88 % |
+| `internal/filters/basicauth` | 88 % |
 | `internal/waf` | 85 % |
-| `internal/upstream` | 84 % |
-| `internal/mgmt` | 84 % |
+| `internal/jwt` | 85 % |
+| `internal/tlsconf` | 82 % |
+| `internal/acme/jose` | 82 % |
+| `internal/logging` | 82 % |
+| `internal/acme` | 81 % |
 | `internal/ban` | 80 % |
-| `internal/proxy` | 73 % |
-| `internal/config` | 72 % |
-| `internal/logging` | 77 % |
+| `internal/admin` | 80 % |
+| `internal/h3` | 79 % |
+| `internal/mgmt` | 78 % |
+| `internal/proxy` | 77 % |
+| `internal/icap` | 77 % |
+| `internal/passwd` | 77 % |
 | `internal/tui` | 62 % (the terminal loop itself is covered by the pseudo terminal check) |
-| `internal/icap` | 58 % (the TLS dial path and rare parse errors are not exercised) |
-| `internal/tlsconf` | 56 % |
+| **core packages together** | **82.5 % of 7704 statements** |
 
-Not covered: `cmd/` binaries (covered by the manual smoke procedure below
-and by binary level tests in phase 3), socket activation paths (need
-systemd), error branches for file system failures.
+Not covered: the raw terminal loop of the TUI (pseudo terminal check),
+socket activation (needs systemd), the QUIC transport internals beyond the
+handshake and admission tests, and file system failures other than a full
+disk.
+
+## Mutation testing
+
+`make mutate` runs [gremlins](https://github.com/go-gremlins/gremlins) on
+the packages whose comparisons and arithmetic decide admission:
+`internal/limits` (token buckets, peer rates, connection and concurrency
+limits), `internal/router` (host and path precedence) and
+`internal/netutil` (client address and host normalisation). Gremlins
+applies one mutation at a time (flip a comparison, move a boundary, change
+an operator, invert a sign) and runs the package tests; a mutant that
+survives marks a behaviour no test observes. `.gremlins.yaml` sets the
+gate at 75 % efficacy (killed over killed plus lived) and 90 % mutant
+coverage. Timed out mutants are excluded from efficacy; run it on an
+otherwise idle machine, the timeouts derive from a baseline run.
+
+| Package | Mutants | Killed | Lived | Efficacy |
+|---------|---------|--------|-------|----------|
+| `internal/limits` | 68 | 59 | 9 | 86.8 % |
+| `internal/router` | 31 | 25 | 6 | 80.6 % |
+| `internal/netutil` | 46 | 45 | 1 | 97.8 % |
+
+The first run scored 61.8 %, 79.3 % and 87.0 %; the survivors led to
+`limits/mutation_test.go` (exact token, eviction, peer staleness, peer
+count and shard bound boundaries, the hash function, per address
+connection counts), `TestTieBreaks` and `TestWildcardHostEdges` in the
+router, and `TestHostEdges` in netutil. What still lives are boundary
+mutants on the sort comparator for equal length prefixes (equivalent
+under stable sort with the index tie break) and on comparisons whose
+boundary case is unreachable by construction (an IPv6 literal without a
+closing bracket at position zero, `len(host)+1`). They are accepted and
+listed here so a future change to those lines is looked at.
+
+## Chaos tests
+
+`internal/proxy/chaos_test.go` injects the failures an operator sees in
+production and asserts continuity, bounded recovery and no leak: a reload
+storm, a flapping endpoint, an upstream dying mid response, a full log
+disk and certificate rotation with a broken file. The table above lists
+what each one checks. Two of them changed the product: a full disk now
+counts dropped events (`log_write_errors`, `xproxy_log_write_errors_total`)
+and warns on stderr at most once a minute instead of failing silently,
+and the earliest certificate expiry per listener is exposed as
+`xproxy_certificate_expiry_seconds` so a forgotten renewal is an alert,
+not an outage.
 
 ## Manual smoke procedure
 
@@ -246,11 +319,9 @@ Phase 3:
 - Binary level end-to-end suite in `test/e2e` that runs `bin/xproxy` with
   socket activation emulated via `LISTEN_FDS`, exercises `xproxyctl` and
   checks logs.
-- Chaos tests: upstream flapping, certificate expiry during runtime,
-  configuration reload storms, disk full on the log directory, SIGKILL of
-  an upstream mid-response.
-- Coverage gate at 80 percent on core packages; mutation testing pass with
-  `gremlins` or equivalent on `limits`, `router` and `netutil`.
+- Chaos: certificate expiry while serving (the certificate itself expiring,
+  as opposed to rotation, which is covered), a SIGKILLed upstream process
+  (the mid-response death is covered at the connection level).
 - Fedora VM runner: install the RPMs, enable units, run traffic, assert no
   AVC denials and a passing `systemd-analyze security` band (the container
   job covers build, lint and install).

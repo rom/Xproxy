@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/rom/xproxy/internal/config"
 )
@@ -52,6 +53,24 @@ func (r *Reloadable) Load() error {
 	}
 	r.certs.Store(&certs)
 	return nil
+}
+
+// NotAfter returns the earliest expiry among the loaded file certificates,
+// or the zero time when none is loaded. Managed certificates report their
+// own expiry through the ACME status.
+func (r *Reloadable) NotAfter() time.Time {
+	var earliest time.Time
+	if certs := r.certs.Load(); certs != nil {
+		for _, c := range *certs {
+			if c.Leaf == nil {
+				continue
+			}
+			if earliest.IsZero() || c.Leaf.NotAfter.Before(earliest) {
+				earliest = c.Leaf.NotAfter
+			}
+		}
+	}
+	return earliest
 }
 
 // getCertificate selects a certificate by SNI, falling back to the first

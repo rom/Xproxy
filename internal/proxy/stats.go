@@ -90,6 +90,7 @@ type Snapshot struct {
 	LogSyslogDropped  uint64    `json:"log_syslog_dropped"`
 	LogJournalDropped uint64    `json:"log_journald_dropped"`
 	LogRedaction      bool      `json:"log_redaction"`
+	LogWriteErrors    uint64    `json:"log_write_errors"`
 	UpstreamErrors    uint64    `json:"upstream_errors"`
 	UpstreamTimeouts  uint64    `json:"upstream_timeouts"`
 	UpstreamNoHealthy uint64    `json:"upstream_no_healthy"`

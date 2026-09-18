@@ -20,7 +20,7 @@ RPMDIR       ?= $(CURDIR)/rpmbuild
 
 BIN = bin
 
-.PHONY: all build test test-race cover fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint scale bench load
+.PHONY: all build test test-race cover cover-gate mutate fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint scale bench load
 
 all: build
 
@@ -39,9 +39,28 @@ test:
 test-race:
 	$(GO) test -count=1 -race ./...
 
+# Coverage of every internal package by the whole suite (integration tests
+# count towards the packages they exercise), under the race detector.
+# Only packages with tests are run (a package without tests contributes
+# nothing and needs the covdata tool with -coverpkg, which some toolchain
+# installations lack).
+TESTPKGS = $$($(GO) list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
 cover:
-	$(GO) test -count=1 -race -coverprofile=coverage.out -covermode=atomic ./...
+	$(GO) test -count=1 -race -coverpkg=./internal/... -coverprofile=coverage.out -covermode=atomic $(TESTPKGS)
 	$(GO) tool cover -func=coverage.out | tail -1
+
+# Gate: core packages together at least COVER_MIN percent, no package
+# below COVER_FLOOR. See docs/TESTS.md.
+COVER_MIN   ?= 80
+COVER_FLOOR ?= 60
+cover-gate: cover
+	$(GO) run ./test/covergate -profile coverage.out -min $(COVER_MIN) -floor $(COVER_FLOOR)
+
+# Mutation testing on the packages whose arithmetic and comparisons guard
+# admission: limiters, router, host and path normalisation.
+MUTATE_PKGS ?= internal/limits internal/router internal/netutil
+mutate:
+	@for p in $(MUTATE_PKGS); do echo "== $$p"; gremlins unleash $$p || exit 1; done
 
 # Run every fuzz target briefly. FUZZTIME controls the per-target budget.
 FUZZTIME ?= 20s

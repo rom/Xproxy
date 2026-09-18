@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/rom/xproxy/internal/config"
 )
@@ -34,6 +35,8 @@ type Logs struct {
 	journald *journaldSink
 	syslog   *syslogSink
 	redactor *Redactor
+	// writeErrors counts failed file writes across all streams.
+	writeErrors atomic.Uint64
 }
 
 // Open creates the streams described by cfg. Files are created with mode
@@ -79,6 +82,9 @@ func Open(cfg config.Logging) (*Logs, error) {
 			case "file":
 				path := filepath.Join(cfg.Directory, s.File)
 				fw, err := newFileWriter(path, int64(s.MaxSizeMB)<<20, s.MaxFiles)
+				if fw != nil {
+					fw.errs = &l.writeErrors
+				}
 				if err != nil {
 					l.Close()
 					return nil, fmt.Errorf("open %s log: %w", name, err)
@@ -170,6 +176,7 @@ type SinkStats struct {
 	SyslogSent     uint64 `json:"syslog_sent"`
 	SyslogDropped  uint64 `json:"syslog_dropped"`
 	JournalDropped uint64 `json:"journald_dropped"`
+	WriteErrors    uint64 `json:"write_errors"`
 	Redaction      bool   `json:"redaction"`
 }
 
@@ -186,6 +193,7 @@ func (l *Logs) Stats() SinkStats {
 		st.JournalDropped = l.journald.drop.Load()
 	}
 	st.Redaction = l.redactor != nil
+	st.WriteErrors = l.writeErrors.Load()
 	return st
 }
 
