@@ -104,8 +104,11 @@ node at a time; the others keep serving with local limits meanwhile.
 Only members of the `xproxy` group and root can reach the socket. Keep
 that group small; every action is in the audit log with the caller's uid.
 Do not expose the socket through a TCP forwarder. For remote administration
-use SSH with `xproxyctl`; the 1.0 GUI adds mTLS on a loopback or dedicated
-listener.
+use SSH with `xproxyctl`, or the GUI through an SSH tunnel to its loopback
+listener. If the GUI must be reachable on an internal network, bind it
+with a server certificate and a client CA (the process refuses anything
+else), give operators client certificates, and keep viewers to the
+`viewer` role.
 
 ## 7. Configuration choices that matter
 

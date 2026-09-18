@@ -86,6 +86,12 @@ func (c *Client) doBody(method, path string, payload any, out any) error {
 	return nil
 }
 
+// Do performs an arbitrary call. payload (if not nil) is sent as JSON; out
+// receives the decoded body, or the raw body when it is a *[]byte.
+func (c *Client) Do(method, path string, payload, out any) error {
+	return c.doBody(method, path, payload, out)
+}
+
 // Status fetches /v1/status.
 func (c *Client) Status() (*Status, error) {
 	var s Status

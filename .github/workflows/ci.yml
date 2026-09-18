@@ -19,7 +19,7 @@ jobs:
       - run: make test-race
       - run: make cover
       - run: make build
-      - run: ./bin/xproxy -version && ./bin/xproxyctl version
+      - run: ./bin/xproxy -version && ./bin/xproxyctl version && ./bin/xproxy-admin version
   lint:
     runs-on: ubuntu-latest
     steps:

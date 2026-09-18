@@ -11,6 +11,7 @@ configuration patterns and reading the logs. Installation is covered in
 |--------|---------|
 | `xproxy` | The data plane daemon |
 | `xproxyctl` | Control tool talking to the daemon's Unix socket |
+| `xproxy-admin` | Web GUI: a separate process serving a browser interface over the same socket |
 
 ### xproxy
 
@@ -465,6 +466,71 @@ requires one only while the load level is at or above 0.5, so a flood of
 plain HTTP clients is turned away with a static page while browsers carry
 on after a short delay. Do not gate API routes: clients without JavaScript
 cannot pass. Give monitoring systems `exempt_cidrs`.
+
+## Web GUI
+
+`xproxy-admin` serves the browser interface. It is a separate process from
+the data plane, holds no secrets of its own beyond its users file, and
+forwards every action to the management socket, so everything it does is
+in the audit log like a `xproxyctl` call.
+
+```
+xproxy-admin serve [-listen 127.0.0.1:8443] [-socket /run/xproxy/mgmt.sock]
+                   [-config /etc/xproxy/xproxy.yaml] [-users /etc/xproxy/admin-users]
+                   [-tls-cert PATH -tls-key PATH [-client-ca PATH]]
+                   [-restart-cmd "systemctl restart xproxy.service"]
+                   [-session-idle 30m] [-session-max 12h]
+xproxy-admin user add NAME -role viewer|operator [-cert-only]
+xproxy-admin user del NAME
+xproxy-admin user list
+xproxy-admin passwd NAME
+```
+
+Roles:
+
+| Role | May |
+|------|-----|
+| `viewer` | See every screen: overview, upstreams, bans, graphs, cluster, certificates, ICAP, the configuration file and the logs |
+| `operator` | Everything a viewer may, plus ban and unban, reload, reload certificates, reopen logs, renew certificates, edit and save the configuration file, restart the data plane |
+
+Screens:
+
+- **Overview**: version, uptime, generation, request and response counters,
+  denials by reason, load level, listeners; the action buttons for
+  operators.
+- **Upstreams**: every endpoint with health, ejection, active requests and
+  error counts, refreshed every five seconds.
+- **Bans**: the active list with expiry, source and count; add a ban with a
+  duration and reason (recorded as `admin:<user>: <reason>`), unban.
+- **Graphs**: requests, denials, bytes, connections, load level, upstream
+  latency, bans and cluster peers from the sampled series buffer, with a
+  selectable window.
+- **Cluster**, **Certificates** (ACME status with days left and a renew
+  button), **ICAP** (service reachability and counters).
+- **Config**: the active configuration as the data plane loaded it, and an
+  editor for the file. *Validate* runs the full validation without
+  touching the file and lists every problem; *Validate and save* writes
+  the file atomically, keeps the previous version in `xproxy.yaml.bak`,
+  and refuses to overwrite a file that changed since it was loaded;
+  *Reload data plane* applies it.
+- **Logs**: the last lines of a stream and a live follow with a substring
+  filter and pause.
+
+Access: the default listener is `127.0.0.1:8443` in plain HTTP, reached
+through an SSH tunnel (`ssh -L 8443:127.0.0.1:8443 edge`). Binding to any
+other address requires `-tls-cert`, `-tls-key` and `-client-ca`: the
+browser must present a client certificate from that CA, and a certificate
+whose common name matches a user logs that user in without a password
+(`-cert-only` users have no password at all). Five failed logins from one
+address lock it out for five minutes. Sessions end after thirty minutes
+idle or twelve hours in total.
+
+The first user:
+
+```sh
+xproxy-admin user add admin -role operator     # prompts for the password twice
+xproxy-admin user add oncall -role viewer
+```
 
 ## Live terminal view
 

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xproxy admin</title>
+<link rel="stylesheet" href="/app.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<noscript>xproxy admin needs JavaScript.</noscript>
+<div id="login" class="hidden">
+  <form id="login-form" class="card" autocomplete="on">
+    <h1>xproxy admin</h1>
+    <label>User <input name="user" autocomplete="username" required autofocus></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Log in</button>
+    <p id="login-error" class="error"></p>
+  </form>
+</div>
+<div id="app" class="hidden">
+  <header>
+    <span class="brand">xproxy</span>
+    <nav id="nav">
+      <a href="#overview">Overview</a>
+      <a href="#upstreams">Upstreams</a>
+      <a href="#bans">Bans</a>
+      <a href="#graphs">Graphs</a>
+      <a href="#cluster">Cluster</a>
+      <a href="#certificates">Certificates</a>
+      <a href="#icap">ICAP</a>
+      <a href="#config">Config</a>
+      <a href="#logs">Logs</a>
+    </nav>
+    <span id="who"></span>
+    <button id="logout" class="link">Log out</button>
+  </header>
+  <div id="flash" class="hidden"></div>
+  <main id="view"></main>
+  <footer><span id="footer-version"></span> <span id="refresh-state"></span></footer>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

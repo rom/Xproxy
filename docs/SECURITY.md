@@ -215,6 +215,15 @@ to report a vulnerability. The threat analysis behind the controls is in
   audit log for every mutating action.
 - Reload through the API re-reads the operator's file; the API never accepts
   a configuration body.
+- The web GUI is a separate process and user; it forwards actions to the
+  socket (so they are audited with its uid) and adds its own audit line
+  with the GUI user name. Strict Content Security Policy without inline
+  code, `HttpOnly` `SameSite=Strict` session cookies, three independent
+  cross-site request forgery checks, server side role enforcement, PBKDF2
+  password hashes with per-source login lockout, mutual TLS required for
+  any non-loopback listener. Configuration edits are validated before they
+  are written, written atomically with a backup, and guarded by an entity
+  tag.
 - Four separate JSON streams. Log files are created `0640`. Attacker
   controlled values are JSON encoded, which defeats log injection. Query
   strings are not logged.
@@ -232,8 +241,9 @@ to report a vulnerability. The threat analysis behind the controls is in
 
 Phase 2 (remaining): TUI.
 
-Phase 3 (ICAP and ACME delivered): full SELinux policy in an RPM, GUI with
-role separation, coverage and mutation gates, external security review.
+Phase 3 (ICAP, ACME and the GUI delivered): full SELinux policy in an RPM
+including a domain for `xproxy-admin`, coverage and mutation gates,
+external security review.
 
 ## Secure development
 

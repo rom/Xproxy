@@ -258,7 +258,8 @@ plane never serves management traffic on a data listener.
 **Alternatives.** Embedding the GUI in `xproxy` (a browser surface inside the
 data plane binary), gRPC (adds a dependency for no gain on a local socket).
 
-**Status.** Accepted (interview).
+**Status.** Accepted (interview); GUI delivered in phase 3, see AMR-030 for
+its implementation choices.
 
 ---
 
@@ -736,6 +737,52 @@ are not implemented (candidates after 1.0). Only one account per process;
 the state directory format (`account.key`, `account.url`,
 `certs/<first host>.pem`) is part of the operator contract and is
 documented in CONFIG.md.
+
+**Status.** Accepted.
+
+---
+
+## AMR-030: Web GUI without a framework, with its own user
+
+**Context.** AMR-011 fixed the shape (separate binary over the management
+socket). Open were the front end stack, the authentication model, how the
+GUI edits configuration that the data plane user must not be able to
+write, and how it restarts a service it has no privilege over.
+
+**Decision.**
+
+- Front end: one HTML page, one stylesheet and one script in plain
+  JavaScript, embedded in the binary, no framework and no build step. The
+  page renders everything through DOM construction (`textContent`), which
+  lets the server send a Content Security Policy with no inline code and
+  no external origin. The screens mirror the TUI and add the editor, the
+  graphs (canvas) and the log follow (server-sent events).
+- Authentication: a users file with PBKDF2-HMAC-SHA256 from the standard
+  library (`crypto/pbkdf2`, Go 1.24) rather than argon2 from `x/crypto`,
+  keeping AMR-004's dependency set unchanged; the iteration count is
+  stored per hash so it can be raised. Client certificates on a mutual
+  TLS listener log in by common name. Two roles, viewer and operator,
+  enforced by HTTP method on the server.
+- Process model: `xproxy-admin` runs as its own user in the `xproxy`
+  group. The configuration file is owned by that user and group readable,
+  so the data plane can read but never write it, and the GUI can save it.
+  Restart is an operator configured command; the shipped unit uses
+  `systemctl restart xproxy.service` authorised by a polkit rule scoped to
+  that user, unit and verb.
+- Network exposure: loopback or Unix socket by default (SSH tunnel for
+  remote use); any other bind address requires server TLS and a client CA.
+
+**Alternatives.** A framework (React, htmx) with a bundler: more code to
+audit and a build toolchain in CI for a nine screen tool. OAuth or an
+external identity provider: a dependency on network services for the
+tool used when the network is on fire; can be added behind the mutual
+TLS listener later. A setuid helper for restart: replaced by polkit, which
+is already the Fedora mechanism for exactly this.
+
+**Consequences.** No new module. The GUI has no SELinux domain yet; until
+the policy in phase 3 adds `xproxy_admin_t` it runs in the unit's default
+domain with the systemd sandbox. Browser support is current Firefox and
+Chromium (fetch metadata, `EventSource`, canvas); no legacy browsers.
 
 **Status.** Accepted.
 

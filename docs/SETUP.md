@@ -17,7 +17,7 @@ level checklist and [USAGE.md](USAGE.md) for operation.
 ```sh
 git clone https://github.com/rom/xproxy.git
 cd xproxy
-make build          # bin/xproxy, bin/xproxyctl (static, stripped)
+make build          # bin/xproxy, bin/xproxyctl, bin/xproxy-admin (static, stripped)
 make check          # fmt, vet, race tests, lint
 ```
 
@@ -38,8 +38,9 @@ sysctl --system
 
 | Path | Content |
 |------|---------|
-| `/usr/local/bin/xproxy`, `/usr/local/bin/xproxyctl` | binaries |
+| `/usr/local/bin/xproxy`, `/usr/local/bin/xproxyctl`, `/usr/local/bin/xproxy-admin` | binaries |
 | `/etc/systemd/system/xproxy.service` | hardened service |
+| `/etc/systemd/system/xproxy-admin.service`, `/etc/polkit-1/rules.d/50-xproxy-admin.rules` | web GUI service (disabled until you enable it) and the polkit rule that lets it restart the data plane |
 | `/etc/systemd/system/xproxy.socket`, `xproxy-https.socket`, `xproxy-h3.socket` | listening sockets on TCP 80, TCP 443 and UDP 443 |
 | `/etc/sysctl.d/90-xproxy.conf` | kernel profile |
 | `/etc/logrotate.d/xproxy` | rotation calling `xproxyctl reopen-logs` |
@@ -90,6 +91,35 @@ xproxyctl status
 
 The service is `Type=notify`; `systemctl start` returns when the proxy is
 serving.
+
+## Web GUI
+
+The GUI is optional and off until enabled. It runs as its own user so that
+a compromise of the data plane cannot write its configuration, and it owns
+the configuration file so that operators can edit it from the browser:
+
+```sh
+useradd --system --gid xproxy --home-dir /var/lib/xproxy --shell /usr/sbin/nologin xproxy-admin
+chown xproxy-admin:xproxy /etc/xproxy/xproxy.yaml && chmod 0640 /etc/xproxy/xproxy.yaml
+sudo -u xproxy-admin xproxy-admin user add admin -role operator
+systemctl enable --now xproxy-admin
+ssh -L 8443:127.0.0.1:8443 edge          # from the workstation
+xdg-open http://127.0.0.1:8443/
+```
+
+The shipped unit listens on `127.0.0.1:8443` only. To reach it directly
+from an internal network, issue a server certificate and a client CA,
+then change `ExecStart` to add `-listen 10.0.0.5:8443 -tls-cert ...
+-tls-key ... -client-ca ...`; without all three the process refuses to
+bind a non-loopback address. The restart button runs
+`systemctl restart xproxy.service`; the polkit rule allows exactly that
+verb on that unit for the `xproxy-admin` user and nothing else. Remove
+`-restart-cmd` from the unit to disable the button.
+
+The users file `/etc/xproxy/admin-users` holds PBKDF2 hashes and is
+written `0600` by the `user` and `passwd` subcommands, run as
+`xproxy-admin`. `xproxy-admin passwd NAME` changes a password; restart
+the service afterwards to end that user's sessions.
 
 ## SELinux
 
@@ -183,7 +213,8 @@ schema version ships with a migration note in the change log.
 ```sh
 systemctl disable --now xproxy.service xproxy.socket xproxy-https.socket
 semodule -r xproxy
-rm -f /usr/local/bin/xproxy /usr/local/bin/xproxyctl /etc/systemd/system/xproxy*.{service,socket} /etc/sysctl.d/90-xproxy.conf /etc/logrotate.d/xproxy
+systemctl disable --now xproxy-admin.service
+rm -f /usr/local/bin/xproxy /usr/local/bin/xproxyctl /usr/local/bin/xproxy-admin /etc/systemd/system/xproxy*.{service,socket} /etc/sysctl.d/90-xproxy.conf /etc/logrotate.d/xproxy /etc/polkit-1/rules.d/50-xproxy-admin.rules
 ```
 
 Configuration, certificates and logs are left in place.
