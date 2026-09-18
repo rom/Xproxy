@@ -68,6 +68,7 @@ internal/proxy/forward.go  kind: forward listeners (CONNECT tunnels, plain relay
 internal/dns        DNS proxy: message framing, cache, block list, resolver, UDP and TCP server
 internal/ingress    Kubernetes ingress controller: API client, translation, merge, polling
 internal/proxy/dnslistener.go  kind: dns listeners bound to the proxy's logs and bans
+internal/proxy/static.go  routes[].static: files through os.Root, index, listing, fallback
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
@@ -198,6 +199,19 @@ kept only from trusted peers; otherwise it is replaced by the peer address.
 `Forwarded` is always removed. This is the only correct construction when
 the proxy is behind a known chain and the strictest one when it is the
 edge.
+
+Listeners with `proxy_protocol: true` establish the peer one layer
+lower. `proxyListener` (`internal/proxy/proxyproto.go`) wraps the
+limited listener; its connections parse a PROXY protocol v1 or v2 header
+(`netutil.ReadProxyHeader`) lazily, on the first `Read` or `RemoteAddr`
+call, which `net/http` makes in the connection's own goroutine, so the
+accept loop never waits on a slow balancer. Only a peer inside
+`trusted_proxies` is parsed; the header's source becomes `RemoteAddr`,
+the connection limiter re-keys the per address count to it (`Rekey`),
+and everything above (TLS fingerprinting, `ClientIP`, bans, logs) sees
+the client. A trusted peer without a header, or with a bad one, gets its
+connection closed silently and a `drop_connection` event; the parse has
+a five second deadline.
 
 ### Path handling
 
@@ -410,6 +424,33 @@ claims, issue and expiry times) with AES-GCM under a purpose string
 that keeps state and session ciphertexts apart. Redirects are
 `Verdict.Silent` denies: sent as responses without the security
 bookkeeping of a refusal.
+
+### Static files
+
+A `static` route (`internal/proxy/static.go`) holds an `os.Root` opened
+at generation build (a missing directory fails the reload) and closed
+with the generation. Every open goes through the root, so the kernel
+refuses paths that escape it through symbolic links, and the request
+path is cleaned before it arrives; dot segments are refused in the
+handler. Regular files are served with `http.ServeContent` (ranges,
+conditional requests, HEAD) under a weak `ETag` from size and
+modification time and a fixed content type table; directories serve
+their index, a listing or 404; any open failure is a 404. A single page
+fallback is one more open inside the same root.
+
+### Response compression
+
+When a route compresses and the client accepts gzip, the handler slips a
+`compressWriter` (`internal/proxy/compress.go`) between the logging
+`responseWriter` and the connection before the action runs, so every
+action writes through it. The writer decides when the header is
+committed (status, existing encoding, `no-transform`, media type,
+length), buffers an unknown-length body up to `min_bytes`, decides at
+the first flush for streamed bodies, and is closed by a deferred call
+when the handler returns, which writes the gzip trailer or releases a
+small buffered body unchanged. gzip writers are pooled per generation.
+The cache stores upstream bodies before this layer, so one entry serves
+both encodings.
 
 ### Honeypots
 
@@ -737,6 +778,21 @@ configured rate approximately cluster wide. Ban changes originating locally
 the same cycle; peers apply them with source `peer:<node>` and never
 re-announce them, so there are no loops. A newly connected peer receives a
 snapshot of all active bans. Idle cycles send a ping so deadlines hold.
+
+Protocol version 2 (1.3) adds an `events` message: bounded facts with a
+kind, a key, an optional route and an expiry. The server publishes
+honeypot marks and unmarks and applies peers' marks to its own table;
+filters reach the channel through `filter.Env.Events`, a per generation
+bus (`internal/proxy/events.go`) whose subscriptions die with the
+generation, so a reload never leaves a stale filter listening. The OIDC
+filter shares session revocations under the kind `oidc_revoke/<filter
+name>`. Events queue without blocking and are dropped and counted when
+the queue is full; a receiver applies them with its own bounds (the mark
+table size, the revocation index size, a lifetime clamp of one year).
+Unknown message types are now skipped and counted rather than closing
+the connection, so a newer node can join an older cluster; version 1
+nodes still close on an events message, hence `share_events: false`
+during a rolling upgrade.
 
 The node is owned by the `Server` like the ban list and reads limiters
 through the live runtime pointer, so reloads neither detach it nor lose

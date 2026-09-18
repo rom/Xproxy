@@ -24,6 +24,9 @@ func Merge(base *config.Config, snap Snapshot, certs []config.Certificate) (*con
 	if err := yaml.Unmarshal(raw, &c); err != nil {
 		return nil, err
 	}
+	// base already carries its fragments' sections; parsing the merged
+	// document must not append them a second time.
+	c.Includes = nil
 	names := map[string]bool{}
 	for _, u := range c.Upstreams {
 		names[u.Name] = true

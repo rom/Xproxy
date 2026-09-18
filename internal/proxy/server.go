@@ -118,7 +118,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		bl := s.bans.Load()
 		return bl != nil && bl.DropsConnections() && bl.Banned(addr)
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error)
+	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s))
 	if err != nil {
 		if bl := s.bans.Load(); bl != nil {
 			bl.Close()
@@ -162,6 +162,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 			return nil, err
 		}
 		node.AttachBans(banStore(s.bans.Load()))
+		node.OnEvent(s.onClusterEvent)
 		s.cluster.Store(node)
 	}
 	return s, nil
@@ -358,6 +359,12 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 	}
 	lim := s.cfg().Server.Limits
 	bl := &boundListener{cfg: lc, ln: s.connLimiter.Wrap(ln), activated: act}
+	if lc.ProxyProtocol && lc.Kind != "tcp" && lc.Kind != "dns" {
+		bl.ln = &proxyListener{Listener: bl.ln,
+			trusted:  func() []netip.Prefix { return s.rt.Load().trusted },
+			onReject: s.connLimiter.Reject,
+		}
+	}
 	if lc.Kind == "tcp" {
 		bl.tcp = newTCPServer(s, lc, bl.ln)
 		if lc.TCP.QUIC {
@@ -541,7 +548,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error)
+	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s))
 	if err != nil {
 		s.stats.ReloadFailures.Add(1)
 		return err
@@ -755,6 +762,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			}
 			if bl.dns != nil {
 				bl.dns.Shutdown(ctx)
+				bl.dns.Close()
 				return
 			}
 			err := bl.httpSrv.Shutdown(ctx)

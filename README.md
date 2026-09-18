@@ -27,8 +27,8 @@ management plane for other protocols.
 ```
 client ──▶ listener (accept limits, bans) ──▶ admission pipeline ──▶ route action ──▶ upstream pool
               http | tcp | forward | dns        concurrency, host and       proxy, redirect,      balancer, health,
-                                                path checks, route match,   respond, honeypot     ejection, retries,
-                                                country, ACL, challenge,                          affinity, mirror
+                                                path checks, route match,   respond, honeypot,    ejection, retries,
+                                                country, ACL, challenge,    static files          affinity, mirror
                                                 shedding, rate limits,
                                                 body limit, filters
                                                 (auth, WAF, ICAP, yours),
@@ -63,8 +63,11 @@ an identifier from the access log to the upstream.
   consistent hashing; active HTTP or gRPC health checks, passive outlier
   ejection, connection level retries, signed cookie affinity
 - Response caching with per route key policies, `Vary` and conditional
-  requests; request mirroring of sampled traffic to a candidate
-  upstream, bounded and invisible to clients
+  requests; gzip compression of eligible responses; request mirroring
+  of sampled traffic to a candidate upstream, bounded and invisible to
+  clients
+- Static file serving from a directory with index files, listings and a
+  single page application fallback, confined to the root
 - gRPC: errors answered as gRPC statuses, `grpc-timeout` honoured,
   trailers relayed, per code counters
 

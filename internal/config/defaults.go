@@ -375,6 +375,13 @@ func applyDefaults(c *Config) {
 	for i := range c.Filters {
 		setStr(&c.Filters[i].Stage, StageAfterAuth)
 	}
+	if cp := c.Compression; cp != nil {
+		setInt(&cp.Level, 5)
+		setInt(&cp.MinBytes, 1024)
+		if len(cp.Types) == 0 {
+			cp.Types = append([]string(nil), DefaultCompressionTypes...)
+		}
+	}
 	if c.Cache != nil {
 		if c.Cache.MaxBytes == 0 {
 			c.Cache.MaxBytes = 64 << 20

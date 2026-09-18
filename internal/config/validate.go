@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/rom/xproxy/internal/filter"
+	"mime"
 	"time"
 
 	"crypto/tls"
@@ -74,6 +75,12 @@ func (v *validator) config(c *Config) {
 		v.errf("version: got %d, this build supports %d", c.Version, CurrentVersion)
 	}
 	v.server(&c.Server)
+	for i := range c.Server.Listeners {
+		ln := &c.Server.Listeners[i]
+		if ln.ProxyProtocol && ln.Kind != "tcp" && len(c.TrustedProxies) == 0 {
+			v.errf("server.listeners[%d].proxy_protocol: needs trusted_proxies naming the balancers that send the header", i)
+		}
+	}
 	v.management(&c.Management)
 	v.logging(&c.Logging)
 	for i, cidr := range c.TrustedProxies {
@@ -147,6 +154,24 @@ func (v *validator) config(c *Config) {
 		}
 		if g.CSV != "" {
 			v.file("geoip.csv", g.CSV)
+		}
+	}
+	if cp := c.Compression; cp != nil {
+		if cp.Level < 1 || cp.Level > 9 {
+			v.errf("compression.level: must be between 1 and 9")
+		}
+		if cp.MinBytes < 0 || cp.MinBytes > 1<<20 {
+			v.errf("compression.min_bytes: must be between 0 and 1048576")
+		}
+		for j, t := range cp.Types {
+			if mt, _, err := mime.ParseMediaType(t); err != nil || mt != strings.ToLower(t) {
+				v.errf("compression.types[%d]: %q is not a media type without parameters", j, t)
+			}
+		}
+	}
+	for i := range c.Routes {
+		if r := &c.Routes[i]; r.Compress != nil && *r.Compress && !c.Compression.Enable() {
+			v.errf("routes[%d].compress: true needs an enabled compression section", i)
 		}
 	}
 	if cc := c.Cache; cc != nil {
@@ -926,8 +951,38 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 			v.errf("%s.doh.listener: required", p)
 		}
 	}
+	if st := r.Static; st != nil {
+		actions++
+		switch {
+		case st.Root == "":
+			v.errf("%s.static.root: required", p)
+		case !strings.HasPrefix(st.Root, "/"):
+			v.errf("%s.static.root: must be an absolute path", p)
+		case v.fileCheck:
+			if info, err := os.Stat(st.Root); err != nil {
+				v.errf("%s.static.root: %v", p, err)
+			} else if !info.IsDir() {
+				v.errf("%s.static.root: %s is not a directory", p, st.Root)
+			}
+		}
+		if idx := st.IndexFile(); strings.ContainsAny(idx, "/\\") || idx == "." || idx == ".." {
+			v.errf("%s.static.index: must be a file name", p)
+		}
+		if st.Fallback != "" && (!strings.HasPrefix(st.Fallback, "/") || strings.Contains(st.Fallback, "..")) {
+			v.errf("%s.static.fallback: must be an absolute path inside root", p)
+		}
+		if strings.ContainsAny(st.CacheControl, "\r\n") {
+			v.errf("%s.static.cache_control: invalid", p)
+		}
+		if st.MaxFileBytes < 0 {
+			v.errf("%s.static.max_file_bytes: must not be negative", p)
+		}
+		if r.Cache != nil || r.Mirror != nil || r.GRPC != nil || r.WebSocket {
+			v.errf("%s.static: cache, mirror, grpc and websocket do not apply to a static route", p)
+		}
+	}
 	if actions != 1 {
-		v.errf("%s: exactly one of upstream, redirect, respond, honeypot or doh is required", p)
+		v.errf("%s: exactly one of upstream, redirect, respond, honeypot, doh or static is required", p)
 	}
 	if g := r.GRPC; g != nil {
 		for j, sv := range g.Services {

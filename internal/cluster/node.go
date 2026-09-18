@@ -53,12 +53,17 @@ type Node struct {
 	tick     *time.Ticker
 
 	banQueue chan banChange
-	seq      atomic.Uint64
-	stop     chan struct{}
-	stopped  atomic.Bool
-	wg       sync.WaitGroup
+	// eventQueue holds local events awaiting broadcast; onEvent receives
+	// peers' events.
+	eventQueue chan Event
+	onEvent    atomic.Pointer[func(e Event, peer string)]
+	seq        atomic.Uint64
+	stop       chan struct{}
+	stopped    atomic.Bool
+	wg         sync.WaitGroup
 
 	ratesSent, ratesRecv, keysRecv, bansSent, bansRecv, rejected, dropped atomic.Uint64
+	eventsSent, eventsRecv, ignored                                       atomic.Uint64
 }
 
 type banChange struct {
@@ -79,6 +84,7 @@ func New(cfg *config.Cluster, rates RateSource, log *slog.Logger) (*Node, error)
 		banQueue: make(chan banChange, banQueueSize),
 		stop:     make(chan struct{}),
 	}
+	n.eventQueue = make(chan Event, eventQueueSize)
 	srv, cli, err := buildTLS(&cfg.TLS)
 	if err != nil {
 		return nil, err
@@ -161,6 +167,46 @@ func (n *Node) AttachBans(b BanStore) {
 			}
 		})
 	}
+}
+
+// PublishEvent queues a local event for every peer. It never blocks: when
+// the queue is full the event is dropped and counted, as bans are.
+func (n *Node) PublishEvent(e Event) {
+	n.mu.Lock()
+	share := n.cfg.SharesEvents()
+	n.mu.Unlock()
+	if !share || !validEvent(&e) {
+		return
+	}
+	select {
+	case n.eventQueue <- e:
+	default:
+		n.dropped.Add(1)
+	}
+}
+
+// OnEvent sets the receiver of peers' events. Passing nil discards them.
+func (n *Node) OnEvent(fn func(e Event, peer string)) {
+	if fn == nil {
+		n.onEvent.Store(nil)
+		return
+	}
+	n.onEvent.Store(&fn)
+}
+
+// validEvent bounds an event's fields and clamps its lifetime.
+func validEvent(e *Event) bool {
+	if e.Kind == "" || len(e.Kind) > maxEventKind || e.Key == "" || len(e.Key) > maxEventKey || len(e.Route) > 256 {
+		return false
+	}
+	now := time.Now()
+	if e.Until.IsZero() || !e.Until.After(now) {
+		return false
+	}
+	if e.Until.After(now.Add(maxEventTTL)) {
+		e.Until = now.Add(maxEventTTL)
+	}
+	return true
 }
 
 // Start begins accepting on ln and dialling peers.
@@ -425,6 +471,7 @@ func (n *Node) gossipLoop() {
 				n.rates.Flush(cfg.MaxKeysPerReport)
 			}
 			n.drainBans(nil)
+			n.drainEvents(nil)
 			continue
 		}
 		sent := false
@@ -441,6 +488,9 @@ func (n *Node) gossipLoop() {
 			}
 		}
 		if n.drainBans(peers) {
+			sent = true
+		}
+		if n.drainEvents(peers) {
 			sent = true
 		}
 		if !sent {
@@ -476,6 +526,30 @@ func (n *Node) drainBans(peers []*peer) bool {
 	for _, p := range peers {
 		if p.send(m) == nil {
 			n.bansSent.Add(uint64(len(added) + len(removed))) //nolint:gosec // bounded by MaxBansPerMessage
+		}
+	}
+	return true
+}
+
+// drainEvents sends queued events; it returns whether anything was sent.
+func (n *Node) drainEvents(peers []*peer) bool {
+	var events []Event
+	for len(events) < MaxEventsPerMessage {
+		select {
+		case e := <-n.eventQueue:
+			events = append(events, e)
+			continue
+		default:
+		}
+		break
+	}
+	if len(events) == 0 || len(peers) == 0 {
+		return false
+	}
+	m := &message{T: typeEvents, Node: n.id, Seq: n.seq.Add(1), Events: events}
+	for _, p := range peers {
+		if p.send(m) == nil {
+			n.eventsSent.Add(uint64(len(events))) //nolint:gosec // bounded by MaxEventsPerMessage
 		}
 	}
 	return true
@@ -598,7 +672,7 @@ func readLine(r *bufio.Reader, limit int) ([]byte, error) {
 func (n *Node) handle(in *inbound, m *message) error {
 	switch m.T {
 	case typeHello:
-		if m.Ver != ProtocolVersion {
+		if m.Ver < minProtocolVersion || m.Ver > ProtocolVersion {
 			return fmt.Errorf("protocol version %d not supported", m.Ver)
 		}
 		if m.Node == "" || len(m.Node) > 64 {
@@ -669,8 +743,35 @@ func (n *Node) handle(in *inbound, m *message) error {
 		}
 		n.bansRecv.Add(uint64(len(m.Bans) + len(m.Removed))) //nolint:gosec // bounded above
 		return nil
+	case typeEvents:
+		peerID := deref(in.nodeID.Load())
+		if peerID == "" {
+			return errors.New("events before hello")
+		}
+		if len(m.Events) > MaxEventsPerMessage {
+			return errors.New("too many events")
+		}
+		n.mu.Lock()
+		share := n.cfg.SharesEvents()
+		n.mu.Unlock()
+		fn := n.onEvent.Load()
+		if !share || fn == nil {
+			return nil
+		}
+		for _, e := range m.Events {
+			if !validEvent(&e) {
+				continue
+			}
+			(*fn)(e, peerID)
+			n.eventsRecv.Add(1)
+		}
+		return nil
 	default:
-		return fmt.Errorf("unknown message type %q", m.T)
+		// A newer peer may send types this node does not know; they are
+		// counted and skipped so that a rolling upgrade keeps the
+		// channel up. Version 1 nodes closed the connection instead.
+		n.ignored.Add(1)
+		return nil
 	}
 }
 
@@ -685,6 +786,9 @@ func (n *Node) Status() Status {
 		KeysReceived:  n.keysRecv.Load(),
 		BansSent:      n.bansSent.Load(),
 		BansReceived:  n.bansRecv.Load(),
+		EventsSent:    n.eventsSent.Load(),
+		EventsRecv:    n.eventsRecv.Load(),
+		Ignored:       n.ignored.Load(),
 		Rejected:      n.rejected.Load(),
 		Dropped:       n.dropped.Load(),
 		Peers:         []PeerStatus{},

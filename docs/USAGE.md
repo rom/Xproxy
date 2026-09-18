@@ -146,7 +146,12 @@ everything that controls the process (listeners, limits, logging,
 management) stays in the main file, so a fragment can add a site but
 never weaken a defence. Files are appended in lexical order, names must
 be unique across all of them, and `xproxyctl validate` checks the whole
-set. A reload re-reads every fragment.
+set. A reload re-reads every fragment. `xproxyctl config` prints the
+expanded result as one self-contained document (with `includes` cleared
+and the fragment paths in a leading comment), so its output can be
+saved and loaded as a main file without expanding the fragments twice.
+The Kubernetes ingress merge works on the expanded document the same
+way.
 
 
 ### TLS edge with HTTP redirect
@@ -279,6 +284,28 @@ trusted_proxies: [10.0.0.0/24]
 
 Only hops from this range are believed. Never list `0.0.0.0/0`.
 
+### Behind a layer 4 balancer that speaks the PROXY protocol
+
+```yaml
+trusted_proxies: [10.0.0.0/24]
+server:
+  listeners:
+    - {name: public, address: ":443", proxy_protocol: true, tls: {certificates: [...]}}
+```
+
+A TCP balancer that cannot add HTTP headers (HAProxy in `mode tcp`,
+cloud network load balancers) prepends a PROXY protocol v1 or v2 header
+to every connection instead. With `proxy_protocol: true` the listener
+reads it from peers in `trusted_proxies` before TLS starts, and from
+then on the client address in the header is the client: bans, connection
+and rate limits, ACLs, country lookups, the access log and the
+forwarding headers all see it. A trusted balancer that sends no header
+is dropped, so turn the option on together with the balancer, and a
+connection from any other peer is served as before, so nobody outside
+the balancer range can choose an address. Layer 4 listeners (`kind:
+tcp`) do the opposite: their `proxy_protocol` sends the header to the
+upstream.
+
 ### Weighted and sticky pools
 
 ```yaml
@@ -409,9 +436,17 @@ cluster:
 
 With this in place every `rate_limits` policy is approximately cluster
 wide per key and every ban (manual or triggered) reaches all nodes within
-a gossip interval. `xproxyctl cluster` shows connection state; a peer with
-`connected: false` and a `last_error` is being redialled with back-off.
-Firewall the cluster port to the peers' addresses (HARDENING.md).
+a gossip interval. So do security events: a client that touches a
+honeypot on one node is marked on all of them (`xproxyctl honeypot`
+shows `peer:<node>/<route>` as the route), and an OIDC logout on one
+node revokes the provider session on all of them. `share_rate_limits`,
+`share_bans` and `share_events` switch each channel off separately; set
+`share_events: false` while nodes older than 1.3 are still in the
+cluster, since they close a connection that carries events. `xproxyctl
+cluster` shows connection state and the counters per channel; a peer
+with `connected: false` and a `last_error` is being redialled with
+back-off. Firewall the cluster port to the peers' addresses
+(HARDENING.md).
 
 ### Priority classes and load shedding
 
@@ -797,6 +832,58 @@ checks use the standard health service, so an endpoint that reports
 `NOT_SERVING` is taken out of rotation before clients see errors, and
 a rate limited call is refused with `RESOURCE_EXHAUSTED` rather than a
 text page a gRPC client cannot read.
+
+### Response compression
+
+```yaml
+compression: {level: 5, min_bytes: 1024}
+routes:
+  - name: api
+    hosts: [api.example.com]
+    upstream: api                      # JSON compressed on the way out
+  - name: account
+    hosts: [www.example.com]
+    paths: [/account]
+    compress: false                    # pages with tokens: leave as they are
+    upstream: web
+```
+
+One section turns gzip on for every route; a route opts out with
+`compress: false`. Bodies the upstream already compressed, images,
+ranges and `no-transform` responses pass through, small bodies are left
+alone, and `Vary: Accept-Encoding` is set on everything that could be
+compressed so shared caches stay correct. The access log shows
+`encoding: gzip` on compressed answers and `xproxyctl status` counts
+them.
+
+### Static files and single page applications
+
+```yaml
+routes:
+  - name: assets
+    hosts: [app.example.com]
+    paths: [/static]
+    strip_prefix: /static
+    static: {root: /srv/app/static, cache_control: "public, max-age=86400, immutable"}
+  - name: spa
+    hosts: [app.example.com]
+    paths: [/]
+    static: {root: /srv/app/dist, fallback: /index.html}
+  - name: api
+    hosts: [app.example.com]
+    paths: [/api]
+    upstream: api
+```
+
+Requests for `/static/app.js` serve `/srv/app/static/app.js` with an
+`ETag`, ranges and conditional requests; anything under `/` that is not
+a file in `/srv/app/dist` serves `index.html`, so client side routes
+deep link; the API is proxied. Files are opened inside the root only,
+dot files are never served, and a root that disappears fails the reload
+rather than the site. Give the `xproxy` user read access to the tree
+and, under SELinux, label it `httpd_sys_content_t` or the policy's
+equivalent (SETUP.md). `static_served` and `static_not_found` count the
+answers.
 
 ### Request mirroring
 

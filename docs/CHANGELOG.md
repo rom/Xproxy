@@ -37,6 +37,45 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 - OIDC front channel logout: sessions carry the provider's `sid`,
   `frontchannel_logout_path` revokes it into a bounded index, a logout
   at the proxy revokes it too; `logouts` and `revoked` in the status.
+- Inbound PROXY protocol: `proxy_protocol: true` on `http` listeners
+  reads a v1 or v2 header from peers in `trusted_proxies` and makes the
+  carried address the client for limits, bans, ACLs, logs and
+  forwarding headers; trusted peers without a header are dropped,
+  other peers are served unchanged. The key was reserved since 0.x.
+- Cluster events (protocol version 2): honeypot marks and unmarks and
+  OIDC session revocations are shared between nodes; `share_events`
+  switches the channel; `events_sent`, `events_received` and
+  `ignored_messages` in `xproxyctl cluster`; unknown message types are
+  skipped instead of closing the connection.
+- `filter.Env.Events`: an event bus for compiled-in filters to share
+  facts with cluster peers (middleware API version 1, additive).
+- `bot_score` signal `honeypot_marked` (weight 40) for clients marked
+  by a honeypot here or on a peer.
+- Static file serving: `routes[].static` serves a directory through
+  `os.Root` with index files, optional listings, a single page
+  application fallback, `Cache-Control`, dot file refusal, a size
+  bound, weak `ETag`s, ranges and conditional requests;
+  `static_served`, `static_not_found`, `xproxy_static_responses_total`.
+- Response compression: a `compression` section gzips eligible
+  responses of every kind the proxy writes (proxied, cached, static,
+  respond) with a level, a size floor, a media type list and a per
+  route `compress` override; `Vary`, weak `ETag`s, pre-encoded bodies,
+  ranges and `no-transform` handled; `encoding` in the access log,
+  `compressed` and `compressed_raw_bytes` counters and metrics.
+
+### Fixed (1.3)
+- Ingress merge on a configuration with `includes` expanded the
+  fragments a second time, failing the merge on duplicate names.
+- Reloading a dns listener's policy leaked the previous resolver's
+  idle DNS over TLS connections; the old resolver is now closed, and
+  shutdown closes the last one.
+- Ingress watch streams had no response header timeout, so an API
+  server that accepted the connection and never answered held the
+  watcher forever.
+- `xproxyctl config` output on a configuration with `includes` was not
+  loadable as a main file without expanding the fragments twice; it now
+  prints one self-contained document with the fragment paths in a
+  comment.
 
 ### Added (1.2)
 - GeoIP policy: `geoip` section with a built-in MaxMind DB reader (no

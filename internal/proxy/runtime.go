@@ -41,6 +41,9 @@ type runtime struct {
 	geo        *geoip.DB
 	// geoNeeded is set when any route or rate limit consults the country.
 	geoNeeded bool
+	// events is the generation's event bus (nil in unit tests that build
+	// a runtime without a server).
+	events *eventBus
 }
 
 // customFilter wraps a configured middleware instance with its deny
@@ -103,6 +106,8 @@ type compiledRoute struct {
 	pool         *upstream.Pool
 	honeypotBody []byte
 	honeypotType string
+	static       *staticSite
+	compress     *compressPolicy
 	mirror       *mirror
 	rateLimits   []*rateLimit
 	allow        []netip.Prefix
@@ -145,7 +150,7 @@ func wafSelection(cfg *config.Config, r *config.Route) (profile string, mode waf
 	return cfg.WAF.DefaultProfile, waf.Mode(cfg.WAF.DefaultMode)
 }
 
-func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runtime, error) {
+func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events *eventBus) (*runtime, error) {
 	rt := &runtime{
 		cfg:        cfg,
 		generation: generation,
@@ -154,6 +159,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 		rateLimits: make(map[string]*rateLimit, len(cfg.RateLimits)),
 		trusted:    netutil.ParsePrefixes(cfg.TrustedProxies),
 		routes:     make([]*compiledRoute, len(cfg.Routes)),
+		events:     events,
 	}
 	for i := range cfg.Upstreams {
 		u := &cfg.Upstreams[i]
@@ -229,7 +235,11 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 				rt.stop()
 				return nil, fmt.Errorf("filter %s: %w %q", fc.Name, filter.ErrUnknownKind, fc.Kind)
 			}
-			f, err := k.New(fc.Name, filter.Options(fc.Options), filter.Env{Log: log.With("filter", fc.Name, "kind", fc.Kind)})
+			env := filter.Env{Log: log.With("filter", fc.Name, "kind", fc.Kind)}
+			if events != nil {
+				env.Events = events
+			}
+			f, err := k.New(fc.Name, filter.Options(fc.Options), env)
 			if err != nil {
 				rt.stop()
 				return nil, fmt.Errorf("filter %s: %w", fc.Name, err)
@@ -255,6 +265,10 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 			return nil, err
 		}
 		rt.waf = engine
+	}
+	var compressPol *compressPolicy
+	if cfg.Compression.Enable() {
+		compressPol = newCompressPolicy(cfg.Compression)
 	}
 	for i := range cfg.Routes {
 		r := &cfg.Routes[i]
@@ -298,6 +312,17 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 			default:
 				cr.honeypotBody = []byte(hp.Body)
 			}
+		}
+		if on := cfg.Compression.Enable(); on && (r.Compress == nil || *r.Compress) {
+			cr.compress = compressPol
+		}
+		if r.Static != nil {
+			ss, err := openStatic(r.Static)
+			if err != nil {
+				rt.stop()
+				return nil, fmt.Errorf("route %s: static root: %w", r.Name, err)
+			}
+			cr.static = ss
 		}
 		if r.Upstream != "" {
 			p, ok := rt.pools[r.Upstream]
@@ -416,6 +441,11 @@ func (rt *runtime) stop() {
 	for _, cf := range rt.filters {
 		if c, ok := cf.f.(filter.Closer); ok {
 			_ = c.Close()
+		}
+	}
+	for _, cr := range rt.routes {
+		if cr != nil { // a failed build leaves later slots empty
+			cr.static.close()
 		}
 	}
 }

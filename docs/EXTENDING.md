@@ -144,6 +144,23 @@ func init() {
         },
     })
 }
+
+`Env.Events` is the node's event bus. A filter that keeps state other
+nodes of a cluster should share (a revoked session, a client it has
+decided about) publishes a `filter.Event{Kind, Key, Until}` and
+subscribes to the same kind to learn the peers' facts:
+
+```go
+env.Events.Subscribe("my_filter/"+name, func(e filter.Event) { f.apply(e.Key, e.Until) })
+...
+env.Events.Publish(filter.Event{Kind: "my_filter/" + name, Key: key, Until: exp})
+```
+
+Put the filter name in the kind so that two instances stay apart. Publish
+never blocks and never echoes locally; subscriptions end with the
+generation. Kinds are bounded to 128 bytes and keys to 512; a lifetime
+over a year is clamped. `Env.Events` is nil in `filtertest`, so check it.
+Without a `cluster` section the bus is inert.
 ```
 
 Then add `_ "github.com/rom/xproxy/internal/filters/myfilter"` to
@@ -316,7 +333,8 @@ Version 1 guarantees:
   `Env`, new optional interfaces a filter may implement (as `Closer`),
   new stages. Version 1 gained `Info.Country`, `Info.JA3`, `Info.JA4`,
   `Info.ALPN`, `Info.ChallengeVerified` and `Verdict.Challenge` in 1.1
-  this way, and `Info.HoneypotMarked` and `Verdict.Silent` in 1.2. The
+  this way, `Info.HoneypotMarked` and `Verdict.Silent` in 1.2, and
+  `Env.Events` in 1.3. The
   WebAssembly ABI gained body `get` kinds and `set_body` in 1.3 at
   version 1.
 - Incompatible changes bump `APIVersion`, are recorded in CHANGELOG.md

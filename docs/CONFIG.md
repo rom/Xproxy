@@ -17,10 +17,11 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `server` | object | | Listeners and global limits |
 | `management` | object | | Control socket |
 | `logging` | object | | Log streams |
-| `trusted_proxies` | list of CIDR | `[]` | Peers whose `X-Forwarded-For` is believed. Empty means never. |
+| `trusted_proxies` | list of CIDR | `[]` | Peers whose `X-Forwarded-For` is believed, and whose PROXY protocol header is parsed on listeners with `proxy_protocol: true`. Empty means never. |
 | `rate_limits` | list | `[]` | Named rate limit policies |
 | `upstreams` | list | `[]` | Named endpoint pools |
 | `routes` | list | `[]` | Request matching and actions |
+| `compression` | object | none | gzip of eligible responses; see `compression` |
 
 ## server
 
@@ -41,7 +42,7 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
-| `proxy_protocol` | bool | `false` | Reserved (PROXY protocol parsing arrives in 1.0) |
+| `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; not on `kind: tcp` (which forwards a header instead) or `dns`. |
 | `kind` | `http`, `tcp`, `forward`, `dns` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients and `dns` a DNS proxy; see below |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 
@@ -373,13 +374,15 @@ wins); then configuration order.
 | `paths` | list | `["/"]` | Prefixes on segment boundaries |
 | `methods` | list | `[]` (any) | Upper-case tokens |
 | `priority` | int | `0` | Tie breaker |
-| `upstream` | name | | Exactly one of `upstream`, `redirect`, `respond`, `honeypot` |
+| `upstream` | name | | Exactly one of `upstream`, `redirect`, `respond`, `honeypot`, `doh`, `static` |
 | `redirect` | `{to, status}` | status `308` | `to` is a URL or path; status 301, 302, 303, 307 or 308 |
 | `respond` | `{status, body}` | status `200` | Static response, body up to 64 KiB |
 | `honeypot` | object | | Decoy action; see `routes[].honeypot` |
 | `mirror` | object | | Copy requests to a second upstream; see `routes[].mirror` |
 | `grpc` | `{services, methods}` | | Restrict the route to gRPC requests; see `routes[].grpc` |
 | `doh` | `{listener}` | | DNS over HTTPS action; see `routes[].doh` |
+| `static` | object | | Serve files from a directory; see `routes[].static` |
+| `compress` | bool | follows `compression` | `false` leaves this route's responses as they are; `true` needs an enabled `compression` section |
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
@@ -636,6 +639,39 @@ Counters: `mirror_sent`, `mirror_dropped`, `mirror_skipped`,
 `mirror_failed`; metric `xproxy_mirror_total{outcome}`. Mirror
 responses appear in the error log at debug level with their status.
 
+### routes[].static
+
+A `static` route serves files from a directory: assets next to an
+application, a maintenance page, a single page application. The request
+path after `strip_prefix` or `rewrite_path` selects the file. Files are
+opened through `os.Root`, so neither `..` (removed earlier by path
+cleaning) nor a symbolic link pointing outside the root can leave it;
+names starting with a dot (`.env`, `.git`) are refused unless
+`dot_files` is set; anything that is not a regular file or directory
+answers 404, as does every failure to open, so the tree's shape leaks
+nothing. `GET` and `HEAD` only (405 otherwise). Responses carry a weak
+`ETag` from size and modification time, honour `If-None-Match`,
+`If-Modified-Since` and `Range`, and set the content type from a fixed
+table for the common web types (`text/javascript`, `text/css`,
+`image/svg+xml`, `application/wasm`, ...) with `X-Content-Type-Options:
+nosniff`. A directory without a trailing slash redirects to it (301),
+then serves `index`, then a listing when enabled, else 404. The route's
+admission pipeline (bans, limits, ACLs, WAF, filters) applies before the
+file is opened, and `response_headers` apply to every answer.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `root` | path | required | Absolute directory; must exist at load (a missing root fails the reload and the previous generation keeps serving) |
+| `index` | file name | `index.html` | Served for a directory; `""` disables |
+| `listing` | bool | `false` | Render a directory without an index as an HTML list (dot files hidden unless `dot_files`) |
+| `fallback` | path | none | File inside the root served when the requested one does not exist, for single page applications (`/index.html`); assets that do exist are served as themselves |
+| `cache_control` | string | none | Sent as `Cache-Control` with every file |
+| `dot_files` | bool | `false` | Serve names starting with a dot |
+| `max_file_bytes` | int | `0` (no bound) | Larger files answer 404 |
+
+`cache`, `mirror`, `grpc` and `websocket` cannot be combined with
+`static`.
+
 ### routes[].doh
 
 A `doh` route answers DNS over HTTPS (RFC 8484) for clients: `GET`
@@ -711,6 +747,7 @@ and sharing flags reload.
 | `peer_stale` | duration | 3 x `gossip_interval` | How long a peer report keeps reducing local refill after its last update; at least 2 x the interval |
 | `share_rate_limits` | bool | `true` | Exchange consumption reports |
 | `share_bans` | bool | `true` | Exchange bans and unbans, and send a snapshot to a newly connected peer |
+| `share_events` | bool | `true` | Exchange security events: honeypot marks and unmarks (applied to the peer's mark table with route `peer:<node>/<route>`) and OIDC session revocations (per filter name). Events are bounded (128 byte kind, 512 byte key, lifetime clamped to a year), queued without blocking and dropped when the queue is full. Nodes older than 1.3 close a connection that carries them: set `false` during a rolling upgrade from 1.2 |
 | `max_keys_per_report` | int | `4096` | Largest consumers kept per report |
 
 Semantics: with sharing on, a rate limit policy's `rate` becomes an
@@ -945,7 +982,9 @@ hello without `h2` ALPN or with fewer than ten cipher suites),
 `error_rate` 30 (more than half of at least ten recent requests were
 4xx or denied), `path_spread` 15 (fifty or more distinct paths in the
 window), `regular_interval` 20 (eight or more requests with machine-like
-timing), `high_rate` 15. The score is the capped sum; a client that is
+timing), `high_rate` 15, `honeypot_marked` 40 (the client touched a
+honeypot route on this node or, with cluster sharing, on a peer). The
+score is the capped sum; a client that is
 already verified by the challenge is never challenged again. The JA4 of
 every TLS request is logged as `ja4`.
 
@@ -953,6 +992,47 @@ every TLS request is logged as `ja4`.
 
 A list of filter names, run in the listed order within each stage. A
 route may combine them with `jwt`, `waf` and `icap`.
+
+## compression
+
+gzip for the responses the proxy writes: proxied, cached, static and
+`respond` bodies alike. The decision is made per response when its
+header is committed: the client must list `gzip` (or `*`) in
+`Accept-Encoding` with a non-zero quality, the request must not be
+`HEAD`, an upgrade or gRPC, the status must carry a body (not 1xx, 204,
+206, 304), the response must carry no `Content-Encoding` or
+`Content-Range`, no `Cache-Control: no-transform`, and a media type from
+`types`. A known `Content-Length` below `min_bytes` passes as it is;
+without a known length the body is held up to `min_bytes` before
+deciding, and a flush (a streamed response, which is how proxied bodies
+arrive) decides at once for compression when the type matches.
+Compressed responses lose `Content-Length`, gain `Content-Encoding:
+gzip`, and a strong `ETag` becomes weak; every response of an eligible
+type gains `Vary: Accept-Encoding` so caches keep the variants apart.
+Bodies the upstream already encoded pass through untouched. Only gzip
+is offered (the standard library has no Brotli); a client that prefers
+Brotli still receives gzip when it accepts it. The access log has
+`encoding: gzip`; `compressed` and `compressed_raw_bytes` count.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Switch for the section |
+| `level` | int | `5` | gzip level 1 (fastest) to 9 (smallest) |
+| `min_bytes` | int | `1024` | Bodies below this length are not compressed; 0 to 1 MiB |
+| `types` | list | text, script, style, JSON, XML, SVG, wasm and font types | Media types compressed, without parameters |
+
+The default `types` are `text/html`, `text/plain`, `text/css`,
+`text/csv`, `text/xml`, `text/javascript`, `application/javascript`,
+`application/json`, `application/ld+json`,
+`application/manifest+json`, `application/xml`,
+`application/xhtml+xml`, `application/rss+xml`,
+`application/atom+xml`, `image/svg+xml`, `application/wasm`,
+`font/ttf`, `font/otf` and `application/vnd.api+json`. Images, video,
+archives and fonts in `woff2` are already compressed and are never
+listed by default. Compressing responses that mix a secret with
+attacker-controlled input in one body exposes the BREACH class of
+attacks; keep `compress: false` on routes that render CSRF tokens next
+to reflected parameters, or make sure the application masks its tokens.
 
 ## cache
 

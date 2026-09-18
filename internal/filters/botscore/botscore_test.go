@@ -67,6 +67,13 @@ func TestSignals(t *testing.T) {
 	if v, _ := run(req(chromeUA), verified); v.Deny {
 		t.Fatalf("verified client challenged again: %+v", v)
 	}
+	// A client marked by a honeypot (here or on a peer) scores 40 on an
+	// otherwise clean browser request.
+	marked := browser
+	marked.HoneypotMarked = true
+	if v, score := run(req(chromeUA, "Accept", "text/html", "Accept-Language", "sv"), marked); score != 40 || v.Deny || v.Challenge {
+		t.Fatalf("honeypot marked scored %d: %+v", score, v)
+	}
 	// Allow and deny lists override everything.
 	s2 := build(t, filter.Options{"deny_at": 80, "ja4_deny": []any{scripted.JA4}, "ja4_allow": []any{browser.JA4}})
 	in := s2.Begin(nil, &scripted).(*instance) //nolint:staticcheck // see above

@@ -48,6 +48,7 @@ type reqState struct {
 	country  string
 	ja4      string
 	cache    string // hit, miss or bypass on a cached route
+	encoding string // gzip when the proxy compressed the response
 	cacheKey string
 	marked   bool   // client previously hit a honeypot
 	mirror   string // sent, dropped or body_too_large on a mirrored route
@@ -188,6 +189,18 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cr := rt.routes[match.Index]
 	st.route = cr.cfg.Name
 	route = cr
+	if cr.compress != nil && r.Method != http.MethodHead && !isUpgrade(r) && !isGRPC(r) && wantsGzip(r) {
+		cw := newCompressWriter(rw.ResponseWriter, cr.compress)
+		rw.ResponseWriter = cw
+		defer func() {
+			cw.Close()
+			if cw.compress {
+				st.encoding = "gzip"
+				s.stats.Compressed.Add(1)
+				s.stats.CompressedRawBytes.Add(uint64(max(cw.raw, 0))) //nolint:gosec // non-negative
+			}
+		}()
+	}
 	st.marked = s.marks.marked(st.clientIP, st.start)
 
 	// Country lookup and policy (after the address ACL, which is cheaper).
@@ -351,6 +364,8 @@ admitted:
 		s.honeypot(rw, r, st, cr, release)
 	case cr.cfg.DoH != nil:
 		s.doh(rw, r, st, cr)
+	case cr.cfg.Static != nil:
+		s.static(rw, r, st, cr)
 	case cr.cfg.Respond != nil:
 		applyHeaderOps(rw.Header(), cr.cfg.ResponseHeaders)
 		if rw.Header().Get("Content-Type") == "" {
@@ -755,6 +770,9 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	}
 	if st.cache != "" {
 		attrs = append(attrs, "cache", st.cache)
+	}
+	if st.encoding != "" {
+		attrs = append(attrs, "encoding", st.encoding)
 	}
 	if st.marked {
 		attrs = append(attrs, "honeypot_marked", true)

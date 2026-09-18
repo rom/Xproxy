@@ -36,6 +36,7 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Threat | Mitigation |
 |--------|------------|
 | Forged `X-Forwarded-For` to evade IP based limits or ACLs | Only peers in `trusted_proxies` may supply it; right-most untrusted algorithm; header replaced when the peer is untrusted (`netutil.ClientIP`, `TestClientIP`) |
+| Forged PROXY protocol header to choose a client address | Parsed only on listeners with `proxy_protocol: true` and only from peers in `trusted_proxies`; any other peer's bytes go to the HTTP parser as they are, where a header is a malformed request; a trusted peer must send one, so a balancer misconfiguration fails closed (`TestProxyProtocolInbound`, `TestProxyProtocolUntrustedPeer`) |
 | Forged `Host` to reach a different virtual host | Host normalised and matched exactly or by single label wildcard; unmatched hosts get 404 |
 | Forged affinity cookie to pick a backend | HMAC signed index with expiry (`affinity.verify`, `TestAffinity`) |
 | Forged identity headers (`X-User` and similar) | Forwarded claim headers are deleted from every request before the token is examined, so only the validator can set them |
@@ -150,6 +151,8 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Rogue host joins the cluster | TLS 1.3 with client certificates from the cluster CA required; `allowed_names` pins identities; the listener is bound to an internal address |
 | Compromised peer relaxes limits | Impossible by construction: peer reports only reduce refill; there is no message that raises a limit or unbans except an explicit removal, which is visible in logs with the peer identity |
 | Compromised peer bans legitimate users | Accepted risk within the trust domain; exemptions still apply, wide prefixes and loopback are refused, `xproxyctl bans` shows `peer:<node>` sources, and `share_bans: false` disables the channel |
+| Compromised peer marks clients as honeypot visitors or revokes sessions | Same trust domain; marks only raise the bot score and label requests (they never ban by themselves, AMR-037), revocations only end sessions, both are bounded per message and by the receiver's tables, marks show `peer:<node>/<route>`, and `share_events: false` disables the channel |
+| Session identifiers cross the network in events | Revocations carry the provider's session id (not a cookie or token) under mTLS between hosts of the same operator, keyed by filter name so one provider's ids never touch another's index |
 | Compromised peer floods the listener | Message size, key and ban counts bounded; inbound connection cap; oversized or malformed input closes the connection |
 | Client addresses cross the network in reports | Reports carry rate limit keys (addresses or header values) under mTLS between hosts of the same operator; documented in AMR-021 |
 | Peer identity spoofing in messages | The `node` field is informational; authorisation is the certificate, and the certificate name is logged next to it |

@@ -512,6 +512,16 @@ receiver must address its own buckets by key; the channel is mTLS within
 one operator's hosts and the keys are addresses the peer also sees in its
 own logs.
 
+**Update (1.3).** Protocol version 2 adds an `events` message carrying
+bounded facts (kind, key, route, expiry): honeypot marks and unmarks,
+and OIDC session revocations published by the filter through
+`filter.Env.Events`. The same principles hold: events queue without
+blocking, drop when the queue is full, and are applied within the
+receiver's own bounds; `share_events` switches the channel. Unknown
+message types are skipped and counted from this version on, so future
+additions no longer require a flag day; the step from version 1 does
+(1.2 nodes close on an events message).
+
 **Consequences.** Accuracy is bounded by one gossip interval plus
 `peer_stale`; documented in CONFIG.md. Memory per bucket grows by up to 64
 peer entries. Listen address, node identity and TLS material need a
@@ -1069,7 +1079,10 @@ request details (rejected: reflection is an injection surface).
 **Consequences.** Operators who want an immediate ban write a trigger
 with threshold 1. The mark table is bounded; under a flood of distinct
 addresses new marks are dropped rather than old ones evicted, which is
-the conservative failure.
+the conservative failure. Since 1.3 marks and unmarks are shared with
+cluster peers as events (AMR-021 update), so a scanner that probes one
+node is labelled on all of them, and the `bot_score` filter counts a
+mark as a signal (`honeypot_marked`, weight 40).
 
 **Status.** Accepted.
 
@@ -1178,6 +1191,10 @@ still expires the session on time).
 the filter refuses to seal a larger session. Clock skew between nodes
 does not matter beyond the JWT verifier's allowance. Flow redirects
 are `Verdict.Silent`, which the middleware contract gained for this.
+Since 1.3 revocations are shared with cluster peers through
+`filter.Env.Events` under the kind `oidc_revoke/<filter name>`, so a
+front channel logout that reaches one node ends the session on all of
+them, without a session store.
 
 **Status.** Accepted.
 

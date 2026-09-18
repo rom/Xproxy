@@ -116,6 +116,50 @@ func TestSealOpen(t *testing.T) {
 	}
 }
 
+// fakeBus records publications and lets a test inject peer events.
+type fakeBus struct {
+	published []filter.Event
+	subs      map[string][]func(filter.Event)
+}
+
+func (b *fakeBus) Publish(e filter.Event) { b.published = append(b.published, e) }
+func (b *fakeBus) Subscribe(kind string, fn func(filter.Event)) {
+	if b.subs == nil {
+		b.subs = map[string][]func(filter.Event){}
+	}
+	b.subs[kind] = append(b.subs[kind], fn)
+}
+
+func TestRevocationShared(t *testing.T) {
+	bus := &fakeBus{}
+	f := &oidcFilter{name: "login", cfg: &Config{RevokedMax: 10, ttl: time.Hour}, revoked: map[string]time.Time{}}
+	f.attach(bus)
+	exp := time.Now().Add(time.Hour)
+	f.revokeAndShare("local-sid", exp)
+	if !f.isRevoked("local-sid") || len(bus.published) != 1 || bus.published[0].Kind != "oidc_revoke/login" || bus.published[0].Key != "local-sid" || !bus.published[0].Until.Equal(exp) {
+		t.Fatalf("published %+v", bus.published)
+	}
+	// A peer's revocation for this filter lands; another filter's does not.
+	fns := bus.subs["oidc_revoke/login"]
+	if len(fns) != 1 || len(bus.subs) != 1 {
+		t.Fatalf("subscriptions %v", bus.subs)
+	}
+	fns[0](filter.Event{Kind: "oidc_revoke/login", Key: "peer-sid", Until: exp})
+	if !f.isRevoked("peer-sid") {
+		t.Fatal("peer revocation not applied")
+	}
+	if len(bus.published) != 1 {
+		t.Fatal("peer revocation republished")
+	}
+	// Without a bus nothing breaks.
+	g := &oidcFilter{name: "solo", cfg: &Config{RevokedMax: 10, ttl: time.Hour}, revoked: map[string]time.Time{}}
+	g.attach(nil)
+	g.revokeAndShare("x", exp)
+	if !g.isRevoked("x") {
+		t.Fatal("solo revoke")
+	}
+}
+
 func TestRevocation(t *testing.T) {
 	f := &oidcFilter{cfg: &Config{RevokedMax: 3, ttl: time.Hour}, revoked: map[string]time.Time{}}
 	now := time.Now()
