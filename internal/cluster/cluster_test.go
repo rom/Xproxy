@@ -200,12 +200,9 @@ func TestEvents(t *testing.T) {
 	if got[1].Until.After(time.Now().Add(maxEventTTL)) {
 		t.Fatalf("lifetime not clamped: %v", got[1].Until)
 	}
-	if st := a.node.Status(); st.EventsSent != 2 {
-		t.Fatalf("sent %+v", st)
-	}
-	if st := b.node.Status(); st.EventsRecv != 2 {
-		t.Fatalf("received %+v", st)
-	}
+	// Counters are updated after the send returns, so wait for them.
+	waitFor(t, "sent counter", func() bool { return a.node.Status().EventsSent == 2 })
+	waitFor(t, "received counter", func() bool { return b.node.Status().EventsRecv == 2 })
 
 	// share_events: false silences both directions.
 	off := false

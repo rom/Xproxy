@@ -364,14 +364,22 @@ Memory: at most 64 x 8192 buckets per policy.
 ## routes[]
 
 Matching: exact host, then wildcard host, then hostless routes; within a
-host the longest path prefix; then `methods`; then `priority` (higher
-wins); then configuration order.
+host the longest path (a `path_regex` entry counts as the length of its
+literal prefix and, at equal length, beats a plain prefix); then the
+number of `headers` and `cookies` conditions (more first, so a
+conditioned route is tried before the plain route on the same path);
+then `priority` (higher wins); then configuration order. `methods` and
+the conditions are filters: a route whose method set or conditions do
+not match is skipped and the next candidate is tried.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in logs |
 | `hosts` | list | `[]` (any) | `example.com` or `*.example.com` (one label) |
-| `paths` | list | `["/"]` | Prefixes on segment boundaries |
+| `paths` | list | `["/"]` (none when `path_regex` is set) | Prefixes on segment boundaries |
+| `path_regex` | list | `[]` | RE2 patterns matched against the whole cleaned path (anchored at both ends by the proxy); must start with `/`; at most 32, each at most 512 bytes. `strip_prefix` and `rewrite_path` apply as usual |
+| `headers` | list | `[]` | Conditions on request headers, all of which must hold: `{name, exact | prefix | regex | present}`; names are case insensitive, the first value is examined, `regex` matches the whole value, `present: false` requires absence; at most 16 conditions with `cookies` |
+| `cookies` | list | `[]` | The same conditions on cookies by name |
 | `methods` | list | `[]` (any) | Upper-case tokens |
 | `priority` | int | `0` | Tie breaker |
 | `upstream` | name | | Exactly one of `upstream`, `redirect`, `respond`, `honeypot`, `doh`, `static` |
@@ -431,8 +439,8 @@ the first successful sync.
 Translation: every `rules[].http.paths[]` entry becomes a route named
 `k8s-<namespace>-<ingress>-<n>` with the rule's host, the path as a
 prefix (`pathType: Exact` gets priority 10 so it wins over a prefix of
-the same length; regular expression paths are skipped with a
-warning), and an upstream `k8s-<namespace>-<service>-<port>` whose
+the same length; `ImplementationSpecific` paths with wildcards are
+skipped with a warning), and an upstream `k8s-<namespace>-<service>-<port>` whose
 endpoints are the ready addresses of the service's EndpointSlices on
 the port the service maps to (a service without ready endpoints gets
 an unreachable placeholder so the route answers 503 rather than
@@ -449,9 +457,11 @@ HTTPRoutes whose `parentRefs` name them translate as well. Route
 hostnames come from the HTTPRoute or, when it has none, from the
 parent listeners' hostnames (wildcards allowed). Each rule and match
 becomes a route `k8s-gw-<namespace>-<httproute>-<rule>-<match>`:
-`PathPrefix` and `Exact` paths (priority 10 for exact), a `method`
-match; header matches are not supported and are ignored with a
-warning, as are `RegularExpression` paths. Filters: `RequestHeaderModifier`
+`PathPrefix` and `Exact` paths (priority 10 for exact),
+`RegularExpression` paths as `path_regex`, a `method` match, and
+header matches of type `Exact` and `RegularExpression` as `headers`
+conditions (a match with an unknown header match type or a pattern that
+does not compile is skipped with a warning). Filters: `RequestHeaderModifier`
 and `ResponseHeaderModifier` become header operations, `URLRewrite`
 with `ReplaceFullPath` becomes `rewrite_path`, with `ReplacePrefixMatch: /`
 `strip_prefix`, and a `hostname` `host_header`; `RequestRedirect` with a

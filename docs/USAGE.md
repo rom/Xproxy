@@ -833,6 +833,36 @@ checks use the standard health service, so an endpoint that reports
 a rate limited call is refused with `RESOURCE_EXHAUSTED` rather than a
 text page a gRPC client cannot read.
 
+### Routing by pattern, header and cookie
+
+```yaml
+routes:
+  - name: canary
+    hosts: [app.example.com]
+    headers: [{name: X-Canary, exact: "1"}]
+    upstream: app-v2
+  - name: beta-testers
+    hosts: [app.example.com]
+    cookies: [{name: beta, present: true}]
+    upstream: app-v2
+  - name: item-api
+    hosts: [app.example.com]
+    path_regex: ['/api/v[0-9]+/items/[0-9]+']
+    upstream: items
+  - name: app
+    hosts: [app.example.com]
+    upstream: app-v1
+```
+
+A request with `X-Canary: 1` or a `beta` cookie reaches the new
+version whatever its path; `/api/v3/items/42` reaches the item service
+while `/api/v3/items/list` does not (patterns match the whole path);
+everything else goes to the current version. Conditioned routes are
+tried before the plain route on the same path, so the order above does
+not matter. For a canary by share of traffic rather than by header,
+use a `weighted` upstream; for one by header on the same route, see
+`canary` on the upstream pool (traffic management).
+
 ### Response compression
 
 ```yaml

@@ -486,11 +486,11 @@ func TestGatewayAPI(t *testing.T) {
 		api.RequestHeaders.Set["X-Tenant"] != "shop" || api.RequestHeaders.Remove[0] != "X-Debug" || api.Upstream != "k8s-gw-shop-shop-0" {
 		t.Fatalf("api route: %+v", api)
 	}
-	if h := byName["k8s-gw-shop-shop-0-1"]; h.Paths[0] != "/health" || h.Priority != 10 || h.StripPrefix != "/health" {
+	if h := byName["k8s-gw-shop-shop-0-1"]; h.Paths[0] != "/health" || h.Priority != 10 || h.StripPrefix != "/health" || len(h.Headers) != 1 || h.Headers[0].Name != "X-A" || h.Headers[0].Exact != "1" {
 		t.Fatalf("exact route: %+v", h)
 	}
-	if _, ok := byName["k8s-gw-shop-shop-0-2"]; ok {
-		t.Fatal("regular expression match translated")
+	if rx := byName["k8s-gw-shop-shop-0-2"]; len(rx.PathRegex) != 1 || rx.PathRegex[0] != "/x.*" || len(rx.Paths) != 0 {
+		t.Fatalf("regular expression route: %+v", rx)
 	}
 	if rd := byName["k8s-gw-shop-shop-1-0"]; rd.Redirect == nil || rd.Redirect.To != "https://www.example.com/new" || rd.Redirect.Status != 301 || rd.Upstream != "" {
 		t.Fatalf("redirect route: %+v", rd)
@@ -514,7 +514,7 @@ func TestGatewayAPI(t *testing.T) {
 		t.Fatalf("certs: %+v", snap.Certificates)
 	}
 	joined := strings.Join(snap.Warnings, "\n")
-	for _, want := range []string{"header matches are not supported", "RegularExpression", "service missing not found"} {
+	for _, want := range []string{"service missing not found"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("warning %q missing in:\n%s", want, joined)
 		}

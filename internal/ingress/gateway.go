@@ -3,6 +3,7 @@ package ingress
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -268,15 +269,42 @@ func translateGateway(in Input, class string, snap *Snapshot, endpointsFor func(
 						ptype = m.Path.Type
 					}
 				}
-				if ptype == "RegularExpression" || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "*?#") {
+				if ptype == "RegularExpression" {
+					if _, err := regexp.Compile("^(?:" + path + ")$"); err != nil || !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "^/") {
+						warn("httproute", ns, name, "rule %d match %d: path RegularExpression %q not accepted (must start with / and compile as RE2)", ri, mi, path)
+						continue
+					}
+				} else if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "*?#") {
 					warn("httproute", ns, name, "rule %d match %d: path %s %q not supported", ri, mi, ptype, path)
 					continue
 				}
-				if len(m.Headers) > 0 {
-					warn("httproute", ns, name, "rule %d match %d: header matches are not supported; the match is applied without them", ri, mi)
+				headerOK := true
+				for _, hm := range m.Headers {
+					switch hm.Type {
+					case "", "Exact":
+						r.Headers = append(r.Headers, config.HeaderMatch{Name: hm.Name, Exact: hm.Value})
+					case "RegularExpression":
+						if _, err := regexp.Compile("^(?:" + hm.Value + ")$"); err != nil {
+							warn("httproute", ns, name, "rule %d match %d: header %s regular expression not accepted: %v", ri, mi, hm.Name, err)
+							headerOK = false
+							continue
+						}
+						r.Headers = append(r.Headers, config.HeaderMatch{Name: hm.Name, Regex: hm.Value})
+					default:
+						warn("httproute", ns, name, "rule %d match %d: header match type %s not supported", ri, mi, hm.Type)
+						headerOK = false
+					}
+				}
+				if !headerOK {
+					continue
 				}
 				r.Name = objName("gw", ns, name, strconv.Itoa(ri), strconv.Itoa(mi))
-				r.Paths = []string{path}
+				if ptype == "RegularExpression" {
+					r.PathRegex = []string{strings.TrimPrefix(path, "^")}
+					r.Paths = nil
+				} else {
+					r.Paths = []string{path}
+				}
 				if ptype == "Exact" {
 					r.Priority = 10
 				}

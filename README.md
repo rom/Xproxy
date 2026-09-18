@@ -56,8 +56,9 @@ an identifier from the access log to the upstream.
 
 **Routing and upstreams**
 
-- Routes by host (exact or wildcard), path prefix, method, priority and
-  gRPC service or method; redirects, static responses, path rewriting,
+- Routes by host (exact or wildcard), path prefix or regular
+  expression, method, header and cookie conditions, priority and gRPC
+  service or method; redirects, static responses, path rewriting,
   header operations, per route timeouts and body limits
 - Upstream pools with round robin, weighted, least connections and
   consistent hashing; active HTTP or gRPC health checks, passive outlier

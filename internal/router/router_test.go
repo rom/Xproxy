@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/rom/xproxy/internal/config"
@@ -36,7 +37,7 @@ func TestMatchGRPC(t *testing.T) {
 		{"/", true, "grpc-any"},
 	}
 	for _, c := range cases {
-		got := r.MatchRequest("rpc.test", c.path, "POST", c.grpc)
+		got := r.MatchRequest("rpc.test", c.path, "POST", c.grpc, nil)
 		if got == nil || got.Cfg.Name != c.want {
 			t.Errorf("%s grpc=%v: got %v want %s", c.path, c.grpc, got, c.want)
 		}
@@ -151,6 +152,59 @@ func TestTieBreaks(t *testing.T) {
 	r = New(rs[:2])
 	if m := r.Match("h.test", "/x/y", "GET"); m == nil || m.Cfg.Name != "first" {
 		t.Fatalf("earlier route should win a tie: %v", m)
+	}
+}
+
+func TestRegexAndConditions(t *testing.T) {
+	yes, no := true, false
+	rs := []config.Route{
+		{Name: "app", Hosts: []string{"h.test"}, Paths: []string{"/"}, Upstream: "u"},
+		{Name: "api", Hosts: []string{"h.test"}, Paths: []string{"/api"}, Upstream: "u"},
+		{Name: "versioned", Hosts: []string{"h.test"}, PathRegex: []string{`/api/v[0-9]+/users/[0-9]+`}, Upstream: "u"},
+		{Name: "deep", Hosts: []string{"h.test"}, Paths: []string{"/api/v1/users/42/details"}, Upstream: "u"},
+		{Name: "canary", Hosts: []string{"h.test"}, Paths: []string{"/"}, Headers: []config.HeaderMatch{{Name: "x-canary", Exact: "1"}}, Upstream: "u"},
+		{Name: "beta", Hosts: []string{"h.test"}, Paths: []string{"/"}, Cookies: []config.HeaderMatch{{Name: "beta", Present: &yes}}, Headers: []config.HeaderMatch{{Name: "User-Agent", Regex: `Mozilla.*`}}, Upstream: "u"},
+		{Name: "nobot", Hosts: []string{"h.test"}, Paths: []string{"/"}, Headers: []config.HeaderMatch{{Name: "X-Bot", Present: &no}, {Name: "Accept", Prefix: "text/"}}, Upstream: "u"},
+		{Name: "files", Hosts: []string{"h.test"}, PathRegex: []string{`/.*\.(png|jpe?g|css)`}, Upstream: "u"},
+	}
+	r := New(rs)
+	hdr := func(kv ...string) http.Header {
+		h := http.Header{}
+		for i := 0; i+1 < len(kv); i += 2 {
+			h.Add(kv[i], kv[i+1])
+		}
+		return h
+	}
+	cases := []struct {
+		path string
+		hdr  http.Header
+		want string
+	}{
+		{"/api/v1/users/42", nil, "versioned"},
+		{"/api/v12/users/7", nil, "versioned"},
+		{"/api/v1/users/42/details", nil, "deep"},         // longer literal prefix wins
+		{"/api/v1/users/abc", nil, "api"},                 // pattern fails, prefix stands
+		{"/api/v1/users/42/x", nil, "api"},                // anchored at both ends
+		{"/img/logo.png", nil, "files"},                   // pattern beats the plain "/" of the same length
+		{"/img/logo.PNG", nil, "app"},                     // case sensitive
+		{"/styles/a.css", hdr("X-Canary", "1"), "canary"}, // same literal length: the conditioned route comes first
+		{"/x", hdr("X-Canary", "1"), "canary"},
+		{"/x", hdr("X-Canary", "2"), "app"},
+		{"/x", hdr("Cookie", "beta=1", "User-Agent", "Mozilla/5.0"), "beta"},
+		{"/x", hdr("Cookie", "beta=1", "User-Agent", "curl/8"), "app"},
+		{"/x", hdr("Accept", "text/html"), "nobot"},
+		{"/x", hdr("Accept", "text/html", "X-Bot", "yes"), "app"},
+		{"/x", hdr("Accept", "application/json"), "app"},
+		{"/x", hdr("Accept", "text/html", "Cookie", "beta=1", "User-Agent", "Mozilla"), "beta"}, // two conditions each: configuration order
+	}
+	for _, c := range cases {
+		got := r.MatchRequest("h.test", c.path, "GET", false, c.hdr)
+		if got == nil {
+			t.Fatalf("%s %v: no match", c.path, c.hdr)
+		}
+		if got.Cfg.Name != c.want {
+			t.Errorf("%s %v: got %s want %s", c.path, c.hdr, got.Cfg.Name, c.want)
+		}
 	}
 }
 

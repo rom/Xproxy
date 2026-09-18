@@ -179,7 +179,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	match := rt.router.MatchRequest(st.host, st.path, r.Method, st.grpc)
+	match := rt.router.MatchRequest(st.host, st.path, r.Method, st.grpc, r.Header)
 	if match == nil {
 		s.stats.DeniedNoRoute.Add(1)
 		st.denied = "no_route"
