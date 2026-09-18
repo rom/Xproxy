@@ -17,12 +17,12 @@ records are in [AMR.md](AMR.md); requirements in [ASR.md](ASR.md).
             +-----------+-----------+
                         | accept (systemd owned sockets)
             +-----------v-----------+        +-------------------+
-            |        xproxy         |<-------| xproxyctl / TUI   |
-            |  data plane process   | unix   | xproxy-admin GUI  |
-            |  user: xproxy         | socket | (1.0)             |
+            |        xproxy         |<-------| xproxyctl (CLI,   |
+            |  data plane process   | unix   |  TUI), GUI (1.0)  |
+            |  user: xproxy         | socket |                   |
             +--+------+------+------+        +-------------------+
                |      |      |
-        access | err  | sec  | audit      -> files, journald, syslog (1.0)
+        access | err  | sec  | audit      -> files, journald, syslog
                v      v      v
             +--------------------------+
             | upstream pools           |  http / https, health checks,
@@ -65,6 +65,7 @@ internal/challenge  browser proof-of-work challenge
 internal/h3         HTTP/3 over QUIC (the only package importing quic-go)
 internal/jwt        JSON Web Token validation on the standard library
 internal/metrics    Prometheus text encoder, histogram, sampled series
+internal/tui        terminal UI of xproxyctl (pure renderer plus a raw-mode loop)
 internal/version    build information
 deploy/             systemd units, sysctl, SELinux, logrotate, example config
 docs/               this documentation
@@ -309,6 +310,12 @@ Endpoints:
 | GET | `/v1/cluster` | cluster peers and counters |
 | GET | `/metrics` | Prometheus exposition |
 | GET | `/v1/series?since=10m&limit=60` | sampled series for graphs |
+
+The TUI is a mode of `xproxyctl`: a pure renderer (`tui.Render`, data and
+terminal size in, lines out, tested without a terminal) driven by a raw
+mode loop on `golang.org/x/term` that fetches all views concurrently with
+a deadline each refresh and reads keys from stdin. It uses the same client
+and therefore the same audited API for bans.
 
 An optional TCP listener (`metrics.listen`) serves `/metrics` only, with a
 source allow list and optional TLS with client certificates; it never

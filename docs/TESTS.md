@@ -40,6 +40,7 @@ server.
 | `internal/ban` | `TestTriggerAndEscalation`, `TestWindowReset`, `TestExemptAndManual`, `TestBound`, `TestPersistence`, `TestReconfigure` | Trigger thresholds and reason filters, escalation and cap with a fake clock, window reset, exemptions, refusal of loopback and wide prefixes, CIDR bans, IPv4 mapped lookups, table bound, bbolt round trip including expiry and unban, reconfiguration keeps state |
 | `internal/cluster` | `TestTwoNodes`, `TestRejectsUnauthenticated`, `TestProtocolErrors` | Bans and unbans propagate, sources are rewritten, rates arrive as rates, late joiner gets a snapshot, peer removal on reconfigure, status; connections without a certificate, with a foreign CA or outside `allowed_names` are rejected and counted; bad JSON, messages before hello, wrong version, unknown type and oversized lines close the connection while a valid session is applied |
 | `internal/jwt` | `TestVerifyAlgorithms`, `TestVerifyRejections`, `TestHMAC`, `TestJWKSURLAndRotation`, `TestJWKSParsing`, `TestFilter`, `TestClaimString` | RS256, PS256, ES256 and EdDSA accepted with and without key ids; expiry, skew, `nbf`, issuer, audience (string and list), missing and required claims, `alg: none`, disallowed algorithms, HMAC against an asymmetric provider, unknown key, wrong key, algorithm and key type mismatch, tampered payload, malformed and oversized tokens; HMAC secret handling; JWKS over HTTPS with a pinned CA, rotation through on-demand refresh, rate limiting of refreshes, unpinned CA fails closed; malformed and symmetric keys skipped when parsing; filter behaviour for missing, optional, valid, invalid tokens, header spoof removal, cookie and header sources with stripping |
+| `internal/tui` | `TestRenderAllViewsFit`, `TestRenderContent`, `TestHelpers`, `TestKeys`, `TestRunRequiresTerminal` | Every screen renders to exactly the terminal height and within its width at three sizes with and without colour; expected content per screen including selection, errors and prompts; ANSI-aware width and clipping; key handling for navigation, interval, pause, ban prompt with editing, unban confirmation and API errors, escape; refusal to run without a terminal |
 | `internal/metrics` | `TestEncoder`, `TestHistogram`, `TestSeriesAndSampler` | Text format with escaping and sorted labels, histogram buckets, sum and count; atomic histogram bucketing; ring buffer order, retention, since and limit, per-second rates from counters, counter reset handling, start and stop |
 | `internal/shed` | `TestInflightLevel`, `TestLatencyLevelAndDrain`, `TestReconfigureKeepsSamples` | Class thresholds against the in-flight ratio, hysteresis, latency level from windowed samples, drain after an idle window, reconfiguration |
 | `internal/challenge` | `TestFlow`, `TestVerifyInputs`, `TestPersistentKey`, `TestProofDefinition`, `TestScriptSHA256MatchesGo` | Page and headers, proof verification, wrong proof and wrong address refused, replay refused, cookie bound to address, expiry and tampering, exemptions, method and input validation, expired nonces, open redirect neutralised, key persistence, proof definition shared with the script |
@@ -111,6 +112,7 @@ Current statement coverage from `make cover` (race enabled):
 | `internal/proxy` | 73 % |
 | `internal/config` | 72 % |
 | `internal/logging` | 77 % |
+| `internal/tui` | 62 % (the terminal loop itself is covered by the pseudo terminal check) |
 | `internal/tlsconf` | 56 % |
 
 Not covered: `cmd/` binaries (covered by the manual smoke procedure below
@@ -144,6 +146,14 @@ for i in 1 2 3 4 5; do curl -s -o /dev/null -w "%{http_code} " http://127.0.0.1:
 tail -1 /tmp/xproxy-logs/security.log; cat /tmp/xproxy-logs/audit.log
 kill %2; kill %1
 ```
+
+### Pseudo terminal check of the TUI
+
+Before release the TUI is driven in a pseudo terminal against a running
+proxy (a Python `pty.fork` of `xproxyctl tui`, sending `2`, `3`, `5`,
+`6`, `1`, `q`), asserting that the alternate screen is entered and left,
+that each screen shows live data (upstream address, a ban, sparklines,
+security events) and that the process exits with status 0.
 
 ### Browser check of the challenge
 

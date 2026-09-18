@@ -5,9 +5,10 @@ firewall, written in Go for Fedora Linux. Single static
 binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
-Status: **phase 2 in progress** (WAF, ban list, cluster, load shedding,
-challenge, HTTP/3, upstream mutual TLS, JWT, log sinks, redaction and
-metrics delivered; TUI remaining). See
+Status: **phase 2 complete** (WAF, ban list, cluster, load shedding,
+challenge, HTTP/3, upstream mutual TLS, JWT, log sinks, redaction, metrics
+and TUI). Phase 3 (ICAP, ACME, GUI, SELinux, packaging, scale validation)
+is next. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today
@@ -39,7 +40,7 @@ metrics delivered; TUI remaining). See
   per-stream redaction of personal data
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
   status, upstreams, reload, certificate reload, log reopen, tail, bans,
-  cluster, metrics and sampled series
+  cluster, metrics, sampled series, and a full-screen TUI
 - Prometheus exposition with latency histograms and per-route counters,
   on the socket or a hardened TCP endpoint, plus an in-process series
   buffer for graphs

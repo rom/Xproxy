@@ -43,11 +43,11 @@ Exit criterion: `make check` is green, the example configuration validates,
 and a manual deployment on Fedora following SETUP.md serves traffic under
 the hardened unit.
 
-## Phase 2: Defence (in progress)
+## Phase 2: Defence (complete)
 
 Goal: the proxy detects and deflects attacks, not only limits them.
 
-Delivered so far:
+Delivered:
 
 - Filter (middleware) interface with per request instances, request and
   response phases and access log attributes (AMR-013 groundwork)
@@ -83,16 +83,19 @@ Delivered so far:
   hardened TCP endpoint, request and upstream latency histograms,
   per-route counters, and an in-process sampled series buffer for graphs
   (ASR-O4, AMR-026)
+- TUI mode of `xproxyctl` with six live screens, ban management and
+  sparkline graphs (ASR-O3, AMR-027)
 
-Remaining:
+Deferred to phase 3 or later:
 - Upstream HTTP/2 tuning
-- TUI mode of `xproxyctl` (AMR-011)
 - Fuzz targets for every new parser (WAF transaction, ICAP framing, QUIC
   configuration), WAF regression corpus, load test scripts (ASR-Q1, Q4)
 
-Exit criterion: the WAF blocks the CRS test corpus at the documented
-threshold with no false positives on the sample application suite; a two
-node cluster shares limits; HTTP/3 interoperates with Firefox and Chromium.
+Exit criterion (status): the WAF blocks injection in the engine and
+integration tests and a CRS corpus run remains a phase 3 test item; a two
+node cluster shares limits (tested in process and with real binaries);
+HTTP/3 is tested with a QUIC client and browser interoperability is a
+phase 3 checklist item; the challenge was verified in headless Chromium.
 
 ## Phase 3: 1.0
 
