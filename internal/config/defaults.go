@@ -296,6 +296,20 @@ func applyDefaults(c *Config) {
 			setStr(&p.Source, "bearer")
 		}
 	}
+	if ic := c.ICAP; ic != nil {
+		for i := range ic.Services {
+			s := &ic.Services[i]
+			setDur(&s.ConnectTimeout, 2*time.Second)
+			setDur(&s.Timeout, 5*time.Second)
+			setInt(&s.MaxConns, 8)
+			if s.MaxBody == 0 {
+				s.MaxBody = 10 << 20
+			}
+			setStr(&s.BodyLimitAction, "reject")
+			setStr(&s.Fail, "closed")
+			setStr(&s.Preview, "auto")
+		}
+	}
 	setDur(&c.Metrics.SampleInterval, 10*time.Second)
 	setDur(&c.Metrics.Retention, time.Hour)
 	if ch := c.Challenge; ch != nil {

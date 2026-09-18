@@ -327,7 +327,7 @@ security stream.
 **Alternatives.** Vendor specific HTTP APIs: not portable. Inline scanning in
 process: out of scope for a proxy.
 
-**Status.** Accepted (interview).
+**Status.** Accepted (interview); delivered in phase 3 (AMR-028).
 
 ---
 
@@ -657,6 +657,36 @@ dependency weight against the modest UI. tview or termui: same concern.
 **Consequences.** No mouse, no widgets beyond what is written here; the
 GUI (1.0) is where richer interaction belongs. Future screens are added as
 render functions.
+
+**Status.** Accepted.
+
+---
+
+## AMR-028: ICAP integration details
+
+**Context.** AMR-015 chose ICAP. The integration decides what a scanner
+may do to traffic and how failures behave.
+
+**Decision.**
+
+- Bodies are buffered in memory up to `max_body` and sent in one exchange
+  (with preview when the service advertises it), never spooled to disk;
+  over the limit the route rejects or bypasses as configured.
+- A scanner may block (its encapsulated response is returned verbatim, with
+  the proxy's hygiene headers) or modify method, path, headers and body,
+  but `Host`, the forwarding headers, `Authorization` and `Cookie` are
+  protected so the origin and credentials cannot be changed by the scanner.
+- Failures follow a per-service policy; closed by default. Every bypass and
+  error is counted per service and exposed in status and metrics, so a
+  degraded scanner is visible rather than silent.
+- Connections are pooled with their buffered reader so bytes read ahead at
+  the end of a chunked body are never lost between exchanges (a bug the
+  race between segment boundaries exposed in testing).
+- Order in the chain: after JWT and WAF, so only authenticated requests
+  that pass the rules reach the scanner.
+
+**Consequences.** Streaming of very large bodies is not supported; the
+limit is the operator's tool. A TLS scanner link uses a pinned CA.
 
 **Status.** Accepted.
 

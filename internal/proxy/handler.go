@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
@@ -295,6 +296,8 @@ func (s *Server) filterDeny(rw *responseWriter, r *http.Request, st *reqState, v
 		s.stats.DeniedWAF.Add(1)
 	case "jwt":
 		s.stats.DeniedJWT.Add(1)
+	case "icap":
+		s.stats.DeniedICAP.Add(1)
 	case "body_size":
 		s.stats.DeniedBodySize.Add(1)
 	}
@@ -311,7 +314,30 @@ func (s *Server) filterDeny(rw *responseWriter, r *http.Request, st *reqState, v
 	for k, val := range v.Headers {
 		rw.Header().Set(k, val)
 	}
+	if v.Response != nil {
+		s.writeResponse(rw, r, v.Response)
+		return
+	}
 	s.plainStatus(rw, r, v.Status)
+}
+
+// writeResponse sends a filter supplied response verbatim, keeping the
+// proxy's own hygiene headers.
+func (s *Server) writeResponse(rw *responseWriter, r *http.Request, resp *http.Response) {
+	h := rw.Header()
+	for k, vs := range resp.Header {
+		if k == "Server" || k == "Connection" || k == "Transfer-Encoding" {
+			continue
+		}
+		h[k] = vs
+	}
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Content-Type-Options", "nosniff")
+	rw.WriteHeader(resp.StatusCode)
+	if r.Method != http.MethodHead && resp.Body != nil {
+		_, _ = io.Copy(rw, io.LimitReader(resp.Body, 4<<20))
+		_ = resp.Body.Close()
+	}
 }
 
 // banCategory maps a deny reason to the trigger category in the

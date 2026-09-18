@@ -64,6 +64,7 @@ internal/shed       adaptive load shedding by priority class
 internal/challenge  browser proof-of-work challenge
 internal/h3         HTTP/3 over QUIC (the only package importing quic-go)
 internal/jwt        JSON Web Token validation on the standard library
+internal/icap       ICAP client (RFC 3507) as a filter; icaptest fake server
 internal/metrics    Prometheus text encoder, histogram, sampled series
 internal/tui        terminal UI of xproxyctl (pure renderer plus a raw-mode loop)
 internal/version    build information
@@ -78,7 +79,8 @@ keeps the API surface at exactly two binaries.
 Dependency direction (arrows point at the importer's dependency):
 
 ```
-cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster, shed, challenge, h3, jwt, metrics}
+cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster, shed, challenge, h3, jwt, metrics, icap}
+                       icap     -> {filter, config}
                        metrics  -> (standard library only)
                        jwt      -> {filter, config}
                        h3       -> {limits, config}
@@ -154,12 +156,12 @@ the `denied` reason.
 | 7c | Adaptive shedding: the route's priority class against the load level | 503 + `Retry-After` | `shed` |
 | 8 | Rate limits in route order; reject or tarpit | 429 | `denied_rate_limit`, `tarpitted` |
 | 9 | Body limit: declared length checked, then `MaxBytesReader` | 413 | `denied_body_size` |
-| 9b | Filter chain request phase: JWT (401 with `WWW-Authenticate`, claims forwarded as headers, token stripped), then WAF (headers, then body, buffered and replayed to the upstream) | 401 / 403 or rule status | `denied_jwt`, `denied_waf`, `waf_detected` |
+| 9b | Filter chain request phase: JWT (401 with `WWW-Authenticate`, claims forwarded as headers, token stripped), then WAF (headers, then body, buffered and replayed to the upstream), then ICAP REQMOD (block page, modified request, or pass) | 401 / 403 / scanner status | `denied_jwt`, `denied_waf`, `denied_icap`, `waf_detected` |
 | 10 | Route timeout context | 504 | `upstream_timeouts` |
 | 11 | Action: redirect, respond, or proxy | | |
 | 12 | Proxy: WebSocket gate | 403 | `denied_websocket` |
 | 13 | Proxy: `httputil.ReverseProxy` with `poolTransport` | 502 / 503 / 504 | `upstream_*` |
-| 13b | Filter chain response phase (WAF response rules when `inspect_responses`) | 403 | `denied_waf` |
+| 13b | Filter chain response phase: WAF response rules when `inspect_responses`, then ICAP RESPMOD when enabled | 403 / scanner status | `denied_waf`, `denied_icap` |
 | 14 | Response: header operations, `Server` removal, affinity cookie | | |
 | 15 | Access log | | `responses_*`, `bytes_*` |
 
@@ -169,9 +171,8 @@ its category, so triggers can turn repeated denies into bans.
 Upstream time to first byte is observed in `ModifyResponse` (and on
 timeouts) and feeds the shedder.
 
-Planned stages (1.0): ICAP REQMOD after the WAF request phase and ICAP
-RESPMOD after the WAF response phase, JWT validation before the filter
-chain.
+A deny verdict may carry a complete response (a scanner's block page),
+which the handler writes verbatim apart from its own hygiene headers.
 
 ### Client address
 
@@ -354,10 +355,27 @@ action, the response phase inside the reverse proxy's `ModifyResponse`
 (a deny there travels through the error handler as `filterDenied`), and
 always calls `End`, whose attributes land in the access log line.
 
-The WAF and the JWT validator are the first filters; on a route with both,
-JWT runs first so unauthenticated requests are refused before rule
-evaluation. ICAP follows in 1.0; the interface is declared stable for
-external middleware once it exists (AMR-013).
+Filters run in the order JWT, WAF, ICAP: unauthenticated requests are
+refused before rule evaluation, and only requests that pass the WAF are
+sent to an external scanner. With three internal users the interface is
+now the basis for the stable middleware contract of 1.0 (AMR-013).
+
+### ICAP filter
+
+`icap.Service` keeps a pool of connections, each with its own buffered
+reader so bytes read ahead survive between exchanges, and the OPTIONS
+results (preview size, ISTag, 204 support). REQMOD sends the request line
+and headers (hop-by-hop removed) and the body as chunks; with preview the
+first bytes go first and the rest only after `100 Continue`. RESPMOD sends
+the original request headers, the response headers and the bounded
+response body. Verdicts: `204` unmodified; `200` with an encapsulated
+response is a replacement the client receives verbatim; `200` with an
+encapsulated request rewrites method, path, headers and body while
+protected headers (`Host`, forwarding headers, `Authorization`, `Cookie`)
+are kept, so a scanner can never redirect the request to another origin.
+Bodies over `max_body` and service failures follow the per-service
+policies (reject or bypass, closed or open), and every outcome is counted
+per service and exposed in status and metrics.
 
 ### JWT filter
 

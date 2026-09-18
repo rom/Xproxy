@@ -97,12 +97,18 @@ node cluster shares limits (tested in process and with real binaries);
 HTTP/3 is tested with a QUIC client and browser interoperability is a
 phase 3 checklist item; the challenge was verified in headless Chromium.
 
-## Phase 3: 1.0
+## Phase 3: 1.0 (in progress)
 
 Goal: operable at fleet scale by a team, packaged for Fedora, reviewed.
 
-- ICAP client with REQMOD and RESPMOD, preview, fail policies (ASR-F7,
-  AMR-015)
+Delivered so far:
+
+- ICAP client with REQMOD and RESPMOD, preview, block pages, modified
+  requests with protected headers, body limits and fail policies, per
+  service status and metrics (ASR-F7, AMR-015, AMR-028)
+
+Remaining:
+
 - ACME with HTTP-01 and TLS-ALPN-01, automatic renewal (ASR-F11)
 - Web GUI (`xproxy-admin`) with configuration editing and validation,
   restart and reload, graphs from the metrics ring buffer, ban management,

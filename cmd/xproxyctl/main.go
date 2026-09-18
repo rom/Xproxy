@@ -21,6 +21,7 @@
 //	cluster        show cluster peers and counters
 //	spki FILE      print the spki_pins value for a PEM certificate
 //	tui            full-screen live view (-refresh 2s, -no-color)
+//	icap           show ICAP services and counters
 //	metrics        print the Prometheus exposition
 //	series         print sampled series (-since 10m -last 20)
 //	version        print version
@@ -54,7 +55,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster icap spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -195,6 +196,21 @@ func run(args []string, out, errOut io.Writer) int {
 		if err := tui.Run(src, act, tui.Options{Refresh: *refresh, Color: !*noColor}); err != nil {
 			return fail(err)
 		}
+		return 0
+	case "icap":
+		sts, err := c.ICAP()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, sts)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "SERVICE\tURL\tREACHABLE\tPREVIEW\tREQUESTS\tUNMODIFIED\tMODIFIED\tREPLACED\tERRORS\tBYPASSED\tISTAG")
+		for _, st := range sts {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%v\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n", st.Name, st.URL, st.Reachable, st.Preview, st.Requests, st.Unmodified, st.Modified, st.Replacements, st.Errors, st.Bypassed, st.ISTag)
+		}
+		_ = tw.Flush()
 		return 0
 	case "metrics":
 		b, err := c.Metrics()

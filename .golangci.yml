@@ -20,7 +20,9 @@ linters:
   exclusions:
     rules:
       - path: _test\.go
-        linters: [gosec, errcheck, noctx, bodyclose]
+        linters: [gosec, errcheck, noctx, bodyclose, unparam]
+      - path: internal/icap/icaptest/
+        linters: [gosec, errcheck, noctx, bodyclose, unparam, staticcheck]
 formatters:
   enable:
     - gofmt

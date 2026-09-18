@@ -54,6 +54,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `unban TARGET` | Remove a ban |
 | `cluster` | Peers, inbound connections and gossip counters |
 | `spki CERT.pem` | Print the `spki_pins` value of a certificate |
+| `icap` | ICAP services with reachability, preview size, ISTag and counters |
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
 | `series` | Print sampled series; `-since 10m`, `-last 30`, `-json` |
@@ -388,6 +389,29 @@ a first-party service with a shared secret use `algorithms: [HS256]` and
 on a downstream route if you need per-user limits today; token-keyed rate
 limits are planned.
 
+### Virus and content scanning (ICAP)
+
+```yaml
+icap:
+  services:
+    - name: av
+      url: icaps://scanner.internal:11344/avscan
+      tls: {ca_file: /etc/xproxy/certs/internal-ca.pem}
+      max_body: 52428800        # 50 MiB uploads
+      body_limit_action: reject
+      fail: closed
+routes:
+  - {name: upload,   hosts: [example.com], paths: [/upload],   icap: {service: av}, upstream: web}
+  - {name: download, hosts: [example.com], paths: [/files],    icap: {service: av, request: false, response: true}, upstream: web}
+```
+
+Uploads are scanned before they reach the application; downloads are
+scanned before they reach the client. A detection returns the scanner's
+own block page, is logged with reason `icap`, and counts towards ban
+triggers. `xproxyctl icap` shows whether each service answered its last
+exchange, the preview size it advertised, and how many exchanges were
+unmodified, modified, replaced, failed or bypassed.
+
 ### Browser challenge
 
 ```yaml
@@ -566,6 +590,8 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 | 401 with `WWW-Authenticate: Bearer` | JWT missing or invalid; the security log names the category (expired, signature, issuer, audience, algorithm, unknown_key) |
 | 503 on a JWT route with `detail: keys_unavailable` | The provider's key set never loaded; check `jwks_url` and `jwks_ca_file` in the error log |
 | 502 to an https upstream after enabling pins or mTLS | `xproxyctl spki` on the upstream certificate; check the client certificate is issued by the CA the upstream trusts |
+| Scanner block page (status from the scanner, `reason: icap`) | The ICAP service replaced the request or response; `icap_verdict: replaced` in the access line |
+| 502 with `detail: reqmod_unavailable` | The ICAP service failed or timed out and `fail: closed`; `xproxyctl icap` |
 | 403 with `reason: waf` | A rule blocked the request; `waf_matched` names the rules. Add an exclusion or lower the paranoia level for that route |
 | 403 with `reason: banned` or connections closed immediately | `xproxyctl bans`; unban or add the range to `exempt_cidrs` |
 | Reload fails with a WAF compile error | The error names the file and line of the bad directive; the old rules stay active |

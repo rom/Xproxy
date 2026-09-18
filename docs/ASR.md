@@ -20,7 +20,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F4 | Session affinity by cookie | M | MVP | Cookie carries a signed endpoint index, never an address; HMAC key per pool, persisted in the state directory |
 | ASR-F5 | Active health checks and passive outlier ejection | M | MVP | Per endpoint goroutine with jitter; ejection with exponential back-off and a maximum ejection percentage |
 | ASR-F6 | Web application firewall with a rule set, anomaly scoring, shadow mode and per route thresholds | M | 1.0 (delivered in phase 2) | WAF is a filter with a bounded body buffer; the engine sits behind the filter interface so it can be swapped |
-| ASR-F7 | ICAP client (RFC 3507) for REQMOD and RESPMOD against external scanners | M | 1.0 | Streaming ICAP encapsulation, preview support, fail-open or fail-closed per route, bounded body spooling |
+| ASR-F7 | ICAP client (RFC 3507) for REQMOD and RESPMOD against external scanners | M | 1.0 (delivered in phase 3) | ICAP encapsulation with preview, fail-open or fail-closed per service, bounded in-memory bodies |
 | ASR-F8 | WebSocket passthrough only where a route allows it | M | MVP | Upgrade requests are refused unless `websocket: true`; hijack path bypasses body limits so it is opt-in |
 | ASR-F9 | Mutual TLS to clients and to upstreams | M | 1.0 (client CA at MVP, upstream side delivered in phase 2) | `crypto/tls` client auth modes; certificate identity exposed to routing and logging; upstream client certificate reloadable, SPKI pins |
 | ASR-F10 | JWT validation at the edge | S | 1.0 (delivered in phase 2) | Key set loading from file or JWKS URL with pinned CA; algorithm allow list; no `none` |
@@ -102,6 +102,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F2 | `internal/h3`, listener wiring in `internal/proxy/server.go` | `TestHTTP3`, `TestHTTP3ConnectionLimit` |
 | ASR-F9 (upstream) | `tlsconf.Client`, `Pool.ReloadClientCertificate` | `TestUpstreamMutualTLS`, `TestUpstreamSPKIPin` |
 | ASR-O2, ASR-S10 | `internal/logging` (redact.go, sinks.go, journald.go, syslog.go) | `internal/logging/sinks_test.go`, `TestRedactedAccessLog` |
+| ASR-F7 | `internal/icap` | `internal/icap/icap_test.go`, `TestICAPIntegration`, `TestICAPFailOpen` |
 | ASR-O3 (TUI) | `internal/tui`, `xproxyctl tui` | `internal/tui/render_test.go`, pseudo terminal check in TESTS.md |
 | ASR-O4 | `internal/metrics`, `Server.WriteMetrics`, `mgmt.MetricsListener` | `internal/metrics/metrics_test.go`, `TestWriteMetrics`, `TestMetricsEndpoints`, `TestMetricsListener` |
 | ASR-F10 | `internal/jwt` | `internal/jwt/jwt_test.go`, `TestJWTRoutes`, `TestJWTFromJWKSURL` |

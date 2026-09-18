@@ -54,7 +54,7 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 	}{
 		{"acl", sn.DeniedACL}, {"rate_limit", sn.DeniedRateLimit}, {"tarpit", sn.Tarpitted}, {"concurrency", sn.DeniedConcurrency},
 		{"body_size", sn.DeniedBodySize}, {"uri_length", sn.DeniedURILength}, {"no_route", sn.DeniedNoRoute}, {"websocket", sn.DeniedWebSocket},
-		{"bad_host", sn.DeniedBadHost}, {"ban", sn.DeniedBan}, {"waf", sn.DeniedWAF}, {"jwt", sn.DeniedJWT}, {"shed", sn.Shed},
+		{"bad_host", sn.DeniedBadHost}, {"ban", sn.DeniedBan}, {"waf", sn.DeniedWAF}, {"jwt", sn.DeniedJWT}, {"icap", sn.DeniedICAP}, {"shed", sn.Shed},
 	}
 	for _, d := range denied {
 		e.Counter("xproxy_denied_total", "Requests refused by the proxy, by reason.", L{"reason": d.reason}, float64(d.v))
@@ -100,6 +100,14 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 		e.Counter("xproxy_cluster_messages_total", "Cluster messages by direction and type.", L{"direction": "out", "type": "bans"}, float64(st.BansSent))
 		e.Counter("xproxy_cluster_messages_total", "Cluster messages by direction and type.", L{"direction": "in", "type": "bans"}, float64(st.BansReceived))
 		e.Counter("xproxy_cluster_rejected_total", "Cluster connections rejected.", nil, float64(st.Rejected))
+	}
+
+	for _, st := range s.ICAP() {
+		l := L{"service": st.Name}
+		e.Gauge("xproxy_icap_reachable", "1 when the ICAP service answered its last exchange.", l, b2f(st.Reachable))
+		for result, v := range map[string]uint64{"unmodified": st.Unmodified, "modified": st.Modified, "replaced": st.Replacements, "error": st.Errors, "bypassed": st.Bypassed} {
+			e.Counter("xproxy_icap_results_total", "ICAP exchanges by result.", L{"service": st.Name, "result": result}, float64(v))
+		}
 	}
 
 	e.Histogram("xproxy_request_duration_seconds", "Time from request start to response end.", nil, s.stats.RequestDuration.Snapshot())

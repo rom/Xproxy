@@ -55,6 +55,8 @@ type Config struct {
 	JWT *JWT `yaml:"jwt"`
 	// Metrics tunes exposition and the time series buffer.
 	Metrics Metrics `yaml:"metrics"`
+	// ICAP configures external scanning services referenced by routes.
+	ICAP *ICAP `yaml:"icap"`
 }
 
 // Metrics configures Prometheus exposition and sampled series (AMR-026).
@@ -429,6 +431,8 @@ type Route struct {
 	Challenge *RouteChallenge `yaml:"challenge"`
 	// JWT requires or accepts a validated token from a provider.
 	JWT *RouteJWT `yaml:"jwt"`
+	// ICAP hands requests and/or responses to a scanning service.
+	ICAP *RouteICAP `yaml:"icap"`
 }
 
 // Redirect is a static redirect action.
@@ -724,3 +728,53 @@ type RouteJWT struct {
 
 // IsRequired reports whether a token must be present.
 func (r *RouteJWT) IsRequired() bool { return r.Required == nil || *r.Required }
+
+// ICAP holds scanning services (RFC 3507; AMR-015, AMR-028).
+type ICAP struct {
+	Services []ICAPService `yaml:"services"`
+}
+
+// ICAPService is one ICAP endpoint.
+type ICAPService struct {
+	Name string `yaml:"name"`
+	// URL is icap://host[:port]/service or icaps://... for TLS.
+	URL string   `yaml:"url"`
+	TLS *ICAPTLS `yaml:"tls"`
+	// ConnectTimeout and Timeout bound the dial and the whole exchange.
+	// Defaults 2s and 5s.
+	ConnectTimeout Duration `yaml:"connect_timeout"`
+	Timeout        Duration `yaml:"timeout"`
+	// MaxConns bounds pooled idle connections. Default 8.
+	MaxConns int `yaml:"max_conns"`
+	// MaxBody bounds the body sent for scanning. Default 10 MiB.
+	MaxBody int64 `yaml:"max_body"`
+	// BodyLimitAction is bypass (pass without scanning) or reject (413)
+	// for bodies above MaxBody. Default reject.
+	BodyLimitAction string `yaml:"body_limit_action"`
+	// Fail is open (pass when the service errors or times out) or closed
+	// (answer 502). Default closed.
+	Fail string `yaml:"fail"`
+	// Preview is auto (from OPTIONS), off, or a byte count.
+	Preview string `yaml:"preview"`
+}
+
+// ICAPTLS pins the CA and name for icaps.
+type ICAPTLS struct {
+	CAFile     string `yaml:"ca_file"`
+	ServerName string `yaml:"server_name"`
+}
+
+// RouteICAP attaches a service to a route.
+type RouteICAP struct {
+	Service string `yaml:"service"`
+	// Request sends requests (REQMOD); Response sends responses (RESPMOD).
+	// Request defaults to true, Response to false.
+	Request  *bool `yaml:"request"`
+	Response *bool `yaml:"response"`
+}
+
+// ScansRequests reports whether REQMOD is enabled.
+func (r *RouteICAP) ScansRequests() bool { return r.Request == nil || *r.Request }
+
+// ScansResponses reports whether RESPMOD is enabled.
+func (r *RouteICAP) ScansResponses() bool { return r.Response != nil && *r.Response }

@@ -442,6 +442,46 @@ for a present but invalid token), are logged with the failure category
 malformed) and feed ban triggers under the `jwt` category. The JWT filter
 runs before the WAF on the same route.
 
+## icap
+
+Present means scanning services are available; routes opt in with an
+`icap` block. Requests (REQMOD) and responses (RESPMOD) are handed to the
+service per RFC 3507 with preview and `204 No Content` support. A
+`200` answer with an encapsulated response is sent to the client as is
+(a block page); one with an encapsulated request replaces the method, path,
+headers and body sent upstream, except the protected headers (`Host`, the
+forwarding headers, `Authorization`, `Cookie`).
+
+### icap.services[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required, unique | Referenced by routes |
+| `url` | `icap://host[:port]/service` or `icaps://...` | required | Default ports 1344 and 11344 |
+| `tls.ca_file`, `tls.server_name` | | | Pinned CA and verified name for `icaps` |
+| `connect_timeout` | duration | `2s` | |
+| `timeout` | duration | `5s` | Whole exchange; at most 2m |
+| `max_conns` | int | `8` | Pooled idle connections |
+| `max_body` | int | `10485760` | Largest body sent for scanning; 1024 to 1 GiB |
+| `body_limit_action` | `reject`, `bypass` | `reject` | 413, or pass unscanned and count as bypassed |
+| `fail` | `closed`, `open` | `closed` | On a service error or timeout: 502 with `Retry-After`, or pass unscanned and count as bypassed |
+| `preview` | `auto`, `off`, bytes | `auto` | Preview size from OPTIONS, none, or a fixed count |
+
+The service is probed with OPTIONS at load and reload; an unreachable
+service is logged, not fatal, and behaves according to `fail` until it
+answers.
+
+### routes[].icap
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `service` | name | required | |
+| `request` | bool | `true` | Send requests (REQMOD) |
+| `response` | bool | `false` | Send responses (RESPMOD); the response body is buffered up to `max_body` |
+
+Blocks are logged with reason `icap` and feed ban triggers under the
+`icap` category. The ICAP filter runs after JWT and WAF on the same route.
+
 ## shedding
 
 Present means enabled. The load level is the larger of the in-flight

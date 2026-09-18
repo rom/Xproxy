@@ -65,6 +65,7 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("POST /v1/bans", s.addBan)
 	mux.HandleFunc("DELETE /v1/bans", s.removeBan)
 	mux.HandleFunc("GET /v1/cluster", s.clusterStatus)
+	mux.HandleFunc("GET /v1/icap", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.ICAP()) })
 	mux.HandleFunc("GET /metrics", s.serveMetrics)
 	mux.HandleFunc("GET /v1/series", s.serveSeries)
 	s.http = &http.Server{
