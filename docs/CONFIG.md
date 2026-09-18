@@ -749,6 +749,23 @@ set fails the reload.
 | `inspect_responses` | bool | `false` | Enable response header and body rules (data leakage) |
 | `response_body_limit` | int | `524288` | Larger response bodies pass uninspected |
 | `response_mime_types` | list | text and JSON/XML types | Bodies with other content types are not inspected |
+| `learning` | object | none | Exclusion learning; see below |
+
+### waf.learning
+
+Learning aggregates every match of a detection rule by rule id, matched
+variable (for example `ARGS:q`) and route, in block and detect mode
+alike. A triple seen `min_hits` times becomes a proposal with a ready to
+review SecLang exclusion, scoped to the route's path prefix when it has
+one (`GET /v1/waf`, `GET /v1/waf/exclusions`, `xproxyctl waf
+proposals`). The table and the per rule statistics live for the process
+and survive reloads; `POST /v1/waf/reset` clears them.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Collect matched variables |
+| `min_hits` | int | `5` | Matches before a proposal appears; 1 to 1000000 |
+| `max_entries` | int | `10000` | Bound on distinct (rule, variable, route) entries; further ones are counted as dropped; 100 to 1000000 |
 
 ### waf.profiles[]
 
@@ -756,6 +773,7 @@ set fails the reload.
 |-----|------|---------|-------------|
 | `name` | name | required, unique | |
 | `crs` | object | none | Enable the bundled OWASP Core Rule Set |
+| `crs.dir` | absolute path | embedded copy | Load the Core Rule Set from a directory in the release layout (`crs-setup.conf` or `crs-setup.conf.example`, `rules/*.conf` with their `.data` files); a reload picks up changed files, so rules update without a new binary. The directory is validated at load and a broken file fails the reload |
 | `crs.paranoia_level` | int | `1` | 1 to 4 |
 | `crs.inbound_threshold` | int | `5` | Anomaly score that blocks a request |
 | `crs.outbound_threshold` | int | `4` | Anomaly score that blocks a response |

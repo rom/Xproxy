@@ -1929,6 +1929,14 @@ func (v *validator) waf(w *WAF, profiles map[string]bool) {
 	if len(w.Profiles) == 0 {
 		v.errf("waf.profiles: at least one profile is required")
 	}
+	if l := w.Learning; l != nil {
+		if l.MinHits < 1 || l.MinHits > 1_000_000 {
+			v.errf("waf.learning.min_hits: must be between 1 and 1000000")
+		}
+		if l.MaxEntries < 100 || l.MaxEntries > 1_000_000 {
+			v.errf("waf.learning.max_entries: must be between 100 and 1000000")
+		}
+	}
 	for i, p := range w.Profiles {
 		pp := fmt.Sprintf("waf.profiles[%d]", i)
 		if !nameRE.MatchString(p.Name) {
@@ -1946,6 +1954,9 @@ func (v *validator) waf(w *WAF, profiles map[string]bool) {
 			}
 			if crs.InboundThreshold < 1 || crs.OutboundThreshold < 1 {
 				v.errf("%s.crs: thresholds must be at least 1", pp)
+			}
+			if crs.Dir != "" {
+				v.dir(pp+".crs.dir", crs.Dir)
 			}
 		}
 		for j, f := range p.DirectiveFiles {
@@ -2009,6 +2020,25 @@ func (v *validator) file(p, path string) {
 	}
 	if st.IsDir() {
 		v.errf("%s: %s is a directory", p, path)
+	}
+}
+
+// dir checks an absolute directory path.
+func (v *validator) dir(p, path string) {
+	if !strings.HasPrefix(path, "/") {
+		v.errf("%s: must be an absolute path", p)
+		return
+	}
+	if !v.fileCheck {
+		return
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		v.errf("%s: %v", p, errors.Unwrap(err))
+		return
+	}
+	if !st.IsDir() {
+		v.errf("%s: %s is not a directory", p, path)
 	}
 }
 

@@ -35,6 +35,7 @@ import (
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/upstream"
+	"github.com/rom/xproxy/internal/waf"
 )
 
 // Server runs the data plane for one configuration and supports hot reload.
@@ -61,6 +62,8 @@ type Server struct {
 	tracer      atomic.Pointer[tracing.Tracer]
 	sampler     *metrics.Sampler
 	acme        *acme.Manager
+	// wafStats keeps per rule counters and learning across reloads.
+	wafStats *waf.Stats
 
 	mu        sync.Mutex
 	listeners []*boundListener
@@ -92,6 +95,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		marks:        newMarks(),
 		fingerprints: tlsconf.NewFingerprintTable(max(cfg.Server.Limits.MaxConnections, 1024)),
 		connLimiter:  limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
+		wafStats:     waf.NewStats(),
 	}
 	s.connLimiter.OnReject = func(addr netip.Addr, reason string) {
 		s.logs.SecurityEvent(context.Background(), "drop_connection", reason, "client_ip", addr.String())
@@ -120,7 +124,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		bl := s.bans.Load()
 		return bl != nil && bl.DropsConnections() && bl.Banned(addr)
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s))
+	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s), s.wafStats)
 	if err != nil {
 		if bl := s.bans.Load(); bl != nil {
 			bl.Close()
@@ -340,6 +344,61 @@ func (s *Server) Pools() map[string]upstream.PoolStatus {
 
 // Generation returns the configuration generation counter.
 func (s *Server) Generation() uint64 { return s.rt.Load().generation }
+
+// WAFReport is the response of GET /v1/waf: the compiled profiles of the
+// active generation, the route assignments, and the process wide rule
+// statistics and learning proposals.
+type WAFReport struct {
+	Enabled  bool                `json:"enabled"`
+	Profiles []waf.ProfileStatus `json:"profiles"`
+	Routes   []WAFRoute          `json:"routes"`
+	waf.Report
+}
+
+// WAFRoute is one route's WAF assignment.
+type WAFRoute struct {
+	Route   string `json:"route"`
+	Profile string `json:"profile"`
+	Mode    string `json:"mode"`
+}
+
+// WAF builds the WAF report with at most top rules.
+func (s *Server) WAF(top int) WAFReport {
+	rt := s.rt.Load()
+	rep := WAFReport{Profiles: []waf.ProfileStatus{}, Routes: []WAFRoute{}}
+	if rt.waf != nil {
+		rep.Enabled = true
+		rep.Profiles = rt.waf.Profiles()
+	}
+	for _, cr := range rt.routes {
+		if cr.wafMode != "" && cr.wafMode != string(waf.ModeOff) {
+			p, _ := wafSelection(rt.cfg, cr.cfg)
+			rep.Routes = append(rep.Routes, WAFRoute{Route: cr.cfg.Name, Profile: p, Mode: cr.wafMode})
+		}
+	}
+	rep.Report = s.wafStats.Report(top, rt.routePaths())
+	return rep
+}
+
+// WAFExclusions renders the learning proposals as SecLang.
+func (s *Server) WAFExclusions() string { return s.wafStats.Exclusions(s.rt.Load().routePaths()) }
+
+// WAFReset clears the WAF statistics and learning table.
+func (s *Server) WAFReset() { s.wafStats.Reset() }
+
+// routePaths maps every route to its first path prefix, "" for regex
+// routes, for scoping exclusion proposals.
+func (rt *runtime) routePaths() map[string]string {
+	out := make(map[string]string, len(rt.routes))
+	for _, cr := range rt.routes {
+		if len(cr.cfg.PathRegex) == 0 && len(cr.cfg.Paths) > 0 {
+			out[cr.cfg.Name] = cr.cfg.Paths[0]
+		} else {
+			out[cr.cfg.Name] = ""
+		}
+	}
+	return out
+}
 
 // Start opens all listeners and begins serving. It returns once every
 // listener is bound; serving continues in the background until Shutdown.
@@ -620,7 +679,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s))
+	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s), s.wafStats)
 	if err != nil {
 		s.stats.ReloadFailures.Add(1)
 		return err

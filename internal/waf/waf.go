@@ -15,11 +15,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	coreruleset "github.com/corazawaf/coraza-coreruleset/v4"
 	"github.com/corazawaf/coraza/v3"
@@ -42,6 +45,7 @@ const (
 type Engine struct {
 	cfg      *config.WAF
 	profiles map[string]*profile
+	stats    *Stats
 	log      *slog.Logger
 }
 
@@ -49,15 +53,57 @@ type profile struct {
 	name   string
 	block  coraza.WAF
 	detect coraza.WAF
+	// source is "embedded", the CRS directory, or "" without the CRS;
+	// version is the tx.crs_setup_version the setup file declares.
+	source  string
+	version string
+	rules   int
+}
+
+// ProfileStatus describes one compiled profile (GET /v1/waf).
+type ProfileStatus struct {
+	Name  string   `json:"name"`
+	Modes []string `json:"modes"`
+	// CRS is "embedded", the rule set directory, or "" when the profile
+	// has no Core Rule Set.
+	CRS string `json:"crs,omitempty"`
+	// Version is the CRS setup version (for example "4250" for 4.25.0).
+	Version string `json:"version,omitempty"`
+	// RuleFiles counts the CRS rule files loaded.
+	RuleFiles int `json:"rule_files,omitempty"`
+}
+
+// Profiles lists the compiled profiles in configuration order.
+func (e *Engine) Profiles() []ProfileStatus {
+	out := make([]ProfileStatus, 0, len(e.profiles))
+	for i := range e.cfg.Profiles {
+		p, ok := e.profiles[e.cfg.Profiles[i].Name]
+		if !ok {
+			continue
+		}
+		st := ProfileStatus{Name: p.name, Modes: []string{}, CRS: p.source, Version: p.version, RuleFiles: p.rules}
+		if p.block != nil {
+			st.Modes = append(st.Modes, string(ModeBlock))
+		}
+		if p.detect != nil {
+			st.Modes = append(st.Modes, string(ModeDetect))
+		}
+		out = append(out, st)
+	}
+	return out
 }
 
 // Need lists which (profile, mode) pairs the routes use, so that only those
 // are compiled.
 type Need map[string]map[Mode]bool
 
-// New compiles the profiles required by need.
-func New(cfg *config.WAF, need Need, log *slog.Logger) (*Engine, error) {
-	e := &Engine{cfg: cfg, profiles: map[string]*profile{}, log: log.With("component", "waf")}
+// New compiles the profiles required by need. stats receives per rule
+// counters and learning observations; nil disables both.
+func New(cfg *config.WAF, need Need, stats *Stats, log *slog.Logger) (*Engine, error) {
+	e := &Engine{cfg: cfg, profiles: map[string]*profile{}, stats: stats, log: log.With("component", "waf")}
+	if stats != nil {
+		stats.Configure(cfg.Learning)
+	}
 	for i := range cfg.Profiles {
 		pc := &cfg.Profiles[i]
 		modes := need[pc.Name]
@@ -65,19 +111,24 @@ func New(cfg *config.WAF, need Need, log *slog.Logger) (*Engine, error) {
 			continue
 		}
 		p := &profile{name: pc.Name}
-		base, err := e.directives(pc)
+		src, err := openRuleSet(pc)
+		if err != nil {
+			return nil, fmt.Errorf("waf profile %s: %w", pc.Name, err)
+		}
+		p.source, p.version, p.rules = src.name, src.version, src.files
+		base, err := e.directives(pc, src)
 		if err != nil {
 			return nil, fmt.Errorf("waf profile %s: %w", pc.Name, err)
 		}
 		if modes[ModeBlock] {
-			w, err := compile(base, "On")
+			w, err := compile(src.fs, base, "On")
 			if err != nil {
 				return nil, fmt.Errorf("waf profile %s: %w", pc.Name, err)
 			}
 			p.block = w
 		}
 		if modes[ModeDetect] {
-			w, err := compile(base, "DetectionOnly")
+			w, err := compile(src.fs, base, "DetectionOnly")
 			if err != nil {
 				return nil, fmt.Errorf("waf profile %s: %w", pc.Name, err)
 			}
@@ -88,19 +139,99 @@ func New(cfg *config.WAF, need Need, log *slog.Logger) (*Engine, error) {
 	return e, nil
 }
 
-func compile(base string, engine string) (coraza.WAF, error) {
+func compile(root fs.FS, base string, engine string) (coraza.WAF, error) {
 	cfg := coraza.NewWAFConfig().
-		WithRootFS(coreruleset.FS).
+		WithRootFS(root).
 		WithDirectives(base + "\nSecRuleEngine " + engine + "\n")
 	return coraza.NewWAF(cfg)
+}
+
+// ruleSet is where a profile's Core Rule Set comes from: the embedded copy
+// or an operator directory (crs.dir), which lets the rules be updated
+// without rebuilding the binary.
+type ruleSet struct {
+	fs fs.FS
+	// name is "embedded" or the directory path; "" without the CRS.
+	name string
+	// setup and rules are the include paths inside fs.
+	setup   string
+	rules   string
+	version string
+	files   int
+}
+
+// recommended is the engine configuration the embedded rule set ships;
+// it is inlined so that a directory rule set does not need a copy.
+var recommended = sync.OnceValues(func() (string, error) {
+	data, err := fs.ReadFile(coreruleset.FS, "@coraza.conf-recommended")
+	return string(data), err
+})
+
+// crsVersionRE finds the setup version declared by crs-setup.conf.
+var crsVersionRE = regexp.MustCompile(`setvar:'?tx\.crs_setup_version=(\d+)`)
+
+// openRuleSet locates the CRS for a profile and checks its layout.
+func openRuleSet(pc *config.WAFProfile) (*ruleSet, error) {
+	if pc.CRS == nil {
+		return &ruleSet{fs: coreruleset.FS}, nil
+	}
+	if pc.CRS.Dir == "" {
+		rs := &ruleSet{fs: coreruleset.FS, name: "embedded", setup: "@crs-setup.conf.example", rules: "@owasp_crs/*.conf"}
+		return rs.inspect()
+	}
+	dir := pc.CRS.Dir
+	st, err := os.Stat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("crs.dir: %w", err)
+	}
+	if !st.IsDir() {
+		return nil, fmt.Errorf("crs.dir: %s is not a directory", dir)
+	}
+	rs := &ruleSet{fs: os.DirFS(dir), name: dir, rules: "rules/*.conf"}
+	for _, cand := range []string{"crs-setup.conf", "crs-setup.conf.example"} {
+		if _, err := fs.Stat(rs.fs, cand); err == nil {
+			rs.setup = cand
+			break
+		}
+	}
+	if rs.setup == "" {
+		return nil, fmt.Errorf("crs.dir: %s has no crs-setup.conf or crs-setup.conf.example", dir)
+	}
+	return rs.inspect()
+}
+
+// inspect reads the setup version and counts the rule files.
+func (rs *ruleSet) inspect() (*ruleSet, error) {
+	data, err := fs.ReadFile(rs.fs, rs.setup)
+	if err != nil {
+		return nil, fmt.Errorf("crs setup: %w", err)
+	}
+	if m := crsVersionRE.FindSubmatch(data); m != nil {
+		rs.version = string(m[1])
+	}
+	files, err := fs.Glob(rs.fs, rs.rules)
+	if err != nil {
+		return nil, fmt.Errorf("crs rules: %w", err)
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("crs rules: no %s files under %s", rs.rules, rs.name)
+	}
+	rs.files = len(files)
+	return rs, nil
 }
 
 // directives assembles the SecLang for a profile. Order matters: engine
 // recommendations, body limits, CRS setup, tuning, operator exclusions,
 // CRS rules.
-func (e *Engine) directives(pc *config.WAFProfile) (string, error) {
+func (e *Engine) directives(pc *config.WAFProfile, src *ruleSet) (string, error) {
 	var b strings.Builder
-	b.WriteString("Include @coraza.conf-recommended\n")
+	rec, err := recommended()
+	if err != nil {
+		return "", fmt.Errorf("embedded engine configuration: %w", err)
+	}
+	b.WriteString("# --- coraza.conf-recommended ---\n")
+	b.WriteString(rec)
+	b.WriteString("\n# --- xproxy ---\n")
 	b.WriteString("SecAuditEngine Off\n")
 	fmt.Fprintf(&b, "SecRequestBodyLimit %d\n", e.cfg.RequestBodyLimit)
 	fmt.Fprintf(&b, "SecRequestBodyInMemoryLimit %d\n", min(e.cfg.RequestBodyLimit, 1<<20))
@@ -118,7 +249,7 @@ func (e *Engine) directives(pc *config.WAFProfile) (string, error) {
 		b.WriteString("SecResponseBodyAccess Off\n")
 	}
 	if crs := pc.CRS; crs != nil {
-		b.WriteString("Include @crs-setup.conf.example\n")
+		fmt.Fprintf(&b, "Include %s\n", src.setup)
 		fmt.Fprintf(&b, "SecAction \"id:900000,phase:1,pass,t:none,nolog,setvar:tx.blocking_paranoia_level=%d\"\n", crs.ParanoiaLevel)
 		fmt.Fprintf(&b, "SecAction \"id:900110,phase:1,pass,t:none,nolog,setvar:tx.inbound_anomaly_score_threshold=%d,setvar:tx.outbound_anomaly_score_threshold=%d\"\n", crs.InboundThreshold, crs.OutboundThreshold)
 	}
@@ -137,7 +268,7 @@ func (e *Engine) directives(pc *config.WAFProfile) (string, error) {
 		b.WriteString("\n")
 	}
 	if pc.CRS != nil {
-		b.WriteString("Include @owasp_crs/*.conf\n")
+		fmt.Fprintf(&b, "Include %s\n", src.rules)
 	}
 	return b.String(), nil
 }
@@ -378,6 +509,9 @@ func (in *instance) End() []any {
 	}
 	in.done = true
 	in.tx.ProcessLogging()
+	if s := in.f.engine.stats; s != nil {
+		s.record(in)
+	}
 	var out []any
 	if in.verdict != nil || in.detected() {
 		out = in.attrs()

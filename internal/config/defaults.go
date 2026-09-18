@@ -52,9 +52,13 @@ const (
 
 	DefaultWAFRequestBodyLimit  = 1 << 20
 	DefaultWAFResponseBodyLimit = 512 << 10
-	DefaultCRSParanoia          = 1
-	DefaultCRSInbound           = 5
-	DefaultCRSOutbound          = 4
+	// DefaultWAFLearningMinHits is the matches before an exclusion is
+	// proposed; DefaultWAFLearningMaxEntries bounds the learning table.
+	DefaultWAFLearningMinHits    = 5
+	DefaultWAFLearningMaxEntries = 10000
+	DefaultCRSParanoia           = 1
+	DefaultCRSInbound            = 5
+	DefaultCRSOutbound           = 4
 
 	DefaultLogDirectory = "/var/log/xproxy"
 	DefaultLogLevel     = "info"
@@ -336,6 +340,10 @@ func applyDefaults(c *Config) {
 		}
 		if len(w.ResponseMIMETypes) == 0 {
 			w.ResponseMIMETypes = []string{"text/plain", "text/html", "text/xml", "application/json", "application/xml"}
+		}
+		if l := w.Learning; l != nil {
+			setInt(&l.MinHits, DefaultWAFLearningMinHits)
+			setInt(&l.MaxEntries, DefaultWAFLearningMaxEntries)
 		}
 		for i := range w.Profiles {
 			if crs := w.Profiles[i].CRS; crs != nil {

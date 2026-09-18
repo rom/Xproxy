@@ -155,7 +155,7 @@ func wafSelection(cfg *config.Config, r *config.Route) (profile string, mode waf
 	return cfg.WAF.DefaultProfile, waf.Mode(cfg.WAF.DefaultMode)
 }
 
-func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events *eventBus) (*runtime, error) {
+func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events *eventBus, wafStats *waf.Stats) (*runtime, error) {
 	rt := &runtime{
 		cfg:        cfg,
 		generation: generation,
@@ -264,7 +264,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 			}
 			need[p][m] = true
 		}
-		engine, err := waf.New(cfg.WAF, need, log)
+		engine, err := waf.New(cfg.WAF, need, wafStats, log)
 		if err != nil {
 			rt.stop()
 			return nil, err

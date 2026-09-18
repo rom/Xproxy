@@ -78,7 +78,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas config validate reload diff history rollback rotate-secret tls reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp telemetry htpasswd spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas waf config validate reload diff history rollback rotate-secret tls reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp telemetry htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -287,6 +287,8 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_, _ = fmt.Fprintln(out, "reloaded")
 		return 0
+	case "waf":
+		return cmdWAF(c, fs.Args()[1:], *asJSON, out, errOut)
 	case "tls":
 		b, err := c.Raw("/v1/tls")
 		if err != nil {
@@ -900,6 +902,112 @@ func tail(cfgPath, stream string, out, errOut io.Writer) int {
 }
 
 // dash prints "-" for an empty cell.
+// cmdWAF implements "xproxyctl waf [rules|proposals|exclusions|reset]".
+func cmdWAF(c *mgmt.Client, args []string, asJSON bool, out, errOut io.Writer) int {
+	wfs := flag.NewFlagSet("waf", flag.ContinueOnError)
+	wfs.SetOutput(errOut)
+	top := wfs.Int("top", 20, "rules listed")
+	if err := wfs.Parse(args); err != nil {
+		return 2
+	}
+	fail := func(err error) int {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	sub := wfs.Arg(0)
+	switch sub {
+	case "exclusions":
+		b, err := c.Raw("/v1/waf/exclusions")
+		if err != nil {
+			return fail(err)
+		}
+		_, _ = out.Write(b)
+		return 0
+	case "reset":
+		if err := c.Post("/v1/waf/reset"); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintln(out, "waf statistics reset")
+		return 0
+	case "", "rules", "proposals":
+	default:
+		_, _ = fmt.Fprintln(errOut, "usage: xproxyctl waf [-top N] [rules|proposals|exclusions|reset]")
+		return 2
+	}
+	b, err := c.Raw(fmt.Sprintf("/v1/waf?top=%d", *top))
+	if err != nil {
+		return fail(err)
+	}
+	if asJSON {
+		_, _ = out.Write(b)
+		return 0
+	}
+	var rep proxy.WAFReport
+	if err := json.Unmarshal(b, &rep); err != nil {
+		return fail(err)
+	}
+	if !rep.Enabled {
+		_, _ = fmt.Fprintln(out, "waf: not configured")
+		if rep.Requests == 0 {
+			return 0
+		}
+	}
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	if sub == "" {
+		_, _ = fmt.Fprintf(out, "since %s  requests %d  blocked %d  detected %d  rules seen %d\n",
+			rep.Since.Local().Format(time.RFC3339), rep.Requests, rep.Blocked, rep.Detected, rep.TotalRules)
+		if l := rep.Learning; l != nil {
+			_, _ = fmt.Fprintf(out, "learning %s  min_hits %d  entries %d/%d  dropped %d  proposals %d\n",
+				onOff(l.Enabled), l.MinHits, l.Entries, l.MaxEntries, l.Dropped, len(l.Proposals))
+		}
+		if len(rep.Profiles) > 0 {
+			_, _ = fmt.Fprintln(tw, "PROFILE	MODES	CRS	VERSION	RULE-FILES")
+			for _, p := range rep.Profiles {
+				_, _ = fmt.Fprintf(tw, "%s	%s	%s	%s	%d\n", p.Name, strings.Join(p.Modes, ","), dash(p.CRS), dash(p.Version), p.RuleFiles)
+			}
+			_ = tw.Flush()
+		}
+		if len(rep.Routes) > 0 {
+			_, _ = fmt.Fprintln(tw, "ROUTE	PROFILE	MODE")
+			for _, r := range rep.Routes {
+				_, _ = fmt.Fprintf(tw, "%s	%s	%s\n", r.Route, r.Profile, r.Mode)
+			}
+			_ = tw.Flush()
+		}
+	}
+	if sub == "" || sub == "rules" {
+		if len(rep.Rules) == 0 {
+			_, _ = fmt.Fprintln(out, "no rule matches recorded")
+		} else {
+			_, _ = fmt.Fprintln(tw, "RULE	MATCHES	BLOCKS	DETECTS	SEVERITY	LAST-SEEN	MESSAGE")
+			for _, r := range rep.Rules {
+				_, _ = fmt.Fprintf(tw, "%d	%d	%d	%d	%s	%s	%s\n", r.ID, r.Matches, r.Blocks, r.Detects, dash(r.Severity), r.LastSeen.Local().Format(time.RFC3339), r.Message)
+			}
+			_ = tw.Flush()
+		}
+	}
+	if sub == "proposals" || (sub == "" && rep.Learning != nil && len(rep.Learning.Proposals) > 0) {
+		if rep.Learning == nil || len(rep.Learning.Proposals) == 0 {
+			_, _ = fmt.Fprintln(out, "no exclusion proposals")
+			return 0
+		}
+		_, _ = fmt.Fprintln(tw, "RULE	TARGET	ROUTE	HITS	CLIENTS	LAST-SEEN	MESSAGE")
+		for _, p := range rep.Learning.Proposals {
+			_, _ = fmt.Fprintf(tw, "%d	%s	%s	%d	%d	%s	%s\n", p.Rule, p.Target, dash(p.Route), p.Hits, p.Clients, p.LastSeen.Local().Format(time.RFC3339), p.Message)
+		}
+		_ = tw.Flush()
+		_, _ = fmt.Fprintln(out, "review the directives with: xproxyctl waf exclusions")
+	}
+	return 0
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
 func dash(v string) string {
 	if v == "" {
 		return "-"

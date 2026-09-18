@@ -184,6 +184,15 @@ routes:
 	if b, err = c.Raw("/v1/tls"); err != nil || strings.TrimSpace(string(b)) != "{}" {
 		t.Fatalf("tls: %v %s", err, b)
 	}
+	if b, err = c.Raw("/v1/waf?top=5"); err != nil || !strings.Contains(string(b), `"enabled": false`) || !strings.Contains(string(b), `"rules": []`) {
+		t.Fatalf("waf: %v %s", err, b)
+	}
+	if b, err = c.Raw("/v1/waf/exclusions"); err != nil || !strings.Contains(string(b), "(no proposals)") {
+		t.Fatalf("waf exclusions: %v %s", err, b)
+	}
+	if err := c.Post("/v1/waf/reset"); err != nil {
+		t.Fatalf("waf reset: %v", err)
+	}
 	// Cluster is not configured in this server.
 	if _, err := c.ClusterStatus(); err == nil {
 		t.Fatal("cluster status should be unavailable")

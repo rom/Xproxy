@@ -242,6 +242,9 @@ procedure is in RELEASING.md.
 - DNS over TLS and HTTPS for clients on dns listeners (`tls` on `kind:
   dns`, `doh_path`): delivered
 - DNSSEC validation on dns listeners (`dns.dnssec`): delivered
+- WAF operations: learning mode with exclusion proposals, per rule
+  statistics, rule set updates from a directory (`waf.learning`,
+  `crs.dir`, `xproxyctl waf`): delivered
 
 ## After 1.3 (candidates, unranked)
 

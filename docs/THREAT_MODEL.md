@@ -217,7 +217,9 @@ data plane does not trust it more than any other socket client.
 | Rate limit buckets reset on reload | Accepted; a flood cannot exploit it without also triggering reloads, which require operator access |
 | Volumetric attacks above the host's link capacity | Out of scope; requires upstream scrubbing or anycast |
 | A full rate limit table fails open for the rate dimension | Accepted and documented; connection and concurrency ceilings still hold; table size is generous |
-| WAF false positives can block legitimate traffic | Mitigated by `detect` mode for roll-out, per route profiles and exclusion files; residual risk is operational |
+| WAF false positives can block legitimate traffic | Mitigated by `detect` mode for roll-out, per route profiles and exclusion files; per rule statistics and learned exclusion proposals (`xproxyctl waf`) show which rules fire on which variables so tuning is evidence based; residual risk is operational |
+| Attacker trains the learning table so an operator excludes a real attack vector | Proposals are never applied automatically; each carries the distinct client count and a sample value so a handful of addresses repeating a payload is distinguishable from application traffic; the table is bounded so flooding cannot grow memory, only evict its own new entries |
+| Tampered on-disk rule set (`crs.dir`) | The directory is operator owned like the configuration; it is read only at load, validated for layout, and a file that fails to compile keeps the running rules; the version in service is reported over the management socket |
 | An attacker can get a shared NAT address banned | Accepted; `exempt_cidrs` for known shared egress, `reject` action and short durations reduce impact; bans never apply to exempt ranges |
 | `WriteTimeout` may cut long downloads | Operator tunes per deployment; 1.0 adds per route write deadlines |
 | Certificate private keys readable by the service user | Inherent in a single process design (AMR-005); mitigated by file modes, SELinux and no shell in the unit |

@@ -52,6 +52,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `history` | Recorded configurations with generation, time, note and size (needs `management.history_dir`) |
 | `rollback ID` | Apply a recorded configuration (audited; becomes a new history entry) |
 | `tls` | Served certificates per listener: names, issuer, expiry, source (file or ACME), OCSP staple state and Certificate Transparency verdict |
+| `waf [rules\|proposals\|exclusions\|reset]` | WAF profiles with rule set source and version, route assignments, counters and the most matched rules (`-top 20`); `proposals` lists learned exclusion candidates, `exclusions` prints them as SecLang for review, `reset` clears the statistics (audited) |
 | `rotate-secret FILE` | Add a fresh primary key to a secret file (affinity, challenge, OIDC cookie, redaction hash), keeping `-keep 2` previous keys for verification; then `reload` |
 | `reload-certs` | Re-read certificate files |
 | `reopen-logs` | Reopen log files |
@@ -603,6 +604,73 @@ SecRule REQUEST_URI "@beginsWith /posts" \
 ```
 
 Custom rules without the CRS work the same way through `directives`.
+
+#### Rule statistics and learned exclusions
+
+`xproxyctl waf` shows the compiled profiles (rule set source and CRS
+version), which route runs which profile in which mode, and the rules
+that matched most with their block and detect counts, severity and
+last seen time; `xproxyctl waf rules -top 50` lists more. The counters
+belong to the process, not to a configuration generation, so they keep
+accumulating while a rule set is tuned across reloads; `xproxyctl waf
+reset` starts them over (audited).
+
+Turning on learning makes the same tuning data driven:
+
+```yaml
+waf:
+  default_mode: detect
+  learning: {enabled: true, min_hits: 10}
+  profiles:
+    - name: default
+      crs: {paranoia_level: 2}
+```
+
+Every detection rule match is aggregated by rule, matched variable and
+route. Once a combination reaches `min_hits`, `xproxyctl waf proposals`
+lists it with the number of distinct clients and a sample value, and
+`xproxyctl waf exclusions > /etc/xproxy/waf/learned.conf` writes the
+proposals as SecLang, scoped to the route's path prefix:
+
+```
+# rule 941100: XSS Attack Detected via libinjection
+# route posts, 37 hits from 12 clients, last 2026-09-18T10:22:41Z
+SecRule REQUEST_URI "@beginsWith /posts" "id:10000,phase:1,pass,t:none,nolog,ctl:ruleRemoveTargetById=941100;ARGS:body"
+```
+
+Review every line: a proposal means the rule fired on that variable
+repeatedly, which is what both a false positive and a persistent
+attacker look like. Many distinct clients and a sample that is plainly
+application data point to the former; a handful of addresses and
+payload-like samples point to the latter and belong in a ban trigger
+instead. Keep the reviewed lines in a `directive_files` entry, reload,
+and the matching entries stop appearing. Learning runs in block mode
+too, so exclusions for rules that already deny traffic surface the
+same way.
+
+#### Updating the Core Rule Set without a new binary
+
+The embedded rule set is the version the binary was built with. To run
+a newer release, or a patched one, unpack it into a directory and point
+the profile at it:
+
+```yaml
+waf:
+  profiles:
+    - name: default
+      crs: {dir: /etc/xproxy/crs, paranoia_level: 1}
+```
+
+The directory holds `crs-setup.conf.example` (or a tuned
+`crs-setup.conf`, which is preferred) and `rules/` with the `.conf`
+and `.data` files, exactly as the upstream archive lays them out. It is
+read once per load: `xproxyctl reload -dry-run` validates a new
+version before it is applied, a syntax error in any file fails the
+reload and keeps the running rules, and `xproxyctl waf` reports the
+directory and its `crs_setup_version` so the version in service is
+never a guess. The engine settings that the embedded set carries
+(`coraza.conf-recommended`) are applied to a directory rule set as
+well, so the directory needs nothing besides the CRS files.
 
 ### Ban list
 

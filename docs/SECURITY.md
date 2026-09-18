@@ -122,6 +122,17 @@ to report a vulnerability. The threat analysis behind the controls is in
   CRS rules; a rule set that fails to compile fails the reload.
 - Every block and every detection is logged with matched rule identifiers,
   the CRS total score and the WAF phase.
+- Per rule statistics over the management socket show which rules fire
+  and how often, so a rule set is tuned from evidence rather than by
+  lowering the paranoia level. Optional learning proposes exclusions
+  scoped to a route's path for repeatedly matched (rule, variable)
+  pairs; proposals are never applied automatically, the output states
+  that a proposal is not a judgement of legitimacy, and the tables are
+  bounded in rules, entries and clients per entry.
+- The rule set can be loaded from an operator directory (`crs.dir`)
+  instead of the embedded copy, so a CRS security release is applied
+  with a reload. The directory is read only at load, validated for
+  layout, and a file that fails to compile keeps the running rules.
 
 ### Ban list
 

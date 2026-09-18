@@ -444,7 +444,11 @@ performance, memory bounds and operability.
 **Decision.**
 
 - The CRS is embedded in the binary through `coraza-coreruleset`; no rule
-  download at run time, and rule set upgrades are release upgrades.
+  download at run time. Rule set upgrades are release upgrades by
+  default; since 1.3 a profile may instead load the CRS from an operator
+  directory (`crs.dir`, read and validated at load, never fetched), so a
+  CRS security release can be applied with a reload while the embedded
+  copy remains the fallback and the no-network property holds.
 - A profile compiles into separate blocking and detection-only Coraza
   instances, only for the modes routes actually use, because Coraza's
   engine mode is per instance. Detection-only doubles as shadow mode.
@@ -461,6 +465,12 @@ performance, memory bounds and operability.
   rules; Coraza's audit engine is off so there is one log format.
 - Operator exclusions load between CRS setup and CRS rules, the position
   the CRS documents for `ctl:ruleRemove*` directives.
+- Per rule statistics and exclusion learning (1.3) are computed from the
+  matched rules xproxy already reads for logging, in a process wide
+  table bounded in rules, entries and clients; proposals are rendered
+  as SecLang for review and never applied by the proxy itself, because
+  an automatic exclusion would let an attacker weaken the rule set by
+  repetition.
 
 **Consequences.** Memory per compiled instance is tens of megabytes; with
 two modes and several profiles this is the dominant memory cost of the

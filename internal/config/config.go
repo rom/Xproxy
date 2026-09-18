@@ -1251,6 +1251,20 @@ type WAF struct {
 	ResponseBodyLimit int64 `yaml:"response_body_limit"`
 	// ResponseMIMETypes lists content types whose bodies are inspected.
 	ResponseMIMETypes []string `yaml:"response_mime_types"`
+	// Learning collects the variables that trigger detection rules and
+	// proposes exclusions (GET /v1/waf, xproxyctl waf proposals).
+	Learning *WAFLearning `yaml:"learning"`
+}
+
+// WAFLearning tunes exclusion learning. Matches are aggregated per rule,
+// target variable and route across block and detect mode alike; a triple
+// seen min_hits times becomes a proposal.
+type WAFLearning struct {
+	Enabled bool `yaml:"enabled"`
+	// MinHits is the number of matches before a proposal appears. Default 5.
+	MinHits int `yaml:"min_hits"`
+	// MaxEntries bounds the learning table. Default 10000.
+	MaxEntries int `yaml:"max_entries"`
 }
 
 // WAFProfile is a named rule set.
@@ -1267,6 +1281,11 @@ type WAFProfile struct {
 
 // CRS tunes the Core Rule Set.
 type CRS struct {
+	// Dir loads the rule set from a directory laid out like a CRS release
+	// (crs-setup.conf or crs-setup.conf.example, rules/*.conf and the data
+	// files) instead of the copy embedded in the binary, so that rules can
+	// be updated with a reload. Default: embedded.
+	Dir string `yaml:"dir"`
 	// ParanoiaLevel 1 to 4. Default 1.
 	ParanoiaLevel int `yaml:"paranoia_level"`
 	// InboundThreshold is the anomaly score at which a request is blocked.

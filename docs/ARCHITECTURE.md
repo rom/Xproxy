@@ -667,6 +667,9 @@ Endpoints:
 | GET | `/v1/tls` | served certificates per listener with OCSP staple and CT state |
 | GET | `/v1/telemetry` | OpenTelemetry exporters (metrics, traces, logs) with counters |
 | GET | `/v1/quotas` | usage per tenant, route and rate limit policy; `?top=N` consumers per policy |
+| GET | `/v1/waf` | WAF profiles, route assignments, per rule statistics (`?top=N`) and learned exclusion proposals |
+| GET | `/v1/waf/exclusions` | the proposals as a SecLang file (text/plain) |
+| POST | `/v1/waf/reset` | clear WAF statistics and the learning table (audited) |
 | GET | `/v1/config` | active configuration as YAML |
 | POST | `/v1/reload` | validate and apply the configuration file; `?dry_run=1` returns the changes without applying |
 | GET | `/v1/diff` | compare `from` and `to` (`active`, `file` or a history id) |
@@ -816,6 +819,24 @@ the transaction and replayed to the upstream from Coraza's buffer, then
 optionally response headers and a bounded response body. Matched attack
 rules, the blocking rule's total score and the interruption are logged;
 initialisation and reporting rules are filtered out.
+
+The rule set comes from a `ruleSet`: the embedded `coreruleset.FS` or,
+with `crs.dir`, an `os.DirFS` over the operator's directory. The
+engine recommendations that the embedded copy ships are inlined into
+the assembled SecLang so both sources compile the same way; the setup
+file's `crs_setup_version` and the number of rule files are recorded
+for the status. Every instance reports to one `waf.Stats` owned by the
+`Server` and passed into each generation's engine, so counts survive
+reloads: `End` walks the transaction's matched rules and, per rule,
+increments matches, blocks and detects with the last URI, bounded to
+8192 rules. With learning on, the matched data of every detection rule
+(variable name and key) is aggregated by (rule, target, route) in a
+table bounded by `max_entries`, with a bounded set of distinct clients
+and the first sample value. `Report` sorts rules by matches and turns
+entries at or above `min_hits` into proposals: a `SecRule REQUEST_URI
+"@beginsWith <path>"` with `ctl:ruleRemoveTargetById` when the route has
+a path prefix, otherwise `SecRuleUpdateTargetById`; ids are allocated
+from 10000 upwards in sorted order so a saved file is stable.
 
 ### Ban list
 

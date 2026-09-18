@@ -137,6 +137,14 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   NSEC3 denial proofs with wildcard and opt-out handling, a bounded
   key cache, AD for secure answers, SERVFAIL and `dns_bogus` for bogus
   ones, CD passthrough, DNSSEC records stripped for clients without DO.
+- WAF operations: per rule statistics (matches, blocks, detects, last
+  seen, severity, tags) and profile status with rule set source and
+  CRS version; `waf.learning` aggregates matched variables per rule
+  and route and proposes path scoped SecLang exclusions once
+  `min_hits` is reached; `crs.dir` loads the Core Rule Set from a
+  directory so rules update with a reload instead of a rebuild;
+  `GET /v1/waf`, `GET /v1/waf/exclusions`, `POST /v1/waf/reset`,
+  `xproxyctl waf [rules|proposals|exclusions|reset]`.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

@@ -83,6 +83,18 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		}
 		writeJSON(w, 200, s.proxy.Quotas(top))
 	})
+	mux.HandleFunc("GET /v1/waf", func(w http.ResponseWriter, r *http.Request) {
+		top := 50
+		if v, err := strconv.Atoi(r.URL.Query().Get("top")); err == nil && v >= 0 && v <= 10000 {
+			top = v
+		}
+		writeJSON(w, 200, s.proxy.WAF(top))
+	})
+	mux.HandleFunc("GET /v1/waf/exclusions", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, s.proxy.WAFExclusions())
+	})
+	mux.HandleFunc("POST /v1/waf/reset", s.audited("waf_reset", func() error { s.proxy.WAFReset(); return nil }))
 	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("POST /v1/reload", s.reload)
 	mux.HandleFunc("GET /v1/history", func(w http.ResponseWriter, _ *http.Request) {
