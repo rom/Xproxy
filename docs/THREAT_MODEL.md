@@ -38,6 +38,10 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Forged `X-Forwarded-For` to evade IP based limits or ACLs | Only peers in `trusted_proxies` may supply it; right-most untrusted algorithm; header replaced when the peer is untrusted (`netutil.ClientIP`, `TestClientIP`) |
 | Forged `Host` to reach a different virtual host | Host normalised and matched exactly or by single label wildcard; unmatched hosts get 404 |
 | Forged affinity cookie to pick a backend | HMAC signed index with expiry (`affinity.verify`, `TestAffinity`) |
+| Forged identity headers (`X-User` and similar) | Forwarded claim headers are deleted from every request before the token is examined, so only the validator can set them |
+| Token forgery: `alg: none`, algorithm confusion, wrong curve, unknown key | No `none`; per-provider allow list; HMAC only from a secret file; ECDSA curve must match; unknown key ids cause one rate limited refresh and otherwise rejection |
+| Replay of expired or premature tokens | `exp` mandatory, `nbf` and `iat` checked, bounded skew |
+| Key set poisoning | JWKS fetched only over HTTPS with a pinned CA, bounded in size, no redirects; an empty refresh keeps the previous keys |
 | TLS SNI mismatch with `Host` | Routing uses `Host`; certificate is chosen by SNI. 1.0 adds an optional strict SNI equals Host check |
 
 ### Tampering
@@ -106,7 +110,8 @@ explicitly out of scope. This document is reviewed at every phase exit
 |--------|------------|
 | Malicious upstream keeps connections open | `response_header` timeout, `total` timeout, `idle` timeout; `write_timeout` on the client side |
 | Upstream returns oversized headers | `MaxResponseHeaderBytes` 64 KiB |
-| Upstream impersonation | HTTPS with CA pinning via `ca_file`, `server_name`; verification skip requires double opt-in and is logged |
+| Upstream impersonation | HTTPS with CA pinning via `ca_file`, `server_name`, minimum version and optional SPKI pins on the leaf; verification skip requires double opt-in and is logged |
+| Upstream accepts traffic from anything on the network | Mutual TLS: the proxy presents a client certificate the upstream can require; rotation without restart |
 | Upstream pushes a backend into a poisoned state | Outlier ejection removes failing endpoints; `max_ejection_percent` prevents ejecting everything and stampeding the rest |
 | Credentials leaking to the wrong upstream | Route level `request_headers.remove` (for example `Cookie` on an API route) |
 

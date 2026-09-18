@@ -10,6 +10,14 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 ### Phase 2: Defence (in progress)
 
 #### Added
+- JWT validation: `jwt.providers` with RS/PS/ES/EdDSA/HS algorithms on an
+  allow list, JWKS from file or HTTPS URL with a pinned CA and rotation
+  handling, HMAC secret files, claim checks with bounded skew, claim
+  forwarding with spoof protection, token stripping, per-route required
+  or optional mode, `denied_jwt` counter, `jwt` ban category.
+- Upstream mutual TLS completed: reloadable client certificate (rotated by
+  `reload-certs`), `min_version`, `spki_pins`, and `xproxyctl spki` to
+  print pins.
 - HTTP/3 over QUIC: list `h3` in a TLS listener's protocols to serve the
   same routes on UDP at the same port, with `Alt-Svc` on TLS responses,
   shared certificates, shared connection ceilings and ban list, mandatory

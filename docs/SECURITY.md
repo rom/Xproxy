@@ -41,8 +41,11 @@ to report a vulnerability. The threat analysis behind the controls is in
 - SNI based certificate selection; certificates reload without restart.
 - Optional client certificate verification (`request` or `require`) against
   a configured CA bundle.
-- Upstream TLS verifies against the system pool or a pinned `ca_file`;
-  skipping verification needs `insecure_skip_verify` and `allow_insecure`.
+- Upstream TLS verifies against the system pool or a pinned `ca_file`,
+  with a configurable minimum version, optional public key pins on the
+  upstream leaf, and mutual TLS with a client certificate that rotates on
+  `reload-certs`; skipping verification needs `insecure_skip_verify` and
+  `allow_insecure` and cannot be combined with pins.
 
 ### Request handling
 
@@ -67,6 +70,24 @@ to report a vulnerability. The threat analysis behind the controls is in
   the upstream and present in every log line.
 - Environment proxy variables ignored for upstream connections.
 - No response decompression, so no decompression bombs in the proxy.
+
+### Token validation
+
+- JSON Web Tokens are verified on the standard library with an explicit
+  per-provider algorithm allow list; `none` does not exist and HMAC
+  secrets never come from a key set, which removes the classic algorithm
+  confusion attacks.
+- Signatures are checked before claims are parsed; ECDSA curves must
+  match the algorithm; keys are selected by identifier with a bounded
+  fallback.
+- `exp` is mandatory; `nbf`, `iat`, `iss`, `aud` and required claims are
+  enforced with a bounded clock skew.
+- Key sets come from a file or an HTTPS URL with a pinned CA, refreshed
+  on a timer and on unknown key identifiers with rate limiting; a provider
+  without keys fails closed with 503.
+- Client supplied copies of forwarded claim headers are always removed;
+  tokens are stripped before forwarding by default; failures are logged
+  by category and feed ban triggers.
 
 ### Web application firewall
 
@@ -170,8 +191,8 @@ to report a vulnerability. The threat analysis behind the controls is in
 
 ## Planned controls (see ROADMAP.md)
 
-Phase 2 (remaining): mutual TLS to upstreams, JWT validation, PII
-redaction rules, journald and syslog sinks, Prometheus metrics, TUI.
+Phase 2 (remaining): PII redaction rules, journald and syslog sinks,
+Prometheus metrics, TUI.
 
 Phase 3: ICAP scanning, ACME, full SELinux policy in an RPM, GUI with role
 separation, coverage and mutation gates, external security review.

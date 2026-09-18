@@ -40,15 +40,35 @@ func TestServer(t *testing.T) {
 }
 
 func TestClient(t *testing.T) {
-	tc, err := Client(&config.UpstreamTLS{InsecureSkipVerify: true})
+	tc, _, err := Client(&config.UpstreamTLS{InsecureSkipVerify: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tc.InsecureSkipVerify {
 		t.Fatal("insecure without allow_insecure")
 	}
-	tc, _ = Client(&config.UpstreamTLS{InsecureSkipVerify: true, AllowInsecure: true})
+	tc, _, _ = Client(&config.UpstreamTLS{InsecureSkipVerify: true, AllowInsecure: true})
 	if !tc.InsecureSkipVerify {
 		t.Fatal("double opt-in not honoured")
+	}
+	tc, _, _ = Client(&config.UpstreamTLS{MinVersion: "1.3"})
+	if tc.MinVersion != tls.VersionTLS13 {
+		t.Fatal("min version")
+	}
+	dir := t.TempDir()
+	cp, kp := testutil.WriteCert(t, dir, "client.test")
+	tc, rl, err := Client(&config.UpstreamTLS{ClientCertFile: cp, ClientKeyFile: kp})
+	if err != nil || rl == nil || tc.GetClientCertificate == nil {
+		t.Fatalf("client cert: %v", err)
+	}
+	c, _ := tc.GetClientCertificate(nil)
+	if len(c.Certificate) == 0 {
+		t.Fatal("no client certificate served")
+	}
+	if err := rl.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Client(&config.UpstreamTLS{SPKIPins: []string{"nope"}}); err == nil {
+		t.Fatal("bad pin accepted")
 	}
 }

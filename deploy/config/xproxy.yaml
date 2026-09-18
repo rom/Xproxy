@@ -91,6 +91,10 @@ upstreams:
     tls:
       server_name: api.internal
       ca_file: /etc/xproxy/certs/internal-ca.pem
+      min_version: "1.3"
+      client_cert_file: /etc/xproxy/certs/edge.pem        # mutual TLS to the API
+      client_key_file: /etc/xproxy/certs/edge-key.pem
+      # spki_pins: ["<xproxyctl spki api.internal.pem>"]
     endpoints:
       - {address: 10.0.2.10:8443}
       - {address: 10.0.2.11:8443}
@@ -112,6 +116,7 @@ routes:
     strip_prefix: /v1
     rate_limits: [per-ip]
     upstream: api
+    jwt: {provider: idp}
     waf: {profile: api-strict, mode: block}
     request_headers:
       remove: [Cookie]
@@ -218,3 +223,16 @@ challenge:
   difficulty: 16
   ttl: 1h
   exempt_cidrs: [10.0.0.0/8]
+
+# Token validation for the API.
+jwt:
+  providers:
+    - name: idp
+      issuer: https://idp.example.com/
+      audiences: [api]
+      algorithms: [RS256, ES256]
+      jwks_url: https://idp.example.com/.well-known/jwks.json
+      jwks_ca_file: /etc/xproxy/certs/idp-ca.pem
+      jwks_refresh: 1h
+      forward_claims: {X-User: sub, X-Scopes: scope}
+      log_claims: [sub]

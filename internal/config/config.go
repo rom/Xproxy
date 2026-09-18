@@ -51,6 +51,8 @@ type Config struct {
 	// Challenge configures the browser challenge used by routes with a
 	// challenge block.
 	Challenge *Challenge `yaml:"challenge"`
+	// JWT configures token providers referenced by routes.
+	JWT *JWT `yaml:"jwt"`
 }
 
 // Server holds listener and global limit settings for the data plane.
@@ -222,9 +224,17 @@ type Endpoint struct {
 type UpstreamTLS struct {
 	ServerName string `yaml:"server_name"`
 	CAFile     string `yaml:"ca_file"`
-	// ClientCertFile / ClientKeyFile enable mTLS to the upstream.
+	// MinVersion is "1.2" or "1.3". Default "1.2".
+	MinVersion string `yaml:"min_version"`
+	// ClientCertFile / ClientKeyFile enable mTLS to the upstream. The pair
+	// is re-read by reload-certs and by configuration reload.
 	ClientCertFile string `yaml:"client_cert_file"`
 	ClientKeyFile  string `yaml:"client_key_file"`
+	// SPKIPins are base64 SHA-256 digests of the upstream leaf public key
+	// (as in HTTP Public Key Pinning). When set, the connection is refused
+	// unless the presented leaf matches one pin, in addition to chain
+	// verification.
+	SPKIPins []string `yaml:"spki_pins"`
 	// InsecureSkipVerify disables verification. Refused unless
 	// allow_insecure is also true; logged as a security warning at start.
 	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
@@ -313,6 +323,8 @@ type Route struct {
 	PriorityClass string `yaml:"priority_class"`
 	// Challenge gates unverified clients with the browser challenge.
 	Challenge *RouteChallenge `yaml:"challenge"`
+	// JWT requires or accepts a validated token from a provider.
+	JWT *RouteJWT `yaml:"jwt"`
 }
 
 // Redirect is a static redirect action.
@@ -550,3 +562,61 @@ type RouteChallenge struct {
 	// Level is the load level that activates load mode. Default 0.5.
 	Level float64 `yaml:"level"`
 }
+
+// JWT holds token providers (AMR-025).
+type JWT struct {
+	Providers []JWTProvider `yaml:"providers"`
+}
+
+// JWTProvider describes one issuer and where its keys come from.
+type JWTProvider struct {
+	Name string `yaml:"name"`
+	// Issuer must equal the token's iss claim.
+	Issuer string `yaml:"issuer"`
+	// Audiences: the token's aud must contain at least one. Empty accepts
+	// any audience (not recommended).
+	Audiences []string `yaml:"audiences"`
+	// Algorithms allowed, from RS256, RS384, RS512, PS256, PS384, PS512,
+	// ES256, ES384, ES512, EdDSA, HS256, HS384, HS512. "none" is never
+	// allowed. Default: [RS256, ES256, EdDSA].
+	Algorithms []string `yaml:"algorithms"`
+	// JWKSFile is a JSON Web Key Set on disk (re-read on reload).
+	JWKSFile string `yaml:"jwks_file"`
+	// JWKSURL fetches the key set over HTTPS at start and every
+	// JWKSRefresh, and on an unknown key id (rate limited).
+	JWKSURL string `yaml:"jwks_url"`
+	// JWKSCAFile pins the CA for the JWKS fetch. Default: system pool.
+	JWKSCAFile  string   `yaml:"jwks_ca_file"`
+	JWKSRefresh Duration `yaml:"jwks_refresh"`
+	// HMACSecretFile holds the shared secret for HS* algorithms.
+	HMACSecretFile string `yaml:"hmac_secret_file"`
+	// ClockSkew tolerated on exp and nbf. Default 30s.
+	ClockSkew Duration `yaml:"clock_skew"`
+	// RequiredClaims must be present. exp is always required.
+	RequiredClaims []string `yaml:"required_claims"`
+	// Source is where the token is read from: bearer (Authorization:
+	// Bearer), header:<Name> or cookie:<Name>. Default bearer.
+	Source string `yaml:"source"`
+	// ForwardClaims maps upstream header names to claim names. Client
+	// supplied values of these headers are always removed first.
+	ForwardClaims map[string]string `yaml:"forward_claims"`
+	// StripToken removes the token from the forwarded request. Default
+	// true.
+	StripToken *bool `yaml:"strip_token"`
+	// LogClaims lists claims copied into the access log (for example sub).
+	LogClaims []string `yaml:"log_claims"`
+}
+
+// Strips reports whether the token is removed before forwarding.
+func (p *JWTProvider) Strips() bool { return p.StripToken == nil || *p.StripToken }
+
+// RouteJWT attaches a provider to a route.
+type RouteJWT struct {
+	Provider string `yaml:"provider"`
+	// Required rejects requests without a token with 401. Default true.
+	// When false, a missing token passes and an invalid one is rejected.
+	Required *bool `yaml:"required"`
+}
+
+// IsRequired reports whether a token must be present.
+func (r *RouteJWT) IsRequired() bool { return r.Required == nil || *r.Required }

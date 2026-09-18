@@ -24,7 +24,9 @@ type Pool struct {
 	endpoints []*Endpoint
 	bal       balancer
 	aff       *affinity
-	log       *slog.Logger
+	// clientCert is the reloadable mTLS client certificate, or nil.
+	clientCert *tlsconf.ClientReloadable
+	log        *slog.Logger
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -63,7 +65,7 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 	var tc *tls.Config
 	if cfg.Scheme == "https" {
 		var err error
-		tc, err = tlsconf.Client(cfg.TLS)
+		tc, p.clientCert, err = tlsconf.Client(cfg.TLS)
 		if err != nil {
 			return nil, fmt.Errorf("upstream %s: %w", cfg.Name, err)
 		}
@@ -106,6 +108,19 @@ func (p *Pool) Stop() {
 	}
 	p.wg.Wait()
 	p.Transport.CloseIdleConnections()
+}
+
+// ReloadClientCertificate re-reads the upstream client certificate, if
+// any, and drops idle connections so new ones present it.
+func (p *Pool) ReloadClientCertificate() error {
+	if p.clientCert == nil {
+		return nil
+	}
+	if err := p.clientCert.Load(); err != nil {
+		return fmt.Errorf("upstream %s: %w", p.Name, err)
+	}
+	p.Transport.CloseIdleConnections()
+	return nil
 }
 
 // Endpoints returns the endpoints (read only).

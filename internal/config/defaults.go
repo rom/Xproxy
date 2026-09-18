@@ -159,6 +159,9 @@ func applyDefaults(c *Config) {
 		if u.Balancer == "hash" {
 			setStr(&u.HashOn, "client_ip")
 		}
+		if u.TLS != nil {
+			setStr(&u.TLS.MinVersion, "1.2")
+		}
 		for j := range u.Endpoints {
 			setInt(&u.Endpoints[j].Weight, 1)
 		}
@@ -247,6 +250,17 @@ func applyDefaults(c *Config) {
 			sh.Hysteresis = 0.1
 		}
 		setDur(&sh.RetryAfter, 2*time.Second)
+	}
+	if j := c.JWT; j != nil {
+		for i := range j.Providers {
+			p := &j.Providers[i]
+			if len(p.Algorithms) == 0 {
+				p.Algorithms = []string{"RS256", "ES256", "EdDSA"}
+			}
+			setDur(&p.JWKSRefresh, time.Hour)
+			setDur(&p.ClockSkew, 30*time.Second)
+			setStr(&p.Source, "bearer")
+		}
 	}
 	if ch := c.Challenge; ch != nil {
 		setInt(&ch.Difficulty, 16)

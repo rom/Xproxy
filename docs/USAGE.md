@@ -53,6 +53,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `ban TARGET` | Ban an address or CIDR; `-duration 1h`, `-reason text` |
 | `unban TARGET` | Remove a ban |
 | `cluster` | Peers, inbound connections and gossip counters |
+| `spki CERT.pem` | Print the `spki_pins` value of a certificate |
 | `version` | Print version |
 
 `-json` switches `status`, `stats` and `upstreams` to machine readable
@@ -337,6 +338,53 @@ are never shed. `xproxyctl status` shows `load_level`,
 `upstream_latency_ms` and `shedding_classes`. Tune `target_latency` to the
 site's healthy time to first byte, not to the slowest page.
 
+### Mutual TLS to upstreams
+
+```yaml
+upstreams:
+  - name: api
+    scheme: https
+    tls:
+      server_name: api.internal
+      ca_file: /etc/xproxy/certs/internal-ca.pem
+      min_version: "1.3"
+      client_cert_file: /etc/xproxy/certs/edge.pem
+      client_key_file: /etc/xproxy/certs/edge-key.pem
+      spki_pins: ["<base64 sha256>"]     # xproxyctl spki api.internal.pem
+```
+
+The upstream can now require the edge's certificate, and the edge refuses
+any upstream whose public key is not pinned. Rotate the client certificate
+by replacing the files and running `xproxyctl reload-certs`; a broken pair
+is rejected and the old one stays in use. Keep two pins during an upstream
+key rotation.
+
+### JWT validation
+
+```yaml
+jwt:
+  providers:
+    - name: idp
+      issuer: https://idp.example.com/
+      audiences: [api]
+      algorithms: [RS256, ES256]
+      jwks_url: https://idp.example.com/.well-known/jwks.json
+      jwks_ca_file: /etc/xproxy/certs/idp-ca.pem
+      forward_claims: {X-User: sub, X-Scopes: scope}
+      log_claims: [sub]
+routes:
+  - {name: api,    hosts: [api.example.com], jwt: {provider: idp}, upstream: api}
+  - {name: public, hosts: [api.example.com], paths: [/public], jwt: {provider: idp, required: false}, upstream: api}
+```
+
+Requests without a valid token get 401 with `WWW-Authenticate`; valid ones
+reach the upstream with `X-User` and `X-Scopes` set from the token and the
+`Authorization` header removed. A client cannot inject `X-User` itself. For
+a first-party service with a shared secret use `algorithms: [HS256]` and
+`hmac_secret_file`. Combine with `rate_limits` keyed by `header:X-User`
+on a downstream route if you need per-user limits today; token-keyed rate
+limits are planned.
+
 ### Browser challenge
 
 ```yaml
@@ -416,6 +464,9 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 | `config: ... no such file or directory` | Certificate or CA paths; `xproxy -validate` lists all problems at once |
 | 404 for a host you configured | Host matching is exact or single label wildcard; check the `host` field in the access log |
 | 403 with `reason: acl_allow` | The client address is not in `allow_cidrs`; if behind a proxy, set `trusted_proxies` |
+| 401 with `WWW-Authenticate: Bearer` | JWT missing or invalid; the security log names the category (expired, signature, issuer, audience, algorithm, unknown_key) |
+| 503 on a JWT route with `detail: keys_unavailable` | The provider's key set never loaded; check `jwks_url` and `jwks_ca_file` in the error log |
+| 502 to an https upstream after enabling pins or mTLS | `xproxyctl spki` on the upstream certificate; check the client certificate is issued by the CA the upstream trusts |
 | 403 with `reason: waf` | A rule blocked the request; `waf_matched` names the rules. Add an exclusion or lower the paranoia level for that route |
 | 403 with `reason: banned` or connections closed immediately | `xproxyctl bans`; unban or add the range to `exempt_cidrs` |
 | Reload fails with a WAF compile error | The error names the file and line of the bad directive; the old rules stay active |

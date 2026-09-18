@@ -563,6 +563,38 @@ UDP buffer sizes matter; the sysctl profile and the socket unit set them.
 
 ---
 
+## AMR-025: JWT validation on the standard library
+
+**Context.** ASR-F10 asks for token validation at the edge. Third party
+JWT libraries have a history of algorithm confusion and `none`
+acceptance bugs, and would add to the dependency set (AMR-004).
+
+**Decision.** Implement verification directly on `crypto/*` and
+`encoding/json`: compact form parsing with size bounds, an explicit
+per-provider algorithm allow list, signature verification before claim
+parsing, HMAC secrets only from a file (never from a key set), ECDSA curve
+matched to the algorithm, key selection by identifier with a bounded
+fallback, JWKS from a file or an HTTPS URL with a pinned CA, refreshed on
+a timer and on unknown key identifiers with rate limiting, and standard
+time, issuer and audience checks with bounded skew. Exposed as a filter
+(AMR-013) that forwards selected claims as headers after deleting any
+client supplied copies, strips the token, and logs failure categories.
+Nested (JWE) tokens, DPoP and OIDC login flows are out of scope; OIDC is
+a 1.x item.
+
+**Alternatives.** `golang-jwt` or `lestrrat-go/jwx`: mature, but the
+verification core here is a few hundred lines that the project can review
+completely, and the allow list semantics are exactly what the threat model
+needs.
+
+**Consequences.** New algorithms (for example RSA-PSS with other hashes or
+ES256K) need code; the allow list makes that explicit. A provider without
+keys fails closed.
+
+**Status.** Accepted.
+
+---
+
 ## AMR-018: Licence and name
 
 **Context.** The open items on licence and name were decided by the

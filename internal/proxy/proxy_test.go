@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -549,4 +550,9 @@ func mustParse(t *testing.T, yaml string) *config.Config {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func sha256sum(b []byte) []byte {
+	h := sha256.Sum256(b)
+	return h[:]
 }

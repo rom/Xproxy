@@ -6,7 +6,7 @@ binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
 Status: **phase 2 in progress** (WAF, ban list, cluster, load shedding,
-challenge and HTTP/3 delivered). See
+challenge, HTTP/3, upstream mutual TLS and JWT delivered). See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today
@@ -28,6 +28,8 @@ challenge and HTTP/3 delivered). See
 - Adaptive load shedding by priority class from upstream latency and
   in-flight load, with critical routes never shed
 - Browser proof-of-work challenge, always or only under load
+- JWT validation at the edge with JWKS rotation, claim forwarding and
+  algorithm allow lists; mutual TLS and public key pinning to upstreams
 - Defences: connection limits at accept, concurrency ceiling, slowloris and
   body timeouts, size limits, keyed rate limits with reject or tarpit, CIDR
   allow and deny lists, trusted proxy handling, WebSocket opt-in

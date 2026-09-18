@@ -39,6 +39,7 @@ server.
 | `internal/mgmt` | `TestManagementAPI`, `TestBanAPI` | Socket mode, status, actions, error propagation, 501 for missing actions, in-use socket refusal; ban list, add, refuse loopback and bad durations, remove, counters |
 | `internal/ban` | `TestTriggerAndEscalation`, `TestWindowReset`, `TestExemptAndManual`, `TestBound`, `TestPersistence`, `TestReconfigure` | Trigger thresholds and reason filters, escalation and cap with a fake clock, window reset, exemptions, refusal of loopback and wide prefixes, CIDR bans, IPv4 mapped lookups, table bound, bbolt round trip including expiry and unban, reconfiguration keeps state |
 | `internal/cluster` | `TestTwoNodes`, `TestRejectsUnauthenticated`, `TestProtocolErrors` | Bans and unbans propagate, sources are rewritten, rates arrive as rates, late joiner gets a snapshot, peer removal on reconfigure, status; connections without a certificate, with a foreign CA or outside `allowed_names` are rejected and counted; bad JSON, messages before hello, wrong version, unknown type and oversized lines close the connection while a valid session is applied |
+| `internal/jwt` | `TestVerifyAlgorithms`, `TestVerifyRejections`, `TestHMAC`, `TestJWKSURLAndRotation`, `TestJWKSParsing`, `TestFilter`, `TestClaimString` | RS256, PS256, ES256 and EdDSA accepted with and without key ids; expiry, skew, `nbf`, issuer, audience (string and list), missing and required claims, `alg: none`, disallowed algorithms, HMAC against an asymmetric provider, unknown key, wrong key, algorithm and key type mismatch, tampered payload, malformed and oversized tokens; HMAC secret handling; JWKS over HTTPS with a pinned CA, rotation through on-demand refresh, rate limiting of refreshes, unpinned CA fails closed; malformed and symmetric keys skipped when parsing; filter behaviour for missing, optional, valid, invalid tokens, header spoof removal, cookie and header sources with stripping |
 | `internal/shed` | `TestInflightLevel`, `TestLatencyLevelAndDrain`, `TestReconfigureKeepsSamples` | Class thresholds against the in-flight ratio, hysteresis, latency level from windowed samples, drain after an idle window, reconfiguration |
 | `internal/challenge` | `TestFlow`, `TestVerifyInputs`, `TestPersistentKey`, `TestProofDefinition`, `TestScriptSHA256MatchesGo` | Page and headers, proof verification, wrong proof and wrong address refused, replay refused, cookie bound to address, expiry and tampering, exemptions, method and input validation, expired nonces, open redirect neutralised, key persistence, proof definition shared with the script |
 | `internal/waf` | `TestBlockSQLi`, `TestDetectMode`, `TestCleanRequestPasses`, `TestBodyInspectionAndReplay`, `TestBodyLimitReject`, `TestResponseInspection`, `TestCustomDirectivesAndBadRules`, `TestOnlyNeededModesCompiled` | CRS blocks injection in query and body, detect mode logs without denying, clean traffic produces no attributes, inspected bodies are replayed intact, 413 above the body limit, response leakage blocked and clean or oversize responses pass intact, custom SecLang rules, compile errors surface, lazy compilation per mode |
@@ -62,6 +63,10 @@ drive it with `net/http` and raw TCP.
 | `TestBansSurviveReload` | Reload keeps active bans; removing the section drops the list |
 | `TestAdaptiveShedding` | A slow backend raises the level to 1; low, normal and high get 503 with `Retry-After` while critical is served; classes return once the window drains |
 | `TestChallengeGate` | Script served on any host, unverified client challenged, exempt client passes, solved proof yields a cookie that works from the same address only, failed proof counted, `load` mode opens when calm and gates under load |
+| `TestUpstreamMutualTLS` | Backend requiring a client certificate refuses the proxy without one; with the pair the backend sees the edge identity; certificate rotation through `ReloadCertificates` takes effect; a broken key fails the reload and keeps the old certificate |
+| `TestUpstreamSPKIPin` | Wrong pin gives 502; a pin list containing the right pin passes |
+| `TestJWTRoutes` | 401 challenge without a token, forwarded claims and stripped token with a valid one, spoofed header removed, expired token rejected with `invalid_token`, optional route semantics, open route unaffected, repeated failures trigger a ban |
+| `TestJWTFromJWKSURL` | Provider fed by an HTTPS key set with a pinned CA |
 | `TestHTTP3` | `Alt-Svc` on the TLS listener, a request over QUIC with `HTTP/3.0`, forwarding headers and response hygiene, body limit over QUIC, QUIC connection counted |
 | `TestHTTP3ConnectionLimit` | A second QUIC connection from the same address is refused in the handshake while the first keeps working; rejection counted |
 | `TestClusterSharesLimitsAndBans` | Two full servers peer over mTLS; a client's consumption on one node holds its bucket at zero on the other, other clients unaffected, recovery after reports go stale, ban propagation, listen change refused on reload |
@@ -91,6 +96,7 @@ Current statement coverage from `make cover` (race enabled):
 |---------|----------|
 | `internal/router` | 96 % |
 | `internal/limits` | 94 % |
+| `internal/jwt` | 90 % |
 | `internal/netutil` | 92 % |
 | `internal/shed` | 88 % |
 | `internal/cluster` | 87 % |
