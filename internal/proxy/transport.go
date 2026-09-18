@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 
 	"github.com/rom/xproxy/internal/upstream"
@@ -25,6 +26,8 @@ type pickInfo struct {
 	endpoint  *upstream.Endpoint
 	setCookie string
 	attempts  int
+	// statusRetries counts responses discarded under retry_on.
+	statusRetries int
 }
 
 type pickKey struct{}
@@ -44,6 +47,28 @@ func pickFrom(ctx context.Context) *pickInfo {
 type poolTransport struct {
 	pool    *upstream.Pool
 	retries int
+	// retryOn lists the statuses retried on another endpoint.
+	retryOn []string
+}
+
+// retryStatus reports whether a response status is in the retry_on list.
+func (t *poolTransport) retryStatus(code int) bool {
+	if len(t.retryOn) == 0 {
+		return false
+	}
+	for _, on := range t.retryOn {
+		switch on {
+		case "5xx":
+			if code >= 500 && code <= 599 {
+				return true
+			}
+		default:
+			if n, err := strconv.Atoi(on); err == nil && n == code {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (t *poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -87,13 +112,35 @@ func (t *poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			exclude[e] = true
 			continue
 		}
-		// Count 503 as a passive failure signal; other statuses are the
-		// application's business.
-		failed := resp.StatusCode == http.StatusServiceUnavailable
+		// A status in retry_on is a failed attempt: the body is dropped,
+		// the endpoint marked, and the next endpoint tried while the
+		// budget lasts. The last attempt's response is returned as it is.
+		if attempt+1 < maxAttempts && t.retryStatus(resp.StatusCode) && t.hasAlternative(pi, exclude, e) {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+			_ = resp.Body.Close()
+			t.pool.End(e, true)
+			pi.mu.Lock()
+			pi.statusRetries++
+			pi.mu.Unlock()
+			exclude[e] = true
+			continue
+		}
+		// Count 503 (and every retry_on status) as a passive failure
+		// signal; other statuses are the application's business.
+		failed := resp.StatusCode == http.StatusServiceUnavailable || t.retryStatus(resp.StatusCode)
 		resp.Body = &endBody{ReadCloser: resp.Body, done: func() { t.pool.End(e, failed) }}
 		return resp, nil
 	}
 	return nil, lastErr
+}
+
+// hasAlternative reports whether another endpoint could take the retry;
+// without one the response in hand is better than a synthetic error.
+func (t *poolTransport) hasAlternative(pi *pickInfo, exclude map[*upstream.Endpoint]bool, cur *upstream.Endpoint) bool {
+	exclude[cur] = true
+	next, _ := t.pool.Pick(pi.hashKey, pi.cookie, exclude)
+	delete(exclude, cur)
+	return next != nil
 }
 
 // replayable reports whether a request may be sent to a second endpoint

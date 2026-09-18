@@ -316,7 +316,8 @@ Memory: at most 64 x 8192 buckets per policy.
 | `timeouts.idle` | duration | `90s` | Pooled connection idle |
 | `timeouts.total` | duration | `5m` | Whole exchange |
 | `max_idle_conns_per_host` | int | `64` | Pooled connections per endpoint |
-| `retries` | int | `1` | 0 to 5; only replayable requests, only on connection errors |
+| `retries` | int | `1` | 0 to 5; only replayable requests (GET, HEAD, OPTIONS, TRACE without a body), each attempt on a different endpoint; connection errors always, statuses per `retry_on` |
+| `retry_on` | list | `[]` | Response statuses treated as a failed attempt: `5xx`, `500`, `502`, `503`, `504`, `429`. The response is discarded, the endpoint marked as failed for outlier ejection, and the next endpoint tried within the `retries` budget; the last attempt's response is returned as it is. Needs `retries` above 0 |
 
 ### upstreams[].tls
 

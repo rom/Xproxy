@@ -220,6 +220,7 @@ procedure is in RELEASING.md.
 - Response compression (`compression`, `routes[].compress`): delivered
 - Regular expression, header and cookie routing (`path_regex`,
   `headers`, `cookies`): delivered
+- `retry_on` status policy for upstream retries: delivered
 
 ## After 1.3 (candidates, unranked)
 

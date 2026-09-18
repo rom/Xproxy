@@ -762,6 +762,16 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 	if u.Retries != nil && (*u.Retries < 0 || *u.Retries > 5) {
 		v.errf("%s.retries: must be between 0 and 5", p)
 	}
+	for j, on := range u.RetryOn {
+		switch on {
+		case "5xx", "500", "502", "503", "504", "429":
+		default:
+			v.errf("%s.retry_on[%d]: %q is not one of 5xx, 500, 502, 503, 504, 429", p, j, on)
+		}
+	}
+	if len(u.RetryOn) > 0 && u.Retries != nil && *u.Retries == 0 {
+		v.errf("%s.retry_on: set but retries is 0", p)
+	}
 	if u.MaxIdleConnsPerHost < 0 {
 		v.errf("%s.max_idle_conns_per_host: must not be negative", p)
 	}

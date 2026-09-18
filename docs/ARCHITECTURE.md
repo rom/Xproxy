@@ -223,6 +223,14 @@ but not `/apix`.
 
 ### Upstream selection and retries
 
+A response whose status is listed in the pool's `retry_on` is treated by
+`poolTransport` like a connection error: its body is drained and
+closed, the endpoint is marked as failed for outlier ejection, and the
+next attempt goes to another endpoint while the `retries` budget and
+the replayability rule allow; the last attempt's response is returned
+unchanged. The attempt count and the number of status retries travel
+back in `pickInfo` for the access log and the counters.
+
 `poolTransport.RoundTrip` picks an endpoint per attempt:
 
 1. If the pool has affinity and the request carries a valid cookie for an

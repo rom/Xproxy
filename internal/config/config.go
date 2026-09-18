@@ -581,6 +581,12 @@ type Upstream struct {
 	// Retries is the number of times an idempotent request is retried on a
 	// connection error against a different endpoint. Default 1.
 	Retries *int `yaml:"retries"`
+	// RetryOn adds response statuses that are retried like connection
+	// errors, on another endpoint, within the same Retries budget and
+	// only for replayable requests: "5xx", "500", "502", "503", "504",
+	// "429". A retried status counts as a passive failure of the
+	// endpoint. Default none.
+	RetryOn []string `yaml:"retry_on"`
 	// HashOn selects the hash input for the hash balancer: client_ip,
 	// header:<name> or cookie:<name>.
 	HashOn string `yaml:"hash_on"`

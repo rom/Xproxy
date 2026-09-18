@@ -155,6 +155,8 @@ routes:
 		{"h2c with tls", ", h2c: true, tls: {certificates: [{cert_file: /c, key_file: /k}]}", "", "only for plaintext"},
 		{"h2c on https upstream", "", "scheme: https\n    h2c: true", "only for scheme http"},
 		{"grpc check needs h2", "", "health_check: {type: grpc}", "needs h2c or scheme https"},
+		{"retry_on unknown", "", "retry_on: [418]", "not one of 5xx"},
+		{"retry_on without retries", "", "retries: 0\n    retry_on: [\"503\"]", "retries is 0"},
 		{"grpc check path", "", "h2c: true\n    health_check: {type: grpc, path: /x}", "not used by type grpc"},
 		{"grpc service on http check", "", "health_check: {grpc_service: a}", "only for type grpc"},
 		{"bad grpc service", "", "h2c: true\n    health_check: {type: grpc, grpc_service: \"a b\"}", "not a service name"},

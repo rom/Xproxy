@@ -306,6 +306,25 @@ the balancer range can choose an address. Layer 4 listeners (`kind:
 tcp`) do the opposite: their `proxy_protocol` sends the header to the
 upstream.
 
+### Retrying failed responses on another endpoint
+
+```yaml
+upstreams:
+  - name: api
+    retries: 2
+    retry_on: ["502", "503", "504"]
+    endpoints: [{address: 10.0.1.10:8080}, {address: 10.0.1.11:8080}, {address: 10.0.1.12:8080}]
+    outlier_ejection: {consecutive_failures: 3, base_ejection_time: 30s}
+```
+
+Connection failures are retried on another endpoint by default; with
+`retry_on`, a gateway status from an endpoint counts the same way, so
+one endpoint that answers 503 while restarting costs the client nothing
+and gets ejected after a few such answers. Only replayable requests
+(safe methods without a body) are retried, at most `retries` times, and
+when every endpoint fails the last answer is passed through unchanged.
+`upstream_retries` and `upstream_status_retries` count the attempts.
+
 ### Weighted and sticky pools
 
 ```yaml

@@ -70,6 +70,8 @@ func (s *Server) Collect(e metrics.Collector) {
 	}
 	e.Counter("xproxy_waf_detected_total", "Requests the WAF flagged in detect mode.", nil, float64(sn.WAFDetected))
 	e.Counter("xproxy_upstream_errors_total", "Upstream connection failures.", nil, float64(sn.UpstreamErrors))
+	e.Counter("xproxy_upstream_retries_total", "Attempts repeated on another endpoint.", L{"reason": "connect"}, float64(sn.UpstreamRetries-sn.UpstreamStatusRetries))
+	e.Counter("xproxy_upstream_retries_total", "Attempts repeated on another endpoint.", L{"reason": "status"}, float64(sn.UpstreamStatusRetries))
 	e.Counter("xproxy_upstream_timeouts_total", "Upstream timeouts.", nil, float64(sn.UpstreamTimeouts))
 	e.Counter("xproxy_upstream_no_healthy_total", "Requests with no healthy endpoint.", nil, float64(sn.UpstreamNoHealthy))
 	e.Counter("xproxy_client_aborts_total", "Requests abandoned by the client.", nil, float64(sn.ClientAborts))

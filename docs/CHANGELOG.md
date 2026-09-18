@@ -68,6 +68,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `exact`, `prefix`, `regex` and `present`); conditioned routes rank
   before plain routes on the same path. Gateway API `RegularExpression`
   paths and header matches now translate instead of warning.
+- `upstreams[].retry_on`: response statuses (`5xx`, `500`, `502`,
+  `503`, `504`, `429`) retried on another endpoint within the
+  `retries` budget for replayable requests, counted as passive
+  failures; `upstream_retries` and `upstream_status_retries` counters
+  and `xproxy_upstream_retries_total` by reason.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

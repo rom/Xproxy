@@ -509,7 +509,7 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 
 	start := time.Now()
 	rp := &httputil.ReverseProxy{
-		Transport:     &poolTransport{pool: pool, retries: *pool.Cfg.Retries},
+		Transport:     &poolTransport{pool: pool, retries: *pool.Cfg.Retries, retryOn: pool.Cfg.RetryOn},
 		FlushInterval: -1,
 		ErrorLog:      nil,
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -527,7 +527,13 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			}
 			st.attempts = pi.attempts
 			cookie := pi.setCookie
+			retried := pi.attempts - 1
+			statusRetries := pi.statusRetries
 			pi.mu.Unlock()
+			if retried > 0 {
+				s.stats.UpstreamRetries.Add(uint64(retried))             //nolint:gosec // positive
+				s.stats.UpstreamStatusRetries.Add(uint64(statusRetries)) //nolint:gosec // bounded by retried
+			}
 			if cookie != "" {
 				http.SetCookie(rw, &http.Cookie{
 					Name: pool.AffinityCookie(), Value: cookie, Path: "/",
@@ -635,7 +641,12 @@ func (s *Server) upstreamError(rw *responseWriter, r *http.Request, st *reqState
 		st.endpoint = pi.endpoint.Address
 	}
 	st.attempts = pi.attempts
+	retried, statusRetries := pi.attempts-1, pi.statusRetries
 	pi.mu.Unlock()
+	if retried > 0 {
+		s.stats.UpstreamRetries.Add(uint64(retried))             //nolint:gosec // positive
+		s.stats.UpstreamStatusRetries.Add(uint64(statusRetries)) //nolint:gosec // bounded by retried
+	}
 	var fd *filterDenied
 	if errors.As(err, &fd) {
 		s.filterDeny(rw, r, st, fd.v)
