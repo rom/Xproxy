@@ -227,6 +227,8 @@ procedure is in RELEASING.md.
   (`body_rewrite` filter kind): delivered
 - Circuit breaker with half open probing, per upstream concurrency
   limits and request queueing with deadlines: delivered
+- Canary by header or cookie beyond weights (`upstreams[].canary`):
+  delivered
 
 ## After 1.3 (candidates, unranked)
 

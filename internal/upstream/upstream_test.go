@@ -32,7 +32,7 @@ func TestRoundRobin(t *testing.T) {
 	}
 	var got []string
 	for i := 0; i < 6; i++ {
-		e, _ := p.Pick("", "", nil)
+		e, _ := p.Pick("", "", nil, CanaryAny)
 		got = append(got, e.Address)
 	}
 	if s := strings.Join(got, ","); s != "a:1,b:1,c:1,a:1,b:1,c:1" {
@@ -41,7 +41,7 @@ func TestRoundRobin(t *testing.T) {
 	p.endpoints[1].healthy.Store(false)
 	got = got[:0]
 	for i := 0; i < 4; i++ {
-		e, _ := p.Pick("", "", nil)
+		e, _ := p.Pick("", "", nil, CanaryAny)
 		got = append(got, e.Address)
 	}
 	if s := strings.Join(got, ","); s != "a:1,c:1,a:1,c:1" {
@@ -49,7 +49,7 @@ func TestRoundRobin(t *testing.T) {
 	}
 	p.endpoints[0].healthy.Store(false)
 	p.endpoints[2].healthy.Store(false)
-	if e, _ := p.Pick("", "", nil); e != nil {
+	if e, _ := p.Pick("", "", nil, CanaryAny); e != nil {
 		t.Fatal("all down should return nil")
 	}
 }
@@ -61,7 +61,7 @@ func TestWeighted(t *testing.T) {
 	count := map[string]int{}
 	var seq []string
 	for i := 0; i < 8; i++ {
-		e, _ := p.Pick("", "", nil)
+		e, _ := p.Pick("", "", nil, CanaryAny)
 		count[e.Address]++
 		seq = append(seq, e.Address[:1])
 	}
@@ -75,15 +75,15 @@ func TestWeighted(t *testing.T) {
 
 func TestLeastConn(t *testing.T) {
 	p, _ := NewPool(testCfg("least_conn", "a:1", "b:1"), nolog)
-	e1, _ := p.Pick("", "", nil)
+	e1, _ := p.Pick("", "", nil, CanaryAny)
 	p.Begin(e1)
-	e2, _ := p.Pick("", "", nil)
+	e2, _ := p.Pick("", "", nil, CanaryAny)
 	if e1 == e2 {
 		t.Fatal("least_conn picked busy endpoint")
 	}
 	p.Begin(e2)
 	p.End(e1, false)
-	e3, _ := p.Pick("", "", nil)
+	e3, _ := p.Pick("", "", nil, CanaryAny)
 	if e3 != e1 {
 		t.Fatal("least_conn should prefer idle endpoint")
 	}
@@ -94,12 +94,12 @@ func TestHashRing(t *testing.T) {
 	first := map[string]string{}
 	for i := 0; i < 200; i++ {
 		k := "key" + string(rune(i))
-		e, _ := p.Pick(k, "", nil)
+		e, _ := p.Pick(k, "", nil, CanaryAny)
 		first[k] = e.Address
 	}
 	// Stable.
 	for k, want := range first {
-		if e, _ := p.Pick(k, "", nil); e.Address != want {
+		if e, _ := p.Pick(k, "", nil, CanaryAny); e.Address != want {
 			t.Fatal("unstable hash")
 		}
 	}
@@ -107,7 +107,7 @@ func TestHashRing(t *testing.T) {
 	p.endpoints[0].healthy.Store(false)
 	moved := 0
 	for k, want := range first {
-		e, _ := p.Pick(k, "", nil)
+		e, _ := p.Pick(k, "", nil, CanaryAny)
 		if want == "a:1" {
 			if e.Address == "a:1" {
 				t.Fatal("picked unhealthy")
@@ -128,30 +128,30 @@ func TestAffinity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, cookie := p.Pick("", "", nil)
+	e, cookie := p.Pick("", "", nil, CanaryAny)
 	if cookie == "" {
 		t.Fatal("no cookie issued")
 	}
 	for i := 0; i < 5; i++ {
-		e2, c2 := p.Pick("", cookie, nil)
+		e2, c2 := p.Pick("", cookie, nil, CanaryAny)
 		if e2 != e || c2 != "" {
 			t.Fatal("affinity not honoured")
 		}
 	}
 	// Tampered cookie is ignored.
 	bad := cookie[:len(cookie)-2] + "AA"
-	if _, c2 := p.Pick("", bad, nil); c2 == "" {
+	if _, c2 := p.Pick("", bad, nil, CanaryAny); c2 == "" {
 		t.Fatal("tampered cookie accepted")
 	}
 	// Expired cookie is ignored.
 	p.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
-	if _, c2 := p.Pick("", cookie, nil); c2 == "" {
+	if _, c2 := p.Pick("", cookie, nil, CanaryAny); c2 == "" {
 		t.Fatal("expired cookie accepted")
 	}
 	// Unavailable endpoint falls through to the balancer.
 	p.now = time.Now
 	e.healthy.Store(false)
-	e3, c3 := p.Pick("", cookie, nil)
+	e3, c3 := p.Pick("", cookie, nil, CanaryAny)
 	if e3 == e || c3 == "" {
 		t.Fatal("cookie to unhealthy endpoint should re-balance")
 	}

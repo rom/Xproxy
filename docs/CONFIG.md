@@ -306,7 +306,8 @@ Memory: at most 64 x 8192 buckets per policy.
 | `name` | name | required, unique | |
 | `balancer` | `round_robin`, `weighted`, `least_conn`, `hash` | `round_robin` | |
 | `hash_on` | `client_ip`, `header:<Name>`, `cookie:<Name>` | `client_ip` | For `hash`; missing input falls back to the client address |
-| `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000}` |
+| `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000, canary: bool}`; `canary` marks the endpoints the `canary` policy selects |
+| `canary` | object | none | Route selected requests to the canary endpoints; see below |
 | `scheme` | `http`, `https` | `http` | |
 | `h2c` | bool | `false` | Speak HTTP/2 without TLS to `http` endpoints (gRPC backends); `https` negotiates HTTP/2 with ALPN on its own |
 | `tls` | object | | Only with `https`; see below |
@@ -358,6 +359,31 @@ Memory: at most 64 x 8192 buckets per policy.
 | `consecutive_failures` | int | `5` | Connection errors or 503 responses in a row |
 | `base_ejection_time` | duration | `30s` | Multiplied by the ejection count, capped at 10x |
 | `max_ejection_percent` | int | `50` | Never eject more than this share of the pool |
+
+### upstreams[].canary
+
+A canary release inside one pool: the endpoints marked `canary: true`
+receive the requests the policy selects and no others, so a new version
+can be exercised by testers (a header or a cookie), then by a share of
+everyone (`percent`), then promoted by marking the old endpoints out.
+Selected requests fall back to the ordinary endpoints when no canary is
+available, and ordinary requests fall back to the canaries when the
+rest is down, unless `fallback: false`. Session affinity and hashing
+apply within the chosen side. `canary: true` in the access log marks
+responses from a canary endpoint; `GET /v1/pools` counts canary
+requests and fallbacks. For a canary on a separate pool selected by
+header, use `routes[].headers` instead.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `header` | header name | none | Requests carrying this header go to the canaries |
+| `cookie` | cookie name | none | Requests carrying this cookie go to the canaries |
+| `values` | list | `[]` (any value) | With `header` or `cookie`: only these values select |
+| `percent` | 0 to 100 | `0` | Share of the other requests also sent to the canaries |
+| `fallback` | bool | `true` | Use the other side when the selected one has no available endpoint |
+
+At least one of `header`, `cookie` or `percent` is required, at least
+one endpoint must be a canary and at least one must not.
 
 ### upstreams[].circuit_breaker
 

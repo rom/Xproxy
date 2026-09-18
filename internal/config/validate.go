@@ -785,6 +785,40 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 	if u.Retries != nil && (*u.Retries < 0 || *u.Retries > 5) {
 		v.errf("%s.retries: must be between 0 and 5", p)
 	}
+	if c := u.Canary; c != nil {
+		canaries := 0
+		for _, e := range u.Endpoints {
+			if e.Canary {
+				canaries++
+			}
+		}
+		if canaries == 0 {
+			v.errf("%s.canary: no endpoint is marked canary: true", p)
+		} else if canaries == len(u.Endpoints) {
+			v.errf("%s.canary: every endpoint is a canary; mark the ordinary ones too", p)
+		}
+		if c.Header == "" && c.Cookie == "" && c.Percent <= 0 {
+			v.errf("%s.canary: header, cookie or percent is required", p)
+		}
+		if c.Header != "" && !headerNameOK(c.Header) {
+			v.errf("%s.canary.header: %q is not a header name", p, c.Header)
+		}
+		if c.Cookie != "" && strings.ContainsAny(c.Cookie, " \t;=,\r\n") {
+			v.errf("%s.canary.cookie: %q is not a cookie name", p, c.Cookie)
+		}
+		if c.Percent < 0 || c.Percent > 100 {
+			v.errf("%s.canary.percent: must be between 0 and 100", p)
+		}
+		if len(c.Values) > 32 {
+			v.errf("%s.canary.values: at most 32", p)
+		}
+	} else {
+		for j, e := range u.Endpoints {
+			if e.Canary {
+				v.errf("%s.endpoints[%d].canary: set without a canary section", p, j)
+			}
+		}
+	}
 	if cb := u.CircuitBreaker; cb != nil {
 		if cb.ConsecutiveFailures < 1 || cb.ConsecutiveFailures > 10000 {
 			v.errf("%s.circuit_breaker.consecutive_failures: must be between 1 and 10000", p)

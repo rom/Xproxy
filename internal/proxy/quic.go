@@ -155,7 +155,7 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 	var uc *net.UDPConn
 	var ep *upstream.Endpoint
 	for attempt := 0; attempt < 3 && uc == nil; attempt++ {
-		e, _ := pool.Pick(client.Addr().String(), "", tried)
+		e, _ := pool.Pick(client.Addr().String(), "", tried, upstream.CanaryAny)
 		if e == nil {
 			break
 		}

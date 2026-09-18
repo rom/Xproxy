@@ -29,6 +29,8 @@ type pickInfo struct {
 	attempts  int
 	// statusRetries counts responses discarded under retry_on.
 	statusRetries int
+	// canary is the request's mode under the pool's canary policy.
+	canary upstream.CanaryMode
 }
 
 type pickKey struct{}
@@ -114,7 +116,7 @@ func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Respon
 	}
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		e, cookie := t.pool.Pick(pi.hashKey, pi.cookie, exclude)
+		e, cookie := t.pool.Pick(pi.hashKey, pi.cookie, exclude, pi.canary)
 		if e == nil {
 			if lastErr != nil {
 				return nil, lastErr
@@ -169,7 +171,7 @@ func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Respon
 // without one the response in hand is better than a synthetic error.
 func (t *poolTransport) hasAlternative(pi *pickInfo, exclude map[*upstream.Endpoint]bool, cur *upstream.Endpoint) bool {
 	exclude[cur] = true
-	next, _ := t.pool.Pick(pi.hashKey, pi.cookie, exclude)
+	next, _ := t.pool.Pick(pi.hashKey, pi.cookie, exclude, pi.canary)
 	delete(exclude, cur)
 	return next != nil
 }

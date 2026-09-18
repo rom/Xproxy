@@ -228,4 +228,5 @@ type PoolStatus struct {
 	Active    int64          `json:"active"`
 	Circuit   *CircuitStatus `json:"circuit,omitempty"`
 	Queue     *QueueStatus   `json:"queue,omitempty"`
+	Canary    *CanaryStatus  `json:"canary,omitempty"`
 }

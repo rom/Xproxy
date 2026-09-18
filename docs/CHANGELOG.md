@@ -88,6 +88,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   waiters with a deadline); `GET /v1/pools`, pool rows in `xproxyctl
   upstreams`, `upstream_circuit_open`, `upstream_queue_full`,
   `upstream_queue_timeouts` and per pool gauges.
+- Canary endpoints: `endpoints[].canary` with `upstreams[].canary`
+  (header, cookie, values, percent, fallback) sends selected requests
+  to the canary endpoints of a pool and keeps the rest away; `canary`
+  in the access log, endpoint stats and `GET /v1/pools`.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

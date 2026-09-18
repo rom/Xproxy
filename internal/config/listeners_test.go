@@ -157,6 +157,7 @@ routes:
 		{"grpc check needs h2", "", "health_check: {type: grpc}", "needs h2c or scheme https"},
 		{"retry_on unknown", "", "retry_on: [418]", "not one of 5xx"},
 		{"queue without max_concurrent", "", "queue: {size: 10}", "needs max_concurrent"},
+		{"canary without endpoint", "", "canary: {header: X-Canary}", "no endpoint is marked"},
 		{"queue timeout", "", "max_concurrent: 5\n    queue: {size: 10, timeout: 1ms}", "queue.timeout"},
 		{"breaker open_for", "", "circuit_breaker: {open_for: 1ms}", "open_for"},
 		{"breaker threshold", "", "circuit_breaker: {consecutive_failures: -1}", "consecutive_failures"},

@@ -150,7 +150,7 @@ func run(args []string, out, errOut io.Writer) int {
 			_ = json.Unmarshal(pb, &pools)
 		}
 		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS")
+		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tCANARY\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS")
 		names := make([]string, 0, len(ups))
 		for n := range ups {
 			names = append(names, n)
@@ -158,7 +158,7 @@ func run(args []string, out, errOut io.Writer) int {
 		sort.Strings(names)
 		for _, n := range names {
 			for _, e := range ups[n] {
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%d\t%d\t%d\n", n, e.Address, e.Weight, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors)
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%v\t%d\t%d\t%d\n", n, e.Address, e.Weight, e.Canary, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors)
 			}
 		}
 		_ = tw.Flush()

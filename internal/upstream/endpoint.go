@@ -11,6 +11,7 @@ import (
 type Endpoint struct {
 	Address string
 	Weight  int
+	Canary  bool
 	index   int
 
 	healthy   atomic.Bool  // active health check result
@@ -49,6 +50,7 @@ func (e *Endpoint) Active() int64 { return e.active.Load() }
 type Stats struct {
 	Address   string `json:"address"`
 	Weight    int    `json:"weight"`
+	Canary    bool   `json:"canary,omitempty"`
 	Healthy   bool   `json:"healthy"`
 	Ejected   bool   `json:"ejected"`
 	Active    int64  `json:"active"`
@@ -61,6 +63,7 @@ func (e *Endpoint) stats(now time.Time) Stats {
 	return Stats{
 		Address:   e.Address,
 		Weight:    e.Weight,
+		Canary:    e.Canary,
 		Healthy:   e.healthy.Load(),
 		Ejected:   e.ejectedNS.Load() > now.UnixNano(),
 		Active:    e.active.Load(),

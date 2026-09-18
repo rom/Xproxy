@@ -609,12 +609,30 @@ type Upstream struct {
 	MaxConcurrent int `yaml:"max_concurrent"`
 	// Queue holds requests beyond MaxConcurrent for a bounded time.
 	Queue *UpstreamQueue `yaml:"queue"`
+	// Canary sends selected requests to endpoints marked canary.
+	Canary *Canary `yaml:"canary"`
 }
 
 // Endpoint is a single upstream address.
 type Endpoint struct {
 	Address string `yaml:"address"`
 	Weight  int    `yaml:"weight"`
+	// Canary marks the endpoint as the pool's canary: it receives the
+	// requests the pool's canary policy selects and no others.
+	Canary bool `yaml:"canary"`
+}
+
+// Canary routes selected requests to the pool's canary endpoints: those
+// carrying Header or Cookie (with one of Values when listed) and a
+// Percent share of the rest. Other requests avoid the canaries. Each
+// side falls back to the other when its endpoints are all unavailable
+// unless Fallback is false.
+type Canary struct {
+	Header   string   `yaml:"header"`
+	Cookie   string   `yaml:"cookie"`
+	Values   []string `yaml:"values"`
+	Percent  float64  `yaml:"percent"`
+	Fallback *bool    `yaml:"fallback"`
 }
 
 // UpstreamTLS configures TLS towards upstream endpoints.

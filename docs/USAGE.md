@@ -928,9 +928,27 @@ version whatever its path; `/api/v3/items/42` reaches the item service
 while `/api/v3/items/list` does not (patterns match the whole path);
 everything else goes to the current version. Conditioned routes are
 tried before the plain route on the same path, so the order above does
-not matter. For a canary by share of traffic rather than by header,
-use a `weighted` upstream; for one by header on the same route, see
-`canary` on the upstream pool (traffic management).
+not matter.
+
+### Canary endpoints inside one pool
+
+```yaml
+upstreams:
+  - name: app
+    canary: {header: X-Canary, cookie: canary, percent: 5}
+    endpoints:
+      - {address: 10.0.1.10:8080}
+      - {address: 10.0.1.11:8080}
+      - {address: 10.0.1.12:8080, canary: true}
+```
+
+The third endpoint runs the new build. Testers reach it with an
+`X-Canary` header or a `canary` cookie, five percent of everyone else
+lands on it too, and the remaining traffic never does. If the canary
+fails its health checks its traffic falls back to the other two. Raise
+`percent` as confidence grows; to promote, mark the old endpoints
+`canary: true` and the new one not, or drop the policy. The access log
+shows `canary: true` on responses the canary served.
 
 ### Response compression
 

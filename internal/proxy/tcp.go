@@ -183,7 +183,7 @@ func (t *tcpServer) handle(client net.Conn) {
 	var up net.Conn
 	tried := map[*upstream.Endpoint]bool{}
 	for attempt := 0; attempt < 3; attempt++ {
-		e, _ := pool.Pick(clientIP.String(), "", tried)
+		e, _ := pool.Pick(clientIP.String(), "", tried, upstream.CanaryAny)
 		if e == nil {
 			break
 		}

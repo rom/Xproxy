@@ -50,6 +50,7 @@ type reqState struct {
 	ja4      string
 	cache    string // hit, miss or bypass on a cached route
 	encoding string // gzip when the proxy compressed the response
+	canary   bool   // the response came from a canary endpoint
 	cacheKey string
 	marked   bool   // client previously hit a honeypot
 	mirror   string // sent, dropped or body_too_large on a mirrored route
@@ -504,7 +505,7 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 	if cr.mirror != nil {
 		mirrored = s.prepareMirror(r, st, cr)
 	}
-	pi := &pickInfo{hashKey: hashKey(pool.Cfg, r, st)}
+	pi := &pickInfo{hashKey: hashKey(pool.Cfg, r, st), canary: pool.CanaryMode(r)}
 	if name := pool.AffinityCookie(); name != "" {
 		if c, err := r.Cookie(name); err == nil {
 			pi.cookie = c.Value
@@ -533,6 +534,7 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			pi.mu.Lock()
 			if pi.endpoint != nil {
 				st.endpoint = pi.endpoint.Address
+				st.canary = pi.endpoint.Canary
 			}
 			st.attempts = pi.attempts
 			cookie := pi.setCookie
@@ -825,6 +827,9 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	}
 	if st.cache != "" {
 		attrs = append(attrs, "cache", st.cache)
+	}
+	if st.canary {
+		attrs = append(attrs, "canary", true)
 	}
 	if st.encoding != "" {
 		attrs = append(attrs, "encoding", st.encoding)
