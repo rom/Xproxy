@@ -3,12 +3,17 @@ package proxy
 import (
 	"sync/atomic"
 	"time"
+
+	"github.com/rom/xproxy/internal/metrics"
 )
 
 // Stats are process-wide counters exposed by the management API. They are
 // monotonically increasing except for the gauges.
 type Stats struct {
 	StartedAt time.Time
+
+	RequestDuration *metrics.Histogram
+	UpstreamTTFB    *metrics.Histogram
 
 	Requests     atomic.Uint64
 	Responses2xx atomic.Uint64

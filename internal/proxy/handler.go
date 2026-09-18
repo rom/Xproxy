@@ -63,6 +63,12 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	st := &reqState{id: newRequestID(), start: time.Now()}
 	st.clientIP = netutil.ClientIP(r, rt.trusted)
 	s.stats.Requests.Add(1)
+	var route *compiledRoute
+	defer func() {
+		if route != nil {
+			route.observe(rw.Status(), st.denied != "")
+		}
+	}()
 	if r.ContentLength > 0 {
 		s.stats.BytesIn.Add(uint64(r.ContentLength)) //nolint:gosec // guarded by > 0 above
 	}
@@ -153,6 +159,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	cr := rt.routes[match.Index]
 	st.route = cr.cfg.Name
+	route = cr
 
 	// Access control.
 	if len(cr.deny) > 0 && netutil.Contains(cr.deny, st.clientIP) {
@@ -352,8 +359,10 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			s.rewrite(pr, st, cr)
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			ttfb := time.Since(start)
+			s.stats.UpstreamTTFB.Observe(ttfb.Seconds())
 			if sh := s.shedder.Load(); sh != nil {
-				sh.Observe(time.Since(start))
+				sh.Observe(ttfb)
 			}
 			pi.mu.Lock()
 			if pi.endpoint != nil {
@@ -538,6 +547,7 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	s.stats.countStatus(status)
 	s.stats.BytesOut.Add(uint64(max(rw.bytes, 0))) //nolint:gosec // non-negative
 	dur := time.Since(st.start)
+	s.stats.RequestDuration.Observe(dur.Seconds())
 	attrs := []any{
 		"request_id", st.id,
 		"client_ip", st.clientIP.String(),

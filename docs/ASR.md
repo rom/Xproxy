@@ -62,7 +62,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-O1 | Single YAML configuration file, validated before use | M | MVP | Schema in Go types; `xproxy -validate` and `xproxyctl validate` |
 | ASR-O2 | Four log streams (access, error, security, audit) as JSON, to files, journald and syslog | M | MVP files, sinks delivered in phase 2 | Sink abstraction behind `log/slog` handlers; native journald datagram protocol and RFC 5424 syslog without cgo |
 | ASR-O3 | Management via CLI, TUI and web GUI | M | MVP CLI, TUI and GUI at 1.0 | One management API on a Unix socket serves all three; GUI is a separate binary serving embedded static assets over the same API, never inside the data plane |
-| ASR-O4 | Metrics for graphs and statistics | M | 1.0 | Prometheus text endpoint on the management socket, plus a local ring buffer of time series for the GUI without external storage |
+| ASR-O4 | Metrics for graphs and statistics | M | 1.0 (delivered in phase 2) | Prometheus text endpoint on the management socket and an optional TCP endpoint, plus a local ring buffer of time series for the GUI without external storage |
 | ASR-O5 | Persisted state for bans and statistics across restarts | S | 1.0 | Embedded key-value store (bbolt) in the state directory |
 | ASR-O6 | Extensible without recompiling the core for common cases | S | 1.0 interface, 1.x WASM | Middleware interface with a registry at 1.0; WebAssembly extension ABI in 1.x; never Go plugins |
 
@@ -102,6 +102,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F2 | `internal/h3`, listener wiring in `internal/proxy/server.go` | `TestHTTP3`, `TestHTTP3ConnectionLimit` |
 | ASR-F9 (upstream) | `tlsconf.Client`, `Pool.ReloadClientCertificate` | `TestUpstreamMutualTLS`, `TestUpstreamSPKIPin` |
 | ASR-O2, ASR-S10 | `internal/logging` (redact.go, sinks.go, journald.go, syslog.go) | `internal/logging/sinks_test.go`, `TestRedactedAccessLog` |
+| ASR-O4 | `internal/metrics`, `Server.WriteMetrics`, `mgmt.MetricsListener` | `internal/metrics/metrics_test.go`, `TestWriteMetrics`, `TestMetricsEndpoints`, `TestMetricsListener` |
 | ASR-F10 | `internal/jwt` | `internal/jwt/jwt_test.go`, `TestJWTRoutes`, `TestJWTFromJWKSURL` |
 | ASR-S2 (shedding, challenge) | `internal/shed`, `internal/challenge` | `internal/shed/shed_test.go`, `internal/challenge/challenge_test.go`, `TestAdaptiveShedding`, `TestChallengeGate` |
 | ASR-S9, O2 | `internal/logging`, `internal/mgmt` | `internal/logging/logging_test.go`, `internal/mgmt/mgmt_test.go` |

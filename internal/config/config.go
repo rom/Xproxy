@@ -53,7 +53,41 @@ type Config struct {
 	Challenge *Challenge `yaml:"challenge"`
 	// JWT configures token providers referenced by routes.
 	JWT *JWT `yaml:"jwt"`
+	// Metrics tunes exposition and the time series buffer.
+	Metrics Metrics `yaml:"metrics"`
 }
+
+// Metrics configures Prometheus exposition and sampled series (AMR-026).
+// The management socket always serves /metrics; Listen adds a TCP
+// endpoint for scrapers.
+type Metrics struct {
+	// Listen is an optional host:port serving only /metrics. Binding all
+	// interfaces requires TLS with a client CA.
+	Listen string `yaml:"listen"`
+	// AllowCIDRs restricts scrapers by source address. Empty allows any
+	// address that reaches the listener.
+	AllowCIDRs []string `yaml:"allow_cidrs"`
+	// TLS makes the listener HTTPS; ClientCAFile requires client
+	// certificates.
+	TLS *MetricsTLS `yaml:"tls"`
+	// PerRoute exposes request counters per route (one series per route
+	// and status class). Default true.
+	PerRoute *bool `yaml:"per_route"`
+	// SampleInterval and Retention size the time series buffer. Defaults
+	// 10s and 1h.
+	SampleInterval Duration `yaml:"sample_interval"`
+	Retention      Duration `yaml:"retention"`
+}
+
+// MetricsTLS is the metrics listener certificate and optional client CA.
+type MetricsTLS struct {
+	CertFile     string `yaml:"cert_file"`
+	KeyFile      string `yaml:"key_file"`
+	ClientCAFile string `yaml:"client_ca_file"`
+}
+
+// PerRouteEnabled reports whether per-route counters are exposed.
+func (m *Metrics) PerRouteEnabled() bool { return m.PerRoute == nil || *m.PerRoute }
 
 // Server holds listener and global limit settings for the data plane.
 type Server struct {

@@ -34,6 +34,14 @@ management:
   socket: /run/xproxy/mgmt.sock
   socket_mode: "0660"
 
+# Prometheus: /metrics is always on the management socket; this adds a
+# scrape endpoint on the internal interface for the monitoring servers.
+metrics:
+  listen: 10.0.0.1:9100
+  allow_cidrs: [10.0.5.0/24]
+  sample_interval: 10s
+  retention: 1h
+
 logging:
   directory: /var/log/xproxy
   level: info

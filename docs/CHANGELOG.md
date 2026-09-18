@@ -10,6 +10,11 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 ### Phase 2: Defence (in progress)
 
 #### Added
+- Metrics: Prometheus text exposition at `/metrics` on the management
+  socket and on an optional TCP listener with allow list and mutual TLS
+  (`metrics` section); request duration and upstream time to first byte
+  histograms; per-route outcome counters; sampled series buffer served at
+  `/v1/series`; `xproxyctl metrics` and `xproxyctl series`.
 - Log sinks: per-stream `sinks` with `file`, `journald` (native protocol,
   `MESSAGE` plus indexed `XPROXY_*` fields) and `syslog` (RFC 5424 or
   3164 over UDP, TCP, TLS with pinned CA, or Unix socket; bounded queue,

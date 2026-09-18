@@ -79,11 +79,13 @@ Delivered so far:
   TLS and Unix socket behind a bounded queue; per-stream redaction rules
   for addresses, user agents, referers, claims and arbitrary fields
   (ASR-O2, ASR-S10, AMR-014)
+- Prometheus exposition on the management socket and an optional
+  hardened TCP endpoint, request and upstream latency histograms,
+  per-route counters, and an in-process sampled series buffer for graphs
+  (ASR-O4, AMR-026)
 
 Remaining:
 - Upstream HTTP/2 tuning
-- Prometheus metrics endpoint and an in-process time series ring buffer for
-  graphs (ASR-O4)
 - TUI mode of `xproxyctl` (AMR-011)
 - Fuzz targets for every new parser (WAF transaction, ICAP framing, QUIC
   configuration), WAF regression corpus, load test scripts (ASR-Q1, Q4)

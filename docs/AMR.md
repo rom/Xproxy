@@ -606,6 +606,37 @@ keys fails closed.
 
 ---
 
+## AMR-026: Metrics without a client library
+
+**Context.** ASR-O4 asks for metrics for graphs and statistics; AMR-004
+keeps the dependency set short, and the Prometheus client library brings
+its own registry, process collectors and protobuf paths.
+
+**Decision.** The proxy keeps its counters in atomics that the request
+path already updates, and assembles the text exposition on each scrape
+with a small encoder (families, sorted labels, escaping, histograms). Two
+histograms (request duration, upstream time to first byte) and per-route
+outcome counters are added; everything else is derived from existing
+state. The management socket serves `/metrics`; an optional TCP endpoint
+serves only that path with an allow list and optional mutual TLS. A
+sampler stores a fixed set of series (rates from counters, current gauges)
+in a ring buffer sized by interval and retention, so the TUI and GUI can
+graph without external storage.
+
+**Alternatives.** `prometheus/client_golang`: rejected for dependency
+weight and because the registry model duplicates the atomics already in
+place. OpenTelemetry: deferred; the exposition is the interoperability
+boundary and an OTLP exporter can be added behind the same snapshot.
+
+**Consequences.** New metrics are added by hand in one function; label
+cardinality is bounded by configuration by construction. Counters that
+live in the configuration generation (per-route) reset on reload, which
+Prometheus rate functions handle.
+
+**Status.** Accepted.
+
+---
+
 ## AMR-018: Licence and name
 
 **Context.** The open items on licence and name were decided by the
