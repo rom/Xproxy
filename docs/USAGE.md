@@ -937,6 +937,26 @@ the same block list and cache. `xproxyctl dns` shows the
 counters; `log_queries: true` writes every question to the access log
 when an investigation needs it.
 
+### Validating DNSSEC for clients
+
+```yaml
+server:
+  listeners:
+    - name: dns
+      address: "10.0.0.53:53"
+      kind: dns
+      dns:
+        upstreams: ["9.9.9.9:53", "149.112.112.112:53"]
+        dnssec: {}
+```
+
+Answers now come with the AD bit for clients that ask for it, forged or
+broken answers are refused with SERVFAIL and logged as `dns_bogus`, and
+unsigned zones keep working. The root keys are built in; an internal
+zone with its own trust anchor adds a DS line to `trust_anchors`.
+Clients that set CD (debugging with `dig +cd`) get the raw answer.
+`xproxyctl dns` counts secure, insecure and bogus answers per listener.
+
 ### Encrypted DNS for clients (DoT and DoH)
 
 ```yaml

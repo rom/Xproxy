@@ -117,6 +117,9 @@ func applyDefaults(c *Config) {
 				d.Cache = &DNSCache{}
 			}
 			setStr(&d.DoHPath, "/dns-query")
+			if d.DNSSEC != nil {
+				setInt(&d.DNSSEC.MaxLookups, 48)
+			}
 			setInt(&d.Cache.MaxEntries, 10000)
 			setDur(&d.Cache.MinTTL, 5*time.Second)
 			setDur(&d.Cache.MaxTTL, time.Hour)

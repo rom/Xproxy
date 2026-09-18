@@ -39,6 +39,10 @@ to report a vulnerability. The threat analysis behind the controls is in
   connection are bounded, and QUIC connections count against the same
   connection ceilings and ban list as TCP.
 - SNI based certificate selection; certificates reload without restart.
+- DNS listeners validate DNSSEC when configured: signatures and denial
+  proofs are checked up to the root trust anchors, bogus answers are
+  refused and logged, DNSSEC records never leak to clients that did not
+  ask, and lookups per answer are bounded.
 - OCSP stapling per listener: responses fetched in the background from
   the responder the certificate names, refreshed at half their validity,
   never blocking a handshake, revoked answers stapled and logged.

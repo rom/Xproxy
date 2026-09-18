@@ -171,6 +171,34 @@ browsers should use it) side by side.
 | `max_in_flight` | int | `1024` | Queries being handled at once; beyond it UDP queries are dropped |
 | `log_queries` | bool | `false` | One `dns` access log line per query (client, name, type, rcode, source, bytes, duration). Query logs are personal data; leave off unless needed |
 | `doh_path` | path | `/dns-query` | DNS over HTTPS path on an encrypted listener; other paths answer 404 |
+| `dnssec` | object | none | Validate answers; see below |
+
+#### server.listeners[].dns.dnssec
+
+With the section present the listener is a validating resolver in front
+of its upstreams: every upstream query carries the DO bit, and each
+answer is checked before it reaches the client or the cache. Positive
+answers need a verified RRSIG on every RRset, chained through DNSKEY
+and DS records up to a trust anchor; negative answers need a verified
+NSEC or NSEC3 proof (NXDOMAIN, NODATA, wildcard, opt-out); an insecure
+delegation proven by the parent makes answers below it insecure. The
+outcome shapes the answer: secure answers carry AD when the client set
+AD or DO, bogus answers become SERVFAIL (a `dns_bogus` security event)
+unless the client set CD, insecure and indeterminate answers pass
+without AD. Clients without DO never receive RRSIG, NSEC or NSEC3
+records. Algorithms 5, 7, 8, 10, 13, 14 and 15 and DS digests 1, 2 and
+4 are supported; a zone signed only with others counts as insecure (RFC
+4035). DNSKEY and DS lookups go to the same upstreams and are cached per
+zone until the shorter of their TTL and signature validity, bounded to
+10000 zones. `xproxyctl dns` shows secure, insecure, bogus and
+indeterminate counts, the key cache size and lookups.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Switch for the section |
+| `trust_anchors` | list | the IANA root keys (KSK-2017 20326, KSK-2024 38696) | DS records as `zone keytag algorithm digesttype digest` (`IN DS` accepted); setting any replaces the built-in list |
+| `trust_anchors_file` | path | none | More DS lines from a file (`#` comments), read at load and reload |
+| `max_lookups` | int | `48` | DNSKEY and DS queries per answer (4 to 1000); beyond it the answer is bogus |
 
 `GET /v1/dns` and `xproxyctl dns` show per listener counters (queries,
 cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated,

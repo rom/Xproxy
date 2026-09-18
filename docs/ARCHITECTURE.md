@@ -431,6 +431,20 @@ handler answers RFC 8484 on the configured path with the same
 `handle` path and the client address of the connection. The route
 based `doh` action shares the request and response helpers.
 
+With `dnssec`, `internal/dns/dnssec.go` validates each upstream answer
+before caching: records are parsed with decompressed rdata (`rr.go`),
+grouped into RRsets with their RRSIGs, and every signature is checked
+over the RFC 4034 canonical form with the keys of the signer zone. Keys
+come from a bounded per zone cache built on demand: the DNSKEY set of a
+zone is accepted when a DS from the parent (or a trust anchor) matches
+one of its keys and the set is self signed; a NODATA DS answer with a
+verified NSEC or NSEC3 proof marks the delegation insecure. Denial
+proofs implement NSEC name error and no data, NSEC3 closest encloser,
+opt-out and wildcard cases. Lookups reuse the listener's resolver with
+the DO bit and are bounded per answer. The result sets AD, turns bogus
+answers into SERVFAIL (unless CD) and strips DNSSEC records for clients
+without DO.
+
 ### Forward proxy
 
 A `kind: forward` listener (`internal/proxy/forward.go`) is an

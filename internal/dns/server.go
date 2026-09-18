@@ -412,21 +412,52 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		return s.finish(query, qEnd, h, q, client, proto, start, "blocked", resp)
 	}
 	now := time.Now()
+	var qm *Message // parsed client query, only with validation on
+	if p.DNSSEC != nil {
+		qm, _ = ParseMessage(query)
+	}
 	if h.RecursionDesired() {
 		if resp, rEnd := s.cache.Get(q, h.ID, now); resp != nil {
 			s.Hits.Add(1)
+			if qm != nil {
+				resp = s.finalizeDNSSEC(resp, qm, h)
+				if _, e, err := ParseQuestion(resp); err == nil {
+					rEnd = e
+				}
+			}
 			return s.finish(query, qEnd, h, q, client, proto, start, "cache", s.fit(query, qEnd, h, resp, rEnd, tcp))
 		}
 	}
 	// Upstream transport is the resolver's business: UDP first with TCP
 	// on truncation for plain servers whatever the client used, so a
 	// stream client (TCP, DoH) does not force a TCP dial per query.
-	ctx, cancel := context.WithTimeout(context.Background(), p.Resolver.timeout*time.Duration(max(len(p.Resolver.servers), 1)))
-	resp, err := p.Resolver.Exchange(ctx, query, qEnd, q, len(query) > maxUDP)
-	cancel()
+	budget := p.Resolver.timeout * time.Duration(max(len(p.Resolver.servers), 1))
+	if p.DNSSEC != nil {
+		budget *= 4 // chain lookups
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	upQuery := query
+	if p.DNSSEC != nil {
+		upQuery = withDO(query) // the upstream must return signatures
+	}
+	resp, err := p.Resolver.Exchange(ctx, upQuery, qEnd, q, len(query) > maxUDP)
 	if err != nil {
 		s.ServFail.Add(1)
 		return s.finish(query, qEnd, h, q, client, proto, start, "servfail", Reply(query, qEnd, h, RcodeServFail))
+	}
+	source := "upstream"
+	if p.DNSSEC != nil {
+		var res Result
+		res, resp = p.DNSSEC.Validate(ctx, query, qEnd, h, resp)
+		source = "upstream:" + res.String()
+		if res == Bogus && h.Flags&flagCD == 0 {
+			s.ServFail.Add(1)
+			if s.hooks.Event != nil {
+				s.hooks.Event(client, "dns_bogus", "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
+			}
+			return s.finish(query, qEnd, h, q, client, proto, start, source, resp)
+		}
 	}
 	rh, _ := ParseHeader(resp)
 	_, rEnd, qerr := ParseQuestion(resp)
@@ -449,7 +480,29 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	if qerr != nil {
 		rEnd = qEnd
 	}
-	return s.finish(query, qEnd, h, q, client, proto, start, "upstream", s.fit(query, qEnd, h, resp, rEnd, tcp))
+	if qm != nil {
+		resp = s.finalizeDNSSEC(resp, qm, h)
+		if _, e, err := ParseQuestion(resp); err == nil {
+			rEnd = e
+		}
+	}
+	return s.finish(query, qEnd, h, q, client, proto, start, source, s.fit(query, qEnd, h, resp, rEnd, tcp))
+}
+
+// finalizeDNSSEC shapes a validated response for the client: AD only
+// when the client asked (AD or DO set), signatures only with DO.
+func (s *Server) finalizeDNSSEC(resp []byte, qm *Message, h Header) []byte {
+	do, _ := clientDO(qm)
+	out := StripDNSSEC(resp, qm)
+	if !do && h.Flags&flagAD == 0 && len(out) >= 4 {
+		if out[2]&(flagAD>>8) != 0 {
+			if len(out) == len(resp) && &out[0] == &resp[0] {
+				out = append([]byte(nil), out...)
+			}
+			out[2] &^= flagAD >> 8
+		}
+	}
+	return out
 }
 
 // fit truncates a UDP response that exceeds what the client can take.
@@ -496,8 +549,22 @@ func TypeName(t uint16) string {
 		return "OPT"
 	case TypeANY:
 		return "ANY"
-	case 33:
+	case TypeSRV:
 		return "SRV"
+	case TypeDNAME:
+		return "DNAME"
+	case TypeDS:
+		return "DS"
+	case TypeRRSIG:
+		return "RRSIG"
+	case TypeNSEC:
+		return "NSEC"
+	case TypeDNSKEY:
+		return "DNSKEY"
+	case TypeNSEC3:
+		return "NSEC3"
+	case TypeNSEC3PARAM:
+		return "NSEC3PARAM"
 	case 65:
 		return "HTTPS"
 	}

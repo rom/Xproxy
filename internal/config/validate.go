@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/filter"
 	"mime"
 	"time"
@@ -1228,7 +1229,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
-	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true,
+	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
 }
 
 // HoneypotDecoys are the built-in decoy names (bodies live in the proxy).
@@ -1576,6 +1577,19 @@ func (v *validator) ingress(in *Ingress, listeners map[string]*Listener) {
 }
 
 func (v *validator) dnsListener(p string, d *DNSListener) {
+	if ds := d.DNSSEC; ds != nil {
+		for i, a := range ds.TrustAnchors {
+			if _, err := dns.ParseTrustAnchor(a); err != nil {
+				v.errf("%s.dnssec.trust_anchors[%d]: %v", p, i, err)
+			}
+		}
+		if ds.TrustAnchorsFile != "" {
+			v.file(p+".dnssec.trust_anchors_file", ds.TrustAnchorsFile)
+		}
+		if ds.MaxLookups < 4 || ds.MaxLookups > 1000 {
+			v.errf("%s.dnssec.max_lookups: must be between 4 and 1000", p)
+		}
+	}
 	if len(d.Upstreams) == 0 {
 		v.errf("%s.upstreams: at least one resolver is required", p)
 	}

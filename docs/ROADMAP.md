@@ -241,6 +241,7 @@ procedure is in RELEASING.md.
   logs (`tracing`, `logging.otlp`, `xproxyctl telemetry`): delivered
 - DNS over TLS and HTTPS for clients on dns listeners (`tls` on `kind:
   dns`, `doh_path`): delivered
+- DNSSEC validation on dns listeners (`dns.dnssec`): delivered
 
 ## After 1.3 (candidates, unranked)
 

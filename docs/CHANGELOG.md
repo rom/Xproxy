@@ -131,6 +131,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   and DNS over HTTPS (`doh_path`) on one port by ALPN, with per
   transport counters `queries_udp`, `queries_tcp`, `queries_dot` and
   `queries_doh`.
+- DNSSEC validation on dns listeners (`dns.dnssec`): RRSIG
+  verification for RSA, ECDSA P-256/P-384 and Ed25519, DS and DNSKEY
+  chains from the built-in root anchors or configured ones, NSEC and
+  NSEC3 denial proofs with wildcard and opt-out handling, a bounded
+  key cache, AD for secure answers, SERVFAIL and `dns_bogus` for bogus
+  ones, CD passthrough, DNSSEC records stripped for clients without DO.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

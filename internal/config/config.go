@@ -220,7 +220,28 @@ type DNSListener struct {
 	// DoHPath is the DNS over HTTPS path served on an encrypted dns
 	// listener (one with tls). Default /dns-query.
 	DoHPath string `yaml:"doh_path"`
+	// DNSSEC validates upstream answers against a trust anchor.
+	DNSSEC *DNSSEC `yaml:"dnssec"`
 }
+
+// DNSSEC configures validation on a dns listener: answers are fetched
+// with the DO bit, signatures and denial proofs are checked up to a
+// trust anchor, secure answers carry AD, bogus answers become SERVFAIL
+// (unless the client set CD), insecure answers pass without AD.
+type DNSSEC struct {
+	// Enabled defaults to true when the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// TrustAnchors are DS records ("zone keytag algorithm digesttype
+	// digest"); the IANA root keys are built in.
+	TrustAnchors []string `yaml:"trust_anchors"`
+	// TrustAnchorsFile adds DS lines from a file (comments with #).
+	TrustAnchorsFile string `yaml:"trust_anchors_file"`
+	// MaxLookups bounds DNSKEY and DS queries per answer. Default 48.
+	MaxLookups int `yaml:"max_lookups"`
+}
+
+// IsEnabled reports whether validation is on.
+func (d *DNSSEC) IsEnabled() bool { return d != nil && (d.Enabled == nil || *d.Enabled) }
 
 // DNSCache bounds the cache of a dns listener.
 type DNSCache struct {

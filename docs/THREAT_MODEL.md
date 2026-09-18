@@ -43,6 +43,7 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Token forgery: `alg: none`, algorithm confusion, wrong curve, unknown key | No `none`; per-provider allow list; HMAC only from a secret file; ECDSA curve must match; unknown key ids cause one rate limited refresh and otherwise rejection |
 | Replay of expired or premature tokens | `exp` mandatory, `nbf` and `iat` checked, bounded skew |
 | Key set poisoning | JWKS fetched only over HTTPS with a pinned CA, bounded in size, no redirects; an empty refresh keeps the previous keys |
+| Forged or altered DNS answers from a compromised path or upstream reach clients of the dns listener | `dnssec` validates every answer up to a trust anchor before it is cached or served; bogus answers become SERVFAIL and `dns_bogus` events feed the ban list (`TestDNSSECValidation`) |
 | Revoked server certificate keeps being trusted by clients that cannot reach the responder | OCSP stapling delivers the responder's answer in the handshake, refreshed in the background; a revoked answer is stapled rather than hidden (`TestOCSPStapling`) |
 | Misissued or unlogged certificate deployed unnoticed | Embedded SCTs are counted and, with a log list, verified at every load; `ct.enforce` refuses the certificate and the previous one keeps serving (`TestCertificateTransparency`) |
 | TLS SNI mismatch with `Host` | Routing uses `Host`; certificate is chosen by SNI. 1.0 adds an optional strict SNI equals Host check |
