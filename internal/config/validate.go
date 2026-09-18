@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/rom/xproxy/internal/filter"
+	"time"
 
 	"crypto/tls"
 	"encoding/base64"
@@ -141,6 +142,14 @@ func (v *validator) config(c *Config) {
 			v.file("geoip.csv", g.CSV)
 		}
 	}
+	if cc := c.Cache; cc != nil {
+		if cc.MaxBytes < 1<<20 || cc.MaxBytes > 64<<30 {
+			v.errf("cache.max_bytes: must be between 1 MiB and 64 GiB")
+		}
+		if cc.MaxObjectBytes < 1024 || cc.MaxObjectBytes > cc.MaxBytes {
+			v.errf("cache.max_object_bytes: must be between 1024 and max_bytes")
+		}
+	}
 	for i := range c.RateLimits {
 		if c.RateLimits[i].Key == "country" && c.GeoIP == nil {
 			v.errf("rate_limits[%d].key: country needs a geoip section", i)
@@ -152,6 +161,38 @@ func (v *validator) config(c *Config) {
 		for j, name := range c.Routes[i].Filters {
 			if !filters[name] {
 				v.errf("routes[%d].filters[%d]: unknown filter %q", i, j, name)
+			}
+		}
+		if rc := c.Routes[i].Cache; rc != nil {
+			p := fmt.Sprintf("routes[%d].cache", i)
+			if c.Cache == nil {
+				v.errf("%s: set but there is no cache section", p)
+			}
+			if c.Routes[i].Upstream == "" {
+				v.errf("%s: only proxied routes can be cached", p)
+			}
+			if rc.TTL <= 0 || rc.TTL > Duration(365*24*time.Hour) {
+				v.errf("%s.ttl: must be positive and at most a year", p)
+			}
+			for _, m := range rc.Methods {
+				if m != "GET" && m != "HEAD" {
+					v.errf("%s.methods: only GET and HEAD can be cached", p)
+				}
+			}
+			for _, st := range rc.Statuses {
+				if st < 200 || st > 599 || st == 206 {
+					v.errf("%s.statuses: %d cannot be cached", p, st)
+				}
+			}
+			switch rc.Query {
+			case "all", "none", "listed":
+			default:
+				v.errf("%s.query: must be all, none or listed", p)
+			}
+			for _, h := range rc.Headers {
+				if !headerNameOK(h) {
+					v.errf("%s.headers: %q is not a header name", p, h)
+				}
 			}
 		}
 		if g := c.Routes[i].Geo; g != nil {

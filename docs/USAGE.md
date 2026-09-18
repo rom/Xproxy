@@ -59,6 +59,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `icap` | ICAP services with reachability, preview size, ISTag and counters |
 | `filters` | Middleware API version, registered kinds, configured filters with routes and deny counts |
 | `geoip` | Country database kind, path, build date, lookup and unknown counters |
+| `cache` | Cache entries, bytes and counters; `cache purge [HOST [PATH-PREFIX]]` removes entries |
 | `htpasswd FILE NAME` | Add or replace a `basic_auth` user; the password is read from stdin |
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
@@ -451,6 +452,26 @@ own block page, is logged with reason `icap`, and counts towards ban
 triggers. `xproxyctl icap` shows whether each service answered its last
 exchange, the preview size it advertised, and how many exchanges were
 unmodified, modified, replaced, failed or bypassed.
+
+### Response caching
+
+```yaml
+cache: {max_bytes: 268435456, max_object_bytes: 2097152}
+routes:
+  - name: assets
+    hosts: [www.example.com]
+    paths: [/static/]
+    cache: {ttl: 1h, headers: [Accept-Encoding]}
+    upstream: web
+  - name: api-public
+    hosts: [api.example.com]
+    paths: [/v1/public/]
+    cache: {ttl: 10s, query: listed, query_params: [page, lang]}
+    upstream: api
+```
+
+The upstream stays in control through `Cache-Control`; `xproxyctl cache
+purge www.example.com /static/` drops entries after a deploy.
 
 ### Country policy (GeoIP)
 

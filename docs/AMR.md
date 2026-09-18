@@ -910,6 +910,39 @@ Weights are heuristics; the documented roll-out is to log first.
 
 ---
 
+## AMR-034: An in-process response cache that hits still pass admission
+
+**Context.** ASR-F15. Caching at the edge cuts upstream load for
+public content, but a cache in a security proxy must not become a way
+around its checks or a way to serve one client's response to another.
+
+**Decision.** `internal/cache` is an in-memory LRU bounded in bytes with
+a per object bound, owned by the server so reloads keep it. The lookup
+happens after every admission stage and the request phase of filters,
+so a hit is served only to a request that would have reached the
+upstream; response filters do not run on hits because they ran when the
+entry was stored. Keys are derived from host, path and an explicit
+query and header policy, `Vary` creates one entry per combination, and
+the RFC 9111 rules that matter (`no-store`, `no-cache`, `private`,
+`Set-Cookie`, `Authorization`) are enforced with no operator override
+except `ignore_cache_control`, which is documented as the upstream's
+headers being wrong. Storage is a body tee: the client is never delayed
+by caching, and an object that exceeds the bound is dropped mid stream.
+
+**Alternatives.** A disk cache (larger, but the state directory is
+SELinux confined and the win at the edge is in hot objects); a shared
+cache across the cluster (a consistency protocol the cluster does not
+have; nodes cache independently); caching before admission for speed
+(rejected: bans, ACLs and rate limits must see every request).
+
+**Consequences.** Cache hit rates are per node. Purges are per node
+too (`xproxyctl cache purge` on each), a cluster wide purge is a 1.x
+item.
+
+**Status.** Accepted.
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |

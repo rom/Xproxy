@@ -19,6 +19,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/ban"
+	"github.com/rom/xproxy/internal/cache"
 	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
@@ -45,13 +46,16 @@ type Server struct {
 	tarpits     *limits.Concurrency // bound on requests held in a tarpit
 	// fingerprints holds the TLS fingerprint of every open TLS connection.
 	fingerprints *tlsconf.FingerprintTable
-	connLimiter  *limits.ConnLimiter
-	bans         atomic.Pointer[ban.List]
-	cluster      atomic.Pointer[cluster.Node]
-	shedder      atomic.Pointer[shed.Shedder]
-	challenger   atomic.Pointer[challenge.Challenger]
-	sampler      *metrics.Sampler
-	acme         *acme.Manager
+	// cache is the response cache, kept across reloads; nil when the
+	// configuration has no cache section.
+	cache       atomic.Pointer[cache.Cache]
+	connLimiter *limits.ConnLimiter
+	bans        atomic.Pointer[ban.List]
+	cluster     atomic.Pointer[cluster.Node]
+	shedder     atomic.Pointer[shed.Shedder]
+	challenger  atomic.Pointer[challenge.Challenger]
+	sampler     *metrics.Sampler
+	acme        *acme.Manager
 
 	mu        sync.Mutex
 	listeners []*boundListener
@@ -137,6 +141,9 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 			m.OnChange(func() { s.logs.Audit.Info("acme certificates updated") })
 			s.acme = m
 		}
+	}
+	if cfg.Cache != nil {
+		s.cache.Store(cache.New(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes))
 	}
 	if cfg.Cluster != nil {
 		node, err := cluster.New(cfg.Cluster, rateSource{s: s}, logs.Error)
@@ -227,6 +234,9 @@ func (s *Server) CertificateExpiry() map[string]time.Time {
 	}
 	return out
 }
+
+// Cache returns the response cache, or nil when none is configured.
+func (s *Server) Cache() *cache.Cache { return s.cache.Load() }
 
 // GeoIP returns the country database status, or nil when none is configured.
 func (s *Server) GeoIP() *geoip.Status {
@@ -539,6 +549,14 @@ func (s *Server) Reload(cfg *config.Config) error {
 		}
 	case ch != nil:
 		s.challenger.Store(nil)
+	}
+	switch c := s.cache.Load(); {
+	case cfg.Cache != nil && c != nil:
+		c.Resize(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes)
+	case cfg.Cache != nil:
+		s.cache.Store(cache.New(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes))
+	case c != nil:
+		s.cache.Store(nil)
 	}
 	s.stats.Reloads.Add(1)
 	// The old generation stops probing at once (its health state is no

@@ -128,6 +128,16 @@ func (c *Client) ACME() ([]acme.CertStatus, error) {
 }
 
 // ICAP fetches the status of ICAP services.
+// CachePurge removes cached responses for a host (all when "") whose
+// path starts with prefix; it returns the number removed.
+func (c *Client) CachePurge(host, prefix string) (int, error) {
+	var out struct {
+		Removed int `json:"removed"`
+	}
+	err := c.doBody("DELETE", "/v1/cache?host="+url.QueryEscape(host)+"&path="+url.QueryEscape(prefix), nil, &out)
+	return out.Removed, err
+}
+
 // Filters fetches /v1/filters.
 func (c *Client) Filters() (*FiltersView, error) {
 	var out FiltersView

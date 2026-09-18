@@ -25,6 +25,7 @@
 //	icap           show ICAP services and counters
 //	filters        list middleware kinds and configured filters
 //	geoip          show the country database and lookup counters
+//	cache          show cache statistics; "cache purge [HOST [PATH-PREFIX]]" removes entries
 //	htpasswd FILE NAME  add or replace a basic_auth user (password on stdin)
 //	metrics        print the Prometheus exposition
 //	series         print sampled series (-since 10m -last 20)
@@ -63,7 +64,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip htpasswd spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -230,6 +231,28 @@ func run(args []string, out, errOut io.Writer) int {
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%v\t%s\t%s\t%d\t%v\t%s\n", st.Name, strings.Join(st.Hosts, ","), st.Present, exp, st.Issuer, st.Issued, st.Renewing, st.LastError)
 		}
 		_ = tw.Flush()
+		return 0
+	case "cache":
+		if fs.NArg() >= 2 && fs.Arg(1) == "purge" {
+			host, prefix := "", ""
+			if fs.NArg() >= 3 {
+				host = fs.Arg(2)
+			}
+			if fs.NArg() >= 4 {
+				prefix = fs.Arg(3)
+			}
+			n, err := c.CachePurge(host, prefix)
+			if err != nil {
+				return fail(err)
+			}
+			_, _ = fmt.Fprintf(out, "purged %d entries\n", n)
+			return 0
+		}
+		var b []byte
+		if err := c.Do("GET", "/v1/cache", nil, &b); err != nil {
+			return fail(err)
+		}
+		_, _ = out.Write(b)
 		return 0
 	case "geoip":
 		var b []byte

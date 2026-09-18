@@ -172,7 +172,8 @@ procedure is in RELEASING.md.
   AMR-032)
 - Bot classification with JA3 and JA4 fingerprints and behavioural
   scoring: delivered (`bot_score` filter kind, AMR-033)
-- Response caching with cache key policies
+- Response caching with cache key policies: delivered (`cache`,
+  `routes[].cache`, AMR-034)
 - L4 TCP and TLS passthrough with SNI routing
 - Forward proxy mode with CONNECT and authentication (ASR-F12)
 
@@ -186,7 +187,6 @@ procedure is in RELEASING.md.
 - Request mirroring and replay for testing
 - gRPC aware routing and health checks
 - Kubernetes ingress controller mode
-- Response caching with cache key policies
 
 ## Not planned
 

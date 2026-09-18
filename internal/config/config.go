@@ -63,6 +63,8 @@ type Config struct {
 	// GeoIP names the country database used by routes[].geo and by rate
 	// limits keyed on country.
 	GeoIP *GeoIP `yaml:"geoip"`
+	// Cache sizes the in-memory response cache used by routes[].cache.
+	Cache *Cache `yaml:"cache"`
 	// ACME configures automatic certificates for listeners with tls.acme.
 	ACME *ACME `yaml:"acme"`
 }
@@ -476,6 +478,39 @@ type Route struct {
 	Filters []string `yaml:"filters"`
 	// Geo allows or denies by client country (needs the geoip section).
 	Geo *RouteGeo `yaml:"geo"`
+	// Cache stores responses of this route (needs the cache section).
+	Cache *RouteCache `yaml:"cache"`
+}
+
+// Cache bounds the response cache. Default 64 MiB total, 1 MiB per
+// object.
+type Cache struct {
+	MaxBytes       int64 `yaml:"max_bytes"`
+	MaxObjectBytes int64 `yaml:"max_object_bytes"`
+}
+
+// RouteCache is a route's caching policy.
+type RouteCache struct {
+	// TTL is the lifetime of a stored response when the response carries
+	// no max-age (or when ignore_cache_control is set). Default 60s.
+	TTL Duration `yaml:"ttl"`
+	// Methods cached. Default [GET, HEAD].
+	Methods []string `yaml:"methods"`
+	// Statuses cached. Default [200, 203, 204, 300, 301, 404, 410].
+	Statuses []int `yaml:"statuses"`
+	// Query is "all" (default), "none" (ignore the query string in the
+	// key) or "listed" (only the names in query_params, sorted).
+	Query       string   `yaml:"query"`
+	QueryParams []string `yaml:"query_params"`
+	// Headers are request headers whose values join the key (for example
+	// Accept-Encoding when the upstream does not send Vary).
+	Headers []string `yaml:"headers"`
+	// Cookies allows caching requests that carry a Cookie header. Default
+	// false: such requests bypass the cache.
+	Cookies bool `yaml:"cookies"`
+	// IgnoreCacheControl stores responses regardless of Cache-Control and
+	// applies ttl. Default false.
+	IgnoreCacheControl bool `yaml:"ignore_cache_control"`
 }
 
 // GeoIP configures the country database: a MaxMind DB file (GeoLite2 or

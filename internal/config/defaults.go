@@ -325,7 +325,25 @@ func applyDefaults(c *Config) {
 	for i := range c.Filters {
 		setStr(&c.Filters[i].Stage, StageAfterAuth)
 	}
+	if c.Cache != nil {
+		if c.Cache.MaxBytes == 0 {
+			c.Cache.MaxBytes = 64 << 20
+		}
+		if c.Cache.MaxObjectBytes == 0 {
+			c.Cache.MaxObjectBytes = 1 << 20
+		}
+	}
 	for i := range c.Routes {
+		if rc := c.Routes[i].Cache; rc != nil {
+			setDur(&rc.TTL, 60*time.Second)
+			if len(rc.Methods) == 0 {
+				rc.Methods = []string{"GET", "HEAD"}
+			}
+			if len(rc.Statuses) == 0 {
+				rc.Statuses = []int{200, 203, 204, 300, 301, 404, 410}
+			}
+			setStr(&rc.Query, "all")
+		}
 		if g := c.Routes[i].Geo; g != nil {
 			setStr(&g.Unknown, "allow")
 			for j := range g.Allow {

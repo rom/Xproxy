@@ -123,6 +123,15 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 			e.Gauge("xproxy_certificate_expiry_seconds", "Seconds until the earliest file certificate of the listener expires.", L{"listener": n}, time.Until(exp[n]).Seconds())
 		}
 	}
+	if c := s.cache.Load(); c != nil {
+		cs := c.Stats()
+		e.Counter("xproxy_cache_hits_total", "Responses served from the cache.", nil, float64(cs.Hits))
+		e.Counter("xproxy_cache_misses_total", "Cacheable requests not found in the cache.", nil, float64(cs.Misses))
+		e.Counter("xproxy_cache_stores_total", "Responses stored.", nil, float64(cs.Stores))
+		e.Counter("xproxy_cache_evictions_total", "Entries evicted for space.", nil, float64(cs.Evictions))
+		e.Gauge("xproxy_cache_entries", "Entries in the cache.", nil, float64(cs.Entries))
+		e.Gauge("xproxy_cache_bytes", "Bytes held by the cache.", nil, float64(cs.Bytes))
+	}
 	if rt.geo != nil {
 		gs := rt.geo.Status()
 		e.Counter("xproxy_geoip_lookups_total", "Country lookups.", nil, float64(gs.Lookups))

@@ -20,6 +20,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   and log, challenge or deny thresholds; the score can be forwarded in a
   header. Middleware API additions: `Info.Country`, `Info.JA3`,
   `Info.JA4`, `Info.ALPN`, `Info.ChallengeVerified`, `Verdict.Challenge`.
+- Response caching: `cache` section (byte bound, object bound) and
+  `routes[].cache` (ttl, methods, statuses, query and header key policy,
+  cookies, ignore_cache_control); `Cache-Control`, `Expires` and `Vary`
+  honoured; conditional requests answered with 304; `X-Cache` and `Age`
+  headers, `cache` in the access log; `GET /v1/cache`, `DELETE
+  /v1/cache`, `xproxyctl cache` and `cache purge`; `xproxy_cache_*`
+  metrics. The cache survives reloads.
 
 ## 1.0.0 - 2026-09-18
 

@@ -565,6 +565,43 @@ every TLS request is logged as `ja4`.
 A list of filter names, run in the listed order within each stage. A
 route may combine them with `jwt`, `waf` and `icap`.
 
+## cache
+
+An in-memory response cache. The section sizes it; routes opt in with
+`routes[].cache`. The cache is owned by the process, not by a
+configuration generation, so a reload keeps its contents (and resizes
+it); a restart empties it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `max_bytes` | int | `67108864` (64 MiB) | Total bound; least recently used entries are evicted |
+| `max_object_bytes` | int | `1048576` (1 MiB) | Largest response stored; larger ones stream through uncached |
+
+### routes[].cache
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ttl` | duration | `60s` | Lifetime when the response has no `max-age`, `s-maxage` or `Expires`, or with `ignore_cache_control` |
+| `methods` | list | `[GET, HEAD]` | Only GET and HEAD can be cached; HEAD is served from GET's entry |
+| `statuses` | list of int | `[200, 203, 204, 300, 301, 404, 410]` | Statuses stored |
+| `query` | `all`, `none`, `listed` | `all` | Whether the query string is part of the key, or only the sorted `query_params` |
+| `query_params` | list | | Names for `query: listed` |
+| `headers` | list | | Request headers whose values join the key (for example `Accept-Encoding` when the upstream sends no `Vary`) |
+| `cookies` | bool | `false` | Cache requests that carry a `Cookie` header; off, such requests bypass the cache |
+| `ignore_cache_control` | bool | `false` | Store regardless of the response's `Cache-Control` and apply `ttl` |
+
+What is never cached: requests with `Authorization` (unless the response
+says `Cache-Control: public`) or `Range`; responses with `Set-Cookie`,
+`Cache-Control: no-store`, `no-cache` or `private`, `Vary: *`, or a body
+above `max_object_bytes`. `Vary` is honoured: one entry per combination
+of the named request headers. Hits carry `X-Cache: HIT` and `Age`,
+answer `If-None-Match` and `If-Modified-Since` with 304, and skip the
+response filters (which ran when the entry was stored); misses carry
+`X-Cache: MISS`; bypassed requests `X-Cache: BYPASS`. The access log has
+`cache`. `GET /v1/cache` and `xproxyctl cache` show counters;
+`DELETE /v1/cache?host=&path=` and `xproxyctl cache purge [HOST
+[PATH-PREFIX]]` remove entries (audited).
+
 ## geoip
 
 A country database for `routes[].geo` and for rate limits keyed on

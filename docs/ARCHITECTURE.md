@@ -61,6 +61,7 @@ internal/filter     middleware interface, kind registry, options decoding; filte
 internal/filters    built-in kinds (header_guard, basic_auth) and the registration list
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
+internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
@@ -271,6 +272,19 @@ validation certificate for a pending `tls-alpn-01` challenge; without a
 pending challenge such a handshake is refused rather than answered with a
 real certificate. Listeners with ACME groups add `acme-tls/1` to their
 ALPN list.
+
+### Response cache
+
+`internal/cache` is a byte bounded LRU of stored responses keyed by a
+hash of method, host, path, the selected query and header values, with a
+second level per `Vary` combination. The handler consults it after the
+request filters and before the proxy action, so every admission rule
+and the WAF request phase apply to hits too; a miss proxies as usual and
+`ModifyResponse` wraps the body so that a response that turns out
+storable (status, `Cache-Control`, no `Set-Cookie`, within the object
+bound) is captured as it streams to the client and stored on a clean
+end. The cache belongs to the `Server`, not to a generation, so reloads
+resize rather than empty it.
 
 ### TLS fingerprints
 
