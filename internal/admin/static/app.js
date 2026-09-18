@@ -120,6 +120,7 @@ views.overview = { refresh: 5000, async render() {
     ['Open connections', s.open_connections], ['Bytes in', fmtBytes(s.bytes_in)], ['Bytes out', fmtBytes(s.bytes_out)], ['Denied', fmtNum(denied)],
     ['Bans active', s.bans_active], ['WAF blocked / detected', fmtNum(s.denied_waf) + ' / ' + fmtNum(s.waf_detected)], ['Rate limited / tarpitted', fmtNum(s.denied_rate_limit) + ' / ' + fmtNum(s.tarpitted)], ['Shed', fmtNum(s.shed)],
     ['Load level', s.load_level.toFixed(2) + (s.shedding_classes && s.shedding_classes.length ? ' shedding ' + s.shedding_classes.join(',') : '')], ['Upstream latency', s.upstream_latency_ms.toFixed(1) + ' ms'], ['Upstream errors / timeouts', fmtNum(s.upstream_errors) + ' / ' + fmtNum(s.upstream_timeouts)], ['Cluster', s.cluster_connected + ' / ' + s.cluster_peers + ' peers'],
+    ['Sandbox', sandboxSummary(st.sandbox)],
     ['Challenges issued / passed', fmtNum(s.challenges_issued) + ' / ' + fmtNum(s.challenges_passed)], ['Reloads / failures', s.reloads + ' / ' + s.reload_failures], ['Log drops (syslog / journald)', s.log_syslog_dropped + ' / ' + s.log_journald_dropped], ['Redaction', s.log_redaction ? 'on' : 'off'],
   ];
   const denies = Object.entries(s).filter(([k, v]) => k.startsWith('denied_') && v > 0).sort((a, b) => b[1] - a[1]);
@@ -148,16 +149,59 @@ function actionButton(label, path, cls, confirmText) {
 }
 
 views.upstreams = { refresh: 5000, async render() {
-  const ups = await get('/api/upstreams');
+  const [ups, pools] = await Promise.all([get('/api/upstreams'), get('/api/pools').catch(() => ({}))]);
   clear(view);
   const names = Object.keys(ups).sort();
   if (!names.length) view.append(h('p', { class: 'muted' }, 'no upstreams'));
   for (const n of names) {
+    const p = pools[n];
+    const facts = [];
+    if (p) {
+      facts.push(['Balancer', p.balancer], ['Available', p.available + ' / ' + p.endpoints], ['Active', p.active]);
+      if (p.circuit) facts.push(['Circuit', circuitState(p.circuit)], ['Circuit opens / rejected', fmtNum(p.circuit.opens) + ' / ' + fmtNum(p.circuit.rejected)]);
+      if (p.queue) facts.push(['Concurrency', p.queue.in_flight + ' / ' + p.queue.max_concurrent + ' in flight, ' + p.queue.waiting + ' / ' + p.queue.queue_size + ' queued'], ['Queue timeouts / full', fmtNum(p.queue.timeouts) + ' / ' + fmtNum(p.queue.full)]);
+      if (p.canary) facts.push(['Canary', (p.canary.header ? 'header ' + p.canary.header + ' ' : '') + (p.canary.cookie ? 'cookie ' + p.canary.cookie + ' ' : '') + p.canary.percent + '% on ' + p.canary.endpoints + ' endpoint(s)'], ['Canary requests / fallbacks', fmtNum(p.canary.requests) + ' / ' + fmtNum(p.canary.fallbacks)]);
+    }
     view.append(h('div', { class: 'card' }, h('h2', null, n),
+      facts.length ? h('div', { class: 'grid' }, facts.map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))) : null,
       table(['Address', { label: 'Weight', num: true }, 'Health', { label: 'Active', num: true }, { label: 'Requests', num: true }, { label: 'Errors', num: true }, { label: 'Ejections', num: true }],
         ups[n].map(e => [e.address, e.weight, e.ejected ? h('span', { class: 'bad' }, 'ejected') : e.healthy ? h('span', { class: 'ok' }, 'healthy') : h('span', { class: 'bad' }, 'unhealthy'), e.active, fmtNum(e.requests), fmtNum(e.errors), e.ejections]))));
   }
 }};
+function circuitState(c) {
+  const cls = c.state === 'closed' ? 'ok' : c.state === 'half_open' ? 'warn' : 'bad';
+  return h('span', { class: cls }, c.state + (c.failures ? ' (' + c.failures + ' failures)' : ''));
+}
+function sandboxSummary(sb) {
+  if (!sb) return 'not reported';
+  if (!sb.enabled) return h('span', { class: 'warn' }, 'disabled');
+  const applied = (sb.mechanisms || []).filter(m => m.state === 'applied').map(m => m.name);
+  const other = (sb.mechanisms || []).filter(m => m.state !== 'applied').map(m => m.name + '=' + m.state);
+  return h('span', null, h('span', { class: 'ok' }, applied.join(', ') || '-'), other.length ? h('span', { class: 'warn' }, ' ' + other.join(' ')) : null);
+}
+
+// Renders arbitrary JSON: arrays of objects as tables, objects as grids,
+// used for subsystems whose views are a plain status document.
+function jsonView(data) {
+  if (Array.isArray(data)) {
+    if (!data.length) return h('p', { class: 'muted' }, 'none');
+    if (typeof data[0] !== 'object' || data[0] === null) return h('p', null, data.map(String).join(', '));
+    const keys = [...new Set(data.flatMap(o => Object.keys(o)))];
+    return table(keys, data.map(o => keys.map(k => cell(o[k]))));
+  }
+  if (data && typeof data === 'object') {
+    return h('div', { class: 'grid' }, Object.entries(data).map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k.replace(/_/g, ' ')), h('div', { class: 'v' }, cell(v)))));
+  }
+  return h('p', null, String(data));
+}
+function cell(v) {
+  if (v === null || v === undefined) return '-';
+  if (typeof v === 'number') return fmtNum(v);
+  if (typeof v === 'boolean') return v ? 'yes' : 'no';
+  if (typeof v === 'string') return /^\d{4}-\d\d-\d\dT/.test(v) ? fmtTime(v) : v;
+  if (Array.isArray(v)) return v.length && typeof v[0] === 'object' ? jsonView(v) : v.map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(', ');
+  return jsonView(v);
+}
 
 views.bans = { refresh: 10000, async render() {
   const bans = await get('/api/bans');
@@ -203,10 +247,21 @@ views.cluster = { refresh: 5000, async render() {
 }};
 
 views.certificates = { refresh: 30000, async render() {
-  let certs;
-  try { certs = await get('/api/acme'); } catch (e) { clear(view); view.append(h('p', { class: 'muted' }, 'ACME not configured (' + e.message + ')')); return; }
+  const [served, certs] = await Promise.all([get('/api/tls').catch(() => ({})), get('/api/acme').catch(() => null)]);
   clear(view);
   const now = Date.now();
+  const rows = [];
+  for (const ln of Object.keys(served).sort()) for (const c of served[ln]) {
+    const days = Math.floor((new Date(c.not_after) - now) / 86400000);
+    const exp = days < 7 ? h('span', { class: 'bad' }, days + ' days left') : days < 30 ? h('span', { class: 'warn' }, days + ' days left') : h('span', { class: 'ok' }, days + ' days left');
+    const os = c.ocsp ? c.ocsp.status : 'disabled';
+    const ocsp = os === 'disabled' ? '-' : h('span', { class: os === 'good' ? 'ok' : os === 'revoked' ? 'bad' : 'warn' }, os + (c.ocsp.error ? ' (' + c.ocsp.error + ')' : ''));
+    const ct = c.ct && c.ct.required ? h('span', { class: c.ct.ok ? 'ok' : 'warn' }, (c.ct.ok ? 'ok' : 'failed') + ' ' + c.ct.verified + '/' + c.ct.required + ' SCTs' + (c.ct.error ? ' (' + c.ct.error + ')' : '')) : (c.ct && c.ct.embedded ? c.ct.embedded + ' SCTs' : '-');
+    rows.push([ln, (c.names || []).join(', '), c.issuer || '-', exp, c.managed ? 'ACME' : 'file', ocsp, ct]);
+  }
+  view.append(h('div', { class: 'card' }, h('h2', null, 'Served certificates'),
+    rows.length ? table(['Listener', 'Names', 'Issuer', 'Expires', 'Source', 'OCSP', 'CT'], rows) : h('p', { class: 'muted' }, 'no TLS listeners')));
+  if (!certs) { view.append(h('p', { class: 'muted' }, 'ACME not configured')); return; }
   view.append(h('div', { class: 'card' }, h('h2', null, 'Managed certificates'),
     table(['Name', 'Hosts', 'State', 'Expires', 'Issuer', { label: 'Issued', num: true }, 'Last error'],
       certs.map(c => {
@@ -373,3 +428,94 @@ function compact(line) {
 }
 
 boot();
+
+
+// ---- routes, WAF, subsystems, history ----
+views.routes = { refresh: 10000, async render() {
+  const q = await get('/api/quotas');
+  clear(view);
+  if ((q.tenants || []).length) view.append(h('div', { class: 'card' }, h('h2', null, 'Tenants'),
+    table(['Tenant', { label: 'Routes', num: true }, { label: 'Requests', num: true }, { label: 'Denied', num: true }, { label: 'Rate limited', num: true }, { label: 'Bytes in', num: true }, { label: 'Bytes out', num: true }],
+      q.tenants.map(t => [t.tenant, t.routes, fmtNum(t.requests), fmtNum(t.denied), fmtNum(t.rate_limited), fmtBytes(t.bytes_in), fmtBytes(t.bytes_out)]))));
+  view.append(h('div', { class: 'card' }, h('h2', null, 'Routes (generation ' + q.generation + ')'),
+    table(['Route', 'Tenant', 'Upstream', { label: 'Requests', num: true }, { label: '2xx', num: true }, { label: '3xx', num: true }, { label: '4xx', num: true }, { label: '5xx', num: true }, { label: 'Denied', num: true }, { label: 'Rate limited', num: true }, { label: 'Bytes out', num: true }],
+      (q.routes || []).map(r => [r.route, r.tenant || '-', r.upstream || '-', fmtNum(r.requests), fmtNum(r.status_2xx), fmtNum(r.status_3xx), fmtNum(r.status_4xx), fmtNum(r.status_5xx), fmtNum(r.denied), fmtNum(r.rate_limited), fmtBytes(r.bytes_out)]))));
+  if ((q.rate_limits || []).length) view.append(h('div', { class: 'card' }, h('h2', null, 'Rate limit policies'),
+    table(['Policy', 'Key', { label: 'Rate', num: true }, { label: 'Burst', num: true }, { label: 'Keys', num: true }, { label: 'Allowed', num: true }, { label: 'Denied', num: true }, 'Top consumers'],
+      q.rate_limits.map(p => [p.policy, p.key, p.rate, p.burst, p.keys, fmtNum(p.allowed), fmtNum(p.denied), (p.top || []).map(u => u.key + '=' + fmtNum(u.total)).join(', ') || '-']))));
+  if ((q.upstreams || []).length) view.append(h('div', { class: 'card' }, h('h2', null, 'Upstream share'),
+    table(['Upstream', { label: 'Requests', num: true }, { label: 'Errors', num: true }, { label: 'Active', num: true }], q.upstreams.map(u => [u.upstream, fmtNum(u.requests), fmtNum(u.errors), u.active]))));
+}};
+
+views.waf = { refresh: 10000, async render() {
+  const w = await get('/api/waf');
+  clear(view);
+  const l = w.learning || {};
+  view.append(h('div', { class: 'grid' }, [['Enabled', w.enabled ? 'yes' : 'no'], ['Since', fmtTime(w.since)], ['Requests', fmtNum(w.requests)], ['Blocked', fmtNum(w.blocked)], ['Detected', fmtNum(w.detected)], ['Rules seen', w.total_rules],
+    ['Learning', (l.enabled ? 'on' : 'off') + ', min hits ' + (l.min_hits || '-') + ', ' + (l.entries || 0) + '/' + (l.max_entries || 0) + ' entries' + (l.dropped ? ', ' + l.dropped + ' dropped' : '')]]
+    .map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))));
+  if ((w.profiles || []).length) view.append(h('div', { class: 'card mt' }, h('h2', null, 'Profiles'),
+    table(['Profile', 'Modes', 'Rule set', 'CRS version', { label: 'Rule files', num: true }], w.profiles.map(p => [p.name, (p.modes || []).join(', '), p.crs || '-', p.version || '-', p.rule_files || 0]))));
+  if ((w.routes || []).length) view.append(h('div', { class: 'card' }, h('h2', null, 'Routes'),
+    table(['Route', 'Profile', 'Mode'], w.routes.map(r => [r.route, r.profile, h('span', { class: r.mode === 'block' ? 'ok' : 'warn' }, r.mode)]))));
+  view.append(h('div', { class: 'card' }, h('h2', null, 'Most matched rules'),
+    (w.rules || []).length ? table([{ label: 'Rule', num: true }, { label: 'Matches', num: true }, { label: 'Blocks', num: true }, { label: 'Detects', num: true }, 'Severity', 'Last seen', 'Message', 'Last URI'],
+      w.rules.map(r => [r.id, fmtNum(r.matches), fmtNum(r.blocks), fmtNum(r.detects), r.severity || '-', fmtTime(r.last_seen), r.message || '', r.last_uri || ''])) : h('p', { class: 'muted' }, 'no matches recorded'),
+    operator() ? h('div', { class: 'row mt-s' }, actionButton('Reset statistics', '/api/waf/reset', 'secondary', 'Clear the WAF rule statistics and the learning table?')) : null));
+  const props = l.proposals || [];
+  view.append(h('div', { class: 'card' }, h('h2', null, 'Exclusion proposals (' + props.length + ')'),
+    props.length ? table([{ label: 'Rule', num: true }, 'Target', 'Route', { label: 'Hits', num: true }, { label: 'Clients', num: true }, 'Last seen', 'Message', 'Directive'],
+      props.map(p => [p.rule, p.target, p.route || '-', fmtNum(p.hits), p.clients, fmtTime(p.last_seen), p.message || '', h('code', null, p.directive)])) : h('p', { class: 'muted' }, l.enabled ? 'none yet' : 'learning is off (waf.learning.enabled)'),
+    props.length ? h('p', { class: 'muted mt-s' }, 'Review before use: ', h('a', { href: '/api/waf/exclusions', target: '_blank' }, 'download as SecLang')) : null));
+}};
+
+// One page for the subsystems that expose a status document each.
+const subsystems = [
+  ['Sandbox', '/api/sandbox', d => h('div', null, h('div', { class: 'grid' }, [['Platform', d.platform], ['Enabled', d.enabled ? 'yes' : 'no'], ['Strict', d.strict ? 'yes' : 'no'], ['Applied', fmtTime(d.applied_at)], ['Landlock ABI', d.landlock_abi || '-'], ['Syscalls refused', d.seccomp_denied || 0]].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+    table(['Mechanism', 'State', 'Detail'], (d.mechanisms || []).map(m => [m.name, h('span', { class: m.state === 'applied' ? 'ok' : m.state === 'disabled' ? 'muted' : 'warn' }, m.state), m.detail || ''])),
+    d.landlocked ? h('p', { class: 'muted' }, 'read: ' + (d.read_paths || []).join(', ') + ' — write: ' + (d.write_paths || []).join(', ')) : null)],
+  ['Telemetry', '/api/telemetry', d => h('div', null, ...[['Metrics', d.metrics], ['Traces', d.traces], ['Logs', d.logs]].map(([k, v]) => h('div', null, h('h3', null, k), v ? jsonView(v) : h('p', { class: 'muted' }, 'not configured'))))],
+  ['DNS', '/api/dns', d => (d || []).length ? h('div', null, ...d.map(l => h('div', null, h('h3', null, l.listener + (l.encrypted ? ' (DoT/DoH)' : '')), jsonView(l)))) : h('p', { class: 'muted' }, 'no dns listeners')],
+  ['ICAP', '/api/icap', jsonView],
+  ['Cache', '/api/cache', jsonView],
+  ['GeoIP', '/api/geoip', jsonView],
+  ['Honeypots', '/api/honeypot', jsonView],
+  ['Filters', '/api/filters', jsonView],
+  ['Ingress', '/api/ingress', jsonView],
+  ['OpenTelemetry metrics', '/api/otlp', jsonView],
+];
+views.subsystems = { refresh: 10000, async render() {
+  const results = await Promise.all(subsystems.map(([, path]) => get(path).then(d => ({ d })).catch(e => ({ e }))));
+  clear(view);
+  subsystems.forEach(([title, , render], i) => {
+    const r = results[i];
+    view.append(h('div', { class: 'card' }, h('h2', null, title), r.e ? h('p', { class: 'muted' }, 'not configured (' + r.e.message + ')') : render(r.d)));
+  });
+}};
+
+views.history = { async render() {
+  const [entries, pending] = await Promise.all([get('/api/history').catch(e => ({ e })), api('POST', '/api/reload/dry-run').catch(e => ({ e }))]);
+  clear(view);
+  const pend = h('div', { class: 'card' }, h('h2', null, 'Pending changes (file versus active)'));
+  if (pending.e) pend.append(h('p', { class: 'muted' }, pending.e.message));
+  else if (pending.same || !(pending.changes || []).length) pend.append(h('p', { class: 'muted' }, 'the file matches the active configuration'));
+  else pend.append(table(['Section', 'Item', 'Change'], pending.changes.map(it => [it.section, it.name || '-', it.kind])),
+    (pending.summary || []).length ? h('ul', null, pending.summary.map(l => h('li', null, l))) : null,
+    (pending.restart_needed || []).length ? h('p', { class: 'warn mt-s' }, 'needs a restart: ' + pending.restart_needed.join(', ')) : null,
+    pending.text ? h('pre', { class: 'diff' }, pending.text + (pending.truncated ? '\n... (truncated)' : '')) : null);
+  view.append(pend);
+  const hist = h('div', { class: 'card' }, h('h2', null, 'Recorded configurations'));
+  if (entries.e) hist.append(h('p', { class: 'muted' }, entries.e.message + ' (set management.history_dir)'));
+  else hist.append(table(['Id', { label: 'Generation', num: true }, 'Applied', 'Note', 'Source', { label: 'Size', num: true }, ''],
+    (entries || []).map(e => [e.id, e.generation, fmtTime(e.applied), e.note, e.source, fmtBytes(e.size), operator() ? rollbackButton(e.id) : ''])));
+  view.append(hist);
+}};
+function rollbackButton(id) {
+  const b = h('button', { class: 'secondary' }, 'Roll back');
+  b.addEventListener('click', async () => {
+    if (!confirm('Apply the recorded configuration ' + id + '?')) return;
+    try { await post('/api/rollback', { id }); flash('rolled back to ' + id, 'ok'); route(); }
+    catch (e) { flash(e.message, 'bad'); }
+  });
+  return b;
+}

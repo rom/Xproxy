@@ -248,6 +248,12 @@ procedure is in RELEASING.md.
 - In-process sandbox (Landlock, seccomp, capabilities, no_new_privs,
   non dumpable), systemd unit additions, macOS target with launchd,
   Seatbelt and pf: delivered (AMR-044, AMR-045)
+- Validated `examples/` (WAF rules, block lists, filters, a WebAssembly
+  module, rewriting, routing), a documentation syntax test, CLI end to
+  end tests, new fuzz targets, benchmarks and a golden configuration
+  dump: delivered
+- Every management endpoint visible in the CLI, the TUI (nine screens)
+  and the GUI (twelve pages): delivered
 
 ## After 1.3 (candidates, unranked)
 

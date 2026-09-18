@@ -1486,8 +1486,8 @@ Roles:
 
 | Role | May |
 |------|-----|
-| `viewer` | See every screen: overview, upstreams, bans, graphs, cluster, certificates, ICAP, the configuration file and the logs |
-| `operator` | Everything a viewer may, plus ban and unban, reload, reload certificates, reopen logs, renew certificates, edit and save the configuration file, restart the data plane |
+| `viewer` | See every screen: overview, upstreams, routes, WAF, bans, graphs, cluster, certificates, subsystems, history, the configuration file and the logs |
+| `operator` | Everything a viewer may, plus ban and unban, reload, reload certificates, reopen logs, renew certificates, reset the WAF statistics, roll back to a recorded configuration, edit and save the configuration file, restart the data plane |
 
 Screens:
 
@@ -1495,14 +1495,31 @@ Screens:
   denials by reason, load level, listeners; the action buttons for
   operators.
 - **Upstreams**: every endpoint with health, ejection, active requests and
-  error counts, refreshed every five seconds.
+  error counts, refreshed every five seconds; per pool the balancer,
+  availability, circuit breaker state, concurrency gate and queue
+  counters, and the canary share with its fallbacks.
+- **Routes**: usage per tenant, per route (requests by status class,
+  denied, rate limited, bytes) and per rate limit policy with the top
+  consumers, plus the request share per upstream (the quota report).
+- **WAF**: counters, learning state, profiles with rule set source and
+  CRS version, route assignments, the most matched rules with block and
+  detect counts, the exclusion proposals with their directives and a
+  SecLang download; operators reset the statistics.
 - **Bans**: the active list with expiry, source and count; add a ban with a
   duration and reason (recorded as `admin:<user>: <reason>`), unban.
 - **Graphs**: requests, denials, bytes, connections, load level, upstream
   latency, bans and cluster peers from the sampled series buffer, with a
   selectable window.
-- **Cluster**, **Certificates** (ACME status with days left and a renew
-  button), **ICAP** (service reachability and counters).
+- **Cluster**; **Certificates**: every served certificate per listener
+  with issuer, days left, source, OCSP status and Certificate
+  Transparency verdict, then the ACME status with a renew button.
+- **Subsystems**: one page for the status documents of the sandbox
+  (mechanisms and Landlock rules), telemetry exporters, dns listeners,
+  ICAP, cache, GeoIP, honeypots, filters, ingress and the OpenTelemetry
+  metrics exporter; unconfigured ones say so.
+- **History**: the pending changes between the file and the active
+  configuration (a dry run), and the recorded generations with a roll
+  back button for operators.
 - **Config**: the active configuration as the data plane loaded it, and an
   editor for the file. *Validate* runs the full validation without
   touching the file and lists every problem; *Validate and save* writes
@@ -1535,14 +1552,17 @@ management socket:
 
 | Screen | Content |
 |--------|---------|
-| 1 Overview | Version, listeners, counters, shedding state, request and denied sparklines |
-| 2 Upstreams | Endpoint health, ejection, in-flight, requests and errors |
+| 1 Overview | Version, listeners, counters, shedding state, the sandbox summary, telemetry exporter counters, dns listener counters with DNSSEC results, request and denied sparklines |
+| 2 Upstreams | Endpoint health, ejection, in-flight, requests and errors; per pool the circuit breaker state, concurrency gate and queue, and canary counters |
 | 3 Bans | Active bans; `j`/`k` select, `u` unban (confirm with `y`), `b` ban with `address [duration] [reason]` |
 | 4 Cluster | Peers, inbound connections, message counters |
 | 5 Graphs | Sparklines of the sampled series over the retention window |
-| 6 Security log | Last events from the security log file (needs `-config` to locate it) |
+| 6 Log | Last events from the security log file (needs `-config` to locate it) |
+| 7 Routes | Usage per route (requests by class, denied, rate limited, bytes), per tenant, and per rate limit policy with the top consumers |
+| 8 WAF | Counters, learning state, profiles with rule set source and version, route assignments, the most matched rules and the exclusion proposals |
+| 9 TLS | Served certificates per listener: names, issuer, days left, source, OCSP status and CT verdict |
 
-Keys: `1` to `6` or `tab` and `shift-tab` switch screens, `r` refreshes,
+Keys: `1` to `9` or `tab` and `shift-tab` switch screens, `r` refreshes,
 `p` pauses, `+` and `-` change the interval, `q` quits. Bans and unbans
 from the TUI go through the same audited API as the CLI.
 

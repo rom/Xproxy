@@ -19,6 +19,9 @@ import (
 // Packages outside the gate: binaries (covered by the smoke procedures),
 // test helpers and fakes, generated or trivial packages.
 var excluded = []string{
+	// The sandbox applies Landlock and seccomp to a confined child process
+	// in its tests; the profile of the parent cannot see that code run.
+	"github.com/rom/xproxy/internal/sandbox",
 	"github.com/rom/xproxy/cmd/",
 	"github.com/rom/xproxy/test/",
 	"github.com/rom/xproxy/internal/acme/acmetest",

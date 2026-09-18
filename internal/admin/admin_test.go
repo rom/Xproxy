@@ -19,10 +19,12 @@ import (
 
 // fakeMgmt is a minimal management API on a Unix socket.
 type fakeMgmt struct {
-	srv     *http.Server
-	path    string
-	reloads atomic.Int64
-	bans    atomic.Int64
+	srv       *http.Server
+	path      string
+	reloads   atomic.Int64
+	bans      atomic.Int64
+	wafResets atomic.Int64
+	rollbacks atomic.Value
 }
 
 func startFakeMgmt(t *testing.T) *fakeMgmt {
@@ -45,7 +47,11 @@ func startFakeMgmt(t *testing.T) *fakeMgmt {
 		_, _ = io.WriteString(w, `{"target":"`+req["target"]+`"}`)
 	})
 	mux.HandleFunc("DELETE /v1/bans", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{"ok":true}`) })
-	mux.HandleFunc("POST /v1/reload", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /v1/reload", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("dry_run") == "1" {
+			_, _ = io.WriteString(w, `{"from":"active","to":"file","same":false,"changes":[{"section":"routes","name":"r","kind":"changed"}],"summary":["route r changed"],"restart_needed":[],"text":"--- active\n+++ file\n"}`)
+			return
+		}
 		f.reloads.Add(1)
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	})
@@ -55,6 +61,33 @@ func startFakeMgmt(t *testing.T) *fakeMgmt {
 	mux.HandleFunc("GET /v1/acme", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(404)
 		_, _ = io.WriteString(w, `{"error":"acme not configured"}`)
+	})
+	// 1.3 views: fixed documents the GUI passes through.
+	for path, doc := range map[string]string{
+		"/v1/pools":     `{"u":{"name":"u","balancer":"round_robin","endpoints":1,"available":1,"active":0,"circuit":{"state":"closed","failures":0,"opens":0,"rejected":0}}}`,
+		"/v1/quotas":    `{"generation":3,"tenants":[],"routes":[{"route":"r","requests":10}],"rate_limits":[],"upstreams":[]}`,
+		"/v1/waf":       `{"enabled":true,"profiles":[{"name":"default","modes":["block"],"crs":"embedded","version":"4250"}],"routes":[],"requests":5,"blocked":1,"rules":[],"total_rules":0,"learning":{"enabled":false,"proposals":[]}}`,
+		"/v1/tls":       `{"main":[{"names":["a.test"],"issuer":"CA","not_after":"2030-01-01T00:00:00Z","ocsp":{"status":"good"},"ct":{"ok":true,"verified":2,"required":2}}]}`,
+		"/v1/telemetry": `{"metrics":null,"traces":null,"logs":null}`,
+		"/v1/sandbox":   `{"platform":"linux","enabled":true,"mechanisms":[{"name":"landlock","state":"applied"}],"landlocked":true,"read_paths":["/etc/xproxy"]}`,
+		"/v1/dns":       `[]`,
+		"/v1/history":   `[{"id":"20260918T100000Z-gen3","generation":3,"applied":"2026-09-18T10:00:00Z","note":"start","source":"/etc/xproxy/xproxy.yaml","size":100}]`,
+		"/v1/diff":      `{"from":"active","to":"file","same":true,"changes":[],"summary":[],"restart_needed":[]}`,
+	} {
+		d := doc
+		mux.HandleFunc("GET "+path, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, d) })
+	}
+	mux.HandleFunc("GET /v1/waf/exclusions", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "# xproxy WAF exclusion proposals\n# (no proposals)\n")
+	})
+	mux.HandleFunc("POST /v1/waf/reset", func(w http.ResponseWriter, _ *http.Request) {
+		f.wafResets.Add(1)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})
+	mux.HandleFunc("POST /v1/rollback", func(w http.ResponseWriter, r *http.Request) {
+		f.rollbacks.Store(r.URL.Query().Get("id"))
+		_, _ = io.WriteString(w, `{"ok":true}`)
 	})
 	ln, err := net.Listen("unix", f.path)
 	if err != nil {
@@ -435,6 +468,50 @@ func TestLoginLockout(t *testing.T) {
 	}
 	if st := c.login("op", "operator-password-1"); st != 429 {
 		t.Fatalf("locked out login: %d", st)
+	}
+}
+
+// TestExtendedViews covers the 1.3 pass-throughs and actions: every
+// status document reaches a viewer unchanged, the SecLang download is
+// text, the WAF reset and the rollback need the operator role, the
+// rollback carries its id, the dry run answers with the change set.
+func TestExtendedViews(t *testing.T) {
+	fm := startFakeMgmt(t)
+	dir := t.TempDir()
+	_, c := newTestServer(t, Options{Listen: "127.0.0.1:0", Socket: fm.path, UsersFile: writeUsers(t, dir)})
+	if st := c.login("view", "viewer-password-01"); st != 200 {
+		t.Fatalf("viewer login: %d", st)
+	}
+	for path, want := range map[string]string{
+		"/api/pools": `"circuit"`, "/api/quotas": `"generation":3`, "/api/waf": `"version":"4250"`, "/api/tls": `"a.test"`,
+		"/api/telemetry": `"traces":null`, "/api/sandbox": `"landlocked":true`, "/api/dns": `[]`, "/api/history": `-gen3"`,
+		"/api/diff": `"same":true`, "/api/waf/exclusions": "(no proposals)",
+	} {
+		st, body := c.do("GET", path, nil, false)
+		if st != 200 || !strings.Contains(string(body), want) {
+			t.Fatalf("%s: %d %s", path, st, body)
+		}
+	}
+	if st, _ := c.do("POST", "/api/waf/reset", nil, true); st != 403 {
+		t.Fatalf("viewer waf reset: %d", st)
+	}
+	if st, _ := c.do("POST", "/api/rollback", map[string]string{"id": "x"}, true); st != 403 {
+		t.Fatalf("viewer rollback: %d", st)
+	}
+	if st := c.login("op", "operator-password-1"); st != 200 {
+		t.Fatalf("operator login: %d", st)
+	}
+	if st, _ := c.do("POST", "/api/waf/reset", nil, true); st != 200 || fm.wafResets.Load() != 1 {
+		t.Fatalf("waf reset: %d (%d resets)", st, fm.wafResets.Load())
+	}
+	if st, _ := c.do("POST", "/api/rollback", map[string]string{}, true); st != 400 {
+		t.Fatalf("rollback without id: %d", st)
+	}
+	if st, _ := c.do("POST", "/api/rollback", map[string]string{"id": "20260918T100000Z-gen3"}, true); st != 200 || fm.rollbacks.Load() != "20260918T100000Z-gen3" {
+		t.Fatalf("rollback: %d (%v)", st, fm.rollbacks.Load())
+	}
+	if st, body := c.do("POST", "/api/reload/dry-run", nil, true); st != 200 || !strings.Contains(string(body), `"changes"`) || fm.reloads.Load() != 0 {
+		t.Fatalf("dry run: %d %s (reloads %d)", st, body, fm.reloads.Load())
 	}
 }
 

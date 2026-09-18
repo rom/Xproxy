@@ -218,6 +218,7 @@ make cover-gate     # coverage under race with the 80 % gate
 make mutate         # mutation testing on the admission packages
 make fuzz           # all fuzz targets, 20s each
 make rpm            # Fedora package with the SELinux policy
+make build-darwin   # macOS binaries (arm64 and amd64), see docs/SETUP_MACOS.md
 ```
 
 Go 1.25 or newer. No cgo. Dependencies are few, listed and justified in

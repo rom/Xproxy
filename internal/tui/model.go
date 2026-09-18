@@ -16,7 +16,10 @@ import (
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/mgmt"
+	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
@@ -30,6 +33,14 @@ type Data struct {
 	Cluster   *cluster.Status
 	Series    *mgmt.SeriesResponse
 	LogLines  []string
+	// Added in 1.3: pool state, per route usage, WAF statistics, served
+	// certificates, telemetry exporters and dns listeners.
+	Pools     map[string]upstream.PoolStatus
+	Quotas    *proxy.QuotaReport
+	WAF       *proxy.WAFReport
+	TLS       map[string][]tlsconf.CertInfo
+	Telemetry *mgmt.TelemetryView
+	DNS       []dns.Status
 	Errors    map[string]string
 }
 
@@ -124,6 +135,37 @@ func (s *clientSource) Fetch(ctx context.Context) Data {
 		}
 		return err
 	})
+	fetch := func(what, path string, into func() any) {
+		run(what, func() error {
+			v := into()
+			if err := s.c.Do("GET", path, nil, v); err != nil {
+				return err
+			}
+			mu.Lock()
+			switch t := v.(type) {
+			case *map[string]upstream.PoolStatus:
+				d.Pools = *t
+			case *proxy.QuotaReport:
+				d.Quotas = t
+			case *proxy.WAFReport:
+				d.WAF = t
+			case *map[string][]tlsconf.CertInfo:
+				d.TLS = *t
+			case *mgmt.TelemetryView:
+				d.Telemetry = t
+			case *[]dns.Status:
+				d.DNS = *t
+			}
+			mu.Unlock()
+			return nil
+		})
+	}
+	fetch("pools", "/v1/pools", func() any { return &map[string]upstream.PoolStatus{} })
+	fetch("quotas", "/v1/quotas?top=3", func() any { return &proxy.QuotaReport{} })
+	fetch("waf", "/v1/waf?top=12", func() any { return &proxy.WAFReport{} })
+	fetch("tls", "/v1/tls", func() any { return &map[string][]tlsconf.CertInfo{} })
+	fetch("telemetry", "/v1/telemetry", func() any { return &mgmt.TelemetryView{} })
+	fetch("dns", "/v1/dns", func() any { return &[]dns.Status{} })
 	if s.logPath != "" {
 		run("log", func() error {
 			lines, err := tailLines(s.logPath, 200)

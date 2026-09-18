@@ -170,6 +170,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `go test ./test/examples/`.
 - Documentation syntax test: every `yaml` block in the documentation is
   checked against the configuration schema on each `make check`.
+- TUI screens 7 to 9 (routes, WAF, TLS), pool state under upstreams,
+  sandbox, telemetry and dns lines in the overview; GUI pages Routes,
+  WAF (with reset and SecLang download), Subsystems, History (dry run
+  and roll back), served certificates on the Certificates page and pool
+  state on Upstreams, so every management endpoint is visible in the
+  CLI, the TUI and the GUI.
 - Tests: `xproxyctl` exercised end to end against a management server
   (every command), fuzz targets for the PROXY protocol header, access
   log templates, DNS messages, trust anchors and the configuration

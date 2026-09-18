@@ -708,7 +708,11 @@ The TUI is a mode of `xproxyctl`: a pure renderer (`tui.Render`, data and
 terminal size in, lines out, tested without a terminal) driven by a raw
 mode loop on `golang.org/x/term` that fetches all views concurrently with
 a deadline each refresh and reads keys from stdin. It uses the same client
-and therefore the same audited API for bans.
+and therefore the same audited API for bans. Nine screens cover the
+management API: overview (with sandbox, telemetry and dns lines),
+upstreams with pool state, bans, cluster, graphs, the security log,
+routes (the quota report), WAF statistics and served certificates; a
+fetch that fails leaves its screen empty and names the error.
 
 An optional TCP listener (`metrics.listen`) serves `/metrics` only, with a
 source allow list and optional TLS with client certificates; it never
@@ -724,7 +728,11 @@ framework and no external resource) under a strict Content Security
 Policy (`default-src 'none'`, scripts and styles from `'self'` only, no
 inline code, `frame-ancestors 'none'`), and a JSON API under `/api/` that
 forwards to the management client: read endpoints pass the socket's
-responses through unchanged, actions post to the same audited endpoints,
+responses through unchanged (status, pools, quotas, WAF with the SecLang
+download, certificates, telemetry, sandbox, dns, history, diff and every
+subsystem status), actions post to the same audited endpoints (reload,
+certificates, logs, ACME renewal, WAF reset, rollback by id; a dry run
+posts to the reload endpoint without applying),
 and the two things the socket does not offer, editing the configuration
 file and following log files, are done by the GUI process itself on files
 it owns or may read. Configuration edits go through the full validator
