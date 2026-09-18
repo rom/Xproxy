@@ -667,8 +667,10 @@ graph without external storage.
 
 **Alternatives.** `prometheus/client_golang`: rejected for dependency
 weight and because the registry model duplicates the atomics already in
-place. OpenTelemetry: deferred; the exposition is the interoperability
-boundary and an OTLP exporter can be added behind the same snapshot.
+place. OpenTelemetry: deferred at 1.0 and delivered in 1.3 exactly as
+foreseen, behind the same collection: a `Collector` interface that the
+Prometheus encoder and the OTLP/HTTP JSON exporter both implement, so
+every family reaches both without a metrics library.
 
 **Consequences.** New metrics are added by hand in one function; label
 cardinality is bounded by configuration by construction. Counters that

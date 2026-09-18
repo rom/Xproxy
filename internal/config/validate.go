@@ -1144,6 +1144,35 @@ func (v *validator) metrics(m *Metrics) {
 			v.file("metrics.tls.client_ca_file", t.ClientCAFile)
 		}
 	}
+	if o := m.OTLP; o != nil {
+		u, err := url.Parse(o.Endpoint)
+		schemeOK := u.Scheme == "https" || (u.Scheme == "http" && o.AllowHTTP)
+		if err != nil || u.Host == "" || !schemeOK {
+			v.errf("metrics.otlp.endpoint: must be an https URL (http only with allow_http)")
+		}
+		if o.Interval < Duration(time.Second) || o.Interval > Duration(time.Hour) {
+			v.errf("metrics.otlp.interval: must be between 1s and 1h")
+		}
+		if o.Timeout <= 0 || o.Timeout > o.Interval {
+			v.errf("metrics.otlp.timeout: must be positive and at most interval")
+		}
+		for k, val := range o.Headers {
+			if k == "" || strings.ContainsAny(k, " :\r\n") || strings.ContainsAny(val, "\r\n") {
+				v.errf("metrics.otlp.headers: %q is not a header", k)
+			}
+		}
+		if o.CAFile != "" {
+			v.file("metrics.otlp.ca_file", o.CAFile)
+		}
+		if o.ServiceName == "" || len(o.ServiceName) > 255 {
+			v.errf("metrics.otlp.service_name: must be 1 to 255 characters")
+		}
+		for k := range o.Attributes {
+			if k == "" || len(k) > 255 {
+				v.errf("metrics.otlp.attributes: empty or overlong key")
+			}
+		}
+	}
 	if m.SampleInterval < Duration(1_000_000_000) || m.SampleInterval > Duration(300_000_000_000) {
 		v.errf("metrics.sample_interval: must be between 1s and 5m")
 	}

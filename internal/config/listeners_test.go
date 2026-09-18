@@ -274,3 +274,52 @@ routes:
 		t.Fatalf("disabled ingress validated: %v", err)
 	}
 }
+
+// TestOTLPConfig covers the exporter section's defaults and rules.
+func TestOTLPConfig(t *testing.T) {
+	base := `
+version: 1
+server:
+  listeners:
+    - {name: main, address: ":8080"}
+metrics:
+  otlp:
+    endpoint: %s
+%s
+upstreams:
+  - name: app
+    endpoints: [{address: 127.0.0.1:9000}]
+routes:
+  - name: r
+    upstream: app
+`
+	cfg, err := ParseWith([]byte(fmt.Sprintf(base, "https://otel.test:4318/v1/metrics", "")), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := cfg.Metrics.OTLP
+	if o.Interval.D() != 30*time.Second || o.Timeout.D() != 10*time.Second || o.ServiceName != "xproxy" || o.Compress == nil || !*o.Compress {
+		t.Fatalf("otlp defaults: %+v", o)
+	}
+	cases := []struct{ name, endpoint, extra, want string }{
+		{"http", "http://otel.test/v1/metrics", "", "otlp.endpoint"},
+		{"http allowed", "http://otel.test/v1/metrics", "    allow_http: true\n    interval: 0s", ""},
+		{"interval", "https://otel.test/v1/metrics", "    interval: 2h", "otlp.interval"},
+		{"timeout", "https://otel.test/v1/metrics", "    timeout: 1m", "otlp.timeout"},
+		{"header", "https://otel.test/v1/metrics", "    headers: {\"a b\": x}", "otlp.headers"},
+		{"ca", "https://otel.test/v1/metrics", "    ca_file: rel.pem", "otlp.ca_file"},
+		{"service", "https://otel.test/v1/metrics", "    service_name: " + strings.Repeat("s", 256), "otlp.service_name"},
+	}
+	for _, tc := range cases {
+		_, err := ParseWith([]byte(fmt.Sprintf(base, tc.endpoint, tc.extra)), false)
+		if tc.want == "" {
+			if err != nil {
+				t.Errorf("%s: %v", tc.name, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}

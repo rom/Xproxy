@@ -103,6 +103,8 @@ type Metrics struct {
 	// 10s and 1h.
 	SampleInterval Duration `yaml:"sample_interval"`
 	Retention      Duration `yaml:"retention"`
+	// OTLP pushes the same metrics to an OpenTelemetry collector.
+	OTLP *OTLP `yaml:"otlp"`
 }
 
 // MetricsTLS is the metrics listener certificate and optional client CA.
@@ -258,6 +260,32 @@ type Ingress struct {
 	Resync Duration `yaml:"resync"`
 	// Timeout bounds one API request. Default 10s.
 	Timeout Duration `yaml:"timeout"`
+}
+
+// OTLP is the OpenTelemetry push exporter: every interval the metric
+// families are sent as OTLP/HTTP with JSON encoding to a collector
+// (counters as cumulative monotonic sums, gauges, histograms as
+// cumulative explicit bucket histograms).
+type OTLP struct {
+	// Endpoint is the collector's metrics URL, for example
+	// https://otel.example.com:4318/v1/metrics.
+	Endpoint string `yaml:"endpoint"`
+	// AllowHTTP permits a plain http endpoint.
+	AllowHTTP bool `yaml:"allow_http"`
+	// Interval between pushes. Default 30s; 1s to 1h.
+	Interval Duration `yaml:"interval"`
+	// Timeout of one push. Default 10s.
+	Timeout Duration `yaml:"timeout"`
+	// Headers added to every request (for example Authorization).
+	Headers map[string]string `yaml:"headers"`
+	// CAFile pins the collector's CA. Default: system pool.
+	CAFile string `yaml:"ca_file"`
+	// ServiceName is the service.name resource attribute. Default xproxy.
+	ServiceName string `yaml:"service_name"`
+	// Attributes are extra resource attributes.
+	Attributes map[string]string `yaml:"attributes"`
+	// Compress gzips the request body. Default true.
+	Compress *bool `yaml:"compress"`
 }
 
 // ForwardListener is an explicit forward proxy: clients send CONNECT

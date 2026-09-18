@@ -292,6 +292,16 @@ idle deadline and half-close. Connections are accounted on the pool like
 requests so ejection and health apply. The listener has its own
 connection bound and is drained on shutdown like the HTTP servers.
 
+### Metrics collection and export
+
+`Server.Collect` runs one collection of every metric family into a
+`metrics.Collector`; the Prometheus encoder implements it for
+`/metrics`, and the OTLP exporter implements it to build an
+OTLP/HTTP JSON request (counters as cumulative monotonic sums from the
+process start time, gauges, histograms with explicit bounds) that it
+pushes on an interval with a bounded client, gzip and pinned CA. No
+metrics library is linked on either path.
+
 ### Kubernetes ingress mode
 
 `internal/ingress` is a polling controller with no client library: a

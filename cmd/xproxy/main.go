@@ -24,6 +24,7 @@ import (
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds
 	"github.com/rom/xproxy/internal/ingress"
 	"github.com/rom/xproxy/internal/logging"
+	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/version"
@@ -137,6 +138,23 @@ func run(args []string) int {
 	}
 	if ctrl != nil {
 		actions.Ingress = func() any { return ctrl.Status() }
+	}
+	var otlp *metrics.OTLPExporter
+	if o := cfg.Metrics.OTLP; o != nil {
+		ex, err := metrics.NewOTLPExporter(metrics.OTLPConfig{Endpoint: o.Endpoint, Interval: o.Interval.D(), Timeout: o.Timeout.D(), Headers: o.Headers,
+			CAFile: o.CAFile, ServiceName: o.ServiceName, Attributes: o.Attributes, Compress: *o.Compress, Version: version.Version},
+			srv.Collect, logs.Error.With("component", "otlp"))
+		if err != nil {
+			logs.Error.Error("otlp exporter failed", "err", err.Error())
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(ctx)
+			return 1
+		}
+		otlp = ex
+		otlp.Start()
+		defer otlp.Stop()
+		actions.OTLP = otlp.Status
 	}
 	m := mgmt.New(cfg.Management, srv, logs, actions)
 	if err := m.Start(); err != nil {

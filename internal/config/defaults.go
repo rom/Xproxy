@@ -405,6 +405,15 @@ func applyDefaults(c *Config) {
 	}
 	setDur(&c.Metrics.SampleInterval, 10*time.Second)
 	setDur(&c.Metrics.Retention, time.Hour)
+	if o := c.Metrics.OTLP; o != nil {
+		setDur(&o.Interval, 30*time.Second)
+		setDur(&o.Timeout, 10*time.Second)
+		setStr(&o.ServiceName, "xproxy")
+		if o.Compress == nil {
+			t := true
+			o.Compress = &t
+		}
+	}
 	if ch := c.Challenge; ch != nil {
 		setInt(&ch.Difficulty, 16)
 		setDur(&ch.TTL, time.Hour)

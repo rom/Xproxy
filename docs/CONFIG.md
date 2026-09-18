@@ -447,6 +447,22 @@ endpoint for scrapers and sizes the series buffer.
 | `endpoint_series` | bool | `true` | Expose five series per upstream endpoint (`xproxy_upstream_endpoint_*`). About 1 KiB per endpoint per scrape; turn off above a few thousand endpoints and rely on the per-pool `xproxy_upstream_endpoints_healthy` |
 | `sample_interval` | duration | `10s` | Series sampling period; 1s to 5m |
 | `retention` | duration | `1h` | Series kept in memory; at most 100000 points |
+| `otlp.endpoint` | URL | none | Enables the OpenTelemetry push exporter: the collector's metrics URL (`https://otel.example.com:4318/v1/metrics`); `http://` only with `otlp.allow_http` |
+| `otlp.allow_http` | bool | `false` | |
+| `otlp.interval` | duration | `30s` | Push period; 1s to 1h. The last push happens at shutdown |
+| `otlp.timeout` | duration | `10s` | One push; at most `interval` |
+| `otlp.headers` | map | `{}` | Request headers, for example `Authorization` |
+| `otlp.ca_file` | path | system pool | Pins the collector's CA |
+| `otlp.service_name` | string | `xproxy` | `service.name` resource attribute; `service.version` and `host.name` are added |
+| `otlp.attributes` | map | `{}` | Extra resource attributes |
+| `otlp.compress` | bool | `true` | gzip the request body |
+
+The OTLP exporter sends the same families as OTLP/HTTP with JSON
+encoding: counters as cumulative monotonic sums since process start,
+gauges as gauges, histograms as cumulative explicit bucket histograms;
+labels become data point attributes. `GET /v1/otlp` and `xproxyctl
+otlp` show pushes, failures, the last error and the size of the last
+request.
 
 Exposed families: `xproxy_requests_total`, `xproxy_responses_total{class}`,
 `xproxy_denied_total{reason}`, `xproxy_bytes_in_total`,

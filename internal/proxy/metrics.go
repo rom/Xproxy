@@ -36,6 +36,13 @@ func (s *Server) Series() *metrics.Series { return s.sampler.Series() }
 // WriteMetrics writes the Prometheus exposition of the whole process.
 func (s *Server) WriteMetrics(w io.Writer) error {
 	e := metrics.NewEncoder(w)
+	s.Collect(e)
+	return e.Flush()
+}
+
+// Collect runs one collection of every metric family into c (the
+// Prometheus encoder or the OTLP exporter).
+func (s *Server) Collect(e metrics.Collector) {
 	sn := s.Stats()
 	rt := s.rt.Load()
 	type L = metrics.Labels
@@ -229,7 +236,6 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 			}
 		}
 	}
-	return e.Flush()
 }
 
 var routeClasses = [...]string{"2xx", "3xx", "4xx", "5xx", "denied"}

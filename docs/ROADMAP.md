@@ -203,7 +203,8 @@ procedure is in RELEASING.md.
   update)
 - OIDC front channel logout: delivered (`frontchannel_logout_path`,
   AMR-040 update)
-- OpenTelemetry exporter behind the metrics snapshot (AMR-014)
+- OpenTelemetry exporter behind the metrics snapshot: delivered
+  (`metrics.otlp`, AMR-026 update)
 - DNS over TLS and HTTPS to upstream resolvers, DNS over HTTPS for
   clients on an http listener (AMR-041)
 - Kubernetes Gateway API next to the Ingress translator, and API

@@ -85,6 +85,23 @@ xproxyctl unban 203.0.113.0/24
 
 ## Configuration patterns
 
+### Pushing metrics to an OpenTelemetry collector
+
+```yaml
+metrics:
+  otlp:
+    endpoint: https://otel.example.internal:4318/v1/metrics
+    interval: 15s
+    headers: {Authorization: "Bearer replace-me"}
+    ca_file: /etc/xproxy/otel-ca.pem
+    service_name: edge
+    attributes: {deployment.environment: production}
+```
+
+Every family in `/metrics` reaches the collector as OTLP with the same
+names, so dashboards built on the Prometheus exposition carry over;
+`xproxyctl otlp` shows whether pushes succeed.
+
 ### Splitting the configuration into fragments
 
 ```yaml
