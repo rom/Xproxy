@@ -140,9 +140,15 @@ systemd creates as `StateDirectory` with mode `0700`.
 
 By default logs are files in `/var/log/xproxy` rotated by size when
 `max_size_mb` is set, or by logrotate daily with the shipped configuration.
-To use journald instead, set `logging.stdout: true` and disable the file
-streams; `journalctl -u xproxy -o json` then shows the JSON lines. Native
-journald and syslog sinks arrive in 1.0.
+Each stream can also list `journald` (native protocol, indexed `XPROXY_*`
+fields) and `syslog` (UDP, TCP, TLS or `/dev/log`) in its `sinks`; see
+CONFIG.md and USAGE.md. The SELinux module allows the journal socket
+(`init_dgram_send`) and `/dev/log`; a remote syslog collector needs the
+collector port allowed for `xproxy_t`, for example
+`semanage port -a -t xproxy_upstream_port_t -p tcp 6514`. Enable
+`logging.redaction` before the first production traffic if the logs are
+subject to data protection requirements; the key file for `hash` mode
+lives in the state directory.
 
 ## Verifying the hardening
 

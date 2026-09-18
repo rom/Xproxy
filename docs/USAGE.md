@@ -407,6 +407,55 @@ cannot pass. Give monitoring systems `exempt_cidrs`.
 
 All streams are JSON lines with `time`, `level`, `msg` and `stream`.
 
+### Sinks
+
+Each stream lists where it goes. A typical production setup keeps access
+logs in files, sends security and audit events to journald and to a remote
+collector, and lets journald handle operational messages:
+
+```yaml
+logging:
+  directory: /var/log/xproxy
+  access:   {file: access.log, max_size_mb: 512, max_files: 10, sinks: [file]}
+  error:    {sinks: [journald]}
+  security: {file: security.log, sinks: [file, journald, syslog]}
+  audit:    {file: audit.log, sinks: [file, syslog]}
+  journald: {identifier: xproxy}
+  syslog:
+    network: tcp+tls
+    address: logs.example.internal:6514
+    ca_file: /etc/xproxy/certs/logs-ca.pem
+    server_name: logs.example.internal
+    facility: local3
+```
+
+`journalctl -t xproxy XPROXY_STREAM=security` and
+`journalctl XPROXY_CLIENT_IP=203.0.113.9` filter on the indexed fields.
+`xproxyctl status` shows `log_syslog_sent`, `log_syslog_dropped` and
+`log_journald_dropped`; drops mean the collector is slow or unreachable,
+never that the proxy waited.
+
+### Redaction
+
+```yaml
+logging:
+  redaction:
+    client_ip: hash
+    hash_secret_file: /var/lib/xproxy/redaction.key
+    user_agent: drop
+    referer: origin
+    claims: hash
+    drop_fields: [sni]
+```
+
+With this in place the access, security and error streams carry a stable
+pseudonym instead of the client address (the same client keeps the same
+`h:` value across restarts and across nodes sharing the key file), no user
+agent, referers cut to their origin and hashed token subjects, while the
+audit stream keeps full detail. Set `enabled: false` to switch the rules
+off temporarily during an incident without deleting them, and remember
+that `xproxyctl bans` and the ban list itself still hold real addresses.
+
 ### access
 
 One line per request:

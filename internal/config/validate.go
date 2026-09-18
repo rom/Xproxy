@@ -329,8 +329,114 @@ func (v *validator) logging(l *Logging) {
 		if s.MaxSizeMB < 0 || s.MaxFiles < 0 {
 			v.errf("logging.%s: rotation values must not be negative", name)
 		}
+		for i, sink := range s.Sinks {
+			switch sink {
+			case "file":
+			case "journald":
+				if l.Journald == nil {
+					v.errf("logging.%s.sinks[%d]: journald requires a logging.journald section", name, i)
+				}
+			case "syslog":
+				if l.Syslog == nil {
+					v.errf("logging.%s.sinks[%d]: syslog requires a logging.syslog section", name, i)
+				}
+			default:
+				v.errf("logging.%s.sinks[%d]: must be file, journald or syslog", name, i)
+			}
+		}
+	}
+	if j := l.Journald; j != nil {
+		if !strings.HasPrefix(j.Socket, "/") {
+			v.errf("logging.journald.socket: must be an absolute path")
+		}
+		if !nameRE.MatchString(j.Identifier) {
+			v.errf("logging.journald.identifier: %q is not a valid identifier", j.Identifier)
+		}
+	}
+	if s := l.Syslog; s != nil {
+		switch s.Network {
+		case "unix":
+			if !strings.HasPrefix(s.Address, "/") {
+				v.errf("logging.syslog.address: must be an absolute socket path for unix")
+			}
+		case "udp", "tcp", "tcp+tls":
+			if _, _, err := net.SplitHostPort(s.Address); err != nil {
+				v.errf("logging.syslog.address: %q must be host:port", s.Address)
+			}
+		default:
+			v.errf("logging.syslog.network: must be unix, udp, tcp or tcp+tls")
+		}
+		if s.Format != "rfc5424" && s.Format != "rfc3164" {
+			v.errf("logging.syslog.format: must be rfc5424 or rfc3164")
+		}
+		if _, ok := syslogFacilities[s.Facility]; !ok {
+			v.errf("logging.syslog.facility: unknown facility %q", s.Facility)
+		}
+		if !nameRE.MatchString(s.AppName) {
+			v.errf("logging.syslog.app_name: %q is not valid", s.AppName)
+		}
+		if s.Network == "tcp+tls" {
+			if s.CAFile != "" {
+				v.file("logging.syslog.ca_file", s.CAFile)
+			}
+			if (s.CertFile == "") != (s.KeyFile == "") {
+				v.errf("logging.syslog: cert_file and key_file must be set together")
+			}
+			if s.CertFile != "" {
+				v.file("logging.syslog.cert_file", s.CertFile)
+				v.file("logging.syslog.key_file", s.KeyFile)
+			}
+		}
+		if s.QueueSize < 64 || s.QueueSize > 1_000_000 {
+			v.errf("logging.syslog.queue_size: must be between 64 and 1000000")
+		}
+	}
+	if r := l.Redaction; r != nil {
+		for i, st := range r.Streams {
+			switch st {
+			case "access", "security", "error", "audit":
+			default:
+				v.errf("logging.redaction.streams[%d]: unknown stream %q", i, st)
+			}
+		}
+		switch r.ClientIP {
+		case "keep", "truncate", "hash":
+		default:
+			v.errf("logging.redaction.client_ip: must be keep, truncate or hash")
+		}
+		if r.ClientIP == "hash" && r.HashSecretFile != "" && !strings.HasPrefix(r.HashSecretFile, "/") {
+			v.errf("logging.redaction.hash_secret_file: must be an absolute path")
+		}
+		if r.UserAgent != "keep" && r.UserAgent != "drop" {
+			v.errf("logging.redaction.user_agent: must be keep or drop")
+		}
+		switch r.Referer {
+		case "keep", "origin", "drop":
+		default:
+			v.errf("logging.redaction.referer: must be keep, origin or drop")
+		}
+		switch r.Claims {
+		case "keep", "hash", "drop":
+		default:
+			v.errf("logging.redaction.claims: must be keep, hash or drop")
+		}
+		for i, f := range r.DropFields {
+			if f == "" || len(f) > 64 || f == "time" || f == "level" || f == "msg" || f == "stream" {
+				v.errf("logging.redaction.drop_fields[%d]: %q cannot be dropped", i, f)
+			}
+		}
 	}
 }
+
+// SyslogFacilities maps facility names to their codes.
+var syslogFacilities = map[string]int{
+	"kern": 0, "user": 1, "mail": 2, "daemon": 3, "auth": 4, "syslog": 5, "lpr": 6, "news": 7,
+	"uucp": 8, "cron": 9, "authpriv": 10, "ftp": 11,
+	"local0": 16, "local1": 17, "local2": 18, "local3": 19, "local4": 20, "local5": 21, "local6": 22, "local7": 23,
+}
+
+// SyslogFacility returns the numeric facility for a validated name.
+func SyslogFacility(name string) int { return syslogFacilities[name] }
 
 func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 	p := fmt.Sprintf("rate_limits[%d]", i)

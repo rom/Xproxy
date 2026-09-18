@@ -261,11 +261,26 @@ disabled with two flags (`insecure_skip_verify` and `allow_insecure`).
 
 ## 9. Logging
 
-Four `slog` JSON loggers with a `stream` attribute. Files are opened `0640`,
-rotated by size when configured, reopened on `SIGUSR1` or the API. Attacker
-controlled strings are JSON encoded, which neutralises log injection. The
-access log does not record query strings (only their length) because they
-commonly carry tokens; 1.0 adds configurable redaction and additional sinks.
+Four `slog` loggers with a `stream` attribute. Each stream is a handler
+chain:
+
+```
+logger -> [redactHandler] -> multiHandler -> JSON handler -> file (0640, rotated), stdout
+                                          -> lineHandler  -> journaldSink (native datagram protocol)
+                                          -> lineHandler  -> syslogSink   (bounded queue, background writer)
+```
+
+The redaction handler rewrites attributes by key before any sink sees the
+record: client addresses are truncated or replaced by a keyed pseudonym,
+user agents dropped, referers cut to their origin, token claims hashed or
+dropped, plus an operator list of fields to remove. Attacker controlled
+strings are JSON encoded, which neutralises log injection. The access log
+does not record query strings (only their length) because they commonly
+carry tokens. Files are reopened on `SIGUSR1` or the API. The journald
+sink writes `MESSAGE` plus indexed `XPROXY_*` fields; the syslog sink
+formats RFC 5424 or 3164 with the stream as MSGID and never blocks the
+request path: a slow or unreachable collector fills a bounded queue and
+then drops with a counter visible in status.
 
 ## 10. Management plane
 

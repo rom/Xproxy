@@ -75,13 +75,15 @@ Delivered so far:
   version, SPKI pins, `xproxyctl spki` (ASR-F9)
 - JWT validation as a filter on the standard library, with JWKS from file
   or URL, claim forwarding and token stripping (ASR-F10, AMR-025)
+- Log sinks: native journald with indexed fields, syslog over UDP, TCP,
+  TLS and Unix socket behind a bounded queue; per-stream redaction rules
+  for addresses, user agents, referers, claims and arbitrary fields
+  (ASR-O2, ASR-S10, AMR-014)
 
 Remaining:
 - Upstream HTTP/2 tuning
 - Prometheus metrics endpoint and an in-process time series ring buffer for
   graphs (ASR-O4)
-- journald and syslog sinks; PII redaction rules per stream (ASR-O2, S10,
-  AMR-014)
 - TUI mode of `xproxyctl` (AMR-011)
 - Fuzz targets for every new parser (WAF transaction, ICAP framing, QUIC
   configuration), WAF regression corpus, load test scripts (ASR-Q1, Q4)

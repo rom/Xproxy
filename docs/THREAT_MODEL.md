@@ -67,7 +67,8 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Server fingerprinting | `Server` header removed from responses; error bodies are reason phrases only |
 | Upstream error details reaching clients | `ErrorHandler` writes a generic status; details go to the error log |
 | Backend address in affinity cookies | Cookie carries an index, not an address |
-| Secrets in logs | Query strings not logged; 1.0 redaction rules |
+| Secrets and personal data in logs | Query strings not logged; redaction rules per stream (address truncation or keyed pseudonyms, user agent and referer reduction, claim hashing, field drop list) applied before every sink |
+| Log collector outage used to stall the proxy | Syslog sends from a bounded queue on a background goroutine; journald writes have a short deadline; both drop and count rather than block |
 | TLS downgrade | TLS 1.0 and 1.1 refused by validation; insecure suites cannot be configured |
 
 ### Denial of service
@@ -141,7 +142,7 @@ explicitly out of scope. This document is reviewed at every phase exit
 |--------|------------|
 | World writable configuration | Loader refuses `o+w` files |
 | Key exposure | Keys in `/etc/xproxy/certs` labelled `xproxy_conf_t`, mode `0640` `root:xproxy`; unit mounts `/etc/xproxy` read only |
-| Log tampering by the service account | Logs are append opened; SELinux allows append and rename inside the log directory only; forwarding to journald or syslog (1.0) moves the record off the host account |
+| Log tampering by the service account | Logs are append opened; SELinux allows append and rename inside the log directory only; the security and audit streams can be sent to journald or a remote syslog collector, which moves the record out of the service account's reach |
 | Binary replacement | `ProtectSystem=strict`; SELinux `xproxy_exec_t`; RPM verification in 1.0 |
 
 ## Residual risks and accepted limitations

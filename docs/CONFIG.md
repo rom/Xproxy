@@ -96,6 +96,9 @@ upstream `total` for those. 0-RTT is never enabled.
 | `level` | `debug`, `info`, `warn`, `error` | `info` | Minimum level for the error stream |
 | `stdout` | bool | `false` | Mirror all streams to stdout (journald, containers) |
 | `access`, `error`, `security`, `audit` | stream | | Per stream settings |
+| `journald` | object | none | journald sink, used by streams listing `journald` |
+| `syslog` | object | none | syslog sink, used by streams listing `syslog` |
+| `redaction` | object | none | Personal data rules applied before every sink |
 
 ### logging.<stream>
 
@@ -105,6 +108,55 @@ upstream `total` for those. 0-RTT is never enabled.
 | `file` | file name | `access.log` etc. | Bare name inside `directory` |
 | `max_size_mb` | int | `0` (no internal rotation) | Rotate to `.1`, `.2`, ... when exceeded |
 | `max_files` | int | `5` | Archives kept |
+| `sinks` | list | `[file]` | Any of `file`, `journald`, `syslog`; a stream can go to several |
+
+### logging.journald
+
+Native journald protocol over the journal's datagram socket, no cgo. The
+JSON line is `MESSAGE`; the level maps to `PRIORITY`; the stream and every
+top-level attribute become `XPROXY_*` fields, so
+`journalctl XPROXY_CLIENT_IP=203.0.113.9` works without parsing.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `socket` | path | `/run/systemd/journal/socket` | |
+| `identifier` | name | `xproxy` | `SYSLOG_IDENTIFIER` |
+
+### logging.syslog
+
+Messages are queued and sent by a background writer; the request path
+never waits for a collector. A full queue drops and counts. Stream
+transports use RFC 6587 octet counting and reconnect with back-off.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `network` | `unix`, `udp`, `tcp`, `tcp+tls` | `unix` | |
+| `address` | path or host:port | `/dev/log` for unix | |
+| `format` | `rfc5424`, `rfc3164` | `rfc3164` for unix, else `rfc5424` | The JSON line is the message; the stream is the RFC 5424 MSGID |
+| `facility` | name | `local0` | `kern`, `user`, `mail`, `daemon`, `auth`, `syslog`, `lpr`, `news`, `uucp`, `cron`, `authpriv`, `ftp`, `local0` to `local7` |
+| `app_name` | name | `xproxy` | APP-NAME or tag |
+| `hostname` | string | OS host name | |
+| `ca_file`, `cert_file`, `key_file`, `server_name` | | | `tcp+tls`: pinned CA, optional client certificate, verified name |
+| `queue_size` | int | `8192` | Messages held for a slow collector; 64 to 1000000 |
+
+Datagram transports truncate messages at 8 KiB.
+
+### logging.redaction
+
+Presence enables the rules; `enabled: false` switches them off while
+keeping the configuration. Rules run before every sink, so files, journald
+and syslog all receive the same redacted record.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | |
+| `streams` | list | `[access, security, error]` | The audit stream keeps full detail unless listed |
+| `client_ip` | `keep`, `truncate`, `hash` | `truncate` | `truncate` masks to /24 (IPv4) or /48 (IPv6); `hash` writes a keyed pseudonym (`h:` + 16 hex) that is stable per key and lets you correlate one client across lines without storing the address |
+| `hash_secret_file` | path | ephemeral | Key for `hash`; set it so pseudonyms survive restarts and match across nodes |
+| `user_agent` | `keep`, `drop` | `keep` | |
+| `referer` | `keep`, `origin`, `drop` | `origin` | `origin` keeps scheme and host only |
+| `claims` | `keep`, `hash`, `drop` | `hash` | Applies to `jwt_*` (except `jwt_provider`) and `client_cn` |
+| `drop_fields` | list | `[]` | Further attribute names removed from lines; `time`, `level`, `msg` and `stream` cannot be dropped |
 
 ## rate_limits[]
 

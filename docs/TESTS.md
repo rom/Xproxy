@@ -35,7 +35,7 @@ server.
 | `internal/limits` | `TestKeyedLimiter`, `TestKeyedLimiterBound`, `TestPeerRates`, `TestConcurrency`, `TestConnLimiter`, `TestConnLimiterBanned` | Refill arithmetic with a fake clock, memory bound and eviction, peer reports reduce refill and expire, flush and its cap, release idempotency, real sockets dropped at accept, banned peers closed at accept |
 | `internal/tlsconf` | `TestServer`, `TestClient` | SNI selection, hardening flags, insecure suite rejection, double opt-in |
 | `internal/upstream` | `TestRoundRobin`, `TestWeighted`, `TestLeastConn`, `TestHashRing`, `TestAffinity`, `TestOutlierEjection`, `TestActiveHealthCheck` | Balancer semantics including smooth weighting and minimal key movement on the ring; cookie tamper and expiry; ejection percentage; health state transitions against a real HTTP server |
-| `internal/logging` | `TestOpenAndWrite`, `TestRotate` | JSON single line, level filter, file mode, injection safety, rotation chain |
+| `internal/logging` | `TestOpenAndWrite`, `TestRotate`, `TestRedactor`, `TestRedactionInStreams`, `TestJournaldSink`, `TestSyslogUDP`, `TestSyslogTCPFramingAndTLS`, `TestSyslogUnixAndDrops`, `TestMultiSink` | JSON single line, level filter, file mode, injection safety, rotation chain; every redaction rule including stable keyed pseudonyms across instances and IPv4/IPv6 truncation; redaction applied per stream with audit untouched; native journald datagrams parsed back (priority, identifier, indexed fields, binary multi-line values, key sanitising); RFC 5424 over UDP, RFC 3164 with octet counting over TCP and TLS with a pinned CA, Unix datagram; an unreachable collector never blocks and drops are counted; one stream to file and syslog with redaction on both |
 | `internal/mgmt` | `TestManagementAPI`, `TestBanAPI` | Socket mode, status, actions, error propagation, 501 for missing actions, in-use socket refusal; ban list, add, refuse loopback and bad durations, remove, counters |
 | `internal/ban` | `TestTriggerAndEscalation`, `TestWindowReset`, `TestExemptAndManual`, `TestBound`, `TestPersistence`, `TestReconfigure` | Trigger thresholds and reason filters, escalation and cap with a fake clock, window reset, exemptions, refusal of loopback and wide prefixes, CIDR bans, IPv4 mapped lookups, table bound, bbolt round trip including expiry and unban, reconfiguration keeps state |
 | `internal/cluster` | `TestTwoNodes`, `TestRejectsUnauthenticated`, `TestProtocolErrors` | Bans and unbans propagate, sources are rewritten, rates arrive as rates, late joiner gets a snapshot, peer removal on reconfigure, status; connections without a certificate, with a foreign CA or outside `allowed_names` are rejected and counted; bad JSON, messages before hello, wrong version, unknown type and oversized lines close the connection while a valid session is applied |
@@ -63,6 +63,7 @@ drive it with `net/http` and raw TCP.
 | `TestBansSurviveReload` | Reload keeps active bans; removing the section drops the list |
 | `TestAdaptiveShedding` | A slow backend raises the level to 1; low, normal and high get 503 with `Retry-After` while critical is served; classes return once the window drains |
 | `TestChallengeGate` | Script served on any host, unverified client challenged, exempt client passes, solved proof yields a cookie that works from the same address only, failed proof counted, `load` mode opens when calm and gates under load |
+| `TestRedactedAccessLog` | A request through the full pipeline with redaction on: stable pseudonym, no address, user agent or referer path in the access file, status flag |
 | `TestUpstreamMutualTLS` | Backend requiring a client certificate refuses the proxy without one; with the pair the backend sees the edge identity; certificate rotation through `ReloadCertificates` takes effect; a broken key fails the reload and keeps the old certificate |
 | `TestUpstreamSPKIPin` | Wrong pin gives 502; a pin list containing the right pin passes |
 | `TestJWTRoutes` | 401 challenge without a token, forwarded claims and stripped token with a valid one, spoofed header removed, expired token rejected with `invalid_token`, optional route semantics, open route unaffected, repeated failures trigger a ban |
@@ -107,7 +108,7 @@ Current statement coverage from `make cover` (race enabled):
 | `internal/ban` | 80 % |
 | `internal/proxy` | 73 % |
 | `internal/config` | 72 % |
-| `internal/logging` | 66 % |
+| `internal/logging` | 77 % |
 | `internal/tlsconf` | 56 % |
 
 Not covered: `cmd/` binaries (covered by the manual smoke procedure below

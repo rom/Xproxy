@@ -6,7 +6,8 @@ binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
 Status: **phase 2 in progress** (WAF, ban list, cluster, load shedding,
-challenge, HTTP/3, upstream mutual TLS and JWT delivered). See
+challenge, HTTP/3, upstream mutual TLS, JWT, log sinks and redaction
+delivered). See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today
@@ -34,7 +35,8 @@ challenge, HTTP/3, upstream mutual TLS and JWT delivered). See
   body timeouts, size limits, keyed rate limits with reject or tarpit, CIDR
   allow and deny lists, trusted proxy handling, WebSocket opt-in
 - Four JSON log streams (access, error, security, audit) with a request
-  identifier end to end
+  identifier end to end, delivered to files, journald or syslog, with
+  per-stream redaction of personal data
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
   status, upstreams, reload, certificate reload, log reopen, tail
 - Hot reload, graceful shutdown, systemd socket activation and notify

@@ -29,32 +29,86 @@ type Logs struct {
 	Security *slog.Logger
 	Audit    *slog.Logger
 
-	closers []io.Closer
-	mu      sync.Mutex
+	closers  []io.Closer
+	mu       sync.Mutex
+	journald *journaldSink
+	syslog   *syslogSink
+	redactor *Redactor
 }
 
 // Open creates the streams described by cfg. Files are created with mode
-// 0640 inside cfg.Directory, which must exist and be writable.
+// 0640 inside cfg.Directory, which must exist and be writable. Each stream
+// fans out to its configured sinks; redaction, when enabled for the
+// stream, runs before every sink.
 func Open(cfg config.Logging) (*Logs, error) {
 	level := parseLevel(cfg.Level)
 	l := &Logs{}
+	if cfg.Journald != nil {
+		l.journald = newJournaldSink(*cfg.Journald)
+	}
+	if cfg.Syslog != nil {
+		s, err := newSyslogSink(*cfg.Syslog)
+		if err != nil {
+			return nil, err
+		}
+		l.syslog = s
+	}
+	redacted := map[string]bool{}
+	if cfg.Redaction.IsEnabled() {
+		r, err := NewRedactor(cfg.Redaction)
+		if err != nil {
+			l.Close()
+			return nil, err
+		}
+		l.redactor = r
+		for _, st := range cfg.Redaction.Streams {
+			redacted[st] = true
+		}
+	}
 	open := func(name string, s config.LogStream, lvl slog.Level) (*slog.Logger, error) {
 		if !s.IsEnabled() {
 			return slog.New(slog.NewJSONHandler(io.Discard, nil)), nil
 		}
-		var w io.Writer
-		path := filepath.Join(cfg.Directory, s.File)
-		fw, err := newFileWriter(path, int64(s.MaxSizeMB)<<20, s.MaxFiles)
-		if err != nil {
-			l.Close()
-			return nil, fmt.Errorf("open %s log: %w", name, err)
+		var handlers multiHandler
+		sinks := s.Sinks
+		if len(sinks) == 0 {
+			sinks = []string{"file"}
 		}
-		l.closers = append(l.closers, fw)
-		w = fw
-		if cfg.Stdout {
-			w = io.MultiWriter(fw, os.Stdout)
+		for _, sink := range sinks {
+			switch sink {
+			case "file":
+				path := filepath.Join(cfg.Directory, s.File)
+				fw, err := newFileWriter(path, int64(s.MaxSizeMB)<<20, s.MaxFiles)
+				if err != nil {
+					l.Close()
+					return nil, fmt.Errorf("open %s log: %w", name, err)
+				}
+				l.closers = append(l.closers, fw)
+				var w io.Writer = fw
+				if cfg.Stdout {
+					w = io.MultiWriter(fw, os.Stdout)
+				}
+				handlers = append(handlers, slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl}))
+			case "journald":
+				if l.journald != nil {
+					handlers = append(handlers, newLineHandler(l.journald, lvl))
+				}
+			case "syslog":
+				if l.syslog != nil {
+					handlers = append(handlers, newLineHandler(l.syslog, lvl))
+				}
+			}
 		}
-		h := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl})
+		if len(handlers) == 0 && cfg.Stdout {
+			handlers = append(handlers, slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+		}
+		var h slog.Handler = handlers
+		if len(handlers) == 1 {
+			h = handlers[0]
+		}
+		if redacted[name] {
+			h = WithRedaction(h, l.redactor)
+		}
 		return slog.New(h).With("stream", name), nil
 	}
 	var err error
@@ -93,7 +147,7 @@ func Stderr(level string) *Logs {
 	}
 }
 
-// Close flushes and closes all files.
+// Close flushes and closes all files and sinks.
 func (l *Logs) Close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -101,6 +155,38 @@ func (l *Logs) Close() {
 		_ = c.Close()
 	}
 	l.closers = nil
+	if l.syslog != nil {
+		l.syslog.close()
+		l.syslog = nil
+	}
+	if l.journald != nil {
+		l.journald.close()
+		l.journald = nil
+	}
+}
+
+// SinkStats reports messages dropped and sent by the network sinks.
+type SinkStats struct {
+	SyslogSent     uint64 `json:"syslog_sent"`
+	SyslogDropped  uint64 `json:"syslog_dropped"`
+	JournalDropped uint64 `json:"journald_dropped"`
+	Redaction      bool   `json:"redaction"`
+}
+
+// Stats returns sink counters.
+func (l *Logs) Stats() SinkStats {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var st SinkStats
+	if l.syslog != nil {
+		st.SyslogSent = l.syslog.sent.Load()
+		st.SyslogDropped = l.syslog.drop.Load()
+	}
+	if l.journald != nil {
+		st.JournalDropped = l.journald.drop.Load()
+	}
+	st.Redaction = l.redactor != nil
+	return st
 }
 
 // Reopen closes and reopens files, for use after external log rotation.
