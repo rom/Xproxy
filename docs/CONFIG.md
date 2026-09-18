@@ -145,7 +145,9 @@ Memory: at most 64 x 8192 buckets per policy.
 |-----|------|---------|-------------|
 | `server_name` | string | endpoint host | SNI and verification name |
 | `ca_file` | path | system pool | PEM bundle to verify against |
-| `client_cert_file`, `client_key_file` | path | | Mutual TLS to the upstream; set both |
+| `min_version` | `"1.2"`, `"1.3"` | `"1.2"` | Minimum TLS version towards the upstream |
+| `client_cert_file`, `client_key_file` | path | | Mutual TLS to the upstream; set both. Re-read by `xproxyctl reload-certs` and by configuration reload; idle connections are dropped so new ones present the new certificate |
+| `spki_pins` | list of base64 SHA-256 | `[]` | Pins of the upstream leaf public key; the connection is refused unless the presented leaf matches one, in addition to chain verification. `xproxyctl spki CERT.pem` prints a pin. Cannot be combined with `insecure_skip_verify` |
 | `insecure_skip_verify` | bool | `false` | Requires `allow_insecure: true` as well |
 | `allow_insecure` | bool | `false` | Second opt-in |
 
@@ -300,6 +302,51 @@ per node. Accuracy is bounded by one gossip interval of delay and reports
 expire after `peer_stale`, so losing a peer degrades to local limiting.
 
 The cluster listener can be socket activated with `FileDescriptorName=cluster`.
+
+## jwt
+
+Present means providers are available; routes opt in with a `jwt` block.
+Tokens are validated on the standard library: RSA (PKCS#1 v1.5 and PSS),
+ECDSA, Ed25519 and HMAC signatures, JSON Web Key Sets from a file or an
+HTTPS URL, and the standard time and audience claims. `none` is never
+accepted.
+
+### jwt.providers[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required, unique | Referenced by routes |
+| `issuer` | string | required | Must equal the token's `iss` |
+| `audiences` | list | `[]` (any) | The token's `aud` must contain one; set it |
+| `algorithms` | list | `[RS256, ES256, EdDSA]` | Allow list from RS256/384/512, PS256/384/512, ES256/384/512, EdDSA, HS256/384/512 |
+| `jwks_file` | path | | Key set on disk, re-read on reload |
+| `jwks_url` | https URL | | Key set fetched at start, every `jwks_refresh`, and on an unknown key id (at most once a minute) |
+| `jwks_ca_file` | path | system pool | CA pinned for the fetch |
+| `jwks_refresh` | duration | `1h` | At least 1m |
+| `hmac_secret_file` | path | | Shared secret (at least 32 bytes) for HS algorithms; symmetric keys are never taken from a key set |
+| `clock_skew` | duration | `30s` | Tolerance on `exp`, `nbf` and `iat`; 0 to 10m |
+| `required_claims` | list | `[]` | Claims that must be present; `exp` always is |
+| `source` | `bearer`, `header:<Name>`, `cookie:<Name>` | `bearer` | Where the token is read from |
+| `forward_claims` | map header -> claim | `{}` | Set upstream headers from claims; client supplied copies of these headers are always removed, token or not. `Authorization`, `Cookie` and `Host` cannot be targets |
+| `strip_token` | bool | `true` | Remove the token before forwarding |
+| `log_claims` | list | `[]` | Claims copied to the access log as `jwt_<claim>` |
+
+A provider whose key set has never loaded (for example the JWKS URL is
+unreachable at start) rejects tokens with 503 and `Retry-After` until a
+fetch succeeds; a fetch that returns no keys keeps the previous set.
+
+### routes[].jwt
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `provider` | name | required | |
+| `required` | bool | `true` | `false` lets requests without a token through (spoofed claim headers still removed) and rejects invalid ones |
+
+Rejections answer 401 with `WWW-Authenticate: Bearer` (`error="invalid_token"`
+for a present but invalid token), are logged with the failure category
+(expired, signature, issuer, audience, algorithm, unknown_key, claim,
+malformed) and feed ban triggers under the `jwt` category. The JWT filter
+runs before the WAF on the same route.
 
 ## shedding
 

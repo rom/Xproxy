@@ -7,6 +7,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/jwt"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/router"
@@ -28,6 +29,7 @@ type runtime struct {
 	trusted    []netip.Prefix
 	routes     []*compiledRoute
 	waf        *waf.Engine
+	jwt        map[string]*jwt.Provider
 }
 
 type rateLimit struct {
@@ -89,6 +91,18 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 		}
 		rt.rateLimits[rl.Name] = &rateLimit{cfg: rl, lim: lim}
 	}
+	if cfg.JWT != nil {
+		rt.jwt = make(map[string]*jwt.Provider, len(cfg.JWT.Providers))
+		for i := range cfg.JWT.Providers {
+			pc := cfg.JWT.Providers[i]
+			p, err := jwt.NewProvider(pc, log)
+			if err != nil {
+				rt.stop()
+				return nil, err
+			}
+			rt.jwt[pc.Name] = p
+		}
+	}
 	if cfg.WAF != nil {
 		need := waf.Need{}
 		for i := range cfg.Routes {
@@ -135,6 +149,14 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 			}
 			cr.rateLimits = append(cr.rateLimits, rl)
 		}
+		if r.JWT != nil {
+			p, ok := rt.jwt[r.JWT.Provider]
+			if !ok {
+				rt.stop()
+				return nil, fmt.Errorf("route %s: unknown jwt provider %s", r.Name, r.JWT.Provider)
+			}
+			cr.filters = append(cr.filters, p.Filter(r.JWT.IsRequired()))
+		}
 		if p, m := wafSelection(cfg, r); m != waf.ModeOff {
 			f, err := rt.waf.Filter(p, m)
 			if err != nil {
@@ -153,10 +175,16 @@ func (rt *runtime) start() {
 	for _, p := range rt.pools {
 		p.Start()
 	}
+	for _, p := range rt.jwt {
+		p.Start()
+	}
 }
 
 func (rt *runtime) stop() {
 	for _, p := range rt.pools {
+		p.Stop()
+	}
+	for _, p := range rt.jwt {
 		p.Stop()
 	}
 }

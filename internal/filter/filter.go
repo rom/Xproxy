@@ -37,6 +37,8 @@ type Verdict struct {
 	Detail string
 	// Attrs are extra structured attributes for the security log.
 	Attrs []any
+	// Headers are set on the deny response (for example WWW-Authenticate).
+	Headers map[string]string
 }
 
 // Continue is the verdict that lets a request proceed.

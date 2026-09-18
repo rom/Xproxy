@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -102,6 +103,10 @@ func (v *validator) config(c *Config) {
 	if c.Challenge != nil {
 		v.challenge(c.Challenge)
 	}
+	jwtProviders := map[string]bool{}
+	if c.JWT != nil {
+		v.jwt(c.JWT, jwtProviders)
+	}
 	routes := map[string]bool{}
 	for i := range c.Routes {
 		v.route(i, &c.Routes[i], routes, upstreams, rateLimits)
@@ -112,6 +117,14 @@ func (v *validator) config(c *Config) {
 		case "low", "normal", "high", "critical":
 		default:
 			v.errf("routes[%d].priority_class: must be low, normal, high or critical", i)
+		}
+		if rj := c.Routes[i].JWT; rj != nil {
+			p := fmt.Sprintf("routes[%d].jwt", i)
+			if c.JWT == nil {
+				v.errf("%s: set but there is no top-level jwt section", p)
+			} else if !jwtProviders[rj.Provider] {
+				v.errf("%s.provider: unknown provider %q", p, rj.Provider)
+			}
 		}
 		if rc := c.Routes[i].Challenge; rc != nil {
 			p := fmt.Sprintf("routes[%d].challenge", i)
@@ -458,6 +471,19 @@ func (v *validator) upstreamTLS(p string, t *UpstreamTLS) {
 	if t.CAFile != "" {
 		v.file(p+".ca_file", t.CAFile)
 	}
+	switch t.MinVersion {
+	case "1.2", "1.3":
+	default:
+		v.errf("%s.min_version: must be \"1.2\" or \"1.3\"", p)
+	}
+	for i, pin := range t.SPKIPins {
+		if raw, err := base64.StdEncoding.DecodeString(pin); err != nil || len(raw) != 32 {
+			v.errf("%s.spki_pins[%d]: must be a base64 SHA-256 digest", p, i)
+		}
+	}
+	if len(t.SPKIPins) > 0 && t.InsecureSkipVerify {
+		v.errf("%s: spki_pins cannot be combined with insecure_skip_verify", p)
+	}
 	if (t.ClientCertFile == "") != (t.ClientKeyFile == "") {
 		v.errf("%s: client_cert_file and client_key_file must be set together", p)
 	}
@@ -563,7 +589,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 
 var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
-	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true,
+	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true,
 }
 
 func (v *validator) bans(b *Bans) {
@@ -675,6 +701,93 @@ func (v *validator) shedding(s *Shedding) {
 	}
 	if s.RetryAfter <= 0 {
 		v.errf("shedding.retry_after: must be positive")
+	}
+}
+
+var jwtAlgorithms = map[string]bool{
+	"RS256": true, "RS384": true, "RS512": true, "PS256": true, "PS384": true, "PS512": true,
+	"ES256": true, "ES384": true, "ES512": true, "EdDSA": true, "HS256": true, "HS384": true, "HS512": true,
+}
+
+func (v *validator) jwt(j *JWT, seen map[string]bool) {
+	if len(j.Providers) == 0 {
+		v.errf("jwt.providers: at least one provider is required")
+	}
+	for i := range j.Providers {
+		p := &j.Providers[i]
+		pp := fmt.Sprintf("jwt.providers[%d]", i)
+		if !nameRE.MatchString(p.Name) {
+			v.errf("%s.name: %q is not a valid name", pp, p.Name)
+		} else if seen[p.Name] {
+			v.errf("%s.name: duplicate %q", pp, p.Name)
+		}
+		seen[p.Name] = true
+		if p.Issuer == "" || len(p.Issuer) > 512 {
+			v.errf("%s.issuer: required (at most 512 characters)", pp)
+		}
+		hmac := false
+		for j, a := range p.Algorithms {
+			if !jwtAlgorithms[a] {
+				v.errf("%s.algorithms[%d]: %q is not allowed", pp, j, a)
+			}
+			if strings.HasPrefix(a, "HS") {
+				hmac = true
+			}
+		}
+		sources := 0
+		if p.JWKSFile != "" {
+			sources++
+			v.file(pp+".jwks_file", p.JWKSFile)
+		}
+		if p.JWKSURL != "" {
+			sources++
+			if u, err := url.Parse(p.JWKSURL); err != nil || u.Scheme != "https" || u.Host == "" {
+				v.errf("%s.jwks_url: must be an https URL", pp)
+			}
+			if p.JWKSRefresh < Duration(60_000_000_000) {
+				v.errf("%s.jwks_refresh: must be at least 1m", pp)
+			}
+		}
+		if p.JWKSCAFile != "" {
+			v.file(pp+".jwks_ca_file", p.JWKSCAFile)
+		}
+		if p.HMACSecretFile != "" {
+			v.file(pp+".hmac_secret_file", p.HMACSecretFile)
+			if !hmac {
+				v.errf("%s.hmac_secret_file: set but no HS algorithm is allowed", pp)
+			}
+		} else if hmac {
+			v.errf("%s: HS algorithms require hmac_secret_file", pp)
+		}
+		if sources == 0 && p.HMACSecretFile == "" {
+			v.errf("%s: jwks_file, jwks_url or hmac_secret_file is required", pp)
+		}
+		if p.ClockSkew < 0 || p.ClockSkew > Duration(600_000_000_000) {
+			v.errf("%s.clock_skew: must be between 0 and 10m", pp)
+		}
+		switch {
+		case p.Source == "bearer":
+		case strings.HasPrefix(p.Source, "header:") && headerNameOK(p.Source[7:]):
+		case strings.HasPrefix(p.Source, "cookie:") && cookieNameOK(p.Source[7:]):
+		default:
+			v.errf("%s.source: must be bearer, header:<Name> or cookie:<Name>", pp)
+		}
+		for h, claim := range p.ForwardClaims {
+			if !headerNameOK(h) {
+				v.errf("%s.forward_claims: %q is not a valid header name", pp, h)
+			}
+			if claim == "" || len(claim) > 128 {
+				v.errf("%s.forward_claims[%s]: claim name required", pp, h)
+			}
+			if strings.EqualFold(h, "Authorization") || strings.EqualFold(h, "Cookie") || strings.EqualFold(h, "Host") {
+				v.errf("%s.forward_claims: %s cannot be overwritten from a claim", pp, h)
+			}
+		}
+		for _, c := range append(append([]string{}, p.RequiredClaims...), p.LogClaims...) {
+			if c == "" || len(c) > 128 {
+				v.errf("%s: claim names must be 1 to 128 characters", pp)
+			}
+		}
 	}
 }
 

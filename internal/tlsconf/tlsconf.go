@@ -5,8 +5,10 @@
 package tlsconf
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -153,35 +155,97 @@ func loadPool(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// Client builds the tls.Config used towards an upstream.
-func Client(cfg *config.UpstreamTLS) (*tls.Config, error) {
+// ClientReloadable holds an upstream client certificate that can be
+// re-read without rebuilding the transport.
+type ClientReloadable struct {
+	cert     atomic.Pointer[tls.Certificate]
+	certFile string
+	keyFile  string
+}
+
+// Load re-reads the client certificate pair.
+func (r *ClientReloadable) Load() error {
+	if r == nil || r.certFile == "" {
+		return nil
+	}
+	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
+	if err != nil {
+		return fmt.Errorf("load upstream client certificate %s: %w", r.certFile, err)
+	}
+	r.cert.Store(&cert)
+	return nil
+}
+
+// Client builds the tls.Config used towards an upstream. The returned
+// ClientReloadable is nil when no client certificate is configured.
+func Client(cfg *config.UpstreamTLS) (*tls.Config, *ClientReloadable, error) {
 	tc := &tls.Config{
 		MinVersion:       tls.VersionTLS12,
 		CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384},
 		Renegotiation:    tls.RenegotiateNever,
 	}
 	if cfg == nil {
-		return tc, nil
+		return tc, nil, nil
+	}
+	if cfg.MinVersion == "1.3" {
+		tc.MinVersion = tls.VersionTLS13
 	}
 	tc.ServerName = cfg.ServerName
 	if cfg.CAFile != "" {
 		pool, err := loadPool(cfg.CAFile)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		tc.RootCAs = pool
 	}
+	var rl *ClientReloadable
 	if cfg.ClientCertFile != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.ClientCertFile, cfg.ClientKeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("load upstream client certificate: %w", err)
+		rl = &ClientReloadable{certFile: cfg.ClientCertFile, keyFile: cfg.ClientKeyFile}
+		if err := rl.Load(); err != nil {
+			return nil, nil, err
 		}
-		tc.Certificates = []tls.Certificate{cert}
+		tc.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			if c := rl.cert.Load(); c != nil {
+				return c, nil
+			}
+			return &tls.Certificate{}, nil
+		}
+	}
+	if len(cfg.SPKIPins) > 0 {
+		pins := make([][32]byte, 0, len(cfg.SPKIPins))
+		for _, p := range cfg.SPKIPins {
+			raw, err := base64.StdEncoding.DecodeString(p)
+			if err != nil || len(raw) != 32 {
+				return nil, nil, fmt.Errorf("bad spki pin %q", p)
+			}
+			var d [32]byte
+			copy(d[:], raw)
+			pins = append(pins, d)
+		}
+		tc.VerifyConnection = func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return errors.New("no peer certificate")
+			}
+			got := sha256.Sum256(cs.PeerCertificates[0].RawSubjectPublicKeyInfo)
+			for _, p := range pins {
+				if p == got {
+					return nil
+				}
+			}
+			return fmt.Errorf("upstream public key does not match any spki_pin (got %s)", base64.StdEncoding.EncodeToString(got[:]))
+		}
 	}
 	if cfg.InsecureSkipVerify && cfg.AllowInsecure {
 		tc.InsecureSkipVerify = true //nolint:gosec // explicitly double opted in by config
 	}
-	return tc, nil
+	return tc, rl, nil
+}
+
+// SPKIPin returns the pin (base64 SHA-256 of the SubjectPublicKeyInfo) of
+// a certificate, for operators generating configuration.
+func SPKIPin(cert *x509.Certificate) string {
+	d := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return base64.StdEncoding.EncodeToString(d[:])
 }
 
 // VersionName returns a short TLS version name for logging.

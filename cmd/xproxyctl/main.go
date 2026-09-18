@@ -19,11 +19,15 @@
 //	ban TARGET     ban an address or CIDR (-duration 1h -reason text)
 //	unban TARGET   remove a ban
 //	cluster        show cluster peers and counters
+//	spki FILE      print the spki_pins value for a PEM certificate
 //	version        print version
 package main
 
 import (
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -35,6 +39,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mgmt"
+	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 	"github.com/rom/xproxy/internal/version"
 )
@@ -45,7 +50,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster spki version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -169,6 +174,25 @@ func run(args []string, out, errOut io.Writer) int {
 			return 2
 		}
 		return tail(*cfgPath, fs.Arg(1), out, errOut)
+	case "spki":
+		if fs.NArg() != 2 {
+			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl spki CERT.pem")
+			return 2
+		}
+		data, err := os.ReadFile(fs.Arg(1)) //nolint:gosec // operator supplied path
+		if err != nil {
+			return fail(err)
+		}
+		block, _ := pem.Decode(data)
+		if block == nil || block.Type != "CERTIFICATE" {
+			return fail(errors.New("no PEM certificate found"))
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintf(out, "%s  # %s, expires %s\n", tlsconf.SPKIPin(cert), cert.Subject.CommonName, cert.NotAfter.Format("2006-01-02"))
+		return 0
 	case "cluster":
 		st, err := c.ClusterStatus()
 		if err != nil {

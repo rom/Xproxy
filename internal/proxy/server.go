@@ -488,7 +488,8 @@ func listenersCompatible(old, new_ []config.Listener) error {
 	return nil
 }
 
-// ReloadCertificates re-reads certificate files without a full reload.
+// ReloadCertificates re-reads listener certificates and upstream client
+// certificates without a full reload.
 func (s *Server) ReloadCertificates() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -497,6 +498,11 @@ func (s *Server) ReloadCertificates() error {
 			if err := bl.tlsReload.Load(); err != nil {
 				return fmt.Errorf("listener %s: %w", bl.cfg.Name, err)
 			}
+		}
+	}
+	for _, p := range s.rt.Load().pools {
+		if err := p.ReloadClientCertificate(); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -63,6 +63,7 @@ internal/cluster    peer sharing of limits and bans over mutual TLS
 internal/shed       adaptive load shedding by priority class
 internal/challenge  browser proof-of-work challenge
 internal/h3         HTTP/3 over QUIC (the only package importing quic-go)
+internal/jwt        JSON Web Token validation on the standard library
 internal/version    build information
 deploy/             systemd units, sysctl, SELinux, logrotate, example config
 docs/               this documentation
@@ -75,7 +76,8 @@ keeps the API surface at exactly two binaries.
 Dependency direction (arrows point at the importer's dependency):
 
 ```
-cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster, shed, challenge, h3}
+cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster, shed, challenge, h3, jwt}
+                       jwt      -> {filter, config}
                        h3       -> {limits, config}
                        cluster  -> {ban, limits, config}
                        waf      -> {filter, config}
@@ -149,7 +151,7 @@ the `denied` reason.
 | 7c | Adaptive shedding: the route's priority class against the load level | 503 + `Retry-After` | `shed` |
 | 8 | Rate limits in route order; reject or tarpit | 429 | `denied_rate_limit`, `tarpitted` |
 | 9 | Body limit: declared length checked, then `MaxBytesReader` | 413 | `denied_body_size` |
-| 9b | Filter chain request phase (WAF): headers, then body, which is buffered and replayed to the upstream | 403 or rule status | `denied_waf`, `waf_detected` |
+| 9b | Filter chain request phase: JWT (401 with `WWW-Authenticate`, claims forwarded as headers, token stripped), then WAF (headers, then body, buffered and replayed to the upstream) | 401 / 403 or rule status | `denied_jwt`, `denied_waf`, `waf_detected` |
 | 10 | Route timeout context | 504 | `upstream_timeouts` |
 | 11 | Action: redirect, respond, or proxy | | |
 | 12 | Proxy: WebSocket gate | 403 | `denied_websocket` |
@@ -250,8 +252,12 @@ Certificates live behind an atomic pointer read by `GetCertificate`, which
 selects by SNI and falls back to the first certificate. Client CA and auth
 mode are fixed for the life of a listener.
 
-`tlsconf.Client` produces the upstream configuration; verification can only
-be disabled with two flags (`insecure_skip_verify` and `allow_insecure`).
+`tlsconf.Client` produces the upstream configuration: minimum version,
+pinned CA, an optional client certificate served through
+`GetClientCertificate` from an atomic pointer so `reload-certs` rotates it
+without rebuilding the transport, and optional SPKI pins checked in
+`VerifyConnection` on top of chain verification. Verification can only be
+disabled with two flags (`insecure_skip_verify` and `allow_insecure`).
 
 ## 9. Logging
 
@@ -305,8 +311,24 @@ action, the response phase inside the reverse proxy's `ModifyResponse`
 (a deny there travels through the error handler as `filterDenied`), and
 always calls `End`, whose attributes land in the access log line.
 
-The WAF is the first filter. ICAP and JWT follow in 1.0; the interface is
-declared stable for external middleware once those exist (AMR-013).
+The WAF and the JWT validator are the first filters; on a route with both,
+JWT runs first so unauthenticated requests are refused before rule
+evaluation. ICAP follows in 1.0; the interface is declared stable for
+external middleware once it exists (AMR-013).
+
+### JWT filter
+
+`jwt.Provider` holds the allow list of algorithms, an atomic pointer to
+the current key set (from a file, or fetched over HTTPS with a pinned CA
+and refreshed on a timer and on unknown key ids, rate limited), and an
+optional HMAC secret. Verification checks compact form and size, decodes
+the header, refuses algorithms outside the allow list, selects keys by
+`kid` (or by key type when absent, bounded), verifies the signature with
+the algorithm's own primitive and, for ECDSA, insists that the curve
+matches the algorithm, then checks `exp`, `nbf`, `iat`, `iss`, `aud` and
+required claims. The filter removes client supplied copies of forwarded
+claim headers before anything else, so a claim header can never be
+spoofed even on optional routes.
 
 ### WAF filter
 

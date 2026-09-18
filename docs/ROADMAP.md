@@ -71,10 +71,13 @@ Delivered so far:
 - HTTP/3 over QUIC on TLS listeners with `Alt-Svc`, shared certificates,
   shared connection admission and bans, mandatory address validation,
   no 0-RTT, UDP socket activation (ASR-F2, AMR-002, AMR-024)
+- Upstream mutual TLS completed: reloadable client certificate, minimum
+  version, SPKI pins, `xproxyctl spki` (ASR-F9)
+- JWT validation as a filter on the standard library, with JWKS from file
+  or URL, claim forwarding and token stripping (ASR-F10, AMR-025)
 
 Remaining:
-- Mutual TLS to upstreams, JWT validation, upstream HTTP/2 tuning (ASR-F9,
-  F10)
+- Upstream HTTP/2 tuning
 - Prometheus metrics endpoint and an in-process time series ring buffer for
   graphs (ASR-O4)
 - journald and syslog sinks; PII redaction rules per stream (ASR-O2, S10,

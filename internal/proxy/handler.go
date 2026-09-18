@@ -286,6 +286,8 @@ func (s *Server) filterDeny(rw *responseWriter, r *http.Request, st *reqState, v
 	switch v.Reason {
 	case "waf":
 		s.stats.DeniedWAF.Add(1)
+	case "jwt":
+		s.stats.DeniedJWT.Add(1)
 	case "body_size":
 		s.stats.DeniedBodySize.Add(1)
 	}
@@ -298,6 +300,9 @@ func (s *Server) filterDeny(rw *responseWriter, r *http.Request, st *reqState, v
 	}
 	if rw.wrote {
 		return
+	}
+	for k, val := range v.Headers {
+		rw.Header().Set(k, val)
 	}
 	s.plainStatus(rw, r, v.Status)
 }

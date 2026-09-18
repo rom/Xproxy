@@ -22,8 +22,8 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F6 | Web application firewall with a rule set, anomaly scoring, shadow mode and per route thresholds | M | 1.0 (delivered in phase 2) | WAF is a filter with a bounded body buffer; the engine sits behind the filter interface so it can be swapped |
 | ASR-F7 | ICAP client (RFC 3507) for REQMOD and RESPMOD against external scanners | M | 1.0 | Streaming ICAP encapsulation, preview support, fail-open or fail-closed per route, bounded body spooling |
 | ASR-F8 | WebSocket passthrough only where a route allows it | M | MVP | Upgrade requests are refused unless `websocket: true`; hijack path bypasses body limits so it is opt-in |
-| ASR-F9 | Mutual TLS to clients and to upstreams | M | 1.0 (client CA at MVP) | `crypto/tls` client auth modes; certificate identity exposed to routing and logging |
-| ASR-F10 | JWT validation at the edge | S | 1.0 | Key set loading from file or JWKS URL with pinned CA; algorithm allow list; no `none` |
+| ASR-F9 | Mutual TLS to clients and to upstreams | M | 1.0 (client CA at MVP, upstream side delivered in phase 2) | `crypto/tls` client auth modes; certificate identity exposed to routing and logging; upstream client certificate reloadable, SPKI pins |
+| ASR-F10 | JWT validation at the edge | S | 1.0 (delivered in phase 2) | Key set loading from file or JWKS URL with pinned CA; algorithm allow list; no `none` |
 | ASR-F11 | ACME certificate issuance (HTTP-01, TLS-ALPN-01) | S | 1.0 | Separate account key storage; challenge responder inside the listener; renewals on a timer with reload of `Reloadable` certificates |
 | ASR-F12 | Forward proxy and L4 TCP/TLS passthrough | C | 1.x | Not in the request pipeline; separate listener kinds |
 
@@ -100,6 +100,8 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-O5 | `internal/ban` persistence (bbolt) | `TestPersistence` |
 | ASR-S3 | `internal/cluster`, peer accounting in `internal/limits` | `internal/cluster/cluster_test.go`, `TestPeerRates`, `TestClusterSharesLimitsAndBans` |
 | ASR-F2 | `internal/h3`, listener wiring in `internal/proxy/server.go` | `TestHTTP3`, `TestHTTP3ConnectionLimit` |
+| ASR-F9 (upstream) | `tlsconf.Client`, `Pool.ReloadClientCertificate` | `TestUpstreamMutualTLS`, `TestUpstreamSPKIPin` |
+| ASR-F10 | `internal/jwt` | `internal/jwt/jwt_test.go`, `TestJWTRoutes`, `TestJWTFromJWKSURL` |
 | ASR-S2 (shedding, challenge) | `internal/shed`, `internal/challenge` | `internal/shed/shed_test.go`, `internal/challenge/challenge_test.go`, `TestAdaptiveShedding`, `TestChallengeGate` |
 | ASR-S9, O2 | `internal/logging`, `internal/mgmt` | `internal/logging/logging_test.go`, `internal/mgmt/mgmt_test.go` |
 | ASR-S11, P4 | `internal/tlsconf` | `internal/tlsconf/tlsconf_test.go`, `TestTLSAndRedirect` |
