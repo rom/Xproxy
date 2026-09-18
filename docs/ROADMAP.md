@@ -223,6 +223,8 @@ procedure is in RELEASING.md.
 - `retry_on` status policy for upstream retries: delivered
 - Access log formats beyond JSON (`common`, `combined`, `custom`
   template): delivered
+- Request and response body rewriting outside WebAssembly
+  (`body_rewrite` filter kind): delivered
 
 ## After 1.3 (candidates, unranked)
 

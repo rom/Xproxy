@@ -164,7 +164,7 @@ func (v *validator) config(c *Config) {
 			v.errf("compression.min_bytes: must be between 0 and 1048576")
 		}
 		for j, t := range cp.Types {
-			if mt, _, err := mime.ParseMediaType(t); err != nil || mt != strings.ToLower(t) {
+			if mt, _, err := mime.ParseMediaType(t); err != nil || mt != strings.ToLower(t) || !strings.Contains(mt, "/") {
 				v.errf("compression.types[%d]: %q is not a media type without parameters", j, t)
 			}
 		}

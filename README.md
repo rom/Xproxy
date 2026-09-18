@@ -116,9 +116,10 @@ an identifier from the access log to the upstream.
 
 **Extensibility and platforms**
 
-- A stable middleware interface for compiled-in filters, and a
-  WebAssembly ABI that runs sandboxed modules per request with memory
-  and time bounds
+- A stable middleware interface for compiled-in filters (header
+  policy, basic authentication, body rewriting, bot scoring, OpenID
+  Connect), and a WebAssembly ABI that runs sandboxed modules per
+  request with memory and time bounds
 - Kubernetes ingress controller mode: Ingress and Gateway API resources
   become routes, upstreams and certificates, reloaded within a second
   of a change through watches; manifests and a container build

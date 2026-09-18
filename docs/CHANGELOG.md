@@ -78,6 +78,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   placeholders over every access log attribute plus derived `time_clf`,
   `request`, `user` and `bytes_out_clf`; Apache style escaping; the
   same line to every sink.
+- `body_rewrite` filter kind: literal and regular expression rules over
+  request and response bodies with media type lists and size bounds,
+  `Content-Length` and validators maintained, `body_rewrite` in the
+  access log.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

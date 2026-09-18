@@ -1075,11 +1075,41 @@ with a memory bound and a deadline; a module that traps or overruns
 fails closed unless `on_error: allow`. Build it with any toolchain that
 targets WebAssembly; EXTENDING.md has the ABI and a minimal guest.
 
+### Rewriting bodies without WebAssembly
+
+```yaml
+filters:
+  - name: links
+    kind: body_rewrite
+    options:
+      response:
+        types: [text/html, application/json]
+        rules:
+          - {find: "http://app.internal:8080/", replace: "https://www.example.com/"}
+          - {regex: '"card":\s*"\d{12}(\d{4})"', replace: '"card": "************$1"'}
+      request:
+        types: [application/json]
+        rules: [{regex: '"userName"', replace: '"user_name"'}]
+routes:
+  - name: app
+    hosts: [www.example.com]
+    filters: [links]
+    upstream: app
+```
+
+Links the application renders with its internal name come out with the
+public one, card numbers in JSON answers are masked to their last four
+digits, and a client still sending the old key name reaches the new
+API. Bodies above `max_bytes`, encoded bodies and other media types
+pass through unchanged; the access log shows `body_rewrite` on lines
+where something changed.
+
 ### Header policy and basic authentication (filters)
 
 Filters are middleware instances attached to routes; the built-in kinds
-are `header_guard` and `basic_auth` (`xproxyctl filters` lists what the
-binary has; [EXTENDING.md](EXTENDING.md) shows how to add one).
+are `header_guard`, `basic_auth`, `body_rewrite`, `bot_score`, `oidc`
+and `wasm` (`xproxyctl filters` lists what the binary has;
+[EXTENDING.md](EXTENDING.md) shows how to add one).
 
 ```yaml
 filters:

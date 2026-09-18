@@ -865,7 +865,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -1005,6 +1005,33 @@ every TLS request is logged as `ja4`.
 
 A list of filter names, run in the listed order within each stage. A
 route may combine them with `jwt`, `waf` and `icap`.
+
+### Kind `body_rewrite`
+
+Rewrites request and response bodies with literal or regular expression
+rules, for the cases that need no WebAssembly module: absolute links an
+application emits for its internal name, a field to mask on the way
+out, a key to rename on the way in. Each phase is optional and has its
+own media type list, size bound and rules, applied in order.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `request`, `response` | phase | | At least one |
+| `<phase>.types` | list | text, JSON, XML, JavaScript, SVG and form types | Media types rewritten, without parameters |
+| `<phase>.max_bytes` | int | `1048576` (1 MiB) | Bodies above this size pass through unchanged (1 to 64 MiB) |
+| `<phase>.rules` | list | required | 1 to 64 rules of `{find, replace}` (literal) or `{regex, replace}` (RE2; `$1` groups in `replace`), each with an optional `max` count (0 means all) |
+
+A body is buffered up to `max_bytes` and rewritten in memory; a larger
+body, one the upstream already encoded (`Content-Encoding`), a range
+and any media type outside the list pass through untouched, so the
+filter never breaks a download. After a change `Content-Length` is set
+and `ETag` and `Content-MD5` removed; nothing changes when no rule
+matched. The access log carries `body_rewrite: request`, `response` or
+`request,response` on lines where a body changed. Response rewriting
+runs before compression and after the WAF's response inspection, so
+the WAF sees the upstream's bytes and the client sees the rewritten
+ones. Put the filter on the routes that need it rather than on every
+route: buffering costs memory per request up to the bound.
 
 ## compression
 
