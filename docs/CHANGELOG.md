@@ -10,6 +10,12 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 ### Phase 2: Defence (in progress)
 
 #### Added
+- HTTP/3 over QUIC: list `h3` in a TLS listener's protocols to serve the
+  same routes on UDP at the same port, with `Alt-Svc` on TLS responses,
+  shared certificates, shared connection ceilings and ban list, mandatory
+  source address validation, bounded streams, no 0-RTT, and UDP socket
+  activation (`xproxy-h3.socket`). New `server.listeners[].h3` block and
+  `<listener>/udp` in status.
 - Adaptive load shedding: a load level from the in-flight ratio and
   windowed upstream latency; routes carry a `priority_class` (low, normal,
   high, critical) and are shed with 503 and `Retry-After` by class with

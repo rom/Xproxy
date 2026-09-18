@@ -62,6 +62,7 @@ internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
 internal/shed       adaptive load shedding by priority class
 internal/challenge  browser proof-of-work challenge
+internal/h3         HTTP/3 over QUIC (the only package importing quic-go)
 internal/version    build information
 deploy/             systemd units, sysctl, SELinux, logrotate, example config
 docs/               this documentation
@@ -74,7 +75,8 @@ keeps the API surface at exactly two binaries.
 Dependency direction (arrows point at the importer's dependency):
 
 ```
-cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster, shed, challenge}
+cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster, shed, challenge, h3}
+                       h3       -> {limits, config}
                        cluster  -> {ban, limits, config}
                        waf      -> {filter, config}
                        ban      -> {netutil, config}
@@ -90,7 +92,8 @@ nothing from the module.
 
 One process, one user, no capabilities. systemd passes the listening sockets
 (`LISTEN_FDS`), the process matches them to configured listeners by name or
-address and binds any listener that was not passed. The process sends
+address and binds any listener that was not passed. Datagram sockets are
+matched the same way (name `<listener>-udp` or address) for HTTP/3. The process sends
 `READY=1`, `RELOADING=1` and `STOPPING=1` over `NOTIFY_SOCKET`.
 
 Signals: `SIGHUP` reloads the configuration, `SIGUSR1` reopens log files,
@@ -390,7 +393,23 @@ sanitised original path. The gate runs after routing (it needs the route's
 mode) and before shedding, so under load unverified clients are turned
 away cheaply and verified browsers compete only with each other.
 
-## 14. Scale considerations for 1.0 targets
+## 14. HTTP/3
+
+A listener whose protocols include `h3` gets a QUIC endpoint on UDP at
+the same port, served by `internal/h3` with the same `listenerHandler`,
+the same TLS certificates (through the shared `GetCertificate`) and the
+same limits. Responses on the TCP side carry `Alt-Svc` so browsers
+upgrade. The QUIC transport's `ConnContext` hook runs the same admission
+as the TCP accept path (`ConnLimiter.Admit`: ban list, per address and
+global limits) and releases when the connection's context ends, so
+`open_connections` and `rejected_connections` count both transports.
+Address validation by Retry is on for every unvalidated address by
+default; handshake and idle timeouts, streams per connection and header
+size come from the listener limits; 0-RTT is disabled. Requests arrive as
+`HTTP/3.0` with `r.TLS` set, so logging, forwarding headers and every
+pipeline stage behave as for HTTP/2.
+
+## 15. Scale considerations for 1.0 targets
 
 1000 hosts and 10 000 endpoints (ASR-P1) drive these properties:
 

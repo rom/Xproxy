@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/shed"
@@ -53,6 +55,7 @@ type boundListener struct {
 	httpSrv   *http.Server
 	tlsReload *tlsconf.Reloadable
 	activated bool
+	h3        *h3.Server
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -192,10 +195,11 @@ func (s *Server) Start() error {
 		return errors.New("already started")
 	}
 	cfg := s.cfg()
-	activated, err := activatedListeners()
+	act, err := activatedListeners()
 	if err != nil {
 		return fmt.Errorf("socket activation: %w", err)
 	}
+	activated := act
 	for i := range cfg.Server.Listeners {
 		lc := cfg.Server.Listeners[i]
 		bl, err := s.bind(lc, activated)
@@ -214,19 +218,26 @@ func (s *Server) Start() error {
 		s.logs.Error.Info("cluster listener bound", "address", ln.Addr().String(), "socket_activated", act)
 		node.Start(ln)
 	}
-	for name := range activated {
+	for name, ln := range activated.streams {
 		s.logs.Error.Warn("unused socket from systemd", "name", name)
-		_ = activated[name].Close()
+		_ = ln.Close()
+	}
+	for name, pc := range activated.packets {
+		s.logs.Error.Warn("unused datagram socket from systemd", "name", name)
+		_ = pc.Close()
 	}
 	s.rt.Load().start()
 	for _, bl := range s.listeners {
 		go s.serve(bl)
+		if bl.h3 != nil {
+			go s.serveH3(bl)
+		}
 	}
 	s.started = true
 	return nil
 }
 
-func (s *Server) bind(lc config.Listener, activated map[string]net.Listener) (*boundListener, error) {
+func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener, error) {
 	ln, act, err := listenerFor(activated, lc.Name, lc.Address)
 	if err != nil {
 		return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
@@ -257,8 +268,35 @@ func (s *Server) bind(lc config.Listener, activated map[string]net.Listener) (*b
 			// Prevent the automatic HTTP/2 configuration.
 			bl.httpSrv.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){}
 		}
+		if hasProto(lc.Protocols, config.ProtocolH3) {
+			pc, act, err := packetFor(activated, lc.Name, lc.Address)
+			if err != nil {
+				_ = ln.Close()
+				return nil, fmt.Errorf("listener %s: h3: %w", lc.Name, err)
+			}
+			_, portStr, _ := net.SplitHostPort(pc.LocalAddr().String())
+			port, _ := strconv.Atoi(portStr)
+			h3srv, err := h3.New(h3.Options{
+				Conn: pc, Port: port, TLS: tc, Handler: h, Limits: lim, H3: *lc.H3,
+				Limiter: s.connLimiter, Log: s.logs.Error.With("listener", lc.Name, "proto", "h3"),
+			})
+			if err != nil {
+				_ = pc.Close()
+				_ = ln.Close()
+				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+			}
+			bl.h3 = h3srv
+			h.h3 = h3srv
+			s.logs.Error.Info("h3 listener bound", "listener", lc.Name, "address", pc.LocalAddr().String(), "socket_activated", act)
+		}
 	}
 	return bl, nil
+}
+
+func (s *Server) serveH3(bl *boundListener) {
+	if err := bl.h3.Serve(); err != nil {
+		s.logs.Error.Error("h3 listener stopped", "listener", bl.cfg.Name, "err", err.Error())
+	}
 }
 
 func hasProto(ps []config.Protocol, p config.Protocol) bool {
@@ -291,6 +329,9 @@ func (s *Server) Addrs() map[string]string {
 	out := make(map[string]string, len(s.listeners))
 	for _, bl := range s.listeners {
 		out[bl.cfg.Name] = bl.ln.Addr().String()
+		if bl.h3 != nil {
+			out[bl.cfg.Name+"/udp"] = bl.h3.Addr().String()
+		}
 	}
 	return out
 }
@@ -476,7 +517,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		wg.Add(1)
 		go func(bl *boundListener) {
 			defer wg.Done()
-			if err := bl.httpSrv.Shutdown(ctx); err != nil {
+			err := bl.httpSrv.Shutdown(ctx)
+			if bl.h3 != nil {
+				if err3 := bl.h3.Shutdown(ctx); err == nil {
+					err = err3
+				}
+			}
+			if err != nil {
 				errMu.Lock()
 				if firstErr == nil {
 					firstErr = err

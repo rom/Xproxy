@@ -187,6 +187,39 @@ func TestConnLimiterBanned(t *testing.T) {
 	}
 }
 
+func TestAdmit(t *testing.T) {
+	lim := NewConnLimiter(2, 1)
+	a := netip.MustParseAddr("192.0.2.1")
+	b := netip.MustParseAddr("192.0.2.2")
+	r1, reason := lim.Admit(a)
+	if r1 == nil || reason != "" {
+		t.Fatal("first admit")
+	}
+	if r, reason := lim.Admit(a); r != nil || reason != "max_connections_per_ip" {
+		t.Fatalf("per ip: %v %q", r != nil, reason)
+	}
+	r2, _ := lim.Admit(b)
+	if r2 == nil {
+		t.Fatal("second address")
+	}
+	if r, reason := lim.Admit(netip.MustParseAddr("192.0.2.3")); r != nil || reason != "max_connections" {
+		t.Fatalf("global: %v %q", r != nil, reason)
+	}
+	r1()
+	r1()
+	if lim.Open() != 1 {
+		t.Fatalf("open %d", lim.Open())
+	}
+	lim.Banned = func(x netip.Addr) bool { return x == a }
+	if r, reason := lim.Admit(a); r != nil || reason != "banned" {
+		t.Fatalf("banned: %v %q", r != nil, reason)
+	}
+	if lim.Rejected.Load() != 3 {
+		t.Fatalf("rejected %d", lim.Rejected.Load())
+	}
+	r2()
+}
+
 func TestConnLimiter(t *testing.T) {
 	base, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

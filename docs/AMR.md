@@ -48,12 +48,11 @@ handler pipeline and the connection accounting of its TLS listener.
 Terminating HTTP/3 in a separate front process: adds a second trust boundary
 and defeats the shared limits.
 
-**Consequences.** `quic-go` requires a recent Go toolchain and becomes the
-largest third party dependency; it is pinned and audited on every upgrade
-(see AMR-004). UDP amplification defences (retry tokens, address validation)
-must be enabled and are part of the DDoS test plan.
+**Consequences.** `quic-go` requires a recent Go toolchain and is pinned
+and audited on every upgrade (see AMR-004). UDP amplification defences
+(retry tokens, address validation) are enabled by default (AMR-024).
 
-**Status.** Accepted (interview).
+**Status.** Accepted (interview); delivered in phase 2.
 
 ---
 
@@ -95,7 +94,7 @@ record.
 | `github.com/corazawaf/coraza/v3` | Apache 2.0 | WAF engine, SecLang compatible (AMR-008) | phase 2 |
 | `github.com/corazawaf/coraza-coreruleset/v4` | Apache 2.0 | OWASP CRS embedded as a file system, no network fetch | phase 2 |
 | `go.etcd.io/bbolt` | MIT | Embedded state store for bans (AMR-012) | phase 2 |
-| `github.com/quic-go/quic-go` | MIT | HTTP/3 (AMR-002) | 1.0 |
+| `github.com/quic-go/quic-go` (with `qpack`) | MIT | HTTP/3 (AMR-002, AMR-024); pinned to the newest release that builds with the minimum toolchain | phase 2 |
 | `golang.org/x/*` | BSD | Extended standard library (`net`, `crypto`, `sys`, `time`) | as needed |
 | `github.com/charmbracelet/bubbletea` and `lipgloss` | MIT | TUI (AMR-011) in the management binary only | 1.0 |
 
@@ -520,6 +519,45 @@ for browser routes only. Proof-of-work raises the attacker's cost linearly
 with difficulty and is not a guarantee against a determined actor with
 compute; combined with rate limits and bans it removes the cheap tier of
 floods.
+
+**Status.** Accepted.
+
+---
+
+## AMR-024: QUIC hardening choices
+
+**Context.** HTTP/3 (AMR-002) opens a UDP surface with its own attack
+classes: amplification through spoofed Initials, connection state
+exhaustion, stream floods and 0-RTT replay.
+
+**Decision.**
+
+- `quic-go` is confined to `internal/h3`; the rest of the proxy sees an
+  `http.Handler` and the shared limiter.
+- Every new QUIC connection passes `ConnLimiter.Admit` in the transport's
+  `ConnContext` hook, so the ban list and both connection ceilings apply
+  before the handshake finishes; release runs when the connection context
+  ends.
+- Source address validation (Retry) is required for every unvalidated
+  address by default (`validate_addresses: always`); `under_load` exists
+  for latency sensitive deployments and switches on when open connections
+  exceed a quarter of the ceiling. Tokens let returning clients skip it.
+- 0-RTT is disabled; datagrams are disabled; streams per connection,
+  header size, handshake and idle timeouts come from the listener limits.
+- A stateless reset key is generated per process; a persisted key may
+  follow if operators need resets to survive restarts.
+- `h3` requires `h1` or `h2` on the same listener so that `Alt-Svc` can be
+  advertised; there is no QUIC-only listener.
+- The library is pinned to the newest release that builds with the
+  project's minimum toolchain so that the linter and the build agree.
+
+**Alternatives.** Adaptive validation only (the library's own advice):
+rejected as the default for a product whose brief makes DDoS resistance
+central; the option remains. Terminating QUIC in a separate process:
+rejected in AMR-002.
+
+**Consequences.** New clients pay one extra round trip on first contact.
+UDP buffer sizes matter; the sysctl profile and the socket unit set them.
 
 **Status.** Accepted.
 

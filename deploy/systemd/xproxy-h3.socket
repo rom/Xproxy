@@ -1,0 +1,14 @@
+[Unit]
+Description=xproxy HTTP/3 (QUIC) listening socket
+PartOf=xproxy.socket
+
+[Socket]
+ListenDatagram=0.0.0.0:443
+ListenDatagram=[::]:443
+FileDescriptorName=public-udp
+Service=xproxy.service
+ReceiveBuffer=8388608
+SendBuffer=8388608
+
+[Install]
+WantedBy=sockets.target

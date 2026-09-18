@@ -180,7 +180,30 @@ func (v *validator) server(s *Server) {
 			v.tls(p+".tls", ln.TLS)
 		}
 		if h3 {
-			v.errf("%s: h3 is not yet supported by this build (planned for 1.0)", p)
+			h1h2 := false
+			for _, proto := range ln.Protocols {
+				if proto == ProtocolH1 || proto == ProtocolH2 {
+					h1h2 = true
+				}
+			}
+			if !h1h2 {
+				v.errf("%s.protocols: h3 requires h1 or h2 on the same listener (clients discover HTTP/3 through Alt-Svc)", p)
+			}
+			if ln.H3 != nil {
+				if ln.H3.MaxStreams < 1 || ln.H3.MaxStreams > 10000 {
+					v.errf("%s.h3.max_streams: must be 1..10000", p)
+				}
+				switch ln.H3.ValidateAddresses {
+				case "always", "under_load":
+				default:
+					v.errf("%s.h3.validate_addresses: must be always or under_load", p)
+				}
+				if ln.H3.AltSvcMaxAge <= 0 {
+					v.errf("%s.h3.alt_svc_max_age: must be positive", p)
+				}
+			}
+		} else if ln.H3 != nil {
+			v.errf("%s.h3: set but protocols do not include h3", p)
 		}
 		if ln.RedirectToHTTPS && ln.TLS != nil {
 			v.errf("%s: redirect_to_https only makes sense on a plaintext listener", p)

@@ -67,9 +67,11 @@ allow xproxy_t self:unix_stream_socket { create bind listen accept connect read 
 # Network: listen on http ports (or receive sockets from systemd), connect
 # to upstreams on http ports and on the dedicated upstream port type.
 allow xproxy_t self:tcp_socket { create getattr getopt setopt read write shutdown accept listen bind connect };
-allow xproxy_t self:udp_socket { create connect read write getattr setopt };
+allow xproxy_t self:udp_socket { create connect read write getattr setopt bind ioctl sendto recvfrom };
 corenet_tcp_bind_generic_node(xproxy_t)
+corenet_udp_bind_generic_node(xproxy_t)
 corenet_tcp_bind_http_port(xproxy_t)
+corenet_udp_bind_http_port(xproxy_t)
 corenet_tcp_connect_http_port(xproxy_t)
 allow xproxy_t xproxy_upstream_port_t:tcp_socket name_connect;
 sysnet_dns_name_resolve(xproxy_t)

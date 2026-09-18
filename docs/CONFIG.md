@@ -36,10 +36,25 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Also used to match systemd socket names |
 | `address` | host:port | required | `":443"`, `"0.0.0.0:80"`, `"[::1]:8080"`. Port `0` picks a free port (tests). |
-| `protocols` | list | `[h1, h2]` with TLS, `[h1]` without | `h2` and `h3` require `tls`. `h3` is rejected by this build (planned for 1.0). |
+| `protocols` | list | `[h1, h2]` with TLS, `[h1]` without | `h2` and `h3` require `tls`. `h3` adds a QUIC endpoint on UDP at the same port and requires `h1` or `h2` alongside it (clients discover HTTP/3 through `Alt-Svc`). |
+| `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Reserved (PROXY protocol parsing arrives in 1.0) |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
+
+### server.listeners[].h3
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `max_streams` | int | `100` | Concurrent request streams per QUIC connection; 1 to 10000 |
+| `validate_addresses` | `always`, `under_load` | `always` | `always` makes every unvalidated client address complete a Retry round trip before the server allocates connection state; `under_load` does so only when open connections exceed a quarter of `max_connections` |
+| `alt_svc_max_age` | duration | `24h` | Reserved for the `Alt-Svc` `ma` value (currently the library default) |
+
+QUIC connections share the listener's `max_connections`,
+`max_connections_per_ip`, ban list, header size and idle timeout;
+`read_header_timeout` bounds the handshake. `read_timeout` and
+`write_timeout` do not apply to HTTP/3 streams; use route `timeout` and
+upstream `total` for those. 0-RTT is never enabled.
 
 ### server.listeners[].tls
 

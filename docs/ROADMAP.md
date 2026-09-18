@@ -68,9 +68,11 @@ Delivered so far:
   windowed upstream latency, with hysteresis and drain (AMR-022)
 - Browser proof-of-work challenge, always or under load, with signed
   single-use nonces and address-bound cookies (AMR-023)
+- HTTP/3 over QUIC on TLS listeners with `Alt-Svc`, shared certificates,
+  shared connection admission and bans, mandatory address validation,
+  no 0-RTT, UDP socket activation (ASR-F2, AMR-002, AMR-024)
 
 Remaining:
-- HTTP/3 over QUIC with address validation and Alt-Svc (ASR-F2, AMR-002)
 - Mutual TLS to upstreams, JWT validation, upstream HTTP/2 tuning (ASR-F9,
   F10)
 - Prometheus metrics endpoint and an in-process time series ring buffer for

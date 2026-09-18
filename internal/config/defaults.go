@@ -98,6 +98,20 @@ func applyDefaults(c *Config) {
 				ln.TLS.ClientAuth = "none"
 			}
 		}
+		hasH3 := false
+		for _, p := range ln.Protocols {
+			if p == ProtocolH3 {
+				hasH3 = true
+			}
+		}
+		if hasH3 {
+			if ln.H3 == nil {
+				ln.H3 = &H3{}
+			}
+			setInt(&ln.H3.MaxStreams, 100)
+			setStr(&ln.H3.ValidateAddresses, "always")
+			setDur(&ln.H3.AltSvcMaxAge, 24*time.Hour)
+		}
 	}
 
 	if c.Management.SocketMode == "" {

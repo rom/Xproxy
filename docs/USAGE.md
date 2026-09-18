@@ -104,6 +104,22 @@ server:
 
 Add more certificates to the list; SNI selects the matching one.
 
+### HTTP/3
+
+```yaml
+    - name: public
+      address: ":443"
+      protocols: [h1, h2, h3]
+      h3: {max_streams: 100, validate_addresses: always}
+      tls: {certificates: [...]}
+```
+
+xproxy binds UDP 443 next to TCP 443 (or takes the datagram socket from
+`xproxy-h3.socket`), advertises `Alt-Svc` on TLS responses, and serves the
+same routes over QUIC. Open UDP 443 in the firewall. `xproxyctl status`
+lists the endpoint as `public/udp`; access log lines show
+`proto: HTTP/3.0`.
+
 ### Virtual hosts and path routing
 
 ```yaml

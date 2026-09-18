@@ -40,7 +40,7 @@ sysctl --system
 |------|---------|
 | `/usr/local/bin/xproxy`, `/usr/local/bin/xproxyctl` | binaries |
 | `/etc/systemd/system/xproxy.service` | hardened service |
-| `/etc/systemd/system/xproxy.socket`, `xproxy-https.socket` | listening sockets on 80 and 443 |
+| `/etc/systemd/system/xproxy.socket`, `xproxy-https.socket`, `xproxy-h3.socket` | listening sockets on TCP 80, TCP 443 and UDP 443 |
 | `/etc/sysctl.d/90-xproxy.conf` | kernel profile |
 | `/etc/logrotate.d/xproxy` | rotation calling `xproxyctl reopen-logs` |
 | `/etc/xproxy/xproxy.yaml` | example configuration (existing file backed up) |
@@ -73,7 +73,7 @@ Every problem is listed at once. Fix them all, then:
 
 ```sh
 systemctl daemon-reload
-systemctl enable --now xproxy.socket xproxy-https.socket
+systemctl enable --now xproxy.socket xproxy-https.socket xproxy-h3.socket   # omit h3 without HTTP/3
 systemctl start xproxy.service
 systemctl status xproxy.service
 xproxyctl status
@@ -106,6 +106,15 @@ permissive mode for the domain first if you deploy it now:
 ```sh
 semanage permissive -a xproxy_t
 ```
+
+## HTTP/3
+
+List `h3` in the protocols of the TLS listener. The UDP socket comes from
+`xproxy-h3.socket` (`FileDescriptorName=public-udp`) or is bound by the
+process. Allow UDP 443 in the firewall and apply the sysctl profile, which
+raises the UDP buffer limits QUIC needs (`net.core.rmem_max` at least
+7 MiB). Verify with a browser or `curl --http3-only` from a curl build with
+HTTP/3 support; the access log shows `HTTP/3.0`.
 
 ## Cluster
 
