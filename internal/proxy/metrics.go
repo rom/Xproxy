@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/metrics"
+	"github.com/rom/xproxy/internal/upstream"
 	"github.com/rom/xproxy/internal/version"
 )
 
@@ -74,6 +75,9 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_upstream_retries_total", "Attempts repeated on another endpoint.", L{"reason": "status"}, float64(sn.UpstreamStatusRetries))
 	e.Counter("xproxy_upstream_timeouts_total", "Upstream timeouts.", nil, float64(sn.UpstreamTimeouts))
 	e.Counter("xproxy_upstream_no_healthy_total", "Requests with no healthy endpoint.", nil, float64(sn.UpstreamNoHealthy))
+	e.Counter("xproxy_upstream_circuit_open_total", "Requests refused by an open circuit breaker.", nil, float64(sn.UpstreamCircuitOpen))
+	e.Counter("xproxy_upstream_queue_refused_total", "Requests refused by a pool's queue.", L{"reason": "full"}, float64(sn.UpstreamQueueFull))
+	e.Counter("xproxy_upstream_queue_refused_total", "Requests refused by a pool's queue.", L{"reason": "timeout"}, float64(sn.UpstreamQueueTimeouts))
 	e.Counter("xproxy_client_aborts_total", "Requests abandoned by the client.", nil, float64(sn.ClientAborts))
 	e.Counter("xproxy_connections_rejected_total", "Connections closed at accept by limits or bans.", nil, float64(sn.RejectedConns))
 	e.Counter("xproxy_reloads_total", "Configuration reloads.", L{"result": "ok"}, float64(sn.Reloads))
@@ -221,6 +225,22 @@ func (s *Server) Collect(e metrics.Collector) {
 			}
 		}
 		e.Gauge("xproxy_upstream_endpoints", "Configured endpoints in the pool.", L{"upstream": name}, float64(len(eps)))
+		ps := rt.pools[name].Status()
+		if ps.Circuit != nil {
+			state := 0.0
+			switch ps.Circuit.State {
+			case upstream.CircuitHalfOpen:
+				state = 1
+			case upstream.CircuitOpen:
+				state = 2
+			}
+			e.Gauge("xproxy_upstream_circuit_state", "Circuit breaker state: 0 closed, 1 half open, 2 open.", L{"upstream": name}, state)
+			e.Counter("xproxy_upstream_circuit_opens_total", "Times the circuit opened.", L{"upstream": name}, float64(ps.Circuit.Opens))
+		}
+		if ps.Queue != nil {
+			e.Gauge("xproxy_upstream_queue_waiting", "Requests waiting for a pool slot.", L{"upstream": name}, float64(ps.Queue.Waiting))
+			e.Gauge("xproxy_upstream_in_flight", "Requests holding a pool slot.", L{"upstream": name}, float64(ps.Queue.InFlight))
+		}
 		e.Gauge("xproxy_upstream_endpoints_healthy", "Endpoints passing health checks and not ejected.", L{"upstream": name}, float64(healthy))
 		if !rt.cfg.Metrics.EndpointSeriesEnabled() {
 			continue

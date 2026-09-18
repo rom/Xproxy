@@ -225,6 +225,8 @@ procedure is in RELEASING.md.
   template): delivered
 - Request and response body rewriting outside WebAssembly
   (`body_rewrite` filter kind): delivered
+- Circuit breaker with half open probing, per upstream concurrency
+  limits and request queueing with deadlines: delivered
 
 ## After 1.3 (candidates, unranked)
 

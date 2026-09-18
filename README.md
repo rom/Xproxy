@@ -62,7 +62,9 @@ an identifier from the access log to the upstream.
   header operations, per route timeouts and body limits
 - Upstream pools with round robin, weighted, least connections and
   consistent hashing; active HTTP or gRPC health checks, passive outlier
-  ejection, connection level retries, signed cookie affinity
+  ejection, a circuit breaker with half open probing, concurrency
+  limits with a bounded queue, retries on connection errors and chosen
+  statuses, signed cookie affinity
 - Response caching with per route key policies, `Vary` and conditional
   requests; gzip compression of eligible responses; request mirroring
   of sampled traffic to a candidate upstream, bounded and invisible to

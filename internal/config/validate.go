@@ -785,6 +785,31 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 	if u.Retries != nil && (*u.Retries < 0 || *u.Retries > 5) {
 		v.errf("%s.retries: must be between 0 and 5", p)
 	}
+	if cb := u.CircuitBreaker; cb != nil {
+		if cb.ConsecutiveFailures < 1 || cb.ConsecutiveFailures > 10000 {
+			v.errf("%s.circuit_breaker.consecutive_failures: must be between 1 and 10000", p)
+		}
+		if cb.OpenFor < Duration(100*time.Millisecond) || cb.OpenFor > Duration(time.Hour) {
+			v.errf("%s.circuit_breaker.open_for: must be between 100ms and 1h", p)
+		}
+		if cb.HalfOpenRequests < 1 || cb.HalfOpenRequests > 1000 {
+			v.errf("%s.circuit_breaker.half_open_requests: must be between 1 and 1000", p)
+		}
+	}
+	if u.MaxConcurrent < 0 || u.MaxConcurrent > 1_000_000 {
+		v.errf("%s.max_concurrent: must be between 0 and 1000000", p)
+	}
+	if q := u.Queue; q != nil {
+		if u.MaxConcurrent == 0 {
+			v.errf("%s.queue: needs max_concurrent", p)
+		}
+		if q.Size < 1 || q.Size > 1_000_000 {
+			v.errf("%s.queue.size: must be between 1 and 1000000", p)
+		}
+		if q.Timeout < Duration(10*time.Millisecond) || q.Timeout > Duration(5*time.Minute) {
+			v.errf("%s.queue.timeout: must be between 10ms and 5m", p)
+		}
+	}
 	for j, on := range u.RetryOn {
 		switch on {
 		case "5xx", "500", "502", "503", "504", "429":

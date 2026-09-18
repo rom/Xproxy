@@ -82,6 +82,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   request and response bodies with media type lists and size bounds,
   `Content-Length` and validators maintained, `body_rewrite` in the
   access log.
+- Traffic management: `upstreams[].circuit_breaker` (pool wide breaker
+  with half open trials and growing back-off, distinct from outlier
+  ejection), `upstreams[].max_concurrent` with `queue` (bounded
+  waiters with a deadline); `GET /v1/pools`, pool rows in `xproxyctl
+  upstreams`, `upstream_circuit_open`, `upstream_queue_full`,
+  `upstream_queue_timeouts` and per pool gauges.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

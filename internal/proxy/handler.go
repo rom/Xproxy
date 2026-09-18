@@ -21,6 +21,7 @@ import (
 	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/tlsconf"
+	"github.com/rom/xproxy/internal/upstream"
 )
 
 // listenerHandler is the http.Handler installed on one listener (and on
@@ -491,6 +492,14 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		return
 	}
 
+	if g := pool.Gate(); g != nil {
+		release, err := g.Acquire(r.Context())
+		if err != nil {
+			s.queueRefused(rw, r, st, err)
+			return
+		}
+		defer release()
+	}
 	var mirrored *http.Request
 	if cr.mirror != nil {
 		mirrored = s.prepareMirror(r, st, cr)
@@ -672,6 +681,21 @@ func (s *Server) upstreamError(rw *responseWriter, r *http.Request, st *reqState
 		s.stats.UpstreamNoHealthy.Add(1)
 		status = http.StatusServiceUnavailable
 		rw.Header().Set("Retry-After", "5")
+	case errors.Is(err, upstream.ErrCircuitOpen):
+		s.stats.UpstreamCircuitOpen.Add(1)
+		status = http.StatusServiceUnavailable
+		var coe *circuitOpenError
+		secs := 1
+		if errors.As(err, &coe) {
+			secs = max(int(coe.retryAfter.Seconds()+0.999), 1)
+		}
+		rw.Header().Set("Retry-After", strconv.Itoa(secs))
+		st.upErr = "circuit_open"
+		if rw.wrote {
+			return
+		}
+		s.plainStatus(rw, r, status)
+		return
 	default:
 		s.stats.UpstreamErrors.Add(1)
 		var mbe *http.MaxBytesError
@@ -686,6 +710,26 @@ func (s *Server) upstreamError(rw *responseWriter, r *http.Request, st *reqState
 		return
 	}
 	s.plainStatus(rw, r, status)
+}
+
+// queueRefused answers a request the pool's gate could not seat: the
+// queue was full or the wait ran out. A client cancel gets nothing.
+func (s *Server) queueRefused(rw *responseWriter, r *http.Request, st *reqState, err error) {
+	switch {
+	case errors.Is(err, upstream.ErrQueueFull):
+		s.stats.UpstreamQueueFull.Add(1)
+		st.upErr = "queue_full"
+	case errors.Is(err, upstream.ErrQueueTimeout):
+		s.stats.UpstreamQueueTimeouts.Add(1)
+		st.upErr = "queue_timeout"
+	default:
+		s.stats.ClientAborts.Add(1)
+		rw.status = 499
+		rw.wrote = true
+		return
+	}
+	rw.Header().Set("Retry-After", "1")
+	s.plainStatus(rw, r, http.StatusServiceUnavailable)
 }
 
 // deny writes a minimal error response and a security log entry.

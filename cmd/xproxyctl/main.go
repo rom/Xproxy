@@ -145,6 +145,10 @@ func run(args []string, out, errOut io.Writer) int {
 		if err := json.Unmarshal(b, &ups); err != nil {
 			return fail(err)
 		}
+		pools := map[string]upstream.PoolStatus{}
+		if pb, err := c.Raw("/v1/pools"); err == nil {
+			_ = json.Unmarshal(pb, &pools)
+		}
 		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS")
 		names := make([]string, 0, len(ups))
@@ -156,6 +160,32 @@ func run(args []string, out, errOut io.Writer) int {
 			for _, e := range ups[n] {
 				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%d\t%d\t%d\n", n, e.Address, e.Weight, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors)
 			}
+		}
+		_ = tw.Flush()
+		// Pool level state: circuit breakers and queues, when configured.
+		shown := false
+		for _, n := range names {
+			ps, ok := pools[n]
+			if !ok || (ps.Circuit == nil && ps.Queue == nil) {
+				continue
+			}
+			if !shown {
+				_, _ = fmt.Fprintln(out)
+				_, _ = fmt.Fprintln(tw, "UPSTREAM\tCIRCUIT\tFAILURES\tOPENS\tREFUSED\tIN-FLIGHT\tWAITING\tQUEUED\tTIMEOUTS\tFULL")
+				shown = true
+			}
+			circuit, failures, opens, refused := "-", "-", "-", "-"
+			if cs := ps.Circuit; cs != nil {
+				circuit, failures, opens, refused = cs.State, fmt.Sprintf("%d/%d", cs.Failures, cs.Threshold), fmt.Sprint(cs.Opens), fmt.Sprint(cs.Rejected)
+				if cs.State == upstream.CircuitOpen {
+					circuit += " until " + cs.Until.Local().Format("15:04:05")
+				}
+			}
+			inFlight, waiting, queued, timeouts, full := "-", "-", "-", "-", "-"
+			if q := ps.Queue; q != nil {
+				inFlight, waiting, queued, timeouts, full = fmt.Sprintf("%d/%d", q.InFlight, q.MaxConcurrent), fmt.Sprintf("%d/%d", q.Waiting, q.QueueSize), fmt.Sprint(q.Queued), fmt.Sprint(q.Timeouts), fmt.Sprint(q.Full)
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n, circuit, failures, opens, refused, inFlight, waiting, queued, timeouts, full)
 		}
 		_ = tw.Flush()
 		return 0

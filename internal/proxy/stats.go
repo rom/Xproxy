@@ -71,6 +71,9 @@ type Stats struct {
 	UpstreamErrors        atomic.Uint64
 	UpstreamRetries       atomic.Uint64
 	UpstreamStatusRetries atomic.Uint64
+	UpstreamCircuitOpen   atomic.Uint64
+	UpstreamQueueFull     atomic.Uint64
+	UpstreamQueueTimeouts atomic.Uint64
 	UpstreamTimeouts      atomic.Uint64
 	UpstreamNoHealthy     atomic.Uint64
 	ClientAborts          atomic.Uint64
@@ -162,6 +165,9 @@ type Snapshot struct {
 	UpstreamErrors        uint64     `json:"upstream_errors"`
 	UpstreamRetries       uint64     `json:"upstream_retries"`
 	UpstreamStatusRetries uint64     `json:"upstream_status_retries"`
+	UpstreamCircuitOpen   uint64     `json:"upstream_circuit_open"`
+	UpstreamQueueFull     uint64     `json:"upstream_queue_full"`
+	UpstreamQueueTimeouts uint64     `json:"upstream_queue_timeouts"`
 	UpstreamTimeouts      uint64     `json:"upstream_timeouts"`
 	UpstreamNoHealthy     uint64     `json:"upstream_no_healthy"`
 	ClientAborts          uint64     `json:"client_aborts"`
@@ -230,6 +236,9 @@ func (s *Stats) snapshot() Snapshot {
 		UpstreamErrors:        s.UpstreamErrors.Load(),
 		UpstreamRetries:       s.UpstreamRetries.Load(),
 		UpstreamStatusRetries: s.UpstreamStatusRetries.Load(),
+		UpstreamCircuitOpen:   s.UpstreamCircuitOpen.Load(),
+		UpstreamQueueFull:     s.UpstreamQueueFull.Load(),
+		UpstreamQueueTimeouts: s.UpstreamQueueTimeouts.Load(),
 		UpstreamTimeouts:      s.UpstreamTimeouts.Load(),
 		UpstreamNoHealthy:     s.UpstreamNoHealthy.Load(),
 		ClientAborts:          s.ClientAborts.Load(),

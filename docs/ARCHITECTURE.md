@@ -223,6 +223,18 @@ but not `/apix`.
 
 ### Upstream selection and retries
 
+Two pool wide controls sit in front of endpoint selection. The gate
+(`upstream.Gate`, `max_concurrent` and `queue`) is a semaphore taken in
+`proxyTo` for the whole exchange, with a bounded number of waiters and
+a per waiter deadline; a refused request is a 503 with `Retry-After`
+and an `upstream_error` of `queue_full` or `queue_timeout`, never a
+security event. The breaker (`upstream.Breaker`, `circuit_breaker`) is
+consulted in `poolTransport.RoundTrip` around the attempt loop: closed
+it counts consecutive failed attempts, open it refuses with the
+remaining time, half open it admits a bounded number of trials whose
+outcome closes or reopens it with a growing back-off. Both report
+through `Pool.Status` to `GET /v1/pools` and the metrics.
+
 A response whose status is listed in the pool's `retry_on` is treated by
 `poolTransport` like a connection error: its body is drained and
 closed, the endpoint is marked as failed for outlier ejection, and the
@@ -599,6 +611,7 @@ Endpoints:
 | GET | `/v1/status` | version, pid, generation, listeners, counters |
 | GET | `/v1/stats` | counters |
 | GET | `/v1/upstreams` | endpoint health and load |
+| GET | `/v1/pools` | pool level state: circuit breaker, concurrency gate and queue |
 | GET | `/v1/config` | active configuration as YAML |
 | POST | `/v1/reload` | validate and apply the configuration file |
 | POST | `/v1/reload-certs` | re-read certificates |

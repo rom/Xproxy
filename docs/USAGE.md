@@ -354,6 +354,27 @@ and gets ejected after a few such answers. Only replayable requests
 when every endpoint fails the last answer is passed through unchanged.
 `upstream_retries` and `upstream_status_retries` count the attempts.
 
+### Protecting a slow upstream: concurrency, queue and circuit breaker
+
+```yaml
+upstreams:
+  - name: reports
+    max_concurrent: 20
+    queue: {size: 50, timeout: 2s}
+    circuit_breaker: {consecutive_failures: 5, open_for: 15s, half_open_requests: 2}
+    endpoints: [{address: 10.0.3.10:8080}, {address: 10.0.3.11:8080}]
+```
+
+At most twenty requests are in flight to the report service; the next
+fifty wait up to two seconds for a slot and get 503 with `Retry-After`
+when none frees up, and anything beyond that is refused at once, so a
+burst never piles hundreds of connections onto a service that is
+already slow. If the service fails five attempts in a row the circuit
+opens: for fifteen seconds every request is answered 503 locally, then
+two trial requests probe it, and one success closes the circuit again
+(each reopen doubles the wait, up to ten times). `xproxyctl upstreams`
+shows the circuit state and queue depth per pool.
+
 ### Weighted and sticky pools
 
 ```yaml

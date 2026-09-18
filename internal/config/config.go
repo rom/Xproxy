@@ -602,6 +602,13 @@ type Upstream struct {
 	Affinity *Affinity `yaml:"affinity"`
 	// OutlierEjection removes endpoints that fail passively.
 	OutlierEjection *OutlierEjection `yaml:"outlier_ejection"`
+	// CircuitBreaker stops sending to the pool as a whole after
+	// consecutive failures and probes it back with half open trials.
+	CircuitBreaker *CircuitBreaker `yaml:"circuit_breaker"`
+	// MaxConcurrent bounds requests in flight to the pool; 0 is unbounded.
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// Queue holds requests beyond MaxConcurrent for a bounded time.
+	Queue *UpstreamQueue `yaml:"queue"`
 }
 
 // Endpoint is a single upstream address.
@@ -678,6 +685,24 @@ type OutlierEjection struct {
 	ConsecutiveFailures int      `yaml:"consecutive_failures"`
 	BaseEjectionTime    Duration `yaml:"base_ejection_time"`
 	MaxEjectionPercent  int      `yaml:"max_ejection_percent"`
+}
+
+// CircuitBreaker is a pool wide breaker: closed counts consecutive
+// failures (connection errors, timeouts, 503 and retry_on statuses),
+// open refuses requests with 503 for OpenFor (times the number of
+// reopens, at most ten), half open lets HalfOpenRequests trials through.
+type CircuitBreaker struct {
+	ConsecutiveFailures int      `yaml:"consecutive_failures"`
+	OpenFor             Duration `yaml:"open_for"`
+	HalfOpenRequests    int      `yaml:"half_open_requests"`
+}
+
+// UpstreamQueue bounds the requests waiting for a MaxConcurrent slot.
+type UpstreamQueue struct {
+	// Size is the number of waiting requests; more are refused at once.
+	Size int `yaml:"size"`
+	// Timeout is how long a request waits before 503. Default 1s.
+	Timeout Duration `yaml:"timeout"`
 }
 
 // Route maps a request to an upstream and attaches policies.

@@ -245,6 +245,15 @@ func applyDefaults(c *Config) {
 			r := DefaultRetries
 			u.Retries = &r
 		}
+		if cb := u.CircuitBreaker; cb != nil {
+			setInt(&cb.ConsecutiveFailures, 5)
+			setDur(&cb.OpenFor, 10*time.Second)
+			setInt(&cb.HalfOpenRequests, 1)
+		}
+		if q := u.Queue; q != nil {
+			setInt(&q.Size, 100)
+			setDur(&q.Timeout, time.Second)
+		}
 		if u.Balancer == "hash" {
 			setStr(&u.HashOn, "client_ip")
 		}

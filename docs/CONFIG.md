@@ -312,6 +312,9 @@ Memory: at most 64 x 8192 buckets per policy.
 | `tls` | object | | Only with `https`; see below |
 | `health_check` | object | none | Active probing; see below |
 | `outlier_ejection` | object | none | Passive ejection; see below |
+| `circuit_breaker` | object | none | Pool wide breaker with half open probing; see below |
+| `max_concurrent` | int | `0` (unbounded) | Requests in flight to the pool; the excess waits in `queue` or is refused with 503 |
+| `queue` | `{size, timeout}` | none | With `max_concurrent`: requests waiting for a slot (`size` 1 to 1000000, default 100) and how long each waits (`timeout` 10ms to 5m, default 1s) before 503 with `Retry-After: 1`; a full queue refuses at once |
 | `affinity` | object | none | Cookie stickiness; see below |
 | `timeouts.connect` | duration | `5s` | Dial and TLS handshake |
 | `timeouts.response_header` | duration | `30s` | Time to first response byte |
@@ -355,6 +358,29 @@ Memory: at most 64 x 8192 buckets per policy.
 | `consecutive_failures` | int | `5` | Connection errors or 503 responses in a row |
 | `base_ejection_time` | duration | `30s` | Multiplied by the ejection count, capped at 10x |
 | `max_ejection_percent` | int | `50` | Never eject more than this share of the pool |
+
+### upstreams[].circuit_breaker
+
+Outlier ejection removes one failing endpoint from a healthy pool; the
+circuit breaker stops sending to a pool that fails as a whole and
+probes it back. Closed, it counts consecutive failed attempts across
+the pool (connection errors, timeouts, 503 and `retry_on` statuses; a
+success resets the count). At `consecutive_failures` it opens: every
+request is refused at once with 503 and `Retry-After` set to the
+remaining open time, without touching the upstream, for `open_for`
+times the number of consecutive reopens (capped at ten). Then it is
+half open: `half_open_requests` trials may be in flight, a success
+closes the circuit and resets the back-off, a failure reopens it.
+`xproxyctl upstreams` and `GET /v1/pools` show the state, the count,
+opens and refusals; `xproxy_upstream_circuit_state` and
+`xproxy_upstream_circuit_open_total` export them; refusals appear in
+the access log with `upstream_error: circuit_open`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `consecutive_failures` | int | `5` | Failed attempts in a row that open the circuit (1 to 10000) |
+| `open_for` | duration | `10s` | Base open time, multiplied by the reopen count (100ms to 1h) |
+| `half_open_requests` | int | `1` | Trials allowed at once while half open (1 to 1000) |
 
 ### upstreams[].affinity
 

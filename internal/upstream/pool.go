@@ -38,6 +38,36 @@ type Pool struct {
 	// hcTransport carries probes: the pool transport with keep_alive, or a
 	// dedicated one that opens a fresh connection per probe.
 	hcTransport *http.Transport
+	// breaker and gate are nil when not configured.
+	breaker *Breaker
+	gate    *Gate
+}
+
+// Breaker returns the circuit breaker, or nil.
+func (p *Pool) Breaker() *Breaker { return p.breaker }
+
+// Gate returns the concurrency gate, or nil.
+func (p *Pool) Gate() *Gate { return p.gate }
+
+// Status returns the pool level management view.
+func (p *Pool) Status() PoolStatus {
+	now := p.now()
+	st := PoolStatus{Name: p.Name, Balancer: p.Cfg.Balancer, Endpoints: len(p.endpoints)}
+	for _, e := range p.endpoints {
+		if e.Available(now) {
+			st.Available++
+		}
+		st.Active += e.active.Load()
+	}
+	if p.breaker != nil {
+		c := p.breaker.Status()
+		st.Circuit = &c
+	}
+	if p.gate != nil {
+		q := p.gate.Status()
+		st.Queue = &q
+	}
+	return st
 }
 
 // NewPool builds a pool from configuration. Call Start to begin health
@@ -61,6 +91,16 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 		p.bal = newRing(p.endpoints)
 	default:
 		p.bal = &roundRobin{}
+	}
+	if cfg.CircuitBreaker != nil {
+		p.breaker = newBreaker(cfg.CircuitBreaker, p.now)
+	}
+	if cfg.MaxConcurrent > 0 {
+		size, timeout := 0, time.Duration(0)
+		if cfg.Queue != nil {
+			size, timeout = cfg.Queue.Size, cfg.Queue.Timeout.D()
+		}
+		p.gate = newGate(cfg.MaxConcurrent, size, timeout)
 	}
 	if cfg.Affinity != nil {
 		a, err := newAffinity(cfg.Affinity.CookieName, cfg.Affinity.TTL.D(), cfg.Affinity.SecretFile)

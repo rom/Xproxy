@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -71,11 +72,41 @@ func (t *poolTransport) retryStatus(code int) bool {
 	return false
 }
 
+// circuitOpenError carries the remaining open time for Retry-After.
+type circuitOpenError struct{ retryAfter time.Duration }
+
+func (e *circuitOpenError) Error() string { return upstream.ErrCircuitOpen.Error() }
+func (e *circuitOpenError) Unwrap() error { return upstream.ErrCircuitOpen }
+
 func (t *poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	pi := pickFrom(req.Context())
 	if pi == nil {
 		pi = &pickInfo{}
 	}
+	var done func(bool)
+	if b := t.pool.Breaker(); b != nil {
+		var wait time.Duration
+		if done, wait = b.Allow(); done == nil {
+			return nil, &circuitOpenError{retryAfter: wait}
+		}
+	}
+	resp, err := t.roundTrip(req, pi)
+	if done != nil {
+		switch {
+		case err != nil:
+			// Timeouts and connection errors are the upstream's; a client
+			// cancel or a missing endpoint is not an outcome.
+			if isConnError(err) || errors.Is(err, context.DeadlineExceeded) && req.Context().Err() == nil {
+				done(false)
+			}
+		default:
+			done(resp.StatusCode != http.StatusServiceUnavailable && !t.retryStatus(resp.StatusCode))
+		}
+	}
+	return resp, err
+}
+
+func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Response, error) {
 	exclude := map[*upstream.Endpoint]bool{}
 	maxAttempts := 1
 	if replayable(req) {

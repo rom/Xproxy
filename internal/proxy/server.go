@@ -294,6 +294,16 @@ func (s *Server) Upstreams() map[string][]upstream.Stats {
 	return out
 }
 
+// Pools returns the pool level status (circuit breaker, queue) by name.
+func (s *Server) Pools() map[string]upstream.PoolStatus {
+	rt := s.rt.Load()
+	out := make(map[string]upstream.PoolStatus, len(rt.pools))
+	for name, p := range rt.pools {
+		out[name] = p.Status()
+	}
+	return out
+}
+
 // Generation returns the configuration generation counter.
 func (s *Server) Generation() uint64 { return s.rt.Load().generation }
 
