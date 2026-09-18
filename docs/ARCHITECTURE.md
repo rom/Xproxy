@@ -57,7 +57,9 @@ internal/upstream   endpoints, balancers, health checks, affinity, ejection
 internal/proxy      server, listeners, handler pipeline, transport, stats
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
-internal/filter     per-route middleware interface (Filter, Instance, Chain)
+internal/filter     middleware interface, kind registry, options decoding; filtertest harness
+internal/filters    built-in kinds (header_guard, basic_auth) and the registration list
+internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
@@ -95,7 +97,8 @@ cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logg
 ```
 
 No package imports `proxy` except `mgmt` and the commands. `config` imports
-nothing from the module. `admin` imports only `mgmt` (the client), `config`
+only `filter` (to validate `filters[].options` against the registry);
+`filter` imports nothing from the module. `admin` imports only `mgmt` (the client), `config`
 (validation of edited files) and `tlsconf`; it never links the data plane.
 
 ## 3. Process model
@@ -422,10 +425,21 @@ action, the response phase inside the reverse proxy's `ModifyResponse`
 (a deny there travels through the error handler as `filterDenied`), and
 always calls `End`, whose attributes land in the access log line.
 
-Filters run in the order JWT, WAF, ICAP: unauthenticated requests are
-refused before rule evaluation, and only requests that pass the WAF are
-sent to an external scanner. With three internal users the interface is
-now the basis for the stable middleware contract of 1.0 (AMR-013).
+Built-in filters run in the order JWT, WAF, ICAP: unauthenticated
+requests are refused before rule evaluation, and only requests that pass
+the WAF are sent to an external scanner. Configured filters
+(`filters[]`, attached by `routes[].filters`) slot in by stage:
+`before_auth`, `after_auth`, `after_waf`, `after_scan`.
+
+The interface is the stable extension contract (EXTENDING.md, API
+version 1). A *kind* registers at start (`filter.Register` from an init
+function; the list of built-ins is `internal/filters/all.go`) with a
+`Validate` used by the configuration loader and a `New` called once per
+generation. The runtime wraps each configured instance so that a deny
+counts in `denied_filter` and `xproxy_filter_denied_total{filter,kind}`,
+defaults its reason to the instance name, and closes filters that
+implement `Closer` when the generation is torn down. `/v1/filters` and
+`xproxyctl filters` show the kinds and instances.
 
 ### ICAP filter
 

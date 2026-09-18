@@ -204,6 +204,9 @@ func (s *Server) Stats() Snapshot {
 func (s *Server) ACME() *acme.Manager { return s.acme }
 
 // ICAP returns the status of every configured ICAP service.
+// Filters returns the configured middleware instances.
+func (s *Server) Filters() []FilterStatus { return s.rt.Load().filterStatus() }
+
 func (s *Server) ICAP() []icap.Status {
 	rt := s.rt.Load()
 	out := make([]icap.Status, 0, len(rt.icap))

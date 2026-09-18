@@ -57,6 +57,9 @@ type Config struct {
 	Metrics Metrics `yaml:"metrics"`
 	// ICAP configures external scanning services referenced by routes.
 	ICAP *ICAP `yaml:"icap"`
+	// Filters are middleware instances of registered kinds (see
+	// docs/EXTENDING.md) that routes attach by name.
+	Filters []FilterConfig `yaml:"filters"`
 	// ACME configures automatic certificates for listeners with tls.acme.
 	ACME *ACME `yaml:"acme"`
 }
@@ -461,7 +464,31 @@ type Route struct {
 	JWT *RouteJWT `yaml:"jwt"`
 	// ICAP hands requests and/or responses to a scanning service.
 	ICAP *RouteICAP `yaml:"icap"`
+	// Filters names entries of the top-level filters list, run in the
+	// listed order within their stage.
+	Filters []string `yaml:"filters"`
 }
+
+// FilterConfig is one middleware instance.
+type FilterConfig struct {
+	Name string `yaml:"name"`
+	// Kind is a registered filter kind (xproxyctl filters lists them).
+	Kind string `yaml:"kind"`
+	// Stage places the filter relative to the built-in chain: before_auth
+	// (before JWT), after_auth (default; after JWT, before the WAF),
+	// after_waf (before ICAP) or after_scan (last).
+	Stage string `yaml:"stage"`
+	// Options are kind specific and validated by the kind at load.
+	Options map[string]any `yaml:"options"`
+}
+
+// Filter stages in chain order.
+const (
+	StageBeforeAuth = "before_auth"
+	StageAfterAuth  = "after_auth"
+	StageAfterWAF   = "after_waf"
+	StageAfterScan  = "after_scan"
+)
 
 // Redirect is a static redirect action.
 type Redirect struct {

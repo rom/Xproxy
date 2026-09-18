@@ -283,7 +283,21 @@ are compiled into the binary. 1.x adds a WebAssembly ABI (wazero runtime, no
 cgo) for sandboxed extensions. Go plugins are never used: they tie the plugin
 to the exact toolchain and run with full process privileges.
 
-**Status.** Accepted (default accepted).
+**Update (phase 3).** The contract is `internal/filter` at API version 1
+(EXTENDING.md). Design points: a kind registers from an init function
+and carries a `Validate` used by the configuration loader, so a bad
+extension configuration is a load error with the same aggregation as
+every other setting, and `xproxyctl validate` knows the kinds because
+every binary imports `internal/filters`; options are a free mapping
+decoded into the kind's own struct with unknown keys rejected, so the
+core schema never changes for an extension; instances are placed by
+named stage relative to the fixed JWT, WAF, ICAP order rather than by a
+global priority number, which keeps the built-in order reasoned about
+in one place; the runtime wraps instances for counting and defaulting,
+so an extension cannot produce an unlogged or uncounted deny.
+`config` now imports `filter` (and nothing else from the module).
+
+**Status.** Accepted; interface delivered.
 
 ---
 

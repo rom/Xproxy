@@ -128,6 +128,12 @@ func (c *Client) ACME() ([]acme.CertStatus, error) {
 }
 
 // ICAP fetches the status of ICAP services.
+// Filters fetches /v1/filters.
+func (c *Client) Filters() (*FiltersView, error) {
+	var out FiltersView
+	return &out, c.do("GET", "/v1/filters", &out)
+}
+
 func (c *Client) ICAP() ([]icap.Status, error) {
 	var out []icap.Status
 	return out, c.do("GET", "/v1/icap", &out)

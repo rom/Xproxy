@@ -10,6 +10,14 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 ### Phase 3: 1.0 (in progress)
 
 #### Added
+- Middleware interface at API version 1 (`docs/EXTENDING.md`): kind
+  registry with load-time validation and per-generation construction,
+  `filters[]` with `stage` and kind specific `options`, `routes[].filters`,
+  deny counting (`denied_filter`, `xproxy_filter_denied_total`), ban
+  categories by filter name, `Closer` for resources, `filtertest`
+  harness; built-in kinds `header_guard` and `basic_auth`; `/v1/filters`,
+  `xproxyctl filters` and `xproxyctl htpasswd`; `internal/passwd` shared
+  with the GUI.
 - Scale validation: `TestScale` at 1000 hosts and 10 000 endpoints
   (`make scale`), routing benchmarks at 1000 hosts (`make bench`),
   `test/load` with a backend, vegeta and k6 scripts and a soak script

@@ -5,19 +5,15 @@ package admin
 
 import (
 	"bufio"
-	"crypto/pbkdf2"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/rom/xproxy/internal/passwd"
 )
 
 // Role is what a user may do. Viewers read; operators also change things.
@@ -50,67 +46,15 @@ type User struct {
 // CertOnly reports whether the user has no password.
 func (u User) CertOnly() bool { return u.Hash == "x509" }
 
-// Password hashing: PBKDF2-HMAC-SHA256 from the standard library with a
-// per-user 16 byte salt and an iteration count stored in the hash, so it
-// can be raised later without a format change.
-const (
-	hashPrefix     = "pbkdf2-sha256"
-	hashIterations = 600_000
-	hashLen        = 32
-)
-
-// HashPassword derives a stored hash for a password.
-func HashPassword(password string) (string, error) {
-	return hashPassword(password, hashIterations)
-}
+// HashPassword derives a stored hash for a password (see passwd).
+func HashPassword(password string) (string, error) { return passwd.Hash(password) }
 
 func hashPassword(password string, iterations int) (string, error) {
-	if len(password) < 12 {
-		return "", errors.New("password must be at least 12 characters")
-	}
-	if len(password) > 1024 {
-		return "", errors.New("password too long")
-	}
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return "", err
-	}
-	dk, err := pbkdf2.Key(sha256.New, password, salt, iterations, hashLen)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%s$%d$%s$%s", hashPrefix, iterations,
-		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(dk)), nil
+	return passwd.HashWithIterations(password, iterations)
 }
 
-// VerifyPassword checks a password against a stored hash in constant time
-// with respect to the hash contents.
-func VerifyPassword(hash, password string) bool {
-	parts := strings.Split(hash, "$")
-	if len(parts) != 4 || parts[0] != hashPrefix {
-		return false
-	}
-	iter, err := strconv.Atoi(parts[1])
-	if err != nil || iter < 1000 || iter > 10_000_000 {
-		return false
-	}
-	salt, err := base64.RawStdEncoding.DecodeString(parts[2])
-	if err != nil {
-		return false
-	}
-	want, err := base64.RawStdEncoding.DecodeString(parts[3])
-	if err != nil || len(want) != hashLen {
-		return false
-	}
-	if len(password) > 1024 {
-		return false
-	}
-	got, err := pbkdf2.Key(sha256.New, password, salt, iter, hashLen)
-	if err != nil {
-		return false
-	}
-	return subtle.ConstantTimeCompare(got, want) == 1
-}
+// VerifyPassword checks a password against a stored hash.
+func VerifyPassword(hash, password string) bool { return passwd.Verify(hash, password) }
 
 // Users is the users file: "name:role:hash" per line, '#' comments.
 type Users struct {

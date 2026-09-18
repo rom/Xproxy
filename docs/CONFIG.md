@@ -486,6 +486,53 @@ answers.
 Blocks are logged with reason `icap` and feed ban triggers under the
 `icap` category. The ICAP filter runs after JWT and WAF on the same route.
 
+## filters[]
+
+Middleware instances of registered kinds, attached to routes by name
+(`routes[].filters`). `xproxyctl filters` lists the kinds compiled into
+the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required, unique | Referenced by routes; the default deny reason |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, or one added to `internal/filters` |
+| `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
+| `options` | mapping | | Kind specific; unknown keys are rejected |
+
+### Kind `header_guard`
+
+Requires or denies requests by header patterns (RE2 syntax).
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `require` | list of `{header, pattern}` | | Every rule must match the header's value (a missing header is the empty string) |
+| `deny` | list of `{header, pattern}` | | Any match denies; evaluated before `require` |
+| `status` | int | `403` | 4xx status on deny |
+| `reason` | string | the filter name | Deny reason in logs, counters and ban triggers |
+
+### Kind `basic_auth`
+
+HTTP Basic authentication against a file of `name:hash` lines written by
+`xproxyctl htpasswd FILE NAME` (PBKDF2-HMAC-SHA256, 600 000 iterations;
+the file must not be world readable). Verified credentials are cached by
+digest so the hash cost is paid once per client session.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `users_file` | path | required | Users file |
+| `realm` | string | `restricted` | `WWW-Authenticate` realm |
+| `cache_ttl` | duration | `5m` | Credential cache; `0` disables |
+| `forward_user_header` | header | none | Set to the user name on the upstream request |
+| `strip` | bool | `true` | Remove `Authorization` before forwarding |
+
+Denies answer 401 with `WWW-Authenticate` and reason `<filter name>`;
+the user name is added to the access log line as `auth_user`.
+
+### routes[].filters
+
+A list of filter names, run in the listed order within each stage. A
+route may combine them with `jwt`, `waf` and `icap`.
+
 ## acme
 
 Required when any listener has `tls.acme` groups. One account per proxy;

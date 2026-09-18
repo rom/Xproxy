@@ -33,6 +33,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/rom/xproxy/internal/admin"
+	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds
 	"github.com/rom/xproxy/internal/version"
 )
 
