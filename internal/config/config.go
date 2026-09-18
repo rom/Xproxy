@@ -217,6 +217,9 @@ type DNSListener struct {
 	// LogQueries writes one dns line per query to the access log.
 	// Default false (query logs are personal data).
 	LogQueries bool `yaml:"log_queries"`
+	// DoHPath is the DNS over HTTPS path served on an encrypted dns
+	// listener (one with tls). Default /dns-query.
+	DoHPath string `yaml:"doh_path"`
 }
 
 // DNSCache bounds the cache of a dns listener.

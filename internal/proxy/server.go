@@ -425,6 +425,30 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		}
 		return bl, nil
 	}
+	if lc.Kind == "dns" && lc.TLS != nil {
+		// Encrypted: DNS over TLS and DNS over HTTPS on the TCP port, no
+		// plain UDP.
+		tc, rl, err := tlsconf.Server(lc.TLS, nil)
+		if err != nil {
+			_ = ln.Close()
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		tc.NextProtos = []string{dns.ALPNDoT, dns.ALPNH2, dns.ALPNHTTP}
+		rl.Fingerprints = s.fingerprints
+		rl.StartStapling(s.logs.Error)
+		bl.tlsReload = rl
+		bl.ln = tls.NewListener(bl.ln, tc)
+		d, err := s.newDNSServer(lc, nil, bl.ln)
+		if err != nil {
+			_ = ln.Close()
+			rl.Close()
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		d.Encrypted = true
+		d.DoHPath = lc.DNS.DoHPath
+		bl.dns = d
+		return bl, nil
+	}
 	if lc.Kind == "dns" {
 		// UDP on the same port as TCP, also when the port was chosen by
 		// the system (":0" in tests).
@@ -826,6 +850,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			if bl.dns != nil {
 				bl.dns.Shutdown(ctx)
 				bl.dns.Close()
+				if bl.tlsReload != nil {
+					bl.tlsReload.Close()
+				}
 				return
 			}
 			err := bl.httpSrv.Shutdown(ctx)

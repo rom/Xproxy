@@ -384,8 +384,14 @@ func (v *validator) server(s *Server) {
 				v.tcpListener(p+".tcp", ln.TCP)
 			}
 		case "dns":
-			if ln.TLS != nil || len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.H2C {
-				v.errf("%s: a dns listener takes only address and dns", p)
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.H2C {
+				v.errf("%s: a dns listener takes only address, dns and tls", p)
+			}
+			if ln.TLS != nil && len(ln.TLS.ACME) > 0 {
+				v.errf("%s.tls.acme: not on a dns listener (no http-01 or tls-alpn-01 there); use certificates", p)
+			}
+			if ln.DNS != nil && (!strings.HasPrefix(ln.DNS.DoHPath, "/") || strings.ContainsAny(ln.DNS.DoHPath, "?# ")) {
+				v.errf("%s.dns.doh_path: must be an absolute path", p)
 			}
 			if ln.DNS == nil {
 				v.errf("%s.dns: required for kind dns", p)

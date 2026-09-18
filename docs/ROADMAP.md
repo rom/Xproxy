@@ -239,6 +239,8 @@ procedure is in RELEASING.md.
   (`tls.ocsp_stapling`, `tls.ct`, `xproxyctl tls`): delivered
 - Distributed tracing (W3C trace context, OTLP spans) and OTLP for
   logs (`tracing`, `logging.otlp`, `xproxyctl telemetry`): delivered
+- DNS over TLS and HTTPS for clients on dns listeners (`tls` on `kind:
+  dns`, `doh_path`): delivered
 
 ## After 1.3 (candidates, unranked)
 

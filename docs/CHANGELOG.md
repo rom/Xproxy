@@ -127,6 +127,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   typed attributes and trace ids to a collector; `GET /v1/telemetry`
   and `xproxyctl telemetry` show metrics, traces and logs exporters
   together. The OTLP/HTTP client is shared (`internal/otlp`).
+- Encrypted dns listeners: `tls` on `kind: dns` serves DNS over TLS
+  and DNS over HTTPS (`doh_path`) on one port by ALPN, with per
+  transport counters `queries_udp`, `queries_tcp`, `queries_dot` and
+  `queries_doh`.
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

@@ -422,6 +422,15 @@ an http listener and hands the query to the named dns listener's
 `Handle`, so DNS over HTTPS clients get the same policy and cache as
 UDP clients plus the route's own admission pipeline.
 
+An encrypted dns listener (`tls` on `kind: dns`) wraps the TCP listener
+in TLS with the ALPN list `dot`, `h2`, `http/1.1` and binds no UDP.
+`serveConn` completes the handshake and demultiplexes: DoT and no ALPN
+stay on the DNS stream loop, HTTP goes to an `http.Server` inside the
+dns server through a channel listener (`internal/dns/doh.go`), whose
+handler answers RFC 8484 on the configured path with the same
+`handle` path and the client address of the connection. The route
+based `doh` action shares the request and response helpers.
+
 ### Forward proxy
 
 A `kind: forward` listener (`internal/proxy/forward.go`) is an

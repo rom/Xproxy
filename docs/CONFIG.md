@@ -138,10 +138,19 @@ and an answer larger than the client's UDP size (512 bytes or its EDNS
 advertisement) is truncated so the client retries over TCP. Only one
 question per query and the QUERY opcode are handled (FORMERR and
 NOTIMP otherwise); responses arriving as queries and packets from
-banned clients are dropped. A dns listener takes only `address` and
-`dns`; bans and the global connection limits apply to TCP clients as
-on every listener. The policy, upstreams and cache bounds reload (the
-cache is kept); the address needs a restart.
+banned clients are dropped. A dns listener takes `address`, `dns` and
+optionally `tls`; bans and the global connection limits apply to TCP
+clients as on every listener. The policy, upstreams and cache bounds
+reload (the cache is kept); the address needs a restart.
+
+With `tls` (certificates only, no ACME) the listener is encrypted: no
+plain UDP is bound, the TCP port serves DNS over TLS (RFC 7858, ALPN
+`dot` or none) and DNS over HTTPS (RFC 8484, ALPN `h2` or `http/1.1`)
+at `doh_path`, chosen per connection by the negotiated protocol. The
+same policy, cache and counters serve both; `queries_dot` and
+`queries_doh` count them, and `xproxyctl tls` shows the certificate.
+Run a plain listener on 53 and an encrypted one on 853 (and 443 when
+browsers should use it) side by side.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -161,6 +170,7 @@ cache is kept); the address needs a restart.
 | `rate_limit` | `{qps, burst}` | none | Per client token bucket (defaults 50 and 100 when the section is present); over it queries are dropped, not answered |
 | `max_in_flight` | int | `1024` | Queries being handled at once; beyond it UDP queries are dropped |
 | `log_queries` | bool | `false` | One `dns` access log line per query (client, name, type, rcode, source, bytes, duration). Query logs are personal data; leave off unless needed |
+| `doh_path` | path | `/dns-query` | DNS over HTTPS path on an encrypted listener; other paths answer 404 |
 
 `GET /v1/dns` and `xproxyctl dns` show per listener counters (queries,
 cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated,

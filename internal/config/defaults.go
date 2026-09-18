@@ -116,6 +116,7 @@ func applyDefaults(c *Config) {
 			if d.Cache == nil {
 				d.Cache = &DNSCache{}
 			}
+			setStr(&d.DoHPath, "/dns-query")
 			setInt(&d.Cache.MaxEntries, 10000)
 			setDur(&d.Cache.MinTTL, 5*time.Second)
 			setDur(&d.Cache.MaxTTL, time.Hour)
@@ -132,7 +133,13 @@ func applyDefaults(c *Config) {
 		}
 		ln := &s.Listeners[i]
 		if ln.Kind == "tcp" || ln.Kind == "dns" {
-			continue // no HTTP protocol or TLS defaults on a non-HTTP listener
+			// No HTTP protocol defaults on a non-HTTP listener; an
+			// encrypted dns listener still gets the TLS defaults.
+			if ln.Kind == "dns" && ln.TLS != nil {
+				setStr(&ln.TLS.MinVersion, "1.2")
+				setStr(&ln.TLS.ClientAuth, "none")
+			}
+			continue
 		}
 		if len(ln.Protocols) == 0 {
 			switch {

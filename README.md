@@ -115,8 +115,8 @@ an identifier from the access log to the upstream.
 - `kind: forward`: an explicit proxy for clients with CONNECT tunnels,
   a destination policy that refuses private ranges by default, and
   proxy credentials
-- `kind: dns`: a DNS proxy over UDP and TCP with a cache, block lists,
-  sinkholes, client allow lists and per client rate limits
+- `kind: dns`: a DNS proxy over UDP, TCP, TLS and HTTPS with a cache,
+  block lists, sinkholes, client allow lists and per client rate limits
 
 **Extensibility and platforms**
 

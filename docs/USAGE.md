@@ -937,6 +937,31 @@ the same block list and cache. `xproxyctl dns` shows the
 counters; `log_queries: true` writes every question to the access log
 when an investigation needs it.
 
+### Encrypted DNS for clients (DoT and DoH)
+
+```yaml
+server:
+  listeners:
+    - name: dns
+      address: "10.0.0.53:53"
+      kind: dns
+      dns: {upstreams: ["tls://9.9.9.9:853"], block_file: /etc/xproxy/dns/blocklist.txt}
+    - name: dns-tls
+      address: "10.0.0.53:853"
+      kind: dns
+      tls: {certificates: [{cert_file: /etc/xproxy/tls/dns.pem, key_file: /etc/xproxy/tls/dns-key.pem}]}
+      dns: {upstreams: ["tls://9.9.9.9:853"], block_file: /etc/xproxy/dns/blocklist.txt, doh_path: /dns-query}
+```
+
+Phones and browsers with private DNS settings reach the second
+listener over TLS (`dns.example.com` on 853) or HTTPS
+(`https://dns.example.com:853/dns-query`); the first keeps serving the
+network's plain resolvers. Both apply the same block list and share
+the counters, and `xproxyctl dns` shows `queries_dot` and
+`queries_doh` next to the UDP and TCP ones. For DoH on 443 next to web
+sites, a `doh` route on the https listener (see above) does the same
+through the http pipeline.
+
 ### Forward proxy for outbound clients (CONNECT)
 
 ```yaml
