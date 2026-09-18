@@ -79,7 +79,9 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Slowloris (slow headers) | `read_header_timeout`, default 10 s (`TestSlowHeaderTimeout`) |
 | Slow body / slow read | `read_timeout`, `write_timeout`, `idle_timeout`; upstream `total` timeout |
 | Request flood | `max_concurrent_requests` (503, no queue); keyed rate limits; tarpit bounded by the client context so a disconnected attacker frees the goroutine |
+| Tarpits used to fill the concurrency ceiling | A tarpitted request releases its concurrency slot and is bounded by `max_tarpits`; above that it is rejected immediately (SR-1, `TestTarpitDoesNotHoldConcurrency`) |
 | Memory exhaustion via many rate limit keys | Bounded shards with eviction (`TestKeyedLimiterBound`) |
+| Rate limit bypass by rotating a header keyed value | A missing header falls back to the client address; once a shard is full of active keys the client address decides instead of a fresh burst per value (SR-2, `TestHeaderRateLimitRotation`) |
 | Large bodies | `max_body_bytes` globally and per route, checked on `Content-Length` and enforced by `MaxBytesReader` |
 | Long URIs and huge headers | `max_uri_length` (414), `max_header_bytes` (431) |
 | Health check amplification against upstreams | Jittered probes, bounded drain of probe responses |
@@ -163,6 +165,7 @@ data plane does not trust it more than any other socket client.
 | Cross-site request forgery | Custom header required on every state change, `Sec-Fetch-Site` and `Origin` checked, `SameSite=Strict` cookie |
 | Cross-site scripting and injection | No inline script or style, `script-src 'self'` only, all data rendered through `textContent`, JSON responses `nosniff`, `frame-ancestors 'none'` |
 | Viewer escalates to operator | Roles enforced on the server by method: non-`GET` requires the operator role, independent of anything in the page |
+| Group member plants a symbolic link in `/etc/xproxy` | Backups open with `O_NOFOLLOW`, temporary files are created exclusively with random names (SR-3) |
 | Compromised GUI process edits the configuration | Accepted within the design: the GUI user owns the file for that purpose; every save is validated, atomic, backed up and audited; the data plane still validates on reload and keeps the old generation on error; listeners, cluster and ACME changes need a restart the polkit rule limits to one verb on one unit |
 | Compromised GUI process reaches the data plane | Only through the same socket and API as `xproxyctl`, with its own uid in the audit log; it cannot bind data ports, read the account key or change the units |
 | Log disclosure through the GUI | Logs are readable by viewers by design (same as the `xproxy` group); redaction applies before the file is written, so the GUI sees redacted data |

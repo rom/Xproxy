@@ -466,13 +466,24 @@ func htpasswd(path, name string, in io.Reader, out, errOut io.Writer) int {
 		return 1
 	}
 	lines = append(lines, name+":"+hash)
-	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp")
-	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp") // O_EXCL, never follows a link
+	if err != nil {
 		_, _ = fmt.Fprintln(errOut, "error:", err)
 		return 1
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if _, err := tmp.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		_ = os.Remove(tmp.Name())
 		_, _ = fmt.Fprintln(errOut, "error:", err)
 		return 1
 	}

@@ -71,7 +71,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ID | Requirement | Prio | Release | Architectural consequence |
 |----|-------------|------|---------|---------------------------|
 | ASR-Q1 | Every parser and matcher has a fuzz target | M | MVP | Go native fuzzing; targets run in CI |
-| ASR-Q2 | Core packages hold at least 80 percent statement coverage, measured under the race detector | M | 1.0 | Coverage gate in CI |
+| ASR-Q2 | Core packages hold at least 80 percent statement coverage, measured under the race detector | M | 1.0 (delivered in phase 3) | Coverage gate in CI (`make cover-gate`), mutation testing on the admission packages, chaos tests |
 | ASR-Q3 | End-to-end tests drive the real binary | M | MVP (in package tests), binary tests at 1.0 | Tests start listeners on port 0 and read back addresses from the server |
 | ASR-Q4 | Load and soak tests with published numbers | S | 1.0 | k6 or vegeta scripts in `test/load`; results in TESTS.md |
 | ASR-Q5 | Documentation is part of the definition of done | M | MVP | `docs/` is versioned with the code; CONFIG.md is checked against the example configuration by a test |
@@ -111,6 +111,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S2 (shedding, challenge) | `internal/shed`, `internal/challenge` | `internal/shed/shed_test.go`, `internal/challenge/challenge_test.go`, `TestAdaptiveShedding`, `TestChallengeGate` |
 | ASR-S9, O2 | `internal/logging`, `internal/mgmt` | `internal/logging/logging_test.go`, `internal/mgmt/mgmt_test.go` |
 | ASR-S11, P4 | `internal/tlsconf` | `internal/tlsconf/tlsconf_test.go`, `TestTLSAndRedirect` |
+| ASR-Q2 | `test/covergate`, `.gremlins.yaml`, `internal/proxy/chaos_test.go` | CI `test` job (`make cover-gate`), CI `mutate` job, `TestChaos*` |
 | ASR-O6 | `internal/filter` registry, `internal/filters` | `TestRegistry`, `TestFilters`, `TestFiltersConfig`, EXTENDING.md |
 | ASR-P1 | `internal/router`, `internal/upstream` health bounds, `internal/proxy` generations | `TestScale` (`make scale`), `BenchmarkMatch1000Hosts`, PERFORMANCE.md |
 | ASR-P2 | handler path, `test/load` | `make load` baseline in PERFORMANCE.md; 8 core reference run open |

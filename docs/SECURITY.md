@@ -241,9 +241,10 @@ to report a vulnerability. The threat analysis behind the controls is in
 
 Phase 2 (remaining): TUI.
 
-Phase 3 (ICAP, ACME, the GUI, the SELinux policy and the RPMs delivered):
-coverage and mutation gates, external security review, AVC validation on
-a Fedora VM in CI.
+Phase 3 (ICAP, ACME, the GUI, the SELinux policy, the RPMs, scale
+validation, the middleware interface, the quality gates and the internal
+security review delivered, see SECURITY_REVIEW.md): external security
+review, AVC validation on a Fedora VM in CI.
 
 ## Secure development
 
@@ -268,10 +269,12 @@ a Fedora VM in CI.
 
 ## Release checklist
 
-1. `make check` green; `make fuzz FUZZTIME=5m` green.
-2. `govulncheck` clean; dependency versions reviewed.
+1. `make check`, `make cover-gate` and `make mutate` green; `make fuzz
+   FUZZTIME=5m` green.
+2. `govulncheck` clean (CI `security` job); dependency versions reviewed.
 3. THREAT_MODEL.md reviewed against the change log; new threats have
-   mitigations or accepted risks.
+   mitigations or accepted risks; SECURITY_REVIEW.md updated with the
+   findings of the release's review.
 4. Example configuration validates; CONFIG.md matches the schema.
 5. Deployed on a Fedora host with SELinux enforcing; `systemd-analyze
    security xproxy.service` scores in the "OK" band; `ausearch -m AVC` is

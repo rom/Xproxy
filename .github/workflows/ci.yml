@@ -17,7 +17,7 @@ jobs:
       - run: make fmt
       - run: make vet
       - run: make test-race
-      - run: make cover
+      - run: make cover-gate
       - run: make build
       - run: ./bin/xproxy -version && ./bin/xproxyctl version && ./bin/xproxy-admin version
   package:
@@ -40,6 +40,15 @@ jobs:
       - run: xproxy -config /etc/xproxy/xproxy.yaml -validate || true   # example config references certificate files that do not exist here
       - run: systemd-analyze verify /usr/lib/systemd/system/xproxy.service /usr/lib/systemd/system/xproxy-admin.service || true
       - run: rpm -q --scripts xproxy xproxy-admin && rpm -qlp ./rpmbuild/RPMS/noarch/xproxy-selinux-*.rpm
+  mutate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+      - run: make mutate
   lint:
     runs-on: ubuntu-latest
     steps:

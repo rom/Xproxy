@@ -3,6 +3,7 @@ package netutil
 import (
 	"net/http"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -92,4 +93,29 @@ func FuzzHost(f *testing.F) {
 	f.Fuzz(func(t *testing.T, s string) {
 		_ = Host(s)
 	})
+}
+
+// TestHostEdges pins boundaries mutation testing found unobserved.
+func TestHostEdges(t *testing.T) {
+	long := strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 61)
+	if len(long) != 253 {
+		t.Fatalf("length %d", len(long))
+	}
+	cases := map[string]string{
+		":80":              "",
+		"az09-_.example":   "az09-_.example",
+		"A.Z":              "a.z",
+		long:               long,
+		long + "a":         "",
+		"[":                "",
+		"[::1]:443":        "[::1]",
+		"[::1]":            "[::1]",
+		"example.com:8080": "example.com",
+		"a{b}.example":     "",
+	}
+	for in, want := range cases {
+		if got := Host(in); got != want {
+			t.Errorf("Host(%q) = %q, want %q", in, got, want)
+		}
+	}
 }

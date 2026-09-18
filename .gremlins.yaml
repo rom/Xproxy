@@ -1,0 +1,9 @@
+# Mutation testing configuration (github.com/go-gremlins/gremlins).
+# Run with `make mutate`; the packages and thresholds are in the Makefile.
+unleash:
+  workers: 2
+  timeout-coefficient: 3
+  # Efficacy is killed / (killed + lived). Timed out mutants are not
+  # counted; keep the machine otherwise idle for a reliable number.
+  threshold-efficacy: 75
+  threshold-mcover: 90

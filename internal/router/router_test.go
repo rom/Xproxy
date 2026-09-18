@@ -104,3 +104,35 @@ func BenchmarkNew1000Hosts(b *testing.B) {
 		New(rs)
 	}
 }
+
+// TestTieBreaks pins the ordering rules that mutation testing found
+// unobserved: equal prefixes are ordered by priority, then by position.
+func TestTieBreaks(t *testing.T) {
+	rs := []config.Route{
+		{Name: "first", Hosts: []string{"h.test"}, Paths: []string{"/x/"}, Upstream: "u"},
+		{Name: "second", Hosts: []string{"h.test"}, Paths: []string{"/x/"}, Upstream: "u"},
+		{Name: "high", Hosts: []string{"h.test"}, Paths: []string{"/x/"}, Priority: 5, Upstream: "u"},
+	}
+	r := New(rs)
+	if m := r.Match("h.test", "/x/y", "GET"); m == nil || m.Cfg.Name != "high" {
+		t.Fatalf("priority should win: %v", m)
+	}
+	r = New(rs[:2])
+	if m := r.Match("h.test", "/x/y", "GET"); m == nil || m.Cfg.Name != "first" {
+		t.Fatalf("earlier route should win a tie: %v", m)
+	}
+}
+
+// TestWildcardHostEdges: a wildcard never matches a host that is only the
+// suffix, a host starting with a dot, or a host ending with a dot.
+func TestWildcardHostEdges(t *testing.T) {
+	r := New([]config.Route{{Name: "w", Hosts: []string{"*.example.com"}, Paths: []string{"/"}, Upstream: "u"}})
+	if r.Match("a.example.com", "/", "GET") == nil {
+		t.Fatal("wildcard should match a subdomain")
+	}
+	for _, h := range []string{"example.com", ".example.com", "example.com.", "a.example.com.", "", "."} {
+		if m := r.Match(h, "/", "GET"); m != nil {
+			t.Errorf("host %q matched %s", h, m.Cfg.Name)
+		}
+	}
+}

@@ -134,18 +134,27 @@ Delivered so far:
   kinds `header_guard` and `basic_auth` with `xproxyctl htpasswd`
   (ASR-O6, AMR-013)
 
+- Quality gates: `make cover-gate` (whole suite coverage under race, core
+  packages 80 % together and 60 % each, in CI), `make mutate` (gremlins
+  on limits, router and netutil at 87 %, 81 % and 98 % efficacy after
+  tests for the survivors), chaos tests (reload storm, flapping endpoint,
+  upstream death mid response, full log disk, certificate rotation) with
+  the two observability fixes they produced (ASR-Q2)
+
+- Security review against THREAT_MODEL.md (SECURITY_REVIEW.md): five
+  findings, two medium (tarpits holding concurrency slots, header keyed
+  rate limit bypass by value rotation), fixed with regression tests;
+  residual risks recorded
+
 Remaining:
 
+- External security review and release signing (checksums and a signed
+  tag) at the 1.0 cut
 - Fedora VM runner with SELinux enforcing for AVC checks and
   `systemd-analyze security` (the container job cannot load policy)
 - The 8 core reference throughput number with a remote load generator,
   TLS, HTTP/2, HTTP/3 and WAF cost per request, the 24 hour soak
   (ASR-P2)
-- Coverage gate at 80 percent under race, mutation testing pass on the
-  limiters and the router, chaos tests (upstream flaps, certificate
-  expiry, disk full on logs) (ASR-Q2)
-- Security review against THREAT_MODEL.md, hardening guide, config
-  reference generator, changelog, release signing
 
 Exit criterion: release checklist in SECURITY.md complete; all ASR entries
 marked 1.0 satisfied and traced to tests.

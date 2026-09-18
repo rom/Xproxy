@@ -3,6 +3,7 @@ package proxy
 import (
 	"io"
 	"sort"
+	"time"
 
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/version"
@@ -110,6 +111,18 @@ func (s *Server) WriteMetrics(w io.Writer) error {
 		}
 	}
 
+	e.Counter("xproxy_log_write_errors_total", "Failed log file writes (disk full); events were dropped.", nil, float64(sn.LogWriteErrors))
+	{
+		exp := s.CertificateExpiry()
+		names := make([]string, 0, len(exp))
+		for n := range exp {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			e.Gauge("xproxy_certificate_expiry_seconds", "Seconds until the earliest file certificate of the listener expires.", L{"listener": n}, time.Until(exp[n]).Seconds())
+		}
+	}
 	for _, fs := range rt.filterStatus() {
 		e.Counter("xproxy_filter_denied_total", "Requests denied by a configured filter.", L{"filter": fs.Name, "kind": fs.Kind}, float64(fs.Denied))
 	}

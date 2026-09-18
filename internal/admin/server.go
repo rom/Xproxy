@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
@@ -798,11 +799,21 @@ func writeFileAtomic(path string, data, previous []byte) error {
 	}
 	dir := filepath.Dir(path)
 	if previous != nil {
-		if err := os.WriteFile(path+".bak", previous, mode); err != nil {
+		// O_NOFOLLOW: the backup name must be a regular file, never a link
+		// planted by another member of the group into a file we can write.
+		bf, err := os.OpenFile(path+".bak", os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, mode) //nolint:gosec // next to the configuration file
+		if err != nil {
+			return fmt.Errorf("backup: %w", err)
+		}
+		if _, err := bf.Write(previous); err != nil {
+			_ = bf.Close()
+			return fmt.Errorf("backup: %w", err)
+		}
+		if err := bf.Close(); err != nil {
 			return fmt.Errorf("backup: %w", err)
 		}
 	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp") // O_EXCL: never follows an existing link
 	if err != nil {
 		return err
 	}

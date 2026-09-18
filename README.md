@@ -6,8 +6,9 @@ binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
 Status: **phase 3 in progress** (ICAP, ACME, the web GUI, the SELinux
-policy, RPM packaging and scale validation delivered; coverage gates, the
-security review and the reference hardware numbers remain). Phases 1 and 2 are complete. See
+policy, RPM packaging, scale validation, the middleware interface, the
+quality gates and the internal security review delivered; the Fedora VM
+runner, the reference hardware numbers and the external review remain). Phases 1 and 2 are complete. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today
@@ -90,6 +91,7 @@ curl -i http://127.0.0.1:8080/
 | [docs/SETUP.md](docs/SETUP.md) | Installation on Fedora |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured scale and throughput |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Writing middleware against the stable interface |
+| [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md) | Findings of the phase 3 security review |
 | [docs/HARDENING.md](docs/HARDENING.md) | Host hardening checklist |
 | [docs/TESTS.md](docs/TESTS.md) | Test harness and coverage |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases to 1.0 and beyond |
@@ -99,7 +101,8 @@ curl -i http://127.0.0.1:8080/
 
 ```sh
 make check          # fmt, vet, race tests, lint
-make cover          # coverage under race
+make cover-gate     # coverage under race with the 80 % gate
+make mutate         # mutation testing on the admission packages
 make fuzz           # all fuzz targets, 20s each
 ```
 

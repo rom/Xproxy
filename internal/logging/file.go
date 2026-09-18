@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // fileWriter is an append-only writer with optional size based rotation.
@@ -17,6 +19,10 @@ type fileWriter struct {
 	size     int64
 	maxSize  int64
 	maxFiles int
+	// errs counts failed writes (disk full, revoked file); shared with the
+	// Logs that owns the writer so the data plane can expose it.
+	errs     *atomic.Uint64
+	lastWarn time.Time
 }
 
 func newFileWriter(path string, maxSize int64, maxFiles int) (*fileWriter, error) {
@@ -59,6 +65,17 @@ func (w *fileWriter) Write(p []byte) (int, error) {
 	}
 	n, err := w.f.Write(p)
 	w.size += int64(n)
+	if err != nil {
+		if w.errs != nil {
+			w.errs.Add(1)
+		}
+		// A full disk must never take the data plane down: the event is
+		// dropped, counted, and reported to stderr at most once a minute.
+		if now := time.Now(); now.Sub(w.lastWarn) > time.Minute {
+			w.lastWarn = now
+			fmt.Fprintf(os.Stderr, "xproxy: log write to %s failed: %v (events are being dropped)\n", w.path, err)
+		}
+	}
 	return n, err
 }
 
