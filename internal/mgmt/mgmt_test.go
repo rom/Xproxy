@@ -2,15 +2,22 @@ package mgmt
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/testutil"
 )
 
 func TestBanAPI(t *testing.T) {
@@ -144,5 +151,120 @@ routes:
 	m2 := New(config.Management{Socket: sock, SocketMode: "0600"}, p, logging.Discard(), Actions{})
 	if err := m2.Start(); err == nil {
 		t.Fatal("in-use socket accepted")
+	}
+}
+
+func TestMetricsEndpoints(t *testing.T) {
+	cfg, err := config.Parse([]byte(`
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+upstreams:
+  - name: u
+    endpoints: [{address: "127.0.0.1:1"}]
+routes:
+  - name: r
+    upstream: u
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := proxy.New(cfg, logging.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(t.TempDir(), "m.sock")
+	m := New(config.Management{Socket: sock, SocketMode: "0600"}, p, logging.Discard(), Actions{})
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Shutdown(context.Background())
+	c := NewClient(sock)
+	b, err := c.Metrics()
+	if err != nil || !strings.Contains(string(b), "xproxy_requests_total 0") {
+		t.Fatalf("metrics: %v %s", err, b)
+	}
+	sr, err := c.Series(time.Hour, 10)
+	if err != nil || sr.IntervalSeconds != 10 || len(sr.Names) == 0 {
+		t.Fatalf("series: %v %+v", err, sr)
+	}
+	if _, err := c.Raw("/v1/series?since=bogus"); err == nil {
+		t.Fatal("bad since accepted")
+	}
+}
+
+func TestMetricsListener(t *testing.T) {
+	cfg, _ := config.Parse([]byte(`
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+upstreams:
+  - name: u
+    endpoints: [{address: "127.0.0.1:1"}]
+routes:
+  - name: r
+    upstream: u
+`))
+	p, _ := proxy.New(cfg, logging.Discard())
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	srvCert, srvKey := ca.Issue(t, dir, "metrics.test")
+	cliCert, cliKey := ca.Issue(t, dir, "prometheus")
+
+	// Plain listener with an allow list that excludes the caller.
+	ml, err := NewMetricsListener(config.Metrics{Listen: "127.0.0.1:0", AllowCIDRs: []string{"10.0.0.0/8"}}, p, logging.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ml.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer ml.Shutdown(context.Background())
+	resp, err := http.Get("http://" + ml.Addr() + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatalf("acl: %d", resp.StatusCode)
+	}
+
+	// TLS with client certificates: no certificate is refused, a valid one
+	// is served; other paths are 404.
+	ml2, err := NewMetricsListener(config.Metrics{Listen: "127.0.0.1:0", TLS: &config.MetricsTLS{CertFile: srvCert, KeyFile: srvKey, ClientCAFile: ca.Path}}, p, logging.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ml2.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer ml2.Shutdown(context.Background())
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(ca.CertPEM)
+	noCert := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "metrics.test", MinVersion: tls.VersionTLS12}}}
+	if resp, err := noCert.Get("https://" + ml2.Addr() + "/metrics"); err == nil {
+		resp.Body.Close()
+		t.Fatal("served without client certificate")
+	}
+	pair, _ := tls.LoadX509KeyPair(cliCert, cliKey)
+	withCert := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "metrics.test", Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}}}
+	resp, err = withCert.Get("https://" + ml2.Addr() + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "xproxy_build_info") {
+		t.Fatalf("mtls metrics: %d", resp.StatusCode)
+	}
+	resp, _ = withCert.Get("https://" + ml2.Addr() + "/v1/status")
+	resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("management API exposed on metrics listener: %d", resp.StatusCode)
+	}
+	// Disabled listener is a no-op.
+	ml3, _ := NewMetricsListener(config.Metrics{}, p, logging.Discard())
+	if err := ml3.Start(); err != nil || ml3.Addr() != "" {
+		t.Fatal("disabled listener")
 	}
 }

@@ -296,6 +296,8 @@ func applyDefaults(c *Config) {
 			setStr(&p.Source, "bearer")
 		}
 	}
+	setDur(&c.Metrics.SampleInterval, 10*time.Second)
+	setDur(&c.Metrics.Retention, time.Hour)
 	if ch := c.Challenge; ch != nil {
 		setInt(&ch.Difficulty, 16)
 		setDur(&ch.TTL, time.Hour)

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/rom/xproxy/internal/ban"
@@ -103,6 +104,22 @@ func (c *Client) Post(path string) error {
 func (c *Client) ClusterStatus() (*cluster.Status, error) {
 	var st cluster.Status
 	return &st, c.do("GET", "/v1/cluster", &st)
+}
+
+// Metrics fetches the Prometheus exposition.
+func (c *Client) Metrics() ([]byte, error) {
+	var b []byte
+	return b, c.do("GET", "/metrics", &b)
+}
+
+// Series fetches sampled series since the given duration ago.
+func (c *Client) Series(since time.Duration, limit int) (*SeriesResponse, error) {
+	var out SeriesResponse
+	q := "/v1/series?since=" + since.String()
+	if limit > 0 {
+		q += "&limit=" + strconv.Itoa(limit)
+	}
+	return &out, c.do("GET", q, &out)
 }
 
 // Bans lists active bans.

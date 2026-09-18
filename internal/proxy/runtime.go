@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"sync/atomic"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
@@ -48,6 +49,7 @@ type compiledRoute struct {
 	wafMode    string
 	class      shed.Class
 	challenge  *config.RouteChallenge // nil or mode off means no gate
+	counts     [5]atomic.Uint64       // 2xx, 3xx, 4xx, 5xx, denied
 }
 
 // wafSelection returns the WAF profile and mode for a route.

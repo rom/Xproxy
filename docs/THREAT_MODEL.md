@@ -135,6 +135,8 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Stale socket hijack | Existing socket is dialled before removal; a live socket aborts start-up |
 | Reload of a malicious configuration | The API only reloads the operator's configuration file, it does not accept configuration bodies; the file must not be world writable |
 | Denial of service on the management socket | Separate `http.Server` with its own timeouts and a 1 MiB body cap; not reachable from the network |
+| Scraping metrics from the network | Optional listener serves only `/metrics`, has a source allow list, optional mutual TLS, and validation refuses all-interfaces binds without a client CA; metrics contain counts and configuration names, never client data |
+| Metric label cardinality explosion | Labels come from configuration only (routes, upstreams, endpoints, fixed reasons); per-route counters can be switched off |
 
 ## Boundary 4: Host and files
 

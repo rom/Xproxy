@@ -137,6 +137,15 @@ to report a vulnerability. The threat analysis behind the controls is in
   paths only. Failed verifications are security events that feed ban
   triggers under the `challenge` category.
 
+### Metrics
+
+- The management socket serves `/metrics` with the kernel enforced access
+  of the socket. The optional TCP endpoint serves nothing but `/metrics`,
+  refuses sources outside `allow_cidrs`, can require mutual TLS, and
+  cannot be bound to all interfaces without a client CA.
+- Label cardinality is bounded by configuration (routes, upstreams,
+  endpoints); no client controlled value becomes a label.
+
 ### Cluster
 
 - Mutual TLS 1.3 only; every peer must present a certificate from the
@@ -200,7 +209,7 @@ to report a vulnerability. The threat analysis behind the controls is in
 
 ## Planned controls (see ROADMAP.md)
 
-Phase 2 (remaining): Prometheus metrics, TUI.
+Phase 2 (remaining): TUI.
 
 Phase 3: ICAP scanning, ACME, full SELinux policy in an RPM, GUI with role
 separation, coverage and mutation gates, external security review.

@@ -100,6 +100,7 @@ func (v *validator) config(c *Config) {
 	if c.Shedding != nil {
 		v.shedding(c.Shedding)
 	}
+	v.metrics(&c.Metrics)
 	if c.Challenge != nil {
 		v.challenge(c.Challenge)
 	}
@@ -784,6 +785,42 @@ func (v *validator) cluster(c *Cluster) {
 	}
 	if c.MaxKeysPerReport < 1 || c.MaxKeysPerReport > 65536 {
 		v.errf("cluster.max_keys_per_report: must be 1..65536")
+	}
+}
+
+func (v *validator) metrics(m *Metrics) {
+	if m.Listen != "" {
+		host, _, err := net.SplitHostPort(m.Listen)
+		if err != nil {
+			v.errf("metrics.listen: %q: %v", m.Listen, err)
+		} else if (host == "" || host == "0.0.0.0" || host == "::") && (m.TLS == nil || m.TLS.ClientCAFile == "") {
+			v.errf("metrics.listen: binding all interfaces requires tls with client_ca_file")
+		}
+	}
+	for i, c := range m.AllowCIDRs {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("metrics.allow_cidrs[%d]: %q is not a CIDR", i, c)
+		}
+	}
+	if t := m.TLS; t != nil {
+		if t.CertFile == "" || t.KeyFile == "" {
+			v.errf("metrics.tls: cert_file and key_file are required")
+		} else {
+			v.file("metrics.tls.cert_file", t.CertFile)
+			v.file("metrics.tls.key_file", t.KeyFile)
+		}
+		if t.ClientCAFile != "" {
+			v.file("metrics.tls.client_ca_file", t.ClientCAFile)
+		}
+	}
+	if m.SampleInterval < Duration(1_000_000_000) || m.SampleInterval > Duration(300_000_000_000) {
+		v.errf("metrics.sample_interval: must be between 1s and 5m")
+	}
+	if m.Retention < m.SampleInterval*2 || m.Retention > Duration(7*24*3600*1e9) {
+		v.errf("metrics.retention: must be at least twice sample_interval and at most 7d")
+	}
+	if m.Retention/m.SampleInterval > 100_000 {
+		v.errf("metrics.retention: retention / sample_interval must not exceed 100000 points")
 	}
 }
 

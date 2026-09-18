@@ -64,6 +64,7 @@ internal/shed       adaptive load shedding by priority class
 internal/challenge  browser proof-of-work challenge
 internal/h3         HTTP/3 over QUIC (the only package importing quic-go)
 internal/jwt        JSON Web Token validation on the standard library
+internal/metrics    Prometheus text encoder, histogram, sampled series
 internal/version    build information
 deploy/             systemd units, sysctl, SELinux, logrotate, example config
 docs/               this documentation
@@ -76,7 +77,8 @@ keeps the API surface at exactly two binaries.
 Dependency direction (arrows point at the importer's dependency):
 
 ```
-cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster, shed, challenge, h3, jwt}
+cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster, shed, challenge, h3, jwt, metrics}
+                       metrics  -> (standard library only)
                        jwt      -> {filter, config}
                        h3       -> {limits, config}
                        cluster  -> {ban, limits, config}
@@ -303,9 +305,28 @@ Endpoints:
 | POST | `/v1/reload` | validate and apply the configuration file |
 | POST | `/v1/reload-certs` | re-read certificates |
 | POST | `/v1/logs/reopen` | reopen log files |
+| GET | `/v1/bans`, POST `/v1/bans`, DELETE `/v1/bans?target=` | ban list |
+| GET | `/v1/cluster` | cluster peers and counters |
+| GET | `/metrics` | Prometheus exposition |
+| GET | `/v1/series?since=10m&limit=60` | sampled series for graphs |
 
-1.0 adds `/metrics` (Prometheus), ban management, the time series ring
-buffer and configuration editing with validation, all on the same socket.
+An optional TCP listener (`metrics.listen`) serves `/metrics` only, with a
+source allow list and optional TLS with client certificates; it never
+carries the management API. 1.0 adds configuration editing with validation
+on the socket.
+
+### Metrics and series
+
+Counters live in atomics that the request path already updates; the
+exposition (`Server.WriteMetrics`) is assembled on each scrape from the
+status snapshot, upstream statistics, shedder, cluster, two histograms
+(request duration, upstream time to first byte) and per-route outcome
+counters, with a small text encoder in `internal/metrics` (no client
+library, per AMR-004). Label cardinality is bounded by configuration:
+routes, upstreams and endpoints. A sampler goroutine reads the same
+snapshot every `sample_interval`, turns counters into per-second rates and
+stores a fixed set of series in a ring buffer sized by `retention`; the
+TUI and GUI graph from it without external storage (AMR-026).
 
 ## 11. Filters (middleware)
 

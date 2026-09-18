@@ -23,6 +23,7 @@ import (
 	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
+	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/shed"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
@@ -42,6 +43,7 @@ type Server struct {
 	cluster     atomic.Pointer[cluster.Node]
 	shedder     atomic.Pointer[shed.Shedder]
 	challenger  atomic.Pointer[challenge.Challenger]
+	sampler     *metrics.Sampler
 
 	mu        sync.Mutex
 	listeners []*boundListener
@@ -61,8 +63,10 @@ type boundListener struct {
 // New creates a server for cfg. Listeners are not opened until Start.
 func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	s := &Server{
-		logs:        logs,
-		stats:       &Stats{StartedAt: time.Now()},
+		logs: logs,
+		stats: &Stats{StartedAt: time.Now(),
+			RequestDuration: metrics.NewHistogram(metrics.DurationBuckets),
+			UpstreamTTFB:    metrics.NewHistogram(metrics.DurationBuckets)},
 		concurrency: limits.NewConcurrency(cfg.Server.Limits.MaxConcurrentRequests),
 		connLimiter: limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
 	}
@@ -101,6 +105,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		return nil, err
 	}
 	s.rt.Store(rt)
+	s.sampler = metrics.NewSampler(seriesCounters, seriesGauges, cfg.Metrics.SampleInterval.D(), cfg.Metrics.Retention.D(), s.sample)
 	if cfg.Cluster != nil {
 		node, err := cluster.New(cfg.Cluster, rateSource{s: s}, logs.Error)
 		if err != nil {
@@ -229,6 +234,7 @@ func (s *Server) Start() error {
 		_ = pc.Close()
 	}
 	s.rt.Load().start()
+	s.sampler.Start()
 	for _, bl := range s.listeners {
 		go s.serve(bl)
 		if bl.h3 != nil {
@@ -541,6 +547,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}(bl)
 	}
 	wg.Wait()
+	if s.started {
+		s.sampler.Stop()
+	}
 	if node := s.cluster.Load(); node != nil {
 		node.Stop()
 	}

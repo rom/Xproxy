@@ -101,6 +101,18 @@ func run(args []string) int {
 		_ = srv.Shutdown(ctx)
 		return 1
 	}
+	ml, err := mgmt.NewMetricsListener(cfg.Metrics, srv, logs)
+	if err == nil {
+		err = ml.Start()
+	}
+	if err != nil {
+		logs.Error.Error("metrics listener failed", "err", err.Error())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = m.Shutdown(ctx)
+		_ = srv.Shutdown(ctx)
+		return 1
+	}
 	sdNotify("READY=1")
 
 	sigs := make(chan os.Signal, 4)
@@ -119,6 +131,7 @@ func run(args []string) int {
 			ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout.D())
 			defer cancel()
 			_ = m.Shutdown(ctx)
+			_ = ml.Shutdown(ctx)
 			if err := srv.Shutdown(ctx); err != nil {
 				logs.Error.Warn("shutdown incomplete", "err", err.Error())
 				return 1

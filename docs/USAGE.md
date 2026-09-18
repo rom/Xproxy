@@ -54,6 +54,8 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `unban TARGET` | Remove a ban |
 | `cluster` | Peers, inbound connections and gossip counters |
 | `spki CERT.pem` | Print the `spki_pins` value of a certificate |
+| `metrics` | Print the Prometheus exposition |
+| `series` | Print sampled series; `-since 10m`, `-last 30`, `-json` |
 | `version` | Print version |
 
 `-json` switches `status`, `stats` and `upstreams` to machine readable
@@ -402,6 +404,35 @@ requires one only while the load level is at or above 0.5, so a flood of
 plain HTTP clients is turned away with a static page while browsers carry
 on after a short delay. Do not gate API routes: clients without JavaScript
 cannot pass. Give monitoring systems `exempt_cidrs`.
+
+## Metrics and graphs
+
+Scrape through the socket with a local exporter, or enable the TCP
+endpoint for Prometheus:
+
+```yaml
+metrics:
+  listen: 10.0.0.1:9100
+  allow_cidrs: [10.0.5.0/24]          # the Prometheus servers
+  tls:
+    cert_file: /etc/xproxy/certs/metrics.pem
+    key_file: /etc/xproxy/certs/metrics-key.pem
+    client_ca_file: /etc/xproxy/certs/monitoring-ca.pem
+```
+
+```sh
+xproxyctl metrics | grep -E '^xproxy_(requests_total|load_level|denied_total)'
+xproxyctl series -since 30m -last 12
+```
+
+Useful expressions: `rate(xproxy_denied_total[5m])` by `reason` for attack
+activity, `histogram_quantile(0.99, rate(xproxy_upstream_ttfb_seconds_bucket[5m]))`
+for backend health, `xproxy_shedding` to alert on load shedding,
+`xproxy_upstream_endpoint_healthy == 0` for dead endpoints,
+`xproxy_log_dropped_total` for a collector problem. The `series` command
+shows the same numbers the TUI and GUI graph, sampled in process for the
+configured retention, so a graph is available on a host with no
+monitoring stack at all.
 
 ## Logs
 

@@ -65,6 +65,8 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("POST /v1/bans", s.addBan)
 	mux.HandleFunc("DELETE /v1/bans", s.removeBan)
 	mux.HandleFunc("GET /v1/cluster", s.clusterStatus)
+	mux.HandleFunc("GET /metrics", s.serveMetrics)
+	mux.HandleFunc("GET /v1/series", s.serveSeries)
 	s.http = &http.Server{
 		Handler:           http.MaxBytesHandler(mux, 1<<20),
 		ReadHeaderTimeout: 5 * time.Second,

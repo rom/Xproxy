@@ -20,6 +20,8 @@
 //	unban TARGET   remove a ban
 //	cluster        show cluster peers and counters
 //	spki FILE      print the spki_pins value for a PEM certificate
+//	metrics        print the Prometheus exposition
+//	series         print sampled series (-since 10m -last 20)
 //	version        print version
 package main
 
@@ -50,7 +52,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster spki version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster spki metrics series version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -174,6 +176,43 @@ func run(args []string, out, errOut io.Writer) int {
 			return 2
 		}
 		return tail(*cfgPath, fs.Arg(1), out, errOut)
+	case "metrics":
+		b, err := c.Metrics()
+		if err != nil {
+			return fail(err)
+		}
+		_, _ = out.Write(b)
+		return 0
+	case "series":
+		sf := flag.NewFlagSet("series", flag.ContinueOnError)
+		sf.SetOutput(errOut)
+		since := sf.Duration("since", 10*time.Minute, "how far back")
+		last := sf.Int("last", 30, "at most this many points")
+		if err := sf.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		sr, err := c.Series(*since, *last)
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, sr)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprint(tw, "TIME")
+		for _, n := range sr.Names {
+			_, _ = fmt.Fprintf(tw, "\t%s", n)
+		}
+		_, _ = fmt.Fprintln(tw)
+		for _, p := range sr.Points {
+			_, _ = fmt.Fprint(tw, p.Time.Local().Format("15:04:05"))
+			for _, v := range p.Values {
+				_, _ = fmt.Fprintf(tw, "\t%.2f", v)
+			}
+			_, _ = fmt.Fprintln(tw)
+		}
+		_ = tw.Flush()
+		return 0
 	case "spki":
 		if fs.NArg() != 2 {
 			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl spki CERT.pem")

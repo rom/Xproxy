@@ -258,6 +258,48 @@ wins); then configuration order.
 | `timeout` | duration | none | Whole request deadline for this route |
 | `websocket` | bool | `false` | Allow `Upgrade` requests |
 
+## metrics
+
+The management socket always serves `/metrics` in Prometheus text format
+and `/v1/series` with sampled series. This section adds an optional TCP
+endpoint for scrapers and sizes the series buffer.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `listen` | host:port | `""` (disabled) | Serves only `/metrics`. Binding all interfaces requires `tls` with `client_ca_file` |
+| `allow_cidrs` | list | `[]` (any) | Scraper source addresses; others get 403 and a security event |
+| `tls.cert_file`, `tls.key_file` | path | | Make the endpoint HTTPS |
+| `tls.client_ca_file` | path | | Require client certificates from this CA (mutual TLS) |
+| `per_route` | bool | `true` | Expose `xproxy_route_requests_total{route,outcome}` (one series per route and outcome) |
+| `sample_interval` | duration | `10s` | Series sampling period; 1s to 5m |
+| `retention` | duration | `1h` | Series kept in memory; at most 100000 points |
+
+Exposed families: `xproxy_requests_total`, `xproxy_responses_total{class}`,
+`xproxy_denied_total{reason}`, `xproxy_bytes_in_total`,
+`xproxy_bytes_out_total`, `xproxy_waf_detected_total`,
+`xproxy_upstream_errors_total`, `xproxy_upstream_timeouts_total`,
+`xproxy_upstream_no_healthy_total`, `xproxy_client_aborts_total`,
+`xproxy_connections_rejected_total`, `xproxy_reloads_total{result}`,
+`xproxy_bans_total`, `xproxy_challenges_total{result}`,
+`xproxy_log_sent_total{sink}`, `xproxy_log_dropped_total{sink}`,
+`xproxy_connections_open`, `xproxy_requests_in_flight`,
+`xproxy_bans_active`, `xproxy_load_level`,
+`xproxy_upstream_latency_seconds`, `xproxy_shedding{class}`,
+`xproxy_cluster_peers`, `xproxy_cluster_peers_connected`,
+`xproxy_cluster_messages_total{direction,type}`,
+`xproxy_cluster_rejected_total`, `xproxy_request_duration_seconds`
+(histogram), `xproxy_upstream_ttfb_seconds` (histogram),
+`xproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}`,
+`xproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}`,
+`xproxy_route_requests_total{route,outcome}`, `xproxy_build_info`,
+`xproxy_uptime_seconds`, `xproxy_config_generation`.
+
+Series (per-second rates for counters, current values for gauges):
+`requests`, `responses_2xx`, `responses_4xx`, `responses_5xx`, `denied`,
+`shed`, `bytes_in`, `bytes_out`, `upstream_errors`, `open_connections`,
+`in_flight`, `load_level`, `upstream_latency_ms`, `bans_active`,
+`cluster_connected`.
+
 ## bans
 
 Present means enabled. Bans apply before routing; banned peers are closed
