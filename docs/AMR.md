@@ -469,6 +469,62 @@ restart; peers and intervals reload.
 
 ---
 
+## AMR-022: Adaptive load shedding
+
+**Context.** AMR-016 layer 4 calls for shedding by priority so that an
+overloaded site keeps its critical paths.
+
+**Decision.** One load level in [0, 1] computed on demand as the maximum of
+the in-flight ratio and a latency level derived from the average upstream
+time to first byte over a sliding window of fixed buckets, reaching 1 at
+twice the target. Routes carry a priority class (low, normal, high,
+critical); each class has a threshold and is shed with an immediate 503
+while the level is at or above it, readmitted below threshold minus
+hysteresis. Critical is never shed.
+
+**Alternatives.** Gradient or AIMD concurrency limits per upstream
+(Netflix style): more precise but harder to reason about and to explain in
+a log line; may follow in 1.x per upstream. CoDel style queue delay:
+needs a queue, which AMR-007 forbids. Exponentially weighted averages:
+never drain when all traffic is shed, which deadlocks; the windowed
+average drains by construction.
+
+**Consequences.** Oscillation with a period near the window is possible
+under sustained overload; hysteresis and the drain make it bounded and
+visible. Latency observations require admitted traffic, which critical
+routes provide.
+
+**Status.** Accepted.
+
+---
+
+## AMR-023: Browser challenge
+
+**Context.** AMR-016 layer 4 calls for a challenge response for browsers.
+
+**Decision.** A self-contained proof-of-work challenge with no external
+service: a signed nonce, a script that searches for a SHA-256 preimage
+with N leading zero bits, and a signed cookie bound to the client address.
+Nonces are single use and expire; the key is persisted so a cluster shares
+verification. Routes choose `always` or `load` (above a level from the
+shedder). The script is served from a reserved path so the page carries a
+strict Content Security Policy.
+
+**Alternatives.** Third-party CAPTCHA services: external dependency,
+privacy and availability concerns. Cookie-only "JavaScript check" without
+work: trivially replayed by scripted clients. Client fingerprinting: 1.x
+(JA3/JA4) as a complementary signal, not a gate.
+
+**Consequences.** Clients without JavaScript cannot pass; the challenge is
+for browser routes only. Proof-of-work raises the attacker's cost linearly
+with difficulty and is not a guarantee against a determined actor with
+compute; combined with rate limits and bans it removes the cheap tier of
+floods.
+
+**Status.** Accepted.
+
+---
+
 ## AMR-018: Licence and name
 
 **Context.** The open items on licence and name were decided by the

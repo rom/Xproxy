@@ -64,10 +64,12 @@ Delivered so far:
   limits approximately cluster wide, ban and unban propagation with
   snapshots for new peers, bounded protocol, reload of peers in place,
   management view (ASR-S3, AMR-009, AMR-021)
+- Adaptive load shedding by priority class from in-flight ratio and
+  windowed upstream latency, with hysteresis and drain (AMR-022)
+- Browser proof-of-work challenge, always or under load, with signed
+  single-use nonces and address-bound cookies (AMR-023)
 
 Remaining:
-- Adaptive load shedding with priority classes per route; static challenge
-  page for browsers (AMR-016)
 - HTTP/3 over QUIC with address validation and Alt-Svc (ASR-F2, AMR-002)
 - Mutual TLS to upstreams, JWT validation, upstream HTTP/2 tuning (ASR-F9,
   F10)

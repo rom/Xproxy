@@ -286,6 +286,58 @@ expire after `peer_stale`, so losing a peer degrades to local limiting.
 
 The cluster listener can be socket activated with `FileDescriptorName=cluster`.
 
+## shedding
+
+Present means enabled. The load level is the larger of the in-flight
+ratio (`in_flight / max_concurrent_requests`) and the latency level
+(`(latency - target) / target`, capped at 1, where latency is the average
+upstream time to first byte over `window`). A class is shed with 503 while
+the level is at or above its threshold and admitted again once the level
+falls below the threshold minus `hysteresis`. Critical routes are never
+shed. A window without samples drains the latency signal, so shedding
+never locks in.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `target_latency` | duration | `250ms` | Upstream time to first byte the site is designed for |
+| `window` | duration | `10s` | Averaging window; 1s to 10m |
+| `low`, `normal`, `high` | float | `0.6`, `0.8`, `0.95` | Shed thresholds per class; must be non-decreasing |
+| `hysteresis` | float | `0.1` | Readmission margin below the threshold |
+| `retry_after` | duration | `2s` | `Retry-After` on shed responses |
+
+### routes[].priority_class
+
+`low`, `normal` (default), `high` or `critical`. Put health checks, login
+and payment on `critical` or `high`; search, feeds and exports on `low`.
+
+## challenge
+
+Present means the challenge engine is available; routes opt in with a
+`challenge` block. Unverified clients receive a 503 page with a signed
+nonce and a script that finds a SHA-256 proof of work, posts it to
+`/.xproxy/challenge`, and receives a signed cookie. Both reserved paths
+(`/.xproxy/challenge` and `/.xproxy/challenge.js`) are served on every
+host before routing.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `secret_file` | path | ephemeral | HMAC key for nonces and cookies; set it so cookies survive restarts and are valid across a cluster |
+| `difficulty` | int | `16` | Leading zero bits required; 8 to 24. 16 is roughly 65 000 hashes, under a second in a browser |
+| `ttl` | duration | `1h` | Validity of a passed challenge; at least 1m |
+| `bind_ip` | bool | `true` | Cookie and nonce are bound to the client address |
+| `cookie_name` | token | `XPCHAL` | |
+| `exempt_cidrs` | list | `[]` | Never challenged (monitoring, partners) |
+| `title` | string | `Checking your browser` | Heading on the page; no HTML characters |
+
+### routes[].challenge
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | `off`, `always`, `load` | `always` | `load` challenges only while the shedding load level is at or above `level` and requires a `shedding` section |
+| `level` | float | `0.5` | Activation level for `load` mode |
+
+The challenge is for browser-facing routes: API clients cannot solve it.
+
 ## Headers set on forwarded requests
 
 | Header | Value |
@@ -304,7 +356,8 @@ Changed by `SIGHUP` or `xproxyctl reload` without restart: routes,
 upstreams, rate limits, trusted proxies, logging levels, limits other than
 listeners, certificate files, WAF profiles and modes, ban triggers and
 exemptions (active bans are kept; changing `bans.state_file` opens a new
-list), cluster peers, intervals and sharing flags. Requires restart: any
+list), cluster peers, intervals and sharing flags, shedding thresholds,
+challenge settings (the key is kept), priority classes. Requires restart: any
 change under `server.listeners` other than certificate file contents,
 `management.socket`, and cluster `listen`, `node_id` or `tls`. Requires restart: any change under
 `server.listeners` other than certificate file contents, and

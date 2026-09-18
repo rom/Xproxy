@@ -39,6 +39,8 @@ server.
 | `internal/mgmt` | `TestManagementAPI`, `TestBanAPI` | Socket mode, status, actions, error propagation, 501 for missing actions, in-use socket refusal; ban list, add, refuse loopback and bad durations, remove, counters |
 | `internal/ban` | `TestTriggerAndEscalation`, `TestWindowReset`, `TestExemptAndManual`, `TestBound`, `TestPersistence`, `TestReconfigure` | Trigger thresholds and reason filters, escalation and cap with a fake clock, window reset, exemptions, refusal of loopback and wide prefixes, CIDR bans, IPv4 mapped lookups, table bound, bbolt round trip including expiry and unban, reconfiguration keeps state |
 | `internal/cluster` | `TestTwoNodes`, `TestRejectsUnauthenticated`, `TestProtocolErrors` | Bans and unbans propagate, sources are rewritten, rates arrive as rates, late joiner gets a snapshot, peer removal on reconfigure, status; connections without a certificate, with a foreign CA or outside `allowed_names` are rejected and counted; bad JSON, messages before hello, wrong version, unknown type and oversized lines close the connection while a valid session is applied |
+| `internal/shed` | `TestInflightLevel`, `TestLatencyLevelAndDrain`, `TestReconfigureKeepsSamples` | Class thresholds against the in-flight ratio, hysteresis, latency level from windowed samples, drain after an idle window, reconfiguration |
+| `internal/challenge` | `TestFlow`, `TestVerifyInputs`, `TestPersistentKey`, `TestProofDefinition`, `TestScriptSHA256MatchesGo` | Page and headers, proof verification, wrong proof and wrong address refused, replay refused, cookie bound to address, expiry and tampering, exemptions, method and input validation, expired nonces, open redirect neutralised, key persistence, proof definition shared with the script |
 | `internal/waf` | `TestBlockSQLi`, `TestDetectMode`, `TestCleanRequestPasses`, `TestBodyInspectionAndReplay`, `TestBodyLimitReject`, `TestResponseInspection`, `TestCustomDirectivesAndBadRules`, `TestOnlyNeededModesCompiled` | CRS blocks injection in query and body, detect mode logs without denying, clean traffic produces no attributes, inspected bodies are replayed intact, 413 above the body limit, response leakage blocked and clean or oversize responses pass intact, custom SecLang rules, compile errors surface, lazy compilation per mode |
 
 ### Integration tests (in `internal/proxy`)
@@ -58,6 +60,8 @@ drive it with `net/http` and raw TCP.
 | `TestBanIntegration` | WAF denies trigger a ban that applies before routing, other clients unaffected, exempt range never banned, rate limit denies feed the catch-all trigger, manual CIDR ban and unban |
 | `TestBanDropsConnectionAtAccept` | Accept hook sees bans; loopback refusal |
 | `TestBansSurviveReload` | Reload keeps active bans; removing the section drops the list |
+| `TestAdaptiveShedding` | A slow backend raises the level to 1; low, normal and high get 503 with `Retry-After` while critical is served; classes return once the window drains |
+| `TestChallengeGate` | Script served on any host, unverified client challenged, exempt client passes, solved proof yields a cookie that works from the same address only, failed proof counted, `load` mode opens when calm and gates under load |
 | `TestClusterSharesLimitsAndBans` | Two full servers peer over mTLS; a client's consumption on one node holds its bucket at zero on the other, other clients unaffected, recovery after reports go stale, ban propagation, listen change refused on reload |
 
 ### Fuzz targets
@@ -86,7 +90,9 @@ Current statement coverage from `make cover` (race enabled):
 | `internal/router` | 96 % |
 | `internal/limits` | 94 % |
 | `internal/netutil` | 92 % |
+| `internal/shed` | 88 % |
 | `internal/cluster` | 87 % |
+| `internal/challenge` | 86 % |
 | `internal/waf` | 85 % |
 | `internal/upstream` | 84 % |
 | `internal/mgmt` | 84 % |
@@ -126,6 +132,20 @@ for i in 1 2 3 4 5; do curl -s -o /dev/null -w "%{http_code} " http://127.0.0.1:
 ./bin/xproxyctl -socket /tmp/xproxy-mgmt.sock -config /tmp/x.yaml reload
 tail -1 /tmp/xproxy-logs/security.log; cat /tmp/xproxy-logs/audit.log
 kill %2; kill %1
+```
+
+### Browser check of the challenge
+
+The challenge script is verified in a real browser before release, using
+the headless Chromium that CI images carry:
+
+```sh
+# xproxy running with challenge: {difficulty: 14} and a route with
+# challenge: {mode: always}, upstream serving "hello from backend"
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:18121/        # 503: the page
+chromium --headless --no-sandbox --virtual-time-budget=60000 --dump-dom http://127.0.0.1:18121/
+# prints the backend document; the access log shows 503, 200 (script),
+# 303 (verification) and 200 (return), and challenges_passed is 1
 ```
 
 ## Planned additions

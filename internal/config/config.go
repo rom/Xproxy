@@ -45,6 +45,12 @@ type Config struct {
 	// Cluster enables sharing of rate limit consumption and bans between
 	// proxies when present.
 	Cluster *Cluster `yaml:"cluster"`
+	// Shedding enables adaptive load shedding by priority class when
+	// present.
+	Shedding *Shedding `yaml:"shedding"`
+	// Challenge configures the browser challenge used by routes with a
+	// challenge block.
+	Challenge *Challenge `yaml:"challenge"`
 }
 
 // Server holds listener and global limit settings for the data plane.
@@ -286,6 +292,11 @@ type Route struct {
 	WebSocket bool `yaml:"websocket"`
 	// WAF overrides the global WAF mode and profile for this route.
 	WAF *RouteWAF `yaml:"waf"`
+	// PriorityClass is low, normal, high or critical (never shed). Default
+	// normal.
+	PriorityClass string `yaml:"priority_class"`
+	// Challenge gates unverified clients with the browser challenge.
+	Challenge *RouteChallenge `yaml:"challenge"`
 }
 
 // Redirect is a static redirect action.
@@ -467,3 +478,59 @@ func (c *Cluster) SharesRateLimits() bool { return c.ShareRateLimits == nil || *
 
 // SharesBans reports whether bans are exchanged.
 func (c *Cluster) SharesBans() bool { return c.ShareBans == nil || *c.ShareBans }
+
+// Shedding configures adaptive load shedding (AMR-022). The load level is
+// the larger of the in-flight ratio (in-flight requests over
+// max_concurrent_requests) and the latency level (how far recent upstream
+// latency exceeds target_latency, reaching 1 at twice the target). A
+// priority class is shed while the level is at or above its threshold,
+// with hysteresis so that admission does not flap.
+type Shedding struct {
+	// TargetLatency is the upstream time to first byte the site is designed
+	// for. Default 250ms.
+	TargetLatency Duration `yaml:"target_latency"`
+	// Window is the period over which latency is averaged. Default 10s.
+	Window Duration `yaml:"window"`
+	// Thresholds per class as a load level between 0 and 1. Defaults: low
+	// 0.6, normal 0.8, high 0.95. Critical is never shed.
+	Low    float64 `yaml:"low"`
+	Normal float64 `yaml:"normal"`
+	High   float64 `yaml:"high"`
+	// Hysteresis is subtracted from a threshold before a class is admitted
+	// again. Default 0.1.
+	Hysteresis float64 `yaml:"hysteresis"`
+	// RetryAfter is the Retry-After value sent with shed responses. Default
+	// 2s.
+	RetryAfter Duration `yaml:"retry_after"`
+}
+
+// Challenge configures the browser proof-of-work challenge (AMR-023).
+type Challenge struct {
+	// SecretFile persists the HMAC key so cookies survive restarts.
+	SecretFile string `yaml:"secret_file"`
+	// Difficulty is the number of leading zero bits required. Default 16
+	// (about 65 000 hashes, well under a second in a browser).
+	Difficulty int `yaml:"difficulty"`
+	// TTL is the validity of a passed challenge. Default 1h.
+	TTL Duration `yaml:"ttl"`
+	// BindIP ties the cookie to the client address. Default true.
+	BindIP *bool `yaml:"bind_ip"`
+	// CookieName defaults to XPCHAL.
+	CookieName string `yaml:"cookie_name"`
+	// ExemptCIDRs are never challenged.
+	ExemptCIDRs []string `yaml:"exempt_cidrs"`
+	// Title is the heading shown on the page.
+	Title string `yaml:"title"`
+}
+
+// BindsIP reports whether cookies are bound to the client address.
+func (c *Challenge) BindsIP() bool { return c.BindIP == nil || *c.BindIP }
+
+// RouteChallenge selects when a route challenges unverified clients.
+type RouteChallenge struct {
+	// Mode is off, always or load. In load mode clients are challenged only
+	// while the shedding load level is at or above Level.
+	Mode string `yaml:"mode"`
+	// Level is the load level that activates load mode. Default 0.5.
+	Level float64 `yaml:"level"`
+}

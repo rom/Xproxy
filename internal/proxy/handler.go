@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/netutil"
@@ -115,6 +116,28 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	st.path = netutil.CleanPath(r.URL.Path)
 
+	// Reserved challenge paths, served on every host.
+	if ch := s.challenger.Load(); ch != nil && strings.HasPrefix(st.path, "/.xproxy/") {
+		switch st.path {
+		case challenge.ScriptPath:
+			st.route = "_challenge"
+			ch.ServeScript(rw, r)
+			return
+		case challenge.VerifyPath:
+			st.route = "_challenge"
+			ok, reason := ch.Verify(rw, r, st.clientIP, r.TLS != nil)
+			if !ok {
+				st.denied = "challenge:" + reason
+				s.logs.SecurityEvent(r.Context(), "challenge_failed", reason,
+					"request_id", st.id, "client_ip", st.clientIP.String(), "user_agent", r.UserAgent())
+				if bl := s.bans.Load(); bl != nil {
+					bl.Observe(st.clientIP, "challenge")
+				}
+			}
+			return
+		}
+	}
+
 	match := rt.router.Match(st.host, st.path, r.Method)
 	if match == nil {
 		s.stats.DeniedNoRoute.Add(1)
@@ -137,6 +160,37 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		st.denied = "allow_cidrs"
 		s.deny(rw, r, st, http.StatusForbidden, "acl_allow")
 		return
+	}
+
+	// Browser challenge gate: unverified clients get the page instead of
+	// the route. In load mode only while the shedder reports pressure.
+	if cr.challenge != nil {
+		if ch := s.challenger.Load(); ch != nil && !ch.Exempt(st.clientIP) {
+			active := cr.challenge.Mode == "always"
+			if !active {
+				if sh := s.shedder.Load(); sh != nil && sh.Level() >= cr.challenge.Level {
+					active = true
+				}
+			}
+			if active && !ch.Verified(r, st.clientIP) {
+				s.stats.Challenged.Add(1)
+				st.denied = "challenge"
+				ch.Serve(rw, r, st.clientIP)
+				return
+			}
+		}
+	}
+
+	// Adaptive load shedding by priority class.
+	if sh := s.shedder.Load(); sh != nil {
+		if ok, level := sh.Admit(cr.class); !ok {
+			s.stats.Shed.Add(1)
+			st.denied = "shed:" + cr.class.String()
+			rw.Header().Set("Retry-After", strconv.Itoa(int(sh.RetryAfter().Seconds())))
+			s.logs.Error.Debug("request shed", "request_id", st.id, "route", st.route, "class", cr.class.String(), "level", level)
+			s.plainStatus(rw, r, http.StatusServiceUnavailable)
+			return
+		}
 	}
 
 	// Rate limits.
@@ -278,6 +332,7 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 	defer cancel()
 	r = r.WithContext(ctx)
 
+	start := time.Now()
 	rp := &httputil.ReverseProxy{
 		Transport:     &poolTransport{pool: pool, retries: *pool.Cfg.Retries},
 		FlushInterval: -1,
@@ -286,6 +341,9 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			s.rewrite(pr, st, cr)
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			if sh := s.shedder.Load(); sh != nil {
+				sh.Observe(time.Since(start))
+			}
 			pi.mu.Lock()
 			if pi.endpoint != nil {
 				st.endpoint = pi.endpoint.Address
@@ -377,6 +435,10 @@ func (s *Server) upstreamError(rw *responseWriter, r *http.Request, st *reqState
 	if errors.As(err, &fd) {
 		s.filterDeny(rw, r, st, fd.v)
 		return
+	}
+	if sh := s.shedder.Load(); sh != nil && errors.Is(err, context.DeadlineExceeded) {
+		// A timeout is the strongest latency signal there is.
+		sh.Observe(time.Since(st.start))
 	}
 	st.upErr = err.Error()
 	status := http.StatusBadGateway

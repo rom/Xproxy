@@ -96,11 +96,40 @@ func (v *validator) config(c *Config) {
 	if c.Cluster != nil {
 		v.cluster(c.Cluster)
 	}
+	if c.Shedding != nil {
+		v.shedding(c.Shedding)
+	}
+	if c.Challenge != nil {
+		v.challenge(c.Challenge)
+	}
 	routes := map[string]bool{}
 	for i := range c.Routes {
 		v.route(i, &c.Routes[i], routes, upstreams, rateLimits)
 		if c.Routes[i].WAF != nil {
 			v.routeWAF(i, c.Routes[i].WAF, c.WAF, profiles)
+		}
+		switch c.Routes[i].PriorityClass {
+		case "low", "normal", "high", "critical":
+		default:
+			v.errf("routes[%d].priority_class: must be low, normal, high or critical", i)
+		}
+		if rc := c.Routes[i].Challenge; rc != nil {
+			p := fmt.Sprintf("routes[%d].challenge", i)
+			switch rc.Mode {
+			case "off", "always":
+			case "load":
+				if c.Shedding == nil {
+					v.errf("%s.mode: load requires a top-level shedding section", p)
+				}
+			default:
+				v.errf("%s.mode: must be off, always or load", p)
+			}
+			if rc.Mode != "off" && c.Challenge == nil {
+				v.errf("%s: set but there is no top-level challenge section", p)
+			}
+			if rc.Level <= 0 || rc.Level > 1 {
+				v.errf("%s.level: must be between 0 and 1", p)
+			}
 		}
 	}
 	if len(c.Server.Listeners) == 0 {
@@ -511,7 +540,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 
 var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
-	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true,
+	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true,
 }
 
 func (v *validator) bans(b *Bans) {
@@ -600,6 +629,52 @@ func (v *validator) cluster(c *Cluster) {
 	}
 	if c.MaxKeysPerReport < 1 || c.MaxKeysPerReport > 65536 {
 		v.errf("cluster.max_keys_per_report: must be 1..65536")
+	}
+}
+
+func (v *validator) shedding(s *Shedding) {
+	if s.TargetLatency < Duration(1_000_000) {
+		v.errf("shedding.target_latency: must be at least 1ms")
+	}
+	if s.Window < Duration(1_000_000_000) || s.Window > Duration(600_000_000_000) {
+		v.errf("shedding.window: must be between 1s and 10m")
+	}
+	for name, t := range map[string]float64{"low": s.Low, "normal": s.Normal, "high": s.High} {
+		if t <= 0 || t > 1 {
+			v.errf("shedding.%s: must be between 0 and 1", name)
+		}
+	}
+	if !(s.Low <= s.Normal && s.Normal <= s.High) {
+		v.errf("shedding: thresholds must satisfy low <= normal <= high")
+	}
+	if s.Hysteresis < 0 || s.Hysteresis >= s.Low {
+		v.errf("shedding.hysteresis: must be non-negative and below the low threshold")
+	}
+	if s.RetryAfter <= 0 {
+		v.errf("shedding.retry_after: must be positive")
+	}
+}
+
+func (v *validator) challenge(c *Challenge) {
+	if c.SecretFile != "" && !strings.HasPrefix(c.SecretFile, "/") {
+		v.errf("challenge.secret_file: must be an absolute path")
+	}
+	if c.Difficulty < 8 || c.Difficulty > 24 {
+		v.errf("challenge.difficulty: must be between 8 and 24 bits")
+	}
+	if c.TTL < Duration(60_000_000_000) {
+		v.errf("challenge.ttl: must be at least 1m")
+	}
+	if !cookieNameOK(c.CookieName) {
+		v.errf("challenge.cookie_name: %q is not a valid cookie name", c.CookieName)
+	}
+	for i, cidr := range c.ExemptCIDRs {
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			v.errf("challenge.exempt_cidrs[%d]: %q is not a CIDR", i, cidr)
+		}
+	}
+	if len(c.Title) > 200 || strings.ContainsAny(c.Title, "<>&\"'") {
+		v.errf("challenge.title: at most 200 characters, no HTML special characters")
 	}
 }
 

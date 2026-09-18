@@ -10,6 +10,7 @@ import (
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/router"
+	"github.com/rom/xproxy/internal/shed"
 	"github.com/rom/xproxy/internal/upstream"
 	"github.com/rom/xproxy/internal/waf"
 )
@@ -43,6 +44,8 @@ type compiledRoute struct {
 	deny       []netip.Prefix
 	filters    filter.Chain
 	wafMode    string
+	class      shed.Class
+	challenge  *config.RouteChallenge // nil or mode off means no gate
 }
 
 // wafSelection returns the WAF profile and mode for a route.
@@ -111,6 +114,10 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 			cfg:   r,
 			allow: netutil.ParsePrefixes(r.AllowCIDRs),
 			deny:  netutil.ParsePrefixes(r.DenyCIDRs),
+			class: shed.ParseClass(r.PriorityClass),
+		}
+		if r.Challenge != nil && r.Challenge.Mode != "off" && cfg.Challenge != nil {
+			cr.challenge = r.Challenge
 		}
 		if r.Upstream != "" {
 			p, ok := rt.pools[r.Upstream]

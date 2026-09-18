@@ -83,6 +83,11 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Ban table exhaustion by spoofed sources | Bans key on the derived client address; tables are bounded with eviction of the soonest expiring entries; trigger windows are bounded per trigger |
 | Decompression bombs | The proxy never decompresses; `DisableCompression` on the transport passes encodings through |
 | QUIC amplification (1.0) | Retry tokens and address validation enabled; UDP receive buffer bounds |
+| Upstream overload (slow backend, thundering herd) | Adaptive shedding by priority class keeps critical routes responsive and rejects low classes early with 503; the concurrency ceiling still bounds the rest |
+| Bot floods on browser routes | Challenge gate (always or under load): unverified clients get a cheap static page and must spend CPU on a proof of work before being served |
+| Challenge bypass: replaying a solved proof or sharing a cookie | Nonces are signed, single use and expire; cookies are signed and bound to the client address by default; both use a per-installation key |
+| Challenge as a DoS vector against the proxy | Page is templated once, costs one HMAC; verification costs one HMAC and one SHA-256; the seen table is bounded; the reserved paths sit behind the connection and concurrency limits |
+| Open redirect through the challenge return path | Return values are restricted to same-origin absolute paths; protocol-relative and backslash forms are replaced by `/` |
 
 ### Elevation of privilege
 
