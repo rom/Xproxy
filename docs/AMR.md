@@ -943,6 +943,35 @@ item.
 
 ---
 
+## AMR-035: Layer 4 passthrough as a listener kind, not a route action
+
+**Context.** ASR-F12 asks for TCP and TLS passthrough. It could have
+been a route action ("proxy this host's TLS without terminating") on
+the HTTP listener, which is how some proxies present it.
+
+**Decision.** Passthrough is a separate listener kind. An HTTP listener
+terminates TLS on port 443 and a passthrough listener cannot share that
+socket, so mixing the two on one port would need a first-byte demux
+that decides per connection whether to terminate; keeping them apart
+keeps the HTTP pipeline free of a mode. The tcp listener reuses the
+accept limiter, the upstream pools (balancers, health, ejection) and
+the access log, and adds only what layer 4 needs: a defensive SNI peek,
+a splice with idle deadline, PROXY v2 and a connection bound. Server
+names route by exact match or `*.suffix`, like HTTP hosts.
+
+**Alternatives.** Route action on the HTTP listener (rejected above);
+a generic TCP proxy without SNI (covered by `default`); UDP relay (not
+asked for; QUIC passthrough would need it and is a 1.x candidate).
+
+**Consequences.** No inspection of passthrough traffic; the security
+log records connections, not requests. Health checks on such upstreams
+are HTTP by construction, so an HTTPS upstream behind passthrough needs
+an `https` scheme pool for checks to work.
+
+**Status.** Accepted.
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |

@@ -174,13 +174,13 @@ procedure is in RELEASING.md.
   scoring: delivered (`bot_score` filter kind, AMR-033)
 - Response caching with cache key policies: delivered (`cache`,
   `routes[].cache`, AMR-034)
-- L4 TCP and TLS passthrough with SNI routing
+- L4 TCP and TLS passthrough with SNI routing: delivered (`kind: tcp`
+  listeners, AMR-035)
 - Forward proxy mode with CONNECT and authentication (ASR-F12)
 
 ## After 1.1 (candidates, unranked)
 
 - Forward proxy mode with CONNECT and authentication (ASR-F12)
-- L4 TCP and TLS passthrough with SNI routing
 - WebAssembly extension ABI (AMR-013)
 - OIDC login flows with session cookies
 - Honeypot routes and decoy responses

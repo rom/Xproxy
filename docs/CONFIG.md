@@ -40,7 +40,35 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Reserved (PROXY protocol parsing arrives in 1.0) |
+| `kind` | `http`, `tcp` | `http` | `tcp` is a layer 4 listener, see below |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
+
+### server.listeners[].tcp (kind: tcp)
+
+A `kind: tcp` listener forwards connections at layer 4. TLS connections
+are routed by the server name of the ClientHello, which is peeked and
+passed through unchanged, so the upstream terminates TLS with its own
+certificate and the client verifies that one. Connections that are not
+TLS, or whose name matches no route, go to `default` when set and are
+closed otherwise. A tcp listener takes no `tls`, `protocols`, `h3` or
+`redirect_to_https`; bans and the global connection limits apply at
+accept as on every listener.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `routes` | list of `{sni: [names], upstream}` | | Names are exact or `*.suffix`; first match wins |
+| `default` | upstream | none | Upstream for unmatched and non-TLS connections; without it they are closed and logged as `tcp_no_route` (a ban category) |
+| `idle_timeout` | duration | `10m` | Close after no bytes in either direction; at most 24h |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the upstream |
+| `max_connections` | int | `10000` | Open connections on this listener |
+
+Endpoints are picked with the upstream's balancer (hash on the client
+address for `hash`), dial failures try the next endpoint and feed outlier
+ejection; active health checks run as configured on the upstream. Every
+connection writes one `tcp` line to the access log with the name,
+upstream, endpoint, bytes and duration. Counters: `tcp_connections`,
+`tcp_rejected`, `tcp_errors`, `tcp_bytes_in`, `tcp_bytes_out`;
+`xproxy_tcp_*` metrics. Changing a tcp listener needs a restart.
 
 ### server.listeners[].h3
 

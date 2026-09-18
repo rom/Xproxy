@@ -145,6 +145,37 @@ type Listener struct {
 	RedirectToHTTPS bool `yaml:"redirect_to_https"`
 	// H3 tunes HTTP/3 when the protocols include h3.
 	H3 *H3 `yaml:"h3"`
+	// Kind is http (default) or tcp: an L4 listener that forwards
+	// connections by TLS server name without terminating TLS.
+	Kind string `yaml:"kind"`
+	// TCP configures a kind: tcp listener.
+	TCP *TCPListener `yaml:"tcp"`
+}
+
+// TCPListener routes raw connections to upstream pools. TLS connections
+// are routed by the server name of the ClientHello (peeked, never
+// terminated); other connections and unmatched names go to the default
+// upstream when one is set and are closed otherwise.
+type TCPListener struct {
+	Routes []TCPRoute `yaml:"routes"`
+	// Default is the upstream for connections without a matching SNI
+	// (including non-TLS ones).
+	Default string `yaml:"default"`
+	// IdleTimeout closes a connection with no bytes in either direction.
+	// Default 10m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// ProxyProtocol sends a PROXY protocol v2 header to the upstream with
+	// the client address.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// MaxConnections bounds open connections on this listener (in
+	// addition to the global limits). Default 10000.
+	MaxConnections int `yaml:"max_connections"`
+}
+
+// TCPRoute maps server names (exact or *.suffix) to an upstream.
+type TCPRoute struct {
+	SNI      []string `yaml:"sni"`
+	Upstream string   `yaml:"upstream"`
 }
 
 // H3 configures the QUIC listener of a TLS listener (AMR-024).

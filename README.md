@@ -50,6 +50,8 @@ for how a release is cut). Phases 1 and 2 are complete. See
   behaviour, with log, challenge and deny thresholds
 - Response caching with per route key policies, Vary and conditional
   requests
+- Layer 4 TLS passthrough by server name with PROXY protocol to the
+  upstream
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
   status, upstreams, reload, certificate reload, log reopen, tail, bans,
   cluster, metrics, sampled series, and a full-screen TUI

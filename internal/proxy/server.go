@@ -70,6 +70,7 @@ type boundListener struct {
 	tlsReload *tlsconf.Reloadable
 	activated bool
 	h3        *h3.Server
+	tcp       *tcpServer // kind: tcp listeners
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -342,6 +343,10 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 	}
 	lim := s.cfg().Server.Limits
 	bl := &boundListener{cfg: lc, ln: s.connLimiter.Wrap(ln), activated: act}
+	if lc.Kind == "tcp" {
+		bl.tcp = newTCPServer(s, lc, bl.ln)
+		return bl, nil
+	}
 	h := &listenerHandler{srv: s, ln: &bl.cfg}
 	bl.httpSrv = &http.Server{
 		Handler:           h,
@@ -418,7 +423,11 @@ func hasProto(ps []config.Protocol, p config.Protocol) bool {
 
 func (s *Server) serve(bl *boundListener) {
 	var err error
-	s.logs.Error.Info("listening", "listener", bl.cfg.Name, "address", bl.ln.Addr().String(), "tls", bl.cfg.TLS != nil, "socket_activated", bl.activated)
+	s.logs.Error.Info("listening", "listener", bl.cfg.Name, "address", bl.ln.Addr().String(), "tls", bl.cfg.TLS != nil, "kind", bl.cfg.Kind, "socket_activated", bl.activated)
+	if bl.tcp != nil {
+		bl.tcp.serve()
+		return
+	}
 	if bl.cfg.TLS != nil {
 		err = bl.httpSrv.ServeTLS(bl.ln, "", "")
 	} else {
@@ -594,7 +603,7 @@ func listenersCompatible(old, new_ []config.Listener) error {
 	}
 	for i := range old {
 		o, n := old[i], new_[i]
-		if o.Name != n.Name || o.Address != n.Address || (o.TLS == nil) != (n.TLS == nil) || o.ProxyProtocol != n.ProxyProtocol || o.RedirectToHTTPS != n.RedirectToHTTPS {
+		if o.Name != n.Name || o.Address != n.Address || (o.TLS == nil) != (n.TLS == nil) || o.ProxyProtocol != n.ProxyProtocol || o.RedirectToHTTPS != n.RedirectToHTTPS || o.Kind != n.Kind || fmt.Sprint(o.TCP) != fmt.Sprint(n.TCP) {
 			return fmt.Errorf("reload: listener %s changed; restart required", o.Name)
 		}
 		if o.TLS != nil {
@@ -641,6 +650,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		wg.Add(1)
 		go func(bl *boundListener) {
 			defer wg.Done()
+			if bl.tcp != nil {
+				bl.tcp.shutdown(ctx)
+				return
+			}
 			err := bl.httpSrv.Shutdown(ctx)
 			if bl.h3 != nil {
 				if err3 := bl.h3.Shutdown(ctx); err == nil {

@@ -62,6 +62,7 @@ internal/filters    built-in kinds (header_guard, basic_auth) and the registrati
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
+internal/proxy/tcp.go  kind: tcp listeners (SNI routing, PROXY v2, splice)
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
@@ -272,6 +273,19 @@ validation certificate for a pending `tls-alpn-01` challenge; without a
 pending challenge such a handshake is refused rather than answered with a
 real certificate. Listeners with ACME groups add `acme-tls/1` to their
 ALPN list.
+
+### Layer 4 passthrough
+
+A `kind: tcp` listener (`internal/proxy/tcp.go`) accepts through the same
+limiter as every listener (bans, per address and global connection
+limits), peeks the first record with `netutil.ClientHelloSNI` (a
+defensive parser that never copies and checks every length), resolves
+the upstream by name or default, dials an endpoint chosen by the pool's
+balancer with retries across endpoints, optionally writes a PROXY v2
+header, replays the peeked bytes and splices both directions with an
+idle deadline and half-close. Connections are accounted on the pool like
+requests so ejection and health apply. The listener has its own
+connection bound and is drained on shutdown like the HTTP servers.
 
 ### Response cache
 

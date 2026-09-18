@@ -41,6 +41,11 @@ type Stats struct {
 	DeniedICAP        atomic.Uint64
 	DeniedFilter      atomic.Uint64
 	DeniedGeo         atomic.Uint64
+	TCPConnections    atomic.Uint64
+	TCPRejected       atomic.Uint64
+	TCPErrors         atomic.Uint64
+	TCPBytesIn        atomic.Uint64
+	TCPBytesOut       atomic.Uint64
 	WAFDetected       atomic.Uint64
 	UpstreamErrors    atomic.Uint64
 	UpstreamTimeouts  atomic.Uint64
@@ -79,6 +84,11 @@ type Snapshot struct {
 	DeniedICAP        uint64    `json:"denied_icap"`
 	DeniedFilter      uint64    `json:"denied_filter"`
 	DeniedGeo         uint64    `json:"denied_geo"`
+	TCPConnections    uint64    `json:"tcp_connections"`
+	TCPRejected       uint64    `json:"tcp_rejected"`
+	TCPErrors         uint64    `json:"tcp_errors"`
+	TCPBytesIn        uint64    `json:"tcp_bytes_in"`
+	TCPBytesOut       uint64    `json:"tcp_bytes_out"`
 	WAFDetected       uint64    `json:"waf_detected"`
 	BansActive        int       `json:"bans_active"`
 	BansTotal         uint64    `json:"bans_total"`
@@ -135,6 +145,11 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedICAP:        s.DeniedICAP.Load(),
 		DeniedFilter:      s.DeniedFilter.Load(),
 		DeniedGeo:         s.DeniedGeo.Load(),
+		TCPConnections:    s.TCPConnections.Load(),
+		TCPRejected:       s.TCPRejected.Load(),
+		TCPErrors:         s.TCPErrors.Load(),
+		TCPBytesIn:        s.TCPBytesIn.Load(),
+		TCPBytesOut:       s.TCPBytesOut.Load(),
 		WAFDetected:       s.WAFDetected.Load(),
 		UpstreamErrors:    s.UpstreamErrors.Load(),
 		UpstreamTimeouts:  s.UpstreamTimeouts.Load(),

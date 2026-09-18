@@ -453,6 +453,32 @@ triggers. `xproxyctl icap` shows whether each service answered its last
 exchange, the preview size it advertised, and how many exchanges were
 unmodified, modified, replaced, failed or bypassed.
 
+### TLS passthrough by server name (layer 4)
+
+```yaml
+server:
+  listeners:
+    - name: passthrough
+      address: ":8443"
+      kind: tcp
+      tcp:
+        routes:
+          - {sni: [mail.example.com, "*.mail.example.com"], upstream: mail}
+          - {sni: [legacy.example.com], upstream: legacy}
+        default: legacy           # non-TLS and unknown names
+        proxy_protocol: true      # the upstream sees the client address
+upstreams:
+  - name: mail
+    health_check: {path: /healthz}     # for https upstreams checks still use HTTP
+    endpoints: [{address: 10.0.3.10:443}, {address: 10.0.3.11:443}]
+  - name: legacy
+    endpoints: [{address: 10.0.3.20:443}]
+```
+
+The upstream keeps its own certificates and the WAF does not see the
+traffic (it is encrypted end to end); use an `http` listener with TLS
+termination where inspection is wanted.
+
 ### Response caching
 
 ```yaml

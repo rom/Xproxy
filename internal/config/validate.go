@@ -155,6 +155,19 @@ func (v *validator) config(c *Config) {
 			v.errf("rate_limits[%d].key: country needs a geoip section", i)
 		}
 	}
+	for i := range c.Server.Listeners {
+		if t := c.Server.Listeners[i].TCP; t != nil {
+			p := fmt.Sprintf("server.listeners[%d].tcp", i)
+			if t.Default != "" && !upstreams[t.Default] {
+				v.errf("%s.default: unknown upstream %q", p, t.Default)
+			}
+			for j, r := range t.Routes {
+				if r.Upstream != "" && !upstreams[r.Upstream] {
+					v.errf("%s.routes[%d].upstream: unknown upstream %q", p, j, r.Upstream)
+				}
+			}
+		}
+	}
 	routes := map[string]bool{}
 	for i := range c.Routes {
 		v.route(i, &c.Routes[i], routes, upstreams, rateLimits)
@@ -297,6 +310,23 @@ func (v *validator) server(s *Server) {
 			default:
 				v.errf("%s.protocols: unknown protocol %q", p, proto)
 			}
+		}
+		switch ln.Kind {
+		case "http":
+			if ln.TCP != nil {
+				v.errf("%s.tcp: set on an http listener (kind: tcp)", p)
+			}
+		case "tcp":
+			if ln.TLS != nil || len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS {
+				v.errf("%s: a tcp listener takes no tls, protocols, h3 or redirect_to_https", p)
+			}
+			if ln.TCP == nil {
+				v.errf("%s.tcp: required for kind tcp", p)
+			} else {
+				v.tcpListener(p+".tcp", ln.TCP)
+			}
+		default:
+			v.errf("%s.kind: must be http or tcp", p)
 		}
 		if ln.TLS == nil {
 			for _, proto := range ln.Protocols {
@@ -1033,6 +1063,39 @@ func (v *validator) filter(i int, f *FilterConfig, seen map[string]bool) {
 		for _, line := range strings.Split(err.Error(), "\n") {
 			v.errf("%s.options: %s", p, line)
 		}
+	}
+}
+
+// tcpListener validates an L4 listener; upstream references are checked
+// after the upstreams are known (see validate).
+func (v *validator) tcpListener(p string, t *TCPListener) {
+	if len(t.Routes) == 0 && t.Default == "" {
+		v.errf("%s: routes or default is required", p)
+	}
+	seen := map[string]bool{}
+	for i, r := range t.Routes {
+		rp := fmt.Sprintf("%s.routes[%d]", p, i)
+		if len(r.SNI) == 0 {
+			v.errf("%s.sni: at least one server name is required", rp)
+		}
+		for _, n := range r.SNI {
+			if !hostPatternOK(n) {
+				v.errf("%s.sni: %q is not a valid name or *.suffix pattern", rp, n)
+			}
+			if seen[n] {
+				v.errf("%s.sni: %q listed twice", rp, n)
+			}
+			seen[n] = true
+		}
+		if r.Upstream == "" {
+			v.errf("%s.upstream: required", rp)
+		}
+	}
+	if t.IdleTimeout <= 0 || t.IdleTimeout > Duration(24*time.Hour) {
+		v.errf("%s.idle_timeout: must be positive and at most 24h", p)
+	}
+	if t.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be positive", p)
 	}
 }
 

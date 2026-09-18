@@ -87,7 +87,15 @@ func applyDefaults(c *Config) {
 	setInt(&l.MaxTarpits, DefaultMaxTarpits)
 
 	for i := range s.Listeners {
+		setStr(&s.Listeners[i].Kind, "http")
+		if t := s.Listeners[i].TCP; t != nil {
+			setDur(&t.IdleTimeout, 10*time.Minute)
+			setInt(&t.MaxConnections, 10000)
+		}
 		ln := &s.Listeners[i]
+		if ln.Kind == "tcp" {
+			continue // no HTTP protocol or TLS defaults on a passthrough listener
+		}
 		if len(ln.Protocols) == 0 {
 			if ln.TLS != nil {
 				ln.Protocols = []Protocol{ProtocolH1, ProtocolH2}

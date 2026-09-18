@@ -27,6 +27,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   headers, `cache` in the access log; `GET /v1/cache`, `DELETE
   /v1/cache`, `xproxyctl cache` and `cache purge`; `xproxy_cache_*`
   metrics. The cache survives reloads.
+- Layer 4 passthrough: `kind: tcp` listeners route TLS connections by
+  server name (peeked, not terminated) to upstream pools, with a default
+  for non-TLS and unmatched connections, PROXY protocol v2 to the
+  upstream, idle timeout, per listener connection bound, pool accounting
+  and retries across endpoints, a `tcp` access log line per connection
+  and `xproxy_tcp_*` metrics.
 
 ## 1.0.0 - 2026-09-18
 
