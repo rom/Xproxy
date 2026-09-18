@@ -64,6 +64,8 @@ table inet xproxy {
     tcp dport { 80, 443 } ct state new meter conn_rate { ip saddr limit rate over 50/second burst 100 packets } add @ratelimited { ip saddr } drop
     tcp dport { 80, 443 } ct state new ip saddr @ratelimited drop
     tcp dport { 80, 443 } accept
+    udp dport 443 ct state new meter quic_rate { ip saddr limit rate over 50/second burst 100 packets } drop
+    udp dport 443 accept
     tcp dport 22 ip saddr 10.0.0.0/8 accept
     # cluster port: peers only
     tcp dport 7946 ip saddr { 10.0.0.2, 10.0.0.3 } accept

@@ -9,7 +9,10 @@ server:
       redirect_to_https: true
     - name: public
       address: ":443"
-      protocols: [h1, h2]
+      protocols: [h1, h2, h3]        # h3 adds a QUIC endpoint on UDP 443
+      h3:
+        max_streams: 100
+        validate_addresses: always
       tls:
         min_version: "1.2"
         certificates:

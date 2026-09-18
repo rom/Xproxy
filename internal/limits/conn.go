@@ -92,42 +92,52 @@ type limitedListener struct {
 	lim *ConnLimiter
 }
 
+// Admit applies the ban check and the connection limits to a new
+// connection from addr. On success it returns a release function that
+// must be called exactly once when the connection ends; on refusal the
+// reason is returned and the rejection is counted and reported.
+func (c *ConnLimiter) Admit(addr netip.Addr) (release func(), reason string) {
+	if c.Banned != nil && c.Banned(addr) {
+		c.reject(addr, "banned")
+		return nil, "banned"
+	}
+	ok, reason := c.acquire(addr)
+	if !ok {
+		c.reject(addr, reason)
+		return nil, reason
+	}
+	var once sync.Once
+	return func() { once.Do(func() { c.release(addr) }) }, ""
+}
+
+func (c *ConnLimiter) reject(addr netip.Addr, reason string) {
+	c.Rejected.Add(1)
+	if c.OnReject != nil {
+		c.OnReject(addr, reason)
+	}
+}
+
 func (l *limitedListener) Accept() (net.Conn, error) {
 	for {
 		conn, err := l.Listener.Accept()
 		if err != nil {
 			return nil, err
 		}
-		addr := addrOf(conn)
-		if l.lim.Banned != nil && l.lim.Banned(addr) {
-			l.lim.Rejected.Add(1)
-			if l.lim.OnReject != nil {
-				l.lim.OnReject(addr, "banned")
-			}
+		release, _ := l.lim.Admit(addrOf(conn))
+		if release == nil {
 			_ = conn.Close()
 			continue
 		}
-		ok, reason := l.lim.acquire(addr)
-		if !ok {
-			l.lim.Rejected.Add(1)
-			if l.lim.OnReject != nil {
-				l.lim.OnReject(addr, reason)
-			}
-			_ = conn.Close()
-			continue
-		}
-		return &limitedConn{Conn: conn, lim: l.lim, addr: addr}, nil
+		return &limitedConn{Conn: conn, release: release}, nil
 	}
 }
 
 type limitedConn struct {
 	net.Conn
-	lim  *ConnLimiter
-	addr netip.Addr
-	once sync.Once
+	release func()
 }
 
 func (c *limitedConn) Close() error {
-	c.once.Do(func() { c.lim.release(c.addr) })
+	c.release()
 	return c.Conn.Close()
 }

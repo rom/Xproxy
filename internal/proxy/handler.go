@@ -15,14 +15,17 @@ import (
 	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/tlsconf"
 )
 
-// listenerHandler is the http.Handler installed on one listener.
+// listenerHandler is the http.Handler installed on one listener (and on
+// its HTTP/3 endpoint when enabled).
 type listenerHandler struct {
 	srv *Server
 	ln  *config.Listener
+	h3  *h3.Server
 }
 
 // reqState is the per-request bookkeeping used for logging.
@@ -70,6 +73,9 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("Server", s.cfg().Server.ServerHeader)
 	}
 	rw.Header().Set("X-Request-Id", st.id)
+	if h.h3 != nil && r.ProtoMajor < 3 && r.TLS != nil {
+		h.h3.SetAltSvc(rw.Header())
+	}
 
 	release, ok := s.concurrency.Acquire()
 	if !ok {

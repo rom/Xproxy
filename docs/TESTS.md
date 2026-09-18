@@ -62,6 +62,8 @@ drive it with `net/http` and raw TCP.
 | `TestBansSurviveReload` | Reload keeps active bans; removing the section drops the list |
 | `TestAdaptiveShedding` | A slow backend raises the level to 1; low, normal and high get 503 with `Retry-After` while critical is served; classes return once the window drains |
 | `TestChallengeGate` | Script served on any host, unverified client challenged, exempt client passes, solved proof yields a cookie that works from the same address only, failed proof counted, `load` mode opens when calm and gates under load |
+| `TestHTTP3` | `Alt-Svc` on the TLS listener, a request over QUIC with `HTTP/3.0`, forwarding headers and response hygiene, body limit over QUIC, QUIC connection counted |
+| `TestHTTP3ConnectionLimit` | A second QUIC connection from the same address is refused in the handshake while the first keeps working; rejection counted |
 | `TestClusterSharesLimitsAndBans` | Two full servers peer over mTLS; a client's consumption on one node holds its bucket at zero on the other, other clients unaffected, recovery after reports go stale, ban propagation, listen change refused on reload |
 
 ### Fuzz targets

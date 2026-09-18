@@ -33,6 +33,11 @@ to report a vulnerability. The threat analysis behind the controls is in
 - X25519, P-256, P-384 key exchange in that order.
 - Renegotiation disabled. Session tickets rotated by the Go runtime.
 - ALPN offers `h2` then `http/1.1`; h2c (cleartext HTTP/2) is never enabled.
+- HTTP/3 (QUIC) shares certificates and limits with its TLS listener; new
+  client addresses must complete a Retry round trip before state is
+  allocated (amplification defence), 0-RTT is disabled, streams per
+  connection are bounded, and QUIC connections count against the same
+  connection ceilings and ban list as TCP.
 - SNI based certificate selection; certificates reload without restart.
 - Optional client certificate verification (`request` or `require`) against
   a configured CA bundle.
@@ -165,9 +170,8 @@ to report a vulnerability. The threat analysis behind the controls is in
 
 ## Planned controls (see ROADMAP.md)
 
-Phase 2 (remaining): HTTP/3 with address validation, mutual TLS to
-upstreams, JWT validation, PII redaction rules, journald and syslog sinks,
-Prometheus metrics, TUI.
+Phase 2 (remaining): mutual TLS to upstreams, JWT validation, PII
+redaction rules, journald and syslog sinks, Prometheus metrics, TUI.
 
 Phase 3: ICAP scanning, ACME, full SELinux policy in an RPM, GUI with role
 separation, coverage and mutation gates, external security review.

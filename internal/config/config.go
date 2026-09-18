@@ -86,6 +86,22 @@ type Listener struct {
 	// RedirectToHTTPS makes a plaintext listener answer every request with a
 	// 308 redirect to https. Useful for the :80 listener.
 	RedirectToHTTPS bool `yaml:"redirect_to_https"`
+	// H3 tunes HTTP/3 when the protocols include h3.
+	H3 *H3 `yaml:"h3"`
+}
+
+// H3 configures the QUIC listener of a TLS listener (AMR-024).
+type H3 struct {
+	// MaxStreams bounds concurrent request streams per connection. Default
+	// 100.
+	MaxStreams int `yaml:"max_streams"`
+	// ValidateAddresses is always (every new client address must complete a
+	// Retry round trip before any state is allocated) or under_load (only
+	// when open connections exceed a quarter of max_connections). Default
+	// always.
+	ValidateAddresses string `yaml:"validate_addresses"`
+	// AltSvcMaxAge is the ma value advertised in Alt-Svc. Default 24h.
+	AltSvcMaxAge Duration `yaml:"alt_svc_max_age"`
 }
 
 // TLS configures server side TLS for a listener.

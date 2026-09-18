@@ -15,7 +15,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ID | Requirement | Prio | Release | Architectural consequence |
 |----|-------------|------|---------|---------------------------|
 | ASR-F1 | Act as an L7 HTTP reverse proxy for HTTP/1.1 and HTTP/2 clients, HTTP/1.1 and HTTP/2 upstreams | M | MVP | Built on `net/http`; protocol selection via TLS ALPN only, no h2c |
-| ASR-F2 | Serve HTTP/3 over QUIC on the same certificates as TLS listeners | M | 1.0 | UDP listener per TLS listener, `quic-go` dependency, Alt-Svc advertisement, shared handler pipeline |
+| ASR-F2 | Serve HTTP/3 over QUIC on the same certificates as TLS listeners | M | 1.0 (delivered in phase 2) | UDP listener per TLS listener, `quic-go` dependency, Alt-Svc advertisement, shared handler pipeline |
 | ASR-F3 | Load balance across upstream endpoints with round robin, weighted, least connections and consistent hashing | M | MVP | Balancer interface per pool; ring hash with virtual nodes so endpoint loss moves only that endpoint's keys |
 | ASR-F4 | Session affinity by cookie | M | MVP | Cookie carries a signed endpoint index, never an address; HMAC key per pool, persisted in the state directory |
 | ASR-F5 | Active health checks and passive outlier ejection | M | MVP | Per endpoint goroutine with jitter; ejection with exponential back-off and a maximum ejection percentage |
@@ -99,6 +99,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S2 (bans) | `internal/ban`, accept hook in `internal/limits` | `internal/ban/ban_test.go`, `TestBanIntegration`, `TestConnLimiterBanned` |
 | ASR-O5 | `internal/ban` persistence (bbolt) | `TestPersistence` |
 | ASR-S3 | `internal/cluster`, peer accounting in `internal/limits` | `internal/cluster/cluster_test.go`, `TestPeerRates`, `TestClusterSharesLimitsAndBans` |
+| ASR-F2 | `internal/h3`, listener wiring in `internal/proxy/server.go` | `TestHTTP3`, `TestHTTP3ConnectionLimit` |
 | ASR-S2 (shedding, challenge) | `internal/shed`, `internal/challenge` | `internal/shed/shed_test.go`, `internal/challenge/challenge_test.go`, `TestAdaptiveShedding`, `TestChallengeGate` |
 | ASR-S9, O2 | `internal/logging`, `internal/mgmt` | `internal/logging/logging_test.go`, `internal/mgmt/mgmt_test.go` |
 | ASR-S11, P4 | `internal/tlsconf` | `internal/tlsconf/tlsconf_test.go`, `TestTLSAndRedirect` |
