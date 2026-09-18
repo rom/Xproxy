@@ -37,10 +37,23 @@ management:
 logging:
   directory: /var/log/xproxy
   level: info
-  access:   {file: access.log,   max_size_mb: 512, max_files: 10}
-  error:    {file: error.log,    max_size_mb: 64,  max_files: 5}
-  security: {file: security.log, max_size_mb: 256, max_files: 10}
-  audit:    {file: audit.log,    max_size_mb: 64,  max_files: 20}
+  access:   {file: access.log,   max_size_mb: 512, max_files: 10, sinks: [file]}
+  error:    {file: error.log,    max_size_mb: 64,  max_files: 5,  sinks: [file, journald]}
+  security: {file: security.log, max_size_mb: 256, max_files: 10, sinks: [file, journald, syslog]}
+  audit:    {file: audit.log,    max_size_mb: 64,  max_files: 20, sinks: [file, syslog]}
+  journald: {identifier: xproxy}
+  syslog:                                   # remote collector for security and audit
+    network: tcp+tls
+    address: logs.example.internal:6514
+    ca_file: /etc/xproxy/certs/logs-ca.pem
+    server_name: logs.example.internal
+    facility: local3
+  redaction:                                # personal data rules, audit stream exempt
+    client_ip: hash
+    hash_secret_file: /var/lib/xproxy/redaction.key
+    user_agent: keep
+    referer: origin
+    claims: hash
 
 # Only these peers may set X-Forwarded-For. Leave empty when xproxy is the
 # edge.

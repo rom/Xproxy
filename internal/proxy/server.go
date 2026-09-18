@@ -164,6 +164,8 @@ func (s *Server) Stats() Snapshot {
 	if ch := s.challenger.Load(); ch != nil {
 		snap.ChallengesIssued, snap.ChallengesPassed, snap.ChallengesFailed = ch.Stats()
 	}
+	ls := s.logs.Stats()
+	snap.LogSyslogSent, snap.LogSyslogDropped, snap.LogJournalDropped, snap.LogRedaction = ls.SyslogSent, ls.SyslogDropped, ls.JournalDropped, ls.Redaction
 	return snap
 }
 

@@ -10,6 +10,15 @@ delivered it (see [ROADMAP.md](ROADMAP.md)).
 ### Phase 2: Defence (in progress)
 
 #### Added
+- Log sinks: per-stream `sinks` with `file`, `journald` (native protocol,
+  `MESSAGE` plus indexed `XPROXY_*` fields) and `syslog` (RFC 5424 or
+  3164 over UDP, TCP, TLS with pinned CA, or Unix socket; bounded queue,
+  background writer, drop counters). New `logging.journald` and
+  `logging.syslog` sections; `log_syslog_sent`, `log_syslog_dropped`,
+  `log_journald_dropped` and `log_redaction` in status.
+- Redaction: `logging.redaction` with address truncation or keyed
+  pseudonyms, user agent drop, referer origin, claim hashing and a field
+  drop list, applied per stream before every sink.
 - JWT validation: `jwt.providers` with RS/PS/ES/EdDSA/HS algorithms on an
   allow list, JWKS from file or HTTPS URL with a pinned CA and rotation
   handling, HMAC secret files, claim checks with bounded skew, claim

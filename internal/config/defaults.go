@@ -129,6 +129,40 @@ func applyDefaults(c *Config) {
 	setStr(&lg.Error.File, "error.log")
 	setStr(&lg.Security.File, "security.log")
 	setStr(&lg.Audit.File, "audit.log")
+	for _, s := range []*LogStream{&lg.Access, &lg.Error, &lg.Security, &lg.Audit} {
+		if len(s.Sinks) == 0 {
+			s.Sinks = []string{"file"}
+		}
+	}
+	if j := lg.Journald; j != nil {
+		setStr(&j.Socket, "/run/systemd/journal/socket")
+		setStr(&j.Identifier, "xproxy")
+	}
+	if sl := lg.Syslog; sl != nil {
+		setStr(&sl.Network, "unix")
+		if sl.Address == "" && sl.Network == "unix" {
+			sl.Address = "/dev/log"
+		}
+		if sl.Format == "" {
+			if sl.Network == "unix" {
+				sl.Format = "rfc3164"
+			} else {
+				sl.Format = "rfc5424"
+			}
+		}
+		setStr(&sl.Facility, "local0")
+		setStr(&sl.AppName, "xproxy")
+		setInt(&sl.QueueSize, 8192)
+	}
+	if r := lg.Redaction; r != nil {
+		if len(r.Streams) == 0 {
+			r.Streams = []string{"access", "security", "error"}
+		}
+		setStr(&r.ClientIP, "truncate")
+		setStr(&r.UserAgent, "keep")
+		setStr(&r.Referer, "origin")
+		setStr(&r.Claims, "hash")
+	}
 
 	for i := range c.RateLimits {
 		rl := &c.RateLimits[i]

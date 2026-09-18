@@ -126,11 +126,15 @@ listener.
 
 ## 8. Logging and retention
 
-Ship the security and audit streams off the host (journald forwarding or
-the 1.0 syslog sink). Rotate access logs daily with the shipped logrotate
-configuration and keep them according to your retention policy; they
-contain client addresses and user agents. Set `logging.level: info` in
-production; `debug` includes upstream error details.
+Ship the security and audit streams off the host by listing `syslog`
+(`tcp+tls` with a pinned CA) or `journald` in their sinks, so a
+compromised service account cannot rewrite history. Turn on
+`logging.redaction` for the access stream when addresses and user agents
+are not needed in clear text; `hash` mode keeps per-client correlation
+without storing the address. Rotate access logs daily with the shipped
+logrotate configuration and keep them according to your retention policy.
+Set `logging.level: info` in production; `debug` includes upstream error
+details.
 
 ## 9. Resource limits
 

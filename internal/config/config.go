@@ -150,7 +150,7 @@ type Management struct {
 	SocketMode string `yaml:"socket_mode"`
 }
 
-// Logging configures the four log streams.
+// Logging configures the four log streams (AMR-014).
 type Logging struct {
 	Directory string    `yaml:"directory"`
 	Access    LogStream `yaml:"access"`
@@ -162,9 +162,15 @@ type Logging struct {
 	// Stdout mirrors all streams to standard output (useful under journald
 	// and in containers).
 	Stdout bool `yaml:"stdout"`
+	// Journald configures the journald sink used by streams listing it.
+	Journald *Journald `yaml:"journald"`
+	// Syslog configures the syslog sink used by streams listing it.
+	Syslog *Syslog `yaml:"syslog"`
+	// Redaction removes or pseudonymises personal data before any sink.
+	Redaction *Redaction `yaml:"redaction"`
 }
 
-// LogStream configures one log file.
+// LogStream configures one stream.
 type LogStream struct {
 	Enabled *bool  `yaml:"enabled"`
 	File    string `yaml:"file"`
@@ -172,7 +178,71 @@ type LogStream struct {
 	// internal rotation (use logrotate or journald instead).
 	MaxSizeMB int `yaml:"max_size_mb"`
 	MaxFiles  int `yaml:"max_files"`
+	// Sinks lists where the stream goes: file, journald, syslog. Default
+	// [file].
+	Sinks []string `yaml:"sinks"`
 }
+
+// Journald is the native journald sink.
+type Journald struct {
+	// Socket is the journald datagram socket. Default
+	// /run/systemd/journal/socket.
+	Socket string `yaml:"socket"`
+	// Identifier is SYSLOG_IDENTIFIER. Default xproxy.
+	Identifier string `yaml:"identifier"`
+}
+
+// Syslog is the syslog sink.
+type Syslog struct {
+	// Network is unix, udp, tcp or tcp+tls. Default unix.
+	Network string `yaml:"network"`
+	// Address is the socket path for unix (default /dev/log) or host:port.
+	Address string `yaml:"address"`
+	// Format is rfc5424 or rfc3164. Default rfc3164 for unix, rfc5424
+	// otherwise.
+	Format string `yaml:"format"`
+	// Facility is kern, user, daemon, auth, authpriv, syslog, local0 to
+	// local7. Default local0.
+	Facility string `yaml:"facility"`
+	// AppName is the APP-NAME or tag. Default xproxy.
+	AppName string `yaml:"app_name"`
+	// Hostname overrides the HOSTNAME field. Default the OS host name.
+	Hostname string `yaml:"hostname"`
+	// TLS settings for tcp+tls.
+	CAFile     string `yaml:"ca_file"`
+	CertFile   string `yaml:"cert_file"`
+	KeyFile    string `yaml:"key_file"`
+	ServerName string `yaml:"server_name"`
+	// QueueSize bounds messages waiting for a slow or unreachable
+	// collector; beyond it messages are dropped and counted. Default 8192.
+	QueueSize int `yaml:"queue_size"`
+}
+
+// Redaction rules. Presence enables them; Enabled false switches them off
+// without removing the configuration.
+type Redaction struct {
+	Enabled *bool `yaml:"enabled"`
+	// Streams the rules apply to. Default [access, security, error]; the
+	// audit stream keeps full detail unless listed.
+	Streams []string `yaml:"streams"`
+	// ClientIP is keep, truncate (IPv4 /24, IPv6 /48) or hash (keyed
+	// HMAC-SHA256, stable per installation). Default truncate.
+	ClientIP string `yaml:"client_ip"`
+	// HashSecretFile holds the key for hash mode; created on first use.
+	HashSecretFile string `yaml:"hash_secret_file"`
+	// UserAgent is keep or drop. Default keep.
+	UserAgent string `yaml:"user_agent"`
+	// Referer is keep, origin (scheme and host only) or drop. Default origin.
+	Referer string `yaml:"referer"`
+	// Claims is keep, hash or drop and applies to jwt_* attributes and
+	// client_cn. Default hash.
+	Claims string `yaml:"claims"`
+	// DropFields lists further attribute names removed from log lines.
+	DropFields []string `yaml:"drop_fields"`
+}
+
+// IsEnabled reports whether redaction is switched on.
+func (r *Redaction) IsEnabled() bool { return r != nil && (r.Enabled == nil || *r.Enabled) }
 
 // RateLimit is a named token bucket policy referenced by routes.
 type RateLimit struct {

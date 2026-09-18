@@ -188,11 +188,19 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Four separate JSON streams. Log files are created `0640`. Attacker
   controlled values are JSON encoded, which defeats log injection. Query
   strings are not logged.
+- Redaction rules, switchable per stream, run before every sink: client
+  addresses truncated or replaced by a keyed pseudonym, user agents and
+  referers reduced or dropped, token claims hashed or dropped, arbitrary
+  fields removed. The audit stream keeps full detail by default for
+  accountability.
+- Off-host delivery over journald's native socket or syslog (UDP, TCP,
+  TLS with a pinned CA and optional client certificate, or a Unix socket).
+  Sending is asynchronous behind a bounded queue, so a collector outage
+  can never stall or exhaust the proxy; drops are counted and visible.
 
 ## Planned controls (see ROADMAP.md)
 
-Phase 2 (remaining): PII redaction rules, journald and syslog sinks,
-Prometheus metrics, TUI.
+Phase 2 (remaining): Prometheus metrics, TUI.
 
 Phase 3: ICAP scanning, ACME, full SELinux policy in an RPM, GUI with role
 separation, coverage and mutation gates, external security review.

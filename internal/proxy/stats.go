@@ -77,6 +77,10 @@ type Snapshot struct {
 	ChallengesIssued  uint64    `json:"challenges_issued"`
 	ChallengesPassed  uint64    `json:"challenges_passed"`
 	ChallengesFailed  uint64    `json:"challenges_failed"`
+	LogSyslogSent     uint64    `json:"log_syslog_sent"`
+	LogSyslogDropped  uint64    `json:"log_syslog_dropped"`
+	LogJournalDropped uint64    `json:"log_journald_dropped"`
+	LogRedaction      bool      `json:"log_redaction"`
 	UpstreamErrors    uint64    `json:"upstream_errors"`
 	UpstreamTimeouts  uint64    `json:"upstream_timeouts"`
 	UpstreamNoHealthy uint64    `json:"upstream_no_healthy"`

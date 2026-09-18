@@ -291,15 +291,26 @@ to the exact toolchain and run with full process privileges.
 **Context.** The interview asked for syslog and journald and switchable PII
 redaction at 1.0.
 
-**Decision.** Four streams, each a `log/slog` JSON logger. MVP writes files
-with internal size rotation and optional stdout mirroring. 1.0 adds sinks:
-journald (native datagram protocol to `/run/systemd/journal/socket`, no
-cgo) and syslog (RFC 5424 over UDP, TCP or TLS, and Unix socket). Redaction
-is a handler wrapper applied per stream: header, cookie and query name
-allow lists, hashing of client addresses, and body field masks for the WAF
-log, each independently on or off.
+**Decision.** Four streams, each a `log/slog` logger over a handler chain:
+an optional redaction handler, a fan-out, and per sink a JSON handler
+(file, stdout) or a line handler feeding journald (native datagram
+protocol to `/run/systemd/journal/socket`, `MESSAGE` plus indexed
+`XPROXY_*` fields, no cgo) or syslog (RFC 5424 or 3164 over UDP, TCP, TLS
+or Unix socket, octet counting on stream transports). The syslog sink
+sends from a bounded queue on its own goroutine and drops with a counter
+when the collector is slow; the journald sink writes with a short deadline.
+Redaction rewrites attributes by key before any sink: client address
+truncation or keyed pseudonym, user agent drop, referer origin, claim
+hashing, and a drop list; per stream, with audit exempt by default. Cookie
+and header value allow lists were dropped from the plan because no stream
+logs those values in the first place.
 
-**Status.** Accepted (interview).
+**Consequences.** Redaction keys are per installation; nodes that share the
+key file produce matching pseudonyms, which the cluster documentation
+recommends. Sink drops are visible in status so operators notice a
+collector problem without losing request latency.
+
+**Status.** Accepted (interview); delivered in phase 2.
 
 ---
 

@@ -40,7 +40,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S7 | Route decisions must be immune to path normalisation tricks | M | MVP | Routing uses a cleaned path (dot segments and duplicate slashes resolved); the original path is forwarded unless the route rewrites it |
 | ASR-S8 | Run unprivileged on Fedora with systemd hardening and a confined SELinux domain | M | MVP unit, SELinux at 1.0 | Socket activation removes the need for any capability; policy module confines file and network access to four labelled directories and http ports |
 | ASR-S9 | Every deny, ban, tarpit and management action is logged with enough context to investigate | M | MVP | Dedicated security and audit streams; request identifiers propagate to upstream and back; kernel peer credentials on the management socket |
-| ASR-S10 | Logs must not leak secrets or more personal data than configured | M | 1.0 (PII redaction) | Query strings are not logged by default; redaction rules for headers, cookies and body fields, switchable per stream |
+| ASR-S10 | Logs must not leak secrets or more personal data than configured | M | 1.0 (delivered in phase 2) | Query strings are not logged by default; redaction rules for addresses, user agents, referers, claims and named fields, switchable per stream |
 | ASR-S11 | TLS configuration is secure by default and cannot be made insecure by accident | M | MVP | TLS 1.2 minimum, AEAD suites with forward secrecy only, renegotiation disabled, insecure suites rejected by validation, upstream verification skip requires a double opt-in |
 | ASR-S12 | Response leakage control | M | MVP | Error pages are reason phrases only; `Server` header removed; upstream error text never reaches the client |
 | ASR-S13 | Reproducible, verifiable builds with a software bill of materials and vulnerability scanning | M | MVP | `-trimpath`, stripped, `CGO_ENABLED=0`, `govulncheck` in CI, module information embedded in the binary |
@@ -60,7 +60,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ID | Requirement | Prio | Release | Architectural consequence |
 |----|-------------|------|---------|---------------------------|
 | ASR-O1 | Single YAML configuration file, validated before use | M | MVP | Schema in Go types; `xproxy -validate` and `xproxyctl validate` |
-| ASR-O2 | Four log streams (access, error, security, audit) as JSON, to files, journald and syslog | M | MVP files, journald and syslog at 1.0 | Sink abstraction behind `log/slog` handlers; native journald datagram protocol and RFC 5424 syslog without cgo |
+| ASR-O2 | Four log streams (access, error, security, audit) as JSON, to files, journald and syslog | M | MVP files, sinks delivered in phase 2 | Sink abstraction behind `log/slog` handlers; native journald datagram protocol and RFC 5424 syslog without cgo |
 | ASR-O3 | Management via CLI, TUI and web GUI | M | MVP CLI, TUI and GUI at 1.0 | One management API on a Unix socket serves all three; GUI is a separate binary serving embedded static assets over the same API, never inside the data plane |
 | ASR-O4 | Metrics for graphs and statistics | M | 1.0 | Prometheus text endpoint on the management socket, plus a local ring buffer of time series for the GUI without external storage |
 | ASR-O5 | Persisted state for bans and statistics across restarts | S | 1.0 | Embedded key-value store (bbolt) in the state directory |
@@ -101,6 +101,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S3 | `internal/cluster`, peer accounting in `internal/limits` | `internal/cluster/cluster_test.go`, `TestPeerRates`, `TestClusterSharesLimitsAndBans` |
 | ASR-F2 | `internal/h3`, listener wiring in `internal/proxy/server.go` | `TestHTTP3`, `TestHTTP3ConnectionLimit` |
 | ASR-F9 (upstream) | `tlsconf.Client`, `Pool.ReloadClientCertificate` | `TestUpstreamMutualTLS`, `TestUpstreamSPKIPin` |
+| ASR-O2, ASR-S10 | `internal/logging` (redact.go, sinks.go, journald.go, syslog.go) | `internal/logging/sinks_test.go`, `TestRedactedAccessLog` |
 | ASR-F10 | `internal/jwt` | `internal/jwt/jwt_test.go`, `TestJWTRoutes`, `TestJWTFromJWKSURL` |
 | ASR-S2 (shedding, challenge) | `internal/shed`, `internal/challenge` | `internal/shed/shed_test.go`, `internal/challenge/challenge_test.go`, `TestAdaptiveShedding`, `TestChallengeGate` |
 | ASR-S9, O2 | `internal/logging`, `internal/mgmt` | `internal/logging/logging_test.go`, `internal/mgmt/mgmt_test.go` |
