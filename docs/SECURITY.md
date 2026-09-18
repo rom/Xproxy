@@ -206,6 +206,58 @@ to report a vulnerability. The threat analysis behind the controls is in
   security events and ban reasons. Tunnels are bounded and idle closed;
   plain responses are size bounded.
 
+### Kubernetes ingress mode
+
+- Read-only cluster access (get, list, watch on Ingresses, Services,
+  EndpointSlices, Secrets) with the pod's service account; the proxy
+  never writes to the API.
+- Generated routes pass the same validation as the file; the file's
+  names win and collisions are errors; TLS secrets are written `0600`
+  into a controller owned directory and removed when unreferenced.
+- The container runs as a non root user on a scratch image with a read
+  only root file system and no capabilities.
+
+### DNS
+
+- Fresh transaction id and source port per upstream query; answers
+  must match id and question; TC answers are refetched over TCP.
+- Compression pointers only backwards, bounded hops; every length
+  checked; no record data decoded.
+- Client allow list, per client rate limit that drops, in-flight
+  bound, truncation to the client's UDP size: no open resolver, no
+  amplification.
+
+### gRPC and HTTP/2 cleartext
+
+- `h2c` is opt-in on listeners and upstreams and meant for trusted
+  networks; streams per connection and frame size are bounded.
+- gRPC health probes and error responses are hand encoded with bounded
+  reads; no protobuf library is linked.
+
+### WebAssembly filters
+
+- Modules run in wazero (pure Go, no cgo, no JIT escape to the host):
+  no file system, sockets or environment; memory bounded per instance;
+  every call under a deadline; traps and timeouts fail closed by
+  default and discard the instance.
+- The host reads and writes guest memory only through bounded,
+  validated strings; header names and values are checked.
+
+### OpenID Connect
+
+- Authorization code flow only, with PKCE (S256) and a nonce; the
+  implicit flow is not supported.
+- Sessions are AES-GCM sealed cookies with an expiry inside the
+  payload, `HttpOnly`, `SameSite=Lax`, `Secure` on TLS; the state
+  cookie is bound to the `state` parameter by digest and lives ten
+  minutes; ciphertexts carry a purpose so one cannot stand in for the
+  other.
+- ID tokens are verified for signature, issuer, audience, expiry and
+  nonce; `require_claims` refuses logins with 403; identity headers
+  from clients are removed before the session's are set.
+- Return URLs are same-origin paths only; the client secret and cookie
+  key files must not be world readable.
+
 ### Honeypots
 
 - Decoy routes never proxy; built-in decoys contain fabricated values

@@ -50,6 +50,44 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   its later requests carry `honeypot_marked` in the access log and
   `Info.HoneypotMarked` in filters; `GET/DELETE /v1/honeypot`,
   `xproxyctl honeypot`, `xproxy_honeypot_*` metrics.
+- Request mirroring: `routes[].mirror` copies sampled requests to a
+  second upstream in the background with `X-Xproxy-Mirror: 1`, bounded
+  in body size, time and copies in flight; the client never sees the
+  mirror's response; `mirror` in the access log, `mirror_*` counters
+  and `xproxy_mirror_total{outcome}`.
+- gRPC: `routes[].grpc` matches gRPC requests by service or method with
+  precedence over plain routes on the same path; proxy errors on gRPC
+  requests are trailers-only responses with a mapped `grpc-status`;
+  `grpc-timeout` tightens the route deadline; `listeners[].h2c` accepts
+  HTTP/2 without TLS and `upstreams[].h2c` speaks it to backends;
+  `health_check.type: grpc` probes the standard health service;
+  `grpc_status` in the access log and `xproxy_grpc_responses_total`.
+- OpenID Connect login: the `oidc` filter kind runs the authorization
+  code flow with PKCE and a nonce against a discovered provider,
+  verifies the ID token with the JWT verifier, keeps an AES-GCM sealed
+  session cookie, forwards claims as headers, strips the cookie
+  upstream, checks `require_claims`, logs out through the provider.
+  `Verdict.Silent` lets a filter answer flow redirects without
+  security bookkeeping.
+- DNS proxy: `kind: dns` listeners answer over UDP and TCP from a
+  bounded cache, apply a block list (inline and file, NXDOMAIN, REFUSED
+  or sinkhole), a client allow list and per client rate limits, and
+  forward to upstream resolvers with a fresh id and source port per
+  query; `dns_blocked` security events and ban reason; `GET/DELETE
+  /v1/dns`, `xproxyctl dns`, `xproxy_dns_*` metrics.
+- WebAssembly extension ABI version 1: the `wasm` filter kind runs a
+  module per request in a wazero sandbox with memory and time bounds;
+  guests export `xproxy_abi_version`, `xproxy_alloc`,
+  `xproxy_on_request` and optionally `xproxy_on_response` and import
+  `get`, `set_header`, `remove_header`, `deny`, `log` and `log_attr`
+  from module `xproxy`. New dependency `github.com/tetratelabs/wazero`.
+- Kubernetes ingress controller mode: the `ingress` section reads
+  Ingress, Service, EndpointSlice and TLS Secret resources of one class
+  with the pod's service account and merges routes, upstreams and
+  certificates into the file configuration, reloading on change;
+  `xproxy.sysctl.se/*` annotations set route options; `GET
+  /v1/ingress`, `xproxyctl ingress`; `deploy/kubernetes` manifests and
+  Containerfile.
 
 ## 1.0.0 - 2026-09-18
 

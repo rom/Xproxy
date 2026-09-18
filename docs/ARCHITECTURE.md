@@ -58,12 +58,16 @@ internal/proxy      server, listeners, handler pipeline, transport, stats
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
-internal/filters    built-in kinds (header_guard, basic_auth) and the registration list
+internal/filters    built-in kinds (header_guard, basic_auth, bot_score, oidc, wasm) and the registration list
+internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/proxy/tcp.go  kind: tcp listeners (SNI routing, PROXY v2, splice)
 internal/proxy/forward.go  kind: forward listeners (CONNECT tunnels, plain relay, destination policy)
+internal/dns        DNS proxy: message framing, cache, block list, resolver, UDP and TCP server
+internal/ingress    Kubernetes ingress controller: API client, translation, merge, polling
+internal/proxy/dnslistener.go  kind: dns listeners bound to the proxy's logs and bans
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
@@ -288,6 +292,40 @@ idle deadline and half-close. Connections are accounted on the pool like
 requests so ejection and health apply. The listener has its own
 connection bound and is drained on shutdown like the HTTP servers.
 
+### Kubernetes ingress mode
+
+`internal/ingress` is a polling controller with no client library: a
+small REST client with the service account token and CA lists
+Ingresses, Services and EndpointSlices (and fetches referenced TLS
+Secrets), `Translate` turns them into `config.Route` and
+`config.Upstream` values plus certificate material as a pure function
+with per object warnings, the controller writes certificate files
+atomically into `cert_dir` and removes stale ones, and `Merge` appends
+the snapshot to the operator's configuration and runs the result
+through the ordinary parser (YAML round trip) so every default and
+validation rule applies. The main binary computes the effective
+configuration as file plus snapshot at start and on every reload; the
+controller asks for a reload when the snapshot's digest changes. The
+data plane knows nothing about Kubernetes.
+
+### DNS proxy
+
+`internal/dns` handles messages as bytes. The parser reads the header,
+the single question (with compression pointers that may only point
+backwards, never into the header, at most sixteen hops) and the
+framing of resource records (to find TTLs, the OPT record's UDP size
+and where a message can be cut); it never decodes record data. The
+server serves one UDP socket and one TCP listener with a shared
+semaphore on queries in flight; each query passes bans, the per client
+rate limit, the client allow list, the block list (exact and suffix
+lookups per label), then the cache (responses stored with TTLs adjusted
+by age on the way out) and finally the resolver, which forwards with a
+fresh id on a fresh socket and accepts only an answer that echoes the
+id and the question. A `kind: dns` listener wraps this in
+`internal/proxy/dnslistener.go`, binding the access log, security
+events and the ban list; its policy is an immutable value swapped on
+reload while the cache survives.
+
 ### Forward proxy
 
 A `kind: forward` listener (`internal/proxy/forward.go`) is an
@@ -309,6 +347,37 @@ shutdown exceeds its context. Plain requests go through one
 headers removed both ways and the response body bounded. Refusals are
 security events with a `forward_` reason and feed the ban list.
 
+### WebAssembly filters
+
+The `wasm` kind (`internal/filters/wasm`) owns one wazero runtime per
+configured filter with a memory limit and close-on-context-done, the
+host module `xproxy`, WASI preview 1, and the compiled module. Guest
+instances are pooled; a call takes one (or instantiates a fresh one),
+runs the export under a deadline with the per request state in the
+context so host functions can reach the request, response and verdict,
+and returns the instance to the pool unless it trapped. Strings cross
+the boundary through the guest's `xproxy_alloc`, bounded at 64 KiB.
+The verdict the guest builds with `deny` is an ordinary
+`filter.Verdict`, so wasm denies are logged, counted and observed by
+the ban list like every other.
+
+### OpenID Connect login
+
+The `oidc` filter kind (`internal/filters/oidc`) is a state machine
+over three paths. Any other path without a valid session cookie gets a
+302 to the provider's authorization endpoint with a PKCE challenge and
+a nonce; the verifier, nonce and return URL travel in a short lived
+state cookie encrypted with the cookie key, and the `state` parameter
+is a prefix of that cookie plus a digest of it, so the callback can
+bind the two without server side storage. The callback exchanges the
+code, verifies the ID token with a `jwt.Provider` built from the
+discovered JWKS (the same verifier as `routes[].jwt`), checks the
+nonce and required claims, and seals the session (subject, selected
+claims, issue and expiry times) with AES-GCM under a purpose string
+that keeps state and session ciphertexts apart. Redirects are
+`Verdict.Silent` denies: sent as responses without the security
+bookkeeping of a refusal.
+
 ### Honeypots
 
 A honeypot is a route action next to redirect and respond. The compiled
@@ -319,6 +388,39 @@ owned by the `Server` (not a generation, so marks survive reloads),
 observes the `honeypot` ban reason and answers; a delay is spent in a
 tarpit slot after the request slot is released. The mark is read once
 per request after routing and exposed to the access log and to filters.
+
+### gRPC
+
+gRPC rides the ordinary pipeline. The router carries a gRPC rank per
+entry so that routes with a `grpc` section match only gRPC requests
+(by content type) and rank above plain routes on the same path; the
+service and method come from the request path. Plaintext HTTP/2 uses
+the standard library's `Protocols` setting: an `h2c` listener enables
+unencrypted HTTP/2 on its `http.Server` with the same stream and frame
+bounds as TLS listeners, and an `h2c` upstream gets a clone of the pool
+transport that speaks only unencrypted HTTP/2, which `Pool.RoundTripper`
+selects; no HTTP/2 library outside `net/http` is linked. The reverse
+proxy already relays `TE: trailers` and trailers, so streaming works
+without special casing. `plainStatus` answers a gRPC request over
+HTTP/2 with a trailers-only response and a mapped `grpc-status` instead
+of a text page; the client's `grpc-timeout` tightens the route
+deadline. Health checks of type `grpc` post a hand encoded
+`HealthCheckRequest` to `grpc.health.v1.Health/Check` and read the
+status from the response, so the standard health service works without
+a protobuf library. The upstream response's `grpc-status` is captured
+at end of body for the access log and a per code counter.
+
+### Request mirroring
+
+`prepareMirror` runs in `proxyTo` before the live request is handed to
+the reverse proxy: it samples, buffers the body up to the bound (the
+live request reads the buffer; over the bound the live request reads
+the prefix followed by the rest and no copy is made), and builds the
+copy through the same `rewrite` as the live request. `sendMirror`
+takes a slot from the route's in-flight semaphore or drops the copy,
+then delivers it in a goroutine through a `poolTransport` with no
+retries and its own timeout, discarding the response. Nothing on the
+mirror path can block or fail the client's request.
 
 ### Response cache
 

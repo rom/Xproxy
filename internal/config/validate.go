@@ -116,6 +116,13 @@ func (v *validator) config(c *Config) {
 	if c.ACME != nil {
 		v.acme(c.ACME)
 	}
+	if c.Ingress != nil {
+		byName := map[string]*Listener{}
+		for i := range c.Server.Listeners {
+			byName[c.Server.Listeners[i].Name] = &c.Server.Listeners[i]
+		}
+		v.ingress(c.Ingress, byName)
+	}
 	if c.Challenge != nil {
 		v.challenge(c.Challenge)
 	}
@@ -316,6 +323,12 @@ func (v *validator) server(s *Server) {
 			if ln.TCP != nil {
 				v.errf("%s.tcp: set on an http listener (kind: tcp)", p)
 			}
+			if ln.DNS != nil {
+				v.errf("%s.dns: set on an http listener (kind: dns)", p)
+			}
+			if ln.H2C && ln.TLS != nil {
+				v.errf("%s.h2c: only for plaintext listeners (TLS negotiates HTTP/2 with ALPN)", p)
+			}
 			if ln.Forward != nil {
 				v.errf("%s.forward: set on an http listener (kind: forward)", p)
 			}
@@ -328,8 +341,17 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.tcpListener(p+".tcp", ln.TCP)
 			}
+		case "dns":
+			if ln.TLS != nil || len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.H2C {
+				v.errf("%s: a dns listener takes only address and dns", p)
+			}
+			if ln.DNS == nil {
+				v.errf("%s.dns: required for kind dns", p)
+			} else {
+				v.dnsListener(p+".dns", ln.DNS)
+			}
 		case "forward":
-			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || hasProtocol(ln.Protocols, ProtocolH2) {
+			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || ln.H2C || hasProtocol(ln.Protocols, ProtocolH2) {
 				v.errf("%s: a forward listener takes no tcp or redirect_to_https and speaks h1 only", p)
 			}
 			if ln.Forward == nil {
@@ -338,7 +360,7 @@ func (v *validator) server(s *Server) {
 				v.forwardListener(p+".forward", ln.Forward)
 			}
 		default:
-			v.errf("%s.kind: must be http, tcp or forward", p)
+			v.errf("%s.kind: must be http, tcp, forward or dns", p)
 		}
 		if ln.TLS == nil {
 			for _, proto := range ln.Protocols {
@@ -672,6 +694,9 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			v.errf("%s.tls: set only when scheme is https", p)
 		}
 	case "https":
+		if u.H2C {
+			v.errf("%s.h2c: only for scheme http (https negotiates HTTP/2 with ALPN)", p)
+		}
 		if u.TLS != nil {
 			v.upstreamTLS(p+".tls", u.TLS)
 		}
@@ -707,6 +732,24 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		v.errf("%s.max_idle_conns_per_host: must not be negative", p)
 	}
 	if hc := u.HealthCheck; hc != nil {
+		switch hc.Type {
+		case "http":
+			if hc.GRPCService != "" {
+				v.errf("%s.health_check.grpc_service: only for type grpc", p)
+			}
+		case "grpc":
+			if !u.H2C && u.Scheme != "https" {
+				v.errf("%s.health_check.type: grpc needs h2c or scheme https", p)
+			}
+			if hc.Path != DefaultHealthCheckPath {
+				v.errf("%s.health_check.path: not used by type grpc", p)
+			}
+			if len(hc.GRPCService) > 253 || strings.ContainsAny(hc.GRPCService, " /\r\n") {
+				v.errf("%s.health_check.grpc_service: %q is not a service name", p, hc.GRPCService)
+			}
+		default:
+			v.errf("%s.health_check.type: must be http or grpc", p)
+		}
 		if !strings.HasPrefix(hc.Path, "/") {
 			v.errf("%s.health_check.path: must start with /", p)
 		}
@@ -871,6 +914,52 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	if actions != 1 {
 		v.errf("%s: exactly one of upstream, redirect, respond or honeypot is required", p)
 	}
+	if g := r.GRPC; g != nil {
+		for j, sv := range g.Services {
+			if !grpcNameOK(sv) || strings.Contains(sv, "/") {
+				v.errf("%s.grpc.services[%d]: %q is not a service name", p, j, sv)
+			}
+		}
+		for j, m := range g.Methods {
+			sv, mn, ok := strings.Cut(m, "/")
+			if !ok || !grpcNameOK(sv) || !grpcNameOK(mn) || strings.Contains(mn, "/") {
+				v.errf("%s.grpc.methods[%d]: %q is not Service/Method", p, j, m)
+			}
+		}
+		if r.Redirect != nil || r.Respond != nil || r.Honeypot != nil {
+			v.errf("%s.grpc: only a route with an upstream can match gRPC", p)
+		}
+	}
+	if m := r.Mirror; m != nil {
+		if r.Upstream == "" {
+			v.errf("%s.mirror: only a route with an upstream can mirror", p)
+		}
+		switch {
+		case m.Upstream == "":
+			v.errf("%s.mirror.upstream: required", p)
+		case !upstreams[m.Upstream]:
+			v.errf("%s.mirror.upstream: unknown upstream %q", p, m.Upstream)
+		case m.Upstream == r.Upstream:
+			v.errf("%s.mirror.upstream: must differ from the route's upstream", p)
+		}
+		if m.Percent < 1 || m.Percent > 100 {
+			v.errf("%s.mirror.percent: must be between 1 and 100", p)
+		}
+		for j, x := range m.Methods {
+			if x == "" || strings.ToUpper(x) != x {
+				v.errf("%s.mirror.methods[%d]: %q must be an upper-case token", p, j, x)
+			}
+		}
+		if m.MaxBodyBytes < 0 || m.MaxBodyBytes > 64<<20 {
+			v.errf("%s.mirror.max_body_bytes: must be between 0 and 64 MiB", p)
+		}
+		if m.Timeout <= 0 || m.Timeout > Duration(5*time.Minute) {
+			v.errf("%s.mirror.timeout: must be positive and at most 5m", p)
+		}
+		if m.MaxInFlight < 1 || m.MaxInFlight > 10000 {
+			v.errf("%s.mirror.max_in_flight: must be between 1 and 10000", p)
+		}
+	}
 	if r.StripPrefix != "" && !strings.HasPrefix(r.StripPrefix, "/") {
 		v.errf("%s.strip_prefix: must start with /", p)
 	}
@@ -908,7 +997,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
-	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true,
+	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true,
 }
 
 // HoneypotDecoys are the built-in decoy names (bodies live in the proxy).
@@ -1148,6 +1237,20 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	}
 }
 
+// grpcNameOK accepts protobuf identifiers with dots (package.Service).
+func grpcNameOK(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	for _, c := range s {
+		ok := c == '.' || c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func hasProtocol(ps []Protocol, p Protocol) bool {
 	for _, x := range ps {
 		if x == p {
@@ -1167,6 +1270,107 @@ func destinationPatternOK(d string) bool {
 		return true
 	}
 	return hostPatternOK(d)
+}
+
+func (v *validator) ingress(in *Ingress, listeners map[string]*Listener) {
+	if !in.Enabled {
+		return
+	}
+	u, err := url.Parse(in.APIServer)
+	schemeOK := u.Scheme == "https" || (u.Scheme == "http" && in.AllowHTTP)
+	if err != nil || u.Host == "" || !schemeOK {
+		v.errf("ingress.api_server: must be an https URL (http only with allow_http)")
+	}
+	if in.TokenFile != "" && !strings.HasPrefix(in.TokenFile, "/") {
+		v.errf("ingress.token_file: must be an absolute path")
+	}
+	if in.CAFile != "" && !strings.HasPrefix(in.CAFile, "/") {
+		v.errf("ingress.ca_file: must be an absolute path")
+	}
+	if !nameRE.MatchString(in.Class) {
+		v.errf("ingress.class: %q is not a valid name", in.Class)
+	}
+	for i, ns := range in.Namespaces {
+		if !hostPatternOK(ns) || strings.Contains(ns, ".") || strings.Contains(ns, "*") {
+			v.errf("ingress.namespaces[%d]: %q is not a namespace", i, ns)
+		}
+	}
+	if in.Listener != "" {
+		ln, ok := listeners[in.Listener]
+		switch {
+		case !ok:
+			v.errf("ingress.listener: unknown listener %q", in.Listener)
+		case ln.Kind != "http" || ln.TLS == nil:
+			v.errf("ingress.listener: %q must be an http listener with tls", in.Listener)
+		}
+	}
+	if !strings.HasPrefix(in.CertDir, "/") {
+		v.errf("ingress.cert_dir: must be an absolute path")
+	}
+	if in.Resync < Duration(time.Second) || in.Resync > Duration(time.Hour) {
+		v.errf("ingress.resync: must be between 1s and 1h")
+	}
+	if in.Timeout <= 0 || in.Timeout > Duration(5*time.Minute) {
+		v.errf("ingress.timeout: must be positive and at most 5m")
+	}
+}
+
+func (v *validator) dnsListener(p string, d *DNSListener) {
+	if len(d.Upstreams) == 0 {
+		v.errf("%s.upstreams: at least one resolver is required", p)
+	}
+	for i, u := range d.Upstreams {
+		if host, port, err := net.SplitHostPort(u); err != nil || host == "" || port == "" {
+			v.errf("%s.upstreams[%d]: %q must be host:port", p, i, u)
+		}
+	}
+	if d.Timeout <= 0 || d.Timeout > Duration(30*time.Second) {
+		v.errf("%s.timeout: must be positive and at most 30s", p)
+	}
+	for i, c := range d.AllowClients {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR", p, i, c)
+		}
+	}
+	for i, b := range d.Block {
+		name := strings.TrimPrefix(strings.TrimPrefix(b, "*."), "=")
+		if !hostPatternOK(strings.ToLower(strings.TrimSuffix(name, "."))) {
+			v.errf("%s.block[%d]: %q is not a name, *.suffix or =name", p, i, b)
+		}
+	}
+	if d.BlockFile != "" && !strings.HasPrefix(d.BlockFile, "/") {
+		v.errf("%s.block_file: must be an absolute path", p)
+	}
+	switch d.BlockAction {
+	case "nxdomain", "refuse", "sinkhole":
+	default:
+		v.errf("%s.block_action: must be nxdomain, refuse or sinkhole", p)
+	}
+	if a, err := netip.ParseAddr(d.SinkholeIPv4); err != nil || !a.Is4() {
+		v.errf("%s.sinkhole_ipv4: %q is not an IPv4 address", p, d.SinkholeIPv4)
+	}
+	if a, err := netip.ParseAddr(d.SinkholeIPv6); err != nil || !a.Is6() || a.Is4In6() {
+		v.errf("%s.sinkhole_ipv6: %q is not an IPv6 address", p, d.SinkholeIPv6)
+	}
+	if c := d.Cache; c != nil {
+		if c.MaxEntries < 1 || c.MaxEntries > 10_000_000 {
+			v.errf("%s.cache.max_entries: must be between 1 and 10000000", p)
+		}
+		if c.MinTTL < 0 || c.MaxTTL <= 0 || c.MinTTL > c.MaxTTL || c.MaxTTL > Duration(7*24*time.Hour) {
+			v.errf("%s.cache: min_ttl must not exceed max_ttl, max_ttl at most 168h", p)
+		}
+		if c.NegativeTTL < 0 || c.NegativeTTL > Duration(24*time.Hour) {
+			v.errf("%s.cache.negative_ttl: must be between 0 and 24h", p)
+		}
+	}
+	if rl := d.RateLimit; rl != nil {
+		if rl.QPS <= 0 || rl.QPS > 1_000_000 || rl.Burst < 1 {
+			v.errf("%s.rate_limit: qps must be positive and burst at least 1", p)
+		}
+	}
+	if d.MaxInFlight < 1 || d.MaxInFlight > 1_000_000 {
+		v.errf("%s.max_in_flight: must be between 1 and 1000000", p)
+	}
 }
 
 func (v *validator) forwardListener(p string, f *ForwardListener) {

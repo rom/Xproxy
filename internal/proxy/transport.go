@@ -77,7 +77,7 @@ func (t *poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		out.URL.Scheme = t.pool.Scheme
 		out.URL.Host = e.Address
 		t.pool.Begin(e)
-		resp, err := t.pool.Transport.RoundTrip(out)
+		resp, err := t.pool.RoundTripper().RoundTrip(out)
 		if err != nil {
 			t.pool.End(e, isConnError(err))
 			lastErr = err

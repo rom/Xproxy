@@ -38,6 +38,8 @@ type Actions struct {
 	ReloadCerts func() error
 	// ReopenLogs closes and reopens log files.
 	ReopenLogs func() error
+	// Ingress reports the ingress controller status, or nil when off.
+	Ingress func() any
 }
 
 // Server serves the management API.
@@ -85,6 +87,17 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 			defer cancel()
 			return m.Renew(ctx)
 		})(w, r)
+	})
+	mux.HandleFunc("GET /v1/ingress", func(w http.ResponseWriter, _ *http.Request) {
+		if s.actions.Ingress == nil {
+			writeJSON(w, 200, map[string]bool{"enabled": false})
+			return
+		}
+		writeJSON(w, 200, s.actions.Ingress())
+	})
+	mux.HandleFunc("GET /v1/dns", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.DNS()) })
+	mux.HandleFunc("DELETE /v1/dns", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, map[string]int{"purged": s.proxy.PurgeDNS()})
 	})
 	mux.HandleFunc("GET /v1/honeypot", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "decoys": proxy.DecoyNames()})

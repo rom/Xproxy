@@ -28,6 +28,39 @@ type entry struct {
 	methods  map[string]bool // nil means any
 	priority int
 	route    *Route
+	grpc     *grpcMatch // non-nil restricts the entry to gRPC requests
+}
+
+// grpcMatch selects gRPC requests by service or Service/Method. Empty
+// sets match every gRPC request.
+type grpcMatch struct {
+	services map[string]bool
+	methods  map[string]bool
+}
+
+// grpcRank orders entries of equal path and priority: 2 for listed
+// services or methods, 1 for any gRPC request, 0 for a plain entry.
+func (e *entry) grpcRank() int {
+	switch {
+	case e.grpc == nil:
+		return 0
+	case len(e.grpc.services) == 0 && len(e.grpc.methods) == 0:
+		return 1
+	default:
+		return 2
+	}
+}
+
+func (g *grpcMatch) matches(path string) bool {
+	if len(g.services) == 0 && len(g.methods) == 0 {
+		return true
+	}
+	p := strings.TrimPrefix(path, "/")
+	svc, method, ok := strings.Cut(p, "/")
+	if !ok || svc == "" || method == "" || strings.Contains(method, "/") {
+		return false
+	}
+	return g.services[svc] || g.methods[svc+"/"+method]
 }
 
 type hostTable struct {
@@ -61,9 +94,19 @@ func New(routes []config.Route) *Router {
 				methods[m] = true
 			}
 		}
+		var gm *grpcMatch
+		if rc.GRPC != nil {
+			gm = &grpcMatch{services: map[string]bool{}, methods: map[string]bool{}}
+			for _, sv := range rc.GRPC.Services {
+				gm.services[sv] = true
+			}
+			for _, m := range rc.GRPC.Methods {
+				gm.methods[m] = true
+			}
+		}
 		tables := r.tablesFor(rc.Hosts)
 		for _, p := range rc.Paths {
-			e := entry{path: normalisePath(p), methods: methods, priority: rc.Priority, route: cr}
+			e := entry{path: normalisePath(p), methods: methods, priority: rc.Priority, route: cr, grpc: gm}
 			for _, t := range tables {
 				t.entries = append(t.entries, e)
 			}
@@ -111,6 +154,9 @@ func sortEntries(es []entry) {
 		if es[i].priority != es[j].priority {
 			return es[i].priority > es[j].priority
 		}
+		if ri, rj := es[i].grpcRank(), es[j].grpcRank(); ri != rj {
+			return ri > rj // named services beat any-gRPC, which beats plain
+		}
 		return es[i].route.Index < es[j].route.Index
 	})
 }
@@ -123,28 +169,38 @@ func (r *Router) Len() int { return r.count }
 // host must already be lower-cased and stripped of any port. path must be
 // the cleaned request path (see netutil.CleanPath).
 func (r *Router) Match(host, path, method string) *Route {
+	return r.MatchRequest(host, path, method, false)
+}
+
+// MatchRequest is Match with the gRPC flag of the request: routes with
+// a grpc section only match gRPC requests, and only for their services
+// and methods.
+func (r *Router) MatchRequest(host, path, method string, grpc bool) *Route {
 	if t, ok := r.exact[host]; ok {
-		if m := t.match(path, method); m != nil {
+		if m := t.match(path, method, grpc); m != nil {
 			return m
 		}
 	}
 	if i := strings.IndexByte(host, '.'); i > 0 && i < len(host)-1 {
 		if t, ok := r.wildcard[host[i+1:]]; ok {
-			if m := t.match(path, method); m != nil {
+			if m := t.match(path, method, grpc); m != nil {
 				return m
 			}
 		}
 	}
-	return r.catchAll.match(path, method)
+	return r.catchAll.match(path, method, grpc)
 }
 
-func (t *hostTable) match(path, method string) *Route {
+func (t *hostTable) match(path, method string, grpc bool) *Route {
 	for i := range t.entries {
 		e := &t.entries[i]
 		if !prefixMatch(path, e.path) {
 			continue
 		}
 		if e.methods != nil && !e.methods[method] {
+			continue
+		}
+		if e.grpc != nil && (!grpc || !e.grpc.matches(path)) {
 			continue
 		}
 		return e.route

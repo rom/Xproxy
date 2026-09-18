@@ -38,9 +38,10 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `address` | host:port | required | `":443"`, `"0.0.0.0:80"`, `"[::1]:8080"`. Port `0` picks a free port (tests). |
 | `protocols` | list | `[h1, h2]` with TLS, `[h1]` without | `h2` and `h3` require `tls`. `h3` adds a QUIC endpoint on UDP at the same port and requires `h1` or `h2` alongside it (clients discover HTTP/3 through `Alt-Svc`). |
 | `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
+| `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Reserved (PROXY protocol parsing arrives in 1.0) |
-| `kind` | `http`, `tcp`, `forward` | `http` | `tcp` is a layer 4 listener and `forward` an explicit proxy for clients; see below |
+| `kind` | `http`, `tcp`, `forward`, `dns` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients and `dns` a DNS proxy; see below |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 
 ### server.listeners[].tcp (kind: tcp)
@@ -111,6 +112,46 @@ Counters: `forward_requests`, `forward_tunnels`, `forward_tunnels_open`,
 `forward_errors`, `forward_bytes_in`, `forward_bytes_out`;
 `xproxy_forward_*` metrics. The policy and the users file reload; the
 address and TLS settings need a restart like every listener.
+
+### server.listeners[].dns (kind: dns)
+
+A `kind: dns` listener is a forwarding DNS proxy on the listener address
+over UDP and TCP. Queries are answered from a bounded cache when they
+can be, refused or blocked by policy, and otherwise forwarded to the
+upstream resolvers with a fresh transaction id on a fresh socket
+(random source port) per query; the answer must echo the id and the
+question. A truncated UDP answer is retried over TCP to the upstream,
+and an answer larger than the client's UDP size (512 bytes or its EDNS
+advertisement) is truncated so the client retries over TCP. Only one
+question per query and the QUERY opcode are handled (FORMERR and
+NOTIMP otherwise); responses arriving as queries and packets from
+banned clients are dropped. A dns listener takes only `address` and
+`dns`; bans and the global connection limits apply to TCP clients as
+on every listener. The policy, upstreams and cache bounds reload (the
+cache is kept); the address needs a restart.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstreams` | list of host:port | required | Resolvers tried in turn, rotating the first choice per query |
+| `timeout` | duration | `2s` | One upstream attempt; at most 30s |
+| `allow_clients` | list of CIDR | `[]` (any) | Other clients get REFUSED |
+| `block` | list | `[]` | `name` blocks the name and its subdomains, `*.suffix` subdomains only, `=name` that name only |
+| `block_file` | path | none | Names added from a file: one per line, `#` comments, hosts file lines (`0.0.0.0 name`) accepted; read at load and reload, a missing file fails the reload; at most 2 million entries |
+| `block_action` | `nxdomain`, `refuse`, `sinkhole` | `nxdomain` | A blocked query is a `dns_blocked` security event and ban reason whatever the action |
+| `sinkhole_ipv4` | address | `0.0.0.0` | A answer for blocked names with `sinkhole` (TTL 60) |
+| `sinkhole_ipv6` | address | `::` | AAAA answer for blocked names with `sinkhole`; other types get an empty answer |
+| `cache.max_entries` | int | `10000` | LRU bound |
+| `cache.min_ttl` | duration | `5s` | Floor applied to upstream TTLs |
+| `cache.max_ttl` | duration | `1h` | Ceiling applied to upstream TTLs; at most 168h |
+| `cache.negative_ttl` | duration | `60s` | NXDOMAIN and empty answers; 0 disables |
+| `rate_limit` | `{qps, burst}` | none | Per client token bucket (defaults 50 and 100 when the section is present); over it queries are dropped, not answered |
+| `max_in_flight` | int | `1024` | Queries being handled at once; beyond it UDP queries are dropped |
+| `log_queries` | bool | `false` | One `dns` access log line per query (client, name, type, rcode, source, bytes, duration). Query logs are personal data; leave off unless needed |
+
+`GET /v1/dns` and `xproxyctl dns` show per listener counters (queries,
+cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated,
+upstream failures); `DELETE /v1/dns` and `xproxyctl dns purge` empty
+the caches. Metrics: `xproxy_dns_*{listener}`.
 
 ### server.listeners[].h3
 
@@ -252,6 +293,7 @@ Memory: at most 64 x 8192 buckets per policy.
 | `hash_on` | `client_ip`, `header:<Name>`, `cookie:<Name>` | `client_ip` | For `hash`; missing input falls back to the client address |
 | `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000}` |
 | `scheme` | `http`, `https` | `http` | |
+| `h2c` | bool | `false` | Speak HTTP/2 without TLS to `http` endpoints (gRPC backends); `https` negotiates HTTP/2 with ALPN on its own |
 | `tls` | object | | Only with `https`; see below |
 | `health_check` | object | none | Active probing; see below |
 | `outlier_ejection` | object | none | Passive ejection; see below |
@@ -279,6 +321,8 @@ Memory: at most 64 x 8192 buckets per policy.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `type` | `http`, `grpc` | `http` | `grpc` calls the standard `grpc.health.v1.Health/Check` over HTTP/2 and needs `h2c` or `scheme: https`; `path` and `expected_status` are not used |
+| `grpc_service` | string | `""` | Service asked in a grpc check; empty asks about the server as a whole |
 | `path` | path | `/` | GET target |
 | `interval` | duration | `5s` | At least 500ms; start is jittered |
 | `timeout` | duration | `2s` | Must be shorter than `interval` |
@@ -321,6 +365,8 @@ wins); then configuration order.
 | `redirect` | `{to, status}` | status `308` | `to` is a URL or path; status 301, 302, 303, 307 or 308 |
 | `respond` | `{status, body}` | status `200` | Static response, body up to 64 KiB |
 | `honeypot` | object | | Decoy action; see `routes[].honeypot` |
+| `mirror` | object | | Copy requests to a second upstream; see `routes[].mirror` |
+| `grpc` | `{services, methods}` | | Restrict the route to gRPC requests; see `routes[].grpc` |
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
@@ -332,6 +378,54 @@ wins); then configuration order.
 | `max_body_bytes` | int | global | May only lower the global limit |
 | `timeout` | duration | none | Whole request deadline for this route |
 | `websocket` | bool | `false` | Allow `Upgrade` requests |
+
+## ingress
+
+Kubernetes ingress controller mode. When enabled, the proxy reads the
+Ingress, Service, EndpointSlice and TLS Secret resources of one ingress
+class from the API server with the pod's service account (no client
+library), translates them and appends the result to this file's
+routes, upstreams and certificates: the running configuration is the
+file plus the cluster. The file's own routes and upstreams are kept
+and a name collision is an error. Resources are polled every `resync`
+and a change reloads the proxy like a SIGHUP; a SIGHUP or `xproxyctl
+reload` re-reads the file and merges the latest snapshot. The API
+server being unreachable at start is a warning, not a failure: the
+file configuration serves until the first successful sync.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | |
+| `api_server` | URL | `https://kubernetes.default.svc` | `http://` only with `allow_http` (tests, `kubectl proxy`) |
+| `token_file` | path | the service account token | Bearer token |
+| `ca_file` | path | the service account CA | Verifies the API server |
+| `allow_http` | bool | `false` | |
+| `class` | name | `xproxy` | `ingressClassName` (or the `kubernetes.io/ingress.class` annotation) served; other classes are ignored |
+| `namespaces` | list | `[]` (all) | Namespaces read |
+| `listener` | name | none | TLS `http` listener that receives certificates from Ingress TLS secrets; without it TLS secrets are ignored |
+| `cert_dir` | path | `/var/lib/xproxy/ingress` | Certificate files written `0600` per secret (`namespace--name.crt/.key`); files of secrets no longer referenced are removed |
+| `resync` | duration | `30s` | Polling interval; 1s to 1h |
+| `timeout` | duration | `10s` | One API request |
+
+Translation: every `rules[].http.paths[]` entry becomes a route named
+`k8s-<namespace>-<ingress>-<n>` with the rule's host, the path as a
+prefix (`pathType: Exact` gets priority 10 so it wins over a prefix of
+the same length; regular expression paths are skipped with a
+warning), and an upstream `k8s-<namespace>-<service>-<port>` whose
+endpoints are the ready addresses of the service's EndpointSlices on
+the port the service maps to (a service without ready endpoints gets
+an unreachable placeholder so the route answers 503 rather than
+disappearing). `defaultBackend` becomes a hostless `/` route with
+priority -100; only the first Ingress with one counts. Annotations
+with the prefix `xproxy.sysctl.se/` set route options: `websocket`
+(`"true"`), `priority-class`, `rate-limits` and `filters` (comma
+separated names from this file), `timeout`, `max-body-bytes`,
+`strip-prefix` (`"true"` strips the matched path), `host-header`.
+Names over 64 bytes are shortened with a digest. `GET /v1/ingress` and
+`xproxyctl ingress` show syncs, errors, counts and the translation
+warnings. `deploy/kubernetes/xproxy.yaml` is a complete deployment
+with RBAC, an IngressClass and a ConfigMap; `deploy/kubernetes/Containerfile`
+builds the image.
 
 ## metrics
 
@@ -395,7 +489,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -462,6 +556,62 @@ first, last, expires) and the decoy names; `DELETE /v1/honeypot?ip=` and
 `xproxyctl honeypot forget IP` remove a mark. The mark table holds at
 most 65536 addresses. Counters: `honeypot_hits`, `honeypot_marked`;
 metrics `xproxy_honeypot_hits_total`, `xproxy_honeypot_marked`.
+
+### routes[].mirror
+
+A mirrored route sends a copy of each request (sampled by `percent`) to
+another upstream in the background while the live request proceeds as
+usual. The copy is built like the live outbound request (path rules,
+`host_header`, forwarding headers, `request_headers`) and carries
+`X-Xproxy-Mirror: 1` and the same `X-Request-Id`; its response is read
+and discarded, so a slow, failing or absent mirror never changes what
+the client sees. Bodies are buffered up to `max_body_bytes` so that
+both requests can read them; larger requests are proxied and not
+mirrored. Upgrade requests are never mirrored. Only routes with an
+`upstream` can mirror.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | name | required | Receives the copies; must differ from the route's upstream |
+| `percent` | int | `100` | Share of requests copied, 1 to 100 |
+| `methods` | list | `[]` (all) | Upper-case tokens; copies are limited to these methods |
+| `max_body_bytes` | int | `1048576` | Largest body buffered for mirroring; at most 64 MiB |
+| `timeout` | duration | `5s` | Bound on the copy including its response; at most 5m |
+| `max_in_flight` | int | `64` | Copies in flight for this route; beyond it copies are dropped and counted |
+
+The access log carries `mirror: sent`, `dropped` or `body_too_large`.
+Counters: `mirror_sent`, `mirror_dropped`, `mirror_skipped`,
+`mirror_failed`; metric `xproxy_mirror_total{outcome}`. Mirror
+responses appear in the error log at debug level with their status.
+
+### routes[].grpc
+
+A route with a `grpc` section matches only gRPC requests (content type
+`application/grpc` or `application/grpc+...`), and with lists only the
+named services or `Service/Method` pairs read from the request path
+(`/package.Service/Method`). Among routes of equal path length and
+priority, one with named services wins over one with an empty `grpc`
+section, which wins over a plain route, so a gRPC catch-all and an
+HTTP catch-all can share `/`. Only routes with an `upstream` can match
+gRPC. Requests and responses stream through unchanged with their
+trailers; the client's `grpc-timeout` header tightens the route
+`timeout`. When the proxy cannot forward a gRPC request it answers as a
+gRPC client expects, a trailers-only response with HTTP 200 and a
+`grpc-status`: 7 PERMISSION_DENIED for 403, 16 UNAUTHENTICATED for
+401, 12 UNIMPLEMENTED for no route, 8 RESOURCE_EXHAUSTED for rate and
+size limits, 14 UNAVAILABLE for no healthy endpoint or a connection
+error, 4 DEADLINE_EXCEEDED for a timeout, 13 INTERNAL otherwise, with
+the proxy's own status in `grpc-message`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `services` | list | `[]` | Fully qualified service names, `package.Service` |
+| `methods` | list | `[]` | `package.Service/Method` pairs |
+
+The access log carries `grpc: true` and `grpc_status` from the
+response; `xproxy_grpc_responses_total{code}` counts responses by
+status. gRPC needs HTTP/2 end to end: a TLS listener with `h2`, or a
+plaintext listener with `h2c: true`, and an `https` or `h2c` upstream.
 
 ### routes[].waf
 
@@ -594,7 +744,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -626,6 +776,69 @@ digest so the hash cost is paid once per client session.
 
 Denies answer 401 with `WWW-Authenticate` and reason `<filter name>`;
 the user name is added to the access log line as `auth_user`.
+
+### Kind `oidc`
+
+Logs browsers in with OpenID Connect (authorization code flow with PKCE
+and a nonce) and keeps the result in an encrypted, HttpOnly, SameSite
+Lax session cookie. A request without a session is redirected to the
+provider; the callback exchanges the code at the token endpoint,
+verifies the ID token against the provider's JWKS (issuer, audience,
+expiry, signature, nonce), checks `require_claims`, sets the cookie and
+redirects to the page first asked for. Requests with a session carry
+the listed claims to the upstream as headers (client supplied values
+of those headers are always removed) and the cookie is stripped
+upstream. Provider metadata comes from
+`issuer/.well-known/openid-configuration`, fetched at load and retried
+on demand; while it is unavailable logins answer 503. Login and logout
+redirects are not security events; failed callbacks are, with reason
+`oidc` and a detail (`state_mismatch`, `nonce`, `id_token`, `exchange`,
+`claim:<name>`), and count towards ban triggers.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `issuer` | URL | required | `https://` (plain `http://` only with `allow_http`, for tests) |
+| `client_id` | string | required | |
+| `client_secret_file` | path | required | Not world readable; sent as `client_secret_basic` (`token_auth: post` sends it in the form) |
+| `cookie_secret_file` | path | required | 32 or more random bytes, created `0600` if absent; sessions survive reloads and restarts while the key stays |
+| `scopes` | list | `[openid]` | Must include `openid` |
+| `redirect_path` | path | `/oauth2/callback` | Registered at the provider as `external_url` + path |
+| `logout_path` | path | `/oauth2/logout` | Clears the session and sends the browser to the provider's end session endpoint (when it has one) with `logout_redirect` as the return, else to `logout_redirect` |
+| `logout_redirect` | path | `/` | |
+| `external_url` | URL | derived | `scheme://host` the browser reaches the proxy on; derived from the request (`Host`, TLS or `X-Forwarded-Proto`) when unset |
+| `cookie_name` | token | `XPOIDC` | The state cookie is `<cookie_name>_state`, ten minutes |
+| `cookie_domain` | string | host only | |
+| `session_ttl` | duration | `8h` | 1m to 720h; the cookie and its payload expire together |
+| `forward_headers` | map | `{}` | Header name to claim (for example `X-Remote-User: sub`) |
+| `require_claims` | map | `{}` | Claim to required value; a login whose ID token differs is refused with 403 |
+| `log_claims` | list | `[]` | Claims copied to the access log as `oidc_<claim>` |
+| `ca_file` | path | system pool | Pins the CA for the provider's endpoints |
+| `token_auth` | `basic`, `post` | `basic` | Client authentication at the token endpoint |
+| `allow_http` | bool | `false` | Permit a plain `http://` issuer and external URL |
+
+The access log carries `oidc_user` for requests with a session and
+`flow: <name>:login`, `login_complete` or `logout` for the redirects.
+
+### Kind `wasm`
+
+Runs a WebAssembly module per request in a sandbox. The module follows
+the ABI in EXTENDING.md (exports `xproxy_abi_version`, `xproxy_alloc`,
+`xproxy_on_request`, optionally `xproxy_on_response`; imports `get`,
+`set_header`, `remove_header`, `deny`, `log`, `log_attr` from module
+`xproxy`). It is read and compiled at load and on reload; a broken
+module or a wrong ABI version is a load error.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `module` | path | required | Absolute path of the `.wasm` file, at most 64 MiB |
+| `config` | string | `""` | Free text the module reads with `get(config)`, at most 64 KiB |
+| `timeout` | duration | `50ms` | Per call bound; 1ms to 10s |
+| `memory_limit_pages` | int | `256` | 64 KiB pages per instance (16 MiB); 1 to 16384 |
+| `instances` | int | `16` | Pooled instances; more are created on demand and dropped after use |
+| `on_error` | `deny`, `allow` | `deny` | What a trap, timeout or bad result means: 500 with the filter name as reason, or continue with `wasm_error: allowed` in the access log |
+
+Denies carry the status, reason and detail the module set with
+`deny`; `log_attr` values appear in the access log as `wasm_<key>`.
 
 ### Kind `bot_score`
 

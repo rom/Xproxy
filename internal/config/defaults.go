@@ -64,6 +64,7 @@ const (
 // applyDefaults fills zero values with their documented defaults. It must be
 // idempotent.
 func applyDefaults(c *Config) {
+	ingressDefaults(c)
 	if c.Version == 0 {
 		c.Version = CurrentVersion
 	}
@@ -106,9 +107,31 @@ func applyDefaults(c *Config) {
 				setStr(&f.Auth.Realm, "proxy")
 			}
 		}
+		if d := s.Listeners[i].DNS; d != nil {
+			setDur(&d.Timeout, 2*time.Second)
+			setStr(&d.BlockAction, "nxdomain")
+			setStr(&d.SinkholeIPv4, "0.0.0.0")
+			setStr(&d.SinkholeIPv6, "::")
+			if d.Cache == nil {
+				d.Cache = &DNSCache{}
+			}
+			setInt(&d.Cache.MaxEntries, 10000)
+			setDur(&d.Cache.MinTTL, 5*time.Second)
+			setDur(&d.Cache.MaxTTL, time.Hour)
+			if d.Cache.NegativeTTL == 0 {
+				d.Cache.NegativeTTL = Duration(60 * time.Second)
+			}
+			setInt(&d.MaxInFlight, 1024)
+			if d.RateLimit != nil {
+				if d.RateLimit.QPS == 0 {
+					d.RateLimit.QPS = 50
+				}
+				setInt(&d.RateLimit.Burst, 100)
+			}
+		}
 		ln := &s.Listeners[i]
-		if ln.Kind == "tcp" {
-			continue // no HTTP protocol or TLS defaults on a passthrough listener
+		if ln.Kind == "tcp" || ln.Kind == "dns" {
+			continue // no HTTP protocol or TLS defaults on a non-HTTP listener
 		}
 		if len(ln.Protocols) == 0 {
 			switch {
@@ -230,6 +253,7 @@ func applyDefaults(c *Config) {
 			setInt(&u.Endpoints[j].Weight, 1)
 		}
 		if hc := u.HealthCheck; hc != nil {
+			setStr(&hc.Type, "http")
 			setStr(&hc.Path, DefaultHealthCheckPath)
 			setDur(&hc.Interval, DefaultHealthInterval)
 			setDur(&hc.Timeout, DefaultHealthTimeout)
@@ -412,6 +436,14 @@ func applyDefaults(c *Config) {
 		if r.Respond != nil && r.Respond.Status == 0 {
 			r.Respond.Status = 200
 		}
+		if m := r.Mirror; m != nil {
+			setInt(&m.Percent, 100)
+			if m.MaxBodyBytes == 0 {
+				m.MaxBodyBytes = 1 << 20
+			}
+			setDur(&m.Timeout, 5*time.Second)
+			setInt(&m.MaxInFlight, 64)
+		}
 		if hp := r.Honeypot; hp != nil {
 			setInt(&hp.Status, 200)
 			setStr(&hp.ContentType, "text/html; charset=utf-8")
@@ -421,6 +453,20 @@ func applyDefaults(c *Config) {
 			}
 		}
 	}
+}
+
+func ingressDefaults(c *Config) {
+	in := c.Ingress
+	if in == nil {
+		return
+	}
+	setStr(&in.APIServer, "https://kubernetes.default.svc")
+	setStr(&in.TokenFile, "/var/run/secrets/kubernetes.io/serviceaccount/token")
+	setStr(&in.CAFile, "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+	setStr(&in.Class, "xproxy")
+	setStr(&in.CertDir, "/var/lib/xproxy/ingress")
+	setDur(&in.Resync, 30*time.Second)
+	setDur(&in.Timeout, 10*time.Second)
 }
 
 func setInt(p *int, v int) {

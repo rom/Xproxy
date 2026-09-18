@@ -62,6 +62,10 @@ type Verdict struct {
 	// of the status page, when a challenge is configured and the client is
 	// not yet verified; otherwise the verdict is a plain deny.
 	Challenge bool
+	// Silent marks a deny that is part of a normal flow (a login
+	// redirect, a logout): the response is sent but no security event is
+	// logged, no ban reason observed and no deny counted.
+	Silent bool
 }
 
 // Continue is the verdict that lets a request proceed.

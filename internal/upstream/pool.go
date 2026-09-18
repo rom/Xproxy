@@ -19,7 +19,9 @@ type Pool struct {
 	Name      string
 	Cfg       *config.Upstream
 	Transport *http.Transport
-	Scheme    string
+	// h2c carries HTTP/2 without TLS when the upstream sets h2c.
+	h2c    *http.Transport
+	Scheme string
 
 	endpoints []*Endpoint
 	bal       balancer
@@ -90,6 +92,15 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 		MaxResponseHeaderBytes: 64 << 10,
 		DisableCompression:     true, // pass encodings through untouched
 	}
+	if cfg.H2C {
+		// Prior knowledge HTTP/2 over plain TCP: the same transport
+		// settings with only the unencrypted HTTP/2 protocol enabled.
+		t := p.Transport.Clone()
+		t.Protocols = new(http.Protocols)
+		t.Protocols.SetUnencryptedHTTP2(true)
+		t.HTTP2 = &http.HTTP2Config{SendPingTimeout: cfg.Timeouts.Connect.D(), PingTimeout: cfg.Timeouts.Connect.D()}
+		p.h2c = t
+	}
 	if hc := cfg.HealthCheck; hc != nil {
 		if hc.KeepAlive {
 			p.hcTransport = p.Transport
@@ -132,6 +143,18 @@ func (p *Pool) StopChecks() {
 func (p *Pool) Stop() {
 	p.StopChecks()
 	p.Transport.CloseIdleConnections()
+	if p.h2c != nil {
+		p.h2c.CloseIdleConnections()
+	}
+}
+
+// RoundTripper is the transport requests use: HTTP/2 cleartext when the
+// upstream sets h2c, the ordinary transport otherwise.
+func (p *Pool) RoundTripper() http.RoundTripper {
+	if p.h2c != nil {
+		return p.h2c
+	}
+	return p.Transport
 }
 
 // ReloadClientCertificate re-reads the upstream client certificate, if

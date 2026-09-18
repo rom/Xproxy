@@ -404,6 +404,39 @@ by replacing the files and running `xproxyctl reload-certs`; a broken pair
 is rejected and the old one stays in use. Keep two pins during an upstream
 key rotation.
 
+### Browser login with OpenID Connect
+
+```yaml
+filters:
+  - name: sso
+    kind: oidc
+    options:
+      issuer: https://login.example.com
+      client_id: intranet
+      client_secret_file: /etc/xproxy/sso.secret
+      cookie_secret_file: /etc/xproxy/sso.cookie
+      external_url: https://intranet.example.com
+      scopes: [openid, email, profile]
+      forward_headers: {X-Remote-User: sub, X-Remote-Email: email, X-Remote-Name: name}
+      require_claims: {hd: example.com}
+      log_claims: [email]
+      session_ttl: 12h
+routes:
+  - name: intranet
+    hosts: [intranet.example.com]
+    upstream: intranet
+    filters: [sso]
+```
+
+Register `https://intranet.example.com/oauth2/callback` as the redirect
+URI at the provider. The first visit bounces through the provider and
+comes back to the page that was asked for; after that the browser
+carries an encrypted cookie and the application receives the user in
+`X-Remote-User`, never a cookie it could misuse. `/oauth2/logout` ends
+the session at the proxy and at the provider. Put `basic_auth` or JWT
+in front of API paths instead; the OIDC filter is for people with
+browsers.
+
 ### JWT validation
 
 ```yaml
@@ -479,6 +512,79 @@ The upstream keeps its own certificates and the WAF does not see the
 traffic (it is encrypted end to end); use an `http` listener with TLS
 termination where inspection is wanted.
 
+### Kubernetes ingress controller
+
+```sh
+podman build -f deploy/kubernetes/Containerfile -t registry.example.com/xproxy:1.2 .
+kubectl create namespace xproxy
+kubectl -n xproxy create secret tls xproxy-default-tls --cert=default.pem --key=default.key
+kubectl apply -f deploy/kubernetes/xproxy.yaml
+```
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+  namespace: shop
+  annotations:
+    xproxy.sysctl.se/rate-limits: "api"
+    xproxy.sysctl.se/websocket: "true"
+spec:
+  ingressClassName: xproxy
+  tls:
+    - hosts: [shop.example.com]
+      secretName: shop-tls
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: web, port: {number: 80}}}
+          - path: /api
+            pathType: Prefix
+            backend: {service: {name: api, port: {name: http}}}
+```
+
+The proxy pods read Ingress resources of class `xproxy` with their
+service account, turn them into routes and upstreams (pod addresses
+from EndpointSlices, so traffic goes to pods directly), install TLS
+secrets on the `https` listener and reload within `resync` of a
+change. Everything else in the ConfigMap's `xproxy.yaml` (bans, rate
+limits, filters, WAF) applies to the generated routes through the
+annotations. `xproxyctl ingress` in a pod shows the controller state.
+
+### DNS proxy with a block list
+
+```yaml
+server:
+  listeners:
+    - name: resolver
+      address: "10.0.0.5:53"
+      kind: dns
+      dns:
+        upstreams: ["9.9.9.9:53", "149.112.112.112:53"]
+        allow_clients: [10.0.0.0/8]
+        block: [tracker.example, "*.ads.example"]
+        block_file: /etc/xproxy/blocklist.txt      # hosts file format accepted
+        block_action: sinkhole
+        sinkhole_ipv4: 10.0.0.5                     # a local page explaining the block
+        cache: {max_entries: 100000, max_ttl: 6h}
+        rate_limit: {qps: 20, burst: 200}
+bans:
+  triggers:
+    - {name: dns-abuse, reasons: [dns_blocked], threshold: 500, window: 10m, duration: 1h}
+```
+
+Clients on the internal network resolve through the proxy, which
+answers repeated questions from its cache, replaces blocked names with
+the sinkhole address, refuses everyone else, drops floods per client
+and forwards the rest to the upstream resolvers with a fresh
+transaction id and source port per query. `xproxyctl dns` shows the
+counters; `log_queries: true` writes every question to the access log
+when an investigation needs it.
+
 ### Forward proxy for outbound clients (CONNECT)
 
 ```yaml
@@ -540,6 +646,67 @@ on the spot; the security log records the request with reason
 default: their later requests on every route carry
 `honeypot_marked: true` in the access log, and a `bot_score` filter can
 weigh the mark. `xproxyctl honeypot` lists the marks.
+
+### gRPC services
+
+```yaml
+server:
+  listeners:
+    - name: rpc
+      address: "10.0.0.5:8443"
+      tls: {certificates: [{cert_file: /etc/xproxy/rpc.pem, key_file: /etc/xproxy/rpc.key}]}
+    - name: rpc-internal
+      address: "10.0.0.5:8080"
+      h2c: true                     # plaintext HTTP/2 for in-cluster clients
+upstreams:
+  - name: orders
+    h2c: true                       # the gRPC servers listen without TLS
+    endpoints: [{address: 10.0.5.10:9000}, {address: 10.0.5.11:9000}]
+    health_check: {type: grpc, grpc_service: orders.v1.Orders, interval: 5s}
+  - name: catalog
+    scheme: https
+    endpoints: [{address: catalog.svc.internal:443}]
+    health_check: {type: grpc}
+routes:
+  - name: orders
+    grpc: {services: [orders.v1.Orders]}
+    upstream: orders
+    rate_limits: [api]
+  - name: catalog-read
+    grpc: {methods: [catalog.v1.Catalog/Get, catalog.v1.Catalog/List]}
+    upstream: catalog
+  - name: rpc-other
+    grpc: {}
+    respond: {status: 404}          # invalid: gRPC routes need an upstream
+```
+
+(Drop the last route: a request for an unlisted service gets
+`grpc-status: 12 UNIMPLEMENTED` from the proxy on its own.) Health
+checks use the standard health service, so an endpoint that reports
+`NOT_SERVING` is taken out of rotation before clients see errors, and
+a rate limited call is refused with `RESOURCE_EXHAUSTED` rather than a
+text page a gRPC client cannot read.
+
+### Request mirroring
+
+```yaml
+upstreams:
+  - name: api-v2
+    endpoints: [{address: 10.0.4.10:8080}]
+  - name: api-v3-candidate
+    endpoints: [{address: 10.0.4.50:8080}]
+routes:
+  - name: api
+    hosts: [api.example.com]
+    upstream: api-v2
+    mirror: {upstream: api-v3-candidate, percent: 10, methods: [GET], max_in_flight: 32}
+```
+
+One request in ten is copied to the candidate with `X-Xproxy-Mirror: 1`
+and the same `X-Request-Id` as the live request, so the two backends'
+logs can be joined. The client only ever sees the live response;
+copies are bounded in body size, time and number in flight, and
+dropped rather than queued when the candidate falls behind.
 
 ### Response caching
 
@@ -606,6 +773,31 @@ Start with `deny_at` and `challenge_at` at 0 and `log_at: 1` for a day:
 the access log then carries `bot_score`, `bot_signals` and `ja4` for
 every request, which gives the fingerprints of your own tools for
 `ja4_allow` and the score distribution for the thresholds.
+
+### WebAssembly filters
+
+```yaml
+filters:
+  - name: tenant-policy
+    kind: wasm
+    options:
+      module: /etc/xproxy/filters/tenant-policy.wasm
+      config: "allowed=acme,globex"
+      timeout: 20ms
+routes:
+  - name: api
+    hosts: [api.example.com]
+    upstream: api
+    filters: [tenant-policy]
+```
+
+The module decides per request from what it reads through the host
+functions (method, path, headers, client address, country, JA4, its
+own `config`), may add or remove headers in both directions, deny with
+a status and reason of its own, and annotate the access log. It runs
+with a memory bound and a deadline; a module that traps or overruns
+fails closed unless `on_error: allow`. Build it with any toolchain that
+targets WebAssembly; EXTENDING.md has the ABI and a minimal guest.
 
 ### Header policy and basic authentication (filters)
 

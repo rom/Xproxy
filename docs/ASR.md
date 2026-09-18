@@ -14,7 +14,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 
 | ID | Requirement | Prio | Release | Architectural consequence |
 |----|-------------|------|---------|---------------------------|
-| ASR-F1 | Act as an L7 HTTP reverse proxy for HTTP/1.1 and HTTP/2 clients, HTTP/1.1 and HTTP/2 upstreams | M | MVP | Built on `net/http`; protocol selection via TLS ALPN only, no h2c |
+| ASR-F1 | Act as an L7 HTTP reverse proxy for HTTP/1.1 and HTTP/2 clients, HTTP/1.1 and HTTP/2 upstreams | M | MVP | Built on `net/http`; protocol selection via TLS ALPN; h2c only where a listener or upstream opts in (1.2) |
 | ASR-F2 | Serve HTTP/3 over QUIC on the same certificates as TLS listeners | M | 1.0 (delivered in phase 2) | UDP listener per TLS listener, `quic-go` dependency, Alt-Svc advertisement, shared handler pipeline |
 | ASR-F3 | Load balance across upstream endpoints with round robin, weighted, least connections and consistent hashing | M | MVP | Balancer interface per pool; ring hash with virtual nodes so endpoint loss moves only that endpoint's keys |
 | ASR-F4 | Session affinity by cookie | M | MVP | Cookie carries a signed endpoint index, never an address; HMAC key per pool, persisted in the state directory |
@@ -30,6 +30,11 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F14 | Bot classification from TLS fingerprints, headers and behaviour, with log, challenge and deny actions | S | 1.1 (delivered) | Fingerprints observed in the TLS handshake and carried to the request; classification is a filter so it composes with the challenge and the ban list |
 | ASR-F13 | Country based policy: allow, deny and rate by country | S | 1.1 (delivered) | Country lookup in the admission pipeline from a local database, no network lookups on the request path, no new dependency |
 | ASR-F16 | Honeypot routes with decoy responses that mark and ban probing clients | C | 1.2 (delivered) | A route action outside the proxy path; a bounded mark table on the server; bans only through triggers |
+| ASR-F17 | Mirror sampled requests to a second upstream without affecting the client | C | 1.2 (delivered) | Copies are asynchronous, bounded and fire-and-forget; bodies are buffered up to a bound so both requests can read them |
+| ASR-F18 | Route gRPC by service and method, answer errors as gRPC statuses, probe the standard health service | S | 1.2 (delivered) | gRPC rank in the router; h2c opt-in on listeners and upstreams; health protocol hand encoded, no protobuf dependency |
+| ASR-F19 | Log browsers in with OpenID Connect and carry the identity to applications as headers | S | 1.2 (delivered) | A filter kind, so it composes with routes and the ban list; stateless sealed cookies, no session store; the JWT verifier is reused for ID tokens |
+| ASR-F20 | Forwarding DNS proxy with cache, block policy and client controls | C | 1.2 (delivered) | A listener kind with its own byte level parser, no DNS library; the same bans and limits as every listener |
+| ASR-F21 | Serve Kubernetes Ingress resources as an ingress controller | C | 1.2 (delivered) | Polling controller with a minimal API client, translation to the ordinary configuration, merge through the parser; the data plane is unchanged |
 
 ## 2. Security
 
@@ -68,7 +73,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-O3 | Management via CLI, TUI and web GUI | M | MVP CLI, TUI delivered in phase 2, GUI delivered in phase 3 | One management API on a Unix socket serves all three; GUI is a separate binary serving embedded static assets over the same API, never inside the data plane |
 | ASR-O4 | Metrics for graphs and statistics | M | 1.0 (delivered in phase 2) | Prometheus text endpoint on the management socket and an optional TCP endpoint, plus a local ring buffer of time series for the GUI without external storage |
 | ASR-O5 | Persisted state for bans and statistics across restarts | S | 1.0 for bans (delivered in phase 2); statistics moved to 1.x | Embedded key-value store (bbolt) in the state directory |
-| ASR-O6 | Extensible without recompiling the core for common cases | S | 1.0 interface (delivered in phase 3), 1.x WASM | Middleware interface with a registry at 1.0; WebAssembly extension ABI in 1.x; never Go plugins |
+| ASR-O6 | Extensible without recompiling the core for common cases | S | 1.0 interface (delivered in phase 3), 1.2 WebAssembly (delivered) | Middleware interface with a registry at 1.0; WebAssembly ABI v1 on wazero at 1.2; never Go plugins |
 
 ## 5. Quality
 
@@ -121,8 +126,13 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-F14 | `tlsconf.Compute`, `internal/filters/botscore` | `TestFingerprint`, `TestSignals`, `TestBehaviour`, `TestBotScoreOverTLS` |
 | ASR-F13 | `internal/geoip`, `routes[].geo`, rate key `country` | `TestMMDB`, `TestCSVAndDB`, `TestGeoPolicy` |
 | ASR-F16 | `internal/proxy/honeypot.go`, `routes[].honeypot` | `TestHoneypot`, `TestHoneypotMarks` |
+| ASR-F17 | `internal/proxy/mirror.go`, `routes[].mirror` | `TestMirror`, `TestRouteActions` |
+| ASR-F18 | `internal/proxy/grpc.go`, `internal/upstream/grpchealth.go`, router gRPC rank | `TestGRPC`, `TestGRPCHelpers`, `TestMatchGRPC`, `TestGRPCHealthEncoding`, `TestGRPCConfig` |
+| ASR-F19 | `internal/filters/oidc`, `Verdict.Silent` | `TestOIDC`, `TestParse`, `TestSealOpen` |
+| ASR-F20 | `internal/dns`, `internal/proxy/dnslistener.go` | `TestMessages`, `TestBlockList`, `TestCache`, `TestServer`, `TestDNSListener` |
+| ASR-F21 | `internal/ingress`, `ingress` section, `deploy/kubernetes` | `TestTranslate`, `TestControllerAndProxy`, `TestIngressConfig` |
 | ASR-Q2 | `test/covergate`, `.gremlins.yaml`, `internal/proxy/chaos_test.go` | CI `test` job (`make cover-gate`), CI `mutate` job, `TestChaos*` |
-| ASR-O6 | `internal/filter` registry, `internal/filters` | `TestRegistry`, `TestFilters`, `TestFiltersConfig`, EXTENDING.md |
+| ASR-O6 | `internal/filter` registry, `internal/filters`, `internal/filters/wasm` | `TestRegistry`, `TestFilters`, `TestFiltersConfig`, `TestGuest`, `TestLoadErrors`, EXTENDING.md |
 | ASR-P1 | `internal/router`, `internal/upstream` health bounds, `internal/proxy` generations | `TestScale` (`make scale`), `BenchmarkMatch1000Hosts`, PERFORMANCE.md |
 | ASR-P2 | handler path, `test/load` | `make load` baseline in PERFORMANCE.md; 8 core reference run open |
 | ASR-P3 | `Server.Reload` | `TestReload` |

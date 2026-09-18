@@ -50,6 +50,9 @@ type reqState struct {
 	cache    string // hit, miss or bypass on a cached route
 	cacheKey string
 	marked   bool   // client previously hit a honeypot
+	mirror   string // sent, dropped or body_too_large on a mirrored route
+	grpc     bool   // request is gRPC: errors are answered as gRPC statuses
+	grpcCode string // grpc-status of the upstream response
 	release  func() // concurrency slot; idempotent
 }
 
@@ -151,6 +154,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st.path = netutil.CleanPath(r.URL.Path)
+	st.grpc = isGRPC(r)
 
 	// Reserved challenge paths, served on every host.
 	if ch := s.challenger.Load(); ch != nil && strings.HasPrefix(st.path, "/.xproxy/") {
@@ -174,7 +178,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	match := rt.router.Match(st.host, st.path, r.Method)
+	match := rt.router.MatchRequest(st.host, st.path, r.Method, st.grpc)
 	if match == nil {
 		s.stats.DeniedNoRoute.Add(1)
 		st.denied = "no_route"
@@ -323,11 +327,17 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 admitted:
 
-	// Per-route timeout.
+	// Per-route timeout, tightened by a gRPC client's own deadline.
 	ctx := r.Context()
-	if cr.cfg.Timeout > 0 {
+	deadline := cr.cfg.Timeout.D()
+	if st.grpc {
+		if d := parseGRPCTimeout(r.Header.Get("Grpc-Timeout")); d > 0 && (deadline == 0 || d < deadline) {
+			deadline = d
+		}
+	}
+	if deadline > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, cr.cfg.Timeout.D())
+		ctx, cancel = context.WithTimeout(ctx, deadline)
 		defer cancel()
 		r = r.WithContext(ctx)
 	}
@@ -370,6 +380,21 @@ admitted:
 
 // filterDeny handles a deny verdict from the filter chain.
 func (s *Server) filterDeny(rw *responseWriter, r *http.Request, st *reqState, v filter.Verdict) {
+	if v.Silent {
+		// A flow step, not a refusal: answer without the security bookkeeping.
+		st.extra = append(st.extra, "flow", v.Reason+":"+v.Detail)
+		if !rw.wrote {
+			for k, val := range v.Headers {
+				rw.Header().Set(k, val)
+			}
+			if v.Response != nil {
+				s.writeResponse(rw, r, v.Response)
+			} else {
+				s.plainStatus(rw, r, v.Status)
+			}
+		}
+		return
+	}
 	st.denied = v.Reason
 	if v.Detail != "" {
 		st.denied += ":" + v.Detail
@@ -449,6 +474,10 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		return
 	}
 
+	var mirrored *http.Request
+	if cr.mirror != nil {
+		mirrored = s.prepareMirror(r, st, cr)
+	}
 	pi := &pickInfo{hashKey: hashKey(pool.Cfg, r, st)}
 	if name := pool.AffinityCookie(); name != "" {
 		if c, err := r.Cookie(name); err == nil {
@@ -493,6 +522,13 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 				return &filterDenied{v: v}
 			}
 			applyHeaderOps(resp.Header, cr.cfg.ResponseHeaders)
+			if st.grpc {
+				if code := grpcStatusOf(resp); code != "" {
+					st.grpcCode = code
+				} else {
+					resp.Body = &grpcStatusBody{ReadCloser: resp.Body, resp: resp, set: func(code string) { st.grpcCode = code }}
+				}
+			}
 			if st.cache != "" {
 				resp.Header.Set("X-Cache", strings.ToUpper(st.cache))
 			}
@@ -521,6 +557,9 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
 			s.upstreamError(rw, req, st, pi, err)
 		},
+	}
+	if mirrored != nil {
+		s.sendMirror(mirrored, st, cr)
 	}
 	rp.ServeHTTP(rw, r)
 	pi.mu.Lock()
@@ -658,6 +697,10 @@ func (s *Server) tarpit(rw *responseWriter, r *http.Request, st *reqState, rl *c
 // plainStatus writes a terse status page. No body details are leaked: the
 // text is the standard reason phrase only.
 func (s *Server) plainStatus(rw *responseWriter, r *http.Request, status int) {
+	if isGRPC(r) && r.ProtoMajor == 2 {
+		writeGRPCStatus(rw, status)
+		return
+	}
 	h := rw.Header()
 	h.Set("Content-Type", "text/plain; charset=utf-8")
 	h.Set("X-Content-Type-Options", "nosniff")
@@ -713,6 +756,18 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	}
 	if st.marked {
 		attrs = append(attrs, "honeypot_marked", true)
+	}
+	if st.mirror != "" {
+		attrs = append(attrs, "mirror", st.mirror)
+	}
+	if st.grpc {
+		attrs = append(attrs, "grpc", true)
+		if st.grpcCode != "" {
+			attrs = append(attrs, "grpc_status", st.grpcCode)
+			if c, err := strconv.Atoi(st.grpcCode); err == nil && c >= 0 && c <= 16 {
+				s.stats.GRPCStatus[c].Add(1)
+			}
+		}
 	}
 	if st.denied != "" {
 		attrs = append(attrs, "denied", st.denied)

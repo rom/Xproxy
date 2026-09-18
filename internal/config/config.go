@@ -63,6 +63,9 @@ type Config struct {
 	// GeoIP names the country database used by routes[].geo and by rate
 	// limits keyed on country.
 	GeoIP *GeoIP `yaml:"geoip"`
+	// Ingress turns Kubernetes Ingress resources into routes, upstreams
+	// and certificates (ingress controller mode).
+	Ingress *Ingress `yaml:"ingress"`
 	// Cache sizes the in-memory response cache used by routes[].cache.
 	Cache *Cache `yaml:"cache"`
 	// ACME configures automatic certificates for listeners with tls.acme.
@@ -145,6 +148,10 @@ type Listener struct {
 	RedirectToHTTPS bool `yaml:"redirect_to_https"`
 	// H3 tunes HTTP/3 when the protocols include h3.
 	H3 *H3 `yaml:"h3"`
+	// H2C accepts HTTP/2 without TLS (prior knowledge and Upgrade) on a
+	// plaintext http listener, for gRPC clients inside a trusted network.
+	// Default false.
+	H2C bool `yaml:"h2c"`
 	// Kind is http (default), tcp (an L4 listener that forwards
 	// connections by TLS server name without terminating TLS) or forward
 	// (an explicit HTTP proxy for clients: CONNECT tunnels and absolute
@@ -154,6 +161,96 @@ type Listener struct {
 	TCP *TCPListener `yaml:"tcp"`
 	// Forward configures a kind: forward listener.
 	Forward *ForwardListener `yaml:"forward"`
+	// DNS configures a kind: dns listener.
+	DNS *DNSListener `yaml:"dns"`
+}
+
+// DNSListener is a forwarding DNS proxy on the listener address over UDP
+// and TCP: a bounded cache, a block policy and forwarding to upstream
+// resolvers with fresh transaction ids and source ports. The policy,
+// upstreams and cache bounds reload; the address needs a restart.
+type DNSListener struct {
+	// Upstreams are host:port resolvers tried in turn. Required.
+	Upstreams []string `yaml:"upstreams"`
+	// Timeout bounds one upstream attempt. Default 2s.
+	Timeout Duration `yaml:"timeout"`
+	// AllowClients restricts clients to these CIDRs (others get
+	// REFUSED). Empty allows any client.
+	AllowClients []string `yaml:"allow_clients"`
+	// Block lists names: a bare name blocks it and its subdomains,
+	// *.suffix only subdomains, =name only that name.
+	Block []string `yaml:"block"`
+	// BlockFile adds names from a file (one per line, hosts file lines
+	// accepted), read at load and reload.
+	BlockFile string `yaml:"block_file"`
+	// BlockAction is nxdomain (default), refuse or sinkhole.
+	BlockAction string `yaml:"block_action"`
+	// SinkholeIPv4 and SinkholeIPv6 answer A and AAAA for blocked names
+	// with block_action sinkhole. Default 0.0.0.0 and ::.
+	SinkholeIPv4 string `yaml:"sinkhole_ipv4"`
+	SinkholeIPv6 string `yaml:"sinkhole_ipv6"`
+	// Cache bounds the response cache.
+	Cache *DNSCache `yaml:"cache"`
+	// RateLimit bounds queries per client; over it queries are dropped.
+	RateLimit *DNSRateLimit `yaml:"rate_limit"`
+	// MaxInFlight bounds queries being handled. Default 1024.
+	MaxInFlight int `yaml:"max_in_flight"`
+	// LogQueries writes one dns line per query to the access log.
+	// Default false (query logs are personal data).
+	LogQueries bool `yaml:"log_queries"`
+}
+
+// DNSCache bounds the cache of a dns listener.
+type DNSCache struct {
+	// MaxEntries. Default 10000.
+	MaxEntries int `yaml:"max_entries"`
+	// MinTTL and MaxTTL clamp what upstream answers say. Default 5s and
+	// 1h.
+	MinTTL Duration `yaml:"min_ttl"`
+	MaxTTL Duration `yaml:"max_ttl"`
+	// NegativeTTL caches NXDOMAIN and empty answers. Default 60s; 0
+	// disables.
+	NegativeTTL Duration `yaml:"negative_ttl"`
+}
+
+// DNSRateLimit is a per client token bucket.
+type DNSRateLimit struct {
+	QPS   float64 `yaml:"qps"`
+	Burst int     `yaml:"burst"`
+}
+
+// Ingress is Kubernetes ingress controller mode: the proxy reads
+// Ingress, Service, EndpointSlice and TLS Secret resources of one
+// ingress class from the API server with the pod's service account,
+// appends the resulting routes, upstreams and certificates to this
+// configuration and reloads when they change. Routes and upstreams in
+// this file are kept and take precedence by name.
+type Ingress struct {
+	Enabled bool `yaml:"enabled"`
+	// APIServer URL. Default https://kubernetes.default.svc.
+	APIServer string `yaml:"api_server"`
+	// TokenFile is the bearer token (the service account token). Default
+	// /var/run/secrets/kubernetes.io/serviceaccount/token.
+	TokenFile string `yaml:"token_file"`
+	// CAFile verifies the API server. Default
+	// /var/run/secrets/kubernetes.io/serviceaccount/ca.crt.
+	CAFile string `yaml:"ca_file"`
+	// AllowHTTP permits a plain http api_server (tests, kubectl proxy).
+	AllowHTTP bool `yaml:"allow_http"`
+	// Class is the ingressClassName served. Default xproxy.
+	Class string `yaml:"class"`
+	// Namespaces restricts the watch. Empty watches every namespace.
+	Namespaces []string `yaml:"namespaces"`
+	// Listener names the TLS listener that receives certificates from
+	// Ingress TLS secrets. Empty ignores TLS secrets.
+	Listener string `yaml:"listener"`
+	// CertDir receives the certificate files. Default
+	// /var/lib/xproxy/ingress.
+	CertDir string `yaml:"cert_dir"`
+	// Resync is the polling interval. Default 30s.
+	Resync Duration `yaml:"resync"`
+	// Timeout bounds one API request. Default 10s.
+	Timeout Duration `yaml:"timeout"`
 }
 
 // ForwardListener is an explicit forward proxy: clients send CONNECT
@@ -412,7 +509,10 @@ type Upstream struct {
 	Balancer  string     `yaml:"balancer"`
 	Endpoints []Endpoint `yaml:"endpoints"`
 	// Scheme is http or https. Default http.
-	Scheme      string          `yaml:"scheme"`
+	Scheme string `yaml:"scheme"`
+	// H2C speaks HTTP/2 without TLS to http endpoints (gRPC backends).
+	// Default false.
+	H2C         bool            `yaml:"h2c"`
 	TLS         *UpstreamTLS    `yaml:"tls"`
 	HealthCheck *HealthCheck    `yaml:"health_check"`
 	Timeouts    UpstreamTimeout `yaml:"timeouts"`
@@ -459,6 +559,12 @@ type UpstreamTLS struct {
 
 // HealthCheck configures active health probing of an upstream.
 type HealthCheck struct {
+	// Type is http (GET path, expected_status) or grpc (the standard
+	// grpc.health.v1 Check over HTTP/2, needs h2c or https). Default http.
+	Type string `yaml:"type"`
+	// GRPCService is the service name asked in a grpc check. Default ""
+	// (the server as a whole).
+	GRPCService        string   `yaml:"grpc_service"`
 	Path               string   `yaml:"path"`
 	Interval           Duration `yaml:"interval"`
 	Timeout            Duration `yaml:"timeout"`
@@ -560,6 +666,44 @@ type Route struct {
 	Geo *RouteGeo `yaml:"geo"`
 	// Cache stores responses of this route (needs the cache section).
 	Cache *RouteCache `yaml:"cache"`
+	// Mirror copies requests of this route to a second upstream.
+	Mirror *RouteMirror `yaml:"mirror"`
+	// GRPC restricts the route to gRPC requests, optionally to listed
+	// services or methods.
+	GRPC *RouteGRPC `yaml:"grpc"`
+}
+
+// RouteGRPC matches gRPC requests (content type application/grpc) by
+// the service and method in the path (/package.Service/Method). Empty
+// lists match every gRPC request. Denials and proxy errors on such a
+// route are answered as gRPC statuses.
+type RouteGRPC struct {
+	// Services are fully qualified service names.
+	Services []string `yaml:"services"`
+	// Methods are Service/Method pairs.
+	Methods []string `yaml:"methods"`
+}
+
+// RouteMirror sends a copy of each request (sampled by percent) to
+// another upstream in the background. The copy carries the same path
+// rules, host and header operations as the live request plus
+// X-Xproxy-Mirror: 1; its response is discarded and never affects the
+// client. Bodies are buffered up to max_body_bytes; larger requests are
+// proxied but not mirrored.
+type RouteMirror struct {
+	Upstream string `yaml:"upstream"`
+	// Percent of requests copied. Default 100.
+	Percent int `yaml:"percent"`
+	// Methods restricts copies to these methods. Empty copies every
+	// method except upgrades.
+	Methods []string `yaml:"methods"`
+	// MaxBodyBytes bounds the buffered body. Default 1 MiB.
+	MaxBodyBytes int64 `yaml:"max_body_bytes"`
+	// Timeout bounds the copy including its response. Default 5s.
+	Timeout Duration `yaml:"timeout"`
+	// MaxInFlight bounds copies in flight for this route; beyond it
+	// copies are dropped and counted. Default 64.
+	MaxInFlight int `yaml:"max_in_flight"`
 }
 
 // Cache bounds the response cache. Default 64 MiB total, 1 MiB per

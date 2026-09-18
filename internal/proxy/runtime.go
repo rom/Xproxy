@@ -103,6 +103,7 @@ type compiledRoute struct {
 	pool         *upstream.Pool
 	honeypotBody []byte
 	honeypotType string
+	mirror       *mirror
 	rateLimits   []*rateLimit
 	allow        []netip.Prefix
 	deny         []netip.Prefix
@@ -305,6 +306,14 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 				return nil, fmt.Errorf("route %s: unknown upstream %s", r.Name, r.Upstream)
 			}
 			cr.pool = p
+			if mc := r.Mirror; mc != nil {
+				mp, ok := rt.pools[mc.Upstream]
+				if !ok {
+					rt.stop()
+					return nil, fmt.Errorf("route %s: unknown mirror upstream %s", r.Name, mc.Upstream)
+				}
+				cr.mirror = newMirror(mc, mp)
+			}
 		}
 		for _, name := range r.RateLimits {
 			rl, ok := rt.rateLimits[name]

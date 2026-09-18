@@ -96,6 +96,7 @@ record.
 | `go.etcd.io/bbolt` | MIT | Embedded state store for bans (AMR-012) | phase 2 |
 | `github.com/quic-go/quic-go` (with `qpack`) | MIT | HTTP/3 (AMR-002, AMR-024); pinned to the newest release that builds with the minimum toolchain | phase 2 |
 | `golang.org/x/*` | BSD | Extended standard library (`net`, `crypto`, `sys`, `time`) | as needed |
+| `github.com/tetratelabs/wazero` | Apache 2.0 | WebAssembly runtime for the `wasm` filter kind (AMR-013, AMR-042); pure Go, no cgo | 1.2 |
 | `golang.org/x/term` | BSD | Raw terminal mode for the TUI (AMR-027); replaces the bubbletea plan | phase 2 |
 
 Coraza brings a transitive set that is larger than the rest of the binary
@@ -297,7 +298,12 @@ in one place; the runtime wraps instances for counting and defaulting,
 so an extension cannot produce an unlogged or uncounted deny.
 `config` now imports `filter` (and nothing else from the module).
 
-**Status.** Accepted; interface delivered.
+**Update (1.2).** The WebAssembly ABI is delivered as the built-in
+`wasm` kind on wazero (AMR-042 for its shape). Both paths remain:
+compiled-in kinds for what needs the whole request and native speed,
+modules for what must be replaceable without a build.
+
+**Status.** Accepted; interface and WebAssembly ABI delivered.
 
 ---
 
@@ -1042,6 +1048,218 @@ request details (rejected: reflection is an injection surface).
 with threshold 1. The mark table is bounded; under a flood of distinct
 addresses new marks are dropped rather than old ones evicted, which is
 the conservative failure.
+
+**Status.** Accepted.
+
+---
+
+## AMR-038: Mirrored copies are fire-and-forget and bounded
+
+**Context.** Mirroring exists to test a candidate backend with real
+traffic. The tempting design compares the two responses and reports
+differences. It also couples the client's request to the slower of two
+backends.
+
+**Decision.** A copy is sent after the live request has been prepared
+and before it is proxied, in a goroutine with its own timeout, through
+the same endpoint selection as live traffic but without retries. Its
+response is discarded apart from a debug log line. Copies are bounded
+per route in flight (dropped beyond the bound, never queued), in body
+size (a larger request is proxied and not mirrored) and by sampling.
+The body is buffered once so the live request and the copy read the
+same bytes; the buffer bound is the mirror's, not the route's body
+limit. Copies carry `X-Xproxy-Mirror: 1` and the request id so that the
+candidate can tell and the two logs can be joined.
+
+**Alternatives.** Response comparison in the proxy (rejected: it holds
+both responses in memory and turns a testing aid into a latency
+source; join the logs by request id instead); synchronous copies
+(rejected: the client waits for the slower backend); a replay tool
+from the access log (deferred: needs bodies in the log, which the log
+policy forbids).
+
+**Consequences.** Non-idempotent requests are duplicated by design;
+operators choose `methods` accordingly. Mirrored copies count on the
+mirror pool's endpoints (health, ejection) like live traffic.
+
+**Status.** Accepted.
+
+---
+
+## AMR-039: gRPC without a gRPC library
+
+**Context.** gRPC awareness could mean linking a gRPC implementation
+and a protobuf runtime to parse messages, or treating gRPC as what it
+is on the wire: HTTP/2 with a content type, a path convention and
+trailers.
+
+**Decision.** The proxy stays a byte relay for gRPC. Routing reads the
+service and method from the path and the content type; errors the
+proxy produces are trailers-only responses with the status mapping
+from the gRPC specification; deadlines come from `grpc-timeout`. The
+health check encodes the one-field `HealthCheckRequest` and decodes
+the one-field `HealthCheckResponse` by hand (about fifty lines with
+bounds on every length). HTTP/2 cleartext is opt-in per listener and
+per upstream because gRPC deployments inside a cluster run without
+TLS; it is off by default and documented as a trusted network feature.
+
+**Alternatives.** Link `google.golang.org/grpc` (rejected: a large
+dependency with its own connection management, for a proxy that must
+not parse application messages); gRPC-web translation (deferred: a
+different protocol on the browser side; a candidate for 1.x); per
+method rate limits keyed on the gRPC method (possible today with a
+rate limit keyed on a header the client sets; a `grpc_method` key is
+a small follow-up).
+
+**Consequences.** No message level inspection, so the WAF sees a
+binary body on gRPC routes and should run in a mode that suits that.
+Streaming works because the reverse proxy flushes immediately and
+relays trailers.
+
+**Status.** Accepted.
+
+---
+
+## AMR-040: OIDC sessions are sealed cookies, not a session store
+
+**Context.** A login flow needs to remember two things: a login in
+progress (nonce, PKCE verifier, where to return) and a finished login.
+Both could live in a server side table keyed by a cookie, which needs
+bounds, expiry, and sharing across a cluster.
+
+**Decision.** Both live in the browser as AES-GCM sealed cookies under
+a key file the operator owns. The state cookie is bound to the `state`
+parameter by a digest so the callback needs nothing from the server;
+the session cookie carries the subject, the claims the configuration
+forwards or logs, and its own issue and expiry times. Each ciphertext
+carries a purpose string as associated data so a state cookie is never
+accepted as a session. There is no server side session table, so
+nothing to bound or replicate, and every node with the key file
+accepts every session. Revocation before expiry is by rotating the key
+file (a reload) or by a short `session_ttl`; per user revocation is
+not offered. The ID token is verified with the existing JWT provider
+so the two features share one set of algorithms, key handling and
+clock rules.
+
+**Alternatives.** Server side sessions (rejected: state to bound and
+share; the cluster gossip is for counters, not sessions); storing the
+ID token itself in the cookie (rejected: size, and the application
+would receive a bearer credential); front channel logout support
+(deferred: needs an endpoint the provider calls and a session index).
+
+**Consequences.** Cookie size bounds what can be forwarded (4 KiB);
+the filter refuses to seal a larger session. Clock skew between nodes
+does not matter beyond the JWT verifier's allowance. Flow redirects
+are `Verdict.Silent`, which the middleware contract gained for this.
+
+**Status.** Accepted.
+
+---
+
+## AMR-041: The DNS proxy parses framing only and never trusts an answer it did not ask for
+
+**Context.** A DNS proxy could be a full resolver (recursion, DNSSEC
+validation) or a forwarder. Either way the classic attacks are cache
+poisoning by guessed transaction ids and source ports, and abuse as an
+open resolver or amplifier.
+
+**Decision.** Xproxy forwards. Every upstream query carries a fresh
+random transaction id and leaves from a fresh socket, so the source
+port is random too, and an answer is accepted only if it echoes the id
+and the question. The parser decodes the header, the question and the
+framing of records (names, types, TTLs, lengths) and nothing inside
+record data, which keeps the attack surface to a few hundred lines
+with every length checked. The cache stores whole answers and ages
+their TTLs on the way out. The listener has the client controls the
+rest of the proxy has (bans, allow lists, rate limits that drop rather
+than answer, an in-flight bound) so it cannot be turned into an
+amplifier by design. Blocking is a policy of names with three shapes,
+loadable from hosts style files, and acts as NXDOMAIN, REFUSED or a
+sinkhole address.
+
+**Alternatives.** A resolver library (rejected: recursion and DNSSEC
+are a different product; a large dependency for a proxy); DNS over
+TLS or HTTPS to upstreams (deferred: worth adding, the resolver is the
+one place to change); DNS over HTTPS for clients on an http listener
+(deferred: a 1.x candidate).
+
+**Consequences.** No DNSSEC validation; clients that need it validate
+themselves (the proxy passes records through untouched). Cached
+answers are served with the RD and AA bits the upstream set.
+
+**Status.** Accepted.
+
+---
+
+## AMR-042: The WebAssembly ABI is a small set of typed host calls, not a shared request structure
+
+**Context.** Proxy WebAssembly ABIs come in two shapes: proxy-wasm,
+where the host and guest exchange a large versioned surface of
+callbacks and serialised header maps, and small purpose built ABIs.
+Xproxy needs modules that decide and annotate, not a second data
+plane.
+
+**Decision.** ABI version 1 is six imports and three or four exports.
+The guest pulls what it needs through `get` (a kind number and an
+optional name, one value at a time), pushes changes with `set_header`,
+`remove_header` and `deny`, and writes logs with `log` and `log_attr`.
+Strings cross the boundary through the guest's own allocator so the
+host never guesses at the guest's memory layout, and a returned string
+is one packed `i64` so the ABI needs no multi-value support. There is
+no body access in version 1: bodies are where memory and time go, and
+the WAF and ICAP already cover inspection. Every call has a deadline
+and every instance a memory bound; failure is closed by default. The
+runtime is wazero because it is pure Go (the static Fedora build and
+the SELinux policy stay as they are) and interprets or compiles
+without a JIT that maps executable pages from the network.
+
+**Alternatives.** proxy-wasm compatibility (rejected for 1.2: a
+large surface to implement faithfully and a dependency on its SDKs;
+the small ABI can be wrapped by an adapter module later); bodies in
+version 1 (deferred until there is a use that the WAF and ICAP do not
+serve); Go plugins (never, AMR-013).
+
+**Consequences.** Modules cannot inspect bodies or call the network,
+by design. The ABI grows by adding `get` kinds and imports; the
+version number changes only when a table entry changes meaning. A
+module written for version 1 keeps working.
+
+**Status.** Accepted.
+
+---
+
+## AMR-043: Ingress mode translates to the file configuration and polls
+
+**Context.** Kubernetes ingress controllers usually embed client-go,
+watch resources with informers and drive their own data plane
+configuration. Xproxy already has a configuration language, a parser
+with every validation rule, and a reload path that swaps generations
+atomically.
+
+**Decision.** Ingress mode is a translator. A small REST client with
+the service account reads the four resource kinds the job needs, a
+pure function turns them into `config.Route`, `config.Upstream` and
+certificate material, and a merge appends them to the operator's file
+and runs the result through the ordinary parser via a YAML round trip.
+The data plane, the management API and every feature (bans, rate
+limits, filters, WAF) apply to generated routes unchanged, and
+annotations can only reference what the file defines. The controller
+polls on a fixed interval and compares a digest; watches are avoided
+on purpose: they need resource version bookkeeping, reconnection and
+bookmark handling for a gain of a few seconds in propagation, and the
+reload is cheap. client-go is avoided because it is a very large
+dependency tree for a few list calls.
+
+**Alternatives.** client-go with informers (rejected above); the
+Gateway API (deferred: a larger model; a translator for it would sit
+next to this one); a separate controller process writing the file
+(rejected: two processes to run and a file to race on).
+
+**Consequences.** Propagation latency is up to `resync`. Regular
+expression paths and Exact semantics beyond priority are not
+supported. Pod addresses are used directly, so the proxy must run
+inside the cluster network. Watches and the Gateway API are 1.x
+candidates.
 
 **Status.** Accepted.
 
