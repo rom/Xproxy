@@ -217,8 +217,39 @@ func applyDefaults(c *Config) {
 		setInt(&cl.MaxKeysPerReport, 4096)
 	}
 
+	if sh := c.Shedding; sh != nil {
+		setDur(&sh.TargetLatency, 250*time.Millisecond)
+		setDur(&sh.Window, 10*time.Second)
+		if sh.Low == 0 {
+			sh.Low = 0.6
+		}
+		if sh.Normal == 0 {
+			sh.Normal = 0.8
+		}
+		if sh.High == 0 {
+			sh.High = 0.95
+		}
+		if sh.Hysteresis == 0 {
+			sh.Hysteresis = 0.1
+		}
+		setDur(&sh.RetryAfter, 2*time.Second)
+	}
+	if ch := c.Challenge; ch != nil {
+		setInt(&ch.Difficulty, 16)
+		setDur(&ch.TTL, time.Hour)
+		setStr(&ch.CookieName, "XPCHAL")
+		setStr(&ch.Title, "Checking your browser")
+	}
+
 	for i := range c.Routes {
 		r := &c.Routes[i]
+		setStr(&r.PriorityClass, "normal")
+		if r.Challenge != nil {
+			setStr(&r.Challenge.Mode, "always")
+			if r.Challenge.Level == 0 {
+				r.Challenge.Level = 0.5
+			}
+		}
 		if r.WAF != nil {
 			if c.WAF != nil {
 				setStr(&r.WAF.Mode, c.WAF.DefaultMode)

@@ -93,6 +93,24 @@ to report a vulnerability. The threat analysis behind the controls is in
   `0600` bbolt file in the state directory.
 - Operators ban and unban through the audited management API.
 
+### Load shedding and challenge
+
+- Under pressure, routes are shed by priority class with immediate 503 and
+  `Retry-After`, never queued; critical routes are never shed. The signal
+  combines in-flight ratio and upstream latency, drains when no samples
+  arrive, and has hysteresis.
+- The browser challenge makes a client spend CPU (a SHA-256 proof of work)
+  before a gated route is served, either always or only under load. The
+  proxy spends one HMAC per page and one HMAC plus one hash per
+  verification.
+- Nonces are signed, bound to the client address by default, expire after
+  ten minutes and are single use. Cookies are signed, bound to the client
+  address by default, `HttpOnly`, `SameSite=Lax`, `Secure` on TLS.
+- The challenge page carries a strict Content Security Policy (no inline
+  scripts), `X-Frame-Options: DENY`, `noindex`, and returns to same-origin
+  paths only. Failed verifications are security events that feed ban
+  triggers under the `challenge` category.
+
 ### Cluster
 
 - Mutual TLS 1.3 only; every peer must present a certificate from the
@@ -147,10 +165,9 @@ to report a vulnerability. The threat analysis behind the controls is in
 
 ## Planned controls (see ROADMAP.md)
 
-Phase 2 (remaining): adaptive shedding with priority classes, challenge
-page, HTTP/3 with address validation, mutual TLS to upstreams, JWT
-validation, PII redaction rules, journald and syslog sinks, Prometheus
-metrics, TUI.
+Phase 2 (remaining): HTTP/3 with address validation, mutual TLS to
+upstreams, JWT validation, PII redaction rules, journald and syslog sinks,
+Prometheus metrics, TUI.
 
 Phase 3: ICAP scanning, ACME, full SELinux policy in an RPM, GUI with role
 separation, coverage and mutation gates, external security review.

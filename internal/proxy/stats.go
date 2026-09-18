@@ -28,6 +28,8 @@ type Stats struct {
 	DeniedWebSocket   atomic.Uint64
 	DeniedBadHost     atomic.Uint64
 	DeniedBan         atomic.Uint64
+	Shed              atomic.Uint64
+	Challenged        atomic.Uint64
 	DeniedWAF         atomic.Uint64
 	WAFDetected       atomic.Uint64
 	UpstreamErrors    atomic.Uint64
@@ -66,6 +68,13 @@ type Snapshot struct {
 	BansTotal         uint64    `json:"bans_total"`
 	ClusterPeers      int       `json:"cluster_peers"`
 	ClusterConnected  int       `json:"cluster_connected"`
+	Shed              uint64    `json:"shed"`
+	LoadLevel         float64   `json:"load_level"`
+	UpstreamLatencyMS float64   `json:"upstream_latency_ms"`
+	SheddingClasses   []string  `json:"shedding_classes"`
+	ChallengesIssued  uint64    `json:"challenges_issued"`
+	ChallengesPassed  uint64    `json:"challenges_passed"`
+	ChallengesFailed  uint64    `json:"challenges_failed"`
 	UpstreamErrors    uint64    `json:"upstream_errors"`
 	UpstreamTimeouts  uint64    `json:"upstream_timeouts"`
 	UpstreamNoHealthy uint64    `json:"upstream_no_healthy"`
@@ -98,6 +107,7 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedWebSocket:   s.DeniedWebSocket.Load(),
 		DeniedBadHost:     s.DeniedBadHost.Load(),
 		DeniedBan:         s.DeniedBan.Load(),
+		Shed:              s.Shed.Load(),
 		DeniedWAF:         s.DeniedWAF.Load(),
 		WAFDetected:       s.WAFDetected.Load(),
 		UpstreamErrors:    s.UpstreamErrors.Load(),

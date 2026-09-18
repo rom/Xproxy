@@ -302,6 +302,43 @@ a gossip interval. `xproxyctl cluster` shows connection state; a peer with
 `connected: false` and a `last_error` is being redialled with back-off.
 Firewall the cluster port to the peers' addresses (HARDENING.md).
 
+### Priority classes and load shedding
+
+```yaml
+shedding:
+  target_latency: 250ms
+  window: 10s
+routes:
+  - {name: health,  hosts: [example.com], paths: [/healthz], priority_class: critical, upstream: web}
+  - {name: login,   hosts: [example.com], paths: [/login],   priority_class: high,     upstream: web}
+  - {name: search,  hosts: [example.com], paths: [/search],  priority_class: low,      upstream: web}
+  - {name: web,     hosts: [example.com],                     upstream: web}   # normal
+```
+
+When the upstream slows past the target or the proxy nears its concurrency
+ceiling, search is shed first, then normal pages, then login; health checks
+are never shed. `xproxyctl status` shows `load_level`,
+`upstream_latency_ms` and `shedding_classes`. Tune `target_latency` to the
+site's healthy time to first byte, not to the slowest page.
+
+### Browser challenge
+
+```yaml
+challenge:
+  secret_file: /var/lib/xproxy/challenge.key
+  difficulty: 16
+  ttl: 1h
+routes:
+  - {name: signup, hosts: [example.com], paths: [/signup], challenge: {mode: always}, upstream: web}
+  - {name: web,    hosts: [example.com], challenge: {mode: load, level: 0.5}, upstream: web}
+```
+
+The signup page always requires a solved challenge. The rest of the site
+requires one only while the load level is at or above 0.5, so a flood of
+plain HTTP clients is turned away with a static page while browsers carry
+on after a short delay. Do not gate API routes: clients without JavaScript
+cannot pass. Give monitoring systems `exempt_cidrs`.
+
 ## Logs
 
 All streams are JSON lines with `time`, `level`, `msg` and `stream`.
@@ -351,8 +388,10 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 `responses_2xx` to `responses_5xx`, `bytes_in`, `bytes_out`, `denied_*`,
 `tarpitted`, `upstream_errors`, `upstream_timeouts`, `upstream_no_healthy`,
 `client_aborts`, `denied_ban`, `denied_waf`, `waf_detected`, `bans_active`,
-`bans_total`, `cluster_peers`, `cluster_connected`, `reloads`,
-`reload_failures`, `open_connections`, `rejected_connections`, `in_flight`.
+`bans_total`, `cluster_peers`, `cluster_connected`, `shed`, `load_level`,
+`upstream_latency_ms`, `shedding_classes`, `challenges_issued`,
+`challenges_passed`, `challenges_failed`, `reloads`, `reload_failures`,
+`open_connections`, `rejected_connections`, `in_flight`.
 
 ## Troubleshooting
 
@@ -369,5 +408,7 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 | 502 | Upstream connection failed; see `upstream_error` in access and the error log |
 | 503 with `Retry-After: 5` | No healthy endpoint; `xproxyctl upstreams` |
 | 503 with `Retry-After: 1` | Concurrency ceiling reached |
+| 503 with `Retry-After: 2` and `denied: shed:<class>` in the access log | Load shedding; check `load_level` and upstream latency |
+| 503 HTML page titled "Checking your browser" | Challenge gate; a browser solves it, an API client cannot |
 | Reload says listener changed | Restart instead; sockets may be systemd owned |
 | `management socket ... already in use` | Another xproxy is running |

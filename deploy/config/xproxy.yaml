@@ -99,6 +99,8 @@ routes:
     methods: [POST]
     rate_limits: [login, per-ip]
     max_body_bytes: 16384
+    priority_class: high
+    challenge: {mode: always}
     upstream: web
 
   - name: api
@@ -119,12 +121,14 @@ routes:
     hosts: [example.com]
     paths: [/admin]
     allow_cidrs: [10.0.0.0/8, 192.168.0.0/16]
+    priority_class: critical
     upstream: web
 
   - name: web
     hosts: [example.com, www.example.com]
     rate_limits: [per-ip]
     websocket: true
+    challenge: {mode: load, level: 0.5}   # only while the site is under pressure
     upstream: web
     response_headers:
       set:
@@ -195,3 +199,19 @@ cluster:
     key_file: /etc/xproxy/cluster/edge-1-key.pem
     ca_file: /etc/xproxy/cluster/ca.pem
     allowed_names: [edge-1, edge-2, edge-3]
+
+# Adaptive load shedding: shed low priority routes first when the upstream
+# slows past the target or the proxy nears its concurrency ceiling.
+shedding:
+  target_latency: 250ms
+  window: 10s
+  low: 0.6
+  normal: 0.8
+  high: 0.95
+
+# Browser challenge used by routes with a challenge block.
+challenge:
+  secret_file: /var/lib/xproxy/challenge.key
+  difficulty: 16
+  ttl: 1h
+  exempt_cidrs: [10.0.0.0/8]

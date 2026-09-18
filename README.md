@@ -5,7 +5,8 @@ firewall, written in Go for Fedora Linux. Single static
 binary, no cgo, unprivileged under a hardened systemd unit, confined by
 SELinux, managed over a local socket.
 
-Status: **phase 2 in progress** (WAF, ban list and cluster delivered). See
+Status: **phase 2 in progress** (WAF, ban list, cluster, load shedding and
+challenge delivered). See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is in and what follows.
 
 ## What it does today
@@ -23,6 +24,9 @@ Status: **phase 2 in progress** (WAF, ban list and cluster delivered). See
   accept, persisted across restarts, managed from the CLI
 - Cluster: proxies share rate limit consumption and bans over mutual TLS,
   making limits approximately cluster wide with no external datastore
+- Adaptive load shedding by priority class from upstream latency and
+  in-flight load, with critical routes never shed
+- Browser proof-of-work challenge, always or only under load
 - Defences: connection limits at accept, concurrency ceiling, slowloris and
   body timeouts, size limits, keyed rate limits with reject or tarpit, CIDR
   allow and deny lists, trusted proxy handling, WebSocket opt-in
@@ -71,6 +75,7 @@ curl -i http://127.0.0.1:8080/
 | [docs/HARDENING.md](docs/HARDENING.md) | Host hardening checklist |
 | [docs/TESTS.md](docs/TESTS.md) | Test harness and coverage |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases to 1.0 and beyond |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Notable changes per phase |
 
 ## Development
 

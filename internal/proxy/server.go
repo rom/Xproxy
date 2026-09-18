@@ -16,10 +16,12 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/ban"
+	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
+	"github.com/rom/xproxy/internal/shed"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -36,6 +38,8 @@ type Server struct {
 	connLimiter *limits.ConnLimiter
 	bans        atomic.Pointer[ban.List]
 	cluster     atomic.Pointer[cluster.Node]
+	shedder     atomic.Pointer[shed.Shedder]
+	challenger  atomic.Pointer[challenge.Challenger]
 
 	mu        sync.Mutex
 	listeners []*boundListener
@@ -68,6 +72,19 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 			return nil, err
 		}
 		s.bans.Store(bl)
+	}
+	if cfg.Shedding != nil {
+		s.shedder.Store(shed.New(cfg.Shedding, s.concurrency.InFlight, cfg.Server.Limits.MaxConcurrentRequests))
+	}
+	if cfg.Challenge != nil {
+		ch, err := challenge.New(cfg.Challenge)
+		if err != nil {
+			if bl := s.bans.Load(); bl != nil {
+				bl.Close()
+			}
+			return nil, err
+		}
+		s.challenger.Store(ch)
 	}
 	s.connLimiter.Banned = func(addr netip.Addr) bool {
 		bl := s.bans.Load()
@@ -126,8 +143,32 @@ func (s *Server) Stats() Snapshot {
 		snap.ClusterPeers = len(node.Status().Peers)
 		snap.ClusterConnected = node.ConnectedPeers()
 	}
+	if sh := s.shedder.Load(); sh != nil {
+		ss := sh.Snapshot()
+		snap.LoadLevel = ss.Level
+		snap.UpstreamLatencyMS = ss.LatencyMS
+		snap.SheddingClasses = []string{}
+		if ss.SheddingLow {
+			snap.SheddingClasses = append(snap.SheddingClasses, "low")
+		}
+		if ss.SheddingNorm {
+			snap.SheddingClasses = append(snap.SheddingClasses, "normal")
+		}
+		if ss.SheddingHigh {
+			snap.SheddingClasses = append(snap.SheddingClasses, "high")
+		}
+	}
+	if ch := s.challenger.Load(); ch != nil {
+		snap.ChallengesIssued, snap.ChallengesPassed, snap.ChallengesFailed = ch.Stats()
+	}
 	return snap
 }
+
+// Shedder returns the load shedder, or nil when shedding is not configured.
+func (s *Server) Shedder() *shed.Shedder { return s.shedder.Load() }
+
+// Challenger returns the challenge engine, or nil when not configured.
+func (s *Server) Challenger() *challenge.Challenger { return s.challenger.Load() }
 
 // Upstreams returns endpoint statistics per upstream.
 func (s *Server) Upstreams() map[string][]upstream.Stats {
@@ -335,6 +376,30 @@ func (s *Server) Reload(cfg *config.Config) error {
 		if newBans != oldBans {
 			node.AttachBans(banStore(newBans))
 		}
+	}
+	switch sh := s.shedder.Load(); {
+	case cfg.Shedding != nil && sh != nil:
+		sh.Reconfigure(cfg.Shedding, cfg.Server.Limits.MaxConcurrentRequests)
+	case cfg.Shedding != nil:
+		s.shedder.Store(shed.New(cfg.Shedding, s.concurrency.InFlight, cfg.Server.Limits.MaxConcurrentRequests))
+	case sh != nil:
+		s.shedder.Store(nil)
+	}
+	switch ch := s.challenger.Load(); {
+	case cfg.Challenge != nil && ch != nil:
+		ch.Reconfigure(cfg.Challenge)
+	case cfg.Challenge != nil:
+		// Created above the swap would be cleaner, but a key generation
+		// failure here is the only error path and it only disables the
+		// challenge until the next reload; routes referencing it were
+		// validated against the section, so log and continue.
+		if nc, err := challenge.New(cfg.Challenge); err == nil {
+			s.challenger.Store(nc)
+		} else {
+			s.logs.Error.Error("challenge key unavailable", "err", err.Error())
+		}
+	case ch != nil:
+		s.challenger.Store(nil)
 	}
 	s.stats.Reloads.Add(1)
 	// Give in-flight requests on the old generation time to finish before

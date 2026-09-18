@@ -60,6 +60,8 @@ internal/filter     per-route middleware interface (Filter, Instance, Chain)
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
+internal/shed       adaptive load shedding by priority class
+internal/challenge  browser proof-of-work challenge
 internal/version    build information
 deploy/             systemd units, sysctl, SELinux, logrotate, example config
 docs/               this documentation
@@ -72,7 +74,7 @@ keeps the API surface at exactly two binaries.
 Dependency direction (arrows point at the importer's dependency):
 
 ```
-cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster}
+cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster, shed, challenge}
                        cluster  -> {ban, limits, config}
                        waf      -> {filter, config}
                        ban      -> {netutil, config}
@@ -137,8 +139,11 @@ the `denied` reason.
 | 3 | Plaintext redirect listener: 308 to https | 308 | |
 | 4 | URI length | 414 | `denied_uri_length` |
 | 5 | Host normalisation (`netutil.Host`) | 400 | `denied_bad_host` |
+| 5b | Reserved paths `/.xproxy/challenge` (proof verification) and `/.xproxy/challenge.js` | 303 / 403 | `challenges_*` |
 | 6 | Path cleaning (`netutil.CleanPath`) and route match | 404 | `denied_no_route` |
 | 7 | CIDR deny then allow | 403 | `denied_acl` |
+| 7b | Challenge gate: unverified clients on routes with `challenge` (always, or in `load` mode above the level) receive the page | 503 page | `challenges_issued` |
+| 7c | Adaptive shedding: the route's priority class against the load level | 503 + `Retry-After` | `shed` |
 | 8 | Rate limits in route order; reject or tarpit | 429 | `denied_rate_limit`, `tarpitted` |
 | 9 | Body limit: declared length checked, then `MaxBytesReader` | 413 | `denied_body_size` |
 | 9b | Filter chain request phase (WAF): headers, then body, which is buffered and replayed to the upstream | 403 or rule status | `denied_waf`, `waf_detected` |
@@ -153,9 +158,12 @@ the `denied` reason.
 Every deny at stages 2 to 13 is reported to the ban list (`Observe`) with
 its category, so triggers can turn repeated denies into bans.
 
+Upstream time to first byte is observed in `ModifyResponse` (and on
+timeouts) and feeds the shedder.
+
 Planned stages (1.0): ICAP REQMOD after the WAF request phase and ICAP
 RESPMOD after the WAF response phase, JWT validation before the filter
-chain, adaptive shedding at 2.
+chain.
 
 ### Client address
 
@@ -360,7 +368,29 @@ through the live runtime pointer, so reloads neither detach it nor lose
 peer state. Listen address, node identity and TLS material need a restart;
 peers and intervals reload in place.
 
-## 13. Scale considerations for 1.0 targets
+## 13. Load shedding and challenge
+
+`shed.Shedder` keeps a ring of 20 latency buckets covering `window`; the
+latency level is derived from the average of buckets still inside the
+window, so a window with no admitted upstream traffic drains to zero and
+the classes are readmitted for a fresh measurement. The in-flight ratio is
+read from the concurrency limiter. Each class keeps a shedding flag with
+hysteresis so admission does not flap around the threshold. Critical is
+never shed; the concurrency ceiling still applies to it.
+
+`challenge.Challenger` holds an HMAC key (persisted when `secret_file` is
+set). A nonce is `ts || random || HMAC(key, "nonce", ts, random, ip)`;
+a cookie is `expiry || HMAC(key, "cookie", expiry, ip)`. The page ships a
+small script (served from a reserved path so the page's Content Security
+Policy can forbid inline scripts) that searches for a counter such that
+SHA-256 of `nonce ":" counter` has `difficulty` leading zero bits and posts
+it back. Verification checks the nonce signature and age, the proof, and
+single use (bounded seen table), then sets the cookie and redirects to the
+sanitised original path. The gate runs after routing (it needs the route's
+mode) and before shedding, so under load unverified clients are turned
+away cheaply and verified browsers compete only with each other.
+
+## 14. Scale considerations for 1.0 targets
 
 1000 hosts and 10 000 endpoints (ASR-P1) drive these properties:
 

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{.Title}}</title>
+<style>
+html,body{height:100%;margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#f6f7f9;color:#1c1e21}
+main{max-width:34rem;margin:12vh auto;padding:2rem;background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+h1{font-size:1.25rem;margin:0 0 .75rem}
+p{margin:.5rem 0;line-height:1.5}
+.bar{height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;margin-top:1rem}
+.bar i{display:block;height:100%;width:0;background:#2563eb;transition:width .3s}
+small{color:#6b7280}
+@media (prefers-color-scheme:dark){html,body{background:#111315;color:#e5e7eb}main{background:#1a1d21}.bar{background:#2a2f36}}
+</style>
+</head>
+<body data-nonce="{{.Nonce}}" data-difficulty="{{.Difficulty}}" data-return="{{.Return}}" data-verify="{{.Verify}}">
+<main>
+<h1>{{.Title}}</h1>
+<p id="msg">Your browser is completing a short check before continuing. This takes a moment and needs JavaScript.</p>
+<div class="bar"><i id="bar"></i></div>
+<noscript><p><strong>JavaScript is required</strong> to continue to this site.</p></noscript>
+<p><small>Protected by Xproxy</small></p>
+</main>
+<script src="{{.Script}}"></script>
+</body>
+</html>
