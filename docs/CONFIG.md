@@ -213,6 +213,8 @@ upstream `total` for those. 0-RTT is never enabled.
 |-----|------|---------|-------------|
 | `socket` | path | `""` (disabled) | Unix socket for `xproxyctl` |
 | `socket_mode` | octal string | `"0660"` | Any `other` permission is rejected |
+| `history_dir` | path | none (history off) | Directory (created `0700`) where every applied configuration is recorded as a self-contained YAML file (`0600`) for `xproxyctl history`, `diff` and `rollback`; `/var/lib/xproxy/history` on Fedora |
+| `history_keep` | int | `20` | Entries kept; older ones are removed (1 to 1000) |
 
 ## logging
 
@@ -1292,3 +1294,18 @@ challenge settings (the key is kept), priority classes. Requires restart: any
 change under `server.listeners` other than certificate file contents
 (including the `tls.acme` groups), `management.socket`, cluster `listen`,
 `node_id` or `tls`, and the `acme` section.
+
+Before applying, `xproxyctl reload -dry-run` (or `POST /v1/reload?dry_run=1`)
+loads and validates the file and reports what would change against the
+running generation: per named item (listeners, upstreams, routes, rate
+limits, filters) added, removed or changed, every other section as a
+whole, the items in the list above that need a restart, and a unified
+text diff of the two documents. `xproxyctl diff [FROM] [TO]` compares
+any two of `active` (running), `file` (on disk) and a history id. With
+`management.history_dir` set, every applied generation is recorded
+(start, reload, rollback); `xproxyctl history` lists them and
+`xproxyctl rollback ID` applies one through the ordinary reload path,
+so validation, the restart list and the audit log apply as for a
+reload, and the rollback itself becomes a new entry. In ingress
+controller mode the recorded document is the merged one; a rollback
+restores the routes as they were merged at the time.

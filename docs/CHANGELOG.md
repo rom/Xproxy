@@ -99,6 +99,14 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `xproxy_route_bytes_total`, `xproxy_route_rate_limited_total`,
   `xproxy_rate_limit_decisions_total`, `xproxy_rate_limit_keys` and a
   `tenant` label on per route counters.
+- Configuration operations: `xproxyctl reload -dry-run` reports per
+  item changes, the restart list and a unified diff without applying;
+  `xproxyctl diff` compares the running configuration, the file and
+  history entries; `management.history_dir` records every applied
+  generation for `xproxyctl history` and `xproxyctl rollback ID`;
+  endpoints `POST /v1/reload?dry_run=1`, `GET /v1/diff`, `GET
+  /v1/history`, `POST /v1/rollback`. `xproxyctl config` and the history
+  use one self-contained dump (`config.Dump`).
 
 ### Fixed (1.3)
 - Ingress merge on a configuration with `includes` expanded the

@@ -21,8 +21,6 @@ import (
 	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
@@ -44,6 +42,16 @@ type Actions struct {
 	Ingress func() any
 	// OTLP reports the OpenTelemetry exporter status, or nil when off.
 	OTLP func() metrics.OTLPStatus
+	// DryRun loads and validates the configuration file and reports what
+	// applying it would change, without applying it.
+	DryRun func() (*config.Changes, error)
+	// History lists recorded configurations, newest first.
+	History func() ([]config.Entry, error)
+	// Rollback applies a recorded configuration.
+	Rollback func(id string) error
+	// Diff compares two configurations named "active", "file" or a
+	// history id.
+	Diff func(from, to string) (*config.Changes, error)
 }
 
 // Server serves the management API.
@@ -75,6 +83,45 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	})
 	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("POST /v1/reload", s.reload)
+	mux.HandleFunc("GET /v1/history", func(w http.ResponseWriter, _ *http.Request) {
+		if s.actions.History == nil {
+			writeJSON(w, 501, result{Error: "history not available"})
+			return
+		}
+		entries, err := s.actions.History()
+		if err != nil {
+			writeJSON(w, 409, result{Error: err.Error()})
+			return
+		}
+		writeJSON(w, 200, entries)
+	})
+	mux.HandleFunc("POST /v1/rollback", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		if s.actions.Rollback == nil {
+			writeJSON(w, 501, result{Error: "rollback not available"})
+			return
+		}
+		s.audited("rollback "+id, func() error { return s.actions.Rollback(id) })(w, r)
+	})
+	mux.HandleFunc("GET /v1/diff", func(w http.ResponseWriter, r *http.Request) {
+		if s.actions.Diff == nil {
+			writeJSON(w, 501, result{Error: "diff not available"})
+			return
+		}
+		from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
+		if from == "" {
+			from = "active"
+		}
+		if to == "" {
+			to = "file"
+		}
+		ch, err := s.actions.Diff(from, to)
+		if err != nil {
+			writeJSON(w, 409, result{Error: err.Error()})
+			return
+		}
+		writeJSON(w, 200, ch)
+	})
 	mux.HandleFunc("POST /v1/reload-certs", s.reloadCerts)
 	mux.HandleFunc("POST /v1/logs/reopen", s.reopenLogs)
 	mux.HandleFunc("GET /v1/bans", s.listBans)
@@ -295,9 +342,7 @@ func (s *Server) upstreams(w http.ResponseWriter, _ *http.Request) {
 // cleared (a copy fed back would otherwise append them a second time) and
 // the files that were read are listed in a leading comment.
 func (s *Server) config(w http.ResponseWriter, _ *http.Request) {
-	cfg := *s.proxy.Config()
-	cfg.Includes = nil
-	b, err := yaml.Marshal(&cfg)
+	b, err := config.Dump(s.proxy.Config())
 	if err != nil {
 		writeJSON(w, 500, result{Error: err.Error()})
 		return
@@ -427,7 +472,24 @@ func (s *Server) clusterStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, node.Status())
 }
 
+// reload applies the file, or with ?dry_run=1 reports what applying it
+// would change (validation included) without touching the running
+// generation. A dry run is read only and not audited.
 func (s *Server) reload(w http.ResponseWriter, r *http.Request) {
+	if q := r.URL.Query().Get("dry_run"); q == "1" || q == "true" {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if s.actions.DryRun == nil {
+			writeJSON(w, 501, result{Error: "dry run not available"})
+			return
+		}
+		ch, err := s.actions.DryRun()
+		if err != nil {
+			writeJSON(w, 409, result{Error: err.Error()})
+			return
+		}
+		writeJSON(w, 200, ch)
+		return
+	}
 	s.audited("reload", s.actions.Reload)(w, r)
 }
 

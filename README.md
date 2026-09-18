@@ -134,9 +134,10 @@ an identifier from the access log to the upstream.
   journald or syslog, with per stream redaction of personal data and
   a request identifier end to end
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
-  status, upstreams, quotas per tenant and route, reload, certificates,
-  logs, bans, cache, honeypots, DNS, ingress, cluster, metrics and a
-  full screen TUI; a web GUI with
+  status, upstreams, quotas per tenant and route, reload with dry run,
+  configuration diff, history and rollback, certificates, logs, bans,
+  cache, honeypots, DNS, ingress, cluster, metrics and a full screen
+  TUI; a web GUI with
   viewer and operator roles, configuration editing with validation,
   graphs and live logs
 - Prometheus exposition with latency histograms and per route counters,

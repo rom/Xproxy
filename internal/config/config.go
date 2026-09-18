@@ -451,6 +451,11 @@ type Management struct {
 	Socket string `yaml:"socket"`
 	// SocketMode is the octal permission mode of the socket, default 0660.
 	SocketMode string `yaml:"socket_mode"`
+	// HistoryDir keeps every applied configuration as a file for
+	// xproxyctl history, diff and rollback. Empty disables history.
+	HistoryDir string `yaml:"history_dir"`
+	// HistoryKeep is how many entries are kept. Default 20.
+	HistoryKeep int `yaml:"history_keep"`
 }
 
 // Logging configures the four log streams (AMR-014).

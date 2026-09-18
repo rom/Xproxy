@@ -47,7 +47,10 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `quotas` | Usage per tenant, per route (requests by class, denied, rate limited, bytes) and per rate limit policy (decisions, top consumers with tokens left, `-top 10`), plus request share per upstream |
 | `config` | Active configuration as YAML, defaults filled in |
 | `validate` | Validate the configuration file locally |
-| `reload` | Validate locally, then ask the daemon to reload |
+| `reload` | Validate locally, then ask the daemon to reload; `-dry-run` shows what the file would change (per item, restart list, text diff) without applying |
+| `diff [FROM] [TO]` | Compare `active`, `file` or a history id (default `active file`); exit status 1 when they differ |
+| `history` | Recorded configurations with generation, time, note and size (needs `management.history_dir`) |
+| `rollback ID` | Apply a recorded configuration (audited; becomes a new history entry) |
 | `reload-certs` | Re-read certificate files |
 | `reopen-logs` | Reopen log files |
 | `tail STREAM` | Follow `access`, `error`, `security` or `audit` |
@@ -335,6 +338,42 @@ connection from any other peer is served as before, so nobody outside
 the balancer range can choose an address. Layer 4 listeners (`kind:
 tcp`) do the opposite: their `proxy_protocol` sends the header to the
 upstream.
+
+### Previewing, comparing and rolling back configuration
+
+```
+$ xproxyctl reload -dry-run
+active -> file
+  routes: 1 added, 1 changed
+  upstreams: 1 changed
+  added    routes checkout
+  changed  routes web
+  changed  upstreams app
+
+--- active
++++ file
+@@ -41,6 +41,7 @@
+ ...
+$ xproxyctl reload
+reloaded
+$ xproxyctl history
+ID                                   GENERATION  APPLIED                    NOTE     SIZE
+20260918T101522.184201000-gen4       4           2026-09-18T12:15:22+02:00  reload   6120
+20260918T093001.002144000-gen3       3           2026-09-18T11:30:01+02:00  reload   5988
+20260918T090000.000000000-gen1       1           2026-09-18T11:00:00+02:00  start    5988
+$ xproxyctl diff 20260918T093001.002144000-gen3 active
+$ xproxyctl rollback 20260918T093001.002144000-gen3
+rolled back to 20260918T093001.002144000-gen3
+```
+
+Set `management: {history_dir: /var/lib/xproxy/history}` to keep the
+last twenty applied configurations (the RPM creates the directory).
+A dry run validates the file exactly as a reload would, including file
+existence checks, and names the changes that need a restart, so a
+change to a listener address is caught before the reload silently
+leaves it in place. Rollback goes through the same validation and
+audit trail as a reload and never touches the file on disk: after
+rolling back, fix the file, or the next `reload` re-applies it.
 
 ### Usage per tenant and route
 

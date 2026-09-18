@@ -168,6 +168,7 @@ func applyDefaults(c *Config) {
 		}
 	}
 
+	setInt(&c.Management.HistoryKeep, 20)
 	if c.Management.SocketMode == "" {
 		c.Management.SocketMode = DefaultSocketMode
 	}

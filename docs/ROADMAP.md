@@ -231,6 +231,8 @@ procedure is in RELEASING.md.
   delivered
 - Per tenant and per route quota reporting (`tenant`, `/v1/quotas`,
   `xproxyctl quotas`): delivered
+- Configuration dry run, diff between generations, history and rollback
+  beyond the previous file: delivered
 
 ## After 1.3 (candidates, unranked)
 

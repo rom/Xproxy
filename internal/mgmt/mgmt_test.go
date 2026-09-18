@@ -98,9 +98,21 @@ routes:
 	}
 	sock := filepath.Join(t.TempDir(), "m.sock")
 	reloads := 0
+	rolled := ""
 	m := New(config.Management{Socket: sock, SocketMode: "0600"}, p, logging.Discard(), Actions{
 		Reload:      func() error { reloads++; return nil },
 		ReloadCerts: func() error { return errors.New("boom") },
+		DryRun: func() (*config.Changes, error) {
+			return &config.Changes{From: "active", To: "file", Summary: []string{"routes: 1 added"}, Changes: []config.Change{{Section: "routes", Name: "n", Kind: "added"}}}, nil
+		},
+		History:  func() ([]config.Entry, error) { return []config.Entry{{ID: "x-gen1", Generation: 1}}, nil },
+		Rollback: func(id string) error { rolled = id; return nil },
+		Diff: func(from, to string) (*config.Changes, error) {
+			if to == "missing" {
+				return nil, errors.New("no such entry")
+			}
+			return &config.Changes{From: from, To: to, Same: true}, nil
+		},
 	})
 	if err := m.Start(); err != nil {
 		t.Fatal(err)
@@ -120,6 +132,26 @@ routes:
 	}
 	if err := c.Post("/v1/reload"); err != nil || reloads != 1 {
 		t.Fatalf("reload: %v %d", err, reloads)
+	}
+	var ch config.Changes
+	if err := c.Do("POST", "/v1/reload?dry_run=1", nil, &ch); err != nil || reloads != 1 || len(ch.Changes) != 1 || ch.Changes[0].Name != "n" {
+		t.Fatalf("dry run: %v %d %+v", err, reloads, ch)
+	}
+	var entries []config.Entry
+	if err := c.Do("GET", "/v1/history", nil, &entries); err != nil || len(entries) != 1 || entries[0].ID != "x-gen1" {
+		t.Fatalf("history: %v %+v", err, entries)
+	}
+	if err := c.Post("/v1/rollback?id=x-gen1"); err != nil || rolled != "x-gen1" {
+		t.Fatalf("rollback: %v %q", err, rolled)
+	}
+	if err := c.Do("GET", "/v1/diff?from=active&to=x-gen1", nil, &ch); err != nil || !ch.Same || ch.To != "x-gen1" {
+		t.Fatalf("diff: %v %+v", err, ch)
+	}
+	if err := c.Do("GET", "/v1/diff", nil, &ch); err != nil || ch.From != "active" || ch.To != "file" {
+		t.Fatalf("diff defaults: %v %+v", err, ch)
+	}
+	if err := c.Do("GET", "/v1/diff?to=missing", nil, &ch); err == nil {
+		t.Fatal("diff error not propagated")
 	}
 	if err := c.Post("/v1/reload-certs"); err == nil || err.Error() != "boom" {
 		t.Fatalf("error propagation: %v", err)

@@ -531,6 +531,12 @@ func (v *validator) tls(p string, t *TLS) {
 }
 
 func (v *validator) management(m *Management) {
+	if m.HistoryDir != "" && !strings.HasPrefix(m.HistoryDir, "/") {
+		v.errf("management.history_dir: must be an absolute path")
+	}
+	if m.HistoryKeep < 1 || m.HistoryKeep > 1000 {
+		v.errf("management.history_keep: must be between 1 and 1000")
+	}
 	if m.Socket == "" {
 		return
 	}

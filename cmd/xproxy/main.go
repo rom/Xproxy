@@ -113,28 +113,107 @@ func run(args []string) int {
 		defer ctrl.Stop()
 	}
 
-	reload = func() error {
+	// Configuration history: every applied generation is recorded so that
+	// it can be listed, compared and rolled back.
+	var history *config.History
+	if dir := cfg.Management.HistoryDir; dir != "" {
+		h, err := config.NewHistory(dir, cfg.Management.HistoryKeep)
+		if err != nil {
+			logs.Error.Warn("configuration history disabled", "err", err.Error())
+		} else {
+			history = h
+		}
+	}
+	record := func(c *config.Config, note string) {
+		if history == nil {
+			return
+		}
+		if _, err := history.Record(c, srv.Generation(), *cfgPath, note); err != nil {
+			logs.Error.Warn("configuration history write failed", "err", err.Error())
+		}
+	}
+	record(cfg, "start")
+
+	// candidate loads the file the way a reload would, without applying it.
+	candidate := func() (*config.Config, error) {
 		c, err := config.Load(*cfgPath)
 		if err != nil {
-			logs.Error.Error("reload rejected", "err", err.Error())
-			return err
+			return nil, err
 		}
-		if c, err = effective(c); err != nil {
-			logs.Error.Error("reload rejected", "err", err.Error())
-			return err
-		}
+		return effective(c)
+	}
+	apply := func(c *config.Config, note string) error {
 		if err := srv.Reload(c); err != nil {
 			logs.Error.Error("reload failed", "err", err.Error())
 			return err
 		}
+		record(c, note)
 		return nil
 	}
+	reload = func() error {
+		c, err := candidate()
+		if err != nil {
+			logs.Error.Error("reload rejected", "err", err.Error())
+			return err
+		}
+		return apply(c, "reload")
+	}
 	reopen := func() error { logs.Reopen(); logs.Audit.Info("logs reopened"); return nil }
+	// resolve names a configuration for diff: the running one, the file on
+	// disk, or a history entry.
+	resolve := func(name string) (*config.Config, error) {
+		switch name {
+		case "active", "":
+			return srv.Config(), nil
+		case "file":
+			return candidate()
+		}
+		if history == nil {
+			return nil, config.ErrNoHistory
+		}
+		c, _, err := history.Load(name)
+		return c, err
+	}
 
 	actions := mgmt.Actions{
 		Reload:      reload,
 		ReloadCerts: srv.ReloadCertificates,
 		ReopenLogs:  reopen,
+		DryRun: func() (*config.Changes, error) {
+			c, err := candidate()
+			if err != nil {
+				return nil, err
+			}
+			return config.Diff(srv.Config(), c, "active", "file"), nil
+		},
+		Diff: func(from, to string) (*config.Changes, error) {
+			a, err := resolve(from)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", from, err)
+			}
+			b, err := resolve(to)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", to, err)
+			}
+			return config.Diff(a, b, from, to), nil
+		},
+		History: func() ([]config.Entry, error) {
+			if history == nil {
+				return nil, config.ErrNoHistory
+			}
+			return history.List()
+		},
+		Rollback: func(id string) error {
+			if history == nil {
+				return config.ErrNoHistory
+			}
+			c, _, err := history.Load(id)
+			if err != nil {
+				logs.Error.Error("rollback rejected", "id", id, "err", err.Error())
+				return err
+			}
+			return apply(c, "rollback "+id)
+		},
 	}
 	if ctrl != nil {
 		actions.Ingress = func() any { return ctrl.Status() }

@@ -11,7 +11,10 @@
 //	upstreams      show endpoint health and load
 //	config         print the active configuration
 //	validate       validate the configuration file without applying it
-//	reload         validate and apply the configuration file
+//	reload         validate and apply the configuration file (-dry-run shows the changes)
+//	diff [FROM] [TO]  compare configurations: active, file or a history id (default active file)
+//	history        list recorded configurations
+//	rollback ID    apply a recorded configuration
 //	reload-certs   re-read TLS certificate files
 //	reopen-logs    reopen log files after rotation
 //	tail STREAM    follow a log stream (access, error, security, audit)
@@ -71,7 +74,7 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp htpasswd spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas config validate reload diff history rollback reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -252,14 +255,85 @@ func run(args []string, out, errOut io.Writer) int {
 		_, _ = out.Write(b)
 		return 0
 	case "reload":
+		rf := flag.NewFlagSet("reload", flag.ContinueOnError)
+		rf.SetOutput(errOut)
+		dry := rf.Bool("dry-run", false, "show what the file would change without applying it")
+		if err := rf.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
 		if _, err := config.Load(*cfgPath); err != nil {
 			_, _ = fmt.Fprintln(errOut, "refusing to reload: local validation failed")
 			return fail(err)
+		}
+		if *dry {
+			var ch config.Changes
+			if err := c.Do("POST", "/v1/reload?dry_run=1", nil, &ch); err != nil {
+				return fail(err)
+			}
+			if *asJSON {
+				b, _ := json.MarshalIndent(ch, "", "  ")
+				_, _ = out.Write(append(b, '\n'))
+				return 0
+			}
+			printChanges(out, &ch)
+			return 0
 		}
 		if err := c.Post("/v1/reload"); err != nil {
 			return fail(err)
 		}
 		_, _ = fmt.Fprintln(out, "reloaded")
+		return 0
+	case "diff":
+		from, to := "active", "file"
+		if a := fs.Args(); len(a) > 1 {
+			to = a[1]
+			if len(a) > 2 {
+				from, to = a[1], a[2]
+			}
+		}
+		var ch config.Changes
+		if err := c.Do("GET", "/v1/diff?from="+url.QueryEscape(from)+"&to="+url.QueryEscape(to), nil, &ch); err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			b, _ := json.MarshalIndent(ch, "", "  ")
+			_, _ = out.Write(append(b, '\n'))
+			return 0
+		}
+		printChanges(out, &ch)
+		if ch.Same {
+			return 0
+		}
+		return 1
+	case "history":
+		b, err := c.Raw("/v1/history")
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			_, _ = out.Write(b)
+			return 0
+		}
+		var entries []config.Entry
+		if err := json.Unmarshal(b, &entries); err != nil {
+			return fail(err)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "ID\tGENERATION\tAPPLIED\tNOTE\tSIZE")
+		for _, e := range entries {
+			_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\n", e.ID, e.Generation, e.Applied.Local().Format(time.RFC3339), e.Note, e.Size)
+		}
+		_ = tw.Flush()
+		return 0
+	case "rollback":
+		if fs.NArg() != 2 {
+			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl rollback ID   (an id from xproxyctl history)")
+			return 2
+		}
+		if err := c.Post("/v1/rollback?id=" + url.QueryEscape(fs.Arg(1))); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintln(out, "rolled back to", fs.Arg(1))
 		return 0
 	case "reload-certs":
 		if err := c.Post("/v1/reload-certs"); err != nil {
@@ -739,4 +813,35 @@ func dash(v string) string {
 		return "-"
 	}
 	return v
+}
+
+// printChanges renders a configuration comparison.
+func printChanges(out io.Writer, ch *config.Changes) {
+	if ch.Same {
+		_, _ = fmt.Fprintf(out, "%s and %s are identical\n", ch.From, ch.To)
+		return
+	}
+	_, _ = fmt.Fprintf(out, "%s -> %s\n", ch.From, ch.To)
+	for _, line := range ch.Summary {
+		_, _ = fmt.Fprintln(out, " ", line)
+	}
+	for _, c := range ch.Changes {
+		if c.Name != "" {
+			_, _ = fmt.Fprintf(out, "  %-8s %s %s\n", c.Kind, c.Section, c.Name)
+		} else {
+			_, _ = fmt.Fprintf(out, "  %-8s %s\n", c.Kind, c.Section)
+		}
+	}
+	if len(ch.RestartNeeded) > 0 {
+		_, _ = fmt.Fprintln(out, "restart needed for:")
+		for _, r := range ch.RestartNeeded {
+			_, _ = fmt.Fprintln(out, " ", r)
+		}
+	}
+	if ch.Truncated {
+		_, _ = fmt.Fprintln(out, "(text diff omitted: documents too large)")
+	} else if ch.Text != "" {
+		_, _ = fmt.Fprintln(out)
+		_, _ = fmt.Fprint(out, ch.Text)
+	}
 }

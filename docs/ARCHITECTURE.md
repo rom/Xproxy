@@ -614,7 +614,10 @@ Endpoints:
 | GET | `/v1/pools` | pool level state: circuit breaker, concurrency gate and queue |
 | GET | `/v1/quotas` | usage per tenant, route and rate limit policy; `?top=N` consumers per policy |
 | GET | `/v1/config` | active configuration as YAML |
-| POST | `/v1/reload` | validate and apply the configuration file |
+| POST | `/v1/reload` | validate and apply the configuration file; `?dry_run=1` returns the changes without applying |
+| GET | `/v1/diff` | compare `from` and `to` (`active`, `file` or a history id) |
+| GET | `/v1/history` | recorded configurations, newest first |
+| POST | `/v1/rollback` | apply the recorded configuration `id` (audited) |
 | POST | `/v1/reload-certs` | re-read certificates |
 | POST | `/v1/logs/reopen` | reopen log files |
 | GET | `/v1/bans`, POST `/v1/bans`, DELETE `/v1/bans?target=` | ban list |
