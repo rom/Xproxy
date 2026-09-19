@@ -4069,7 +4069,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBaccount_\:abuse\fR
 T}
 T{
 \fBthreshold\fR
@@ -5733,7 +5733,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -6266,6 +6266,161 @@ T}
 .TE
 .PP
 Signals and default weights: \fBua_bot\fR 40 (curl, wget, python, Go, Java, scanners, headless browsers and the like), \fBua_missing\fR 30, \fBbrowser_headers_missing\fR 25 (a browser user agent without \fBAccept\fR or \fBAccept\-Language\fR), \fBfingerprint_mismatch\fR 35 (a browser user agent on a hello without \fBh2\fR ALPN or with fewer than ten cipher suites), \fBerror_rate\fR 30 (more than half of at least ten recent requests were 4xx or denied), \fBpath_spread\fR 15 (fifty or more distinct paths in the window), \fBregular_interval\fR 20 (eight or more requests with machine\-like timing), \fBhigh_rate\fR 15, \fBhoneypot_marked\fR 40 (the client touched a honeypot route on this node or, with cluster sharing, on a peer). The score is the capped sum; a client that is already verified by the challenge is never challenged again. The JA4 of every TLS request is logged as \fBja4\fR.
+.SS "Kind \fBaccount_guard\fR"
+.PP
+Protects the endpoints where accounts are attacked. Each endpoint has a class with a default ladder of progressive actions over a window: \fBlogin\fR counts failed attempts (recognised in the response) per client address, per account, per address and account pair, distinct accounts per address (credential stuffing) and distinct addresses per account (spraying, distributed brute force); \fBregister\fR, \fBreset\fR, \fBcart\fR and \fBscrape\fR count requests; \fBcustom\fR needs its own steps. A step fires when any of its thresholds is reached and the highest firing step acts: \fBlog\fR records, \fBdelay\fR holds the request, \fBchallenge\fR serves the browser challenge to unverified clients (a plain 403 without a \fBchallenge\fR section) and \fBblock\fR refuses the key that crossed the threshold for \fBduration\fR, on every node of a cluster. Blocks and denials use reason \fBaccount_abuse\fR (a ban trigger category) with status \fBblock_status\fR; the access log carries \fBaccount_endpoint\fR, \fBaccount_action\fR, \fBaccount_by\fR, \fBaccount_counts\fR, \fBaccount_hash\fR, \fBaccount_campaign\fR and \fBaccount_outcome\fR. Identities are trimmed, lower cased and hashed before they are counted or logged. A campaign spread over many addresses, each under its own thresholds, is detected from the endpoint\(aqs totals (\fBdistributed\fR): while it lasts every unverified request of the endpoint is challenged (or blocked).
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(1.1i) lbw(1.1i) lbx
+lw(1.3i) lw(1.1i) lw(1.1i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBendpoints\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+1 to 64 endpoints,\: unique names
+T}
+T{
+\fBendpoints[].\:class\fR
+T}	T{
+\fBlogin\fR,\: \fBregister\fR,\: \fBreset\fR,\: \fBcart\fR,\: \fBscrape\fR,\: \fBcustom\fR
+T}	T{
+\fBcustom\fR
+T}	T{
+Selects the default ladder,\: methods and counting mode
+T}
+T{
+\fBendpoints[].\:paths\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+Exact paths,\: or prefixes ending in \fB*\fR
+T}
+T{
+\fBendpoints[].\:methods\fR
+T}	T{
+list
+T}	T{
+\fBPOST\fR (login,\: register,\: reset,\: cart),\: \fBGET\fR (scrape),\: any (custom)
+T}	T{
+
+T}
+T{
+\fBendpoints[].\:count\fR
+T}	T{
+\fBfailures\fR,\: \fBrequests\fR
+T}	T{
+\fBfailures\fR for login,\: \fBrequests\fR otherwise
+T}	T{
+What an event is
+T}
+T{
+\fBendpoints[].\:identity\fR
+T}	T{
+mapping
+T}	T{
+required for login,\: register and reset
+T}	T{
+Where the account identifier lives: \fBheader\fR,\: \fBquery\fR,\: \fBform\fR (a field of a form body) or \fBjson\fR (a field of a JSON body,\: dots descend),\: tried in that order;\: bodies are buffered up to \fBmax_\:body_\:bytes\fR and replayed
+T}
+T{
+\fBendpoints[].\:failure\fR
+T}	T{
+mapping
+T}	T{
+\fB{statuses:\: [401,\: 403]}\fR
+T}	T{
+Failure recognition for \fBfailures\fR counting: \fBstatuses\fR,\: \fBbody_\:regex\fR on a 2xx body (up to \fBmax_\:bytes\fR,\: default 65536),\: \fBlocation_\:regex\fR on a redirect. A success clears the account\(aqs and the pair\(aqs failures
+T}
+T{
+\fBendpoints[].\:window\fR
+T}	T{
+duration
+T}	T{
+\fB10m\fR
+T}	T{
+Counting window (1m to 24h)
+T}
+T{
+\fBendpoints[].\:steps\fR
+T}	T{
+list
+T}	T{
+per class,\: below
+T}	T{
+1 to 8 steps of \fB{action,\: delay,\: duration,\: ip,\: account,\: pair,\: ip_\:accounts,\: account_\:ips,\: ip_\:paths}\fR;\: \fBaction\fR is \fBlog\fR,\: \fBdelay\fR (holds \fBdelay\fR,\: 10ms to 10s,\: default 1s),\: \fBchallenge\fR or \fBblock\fR (for \fBduration\fR,\: default the window);\: at least one threshold per step
+T}
+T{
+\fBendpoints[].\:distributed\fR
+T}	T{
+mapping
+T}	T{
+\fB{ips:\: 50,\: events:\: 200}\fR for login,\: off otherwise
+T}	T{
+Campaign detection: both \fBips\fR (distinct addresses with events in the window) and \fBevents\fR must be reached;\: \fBaction\fR \fBchallenge\fR (default) or \fBblock\fR for \fBduration\fR (default the window)
+T}
+T{
+\fBendpoints[].\:disposable\fR
+T}	T{
+\fBoff\fR,\: \fBlog\fR,\: \fBchallenge\fR,\: \fBblock\fR
+T}	T{
+\fBoff\fR
+T}	T{
+What happens to an e\-mail identity on a disposable domain (built\-in list plus \fBdisposable_\:domains\fR,\: subdomains included)
+T}
+T{
+\fBblock_\:status\fR
+T}	T{
+int
+T}	T{
+\fB429\fR
+T}	T{
+Status of blocks (4xx or 5xx);\: challenges answer 403
+T}
+T{
+\fBmax_\:body_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Request body buffered to read an identity (up to 8 MiB);\: a larger body yields no identity
+T}
+T{
+\fBmax_\:delayed\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Requests held in delay steps at once;\: beyond it the delay is skipped and a throttled warning written
+T}
+T{
+\fBdisposable_\:domains\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Lower case domains added to the built\-in list
+T}
+.TE
+.PP
+Default ladders (thresholds reached within the window): \fBlogin\fR delays 2s at 5 address, 3 account or 3 pair failures, challenges at 15 address, 5 account, 5 pair, 10 accounts per address or 5 addresses per account, blocks 15m at 50 address, 20 account, 10 pair, 30 accounts per address or 20 addresses per account; \fBregister\fR delays 2s at 2 requests per address, challenges at 3 per address or 2 per identity, blocks 1h at 10 per address or 5 per identity; \fBreset\fR delays 2s at 3 per address or 2 per account, challenges at 5 or 3, blocks 1h at 20 or 10; \fBcart\fR delays 1s at 30, challenges at 60 and blocks 30m at 150 requests per address or identity; \fBscrape\fR delays 1s at 200 requests or 100 distinct paths per address, challenges at 400 or 200 and blocks 1h at 1000. Tables are bounded per endpoint (65536 keys each, oldest evicted with a throttled warning). A delay holds a request slot, so keep \fBmax_delayed\fR under the route\(aqs concurrency.
 .SS "Kind \fBapi_key\fR"
 .PP
 API keys with a life cycle: issued by \fBxproxyctl apikey add\fR (the plaintext \fBxpk_<id>_<secret>\fR is printed once; the file keeps a SHA\-256), scoped, expiring, rotated with a grace period for the previous secret (\fBapikey rotate \-grace 24h\fR) and revoked (\fBapikey revoke\fR, kept in the file so the id is never reused). The filter re\-reads the file when its contents change, at most every \fBreload\fR, and keeps the previous table when the new file does not parse.

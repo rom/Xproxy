@@ -58,7 +58,7 @@ internal/proxy      server, listeners, handler pipeline, transport, stats
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
-internal/filters    built-in kinds (header_guard, basic_auth, api_key, openapi, graphql, upload_guard, sensitive_data, body_rewrite, bot_score, oidc, wasm) and the registration list
+internal/filters    built-in kinds (header_guard, basic_auth, api_key, openapi, graphql, upload_guard, sensitive_data, account_guard, body_rewrite, bot_score, oidc, wasm) and the registration list
 internal/jsonschema JSON Schema evaluator shared by the openapi filter and the WAF body schemas
 internal/apiinv     API inventory: endpoints discovered from traffic, shadow, zombie and superseded detection
 internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)

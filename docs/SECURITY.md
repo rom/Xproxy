@@ -107,6 +107,12 @@ to report a vulnerability. The threat analysis behind the controls is in
   content, and bytes checked against the name and the declared type,
   before the application stores anything; malware scanning through
   ICAP combines with it.
+- Account protection (`account_guard` filter): failed logins counted
+  per address, account, pair, accounts per address and addresses per
+  account, registrations, resets, cart and catalogue requests counted
+  per class, progressive delay, challenge and timed block actions with
+  cluster-shared blocks, campaign detection over many addresses,
+  disposable registration domains; identities hashed before use.
 - Sensitive data detection (`sensitive_data` filter): validated
   detectors for payment cards, Swedish personal identity numbers, IBANs,
   US social security numbers, e-mail addresses, JWTs, private keys, API

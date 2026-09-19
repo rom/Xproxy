@@ -2104,6 +2104,75 @@ the access log then carries `bot_score`, `bot_signals` and `ja4` for
 every request, which gives the fingerprints of your own tools for
 `ja4_allow` and the score distribution for the thresholds.
 
+### Account protection: credential stuffing, brute force and abuse
+
+Login, registration, password reset, cart and catalogue endpoints are
+attacked by volume: leaked credential lists replayed against the login
+form, one account hammered, one password sprayed across many accounts,
+thousands of throwaway registrations, reset floods, bots emptying stock
+into carts, scrapers walking the catalogue. The `account_guard` filter
+watches these endpoints with a ladder of progressive actions:
+
+```yaml
+challenge: {secret_file: /var/lib/xproxy/challenge.key}
+filters:
+  - name: accounts
+    kind: account_guard
+    options:
+      endpoints:
+        - name: login
+          class: login
+          paths: [/api/login]
+          identity: {json: username, form: username}
+          failure: {statuses: [401], body_regex: '"error":"invalid_credentials"'}
+        - name: signup
+          class: register
+          paths: [/api/register]
+          identity: {json: email}
+          disposable: challenge
+        - name: reset
+          class: reset
+          paths: [/api/password/reset]
+          identity: {json: email}
+        - name: cart
+          class: cart
+          paths: [/api/cart/items]
+          identity: {header: X-Session-Id}
+        - name: catalogue
+          class: scrape
+          paths: [/products/*]
+routes:
+  - {name: app, hosts: [shop.example.com], upstream: app, filters: [accounts]}
+bans:
+  triggers:
+    - {name: account-abuse, reasons: [account_abuse], threshold: 5, window: 10m, duration: 1h}
+```
+
+For `login` the filter reads the account identifier from the request,
+learns from the response whether the attempt failed, and counts per
+address, per account, per address and account pair, distinct accounts
+per address and distinct addresses per account. Three failures on one
+pair earn a two second delay, five the browser challenge, ten a
+fifteen minute block of that pair; ten different accounts tried from
+one address is credential stuffing and gets the challenge, thirty a
+block; one account tried from five addresses is a distributed attack
+on that account. A successful login clears the account's failures, so
+a user who mistypes twice is never blocked. When the whole endpoint
+sees two hundred failures from fifty addresses inside the window, each
+under its own thresholds, a campaign is declared and every unverified
+client is challenged for the next window; peers in a cluster learn
+blocks and campaigns through the event bus. Registration with an
+address on a disposable domain is challenged, and repeat registrations
+of one identity or many from one address escalate; resets are counted
+per account and address; cart and catalogue endpoints count requests
+and distinct paths. Identities are hashed (`account_hash`) before they
+are counted or logged; the access log shows the endpoint, the action,
+the threshold that fired and the counts on every matched request, so a
+week in the default ladder shows what the thresholds should be for
+your traffic before `steps` tightens them. Blocks are `account_abuse`
+denials, which the ban trigger above turns into an address ban after
+five. `examples/filters/accounts.yaml` is a complete configuration.
+
 ### WebAssembly filters
 
 ```yaml
@@ -2162,8 +2231,8 @@ where something changed.
 
 Filters are middleware instances attached to routes; the built-in kinds
 are `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`,
-`upload_guard`, `sensitive_data`, `body_rewrite`, `bot_score`, `oidc` and
-`wasm` (`xproxyctl filters` lists what the binary has;
+`upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`,
+`bot_score`, `oidc` and `wasm` (`xproxyctl filters` lists what the binary has;
 [EXTENDING.md](EXTENDING.md) shows how to add one).
 
 ```yaml

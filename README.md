@@ -110,6 +110,9 @@ an identifier from the access log to the upstream.
   NDJSON, Splunk HEC, CEF or LEEF
 - Adaptive load shedding by priority class from upstream latency and
   in-flight load; browser proof of work challenge, always or under load
+- Account protection: credential stuffing, brute force, registration,
+  reset, hoarding and scraping abuse with progressive delay, challenge
+  and block, and campaign detection across many addresses
 - Bot classification from JA3 and JA4 fingerprints, headers and
   behaviour, with log, challenge and deny thresholds; country policy
   from a local MaxMind or CSV database

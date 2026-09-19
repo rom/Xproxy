@@ -222,6 +222,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- `account_guard` filter kind: login, registration, reset, cart and
+  scrape endpoint classes with default ladders of delay, challenge and
+  block per address, account, pair, accounts per address and addresses
+  per account, failure recognition from status, body or redirect,
+  campaign detection over many addresses, disposable registration
+  domains, cluster-shared blocks, the `account_abuse` deny reason and
+  ban category, and `account_*` access log attributes.
 - `sensitive_data` filter kind: validated detectors for payment cards,
   Swedish personal identity numbers, IBANs, US social security numbers,
   e-mail addresses, JWTs, private keys, API keys and query string

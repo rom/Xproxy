@@ -456,6 +456,45 @@ func TestSensitiveData(t *testing.T) {
 	}
 }
 
+// TestAccountGuard runs the example account filter through a credential
+// stuffing run: many accounts from one address on the login endpoint.
+func TestAccountGuard(t *testing.T) {
+	f := filterFromExample(t, "filters/accounts.yaml", "accounts")
+	info := &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9"), Path: "/api/login", Method: "POST"}
+	attempt := func(user string) filter.Verdict {
+		r := httptest.NewRequest("POST", "http://shop.example.com/api/login", strings.NewReader(`{"username":"`+user+`","password":"x"}`))
+		r.Header.Set("Content-Type", "application/json")
+		in := f.Begin(context.Background(), info)
+		v := in.Request(r)
+		if !v.Deny {
+			in.Response(&http.Response{StatusCode: 401, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))})
+		}
+		return v
+	}
+	for i := 0; i < 4; i++ {
+		if v := attempt(fmt.Sprintf("user%d@example.com", i)); v.Deny {
+			t.Fatalf("attempt %d denied: %+v", i, v)
+		}
+	}
+	// Five address failures reach the delay step; ten distinct accounts
+	// the challenge step.
+	for i := 4; i < 10; i++ {
+		if v := attempt(fmt.Sprintf("user%d@example.com", i)); v.Deny {
+			t.Fatalf("attempt %d denied: %+v", i, v)
+		}
+	}
+	if v := attempt("user10@example.com"); !v.Deny || !v.Challenge || v.Reason != "account_abuse" || !strings.Contains(v.Detail, "ip_accounts") {
+		t.Fatalf("stuffing not challenged: %+v", v)
+	}
+	// A registration from a disposable domain is challenged too.
+	r := httptest.NewRequest("POST", "http://shop.example.com/api/register", strings.NewReader(`{"email":"x@mailinator.com"}`))
+	r.Header.Set("Content-Type", "application/json")
+	reg := &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.10"), Path: "/api/register", Method: "POST"}
+	if v := f.Begin(context.Background(), reg).Request(r); !v.Deny || !v.Challenge || !strings.Contains(v.Detail, "disposable_email") {
+		t.Fatalf("disposable registration: %+v", v)
+	}
+}
+
 func TestBadBots(t *testing.T) {
 	main := fmt.Sprintf(`
 version: 1

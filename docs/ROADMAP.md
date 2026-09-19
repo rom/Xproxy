@@ -253,6 +253,9 @@ procedure is in RELEASING.md.
   detection (`api_inventory`, `xproxyctl api`): delivered
 - Sensitive data detection in requests and responses (`sensitive_data`
   filter): delivered
+- Account protection: credential stuffing, brute force, registration,
+  reset, hoarding and scraping abuse with progressive actions and
+  distributed campaign detection (`account_guard` filter): delivered
 - Bypass protection: origin request signatures and the origin locking
   guide (`upstreams[].origin_signature`, HARDENING.md 5c): delivered
 - WAF operating modes with gradual enforcement (`block_percent`,

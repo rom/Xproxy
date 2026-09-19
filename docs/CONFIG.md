@@ -1031,7 +1031,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `account_abuse` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -1504,7 +1504,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -1640,6 +1640,62 @@ honeypot route on this node or, with cluster sharing, on a peer). The
 score is the capped sum; a client that is
 already verified by the challenge is never challenged again. The JA4 of
 every TLS request is logged as `ja4`.
+
+### Kind `account_guard`
+
+Protects the endpoints where accounts are attacked. Each endpoint has
+a class with a default ladder of progressive actions over a window:
+`login` counts failed attempts (recognised in the response) per client
+address, per account, per address and account pair, distinct accounts
+per address (credential stuffing) and distinct addresses per account
+(spraying, distributed brute force); `register`, `reset`, `cart` and
+`scrape` count requests; `custom` needs its own steps. A step fires
+when any of its thresholds is reached and the highest firing step acts:
+`log` records, `delay` holds the request, `challenge` serves the
+browser challenge to unverified clients (a plain 403 without a
+`challenge` section) and `block` refuses the key that crossed the
+threshold for `duration`, on every node of a cluster. Blocks and
+denials use reason `account_abuse` (a ban trigger category) with
+status `block_status`; the access log carries `account_endpoint`,
+`account_action`, `account_by`, `account_counts`, `account_hash`,
+`account_campaign` and `account_outcome`. Identities are trimmed,
+lower cased and hashed before they are counted or logged. A campaign
+spread over many addresses, each under its own thresholds, is detected
+from the endpoint's totals (`distributed`): while it lasts every
+unverified request of the endpoint is challenged (or blocked).
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `endpoints` | list | required | 1 to 64 endpoints, unique names |
+| `endpoints[].class` | `login`, `register`, `reset`, `cart`, `scrape`, `custom` | `custom` | Selects the default ladder, methods and counting mode |
+| `endpoints[].paths` | list | required | Exact paths, or prefixes ending in `*` |
+| `endpoints[].methods` | list | `POST` (login, register, reset, cart), `GET` (scrape), any (custom) | |
+| `endpoints[].count` | `failures`, `requests` | `failures` for login, `requests` otherwise | What an event is |
+| `endpoints[].identity` | mapping | required for login, register and reset | Where the account identifier lives: `header`, `query`, `form` (a field of a form body) or `json` (a field of a JSON body, dots descend), tried in that order; bodies are buffered up to `max_body_bytes` and replayed |
+| `endpoints[].failure` | mapping | `{statuses: [401, 403]}` | Failure recognition for `failures` counting: `statuses`, `body_regex` on a 2xx body (up to `max_bytes`, default 65536), `location_regex` on a redirect. A success clears the account's and the pair's failures |
+| `endpoints[].window` | duration | `10m` | Counting window (1m to 24h) |
+| `endpoints[].steps` | list | per class, below | 1 to 8 steps of `{action, delay, duration, ip, account, pair, ip_accounts, account_ips, ip_paths}`; `action` is `log`, `delay` (holds `delay`, 10ms to 10s, default 1s), `challenge` or `block` (for `duration`, default the window); at least one threshold per step |
+| `endpoints[].distributed` | mapping | `{ips: 50, events: 200}` for login, off otherwise | Campaign detection: both `ips` (distinct addresses with events in the window) and `events` must be reached; `action` `challenge` (default) or `block` for `duration` (default the window) |
+| `endpoints[].disposable` | `off`, `log`, `challenge`, `block` | `off` | What happens to an e-mail identity on a disposable domain (built-in list plus `disposable_domains`, subdomains included) |
+| `block_status` | int | `429` | Status of blocks (4xx or 5xx); challenges answer 403 |
+| `max_body_bytes` | int | `65536` | Request body buffered to read an identity (up to 8 MiB); a larger body yields no identity |
+| `max_delayed` | int | `256` | Requests held in delay steps at once; beyond it the delay is skipped and a throttled warning written |
+| `disposable_domains` | list | `[]` | Lower case domains added to the built-in list |
+
+Default ladders (thresholds reached within the window): `login` delays
+2s at 5 address, 3 account or 3 pair failures, challenges at 15
+address, 5 account, 5 pair, 10 accounts per address or 5 addresses per
+account, blocks 15m at 50 address, 20 account, 10 pair, 30 accounts
+per address or 20 addresses per account; `register` delays 2s at 2
+requests per address, challenges at 3 per address or 2 per identity,
+blocks 1h at 10 per address or 5 per identity; `reset` delays 2s at 3
+per address or 2 per account, challenges at 5 or 3, blocks 1h at 20 or
+10; `cart` delays 1s at 30, challenges at 60 and blocks 30m at 150
+requests per address or identity; `scrape` delays 1s at 200 requests
+or 100 distinct paths per address, challenges at 400 or 200 and blocks
+1h at 1000. Tables are bounded per endpoint (65536 keys each, oldest
+evicted with a throttled warning). A delay holds a request slot, so
+keep `max_delayed` under the route's concurrency.
 
 ### Kind `api_key`
 

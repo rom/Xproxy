@@ -1,0 +1,57 @@
+# Account protection: the account_guard filter watches the login,
+# registration, password reset, cart and catalogue endpoints of a shop
+# with progressive actions (delay, browser challenge, timed block) per
+# address, account and pair, detects campaigns spread over many
+# addresses, and challenges registrations from disposable domains.
+# Blocks are account_abuse denials that the ban trigger turns into an
+# address ban.
+#
+# Validate: xproxy -config examples/filters/accounts.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+challenge:
+  secret_file: /var/lib/xproxy/challenge.key
+bans:
+  triggers:
+    - {name: account-abuse, reasons: [account_abuse], threshold: 5, window: 10m, duration: 1h}
+filters:
+  - name: accounts
+    kind: account_guard
+    options:
+      endpoints:
+        - name: login
+          class: login
+          paths: [/api/login]
+          identity: {json: username, form: username}
+          failure: {statuses: [401], body_regex: '"error":"invalid_credentials"'}
+        - name: signup
+          class: register
+          paths: [/api/register]
+          identity: {json: email}
+          disposable: challenge
+        - name: reset
+          class: reset
+          paths: [/api/password/reset]
+          identity: {json: email}
+        - name: cart
+          class: cart
+          paths: [/api/cart/items]
+          identity: {header: X-Session-Id}
+        - name: catalogue
+          class: scrape
+          paths: [/products/*]
+          steps:
+            - {action: delay, delay: 1s, ip: 300, ip_paths: 150}
+            - {action: challenge, ip: 600, ip_paths: 300}
+            - {action: block, duration: 1h, ip: 1500}
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.10:8080"}]
+routes:
+  - {name: app, hosts: [shop.example.com], upstream: app, filters: [accounts]}
