@@ -844,7 +844,9 @@ not match is skipped and the next candidate is tried.
 | `allow_cidrs` | list | `[]` (all) | Client must be inside one |
 | `deny_cidrs` | list | `[]` | Evaluated first |
 | `max_body_bytes` | int | global | May only lower the global limit |
-| `timeout` | duration | none | Whole request deadline for this route |
+| `timeout` | duration | none | Whole request deadline for this route (the total, accept to last response byte). The named `timeouts` block is the alternative and adds an idle timeout; set one or the other |
+| `timeouts.total` | duration | none | Same as `timeout` |
+| `timeouts.idle` | duration | none | Cancels a response that produces no bytes for this long, for streaming or long-poll routes where `total` is too coarse. Connect and response-header timeouts are configured per upstream (`upstreams[].timeouts`), since the connection pool is shared |
 | `websocket` | bool | `false` | Allow `Upgrade` requests |
 | `webtransport` | bool | `false` | Relay WebTransport sessions (extended CONNECT over HTTP/3) to the upstream: bidirectional and unidirectional streams and datagrams in both directions, with the request header operations applied to the CONNECT. Needs a listener with `h3.webtransport: true` and an upstream with `h3: true`; on any other listener or protocol the session is refused |
 | `grpc.web` | bool | `false` | Accept gRPC-web requests (`application/grpc-web`, `grpc-web+proto`, `grpc-web-text`, `grpc-web-text+proto`, over HTTP/1.1 or HTTP/2) on this gRPC route and translate them: the upstream sees plain gRPC, the response trailers come back as a trailer frame in the body and the text variants are base64. Without it a gRPC-web request is refused with gRPC status 2 |

@@ -1146,8 +1146,11 @@ type Route struct {
 	// MaxBodyBytes overrides the global body limit for this route (may only
 	// lower it unless allow_raise is set).
 	MaxBodyBytes *int64 `yaml:"max_body_bytes"`
-	// Timeout bounds the entire request on this route.
-	Timeout Duration `yaml:"timeout"`
+	// Timeout bounds the entire request on this route (the total, from
+	// accept to the last response byte). Timeouts is the named form and
+	// adds an idle timeout; the two are mutually exclusive.
+	Timeout  Duration       `yaml:"timeout"`
+	Timeouts *RouteTimeouts `yaml:"timeouts"`
 	// WebSocket allows Upgrade: websocket to be forwarded. Default false.
 	WebSocket bool `yaml:"websocket"`
 	// WebTransport relays WebTransport sessions (extended CONNECT over
@@ -1191,6 +1194,34 @@ type Route struct {
 	// CORS answers cross-origin requests for this route: it short-circuits
 	// preflight OPTIONS and adds the response headers to actual requests.
 	CORS *RouteCORS `yaml:"cors"`
+}
+
+// RouteTimeouts are a route's named timeouts. Connect and the response
+// header timeout are configured per upstream (upstreams[].timeouts),
+// since the connection pool is shared; these bound the exchange as a
+// whole and the gaps between response bytes.
+type RouteTimeouts struct {
+	// Total bounds the whole exchange, accept to last response byte.
+	Total Duration `yaml:"total"`
+	// Idle cancels a response that produces no bytes for this long, for
+	// a streaming or long-poll route where Total would be too coarse.
+	Idle Duration `yaml:"idle"`
+}
+
+// TotalTimeout returns the effective total request timeout.
+func (r *Route) TotalTimeout() Duration {
+	if r.Timeouts != nil {
+		return r.Timeouts.Total
+	}
+	return r.Timeout
+}
+
+// IdleTimeout returns the route's idle response timeout, or 0.
+func (r *Route) IdleTimeout() Duration {
+	if r.Timeouts != nil {
+		return r.Timeouts.Idle
+	}
+	return 0
 }
 
 // RouteCORS is a Cross-Origin Resource Sharing policy for a route. It is

@@ -2630,6 +2630,9 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "timeouts": {
+          "$ref": "#/$defs/RouteTimeouts"
+        },
         "upstream": {
           "type": "string"
         },
@@ -2979,6 +2982,23 @@
         "root": {
           "description": "Root is the absolute directory served.",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteTimeouts": {
+      "description": "RouteTimeouts are a route's named timeouts. Connect and the response header timeout are configured per upstream (upstreams[].timeouts), since the connection pool is shared; these bound the exchange as a whole and the gaps between response bytes.",
+      "type": "object",
+      "properties": {
+        "idle": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "total": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         }
       },
       "additionalProperties": false

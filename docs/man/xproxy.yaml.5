@@ -3539,7 +3539,25 @@ duration
 T}	T{
 none
 T}	T{
-Whole request deadline for this route
+Whole request deadline for this route (the total,\: accept to last response byte). The named \fBtimeouts\fR block is the alternative and adds an idle timeout;\: set one or the other
+T}
+T{
+\fBtimeouts.\:total\fR
+T}	T{
+duration
+T}	T{
+none
+T}	T{
+Same as \fBtimeout\fR
+T}
+T{
+\fBtimeouts.\:idle\fR
+T}	T{
+duration
+T}	T{
+none
+T}	T{
+Cancels a response that produces no bytes for this long,\: for streaming or long\-poll routes where \fBtotal\fR is too coarse. Connect and response\-header timeouts are configured per upstream (\fBupstreams[].\:timeouts\fR),\: since the connection pool is shared
 T}
 T{
 \fBwebsocket\fR

@@ -45,3 +45,28 @@ func TestCORSValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestRouteTimeoutsValidation(t *testing.T) {
+	base := func(rt string) string {
+		return `
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+upstreams:
+  - {name: web, endpoints: [{address: "10.0.0.1:8080"}]}
+routes:
+  - {name: api, upstream: web, ` + rt + `}
+`
+	}
+	if _, err := ParseWith([]byte(base(`timeouts: {total: 5s, idle: 1s}`)), false); err != nil {
+		t.Fatal(err)
+	}
+	for name, rt := range map[string]string{
+		"both timeout and timeouts": `timeout: 5s, timeouts: {total: 5s}`,
+		"idle over total":           `timeouts: {total: 1s, idle: 2s}`,
+	} {
+		if _, err := ParseWith([]byte(base(rt)), false); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

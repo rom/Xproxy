@@ -1294,6 +1294,17 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	if r.CORS != nil {
 		v.routeCORS(p+".cors", r.CORS)
 	}
+	if r.Timeouts != nil {
+		if r.Timeout != 0 {
+			v.errf("%s: set timeout or timeouts, not both", p)
+		}
+		if r.Timeouts.Total < 0 || r.Timeouts.Idle < 0 {
+			v.errf("%s.timeouts: must not be negative", p)
+		}
+		if t, i := r.Timeouts.Total, r.Timeouts.Idle; t > 0 && i > 0 && i > t {
+			v.errf("%s.timeouts.idle: must not exceed total", p)
+		}
+	}
 
 	actions := 0
 	if r.Upstream != "" {

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"sync/atomic"
+	"time"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
@@ -122,6 +123,7 @@ type compiledRoute struct {
 	static       *staticSite
 	compress     *compressPolicy
 	cors         *compiledCORS
+	idleTimeout  time.Duration
 	mirror       *mirror
 	rateLimits   []*rateLimit
 	// identityLimits key on the verified identity and so run after the
@@ -418,6 +420,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		if r.CORS != nil {
 			cr.cors = newCORS(r.CORS)
 		}
+		cr.idleTimeout = r.IdleTimeout().D()
 		if r.Static != nil {
 			ss, err := openStatic(r.Static)
 			if err != nil {

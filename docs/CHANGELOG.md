@@ -222,6 +222,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Per-route timeouts (`routes[].timeouts`): a named `total` (the whole
+  exchange) and an `idle` timeout that cancels a response stalled with
+  no bytes, for streaming and long-poll routes; connect and
+  response-header timeouts remain per upstream.
 - CAPTCHA hostname binding: the challenge verifies the hostname the
   provider reports the token was solved on against the request host or a
   configured `challenge.captcha.hostnames` allowlist, refusing a token

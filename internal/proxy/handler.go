@@ -54,12 +54,13 @@ type reqState struct {
 	extra      []any // filter attributes for the access log
 	country    string
 	ja4        string
-	chalTier   int              // challenge cookie tier (challenge.TierNone without one)
-	device     string           // device identifier from the challenge cookie
-	identity   *filter.Identity // verified identities from the filter chain
-	automation []string         // automation markers from the challenge cookie
-	span       *tracing.Span    // server span, nil without tracing
-	upSpan     *tracing.Span    // client span of the upstream exchange
+	chalTier   int                // challenge cookie tier (challenge.TierNone without one)
+	device     string             // device identifier from the challenge cookie
+	identity   *filter.Identity   // verified identities from the filter chain
+	cancel     context.CancelFunc // cancels the request (idle timeout)
+	automation []string           // automation markers from the challenge cookie
+	span       *tracing.Span      // server span, nil without tracing
+	upSpan     *tracing.Span      // client span of the upstream exchange
 	propagate  bool
 	cache      string // hit, miss or bypass on a cached route
 	encoding   string // gzip when the proxy compressed the response
@@ -468,16 +469,23 @@ admitted:
 
 	// Per-route timeout, tightened by a gRPC client's own deadline.
 	ctx := r.Context()
-	deadline := cr.cfg.Timeout.D()
+	deadline := cr.cfg.TotalTimeout().D()
 	if st.grpc {
 		if d := parseGRPCTimeout(r.Header.Get("Grpc-Timeout")); d > 0 && (deadline == 0 || d < deadline) {
 			deadline = d
 		}
 	}
-	if deadline > 0 {
+	if deadline > 0 || cr.idleTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, deadline)
+		if deadline > 0 {
+			ctx, cancel = context.WithTimeout(ctx, deadline)
+		} else {
+			ctx, cancel = context.WithCancel(ctx)
+		}
 		defer cancel()
+		// The idle reader (set in ModifyResponse) cancels the request when
+		// the upstream stalls; keep the canceller reachable through st.
+		st.cancel = cancel
 		r = r.WithContext(ctx)
 	}
 
@@ -692,6 +700,9 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 				return &filterDenied{v: v}
 			}
 			cr.respOps.apply(resp.Header, &tvars{r: r, st: st})
+			if cr.idleTimeout > 0 && st.cancel != nil && resp.Body != nil && resp.Body != http.NoBody {
+				resp.Body = newIdleReader(resp.Body, cr.idleTimeout, st.cancel)
+			}
 			if cr.cors != nil {
 				// The route's policy is authoritative; drop any copy the
 				// upstream set so the header the proxy wrote to rw stands.
