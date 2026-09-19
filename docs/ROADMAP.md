@@ -249,6 +249,8 @@ procedure is in RELEASING.md.
 - WAF: CRS plugin loading, JSON body schema enforcement, behavioural
   anomaly detection beyond rule scoring (`crs.plugins_dir`,
   `json_schemas`, `waf.anomaly`): delivered
+- API discovery and inventory with shadow, zombie and superseded
+  detection (`api_inventory`, `xproxyctl api`): delivered
 - Bypass protection: origin request signatures and the origin locking
   guide (`upstreams[].origin_signature`, HARDENING.md 5c): delivered
 - WAF operating modes with gradual enforcement (`block_percent`,

@@ -60,6 +60,7 @@ internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
 internal/filters    built-in kinds (header_guard, basic_auth, api_key, openapi, graphql, upload_guard, body_rewrite, bot_score, oidc, wasm) and the registration list
 internal/jsonschema JSON Schema evaluator shared by the openapi filter and the WAF body schemas
+internal/apiinv     API inventory: endpoints discovered from traffic, shadow, zombie and superseded detection
 internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/secret     keyring files for the symmetric secrets, rotation with retained keys
@@ -845,6 +846,7 @@ Endpoints:
 | GET | `/v1/waf` | WAF profiles (plugins, schemas), route assignments, per rule statistics (`?top=N`), learned exclusion proposals, schema violations and the anomaly baseline with flagged clients |
 | GET | `/v1/waf/exclusions` | the proposals as a SecLang file (text/plain) |
 | POST | `/v1/waf/reset` | clear WAF statistics and the learning table (audited) |
+| GET | `/v1/api` | API inventory (`?view=all|shadow|zombie|versions|documented|undocumented&top=N`) |
 | GET | `/v1/fleet` | fleet agent state: controller, applied bundle and result, pending digest, counters |
 | GET | `/v1/sandbox` | in-process hardening: mechanisms with state, Landlock rules and ABI |
 | GET | `/v1/config` | active configuration as YAML |

@@ -218,6 +218,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- API inventory (`api_inventory`): endpoints discovered from traffic
+  with counts, credentials, media types and versions; shadow, zombie
+  and superseded views against `openapi` filters; `xproxyctl api`,
+  `GET /v1/api`, an optional state file.
 - Origin lock: `upstreams[].origin_signature` signs every forwarded
   request with a keyring shared with the origin (`internal/originsig`
   verifies), and HARDENING.md 5c documents network rules, mutual TLS

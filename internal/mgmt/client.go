@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acme"
+	"github.com/rom/xproxy/internal/apiinv"
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/fleet"
@@ -115,6 +116,12 @@ func (c *Client) Post(path string) error {
 func (c *Client) ClusterStatus() (*cluster.Status, error) {
 	var st cluster.Status
 	return &st, c.do("GET", "/v1/cluster", &st)
+}
+
+// APIInventory fetches the inventory view.
+func (c *Client) APIInventory(view string, top int) (*apiinv.Report, error) {
+	var rep apiinv.Report
+	return &rep, c.do("GET", fmt.Sprintf("/v1/api?view=%s&top=%d", url.QueryEscape(view), top), &rep)
 }
 
 // Patches fetches the virtual patches with their counters.

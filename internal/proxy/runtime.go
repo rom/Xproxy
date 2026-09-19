@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"github.com/rom/xproxy/internal/apiinv"
 	"github.com/rom/xproxy/internal/tmpl"
 	"log/slog"
 	"net/http"
@@ -146,6 +147,41 @@ type compiledRoute struct {
 	geoUnknown      string
 	policy          *compiledPolicy
 	policyDenied    atomic.Uint64
+	// inventory marks a route whose requests feed the API inventory;
+	// describers are its OpenAPI filters.
+	inventory  bool
+	describers []apiinv.Describer
+}
+
+// inventoryRoute reports whether the inventory's host and route
+// selectors admit a route.
+func inventoryRoute(inv *config.APIInventory, r *config.Route) bool {
+	if len(inv.Routes) > 0 {
+		found := false
+		for _, n := range inv.Routes {
+			if n == r.Name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	if len(inv.Hosts) > 0 {
+		if len(r.Hosts) == 0 {
+			return false
+		}
+		for _, h := range r.Hosts {
+			for _, p := range inv.Hosts {
+				if hostMatches(p, h) || p == h {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // geoAllowed applies the route's country policy.
@@ -469,6 +505,16 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		if err := stage(config.StageAfterScan); err != nil {
 			rt.stop()
 			return nil, err
+		}
+		if inv := cfg.APIInventory; inv.IsEnabled() && r.Upstream != "" && inventoryRoute(inv, r) {
+			cr.inventory = true
+			for _, f := range cr.filters {
+				if c, ok := f.(*customFilter); ok {
+					if d, ok := c.f.(apiinv.Describer); ok {
+						cr.describers = append(cr.describers, d)
+					}
+				}
+			}
 		}
 		if err := cr.compileTemplates(); err != nil {
 			rt.stop()

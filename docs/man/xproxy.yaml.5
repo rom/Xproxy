@@ -3873,6 +3873,108 @@ The OTLP exporter sends the same families as OTLP/HTTP with JSON encoding: count
 Exposed families: \fBxproxy_requests_total\fR, \fBxproxy_responses_total{class}\fR, \fBxproxy_denied_total{reason}\fR, \fBxproxy_bytes_in_total\fR, \fBxproxy_bytes_out_total\fR, \fBxproxy_waf_detected_total\fR, \fBxproxy_upstream_errors_total\fR, \fBxproxy_upstream_timeouts_total\fR, \fBxproxy_upstream_no_healthy_total\fR, \fBxproxy_client_aborts_total\fR, \fBxproxy_connections_rejected_total\fR, \fBxproxy_reloads_total{result}\fR, \fBxproxy_bans_total\fR, \fBxproxy_challenges_total{result}\fR, \fBxproxy_log_sent_total{sink}\fR, \fBxproxy_log_dropped_total{sink}\fR, \fBxproxy_connections_open\fR, \fBxproxy_requests_in_flight\fR, \fBxproxy_bans_active\fR, \fBxproxy_load_level\fR, \fBxproxy_upstream_latency_seconds\fR, \fBxproxy_shedding{class}\fR, \fBxproxy_cluster_peers\fR, \fBxproxy_cluster_peers_connected\fR, \fBxproxy_cluster_messages_total{direction,type}\fR, \fBxproxy_cluster_rejected_total\fR, \fBxproxy_request_duration_seconds\fR (histogram), \fBxproxy_upstream_ttfb_seconds\fR (histogram), \fBxproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}\fR, \fBxproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}\fR, \fBxproxy_route_requests_total{route,outcome}\fR, \fBxproxy_build_info\fR, \fBxproxy_uptime_seconds\fR, \fBxproxy_config_generation\fR.
 .PP
 Series (per\-second rates for counters, current values for gauges): \fBrequests\fR, \fBresponses_2xx\fR, \fBresponses_4xx\fR, \fBresponses_5xx\fR, \fBdenied\fR, \fBshed\fR, \fBbytes_in\fR, \fBbytes_out\fR, \fBupstream_errors\fR, \fBopen_connections\fR, \fBin_flight\fR, \fBload_level\fR, \fBupstream_latency_ms\fR, \fBbans_active\fR, \fBcluster_connected\fR.
+.SH "api_inventory"
+.PP
+Present means enabled. The proxy discovers the API surface it serves from traffic: every request of a proxied route (not redirects, static files or honeypots) is attributed to its host, method and path template, with first and last seen times, counts per status class, the kinds of credential clients present (\fBbearer\fR, \fBbasic\fR, \fBapi_key\fR, \fBcookie\fR, \fBclient_cert\fR, \fBnone\fR), request and response media types and the version segment of the path (\fBv1\fR, \fBv2\fR). Identifiers in the path (numbers, UUIDs, hashes, opaque tokens) fold into \fB*\fR, so \fB/users/42\fR and \fB/users/43\fR are one endpoint; on a route with an \fBopenapi\fR filter the description\(aqs own template is used and the filter says whether the operation is documented. \fBxproxyctl api\fR and \fBGET /v1/api\fR show:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBshadow\fR APIs: traffic to a described route outside its description (an undocumented path or method), the endpoints nobody reviewed;
+.PP
+.ti -3n
+\(bu
+\fBzombie\fR APIs: documented operations without any traffic for \fBzombie_after\fR, or never since the inventory started, the endpoints nobody uses but everyone still maintains;
+.PP
+.ti -3n
+\(bu
+\fBsuperseded\fR versions: a \fBv1\fR still receiving traffic next to a \fBv2\fR of the same host, method and path;
+.PP
+.ti -3n
+\(bu
+the plain inventory, sorted by requests, with \fBversions\fR, \fBdocumented\fR and \fBundocumented\fR views.
+.RE
+.PP
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.0i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+
+T}
+T{
+\fBmax_\:endpoints\fR
+T}	T{
+int
+T}	T{
+\fB10000\fR
+T}	T{
+Bound on distinct endpoints;\: further ones are counted as dropped (100 to 1000000)
+T}
+T{
+\fBhosts\fR
+T}	T{
+list of host patterns
+T}	T{
+every proxied route
+T}	T{
+Only routes serving these hosts
+T}
+T{
+\fBroutes\fR
+T}	T{
+list of names
+T}	T{
+every proxied route
+T}	T{
+Only these routes
+T}
+T{
+\fBzombie_\:after\fR
+T}	T{
+duration
+T}	T{
+\fB720h\fR
+T}	T{
+Silence after which a documented endpoint is a zombie;\: 1h to 8760h
+T}
+T{
+\fBstate_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+Keeps the inventory across restarts (written every \fBsave_\:interval\fR and at shutdown,\: mode \fB0600\fR)
+T}
+T{
+\fBsave_\:interval\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+10s to 24h
+T}
+.TE
+.PP
+The table lives for the process and survives reloads; counts are cumulative since the start (or since the oldest record in the state file).
 .SH "bans"
 .PP
 Present means enabled. Bans apply before routing; banned peers are closed at accept when \fBaction\fR is \fBdrop\fR, and answered 403 when the client address comes from a trusted proxy chain or \fBaction\fR is \fBreject\fR.

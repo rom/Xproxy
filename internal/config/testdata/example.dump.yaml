@@ -713,6 +713,7 @@ cluster:
     exact_timeout: 50ms
 virtual_patches: []
 fleet: null
+api_inventory: null
 shedding:
     target_latency: 250ms
     window: 10s

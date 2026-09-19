@@ -973,6 +973,45 @@ Series (per-second rates for counters, current values for gauges):
 `in_flight`, `load_level`, `upstream_latency_ms`, `bans_active`,
 `cluster_connected`.
 
+## api_inventory
+
+Present means enabled. The proxy discovers the API surface it serves
+from traffic: every request of a proxied route (not redirects, static
+files or honeypots) is attributed to its host, method and path
+template, with first and last seen times, counts per status class, the
+kinds of credential clients present (`bearer`, `basic`, `api_key`,
+`cookie`, `client_cert`, `none`), request and response media types and
+the version segment of the path (`v1`, `v2`). Identifiers in the path
+(numbers, UUIDs, hashes, opaque tokens) fold into `*`, so `/users/42`
+and `/users/43` are one endpoint; on a route with an `openapi` filter
+the description's own template is used and the filter says whether the
+operation is documented. `xproxyctl api` and `GET /v1/api` show:
+
+- **shadow** APIs: traffic to a described route outside its
+  description (an undocumented path or method), the endpoints nobody
+  reviewed;
+- **zombie** APIs: documented operations without any traffic for
+  `zombie_after`, or never since the inventory started, the endpoints
+  nobody uses but everyone still maintains;
+- **superseded** versions: a `v1` still receiving traffic next to a
+  `v2` of the same host, method and path;
+- the plain inventory, sorted by requests, with `versions`,
+  `documented` and `undocumented` views.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | |
+| `max_endpoints` | int | `10000` | Bound on distinct endpoints; further ones are counted as dropped (100 to 1000000) |
+| `hosts` | list of host patterns | every proxied route | Only routes serving these hosts |
+| `routes` | list of names | every proxied route | Only these routes |
+| `zombie_after` | duration | `720h` | Silence after which a documented endpoint is a zombie; 1h to 8760h |
+| `state_file` | path | none | Keeps the inventory across restarts (written every `save_interval` and at shutdown, mode `0600`) |
+| `save_interval` | duration | `5m` | 10s to 24h |
+
+The table lives for the process and survives reloads; counts are
+cumulative since the start (or since the oldest record in the state
+file).
+
 ## bans
 
 Present means enabled. Bans apply before routing; banned peers are closed

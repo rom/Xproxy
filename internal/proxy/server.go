@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/rom/xproxy/internal/apiinv"
 	"log/slog"
 	"net"
 	"net/http"
@@ -68,6 +69,8 @@ type Server struct {
 	wafStats *waf.Stats
 	// patches keeps virtual patch hit counters across generations.
 	patches patchCounters
+	// inventory is the API inventory, kept across generations.
+	inventory *apiinv.Table
 	// tickets manages shared session ticket keys; nil without the section.
 	tickets        *tlsconf.Tickets
 	ticketMismatch bound.Notice
@@ -107,7 +110,9 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		fingerprints: tlsconf.NewFingerprintTable(max(cfg.Server.Limits.MaxConnections, 1024)),
 		connLimiter:  limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
 		wafStats:     waf.NewStats(),
+		inventory:    apiinv.New(),
 	}
+	s.inventory.Configure(inventoryConfig(cfg), logs.Error)
 	if st := cfg.Server.SessionTickets; st != nil {
 		tk, err := tlsconf.NewTickets(st, logs.Error.With("component", "tickets"))
 		if err != nil {
@@ -417,6 +422,31 @@ func (s *Server) WAF(top int) WAFReport {
 	}
 	rep.Report = s.wafStats.Report(top, rt.routePaths())
 	return rep
+}
+
+// inventoryConfig maps the configuration section to the table's setting.
+func inventoryConfig(cfg *config.Config) apiinv.Config {
+	a := cfg.APIInventory
+	if !a.IsEnabled() {
+		return apiinv.Config{}
+	}
+	return apiinv.Config{Enabled: true, MaxEndpoints: a.MaxEndpoints, ZombieAfter: a.ZombieAfter.D(), StateFile: a.StateFile, SaveInterval: a.SaveInterval.D()}
+}
+
+// APIInventory builds the inventory view: all, shadow, zombie, versions,
+// documented or undocumented, at most top items.
+func (s *Server) APIInventory(view string, top int) apiinv.Report {
+	rt := s.rt.Load()
+	docs := map[string][]apiinv.Operation{}
+	for _, cr := range rt.routes {
+		if !cr.inventory {
+			continue
+		}
+		for _, d := range cr.describers {
+			docs[cr.cfg.Name] = append(docs[cr.cfg.Name], d.Operations()...)
+		}
+	}
+	return s.inventory.Report(view, top, docs, time.Now())
 }
 
 // WAFExclusions renders the learning proposals as SecLang.
@@ -746,6 +776,9 @@ func (s *Server) Reload(cfg *config.Config) error {
 		return err
 	}
 	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s), s.wafStats, &s.patches)
+	if err == nil {
+		s.inventory.Configure(inventoryConfig(cfg), s.logs.Error)
+	}
 	if err != nil {
 		s.stats.ReloadFailures.Add(1)
 		return err
@@ -1145,6 +1178,7 @@ func (s *Server) ReloadCertificates() error {
 // and upstream pools.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.tickets.Stop()
+	s.inventory.Stop()
 	s.mu.Lock()
 	lns := s.listeners
 	s.mu.Unlock()

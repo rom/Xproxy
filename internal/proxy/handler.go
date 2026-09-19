@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/rom/xproxy/internal/apiinv"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -908,6 +909,56 @@ func (s *Server) queueRefused(rw *responseWriter, r *http.Request, st *reqState,
 	s.plainStatus(rw, r, http.StatusServiceUnavailable)
 }
 
+// observeEndpoint feeds the API inventory with a finished request.
+func (s *Server) observeEndpoint(rw *responseWriter, r *http.Request, st *reqState, status int) {
+	o := apiinv.Observation{Host: st.host, Method: r.Method, Path: netutil.PathTemplate(st.path), Route: st.cr.cfg.Name, Status: status,
+		Auth: authKind(r), RequestType: mediaType(r.Header.Get("Content-Type")), ResponseType: mediaType(rw.Header().Get("Content-Type"))}
+	if len(st.cr.describers) > 0 {
+		o.Documented = apiinv.No
+		for _, d := range st.cr.describers {
+			if tmpl, ok := d.Documented(r.Method, st.path); ok {
+				o.Documented, o.Path = apiinv.Yes, tmpl
+				break
+			}
+		}
+	}
+	s.inventory.Observe(o, st.start)
+}
+
+// authKind names the credential a request carries.
+func authKind(r *http.Request) string {
+	if a := r.Header.Get("Authorization"); a != "" {
+		scheme, _, _ := strings.Cut(a, " ")
+		switch strings.ToLower(scheme) {
+		case "bearer":
+			return "bearer"
+		case "basic":
+			return "basic"
+		}
+		return "other"
+	}
+	if r.Header.Get("X-Api-Key") != "" || r.Header.Get("Api-Key") != "" {
+		return "api_key"
+	}
+	if r.Header.Get("Cookie") != "" {
+		return "cookie"
+	}
+	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		return "client_cert"
+	}
+	return "none"
+}
+
+func mediaType(ct string) string {
+	if ct == "" {
+		return ""
+	}
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(ct))
+}
+
 // deny writes a minimal error response and a security log entry.
 func (s *Server) deny(rw *responseWriter, r *http.Request, st *reqState, status int, reason string) {
 	s.denyDetail(rw, r, st, status, reason, "")
@@ -1025,6 +1076,9 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	}
 	if st.ja4 != "" {
 		attrs = append(attrs, "ja4", st.ja4)
+	}
+	if st.cr != nil && st.cr.inventory && s.inventory.Enabled() {
+		s.observeEndpoint(rw, r, st, status)
 	}
 	if st.cache != "" {
 		attrs = append(attrs, "cache", st.cache)

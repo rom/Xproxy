@@ -57,6 +57,9 @@ type Config struct {
 	// Fleet makes this node fetch its configuration bundle from a fleet
 	// controller and report its status there (xproxy-fleet).
 	Fleet *Fleet `yaml:"fleet"`
+	// APIInventory records the endpoints the proxy serves and reports
+	// shadow, zombie and superseded APIs.
+	APIInventory *APIInventory `yaml:"api_inventory"`
 	// Shedding enables adaptive load shedding by priority class when
 	// present.
 	Shedding *Shedding `yaml:"shedding"`
@@ -1901,6 +1904,33 @@ type Cluster struct {
 	// Default 50ms.
 	ExactTimeout Duration `yaml:"exact_timeout"`
 }
+
+// APIInventory discovers the API surface from traffic: every proxied
+// request is attributed to a host, method and path template, with
+// counts, credentials seen, media types and the version in the path.
+// Routes with an openapi filter contribute their documented operations,
+// which makes shadow endpoints (traffic outside the description) and
+// zombies (documented operations without traffic) visible.
+type APIInventory struct {
+	// Enabled defaults to true when the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// MaxEndpoints bounds the table. Default 10000.
+	MaxEndpoints int `yaml:"max_endpoints"`
+	// Hosts and Routes narrow the inventory to these host patterns and
+	// route names. Default: every proxied route.
+	Hosts  []string `yaml:"hosts"`
+	Routes []string `yaml:"routes"`
+	// ZombieAfter is how long a documented endpoint may go without
+	// traffic before it is reported as a zombie. Default 720h.
+	ZombieAfter Duration `yaml:"zombie_after"`
+	// StateFile keeps the inventory across restarts. Optional.
+	StateFile string `yaml:"state_file"`
+	// SaveInterval is how often the state file is written. Default 5m.
+	SaveInterval Duration `yaml:"save_interval"`
+}
+
+// IsEnabled reports whether the inventory records traffic.
+func (a *APIInventory) IsEnabled() bool { return a != nil && (a.Enabled == nil || *a.Enabled) }
 
 // Fleet is the agent side of central configuration management: the node
 // long polls the controller for a bundle whose digest differs from the

@@ -216,6 +216,27 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		writeJSON(w, 200, map[string]int{"purged": s.proxy.PurgeDNS()})
 	})
 	mux.HandleFunc("GET /v1/patches", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.VirtualPatches()) })
+	mux.HandleFunc("GET /v1/api", func(w http.ResponseWriter, r *http.Request) {
+		top := 100
+		if t := r.URL.Query().Get("top"); t != "" {
+			n, err := strconv.Atoi(t)
+			if err != nil || n < 1 || n > 100000 {
+				writeJSON(w, 400, result{Error: "top must be between 1 and 100000"})
+				return
+			}
+			top = n
+		}
+		view := r.URL.Query().Get("view")
+		switch view {
+		case "", "all":
+			view = "all"
+		case "shadow", "zombie", "versions", "documented", "undocumented":
+		default:
+			writeJSON(w, 400, result{Error: "view must be all, shadow, zombie, versions, documented or undocumented"})
+			return
+		}
+		writeJSON(w, 200, s.proxy.APIInventory(view, top))
+	})
 	mux.HandleFunc("GET /v1/honeypot", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "marks_dropped": s.proxy.HoneypotMarksDropped(), "decoys": proxy.DecoyNames()})
 	})

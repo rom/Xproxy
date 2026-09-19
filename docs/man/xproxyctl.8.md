@@ -50,6 +50,7 @@ locally; everything else goes through the socket.
 | `ban` [`-duration` *D*] [`-reason` *TEXT*] *TARGET* | Ban an address or CIDR (default one hour) |
 | `unban` *TARGET* | Remove a ban |
 | `cluster` | Peers, inbound connections and gossip counters |
+| `api` [`all`\|`shadow`\|`zombie`\|`versions`\|`documented`\|`undocumented`] | API inventory discovered from traffic: host, method, path template, route, version, state (documented, shadow, zombie, superseded), counts, credentials seen and last seen (`-top` *N*) |
 | `patches` | Virtual patches with state (active, disabled, expired), action, hits, last hit and expiry |
 | `fleet` | Fleet agent state: controller, node id, applied bundle digest and result, pending bundle, poll and report counters |
 | `acme` [`renew`] | Managed certificates with expiry, issuer and last error; `renew` forces renewal and waits |

@@ -2277,6 +2277,45 @@ scanning is the ICAP filter's job (`routes[].icap`), and the two
 combine on one route. `examples/filters/uploads.yaml` is a complete
 configuration.
 
+### API inventory: discovery, shadow and zombie APIs
+
+An API programme starts with knowing what is exposed. With
+`api_inventory` present the proxy learns it from the traffic it
+proxies and, where a route has an `openapi` filter, compares it with
+the description:
+
+```yaml
+api_inventory:
+  state_file: /var/lib/xproxy/api-inventory.json
+  zombie_after: 720h
+filters:
+  - {name: orders-spec, kind: openapi, options: {spec_file: /etc/xproxy/openapi/orders.yaml, unknown_paths: allow}}
+routes:
+  - {name: orders, hosts: [api.example.com], upstream: api, filters: [orders-spec]}
+```
+
+`unknown_paths: allow` keeps the description advisory while the
+inventory fills; `deny` turns the same description into the positive
+model once the shadow list is empty.
+
+```
+$ xproxyctl api shadow
+since 2026-09-01T00:00:00Z  endpoints 214/10000  dropped 0  shadow 3  zombie 5 (after 720h0m0s)  superseded 2
+HOST             METHOD  PATH               ROUTE   VERSION  STATE   REQUESTS  2XX   4XX  5XX  AUTH    LAST SEEN
+api.example.com  GET     /v1/admin/export   orders  v1       shadow  1842      1840  2    0    cookie  12s ago
+api.example.com  POST    /v1/orders/*/note  orders  v1       shadow  77        77    0    0    bearer  3h12m0s ago
+api.example.com  GET     /internal/health   orders  -        shadow  9         9     0    0    none    1h0m3s ago
+$ xproxyctl api zombie
+$ xproxyctl api versions
+```
+
+The shadow view is the list of endpoints to document, protect or
+remove; the zombie view the list to retire; the versions view shows a
+`v1` marked `superseded` while a `v2` serves the same path, with the
+credentials and last use that tell whether anyone would notice its
+removal. Everything the inventory records is a template and a count:
+no path parameter values, no query strings, no bodies.
+
 ### Browser challenge
 
 ```yaml

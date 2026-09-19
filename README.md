@@ -86,6 +86,8 @@ an identifier from the access log to the upstream.
 - Keyed rate limits (address, network, route, endpoint, country, TLS
   fingerprint, header, cookie, token claim) with reject or tarpit; CIDR
   allow and deny lists; trusted proxy handling for forwarded addresses
+- API inventory discovered from traffic, with shadow, zombie and
+  superseded endpoints against OpenAPI descriptions
 - Origin lock: per request signatures the origin verifies, mutual TLS
   and network rules so an application accepts only proxied traffic
 - Upload protection: extension chains, content sniffing against name and

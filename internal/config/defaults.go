@@ -439,6 +439,11 @@ func applyDefaults(c *Config) {
 			}
 		}
 	}
+	if a := c.APIInventory; a != nil {
+		setInt(&a.MaxEndpoints, 10000)
+		setDur(&a.ZombieAfter, 720*time.Hour)
+		setDur(&a.SaveInterval, 5*time.Minute)
+	}
 	if f := c.Fleet; f != nil {
 		setDur(&f.Interval, 30*time.Second)
 		setDur(&f.Timeout, 10*time.Second)

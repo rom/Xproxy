@@ -114,6 +114,25 @@ func (v *validator) config(c *Config) {
 	if c.Fleet != nil {
 		v.fleet(c.Fleet)
 	}
+	if a := c.APIInventory; a != nil {
+		if a.MaxEndpoints < 100 || a.MaxEndpoints > 1_000_000 {
+			v.errf("api_inventory.max_endpoints: must be between 100 and 1000000")
+		}
+		for i, h := range a.Hosts {
+			if !hostPatternOK(h) {
+				v.errf("api_inventory.hosts[%d]: %q is not a valid host pattern", i, h)
+			}
+		}
+		if a.ZombieAfter < Duration(time.Hour) || a.ZombieAfter > Duration(365*24*time.Hour) {
+			v.errf("api_inventory.zombie_after: must be between 1h and 8760h")
+		}
+		if a.StateFile != "" && !strings.HasPrefix(a.StateFile, "/") {
+			v.errf("api_inventory.state_file: must be an absolute path")
+		}
+		if a.SaveInterval < Duration(10*time.Second) || a.SaveInterval > Duration(24*time.Hour) {
+			v.errf("api_inventory.save_interval: must be between 10s and 24h")
+		}
+	}
 	v.sandbox(&c.Sandbox)
 	if cp := c.Compression; cp != nil {
 		seen := map[string]bool{}
@@ -388,6 +407,13 @@ func (v *validator) config(c *Config) {
 		}
 	}
 	v.virtualPatches(c.VirtualPatches, routes)
+	if a := c.APIInventory; a != nil {
+		for i, r := range a.Routes {
+			if !routes[r] {
+				v.errf("api_inventory.routes[%d]: unknown route %q", i, r)
+			}
+		}
+	}
 	if len(c.Server.Listeners) == 0 {
 		v.errf("server.listeners: at least one listener is required")
 	}

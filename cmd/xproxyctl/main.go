@@ -640,6 +640,64 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_, _ = out.Write(b)
 		return 0
+	case "api":
+		afs := flag.NewFlagSet("api", flag.ContinueOnError)
+		afs.SetOutput(errOut)
+		top := afs.Int("top", 50, "endpoints listed")
+		if err := afs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		view := afs.Arg(0)
+		switch view {
+		case "":
+			view = "all"
+		case "all", "shadow", "zombie", "versions", "documented", "undocumented":
+		default:
+			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl api [all|shadow|zombie|versions|documented|undocumented] [-top N]")
+			return 2
+		}
+		rep, err := c.APIInventory(view, *top)
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, rep)
+		}
+		if !rep.Enabled {
+			_, _ = fmt.Fprintln(out, "api inventory: not configured")
+			return 0
+		}
+		_, _ = fmt.Fprintf(out, "since %s  endpoints %d/%d  dropped %d  shadow %d  zombie %d (after %s)  superseded %d\n",
+			rep.Since.Local().Format(time.RFC3339), rep.Endpoints, rep.MaxEndpoints, rep.Dropped, rep.Shadow, rep.Zombie, rep.ZombieAfter, rep.Superseded)
+		if len(rep.Items) == 0 {
+			_, _ = fmt.Fprintf(out, "no endpoints in view %s\n", view)
+			return 0
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "HOST\tMETHOD\tPATH\tROUTE\tVERSION\tSTATE\tREQUESTS\t2XX\t4XX\t5XX\tAUTH\tLAST SEEN")
+		for _, e := range rep.Items {
+			var flags []string
+			if e.Shadow {
+				flags = append(flags, "shadow")
+			}
+			if e.Zombie {
+				flags = append(flags, "zombie")
+			}
+			if e.Superseded {
+				flags = append(flags, "superseded")
+			}
+			if len(flags) == 0 {
+				if e.Documented == "yes" {
+					flags = append(flags, "documented")
+				} else {
+					flags = append(flags, "ok")
+				}
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\n", dash(e.Host), e.Method, e.Path, dash(e.Route), dash(e.Version), strings.Join(flags, ","),
+				e.Requests, e.Status2xx, e.Status4xx, e.Status5xx, dash(strings.Join(e.Auth, ",")), ago(e.LastSeen))
+		}
+		_ = tw.Flush()
+		return 0
 	case "patches":
 		ps, err := c.Patches()
 		if err != nil {

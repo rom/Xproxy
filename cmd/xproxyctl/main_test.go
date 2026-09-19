@@ -139,6 +139,8 @@ func TestCommands(t *testing.T) {
 		{[]string{"cluster"}, 1, ""},
 		{[]string{"fleet"}, 0, "fleet: not configured"},
 		{[]string{"patches"}, 0, "no virtual patches configured"},
+		{[]string{"api"}, 0, "api inventory: not configured"},
+		{[]string{"api", "bogus"}, 2, "usage: xproxyctl api"},
 		{[]string{"acme"}, 1, ""},
 		{[]string{"metrics"}, 0, "xproxy_"},
 		{[]string{"series", "-since", "1m", "-last", "5"}, 0, ""},

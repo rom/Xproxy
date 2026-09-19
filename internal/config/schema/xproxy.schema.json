@@ -16,6 +16,14 @@
         }
       ]
     },
+    "api_inventory": {
+      "description": "APIInventory records the endpoints the proxy serves and reports shadow, zombie and superseded APIs.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/APIInventory"
+        }
+      ]
+    },
     "bans": {
       "description": "Bans enables the ban list when present.",
       "allOf": [
@@ -248,6 +256,48 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "APIInventory": {
+      "description": "APIInventory discovers the API surface from traffic: every proxied request is attributed to a host, method and path template, with counts, credentials seen, media types and the version in the path. Routes with an openapi filter contribute their documented operations, which makes shadow endpoints (traffic outside the description) and zombies (documented operations without traffic) visible.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enabled defaults to true when the section is present.",
+          "type": "boolean"
+        },
+        "hosts": {
+          "description": "Hosts and Routes narrow the inventory to these host patterns and route names. Default: every proxied route.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_endpoints": {
+          "description": "MaxEndpoints bounds the table. Default 10000.",
+          "type": "integer"
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "save_interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "state_file": {
+          "description": "StateFile keeps the inventory across restarts. Optional.",
+          "type": "string"
+        },
+        "zombie_after": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         }
       },
       "additionalProperties": false
