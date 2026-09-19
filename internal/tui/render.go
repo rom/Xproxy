@@ -195,7 +195,7 @@ func renderOverview(d Data, sty Style, w int) []string {
 		out = append(out, "", sty.Yellow+"  shedding: "+strings.Join(s.SheddingClasses, ", ")+sty.Reset)
 	}
 	out = append(out, "", "  sandbox    "+sandboxLine(d.Status.Sandbox, sty))
-	if t := d.Telemetry; t != nil && (t.Metrics != nil || t.Traces != nil || t.Logs != nil) {
+	if t := d.Telemetry; t != nil && (t.Metrics != nil || t.Traces != nil || t.Logs != nil || t.SIEM != nil) {
 		var parts []string
 		if t.Metrics != nil {
 			parts = append(parts, fmt.Sprintf("metrics sent %d failed %d", t.Metrics.Sent, t.Metrics.Failed))
@@ -205,6 +205,9 @@ func renderOverview(d Data, sty Style, w int) []string {
 		}
 		if t.Logs != nil {
 			parts = append(parts, fmt.Sprintf("logs sent %d dropped %d", t.Logs.Sent, t.Logs.Dropped))
+		}
+		if t.SIEM != nil {
+			parts = append(parts, fmt.Sprintf("siem %s sent %d dropped %d", t.SIEM.Format, t.SIEM.Sent, t.SIEM.Dropped))
 		}
 		out = append(out, "  telemetry  "+strings.Join(parts, "  "))
 	}

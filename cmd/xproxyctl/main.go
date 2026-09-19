@@ -608,8 +608,11 @@ func run(args []string, out, errOut io.Writer) int {
 		if l := v.Logs; l != nil {
 			_, _ = fmt.Fprintf(tw, "logs\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n", l.Endpoint, l.Sent, l.Dropped, l.Pushes, l.Failed, l.Queued, dash(l.LastError))
 		}
-		if v.Metrics == nil && v.Traces == nil && v.Logs == nil {
-			_, _ = fmt.Fprintln(tw, "(no OpenTelemetry exporter configured)")
+		if s := v.SIEM; s != nil {
+			_, _ = fmt.Fprintf(tw, "siem (%s)\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n", s.Format, s.Endpoint, s.Sent, s.Dropped, s.Pushes, s.Failed, s.Queued, dash(s.LastError))
+		}
+		if v.Metrics == nil && v.Traces == nil && v.Logs == nil && v.SIEM == nil {
+			_, _ = fmt.Fprintln(tw, "(no OpenTelemetry exporter or SIEM sink configured)")
 		}
 		_ = tw.Flush()
 		return 0

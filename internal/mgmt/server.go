@@ -180,7 +180,7 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		})(w, r)
 	})
 	mux.HandleFunc("GET /v1/telemetry", func(w http.ResponseWriter, _ *http.Request) {
-		view := TelemetryView{Traces: s.proxy.Tracing(), Logs: s.logs.OTLP()}
+		view := TelemetryView{Traces: s.proxy.Tracing(), Logs: s.logs.OTLP(), SIEM: s.logs.SIEM()}
 		if s.actions.OTLP != nil {
 			m := s.actions.OTLP()
 			view.Metrics = &m
@@ -432,6 +432,7 @@ type TelemetryView struct {
 	Metrics *metrics.OTLPStatus `json:"metrics"`
 	Traces  *tracing.Status     `json:"traces"`
 	Logs    *logging.OTLPStatus `json:"logs"`
+	SIEM    *logging.SIEMStatus `json:"siem"`
 }
 
 // FiltersView is the response of GET /v1/filters.

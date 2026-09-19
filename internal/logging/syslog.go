@@ -32,6 +32,7 @@ type syslogSink struct {
 	stop     chan struct{}
 	wg       sync.WaitGroup
 	tlsCfg   *tls.Config
+	meta     siemMeta
 }
 
 const maxSyslogDatagram = 8192
@@ -52,6 +53,7 @@ func newSyslogSink(cfg config.Syslog) (*syslogSink, error) {
 			s.hostname = "-"
 		}
 	}
+	s.meta = siemMeta{vendor: "Sysctl", product: "Xproxy", version: Version, hostname: s.hostname}
 	if cfg.Network == "tcp+tls" {
 		tc := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: cfg.ServerName}
 		if cfg.CAFile != "" {
@@ -82,7 +84,20 @@ func newSyslogSink(cfg config.Syslog) (*syslogSink, error) {
 func (s *syslogSink) emit(level slog.Level, stream string, line []byte, rec slog.Record) {
 	pri := s.facility*8 + syslogSeverity(level)
 	var msg []byte
-	if s.cfg.Format == "rfc3164" {
+	format := s.cfg.Format
+	switch format {
+	case "cef":
+		line = cefLine(s.meta, stream, level, rec)
+	case "leef":
+		line = leefLine(s.meta, stream, level, rec)
+	}
+	if format == "cef" || format == "leef" {
+		format = "rfc5424"
+		if s.cfg.Network == "unix" {
+			format = "rfc3164"
+		}
+	}
+	if format == "rfc3164" {
 		// <PRI>Mmm dd hh:mm:ss host app[pid]: msg
 		ts := rec.Time.Format(time.Stamp)
 		msg = fmt.Appendf(nil, "<%d>%s %s %s[%s]: %s", pri, ts, s.hostname, s.cfg.AppName, s.pid, line)

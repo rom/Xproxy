@@ -2219,6 +2219,40 @@ logging:
 `log_journald_dropped`; drops mean the collector is slow or unreachable,
 never that the proxy waited.
 
+### SIEM export
+
+Security teams rarely want raw syslog. The `siem` sink posts batches
+over HTTPS in the shape the receiving system expects, and the syslog
+sink can speak CEF or LEEF for collectors that parse those from syslog:
+
+```yaml
+logging:
+  security: {sinks: [file, siem]}
+  audit:    {sinks: [file, siem]}
+  access:   {sinks: [file]}
+  siem:
+    endpoint: https://splunk.example.com:8088/services/collector/event
+    format: hec                     # or json, cef, leef
+    auth_file: /etc/xproxy/siem-token   # "Splunk 1a2b3c..."
+    ca_file: /etc/xproxy/certs/splunk-ca.pem
+    batch: 256
+    interval: 2s
+```
+
+With `format: hec` every record arrives as a Splunk event with
+`sourcetype xproxy:security`, `xproxy:audit` and so on; with `json` the
+body is newline delimited JSON for Elastic, OpenSearch, Logstash, Vector
+or Fluent Bit inputs; `cef` and `leef` produce ArcSight and QRadar
+lines whose standard fields (`src`, `suser`, `requestMethod`, `act`,
+`reason`, `cn1` status...) map without a custom parser, and every other
+attribute keeps its name. Sending is asynchronous behind a bounded
+queue: an unreachable SIEM never slows a request, drops are counted and
+`xproxyctl telemetry` shows the last error. For a syslog based
+collector, `logging.syslog.format: cef` sends the same CEF line behind
+an RFC 5424 header instead. Redaction applies before either sink, so
+the SIEM receives the same pseudonymised addresses the files do unless
+the security stream is excluded from the rules.
+
 ### Redaction
 
 ```yaml

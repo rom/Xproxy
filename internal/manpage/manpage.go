@@ -56,6 +56,7 @@ func (r *renderer) render(md []byte) {
 			for i++; i < len(lines) && !strings.HasPrefix(lines[i], "```"); i++ {
 				code = append(code, lines[i])
 			}
+			r.endList()
 			r.code(code)
 		case strings.HasPrefix(line, "# "):
 			r.flush()
@@ -78,13 +79,18 @@ func (r *renderer) render(md []byte) {
 				rows = append(rows, lines[i])
 			}
 			i--
+			r.endList()
 			r.table(rows)
 		case strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* "):
 			r.flush()
+			// A hanging indent from plain requests rather than .IP: with
+			// groff 1.23 an .IP paragraph leaves every later tbl text
+			// block unable to adjust its lines.
 			if !r.list {
 				r.list = true
+				r.out.WriteString(".RS 3n\n")
 			}
-			r.out.WriteString(".IP \\(bu 2\n")
+			r.out.WriteString(".PP\n.ti -3n\n\\(bu\n")
 			item := strings.TrimSpace(line[2:])
 			// Continuation lines of the item are indented.
 			for i+1 < len(lines) && strings.HasPrefix(lines[i+1], "  ") && strings.TrimSpace(lines[i+1]) != "" && !strings.HasPrefix(strings.TrimSpace(lines[i+1]), "- ") {
@@ -109,18 +115,14 @@ func (r *renderer) flush() {
 	if len(r.para) == 0 {
 		return
 	}
-	if r.list {
-		r.out.WriteString(".IP\n")
-	} else {
-		r.out.WriteString(".PP\n")
-	}
+	r.out.WriteString(".PP\n")
 	r.out.WriteString(guardStart(inline(strings.Join(r.para, " "))) + "\n")
 	r.para = nil
 }
 
 func (r *renderer) endList() {
 	if r.list {
-		r.out.WriteString(".PP\n")
+		r.out.WriteString(".RE\n.PP\n")
 		r.list = false
 	}
 }

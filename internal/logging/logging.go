@@ -36,6 +36,7 @@ type Logs struct {
 	journald *journaldSink
 	syslog   *syslogSink
 	otlp     *otlpSink
+	siem     *siemSink
 	redactor *Redactor
 	// writeErrors counts failed file writes across all streams.
 	writeErrors atomic.Uint64
@@ -67,6 +68,14 @@ func Open(cfg config.Logging) (*Logs, error) {
 			return nil, err
 		}
 		l.otlp = sink
+	}
+	if s := cfg.SIEM; s != nil {
+		sink, err := newSIEMSink(*s, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+		if err != nil {
+			l.Close()
+			return nil, err
+		}
+		l.siem = sink
 	}
 	redacted := map[string]bool{}
 	if cfg.Redaction.IsEnabled() {
@@ -131,6 +140,10 @@ func Open(cfg config.Logging) (*Logs, error) {
 			case "otlp":
 				if l.otlp != nil {
 					handlers = append(handlers, newLineHandler(l.otlp, lvl))
+				}
+			case "siem":
+				if l.siem != nil {
+					handlers = append(handlers, newLineHandler(l.siem, lvl))
 				}
 			}
 		}
@@ -206,6 +219,21 @@ func (l *Logs) Close() {
 		l.otlp.close()
 		l.otlp = nil
 	}
+	if l.siem != nil {
+		l.siem.close()
+		l.siem = nil
+	}
+}
+
+// SIEM returns the SIEM sink status, or nil when not configured.
+func (l *Logs) SIEM() *SIEMStatus {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.siem == nil {
+		return nil
+	}
+	st := l.siem.status()
+	return &st
 }
 
 // OTLP returns the log exporter status, or nil when not configured.
@@ -228,6 +256,8 @@ type SinkStats struct {
 	Redaction      bool   `json:"redaction"`
 	OTLPSent       uint64 `json:"otlp_sent"`
 	OTLPDropped    uint64 `json:"otlp_dropped"`
+	SIEMSent       uint64 `json:"siem_sent"`
+	SIEMDropped    uint64 `json:"siem_dropped"`
 }
 
 // Stats returns sink counters.
@@ -246,6 +276,9 @@ func (l *Logs) Stats() SinkStats {
 	st.WriteErrors = l.writeErrors.Load()
 	if l.otlp != nil {
 		st.OTLPSent, st.OTLPDropped = l.otlp.sent.Load(), l.otlp.dropped.Load()
+	}
+	if l.siem != nil {
+		st.SIEMSent, st.SIEMDropped = l.siem.sent.Load(), l.siem.dropped.Load()
 	}
 	return st
 }

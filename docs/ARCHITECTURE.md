@@ -792,6 +792,8 @@ sinks):
 logger -> [redactHandler] -> multiHandler -> JSON handler -> file (0640, rotated), stdout
                                           -> lineHandler  -> journaldSink (native datagram protocol)
                                           -> lineHandler  -> syslogSink   (bounded queue, background writer)
+                                          -> lineHandler  -> otlpSink     (batched OTLP/HTTP pushes)
+                                          -> lineHandler  -> siemSink     (batched HTTPS pushes: NDJSON, HEC, CEF, LEEF)
 ```
 
 The redaction handler rewrites attributes by key before any sink sees the
@@ -804,7 +806,15 @@ carry tokens. Files are reopened on `SIGUSR1` or the API. The journald
 sink writes `MESSAGE` plus indexed `XPROXY_*` fields; the syslog sink
 formats RFC 5424 or 3164 with the stream as MSGID and never blocks the
 request path: a slow or unreachable collector fills a bounded queue and
-then drops with a counter visible in status.
+then drops with a counter visible in status. The SIEM sink
+(`internal/logging/siem.go`) batches like the OTLP sink and renders
+each record per its format; the CEF and LEEF renderers
+(`siemfmt.go`) flatten the record's attributes once, map the known
+ones to the format's standard and labelled custom keys, derive the
+event class from the stream and the `action` attribute and the
+severity from the status class, the action or the level, and emit the
+rest under their own names. The syslog sink uses the same renderers
+for its `cef` and `leef` formats.
 
 ## 10. Management plane
 

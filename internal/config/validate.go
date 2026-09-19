@@ -677,8 +677,12 @@ func (v *validator) logging(l *Logging) {
 				if l.OTLP == nil {
 					v.errf("logging.%s.sinks[%d]: otlp requires a logging.otlp section", name, i)
 				}
+			case "siem":
+				if l.SIEM == nil {
+					v.errf("logging.%s.sinks[%d]: siem requires a logging.siem section", name, i)
+				}
 			default:
-				v.errf("logging.%s.sinks[%d]: must be file, journald, syslog or otlp", name, i)
+				v.errf("logging.%s.sinks[%d]: must be file, journald, syslog, otlp or siem", name, i)
 			}
 		}
 	}
@@ -692,6 +696,9 @@ func (v *validator) logging(l *Logging) {
 	}
 	if l.OTLP != nil {
 		v.otlpExport("logging.otlp", l.OTLP)
+	}
+	if l.SIEM != nil {
+		v.siem(l.SIEM)
 	}
 	for name, s := range map[string]*LogStream{"access": &l.Access, "error": &l.Error, "security": &l.Security, "audit": &l.Audit} {
 		switch s.Format {
@@ -729,8 +736,10 @@ func (v *validator) logging(l *Logging) {
 		default:
 			v.errf("logging.syslog.network: must be unix, udp, tcp or tcp+tls")
 		}
-		if s.Format != "rfc5424" && s.Format != "rfc3164" {
-			v.errf("logging.syslog.format: must be rfc5424 or rfc3164")
+		switch s.Format {
+		case "rfc5424", "rfc3164", "cef", "leef":
+		default:
+			v.errf("logging.syslog.format: must be rfc5424, rfc3164, cef or leef")
 		}
 		if _, ok := syslogFacilities[s.Facility]; !ok {
 			v.errf("logging.syslog.facility: unknown facility %q", s.Facility)
@@ -2476,6 +2485,61 @@ func templateOK(t string) error {
 }
 
 // otlpExport validates a trace or log collector endpoint.
+func (v *validator) siem(s *SIEM) {
+	const p = "logging.siem"
+	u, err := url.Parse(s.Endpoint)
+	switch {
+	case s.Endpoint == "" || err != nil || u.Host == "":
+		v.errf("%s.endpoint: must be a URL", p)
+	case u.Scheme == "https":
+	case u.Scheme == "http" && s.AllowHTTP:
+	default:
+		v.errf("%s.endpoint: must be an https URL (http only with allow_http)", p)
+	}
+	switch s.Format {
+	case "json", "hec", "cef", "leef":
+	default:
+		v.errf("%s.format: must be json, hec, cef or leef", p)
+	}
+	if s.Timeout <= 0 || s.Timeout > Duration(time.Minute) {
+		v.errf("%s.timeout: must be positive and at most 1m", p)
+	}
+	for k := range s.Headers {
+		if !headerNameOK(k) {
+			v.errf("%s.headers: %q is not a header", p, k)
+		}
+	}
+	if s.AuthFile != "" {
+		v.file(p+".auth_file", s.AuthFile)
+	}
+	if s.CAFile != "" {
+		v.file(p+".ca_file", s.CAFile)
+	}
+	if (s.CertFile == "") != (s.KeyFile == "") {
+		v.errf("%s: cert_file and key_file go together", p)
+	} else if s.CertFile != "" {
+		v.file(p+".cert_file", s.CertFile)
+		v.file(p+".key_file", s.KeyFile)
+	}
+	if s.Batch < 1 || s.Batch > 10000 {
+		v.errf("%s.batch: must be between 1 and 10000", p)
+	}
+	if s.Interval < Duration(100*time.Millisecond) || s.Interval > Duration(5*time.Minute) {
+		v.errf("%s.interval: must be between 100ms and 5m", p)
+	}
+	if s.Queue < 1 || s.Queue > 1_000_000 {
+		v.errf("%s.queue: must be between 1 and 1000000", p)
+	}
+	for _, f := range []struct{ k, v string }{{"vendor", s.Vendor}, {"product", s.Product}} {
+		if f.v == "" || len(f.v) > 63 || strings.ContainsAny(f.v, "|\\\n") {
+			v.errf("%s.%s: 1 to 63 characters without | or backslash", p, f.k)
+		}
+	}
+	if len(s.Hostname) > 255 {
+		v.errf("%s.hostname: at most 255 characters", p)
+	}
+}
+
 func (v *validator) otlpExport(p string, o *OTLPExport) {
 	u, err := url.Parse(o.Endpoint)
 	switch {

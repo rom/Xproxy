@@ -161,6 +161,8 @@ type Snapshot struct {
 	LogSyslogSent         uint64     `json:"log_syslog_sent"`
 	LogSyslogDropped      uint64     `json:"log_syslog_dropped"`
 	LogJournalDropped     uint64     `json:"log_journald_dropped"`
+	LogSIEMSent           uint64     `json:"log_siem_sent"`
+	LogSIEMDropped        uint64     `json:"log_siem_dropped"`
 	LogRedaction          bool       `json:"log_redaction"`
 	LogWriteErrors        uint64     `json:"log_write_errors"`
 	UpstreamErrors        uint64     `json:"upstream_errors"`

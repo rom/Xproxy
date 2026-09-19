@@ -260,6 +260,7 @@ func (s *Server) Stats() Snapshot {
 	}
 	ls := s.logs.Stats()
 	snap.LogSyslogSent, snap.LogSyslogDropped, snap.LogJournalDropped, snap.LogRedaction = ls.SyslogSent, ls.SyslogDropped, ls.JournalDropped, ls.Redaction
+	snap.LogSIEMSent, snap.LogSIEMDropped = ls.SIEMSent, ls.SIEMDropped
 	snap.LogWriteErrors = ls.WriteErrors
 	snap.TarpitActive = s.tarpits.InFlight()
 	return snap

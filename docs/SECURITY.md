@@ -421,6 +421,11 @@ to report a vulnerability. The threat analysis behind the controls is in
   TLS with a pinned CA and optional client certificate, or a Unix socket).
   Sending is asynchronous behind a bounded queue, so a collector outage
   can never stall or exhaust the proxy; drops are counted and visible.
+- SIEM export over HTTPS in newline delimited JSON, the Splunk HTTP
+  Event Collector envelope, CEF or LEEF (the last two also over syslog),
+  with the credential read from a file rather than the configuration,
+  a pinned CA and an optional client certificate, the same bounded
+  asynchronous queue, and redaction applied before export.
 
 ## Planned controls (see ROADMAP.md)
 

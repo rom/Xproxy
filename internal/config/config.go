@@ -556,7 +556,53 @@ type Logging struct {
 	// OTLP configures the OpenTelemetry log sink used by streams listing
 	// otlp in their sinks.
 	OTLP *OTLPExport `yaml:"otlp"`
+	// SIEM configures the HTTPS batch sink for security information and
+	// event management systems, used by streams listing siem.
+	SIEM *SIEM `yaml:"siem"`
 }
+
+// SIEM is an HTTP collector of a SIEM: Splunk HTTP Event Collector,
+// Elastic or OpenSearch ingest, Microsoft Sentinel, or any endpoint that
+// accepts newline delimited JSON, CEF or LEEF.
+type SIEM struct {
+	// Endpoint is the collector URL.
+	Endpoint string `yaml:"endpoint"`
+	// AllowHTTP permits a plain http endpoint.
+	AllowHTTP bool `yaml:"allow_http"`
+	// Format is json (newline delimited JSON lines), hec (the Splunk HTTP
+	// Event Collector envelope), cef or leef. Default json.
+	Format string `yaml:"format"`
+	// Headers added to every request.
+	Headers map[string]string `yaml:"headers"`
+	// AuthFile holds the Authorization header value ("Splunk <token>",
+	// "Bearer <token>", "ApiKey <key>"), kept out of the configuration.
+	AuthFile string `yaml:"auth_file"`
+	// Timeout of one push. Default 10s.
+	Timeout Duration `yaml:"timeout"`
+	// CAFile pins the collector's CA; CertFile and KeyFile present a
+	// client certificate.
+	CAFile   string `yaml:"ca_file"`
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	// Compress gzips the request body. Default true.
+	Compress *bool `yaml:"compress"`
+	// Batch is the largest number of records per push. Default 512.
+	Batch int `yaml:"batch"`
+	// Interval is the longest time a record waits before a push. Default 5s.
+	Interval Duration `yaml:"interval"`
+	// Queue bounds records waiting for a push. Default 8192.
+	Queue int `yaml:"queue"`
+	// Vendor and Product fill the CEF and LEEF header fields. Defaults
+	// Sysctl and Xproxy.
+	Vendor  string `yaml:"vendor"`
+	Product string `yaml:"product"`
+	// Hostname is the device host name reported (dvchost, identHostName,
+	// the HEC host). Default the OS host name.
+	Hostname string `yaml:"hostname"`
+}
+
+// Compresses reports the compress setting with its default.
+func (s *SIEM) Compresses() bool { return s.Compress == nil || *s.Compress }
 
 // OTLPExport is a collector endpoint for traces or logs.
 type OTLPExport struct {
@@ -657,7 +703,9 @@ type Syslog struct {
 	Network string `yaml:"network"`
 	// Address is the socket path for unix (default /dev/log) or host:port.
 	Address string `yaml:"address"`
-	// Format is rfc5424 or rfc3164. Default rfc3164 for unix, rfc5424
+	// Format is rfc5424 or rfc3164 with the JSON line as the message, or
+	// cef or leef with the record rendered in that format behind an RFC
+	// 5424 header (RFC 3164 for unix). Default rfc3164 for unix, rfc5424
 	// otherwise.
 	Format string `yaml:"format"`
 	// Facility is kern, user, daemon, auth, authpriv, syslog, local0 to

@@ -140,6 +140,7 @@ logging:
         claims: hash
         drop_fields: []
     otlp: null
+    siem: null
 trusted_proxies: []
 rate_limits:
     - name: per-ip

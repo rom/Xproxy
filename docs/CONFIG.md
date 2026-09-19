@@ -403,6 +403,7 @@ header("Content-Length") > 1048576`, `capture("id") != "" && ja4 == ""`.
 | `syslog` | object | none | syslog sink, used by streams listing `syslog` |
 | `redaction` | object | none | Personal data rules applied before every sink |
 | `otlp` | object | none | OpenTelemetry log sink, used by streams listing `otlp`; see `logging.otlp` |
+| `siem` | object | none | HTTPS batch sink for a SIEM (NDJSON, Splunk HEC, CEF or LEEF), used by streams listing `siem`; see `logging.siem` |
 
 ### logging.<stream>
 
@@ -412,7 +413,7 @@ header("Content-Length") > 1048576`, `capture("id") != "" && ja4 == ""`.
 | `file` | file name | `access.log` etc. | Bare name inside `directory` |
 | `max_size_mb` | int | `0` (no internal rotation) | Rotate to `.1`, `.2`, ... when exceeded |
 | `max_files` | int | `5` | Archives kept |
-| `sinks` | list | `[file]` | Any of `file`, `journald`, `syslog`, `otlp`; a stream can go to several |
+| `sinks` | list | `[file]` | Any of `file`, `journald`, `syslog`, `otlp`, `siem`; a stream can go to several |
 | `format` | `json`, `common`, `combined`, `custom` | `json` | Access stream only for the text formats: `common` is the Common Log Format (`%h %l %u %t "%r" %>s %b`), `combined` adds the quoted referer and user agent, `custom` uses `template`. The error, security and audit streams stay JSON. Text lines go to every sink of the stream; redaction runs before formatting |
 | `template` | string | | For `format: custom`: literal text with `{field}` placeholders. Fields are the access log attributes (`request_id`, `client_ip`, `method`, `host`, `path`, `query_len`, `proto`, `status`, `bytes_in`, `bytes_out`, `duration_ms`, `route`, `upstream`, `endpoint`, `attempts`, `user_agent`, `referer`, `tls`, `sni`, `client_cn`, `country`, `ja4`, `cache`, `encoding`, `honeypot_marked`, `mirror`, `grpc`, `grpc_status`, `denied`, `upstream_error`, filter attributes such as `jwt_sub`, `oidc_sub`, `bot_score`) plus `time_clf` (`10/Oct/2000:13:55:36 -0700`), `time_iso`, `time_unix`, `request` (`METHOD path PROTO`), `user` (the first of `oidc_sub`, `basic_user`, `jwt_sub`, `jwt_preferred_username`, else `-`) and `bytes_out_clf` (`-` for zero). A missing or empty field prints `-`. Values are escaped Apache style (`\"`, `\\`, `\n`, `\xHH`), so one request is always one line; at most 1024 bytes |
 
@@ -438,7 +439,7 @@ transports use RFC 6587 octet counting and reconnect with back-off.
 |-----|------|---------|-------------|
 | `network` | `unix`, `udp`, `tcp`, `tcp+tls` | `unix` | |
 | `address` | path or host:port | `/dev/log` for unix | |
-| `format` | `rfc5424`, `rfc3164` | `rfc3164` for unix, else `rfc5424` | The JSON line is the message; the stream is the RFC 5424 MSGID |
+| `format` | `rfc5424`, `rfc3164`, `cef`, `leef` | `rfc3164` for unix, else `rfc5424` | With the RFC formats the JSON line is the message and the stream the RFC 5424 MSGID. `cef` and `leef` render the record in that format (see `logging.siem`) behind an RFC 5424 header, or an RFC 3164 header on `unix`, for collectors that parse CEF or LEEF from syslog |
 | `facility` | name | `local0` | `kern`, `user`, `mail`, `daemon`, `auth`, `syslog`, `lpr`, `news`, `uucp`, `cron`, `authpriv`, `ftp`, `local0` to `local7` |
 | `app_name` | name | `xproxy` | APP-NAME or tag |
 | `hostname` | string | OS host name | |
@@ -473,6 +474,66 @@ telemetry` and `GET /v1/telemetry` show the counters.
 | `batch` | int | `512` | Records per push (1 to 10000) |
 | `interval` | duration | `5s` | Longest wait before a push (100ms to 5m) |
 | `queue` | int | `8192` | Records held while a push is in flight; more are dropped and counted (1 to 1000000) |
+
+### logging.siem
+
+Ships log records to a security information and event management
+system over HTTPS: Splunk's HTTP Event Collector, Elastic and
+OpenSearch ingest endpoints, Microsoft Sentinel's data collector, or any
+receiver of newline delimited JSON, CEF or LEEF. Records queue without
+blocking the request path, a full queue drops and counts, and a
+batching goroutine posts by size and interval and flushes at shutdown,
+the same way the `otlp` sink works. Redaction runs before the sink.
+`xproxyctl telemetry` and `GET /v1/telemetry` show the counters,
+`xproxyctl status` `log_siem_sent` and `log_siem_dropped`, and the
+metrics `xproxy_log_sent_total{sink="siem"}` and
+`xproxy_log_dropped_total{sink="siem"}`.
+
+Formats:
+
+- `json`: one JSON line per record, `application/x-ndjson`, the line
+  every other sink sees (with `stream`).
+- `hec`: the Splunk HTTP Event Collector envelope per record (`time`,
+  `host`, `source: xproxy`, `sourcetype: xproxy:<stream>`, `event`
+  holding the JSON object), `application/json`; put `Splunk <token>` in
+  `auth_file`.
+- `cef`: ArcSight Common Event Format, a header of the vendor, product,
+  version, event id (`stream` or `stream:action`), name and severity
+  followed by the extension. Severity is 1, 3 or 5 for access lines by status class, 7 for
+  security events (8 for bans), 3 for audit and 2, 4 or 6 for the error
+  stream by level. Extensions use the standard keys where one exists
+  (`rt`, `dvchost`, `cat`, `outcome`, `suser` from the identified user,
+  `src`, `dst` and `dpt` from the upstream endpoint, `requestMethod`,
+  `dhost`, `request`, `requestClientApplication`, `requestContext`,
+  `app`, `in`, `out`, `act`, `reason`, `msg`), the labelled custom
+  fields for `status` (`cn1`), `duration_ms` (`cn2`), `attempts`
+  (`cn3`), `request_id` (`cs1`), `route` (`cs2`), `upstream` (`cs3`),
+  `country` (`cs4`), `ja4` (`cs5`) and `detail` (`cs6`), and every other
+  attribute under its own name. Header fields escape `|` and `\`,
+  extension values `=`, `\` and line breaks.
+- `leef`: IBM QRadar Log Event Extended Format 2.0 with a tab
+  delimiter (`x09` in the header) and the same header fields except
+  name and severity, followed by `devTime`, `devTimeFormat`, `sev`, `cat`, `identHostName`,
+  `usrName`, `dst`, `dstPort`, `name` for non access events, then
+  `src`, `url`, `proto`, `userAgent`, `reason`, `action`, `msg` and the
+  remaining attributes under their own names.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `endpoint` | URL | required | The collector URL: the Splunk HEC `services/collector/event` path, an Elastic or OpenSearch ingest endpoint, a Logstash, Vector or Fluent Bit http input; `http://` only with `allow_http` |
+| `allow_http` | bool | `false` | |
+| `format` | `json`, `hec`, `cef`, `leef` | `json` | |
+| `headers` | map | `{}` | Request headers |
+| `auth_file` | path | none | File whose trimmed content is the `Authorization` header value (`Splunk <token>`, `Bearer <token>`, `ApiKey <key>`), so the secret stays out of the configuration |
+| `timeout` | duration | `10s` | One push; at most 1m |
+| `ca_file` | path | system pool | Pins the collector's CA |
+| `cert_file`, `key_file` | paths | none | Client certificate, both or neither |
+| `compress` | bool | `true` | gzip the request body |
+| `batch` | int | `512` | Records per push (1 to 10000) |
+| `interval` | duration | `5s` | Longest wait before a push (100ms to 5m) |
+| `queue` | int | `8192` | Records held while a push is in flight; more are dropped and counted (1 to 1000000) |
+| `vendor`, `product` | strings | `Sysctl`, `Xproxy` | CEF and LEEF header fields, 1 to 63 characters without `|` |
+| `hostname` | string | OS host name | `dvchost`, `identHostName` and the HEC `host` |
 
 ### logging.redaction
 

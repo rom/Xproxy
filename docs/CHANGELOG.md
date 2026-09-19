@@ -218,6 +218,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- SIEM export: a `siem` log sink that posts batches over HTTPS as
+  newline delimited JSON, the Splunk HTTP Event Collector envelope, CEF
+  or LEEF (`logging.siem`, credential from `auth_file`), and CEF or LEEF
+  as syslog message formats (`logging.syslog.format`); counters in
+  status, metrics and `xproxyctl telemetry`.
 - WAF: Core Rule Set plugins from a directory (`crs.plugins_dir`,
   `crs.plugins`), JSON body schemas enforced per profile and path
   before the rules (`json_schemas`, with block and detect modes and a

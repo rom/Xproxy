@@ -1628,6 +1628,14 @@
         "security": {
           "$ref": "#/$defs/LogStream"
         },
+        "siem": {
+          "description": "SIEM configures the HTTPS batch sink for security information and event management systems, used by streams listing siem.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SIEM"
+            }
+          ]
+        },
         "stdout": {
           "description": "Stdout mirrors all streams to standard output (useful under journald and in containers).",
           "type": "boolean"
@@ -2528,6 +2536,79 @@
       },
       "additionalProperties": false
     },
+    "SIEM": {
+      "description": "SIEM is an HTTP collector of a SIEM: Splunk HTTP Event Collector, Elastic or OpenSearch ingest, Microsoft Sentinel, or any endpoint that accepts newline delimited JSON, CEF or LEEF.",
+      "type": "object",
+      "properties": {
+        "allow_http": {
+          "description": "AllowHTTP permits a plain http endpoint.",
+          "type": "boolean"
+        },
+        "auth_file": {
+          "description": "AuthFile holds the Authorization header value (\"Splunk \u003ctoken\u003e\", \"Bearer \u003ctoken\u003e\", \"ApiKey \u003ckey\u003e\"), kept out of the configuration.",
+          "type": "string"
+        },
+        "batch": {
+          "description": "Batch is the largest number of records per push. Default 512.",
+          "type": "integer"
+        },
+        "ca_file": {
+          "description": "CAFile pins the collector's CA; CertFile and KeyFile present a client certificate.",
+          "type": "string"
+        },
+        "cert_file": {
+          "type": "string"
+        },
+        "compress": {
+          "description": "Compress gzips the request body. Default true.",
+          "type": "boolean"
+        },
+        "endpoint": {
+          "description": "Endpoint is the collector URL.",
+          "type": "string"
+        },
+        "format": {
+          "description": "Format is json (newline delimited JSON lines), hec (the Splunk HTTP Event Collector envelope), cef or leef. Default json.",
+          "type": "string"
+        },
+        "headers": {
+          "description": "Headers added to every request.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "hostname": {
+          "description": "Hostname is the device host name reported (dvchost, identHostName, the HEC host). Default the OS host name.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "key_file": {
+          "type": "string"
+        },
+        "product": {
+          "type": "string"
+        },
+        "queue": {
+          "description": "Queue bounds records waiting for a push. Default 8192.",
+          "type": "integer"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "vendor": {
+          "description": "Vendor and Product fill the CEF and LEEF header fields. Defaults Sysctl and Xproxy.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "Sandbox": {
       "description": "Sandbox configures the in-process hardening (docs/HARDENING.md). Every mechanism is applied after the listeners, log files, state files and the management socket are open, so the rules describe what the process still needs afterwards: the directories of every configured file for reading, the log, state and history directories for writing. A reload that names a file outside those directories is refused with a message to restart, because Landlock rules cannot be widened once applied.",
       "type": "object",
@@ -2743,7 +2824,7 @@
           "type": "string"
         },
         "format": {
-          "description": "Format is rfc5424 or rfc3164. Default rfc3164 for unix, rfc5424 otherwise.",
+          "description": "Format is rfc5424 or rfc3164 with the JSON line as the message, or cef or leef with the record rendered in that format behind an RFC 5424 header (RFC 3164 for unix). Default rfc3164 for unix, rfc5424 otherwise.",
           "type": "string"
         },
         "hostname": {

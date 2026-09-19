@@ -87,8 +87,10 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_challenges_total", "Browser challenges by result.", L{"result": result}, float64(v))
 	}
 	e.Counter("xproxy_log_sent_total", "Log records delivered to network sinks.", L{"sink": "syslog"}, float64(sn.LogSyslogSent))
+	e.Counter("xproxy_log_sent_total", "Log records delivered to network sinks.", L{"sink": "siem"}, float64(sn.LogSIEMSent))
 	e.Counter("xproxy_log_dropped_total", "Log records dropped by a sink.", L{"sink": "syslog"}, float64(sn.LogSyslogDropped))
 	e.Counter("xproxy_log_dropped_total", "Log records dropped by a sink.", L{"sink": "journald"}, float64(sn.LogJournalDropped))
+	e.Counter("xproxy_log_dropped_total", "Log records dropped by a sink.", L{"sink": "siem"}, float64(sn.LogSIEMDropped))
 
 	e.Gauge("xproxy_connections_open", "Open client connections (TCP and QUIC).", nil, float64(sn.OpenConnections))
 	e.Gauge("xproxy_requests_in_flight", "Requests currently admitted.", nil, float64(sn.InFlight))

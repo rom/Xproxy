@@ -1498,6 +1498,15 @@ none
 T}	T{
 OpenTelemetry log sink,\: used by streams listing \fBotlp\fR;\: see \fBlogging.\:otlp\fR
 T}
+T{
+\fBsiem\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+HTTPS batch sink for a SIEM (NDJSON,\: Splunk HEC,\: CEF or LEEF),\: used by streams listing \fBsiem\fR;\: see \fBlogging.\:siem\fR
+T}
 .TE
 .SS "logging.<stream>"
 .PP
@@ -1557,7 +1566,7 @@ list
 T}	T{
 \fB[file]\fR
 T}	T{
-Any of \fBfile\fR,\: \fBjournald\fR,\: \fBsyslog\fR,\: \fBotlp\fR;\: a stream can go to several
+Any of \fBfile\fR,\: \fBjournald\fR,\: \fBsyslog\fR,\: \fBotlp\fR,\: \fBsiem\fR;\: a stream can go to several
 T}
 T{
 \fBformat\fR
@@ -1652,11 +1661,11 @@ T}
 T{
 \fBformat\fR
 T}	T{
-\fBrfc5424\fR,\: \fBrfc3164\fR
+\fBrfc5424\fR,\: \fBrfc3164\fR,\: \fBcef\fR,\: \fBleef\fR
 T}	T{
 \fBrfc3164\fR for unix,\: else \fBrfc5424\fR
 T}	T{
-The JSON line is the message;\: the stream is the RFC 5424 MSGID
+With the RFC formats the JSON line is the message and the stream the RFC 5424 MSGID. \fBcef\fR and \fBleef\fR render the record in that format (see \fBlogging.\:siem\fR) behind an RFC 5424 header,\: or an RFC 3164 header on \fBunix\fR,\: for collectors that parse CEF or LEEF from syslog
 T}
 T{
 \fBfacility\fR
@@ -1821,6 +1830,171 @@ T}	T{
 \fB8192\fR
 T}	T{
 Records held while a push is in flight;\: more are dropped and counted (1 to 1000000)
+T}
+.TE
+.SS "logging.siem"
+.PP
+Ships log records to a security information and event management system over HTTPS: Splunk\(aqs HTTP Event Collector, Elastic and OpenSearch ingest endpoints, Microsoft Sentinel\(aqs data collector, or any receiver of newline delimited JSON, CEF or LEEF. Records queue without blocking the request path, a full queue drops and counts, and a batching goroutine posts by size and interval and flushes at shutdown, the same way the \fBotlp\fR sink works. Redaction runs before the sink. \fBxproxyctl telemetry\fR and \fBGET /v1/telemetry\fR show the counters, \fBxproxyctl status\fR \fBlog_siem_sent\fR and \fBlog_siem_dropped\fR, and the metrics \fBxproxy_log_sent_total{sink="siem"}\fR and \fBxproxy_log_dropped_total{sink="siem"}\fR.
+.PP
+Formats:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBjson\fR: one JSON line per record, \fBapplication/x\-ndjson\fR, the line every other sink sees (with \fBstream\fR).
+.PP
+.ti -3n
+\(bu
+\fBhec\fR: the Splunk HTTP Event Collector envelope per record (\fBtime\fR, \fBhost\fR, \fBsource: xproxy\fR, \fBsourcetype: xproxy:<stream>\fR, \fBevent\fR holding the JSON object), \fBapplication/json\fR; put \fBSplunk <token>\fR in \fBauth_file\fR.
+.PP
+.ti -3n
+\(bu
+\fBcef\fR: ArcSight Common Event Format, a header of the vendor, product, version, event id (\fBstream\fR or \fBstream:action\fR), name and severity followed by the extension. Severity is 1, 3 or 5 for access lines by status class, 7 for security events (8 for bans), 3 for audit and 2, 4 or 6 for the error stream by level. Extensions use the standard keys where one exists (\fBrt\fR, \fBdvchost\fR, \fBcat\fR, \fBoutcome\fR, \fBsuser\fR from the identified user, \fBsrc\fR, \fBdst\fR and \fBdpt\fR from the upstream endpoint, \fBrequestMethod\fR, \fBdhost\fR, \fBrequest\fR, \fBrequestClientApplication\fR, \fBrequestContext\fR, \fBapp\fR, \fBin\fR, \fBout\fR, \fBact\fR, \fBreason\fR, \fBmsg\fR), the labelled custom fields for \fBstatus\fR (\fBcn1\fR), \fBduration_ms\fR (\fBcn2\fR), \fBattempts\fR (\fBcn3\fR), \fBrequest_id\fR (\fBcs1\fR), \fBroute\fR (\fBcs2\fR), \fBupstream\fR (\fBcs3\fR), \fBcountry\fR (\fBcs4\fR), \fBja4\fR (\fBcs5\fR) and \fBdetail\fR (\fBcs6\fR), and every other attribute under its own name. Header fields escape \fB|\fR and \fB\e\fR, extension values \fB=\fR, \fB\e\fR and line breaks.
+.PP
+.ti -3n
+\(bu
+\fBleef\fR: IBM QRadar Log Event Extended Format 2.0 with a tab delimiter (\fBx09\fR in the header) and the same header fields except name and severity, followed by \fBdevTime\fR, \fBdevTimeFormat\fR, \fBsev\fR, \fBcat\fR, \fBidentHostName\fR, \fBusrName\fR, \fBdst\fR, \fBdstPort\fR, \fBname\fR for non access events, then \fBsrc\fR, \fBurl\fR, \fBproto\fR, \fBuserAgent\fR, \fBreason\fR, \fBaction\fR, \fBmsg\fR and the remaining attributes under their own names.
+.RE
+.PP
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.9i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBendpoint\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+The collector URL: the Splunk HEC \fBservices/\:collector/\:event\fR path,\: an Elastic or OpenSearch ingest endpoint,\: a Logstash,\: Vector or Fluent Bit http input;\: \fBhttp:\:/\:/\fR only with \fBallow_\:http\fR
+T}
+T{
+\fBallow_\:http\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+
+T}
+T{
+\fBformat\fR
+T}	T{
+\fBjson\fR,\: \fBhec\fR,\: \fBcef\fR,\: \fBleef\fR
+T}	T{
+\fBjson\fR
+T}	T{
+
+T}
+T{
+\fBheaders\fR
+T}	T{
+map
+T}	T{
+\fB{}\fR
+T}	T{
+Request headers
+T}
+T{
+\fBauth_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+File whose trimmed content is the \fBAuthorization\fR header value (\fBSplunk <token>\fR,\: \fBBearer <token>\fR,\: \fBApiKey <key>\fR),\: so the secret stays out of the configuration
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+One push;\: at most 1m
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+Pins the collector\(aqs CA
+T}
+T{
+\fBcert_\:file\fR,\: \fBkey_\:file\fR
+T}	T{
+paths
+T}	T{
+none
+T}	T{
+Client certificate,\: both or neither
+T}
+T{
+\fBcompress\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+gzip the request body
+T}
+T{
+\fBbatch\fR
+T}	T{
+int
+T}	T{
+\fB512\fR
+T}	T{
+Records per push (1 to 10000)
+T}
+T{
+\fBinterval\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Longest wait before a push (100ms to 5m)
+T}
+T{
+\fBqueue\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Records held while a push is in flight;\: more are dropped and counted (1 to 1000000)
+T}
+T{
+\fBvendor\fR,\: \fBproduct\fR
+T}	T{
+strings
+T}	T{
+\fBSysctl\fR,\: \fBXproxy\fR
+T}	T{
+CEF and LEEF header fields,\: 1 to 63 characters without \fB|\fR
+T}
+T{
+\fBhostname\fR
+T}	T{
+string
+T}	T{
+OS host name
+T}	T{
+\fBdvchost\fR,\: \fBidentHostName\fR and the HEC \fBhost\fR
 T}
 .TE
 .SS "logging.redaction"

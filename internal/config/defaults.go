@@ -236,6 +236,15 @@ func applyDefaults(c *Config) {
 		setStr(&j.Socket, "/run/systemd/journal/socket")
 		setStr(&j.Identifier, "xproxy")
 	}
+	if s := lg.SIEM; s != nil {
+		setStr(&s.Format, "json")
+		setDur(&s.Timeout, 10*time.Second)
+		setInt(&s.Batch, 512)
+		setDur(&s.Interval, 5*time.Second)
+		setInt(&s.Queue, 8192)
+		setStr(&s.Vendor, "Sysctl")
+		setStr(&s.Product, "Xproxy")
+	}
 	if sl := lg.Syslog; sl != nil {
 		setStr(&sl.Network, "unix")
 		if sl.Address == "" && sl.Network == "unix" {
