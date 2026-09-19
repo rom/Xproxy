@@ -59,6 +59,7 @@ internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
 internal/filters    built-in kinds (header_guard, basic_auth, api_key, openapi, graphql, body_rewrite, bot_score, oidc, wasm) and the registration list
+internal/jsonschema JSON Schema evaluator shared by the openapi filter and the WAF body schemas
 internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/secret     keyring files for the symmetric secrets, rotation with retained keys
@@ -827,7 +828,7 @@ Endpoints:
 | GET | `/v1/tls/tickets` | session ticket key epoch, fingerprint and peer agreement (404 without `server.session_tickets`) |
 | GET | `/v1/telemetry` | OpenTelemetry exporters (metrics, traces, logs) with counters |
 | GET | `/v1/quotas` | usage per tenant, route and rate limit policy; `?top=N` consumers per policy |
-| GET | `/v1/waf` | WAF profiles, route assignments, per rule statistics (`?top=N`) and learned exclusion proposals |
+| GET | `/v1/waf` | WAF profiles (plugins, schemas), route assignments, per rule statistics (`?top=N`), learned exclusion proposals, schema violations and the anomaly baseline with flagged clients |
 | GET | `/v1/waf/exclusions` | the proposals as a SecLang file (text/plain) |
 | POST | `/v1/waf/reset` | clear WAF statistics and the learning table (audited) |
 | GET | `/v1/sandbox` | in-process hardening: mechanisms with state, Landlock rules and ABI |
@@ -1004,13 +1005,34 @@ One `waf.Engine` per generation compiles each profile that some route uses
 into a blocking Coraza instance, a detection-only instance, or both. The
 SecLang is assembled in a fixed order: Coraza recommended settings, body
 limits from the configuration, CRS setup, paranoia level and thresholds,
-operator directive files and inline directives (exclusions), CRS rules,
-and finally the engine mode. Per request the instance mirrors Coraza's own
-middleware: connection and URI, request headers, request body read into
+plugin config and before files, operator directive files and inline
+directives (exclusions), CRS rules, plugin after files, and finally the
+engine mode. Per request the instance mirrors Coraza's own
+middleware: connection and URI, request headers, the anomaly flag
+check and the JSON schema check (below), request body read into
 the transaction and replayed to the upstream from Coraza's buffer, then
 optionally response headers and a bounded response body. Matched attack
 rules, the blocking rule's total score and the interruption are logged;
 initialisation and reporting rules are filtered out.
+
+Plugins (`plugins.go`) are discovered under `crs.plugins_dir` by file
+name suffix, directly, one directory down or in that directory's
+`plugins/` folder, and inlined into the assembled SecLang rather than
+included, so the rule set file system needs no layout change; a
+`pluginFS` layers the plugin directories over the rule set so data
+files resolve by bare name and under `plugins/`. JSON body schemas
+(`schemas.go`) compile through `internal/jsonschema` at load; a
+matching request's body is buffered within the request body limit,
+validated, and reset for Coraza. Anomaly detection (`anomaly.go`)
+lives in `waf.Stats`: `End` attributes every transaction to its client
+in a table sharded 64 ways (requests, rule matches, errors, up to 64
+distinct paths); the first observation after the window closes rolls
+it under a single mutex, turns clients at or above `min_requests` into
+four features, scores them against the previous baseline (z-score with
+a per feature floor on the standard deviation) and folds the window's
+mean and variance into the baseline with a weight of 0.3. Flags sit in
+a concurrent map read lock free on the request path; `Request` applies
+the action before the body is read.
 
 The rule set comes from a `ruleSet`: the embedded `coreruleset.FS` or,
 with `crs.dir`, an `os.DirFS` over the operator's directory. The
@@ -1040,7 +1062,8 @@ table and logs. `openapi` compiles the description at load into exact
 and templated path items (templates become anchored regular
 expressions, concrete paths win, longer literal prefixes first) with
 per operation parameters and request bodies, and validates with a
-small JSON Schema evaluator (`schema.go`): local `$ref` resolution with
+small JSON Schema evaluator (`internal/jsonschema`, shared with the
+WAF body schemas): local `$ref` resolution with
 a cycle guard, a nesting limit, a bounded regular expression cache and
 at most twenty reported issues. `graphql` parses queries with a
 tolerant recursive descent parser under a token budget and measures

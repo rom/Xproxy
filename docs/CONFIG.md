@@ -877,6 +877,7 @@ set fails the reload.
 | `response_body_limit` | int | `524288` | Larger response bodies pass uninspected |
 | `response_mime_types` | list | text and JSON/XML types | Bodies with other content types are not inspected |
 | `learning` | object | none | Exclusion learning; see below |
+| `anomaly` | object | none | Behavioural anomaly detection per client; see below |
 
 ### waf.learning
 
@@ -894,6 +895,31 @@ and survive reloads; `POST /v1/waf/reset` clears them.
 | `min_hits` | int | `5` | Matches before a proposal appears; 1 to 1000000 |
 | `max_entries` | int | `10000` | Bound on distinct (rule, variable, route) entries; further ones are counted as dropped; 100 to 1000000 |
 
+### waf.anomaly
+
+The rules judge one request at a time. Anomaly detection judges
+clients: every WAF protected request is attributed to its client
+address, and at the end of each window a client with at least
+`min_requests` becomes a feature vector (request rate, share of
+requests that matched a rule, share that ended in an error or a deny,
+spread over distinct paths). The population's mean and variance per
+feature form a baseline that follows drift across windows; a client
+whose largest positive z-score against the previous baseline reaches
+`threshold` is flagged and its next requests get `action`, until a
+later window scores it normal or it stays away for three windows. A
+window with fewer than eight scored clients updates nothing, so a
+quiet site never flags its only visitor. Flags, the baseline and the
+counters show under `xproxyctl waf anomalies` and `GET /v1/waf`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | |
+| `window` | duration | `5m` | Observation period; 10s to 24h |
+| `min_requests` | int | `30` | Requests a client needs in a window before it is scored; 1 to 1000000 |
+| `threshold` | float | `4` | z-score at which a client is flagged; 1 to 100 |
+| `action` | `log`, `challenge`, `block` | `log` | For requests of a flagged client: log attributes only, serve the browser challenge (a plain 403 without a `challenge` section), or deny with 403 and reason `waf_anomaly` |
+| `max_clients` | int | `65536` | Clients tracked per window; further ones are counted as dropped and not scored; 100 to 10000000 |
+
 ### waf.profiles[]
 
 | Key | Type | Default | Description |
@@ -901,13 +927,38 @@ and survive reloads; `POST /v1/waf/reset` clears them.
 | `name` | name | required, unique | |
 | `crs` | object | none | Enable the bundled OWASP Core Rule Set |
 | `crs.dir` | absolute path | embedded copy | Load the Core Rule Set from a directory in the release layout (`crs-setup.conf` or `crs-setup.conf.example`, `rules/*.conf` with their `.data` files); a reload picks up changed files, so rules update without a new binary. The directory is validated at load and a broken file fails the reload |
+| `crs.plugins_dir` | absolute path | none | Directory of CRS plugins: files named `<plugin>-config.conf`, `<plugin>-before.conf` and `<plugin>-after.conf` directly in it, in a subdirectory per plugin, or in that subdirectory's `plugins/` folder (a checked out plugin repository); data files next to them resolve by bare name and under `plugins/`. Config and before files load before the CRS rules, after files after them |
+| `crs.plugins` | list of names | every plugin found | Load only these plugins; a listed plugin that is missing fails the load |
 | `crs.paranoia_level` | int | `1` | 1 to 4 |
 | `crs.inbound_threshold` | int | `5` | Anomaly score that blocks a request |
 | `crs.outbound_threshold` | int | `4` | Anomaly score that blocks a response |
 | `directive_files` | list of paths | `[]` | SecLang files loaded after CRS setup and before CRS rules (exclusions go here) |
 | `directives` | string | `""` | Inline SecLang loaded in the same position, at most 1 MiB |
+| `json_schemas` | list | `[]` | JSON body schemas enforced before the rules; see below |
 
 A profile needs at least one of `crs`, `directive_files` or `directives`.
+
+### waf.profiles[].json_schemas[]
+
+A schema binds a JSON Schema document to request paths. A matching
+request's JSON body is buffered (bounded by `waf.request_body_limit`,
+413 above it), validated and then handed to the rules unchanged. In
+`block` mode a violation is denied with 400, reason `waf`, detail
+`json_schema:<name>:<first problem>` and a JSON problem body listing up
+to twenty issues; in `detect` mode it is logged (`waf_schema`,
+`waf_schema_issue`) and the request continues. The evaluator is the
+one the `openapi` filter uses: types, enums, constants, string
+lengths, patterns and formats, numeric bounds, array and object
+bounds, `properties`, `patternProperties`, `additionalProperties`,
+`allOf`, `anyOf`, `oneOf`, `not` and local `$ref`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required, unique in the profile | |
+| `paths` | list of prefixes | required | Request path prefixes the schema applies to; the first schema whose method and prefix match wins |
+| `methods` | list | `[POST, PUT, PATCH]` | Upper-case methods enforced |
+| `schema_file` | path | required | JSON Schema document, JSON or YAML, at most 8 MiB, read at load and on reload |
+| `required` | bool | `false` | Refuse a matching request without a body (400) or with a non JSON media type (415); otherwise such requests pass to the rules unchecked |
 
 ### routes[].honeypot
 

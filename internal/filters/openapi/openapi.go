@@ -35,6 +35,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/jsonschema"
 )
 
 // Config is the options schema.
@@ -89,7 +90,7 @@ func parse(opts filter.Options) (*Config, *api, error) {
 
 // api is the compiled description.
 type api struct {
-	v        *validator
+	v        *jsonschema.Validator
 	basePath string
 	exact    map[string]*pathItem
 	templ    []*pathItem // templated paths, longest literal prefix first
@@ -132,7 +133,7 @@ func loadSpec(path, basePath string) (*api, error) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
-	spec, ok := jsonify(doc).(map[string]any)
+	spec, ok := jsonschema.Jsonify(doc).(map[string]any)
 	if !ok {
 		return nil, errors.New("not a document")
 	}
@@ -140,7 +141,7 @@ func loadSpec(path, basePath string) (*api, error) {
 	if !strings.HasPrefix(ver, "3.") {
 		return nil, fmt.Errorf("openapi version %q is not 3.x", ver)
 	}
-	a := &api{v: newValidator(spec), exact: map[string]*pathItem{}, basePath: basePath}
+	a := &api{v: jsonschema.New(spec), exact: map[string]*pathItem{}, basePath: basePath}
 	if basePath == "" {
 		if servers, _ := spec["servers"].([]any); len(servers) > 0 {
 			if s, _ := servers[0].(map[string]any); s != nil {
@@ -198,10 +199,10 @@ func loadSpec(path, basePath string) (*api, error) {
 					op.declared[prm.name] = true
 				}
 			}
-			if rb := a.v.resolve(opm["requestBody"]); rb != nil && len(rb.raw) > 0 {
-				req, _ := rb.raw["required"].(bool)
+			if rb := a.v.Resolve(opm["requestBody"]); rb != nil && len(rb.Raw) > 0 {
+				req, _ := rb.Raw["required"].(bool)
 				body := &requestBody{required: req, content: map[string]any{}}
-				if content, _ := rb.raw["content"].(map[string]any); content != nil {
+				if content, _ := rb.Raw["content"].(map[string]any); content != nil {
 					for mt, mtNode := range content {
 						mtm, _ := mtNode.(map[string]any)
 						body.content[strings.ToLower(mt)] = mtm["schema"]
@@ -259,7 +260,7 @@ func compileTemplate(p string) (*regexp.Regexp, []string, error) {
 func (a *api) parameters(list []any) []parameter {
 	out := make([]parameter, 0, len(list))
 	for _, node := range list {
-		m := a.v.resolve(node).raw
+		m := a.v.Resolve(node).Raw
 		name, _ := m["name"].(string)
 		in, _ := m["in"].(string)
 		if name == "" || in == "" {
@@ -352,7 +353,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		v.Headers = map[string]string{"Allow": strings.Join(allowed, ", ")}
 		return v
 	}
-	rep := &report{}
+	rep := &jsonschema.Report{}
 	query := r.URL.Query()
 	for _, p := range op.params {
 		var raw string
@@ -365,7 +366,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 			present = has
 			if has {
 				raw = vals[0]
-				if p.schema != nil && typeAllows(p.schema["type"], "array") && len(vals) > 1 {
+				if p.schema != nil && jsonschema.TypeAllows(p.schema["type"], "array") && len(vals) > 1 {
 					raw = strings.Join(vals, ",")
 				}
 			}
@@ -382,18 +383,18 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		where := p.in + "." + p.name
 		if !present {
 			if p.required {
-				rep.add(where, "is required")
+				rep.Add(where, "is required")
 			}
 			continue
 		}
 		if p.schema != nil {
-			g.api.v.validate(p.schema, coerce(p.schema, raw), where, rep, 0)
+			g.api.v.Validate(p.schema, jsonschema.Coerce(p.schema, raw), where, rep, 0)
 		}
 	}
 	if g.cfg.StrictQuery {
 		for name := range query {
 			if !op.declared[name] {
-				rep.add("query."+name, "is not a parameter of this operation")
+				rep.Add("query."+name, "is not a parameter of this operation")
 			}
 		}
 	}
@@ -402,20 +403,20 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 			return *v
 		}
 	}
-	if len(rep.issues) > 0 {
-		return in.deny(http.StatusBadRequest, "schema", rep.issues)
+	if len(rep.Issues) > 0 {
+		return in.deny(http.StatusBadRequest, "schema", rep.Issues)
 	}
 	return filter.Continue
 }
 
 // checkBody validates the request body; it returns a verdict for
 // problems that are not schema issues (size, media type).
-func (in *instance) checkBody(r *http.Request, body *requestBody, rep *report) *filter.Verdict {
+func (in *instance) checkBody(r *http.Request, body *requestBody, rep *jsonschema.Report) *filter.Verdict {
 	g := in.g
 	hasBody := r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0
 	if !hasBody {
 		if body.required {
-			rep.add("body", "is required")
+			rep.Add("body", "is required")
 		}
 		return nil
 	}
@@ -454,22 +455,16 @@ func (in *instance) checkBody(r *http.Request, body *requestBody, rep *report) *
 	if schema == nil {
 		return nil
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	var value any
-	if err := dec.Decode(&value); err != nil {
-		rep.add("body", "is not valid JSON")
+	value, err := jsonschema.Decode(data)
+	if err != nil {
+		rep.Add("body", "%s", err.Error())
 		return nil
 	}
-	if dec.More() {
-		rep.add("body", "has trailing data")
-		return nil
-	}
-	g.api.v.validate(schema, value, "body", rep, 0)
+	g.api.v.Validate(schema, value, "body", rep, 0)
 	return nil
 }
 
-func (in *instance) deny(status int, detail string, issues []issue) filter.Verdict {
+func (in *instance) deny(status int, detail string, issues []jsonschema.Issue) filter.Verdict {
 	msg := map[string]any{"error": "request does not match the API description", "reason": detail}
 	if len(issues) > 0 {
 		msg["details"] = issues
@@ -487,38 +482,6 @@ func (in *instance) deny(status int, detail string, issues []issue) filter.Verdi
 func (in *instance) Response(*http.Response) filter.Verdict { return filter.Continue }
 
 func (in *instance) End() []any { return nil }
-
-// jsonify converts YAML decoded values to the shapes json produces
-// (string keys, json.Number numbers) so one validator serves both.
-func jsonify(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, val := range x {
-			out[k] = jsonify(val)
-		}
-		return out
-	case map[any]any:
-		out := make(map[string]any, len(x))
-		for k, val := range x {
-			out[fmt.Sprint(k)] = jsonify(val)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, val := range x {
-			out[i] = jsonify(val)
-		}
-		return out
-	case int:
-		return json.Number(fmt.Sprint(x))
-	case int64:
-		return json.Number(fmt.Sprint(x))
-	case float64:
-		return json.Number(fmt.Sprint(x))
-	}
-	return v
-}
 
 func init() {
 	filter.Register(filter.Kind{

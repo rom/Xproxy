@@ -629,14 +629,19 @@ waf:
         - name: default
           crs:
             dir: ""
+            plugins_dir: ""
+            plugins: []
             paranoia_level: 1
             inbound_threshold: 5
             outbound_threshold: 4
           directive_files: []
           directives: ""
+          json_schemas: []
         - name: api-strict
           crs:
             dir: ""
+            plugins_dir: ""
+            plugins: []
             paranoia_level: 2
             inbound_threshold: 5
             outbound_threshold: 4
@@ -645,6 +650,7 @@ waf:
             # Allow JSON bodies only on the API profile.
             SecRule REQUEST_HEADERS:Content-Type "!@rx ^application/json" \
               "id:100100,phase:1,deny,status:415,msg:'API accepts JSON only'"
+          json_schemas: []
     default_mode: block
     default_profile: default
     request_body_limit: 1048576
@@ -658,6 +664,7 @@ waf:
         - application/json
         - application/xml
     learning: null
+    anomaly: null
 cluster:
     node_id: edge-1
     listen: 10.0.0.1:7946

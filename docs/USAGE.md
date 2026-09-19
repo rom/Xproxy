@@ -980,6 +980,104 @@ never a guess. The engine settings that the embedded set carries
 (`coraza.conf-recommended`) are applied to a directory rule set as
 well, so the directory needs nothing besides the CRS files.
 
+#### Core Rule Set plugins
+
+CRS plugins (the official ones such as the WordPress, Nextcloud or
+fake bot exclusion plugins, or your own) load from a directory:
+
+```yaml
+waf:
+  profiles:
+    - name: default
+      crs:
+        paranoia_level: 1
+        plugins_dir: /etc/xproxy/crs-plugins
+        plugins: [wordpress-rule-exclusions, fake-bots]   # default: every plugin found
+```
+
+The directory holds the plugin files themselves
+(`<plugin>-config.conf`, `<plugin>-before.conf`, `<plugin>-after.conf`)
+or one subdirectory per plugin, which is what `git clone` of a plugin
+repository produces (the files sit in its `plugins/` folder). Config
+and before files load after the CRS setup and before the CRS rules,
+after files after the rules, the order the CRS documents; data files a
+plugin references with `@pmFromFile` resolve next to the plugin file
+and under `plugins/`. Plugins compile with the profile, so a broken
+plugin fails the reload and `xproxyctl reload -dry-run` catches it;
+`xproxyctl waf` lists the plugins each profile carries.
+
+#### JSON body schemas
+
+A profile can enforce a JSON Schema on request bodies before the
+rules see them, so an API accepts only the shapes it documents and
+fields that the rules would otherwise have to guess at (a free text
+comment, an encoded blob) are bounded by the schema:
+
+```yaml
+waf:
+  profiles:
+    - name: api
+      crs: {paranoia_level: 2}
+      json_schemas:
+        - name: order
+          paths: [/api/orders]
+          methods: [POST, PUT]
+          schema_file: /etc/xproxy/waf/order-schema.json
+          required: true
+```
+
+In block mode a violating body is refused with 400 and a JSON problem
+body naming the fields; in detect mode it is logged with `waf_schema`
+and `waf_schema_issue` and the request continues, so a schema rolls
+out the same way a rule set does. `xproxyctl waf` counts the
+violations (`schema violations`). For an API with a full OpenAPI
+description the `openapi` filter validates paths, parameters and
+bodies together; the WAF schemas suit an application that has a
+schema for a few sensitive endpoints and the CRS for the rest.
+
+#### Behavioural anomaly detection
+
+The CRS scores requests. Some abuse never scores: a credential
+stuffing run of well formed logins, a scraper walking every product
+page, a scanner probing for files that do not exist. Anomaly detection
+looks at clients over a window instead:
+
+```yaml
+waf:
+  anomaly: {enabled: true, window: 5m, min_requests: 30, threshold: 4, action: challenge}
+```
+
+Every WAF protected request is attributed to its client. At the end of
+each window every client with at least `min_requests` becomes a vector
+of four features: request rate, share of requests that matched a rule,
+share that ended in a deny or an error status, and spread over
+distinct paths. The population's mean and spread per feature form the
+baseline, carried across windows as a weighted average, so it follows
+the site's daily rhythm without being pulled by one burst. A client
+whose largest positive z-score reaches `threshold` is flagged; its
+requests are then logged with `waf_anomaly` and `waf_anomaly_score`,
+challenged, or denied with 403 and reason `waf_anomaly` (which a ban
+trigger can count) until a later window scores it normal or it stays
+away for three windows. A window with fewer than eight scored clients
+changes nothing, so a quiet site never flags its only user.
+
+```
+$ xproxyctl waf anomalies
+FEATURE      MEAN   STDDEV
+rate         4.428  0.225
+match_ratio  0.000  0.000
+error_ratio  0.023  0.146
+path_spread  0.162  0.075
+CLIENT        SCORE  FEATURE      VALUE  MEAN   SINCE                 EXPIRES
+203.0.113.99  11.2   path_spread  1.000  0.162  2026-09-19T07:15:00Z  2026-09-19T07:30:00Z
+```
+
+Start with `action: log`, watch which clients appear and with which
+feature, and move to `challenge` (browsers pass, scripts do not) or
+`block` once the flags match what the access log shows. `rate` is on a
+log scale, so a client is flagged for volume only when it sends
+several times what its peers do.
+
 ### Ban list
 
 ```yaml

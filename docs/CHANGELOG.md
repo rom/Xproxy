@@ -218,6 +218,14 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- WAF: Core Rule Set plugins from a directory (`crs.plugins_dir`,
+  `crs.plugins`), JSON body schemas enforced per profile and path
+  before the rules (`json_schemas`, with block and detect modes and a
+  problem body), and behavioural anomaly detection that scores clients
+  against the population per window and logs, challenges or blocks
+  the outliers (`waf.anomaly`, `xproxyctl waf anomalies`, the
+  `waf_anomaly` reason). The JSON Schema evaluator moved to
+  `internal/jsonschema`, shared with the `openapi` filter.
 - API security filters: `api_key` (keys issued, scoped, rotated with
   grace and revoked by `xproxyctl apikey`, stored hashed, forwarded as
   an id and scopes), `openapi` (requests validated against an OpenAPI 3

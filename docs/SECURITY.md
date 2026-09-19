@@ -157,6 +157,18 @@ to report a vulnerability. The threat analysis behind the controls is in
   instead of the embedded copy, so a CRS security release is applied
   with a reload. The directory is read only at load, validated for
   layout, and a file that fails to compile keeps the running rules.
+  CRS plugins load from a directory the same way and compile with the
+  profile.
+- JSON body schemas refuse request bodies that do not match the shape
+  an endpoint documents before any rule or the application parses
+  them, within the same body limit; block and detect modes apply.
+- Behavioural anomaly detection flags clients whose rate, rule match
+  ratio, error ratio or path spread departs from the population by a
+  configured number of standard deviations, so credential stuffing,
+  scraping and scanning that never trips a rule still gets logged,
+  challenged or blocked. It needs a population (eight scored clients
+  per window) before it flags anyone, flags expire, the tracker is
+  bounded and the action defaults to logging.
 
 ### Ban list
 

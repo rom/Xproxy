@@ -1501,6 +1501,31 @@ type WAF struct {
 	// Learning collects the variables that trigger detection rules and
 	// proposes exclusions (GET /v1/waf, xproxyctl waf proposals).
 	Learning *WAFLearning `yaml:"learning"`
+	// Anomaly detects clients whose behaviour departs from the population
+	// (request rate, rule match ratio, error ratio, path spread) rather
+	// than requests that match a rule.
+	Anomaly *WAFAnomaly `yaml:"anomaly"`
+}
+
+// WAFAnomaly tunes behavioural anomaly detection. Every WAF protected
+// request is attributed to its client; at the end of each window the
+// clients' feature vectors update a population baseline (mean and
+// variance per feature) and a client whose largest z-score reaches the
+// threshold is flagged until it looks normal again.
+type WAFAnomaly struct {
+	Enabled bool `yaml:"enabled"`
+	// Window is the observation period. Default 5m.
+	Window Duration `yaml:"window"`
+	// MinRequests is the number of requests a client needs in a window
+	// before it is scored. Default 30.
+	MinRequests int `yaml:"min_requests"`
+	// Threshold is the z-score at which a client is flagged. Default 4.
+	Threshold float64 `yaml:"threshold"`
+	// Action for requests of a flagged client: log, challenge or block.
+	// Default log.
+	Action string `yaml:"action"`
+	// MaxClients bounds the tracked clients per window. Default 65536.
+	MaxClients int `yaml:"max_clients"`
 }
 
 // WAFLearning tunes exclusion learning. Matches are aggregated per rule,
@@ -1524,6 +1549,25 @@ type WAFProfile struct {
 	DirectiveFiles []string `yaml:"directive_files"`
 	// Directives is inline SecLang loaded in the same position.
 	Directives string `yaml:"directives"`
+	// JSONSchemas enforce a JSON Schema on request bodies under a path
+	// prefix, before the rules run.
+	JSONSchemas []WAFJSONSchema `yaml:"json_schemas"`
+}
+
+// WAFJSONSchema binds a schema file to request paths.
+type WAFJSONSchema struct {
+	Name string `yaml:"name"`
+	// Paths are the request path prefixes the schema applies to.
+	Paths []string `yaml:"paths"`
+	// Methods restricts enforcement to these methods. Default POST, PUT
+	// and PATCH.
+	Methods []string `yaml:"methods"`
+	// SchemaFile is a JSON Schema document (JSON or YAML).
+	SchemaFile string `yaml:"schema_file"`
+	// Required rejects requests under Paths without a JSON body. Default
+	// false: a request without a body or with another media type passes
+	// to the rules.
+	Required bool `yaml:"required"`
 }
 
 // CRS tunes the Core Rule Set.
@@ -1533,6 +1577,14 @@ type CRS struct {
 	// files) instead of the copy embedded in the binary, so that rules can
 	// be updated with a reload. Default: embedded.
 	Dir string `yaml:"dir"`
+	// PluginsDir holds CRS plugins, each a directory or a set of files
+	// named <plugin>-config.conf, <plugin>-before.conf and
+	// <plugin>-after.conf. Config and before files load before the CRS
+	// rules, after files after them.
+	PluginsDir string `yaml:"plugins_dir"`
+	// Plugins names the plugins under PluginsDir to load. Default: every
+	// plugin found.
+	Plugins []string `yaml:"plugins"`
 	// ParanoiaLevel 1 to 4. Default 1.
 	ParanoiaLevel int `yaml:"paranoia_level"`
 	// InboundThreshold is the anomaly score at which a request is blocked.

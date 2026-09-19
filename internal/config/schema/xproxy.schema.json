@@ -347,6 +347,17 @@
         "paranoia_level": {
           "description": "ParanoiaLevel 1 to 4. Default 1.",
           "type": "integer"
+        },
+        "plugins": {
+          "description": "Plugins names the plugins under PluginsDir to load. Default: every plugin found.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "plugins_dir": {
+          "description": "PluginsDir holds CRS plugins, each a directory or a set of files named \u003cplugin\u003e-config.conf, \u003cplugin\u003e-before.conf and \u003cplugin\u003e-after.conf. Config and before files load before the CRS rules, after files after them.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -3157,6 +3168,14 @@
       "description": "WAF configures the web application firewall engine.",
       "type": "object",
       "properties": {
+        "anomaly": {
+          "description": "Anomaly detects clients whose behaviour departs from the population (request rate, rule match ratio, error ratio, path spread) rather than requests that match a rule.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/WAFAnomaly"
+            }
+          ]
+        },
         "default_mode": {
           "description": "DefaultMode applies to routes without a waf block: off, detect or block. Default block when the section is present.",
           "type": "string"
@@ -3205,6 +3224,69 @@
       },
       "additionalProperties": false
     },
+    "WAFAnomaly": {
+      "description": "WAFAnomaly tunes behavioural anomaly detection. Every WAF protected request is attributed to its client; at the end of each window the clients' feature vectors update a population baseline (mean and variance per feature) and a client whose largest z-score reaches the threshold is flagged until it looks normal again.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action for requests of a flagged client: log, challenge or block. Default log.",
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_clients": {
+          "description": "MaxClients bounds the tracked clients per window. Default 65536.",
+          "type": "integer"
+        },
+        "min_requests": {
+          "description": "MinRequests is the number of requests a client needs in a window before it is scored. Default 30.",
+          "type": "integer"
+        },
+        "threshold": {
+          "description": "Threshold is the z-score at which a client is flagged. Default 4.",
+          "type": "number"
+        },
+        "window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WAFJSONSchema": {
+      "description": "WAFJSONSchema binds a schema file to request paths.",
+      "type": "object",
+      "properties": {
+        "required": {
+          "description": "Required rejects requests under Paths without a JSON body. Default false: a request without a body or with another media type passes to the rules.",
+          "type": "boolean"
+        },
+        "methods": {
+          "description": "Methods restricts enforcement to these methods. Default POST, PUT and PATCH.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "paths": {
+          "description": "Paths are the request path prefixes the schema applies to.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schema_file": {
+          "description": "SchemaFile is a JSON Schema document (JSON or YAML).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "WAFLearning": {
       "description": "WAFLearning tunes exclusion learning. Matches are aggregated per rule, target variable and route across block and detect mode alike; a triple seen min_hits times becomes a proposal.",
       "type": "object",
@@ -3245,6 +3327,13 @@
         "directives": {
           "description": "Directives is inline SecLang loaded in the same position.",
           "type": "string"
+        },
+        "json_schemas": {
+          "description": "JSONSchemas enforce a JSON Schema on request bodies under a path prefix, before the rules run.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WAFJSONSchema"
+          }
         },
         "name": {
           "type": "string"

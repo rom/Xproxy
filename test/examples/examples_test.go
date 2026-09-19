@@ -231,6 +231,50 @@ func TestWAFCustomRules(t *testing.T) {
 	}
 }
 
+// TestWAFPluginAndSchema compiles the example plugin directory and the
+// order schema into a profile.
+func TestWAFPluginAndSchema(t *testing.T) {
+	cfg := &config.WAF{
+		Profiles: []config.WAFProfile{{Name: "default",
+			CRS: &config.CRS{ParanoiaLevel: 1, InboundThreshold: 5, OutboundThreshold: 4, PluginsDir: filepath.Join(root(t), "waf", "plugins")},
+			JSONSchemas: []config.WAFJSONSchema{{Name: "order", Paths: []string{"/api/orders"}, Methods: []string{"POST", "PUT"},
+				SchemaFile: filepath.Join(root(t), "waf", "order-schema.json"), Required: true}}}},
+		DefaultMode: "block", DefaultProfile: "default", RequestBodyLimit: 65536, RequestBodyLimitAction: "reject", ResponseBodyLimit: 65536,
+	}
+	e, err := waf.New(cfg, waf.Need{"default": {waf.ModeBlock: true}}, nil, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps := e.Profiles(); len(ps) != 1 || len(ps[0].Plugins) != 1 || ps[0].Plugins[0] != "deny-agents" || len(ps[0].Schemas) != 1 {
+		t.Fatalf("profiles = %+v", ps)
+	}
+	r := httptest.NewRequest("GET", "http://www.example.com/", nil)
+	r.Header.Set("User-Agent", "Mozilla/5.0 zgrab/0.x")
+	if v := wafRequest(t, e, r); !v.Deny || v.Status != 403 {
+		t.Fatalf("listed agent: %+v", v)
+	}
+	r = httptest.NewRequest("GET", "http://www.example.com/", nil)
+	r.Header.Set("User-Agent", "Mozilla/5.0")
+	if v := wafRequest(t, e, r); v.Deny {
+		t.Fatalf("plain agent denied: %+v", v)
+	}
+	order := func(body string) *http.Request {
+		r := httptest.NewRequest("POST", "http://api.example.com/api/orders", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("User-Agent", "Mozilla/5.0")
+		return r
+	}
+	if v := wafRequest(t, e, order(`{"sku":"ABC-1234","quantity":2,"address":{"street":"Main 1","postcode":"11122","country":"SE"}}`)); v.Deny {
+		t.Fatalf("valid order denied: %+v", v)
+	}
+	if v := wafRequest(t, e, order(`{"sku":"abc","quantity":500,"address":{"street":"Main 1","postcode":"11122","country":"XX"}}`)); !v.Deny || v.Status != 400 || !strings.HasPrefix(v.Detail, "json_schema:order:") {
+		t.Fatalf("invalid order: %+v", v)
+	}
+	if v := wafRequest(t, e, httptest.NewRequest("POST", "http://api.example.com/api/orders", nil)); !v.Deny || v.Status != 400 {
+		t.Fatalf("missing body: %+v", v)
+	}
+}
+
 func TestDNSBlockList(t *testing.T) {
 	bl, err := dns.NewBlockList(nil)
 	if err != nil {

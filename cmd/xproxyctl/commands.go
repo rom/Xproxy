@@ -23,7 +23,7 @@ var commandTable = []command{
 	{name: "stats", summary: "Counters only"},
 	{name: "upstreams", summary: "Endpoints with health, ejection, active requests and error counts"},
 	{name: "quotas", args: "[-top N]", summary: "Usage per tenant, route, rate limit policy and upstream", flags: []string{"-top"}},
-	{name: "waf", args: "[rules|proposals|exclusions|reset] [-top N]", summary: "WAF profiles, rule statistics, learned exclusions", words: []string{"rules", "proposals", "exclusions", "reset"}, flags: []string{"-top"}},
+	{name: "waf", args: "[rules|proposals|anomalies|exclusions|reset] [-top N]", summary: "WAF profiles, rule statistics, learned exclusions, flagged clients", words: []string{"rules", "proposals", "anomalies", "exclusions", "reset"}, flags: []string{"-top"}},
 	{name: "sandbox", summary: "In-process hardening state and the file rules in force"},
 	{name: "config", summary: "Active configuration as YAML with defaults filled in"},
 	{name: "validate", summary: "Validate the configuration file locally"},

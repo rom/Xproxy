@@ -42,6 +42,11 @@ type Stats struct {
 	shards   [learnShards]learnShard
 	entries  atomic.Int64
 	dropped  bound.Notice
+
+	// schemaViolations counts JSON body schema violations (blocked or
+	// detected); anomaly is the behavioural detector.
+	schemaViolations atomic.Uint64
+	anomaly          anomaly
 }
 
 // maxRules bounds the rule table; the CRS has a few hundred rules and
@@ -62,6 +67,7 @@ func NewStats() *Stats {
 	for i := range s.shards {
 		s.shards[i].entries = map[learnKey]*learnEntry{}
 	}
+	s.anomaly.init(func() time.Time { return s.now() })
 	return s
 }
 
@@ -134,8 +140,10 @@ type learnEntry struct {
 // maxClientsPerEntry bounds the distinct client set kept per entry.
 const maxClientsPerEntry = 64
 
-// Configure applies the learning settings of a configuration generation.
-func (s *Stats) Configure(l *config.WAFLearning) {
+// Configure applies the learning and anomaly settings of a configuration
+// generation.
+func (s *Stats) Configure(l *config.WAFLearning, a *config.WAFAnomaly) {
+	s.anomaly.configure(a)
 	if l == nil || !l.Enabled {
 		s.learning.Store(&learnConfig{})
 		return
@@ -168,6 +176,8 @@ func (s *Stats) Reset() {
 		sh.mu.Unlock()
 	}
 	s.entries.Store(0)
+	s.schemaViolations.Store(0)
+	s.anomaly.reset()
 	s.started.Store(s.now().UnixNano())
 }
 
@@ -182,11 +192,26 @@ func (s *Stats) record(in *instance) {
 	if detected {
 		s.detected.Add(1)
 	}
+	if in.schema != nil {
+		s.schemaViolations.Add(1)
+	}
+	if in.flag != nil {
+		s.anomaly.acted.Add(1)
+	}
+	now := s.now()
 	rules := in.tx.MatchedRules()
+	matched := false
+	for _, m := range rules {
+		if relevant(m) {
+			matched = true
+			break
+		}
+	}
+	errored := blocked || in.schema != nil || in.status >= 400
+	s.anomaly.observe(in.info.ClientIP.String(), in.info.Path, matched || in.schema != nil, errored, now)
 	if len(rules) == 0 {
 		return
 	}
-	now := s.now()
 	cfg := s.config()
 	for _, m := range rules {
 		if !relevant(m) {
@@ -320,6 +345,10 @@ type Report struct {
 	TotalRules   int             `json:"total_rules"`
 	RulesDropped uint64          `json:"rules_dropped,omitempty"`
 	Learning     *LearningReport `json:"learning"`
+	// SchemaViolations counts request bodies that failed a profile's
+	// json_schemas (denied in block mode, logged in detect mode).
+	SchemaViolations uint64         `json:"schema_violations"`
+	Anomaly          *AnomalyReport `json:"anomaly"`
 }
 
 // LearningReport describes the learning table and its proposals.
@@ -354,7 +383,7 @@ type Proposal struct {
 // route names to path prefixes for scoping proposals.
 func (s *Stats) Report(top int, paths map[string]string) Report {
 	rep := Report{Since: time.Unix(0, s.started.Load()), Requests: s.requests.Load(), Blocked: s.blocked.Load(), Detected: s.detected.Load(),
-		Rules: []RuleStat{}, RulesDropped: s.rulesDropped.Total()}
+		Rules: []RuleStat{}, RulesDropped: s.rulesDropped.Total(), SchemaViolations: s.schemaViolations.Load(), Anomaly: s.anomaly.report()}
 	s.rules.Range(func(_, v any) bool {
 		rc := v.(*ruleCounter)
 		st := RuleStat{ID: rc.id, Message: rc.message, Severity: rc.severity, Tags: append([]string(nil), rc.tags...),

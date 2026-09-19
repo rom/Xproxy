@@ -1034,9 +1034,9 @@ func cmdWAF(c *mgmt.Client, args []string, asJSON bool, out, errOut io.Writer) i
 		}
 		_, _ = fmt.Fprintln(out, "waf statistics reset")
 		return 0
-	case "", "rules", "proposals":
+	case "", "rules", "proposals", "anomalies":
 	default:
-		_, _ = fmt.Fprintln(errOut, "usage: xproxyctl waf [-top N] [rules|proposals|exclusions|reset]")
+		_, _ = fmt.Fprintln(errOut, "usage: xproxyctl waf [-top N] [rules|proposals|anomalies|exclusions|reset]")
 		return 2
 	}
 	b, err := c.Raw(fmt.Sprintf("/v1/waf?top=%d", *top))
@@ -1065,10 +1065,18 @@ func cmdWAF(c *mgmt.Client, args []string, asJSON bool, out, errOut io.Writer) i
 			_, _ = fmt.Fprintf(out, "learning %s  min_hits %d  entries %d/%d  dropped %d  proposals %d\n",
 				onOff(l.Enabled), l.MinHits, l.Entries, l.MaxEntries, l.Dropped, len(l.Proposals))
 		}
+		if rep.SchemaViolations > 0 {
+			_, _ = fmt.Fprintf(out, "schema violations %d\n", rep.SchemaViolations)
+		}
+		if a := rep.Anomaly; a != nil && a.Enabled {
+			_, _ = fmt.Fprintf(out, "anomaly %s  window %s  action %s  clients %d  windows %d  flagged %d (total %d)  acted %d\n",
+				onOff(a.Enabled), a.Window, a.Action, a.Clients, a.Windows, a.Flagged, a.FlaggedTotal, a.Acted)
+		}
 		if len(rep.Profiles) > 0 {
-			_, _ = fmt.Fprintln(tw, "PROFILE	MODES	CRS	VERSION	RULE-FILES")
+			_, _ = fmt.Fprintln(tw, "PROFILE	MODES	CRS	VERSION	RULE-FILES	PLUGINS	SCHEMAS")
 			for _, p := range rep.Profiles {
-				_, _ = fmt.Fprintf(tw, "%s	%s	%s	%s	%d\n", p.Name, strings.Join(p.Modes, ","), dash(p.CRS), dash(p.Version), p.RuleFiles)
+				_, _ = fmt.Fprintf(tw, "%s	%s	%s	%s	%d	%s	%s\n", p.Name, strings.Join(p.Modes, ","), dash(p.CRS), dash(p.Version), p.RuleFiles,
+					dash(strings.Join(p.Plugins, ",")), dash(strings.Join(p.Schemas, ",")))
 			}
 			_ = tw.Flush()
 		}
@@ -1102,6 +1110,31 @@ func cmdWAF(c *mgmt.Client, args []string, asJSON bool, out, errOut io.Writer) i
 		}
 		_ = tw.Flush()
 		_, _ = fmt.Fprintln(out, "review the directives with: xproxyctl waf exclusions")
+	}
+	if sub == "anomalies" || (sub == "" && rep.Anomaly != nil && len(rep.Anomaly.Top) > 0) {
+		a := rep.Anomaly
+		if a == nil || !a.Enabled {
+			_, _ = fmt.Fprintln(out, "anomaly detection is not enabled")
+			return 0
+		}
+		if len(a.Baseline) > 0 {
+			_, _ = fmt.Fprintln(tw, "FEATURE	MEAN	STDDEV")
+			for _, b := range a.Baseline {
+				_, _ = fmt.Fprintf(tw, "%s	%.3f	%.3f\n", b.Feature, b.Mean, b.StdDev)
+			}
+			_ = tw.Flush()
+		} else {
+			_, _ = fmt.Fprintf(out, "no baseline yet (%d windows closed, %d clients scored; a window needs at least %d clients with %d requests)\n", a.Windows, a.Scored, 8, a.MinRequests)
+		}
+		if len(a.Top) == 0 {
+			_, _ = fmt.Fprintln(out, "no flagged clients")
+			return 0
+		}
+		_, _ = fmt.Fprintln(tw, "CLIENT	SCORE	FEATURE	VALUE	MEAN	SINCE	EXPIRES")
+		for _, c := range a.Top {
+			_, _ = fmt.Fprintf(tw, "%s	%.1f	%s	%.3f	%.3f	%s	%s\n", c.Client, c.Score, c.Feature, c.Value, c.Mean, c.Since.Local().Format(time.RFC3339), c.Expires.Local().Format(time.RFC3339))
+		}
+		_ = tw.Flush()
 	}
 	return 0
 }

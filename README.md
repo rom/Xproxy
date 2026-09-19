@@ -141,8 +141,8 @@ an identifier from the access log to the upstream.
   journald or syslog, with per stream redaction of personal data and
   a request identifier end to end
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
-  status, upstreams, quotas per tenant and route, WAF rule statistics
-  and learned exclusions, reload with dry run,
+  status, upstreams, quotas per tenant and route, WAF rule statistics,
+  learned exclusions and flagged clients, reload with dry run,
   configuration diff, history and rollback, certificates, logs, bans,
   cache, honeypots, DNS, ingress, cluster, metrics and a full screen
   TUI; a web GUI with

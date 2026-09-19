@@ -2138,6 +2138,25 @@ func (v *validator) waf(w *WAF, profiles map[string]bool) {
 			v.errf("waf.learning.max_entries: must be between 100 and 1000000")
 		}
 	}
+	if a := w.Anomaly; a != nil {
+		if a.Window.D() < 10*time.Second || a.Window.D() > 24*time.Hour {
+			v.errf("waf.anomaly.window: must be between 10s and 24h")
+		}
+		if a.MinRequests < 1 || a.MinRequests > 1_000_000 {
+			v.errf("waf.anomaly.min_requests: must be between 1 and 1000000")
+		}
+		if a.Threshold < 1 || a.Threshold > 100 {
+			v.errf("waf.anomaly.threshold: must be between 1 and 100")
+		}
+		switch a.Action {
+		case "log", "challenge", "block":
+		default:
+			v.errf("waf.anomaly.action: must be log, challenge or block")
+		}
+		if a.MaxClients < 100 || a.MaxClients > 10_000_000 {
+			v.errf("waf.anomaly.max_clients: must be between 100 and 10000000")
+		}
+	}
 	for i, p := range w.Profiles {
 		pp := fmt.Sprintf("waf.profiles[%d]", i)
 		if !nameRE.MatchString(p.Name) {
@@ -2159,12 +2178,51 @@ func (v *validator) waf(w *WAF, profiles map[string]bool) {
 			if crs.Dir != "" {
 				v.dir(pp+".crs.dir", crs.Dir)
 			}
+			if crs.PluginsDir != "" {
+				v.dir(pp+".crs.plugins_dir", crs.PluginsDir)
+			} else if len(crs.Plugins) > 0 {
+				v.errf("%s.crs.plugins: requires plugins_dir", pp)
+			}
+			for j, name := range crs.Plugins {
+				if !nameRE.MatchString(name) {
+					v.errf("%s.crs.plugins[%d]: %q is not a valid plugin name", pp, j, name)
+				}
+			}
 		}
 		for j, f := range p.DirectiveFiles {
 			v.file(fmt.Sprintf("%s.directive_files[%d]", pp, j), f)
 		}
 		if len(p.Directives) > 1<<20 {
 			v.errf("%s.directives: exceeds 1 MiB", pp)
+		}
+		schemas := map[string]bool{}
+		for j := range p.JSONSchemas {
+			js := &p.JSONSchemas[j]
+			sp := fmt.Sprintf("%s.json_schemas[%d]", pp, j)
+			if !nameRE.MatchString(js.Name) {
+				v.errf("%s.name: %q is not a valid name", sp, js.Name)
+			} else if schemas[js.Name] {
+				v.errf("%s.name: duplicate %q", sp, js.Name)
+			}
+			schemas[js.Name] = true
+			if len(js.Paths) == 0 {
+				v.errf("%s.paths: at least one path prefix is required", sp)
+			}
+			for k, path := range js.Paths {
+				if !strings.HasPrefix(path, "/") {
+					v.errf("%s.paths[%d]: must start with /", sp, k)
+				}
+			}
+			for k, m := range js.Methods {
+				if m == "" || strings.ToUpper(m) != m {
+					v.errf("%s.methods[%d]: %q must be an upper-case method", sp, k, m)
+				}
+			}
+			if js.SchemaFile == "" {
+				v.errf("%s.schema_file: required", sp)
+			} else {
+				v.file(sp+".schema_file", js.SchemaFile)
+			}
 		}
 	}
 	if w.DefaultMode != "off" && !profiles[w.DefaultProfile] {

@@ -219,7 +219,7 @@ func TestLearningTableBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.Configure(&config.WAFLearning{Enabled: true, MinHits: 1, MaxEntries: 2})
+	st.Configure(&config.WAFLearning{Enabled: true, MinHits: 1, MaxEntries: 2}, nil)
 	for _, q := range []string{"a", "b", "c", "d"} {
 		r := httptest.NewRequest("GET", "http://example.com/?"+q+"=<script>alert(1)</script>", nil)
 		runInfo(t, e, ModeDetect, r, info())
