@@ -893,9 +893,9 @@ func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 	case r.Key == "identity":
 	case strings.HasPrefix(r.Key, "identity:") && len(r.Key) > len("identity:"):
 		switch r.Key[len("identity:"):] {
-		case "jwt", "oidc", "api_key", "basic":
+		case "jwt", "oidc", "api_key", "basic", "ldap":
 		default:
-			v.errf("%s.key: identity kind must be jwt, oidc, api_key or basic", p)
+			v.errf("%s.key: identity kind must be jwt, oidc, api_key, basic or ldap", p)
 		}
 	default:
 		v.errf("%s.key: must be client_ip, client_net, route, country, endpoint, ja4, device, identity, identity:<kind>, header:<name>, cookie:<name> or jwt:<claim>", p)

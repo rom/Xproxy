@@ -613,7 +613,7 @@ Keys:
 | `cookie:<name>` | value of the cookie (256 bytes), a session or device identifier | client address |
 | `jwt:<claim>` | a string, number or boolean claim of the bearer token in `Authorization`, read without verification (the value only names a bucket; the `jwt` route setting still rejects a forged token) | client address |
 | `identity` | the identity a preceding auth filter verified this request against, preferring `oidc`, `jwt`, `api_key` then `basic`; unlike `jwt:<claim>` it cannot be spoofed, because the filter proved it. Evaluated after the filter chain, so the limiter sees the authenticated principal | client address (unauthenticated) |
-| `identity:<kind>` | the verified identity of one kind: `jwt` (the `sub` claim), `oidc` (the session subject), `api_key` (the key id) or `basic` (the user) | client address |
+| `identity:<kind>` | the verified identity of one kind: `jwt` (the `sub` claim), `oidc` (the session subject), `api_key` (the key id), `basic` (the user) or `ldap` (the user) | client address |
 
 The fallback keeps a limit from being avoided by omitting the
 identifier; rotating it still buys fresh buckets, so pair an identifier
@@ -1571,7 +1571,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -1603,6 +1603,42 @@ digest so the hash cost is paid once per client session.
 
 Denies answer 401 with `WWW-Authenticate` and reason `<filter name>`;
 the user name is added to the access log line as `auth_user`.
+
+### Kind `ldap_auth`
+
+HTTP Basic authentication against an LDAP or Active Directory server. Two
+modes: a **direct bind** substitutes the username into `bind_dn_template`
+and binds with the password; a **search then bind** binds an optional
+service account (`bind_dn`), searches `base_dn` with `user_filter` for the
+user's entry, then binds as that entry, optionally requiring group
+membership. The username is escaped (RFC 4514 for a DN, RFC 4515 for a
+filter) so it cannot alter the query. `ldaps://` and `start_tls` verify the
+server certificate against the system roots or `ca_file`. Verified
+credentials are cached by digest for `cache_ttl`; a directory or network
+error is never cached and denies the request.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `url` | URL | required | `ldap://host:port` or `ldaps://host:port` |
+| `start_tls` | bool | `false` | Upgrade an `ldap://` connection to TLS before binding |
+| `ca_file` | path | system roots | PEM roots for the server certificate |
+| `insecure_skip_verify` | bool | `false` | Skip certificate verification (test only; exclusive with `ca_file`) |
+| `bind_dn_template` | string | | Direct bind: `%s` is replaced by the escaped username, e.g. `uid=%s,ou=people,dc=example,dc=com`; exclusive with the search options |
+| `bind_dn` | DN | | Search bind: service account DN to bind before searching (anonymous search when empty) |
+| `bind_password_file` | path | required with `bind_dn` | Service account password; trailing newline trimmed |
+| `base_dn` | DN | required for search | Search base |
+| `user_filter` | filter | required for search | RFC 4515 filter with `%s` for the escaped username, e.g. `(sAMAccountName=%s)`; supports `&`, `|`, `!`, equality and presence |
+| `require_group` | DN | none | Require this DN among the user's `group_attr` values (search mode only) |
+| `group_attr` | attribute | `memberOf` | Attribute read from the user entry for `require_group` |
+| `realm` | string | `restricted` | `WWW-Authenticate` realm |
+| `cache_ttl` | duration | `5m` | Credential cache; `0` disables |
+| `forward_user_header` | header | none | Set to the user name on the upstream request |
+| `strip` | bool | `true` | Remove `Authorization` before forwarding |
+| `timeout` | duration | `5s` | Bound on the dial and each LDAP request; 1s to 1m |
+
+Denies answer 401 with `WWW-Authenticate` and reason `<filter name>`; the
+user name is added to the access log line as `auth_user` and set as the
+`ldap` identity for identity-keyed rate limits.
 
 ### Kind `oidc`
 

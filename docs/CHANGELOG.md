@@ -222,6 +222,15 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- LDAP and Active Directory authentication (`ldap_auth` filter): HTTP Basic
+  credentials are verified against an LDAP server, by a direct bind
+  (`bind_dn_template`) or a service-account search then bind (`bind_dn`,
+  `base_dn`, `user_filter`), with an optional group requirement
+  (`require_group`). Usernames are escaped (RFC 4514/4515) against
+  injection; `ldaps://`, `start_tls` and `ca_file` secure the transport;
+  verified credentials are cached by digest. The user becomes the `ldap`
+  identity for identity-keyed rate limits. Built on an in-house minimal
+  LDAP client (`internal/ldap`), no new dependency.
 - HTTP registry service discovery (`upstreams[].discovery.type: http`):
   poll a registry URL on the interval and feed its endpoints into the pool.
   `format: list` reads a JSON array of `{address｜host,port, weight?,

@@ -2406,7 +2406,7 @@ T}
 T{
 \fBidentity:\:<kind>\fR
 T}	T{
-the verified identity of one kind: \fBjwt\fR (the \fBsub\fR claim),\: \fBoidc\fR (the session subject),\: \fBapi_\:key\fR (the key id) or \fBbasic\fR (the user)
+the verified identity of one kind: \fBjwt\fR (the \fBsub\fR claim),\: \fBoidc\fR (the session subject),\: \fBapi_\:key\fR (the key id),\: \fBbasic\fR (the user) or \fBldap\fR (the user)
 T}	T{
 client address
 T}
@@ -5938,7 +5938,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -6078,6 +6078,170 @@ T}
 .TE
 .PP
 Denies answer 401 with \fBWWW\-Authenticate\fR and reason \fB<filter name>\fR; the user name is added to the access log line as \fBauth_user\fR.
+.SS "Kind \fBldap_auth\fR"
+.PP
+HTTP Basic authentication against an LDAP or Active Directory server. Two modes: a \fBdirect bind\fR substitutes the username into \fBbind_dn_template\fR and binds with the password; a \fBsearch then bind\fR binds an optional service account (\fBbind_dn\fR), searches \fBbase_dn\fR with \fBuser_filter\fR for the user\(aqs entry, then binds as that entry, optionally requiring group membership. The username is escaped (RFC 4514 for a DN, RFC 4515 for a filter) so it cannot alter the query. \fBldaps://\fR and \fBstart_tls\fR verify the server certificate against the system roots or \fBca_file\fR. Verified credentials are cached by digest for \fBcache_ttl\fR; a directory or network error is never cached and denies the request.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.0i) lbw(1.1i) lbx
+lw(1.0i) lw(1.0i) lw(1.1i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBurl\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+\fBldap:\:/\:/\:host:\:port\fR or \fBldaps:\:/\:/\:host:\:port\fR
+T}
+T{
+\fBstart_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Upgrade an \fBldap:\:/\:/\fR connection to TLS before binding
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system roots
+T}	T{
+PEM roots for the server certificate
+T}
+T{
+\fBinsecure_\:skip_\:verify\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Skip certificate verification (test only;\: exclusive with \fBca_\:file\fR)
+T}
+T{
+\fBbind_\:dn_\:template\fR
+T}	T{
+string
+T}	T{
+
+T}	T{
+Direct bind: \fB%s\fR is replaced by the escaped username,\: e.g. \fBuid=\:%s,\:ou=\:people,\:dc=\:example,\:dc=\:com\fR;\: exclusive with the search options
+T}
+T{
+\fBbind_\:dn\fR
+T}	T{
+DN
+T}	T{
+
+T}	T{
+Search bind: service account DN to bind before searching (anonymous search when empty)
+T}
+T{
+\fBbind_\:password_\:file\fR
+T}	T{
+path
+T}	T{
+required with \fBbind_\:dn\fR
+T}	T{
+Service account password;\: trailing newline trimmed
+T}
+T{
+\fBbase_\:dn\fR
+T}	T{
+DN
+T}	T{
+required for search
+T}	T{
+Search base
+T}
+T{
+\fBuser_\:filter\fR
+T}	T{
+filter
+T}	T{
+required for search
+T}	T{
+RFC 4515 filter with \fB%s\fR for the escaped username,\: e.g. \fB(sAMAccountName=\:%s)\fR;\: supports \fB&\fR,\: \fB|\fR,\: \fB!\fR,\: equality and presence
+T}
+T{
+\fBrequire_\:group\fR
+T}	T{
+DN
+T}	T{
+none
+T}	T{
+Require this DN among the user\(aqs \fBgroup_\:attr\fR values (search mode only)
+T}
+T{
+\fBgroup_\:attr\fR
+T}	T{
+attribute
+T}	T{
+\fBmemberOf\fR
+T}	T{
+Attribute read from the user entry for \fBrequire_\:group\fR
+T}
+T{
+\fBrealm\fR
+T}	T{
+string
+T}	T{
+\fBrestricted\fR
+T}	T{
+\fBWWW\-\:Authenticate\fR realm
+T}
+T{
+\fBcache_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+Credential cache;\: \fB0\fR disables
+T}
+T{
+\fBforward_\:user_\:header\fR
+T}	T{
+header
+T}	T{
+none
+T}	T{
+Set to the user name on the upstream request
+T}
+T{
+\fBstrip\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Remove \fBAuthorization\fR before forwarding
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Bound on the dial and each LDAP request;\: 1s to 1m
+T}
+.TE
+.PP
+Denies answer 401 with \fBWWW\-Authenticate\fR and reason \fB<filter name>\fR; the user name is added to the access log line as \fBauth_user\fR and set as the \fBldap\fR identity for identity\-keyed rate limits.
 .SS "Kind \fBoidc\fR"
 .PP
 Logs browsers in with OpenID Connect (authorization code flow with PKCE and a nonce) and keeps the result in an encrypted, HttpOnly, SameSite Lax session cookie. A request without a session is redirected to the provider; the callback exchanges the code at the token endpoint, verifies the ID token against the provider\(aqs JWKS (issuer, audience, expiry, signature, nonce), checks \fBrequire_claims\fR, sets the cookie and redirects to the page first asked for. Requests with a session carry the listed claims to the upstream as headers (client supplied values of those headers are always removed) and the cookie is stripped upstream. Provider metadata comes from \fBissuer/.well\-known/openid\-configuration\fR, fetched at load and retried on demand; while it is unavailable logins answer 503. Login and logout redirects are not security events; failed callbacks are, with reason \fBoidc\fR and a detail (\fBstate_mismatch\fR, \fBnonce\fR, \fBid_token\fR, \fBexchange\fR, \fBclaim:<name>\fR), and count towards ban triggers.

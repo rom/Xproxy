@@ -1288,7 +1288,7 @@ func (s *Server) rateKey(rl *config.RateLimit, r *http.Request, st *reqState) st
 		}
 		return "c:" + st.country
 	case rl.Key == "identity":
-		if v := st.identity.Any("oidc", "jwt", "api_key", "basic"); v != "" {
+		if v := st.identity.Any("oidc", "jwt", "api_key", "basic", "ldap"); v != "" {
 			return "id:" + trim(v, 256)
 		}
 		return ip
