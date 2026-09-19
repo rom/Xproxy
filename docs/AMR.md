@@ -109,6 +109,8 @@ record.
 | `golang.org/x/*` | BSD | Extended standard library (`net`, `crypto`, `sys`, `time`); `x/crypto/ocsp` and `x/crypto/cryptobyte` are imported directly since 1.3 for OCSP stapling and SCT verification, `x/sys/unix` since 1.3 for Landlock, seccomp, capabilities and the macOS peer credentials (AMR-044, AMR-045) | as needed |
 | `github.com/tetratelabs/wazero` | Apache 2.0 | WebAssembly runtime for the `wasm` filter kind (AMR-013, AMR-042); pure Go, no cgo | 1.2 |
 | `golang.org/x/term` | BSD | Raw terminal mode for the TUI (AMR-027); replaces the bubbletea plan | phase 2 |
+| `github.com/andybalholm/brotli` | MIT | Brotli encoder for response compression; pure Go port of the reference encoder | 1.3 |
+| `github.com/klauspost/compress` | Apache 2.0 / BSD | zstd encoder for response compression (already a transitive dependency of quic-go) | 1.3 |
 
 Coraza brings a transitive set that is larger than the rest of the binary
 combined: `libinjection-go`, `aho-corasick`, `binaryregexp`, `gjson`,

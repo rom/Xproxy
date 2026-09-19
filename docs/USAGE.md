@@ -1297,7 +1297,7 @@ shows `canary: true` on responses the canary served.
 ### Response compression
 
 ```yaml
-compression: {level: 5, min_bytes: 1024}
+compression: {level: 5, min_bytes: 1024, encodings: [br, zstd, gzip]}
 routes:
   - name: api
     hosts: [api.example.com]
@@ -1316,6 +1316,15 @@ alone, and `Vary: Accept-Encoding` is set on everything that could be
 compressed so shared caches stay correct. The access log shows
 `encoding: gzip` on compressed answers and `xproxyctl status` counts
 them.
+
+Three encodings are offered: Brotli (`br`), zstd and gzip. The client's
+`Accept-Encoding` decides: the acceptable encoding with the highest
+quality wins and ties go to the order of `encodings`, so the default
+prefers Brotli for browsers, zstd for clients that ask for it and gzip
+otherwise. Restrict `encodings` to `[gzip]` for a fleet of old clients
+or to save CPU; `brotli_level` and `zstd_level` trade ratio for time.
+The access log's `encoding` field and `xproxy_compressed_total` show
+what was sent.
 
 ### Static files and single page applications
 

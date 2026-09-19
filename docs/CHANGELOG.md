@@ -186,6 +186,9 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   where executable memory is refused (`MemoryDenyWriteExecute`, the
   macOS hardened runtime).
 
+- Brotli and zstd response compression next to gzip: `compression.encodings`
+  sets the offer and preference, `brotli_level` and `zstd_level` the
+  cost; negotiation follows the client's quality values.
 - Regular expression path rewrites (`routes[].rewrite_regex`) with
   numbered and named groups; templated header values, redirect
   targets and rewrite replacements with request variables (client

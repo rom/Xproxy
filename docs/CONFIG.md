@@ -1330,6 +1330,9 @@ Brotli still receives gzip when it accepts it. The access log has
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Switch for the section |
 | `level` | int | `5` | gzip level 1 (fastest) to 9 (smallest) |
+| `encodings` | list | `[br, zstd, gzip]` | Content encodings offered and the server's preference among encodings the client accepts with equal quality; a client's higher `q` wins; `*` in `Accept-Encoding` matches the offered ones |
+| `brotli_level` | int | `4` | Brotli quality 0 (fastest) to 11 (smallest); above 6 the CPU cost grows quickly for dynamic responses |
+| `zstd_level` | int | `2` | zstd level 1 (fastest), 2 (default), 3 (better) or 4 (best) |
 | `min_bytes` | int | `1024` | Bodies below this length are not compressed; 0 to 1 MiB |
 | `types` | list | text, script, style, JSON, XML, SVG, wasm and font types | Media types compressed, without parameters |
 

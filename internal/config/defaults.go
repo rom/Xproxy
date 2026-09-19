@@ -436,6 +436,14 @@ func applyDefaults(c *Config) {
 		setStr(&c.Filters[i].Stage, StageAfterAuth)
 	}
 	if cp := c.Compression; cp != nil {
+		if len(cp.Encodings) == 0 {
+			cp.Encodings = []string{"br", "zstd", "gzip"}
+		}
+		if cp.BrotliLevel == nil {
+			l := DefaultBrotliLevel
+			cp.BrotliLevel = &l
+		}
+		setInt(&cp.ZstdLevel, DefaultZstdLevel)
 		setInt(&cp.Level, 5)
 		setInt(&cp.MinBytes, 1024)
 		if len(cp.Types) == 0 {
@@ -583,3 +591,10 @@ func errorPageDefaults(e *ErrorPages) {
 		e.JSON = &t
 	}
 }
+
+// Compression encoder defaults: Brotli 4 and zstd 2 balance ratio and CPU
+// for dynamic responses.
+const (
+	DefaultBrotliLevel = 4
+	DefaultZstdLevel   = 2
+)

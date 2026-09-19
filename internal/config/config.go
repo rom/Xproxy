@@ -1090,6 +1090,15 @@ type Compression struct {
 	Enabled *bool `yaml:"enabled"`
 	// Level is the gzip level 1 (fastest) to 9 (smallest). Default 5.
 	Level int `yaml:"level"`
+	// Encodings lists the content encodings offered, in the order the
+	// proxy prefers them when a client accepts several with equal
+	// quality: br (Brotli), zstd and gzip. Default [br, zstd, gzip].
+	Encodings []string `yaml:"encodings"`
+	// BrotliLevel is 0 (fastest) to 11 (smallest). Default 4.
+	BrotliLevel *int `yaml:"brotli_level"`
+	// ZstdLevel is 1 (fastest), 2 (default), 3 (better) or 4 (best).
+	// Default 2.
+	ZstdLevel int `yaml:"zstd_level"`
 	// MinBytes is the smallest body compressed when its length is known
 	// or once that much has been buffered. Default 1024.
 	MinBytes int `yaml:"min_bytes"`

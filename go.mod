@@ -3,8 +3,10 @@ module github.com/rom/xproxy
 go 1.25.0
 
 require (
+	github.com/andybalholm/brotli v1.2.4
 	github.com/corazawaf/coraza-coreruleset/v4 v4.25.0
 	github.com/corazawaf/coraza/v3 v3.7.0
+	github.com/klauspost/compress v1.20.0
 	github.com/quic-go/quic-go v0.61.0
 	github.com/tetratelabs/wazero v1.12.0
 	go.etcd.io/bbolt v1.5.0

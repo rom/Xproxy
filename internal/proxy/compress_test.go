@@ -1,8 +1,12 @@
 package proxy
 
 import (
+	"bytes"
 	"compress/gzip"
 	"fmt"
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
+	"github.com/rom/xproxy/internal/config"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -143,14 +147,17 @@ routes:
 	if resp, _ := fetch("/empty"); resp.StatusCode != 204 || resp.Header.Get("Content-Encoding") != "" {
 		t.Fatalf("204: %d %v", resp.StatusCode, resp.Header)
 	}
-	// Clients that do not accept gzip, or refuse it, get identity.
-	for _, ae := range []string{"", "br", "gzip;q=0", "*;q=0", "identity"} {
+	// Clients that accept none of the offered encodings, or refuse them,
+	// get identity.
+	for _, ae := range []string{"", "deflate", "gzip;q=0, br;q=0, zstd;q=0", "*;q=0", "identity"} {
 		if resp, body := fetch("/json", "Accept-Encoding", ae); resp.Header.Get("Content-Encoding") != "" || body != big {
 			t.Fatalf("accept-encoding %q: %v", ae, resp.Header)
 		}
 	}
-	if resp, body := fetch("/json", "Accept-Encoding", "deflate, *;q=0.5"); resp.Header.Get("Content-Encoding") != "gzip" || body != big {
+	if resp, body := fetch("/json", "Accept-Encoding", "deflate, *;q=0.5"); resp.Header.Get("Content-Encoding") != "br" {
 		t.Fatalf("wildcard: %v", resp.Header)
+	} else if dec, err := io.ReadAll(brotli.NewReader(strings.NewReader(body))); err != nil || string(dec) != big {
+		t.Fatalf("wildcard body: %v", err)
 	}
 	// HEAD is never compressed.
 	head, _ := http.NewRequest(http.MethodHead, url+"/json", nil)
@@ -194,6 +201,120 @@ func TestWantsGzip(t *testing.T) {
 		}
 		if got := wantsGzip(r); got != want {
 			t.Errorf("%q: %v", ae, got)
+		}
+	}
+}
+
+// TestCompressionEncodings covers Brotli and zstd next to gzip: bodies
+// decode, quality and order decide, and the offer can be restricted.
+func TestCompressionEncodings(t *testing.T) {
+	big := strings.Repeat(`{"k":"value"},`, 400)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprint(len(big)))
+		_, _ = io.WriteString(w, big)
+	}))
+	t.Cleanup(origin.Close)
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+logging: {access: {enabled: false}}
+compression: {min_bytes: 512, brotli_level: 5, zstd_level: 3}
+upstreams:
+  - name: o
+    endpoints: [{address: %q}]
+routes:
+  - {name: r, upstream: o}
+`, strings.TrimPrefix(origin.URL, "http://"))
+	_, url := startServer(t, yaml)
+	tr := &http.Transport{DisableCompression: true}
+	fetch := func(accept string) (*http.Response, []byte) {
+		t.Helper()
+		req, _ := http.NewRequest("GET", url+"/", nil)
+		req.Header.Set("Accept-Encoding", accept)
+		resp, err := tr.RoundTrip(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return resp, body
+	}
+	decode := func(enc string, body []byte) string {
+		t.Helper()
+		var r io.Reader
+		switch enc {
+		case "br":
+			r = brotli.NewReader(bytes.NewReader(body))
+		case "zstd":
+			d, err := zstd.NewReader(bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			r = d
+		case "gzip":
+			g, err := gzip.NewReader(bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			r = g
+		default:
+			return string(body)
+		}
+		out, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	cases := []struct{ accept, want string }{
+		{"br", "br"},
+		{"zstd", "zstd"},
+		{"gzip", "gzip"},
+		{"gzip, br", "br"},              // equal quality: server order
+		{"br;q=0.5, gzip", "gzip"},      // client quality wins
+		{"*", "br"},                     // wildcard: the preferred one
+		{"deflate", ""},                 // nothing offered
+		{"br;q=0, zstd;q=0, *", "gzip"}, // refused ones are skipped, * covers the rest
+	}
+	for _, c := range cases {
+		resp, body := fetch(c.accept)
+		got := resp.Header.Get("Content-Encoding")
+		if got != c.want {
+			t.Fatalf("Accept-Encoding %q: got %q want %q", c.accept, got, c.want)
+		}
+		if decode(got, body) != big {
+			t.Fatalf("Accept-Encoding %q: body does not decode", c.accept)
+		}
+		if c.want != "" && (resp.Header.Get("Vary") != "Accept-Encoding" || len(body) >= len(big)) {
+			t.Fatalf("Accept-Encoding %q: vary %q size %d", c.accept, resp.Header.Get("Vary"), len(body))
+		}
+	}
+
+	// An offer restricted to gzip leaves a Brotli only client uncompressed.
+	_, url2 := startServer(t, strings.Replace(yaml, "compression: {min_bytes: 512, brotli_level: 5, zstd_level: 3}", "compression: {min_bytes: 512, encodings: [gzip]}", 1))
+	req, _ := http.NewRequest("GET", url2+"/", nil)
+	req.Header.Set("Accept-Encoding", "br")
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Fatalf("gzip only offer compressed with %q", resp.Header.Get("Content-Encoding"))
+	}
+
+	// Validation.
+	for name, snippet := range map[string]string{
+		"encoding":  "compression: {encodings: [deflate]}",
+		"duplicate": "compression: {encodings: [br, br]}",
+		"brotli":    "compression: {brotli_level: 12}",
+		"zstd":      "compression: {zstd_level: 9}",
+	} {
+		if _, err := config.ParseWith([]byte(strings.Replace(yaml, "compression: {min_bytes: 512, brotli_level: 5, zstd_level: 3}", snippet, 1)), false); err == nil {
+			t.Errorf("%s: accepted", name)
 		}
 	}
 }

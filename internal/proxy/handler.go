@@ -210,17 +210,19 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	st.cr = cr
 	cr.captureFrom(st)
 	route = cr
-	if cr.compress != nil && r.Method != http.MethodHead && !isUpgrade(r) && !isGRPC(r) && wantsGzip(r) {
-		cw := newCompressWriter(rw.ResponseWriter, cr.compress)
-		rw.ResponseWriter = cw
-		defer func() {
-			cw.Close()
-			if cw.compress {
-				st.encoding = "gzip"
-				s.stats.Compressed.Add(1)
-				s.stats.CompressedRawBytes.Add(uint64(max(cw.raw, 0))) //nolint:gosec // non-negative
-			}
-		}()
+	if cr.compress != nil && r.Method != http.MethodHead && !isUpgrade(r) && !isGRPC(r) {
+		if enc := cr.compress.negotiate(r); enc != "" {
+			cw := newCompressWriter(rw.ResponseWriter, cr.compress, enc)
+			rw.ResponseWriter = cw
+			defer func() {
+				cw.Close()
+				if cw.compress {
+					st.encoding = enc
+					s.stats.Compressed.Add(1)
+					s.stats.CompressedRawBytes.Add(uint64(max(cw.raw, 0))) //nolint:gosec // non-negative
+				}
+			}()
+		}
 	}
 	st.marked = s.marks.marked(st.clientIP, st.start)
 

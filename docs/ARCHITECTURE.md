@@ -582,15 +582,19 @@ fallback is one more open inside the same root.
 
 ### Response compression
 
-When a route compresses and the client accepts gzip, the handler slips a
-`compressWriter` (`internal/proxy/compress.go`) between the logging
-`responseWriter` and the connection before the action runs, so every
-action writes through it. The writer decides when the header is
+When a route compresses and the client accepts one of the offered
+encodings (Brotli, zstd or gzip, negotiated by quality and then by the
+configured order), the handler slips a `compressWriter`
+(`internal/proxy/compress.go`) between the logging `responseWriter` and
+the connection before the action runs, so every action writes through
+it. The writer decides when the header is
 committed (status, existing encoding, `no-transform`, media type,
 length), buffers an unknown-length body up to `min_bytes`, decides at
 the first flush for streamed bodies, and is closed by a deferred call
-when the handler returns, which writes the gzip trailer or releases a
-small buffered body unchanged. gzip writers are pooled per generation.
+when the handler returns, which writes the encoder's trailer or releases
+a small buffered body unchanged. Encoders are pooled per encoding and
+generation; Brotli comes from `andybalholm/brotli` and zstd from
+`klauspost/compress`, both pure Go.
 The cache stores upstream bodies before this layer, so one entry serves
 both encodings.
 

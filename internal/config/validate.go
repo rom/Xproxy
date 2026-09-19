@@ -111,6 +111,26 @@ func (v *validator) config(c *Config) {
 		v.cluster(c.Cluster)
 	}
 	v.sandbox(&c.Sandbox)
+	if cp := c.Compression; cp != nil {
+		seen := map[string]bool{}
+		for i, e := range cp.Encodings {
+			switch e {
+			case "gzip", "br", "zstd":
+			default:
+				v.errf("compression.encodings[%d]: must be gzip, br or zstd", i)
+			}
+			if seen[e] {
+				v.errf("compression.encodings[%d]: duplicate %q", i, e)
+			}
+			seen[e] = true
+		}
+		if cp.BrotliLevel != nil && (*cp.BrotliLevel < 0 || *cp.BrotliLevel > 11) {
+			v.errf("compression.brotli_level: must be 0 to 11")
+		}
+		if cp.ZstdLevel < 1 || cp.ZstdLevel > 4 {
+			v.errf("compression.zstd_level: must be 1 to 4")
+		}
+	}
 	if c.Server.ErrorPages != nil {
 		v.errorPages("server.error_pages", c.Server.ErrorPages)
 	}

@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"compress/gzip"
+	"io"
 	"mime"
 	"net"
 	"net/http"
@@ -10,32 +11,129 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
+
 	"github.com/rom/xproxy/internal/config"
 )
 
+// encoder is what the three content encodings have in common.
+type encoder interface {
+	io.WriteCloser
+	Flush() error
+	Reset(w io.Writer)
+}
+
 // compressPolicy is the compiled compression section for one route.
 type compressPolicy struct {
-	level    int
-	minBytes int
-	types    map[string]bool // media types without parameters
-	pool     sync.Pool       // *gzip.Writer at level
+	encodings []string // server preference order
+	level     int      // gzip
+	brLevel   int
+	zstdLevel int
+	minBytes  int
+	types     map[string]bool // media types without parameters
+	pools     map[string]*sync.Pool
 }
 
 func newCompressPolicy(c *config.Compression) *compressPolicy {
-	p := &compressPolicy{level: c.Level, minBytes: c.MinBytes, types: make(map[string]bool, len(c.Types))}
+	p := &compressPolicy{encodings: c.Encodings, level: c.Level, brLevel: 4, zstdLevel: c.ZstdLevel, minBytes: c.MinBytes,
+		types: make(map[string]bool, len(c.Types)), pools: map[string]*sync.Pool{}}
+	if c.BrotliLevel != nil {
+		p.brLevel = *c.BrotliLevel
+	}
+	if len(p.encodings) == 0 {
+		p.encodings = []string{"gzip"}
+	}
 	for _, t := range c.Types {
 		p.types[strings.ToLower(t)] = true
+	}
+	for _, e := range p.encodings {
+		p.pools[e] = &sync.Pool{}
 	}
 	return p
 }
 
-func (p *compressPolicy) writer(w http.ResponseWriter) *gzip.Writer {
-	if gz, ok := p.pool.Get().(*gzip.Writer); ok {
-		gz.Reset(w)
+// writer returns a pooled encoder for enc writing to w.
+func (p *compressPolicy) writer(enc string, w io.Writer) encoder {
+	pool := p.pools[enc]
+	if pool != nil {
+		if e, ok := pool.Get().(encoder); ok {
+			e.Reset(w)
+			return e
+		}
+	}
+	switch enc {
+	case "br":
+		return brotli.NewWriterLevel(w, p.brLevel)
+	case "zstd":
+		z, _ := zstd.NewWriter(w, zstd.WithEncoderLevel(zstd.EncoderLevel(p.zstdLevel)), zstd.WithEncoderConcurrency(1)) // options validated
+		return z
+	default:
+		gz, _ := gzip.NewWriterLevel(w, p.level) // level validated
 		return gz
 	}
-	gz, _ := gzip.NewWriterLevel(w, p.level) // level validated
-	return gz
+}
+
+// release returns an encoder to its pool.
+func (p *compressPolicy) release(enc string, e encoder) {
+	e.Reset(nil)
+	if pool := p.pools[enc]; pool != nil {
+		pool.Put(e)
+	}
+}
+
+// negotiate picks the content encoding for r: the acceptable encoding
+// with the highest quality, ties broken by the server's order; "" when
+// the client accepts none of the offered ones.
+func (p *compressPolicy) negotiate(r *http.Request) string {
+	q := acceptEncodings(r)
+	if len(q) == 0 {
+		return ""
+	}
+	best, bestQ := "", 0.0
+	for _, e := range p.encodings {
+		v, ok := q[e]
+		if !ok {
+			if v, ok = q["*"]; !ok {
+				continue
+			}
+		}
+		if v > bestQ {
+			best, bestQ = e, v
+		}
+	}
+	return best
+}
+
+// acceptEncodings parses Accept-Encoding into encoding to quality
+// (x-gzip counts as gzip); a missing header yields nil.
+func acceptEncodings(r *http.Request) map[string]float64 {
+	ae := r.Header.Get("Accept-Encoding")
+	if ae == "" {
+		return nil
+	}
+	out := map[string]float64{}
+	for _, part := range strings.Split(ae, ",") {
+		name, params, _ := strings.Cut(strings.TrimSpace(part), ";")
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			continue
+		}
+		if name == "x-gzip" {
+			name = "gzip"
+		}
+		q := 1.0
+		for _, kv := range strings.Split(params, ";") {
+			k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+			if ok && strings.EqualFold(strings.TrimSpace(k), "q") {
+				if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+					q = f
+				}
+			}
+		}
+		out[name] = q
+	}
+	return out
 }
 
 func (p *compressPolicy) eligibleType(contentType string) bool {
@@ -46,38 +144,14 @@ func (p *compressPolicy) eligibleType(contentType string) bool {
 	return p.types[mt]
 }
 
-// wantsGzip parses Accept-Encoding: gzip must be listed (or "*") with a
-// non-zero quality.
+// wantsGzip reports whether the client accepts gzip (listed, or "*",
+// with a non-zero quality).
 func wantsGzip(r *http.Request) bool {
-	ae := r.Header.Get("Accept-Encoding")
-	if ae == "" {
-		return false
+	q := acceptEncodings(r)
+	if v, ok := q["gzip"]; ok {
+		return v > 0
 	}
-	star := 0 // 0 unknown, 1 allowed, -1 refused
-	for _, part := range strings.Split(ae, ",") {
-		name, params, _ := strings.Cut(strings.TrimSpace(part), ";")
-		name = strings.ToLower(strings.TrimSpace(name))
-		q := 1.0
-		for _, kv := range strings.Split(params, ";") {
-			k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
-			if ok && strings.EqualFold(strings.TrimSpace(k), "q") {
-				if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
-					q = f
-				}
-			}
-		}
-		switch name {
-		case "gzip", "x-gzip":
-			return q > 0
-		case "*":
-			if q > 0 {
-				star = 1
-			} else {
-				star = -1
-			}
-		}
-	}
-	return star == 1
+	return q["*"] > 0
 }
 
 // compressWriter compresses eligible responses with gzip. The decision is
@@ -95,15 +169,16 @@ type compressWriter struct {
 	committed bool // header sent to the underlying writer
 	pending   bool // eligible but undecided (unknown length)
 	compress  bool
-	gz        *gzip.Writer
+	encoding  string // negotiated content encoding
+	gz        encoder
 	buf       []byte
 	raw       int64
 	hijacked  bool
 	closed    bool
 }
 
-func newCompressWriter(w http.ResponseWriter, pol *compressPolicy) *compressWriter {
-	return &compressWriter{ResponseWriter: w, pol: pol}
+func newCompressWriter(w http.ResponseWriter, pol *compressPolicy, encoding string) *compressWriter {
+	return &compressWriter{ResponseWriter: w, pol: pol, encoding: encoding}
 }
 
 func (w *compressWriter) Header() http.Header { return w.ResponseWriter.Header() }
@@ -142,16 +217,16 @@ func (w *compressWriter) commit() {
 	w.ResponseWriter.WriteHeader(w.status)
 }
 
-// start switches to gzip and sends the header.
+// start switches to the negotiated encoding and sends the header.
 func (w *compressWriter) start() {
 	h := w.Header()
 	h.Del("Content-Length")
-	h.Set("Content-Encoding", "gzip")
+	h.Set("Content-Encoding", w.encoding)
 	if et := h.Get("ETag"); et != "" && !strings.HasPrefix(et, "W/") {
 		h.Set("ETag", "W/"+et)
 	}
 	w.compress = true
-	w.gz = w.pol.writer(w.ResponseWriter)
+	w.gz = w.pol.writer(w.encoding, w.ResponseWriter)
 	w.commit()
 }
 
@@ -224,8 +299,7 @@ func (w *compressWriter) Close() {
 	_ = w.flushPending(false)
 	if w.compress {
 		_ = w.gz.Close()
-		w.gz.Reset(nil)
-		w.pol.pool.Put(w.gz)
+		w.pol.release(w.encoding, w.gz)
 		w.gz = nil
 	}
 }
