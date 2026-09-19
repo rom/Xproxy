@@ -115,7 +115,7 @@ func (c *captcha) check(ctx context.Context, token string, ip netip.Addr) (bool,
 	if err != nil {
 		return false, "captcha unreachable"
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return false, "captcha provider error"
