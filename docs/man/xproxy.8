@@ -1,0 +1,122 @@
+.\" Generated from Markdown by internal/manpage; do not edit.
+.TH XPROXY 8 "" "Xproxy" "System administration"
+.nh
+.ad l
+.SH "NAME"
+.PP
+xproxy \- reverse proxy, web application firewall and load balancer
+.SH "SYNOPSIS"
+.PP
+\fBxproxy\fR [\fB\-config\fR \fIFILE\fR] [\fB\-validate\fR] [\fB\-version\fR]
+.SH "DESCRIPTION"
+.PP
+\fBxproxy\fR is the data plane daemon. It reads one YAML configuration file (see \fBxproxy.yaml\fR(5)), binds the listeners it describes or takes them from systemd socket activation, and serves until stopped. Requests pass the listener limits, the ban list, rate limits, the web application firewall, the configured filters and the route action, then reach an upstream pool with health checks, retries and circuit breaking.
+.PP
+The process runs as the \fBxproxy\fR user under the shipped systemd unit and confines itself with Landlock, seccomp and a dropped capability set (see \fBdocs/HARDENING.md\fR). It is controlled at run time through the management socket by \fBxproxyctl\fR(8) and, when installed, the web GUI process \fBxproxy\-admin\fR.
+.SH "OPTIONS"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbx
+lw(0.9i) lx.
+T{
+Option
+T}	T{
+Description
+T}
+T{
+\fB\-\:config\fR \fIFILE\fR
+T}	T{
+Configuration file. Default \fB/\:etc/\:xproxy/\:xproxy.\:yaml\fR (\fB/\:usr/\:local/\:etc/\:xproxy/\:xproxy.\:yaml\fR on macOS).
+T}
+T{
+\fB\-\:validate\fR
+T}	T{
+Load and validate the configuration,\: report every problem,\: and exit with status 0 when it is valid and 1 otherwise. Nothing is bound.
+T}
+T{
+\fB\-\:version\fR
+T}	T{
+Print the version,\: commit and build date,\: and exit.
+T}
+.TE
+.SH "SIGNALS"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbx
+lw(0.9i) lx.
+T{
+Signal
+T}	T{
+Effect
+T}
+T{
+\fBSIGHUP\fR
+T}	T{
+Reload the configuration. A new generation is built and validated first;\: on error the running one stays active and the failure is counted. Listeners are added,\: removed and rebuilt as the file changed;\: see the reload semantics in \fBxproxy.\:yaml\fR(5).
+T}
+T{
+\fBSIGUSR1\fR
+T}	T{
+Reopen the log files (used by logrotate).
+T}
+T{
+\fBSIGTERM\fR,\: \fBSIGINT\fR
+T}	T{
+Stop: listeners close,\: in\-flight requests get \fBserver.\:shutdown_\:timeout\fR to finish,\: then the process exits.
+T}
+.TE
+.PP
+Under systemd use \fBsystemctl reload xproxy\fR and \fBsystemctl restart xproxy\fR; the unit maps them to these signals and socket activation keeps the listening sockets across a restart.
+.SH "FILES"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbx
+lw(0.8i) lx.
+T{
+Path
+T}	T{
+Purpose
+T}
+T{
+\fB/\:etc/\:xproxy/\:xproxy.\:yaml\fR
+T}	T{
+Configuration,\: mode \fB0640\fR,\: owner \fBroot:\:xproxy\fR.
+T}
+T{
+\fB/\:etc/\:xproxy/\:*.\:yaml\fR
+T}	T{
+Fragments named by \fBincludes\fR.
+T}
+T{
+\fB/\:run/\:xproxy/\:mgmt.\:sock\fR
+T}	T{
+Management socket,\: mode \fB0660\fR;\: \fBxproxyctl\fR and the GUI connect here.
+T}
+T{
+\fB/\:var/\:log/\:xproxy/\fR
+T}	T{
+The access,\: error,\: security and audit logs when file sinks are configured.
+T}
+T{
+\fB/\:var/\:lib/\:xproxy/\fR
+T}	T{
+State: ban list,\: configuration history,\: ACME account and certificates,\: secret keyrings.
+T}
+T{
+\fB/\:usr/\:share/\:xproxy/\:xproxy.\:schema.\:json\fR
+T}	T{
+JSON schema of the configuration for editors.
+T}
+.TE
+.SH "EXIT STATUS"
+.PP
+0 after a clean stop or a successful \fB\-validate\fR; 1 when the configuration does not load, a listener cannot be bound or validation fails; 2 on a usage error.
+.SH "ENVIRONMENT"
+.PP
+\fBLISTEN_FDS\fR, \fBLISTEN_PID\fR and \fBLISTEN_FDNAMES\fR are read for systemd socket activation. \fBNOTIFY_SOCKET\fR receives readiness and reload notifications. \fBNO_COLOR\fR is honoured by \fBxproxyctl tui\fR.
+.SH "SEE ALSO"
+.PP
+\fBxproxyctl\fR(8), \fBxproxy.yaml\fR(5), the documentation under \fB/usr/share/doc/xproxy/\fR (USAGE.md, CONFIG.md, HARDENING.md, ARCHITECTURE.md).

@@ -1419,6 +1419,45 @@ reference platform for production.
 
 ---
 
+## AMR-046: Manual pages and the configuration schema are generated from the source
+
+**Context.** Operators asked for manual pages, shell completion and
+editor support for the configuration. Each of these restates
+information that already exists once: the command set in `xproxyctl`,
+the key reference in `docs/CONFIG.md` and the field set in
+`internal/config/config.go`. Hand-maintained copies drift.
+
+**Decision.** `xproxyctl` owns one command table that produces its
+usage, `help` and the bash, zsh and fish completion scripts
+(`xproxyctl completion`). `xproxyctl(8)` and `xproxy(8)` are written as
+Markdown under `docs/man` and `xproxy.yaml(5)` is `docs/CONFIG.md`
+itself; `internal/manpage` renders them to troff (man macros and tbl)
+and the result is committed so packaging needs no generator. The JSON
+schema is derived from the configuration types by `schemagen` (yaml
+tags, doc comments, typed constants, a short table of documented value
+sets and required keys), committed and embedded, so `xproxyctl schema`
+and the installed file are the same document. Tests fail when a
+committed artefact is stale, when the command table and the dispatch
+disagree, when a schema reference dangles, when the golden example dump
+does not fit the schema, or when groff reports a warning on a page.
+
+**Alternatives.** A CLI framework with built-in completion and man
+output (rejected: a dependency for a flat command set the standard
+library handles); pandoc or scdoc at build time (rejected: a build
+dependency on every packaging host; the renderer covers the Markdown
+subset the docs use); a schema written by hand (rejected: it would
+drift from the types); reflection at run time for the schema (rejected:
+doc comments are not available then).
+
+**Consequences.** Adding a configuration key or a command means running
+`make docs` (or the tests say so). The Markdown of `docs/CONFIG.md` has
+to stay within the renderer's subset (ATX headings, pipe tables, fenced
+code, bullet lists, inline code, bold, emphasis, links).
+
+**Status.** Accepted (1.3).
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |

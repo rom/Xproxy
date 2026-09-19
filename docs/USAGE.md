@@ -82,6 +82,9 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
 | `series` | Print sampled series; `-since 10m`, `-last 30`, `-json` |
+| `schema` | Print the JSON schema of the configuration (see below) |
+| `completion bash\|zsh\|fish` | Print a shell completion script for `xproxyctl` and `xproxy` |
+| `help` | List the commands with a summary |
 | `version` | Print version |
 
 `-json` switches `status`, `stats` and `upstreams` to machine readable
@@ -100,6 +103,46 @@ xproxyctl bans
 xproxyctl ban -duration 24h -reason "credential stuffing" 203.0.113.0/24
 xproxyctl unban 203.0.113.0/24
 ```
+
+### Shell completion, manual pages and the configuration schema
+
+`make install` and the RPM install completion for bash, zsh and fish
+(`xproxyctl` commands, their words and flags, and the flags of
+`xproxy`), the manual pages `xproxy(8)`, `xproxyctl(8)` and
+`xproxy.yaml(5)`, and the JSON schema of the configuration at
+`/usr/share/xproxy/xproxy.schema.json`. For a source build without the
+install step:
+
+```sh
+xproxyctl completion bash > ~/.local/share/bash-completion/completions/xproxyctl
+xproxyctl completion zsh > ~/.zfunc/_xproxyctl      # with fpath+=~/.zfunc before compinit
+xproxyctl completion fish > ~/.config/fish/completions/xproxyctl.fish
+man -l docs/man/xproxyctl.8
+```
+
+The schema (JSON Schema draft 2020-12) is generated from the
+configuration types with every key, its type, the value sets of
+enumerated keys, required keys and the documentation comment of each
+key, and forbids unknown keys as the loader does. Editors with a YAML
+language server pick it up from a modeline at the top of the file:
+
+```yaml
+# yaml-language-server: $schema=/usr/share/xproxy/xproxy.schema.json
+version: 1
+server:
+  listeners: [{name: main, address: ":8080"}]
+upstreams:
+  - {name: app, endpoints: [{address: "127.0.0.1:3000"}]}
+routes:
+  - {name: all, upstream: app}
+```
+
+Visual Studio Code (with the Red Hat YAML extension), Neovim with
+`yamlls` and JetBrains IDEs then complete keys, show the documentation
+on hover and mark unknown keys and wrong types while you type; the
+authoritative check remains `xproxy -validate`, which also verifies
+references, files and cross-field rules the schema cannot express.
+`xproxyctl schema` prints the same document for tooling.
 
 ## Configuration patterns
 

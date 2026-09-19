@@ -20,7 +20,7 @@ RPMDIR       ?= $(CURDIR)/rpmbuild
 
 BIN = bin
 
-.PHONY: all build test test-race cover cover-gate mutate fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint scale bench load release build-darwin dist-darwin install-macos vet-all
+.PHONY: all build test test-race cover cover-gate mutate fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint scale bench load release build-darwin dist-darwin install-macos vet-all docs
 
 all: build
 
@@ -166,6 +166,12 @@ release: build dist
 
 check: fmt vet-all test-race lint
 
+# Generated documentation: the configuration JSON schema from the Go
+# types and the manual pages from docs/man/*.md and docs/CONFIG.md. Tests
+# fail when the committed files are stale.
+docs:
+	$(GO) generate ./internal/config/schema ./internal/manpage
+
 clean:
 	rm -rf $(BIN) coverage.out $(RPMDIR) deploy/selinux/xproxy.pp deploy/selinux/xproxy.pp.bz2 deploy/selinux/tmp
 
@@ -185,6 +191,14 @@ install: build
 	install -D -m 0644 deploy/logrotate/xproxy $(DESTDIR)/etc/logrotate.d/xproxy
 	install -D -m 0640 -b deploy/config/xproxy.yaml $(DESTDIR)/etc/xproxy/xproxy.yaml
 	install -D -m 0644 deploy/sysusers/xproxy.conf $(DESTDIR)/usr/lib/sysusers.d/xproxy.conf
+	install -D -m 0644 docs/man/xproxy.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxy.8
+	install -D -m 0644 docs/man/xproxyctl.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxyctl.8
+	install -D -m 0644 docs/man/xproxy.yaml.5 $(DESTDIR)$(PREFIX)/share/man/man5/xproxy.yaml.5
+	install -D -m 0644 internal/config/schema/xproxy.schema.json $(DESTDIR)$(PREFIX)/share/xproxy/xproxy.schema.json
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/share/bash-completion/completions $(DESTDIR)$(PREFIX)/share/zsh/site-functions $(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d
+	$(BIN)/xproxyctl completion bash > $(DESTDIR)$(PREFIX)/share/bash-completion/completions/xproxyctl
+	$(BIN)/xproxyctl completion zsh > $(DESTDIR)$(PREFIX)/share/zsh/site-functions/_xproxyctl
+	$(BIN)/xproxyctl completion fish > $(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d/xproxyctl.fish
 
 # SELinux module. Uses the policy development headers when present (the
 # module uses reference policy interfaces and needs them); falls back to

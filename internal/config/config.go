@@ -181,9 +181,10 @@ type Listener struct {
 	// Default false.
 	H2C bool `yaml:"h2c"`
 	// Kind is http (default), tcp (an L4 listener that forwards
-	// connections by TLS server name without terminating TLS) or forward
+	// connections by TLS server name without terminating TLS), forward
 	// (an explicit HTTP proxy for clients: CONNECT tunnels and absolute
-	// URI requests to destinations the policy allows).
+	// URI requests to destinations the policy allows) or dns (a DNS
+	// proxy).
 	Kind string `yaml:"kind"`
 	// TCP configures a kind: tcp listener.
 	TCP *TCPListener `yaml:"tcp"`

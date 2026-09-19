@@ -100,9 +100,17 @@ install -D -m 0640 deploy/config/xproxy.yaml %{buildroot}%{_sysconfdir}/xproxy/x
 install -d -m 0750 %{buildroot}%{_localstatedir}/log/xproxy
 install -d -m 0700 %{buildroot}%{_sharedstatedir}/xproxy
 
-# Documentation.
+# Documentation, manual pages, configuration schema and shell completion.
 install -d -m 0755 %{buildroot}%{_docdir}/%{name}
 install -m 0644 README.md docs/*.md %{buildroot}%{_docdir}/%{name}/
+install -D -m 0644 docs/man/xproxy.8      %{buildroot}%{_mandir}/man8/xproxy.8
+install -D -m 0644 docs/man/xproxyctl.8   %{buildroot}%{_mandir}/man8/xproxyctl.8
+install -D -m 0644 docs/man/xproxy.yaml.5 %{buildroot}%{_mandir}/man5/xproxy.yaml.5
+install -D -m 0644 internal/config/schema/xproxy.schema.json %{buildroot}%{_datadir}/xproxy/xproxy.schema.json
+install -d -m 0755 %{buildroot}%{_datadir}/bash-completion/completions %{buildroot}%{_datadir}/zsh/site-functions %{buildroot}%{_datadir}/fish/vendor_completions.d
+bin/xproxyctl completion bash > %{buildroot}%{_datadir}/bash-completion/completions/xproxyctl
+bin/xproxyctl completion zsh  > %{buildroot}%{_datadir}/zsh/site-functions/_xproxyctl
+bin/xproxyctl completion fish > %{buildroot}%{_datadir}/fish/vendor_completions.d/xproxyctl.fish
 
 # SELinux module and interface file for other policies.
 install -D -m 0644 deploy/selinux/%{modulename}.pp.bz2 %{buildroot}%{_datadir}/selinux/packages/%{selinuxtype}/%{modulename}.pp.bz2
@@ -153,6 +161,14 @@ fi
 %doc %{_docdir}/%{name}
 %{_bindir}/xproxy
 %{_bindir}/xproxyctl
+%{_mandir}/man8/xproxy.8*
+%{_mandir}/man8/xproxyctl.8*
+%{_mandir}/man5/xproxy.yaml.5*
+%dir %{_datadir}/xproxy
+%{_datadir}/xproxy/xproxy.schema.json
+%{_datadir}/bash-completion/completions/xproxyctl
+%{_datadir}/zsh/site-functions/_xproxyctl
+%{_datadir}/fish/vendor_completions.d/xproxyctl.fish
 %{_unitdir}/xproxy.service
 %{_unitdir}/xproxy.socket
 %{_unitdir}/xproxy-https.socket

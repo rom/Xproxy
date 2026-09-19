@@ -218,6 +218,14 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- Operator tooling: `xproxyctl completion bash|zsh|fish` prints
+  completion scripts for `xproxyctl` and `xproxy` (installed by `make
+  install` and the RPM), `xproxyctl help` lists the commands, the manual
+  pages `xproxy(8)`, `xproxyctl(8)` and `xproxy.yaml(5)` are generated
+  from the documentation and installed, and a JSON schema of the
+  configuration generated from the Go types (`xproxyctl schema`,
+  `/usr/share/xproxy/xproxy.schema.json`) gives editors completion and
+  inline documentation.
 
 ### Changed (1.3)
 - No bounded table is silent any more. Every cap that evicts, refuses

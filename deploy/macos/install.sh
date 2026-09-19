@@ -56,9 +56,19 @@ ensure_user _xproxy _xproxy "xproxy reverse proxy"
 ensure_user _xproxy-admin _xproxy "xproxy web GUI"
 dseditgroup -o edit -a _xproxy-admin -t user _xproxy 2>/dev/null || true
 
-# Binaries.
+# Binaries, manual pages, configuration schema and shell completion.
 install -d -m 0755 "$PREFIX/bin"
 for b in xproxy xproxyctl xproxy-admin; do install -m 0755 "$BIN/$b" "$PREFIX/bin/$b"; done
+if [ -d "$HERE/../../docs/man" ]; then
+  install -d -m 0755 "$PREFIX/share/man/man8" "$PREFIX/share/man/man5" "$PREFIX/share/xproxy"
+  install -m 0644 "$HERE/../../docs/man/xproxy.8" "$HERE/../../docs/man/xproxyctl.8" "$PREFIX/share/man/man8/"
+  install -m 0644 "$HERE/../../docs/man/xproxy.yaml.5" "$PREFIX/share/man/man5/"
+  install -m 0644 "$HERE/../../internal/config/schema/xproxy.schema.json" "$PREFIX/share/xproxy/"
+fi
+install -d -m 0755 "$PREFIX/share/zsh/site-functions" "$PREFIX/share/bash-completion/completions" "$PREFIX/share/fish/vendor_completions.d"
+"$PREFIX/bin/xproxyctl" completion zsh > "$PREFIX/share/zsh/site-functions/_xproxyctl"
+"$PREFIX/bin/xproxyctl" completion bash > "$PREFIX/share/bash-completion/completions/xproxyctl"
+"$PREFIX/bin/xproxyctl" completion fish > "$PREFIX/share/fish/vendor_completions.d/xproxyctl.fish"
 
 # Directories: configuration readable by the group, everything the daemon
 # writes owned by it; state is private.

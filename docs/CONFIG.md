@@ -8,6 +8,13 @@ never "disabled". Paths must be absolute. Durations use Go syntax: `500ms`,
 Validate with `xproxy -config FILE -validate`; all problems are reported at
 once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 
+This reference is also installed as the manual page `xproxy.yaml(5)`,
+and a JSON schema generated from the same types
+(`/usr/share/xproxy/xproxy.schema.json`, `xproxyctl schema`) gives
+editors completion and inline documentation; put
+`# yaml-language-server: $schema=/usr/share/xproxy/xproxy.schema.json`
+on the first line of the file to enable it.
+
 ## Top level
 
 | Key | Type | Default | Description |

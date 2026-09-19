@@ -84,6 +84,9 @@ internal/metrics    Prometheus text encoder, histogram, sampled series
 internal/tui        terminal UI of xproxyctl (pure renderer plus a raw-mode loop)
 internal/admin      web GUI server: users file, sessions, API over the management client, static/ assets
 internal/version    build information
+internal/config/schema  JSON schema of the configuration, generated from the types (schemagen) and embedded
+internal/manpage    Markdown to troff renderer and the generation of docs/man from docs/man/*.md and CONFIG.md
+docs/man/           manual pages (sources *.md, generated xproxy.8, xproxyctl.8, xproxy.yaml.5)
 deploy/             systemd units, sysusers, sysctl, SELinux policy, polkit, logrotate, RPM spec, example config
 docs/               this documentation
 test/               cross package and binary level tests (grows in 1.0)

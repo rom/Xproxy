@@ -61,6 +61,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/config/schema"
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds for validate
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/passwd"
@@ -76,11 +77,6 @@ import (
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
-}
-
-func usage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas waf sandbox config validate reload diff history rollback rotate-secret tls reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp telemetry htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -832,6 +828,21 @@ func run(args []string, out, errOut io.Writer) int {
 			return fail(err)
 		}
 		_, _ = fmt.Fprintf(out, "unbanned %s\n", fs.Arg(1))
+		return 0
+	case "schema":
+		_, _ = out.Write(schema.JSON)
+		return 0
+	case "completion":
+		if fs.NArg() == 2 {
+			if script, ok := completionScript(fs.Arg(1)); ok {
+				_, _ = io.WriteString(out, script)
+				return 0
+			}
+		}
+		_, _ = fmt.Fprintln(errOut, "usage: xproxyctl completion bash|zsh|fish")
+		return 2
+	case "help":
+		help(out)
 		return 0
 	default:
 		usage(errOut)
