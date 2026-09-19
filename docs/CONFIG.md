@@ -233,6 +233,7 @@ the caches. Metrics: `xproxy_dns_*{listener}`.
 | `max_streams` | int | `100` | Concurrent request streams per QUIC connection; 1 to 10000 |
 | `validate_addresses` | `always`, `under_load` | `always` | `always` makes every unvalidated client address complete a Retry round trip before the server allocates connection state; `under_load` does so only when open connections exceed a quarter of `max_connections` |
 | `alt_svc_max_age` | duration | `24h` | Reserved for the `Alt-Svc` `ma` value (currently the library default) |
+| `webtransport` | bool | `false` | Accept WebTransport sessions on this endpoint: HTTP/3 datagrams and the WebTransport settings are enabled and routes with `webtransport: true` relay them. The `Origin` header is forwarded for the upstream to check |
 
 QUIC connections share the listener's `max_connections`,
 `max_connections_per_ip`, ban list, header size and idle timeout;
@@ -518,6 +519,8 @@ Memory: at most 64 x 8192 buckets per policy.
 | `canary` | object | none | Route selected requests to the canary endpoints; see below |
 | `scheme` | `http`, `https` | `http` | |
 | `h2c` | bool | `false` | Speak HTTP/2 without TLS to `http` endpoints (gRPC backends); `https` negotiates HTTP/2 with ALPN on its own |
+| `h3` | bool | `false` | Speak HTTP/3 (QUIC over UDP) to `https` endpoints; health probes use it too. Exclusive with `h2c`. `xproxyctl upstreams` shows the pool protocol |
+| `h3_fallback` | bool | `true` | With `h3`, retry a request whose QUIC connection fails before a response (UDP blocked, handshake timeout) over TCP on the same endpoint; counted as `h3_fallbacks` in the pool status. Off, such failures are errors like any other |
 | `tls` | object | | Only with `https`; see below |
 | `health_check` | object | none | Active probing; see below |
 | `outlier_ejection` | object | none | Passive ejection; see below |
@@ -692,6 +695,9 @@ not match is skipped and the next candidate is tried.
 | `max_body_bytes` | int | global | May only lower the global limit |
 | `timeout` | duration | none | Whole request deadline for this route |
 | `websocket` | bool | `false` | Allow `Upgrade` requests |
+| `webtransport` | bool | `false` | Relay WebTransport sessions (extended CONNECT over HTTP/3) to the upstream: bidirectional and unidirectional streams and datagrams in both directions, with the request header operations applied to the CONNECT. Needs a listener with `h3.webtransport: true` and an upstream with `h3: true`; on any other listener or protocol the session is refused |
+| `grpc.web` | bool | `false` | Accept gRPC-web requests (`application/grpc-web`, `grpc-web+proto`, `grpc-web-text`, `grpc-web-text+proto`, over HTTP/1.1 or HTTP/2) on this gRPC route and translate them: the upstream sees plain gRPC, the response trailers come back as a trailer frame in the body and the text variants are base64. Without it a gRPC-web request is refused with gRPC status 2 |
+| `grpc.web_origins` | list | `[]` | Browser origins (`https://app.example.com`, or `*`) whose CORS preflights are answered (`POST`, the requested headers, ten minutes) and whose responses get `Access-Control-Allow-Origin` and the exposed `grpc-status` and `grpc-message`; needs `web: true`. Empty leaves CORS to the upstream or to header operations |
 
 ## ingress
 

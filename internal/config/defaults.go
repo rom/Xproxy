@@ -309,6 +309,10 @@ func applyDefaults(c *Config) {
 		for j := range u.Endpoints {
 			setInt(&u.Endpoints[j].Weight, 1)
 		}
+		if u.H3 && u.H3Fallback == nil {
+			t := true
+			u.H3Fallback = &t
+		}
 		if hc := u.HealthCheck; hc != nil {
 			setStr(&hc.Type, "http")
 			setStr(&hc.Path, DefaultHealthCheckPath)

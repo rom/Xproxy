@@ -702,6 +702,19 @@ status from the response, so the standard health service works without
 a protobuf library. The upstream response's `grpc-status` is captured
 at end of body for the access log and a per code counter.
 
+gRPC-web (`internal/proxy/grpcweb.go`) is a translation at the edge of
+the same pipeline: `isGRPCWeb` marks the request (it counts as gRPC for
+routing), the rewrite turns the content type into the gRPC one, adds
+`TE: trailers` and decodes a text body chunk by chunk (clients send one
+padded base64 chunk per frame); `ModifyResponse` restores the web
+content type and wraps the body in `grpcWebBody`, which streams the
+data frames (whole frames base64 encoded in text mode) and appends the
+trailer frame from the upstream trailers, or from the headers of a
+trailers-only response, when the body ends. CORS preflights for routes
+with `web_origins` are answered before admission, and proxy errors on
+gRPC-web requests are written as trailers-only responses with the web
+content type.
+
 ### Request mirroring
 
 `prepareMirror` runs in `proxyTo` before the live request is handed to
@@ -1135,6 +1148,26 @@ default; handshake and idle timeouts, streams per connection and header
 size come from the listener limits; 0-RTT is disabled. Requests arrive as
 `HTTP/3.0` with `r.TLS` set, so logging, forwarding headers and every
 pipeline stage behave as for HTTP/2.
+
+HTTP/3 is also spoken upstream. `h3.NewClientTransport` wraps quic-go's
+`http3.Transport` with the pool's client TLS configuration (server
+name, roots, client certificate) and timeouts; `Pool.RoundTripper`
+returns it when `h3` is set, health probes share it, and
+`poolTransport` retries a request whose QUIC connection failed before
+a response over the TCP transport of the same endpoint when
+`h3_fallback` allows (`h3.IsTransportError` recognises the QUIC error
+types), counting the fallback. A listener with `h3.webtransport`
+builds its `http3.Server` inside a `webtransport.Server`
+(quic-go's webtransport-go): datagrams and the WebTransport settings
+are enabled and each accepted QUIC connection is served through it so
+that session streams are demultiplexed. An extended CONNECT with the
+webtransport protocol on a route with `webtransport: true` reaches
+`relayWebTransport`: the upstream session is dialled first
+(`h3.DialWebTransport`, the CONNECT carrying the forwarding headers and
+the route's header operations), then the client's is accepted with
+`Upgrade`, and `h3.RelayWebTransport` pipes bidirectional streams,
+unidirectional streams and datagrams both ways, mirroring closes and
+resets with their codes, until either session ends.
 
 ## 15. Scale properties (measured, see PERFORMANCE.md)
 

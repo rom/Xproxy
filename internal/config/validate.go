@@ -234,6 +234,29 @@ func (v *validator) config(c *Config) {
 			v.errf("rate_limits[%d].distributed: exact needs a cluster section", i)
 		}
 	}
+	wtListener := false
+	for i := range c.Server.Listeners {
+		if h := c.Server.Listeners[i].H3; h != nil && h.WebTransport {
+			wtListener = true
+		}
+	}
+	for i := range c.Routes {
+		r := &c.Routes[i]
+		if !r.WebTransport {
+			continue
+		}
+		if !wtListener {
+			v.errf("routes[%d].webtransport: no listener has h3.webtransport: true", i)
+		}
+		for j := range c.Upstreams {
+			if c.Upstreams[j].Name == r.Upstream && !c.Upstreams[j].H3 {
+				v.errf("routes[%d].webtransport: upstream %q must set h3: true", i, r.Upstream)
+			}
+		}
+		if r.Upstream == "" {
+			v.errf("routes[%d].webtransport: needs an upstream", i)
+		}
+	}
 	for i := range c.Server.Listeners {
 		if t := c.Server.Listeners[i].TCP; t != nil {
 			p := fmt.Sprintf("server.listeners[%d].tcp", i)
@@ -1000,6 +1023,14 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 	if u.MaxIdleConnsPerHost < 0 {
 		v.errf("%s.max_idle_conns_per_host: must not be negative", p)
 	}
+	if u.H3 {
+		if u.Scheme != "https" {
+			v.errf("%s.h3: needs scheme https", p)
+		}
+		if u.H2C {
+			v.errf("%s.h3: exclusive with h2c", p)
+		}
+	}
 	if hc := u.HealthCheck; hc != nil {
 		switch hc.Type {
 		case "http":
@@ -1263,6 +1294,14 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 		v.errf("%s: exactly one of upstream, redirect, respond, honeypot, doh or static is required", p)
 	}
 	if g := r.GRPC; g != nil {
+		for j, o := range g.WebOrigins {
+			if o != "*" && (!strings.HasPrefix(o, "https://") && !strings.HasPrefix(o, "http://") || strings.ContainsAny(o, " /\r\n\t") && strings.Count(o, "/") > 2) {
+				v.errf("%s.grpc.web_origins[%d]: %q is not an origin (scheme://host[:port])", p, j, o)
+			}
+		}
+		if len(g.WebOrigins) > 0 && !g.Web {
+			v.errf("%s.grpc.web_origins: needs web: true", p)
+		}
 		for j, sv := range g.Services {
 			if !grpcNameOK(sv) || strings.Contains(sv, "/") {
 				v.errf("%s.grpc.services[%d]: %q is not a service name", p, j, sv)

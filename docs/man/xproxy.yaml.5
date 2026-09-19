@@ -777,8 +777,8 @@ T}
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.9i) lbw(0.8i) lbx
-lw(1.0i) lw(0.9i) lw(0.8i) lx.
+lbw(1.3i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.3i) lw(0.9i) lw(0.8i) lx.
 T{
 Key
 T}	T{
@@ -814,6 +814,15 @@ T}	T{
 \fB24h\fR
 T}	T{
 Reserved for the \fBAlt\-\:Svc\fR \fBma\fR value (currently the library default)
+T}
+T{
+\fBwebtransport\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept WebTransport sessions on this endpoint: HTTP/\:3 datagrams and the WebTransport settings are enabled and routes with \fBwebtransport:\: true\fR relay them. The \fBOrigin\fR header is forwarded for the upstream to check
 T}
 .TE
 .PP
@@ -2091,6 +2100,24 @@ T}	T{
 Speak HTTP/\:2 without TLS to \fBhttp\fR endpoints (gRPC backends);\: \fBhttps\fR negotiates HTTP/\:2 with ALPN on its own
 T}
 T{
+\fBh3\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Speak HTTP/\:3 (QUIC over UDP) to \fBhttps\fR endpoints;\: health probes use it too. Exclusive with \fBh2c\fR. \fBxproxyctl upstreams\fR shows the pool protocol
+T}
+T{
+\fBh3_\:fallback\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+With \fBh3\fR,\: retry a request whose QUIC connection fails before a response (UDP blocked,\: handshake timeout) over TCP on the same endpoint;\: counted as \fBh3_\:fallbacks\fR in the pool status. Off,\: such failures are errors like any other
+T}
+T{
 \fBtls\fR
 T}	T{
 object
@@ -2782,8 +2809,8 @@ Matching: exact host, then wildcard host, then hostless routes; within a host th
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(1.1i) lbw(1.2i) lbx
-lw(1.0i) lw(1.1i) lw(1.2i) lx.
+lbw(1.3i) lbw(1.1i) lbw(1.2i) lbx
+lw(1.3i) lw(1.1i) lw(1.2i) lx.
 T{
 Key
 T}	T{
@@ -3080,6 +3107,33 @@ T}	T{
 \fBfalse\fR
 T}	T{
 Allow \fBUpgrade\fR requests
+T}
+T{
+\fBwebtransport\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Relay WebTransport sessions (extended CONNECT over HTTP/\:3) to the upstream: bidirectional and unidirectional streams and datagrams in both directions,\: with the request header operations applied to the CONNECT. Needs a listener with \fBh3.\:webtransport:\: true\fR and an upstream with \fBh3:\: true\fR;\: on any other listener or protocol the session is refused
+T}
+T{
+\fBgrpc.\:web\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept gRPC\-web requests (\fBapplication/\:grpc\-\:web\fR,\: \fBgrpc\-\:web+proto\fR,\: \fBgrpc\-\:web\-\:text\fR,\: \fBgrpc\-\:web\-\:text+proto\fR,\: over HTTP/\:1.1 or HTTP/\:2) on this gRPC route and translate them: the upstream sees plain gRPC,\: the response trailers come back as a trailer frame in the body and the text variants are base64. Without it a gRPC\-web request is refused with gRPC status 2
+T}
+T{
+\fBgrpc.\:web_\:origins\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Browser origins (\fBhttps:\:/\:/\:app.\:example.\:com\fR,\: or \fB*\fR) whose CORS preflights are answered (\fBPOST\fR,\: the requested headers,\: ten minutes) and whose responses get \fBAccess\-\:Control\-\:Allow\-\:Origin\fR and the exposed \fBgrpc\-\:status\fR and \fBgrpc\-\:message\fR;\: needs \fBweb:\: true\fR. Empty leaves CORS to the upstream or to header operations
 T}
 .TE
 .SH "ingress"

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/tlsconf"
 )
 
@@ -24,8 +25,12 @@ type Pool struct {
 	Cfg       *config.Upstream
 	Transport *http.Transport
 	// h2c carries HTTP/2 without TLS when the upstream sets h2c.
-	h2c    *http.Transport
-	Scheme string
+	h2c *http.Transport
+	// h3 carries HTTP/3 when the upstream sets h3; H3Fallbacks counts
+	// requests retried over TCP after a QUIC failure.
+	h3          *h3.ClientTransport
+	H3Fallbacks atomic.Uint64
+	Scheme      string
 
 	// eps is the current endpoint set; discovery replaces it atomically.
 	eps       atomic.Pointer[[]*Endpoint]
@@ -184,7 +189,13 @@ func (p *Pool) Gate() *Gate { return p.gate }
 func (p *Pool) Status() PoolStatus {
 	now := p.now()
 	eps := p.endpoints()
-	st := PoolStatus{Name: p.Name, Balancer: p.Cfg.Balancer, Endpoints: len(eps)}
+	st := PoolStatus{Name: p.Name, Balancer: p.Cfg.Balancer, Endpoints: len(eps), Protocol: "tcp", H3Fallbacks: p.H3Fallbacks.Load()}
+	switch {
+	case p.h3 != nil:
+		st.Protocol = "h3"
+	case p.h2c != nil:
+		st.Protocol = "h2c"
+	}
 	if p.Cfg.SlowStart > 0 {
 		st.SlowStart = p.Cfg.SlowStart.D().String()
 	}
@@ -278,6 +289,9 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 		MaxResponseHeaderBytes: 64 << 10,
 		DisableCompression:     true, // pass encodings through untouched
 	}
+	if cfg.H3 {
+		p.h3 = h3.NewClientTransport(h3.ClientOptions{TLS: tc, Handshake: cfg.Timeouts.Connect.D(), Idle: cfg.Timeouts.Idle.D(), ResponseHeader: cfg.Timeouts.ResponseHeader.D()})
+	}
 	if cfg.H2C {
 		// Prior knowledge HTTP/2 over plain TCP: the same transport
 		// settings with only the unencrypted HTTP/2 protocol enabled.
@@ -288,7 +302,7 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 		p.h2c = t
 	}
 	if hc := cfg.HealthCheck; hc != nil {
-		if hc.KeepAlive {
+		if hc.KeepAlive || cfg.H3 {
 			p.hcTransport = p.Transport
 		} else {
 			t := p.Transport.Clone()
@@ -347,16 +361,43 @@ func (p *Pool) Stop() {
 	if p.h2c != nil {
 		p.h2c.CloseIdleConnections()
 	}
+	if p.h3 != nil {
+		_ = p.h3.Close()
+	}
 }
 
-// RoundTripper is the transport requests use: HTTP/2 cleartext when the
-// upstream sets h2c, the ordinary transport otherwise.
+// RoundTripper is the transport requests use: HTTP/3 when the upstream
+// sets h3, HTTP/2 cleartext when it sets h2c, the ordinary transport
+// otherwise.
 func (p *Pool) RoundTripper() http.RoundTripper {
+	switch {
+	case p.h3 != nil:
+		return p.h3
+	case p.h2c != nil:
+		return p.h2c
+	}
+	return p.Transport
+}
+
+// TCPRoundTripper is the TCP transport, the fallback of an h3 pool.
+func (p *Pool) TCPRoundTripper() http.RoundTripper {
 	if p.h2c != nil {
 		return p.h2c
 	}
 	return p.Transport
 }
+
+// H3 reports whether the pool speaks HTTP/3 to its endpoints.
+func (p *Pool) H3() bool { return p.h3 != nil }
+
+// H3Fallback reports whether a QUIC failure is retried over TCP.
+func (p *Pool) H3Fallback() bool {
+	return p.h3 != nil && (p.Cfg.H3Fallback == nil || *p.Cfg.H3Fallback)
+}
+
+// H3TLS returns the client TLS configuration of an https pool (nil for
+// http), for WebTransport dials.
+func (p *Pool) H3TLS() *tls.Config { return p.Transport.TLSClientConfig }
 
 // ReloadClientCertificate re-reads the upstream client certificate, if
 // any, and drops idle connections so new ones present it.
@@ -368,6 +409,9 @@ func (p *Pool) ReloadClientCertificate() error {
 		return fmt.Errorf("upstream %s: %w", p.Name, err)
 	}
 	p.Transport.CloseIdleConnections()
+	if p.h3 != nil {
+		p.h3.CloseIdleConnections()
+	}
 	return nil
 }
 

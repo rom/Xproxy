@@ -435,6 +435,10 @@ type H3 struct {
 	ValidateAddresses string `yaml:"validate_addresses"`
 	// AltSvcMaxAge is the ma value advertised in Alt-Svc. Default 24h.
 	AltSvcMaxAge Duration `yaml:"alt_svc_max_age"`
+	// WebTransport accepts WebTransport sessions (extended CONNECT with
+	// HTTP/3 datagrams) on this endpoint; routes with webtransport relay
+	// them. Default false.
+	WebTransport bool `yaml:"webtransport"`
 }
 
 // TLS configures server side TLS for a listener.
@@ -750,7 +754,15 @@ type Upstream struct {
 	Scheme string `yaml:"scheme"`
 	// H2C speaks HTTP/2 without TLS to http endpoints (gRPC backends).
 	// Default false.
-	H2C         bool            `yaml:"h2c"`
+	H2C bool `yaml:"h2c"`
+	// H3 speaks HTTP/3 (QUIC) to https endpoints. Health probes use it
+	// too. Default false.
+	H3 bool `yaml:"h3"`
+	// H3Fallback retries a request over TCP (HTTP/2 or HTTP/1.1) on the
+	// same endpoint when the QUIC connection cannot be established or
+	// fails before a response, so a network that drops UDP degrades to
+	// TCP rather than to errors. Default true.
+	H3Fallback  *bool           `yaml:"h3_fallback"`
 	TLS         *UpstreamTLS    `yaml:"tls"`
 	HealthCheck *HealthCheck    `yaml:"health_check"`
 	Timeouts    UpstreamTimeout `yaml:"timeouts"`
@@ -1003,6 +1015,11 @@ type Route struct {
 	Timeout Duration `yaml:"timeout"`
 	// WebSocket allows Upgrade: websocket to be forwarded. Default false.
 	WebSocket bool `yaml:"websocket"`
+	// WebTransport relays WebTransport sessions (extended CONNECT over
+	// HTTP/3 on a listener with h3) to the upstream, which must speak
+	// HTTP/3 (h3: true): bidirectional and unidirectional streams and
+	// datagrams in both directions. Default false.
+	WebTransport bool `yaml:"webtransport"`
 	// WAF overrides the global WAF mode and profile for this route.
 	WAF *RouteWAF `yaml:"waf"`
 	// PriorityClass is low, normal, high or critical (never shed). Default
@@ -1096,6 +1113,16 @@ type RouteGRPC struct {
 	Services []string `yaml:"services"`
 	// Methods are Service/Method pairs.
 	Methods []string `yaml:"methods"`
+	// Web accepts gRPC-web requests from browsers (application/grpc-web
+	// and grpc-web-text, over HTTP/1.1 or HTTP/2) and translates them to
+	// gRPC for the upstream: the response trailers become a trailer
+	// frame in the body and the text variant is base64 encoded. Default
+	// false.
+	Web bool `yaml:"web"`
+	// WebOrigins answers CORS preflights of gRPC-web clients from these
+	// origins (exact, or "*") and adds the allow and expose headers to
+	// responses. Empty handles no CORS.
+	WebOrigins []string `yaml:"web_origins"`
 }
 
 // RouteMirror sends a copy of each request (sampled by percent) to

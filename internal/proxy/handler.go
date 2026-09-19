@@ -57,11 +57,13 @@ type reqState struct {
 	encoding  string // gzip when the proxy compressed the response
 	canary    bool   // the response came from a canary endpoint
 	cacheKey  string
-	marked    bool   // client previously hit a honeypot
-	mirror    string // sent, dropped or body_too_large on a mirrored route
-	grpc      bool   // request is gRPC: errors are answered as gRPC statuses
-	grpcCode  string // grpc-status of the upstream response
-	release   func() // concurrency slot; idempotent
+	marked    bool       // client previously hit a honeypot
+	mirror    string     // sent, dropped or body_too_large on a mirrored route
+	grpc      bool       // request is gRPC: errors are answered as gRPC statuses
+	grpcWeb   bool       // request is gRPC-web: translated to gRPC for the upstream
+	h3srv     *h3.Server // the HTTP/3 endpoint the request arrived on, for WebTransport
+	grpcCode  string     // grpc-status of the upstream response
+	release   func()     // concurrency slot; idempotent
 	// cr is the matched route; captures and captureNames hold the
 	// route's regular expression match for templates.
 	cr           *compiledRoute
@@ -89,6 +91,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rw := &responseWriter{ResponseWriter: w}
 	st := &reqState{id: newRequestID(), start: time.Now()}
 	rw.st = st
+	st.h3srv = h.h3
 	st.clientIP = netutil.ClientIP(r, rt.trusted)
 	if tr := s.tracer.Load(); tr != nil {
 		st.span = tr.StartServer(r, r.Method)
@@ -174,7 +177,8 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st.path = netutil.CleanPath(r.URL.Path)
-	st.grpc = isGRPC(r)
+	st.grpcWeb = isGRPCWeb(r)
+	st.grpc = isGRPC(r) || st.grpcWeb || isGRPCWebPreflight(r)
 
 	// Reserved challenge paths, served on every host.
 	if ch := s.challenger.Load(); ch != nil && strings.HasPrefix(st.path, "/.xproxy/") {
@@ -210,6 +214,26 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	st.cr = cr
 	cr.captureFrom(st)
 	route = cr
+	if st.grpcWeb || isGRPCWebPreflight(r) {
+		if cr.cfg.GRPC == nil || !cr.cfg.GRPC.Web {
+			st.denied = "grpc_web"
+			s.deny(rw, r, st, http.StatusUnsupportedMediaType, "grpc_web")
+			return
+		}
+		if isGRPCWebPreflight(r) {
+			s.grpcWebPreflight(rw, r, st, cr)
+			return
+		}
+	}
+	if isWebTransport(r) {
+		if !cr.cfg.WebTransport {
+			st.denied = "webtransport"
+			s.deny(rw, r, st, http.StatusForbidden, "webtransport")
+			return
+		}
+		s.relayWebTransport(rw, r, st, cr)
+		return
+	}
 	if cr.compress != nil && r.Method != http.MethodHead && !isUpgrade(r) && !isGRPC(r) {
 		if enc := cr.compress.negotiate(r); enc != "" {
 			cw := newCompressWriter(rw.ResponseWriter, cr.compress, enc)
@@ -606,6 +630,12 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			} else if ep := s.rt.Load().errorPages; ep != nil {
 				ep.interceptBody(resp, r, st)
 			}
+			if st.grpcWeb {
+				grpcWebResponse(resp, r.Header.Get("Content-Type"))
+				if o, ok := grpcWebOriginAllowed(cr.cfg.GRPC.WebOrigins, r.Header.Get("Origin")); ok {
+					grpcWebCORS(resp.Header, o)
+				}
+			}
 			if st.grpc {
 				if code := grpcStatusOf(resp); code != "" {
 					st.grpcCode = code
@@ -666,6 +696,9 @@ func (s *Server) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 		out.Host = cr.cfg.HostHeader
 	} else {
 		out.Host = in.Host
+	}
+	if st.grpcWeb {
+		grpcWebRequest(out, in.Header.Get("Content-Type"))
 	}
 	// Forwarding headers: only a trusted peer's chain is preserved.
 	if netutil.Contains(rt.trusted, netutil.RemoteAddr(in)) {
@@ -863,6 +896,10 @@ func (s *Server) tarpit(rw *responseWriter, r *http.Request, st *reqState, rl *c
 func (s *Server) plainStatus(rw *responseWriter, r *http.Request, status int) {
 	if isGRPC(r) && r.ProtoMajor == 2 {
 		writeGRPCStatus(rw, status)
+		return
+	}
+	if isGRPCWeb(r) {
+		writeGRPCWebStatus(rw, r, status)
 		return
 	}
 	h := rw.Header()

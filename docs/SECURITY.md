@@ -43,6 +43,14 @@ to report a vulnerability. The threat analysis behind the controls is in
   `${cert:fingerprint}`, `${cert:xfcc}`...), which discard a client
   supplied copy of the header; without a verified certificate the
   variables are empty.
+- WebTransport sessions are relayed, never interpreted: the CONNECT
+  passes every route control (limits, bans, ACLs, expressions), the
+  upstream session is opened before the client's is accepted, streams
+  and datagrams are copied byte for byte with the session's flow
+  control, and the `Origin` header reaches the upstream for its own
+  policy. HTTP/3 to upstreams uses the pool's pinned CA and client
+  certificate like TCP; a QUIC failure falls back to TCP only on the
+  same endpoint and only before a response was received.
 - ALPN offers `h2` then `http/1.1`; h2c (cleartext HTTP/2) is never enabled.
 - HTTP/3 (QUIC) shares certificates and limits with its TLS listener; new
   client addresses must complete a Retry round trip before state is

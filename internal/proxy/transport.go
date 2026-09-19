@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
@@ -137,6 +138,14 @@ func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Respon
 		t.pool.Begin(e)
 		t0 := time.Now()
 		resp, err := t.pool.RoundTripper().RoundTrip(out)
+		if err != nil && t.pool.H3Fallback() && h3.IsTransportError(err) && req.Context().Err() == nil {
+			// QUIC failed before a response (UDP blocked, handshake
+			// timeout): the same endpoint over TCP.
+			if retry, ok := t.tcpRetry(req, e.Address); ok {
+				t.pool.H3Fallbacks.Add(1)
+				resp, err = t.pool.TCPRoundTripper().RoundTrip(retry)
+			}
+		}
 		ttfb := time.Since(t0)
 		if err != nil {
 			t.pool.End(e, isConnError(err), ttfb)
@@ -223,4 +232,23 @@ func (b *endBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.once.Do(b.done)
 	return err
+}
+
+// tcpRetry rebuilds the outbound request for the TCP transport; a body
+// that cannot be replayed makes the retry impossible.
+func (t *poolTransport) tcpRetry(req *http.Request, address string) (*http.Request, bool) {
+	out := req.Clone(req.Context())
+	out.URL.Scheme = t.pool.Scheme
+	out.URL.Host = address
+	if req.Body != nil && req.Body != http.NoBody {
+		if req.GetBody == nil {
+			return nil, false
+		}
+		b, err := req.GetBody()
+		if err != nil {
+			return nil, false
+		}
+		out.Body = b
+	}
+	return out, true
 }

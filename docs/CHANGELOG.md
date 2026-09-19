@@ -218,6 +218,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- HTTP/3 to upstreams (`upstreams[].h3`, with a TCP fallback on QUIC
+  failures), gRPC-web translation for browser clients
+  (`routes[].grpc.web`, `web_origins` for CORS) and WebTransport relays
+  (`h3.webtransport` on a listener, `routes[].webtransport`) that carry
+  streams and datagrams to an HTTP/3 upstream.
 - Identity: OAuth 2.0 token introspection on JWT providers
   (`jwt.providers[].introspection`) for opaque tokens or revocation
   checks, with a bounded cache; client certificate fields as template

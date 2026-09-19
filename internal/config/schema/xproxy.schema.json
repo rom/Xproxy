@@ -983,6 +983,10 @@
         "validate_addresses": {
           "description": "ValidateAddresses is always (every new client address must complete a Retry round trip before any state is allocated) or under_load (only when open connections exceed a quarter of max_connections). Default always.",
           "type": "string"
+        },
+        "webtransport": {
+          "description": "WebTransport accepts WebTransport sessions (extended CONNECT with HTTP/3 datagrams) on this endpoint; routes with webtransport relay them. Default false.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -2258,6 +2262,10 @@
           "description": "WebSocket allows Upgrade: websocket to be forwarded. Default false.",
           "type": "boolean"
         },
+        "webtransport": {
+          "description": "WebTransport relays WebTransport sessions (extended CONNECT over HTTP/3 on a listener with h3) to the upstream, which must speak HTTP/3 (h3: true): bidirectional and unidirectional streams and datagrams in both directions. Default false.",
+          "type": "boolean"
+        },
         "when": {
           "description": "When is a condition in the expression language (docs/CONFIG.md, \"Expressions\") that must hold in addition to the matches above; it counts as one condition for specificity.",
           "type": "string"
@@ -2354,6 +2362,17 @@
         },
         "services": {
           "description": "Services are fully qualified service names.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "web": {
+          "description": "Web accepts gRPC-web requests from browsers (application/grpc-web and grpc-web-text, over HTTP/1.1 or HTTP/2) and translates them to gRPC for the upstream: the response trailers become a trailer frame in the body and the text variant is base64 encoded. Default false.",
+          "type": "boolean"
+        },
+        "web_origins": {
+          "description": "WebOrigins answers CORS preflights of gRPC-web clients from these origins (exact, or \"*\") and adds the allow and expose headers to responses. Empty handles no CORS.",
           "type": "array",
           "items": {
             "type": "string"
@@ -2980,6 +2999,14 @@
         },
         "h2c": {
           "description": "H2C speaks HTTP/2 without TLS to http endpoints (gRPC backends). Default false.",
+          "type": "boolean"
+        },
+        "h3": {
+          "description": "H3 speaks HTTP/3 (QUIC) to https endpoints. Health probes use it too. Default false.",
+          "type": "boolean"
+        },
+        "h3_fallback": {
+          "description": "H3Fallback retries a request over TCP (HTTP/2 or HTTP/1.1) on the same endpoint when the QUIC connection cannot be established or fails before a response, so a network that drops UDP degrades to TCP rather than to errors. Default true.",
           "type": "boolean"
         },
         "hash_on": {

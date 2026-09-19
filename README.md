@@ -51,7 +51,9 @@ an identifier from the access log to the upstream.
   certificates (request or require), ACME issuance and renewal (HTTP-01
   and TLS-ALPN-01)
 - HTTP/1.1, HTTP/2 (ALPN, or `h2c` on trusted networks) and HTTP/3 over
-  QUIC with address validation and Alt-Svc advertisement
+  QUIC with address validation and Alt-Svc advertisement; HTTP/3 to
+  upstreams with a TCP fallback, gRPC-web translation for browsers and
+  WebTransport relays (streams and datagrams) to HTTP/3 upstreams
 - Mutual TLS and public key pinning to upstreams; PROXY protocol
   towards layer 4 upstreams
 

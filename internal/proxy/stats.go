@@ -69,6 +69,7 @@ type Stats struct {
 	ForwardBytesOut       atomic.Uint64
 	WAFDetected           atomic.Uint64
 	UpstreamErrors        atomic.Uint64
+	WebTransportSessions  atomic.Uint64
 	UpstreamRetries       atomic.Uint64
 	UpstreamStatusRetries atomic.Uint64
 	UpstreamCircuitOpen   atomic.Uint64
@@ -163,6 +164,7 @@ type Snapshot struct {
 	LogRedaction          bool       `json:"log_redaction"`
 	LogWriteErrors        uint64     `json:"log_write_errors"`
 	UpstreamErrors        uint64     `json:"upstream_errors"`
+	WebTransportSessions  uint64     `json:"webtransport_sessions"`
 	UpstreamRetries       uint64     `json:"upstream_retries"`
 	UpstreamStatusRetries uint64     `json:"upstream_status_retries"`
 	UpstreamCircuitOpen   uint64     `json:"upstream_circuit_open"`
@@ -234,6 +236,7 @@ func (s *Stats) snapshot() Snapshot {
 		ForwardBytesOut:       s.ForwardBytesOut.Load(),
 		WAFDetected:           s.WAFDetected.Load(),
 		UpstreamErrors:        s.UpstreamErrors.Load(),
+		WebTransportSessions:  s.WebTransportSessions.Load(),
 		UpstreamRetries:       s.UpstreamRetries.Load(),
 		UpstreamStatusRetries: s.UpstreamStatusRetries.Load(),
 		UpstreamCircuitOpen:   s.UpstreamCircuitOpen.Load(),

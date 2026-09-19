@@ -26,6 +26,9 @@ func (p *Pool) healthLoop(ctx context.Context, e *Endpoint) {
 	if p.h2c != nil {
 		hcTransport = p.h2c // probes share the h2c connection like requests
 	}
+	if p.h3 != nil {
+		hcTransport = p.h3 // an h3 upstream is probed over h3
+	}
 	client := &http.Client{
 		Transport: hcTransport,
 		Timeout:   hc.Timeout.D(),

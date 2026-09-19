@@ -221,14 +221,18 @@ func (g *Gate) Status() QueueStatus {
 
 // PoolStatus is the management view of one pool beyond its endpoints.
 type PoolStatus struct {
-	Name      string         `json:"name"`
-	Balancer  string         `json:"balancer"`
-	Endpoints int            `json:"endpoints"`
-	Available int            `json:"available"`
-	Active    int64          `json:"active"`
-	Circuit   *CircuitStatus `json:"circuit,omitempty"`
-	Queue     *QueueStatus   `json:"queue,omitempty"`
-	Canary    *CanaryStatus  `json:"canary,omitempty"`
+	// Protocol is h3, h2c or tcp (HTTP/1.1 and HTTP/2 over TCP);
+	// H3Fallbacks counts requests retried over TCP after a QUIC failure.
+	Protocol    string         `json:"protocol"`
+	H3Fallbacks uint64         `json:"h3_fallbacks,omitempty"`
+	Name        string         `json:"name"`
+	Balancer    string         `json:"balancer"`
+	Endpoints   int            `json:"endpoints"`
+	Available   int            `json:"available"`
+	Active      int64          `json:"active"`
+	Circuit     *CircuitStatus `json:"circuit,omitempty"`
+	Queue       *QueueStatus   `json:"queue,omitempty"`
+	Canary      *CanaryStatus  `json:"canary,omitempty"`
 	// SlowStart is the configured ramp, "" when off; Discovery is nil
 	// without a discovery section.
 	SlowStart string           `json:"slow_start,omitempty"`

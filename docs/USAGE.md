@@ -364,6 +364,59 @@ same routes over QUIC. Open UDP 443 in the firewall. `xproxyctl status`
 lists the endpoint as `public/udp`; access log lines show
 `proto: HTTP/3.0`.
 
+### HTTP/3 to upstreams
+
+```yaml
+upstreams:
+  - name: edge-api
+    scheme: https
+    h3: true
+    endpoints: [{address: "10.0.5.10:443"}]
+    tls: {server_name: api.internal, ca_file: /etc/xproxy/ca/internal.pem}
+```
+
+The pool opens QUIC connections to its endpoints and multiplexes
+requests on them; health probes go over the same transport. When UDP
+is blocked or a handshake times out, the request is retried over TCP on
+the same endpoint and `xproxyctl upstreams` counts an `h3_fallbacks`
+per such request, so a QUIC-hostile network degrades to HTTP/2, not to
+errors; `h3_fallback: false` makes the failures visible instead.
+
+### WebTransport
+
+```yaml
+server:
+  listeners:
+    - name: public
+      address: ":443"
+      protocols: [h1, h2, h3]
+      h3: {webtransport: true}
+      tls: {certificates: [{cert_file: /etc/xproxy/tls/www.pem, key_file: /etc/xproxy/tls/www-key.pem}]}
+upstreams:
+  - name: realtime
+    scheme: https
+    h3: true
+    endpoints: [{address: "10.0.6.10:4433"}]
+    tls: {server_name: realtime.internal, ca_file: /etc/xproxy/ca/internal.pem}
+routes:
+  - name: wt
+    hosts: [rt.example.com]
+    paths: [/session]
+    upstream: realtime
+    webtransport: true
+```
+
+A browser's `new WebTransport("https://rt.example.com/session")` is an
+extended CONNECT over HTTP/3; the listener accepts it, the route opens
+a session to the upstream over HTTP/3 (with the request header
+operations and the usual forwarding headers on the CONNECT) and relays
+every bidirectional and unidirectional stream and every datagram in
+both directions until either side ends the session. The route's
+limits, bans, expressions and ACLs apply to the CONNECT like to any
+request; the access log line carries `webtransport`, the streams and
+datagrams relayed. The `Origin` header is forwarded unchanged so the
+upstream applies its own origin policy.
+
 ### Virtual hosts and path routing
 
 ```yaml
@@ -1472,6 +1525,31 @@ checks use the standard health service, so an endpoint that reports
 `NOT_SERVING` is taken out of rotation before clients see errors, and
 a rate limited call is refused with `RESOURCE_EXHAUSTED` rather than a
 text page a gRPC client cannot read.
+
+### gRPC-web for browsers
+
+```yaml
+upstreams:
+  - {name: rpc, h2c: true, endpoints: [{address: "10.0.4.10:9090"}]}
+routes:
+  - name: rpc-web
+    hosts: [api.example.com]
+    grpc: {web: true, web_origins: ["https://app.example.com"]}
+    upstream: rpc
+```
+
+Browsers cannot speak gRPC (no trailers, no HTTP/2 control), so
+gRPC-web clients send the same frames with a different content type
+over HTTP/1.1 or HTTP/2 and expect the trailers as a last frame in the
+body. The route translates: the upstream receives plain gRPC over the
+pool's transport (h2c or HTTPS), the response goes back as
+`application/grpc-web+proto` with the trailer frame, and the `-text`
+variants are decoded and encoded as base64. `web_origins` answers the
+CORS preflight and exposes `grpc-status` and `grpc-message` to the
+page; proxy errors (a rate limit, a denied ACL) are answered in
+gRPC-web form so the client library reports a status rather than a
+transport failure. A gRPC-web request on a gRPC route without `web`
+gets status 2 (UNKNOWN) with the proxy's reason.
 
 ### Routing by pattern, header and cookie
 
