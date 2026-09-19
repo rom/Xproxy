@@ -1143,6 +1143,12 @@ func printChanges(out io.Writer, ch *config.Changes) {
 			_, _ = fmt.Fprintln(out, " ", r)
 		}
 	}
+	if len(ch.Drains) > 0 {
+		_, _ = fmt.Fprintln(out, "applied on reload with a connection drain:")
+		for _, r := range ch.Drains {
+			_, _ = fmt.Fprintln(out, " ", r)
+		}
+	}
 	if ch.Truncated {
 		_, _ = fmt.Fprintln(out, "(text diff omitted: documents too large)")
 	} else if ch.Text != "" {

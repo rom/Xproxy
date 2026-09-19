@@ -168,8 +168,23 @@ The old runtime's pools are stopped after `shutdown_timeout`. Any failure
 before the swap leaves the old generation active and increments
 `reload_failures`.
 
-Listener changes (address, TLS mode, protocols, client auth) are refused by
-`Reload` because sockets may be systemd owned; they need a restart.
+Listeners are part of the reload. Each accept socket is owned by an
+`acceptor` (`internal/proxy/acceptor.go`) whose goroutine hands
+connections over an unbuffered channel to the current `front`, the
+`net.Listener` a listener generation serves from; closing a front stops
+that generation without touching the socket. `Reload` plans the listener
+set by name, then by address for renames: unchanged listeners keep
+running (certificate files, forward and dns policies apply in place),
+added ones are bound, and changed ones are rebuilt, on the old acceptor
+when the address is the same so a systemd owned or privileged socket is
+never re-bound and no connection is refused. Every bind and build
+happens before the runtime swap; a failure releases what was built and
+leaves the old set serving. After the swap, replaced and removed
+listeners close their front and drain (`http.Server.Shutdown` and the
+per kind equivalents) for `shutdown_timeout`; the socket is closed only
+when no replacement inherited it. A listener with a UDP socket cannot be
+rebuilt on the same address because the old socket stays bound until
+the drain ends, so that change still needs a restart.
 
 ## 5. Request path
 

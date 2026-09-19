@@ -1547,9 +1547,17 @@ upstreams, rate limits, trusted proxies, logging levels, limits other than
 listeners, certificate files, WAF profiles and modes, ban triggers and
 exemptions (active bans are kept; changing `bans.state_file` opens a new
 list), cluster peers, intervals and sharing flags, shedding thresholds,
-challenge settings (the key is kept), priority classes. Requires restart: any
-change under `server.listeners` other than certificate file contents
-(including the `tls.acme` groups), `management.socket`, cluster `listen`,
+challenge settings (the key is kept), priority classes. Listeners are
+matched by name: an added listener is bound and served by the reload, a
+removed one stops accepting and drains its connections for
+`shutdown_timeout`, and one whose settings changed beyond certificate
+files, forward policy and dns policy is rebuilt with the same drain; on
+an unchanged address the accept socket is kept (also when the listener
+is renamed), so nothing is refused during the switch and a systemd
+owned socket survives. A bind that fails (port in use or privileged)
+fails the whole reload with the old set still serving. Requires
+restart: a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`)
+changed on the same address, `management.socket`, cluster `listen`,
 `node_id` or `tls`, and the `acme` section.
 
 Before applying, `xproxyctl reload -dry-run` (or `POST /v1/reload?dry_run=1`)

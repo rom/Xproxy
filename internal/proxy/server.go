@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -76,7 +77,11 @@ type Server struct {
 }
 
 type boundListener struct {
-	cfg       config.Listener
+	cfg config.Listener
+	// acc owns the accept socket; front is this generation's view of it
+	// and ln the wrapped listener the server accepts from.
+	acc       *acceptor
+	front     *front
 	ln        net.Listener
 	httpSrv   *http.Server
 	tlsReload *tlsconf.Reloadable
@@ -481,8 +486,22 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 	if err != nil {
 		return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 	}
+	acc := newAcceptor(ln)
+	bl, err := s.build(lc, acc, act, activated)
+	if err != nil {
+		acc.close()
+		return nil, err
+	}
+	return bl, nil
+}
+
+// build assembles a listener around an accept socket. On error the
+// resources created here are released; the socket stays with the caller.
+func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *activated) (*boundListener, error) {
+	ln := acc.raw
+	fr := acc.newFront()
 	lim := s.cfg().Server.Limits
-	bl := &boundListener{cfg: lc, ln: s.connLimiter.Wrap(ln), activated: act}
+	bl := &boundListener{cfg: lc, acc: acc, front: fr, ln: s.connLimiter.Wrap(fr), activated: act}
 	if lc.ProxyProtocol && lc.Kind != "tcp" && lc.Kind != "dns" {
 		bl.ln = &proxyListener{Listener: bl.ln,
 			trusted:  func() []netip.Prefix { return s.rt.Load().trusted },
@@ -498,7 +517,7 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 			}
 			pc, _, err := packetFor(activated, lc.Name, udpAddr)
 			if err != nil {
-				_ = ln.Close()
+				_ = fr.Close()
 				return nil, fmt.Errorf("listener %s: quic: %w", lc.Name, err)
 			}
 			bl.tcp.quic = newQUICRelay(bl.tcp, pc)
@@ -511,7 +530,7 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		tc, rl, err := tlsconf.Server(lc.TLS, nil)
 		s.tickets.Attach(tc)
 		if err != nil {
-			_ = ln.Close()
+			_ = fr.Close()
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 		}
 		tc.NextProtos = []string{dns.ALPNDoT, dns.ALPNH2, dns.ALPNHTTP}
@@ -521,7 +540,7 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		bl.ln = tls.NewListener(bl.ln, tc)
 		d, err := s.newDNSServer(lc, nil, bl.ln)
 		if err != nil {
-			_ = ln.Close()
+			_ = fr.Close()
 			rl.Close()
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 		}
@@ -539,12 +558,12 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		}
 		pc, _, err := packetFor(activated, lc.Name, udpAddr)
 		if err != nil {
-			_ = ln.Close()
+			_ = fr.Close()
 			return nil, fmt.Errorf("listener %s: udp: %w", lc.Name, err)
 		}
 		d, err := s.newDNSServer(lc, pc, bl.ln)
 		if err != nil {
-			_ = ln.Close()
+			_ = fr.Close()
 			_ = pc.Close()
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 		}
@@ -556,7 +575,7 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 	if lc.Kind == "forward" {
 		fw, err := newForwardServer(s, lc)
 		if err != nil {
-			_ = ln.Close()
+			_ = fr.Close()
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 		}
 		bl.forward = fw
@@ -585,7 +604,7 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		tc, rl, err := tlsconf.Server(lc.TLS, lc.Protocols)
 		s.tickets.Attach(tc)
 		if err != nil {
-			_ = ln.Close()
+			_ = fr.Close()
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 		}
 		if s.acme != nil && len(lc.TLS.ACME) > 0 {
@@ -611,7 +630,7 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		if hasProto(lc.Protocols, config.ProtocolH3) {
 			pc, act, err := packetFor(activated, lc.Name, lc.Address)
 			if err != nil {
-				_ = ln.Close()
+				_ = fr.Close()
 				return nil, fmt.Errorf("listener %s: h3: %w", lc.Name, err)
 			}
 			_, portStr, _ := net.SplitHostPort(pc.LocalAddr().String())
@@ -622,7 +641,7 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 			})
 			if err != nil {
 				_ = pc.Close()
-				_ = ln.Close()
+				_ = fr.Close()
 				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 			}
 			bl.h3 = h3srv
@@ -667,7 +686,7 @@ func (s *Server) serve(bl *boundListener) {
 	} else {
 		err = bl.httpSrv.Serve(bl.ln)
 	}
-	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 		s.logs.Error.Error("listener stopped", "listener", bl.cfg.Name, "err", err.Error())
 	}
 }
@@ -687,14 +706,21 @@ func (s *Server) Addrs() map[string]string {
 	return out
 }
 
-// Reload swaps in a new configuration. Listener addresses and TLS settings
-// other than the certificate files cannot change without a restart; such a
-// change is rejected and the old configuration stays active.
+// Reload swaps in a new configuration. Listeners are matched by name:
+// new ones are bound and served, missing ones stop accepting and drain,
+// and one whose settings changed beyond what applies in place
+// (certificate files, forward policy, dns policy) is rebuilt, on the same
+// accept socket when its address is unchanged. Every bind and build
+// happens before anything is switched, so a failure leaves the old
+// configuration and listener set active.
 func (s *Server) Reload(cfg *config.Config) error {
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
 	old := s.rt.Load()
-	if err := listenersCompatible(old.cfg.Server.Listeners, cfg.Server.Listeners); err != nil {
+	s.mu.Lock()
+	plan, err := s.planListeners(cfg.Server.Listeners)
+	s.mu.Unlock()
+	if err != nil {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
@@ -734,18 +760,47 @@ func (s *Server) Reload(cfg *config.Config) error {
 		}
 		newBans = bl
 	}
-	// Reload certificates before switching so a bad certificate aborts the
-	// reload as a whole.
+	// Bind and build the added and replaced listeners, then reload the
+	// certificates of the kept ones, before switching, so a port that
+	// cannot be bound or a bad certificate aborts the reload as a whole.
+	fresh := make([]freshListener, 0, len(plan.add)+len(plan.replace))
+	abort := func(err error) error {
+		for _, f := range fresh {
+			s.discard(f)
+		}
+		rt.stop()
+		s.stats.ReloadFailures.Add(1)
+		return err
+	}
+	noAct := &activated{streams: map[string]net.Listener{}, packets: map[string]net.PacketConn{}}
+	for _, lc := range plan.add {
+		bl, err := s.bind(lc, noAct)
+		if err != nil {
+			return abort(err)
+		}
+		fresh = append(fresh, freshListener{bl: bl, owns: true})
+	}
+	for _, r := range plan.replace {
+		var bl *boundListener
+		var err error
+		if r.reuse {
+			bl, err = s.build(r.cfg, r.old.acc, r.old.activated, noAct)
+		} else {
+			bl, err = s.bind(r.cfg, noAct)
+		}
+		if err != nil {
+			return abort(err)
+		}
+		fresh = append(fresh, freshListener{bl: bl, owns: !r.reuse})
+	}
 	s.mu.Lock()
-	for _, bl := range s.listeners {
+	for _, bl := range plan.keep {
 		if bl.forward != nil {
 			for i := range cfg.Server.Listeners {
 				if cfg.Server.Listeners[i].Name == bl.cfg.Name {
 					if err := bl.forward.apply(cfg.Server.Listeners[i].Forward); err != nil {
 						s.mu.Unlock()
-						rt.stop()
-						s.stats.ReloadFailures.Add(1)
-						return fmt.Errorf("listener %s: %w", bl.cfg.Name, err)
+						return abort(fmt.Errorf("listener %s: %w", bl.cfg.Name, err))
 					}
 				}
 			}
@@ -756,9 +811,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 					p, err := dnsPolicy(lc.DNS)
 					if err != nil {
 						s.mu.Unlock()
-						rt.stop()
-						s.stats.ReloadFailures.Add(1)
-						return fmt.Errorf("listener %s: %w", bl.cfg.Name, err)
+						return abort(fmt.Errorf("listener %s: %w", bl.cfg.Name, err))
 					}
 					bl.dns.Apply(p, lc.DNS.Cache.MaxEntries)
 				}
@@ -774,15 +827,43 @@ func (s *Server) Reload(cfg *config.Config) error {
 		}
 		if err := bl.tlsReload.Load(); err != nil {
 			s.mu.Unlock()
-			rt.stop()
-			s.stats.ReloadFailures.Add(1)
-			return fmt.Errorf("listener %s: %w", bl.cfg.Name, err)
+			return abort(fmt.Errorf("listener %s: %w", bl.cfg.Name, err))
 		}
 	}
 	s.mu.Unlock()
 	rt.start()
 	s.connLimiter.SetLimits(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP)
 	s.rt.Store(rt)
+	// Switch the listener set: the new listeners start serving on the new
+	// generation, the replaced and removed ones stop accepting now and
+	// drain their connections in the background.
+	byName := map[string]*boundListener{}
+	for _, bl := range plan.keep {
+		byName[bl.cfg.Name] = bl
+	}
+	for _, f := range fresh {
+		byName[f.bl.cfg.Name] = f.bl
+	}
+	set := make([]*boundListener, 0, len(cfg.Server.Listeners))
+	for i := range cfg.Server.Listeners {
+		set = append(set, byName[cfg.Server.Listeners[i].Name])
+	}
+	s.mu.Lock()
+	s.listeners = set
+	s.mu.Unlock()
+	for _, f := range fresh {
+		go s.serve(f.bl)
+		if f.bl.h3 != nil {
+			go s.serveH3(f.bl)
+		}
+	}
+	drain := cfg.Server.ShutdownTimeout.D()
+	for _, r := range plan.replace {
+		go s.retire(r.old, drain, !r.reuse, "replaced")
+	}
+	for _, bl := range plan.remove {
+		go s.retire(bl, drain, true, "removed")
+	}
 	if newBans != oldBans {
 		s.bans.Store(newBans)
 		if oldBans != nil {
@@ -872,22 +953,155 @@ func clusterCompatible(old, new_ *config.Cluster) error {
 	return nil
 }
 
-func listenersCompatible(old, new_ []config.Listener) error {
-	if len(old) != len(new_) {
-		return errors.New("reload: listener set changed; restart required")
+// listenerPlan is what a reload does to the listener set.
+type listenerPlan struct {
+	keep    []*boundListener // unchanged beyond the settings applied in place
+	add     []config.Listener
+	replace []listenerReplace
+	remove  []*boundListener
+}
+
+// listenerReplace rebuilds a listener; with reuse the accept socket of
+// the old one is kept, so no connection is refused during the switch.
+type listenerReplace struct {
+	old   *boundListener
+	cfg   config.Listener
+	reuse bool
+}
+
+type freshListener struct {
+	bl   *boundListener
+	owns bool // the accept socket is not shared with a retiring listener
+}
+
+// planListeners matches the running listeners with the next
+// configuration, by name and then by address (a renamed listener keeps
+// its socket). Caller holds mu.
+func (s *Server) planListeners(next []config.Listener) (*listenerPlan, error) {
+	p := &listenerPlan{}
+	byName := map[string]*boundListener{}
+	for _, bl := range s.listeners {
+		byName[bl.cfg.Name] = bl
 	}
-	for i := range old {
-		o, n := old[i], new_[i]
-		if o.Name != n.Name || o.Address != n.Address || (o.TLS == nil) != (n.TLS == nil) || o.ProxyProtocol != n.ProxyProtocol || o.RedirectToHTTPS != n.RedirectToHTTPS || o.Kind != n.Kind || fmt.Sprint(o.TCP) != fmt.Sprint(n.TCP) {
-			return fmt.Errorf("reload: listener %s changed; restart required", o.Name)
+	used := map[*boundListener]bool{}
+	var pending []config.Listener
+	for i := range next {
+		lc := next[i]
+		old, ok := byName[lc.Name]
+		if !ok {
+			pending = append(pending, lc)
+			continue
 		}
-		if o.TLS != nil {
-			if o.TLS.MinVersion != n.TLS.MinVersion || o.TLS.ClientAuth != n.TLS.ClientAuth || o.TLS.ClientCAFile != n.TLS.ClientCAFile || fmt.Sprint(o.TLS.CipherSuites) != fmt.Sprint(n.TLS.CipherSuites) || fmt.Sprint(o.Protocols) != fmt.Sprint(n.Protocols) || fmt.Sprint(o.TLS.ACME) != fmt.Sprint(n.TLS.ACME) {
-				return fmt.Errorf("reload: listener %s TLS settings changed; restart required", o.Name)
+		used[old] = true
+		if listenerInPlace(old.cfg, lc) {
+			p.keep = append(p.keep, old)
+			continue
+		}
+		p.replace = append(p.replace, listenerReplace{old: old, cfg: lc, reuse: old.cfg.Address == lc.Address})
+	}
+	for _, lc := range pending {
+		var match *boundListener
+		for _, bl := range s.listeners {
+			if !used[bl] && bl.cfg.Address == lc.Address {
+				match = bl
+				break
+			}
+		}
+		if match == nil {
+			p.add = append(p.add, lc)
+			continue
+		}
+		used[match] = true
+		p.replace = append(p.replace, listenerReplace{old: match, cfg: lc, reuse: true})
+	}
+	for _, r := range p.replace {
+		// The UDP socket of the old listener (h3, quic relay, dns) stays
+		// bound until it drains, so the new one cannot bind the same port.
+		if r.reuse && config.ListenerHasUDP(r.old.cfg) {
+			return nil, fmt.Errorf("reload: listener %s changed on the same address and has a UDP socket (h3, quic or dns); restart required", r.old.cfg.Name)
+		}
+	}
+	for _, bl := range s.listeners {
+		if !used[bl] {
+			p.remove = append(p.remove, bl)
+		}
+	}
+	return p, nil
+}
+
+// listenerInPlace reports whether the two configurations differ only in
+// what Reload applies to a running listener: certificate files, the
+// forward policy and the dns policy.
+func listenerInPlace(o, n config.Listener) bool {
+	norm := func(l config.Listener) config.Listener {
+		l.Forward = nil
+		if l.DNS != nil {
+			l.DNS = &config.DNSListener{DoHPath: l.DNS.DoHPath}
+		}
+		if l.TLS != nil {
+			t := *l.TLS
+			t.Certificates = nil
+			l.TLS = &t
+		}
+		return l
+	}
+	return reflect.DeepEqual(norm(o), norm(n))
+}
+
+// retire stops a listener that a reload replaced or removed: it stops
+// accepting at once and drains its connections for at most drain.
+func (s *Server) retire(bl *boundListener, drain time.Duration, closeSocket bool, why string) {
+	ctx, cancel := context.WithTimeout(context.Background(), drain)
+	defer cancel()
+	err := s.stopListener(ctx, bl, closeSocket)
+	attrs := []any{"listener", bl.cfg.Name, "address", bl.ln.Addr().String(), "reason", why}
+	if err != nil {
+		attrs = append(attrs, "err", err.Error())
+	}
+	s.logs.Error.Info("listener retired", attrs...)
+}
+
+// discard releases a listener that was built for a reload that failed
+// and never served.
+func (s *Server) discard(f freshListener) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = s.stopListener(ctx, f.bl, f.owns)
+}
+
+// stopListener stops accepting, drains within ctx and releases the
+// listener's resources; with closeSocket the accept socket is closed too
+// (not when a replacement inherited it).
+func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocket bool) error {
+	var err error
+	_ = bl.front.Close()
+	switch {
+	case bl.tcp != nil:
+		bl.tcp.shutdown(ctx)
+	case bl.dns != nil:
+		bl.dns.Shutdown(ctx)
+		bl.dns.Close()
+		if bl.tlsReload != nil {
+			bl.tlsReload.Close()
+		}
+	default:
+		err = bl.httpSrv.Shutdown(ctx)
+		if bl.tlsReload != nil {
+			bl.tlsReload.Close()
+		}
+		if bl.forward != nil {
+			bl.forward.shutdown(ctx)
+		}
+		if bl.h3 != nil {
+			if err3 := bl.h3.Shutdown(ctx); err == nil {
+				err = err3
 			}
 		}
 	}
-	return nil
+	if closeSocket {
+		bl.acc.close()
+	}
+	return err
 }
 
 // ReloadCertificates re-reads listener certificates and upstream client
@@ -926,31 +1140,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		wg.Add(1)
 		go func(bl *boundListener) {
 			defer wg.Done()
-			if bl.tcp != nil {
-				bl.tcp.shutdown(ctx)
-				return
-			}
-			if bl.dns != nil {
-				bl.dns.Shutdown(ctx)
-				bl.dns.Close()
-				if bl.tlsReload != nil {
-					bl.tlsReload.Close()
-				}
-				return
-			}
-			err := bl.httpSrv.Shutdown(ctx)
-			if bl.tlsReload != nil {
-				bl.tlsReload.Close()
-			}
-			if bl.forward != nil {
-				bl.forward.shutdown(ctx)
-			}
-			if bl.h3 != nil {
-				if err3 := bl.h3.Shutdown(ctx); err == nil {
-					err = err3
-				}
-			}
-			if err != nil {
+			if err := s.stopListener(ctx, bl, true); err != nil {
 				errMu.Lock()
 				if firstErr == nil {
 					firstErr = err
@@ -981,7 +1171,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) closeListenersLocked() {
 	for _, bl := range s.listeners {
-		_ = bl.ln.Close()
+		_ = bl.front.Close()
+		bl.acc.close()
 	}
 	s.listeners = nil
 }

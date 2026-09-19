@@ -154,8 +154,9 @@ and a privileged process that stays alive). `AmbientCapabilities=CAP_NET_BIND_SE
 the socket and is the Fedora idiom).
 
 **Consequences.** `xproxy` also binds ports itself when not socket activated,
-for development and other platforms. Listener changes require a restart;
-`Reload` refuses them.
+for development and other platforms. Since 1.3 a reload adds, removes and
+rebuilds listeners; a rebuilt listener on the same address inherits the
+accept socket, so a systemd owned socket is never re-bound.
 
 **Status.** Accepted.
 

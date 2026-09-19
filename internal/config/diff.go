@@ -26,8 +26,11 @@ type Changes struct {
 	Changes       []Change `json:"changes"`
 	Summary       []string `json:"summary"`
 	RestartNeeded []string `json:"restart_needed"`
-	Text          string   `json:"text,omitempty"`
-	Truncated     bool     `json:"truncated,omitempty"`
+	// Drains lists listeners a reload rebuilds or removes, whose open
+	// connections are drained for shutdown_timeout.
+	Drains    []string `json:"drains"`
+	Text      string   `json:"text,omitempty"`
+	Truncated bool     `json:"truncated,omitempty"`
 }
 
 // maxDiffCells bounds the line diff's work (lines of a times lines of b).
@@ -47,7 +50,7 @@ func Dump(c *Config) ([]byte, error) {
 // routes, rate limits, filters) are compared item by item; every other
 // section as a whole.
 func Diff(from, to *Config, fromLabel, toLabel string) *Changes {
-	ch := &Changes{From: fromLabel, To: toLabel, Changes: []Change{}, Summary: []string{}, RestartNeeded: []string{}}
+	ch := &Changes{From: fromLabel, To: toLabel, Changes: []Change{}, Summary: []string{}, RestartNeeded: []string{}, Drains: []string{}}
 	counts := map[string]map[string]int{}
 	add := func(section, name, kind string) {
 		ch.Changes = append(ch.Changes, Change{Section: section, Name: name, Kind: kind})
@@ -111,10 +114,15 @@ func Diff(from, to *Config, fromLabel, toLabel string) *Changes {
 	}
 	for _, c := range ch.Changes {
 		switch {
-		case c.Section == "server.listeners" && c.Kind != "changed":
-			ch.RestartNeeded = append(ch.RestartNeeded, "listener "+c.Name+" "+c.Kind)
-		case c.Section == "server.listeners" && listenerNeedsRestart(from, to, c.Name):
-			ch.RestartNeeded = append(ch.RestartNeeded, "listener "+c.Name+" changed beyond certificate files")
+		case c.Section == "server.listeners" && c.Kind == "changed":
+			switch listenerChange(from, to, c.Name) {
+			case listenerRestart:
+				ch.RestartNeeded = append(ch.RestartNeeded, "listener "+c.Name+" changed on the same address with a UDP socket (h3, quic or dns)")
+			case listenerRebuild:
+				ch.Drains = append(ch.Drains, "listener "+c.Name+" rebuilt (connections drained)")
+			}
+		case c.Section == "server.listeners" && c.Kind == "removed":
+			ch.Drains = append(ch.Drains, "listener "+c.Name+" removed (connections drained)")
 		case c.Section == "management" && from.Management.Socket != to.Management.Socket:
 			ch.RestartNeeded = append(ch.RestartNeeded, "management.socket")
 		case c.Section == "cluster" && clusterNeedsRestart(from, to):
@@ -226,7 +234,17 @@ func wholeSections(from, to *Config) []wholeSection {
 
 // listenerNeedsRestart reports whether a listener changed in anything
 // but the certificate file contents (which reload-certs handles).
-func listenerNeedsRestart(from, to *Config, name string) bool {
+type listenerChangeKind int
+
+const (
+	listenerInPlace listenerChangeKind = iota // certificate files, forward or dns policy
+	listenerRebuild                           // rebuilt by the reload, connections drained
+	listenerRestart                           // needs a restart
+)
+
+// listenerChange classifies a change of the named listener the way
+// Server.Reload treats it.
+func listenerChange(from, to *Config, name string) listenerChangeKind {
 	var a, b *Listener
 	for i := range from.Server.Listeners {
 		if from.Server.Listeners[i].Name == name {
@@ -238,7 +256,46 @@ func listenerNeedsRestart(from, to *Config, name string) bool {
 			b = &to.Server.Listeners[i]
 		}
 	}
-	return a != nil && b != nil && marshal(a) != marshal(b)
+	if a == nil || b == nil {
+		return listenerInPlace
+	}
+	norm := func(l Listener) Listener {
+		l.Forward = nil
+		if l.DNS != nil {
+			l.DNS = &DNSListener{DoHPath: l.DNS.DoHPath}
+		}
+		if l.TLS != nil {
+			t := *l.TLS
+			t.Certificates = nil
+			l.TLS = &t
+		}
+		return l
+	}
+	na, nb := norm(*a), norm(*b)
+	if marshal(&na) == marshal(&nb) {
+		return listenerInPlace
+	}
+	if a.Address == b.Address && ListenerHasUDP(*a) {
+		return listenerRestart
+	}
+	return listenerRebuild
+}
+
+// ListenerHasUDP reports whether the listener binds a UDP socket besides
+// its TCP one: HTTP/3, the QUIC relay of a tcp listener or plain dns.
+func ListenerHasUDP(lc Listener) bool {
+	switch lc.Kind {
+	case "tcp":
+		return lc.TCP != nil && lc.TCP.QUIC
+	case "dns":
+		return lc.TLS == nil
+	}
+	for _, p := range lc.Protocols {
+		if p == ProtocolH3 {
+			return true
+		}
+	}
+	return false
 }
 
 func clusterNeedsRestart(from, to *Config) bool {

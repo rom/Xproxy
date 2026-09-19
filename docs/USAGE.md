@@ -301,8 +301,9 @@ xproxyctl acme renew      # force, for example after changing hosts
 ```
 
 Certificates and the account live under `/var/lib/xproxy/acme`; back that
-directory up with the configuration. Adding or removing a group is a
-listener change and needs a restart.
+directory up with the configuration. Adding or removing a group rebuilds
+the listener on the next reload (its connections drain, the socket is
+kept).
 
 ### HTTP/3
 
@@ -492,6 +493,36 @@ change to a listener address is caught before the reload silently
 leaves it in place. Rollback goes through the same validation and
 audit trail as a reload and never touches the file on disk: after
 rolling back, fix the file, or the next `reload` re-applies it.
+
+### Adding, removing and changing listeners without a restart
+
+```yaml
+server:
+  listeners:
+    - {name: public, address: ":443", tls: {certificates: [{cert_file: /etc/xproxy/tls/www.pem, key_file: /etc/xproxy/tls/www-key.pem}]}}
+    - {name: public-http, address: ":80", redirect_to_https: true}   # new
+```
+
+```
+$ xproxyctl reload -dry-run
+  added    server.listeners public-http
+$ xproxyctl reload
+```
+
+A reload binds the listeners it does not have yet and serves them at
+once; a listener taken out of the file stops accepting and its open
+connections get `shutdown_timeout` to finish. A listener whose settings
+changed (protocols, TLS mode, client authentication, `redirect_to_https`,
+`h2c`, ACME groups, kind) is rebuilt: on the same address the accept
+socket is handed to the new listener, so a socket passed by systemd or
+bound on a privileged port is kept and no client sees a refused
+connection; the old generation drains as for a removal. Certificate
+files, forward and dns policies still apply in place without a drain.
+The dry run lists the drains and the one case that still needs a
+restart, a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`)
+changed on the same address, because that socket stays bound until the
+drain ends. A port that cannot be bound fails the reload with the
+running set untouched.
 
 ### Usage per tenant and route
 
@@ -1851,5 +1882,5 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 | 503 with `Retry-After: 1` | Concurrency ceiling reached |
 | 503 with `Retry-After: 2` and `denied: shed:<class>` in the access log | Load shedding; check `load_level` and upstream latency |
 | 503 HTML page titled "Checking your browser" | Challenge gate; a browser solves it, an API client cannot |
-| Reload says listener changed | Restart instead; sockets may be systemd owned |
+| Reload says a listener needs a restart | Only a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`) changed on the same address; every other listener change applies on reload with a drain |
 | `management socket ... already in use` | Another xproxy is running |

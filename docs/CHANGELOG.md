@@ -211,6 +211,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   tickets` and `GET /v1/tls/tickets` show the epoch and the peers'
   agreement; the fingerprint travels as the cluster event
   `ticket_keys`.
+- Listeners are added, removed, renamed and rebuilt by a reload. A
+  changed listener on the same address inherits the accept socket, so
+  a systemd owned or privileged socket is never re-bound and no
+  connection is refused; the old generation drains for
+  `shutdown_timeout`. The dry run reports the drains (`drains`) and
+  only a listener with a UDP socket changed on the same address still
+  needs a restart.
 
 ### Changed (1.3)
 - No bounded table is silent any more. Every cap that evicts, refuses

@@ -507,6 +507,7 @@ views.history = { async render() {
   else pend.append(table(['Section', 'Item', 'Change'], pending.changes.map(it => [it.section, it.name || '-', it.kind])),
     (pending.summary || []).length ? h('ul', null, pending.summary.map(l => h('li', null, l))) : null,
     (pending.restart_needed || []).length ? h('p', { class: 'warn mt-s' }, 'needs a restart: ' + pending.restart_needed.join(', ')) : null,
+    (pending.drains || []).length ? h('p', { class: 'muted mt-s' }, 'applied with a connection drain: ' + pending.drains.join(', ')) : null,
     pending.text ? h('pre', { class: 'diff' }, pending.text + (pending.truncated ? '\n... (truncated)' : '')) : null);
   view.append(pend);
   const hist = h('div', { class: 'card' }, h('h2', null, 'Recorded configurations'));
