@@ -222,6 +222,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- `sensitive_data` filter: compressed bodies (`gzip`, `deflate`, `br`,
+  `zstd`) are decoded for scanning and bodies over `max_bytes` are
+  streamed through the scanner (`encoded`, `oversize`,
+  `max_decoded_bytes`); masked or streamed compressed bodies are
+  forwarded decoded and a streamed block cuts the transfer.
 - API inventory export: `xproxyctl api VIEW -openapi` and
   `GET /v1/api?format=openapi` render a view as an OpenAPI 3.0
   skeleton with named path parameters, methods, media types, status

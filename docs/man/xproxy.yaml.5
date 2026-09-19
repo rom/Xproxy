@@ -6904,7 +6904,7 @@ T}
 .TE
 .SS "Kind \fBsensitive_data\fR"
 .PP
-Detects personal and secret data in requests and responses and, per direction, logs the findings, masks them or blocks the message. The request phase scans the query string (raw and decoded, plus parameter names that carry credentials), header values and the body; the response phase scans header values and the body. Bodies are buffered up to \fBmax_bytes\fR when their media type is listed and they are not content encoded; a larger, encoded or unlisted body passes unscanned. Masking rewrites the value in place (\fB************1111\fR, \fBa***@example.com\fR, the first eight characters of a token) and updates \fBContent\-Length\fR; blocking answers \fBblock_status\fR with reason \fBsensitive_data\fR, a detail \fBresponse:card,email\fR and a JSON problem naming the kinds found, never the values. The access log carries \fBsensitive_types\fR, \fBsensitive_count\fR and \fBsensitive_where\fR for every message with a finding, in every mode; blocks count in \fBdenied_sensitive_data\fR, findings and message outcomes in the \fBxproxy_sensitive_*\fR metric families.
+Detects personal and secret data in requests and responses and, per direction, logs the findings, masks them or blocks the message. The request phase scans the query string (raw and decoded, plus parameter names that carry credentials), header values and the body; the response phase scans header values and the body. Bodies of a listed media type are buffered up to \fBmax_bytes\fR and scanned whole; \fBgzip\fR, \fBdeflate\fR, \fBbr\fR and \fBzstd\fR bodies are decoded first (up to \fBmax_decoded_bytes\fR); a body larger than that is streamed through the scanner as it flows, with 4 KiB held back between reads so a value split across two reads is still seen; an unlisted media type, an unknown encoding or a partial (ranged) body passes unscanned. A masked or streamed compressed body is forwarded decoded (the encoding header is removed); a streamed body loses its content length. Blocking a streamed body cuts the transfer at the finding, since the head of the message has already been forwarded. Masking rewrites the value in place (\fB************1111\fR, \fBa***@example.com\fR, the first eight characters of a token) and updates \fBContent\-Length\fR; blocking answers \fBblock_status\fR with reason \fBsensitive_data\fR, a detail \fBresponse:card,email\fR and a JSON problem naming the kinds found, never the values. The access log carries \fBsensitive_types\fR, \fBsensitive_count\fR and \fBsensitive_where\fR for every message with a finding, in every mode; blocks count in \fBdenied_sensitive_data\fR, findings and message outcomes in the \fBxproxy_sensitive_*\fR metric families.
 .PP
 Built\-in detectors: \fBcard\fR (Luhn checked payment cards), \fBpersonnummer\fR (Swedish personal and coordination numbers with a valid date and checksum), \fBiban\fR (mod 97), \fBssn_us\fR, \fBemail\fR, \fBjwt\fR (three base64url parts with a JSON header), \fBprivate_key\fR (PEM headers), \fBapi_keys\fR (AWS, Google, GitHub, Slack, Stripe and GitLab formats) and \fBpassword_query\fR (query parameter names such as \fBpassword\fR, \fBtoken\fR or \fBapi_key\fR with a value; requests only).
 .PP
@@ -7000,7 +7000,34 @@ int
 T}	T{
 \fB1048576\fR
 T}	T{
-Body buffered per direction (1 to 64 MiB)
+Body buffered and scanned whole per direction (1 to 64 MiB);\: larger bodies are streamed
+T}
+T{
+\fB*.\:max_\:decoded_\:bytes\fR
+T}	T{
+int
+T}	T{
+4 \[u00D7] \fBmax_\:bytes\fR
+T}	T{
+A compressed body that decodes to more than this is streamed instead (up to 1 GiB)
+T}
+T{
+\fB*.\:encoded\fR
+T}	T{
+\fBscan\fR,\: \fBskip\fR
+T}	T{
+\fBscan\fR
+T}	T{
+Decode \fBgzip\fR,\: \fBdeflate\fR,\: \fBbr\fR and \fBzstd\fR bodies for scanning,\: or leave compressed bodies unscanned
+T}
+T{
+\fB*.\:oversize\fR
+T}	T{
+\fBstream\fR,\: \fBskip\fR
+T}	T{
+\fBstream\fR
+T}	T{
+Scan bodies larger than \fBmax_\:bytes\fR as they flow,\: or leave them unscanned
 T}
 T{
 \fB*.\:ignore_\:headers\fR

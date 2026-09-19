@@ -1858,10 +1858,17 @@ Detects personal and secret data in requests and responses and, per
 direction, logs the findings, masks them or blocks the message. The
 request phase scans the query string (raw and decoded, plus parameter
 names that carry credentials), header values and the body; the
-response phase scans header values and the body. Bodies are buffered
-up to `max_bytes` when their media type is listed and they are not
-content encoded; a larger, encoded or unlisted body passes unscanned.
-Masking rewrites the value in place (`************1111`,
+response phase scans header values and the body. Bodies of a listed
+media type are buffered up to `max_bytes` and scanned whole; `gzip`,
+`deflate`, `br` and `zstd` bodies are decoded first (up to
+`max_decoded_bytes`); a body larger than that is streamed through the
+scanner as it flows, with 4 KiB held back between reads so a value
+split across two reads is still seen; an unlisted media type, an
+unknown encoding or a partial (ranged) body passes unscanned. A masked
+or streamed compressed body is forwarded decoded (the encoding header
+is removed); a streamed body loses its content length. Blocking a
+streamed body cuts the transfer at the finding, since the head of the
+message has already been forwarded. Masking rewrites the value in place (`************1111`,
 `a***@example.com`, the first eight characters of a token) and updates
 `Content-Length`; blocking answers `block_status` with reason
 `sensitive_data`, a detail `response:card,email` and a JSON problem
@@ -1889,7 +1896,10 @@ or `api_key` with a value; requests only).
 | `request.scan` | list | all | `query`, `headers`, `body` |
 | `response.scan` | list | all | `headers`, `body` |
 | `*.types` | list | text, JSON, XML, form, JavaScript types | Body media types scanned, without parameters |
-| `*.max_bytes` | int | `1048576` | Body buffered per direction (1 to 64 MiB) |
+| `*.max_bytes` | int | `1048576` | Body buffered and scanned whole per direction (1 to 64 MiB); larger bodies are streamed |
+| `*.max_decoded_bytes` | int | 4 × `max_bytes` | A compressed body that decodes to more than this is streamed instead (up to 1 GiB) |
+| `*.encoded` | `scan`, `skip` | `scan` | Decode `gzip`, `deflate`, `br` and `zstd` bodies for scanning, or leave compressed bodies unscanned |
+| `*.oversize` | `stream`, `skip` | `stream` | Scan bodies larger than `max_bytes` as they flow, or leave them unscanned |
 | `*.ignore_headers` | list | request: `Authorization`, `Cookie`, `X-Api-Key`, `Proxy-Authorization`; response: `Set-Cookie` | Headers never scanned or masked |
 | `block_status` | int | `403` | Status for `block` (4xx or 5xx) |
 | `min_findings` | int | `1` | Findings a message needs before mask or block act; fewer are logged only (1 to 64) |

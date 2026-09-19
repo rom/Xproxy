@@ -178,7 +178,7 @@ func operationFor(e Endpoint, schemes map[string]any) map[string]any {
 		responses["default"] = map[string]any{"description": "Not yet observed"}
 	}
 	op["responses"] = responses
-	var security []any
+	security := make([]any, 0, len(e.Auth))
 	for _, a := range e.Auth {
 		name, scheme := securityScheme(a)
 		if name == "" {
