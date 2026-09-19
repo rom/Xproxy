@@ -2122,8 +2122,9 @@ where something changed.
 ### Header policy and basic authentication (filters)
 
 Filters are middleware instances attached to routes; the built-in kinds
-are `header_guard`, `basic_auth`, `body_rewrite`, `bot_score`, `oidc`
-and `wasm` (`xproxyctl filters` lists what the binary has;
+are `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`,
+`upload_guard`, `body_rewrite`, `bot_score`, `oidc` and `wasm`
+(`xproxyctl filters` lists what the binary has;
 [EXTENDING.md](EXTENDING.md) shows how to add one).
 
 ```yaml
@@ -2202,6 +2203,40 @@ queries that take an API down (deep nesting, wide lists, alias floods,
 batches, introspection in production) without knowing the schema. The
 security log carries the filter name as the reason and the access log
 the key id (`api_key`).
+
+### Upload protection (filter)
+
+Uploads are where a web shell arrives. The `upload_guard` filter
+inspects every file part of a multipart request before the application
+sees it:
+
+```yaml
+filters:
+  - name: uploads
+    kind: upload_guard
+    options:
+      max_files: 10
+      max_file_bytes: 10485760
+      allowed_extensions: [jpg, jpeg, png, gif, webp, pdf, docx, xlsx]
+      fields: [file, attachment]
+routes:
+  - {name: attachments, paths: [/api/attachments], methods: [POST], upstream: app, filters: [uploads], max_body_bytes: 52428800}
+```
+
+`invoice.pdf.exe` is refused for the `exe` in its chain, `photo.html.jpg`
+for the unexpected `html` under an allow list, `cute.png` that starts
+with `MZ` for being a Windows program, `cute.jpg` with `<?php` inside
+for being server side code, a PNG named `.jpg` for not matching its
+name, and a file declared `application/pdf` whose bytes are an image
+for not matching its declaration. Each refusal names the check and the
+file in the security event (`detail: executable:pe:cute.png`), the
+request never reaches the application, and the body of an accepted
+upload is replayed unchanged. `strict_magic: true` also refuses content
+nobody recognises, right for an avatar endpoint; `raw_uploads: true`
+covers `PUT /files/name.png` style uploads without multipart. Virus
+scanning is the ICAP filter's job (`routes[].icap`), and the two
+combine on one route. `examples/filters/uploads.yaml` is a complete
+configuration.
 
 ### Browser challenge
 

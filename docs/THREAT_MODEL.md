@@ -53,6 +53,7 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Threat | Mitigation |
 |--------|------------|
 | Path traversal through routing (`/admin/../public`) | Routing on the cleaned path (`netutil.CleanPath`, `FuzzCleanPath`) |
+| Web shell or malware uploaded through a form (a PHP file named `.jpg`, an executable behind a double extension) | `upload_guard` filter: extension chain rules, content sniffing against name and declared type, executable and server side script detection by content, size and count bounds, file name sanitising; ICAP for signature scanning |
 | Encoding tricks that make the proxy and the upstream read a path differently (double encoding, encoded separators, backslashes, NUL and control characters, overlong UTF-8, Unicode spellings) | `server.normalization`: control characters and invalid UTF-8 refused by default, double encoding, encoded slashes and backslashes refusable, NFC or NFKC folding of the routing path; the WAF still sees the raw target |
 | Header injection through configured header values | Validation rejects CR, LF and NUL in configured values; `net/http` rejects them in requests |
 | Request smuggling (CL.TE, TE.CL) | `net/http` parser rejects ambiguous framing; `server.normalization.reject_ambiguous_framing` refuses and counts what it lets through (differing lengths, a length next to a transfer coding, unknown codings); HTTP/1.1 to upstream is re-serialised by `ReverseProxy`, never forwarded byte for byte; hop-by-hop headers stripped |

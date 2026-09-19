@@ -5536,7 +5536,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBupload_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -6321,6 +6321,132 @@ T}	T{
 \fB1000\fR
 T}	T{
 Cap of one multiplier,\: and the value assumed for a variable
+T}
+.TE
+.SS "Kind \fBupload_guard\fR"
+.PP
+Inspects file uploads before the application stores them: multipart bodies (and, with \fBraw_uploads\fR, any other body of a write request) are buffered up to \fBmax_total_bytes\fR, every file part is checked and the body is replayed to the upstream unchanged. Checks, in order: file count, the form field, the file name (no path separators, control characters or traversal, at most \fBmax_filename_length\fR), the extension chain (\fBinvoice.pdf.exe\fR has two; a denied extension anywhere in the chain refuses, and with an allow list an unexpected extension before the last one, \fBphoto.html.jpg\fR, refuses too, while \fBreport.2024.pdf\fR passes), the size, the content (PE, ELF and Mach\-O images, \fB#!\fR scripts, PHP, JSP and ASP tags are refused whatever the name, unless \fBdeny_executables\fR is off), and the bytes against the extension\(aqs family and the declared media type (a PNG named \fB.jpg\fR, a PDF declared as an image). Denials answer 400, 413 or 415 with reason \fBupload\fR, a detail \fBcheck:filename\fR and a JSON body; the access log carries \fBupload_files\fR and \fBupload_bytes\fR. Malware scanning stays with ICAP.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.6i) lbw(0.9i) lbx
+lw(1.2i) lw(0.6i) lw(0.9i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmax_\:files\fR
+T}	T{
+int
+T}	T{
+\fB10\fR
+T}	T{
+File parts per request (1 to 10000)
+T}
+T{
+\fBmax_\:file_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB10485760\fR
+T}	T{
+Per file (up to 1 GiB)
+T}
+T{
+\fBmax_\:total_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB67108864\fR
+T}	T{
+Per request,\: buffered;\: larger requests get 413 (up to 1 GiB,\: at least \fBmax_\:file_\:bytes\fR)
+T}
+T{
+\fBallowed_\:extensions\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Only these final extensions;\: a file without an extension is refused. An entry overrides the built\-in deny list
+T}
+T{
+\fBdenied_\:extensions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Added to the built\-in list: executables,\: installers,\: shell and interpreter scripts,\: PHP,\: JSP,\: ASP,\: CGI,\: Java archives,\: \fB.\:htaccess\fR
+T}
+T{
+\fBdouble_\:extensions\fR
+T}	T{
+\fBdeny\fR,\: \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+\fBdeny\fR checks every extension in the chain;\: \fBallow\fR looks at the last one only
+T}
+T{
+\fBcheck_\:magic\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Bytes must match the extension\(aqs family (images,\: PDF,\: Office and archive containers,\: media) and the declared media type
+T}
+T{
+\fBstrict_\:magic\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Also refuse content of an unrecognised type
+T}
+T{
+\fBdeny_\:executables\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse programs and server side code by content
+T}
+T{
+\fBraw_\:uploads\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Treat a non multipart body of a write request as one file,\: named from \fBContent\-\:Disposition\fR or the last path segment
+T}
+T{
+\fBfields\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Form field names that may carry files
+T}
+T{
+\fBmax_\:filename_\:length\fR
+T}	T{
+int
+T}	T{
+\fB255\fR
+T}	T{
+
 T}
 .TE
 .SS "routes[].filters"

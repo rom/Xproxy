@@ -6,13 +6,16 @@
 package examples
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
@@ -367,6 +370,49 @@ func TestHeaderPolicy(t *testing.T) {
 	r = httptest.NewRequest("GET", "http://api.example.com/v1/users", nil)
 	if v := f.Begin(context.Background(), info).Request(r); !v.Deny {
 		t.Fatal("missing version header accepted")
+	}
+}
+
+// TestUploadGuard runs the example upload filters against multipart
+// uploads.
+func TestUploadGuard(t *testing.T) {
+	f := filterFromExample(t, "filters/uploads.yaml", "uploads")
+	info := &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9")}
+	upload := func(field, name, ctype string, data []byte) *http.Request {
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		h := textproto.MIMEHeader{}
+		h.Set("Content-Disposition", `form-data; name="`+field+`"; filename="`+name+`"`)
+		h.Set("Content-Type", ctype)
+		pw, err := w.CreatePart(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = pw.Write(data)
+		_ = w.Close()
+		r := httptest.NewRequest("POST", "http://app.example.com/api/attachments", bytes.NewReader(buf.Bytes()))
+		r.Header.Set("Content-Type", w.FormDataContentType())
+		return r
+	}
+	png := append([]byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}, make([]byte, 32)...)
+	if v := f.Begin(context.Background(), info).Request(upload("file", "photo.png", "image/png", png)); v.Deny {
+		t.Fatalf("png denied: %+v", v)
+	}
+	if v := f.Begin(context.Background(), info).Request(upload("file", "photo.php.png", "image/png", png)); !v.Deny || v.Status != 415 {
+		t.Fatalf("double extension accepted: %+v", v)
+	}
+	if v := f.Begin(context.Background(), info).Request(upload("file", "photo.png", "image/png", []byte("<?php echo 1; ?>"))); !v.Deny || !strings.HasPrefix(v.Detail, "executable") {
+		t.Fatalf("php content accepted: %+v", v)
+	}
+	if v := f.Begin(context.Background(), info).Request(upload("avatar", "photo.png", "image/png", png)); !v.Deny || !strings.HasPrefix(v.Detail, "field") {
+		t.Fatalf("unknown field accepted: %+v", v)
+	}
+	avatars := filterFromExample(t, "filters/uploads.yaml", "avatars")
+	raw := httptest.NewRequest("PUT", "http://app.example.com/api/me/avatar", bytes.NewReader([]byte("not an image")))
+	raw.Header.Set("Content-Type", "image/png")
+	raw.Header.Set("Content-Disposition", `attachment; filename="me.png"`)
+	if v := avatars.Begin(context.Background(), info).Request(raw); !v.Deny || !strings.HasPrefix(v.Detail, "type_unknown") {
+		t.Fatalf("strict raw upload accepted: %+v", v)
 	}
 }
 

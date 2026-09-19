@@ -101,6 +101,12 @@ to report a vulnerability. The threat analysis behind the controls is in
   query parameters with types, lengths, patterns and repeat counts, and
   bounds on the URI, query and headers, refused before any other
   processing with the failed check named in the log.
+- Upload protection (`upload_guard` filter): file count and sizes,
+  extension chains (double extensions), file names without paths or
+  control characters, executables and server side code recognised by
+  content, and bytes checked against the name and the declared type,
+  before the application stores anything; malware scanning through
+  ICAP combines with it.
 - Virtual patches: known vulnerabilities blocked by request shape (host,
   route, path, method, parameter, header, cookie and body conditions),
   before rate limits, filters and the WAF, with per patch counters, a

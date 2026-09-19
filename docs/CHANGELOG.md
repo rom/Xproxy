@@ -218,6 +218,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- `upload_guard` filter kind: file count and sizes, allowed and denied
+  extensions with double extension rules, file name checks, content
+  sniffing against the extension and the declared type, executable and
+  server side script detection, raw upload support.
 - Request normalisation (`server.normalization`): control characters
   and invalid UTF-8 in the target refused by default, double encoding,
   encoded slashes and backslashes refusable, ambiguous HTTP/1 framing

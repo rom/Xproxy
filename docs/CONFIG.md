@@ -1421,7 +1421,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -1633,6 +1633,40 @@ introspection. Nothing is executed or forwarded to a schema. Denials are
 | `introspection` | bool | `true` | `false` refuses `__schema` and `__type` |
 | `list_args` | list | `[first, last, limit]` | Arguments whose integer value multiplies the cost of the fields below |
 | `max_list` | int | `1000` | Cap of one multiplier, and the value assumed for a variable |
+
+### Kind `upload_guard`
+
+Inspects file uploads before the application stores them: multipart
+bodies (and, with `raw_uploads`, any other body of a write request)
+are buffered up to `max_total_bytes`, every file part is checked and
+the body is replayed to the upstream unchanged. Checks, in order: file
+count, the form field, the file name (no path separators, control
+characters or traversal, at most `max_filename_length`), the extension
+chain (`invoice.pdf.exe` has two; a denied extension anywhere in the
+chain refuses, and with an allow list an unexpected extension before
+the last one, `photo.html.jpg`, refuses too, while `report.2024.pdf`
+passes), the size, the content (PE, ELF and Mach-O images, `#!`
+scripts, PHP, JSP and ASP tags are refused whatever the name, unless
+`deny_executables` is off), and the bytes against the extension's
+family and the declared media type (a PNG named `.jpg`, a PDF declared
+as an image). Denials answer 400, 413 or 415 with reason `upload`, a
+detail `check:filename` and a JSON body; the access log carries
+`upload_files` and `upload_bytes`. Malware scanning stays with ICAP.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_files` | int | `10` | File parts per request (1 to 10000) |
+| `max_file_bytes` | int | `10485760` | Per file (up to 1 GiB) |
+| `max_total_bytes` | int | `67108864` | Per request, buffered; larger requests get 413 (up to 1 GiB, at least `max_file_bytes`) |
+| `allowed_extensions` | list | any | Only these final extensions; a file without an extension is refused. An entry overrides the built-in deny list |
+| `denied_extensions` | list | `[]` | Added to the built-in list: executables, installers, shell and interpreter scripts, PHP, JSP, ASP, CGI, Java archives, `.htaccess` |
+| `double_extensions` | `deny`, `allow` | `deny` | `deny` checks every extension in the chain; `allow` looks at the last one only |
+| `check_magic` | bool | `true` | Bytes must match the extension's family (images, PDF, Office and archive containers, media) and the declared media type |
+| `strict_magic` | bool | `false` | Also refuse content of an unrecognised type |
+| `deny_executables` | bool | `true` | Refuse programs and server side code by content |
+| `raw_uploads` | bool | `false` | Treat a non multipart body of a write request as one file, named from `Content-Disposition` or the last path segment |
+| `fields` | list | any | Form field names that may carry files |
+| `max_filename_length` | int | `255` | |
 
 ### routes[].filters
 
