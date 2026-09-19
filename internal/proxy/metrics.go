@@ -89,6 +89,7 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_account_blocks_total", "Blocks the account guard placed.", nil, float64(acc.Blocks))
 	e.Counter("xproxy_account_campaigns_total", "Distributed campaigns the account guard declared.", nil, float64(acc.Campaigns))
 	e.Counter("xproxy_account_disposable_total", "Registrations with a disposable e-mail domain.", nil, float64(acc.Disposable))
+	e.Counter("xproxy_account_automation_total", "Requests whose challenge cookie carried automation markers on an endpoint acting on them.", nil, float64(acc.Automation))
 	e.Gauge("xproxy_account_blocks_active", "Account guard blocks in force.", nil, float64(sn.AccountBlocksActive))
 	e.Counter("xproxy_waf_detected_total", "Requests the WAF flagged in detect mode.", nil, float64(sn.WAFDetected))
 	e.Counter("xproxy_upstream_errors_total", "Upstream connection failures.", nil, float64(sn.UpstreamErrors))

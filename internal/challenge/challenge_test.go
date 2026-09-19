@@ -172,7 +172,7 @@ func TestPersistentKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	ip := netip.MustParseAddr("203.0.113.1")
-	val := a.issueCookie(ip, time.Now(), TierProof, nil)
+	val := a.issueCookie(ip, time.Now(), TierProof, nil, 0)
 	r := httptest.NewRequest("GET", "/", nil)
 	r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: val})
 	if !b.Verified(r, ip) {
@@ -188,7 +188,7 @@ func TestKeyRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	ip := netip.MustParseAddr("203.0.113.1")
-	old := a.issueCookie(ip, time.Now(), TierProof, nil)
+	old := a.issueCookie(ip, time.Now(), TierProof, nil, 0)
 	if _, err := secret.Rotate(c.SecretFile, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestKeyRotation(t *testing.T) {
 	if !a.Verified(r, ip) {
 		t.Fatal("cookie from before the rotation rejected")
 	}
-	fresh := a.issueCookie(ip, time.Now(), TierProof, nil)
+	fresh := a.issueCookie(ip, time.Now(), TierProof, nil, 0)
 	if fresh == old {
 		t.Fatal("primary key did not change")
 	}
@@ -238,7 +238,7 @@ func TestScriptSHA256MatchesGo(t *testing.T) {
 	// the round constants and the verification form fields the Go side
 	// expects.
 	s := string(script)
-	for _, needle := range []string{"0x428a2f98", "0xc67178f2", `add("nonce", nonce)`, `add("counter", String(found))`, `add("r", ret)`, `add("device", device)`, "xproxyCaptchaDone", "sha256Hex"} {
+	for _, needle := range []string{"0x428a2f98", "0xc67178f2", `add("nonce", nonce)`, `add("counter", String(found))`, `add("r", ret)`, `add("device", device)`, `add("signals", signals)`, "xproxyCaptchaDone", "sha256Hex", "webdriver", "$cdc_"} {
 		if !strings.Contains(s, needle) {
 			t.Fatalf("script missing %q", needle)
 		}
@@ -260,10 +260,11 @@ func TestTiersAndDevice(t *testing.T) {
 		tier   int
 		device string
 	}{
-		{c.issueCookie(ip, now, TierProof, dev), TierProof, "0123456789abcdef"},
-		{c.issueCookie(ip, now, TierCaptcha, dev), TierCaptcha, "0123456789abcdef"},
-		{c.issueCookie(ip, now, TierProof, nil), TierProof, ""},
+		{c.issueCookie(ip, now, TierProof, dev, 0), TierProof, "0123456789abcdef"},
+		{c.issueCookie(ip, now, TierCaptcha, dev, 0), TierCaptcha, "0123456789abcdef"},
+		{c.issueCookie(ip, now, TierProof, nil, 0), TierProof, ""},
 		{legacyCookie(c, ip, now), TierProof, ""},
+		{tieredCookie(c, ip, now, TierCaptcha, dev), TierCaptcha, "0123456789abcdef"},
 	}
 	for i, tc := range cases {
 		r := httptest.NewRequest("GET", "/", nil)
@@ -277,7 +278,7 @@ func TestTiersAndDevice(t *testing.T) {
 		}
 	}
 	// A tier byte outside the range is refused even with a valid MAC.
-	forged := c.issueCookie(ip, now, 7, dev)
+	forged := c.issueCookie(ip, now, 7, dev, 0)
 	r := httptest.NewRequest("GET", "/", nil)
 	r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: forged})
 	if tier, _ := c.Check(r, ip); tier != TierNone {
@@ -300,7 +301,7 @@ func TestTiersAndDevice(t *testing.T) {
 		t.Fatal("page does not ask for a device id")
 	}
 	nonce := extractNonce(t, rec.Body.String())
-	form := url.Values{"nonce": {nonce}, "counter": {Solve(nonce, 10)}, "r": {"/x"}, "device": {strings.Repeat("cd", 32)}}
+	form := url.Values{"nonce": {nonce}, "counter": {Solve(nonce, 10)}, "r": {"/x"}, "device": {strings.Repeat("cd", 32)}, "signals": {"webdriver,bogus,zero_window"}}
 	req := httptest.NewRequest("POST", "http://example.com"+VerifyPath, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
@@ -316,6 +317,9 @@ func TestTiersAndDevice(t *testing.T) {
 	if tier, device := c.Check(r, ip); tier != TierProof || device != strings.Repeat("cd", 8) {
 		t.Fatalf("device cookie: %d %q", tier, device)
 	}
+	if got := c.Inspect(r, ip); strings.Join(got.Automation, ",") != "webdriver,zero_window" {
+		t.Fatalf("automation markers %v", got.Automation)
+	}
 	// Devices off: the page does not ask and the cookie carries none.
 	off := cfg()
 	f := false
@@ -326,6 +330,17 @@ func TestTiersAndDevice(t *testing.T) {
 	if strings.Contains(rec.Body.String(), `data-device`) {
 		t.Fatal("page asks for a device id with devices off")
 	}
+}
+
+// tieredCookie builds a cookie in the tiered format before automation
+// markers (exp, tier, device, mac under "cookie2").
+func tieredCookie(c *Challenger, ip netip.Addr, now time.Time, tier int, device []byte) string {
+	buf := make([]byte, 8+1+deviceLen, 8+1+deviceLen+macLen)
+	binary.BigEndian.PutUint64(buf, uint64(now.Add(c.ttl).Unix())) //nolint:gosec // positive time
+	buf[8] = byte(tier)
+	copy(buf[9:], device)
+	buf = append(buf, c.mac([]byte("cookie2"), buf[:8+1+deviceLen], c.ipBytes(ip))...)
+	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
 // legacyCookie builds a cookie in the format before tiers.

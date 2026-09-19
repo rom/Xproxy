@@ -149,3 +149,60 @@ func TestValidateOptions(t *testing.T) {
 		t.Fatalf("defaults rejected: %v", err)
 	}
 }
+
+func TestDeviceSignals(t *testing.T) {
+	s := build(t, filter.Options{"deny_at": 90, "device_addresses": 3})
+	now := time.Unix(1000, 0)
+	s.now = func() time.Time { return now }
+	base := filter.Info{TLS: true, JA4: "t13d1516h2_8daaf6152771_b0da82dd1658", ALPN: []string{"h2"}, Path: "/p", DeviceID: "0123456789abcdef"}
+	clean := func() *http.Request { return req(chromeUA, "Accept", "text/html", "Accept-Language", "sv") }
+	// A device seen from one or two addresses is nothing; from three it
+	// is shared.
+	for i, ip := range []string{"198.51.100.1", "198.51.100.2"} {
+		info := base
+		info.ClientIP = netip.MustParseAddr(ip)
+		in := s.Begin(nil, &info).(*instance) //nolint:staticcheck // scorer ignores the context
+		if v := in.Request(clean()); v.Deny || in.score != 0 {
+			t.Fatalf("address %d scored %d: %v", i, in.score, in.signals)
+		}
+	}
+	info := base
+	info.ClientIP = netip.MustParseAddr("198.51.100.3")
+	in := s.Begin(nil, &info).(*instance) //nolint:staticcheck // see above
+	in.Request(clean())
+	if in.score != 25 || strings.Join(in.signals, ",") != "device_shared" {
+		t.Fatalf("shared device: %d %v", in.score, in.signals)
+	}
+	// Automation markers from the cookie weigh 45 on an otherwise clean
+	// browser; together with a shared device the client is denied.
+	info.Automation = []string{"webdriver"}
+	in = s.Begin(nil, &info).(*instance) //nolint:staticcheck // see above
+	v := in.Request(clean())
+	if in.score != 70 || v.Deny {
+		t.Fatalf("automation: %d %v %+v", in.score, in.signals, v)
+	}
+	if v := s.Begin(nil, &info).Request(req("curl/8")); !v.Deny { //nolint:staticcheck // see above
+		t.Fatalf("automation plus curl not denied: %+v", v)
+	}
+	// The window resets the device's addresses; a request without a
+	// device never counts.
+	now = now.Add(2 * time.Minute)
+	in = s.Begin(nil, &info).(*instance) //nolint:staticcheck // see above
+	in.Request(clean())
+	if strings.Contains(strings.Join(in.signals, ","), "device_shared") {
+		t.Fatalf("device window did not reset: %v", in.signals)
+	}
+	none := base
+	none.DeviceID = ""
+	none.ClientIP = netip.MustParseAddr("198.51.100.9")
+	if s.observeDevice(none.DeviceID, none.ClientIP) || len(s.devices) != 1 {
+		t.Fatal("empty device tracked")
+	}
+	attrs := in.attrs()
+	if attrs[len(attrs)-2] != "device" || attrs[len(attrs)-1] != "0123456789abcdef" {
+		t.Fatalf("attrs %v", attrs)
+	}
+	if _, err := filtertest.Build("bot_score", "b", filter.Options{"device_addresses": 1}); err == nil {
+		t.Fatal("device_addresses 1 accepted")
+	}
+}

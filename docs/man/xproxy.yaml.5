@@ -6280,6 +6280,15 @@ T}	T{
 Requests in the window above which \fBhigh_\:rate\fR fires
 T}
 T{
+\fBdevice_\:addresses\fR
+T}	T{
+int
+T}	T{
+\fB5\fR
+T}	T{
+Distinct client addresses one device identifier must arrive from within the window before \fBdevice_\:shared\fR fires (2 to 10000)
+T}
+T{
 \fBweights\fR
 T}	T{
 mapping
@@ -6299,10 +6308,10 @@ Deny reason
 T}
 .TE
 .PP
-Signals and default weights: \fBua_bot\fR 40 (curl, wget, python, Go, Java, scanners, headless browsers and the like), \fBua_missing\fR 30, \fBbrowser_headers_missing\fR 25 (a browser user agent without \fBAccept\fR or \fBAccept\-Language\fR), \fBfingerprint_mismatch\fR 35 (a browser user agent on a hello without \fBh2\fR ALPN or with fewer than ten cipher suites), \fBerror_rate\fR 30 (more than half of at least ten recent requests were 4xx or denied), \fBpath_spread\fR 15 (fifty or more distinct paths in the window), \fBregular_interval\fR 20 (eight or more requests with machine\-like timing), \fBhigh_rate\fR 15, \fBhoneypot_marked\fR 40 (the client touched a honeypot route on this node or, with cluster sharing, on a peer). The score is the capped sum; a client that is already verified by the challenge is never challenged again. The JA4 of every TLS request is logged as \fBja4\fR.
+Signals and default weights: \fBua_bot\fR 40 (curl, wget, python, Go, Java, scanners, headless browsers and the like), \fBua_missing\fR 30, \fBbrowser_headers_missing\fR 25 (a browser user agent without \fBAccept\fR or \fBAccept\-Language\fR), \fBfingerprint_mismatch\fR 35 (a browser user agent on a hello without \fBh2\fR ALPN or with fewer than ten cipher suites), \fBerror_rate\fR 30 (more than half of at least ten recent requests were 4xx or denied), \fBpath_spread\fR 15 (fifty or more distinct paths in the window), \fBregular_interval\fR 20 (eight or more requests with machine\-like timing), \fBhigh_rate\fR 15, \fBhoneypot_marked\fR 40 (the client touched a honeypot route on this node or, with cluster sharing, on a peer), \fBautomation_markers\fR 45 (the challenge cookie says the script saw WebDriver, driver globals, chromedriver, a headless user agent, no languages, no plugins or a zero sized window when the client solved its challenge) and \fBdevice_shared\fR 25 (the cookie\(aqs device identifier came from \fBdevice_addresses\fR or more addresses in the window: one tool behind a proxy pool). The last two need a \fBchallenge\fR section with \fBdevice\fR on and only apply once the client holds a cookie. The score is the capped sum; a client that is already verified by the challenge is never challenged again. The JA4 of every TLS request is logged as \fBja4\fR.
 .SS "Kind \fBaccount_guard\fR"
 .PP
-Protects the endpoints where accounts are attacked. Each endpoint has a class with a default ladder of progressive actions over a window: \fBlogin\fR counts failed attempts (recognised in the response) per client address, per account, per address and account pair, distinct accounts per address (credential stuffing) and distinct addresses per account (spraying, distributed brute force); \fBregister\fR, \fBreset\fR, \fBcart\fR and \fBscrape\fR count requests; \fBcustom\fR needs its own steps. A step fires when any of its thresholds is reached and the highest firing step acts: \fBlog\fR records, \fBdelay\fR holds the request, \fBchallenge\fR serves the browser challenge to unverified clients (a plain 403 without a \fBchallenge\fR section), \fBcaptcha\fR serves the CAPTCHA tier (\fBchallenge.captcha\fR; the proof of work without one) to clients that have not passed it, and \fBblock\fR refuses the key that crossed the threshold for \fBduration\fR, on every node of a cluster. Blocks and denials use reason \fBaccount_abuse\fR (a ban trigger category) with status \fBblock_status\fR; the access log carries \fBaccount_endpoint\fR, \fBaccount_action\fR, \fBaccount_by\fR, \fBaccount_counts\fR, \fBaccount_hash\fR, \fBaccount_campaign\fR and \fBaccount_outcome\fR; \fBxproxyctl accounts\fR and \fBGET /v1/accounts\fR show the live state (tracked keys, active blocks, campaigns) and the process wide counters, which the \fBxproxy_account_*\fR metric families export. Identities are trimmed, lower cased and hashed before they are counted or logged. A campaign spread over many addresses, each under its own thresholds, is detected from the endpoint\(aqs totals (\fBdistributed\fR): while it lasts every unverified request of the endpoint is challenged (or blocked).
+Protects the endpoints where accounts are attacked. Each endpoint has a class with a default ladder of progressive actions over a window: \fBlogin\fR counts failed attempts (recognised in the response) per client address, per account, per address and account pair, distinct accounts per address (credential stuffing) and distinct addresses per account (spraying, distributed brute force); \fBregister\fR, \fBreset\fR, \fBcart\fR and \fBscrape\fR count requests; \fBcustom\fR needs its own steps. A step fires when any of its thresholds is reached and the highest firing step acts: \fBlog\fR records, \fBdelay\fR holds the request, \fBchallenge\fR serves the browser challenge to unverified clients (a plain 403 without a \fBchallenge\fR section), \fBcaptcha\fR serves the CAPTCHA tier (\fBchallenge.captcha\fR; the proof of work without one) to clients that have not passed it, and \fBblock\fR refuses the key that crossed the threshold for \fBduration\fR, on every node of a cluster. Blocks and denials use reason \fBaccount_abuse\fR (a ban trigger category) with status \fBblock_status\fR; the access log carries \fBaccount_endpoint\fR, \fBaccount_action\fR, \fBaccount_by\fR, \fBaccount_counts\fR, \fBaccount_hash\fR, \fBaccount_campaign\fR, \fBaccount_device\fR and \fBaccount_outcome\fR; \fBxproxyctl accounts\fR and \fBGET /v1/accounts\fR show the live state (tracked keys, active blocks, campaigns) and the process wide counters, which the \fBxproxy_account_*\fR metric families export. Identities are trimmed, lower cased and hashed before they are counted or logged. A campaign spread over many addresses, each under its own thresholds, is detected from the endpoint\(aqs totals (\fBdistributed\fR): while it lasts every unverified request of the endpoint is challenged (or blocked).
 .PP
 .TS
 allbox;
@@ -6396,7 +6405,7 @@ list
 T}	T{
 per class,\: below
 T}	T{
-1 to 8 steps of \fB{action,\: delay,\: duration,\: ip,\: account,\: pair,\: ip_\:accounts,\: account_\:ips,\: ip_\:paths}\fR;\: \fBaction\fR is \fBlog\fR,\: \fBdelay\fR (holds \fBdelay\fR,\: 10ms to 10s,\: default 1s),\: \fBchallenge\fR,\: \fBcaptcha\fR or \fBblock\fR (for \fBduration\fR,\: default the window);\: at least one threshold per step
+1 to 8 steps of \fB{action,\: delay,\: duration,\: ip,\: account,\: pair,\: ip_\:accounts,\: account_\:ips,\: ip_\:paths,\: device,\: device_\:accounts}\fR (\fBdevice\fR counts events per device identifier from the challenge cookie,\: \fBdevice_\:accounts\fR distinct accounts per device;\: a client without a cookie has no device);\: \fBaction\fR is \fBlog\fR,\: \fBdelay\fR (holds \fBdelay\fR,\: 10ms to 10s,\: default 1s),\: \fBchallenge\fR,\: \fBcaptcha\fR or \fBblock\fR (for \fBduration\fR,\: default the window);\: at least one threshold per step
 T}
 T{
 \fBendpoints[].\:distributed\fR
@@ -6406,6 +6415,15 @@ T}	T{
 \fB{ips:\: 50,\: events:\: 200}\fR for login,\: off otherwise
 T}	T{
 Campaign detection: both \fBips\fR (distinct addresses with events in the window) and \fBevents\fR must be reached;\: \fBaction\fR \fBchallenge\fR (default),\: \fBcaptcha\fR or \fBblock\fR for \fBduration\fR (default the window)
+T}
+T{
+\fBendpoints[].\:automation\fR
+T}	T{
+\fBoff\fR,\: \fBlog\fR,\: \fBchallenge\fR,\: \fBcaptcha\fR,\: \fBblock\fR
+T}	T{
+\fBoff\fR
+T}	T{
+What happens to a client whose challenge cookie carries automation markers (\fBInfo.\:Automation\fR: WebDriver,\: driver globals,\: chromedriver,\: a headless user agent,\: no languages,\: no plugins,\: a zero sized window);\: \fBcaptcha\fR sends it through the CAPTCHA tier
 T}
 T{
 \fBendpoints[].\:disposable\fR
@@ -6454,7 +6472,7 @@ Lower case domains added to the built\-in list
 T}
 .TE
 .PP
-Default ladders (thresholds reached within the window): \fBlogin\fR delays 2s at 5 address, 3 account or 3 pair failures, challenges at 15 address, 5 account, 5 pair, 10 accounts per address or 5 addresses per account, blocks 15m at 50 address, 20 account, 10 pair, 30 accounts per address or 20 addresses per account; \fBregister\fR delays 2s at 2 requests per address, challenges at 3 per address or 2 per identity, blocks 1h at 10 per address or 5 per identity; \fBreset\fR delays 2s at 3 per address or 2 per account, challenges at 5 or 3, blocks 1h at 20 or 10; \fBcart\fR delays 1s at 30, challenges at 60 and blocks 30m at 150 requests per address or identity; \fBscrape\fR delays 1s at 200 requests or 100 distinct paths per address, challenges at 400 or 200 and blocks 1h at 1000. Tables are bounded per endpoint (65536 keys each, oldest evicted with a throttled warning). A delay holds a request slot, so keep \fBmax_delayed\fR under the route\(aqs concurrency.
+Default ladders (thresholds reached within the window): \fBlogin\fR delays 2s at 5 address, 3 account or 3 pair failures, challenges at 15 address, 5 account, 5 pair, 10 accounts per address, 5 addresses per account or 10 accounts per device, blocks 15m at 50 address, 20 account, 10 pair, 30 accounts per address, 20 addresses per account, 50 events or 30 accounts per device; \fBregister\fR delays 2s at 2 requests per address, challenges at 3 per address or device or 2 per identity, blocks 1h at 10 per address or device or 5 per identity; \fBreset\fR delays 2s at 3 per address or 2 per account, challenges at 5 per address or device or 3 per account, blocks 1h at 20 or 10; \fBcart\fR delays 1s at 30, challenges at 60 and blocks 30m at 150 requests per address, identity or device; \fBscrape\fR delays 1s at 200 requests or 100 distinct paths per address, challenges at 400 or 200 and blocks 1h at 1000. Tables are bounded per endpoint (65536 keys each, oldest evicted with a throttled warning). A delay holds a request slot, so keep \fBmax_delayed\fR under the route\(aqs concurrency.
 .SS "Kind \fBapi_key\fR"
 .PP
 API keys with a life cycle: issued by \fBxproxyctl apikey add\fR (the plaintext \fBxpk_<id>_<secret>\fR is printed once; the file keeps a SHA\-256), scoped, expiring, rotated with a grace period for the previous secret (\fBapikey rotate \-grace 24h\fR) and revoked (\fBapikey revoke\fR, kept in the file so the id is never reused). The filter re\-reads the file when its contents change, at most every \fBreload\fR, and keeps the previous table when the new file does not parse.
@@ -7808,7 +7826,7 @@ bool
 T}	T{
 \fBtrue\fR
 T}	T{
-The script derives a device identifier from stable browser properties (user agent,\: languages,\: platform,\: cores,\: memory,\: screen,\: pixel ratio,\: time zone,\: a canvas rendering) and the cookie carries its first eight bytes: \fBdevice\fR in the access log,\: \fBInfo.\:DeviceID\fR for filters and the \fBdevice\fR rate limit key. Client supplied and therefore advisory,\: but fixed into the cookie it earned
+The script derives a device identifier from stable browser properties (user agent,\: languages,\: platform,\: cores,\: memory,\: screen,\: pixel ratio,\: time zone,\: a canvas rendering) and the cookie carries its first eight bytes: \fBdevice\fR in the access log,\: \fBInfo.\:DeviceID\fR for filters and the \fBdevice\fR rate limit key;\: the script also reports automation markers (WebDriver,\: driver globals,\: chromedriver,\: headless user agent,\: no languages,\: no plugins,\: zero sized window),\: carried as \fBautomation\fR in the access log and \fBInfo.\:Automation\fR for the \fBbot_\:score\fR and \fBaccount_\:guard\fR filters. Client supplied and therefore advisory,\: but fixed into the cookie it earned
 T}
 T{
 \fBcaptcha\fR

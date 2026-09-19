@@ -40,36 +40,37 @@ type listenerHandler struct {
 
 // reqState is the per-request bookkeeping used for logging.
 type reqState struct {
-	id        string
-	start     time.Time
-	clientIP  netip.Addr
-	host      string
-	path      string
-	route     string
-	upstream  string
-	endpoint  string
-	attempts  int
-	denied    string
-	upErr     string
-	extra     []any // filter attributes for the access log
-	country   string
-	ja4       string
-	chalTier  int           // challenge cookie tier (challenge.TierNone without one)
-	device    string        // device identifier from the challenge cookie
-	span      *tracing.Span // server span, nil without tracing
-	upSpan    *tracing.Span // client span of the upstream exchange
-	propagate bool
-	cache     string // hit, miss or bypass on a cached route
-	encoding  string // gzip when the proxy compressed the response
-	canary    bool   // the response came from a canary endpoint
-	cacheKey  string
-	marked    bool       // client previously hit a honeypot
-	mirror    string     // sent, dropped or body_too_large on a mirrored route
-	grpc      bool       // request is gRPC: errors are answered as gRPC statuses
-	grpcWeb   bool       // request is gRPC-web: translated to gRPC for the upstream
-	h3srv     *h3.Server // the HTTP/3 endpoint the request arrived on, for WebTransport
-	grpcCode  string     // grpc-status of the upstream response
-	release   func()     // concurrency slot; idempotent
+	id         string
+	start      time.Time
+	clientIP   netip.Addr
+	host       string
+	path       string
+	route      string
+	upstream   string
+	endpoint   string
+	attempts   int
+	denied     string
+	upErr      string
+	extra      []any // filter attributes for the access log
+	country    string
+	ja4        string
+	chalTier   int           // challenge cookie tier (challenge.TierNone without one)
+	device     string        // device identifier from the challenge cookie
+	automation []string      // automation markers from the challenge cookie
+	span       *tracing.Span // server span, nil without tracing
+	upSpan     *tracing.Span // client span of the upstream exchange
+	propagate  bool
+	cache      string // hit, miss or bypass on a cached route
+	encoding   string // gzip when the proxy compressed the response
+	canary     bool   // the response came from a canary endpoint
+	cacheKey   string
+	marked     bool       // client previously hit a honeypot
+	mirror     string     // sent, dropped or body_too_large on a mirrored route
+	grpc       bool       // request is gRPC: errors are answered as gRPC statuses
+	grpcWeb    bool       // request is gRPC-web: translated to gRPC for the upstream
+	h3srv      *h3.Server // the HTTP/3 endpoint the request arrived on, for WebTransport
+	grpcCode   string     // grpc-status of the upstream response
+	release    func()     // concurrency slot; idempotent
 	// cr is the matched route; captures and captureNames hold the
 	// route's regular expression match for templates.
 	cr           *compiledRoute
@@ -340,7 +341,8 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The challenge cookie, read once: its tier gates routes and filter
 	// verdicts, its device identifier feeds the log and rate limit keys.
 	if ch := s.challenger.Load(); ch != nil {
-		st.chalTier, st.device = ch.Check(r, st.clientIP)
+		ck := ch.Inspect(r, st.clientIP)
+		st.chalTier, st.device, st.automation = ck.Tier, ck.Device, ck.Automation
 	}
 
 	// Browser challenge gate: unverified clients get the page instead of
@@ -448,6 +450,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			info.ChallengeVerified = st.chalTier >= challenge.TierProof
 			info.CaptchaVerified = st.chalTier >= challenge.TierCaptcha
 			info.DeviceID = st.device
+			info.Automation = st.automation
 		}
 		instances = cr.filters.Begin(r.Context(), info)
 		defer func() { st.extra = append(st.extra, instances.End()...) }()
@@ -1107,6 +1110,9 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	}
 	if st.device != "" {
 		attrs = append(attrs, "device", st.device)
+	}
+	if len(st.automation) > 0 {
+		attrs = append(attrs, "automation", strings.Join(st.automation, ","))
 	}
 	if st.cr != nil && st.cr.inventory && s.inventory.Enabled() {
 		s.observeEndpoint(rw, r, st, status)

@@ -2519,9 +2519,16 @@ challenge script also derives a device identifier from stable browser
 properties; it travels in the cookie, shows up as `device` in the
 access log and keys the `device` rate limit above, so a client that
 passed a challenge and then rotates addresses still shares one bucket
-(it falls back to the address until a cookie exists). The identifier is
-computed by the client and is advisory: treat it as correlation, not
-identity. `examples/security/captcha.yaml` is a complete configuration.
+(it falls back to the address until a cookie exists). The account guard
+counts events and distinct accounts per device (`device`,
+`device_accounts` thresholds) and blocks a device wherever it connects
+from; `bot_score` adds `device_shared` when one device arrives from
+many addresses. The script also reports automation markers (WebDriver
+and friends); they reach the log as `automation`, weigh 45 in
+`bot_score` and an `account_guard` endpoint can send such clients
+through the CAPTCHA (`automation: captcha`). The identifier and the
+markers are computed by the client and are advisory: treat them as
+correlation, not identity. `examples/security/captcha.yaml` is a complete configuration.
 
 ## Web GUI
 

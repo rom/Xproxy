@@ -21,6 +21,7 @@ type counterSet struct {
 	blocks     atomic.Uint64
 	campaigns  atomic.Uint64
 	disposable atomic.Uint64
+	automation atomic.Uint64
 	events     atomic.Uint64 // counted failures or requests
 }
 
@@ -54,11 +55,12 @@ type Counters struct {
 	Blocks     uint64        `json:"blocks"`
 	Campaigns  uint64        `json:"campaigns"`
 	Disposable uint64        `json:"disposable"`
+	Automation uint64        `json:"automation"`
 }
 
 // Snapshot returns the counters since the process started.
 func Snapshot() Counters {
-	out := Counters{Events: counters.events.Load(), Blocks: counters.blocks.Load(), Campaigns: counters.campaigns.Load(), Disposable: counters.disposable.Load()}
+	out := Counters{Events: counters.events.Load(), Blocks: counters.blocks.Load(), Campaigns: counters.campaigns.Load(), Disposable: counters.disposable.Load(), Automation: counters.automation.Load()}
 	for _, cl := range Classes {
 		for _, a := range Actions {
 			out.Actions = append(out.Actions, ActionCount{Class: cl, Action: a, Count: counters.actions[cl+"|"+a].Load()})
@@ -89,8 +91,8 @@ func (g *guard) Close() error {
 
 // BlockView is one active block.
 type BlockView struct {
-	// Kind is ip, account or pair; Key the address, the account hash or
-	// address|hash.
+	// Kind is ip, account, pair or device; Key the address, the account
+	// hash, address|hash or the device identifier.
 	Kind  string    `json:"kind"`
 	Key   string    `json:"key"`
 	By    string    `json:"by"`
@@ -107,6 +109,7 @@ type EndpointStatus struct {
 	TrackedIPs    int         `json:"tracked_ips"`
 	TrackedAccts  int         `json:"tracked_accounts"`
 	TrackedPairs  int         `json:"tracked_pairs"`
+	TrackedDevs   int         `json:"tracked_devices"`
 	ActiveBlocks  int         `json:"active_blocks"`
 	WindowEvents  int         `json:"window_events"`
 	WindowIPs     int         `json:"window_ips"`
@@ -157,7 +160,7 @@ func (e *Endpoint) status(now time.Time, top int) EndpointStatus {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	st := EndpointStatus{Name: e.Name, Class: e.Class, Count: "requests", Window: e.window.String(), Paths: e.Paths,
-		TrackedIPs: len(t.ips), TrackedAccts: len(t.accounts), TrackedPairs: len(t.pairs), Distributed: e.Distributed != nil}
+		TrackedIPs: len(t.ips), TrackedAccts: len(t.accounts), TrackedPairs: len(t.pairs), TrackedDevs: len(t.devices), Distributed: e.Distributed != nil}
 	if e.failures {
 		st.Count = "failures"
 	}
@@ -179,6 +182,7 @@ func (e *Endpoint) status(now time.Time, top int) EndpointStatus {
 	collect("ip", t.ips)
 	collect("account", t.accounts)
 	collect("pair", t.pairs)
+	collect("device", t.devices)
 	sort.Slice(st.Blocks, func(i, j int) bool { return st.Blocks[i].Until.After(st.Blocks[j].Until) })
 	if top >= 0 && len(st.Blocks) > top {
 		st.Blocks = st.Blocks[:top]

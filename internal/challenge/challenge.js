@@ -100,13 +100,34 @@
   var expected = Math.pow(2, difficulty);
   var counter = 0;
   var device = wantDevice ? deviceID() : "";
+  var signals = wantDevice ? automationSignals() : "";
+
+  // automationSignals lists markers automation frameworks leave in the
+  // browser: the WebDriver flag, driver globals, headless user agents,
+  // missing languages or plugins and a zero sized outer window.
+  function automationSignals() {
+    var out = [];
+    try {
+      var n = navigator, w = window;
+      if (n.webdriver) out.push("webdriver");
+      if (w.callPhantom || w._phantom || w.__nightmare || w.__selenium_unwrapped || w.__webdriver_evaluate || w.__driver_evaluate) out.push("driver_globals");
+      for (var k in document) { if (typeof k === "string" && k.indexOf("$cdc_") === 0) { out.push("chromedriver"); break; } }
+      if (/HeadlessChrome|PhantomJS|Electron/.test(n.userAgent || "")) out.push("headless_ua");
+      if (!n.languages || n.languages.length === 0) out.push("no_languages");
+      if (n.plugins && n.plugins.length === 0 && /Chrome/.test(n.userAgent || "") && !/Mobile|Android/.test(n.userAgent || "")) out.push("no_plugins");
+      if (w.outerWidth === 0 || w.outerHeight === 0) out.push("zero_window");
+    } catch (e) { /* a signal that throws is no signal */ }
+    return out.join(",");
+  }
 
   if (captcha) {
     // The provider widget fills its response field; its callback (or
     // the button) submits the form with the nonce and the device id.
     var form = document.getElementById("captcha");
     var dev = document.getElementById("device");
+    var sig = document.getElementById("signals");
     if (dev) dev.value = device;
+    if (sig) sig.value = signals;
     window.xproxyCaptchaDone = function () { if (form) form.submit(); };
     return;
   }
@@ -116,7 +137,7 @@
     form.method = "POST";
     form.action = verify;
     var add = function (k, v) { var i = document.createElement("input"); i.type = "hidden"; i.name = k; i.value = v; form.appendChild(i); };
-    add("nonce", nonce); add("counter", String(found)); add("r", ret); add("device", device);
+    add("nonce", nonce); add("counter", String(found)); add("r", ret); add("device", device); add("signals", signals);
     document.body.appendChild(form);
     form.submit();
   }

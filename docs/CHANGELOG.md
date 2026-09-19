@@ -222,6 +222,14 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Device identifiers and automation markers in the filters: the
+  challenge script reports WebDriver and headless markers, carried in
+  the cookie as `Info.Automation` and the `automation` log attribute;
+  `account_guard` counts per device (`device`, `device_accounts`
+  thresholds, device blocks shared with peers, `account_device` in the
+  log) and acts on markers (`automation`); `bot_score` gains
+  `automation_markers` and `device_shared` signals with
+  `device_addresses`.
 - Counters and views for the newest filters: `denied_sensitive_data`
   and `denied_account_abuse` in the status, `xproxy_sensitive_findings_total`,
   `xproxy_sensitive_messages_total`, `xproxy_account_actions_total`,

@@ -659,7 +659,7 @@ func run(args []string, out, errOut io.Writer) int {
 			return 0
 		}
 		cnt := rep.Counters
-		_, _ = fmt.Fprintf(out, "events %d  blocks %d  campaigns %d  disposable %d\n", cnt.Events, cnt.Blocks, cnt.Campaigns, cnt.Disposable)
+		_, _ = fmt.Fprintf(out, "events %d  blocks %d  campaigns %d  disposable %d  automation %d\n", cnt.Events, cnt.Blocks, cnt.Campaigns, cnt.Disposable, cnt.Automation)
 		var acts []string
 		for _, a := range cnt.Actions {
 			if a.Count > 0 {
@@ -672,7 +672,7 @@ func run(args []string, out, errOut io.Writer) int {
 		for _, g := range rep.Guards {
 			_, _ = fmt.Fprintf(out, "filter %s\n", g.Filter)
 			tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-			_, _ = fmt.Fprintln(tw, "  ENDPOINT\tCLASS\tCOUNT\tWINDOW\tTRACKED IP/ACCT/PAIR\tBLOCKS\tWINDOW EVENTS/IPS\tCAMPAIGN")
+			_, _ = fmt.Fprintln(tw, "  ENDPOINT\tCLASS\tCOUNT\tWINDOW\tTRACKED IP/ACCT/PAIR/DEV\tBLOCKS\tWINDOW EVENTS/IPS\tCAMPAIGN")
 			for _, ep := range g.Endpoints {
 				campaign := "-"
 				if ep.Campaign && ep.CampaignUntil != nil {
@@ -680,8 +680,8 @@ func run(args []string, out, errOut io.Writer) int {
 				} else if !ep.Distributed {
 					campaign = "off"
 				}
-				_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%d/%d/%d\t%d\t%d/%d\t%s\n", ep.Name, ep.Class, ep.Count, ep.Window,
-					ep.TrackedIPs, ep.TrackedAccts, ep.TrackedPairs, ep.ActiveBlocks, ep.WindowEvents, ep.WindowIPs, campaign)
+				_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%d/%d/%d/%d\t%d\t%d/%d\t%s\n", ep.Name, ep.Class, ep.Count, ep.Window,
+					ep.TrackedIPs, ep.TrackedAccts, ep.TrackedPairs, ep.TrackedDevs, ep.ActiveBlocks, ep.WindowEvents, ep.WindowIPs, campaign)
 			}
 			_ = tw.Flush()
 			for _, ep := range g.Endpoints {
