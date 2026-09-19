@@ -1382,6 +1382,41 @@ everything else goes to the current version. Conditioned routes are
 tried before the plain route on the same path, so the order above does
 not matter.
 
+### Routing and headers by expression
+
+```yaml
+routes:
+  - name: internal-beta
+    hosts: [app.example.com]
+    when: 'client_ip in cidr("10.0.0.0/8", "192.168.0.0/16") && (header("X-Env") == "beta" || has_cookie("beta"))'
+    upstream: app-v2
+  - name: night-readonly
+    hosts: [app.example.com]
+    methods: [POST, PUT, PATCH, DELETE]
+    when: 'hour >= 1 && hour < 3 && weekday in ["Sun"]'
+    respond: {status: 503, body: "maintenance window"}
+  - name: app
+    hosts: [app.example.com]
+    upstream: app-v1
+    request_headers:
+      set: {X-Debug: "1"}
+      when: 'query("debug") == "1" && client_ip in cidr("10.0.0.0/8")'
+    response_headers:
+      set: {Cache-Control: "no-store"}
+      when: 'has_cookie("session") || starts_with(path, "/account")'
+```
+
+`when` adds a condition the static matches cannot express: address
+ranges, combinations with `or`, comparisons, patterns on any variable,
+the time of day. A route with `when` ranks like a route with one header
+condition (more conditions win at equal path length), so the order of
+the routes above does not matter. The same language gates header
+operations, which keeps a debugging header off production clients
+without a second route. Expressions are checked at load: a misspelt
+variable, function or pattern fails `xproxy -validate` with the route
+and position. The grammar and every function are in `docs/CONFIG.md`,
+"Expressions".
+
 ### Canary endpoints inside one pool
 
 ```yaml

@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/rom/xproxy/internal/dns"
+	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/tmpl"
 	"mime"
@@ -1279,8 +1280,9 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	}
 	v.headerTemplates(p+".request_headers", r.RequestHeaders, r)
 	v.headerTemplates(p+".response_headers", r.ResponseHeaders, r)
+	v.when(p+".when", r.When, r)
 	if r.Redirect != nil {
-		if _, err := tmpl.Parse(r.Redirect.To, captureNames(r)...); err != nil {
+		if _, err := tmpl.Parse(r.Redirect.To, CaptureNames(r)...); err != nil {
 			v.errf("%s.redirect.to: %v", p, err)
 		}
 	}
@@ -2119,9 +2121,9 @@ func (v *validator) file(p, path string) {
 // before shape checks that templates would otherwise fail.
 var placeholderRE = regexp.MustCompile(`\$\{[^}]*\}`)
 
-// captureNames lists the named groups of a route's regular expressions,
+// CaptureNames lists the named groups of a route's regular expressions,
 // which header templates may reference.
-func captureNames(r *Route) []string {
+func CaptureNames(r *Route) []string {
 	var names []string
 	if rr := r.RewriteRegex; rr != nil {
 		if re, err := regexp.Compile(rr.Pattern); err == nil {
@@ -2144,7 +2146,8 @@ func captureNames(r *Route) []string {
 
 // headerTemplates checks the placeholders of set and add values.
 func (v *validator) headerTemplates(p string, h HeaderOps, r *Route) {
-	names := captureNames(r)
+	names := CaptureNames(r)
+	v.when(p+".when", h.When, r)
 	for k, val := range h.Set {
 		if _, err := tmpl.Parse(val, names...); err != nil {
 			v.errf("%s.set.%s: %v", p, k, err)
@@ -2345,5 +2348,20 @@ func (v *validator) otlpExport(p string, o *OTLPExport) {
 	}
 	if o.Queue < 1 || o.Queue > 1_000_000 {
 		v.errf("%s.queue: must be between 1 and 1000000", p)
+	}
+}
+
+// when checks an expression of the route: syntax, functions, variables
+// and capture names.
+func (v *validator) when(p, src string, r *Route) {
+	if src == "" {
+		return
+	}
+	if len(src) > 4096 {
+		v.errf("%s: expression longer than 4096 bytes", p)
+		return
+	}
+	if _, err := expr.Parse(src, ExprVars(), CaptureNames(r)...); err != nil {
+		v.errf("%s: %v", p, err)
 	}
 }

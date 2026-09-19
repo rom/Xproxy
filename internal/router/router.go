@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/expr"
 )
 
 // Route is a compiled route ready for matching.
@@ -32,6 +33,7 @@ type entry struct {
 	path     string          // prefix, or the literal prefix of regex
 	regex    *regexp.Regexp  // non-nil: the whole path must match
 	conds    []condition     // header and cookie conditions, all must hold
+	when     *expr.Expr      // routes[].when, evaluated against the request env
 	methods  map[string]bool // nil means any
 	priority int
 	route    *Route
@@ -115,6 +117,16 @@ func condsHold(cs []condition, hdr http.Header) bool {
 	return true
 }
 
+// condCount is the number of conditions for specificity: header and
+// cookie matches plus one for a when expression.
+func (e *entry) condCount() int {
+	n := len(e.conds)
+	if e.when != nil {
+		n++
+	}
+	return n
+}
+
 // grpcMatch selects gRPC requests by service or Service/Method. Empty
 // sets match every gRPC request.
 type grpcMatch struct {
@@ -190,8 +202,12 @@ func New(routes []config.Route) *Router {
 		}
 		tables := r.tablesFor(rc.Hosts)
 		conds := append(compileConds(rc.Headers, false), compileConds(rc.Cookies, true)...)
+		var when *expr.Expr
+		if rc.When != "" {
+			when = expr.MustParse(rc.When, config.ExprVars(), config.CaptureNames(rc)...) // validated
+		}
 		add := func(e entry) {
-			e.conds, e.methods, e.priority, e.route, e.grpc = conds, methods, rc.Priority, cr, gm
+			e.conds, e.methods, e.priority, e.route, e.grpc, e.when = conds, methods, rc.Priority, cr, gm, when
 			for _, t := range tables {
 				t.entries = append(t.entries, e)
 			}
@@ -245,8 +261,8 @@ func sortEntries(es []entry) {
 		if len(es[i].path) != len(es[j].path) {
 			return len(es[i].path) > len(es[j].path)
 		}
-		if len(es[i].conds) != len(es[j].conds) {
-			return len(es[i].conds) > len(es[j].conds) // conditioned entries first
+		if ci, cj := es[i].condCount(), es[j].condCount(); ci != cj {
+			return ci > cj // conditioned entries first
 		}
 		if (es[i].regex != nil) != (es[j].regex != nil) {
 			return es[i].regex != nil // a pattern is more specific than its literal prefix
@@ -269,29 +285,31 @@ func (r *Router) Len() int { return r.count }
 // host must already be lower-cased and stripped of any port. path must be
 // the cleaned request path (see netutil.CleanPath).
 func (r *Router) Match(host, path, method string) *Route {
-	return r.MatchRequest(host, path, method, false, nil)
+	return r.MatchRequest(host, path, method, false, nil, nil)
 }
 
 // MatchRequest is Match with the gRPC flag of the request (routes with
 // a grpc section only match gRPC requests, and only for their services
-// and methods) and its headers for header and cookie conditions.
-func (r *Router) MatchRequest(host, path, method string, grpc bool, hdr http.Header) *Route {
+// and methods), its headers for header and cookie conditions and the
+// variable environment for when expressions (a nil env fails every
+// expression).
+func (r *Router) MatchRequest(host, path, method string, grpc bool, hdr http.Header, env expr.Env) *Route {
 	if t, ok := r.exact[host]; ok {
-		if m := t.match(path, method, grpc, hdr); m != nil {
+		if m := t.match(path, method, grpc, hdr, env); m != nil {
 			return m
 		}
 	}
 	if i := strings.IndexByte(host, '.'); i > 0 && i < len(host)-1 {
 		if t, ok := r.wildcard[host[i+1:]]; ok {
-			if m := t.match(path, method, grpc, hdr); m != nil {
+			if m := t.match(path, method, grpc, hdr, env); m != nil {
 				return m
 			}
 		}
 	}
-	return r.catchAll.match(path, method, grpc, hdr)
+	return r.catchAll.match(path, method, grpc, hdr, env)
 }
 
-func (t *hostTable) match(path, method string, grpc bool, hdr http.Header) *Route {
+func (t *hostTable) match(path, method string, grpc bool, hdr http.Header, env expr.Env) *Route {
 	for i := range t.entries {
 		e := &t.entries[i]
 		if e.regex != nil {
@@ -308,6 +326,9 @@ func (t *hostTable) match(path, method string, grpc bool, hdr http.Header) *Rout
 			continue
 		}
 		if len(e.conds) > 0 && !condsHold(e.conds, hdr) {
+			continue
+		}
+		if e.when != nil && (env == nil || !e.when.Eval(env)) {
 			continue
 		}
 		return e.route

@@ -84,6 +84,7 @@ internal/metrics    Prometheus text encoder, histogram, sampled series
 internal/tui        terminal UI of xproxyctl (pure renderer plus a raw-mode loop)
 internal/admin      web GUI server: users file, sessions, API over the management client, static/ assets
 internal/version    build information
+internal/expr       condition language of routes[].when and header when (lexer, parser, evaluator)
 internal/config/schema  JSON schema of the configuration, generated from the types (schemagen) and embedded
 internal/manpage    Markdown to troff renderer and the generation of docs/man from docs/man/*.md and CONFIG.md
 docs/man/           manual pages (sources *.md, generated xproxy.8, xproxyctl.8, xproxy.yaml.5)
@@ -318,6 +319,21 @@ multiplied by the ejection count (capped at 10) subject to
 
 The consistent hash ring uses 128 virtual nodes per weight unit. Removing
 an endpoint moves only its keys (`TestHashRing` asserts this).
+
+### Expressions
+
+`internal/expr` parses `routes[].when` and the `when` of header
+operations into a small tree (or, and, not, comparisons, `in` over a
+literal list or a `cidr()` prefix set, `matches` with a pattern compiled
+at load, and functions over strings) and evaluates it per request
+against the same `Resolver` the header templates use (`tvars`), so the
+variable set is one. Unknown names, functions, arities, patterns and
+capture groups are rejected by validation; evaluation cannot fail (a
+missing value is the empty string, a non-address in `cidr` is not
+contained). The router evaluates a route's expression after its static
+matches and counts it as one condition for specificity; the handler
+passes a `tvars` bound to the request before the route is known, which
+resolves `country` on demand through the runtime's GeoIP database.
 
 ### Templates and error pages
 

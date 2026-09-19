@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/tmpl"
 )
 
@@ -17,6 +18,7 @@ import (
 type tvars struct {
 	r      *http.Request
 	st     *reqState
+	rt     *runtime // for lookups a when expression needs before the route is known
 	status int
 	reason string
 }
@@ -76,6 +78,11 @@ func (v *tvars) Resolve(name, arg string) (string, bool) {
 		}
 	case "country":
 		if st != nil {
+			if st.country == "" && v.rt != nil && v.rt.geo != nil && st.clientIP.IsValid() {
+				// Asked before the route's own lookup (a when expression):
+				// resolve now, the handler reuses the value.
+				st.country = v.rt.geo.Country(st.clientIP)
+			}
 			return st.country, st.country != ""
 		}
 	case "ja4":
@@ -102,6 +109,14 @@ func (v *tvars) Resolve(name, arg string) (string, bool) {
 		return v.reason, v.reason != ""
 	case "time":
 		return time.Now().UTC().Format(time.RFC3339), true
+	case "date":
+		return time.Now().UTC().Format("2006-01-02"), true
+	case "hour":
+		return strconv.Itoa(time.Now().UTC().Hour()), true
+	case "minute":
+		return strconv.Itoa(time.Now().UTC().Minute()), true
+	case "weekday":
+		return time.Now().UTC().Weekday().String()[:3], true
 	case "header":
 		if r != nil {
 			val := r.Header.Get(arg)
@@ -160,12 +175,20 @@ type compiledOps struct {
 	set    []headerOp
 	add    []headerOp
 	static bool
+	when   *expr.Expr // nil applies always
 }
 
 // compileOps parses the templates of h; captures names the groups the
 // route's regular expressions define.
 func compileOps(h config.HeaderOps, captures []string) (compiledOps, error) {
 	out := compiledOps{remove: h.Remove, static: true}
+	if h.When != "" {
+		w, err := expr.Parse(h.When, config.ExprVars(), captures...)
+		if err != nil {
+			return out, err
+		}
+		out.when = w
+	}
 	for k, v := range h.Set {
 		t, err := tmpl.Parse(v, captures...)
 		if err != nil {
@@ -188,6 +211,11 @@ func compileOps(h config.HeaderOps, captures []string) (compiledOps, error) {
 // apply performs the operations on h with v for the templates (nil v
 // renders variables empty).
 func (o *compiledOps) apply(h http.Header, v *tvars) {
+	if o.when != nil {
+		if v == nil || !o.when.Eval(v) {
+			return
+		}
+	}
 	for _, k := range o.remove {
 		h.Del(k)
 	}

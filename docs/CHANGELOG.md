@@ -218,6 +218,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- Expression language: `routes[].when` and `request_headers.when` /
+  `response_headers.when` hold a condition (`and`, `or`, `not`,
+  comparisons, `in` lists, `cidr()` address sets, `matches` patterns,
+  string functions, `header()`, `cookie()`, `query()`, `capture()` and
+  the request variables plus `date`, `hour`, `minute`, `weekday`),
+  parsed and checked at load and evaluated per request; a route with
+  `when` ranks like a route with one header condition.
 - Operator tooling: `xproxyctl completion bash|zsh|fish` prints
   completion scripts for `xproxyctl` and `xproxy` (installed by `make
   install` and the RPM), `xproxyctl help` lists the commands, the manual

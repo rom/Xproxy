@@ -252,6 +252,7 @@ routes:
       headers: []
       cookies: []
       tenant: ""
+      when: ""
       priority: 0
       upstream: web
       redirect: null
@@ -266,10 +267,12 @@ routes:
         set: {}
         add: {}
         remove: []
+        when: ""
       response_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       rate_limits:
         - login
         - per-ip
@@ -303,6 +306,7 @@ routes:
       headers: []
       cookies: []
       tenant: ""
+      when: ""
       priority: 0
       upstream: api
       redirect: null
@@ -318,12 +322,14 @@ routes:
         add: {}
         remove:
             - Cookie
+        when: ""
       response_headers:
         set:
             Strict-Transport-Security: max-age=63072000; includeSubDomains
             X-Content-Type-Options: nosniff
         add: {}
         remove: []
+        when: ""
       rate_limits:
         - per-ip
       allow_cidrs: []
@@ -359,6 +365,7 @@ routes:
       headers: []
       cookies: []
       tenant: ""
+      when: ""
       priority: 0
       upstream: web
       redirect: null
@@ -373,10 +380,12 @@ routes:
         set: {}
         add: {}
         remove: []
+        when: ""
       response_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       rate_limits: []
       allow_cidrs:
         - 10.0.0.0/8
@@ -411,6 +420,7 @@ routes:
       headers: []
       cookies: []
       tenant: ""
+      when: ""
       priority: 0
       upstream: web
       redirect: null
@@ -425,10 +435,12 @@ routes:
         set: {}
         add: {}
         remove: []
+        when: ""
       response_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       rate_limits:
         - per-ip
       allow_cidrs: []
@@ -463,6 +475,7 @@ routes:
       headers: []
       cookies: []
       tenant: ""
+      when: ""
       priority: 0
       upstream: web
       redirect: null
@@ -477,6 +490,7 @@ routes:
         set: {}
         add: {}
         remove: []
+        when: ""
       response_headers:
         set:
             Referrer-Policy: strict-origin-when-cross-origin
@@ -485,6 +499,7 @@ routes:
             X-Frame-Options: DENY
         add: {}
         remove: []
+        when: ""
       rate_limits:
         - per-ip
       allow_cidrs: []
@@ -516,6 +531,7 @@ routes:
       headers: []
       cookies: []
       tenant: ""
+      when: ""
       priority: -100
       upstream: ""
       redirect: null
@@ -533,10 +549,12 @@ routes:
         set: {}
         add: {}
         remove: []
+        when: ""
       response_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       rate_limits: []
       allow_cidrs: []
       deny_cidrs: []

@@ -1029,6 +1029,10 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "when": {
+          "description": "When restricts the operations to requests for which the expression holds (docs/CONFIG.md, \"Expressions\"); empty applies them always.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -2203,6 +2207,10 @@
         "websocket": {
           "description": "WebSocket allows Upgrade: websocket to be forwarded. Default false.",
           "type": "boolean"
+        },
+        "when": {
+          "description": "When is a condition in the expression language (docs/CONFIG.md, \"Expressions\") that must hold in addition to the matches above; it counts as one condition for specificity.",
+          "type": "string"
         }
       },
       "additionalProperties": false

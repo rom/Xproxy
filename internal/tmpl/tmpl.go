@@ -58,6 +58,10 @@ var Vars = map[string]string{
 	"status_text": "response status phrase (error pages)",
 	"reason":      "denial reason category (error pages)",
 	"time":        "current time, RFC 3339",
+	"date":        "current date, YYYY-MM-DD, UTC",
+	"hour":        "current hour, 0 to 23, UTC",
+	"minute":      "current minute, 0 to 59",
+	"weekday":     "current weekday, Mon to Sun, UTC",
 	"header":      "request header value: ${header:Name}",
 	"cookie":      "request cookie value: ${cookie:name}",
 	"query":       "query parameter value: ${query:name}",
@@ -65,6 +69,10 @@ var Vars = map[string]string{
 
 // withArg are the names that take an argument.
 var withArg = map[string]bool{"header": true, "cookie": true, "query": true}
+
+// TakesArg reports whether the variable takes an argument after a colon
+// (and is a function, not a bare variable, in expressions).
+func TakesArg(name string) bool { return withArg[name] }
 
 // ErrUnknown is returned for a name outside Vars and the captures.
 var ErrUnknown = errors.New("unknown variable")

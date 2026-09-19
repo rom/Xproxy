@@ -1268,7 +1268,78 @@ T{
 T}	T{
 current time,\: RFC 3339,\: UTC
 T}
+T{
+\fBdate\fR,\: \fBhour\fR,\: \fBminute\fR,\: \fBweekday\fR
+T}	T{
+current date (\fB2026\-\:09\-\:19\fR),\: hour (\fB0\fR to \fB23\fR),\: minute and weekday (\fBMon\fR to \fBSun\fR),\: UTC
+T}
 .TE
+.SS "Expressions"
+.PP
+\fBroutes[].when\fR, \fBrequest_headers.when\fR and \fBresponse_headers.when\fR hold a condition that is parsed at load (unknown names, functions, arities, patterns and capture groups are errors) and evaluated per request. Values are strings; a variable without a value is the empty string. \fB==\fR and \fB!=\fR compare as strings; \fB<\fR, \fB<=\fR, \fB>\fR and \fB>=\fR compare numerically when both sides are numbers and by string otherwise. A bare string is true when it is neither empty, \fB0\fR nor \fBfalse\fR.
+.PP
+.TS
+allbox;
+lbw(1.6i) lbx
+lw(1.6i) lx.
+T{
+Element
+T}	T{
+Meaning
+T}
+T{
+\fBa && b\fR,\: \fBa and b\fR,\: \fBa || b\fR,\: \fBa or b\fR,\: \fB!a\fR,\: \fBnot a\fR,\: \fB(a)\fR
+T}	T{
+Boolean operators,\: lowest precedence first: or,\: and,\: not
+T}
+T{
+\fB"text"\fR,\: \fB\(aqtext\(aq\fR,\: \fB42\fR,\: \fBtrue\fR,\: \fBfalse\fR
+T}	T{
+Literals;\: strings take \fB\e"\fR,\: \fB\e\(aq\fR,\: \fB\e\e\fR,\: \fB\en\fR and \fB\et\fR escapes
+T}
+T{
+\fBclient_\:ip\fR,\: \fBhost\fR,\: \fBpath\fR,\: \fBraw_\:query\fR,\: \fBmethod\fR,\: \fBscheme\fR,\: \fBcountry\fR,\: \fBja4\fR,\: \fBtls_\:version\fR,\: \fBtls_\:cipher\fR,\: \fBrequest_\:id\fR,\: \fBroute\fR,\: \fBupstream\fR,\: \fBtenant\fR,\: \fBtime\fR,\: \fBdate\fR,\: \fBhour\fR,\: \fBminute\fR,\: \fBweekday\fR
+T}	T{
+The variables of the table above,\: as bare names (\fBroute\fR,\: \fBupstream\fR and \fBtenant\fR are empty in \fBroutes[].\:when\fR,\: which runs before the route is chosen)
+T}
+T{
+\fBheader("Name")\fR,\: \fBcookie("name")\fR,\: \fBquery("name")\fR,\: \fBcapture("name")\fR
+T}	T{
+A request header (case insensitive,\: first value),\: cookie,\: query parameter or regular expression group by name or number;\: empty when absent
+T}
+T{
+\fBhas_\:header("Name")\fR,\: \fBhas_\:cookie("name")\fR,\: \fBhas_\:query("name")\fR
+T}	T{
+Presence,\: also of an empty value
+T}
+T{
+\fBx in ["a",\: "b"]\fR,\: \fBx not in [.\:.\:.\:]\fR
+T}	T{
+Membership in a list of literals
+T}
+T{
+\fBclient_\:ip in cidr("10.\:0.\:0.\:0/\:8",\: "2001:\:db8:\::\:/\:32",\: "203.\:0.\:113.\:7")\fR
+T}	T{
+Address containment in prefixes or single addresses;\: a value that is not an address is never contained
+T}
+T{
+\fBx matches "pattern"\fR,\: \fBmatches(x,\: "pattern")\fR
+T}	T{
+RE2 match anywhere in the value;\: anchor with \fB^\fR and \fB$\fR for the whole value. Patterns are literals,\: compiled at load
+T}
+T{
+\fBstarts_\:with(x,\: "p")\fR,\: \fBends_\:with(x,\: "s")\fR,\: \fBcontains(x,\: "part")\fR
+T}	T{
+Substring tests
+T}
+T{
+\fBlower(x)\fR,\: \fBupper(x)\fR,\: \fBtrim(x)\fR,\: \fBlen(x)\fR
+T}	T{
+Case folding,\: whitespace trimming and byte length
+T}
+.TE
+.PP
+Examples: \fBmethod in ["GET", "HEAD"] and hour >= 22 or hour < 6\fR (read\-only traffic in the night window), \fBcountry in ["SE", "NO", "DK"] && not has_cookie("consent")\fR, \fBpath matches "^/api/v[0\-9]+/" && header("Content\-Length") > 1048576\fR, \fBcapture("id") != "" && ja4 == ""\fR.
 .SH "management"
 .PP
 .TS
@@ -2686,6 +2757,15 @@ T}	T{
 The same conditions on cookies by name
 T}
 T{
+\fBwhen\fR
+T}	T{
+expression
+T}	T{
+none
+T}	T{
+A condition in the expression language (see "Expressions" below) that must hold as well,\: for example \fBclient_\:ip in cidr("10.\:0.\:0.\:0/\:8") && header("X\-\:Env") =\:=\: "beta"\fR;\: counts as one condition for specificity. At most 4096 bytes
+T}
+T{
 \fBmethods\fR
 T}	T{
 list
@@ -2823,11 +2903,20 @@ T}
 T{
 \fBrequest_\:headers\fR
 T}	T{
-\fB{set,\: add,\: remove}\fR
+\fB{set,\: add,\: remove,\: when}\fR
 T}	T{
 
 T}	T{
 Applied before forwarding;\: values may not contain CR,\: LF or NUL
+T}
+T{
+\fBrequest_\:headers.\:when\fR,\: \fBresponse_\:headers.\:when\fR
+T}	T{
+expression
+T}	T{
+none
+T}	T{
+Apply the block only when the expression holds (see "Expressions" below),\: for example \fBquery("debug") =\:=\: "1"\fR or \fBnot has_\:cookie("consent")\fR;\: \fB${variable}\fR values are still expanded
 T}
 T{
 \fBresponse_\:headers\fR

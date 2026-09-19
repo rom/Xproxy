@@ -37,7 +37,7 @@ func TestMatchGRPC(t *testing.T) {
 		{"/", true, "grpc-any"},
 	}
 	for _, c := range cases {
-		got := r.MatchRequest("rpc.test", c.path, "POST", c.grpc, nil)
+		got := r.MatchRequest("rpc.test", c.path, "POST", c.grpc, nil, nil)
 		if got == nil || got.Cfg.Name != c.want {
 			t.Errorf("%s grpc=%v: got %v want %s", c.path, c.grpc, got, c.want)
 		}
@@ -198,7 +198,7 @@ func TestRegexAndConditions(t *testing.T) {
 		{"/x", hdr("Accept", "text/html", "Cookie", "beta=1", "User-Agent", "Mozilla"), "beta"}, // two conditions each: configuration order
 	}
 	for _, c := range cases {
-		got := r.MatchRequest("h.test", c.path, "GET", false, c.hdr)
+		got := r.MatchRequest("h.test", c.path, "GET", false, c.hdr, nil)
 		if got == nil {
 			t.Fatalf("%s %v: no match", c.path, c.hdr)
 		}

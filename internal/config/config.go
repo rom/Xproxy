@@ -926,6 +926,10 @@ type Route struct {
 	// Tenant is a free label that groups routes for quota reporting
 	// (GET /v1/quotas, xproxyctl quotas) and the per route metrics.
 	Tenant string `yaml:"tenant"`
+	// When is a condition in the expression language (docs/CONFIG.md,
+	// "Expressions") that must hold in addition to the matches above;
+	// it counts as one condition for specificity.
+	When string `yaml:"when"`
 	// Priority breaks ties between routes with identical specificity. Higher
 	// wins. Default 0.
 	Priority int `yaml:"priority"`
@@ -1272,6 +1276,9 @@ type HeaderOps struct {
 	Set    map[string]string `yaml:"set"`
 	Add    map[string]string `yaml:"add"`
 	Remove []string          `yaml:"remove"`
+	// When restricts the operations to requests for which the expression
+	// holds (docs/CONFIG.md, "Expressions"); empty applies them always.
+	When string `yaml:"when"`
 }
 
 // Duration is a time.Duration that unmarshals from strings like "30s".

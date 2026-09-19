@@ -349,6 +349,35 @@ rewrites and redirects and is kept literally in pages.
 | `1` to `9`, `name` | groups of `rewrite_regex.pattern` or, without one, of the matching `path_regex` (numbered and named) |
 | `status`, `status_text`, `reason` | error pages only: the status, its phrase and the denial category (`acl`, `rate_limit`, `waf`, `banned`, `upstream`...) |
 | `time` | current time, RFC 3339, UTC |
+| `date`, `hour`, `minute`, `weekday` | current date (`2026-09-19`), hour (`0` to `23`), minute and weekday (`Mon` to `Sun`), UTC |
+
+### Expressions
+
+`routes[].when`, `request_headers.when` and `response_headers.when`
+hold a condition that is parsed at load (unknown names, functions,
+arities, patterns and capture groups are errors) and evaluated per
+request. Values are strings; a variable without a value is the empty
+string. `==` and `!=` compare as strings; `<`, `<=`, `>` and `>=`
+compare numerically when both sides are numbers and by string otherwise.
+A bare string is true when it is neither empty, `0` nor `false`.
+
+| Element | Meaning |
+|---------|---------|
+| `a && b`, `a and b`, `a \|\| b`, `a or b`, `!a`, `not a`, `(a)` | Boolean operators, lowest precedence first: or, and, not |
+| `"text"`, `'text'`, `42`, `true`, `false` | Literals; strings take `\"`, `\'`, `\\`, `\n` and `\t` escapes |
+| `client_ip`, `host`, `path`, `raw_query`, `method`, `scheme`, `country`, `ja4`, `tls_version`, `tls_cipher`, `request_id`, `route`, `upstream`, `tenant`, `time`, `date`, `hour`, `minute`, `weekday` | The variables of the table above, as bare names (`route`, `upstream` and `tenant` are empty in `routes[].when`, which runs before the route is chosen) |
+| `header("Name")`, `cookie("name")`, `query("name")`, `capture("name")` | A request header (case insensitive, first value), cookie, query parameter or regular expression group by name or number; empty when absent |
+| `has_header("Name")`, `has_cookie("name")`, `has_query("name")` | Presence, also of an empty value |
+| `x in ["a", "b"]`, `x not in [...]` | Membership in a list of literals |
+| `client_ip in cidr("10.0.0.0/8", "2001:db8::/32", "203.0.113.7")` | Address containment in prefixes or single addresses; a value that is not an address is never contained |
+| `x matches "pattern"`, `matches(x, "pattern")` | RE2 match anywhere in the value; anchor with `^` and `$` for the whole value. Patterns are literals, compiled at load |
+| `starts_with(x, "p")`, `ends_with(x, "s")`, `contains(x, "part")` | Substring tests |
+| `lower(x)`, `upper(x)`, `trim(x)`, `len(x)` | Case folding, whitespace trimming and byte length |
+
+Examples: `method in ["GET", "HEAD"] and hour >= 22 or hour < 6`
+(read-only traffic in the night window), `country in ["SE", "NO", "DK"]
+&& not has_cookie("consent")`, `path matches "^/api/v[0-9]+/" &&
+header("Content-Length") > 1048576`, `capture("id") != "" && ja4 == ""`.
 
 ## management
 
@@ -626,6 +655,7 @@ not match is skipped and the next candidate is tried.
 | `path_regex` | list | `[]` | RE2 patterns matched against the whole cleaned path (anchored at both ends by the proxy); must start with `/`; at most 32, each at most 512 bytes. `strip_prefix` and `rewrite_path` apply as usual |
 | `headers` | list | `[]` | Conditions on request headers, all of which must hold: `{name, exact | prefix | regex | present}`; names are case insensitive, the first value is examined, `regex` matches the whole value, `present: false` requires absence; at most 16 conditions with `cookies` |
 | `cookies` | list | `[]` | The same conditions on cookies by name |
+| `when` | expression | none | A condition in the expression language (see "Expressions" below) that must hold as well, for example `client_ip in cidr("10.0.0.0/8") && header("X-Env") == "beta"`; counts as one condition for specificity. At most 4096 bytes |
 | `methods` | list | `[]` (any) | Upper-case tokens |
 | `priority` | int | `0` | Tie breaker |
 | `tenant` | name | none | Free label grouping routes for quota reporting (`xproxyctl quotas`, `GET /v1/quotas`) and added as a `tenant` label to the per route metrics |
@@ -641,7 +671,8 @@ not match is skipped and the next candidate is tried.
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
-| `request_headers` | `{set, add, remove}` | | Applied before forwarding; values may not contain CR, LF or NUL |
+| `request_headers` | `{set, add, remove, when}` | | Applied before forwarding; values may not contain CR, LF or NUL |
+| `request_headers.when`, `response_headers.when` | expression | none | Apply the block only when the expression holds (see "Expressions" below), for example `query("debug") == "1"` or `not has_cookie("consent")`; `${variable}` values are still expanded |
 | `response_headers` | `{set, add, remove}` | | Applied to responses, including redirect and respond actions |
 | `request_headers.*`, `response_headers.*` values | template | | `set` and `add` values may contain `${variable}` placeholders (see "Variables" below); `$$` is a literal dollar; a placeholder without a value expands to an empty string |
 | `rate_limits` | list of names | `[]` | Evaluated in order; first exhausted policy acts |

@@ -198,7 +198,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	match := rt.router.MatchRequest(st.host, st.path, r.Method, st.grpc, r.Header)
+	match := rt.router.MatchRequest(st.host, st.path, r.Method, st.grpc, r.Header, &tvars{r: r, st: st, rt: rt})
 	if match == nil {
 		s.stats.DeniedNoRoute.Add(1)
 		st.denied = "no_route"
@@ -228,7 +228,9 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Country lookup and policy (after the address ACL, which is cheaper).
 	if rt.geo != nil && rt.geoNeeded {
-		st.country = rt.geo.Country(st.clientIP)
+		if st.country == "" {
+			st.country = rt.geo.Country(st.clientIP)
+		}
 	}
 	if !cr.geoAllowed(st.country) {
 		s.stats.DeniedGeo.Add(1)

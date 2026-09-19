@@ -1,0 +1,43 @@
+# Routing and header operations with `when` expressions. Validate with
+#   xproxy -config examples/routing/expressions.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: http, address: ":8080"}
+upstreams:
+  - {name: app-v1, endpoints: [{address: "10.0.1.10:8080"}]}
+  - {name: app-v2, endpoints: [{address: "10.0.2.10:8080"}]}
+  - {name: items, endpoints: [{address: "10.0.3.10:8080"}]}
+routes:
+  # Internal testers reach the new version by header or cookie.
+  - name: internal-beta
+    hosts: [app.example.com]
+    when: 'client_ip in cidr("10.0.0.0/8", "192.168.0.0/16") && (header("X-Env") == "beta" || has_cookie("beta"))'
+    upstream: app-v2
+  # Writes are refused during the Sunday night maintenance window.
+  - name: maintenance
+    hosts: [app.example.com]
+    methods: [POST, PUT, PATCH, DELETE]
+    when: 'weekday == "Sun" && hour >= 1 && hour < 3'
+    respond: {status: 503, body: "maintenance window, retry after 03:00 UTC"}
+  # Large uploads to the item API from outside the office are denied.
+  - name: big-uploads
+    hosts: [app.example.com]
+    path_regex: ['/api/v[0-9]+/items/(?P<id>[0-9]+)']
+    when: 'header("Content-Length") > 10485760 and client_ip not in cidr("10.0.0.0/8")'
+    respond: {status: 413, body: "too large"}
+  - name: item-api
+    hosts: [app.example.com]
+    path_regex: ['/api/v[0-9]+/items/(?P<id>[0-9]+)']
+    upstream: items
+    request_headers:
+      set: {X-Item-Id: "${id}"}
+  - name: app
+    hosts: [app.example.com]
+    upstream: app-v1
+    request_headers:
+      set: {X-Debug: "1"}
+      when: 'query("debug") == "1" && client_ip in cidr("10.0.0.0/8")'
+    response_headers:
+      set: {Cache-Control: "no-store"}
+      when: 'has_cookie("session") || starts_with(path, "/account")'
