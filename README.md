@@ -90,6 +90,9 @@ an identifier from the access log to the upstream.
   superseded endpoints against OpenAPI descriptions
 - Origin lock: per request signatures the origin verifies, mutual TLS
   and network rules so an application accepts only proxied traffic
+- Sensitive data detection in both directions: cards, identity numbers,
+  IBANs, e-mail, tokens, keys and query credentials, logged, masked or
+  blocked per route
 - Upload protection: extension chains, content sniffing against name and
   declared type, executable and web shell detection, size and count
   bounds, combinable with ICAP scanning

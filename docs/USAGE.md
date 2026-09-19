@@ -2162,8 +2162,8 @@ where something changed.
 
 Filters are middleware instances attached to routes; the built-in kinds
 are `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`,
-`upload_guard`, `body_rewrite`, `bot_score`, `oidc` and `wasm`
-(`xproxyctl filters` lists what the binary has;
+`upload_guard`, `sensitive_data`, `body_rewrite`, `bot_score`, `oidc` and
+`wasm` (`xproxyctl filters` lists what the binary has;
 [EXTENDING.md](EXTENDING.md) shows how to add one).
 
 ```yaml
@@ -2276,6 +2276,45 @@ covers `PUT /files/name.png` style uploads without multipart. Virus
 scanning is the ICAP filter's job (`routes[].icap`), and the two
 combine on one route. `examples/filters/uploads.yaml` is a complete
 configuration.
+
+### Sensitive data in requests and responses (filter)
+
+An API that returns card numbers, personal identity numbers or tokens
+it should not, or a client that sends them where they do not belong,
+is a data protection incident waiting for a log line. The
+`sensitive_data` filter watches both directions:
+
+```yaml
+filters:
+  - name: dlp
+    kind: sensitive_data
+    options:
+      detectors: [card, personnummer, iban, email, jwt, private_key, api_keys, password_query]
+      custom: [{name: order_secret, regex: "OS-[0-9]{12}"}]
+      request: {action: log, scan: [query, headers, body]}
+      response: {action: mask, scan: [headers, body], types: [application/json, text/plain]}
+  - name: no-cards-out
+    kind: sensitive_data
+    options: {detectors: [card], response: {action: block}, block_status: 502}
+routes:
+  - {name: export, hosts: [api.example.com], paths: [/v1/export], upstream: api, filters: [no-cards-out]}
+  - {name: api, hosts: [api.example.com], upstream: api, filters: [dlp]}
+```
+
+Every detector validates its match (Luhn for cards, date and checksum
+for personnummer, mod 97 for IBANs, a JSON header for JWTs), so a
+sixteen digit order number does not count. `log` leaves the message
+alone and records `sensitive_types=card,email sensitive_count=2
+sensitive_where=response_body` in the access log; `mask` rewrites the
+values (`************1111`, `a***@example.com`) before the client or
+the upstream sees them; `block` refuses with a JSON problem that names
+the kinds and never the values. Start in `log`, review the log for a
+week, then mask the responses of the routes that leak and block the
+exports that must never carry cards. Credential headers are not
+scanned by default because they always carry secrets; `password_query`
+catches the mistake of a password in a query string, where it lands in
+every log on the path. `examples/filters/sensitive-data.yaml` is a
+complete configuration.
 
 ### API inventory: discovery, shadow and zombie APIs
 

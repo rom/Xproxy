@@ -416,6 +416,46 @@ func TestUploadGuard(t *testing.T) {
 	}
 }
 
+// TestSensitiveData runs the example sensitive_data filters against a
+// request and responses carrying personal and secret data.
+func TestSensitiveData(t *testing.T) {
+	info := &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9")}
+	dlp := filterFromExample(t, "filters/sensitive-data.yaml", "dlp")
+	in := dlp.Begin(context.Background(), info)
+	req := httptest.NewRequest("POST", "http://api.example.com/v1/orders?token=abc", strings.NewReader(`{"card":"4111 1111 1111 1111","note":"OS-123456789012"}`))
+	req.Header.Set("Content-Type", "application/json")
+	if v := in.Request(req); v.Deny {
+		t.Fatalf("log mode denied: %+v", v)
+	}
+	body, _ := io.ReadAll(req.Body)
+	if !strings.Contains(string(body), "4111 1111 1111 1111") {
+		t.Fatalf("log mode changed the body: %s", body)
+	}
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"email":"anna@example.com","pnr":"19811218-9876"}`)), ContentLength: -1}
+	if v := in.Response(resp); v.Deny {
+		t.Fatalf("mask mode denied: %+v", v)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "anna@example.com") || strings.Contains(string(body), "19811218") {
+		t.Fatalf("response not masked: %s", body)
+	}
+	attrs := fmt.Sprint(in.End())
+	for _, want := range []string{"card", "order_secret", "email", "personnummer", "password_query"} {
+		if !strings.Contains(attrs, want) {
+			t.Errorf("end attributes lack %s: %s", want, attrs)
+		}
+	}
+	block := filterFromExample(t, "filters/sensitive-data.yaml", "no-cards-out")
+	resp = &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/csv"}}, Body: io.NopCloser(strings.NewReader("id,card\n1,5555555555554444\n")), ContentLength: -1}
+	if v := block.Begin(context.Background(), info).Response(resp); !v.Deny || v.Status != 502 || v.Reason != "sensitive_data" {
+		t.Fatalf("card export not blocked: %+v", v)
+	}
+	resp = &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/csv"}}, Body: io.NopCloser(strings.NewReader("id,name\n1,anna\n")), ContentLength: -1}
+	if v := block.Begin(context.Background(), info).Response(resp); v.Deny {
+		t.Fatalf("clean export blocked: %+v", v)
+	}
+}
+
 func TestBadBots(t *testing.T) {
 	main := fmt.Sprintf(`
 version: 1

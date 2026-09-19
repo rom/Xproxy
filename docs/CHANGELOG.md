@@ -222,6 +222,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- `sensitive_data` filter kind: validated detectors for payment cards,
+  Swedish personal identity numbers, IBANs, US social security numbers,
+  e-mail addresses, JWTs, private keys, API keys and query string
+  credentials, plus custom patterns, scanning query, headers and bodies
+  in both directions with log, mask or block per direction and
+  `sensitive_types`, `sensitive_count` and `sensitive_where` in the log.
 - Origin lock: `upstreams[].origin_signature` signs every forwarded
   request with a keyring shared with the origin (`internal/originsig`
   verifies), and HARDENING.md 5c documents network rules, mutual TLS

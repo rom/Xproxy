@@ -1504,7 +1504,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -1750,6 +1750,46 @@ detail `check:filename` and a JSON body; the access log carries
 | `raw_uploads` | bool | `false` | Treat a non multipart body of a write request as one file, named from `Content-Disposition` or the last path segment |
 | `fields` | list | any | Form field names that may carry files |
 | `max_filename_length` | int | `255` | |
+
+### Kind `sensitive_data`
+
+Detects personal and secret data in requests and responses and, per
+direction, logs the findings, masks them or blocks the message. The
+request phase scans the query string (raw and decoded, plus parameter
+names that carry credentials), header values and the body; the
+response phase scans header values and the body. Bodies are buffered
+up to `max_bytes` when their media type is listed and they are not
+content encoded; a larger, encoded or unlisted body passes unscanned.
+Masking rewrites the value in place (`************1111`,
+`a***@example.com`, the first eight characters of a token) and updates
+`Content-Length`; blocking answers `block_status` with reason
+`sensitive_data`, a detail `response:card,email` and a JSON problem
+naming the kinds found, never the values. The access log carries
+`sensitive_types`, `sensitive_count` and `sensitive_where` for every
+message with a finding, in every mode.
+
+Built-in detectors: `card` (Luhn checked payment cards), `personnummer`
+(Swedish personal and coordination numbers with a valid date and
+checksum), `iban` (mod 97), `ssn_us`, `email`, `jwt` (three base64url
+parts with a JSON header), `private_key` (PEM headers), `api_keys`
+(AWS, Google, GitHub, Slack, Stripe and GitLab formats) and
+`password_query` (query parameter names such as `password`, `token`
+or `api_key` with a value; requests only).
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `detectors` | list | all built-in | Built-in detector names, each at most once |
+| `custom` | list | `[]` | Up to 32 `{name, regex}` operator detectors (RE2 syntax, at most 1024 bytes); a match is masked to its first eight characters |
+| `request` | mapping | | Request phase; at least one of `request` and `response` is required |
+| `response` | mapping | | Response phase |
+| `request.action`, `response.action` | `log`, `mask`, `block` | `log` | |
+| `request.scan` | list | all | `query`, `headers`, `body` |
+| `response.scan` | list | all | `headers`, `body` |
+| `*.types` | list | text, JSON, XML, form, JavaScript types | Body media types scanned, without parameters |
+| `*.max_bytes` | int | `1048576` | Body buffered per direction (1 to 64 MiB) |
+| `*.ignore_headers` | list | request: `Authorization`, `Cookie`, `X-Api-Key`, `Proxy-Authorization`; response: `Set-Cookie` | Headers never scanned or masked |
+| `block_status` | int | `403` | Status for `block` (4xx or 5xx) |
+| `min_findings` | int | `1` | Findings a message needs before mask or block act; fewer are logged only (1 to 64) |
 
 ### routes[].filters
 

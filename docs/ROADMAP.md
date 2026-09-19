@@ -251,6 +251,8 @@ procedure is in RELEASING.md.
   `json_schemas`, `waf.anomaly`): delivered
 - API discovery and inventory with shadow, zombie and superseded
   detection (`api_inventory`, `xproxyctl api`): delivered
+- Sensitive data detection in requests and responses (`sensitive_data`
+  filter): delivered
 - Bypass protection: origin request signatures and the origin locking
   guide (`upstreams[].origin_signature`, HARDENING.md 5c): delivered
 - WAF operating modes with gradual enforcement (`block_percent`,

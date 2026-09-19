@@ -107,6 +107,12 @@ to report a vulnerability. The threat analysis behind the controls is in
   content, and bytes checked against the name and the declared type,
   before the application stores anything; malware scanning through
   ICAP combines with it.
+- Sensitive data detection (`sensitive_data` filter): validated
+  detectors for payment cards, Swedish personal identity numbers, IBANs,
+  US social security numbers, e-mail addresses, JWTs, private keys, API
+  keys and passwords in query strings, plus operator regular
+  expressions, in both directions, with log, mask or block per direction;
+  the log and the block response name the kinds, never the values.
 - Virtual patches: known vulnerabilities blocked by request shape (host,
   route, path, method, parameter, header, cookie and body conditions),
   before rate limits, filters and the WAF, with per patch counters, a
