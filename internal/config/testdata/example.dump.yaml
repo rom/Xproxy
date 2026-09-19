@@ -60,6 +60,7 @@ server:
         max_tarpits: 1024
     server_header: ""
     error_pages: null
+    session_tickets: null
     shutdown_timeout: 30s
 management:
     socket: /run/xproxy/mgmt.sock

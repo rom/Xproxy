@@ -184,6 +184,9 @@ routes:
 	if b, err = c.Raw("/v1/tls"); err != nil || strings.TrimSpace(string(b)) != "{}" {
 		t.Fatalf("tls: %v %s", err, b)
 	}
+	if _, err = c.Raw("/v1/tls/tickets"); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("tls tickets without the section: %v", err)
+	}
 	if b, err = c.Raw("/v1/waf?top=5"); err != nil || !strings.Contains(string(b), `"enabled": false`) || !strings.Contains(string(b), `"rules": []`) {
 		t.Fatalf("waf: %v %s", err, b)
 	}

@@ -56,6 +56,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `history` | Recorded configurations with generation, time, note and size (needs `management.history_dir`) |
 | `rollback ID` | Apply a recorded configuration (audited; becomes a new history entry) |
 | `tls` | Served certificates per listener: names, issuer, expiry, source (file or ACME), OCSP staple state and Certificate Transparency verdict |
+| `tls tickets` | Session ticket keys: epoch, next rotation, key count, fingerprint and which cluster peers derive the same set |
 | `sandbox` | In-process hardening: platform, each mechanism (Landlock, seccomp, capabilities, no_new_privs, debuggable; Seatbelt on macOS) with applied, unavailable, failed or disabled and a detail, the Landlock ABI and the read and write rules in force |
 | `waf [rules\|proposals\|exclusions\|reset]` | WAF profiles with rule set source and version, route assignments, counters and the most matched rules (`-top 20`); `proposals` lists learned exclusion candidates, `exclusions` prints them as SecLang for review, `reset` clears the statistics (audited) |
 | `rotate-secret FILE` | Add a fresh primary key to a secret file (affinity, challenge, OIDC cookie, redaction hash), keeping `-keep 2` previous keys for verification; then `reload` |
@@ -236,6 +237,38 @@ server:
 
 Add more certificates to the list; SNI selects the matching one.
 
+### Session tickets shared across a cluster
+
+```yaml
+server:
+  session_tickets: {secret_file: /var/lib/xproxy/tickets.key, rotate: 12h}
+```
+
+Without the section every process picks its own ticket keys, so a
+client that lands on another node behind the balancer, or on the same
+node after a restart, does a full handshake. With it the keys are
+derived from the shared file and the wall clock (epoch `now / rotate`),
+so all nodes holding the file encrypt with the same key at the same
+time and any of them resumes a ticket from any other; the previous
+epoch's key is kept so a rotation never cuts a fresh ticket off. Copy
+the file (`0600`, owner `xproxy`) to every node, or rotate it on all of
+them within one epoch with `xproxyctl rotate-secret`. `xproxyctl tls
+tickets` shows the epoch, the next rotation and, in a cluster, which
+peers derive the same set:
+
+```
+$ xproxyctl tls tickets
+session tickets: epoch 20732 (since 2026-09-19T00:00:00Z, next rotation 2026-09-19T12:00:00Z, every 12h0m0s)
+keys 2 from 1 master key(s)  fingerprint 4c1f0e9a7b2d5e31  rotations 0
+peer edge-2 agrees (4c1f0e9a7b2d5e31)
+peer edge-3 MISMATCH (9a02b7c4d1e8f356)
+```
+
+A mismatch means that peer holds another secret file or its clock is an
+epoch off; its tickets do not resume here and vice versa, which costs a
+handshake per client, not correctness. Changing the section needs a
+restart.
+
 ### Automatic certificates (ACME)
 
 ```yaml
@@ -411,7 +444,8 @@ $ xproxyctl reload
 ```
 
 Secret files (`affinity.secret_file`, `challenge.secret_file`, the
-OIDC `cookie_secret_file`, `logging.redaction.hash_secret_file`) hold a
+OIDC `cookie_secret_file`, `logging.redaction.hash_secret_file`,
+`server.session_tickets.secret_file`) hold a
 single raw key when created and become a keyring on the first rotation:
 a text file whose first key signs and seals and whose other keys only
 verify and open. Cookies and sessions issued under a kept key stay

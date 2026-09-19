@@ -165,6 +165,12 @@ CA. Set `allowed_names` to the exact node names. Bind `listen` to the
 internal interface and restrict the port with nftables to the peers.
 Rotate node certificates by installing the new files and restarting one
 node at a time; the others keep serving with local limits meanwhile.
+The session ticket master (`server.session_tickets.secret_file`) is a
+key to every resumable session across the cluster: keep it `0600`,
+owned by `xproxy`, under `/var/lib/xproxy`, out of unencrypted backups,
+and rotate it with `xproxyctl rotate-secret` on every node within one
+epoch (a node with another file falls back to full handshakes and shows
+under `mismatched_peers`).
 
 ## 6. Management access
 

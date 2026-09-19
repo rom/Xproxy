@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -127,6 +128,9 @@ func Diff(from, to *Config, fromLabel, toLabel string) *Changes {
 		a, _ := Dump(from)
 		b, _ := Dump(to)
 		ch.Text, ch.Truncated = unifiedDiff(string(a), string(b), fromLabel, toLabel)
+	}
+	if !reflect.DeepEqual(from.Server.SessionTickets, to.Server.SessionTickets) {
+		ch.RestartNeeded = append(ch.RestartNeeded, "server.session_tickets")
 	}
 	return ch
 }

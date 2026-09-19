@@ -137,6 +137,12 @@ type Server struct {
 	// ErrorPages replaces the proxy's plain status bodies for every route
 	// (routes may override).
 	ErrorPages *ErrorPages `yaml:"error_pages"`
+	// SessionTickets derives the TLS session ticket keys of every TLS
+	// listener from a master secret file and the time, so nodes sharing
+	// the file resume each other's sessions and keys rotate on schedule
+	// without a restart. Without the section each process uses random
+	// keys that rotate every 24 hours and are never shared.
+	SessionTickets *SessionTickets `yaml:"session_tickets"`
 	// ShutdownTimeout bounds graceful drain on stop or reload.
 	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
 }
@@ -1181,6 +1187,18 @@ const (
 	StageAfterWAF   = "after_waf"
 	StageAfterScan  = "after_scan"
 )
+
+// SessionTickets configures shared, rotating TLS session ticket keys.
+type SessionTickets struct {
+	// SecretFile is the master keyring (created when missing, 0600);
+	// deploy the same file to every node of a cluster. Rotate the master
+	// with xproxyctl rotate-secret.
+	SecretFile string `yaml:"secret_file"`
+	// Rotate is the epoch length: the current epoch's key encrypts new
+	// tickets and the previous epoch's key still decrypts. Default 24h;
+	// 1h to 168h.
+	Rotate Duration `yaml:"rotate"`
+}
 
 // RewriteRegex is a regular expression path rewrite. Replace may use
 // ${1} to ${9} and ${name} for the pattern's groups, and the request

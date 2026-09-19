@@ -350,6 +350,30 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		return 0
 	case "tls":
+		if fs.NArg() > 1 && fs.Arg(1) == "tickets" {
+			b, err := c.Raw("/v1/tls/tickets")
+			if err != nil {
+				return fail(err)
+			}
+			if *asJSON {
+				_, _ = out.Write(b)
+				return 0
+			}
+			var ts tlsconf.TicketStatus
+			if err := json.Unmarshal(b, &ts); err != nil {
+				return fail(err)
+			}
+			_, _ = fmt.Fprintf(out, "session tickets: epoch %d (since %s, next rotation %s, every %s)\n", ts.Epoch, ts.EpochStarted.Local().Format(time.RFC3339), ts.NextRotation.Local().Format(time.RFC3339), ts.Rotate)
+			_, _ = fmt.Fprintf(out, "keys %d from %d master key(s)  fingerprint %s  rotations %d\n", ts.Keys, ts.MasterKeys, ts.Fingerprint, ts.Rotations)
+			for p, fp := range ts.Peers {
+				state := "agrees"
+				if fp != ts.Fingerprint {
+					state = "MISMATCH"
+				}
+				_, _ = fmt.Fprintf(out, "peer %s %s (%s)\n", p, state, fp)
+			}
+			return 0
+		}
 		b, err := c.Raw("/v1/tls")
 		if err != nil {
 			return fail(err)

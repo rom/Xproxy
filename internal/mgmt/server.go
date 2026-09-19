@@ -80,6 +80,13 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("GET /v1/upstreams", s.upstreams)
 	mux.HandleFunc("GET /v1/pools", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Pools()) })
 	mux.HandleFunc("GET /v1/tls", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Certificates()) })
+	mux.HandleFunc("GET /v1/tls/tickets", func(w http.ResponseWriter, _ *http.Request) {
+		if st := s.proxy.Tickets(); st != nil {
+			writeJSON(w, 200, st)
+			return
+		}
+		writeJSON(w, 404, result{Error: "session_tickets is not configured"})
+	})
 	mux.HandleFunc("GET /v1/quotas", func(w http.ResponseWriter, r *http.Request) {
 		top := 10
 		if v, err := strconv.Atoi(r.URL.Query().Get("top")); err == nil && v >= 0 && v <= 1000 {

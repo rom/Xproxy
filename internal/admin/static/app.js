@@ -249,8 +249,11 @@ views.cluster = { refresh: 5000, async render() {
 }};
 
 views.certificates = { refresh: 30000, async render() {
-  const [served, certs] = await Promise.all([get('/api/tls').catch(() => ({})), get('/api/acme').catch(() => null)]);
+  const [served, certs, tickets] = await Promise.all([get('/api/tls').catch(() => ({})), get('/api/acme').catch(() => null), get('/api/tls-tickets').catch(() => null)]);
   clear(view);
+  if (tickets) view.append(h('div', { class: 'grid' }, [['Session ticket keys', 'epoch ' + tickets.epoch + ', ' + tickets.keys + ' keys from ' + tickets.master_keys + ' master key(s)'], ['Fingerprint', h('code', null, tickets.fingerprint)], ['Next rotation', fmtTime(tickets.next_rotation) + ' (every ' + tickets.rotate + ')'],
+    ['Cluster peers', (tickets.mismatched_peers || []).length ? h('span', { class: 'bad' }, 'mismatch: ' + tickets.mismatched_peers.join(', ')) : (Object.keys(tickets.peers || {}).length ? h('span', { class: 'ok' }, 'all agree') : '-')]]
+    .map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))));
   const now = Date.now();
   const rows = [];
   for (const ln of Object.keys(served).sort()) for (const c of served[ln]) {

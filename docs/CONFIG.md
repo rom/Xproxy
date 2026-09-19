@@ -32,7 +32,20 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `limits` | object | | Global protections |
 | `server_header` | string | `""` | Value of the `Server` response header. Empty removes it. |
 | `error_pages` | object | none | Replace the proxy's plain status bodies (denials, unknown routes, upstream failures, static misses) with documents; see "server.error_pages" below |
+| `session_tickets` | object | none (keys per process, rotated by the Go runtime) | Derive the TLS session ticket keys of every TLS listener from a shared secret file so that a ticket issued by one node resumes on every node; see "server.session_tickets" below. Changing the section needs a restart |
 | `shutdown_timeout` | duration | `30s` | Drain time on stop and for old generations after reload |
+
+### server.session_tickets
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `secret_file` | absolute path | required | Master keyring, created with mode `0600` when missing. Deploy the same file to every node; rotate the master with `xproxyctl rotate-secret` (the kept keys still open tickets sealed under the old master for one more epoch) |
+| `rotate` | duration | `24h` | Epoch length, `1h` to `168h`. Each epoch's key is derived from the master and the epoch number, so nodes with synchronised clocks switch keys together without exchanging messages; the previous epoch's key is kept for decryption, so a ticket lives at most two epochs |
+
+The key set's fingerprint is shown by `xproxyctl tls tickets` and `GET
+/v1/tls/tickets`; a cluster publishes it and a node whose peers derive a
+different set (a different secret file or a clock more than an epoch
+off) logs a warning and lists them under `mismatched_peers`.
 
 ### server.listeners[]
 

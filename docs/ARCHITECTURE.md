@@ -398,6 +398,20 @@ rebuilds the precertificate TBS with `cryptobyte` and verifies each SCT
 signature against the log list; the verdict is kept per certificate for
 `GET /v1/tls` and, with `enforce`, fails the load.
 
+`tlsconf.Tickets` (`internal/tlsconf/tickets.go`) replaces the runtime's
+per process session ticket keys when `server.session_tickets` is set.
+Every key is `HKDF-SHA256(master, info = "xpticket" || epoch)` for the
+current and the previous epoch (`epoch = now / rotate`) and for every
+key of the master keyring, so nodes that share the file derive the same
+set without a message; the current epoch's first key encrypts new
+tickets, the rest only decrypt. The set is installed on every listener's
+`tls.Config` (and the QUIC one) with `SetSessionTicketKeys` and a
+one-minute loop re-derives it when the epoch changes. A fingerprint of
+the set (`sha256` of the keys, 16 hex digits) is published as the
+cluster event `ticket_keys` on start and after every rotation; a peer's
+fingerprint that differs is recorded and warned about through a bounded
+notice.
+
 ### Layer 4 passthrough
 
 A `kind: tcp` listener (`internal/proxy/tcp.go`) accepts through the same
@@ -739,6 +753,7 @@ Endpoints:
 | GET | `/v1/upstreams` | endpoint health and load |
 | GET | `/v1/pools` | pool level state: circuit breaker, concurrency gate and queue |
 | GET | `/v1/tls` | served certificates per listener with OCSP staple and CT state |
+| GET | `/v1/tls/tickets` | session ticket key epoch, fingerprint and peer agreement (404 without `server.session_tickets`) |
 | GET | `/v1/telemetry` | OpenTelemetry exporters (metrics, traces, logs) with counters |
 | GET | `/v1/quotas` | usage per tenant, route and rate limit policy; `?top=N` consumers per policy |
 | GET | `/v1/waf` | WAF profiles, route assignments, per rule statistics (`?top=N`) and learned exclusion proposals |

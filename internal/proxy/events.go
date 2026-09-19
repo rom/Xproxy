@@ -12,7 +12,9 @@ import (
 // Event kinds the server itself publishes and consumes. Filters use their
 // own kinds (the OIDC filter shares revoked provider sessions).
 const (
-	eventHoneypotMark   = "honeypot_mark"
+	eventHoneypotMark = "honeypot_mark"
+	// eventTicketKeys carries a node's session ticket key fingerprint.
+	eventTicketKeys     = "ticket_keys"
 	eventHoneypotUnmark = "honeypot_unmark"
 )
 
@@ -69,6 +71,10 @@ func (s *Server) publishEvent(e cluster.Event) {
 func (s *Server) onClusterEvent(e cluster.Event, peer string) {
 	now := time.Now()
 	switch e.Kind {
+	case eventTicketKeys:
+		if s.tickets != nil && !s.tickets.PeerFingerprint(peer, e.Key) {
+			s.ticketMismatch.Hit(s.logs.Error, "session ticket keys differ from a peer; tickets will not resume across these nodes (check the shared secret file and clocks)", "peer", peer, "peer_fingerprint", e.Key, "fingerprint", s.tickets.Fingerprint())
+		}
 	case eventHoneypotMark:
 		ip, err := netip.ParseAddr(e.Key)
 		if err != nil {

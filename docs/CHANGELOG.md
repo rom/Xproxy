@@ -204,6 +204,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   surviving ones keep their statistics; failures keep the previous set
   and are counted. `slow_start` ramps a joining or recovering endpoint
   from 10 % to full weight.
+- `server.session_tickets`: TLS session ticket keys derived from a
+  shared master keyring and the time epoch, so a ticket issued by one
+  node of a cluster resumes on every other node and survives restarts;
+  the previous epoch's key is kept across a rotation. `xproxyctl tls
+  tickets` and `GET /v1/tls/tickets` show the epoch and the peers'
+  agreement; the fingerprint travels as the cluster event
+  `ticket_keys`.
 
 ### Changed (1.3)
 - No bounded table is silent any more. Every cap that evicts, refuses

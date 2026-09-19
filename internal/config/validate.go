@@ -134,6 +134,14 @@ func (v *validator) config(c *Config) {
 	if c.Server.ErrorPages != nil {
 		v.errorPages("server.error_pages", c.Server.ErrorPages)
 	}
+	if st := c.Server.SessionTickets; st != nil {
+		if !strings.HasPrefix(st.SecretFile, "/") {
+			v.errf("server.session_tickets.secret_file: must be an absolute path")
+		}
+		if st.Rotate < Duration(time.Hour) || st.Rotate > Duration(168*time.Hour) {
+			v.errf("server.session_tickets.rotate: must be between 1h and 168h")
+		}
+	}
 	if c.Shedding != nil {
 		v.shedding(c.Shedding)
 	}

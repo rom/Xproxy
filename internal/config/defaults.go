@@ -340,6 +340,9 @@ func applyDefaults(c *Config) {
 		}
 	}
 	errorPageDefaults(c.Server.ErrorPages)
+	if st := c.Server.SessionTickets; st != nil {
+		setDur(&st.Rotate, DefaultTicketRotate)
+	}
 	for i := range c.Routes {
 		errorPageDefaults(c.Routes[i].ErrorPages)
 	}
@@ -598,3 +601,6 @@ const (
 	DefaultBrotliLevel = 4
 	DefaultZstdLevel   = 2
 )
+
+// DefaultTicketRotate is the session ticket key epoch.
+const DefaultTicketRotate = 24 * time.Hour

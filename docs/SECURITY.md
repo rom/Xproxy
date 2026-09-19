@@ -31,7 +31,13 @@ to report a vulnerability. The threat analysis behind the controls is in
 - TLS 1.2 suites restricted to ECDHE with AES-GCM or ChaCha20-Poly1305.
   Insecure suites are rejected by validation with their name.
 - X25519, P-256, P-384 key exchange in that order.
-- Renegotiation disabled. Session tickets rotated by the Go runtime.
+- Renegotiation disabled. Session ticket keys are per process and
+  rotated by the Go runtime, or, with `server.session_tickets`, derived
+  from a `0600` master keyring and the time epoch (HKDF-SHA256) so a
+  cluster shares them; only the current and previous epoch's keys exist,
+  so a ticket is decryptable for at most two epochs and a compromised
+  key exposes at most that window. Peers publish a key set fingerprint
+  and a disagreement is logged.
 - ALPN offers `h2` then `http/1.1`; h2c (cleartext HTTP/2) is never enabled.
 - HTTP/3 (QUIC) shares certificates and limits with its TLS listener; new
   client addresses must complete a Retry round trip before state is

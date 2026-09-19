@@ -20,6 +20,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/ban"
+	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/cache"
 	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/cluster"
@@ -64,6 +65,9 @@ type Server struct {
 	acme        *acme.Manager
 	// wafStats keeps per rule counters and learning across reloads.
 	wafStats *waf.Stats
+	// tickets manages shared session ticket keys; nil without the section.
+	tickets        *tlsconf.Tickets
+	ticketMismatch bound.Notice
 
 	mu        sync.Mutex
 	listeners []*boundListener
@@ -96,6 +100,16 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		fingerprints: tlsconf.NewFingerprintTable(max(cfg.Server.Limits.MaxConnections, 1024)),
 		connLimiter:  limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
 		wafStats:     waf.NewStats(),
+	}
+	if st := cfg.Server.SessionTickets; st != nil {
+		tk, err := tlsconf.NewTickets(st, logs.Error.With("component", "tickets"))
+		if err != nil {
+			return nil, err
+		}
+		tk.OnRotate = func(fp string) {
+			s.publishEvent(cluster.Event{Kind: eventTicketKeys, Key: fp, Until: time.Now().Add(st.Rotate.D())})
+		}
+		s.tickets = tk
 	}
 	s.connLimiter.OnReject = func(addr netip.Addr, reason string) {
 		s.logs.SecurityEvent(context.Background(), "drop_connection", reason, "client_ip", addr.String())
@@ -290,6 +304,9 @@ func (s *Server) Certificates() map[string][]tlsconf.CertInfo {
 	return out
 }
 
+// Tickets returns the session ticket key status, nil without the section.
+func (s *Server) Tickets() *tlsconf.TicketStatus { return s.tickets.Status() }
+
 // Cache returns the response cache, or nil when none is configured.
 func (s *Server) Cache() *cache.Cache { return s.cache.Load() }
 
@@ -413,6 +430,10 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("socket activation: %w", err)
 	}
+	if s.tickets != nil {
+		s.tickets.Start()
+		s.publishEvent(cluster.Event{Kind: eventTicketKeys, Key: s.tickets.Fingerprint(), Until: time.Now().Add(cfg.Server.SessionTickets.Rotate.D())})
+	}
 	activated := act
 	for i := range cfg.Server.Listeners {
 		lc := cfg.Server.Listeners[i]
@@ -488,6 +509,7 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		// Encrypted: DNS over TLS and DNS over HTTPS on the TCP port, no
 		// plain UDP.
 		tc, rl, err := tlsconf.Server(lc.TLS, nil)
+		s.tickets.Attach(tc)
 		if err != nil {
 			_ = ln.Close()
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
@@ -561,6 +583,7 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 	}
 	if lc.TLS != nil {
 		tc, rl, err := tlsconf.Server(lc.TLS, lc.Protocols)
+		s.tickets.Attach(tc)
 		if err != nil {
 			_ = ln.Close()
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
@@ -890,6 +913,7 @@ func (s *Server) ReloadCertificates() error {
 // Shutdown drains connections gracefully within ctx, then closes listeners
 // and upstream pools.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.tickets.Stop()
 	s.mu.Lock()
 	lns := s.listeners
 	s.mu.Unlock()
