@@ -218,6 +218,79 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- API inventory (`api_inventory`): endpoints discovered from traffic
+  with counts, credentials, media types and versions; shadow, zombie
+  and superseded views against `openapi` filters; `xproxyctl api`,
+  `GET /v1/api`, an optional state file.
+- Aggregated bans: `bans.triggers[].aggregate` counts and bans per
+  client network (`net`, with `net_v4` and `net_v6`) or per TLS client
+  fingerprint (`ja4`), with `min_sources` distinct addresses required
+  first; fingerprint bans as `ja4:<fp>` targets in triggers, manual
+  bans, persistence and cluster propagation, applied at the request
+  stage and sparing exempt addresses; networks overlapping exempt
+  ranges are never banned.
+- Challenge tiers: `challenge.captcha` adds Cloudflare Turnstile,
+  hCaptcha or reCAPTCHA as a second tier (escalation from
+  `account_guard` `captcha` steps, campaigns and disposable actions, or
+  `mode: always`), verified with the provider from the proxy; the
+  cookie records its tier and a device identifier the challenge script
+  derives (`challenge.device`), exposed as `device` in the access log,
+  `Info.DeviceID` and the `device` rate limit key; `Verdict.Captcha`,
+  `Info.CaptchaVerified`, `captchas_passed` and the `captcha_passed`
+  challenge metric result.
+- `account_guard` filter kind: login, registration, reset, cart and
+  scrape endpoint classes with default ladders of delay, challenge and
+  block per address, account, pair, accounts per address and addresses
+  per account, failure recognition from status, body or redirect,
+  campaign detection over many addresses, disposable registration
+  domains, cluster-shared blocks, the `account_abuse` deny reason and
+  ban category, and `account_*` access log attributes.
+- `sensitive_data` filter kind: validated detectors for payment cards,
+  Swedish personal identity numbers, IBANs, US social security numbers,
+  e-mail addresses, JWTs, private keys, API keys and query string
+  credentials, plus custom patterns, scanning query, headers and bodies
+  in both directions with log, mask or block per direction and
+  `sensitive_types`, `sensitive_count` and `sensitive_where` in the log.
+- Origin lock: `upstreams[].origin_signature` signs every forwarded
+  request with a keyring shared with the origin (`internal/originsig`
+  verifies), and HARDENING.md 5c documents network rules, mutual TLS
+  and signature verification so an origin accepts only proxied traffic.
+- WAF gradual enforcement: `routes[].waf.block_percent` splits clients
+  between block and detect mode by address, `block_cidrs` always
+  enforces the canaries, `waf_enforced` in the access log and the share
+  in `xproxyctl waf`.
+- `upload_guard` filter kind: file count and sizes, allowed and denied
+  extensions with double extension rules, file name checks, content
+  sniffing against the extension and the declared type, executable and
+  server side script detection, raw upload support.
+- Request normalisation (`server.normalization`): control characters
+  and invalid UTF-8 in the target refused by default, double encoding,
+  encoded slashes and backslashes refusable, ambiguous HTTP/1 framing
+  closed and counted, NFC or NFKC folding of the routing path.
+- Rate limit keys `client_net` (with `net_v4` and `net_v6`), `endpoint`
+  (method, route and path template), `ja4`, `cookie:<name>` and
+  `jwt:<claim>`, each falling back to the client address.
+- Positive security model per route (`routes[].policy`: methods,
+  media types, query parameter types and bounds, URI, query and header
+  limits) and structured virtual patches (`virtual_patches`: host,
+  route, path, method, parameter, header, cookie and body conditions,
+  block or log, expiry, per patch counters, `xproxyctl patches`,
+  `GET /v1/patches`, `xproxy_virtual_patch_hits_total`).
+- Fleet operation: `xproxy-fleet`, a controller that serves each node
+  its configuration bundle over mutual TLS and collects the nodes'
+  status, and the `fleet` agent section in the proxy that long polls,
+  applies bundles through the reload path with rollback on refusal and
+  reports; `xproxy-fleet nodes|node|bundle|scan|validate`, `xproxyctl
+  fleet`, `GET /v1/fleet`, an RPM subpackage and a unit.
+- Grafana dashboards (overview, security) and Prometheus alert rules
+  shipped with the product under `deploy/grafana` and
+  `deploy/prometheus`, installed to `/usr/share/xproxy`, checked by a
+  test against the exported metric families.
+- SIEM export: a `siem` log sink that posts batches over HTTPS as
+  newline delimited JSON, the Splunk HTTP Event Collector envelope, CEF
+  or LEEF (`logging.siem`, credential from `auth_file`), and CEF or LEEF
+  as syslog message formats (`logging.syslog.format`); counters in
+  status, metrics and `xproxyctl telemetry`.
 - WAF: Core Rule Set plugins from a directory (`crs.plugins_dir`,
   `crs.plugins`), JSON body schemas enforced per profile and path
   before the rules (`json_schemas`, with block and detect modes and a

@@ -16,6 +16,14 @@
         }
       ]
     },
+    "api_inventory": {
+      "description": "APIInventory records the endpoints the proxy serves and reports shadow, zombie and superseded APIs.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/APIInventory"
+        }
+      ]
+    },
     "bans": {
       "description": "Bans enables the ban list when present.",
       "allOf": [
@@ -62,6 +70,14 @@
       "items": {
         "$ref": "#/$defs/FilterConfig"
       }
+    },
+    "fleet": {
+      "description": "Fleet makes this node fetch its configuration bundle from a fleet controller and report its status there (xproxy-fleet).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Fleet"
+        }
+      ]
     },
     "geoip": {
       "description": "GeoIP names the country database used by routes[].geo and by rate limits keyed on country.",
@@ -172,6 +188,13 @@
       "description": "Version is the schema version. Must equal CurrentVersion.",
       "type": "integer"
     },
+    "virtual_patches": {
+      "description": "VirtualPatches block known vulnerabilities by request shape.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/VirtualPatch"
+      }
+    },
     "waf": {
       "description": "WAF enables the web application firewall when present.",
       "allOf": [
@@ -237,6 +260,48 @@
       },
       "additionalProperties": false
     },
+    "APIInventory": {
+      "description": "APIInventory discovers the API surface from traffic: every proxied request is attributed to a host, method and path template, with counts, credentials seen, media types and the version in the path. Routes with an openapi filter contribute their documented operations, which makes shadow endpoints (traffic outside the description) and zombies (documented operations without traffic) visible.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enabled defaults to true when the section is present.",
+          "type": "boolean"
+        },
+        "hosts": {
+          "description": "Hosts and Routes narrow the inventory to these host patterns and route names. Default: every proxied route.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_endpoints": {
+          "description": "MaxEndpoints bounds the table. Default 10000.",
+          "type": "integer"
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "save_interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "state_file": {
+          "description": "StateFile keeps the inventory across restarts. Optional.",
+          "type": "string"
+        },
+        "zombie_after": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
     "Affinity": {
       "description": "Affinity is signed cookie session affinity.",
       "type": "object",
@@ -260,6 +325,10 @@
       "description": "BanTrigger bans a client after Threshold denies within Window.",
       "type": "object",
       "properties": {
+        "aggregate": {
+          "description": "Aggregate is what the trigger counts and bans: address (default), net (the client network of NetV4 or NetV6 bits, for attacks spread over one allocation) or ja4 (the TLS client fingerprint, for attacks spread over many networks from one tool).",
+          "type": "string"
+        },
         "duration": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
@@ -274,8 +343,19 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "min_sources": {
+          "description": "MinSources is how many distinct client addresses must contribute to the window before a net or ja4 aggregate bans, so one noisy host does not ban its neighbours. Default 1.",
+          "type": "integer"
+        },
         "name": {
           "type": "string"
+        },
+        "net_v4": {
+          "description": "NetV4 and NetV6 are the prefix lengths of aggregate net. Default 24 and 48.",
+          "type": "integer"
+        },
+        "net_v6": {
+          "type": "integer"
         },
         "reasons": {
           "description": "Reasons restricts which deny reasons count (acl, rate_limit, waf, body_size, uri_length, bad_host, no_route, websocket, concurrency). Empty counts every deny.",
@@ -419,6 +499,42 @@
       },
       "additionalProperties": false
     },
+    "Captcha": {
+      "description": "Captcha configures a hosted CAPTCHA provider for the challenge.",
+      "type": "object",
+      "properties": {
+        "min_score": {
+          "description": "MinScore refuses tokens the provider scores below it (reCAPTCHA v3 and Enterprise return one). Default 0 (not checked).",
+          "type": "number"
+        },
+        "mode": {
+          "description": "Mode is escalation (default: the widget only for verdicts that ask for a CAPTCHA) or always (every challenge page).",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider is turnstile, hcaptcha or recaptcha.",
+          "type": "string"
+        },
+        "secret_file": {
+          "description": "SecretFile holds the provider's secret key (one line).",
+          "type": "string"
+        },
+        "site_key": {
+          "description": "SiteKey is the public key rendered into the widget.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "verify_url": {
+          "description": "VerifyURL overrides the provider's siteverify endpoint (tests, enterprise endpoints).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "Certificate": {
       "description": "Certificate references a PEM certificate chain and private key on disk.",
       "type": "object",
@@ -448,9 +564,21 @@
           "description": "BindIP ties the cookie to the client address. Default true.",
           "type": "boolean"
         },
+        "captcha": {
+          "description": "Captcha adds a hosted CAPTCHA tier: verdicts that ask for one (an account_guard captcha step) show the provider's widget instead of the proof of work; with mode always every challenge page does.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Captcha"
+            }
+          ]
+        },
         "cookie_name": {
           "description": "CookieName defaults to XPCHAL.",
           "type": "string"
+        },
+        "device": {
+          "description": "Device includes a device identifier, computed by the challenge script from stable browser properties, in the cookie; it becomes the device attribute, Info.DeviceID for filters and the device rate limit key. Default true.",
+          "type": "boolean"
         },
         "difficulty": {
           "description": "Difficulty is the number of leading zero bits required. Default 16 (about 65 000 hashes, well under a second in a browser).",
@@ -887,6 +1015,74 @@
         },
         "stage": {
           "description": "Stage places the filter relative to the built-in chain: before_auth (before JWT), after_auth (default; after JWT, before the WAF), after_waf (before ICAP) or after_scan (last).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Fleet": {
+      "description": "Fleet is the agent side of central configuration management: the node long polls the controller for a bundle whose digest differs from the applied one, writes the files under Dir, reloads and reports its status. Changing the section requires a restart.",
+      "type": "object",
+      "properties": {
+        "apply": {
+          "description": "Apply false reports status and pending bundles without writing or reloading anything. Default true.",
+          "type": "boolean"
+        },
+        "controller": {
+          "description": "Controller is the controller's base URL (https).",
+          "type": "string"
+        },
+        "dir": {
+          "description": "Dir receives the bundle files; the configuration file must be Dir/xproxy.yaml (the -config path). Default: the directory of the configuration file.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "node_id": {
+          "description": "NodeID is the node's name at the controller; it must match the certificate name unless the controller runs with -any-name. Default cluster.node_id, else the host name.",
+          "type": "string"
+        },
+        "tags": {
+          "description": "Tags are reported to the controller for grouping.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "tls": {
+          "description": "TLS holds the node certificate, key and the fleet CA.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/FleetTLS"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "FleetTLS": {
+      "description": "FleetTLS is the agent's client certificate and the controller CA.",
+      "type": "object",
+      "properties": {
+        "ca_file": {
+          "type": "string"
+        },
+        "cert_file": {
+          "type": "string"
+        },
+        "key_file": {
+          "type": "string"
+        },
+        "server_name": {
+          "description": "ServerName overrides the name verified in the controller's certificate. Default: the host of Controller.",
           "type": "string"
         }
       },
@@ -1628,6 +1824,14 @@
         "security": {
           "$ref": "#/$defs/LogStream"
         },
+        "siem": {
+          "description": "SIEM configures the HTTPS batch sink for security information and event management systems, used by streams listing siem.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SIEM"
+            }
+          ]
+        },
         "stdout": {
           "description": "Stdout mirrors all streams to standard output (useful under journald and in containers).",
           "type": "boolean"
@@ -1729,6 +1933,41 @@
           "type": "string"
         },
         "key_file": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Normalization": {
+      "description": "Normalization decides what the proxy does with encoding tricks in the request target before anything else looks at it. Routing already decodes and cleans the path; these checks refuse the forms that make two components disagree about what a request means, and optionally fold Unicode spellings for routing.",
+      "type": "object",
+      "properties": {
+        "reject_ambiguous_framing": {
+          "description": "RejectAmbiguousFraming refuses HTTP/1 requests whose framing is ambiguous: both Transfer-Encoding and Content-Length, several differing Content-Length values, or a transfer coding other than chunked. The Go parser already refuses most of these; the check closes the rest and counts them. Default true.",
+          "type": "boolean"
+        },
+        "reject_backslashes": {
+          "description": "RejectBackslashes refuses a backslash anywhere in the decoded path, which some servers read as a separator. Default false.",
+          "type": "boolean"
+        },
+        "reject_control_chars": {
+          "description": "RejectControlChars refuses a decoded path or query containing a control character (below 0x20, or 0x7f), NUL included. Default true.",
+          "type": "boolean"
+        },
+        "reject_double_encoding": {
+          "description": "RejectDoubleEncoding refuses a path that still contains a percent escape after one decoding (%252e%252e). Default false.",
+          "type": "boolean"
+        },
+        "reject_encoded_slashes": {
+          "description": "RejectEncodedSlashes refuses %2F and %5C in the raw path: the routing decoder turns them into separators that the upstream may treat as data. Default false.",
+          "type": "boolean"
+        },
+        "reject_invalid_utf8": {
+          "description": "RejectInvalidUTF8 refuses a decoded path that is not valid UTF-8 (overlong and truncated sequences). Default true.",
+          "type": "boolean"
+        },
+        "unicode": {
+          "description": "Unicode is off, nfc or nfkc: the decoded path is normalised to that form for routing (the upstream receives the original), so composed and decomposed spellings, and with nfkc compatibility forms such as fullwidth letters, match the same route. Default off.",
           "type": "string"
         }
       },
@@ -1864,6 +2103,33 @@
       },
       "additionalProperties": false
     },
+    "OriginSignature": {
+      "description": "OriginSignature is the bypass protection an origin verifies: an HMAC over method, host, path, query, time, client address, request id and the listed extra headers, carried in one header.",
+      "type": "object",
+      "properties": {
+        "header": {
+          "description": "Header carries the signature. Default X-Xproxy-Signature.",
+          "type": "string"
+        },
+        "include": {
+          "description": "Include lists extra request headers covered by the signature.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "secret_file": {
+          "description": "SecretFile is the keyring shared with the origin (created when missing; rotate with xproxyctl rotate-secret, the previous key stays valid for verification).",
+          "type": "string"
+        },
+        "ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
     "OutlierEjection": {
       "description": "OutlierEjection configures passive health checking: consecutive failures and, when latency_threshold or latency_factor is set, an endpoint whose smoothed time to first byte is slow.",
       "type": "object",
@@ -1895,6 +2161,79 @@
       },
       "additionalProperties": false
     },
+    "PatchBody": {
+      "description": "PatchBody matches the request body.",
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "description": "Pattern is an RE2 expression matched anywhere in the body.",
+          "type": "string"
+        },
+        "content_types": {
+          "description": "ContentTypes narrows the inspection to these media types (type/* allowed). Empty inspects every body.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_bytes": {
+          "description": "MaxBytes bounds the body inspected; a larger body does not match the patch. Default 64 KiB.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PatchMatch": {
+      "description": "PatchMatch is one condition on a named parameter, header or cookie.",
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "description": "Pattern is an RE2 expression matched anywhere in a value; empty means presence suffices.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "QueryParamPolicy": {
+      "description": "QueryParamPolicy describes one allowed query parameter.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Type is string (default), int, number, bool, uuid or enum (with Values).",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Pattern is an RE2 expression every value must match in full.",
+          "type": "string"
+        },
+        "required": {
+          "description": "Required refuses requests without the parameter.",
+          "type": "boolean"
+        },
+        "max_length": {
+          "description": "MaxLength bounds each value; 0 means no bound.",
+          "type": "integer"
+        },
+        "max_repeat": {
+          "description": "MaxRepeat bounds how many times the parameter may appear. Default 1.",
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "values": {
+          "description": "Values are the allowed values for type enum.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "RateLimit": {
       "description": "RateLimit is a named rate limit policy referenced by routes: a token bucket (rate and burst) or a sliding window (limit per window).",
       "type": "object",
@@ -1919,7 +2258,7 @@
           "type": "string"
         },
         "key": {
-          "description": "Key selects the bucket identity: client_ip, route, or header:\u003cname\u003e.",
+          "description": "Key selects the bucket identity: client_ip, client_net, route, country, endpoint, ja4, header:\u003cname\u003e, cookie:\u003cname\u003e or jwt:\u003cclaim\u003e. Keys that a request may lack fall back to the client address.",
           "type": "string"
         },
         "limit": {
@@ -1928,6 +2267,13 @@
         },
         "name": {
           "type": "string"
+        },
+        "net_v4": {
+          "description": "NetV4 and NetV6 are the prefix lengths for key client_net. Default 24 and 48.",
+          "type": "integer"
+        },
+        "net_v6": {
+          "type": "integer"
         },
         "rate": {
           "description": "Rate is tokens per second (token_bucket).",
@@ -2190,6 +2536,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "policy": {
+          "description": "Policy is the route's positive security model: what a request may look like; everything else is refused before any other processing.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RoutePolicy"
+            }
+          ]
         },
         "priority": {
           "description": "Priority breaks ties between routes with identical specificity. Higher wins. Default 0.",
@@ -2479,6 +2833,59 @@
       },
       "additionalProperties": false
     },
+    "RoutePolicy": {
+      "description": "RoutePolicy is a positive security model for a route: allowed methods, media types and query parameters, and bounds on the URI, headers and query. A request outside the policy is refused (405, 415, 400, 414 or 431) with reason policy before rate limits, filters and the WAF run, and the refusal feeds ban triggers under policy.",
+      "type": "object",
+      "properties": {
+        "content_types": {
+          "description": "ContentTypes allowed for requests with a body: media types or type/* patterns; others get 415. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_unknown_query": {
+          "type": "boolean"
+        },
+        "max_header_bytes": {
+          "type": "integer"
+        },
+        "max_headers": {
+          "description": "MaxHeaders bounds the number of header fields; MaxHeaderBytes the sum of their names and values. 0 means no bound (the server limit still applies).",
+          "type": "integer"
+        },
+        "max_query_bytes": {
+          "description": "MaxQueryBytes bounds the raw query string; MaxQueryParams the number of parameters (repeats counted). 0 means no bound.",
+          "type": "integer"
+        },
+        "max_query_params": {
+          "type": "integer"
+        },
+        "max_uri_length": {
+          "description": "MaxURILength lowers server.limits.max_uri_length for the route.",
+          "type": "integer"
+        },
+        "methods": {
+          "description": "Methods allowed; others get 405 with an Allow header. Unlike routes[].methods, which selects the route, this refuses. Empty allows any method.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "query": {
+          "description": "Query describes the parameters; with DenyUnknown, parameters not listed are refused.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueryParamPolicy"
+          }
+        },
+        "require_content_type": {
+          "description": "RequireContentType refuses a body without a Content-Type header.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "RouteStatic": {
       "description": "RouteStatic serves files from a directory. Paths are resolved inside Root with os.Root, so neither \"..\" nor a symbolic link can leave it.",
       "type": "object",
@@ -2518,11 +2925,95 @@
       "description": "RouteWAF selects the WAF profile and mode for a route.",
       "type": "object",
       "properties": {
+        "block_cidrs": {
+          "description": "BlockCIDRs always get block mode whatever the share: the canary clients (internal testers, a pilot customer). Only with mode block.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "block_percent": {
+          "description": "BlockPercent rolls block mode out gradually: this share of the clients (a stable function of the client address) gets block mode, the rest detect mode. Default 100. Only with mode block.",
+          "type": "integer"
+        },
         "mode": {
           "description": "Mode is off, detect or block.",
           "type": "string"
         },
         "profile": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SIEM": {
+      "description": "SIEM is an HTTP collector of a SIEM: Splunk HTTP Event Collector, Elastic or OpenSearch ingest, Microsoft Sentinel, or any endpoint that accepts newline delimited JSON, CEF or LEEF.",
+      "type": "object",
+      "properties": {
+        "allow_http": {
+          "description": "AllowHTTP permits a plain http endpoint.",
+          "type": "boolean"
+        },
+        "auth_file": {
+          "description": "AuthFile holds the Authorization header value (\"Splunk \u003ctoken\u003e\", \"Bearer \u003ctoken\u003e\", \"ApiKey \u003ckey\u003e\"), kept out of the configuration.",
+          "type": "string"
+        },
+        "batch": {
+          "description": "Batch is the largest number of records per push. Default 512.",
+          "type": "integer"
+        },
+        "ca_file": {
+          "description": "CAFile pins the collector's CA; CertFile and KeyFile present a client certificate.",
+          "type": "string"
+        },
+        "cert_file": {
+          "type": "string"
+        },
+        "compress": {
+          "description": "Compress gzips the request body. Default true.",
+          "type": "boolean"
+        },
+        "endpoint": {
+          "description": "Endpoint is the collector URL.",
+          "type": "string"
+        },
+        "format": {
+          "description": "Format is json (newline delimited JSON lines), hec (the Splunk HTTP Event Collector envelope), cef or leef. Default json.",
+          "type": "string"
+        },
+        "headers": {
+          "description": "Headers added to every request.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "hostname": {
+          "description": "Hostname is the device host name reported (dvchost, identHostName, the HEC host). Default the OS host name.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "key_file": {
+          "type": "string"
+        },
+        "product": {
+          "type": "string"
+        },
+        "queue": {
+          "description": "Queue bounds records waiting for a push. Default 8192.",
+          "type": "integer"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "vendor": {
+          "description": "Vendor and Product fill the CEF and LEEF header fields. Defaults Sysctl and Xproxy.",
           "type": "string"
         }
       },
@@ -2647,6 +3138,14 @@
             "$ref": "#/$defs/Listener"
           }
         },
+        "normalization": {
+          "description": "Normalization checks and canonicalises the request target before routing and analysis.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Normalization"
+            }
+          ]
+        },
         "server_header": {
           "description": "ServerHeader is the value sent in the Server response header. Empty removes the header entirely (the default) to avoid fingerprinting.",
           "type": "string"
@@ -2743,7 +3242,7 @@
           "type": "string"
         },
         "format": {
-          "description": "Format is rfc5424 or rfc3164. Default rfc3164 for unix, rfc5424 otherwise.",
+          "description": "Format is rfc5424 or rfc3164 with the JSON line as the message, or cef or leef with the record rendered in that format behind an RFC 5424 header (RFC 3164 for unix). Default rfc3164 for unix, rfc5424 otherwise.",
           "type": "string"
         },
         "hostname": {
@@ -3038,6 +3537,14 @@
         "name": {
           "type": "string"
         },
+        "origin_signature": {
+          "description": "OriginSignature signs every forwarded request with a key shared with the origin, so the origin can refuse traffic that did not pass through the proxy.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/OriginSignature"
+            }
+          ]
+        },
         "outlier_ejection": {
           "description": "OutlierEjection removes endpoints that fail passively.",
           "allOf": [
@@ -3160,6 +3667,96 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "VirtualPatch": {
+      "description": "VirtualPatch blocks a known vulnerability by its request shape while the application is being fixed: every listed condition must hold for the patch to apply. Patches run right after route matching, before rate limits, filters and the WAF, so they cost nothing for other traffic and work without a WAF section.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "action": {
+          "description": "Action is block (default) or log.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Body matches the request body (buffered up to max_bytes and replayed to the upstream).",
+          "allOf": [
+            {
+              "$ref": "#/$defs/PatchBody"
+            }
+          ]
+        },
+        "cookies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PatchMatch"
+          }
+        },
+        "enabled": {
+          "description": "Enabled false keeps the patch in the configuration without applying it. Default true.",
+          "type": "boolean"
+        },
+        "expires": {
+          "description": "Expires disables the patch after this date (RFC 3339 or YYYY-MM-DD) so a temporary measure does not outlive the fix unnoticed; the status shows expired patches.",
+          "type": "string"
+        },
+        "headers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PatchMatch"
+          }
+        },
+        "hosts": {
+          "description": "Hosts and Routes narrow the patch to host patterns (exact or \"*.example.com\") and route names. Empty means every host or route.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "description": "ID names the patch in logs, status and metrics (for example cve-2024-1234).",
+          "type": "string"
+        },
+        "methods": {
+          "description": "Methods narrows the patch to these methods.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "path_regex": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "paths": {
+          "description": "Paths are prefixes of the cleaned path; PathRegex patterns match the whole path. At least one condition among paths, path_regex, query, headers, cookies and body is required.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "query": {
+          "description": "Query, Headers and Cookies are conditions on parameters, header fields and cookies: the name must be present and, with a pattern, some value must match it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PatchMatch"
+          }
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "description": "Status is the response for block. Default 403.",
+          "type": "integer"
         }
       },
       "additionalProperties": false

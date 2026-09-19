@@ -6,13 +6,16 @@
 package examples
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +27,7 @@ import (
 	"github.com/rom/xproxy/internal/filter"
 	_ "github.com/rom/xproxy/internal/filters" // built-in kinds
 	"github.com/rom/xproxy/internal/filters/apikey"
+	"github.com/rom/xproxy/internal/fleet"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/waf"
 )
@@ -275,6 +279,25 @@ func TestWAFPluginAndSchema(t *testing.T) {
 	}
 }
 
+// TestFleetExample validates the example controller directory the way
+// xproxy-fleet validate does.
+func TestFleetExample(t *testing.T) {
+	problems, ids, err := fleet.ValidateDir(filepath.Join(root(t), "fleet"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || len(problems) != 0 {
+		t.Fatalf("ids %v problems %v", ids, problems)
+	}
+	b, err := fleet.Read(filepath.Join(root(t), "fleet", "common"), filepath.Join(root(t), "fleet", "nodes", "edge-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Files) != 2 || b.Files[0].Path != "waf/custom.conf" || b.Files[1].Path != "xproxy.yaml" {
+		t.Fatalf("bundle %+v", b.Files)
+	}
+}
+
 func TestDNSBlockList(t *testing.T) {
 	bl, err := dns.NewBlockList(nil)
 	if err != nil {
@@ -347,6 +370,128 @@ func TestHeaderPolicy(t *testing.T) {
 	r = httptest.NewRequest("GET", "http://api.example.com/v1/users", nil)
 	if v := f.Begin(context.Background(), info).Request(r); !v.Deny {
 		t.Fatal("missing version header accepted")
+	}
+}
+
+// TestUploadGuard runs the example upload filters against multipart
+// uploads.
+func TestUploadGuard(t *testing.T) {
+	f := filterFromExample(t, "filters/uploads.yaml", "uploads")
+	info := &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9")}
+	upload := func(field, name, ctype string, data []byte) *http.Request {
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		h := textproto.MIMEHeader{}
+		h.Set("Content-Disposition", `form-data; name="`+field+`"; filename="`+name+`"`)
+		h.Set("Content-Type", ctype)
+		pw, err := w.CreatePart(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = pw.Write(data)
+		_ = w.Close()
+		r := httptest.NewRequest("POST", "http://app.example.com/api/attachments", bytes.NewReader(buf.Bytes()))
+		r.Header.Set("Content-Type", w.FormDataContentType())
+		return r
+	}
+	png := append([]byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}, make([]byte, 32)...)
+	if v := f.Begin(context.Background(), info).Request(upload("file", "photo.png", "image/png", png)); v.Deny {
+		t.Fatalf("png denied: %+v", v)
+	}
+	if v := f.Begin(context.Background(), info).Request(upload("file", "photo.php.png", "image/png", png)); !v.Deny || v.Status != 415 {
+		t.Fatalf("double extension accepted: %+v", v)
+	}
+	if v := f.Begin(context.Background(), info).Request(upload("file", "photo.png", "image/png", []byte("<?php echo 1; ?>"))); !v.Deny || !strings.HasPrefix(v.Detail, "executable") {
+		t.Fatalf("php content accepted: %+v", v)
+	}
+	if v := f.Begin(context.Background(), info).Request(upload("avatar", "photo.png", "image/png", png)); !v.Deny || !strings.HasPrefix(v.Detail, "field") {
+		t.Fatalf("unknown field accepted: %+v", v)
+	}
+	avatars := filterFromExample(t, "filters/uploads.yaml", "avatars")
+	raw := httptest.NewRequest("PUT", "http://app.example.com/api/me/avatar", bytes.NewReader([]byte("not an image")))
+	raw.Header.Set("Content-Type", "image/png")
+	raw.Header.Set("Content-Disposition", `attachment; filename="me.png"`)
+	if v := avatars.Begin(context.Background(), info).Request(raw); !v.Deny || !strings.HasPrefix(v.Detail, "type_unknown") {
+		t.Fatalf("strict raw upload accepted: %+v", v)
+	}
+}
+
+// TestSensitiveData runs the example sensitive_data filters against a
+// request and responses carrying personal and secret data.
+func TestSensitiveData(t *testing.T) {
+	info := &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9")}
+	dlp := filterFromExample(t, "filters/sensitive-data.yaml", "dlp")
+	in := dlp.Begin(context.Background(), info)
+	req := httptest.NewRequest("POST", "http://api.example.com/v1/orders?token=abc", strings.NewReader(`{"card":"4111 1111 1111 1111","note":"OS-123456789012"}`))
+	req.Header.Set("Content-Type", "application/json")
+	if v := in.Request(req); v.Deny {
+		t.Fatalf("log mode denied: %+v", v)
+	}
+	body, _ := io.ReadAll(req.Body)
+	if !strings.Contains(string(body), "4111 1111 1111 1111") {
+		t.Fatalf("log mode changed the body: %s", body)
+	}
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"email":"anna@example.com","pnr":"19811218-9876"}`)), ContentLength: -1}
+	if v := in.Response(resp); v.Deny {
+		t.Fatalf("mask mode denied: %+v", v)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "anna@example.com") || strings.Contains(string(body), "19811218") {
+		t.Fatalf("response not masked: %s", body)
+	}
+	attrs := fmt.Sprint(in.End())
+	for _, want := range []string{"card", "order_secret", "email", "personnummer", "password_query"} {
+		if !strings.Contains(attrs, want) {
+			t.Errorf("end attributes lack %s: %s", want, attrs)
+		}
+	}
+	block := filterFromExample(t, "filters/sensitive-data.yaml", "no-cards-out")
+	resp = &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/csv"}}, Body: io.NopCloser(strings.NewReader("id,card\n1,5555555555554444\n")), ContentLength: -1}
+	if v := block.Begin(context.Background(), info).Response(resp); !v.Deny || v.Status != 502 || v.Reason != "sensitive_data" {
+		t.Fatalf("card export not blocked: %+v", v)
+	}
+	resp = &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/csv"}}, Body: io.NopCloser(strings.NewReader("id,name\n1,anna\n")), ContentLength: -1}
+	if v := block.Begin(context.Background(), info).Response(resp); v.Deny {
+		t.Fatalf("clean export blocked: %+v", v)
+	}
+}
+
+// TestAccountGuard runs the example account filter through a credential
+// stuffing run: many accounts from one address on the login endpoint.
+func TestAccountGuard(t *testing.T) {
+	f := filterFromExample(t, "filters/accounts.yaml", "accounts")
+	info := &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9"), Path: "/api/login", Method: "POST"}
+	attempt := func(user string) filter.Verdict {
+		r := httptest.NewRequest("POST", "http://shop.example.com/api/login", strings.NewReader(`{"username":"`+user+`","password":"x"}`))
+		r.Header.Set("Content-Type", "application/json")
+		in := f.Begin(context.Background(), info)
+		v := in.Request(r)
+		if !v.Deny {
+			in.Response(&http.Response{StatusCode: 401, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))})
+		}
+		return v
+	}
+	for i := 0; i < 4; i++ {
+		if v := attempt(fmt.Sprintf("user%d@example.com", i)); v.Deny {
+			t.Fatalf("attempt %d denied: %+v", i, v)
+		}
+	}
+	// Five address failures reach the delay step; ten distinct accounts
+	// the challenge step.
+	for i := 4; i < 10; i++ {
+		if v := attempt(fmt.Sprintf("user%d@example.com", i)); v.Deny {
+			t.Fatalf("attempt %d denied: %+v", i, v)
+		}
+	}
+	if v := attempt("user10@example.com"); !v.Deny || !v.Challenge || v.Reason != "account_abuse" || !strings.Contains(v.Detail, "ip_accounts") {
+		t.Fatalf("stuffing not challenged: %+v", v)
+	}
+	// A registration from a disposable domain is challenged too.
+	r := httptest.NewRequest("POST", "http://shop.example.com/api/register", strings.NewReader(`{"email":"x@mailinator.com"}`))
+	r.Header.Set("Content-Type", "application/json")
+	reg := &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.10"), Path: "/api/register", Method: "POST"}
+	if v := f.Begin(context.Background(), reg).Request(r); !v.Deny || !v.Challenge || !strings.Contains(v.Detail, "disposable_email") {
+		t.Fatalf("disposable registration: %+v", v)
 	}
 }
 

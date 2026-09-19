@@ -22,7 +22,8 @@ var (
 func (s *Server) sample() metrics.Sample {
 	sn := s.Stats()
 	denied := sn.DeniedACL + sn.DeniedRateLimit + sn.Tarpitted + sn.DeniedConcurrency + sn.DeniedBodySize + sn.DeniedURILength +
-		sn.DeniedNoRoute + sn.DeniedWebSocket + sn.DeniedBadHost + sn.DeniedBan + sn.DeniedWAF + sn.DeniedJWT + sn.DeniedICAP + sn.DeniedFilter + sn.DeniedGeo
+		sn.DeniedNoRoute + sn.DeniedWebSocket + sn.DeniedBadHost + sn.DeniedBan + sn.DeniedWAF + sn.DeniedJWT + sn.DeniedICAP + sn.DeniedFilter + sn.DeniedGeo +
+		sn.DeniedPolicy + sn.DeniedVirtualPatch + sn.DeniedNormalization
 	return metrics.Sample{
 		Counters: []float64{float64(sn.Requests), float64(sn.Responses2xx), float64(sn.Responses4xx), float64(sn.Responses5xx),
 			float64(denied), float64(sn.Shed), float64(sn.BytesIn), float64(sn.BytesOut), float64(sn.UpstreamErrors)},
@@ -65,6 +66,7 @@ func (s *Server) Collect(e metrics.Collector) {
 		{"acl", sn.DeniedACL}, {"rate_limit", sn.DeniedRateLimit}, {"tarpit", sn.Tarpitted}, {"concurrency", sn.DeniedConcurrency},
 		{"body_size", sn.DeniedBodySize}, {"uri_length", sn.DeniedURILength}, {"no_route", sn.DeniedNoRoute}, {"websocket", sn.DeniedWebSocket},
 		{"bad_host", sn.DeniedBadHost}, {"ban", sn.DeniedBan}, {"waf", sn.DeniedWAF}, {"jwt", sn.DeniedJWT}, {"icap", sn.DeniedICAP}, {"filter", sn.DeniedFilter}, {"geo", sn.DeniedGeo}, {"shed", sn.Shed},
+		{"policy", sn.DeniedPolicy}, {"virtual_patch", sn.DeniedVirtualPatch}, {"normalization", sn.DeniedNormalization},
 	}
 	for _, d := range denied {
 		e.Counter("xproxy_denied_total", "Requests refused by the proxy, by reason.", L{"reason": d.reason}, float64(d.v))
@@ -83,12 +85,14 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_reloads_total", "Configuration reloads.", L{"result": "ok"}, float64(sn.Reloads))
 	e.Counter("xproxy_reloads_total", "Configuration reloads.", L{"result": "failed"}, float64(sn.ReloadFailures))
 	e.Counter("xproxy_bans_total", "Bans applied.", nil, float64(sn.BansTotal))
-	for result, v := range map[string]uint64{"issued": sn.ChallengesIssued, "passed": sn.ChallengesPassed, "failed": sn.ChallengesFailed} {
+	for result, v := range map[string]uint64{"issued": sn.ChallengesIssued, "passed": sn.ChallengesPassed, "failed": sn.ChallengesFailed, "captcha_passed": sn.CaptchasPassed} {
 		e.Counter("xproxy_challenges_total", "Browser challenges by result.", L{"result": result}, float64(v))
 	}
 	e.Counter("xproxy_log_sent_total", "Log records delivered to network sinks.", L{"sink": "syslog"}, float64(sn.LogSyslogSent))
+	e.Counter("xproxy_log_sent_total", "Log records delivered to network sinks.", L{"sink": "siem"}, float64(sn.LogSIEMSent))
 	e.Counter("xproxy_log_dropped_total", "Log records dropped by a sink.", L{"sink": "syslog"}, float64(sn.LogSyslogDropped))
 	e.Counter("xproxy_log_dropped_total", "Log records dropped by a sink.", L{"sink": "journald"}, float64(sn.LogJournalDropped))
+	e.Counter("xproxy_log_dropped_total", "Log records dropped by a sink.", L{"sink": "siem"}, float64(sn.LogSIEMDropped))
 
 	e.Gauge("xproxy_connections_open", "Open client connections (TCP and QUIC).", nil, float64(sn.OpenConnections))
 	e.Gauge("xproxy_requests_in_flight", "Requests currently admitted.", nil, float64(sn.InFlight))
@@ -146,6 +150,9 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_quic_rejected_total", "QUIC flows without a route or over the listener bound.", nil, float64(sn.QUICRejected))
 	e.Gauge("xproxy_quic_flows_open", "Open QUIC flows.", nil, float64(sn.QUICFlowsOpen))
 	e.Counter("xproxy_honeypot_hits_total", "Requests answered by a honeypot route.", nil, float64(sn.HoneypotHits))
+	for _, vp := range rt.patches {
+		e.Counter("xproxy_virtual_patch_hits_total", "Requests matched by a virtual patch.", L{"patch": vp.cfg.ID}, float64(vp.hits.Load()))
+	}
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "served"}, float64(sn.StaticServed))
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "not_found"}, float64(sn.StaticNotFound))

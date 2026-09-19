@@ -1,0 +1,50 @@
+# Distributed attacks: per address triggers miss an attacker spread over
+# a rented range or a residential proxy pool. The net trigger counts
+# denies per /24 (or /48) and bans the network once several distinct
+# addresses in it contributed; the ja4 trigger counts per TLS client
+# fingerprint across every network and bans the tool. Exempt ranges
+# are never covered by a network ban and never refused by a fingerprint
+# ban.
+#
+# Validate: xproxy -config examples/security/distributed-bans.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+bans:
+  state_file: /var/lib/xproxy/bans.db
+  action: drop
+  exempt_cidrs: [10.0.0.0/8, 192.0.2.0/24]
+  triggers:
+    - {name: waf-repeat, reasons: [waf], threshold: 5, window: 1m, duration: 15m}
+    - name: net-sweep
+      reasons: [waf, rate_limit, account_abuse]
+      aggregate: net
+      net_v4: 24
+      net_v6: 48
+      threshold: 50
+      min_sources: 5
+      window: 5m
+      duration: 1h
+      escalation: 2
+      max_duration: 24h
+    - name: tool
+      reasons: [waf, account_abuse, challenge]
+      aggregate: ja4
+      threshold: 100
+      min_sources: 10
+      window: 5m
+      duration: 6h
+waf:
+  default_mode: block
+  profiles:
+    - {name: default, crs: {paranoia_level: 1}}
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.10:8080"}]
+routes:
+  - {name: app, hosts: [app.example.com], upstream: app}

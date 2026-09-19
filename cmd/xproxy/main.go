@@ -23,6 +23,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds
+	"github.com/rom/xproxy/internal/fleet"
 	"github.com/rom/xproxy/internal/ingress"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
@@ -234,6 +235,19 @@ func run(args []string) int {
 		actions.Ingress = func() any { return ctrl.Status() }
 	}
 	actions.Sandbox = func() *sandbox.Status { return sb }
+	if cfg.Fleet != nil {
+		ag, err := fleet.NewAgent(*cfg.Fleet, *cfgPath, fleet.Hooks{Apply: reload, Status: func() fleet.NodeStatus { return nodeStatus(srv, sb) }}, logs.Error)
+		if err != nil {
+			logs.Error.Error("fleet agent failed", "err", err.Error())
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(ctx)
+			return 1
+		}
+		ag.Start()
+		defer ag.Stop()
+		actions.Fleet = func() any { return ag.Status() }
+	}
 	var otlp *metrics.OTLPExporter
 	if o := cfg.Metrics.OTLP; o != nil {
 		ex, err := metrics.NewOTLPExporter(metrics.OTLPConfig{Endpoint: o.Endpoint, Interval: o.Interval.D(), Timeout: o.Timeout.D(), Headers: o.Headers,
@@ -327,4 +341,42 @@ func sdNotify(state string) {
 	}
 	defer func() { _ = conn.Close() }()
 	_, _ = conn.Write([]byte(state))
+}
+
+// nodeStatus summarises the node for the fleet controller.
+func nodeStatus(srv *proxy.Server, sb *sandbox.Status) fleet.NodeStatus {
+	sn := srv.Stats()
+	st := fleet.NodeStatus{Version: version.Version, Uptime: sn.UptimeSeconds, Generation: srv.Generation(),
+		Requests: sn.Requests, Responses5xx: sn.Responses5xx, OpenConnections: sn.OpenConnections, InFlight: sn.InFlight, BansActive: sn.BansActive}
+	st.Denied = sn.DeniedACL + sn.DeniedRateLimit + sn.DeniedConcurrency + sn.DeniedBodySize + sn.DeniedURILength + sn.DeniedNoRoute +
+		sn.DeniedBadHost + sn.DeniedBan + sn.DeniedWAF + sn.DeniedJWT + sn.DeniedICAP + sn.DeniedFilter + sn.DeniedGeo
+	for _, eps := range srv.Upstreams() {
+		st.UpstreamsTotal++
+		healthy := 0
+		for _, ep := range eps {
+			st.EndpointsTotal++
+			if ep.Healthy && !ep.Ejected {
+				healthy++
+			}
+		}
+		st.EndpointsHealthy += healthy
+		if healthy > 0 {
+			st.UpstreamsHealthy++
+		}
+	}
+	for _, certs := range srv.Certificates() {
+		for _, c := range certs {
+			if !c.NotAfter.IsZero() && (st.CertExpiry.IsZero() || c.NotAfter.Before(st.CertExpiry)) {
+				st.CertExpiry = c.NotAfter
+			}
+		}
+	}
+	if sb != nil {
+		if sb.Enabled {
+			st.Sandbox = "enabled"
+		} else {
+			st.Sandbox = "disabled"
+		}
+	}
+	return st
 }

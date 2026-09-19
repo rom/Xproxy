@@ -1,0 +1,155 @@
+# Prometheus alerting rules for Xproxy, shipped with the product. Load
+# with rule_files in prometheus.yml (or import into Grafana managed
+# alerts). Every rule carries a severity label (page or warn) and a
+# runbook hint in the description; thresholds are conservative starting
+# points and are meant to be tuned per site.
+groups:
+  - name: xproxy.availability
+    rules:
+      - alert: XproxyDown
+        expr: up{job=~".*xproxy.*"} == 0
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "Xproxy on {{ $labels.instance }} is not being scraped"
+          description: "The metrics endpoint has been down for 2 minutes. Check the service (systemctl status xproxy) and the metrics listener allow list."
+      - alert: XproxyNoHealthyEndpoint
+        expr: xproxy_upstream_endpoints_healthy == 0 and xproxy_upstream_endpoints > 0
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "Upstream {{ $labels.upstream }} on {{ $labels.instance }} has no healthy endpoint"
+          description: "Every endpoint of the pool is failing health checks or ejected; requests get 503. xproxyctl upstreams shows the endpoints and their last error."
+      - alert: XproxyEndpointUnhealthy
+        expr: xproxy_upstream_endpoint_healthy == 0
+        for: 5m
+        labels: {severity: warn}
+        annotations:
+          summary: "Endpoint {{ $labels.endpoint }} of {{ $labels.upstream }} unhealthy on {{ $labels.instance }}"
+          description: "The endpoint has failed health checks for 5 minutes while the pool still serves from the others."
+      - alert: XproxyCircuitOpen
+        expr: xproxy_upstream_circuit_state == 2
+        for: 2m
+        labels: {severity: warn}
+        annotations:
+          summary: "Circuit breaker open for {{ $labels.upstream }} on {{ $labels.instance }}"
+          description: "The pool's error ratio tripped the breaker; requests are refused until the half open probe succeeds."
+      - alert: XproxyHigh5xxRatio
+        expr: |
+          sum by (instance) (rate(xproxy_responses_total{class="5xx"}[5m]))
+            / clamp_min(sum by (instance) (rate(xproxy_requests_total[5m])), 1) > 0.05
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "More than 5% of responses are 5xx on {{ $labels.instance }}"
+          description: "Server errors over 5 minutes. Split by route with xproxy_route_requests_total{outcome=\"5xx\"} and check upstream errors and timeouts."
+      - alert: XproxyHighLatency
+        expr: histogram_quantile(0.99, sum by (instance, le) (rate(xproxy_request_duration_seconds_bucket[5m]))) > 2
+        for: 10m
+        labels: {severity: warn}
+        annotations:
+          summary: "p99 request latency above 2s on {{ $labels.instance }}"
+          description: "Compare with xproxy_upstream_ttfb_seconds to tell upstream slowness from proxy load; check xproxy_load_level."
+      - alert: XproxyShedding
+        expr: max by (instance, class) (xproxy_shedding) == 1
+        for: 2m
+        labels: {severity: warn}
+        annotations:
+          summary: "Xproxy on {{ $labels.instance }} is shedding {{ $labels.class }} traffic"
+          description: "Adaptive load shedding has been refusing the class for 2 minutes; the node is saturated or an upstream is slow."
+      - alert: XproxyQueueRefusals
+        expr: sum by (instance) (rate(xproxy_upstream_queue_refused_total[5m])) > 1
+        for: 5m
+        labels: {severity: warn}
+        annotations:
+          summary: "Pool queues refusing requests on {{ $labels.instance }}"
+          description: "Requests wait for a pool slot longer than the queue allows; raise the pool concurrency or add endpoints."
+
+  - name: xproxy.operations
+    rules:
+      - alert: XproxyReloadFailed
+        expr: increase(xproxy_reloads_total{result="failed"}[15m]) > 0
+        labels: {severity: warn}
+        annotations:
+          summary: "A configuration reload failed on {{ $labels.instance }}"
+          description: "The previous configuration stays active. xproxyctl reload -dry-run prints the validation error."
+      - alert: XproxyCertificateExpiring
+        expr: min by (instance, listener) (xproxy_certificate_expiry_seconds) < 14 * 24 * 3600
+        for: 1h
+        labels: {severity: warn}
+        annotations:
+          summary: "Certificate on listener {{ $labels.listener }} ({{ $labels.instance }}) expires within 14 days"
+          description: "Renew and reload (xproxyctl reload-certs), or check ACME renewal with xproxyctl acme."
+      - alert: XproxyCertificateExpiringSoon
+        expr: min by (instance, listener) (xproxy_certificate_expiry_seconds) < 3 * 24 * 3600
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "Certificate on listener {{ $labels.listener }} ({{ $labels.instance }}) expires within 3 days"
+          description: "Clients will start failing TLS handshakes; renew now."
+      - alert: XproxyLogDrops
+        expr: sum by (instance, sink) (increase(xproxy_log_dropped_total[15m])) > 0
+        labels: {severity: warn}
+        annotations:
+          summary: "Log records dropped by the {{ $labels.sink }} sink on {{ $labels.instance }}"
+          description: "The collector is slow or unreachable; the proxy never waits, so events are being lost. xproxyctl telemetry shows the last error."
+      - alert: XproxyLogWriteErrors
+        expr: increase(xproxy_log_write_errors_total[15m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "Log file writes failing on {{ $labels.instance }}"
+          description: "The log directory is full or unwritable; access and security evidence is being lost."
+      - alert: XproxyClusterPeerDown
+        expr: xproxy_cluster_peers_connected < xproxy_cluster_peers
+        for: 5m
+        labels: {severity: warn}
+        annotations:
+          summary: "Cluster peer unreachable from {{ $labels.instance }}"
+          description: "Shared rate limits and bans degrade to local decisions towards the missing peer. xproxyctl cluster lists the peers."
+      - alert: XproxyICAPUnreachable
+        expr: xproxy_icap_reachable == 0
+        for: 5m
+        labels: {severity: warn}
+        annotations:
+          summary: "ICAP service {{ $labels.service }} unreachable from {{ $labels.instance }}"
+          description: "Requests follow the service's on_error setting (pass or block) until it answers again."
+
+  - name: xproxy.security
+    rules:
+      - alert: XproxyAttackSurge
+        expr: |
+          sum by (instance) (rate(xproxy_denied_total{reason=~"waf|acl|rate_limit|ban|filter"}[5m]))
+            > 10 * clamp_min(sum by (instance) (rate(xproxy_denied_total{reason=~"waf|acl|rate_limit|ban|filter"}[1h] offset 1h)), 0.1)
+        for: 10m
+        labels: {severity: warn}
+        annotations:
+          summary: "Denied requests on {{ $labels.instance }} are ten times the hourly baseline"
+          description: "An attack or a broken client. rate(xproxy_denied_total) by reason and the security log show who and what; bans and challenges apply automatically where configured."
+      - alert: XproxyWAFBlockSpike
+        expr: sum by (instance) (rate(xproxy_denied_total{reason="waf"}[5m])) > 5
+        for: 10m
+        labels: {severity: warn}
+        annotations:
+          summary: "WAF blocking more than 5 requests per second on {{ $labels.instance }}"
+          description: "Either an attack or a false positive after a deployment; xproxyctl waf rules names the rules and xproxyctl waf proposals the candidate exclusions."
+      - alert: XproxyBanWave
+        expr: sum by (instance) (increase(xproxy_bans_total[15m])) > 100
+        labels: {severity: warn}
+        annotations:
+          summary: "More than 100 bans in 15 minutes on {{ $labels.instance }}"
+          description: "A distributed attack or a misfiring trigger; xproxyctl bans lists the reasons."
+      - alert: XproxyHoneypotActivity
+        expr: sum by (instance) (increase(xproxy_honeypot_hits_total[1h])) > 20
+        labels: {severity: warn}
+        annotations:
+          summary: "Honeypot routes hit more than 20 times in an hour on {{ $labels.instance }}"
+          description: "Scanning activity; the clients are marked and their requests logged with honeypot_marked."
+      - alert: XproxyRateLimitSaturated
+        expr: |
+          sum by (instance, policy) (rate(xproxy_rate_limit_decisions_total{outcome="denied"}[5m]))
+            / clamp_min(sum by (instance, policy) (rate(xproxy_rate_limit_decisions_total[5m])), 1) > 0.5
+        for: 15m
+        labels: {severity: warn}
+        annotations:
+          summary: "Rate limit policy {{ $labels.policy }} denies more than half of its decisions on {{ $labels.instance }}"
+          description: "The limit is too tight for legitimate traffic or an abuser is being held off; xproxyctl quotas shows the top keys."

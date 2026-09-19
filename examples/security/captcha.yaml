@@ -1,0 +1,55 @@
+# Challenge tiers: the proof of work handles floods and scripted
+# clients; a hosted CAPTCHA (Cloudflare Turnstile here; hcaptcha and
+# recaptcha work the same way) is reserved for the account endpoints
+# where the account guard escalates. The challenge cookie carries a
+# device identifier that keys a rate limit and appears in the access
+# log as device.
+#
+# The provider secret lives on one line in the secret file. Validate:
+# xproxy -config examples/security/captcha.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+challenge:
+  secret_file: /var/lib/xproxy/challenge.key
+  difficulty: 16
+  ttl: 1h
+  captcha:
+    provider: turnstile
+    site_key: 0x4AAAAAAAExampleSiteKey
+    secret_file: /etc/xproxy/turnstile.secret
+    timeout: 5s
+    mode: escalation
+rate_limits:
+  - {name: per-device, key: device, rate: 5, burst: 20}
+filters:
+  - name: accounts
+    kind: account_guard
+    options:
+      endpoints:
+        - name: login
+          class: login
+          paths: [/api/login]
+          identity: {json: username}
+          steps:
+            - {action: delay, delay: 2s, pair: 3, ip: 5}
+            - {action: challenge, pair: 5, ip: 15, ip_accounts: 10}
+            - {action: captcha, pair: 8, ip: 30, ip_accounts: 20, account_ips: 5}
+            - {action: block, duration: 15m, pair: 12, ip: 60, ip_accounts: 40}
+          distributed: {ips: 50, events: 200, action: captcha}
+        - name: signup
+          class: register
+          paths: [/api/register]
+          identity: {json: email}
+          disposable: captcha
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.10:8080"}]
+routes:
+  - {name: login, hosts: [shop.example.com], paths: [/api/login, /api/register], methods: [POST], upstream: app, filters: [accounts], rate_limits: [per-device]}
+  - {name: app, hosts: [shop.example.com], upstream: app}

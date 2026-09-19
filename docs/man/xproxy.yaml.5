@@ -1146,6 +1146,89 @@ T}	T{
 Requests held in a tarpit at once. A tarpitted request releases its concurrency slot;\: above this bound it is rejected with 429 immediately (\fBtarpit_\:overflow\fR counts those)
 T}
 .TE
+.SS "server.normalization"
+.PP
+What the proxy does with encoding tricks in the request target before routing, rate limits, filters and the WAF look at it. Routing already decodes the path once and resolves dot segments and duplicate slashes; these checks refuse the forms that make two components read a request differently, and optionally fold Unicode spellings for routing. A refusal answers 400 with reason \fBnormalization\fR and the check as \fBdetail\fR, counts in \fBdenied_normalization\fR and feeds ban triggers under \fBnormalization\fR. The WAF still inspects the raw request line, so its rules see what the client sent.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.2i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBreject_\:control_\:chars\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A decoded path or query with a control character (below 0x20,\: or 0x7f),\: NUL included (\fBpath_\:control_\:char\fR,\: \fBquery_\:control_\:char\fR)
+T}
+T{
+\fBreject_\:invalid_\:utf8\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A decoded path that is not valid UTF\-8: overlong (\fB%c0%af\fR) and truncated sequences (\fBpath_\:invalid_\:utf8\fR)
+T}
+T{
+\fBreject_\:double_\:encoding\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+A path that still holds a percent escape after one decoding (\fB%252e%252e\fR),\: the classic way past a filter that decodes once (\fBpath_\:double_\:encoding\fR)
+T}
+T{
+\fBreject_\:encoded_\:slashes\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+\fB%2F\fR or \fB%5C\fR in the raw path: the routing decoder turns them into separators that the upstream may treat as data (\fBpath_\:encoded_\:slash\fR)
+T}
+T{
+\fBreject_\:backslashes\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+A backslash in the decoded path,\: a separator to some servers (\fBpath_\:backslash\fR)
+T}
+T{
+\fBreject_\:ambiguous_\:framing\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+HTTP/\:1 requests with several differing \fBContent\-\:Length\fR values,\: a \fBContent\-\:Length\fR next to a transfer coding,\: or a coding other than chunked (\fBframing_\:content_\:length\fR,\: \fBframing_\:te_\:cl\fR,\: \fBframing_\:transfer_\:encoding\fR). The Go parser already refuses most of these before the proxy sees them;\: the check closes the rest and makes them visible
+T}
+T{
+\fBunicode\fR
+T}	T{
+\fBoff\fR,\: \fBnfc\fR,\: \fBnfkc\fR
+T}	T{
+\fBoff\fR
+T}	T{
+Fold the decoded path to that form for routing: \fBnfc\fR makes composed and decomposed spellings (\fBcaf\[u00E9]\fR either way) match one route,\: \fBnfkc\fR also compatibility forms such as fullwidth letters (\fB\[uFF55]sers\fR). The upstream receives the original path
+T}
+.TE
+.PP
+Turn the strict checks on for applications that never use encoded separators or double encoding legitimately (most APIs), and leave them off in front of applications that carry encoded identifiers in the path; \fBexamples/security/positive\-model.yaml\fR shows the strict set.
 .SS "server.error_pages and routes[].error_pages"
 .PP
 Documents are read at load (at most 1 MiB each) and chosen by exact status (\fB"404"\fR), class (\fB"4xx"\fR, \fB"5xx"\fR) or \fB"default"\fR. A route section replaces the server section entirely for that route. Every status the proxy writes itself goes through the pages: denials (ACL, rate limit, WAF, ban, JWT), unknown host or route, upstream failures (502, 503, 504), static file misses and the like; a gRPC request keeps its gRPC status. Upstream responses pass through unchanged unless their status is listed in \fBintercept_upstream\fR.
@@ -1498,6 +1581,15 @@ none
 T}	T{
 OpenTelemetry log sink,\: used by streams listing \fBotlp\fR;\: see \fBlogging.\:otlp\fR
 T}
+T{
+\fBsiem\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+HTTPS batch sink for a SIEM (NDJSON,\: Splunk HEC,\: CEF or LEEF),\: used by streams listing \fBsiem\fR;\: see \fBlogging.\:siem\fR
+T}
 .TE
 .SS "logging.<stream>"
 .PP
@@ -1557,7 +1649,7 @@ list
 T}	T{
 \fB[file]\fR
 T}	T{
-Any of \fBfile\fR,\: \fBjournald\fR,\: \fBsyslog\fR,\: \fBotlp\fR;\: a stream can go to several
+Any of \fBfile\fR,\: \fBjournald\fR,\: \fBsyslog\fR,\: \fBotlp\fR,\: \fBsiem\fR;\: a stream can go to several
 T}
 T{
 \fBformat\fR
@@ -1652,11 +1744,11 @@ T}
 T{
 \fBformat\fR
 T}	T{
-\fBrfc5424\fR,\: \fBrfc3164\fR
+\fBrfc5424\fR,\: \fBrfc3164\fR,\: \fBcef\fR,\: \fBleef\fR
 T}	T{
 \fBrfc3164\fR for unix,\: else \fBrfc5424\fR
 T}	T{
-The JSON line is the message;\: the stream is the RFC 5424 MSGID
+With the RFC formats the JSON line is the message and the stream the RFC 5424 MSGID. \fBcef\fR and \fBleef\fR render the record in that format (see \fBlogging.\:siem\fR) behind an RFC 5424 header,\: or an RFC 3164 header on \fBunix\fR,\: for collectors that parse CEF or LEEF from syslog
 T}
 T{
 \fBfacility\fR
@@ -1823,6 +1915,171 @@ T}	T{
 Records held while a push is in flight;\: more are dropped and counted (1 to 1000000)
 T}
 .TE
+.SS "logging.siem"
+.PP
+Ships log records to a security information and event management system over HTTPS: Splunk\(aqs HTTP Event Collector, Elastic and OpenSearch ingest endpoints, Microsoft Sentinel\(aqs data collector, or any receiver of newline delimited JSON, CEF or LEEF. Records queue without blocking the request path, a full queue drops and counts, and a batching goroutine posts by size and interval and flushes at shutdown, the same way the \fBotlp\fR sink works. Redaction runs before the sink. \fBxproxyctl telemetry\fR and \fBGET /v1/telemetry\fR show the counters, \fBxproxyctl status\fR \fBlog_siem_sent\fR and \fBlog_siem_dropped\fR, and the metrics \fBxproxy_log_sent_total{sink="siem"}\fR and \fBxproxy_log_dropped_total{sink="siem"}\fR.
+.PP
+Formats:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBjson\fR: one JSON line per record, \fBapplication/x\-ndjson\fR, the line every other sink sees (with \fBstream\fR).
+.PP
+.ti -3n
+\(bu
+\fBhec\fR: the Splunk HTTP Event Collector envelope per record (\fBtime\fR, \fBhost\fR, \fBsource: xproxy\fR, \fBsourcetype: xproxy:<stream>\fR, \fBevent\fR holding the JSON object), \fBapplication/json\fR; put \fBSplunk <token>\fR in \fBauth_file\fR.
+.PP
+.ti -3n
+\(bu
+\fBcef\fR: ArcSight Common Event Format, a header of the vendor, product, version, event id (\fBstream\fR or \fBstream:action\fR), name and severity followed by the extension. Severity is 1, 3 or 5 for access lines by status class, 7 for security events (8 for bans), 3 for audit and 2, 4 or 6 for the error stream by level. Extensions use the standard keys where one exists (\fBrt\fR, \fBdvchost\fR, \fBcat\fR, \fBoutcome\fR, \fBsuser\fR from the identified user, \fBsrc\fR, \fBdst\fR and \fBdpt\fR from the upstream endpoint, \fBrequestMethod\fR, \fBdhost\fR, \fBrequest\fR, \fBrequestClientApplication\fR, \fBrequestContext\fR, \fBapp\fR, \fBin\fR, \fBout\fR, \fBact\fR, \fBreason\fR, \fBmsg\fR), the labelled custom fields for \fBstatus\fR (\fBcn1\fR), \fBduration_ms\fR (\fBcn2\fR), \fBattempts\fR (\fBcn3\fR), \fBrequest_id\fR (\fBcs1\fR), \fBroute\fR (\fBcs2\fR), \fBupstream\fR (\fBcs3\fR), \fBcountry\fR (\fBcs4\fR), \fBja4\fR (\fBcs5\fR) and \fBdetail\fR (\fBcs6\fR), and every other attribute under its own name. Header fields escape \fB|\fR and \fB\e\fR, extension values \fB=\fR, \fB\e\fR and line breaks.
+.PP
+.ti -3n
+\(bu
+\fBleef\fR: IBM QRadar Log Event Extended Format 2.0 with a tab delimiter (\fBx09\fR in the header) and the same header fields except name and severity, followed by \fBdevTime\fR, \fBdevTimeFormat\fR, \fBsev\fR, \fBcat\fR, \fBidentHostName\fR, \fBusrName\fR, \fBdst\fR, \fBdstPort\fR, \fBname\fR for non access events, then \fBsrc\fR, \fBurl\fR, \fBproto\fR, \fBuserAgent\fR, \fBreason\fR, \fBaction\fR, \fBmsg\fR and the remaining attributes under their own names.
+.RE
+.PP
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.9i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBendpoint\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+The collector URL: the Splunk HEC \fBservices/\:collector/\:event\fR path,\: an Elastic or OpenSearch ingest endpoint,\: a Logstash,\: Vector or Fluent Bit http input;\: \fBhttp:\:/\:/\fR only with \fBallow_\:http\fR
+T}
+T{
+\fBallow_\:http\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+
+T}
+T{
+\fBformat\fR
+T}	T{
+\fBjson\fR,\: \fBhec\fR,\: \fBcef\fR,\: \fBleef\fR
+T}	T{
+\fBjson\fR
+T}	T{
+
+T}
+T{
+\fBheaders\fR
+T}	T{
+map
+T}	T{
+\fB{}\fR
+T}	T{
+Request headers
+T}
+T{
+\fBauth_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+File whose trimmed content is the \fBAuthorization\fR header value (\fBSplunk <token>\fR,\: \fBBearer <token>\fR,\: \fBApiKey <key>\fR),\: so the secret stays out of the configuration
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+One push;\: at most 1m
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+Pins the collector\(aqs CA
+T}
+T{
+\fBcert_\:file\fR,\: \fBkey_\:file\fR
+T}	T{
+paths
+T}	T{
+none
+T}	T{
+Client certificate,\: both or neither
+T}
+T{
+\fBcompress\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+gzip the request body
+T}
+T{
+\fBbatch\fR
+T}	T{
+int
+T}	T{
+\fB512\fR
+T}	T{
+Records per push (1 to 10000)
+T}
+T{
+\fBinterval\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Longest wait before a push (100ms to 5m)
+T}
+T{
+\fBqueue\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Records held while a push is in flight;\: more are dropped and counted (1 to 1000000)
+T}
+T{
+\fBvendor\fR,\: \fBproduct\fR
+T}	T{
+strings
+T}	T{
+\fBSysctl\fR,\: \fBXproxy\fR
+T}	T{
+CEF and LEEF header fields,\: 1 to 63 characters without \fB|\fR
+T}
+T{
+\fBhostname\fR
+T}	T{
+string
+T}	T{
+OS host name
+T}	T{
+\fBdvchost\fR,\: \fBidentHostName\fR and the HEC \fBhost\fR
+T}
+.TE
 .SS "logging.redaction"
 .PP
 Presence enables the rules; \fBenabled: false\fR switches them off while keeping the configuration. Rules run before every sink, so files, journald and syslog all receive the same redacted record.
@@ -1940,11 +2197,20 @@ T}
 T{
 \fBkey\fR
 T}	T{
-\fBclient_\:ip\fR,\: \fBroute\fR,\: \fBcountry\fR,\: \fBheader:\:<Name>\fR
+see below
 T}	T{
 \fBclient_\:ip\fR
 T}	T{
-Bucket identity. A missing header or an unknown country falls back to the client address.
+Bucket identity
+T}
+T{
+\fBnet_\:v4\fR,\: \fBnet_\:v6\fR
+T}	T{
+int
+T}	T{
+\fB24\fR,\: \fB48\fR
+T}	T{
+Prefix lengths for \fBkey:\: client_\:net\fR
 T}
 T{
 \fBalgorithm\fR
@@ -2019,6 +2285,93 @@ T}	T{
 Hold before answering 429 (released on client disconnect)
 T}
 .TE
+.PP
+Keys:
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.5i) lbx
+lw(0.9i) lw(1.5i) lx.
+T{
+Key
+T}	T{
+Bucket per
+T}	T{
+Without the identifier
+T}
+T{
+\fBclient_\:ip\fR
+T}	T{
+client address
+T}	T{
+
+T}
+T{
+\fBclient_\:net\fR
+T}	T{
+client network: the address truncated to \fBnet_\:v4\fR or \fBnet_\:v6\fR bits,\: so a distributed client rotating addresses inside one allocation shares a bucket
+T}	T{
+
+T}
+T{
+\fBroute\fR
+T}	T{
+route
+T}	T{
+
+T}
+T{
+\fBendpoint\fR
+T}	T{
+method,\: route and path template (identifiers such as numbers,\: UUIDs,\: hashes and opaque tokens replaced by \fB*\fR,\: so \fB/\:users/\:42\fR and \fB/\:users/\:43\fR are one endpoint)
+T}	T{
+
+T}
+T{
+\fBcountry\fR
+T}	T{
+client country (needs \fBgeoip\fR)
+T}	T{
+client address
+T}
+T{
+\fBja4\fR
+T}	T{
+TLS client fingerprint
+T}	T{
+client address (plaintext listeners)
+T}
+T{
+\fBdevice\fR
+T}	T{
+device identifier from the challenge cookie (\fBchallenge.\:device\fR),\: so a client rotating addresses keeps one bucket once it has passed a challenge
+T}	T{
+client address (no cookie yet)
+T}
+T{
+\fBheader:\:<Name>\fR
+T}	T{
+first value of the header (256 bytes)
+T}	T{
+client address
+T}
+T{
+\fBcookie:\:<name>\fR
+T}	T{
+value of the cookie (256 bytes),\: a session or device identifier
+T}	T{
+client address
+T}
+T{
+\fBjwt:\:<claim>\fR
+T}	T{
+a string,\: number or boolean claim of the bearer token in \fBAuthorization\fR,\: read without verification (the value only names a bucket;\: the \fBjwt\fR route setting still rejects a forged token)
+T}	T{
+client address
+T}
+.TE
+.PP
+The fallback keeps a limit from being avoided by omitting the identifier; rotating it still buys fresh buckets, so pair an identifier key with a \fBclient_ip\fR or \fBclient_net\fR policy on the same route.
 .PP
 Memory: at most 64 x 8192 buckets per policy.
 .SH "upstreams[]"
@@ -2339,6 +2692,15 @@ T}	T{
 
 T}	T{
 Mutual TLS to the upstream;\: set both. Re\-read by \fBxproxyctl reload\-\:certs\fR and by configuration reload;\: idle connections are dropped so new ones present the new certificate
+T}
+T{
+\fBorigin_\:signature\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Sign every forwarded request so the origin can refuse traffic that bypassed the proxy;\: see \fBupstreams[].\:origin_\:signature\fR
 T}
 T{
 \fBspki_\:pins\fR
@@ -2803,6 +3165,72 @@ T}	T{
 HMAC key or keyring,\: created \fB0600\fR on first use if absent;\: rotate with \fBxproxyctl rotate\-\:secret\fR (cookies signed with kept keys stay valid)
 T}
 .TE
+.SS "upstreams[].origin_signature"
+.PP
+Network filtering keeps most traffic off an origin, but not where the origin is reachable from the internet by design (a cloud service, a shared host) or where another tenant sits on the same network. A signed header lets the origin refuse anything that did not pass through the proxy. Every forwarded request carries
+.PP
+.RS 4
+.nf
+.ft CR
+X\-Xproxy\-Signature: v1;t=<unix seconds>;kid=<key id>;sig=<base64url HMAC\-SHA256>
+.ft
+.fi
+.RE
+.PP
+where the MAC covers, as newline separated lines: \fBv1\fR, the method, the \fBHost\fR sent upstream (lower case), the path, the raw query, the timestamp, the client address (the \fBX\-Real\-Ip\fR value), the request id (\fBX\-Request\-Id\fR) and the values of the \fBinclude\fR headers in order (repeated values joined with commas). The key id is the first eight hex digits of the SHA\-256 of the key. A signature header sent by a client is always replaced.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(1.0i) lbx
+lw(0.8i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBheader\fR
+T}	T{
+name
+T}	T{
+\fBX\-\:Xproxy\-\:Signature\fR
+T}	T{
+
+T}
+T{
+\fBsecret_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Keyring shared with the origin (mode \fB0600\fR,\: created on first start;\: \fBxproxyctl rotate\-\:secret\fR adds a new primary and keeps the previous key,\: so the origin verifies with either while it is updated)
+T}
+T{
+\fBttl\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+Age the origin should accept;\: a signature is also refused more than a minute in the future
+T}
+T{
+\fBinclude\fR
+T}	T{
+list of headers
+T}	T{
+\fB[]\fR
+T}	T{
+Extra request headers covered,\: for example a tenant header the proxy sets
+T}
+.TE
+.PP
+At the origin, recompute the MAC with the shared key selected by \fBkid\fR, compare in constant time, and refuse when it differs, the key id is unknown or \fBt\fR is older than the TTL. HARDENING.md has verifier snippets; \fBinternal/originsig\fR has \fBVerify\fR for origins written in Go. Combine with mutual TLS (\fBtls.client_cert_file\fR) and with network filtering: each closes what the others cannot.
 .SH "routes[]"
 .PP
 Matching: exact host, then wildcard host, then hostless routes; within a host the longest path (a \fBpath_regex\fR entry counts as the length of its literal prefix and, at equal length, beats a plain prefix); then the number of \fBheaders\fR and \fBcookies\fR conditions (more first, so a conditioned route is tried before the plain route on the same path); then \fBpriority\fR (higher wins); then configuration order. \fBmethods\fR and the conditions are filters: a route whose method set or conditions do not match is skipped and the next candidate is tried.
@@ -3449,9 +3877,111 @@ T}
 .PP
 The OTLP exporter sends the same families as OTLP/HTTP with JSON encoding: counters as cumulative monotonic sums since process start, gauges as gauges, histograms as cumulative explicit bucket histograms; labels become data point attributes. \fBGET /v1/otlp\fR and \fBxproxyctl otlp\fR show pushes, failures, the last error and the size of the last request.
 .PP
-Exposed families: \fBxproxy_requests_total\fR, \fBxproxy_responses_total{class}\fR, \fBxproxy_denied_total{reason}\fR, \fBxproxy_bytes_in_total\fR, \fBxproxy_bytes_out_total\fR, \fBxproxy_waf_detected_total\fR, \fBxproxy_upstream_errors_total\fR, \fBxproxy_upstream_timeouts_total\fR, \fBxproxy_upstream_no_healthy_total\fR, \fBxproxy_client_aborts_total\fR, \fBxproxy_connections_rejected_total\fR, \fBxproxy_reloads_total{result}\fR, \fBxproxy_bans_total\fR, \fBxproxy_challenges_total{result}\fR, \fBxproxy_log_sent_total{sink}\fR, \fBxproxy_log_dropped_total{sink}\fR, \fBxproxy_connections_open\fR, \fBxproxy_requests_in_flight\fR, \fBxproxy_bans_active\fR, \fBxproxy_load_level\fR, \fBxproxy_upstream_latency_seconds\fR, \fBxproxy_shedding{class}\fR, \fBxproxy_cluster_peers\fR, \fBxproxy_cluster_peers_connected\fR, \fBxproxy_cluster_messages_total{direction,type}\fR, \fBxproxy_cluster_rejected_total\fR, \fBxproxy_request_duration_seconds\fR (histogram), \fBxproxy_upstream_ttfb_seconds\fR (histogram), \fBxproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}\fR, \fBxproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}\fR, \fBxproxy_route_requests_total{route,outcome}\fR, \fBxproxy_build_info\fR, \fBxproxy_uptime_seconds\fR, \fBxproxy_config_generation\fR.
+Exposed families: \fBxproxy_requests_total\fR, \fBxproxy_responses_total{class}\fR, \fBxproxy_denied_total{reason}\fR, \fBxproxy_bytes_in_total\fR, \fBxproxy_bytes_out_total\fR, \fBxproxy_waf_detected_total\fR, \fBxproxy_upstream_errors_total\fR, \fBxproxy_upstream_timeouts_total\fR, \fBxproxy_upstream_no_healthy_total\fR, \fBxproxy_client_aborts_total\fR, \fBxproxy_connections_rejected_total\fR, \fBxproxy_reloads_total{result}\fR, \fBxproxy_bans_total\fR, \fBxproxy_challenges_total{result}\fR (\fBissued\fR, \fBpassed\fR, \fBfailed\fR, \fBcaptcha_passed\fR), \fBxproxy_log_sent_total{sink}\fR, \fBxproxy_log_dropped_total{sink}\fR, \fBxproxy_connections_open\fR, \fBxproxy_requests_in_flight\fR, \fBxproxy_bans_active\fR, \fBxproxy_load_level\fR, \fBxproxy_upstream_latency_seconds\fR, \fBxproxy_shedding{class}\fR, \fBxproxy_cluster_peers\fR, \fBxproxy_cluster_peers_connected\fR, \fBxproxy_cluster_messages_total{direction,type}\fR, \fBxproxy_cluster_rejected_total\fR, \fBxproxy_request_duration_seconds\fR (histogram), \fBxproxy_upstream_ttfb_seconds\fR (histogram), \fBxproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}\fR, \fBxproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}\fR, \fBxproxy_route_requests_total{route,outcome}\fR, \fBxproxy_build_info\fR, \fBxproxy_uptime_seconds\fR, \fBxproxy_config_generation\fR.
 .PP
 Series (per\-second rates for counters, current values for gauges): \fBrequests\fR, \fBresponses_2xx\fR, \fBresponses_4xx\fR, \fBresponses_5xx\fR, \fBdenied\fR, \fBshed\fR, \fBbytes_in\fR, \fBbytes_out\fR, \fBupstream_errors\fR, \fBopen_connections\fR, \fBin_flight\fR, \fBload_level\fR, \fBupstream_latency_ms\fR, \fBbans_active\fR, \fBcluster_connected\fR.
+.SH "api_inventory"
+.PP
+Present means enabled. The proxy discovers the API surface it serves from traffic: every request of a proxied route (not redirects, static files or honeypots) is attributed to its host, method and path template, with first and last seen times, counts per status class, the kinds of credential clients present (\fBbearer\fR, \fBbasic\fR, \fBapi_key\fR, \fBcookie\fR, \fBclient_cert\fR, \fBnone\fR), request and response media types and the version segment of the path (\fBv1\fR, \fBv2\fR). Identifiers in the path (numbers, UUIDs, hashes, opaque tokens) fold into \fB*\fR, so \fB/users/42\fR and \fB/users/43\fR are one endpoint; on a route with an \fBopenapi\fR filter the description\(aqs own template is used and the filter says whether the operation is documented. \fBxproxyctl api\fR and \fBGET /v1/api\fR show:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBshadow\fR APIs: traffic to a described route outside its description (an undocumented path or method), the endpoints nobody reviewed;
+.PP
+.ti -3n
+\(bu
+\fBzombie\fR APIs: documented operations without any traffic for \fBzombie_after\fR, or never since the inventory started, the endpoints nobody uses but everyone still maintains;
+.PP
+.ti -3n
+\(bu
+\fBsuperseded\fR versions: a \fBv1\fR still receiving traffic next to a \fBv2\fR of the same host, method and path;
+.PP
+.ti -3n
+\(bu
+the plain inventory, sorted by requests, with \fBversions\fR, \fBdocumented\fR and \fBundocumented\fR views.
+.RE
+.PP
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.0i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+
+T}
+T{
+\fBmax_\:endpoints\fR
+T}	T{
+int
+T}	T{
+\fB10000\fR
+T}	T{
+Bound on distinct endpoints;\: further ones are counted as dropped (100 to 1000000)
+T}
+T{
+\fBhosts\fR
+T}	T{
+list of host patterns
+T}	T{
+every proxied route
+T}	T{
+Only routes serving these hosts
+T}
+T{
+\fBroutes\fR
+T}	T{
+list of names
+T}	T{
+every proxied route
+T}	T{
+Only these routes
+T}
+T{
+\fBzombie_\:after\fR
+T}	T{
+duration
+T}	T{
+\fB720h\fR
+T}	T{
+Silence after which a documented endpoint is a zombie;\: 1h to 8760h
+T}
+T{
+\fBstate_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+Keeps the inventory across restarts (written every \fBsave_\:interval\fR and at shutdown,\: mode \fB0600\fR)
+T}
+T{
+\fBsave_\:interval\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+10s to 24h
+T}
+.TE
+.PP
+The table lives for the process and survives reloads; counts are cumulative since the start (or since the oldest record in the state file).
 .SH "bans"
 .PP
 Present means enabled. Bans apply before routing; banned peers are closed at accept when \fBaction\fR is \fBdrop\fR, and answered 403 when the client address comes from a trusted proxy chain or \fBaction\fR is \fBreject\fR.
@@ -3546,7 +4076,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBaccount_\:abuse\fR
 T}
 T{
 \fBthreshold\fR
@@ -3582,7 +4112,7 @@ float
 T}	T{
 \fB2\fR
 T}	T{
-Multiplier applied for each repeat ban of the same address
+Multiplier applied for each repeat ban of the same target
 T}
 T{
 \fBmax_\:duration\fR
@@ -3593,9 +4123,36 @@ T}	T{
 T}	T{
 Cap on escalated duration;\: at least \fBduration\fR
 T}
+T{
+\fBaggregate\fR
+T}	T{
+\fBaddress\fR,\: \fBnet\fR,\: \fBja4\fR
+T}	T{
+\fBaddress\fR
+T}	T{
+What the trigger counts and bans. \fBnet\fR keys the window by the client network (\fBnet_\:v4\fR or \fBnet_\:v6\fR bits) and bans that network,\: for an attack spread over one allocation;\: \fBja4\fR keys it by the TLS client fingerprint and bans the fingerprint (\fBja4:\:<fp>\fR),\: for an attack spread over many networks from one tool;\: plaintext connections do not count towards a \fBja4\fR trigger
+T}
+T{
+\fBnet_\:v4\fR,\: \fBnet_\:v6\fR
+T}	T{
+int
+T}	T{
+\fB24\fR,\: \fB48\fR
+T}	T{
+Prefix lengths for \fBaggregate:\: net\fR (8 to 32,\: 32 to 128)
+T}
+T{
+\fBmin_\:sources\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+For \fBnet\fR and \fBja4\fR: distinct client addresses that must have contributed to the window before the aggregate is banned,\: so one noisy host does not ban its neighbours or a common fingerprint;\: at most \fBthreshold\fR
+T}
 .TE
 .PP
-Manual bans (\fBxproxyctl ban\fR) accept addresses and CIDRs no wider than /8 (IPv4) or /32 (IPv6); loopback and unspecified addresses are refused.
+Manual bans (\fBxproxyctl ban\fR) accept addresses, CIDRs no wider than /8 (IPv4) or /32 (IPv6) and fingerprints as \fBja4:<fp>\fR; loopback and unspecified addresses are refused. A network overlapping an exempt range is never banned, by trigger, operator or peer; a fingerprint ban is not applied to clients in exempt ranges. Fingerprint bans apply at the request stage (the fingerprint is known after the TLS handshake), not at accept; at most 4096 are held.
 .SH "waf"
 .PP
 Present means enabled. Routes without a \fBwaf\fR block use \fBdefault_mode\fR and \fBdefault_profile\fR. Profiles compile at load and at reload; a broken rule set fails the reload.
@@ -4330,7 +4887,7 @@ T}	T{
 T}	T{
 \fBwaf.\:default_\:mode\fR
 T}	T{
-
+\fBdetect\fR logs what \fBblock\fR would have done
 T}
 T{
 \fBprofile\fR
@@ -4341,7 +4898,182 @@ T}	T{
 T}	T{
 
 T}
+T{
+\fBblock_\:percent\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+With \fBmode:\: block\fR,\: the share of clients that get block mode;\: the rest get detect mode. The choice is a stable function of the client address,\: so one client always sees one behaviour. \fB0\fR with \fBblock_\:cidrs\fR is a test mode: only the canaries are enforced
+T}
+T{
+\fBblock_\:cidrs\fR
+T}	T{
+list of CIDRs
+T}	T{
+\fB[]\fR
+T}	T{
+Clients always in block mode whatever the share (internal testers,\: a pilot customer)
+T}
 .TE
+.PP
+Gradual roll\-out: detect everywhere, then \fBblock_percent: 0\fR with the testers in \fBblock_cidrs\fR, then raise the share in steps while the security log\(aqs \fBwaf_detected\fR entries (the requests detect mode would have blocked) stay explainable, then \fB100\fR. \fBxproxyctl waf\fR shows the share and the canary prefixes per route, and the access log carries \fBwaf_enforced: true\fR or \fBfalse\fR for every request of such a route.
+.SH "virtual_patches[]"
+.PP
+A virtual patch blocks a known vulnerability by the shape of the requests that exploit it, while the application is being fixed, and records how often it fired. Patches run right after route matching, before rate limits, filters and the WAF, so they cost nothing for other traffic and need no \fBwaf\fR section. Every listed condition must hold for a patch to apply; at least one of \fBpaths\fR, \fBpath_regex\fR, \fBquery\fR, \fBheaders\fR, \fBcookies\fR or \fBbody\fR is required. A match with \fBaction: block\fR answers \fBstatus\fR with reason \fBvirtual_patch\fR and the id as \fBdetail\fR (ban category \fBvirtual_patch\fR); with \fBaction: log\fR the request continues and the security event and the access log carry \fBvirtual_patch: <id>\fR. \fBxproxyctl patches\fR and \fBGET /v1/patches\fR list the patches with hits, last hit, expiry and state; \fBxproxy_virtual_patch_hits_total{patch}\fR counts per patch and hits survive reloads.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.1i) lbw(1.0i) lbx
+lw(1.2i) lw(1.1i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBid\fR
+T}	T{
+identifier
+T}	T{
+required,\: unique
+T}	T{
+\fBa\-\:z\fR,\: \fB0\-\:9\fR,\: \fB.\fR,\: \fB_\fR,\: \fB\-\fR,\: at most 63 characters (\fBcve\-\:2024\-\:1234\fR)
+T}
+T{
+\fBdescription\fR
+T}	T{
+string
+T}	T{
+
+T}	T{
+Shown in the status;\: at most 512 bytes
+T}
+T{
+\fBhosts\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Host patterns,\: exact or \fB*.\:example.\:com\fR
+T}
+T{
+\fBroutes\fR
+T}	T{
+list of names
+T}	T{
+any
+T}	T{
+Only requests matched to these routes
+T}
+T{
+\fBpaths\fR
+T}	T{
+list of prefixes
+T}	T{
+
+T}	T{
+Prefixes of the cleaned path
+T}
+T{
+\fBpath_\:regex\fR
+T}	T{
+list of regex
+T}	T{
+
+T}	T{
+Patterns matching the whole cleaned path
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Upper\-case methods
+T}
+T{
+\fBquery\fR
+T}	T{
+list of \fB{name,\: pattern}\fR
+T}	T{
+
+T}	T{
+The parameter must be present and,\: with \fBpattern\fR,\: some value must contain a match
+T}
+T{
+\fBheaders\fR
+T}	T{
+list of \fB{name,\: pattern}\fR
+T}	T{
+
+T}	T{
+Same for header fields (names case insensitive)
+T}
+T{
+\fBcookies\fR
+T}	T{
+list of \fB{name,\: pattern}\fR
+T}	T{
+
+T}	T{
+Same for cookies
+T}
+T{
+\fBbody\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+\fBpattern\fR (required) matched anywhere in the body,\: buffered up to \fBmax_\:bytes\fR (default 64 KiB,\: at most 16 MiB) and replayed to the upstream;\: \fBcontent_\:types\fR narrows the inspection;\: a larger body or another media type does not match
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBblock\fR,\: \fBlog\fR
+T}	T{
+\fBblock\fR
+T}	T{
+
+T}
+T{
+\fBstatus\fR
+T}	T{
+int
+T}	T{
+\fB403\fR
+T}	T{
+Response for \fBblock\fR;\: 4xx or 5xx (404 hides the patched path)
+T}
+T{
+\fBexpires\fR
+T}	T{
+date
+T}	T{
+none
+T}	T{
+RFC 3339 or \fBYYYY\-\:MM\-\:DD\fR (end of that day,\: UTC);\: an expired patch no longer applies and shows as expired
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+\fBfalse\fR keeps the patch without applying it
+T}
+.TE
+.PP
+Hand\-written SecLang in \fBwaf.profiles[].directive_files\fR remains the tool for patches that need the rule engine\(aqs transformations or scoring; \fBexamples/security/positive\-model.yaml\fR shows both kinds side by side with a route policy.
 .SH "cluster"
 .PP
 Present means enabled. Nodes exchange rate limit consumption and ban changes over mutual TLS (AMR\-009, AMR\-021). Every node listens and dials every peer; there is no leader. Enabling or disabling the section, and changing \fBlisten\fR, \fBnode_id\fR or \fBtls\fR, require a restart. Peers, intervals and sharing flags reload.
@@ -4481,6 +5213,116 @@ T}
 Semantics: with sharing on, a rate limit policy\(aqs \fBrate\fR becomes an approximate cluster wide rate per key. Each node refills a key\(aqs bucket at \fBrate\fR minus the sum of fresh peer consumption for that key; \fBburst\fR stays per node. Accuracy is bounded by one gossip interval of delay and reports expire after \fBpeer_stale\fR, so losing a peer degrades to local limiting. A policy with \fBdistributed: exact\fR is instead decided by one owner per key: the members (this node and every peer whose hello was received on a live connection, \fBxproxyctl cluster\fR lists them) agree on the owner through rendezvous hashing, requests for a key owned elsewhere carry one round trip to the owner within \fBexact_timeout\fR, and the owner\(aqs limiter is the single count, so the limit holds exactly cluster wide while the members agree. Membership changes move only the departed member\(aqs keys; during a partition two owners may exist for a key, and a node without an answer in time decides locally, which over\-admits rather than refuses.
 .PP
 The cluster listener can be socket activated with \fBFileDescriptorName=cluster\fR.
+.SH "fleet"
+.PP
+Present means the node is managed by a fleet controller (\fBxproxy\-fleet\fR). The agent long polls the controller for a bundle whose digest differs from the applied one, writes the bundle\(aqs files into the directory of the configuration file, reloads through the ordinary path (validation, sandbox check) and restores the previous files when the reload is refused; after every poll it reports the node\(aqs status (version, generation, applied digest and result, request, error, deny, connection, upstream, endpoint, ban and certificate summary). The controller never connects to the node. Changing the section requires a restart. \fBxproxyctl fleet\fR and \fBGET /v1/fleet\fR show the agent state.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.4i) lbx
+lw(1.1i) lw(0.9i) lw(1.4i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBcontroller\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+The controller\(aqs base URL,\: \fBhttps\fR without a path
+T}
+T{
+\fBnode_\:id\fR
+T}	T{
+name
+T}	T{
+\fBcluster.\:node_\:id\fR,\: else the host name
+T}	T{
+The node\(aqs name at the controller;\: must equal the certificate\(aqs common name or DNS name unless the controller runs with \fB\-\:any\-\:name\fR
+T}
+T{
+\fBtls.\:cert_\:file\fR,\: \fBtls.\:key_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The node\(aqs client certificate
+T}
+T{
+\fBtls.\:ca_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+CA that issued the controller\(aqs certificate
+T}
+T{
+\fBtls.\:server_\:name\fR
+T}	T{
+string
+T}	T{
+host of \fBcontroller\fR
+T}	T{
+Name verified in the controller\(aqs certificate
+T}
+T{
+\fBinterval\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Long poll length and status report period;\: 5s to 1h
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+Request time allowed beyond the poll length;\: 1s to 1m
+T}
+T{
+\fBdir\fR
+T}	T{
+path
+T}	T{
+directory of the configuration file
+T}	T{
+Where bundle files are written;\: must be the configuration file\(aqs directory,\: and the file must be named \fBxproxy.\:yaml\fR
+T}
+T{
+\fBapply\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+\fBfalse\fR reports status and pending bundles without writing or reloading (a review mode)
+T}
+T{
+\fBtags\fR
+T}	T{
+list of names
+T}	T{
+\fB[]\fR
+T}	T{
+Reported to the controller for grouping
+T}
+.TE
+.PP
+The sandbox derives a write rule for \fBdir\fR when \fBapply\fR is on, so the agent can replace the files under Landlock; everything a bundle references must still lie within the sandbox\(aqs read rules, otherwise the reload is refused and the bundle rolled back.
 .SH "jwt"
 .PP
 Present means providers are available; routes opt in with a \fBjwt\fR block. Tokens are validated on the standard library: RSA (PKCS#1 v1.5 and PSS), ECDSA, Ed25519 and HMAC signatures, JSON Web Key Sets from a file or an HTTPS URL, and the standard time and audience claims. \fBnone\fR is never accepted.
@@ -4925,7 +5767,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -5458,6 +6300,161 @@ T}
 .TE
 .PP
 Signals and default weights: \fBua_bot\fR 40 (curl, wget, python, Go, Java, scanners, headless browsers and the like), \fBua_missing\fR 30, \fBbrowser_headers_missing\fR 25 (a browser user agent without \fBAccept\fR or \fBAccept\-Language\fR), \fBfingerprint_mismatch\fR 35 (a browser user agent on a hello without \fBh2\fR ALPN or with fewer than ten cipher suites), \fBerror_rate\fR 30 (more than half of at least ten recent requests were 4xx or denied), \fBpath_spread\fR 15 (fifty or more distinct paths in the window), \fBregular_interval\fR 20 (eight or more requests with machine\-like timing), \fBhigh_rate\fR 15, \fBhoneypot_marked\fR 40 (the client touched a honeypot route on this node or, with cluster sharing, on a peer). The score is the capped sum; a client that is already verified by the challenge is never challenged again. The JA4 of every TLS request is logged as \fBja4\fR.
+.SS "Kind \fBaccount_guard\fR"
+.PP
+Protects the endpoints where accounts are attacked. Each endpoint has a class with a default ladder of progressive actions over a window: \fBlogin\fR counts failed attempts (recognised in the response) per client address, per account, per address and account pair, distinct accounts per address (credential stuffing) and distinct addresses per account (spraying, distributed brute force); \fBregister\fR, \fBreset\fR, \fBcart\fR and \fBscrape\fR count requests; \fBcustom\fR needs its own steps. A step fires when any of its thresholds is reached and the highest firing step acts: \fBlog\fR records, \fBdelay\fR holds the request, \fBchallenge\fR serves the browser challenge to unverified clients (a plain 403 without a \fBchallenge\fR section), \fBcaptcha\fR serves the CAPTCHA tier (\fBchallenge.captcha\fR; the proof of work without one) to clients that have not passed it, and \fBblock\fR refuses the key that crossed the threshold for \fBduration\fR, on every node of a cluster. Blocks and denials use reason \fBaccount_abuse\fR (a ban trigger category) with status \fBblock_status\fR; the access log carries \fBaccount_endpoint\fR, \fBaccount_action\fR, \fBaccount_by\fR, \fBaccount_counts\fR, \fBaccount_hash\fR, \fBaccount_campaign\fR and \fBaccount_outcome\fR. Identities are trimmed, lower cased and hashed before they are counted or logged. A campaign spread over many addresses, each under its own thresholds, is detected from the endpoint\(aqs totals (\fBdistributed\fR): while it lasts every unverified request of the endpoint is challenged (or blocked).
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(1.1i) lbw(1.1i) lbx
+lw(1.3i) lw(1.1i) lw(1.1i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBendpoints\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+1 to 64 endpoints,\: unique names
+T}
+T{
+\fBendpoints[].\:class\fR
+T}	T{
+\fBlogin\fR,\: \fBregister\fR,\: \fBreset\fR,\: \fBcart\fR,\: \fBscrape\fR,\: \fBcustom\fR
+T}	T{
+\fBcustom\fR
+T}	T{
+Selects the default ladder,\: methods and counting mode
+T}
+T{
+\fBendpoints[].\:paths\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+Exact paths,\: or prefixes ending in \fB*\fR
+T}
+T{
+\fBendpoints[].\:methods\fR
+T}	T{
+list
+T}	T{
+\fBPOST\fR (login,\: register,\: reset,\: cart),\: \fBGET\fR (scrape),\: any (custom)
+T}	T{
+
+T}
+T{
+\fBendpoints[].\:count\fR
+T}	T{
+\fBfailures\fR,\: \fBrequests\fR
+T}	T{
+\fBfailures\fR for login,\: \fBrequests\fR otherwise
+T}	T{
+What an event is
+T}
+T{
+\fBendpoints[].\:identity\fR
+T}	T{
+mapping
+T}	T{
+required for login,\: register and reset
+T}	T{
+Where the account identifier lives: \fBheader\fR,\: \fBquery\fR,\: \fBform\fR (a field of a form body) or \fBjson\fR (a field of a JSON body,\: dots descend),\: tried in that order;\: bodies are buffered up to \fBmax_\:body_\:bytes\fR and replayed
+T}
+T{
+\fBendpoints[].\:failure\fR
+T}	T{
+mapping
+T}	T{
+\fB{statuses:\: [401,\: 403]}\fR
+T}	T{
+Failure recognition for \fBfailures\fR counting: \fBstatuses\fR,\: \fBbody_\:regex\fR on a 2xx body (up to \fBmax_\:bytes\fR,\: default 65536),\: \fBlocation_\:regex\fR on a redirect. A success clears the account\(aqs and the pair\(aqs failures
+T}
+T{
+\fBendpoints[].\:window\fR
+T}	T{
+duration
+T}	T{
+\fB10m\fR
+T}	T{
+Counting window (1m to 24h)
+T}
+T{
+\fBendpoints[].\:steps\fR
+T}	T{
+list
+T}	T{
+per class,\: below
+T}	T{
+1 to 8 steps of \fB{action,\: delay,\: duration,\: ip,\: account,\: pair,\: ip_\:accounts,\: account_\:ips,\: ip_\:paths}\fR;\: \fBaction\fR is \fBlog\fR,\: \fBdelay\fR (holds \fBdelay\fR,\: 10ms to 10s,\: default 1s),\: \fBchallenge\fR,\: \fBcaptcha\fR or \fBblock\fR (for \fBduration\fR,\: default the window);\: at least one threshold per step
+T}
+T{
+\fBendpoints[].\:distributed\fR
+T}	T{
+mapping
+T}	T{
+\fB{ips:\: 50,\: events:\: 200}\fR for login,\: off otherwise
+T}	T{
+Campaign detection: both \fBips\fR (distinct addresses with events in the window) and \fBevents\fR must be reached;\: \fBaction\fR \fBchallenge\fR (default),\: \fBcaptcha\fR or \fBblock\fR for \fBduration\fR (default the window)
+T}
+T{
+\fBendpoints[].\:disposable\fR
+T}	T{
+\fBoff\fR,\: \fBlog\fR,\: \fBchallenge\fR,\: \fBcaptcha\fR,\: \fBblock\fR
+T}	T{
+\fBoff\fR
+T}	T{
+What happens to an e\-mail identity on a disposable domain (built\-in list plus \fBdisposable_\:domains\fR,\: subdomains included)
+T}
+T{
+\fBblock_\:status\fR
+T}	T{
+int
+T}	T{
+\fB429\fR
+T}	T{
+Status of blocks (4xx or 5xx);\: challenges answer 403
+T}
+T{
+\fBmax_\:body_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Request body buffered to read an identity (up to 8 MiB);\: a larger body yields no identity
+T}
+T{
+\fBmax_\:delayed\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Requests held in delay steps at once;\: beyond it the delay is skipped and a throttled warning written
+T}
+T{
+\fBdisposable_\:domains\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Lower case domains added to the built\-in list
+T}
+.TE
+.PP
+Default ladders (thresholds reached within the window): \fBlogin\fR delays 2s at 5 address, 3 account or 3 pair failures, challenges at 15 address, 5 account, 5 pair, 10 accounts per address or 5 addresses per account, blocks 15m at 50 address, 20 account, 10 pair, 30 accounts per address or 20 addresses per account; \fBregister\fR delays 2s at 2 requests per address, challenges at 3 per address or 2 per identity, blocks 1h at 10 per address or 5 per identity; \fBreset\fR delays 2s at 3 per address or 2 per account, challenges at 5 or 3, blocks 1h at 20 or 10; \fBcart\fR delays 1s at 30, challenges at 60 and blocks 30m at 150 requests per address or identity; \fBscrape\fR delays 1s at 200 requests or 100 distinct paths per address, challenges at 400 or 200 and blocks 1h at 1000. Tables are bounded per endpoint (65536 keys each, oldest evicted with a throttled warning). A delay holds a request slot, so keep \fBmax_delayed\fR under the route\(aqs concurrency.
 .SS "Kind \fBapi_key\fR"
 .PP
 API keys with a life cycle: issued by \fBxproxyctl apikey add\fR (the plaintext \fBxpk_<id>_<secret>\fR is printed once; the file keeps a SHA\-256), scoped, expiring, rotated with a grace period for the previous secret (\fBapikey rotate \-grace 24h\fR) and revoked (\fBapikey revoke\fR, kept in the file so the id is never reused). The filter re\-reads the file when its contents change, at most every \fBreload\fR, and keeps the previous table when the new file does not parse.
@@ -5710,6 +6707,260 @@ T}	T{
 \fB1000\fR
 T}	T{
 Cap of one multiplier,\: and the value assumed for a variable
+T}
+.TE
+.SS "Kind \fBupload_guard\fR"
+.PP
+Inspects file uploads before the application stores them: multipart bodies (and, with \fBraw_uploads\fR, any other body of a write request) are buffered up to \fBmax_total_bytes\fR, every file part is checked and the body is replayed to the upstream unchanged. Checks, in order: file count, the form field, the file name (no path separators, control characters or traversal, at most \fBmax_filename_length\fR), the extension chain (\fBinvoice.pdf.exe\fR has two; a denied extension anywhere in the chain refuses, and with an allow list an unexpected extension before the last one, \fBphoto.html.jpg\fR, refuses too, while \fBreport.2024.pdf\fR passes), the size, the content (PE, ELF and Mach\-O images, \fB#!\fR scripts, PHP, JSP and ASP tags are refused whatever the name, unless \fBdeny_executables\fR is off), and the bytes against the extension\(aqs family and the declared media type (a PNG named \fB.jpg\fR, a PDF declared as an image). Denials answer 400, 413 or 415 with reason \fBupload\fR, a detail \fBcheck:filename\fR and a JSON body; the access log carries \fBupload_files\fR and \fBupload_bytes\fR. Malware scanning stays with ICAP.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.6i) lbw(0.9i) lbx
+lw(1.2i) lw(0.6i) lw(0.9i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmax_\:files\fR
+T}	T{
+int
+T}	T{
+\fB10\fR
+T}	T{
+File parts per request (1 to 10000)
+T}
+T{
+\fBmax_\:file_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB10485760\fR
+T}	T{
+Per file (up to 1 GiB)
+T}
+T{
+\fBmax_\:total_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB67108864\fR
+T}	T{
+Per request,\: buffered;\: larger requests get 413 (up to 1 GiB,\: at least \fBmax_\:file_\:bytes\fR)
+T}
+T{
+\fBallowed_\:extensions\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Only these final extensions;\: a file without an extension is refused. An entry overrides the built\-in deny list
+T}
+T{
+\fBdenied_\:extensions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Added to the built\-in list: executables,\: installers,\: shell and interpreter scripts,\: PHP,\: JSP,\: ASP,\: CGI,\: Java archives,\: \fB.\:htaccess\fR
+T}
+T{
+\fBdouble_\:extensions\fR
+T}	T{
+\fBdeny\fR,\: \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+\fBdeny\fR checks every extension in the chain;\: \fBallow\fR looks at the last one only
+T}
+T{
+\fBcheck_\:magic\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Bytes must match the extension\(aqs family (images,\: PDF,\: Office and archive containers,\: media) and the declared media type
+T}
+T{
+\fBstrict_\:magic\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Also refuse content of an unrecognised type
+T}
+T{
+\fBdeny_\:executables\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse programs and server side code by content
+T}
+T{
+\fBraw_\:uploads\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Treat a non multipart body of a write request as one file,\: named from \fBContent\-\:Disposition\fR or the last path segment
+T}
+T{
+\fBfields\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Form field names that may carry files
+T}
+T{
+\fBmax_\:filename_\:length\fR
+T}	T{
+int
+T}	T{
+\fB255\fR
+T}	T{
+
+T}
+.TE
+.SS "Kind \fBsensitive_data\fR"
+.PP
+Detects personal and secret data in requests and responses and, per direction, logs the findings, masks them or blocks the message. The request phase scans the query string (raw and decoded, plus parameter names that carry credentials), header values and the body; the response phase scans header values and the body. Bodies are buffered up to \fBmax_bytes\fR when their media type is listed and they are not content encoded; a larger, encoded or unlisted body passes unscanned. Masking rewrites the value in place (\fB************1111\fR, \fBa***@example.com\fR, the first eight characters of a token) and updates \fBContent\-Length\fR; blocking answers \fBblock_status\fR with reason \fBsensitive_data\fR, a detail \fBresponse:card,email\fR and a JSON problem naming the kinds found, never the values. The access log carries \fBsensitive_types\fR, \fBsensitive_count\fR and \fBsensitive_where\fR for every message with a finding, in every mode.
+.PP
+Built\-in detectors: \fBcard\fR (Luhn checked payment cards), \fBpersonnummer\fR (Swedish personal and coordination numbers with a valid date and checksum), \fBiban\fR (mod 97), \fBssn_us\fR, \fBemail\fR, \fBjwt\fR (three base64url parts with a JSON header), \fBprivate_key\fR (PEM headers), \fBapi_keys\fR (AWS, Google, GitHub, Slack, Stripe and GitLab formats) and \fBpassword_query\fR (query parameter names such as \fBpassword\fR, \fBtoken\fR or \fBapi_key\fR with a value; requests only).
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.8i) lbw(1.5i) lbx
+lw(1.0i) lw(0.8i) lw(1.5i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdetectors\fR
+T}	T{
+list
+T}	T{
+all built\-in
+T}	T{
+Built\-in detector names,\: each at most once
+T}
+T{
+\fBcustom\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Up to 32 \fB{name,\: regex}\fR operator detectors (RE2 syntax,\: at most 1024 bytes);\: a match is masked to its first eight characters
+T}
+T{
+\fBrequest\fR
+T}	T{
+mapping
+T}	T{
+
+T}	T{
+Request phase;\: at least one of \fBrequest\fR and \fBresponse\fR is required
+T}
+T{
+\fBresponse\fR
+T}	T{
+mapping
+T}	T{
+
+T}	T{
+Response phase
+T}
+T{
+\fBrequest.\:action\fR,\: \fBresponse.\:action\fR
+T}	T{
+\fBlog\fR,\: \fBmask\fR,\: \fBblock\fR
+T}	T{
+\fBlog\fR
+T}	T{
+
+T}
+T{
+\fBrequest.\:scan\fR
+T}	T{
+list
+T}	T{
+all
+T}	T{
+\fBquery\fR,\: \fBheaders\fR,\: \fBbody\fR
+T}
+T{
+\fBresponse.\:scan\fR
+T}	T{
+list
+T}	T{
+all
+T}	T{
+\fBheaders\fR,\: \fBbody\fR
+T}
+T{
+\fB*.\:types\fR
+T}	T{
+list
+T}	T{
+text,\: JSON,\: XML,\: form,\: JavaScript types
+T}	T{
+Body media types scanned,\: without parameters
+T}
+T{
+\fB*.\:max_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+Body buffered per direction (1 to 64 MiB)
+T}
+T{
+\fB*.\:ignore_\:headers\fR
+T}	T{
+list
+T}	T{
+request: \fBAuthorization\fR,\: \fBCookie\fR,\: \fBX\-\:Api\-\:Key\fR,\: \fBProxy\-\:Authorization\fR;\: response: \fBSet\-\:Cookie\fR
+T}	T{
+Headers never scanned or masked
+T}
+T{
+\fBblock_\:status\fR
+T}	T{
+int
+T}	T{
+\fB403\fR
+T}	T{
+Status for \fBblock\fR (4xx or 5xx)
+T}
+T{
+\fBmin_\:findings\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+Findings a message needs before mask or block act;\: fewer are logged only (1 to 64)
 T}
 .TE
 .SS "routes[].filters"
@@ -6122,6 +7373,196 @@ T}
 .TE
 .PP
 Denies answer 403 with reason \fBgeo\fR and feed ban triggers under the \fBgeo\fR category. A \fBrate_limits[].key\fR of \fBcountry\fR keeps one bucket per country; an unknown country falls back to the client address.
+.SS "routes[].policy"
+.PP
+The route\(aqs positive security model: what a request may look like. Everything outside it is refused right after route matching, before virtual patches\(aq successors (rate limits, filters, the WAF) spend work on the request, with a terse status, reason \fBpolicy\fR and a \fBdetail\fR attribute in the security event naming the check (\fBmethod:DELETE\fR, \fBcontent_type:application/xml\fR, \fBquery:id:not_int\fR, \fBheader_count:41\fR and so on). Refusals count in \fBdenied_policy\fR and feed ban triggers under \fBpolicy\fR. \fBroutes[].methods\fR selects the route; \fBpolicy.methods\fR refuses, with 405 and an \fBAllow\fR header.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.9i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Allowed methods (upper case);\: others get 405 with \fBAllow\fR
+T}
+T{
+\fBcontent_\:types\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Media types allowed for requests with a body,\: exact (\fBapplication/\:json\fR) or \fBtype/\:*\fR;\: parameters such as \fBcharset\fR are ignored;\: others get 415
+T}
+T{
+\fBrequire_\:content_\:type\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+A body without \fBContent\-\:Type\fR gets 415
+T}
+T{
+\fBmax_\:uri_\:length\fR
+T}	T{
+int
+T}	T{
+server limit
+T}	T{
+Lower bound on the request URI for this route (414)
+T}
+T{
+\fBmax_\:query_\:bytes\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+Bound on the raw query string (414)
+T}
+T{
+\fBmax_\:query_\:params\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+Bound on the number of parameters,\: repeats counted (400)
+T}
+T{
+\fBmax_\:headers\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+Bound on the number of header fields (431)
+T}
+T{
+\fBmax_\:header_\:bytes\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+Bound on the sum of header names and values (431)
+T}
+T{
+\fBquery\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Parameter descriptions;\: see below
+T}
+T{
+\fBdeny_\:unknown_\:query\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Parameters not in \fBquery\fR get 400;\: requires \fBquery\fR
+T}
+.TE
+.PP
+Each \fBquery\fR entry:
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.8i) lbw(1.0i) lbx
+lw(0.9i) lw(0.8i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required,\: unique
+T}	T{
+
+T}
+T{
+\fBtype\fR
+T}	T{
+\fBstring\fR,\: \fBint\fR,\: \fBnumber\fR,\: \fBbool\fR,\: \fBuuid\fR,\: \fBenum\fR
+T}	T{
+\fBstring\fR
+T}	T{
+\fBbool\fR accepts \fBtrue\fR,\: \fBfalse\fR,\: \fB1\fR,\: \fB0\fR;\: \fBuuid\fR the 8\-4\-4\-4\-12 hex form;\: \fBenum\fR needs \fBvalues\fR
+T}
+T{
+\fBrequired\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+The parameter must be present
+T}
+T{
+\fBmax_\:length\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+Bound on each value in bytes
+T}
+T{
+\fBpattern\fR
+T}	T{
+regex
+T}	T{
+none
+T}	T{
+Every value must match the whole expression
+T}
+T{
+\fBvalues\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Allowed values for \fBenum\fR (1 to 1024)
+T}
+T{
+\fBmax_\:repeat\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+How many times the parameter may appear
+T}
+.TE
+.PP
+A malformed query string (bad percent encoding) is refused when the route has a \fBquery\fR list or \fBmax_query_params\fR. Bodies are not part of the policy: \fBwaf.profiles[].json_schemas\fR and the \fBopenapi\fR filter validate them.
 .SH "acme"
 .PP
 Required when any listener has \fBtls.acme\fR groups. One account per proxy; the account key, account URL and issued certificates live under \fBstate_dir\fR (mode \fB0700\fR, files \fB0600\fR), so a restart serves the existing certificates immediately and only renews what is due.
@@ -6359,6 +7800,105 @@ T}	T{
 \fBChecking your browser\fR
 T}	T{
 Heading on the page;\: no HTML characters
+T}
+T{
+\fBdevice\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+The script derives a device identifier from stable browser properties (user agent,\: languages,\: platform,\: cores,\: memory,\: screen,\: pixel ratio,\: time zone,\: a canvas rendering) and the cookie carries its first eight bytes: \fBdevice\fR in the access log,\: \fBInfo.\:DeviceID\fR for filters and the \fBdevice\fR rate limit key. Client supplied and therefore advisory,\: but fixed into the cookie it earned
+T}
+T{
+\fBcaptcha\fR
+T}	T{
+mapping
+T}	T{
+none
+T}	T{
+A hosted CAPTCHA tier,\: below
+T}
+.TE
+.SS "challenge.captcha"
+.PP
+Adds a second tier to the challenge. A verdict that asks for it (an \fBaccount_guard\fR step or \fBdisposable\fR action \fBcaptcha\fR, a \fBdistributed\fR action \fBcaptcha\fR) renders the provider\(aqs widget instead of the proof of work; a client that solved only the proof of work is challenged again, and a client that passed the CAPTCHA satisfies both tiers. The token is verified with the provider from the proxy (\fBsiteverify\fR, with the client address), fails closed when the provider is unreachable or rejects it, and the failure is a \fBchallenge_failed\fR security event naming the class (\fBcaptcha rejected\fR, \fBcaptcha score\fR, \fBcaptcha unreachable\fR). The page\(aqs Content Security Policy admits the provider\(aqs script and frame origins only. Without this section a CAPTCHA verdict falls back to the proof of work.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.2i) lbw(1.1i) lbx
+lw(0.9i) lw(1.2i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBprovider\fR
+T}	T{
+\fBturnstile\fR,\: \fBhcaptcha\fR,\: \fBrecaptcha\fR
+T}	T{
+required
+T}	T{
+Cloudflare Turnstile,\: hCaptcha or Google reCAPTCHA (v2 checkbox,\: v3 or Enterprise with \fBmin_\:score\fR)
+T}
+T{
+\fBsite_\:key\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+Public key rendered into the widget
+T}
+T{
+\fBsecret_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The provider secret on one line;\: re\-read on reload
+T}
+T{
+\fBverify_\:url\fR
+T}	T{
+URL
+T}	T{
+the provider\(aqs
+T}	T{
+Override for enterprise endpoints or tests (https,\: or http to localhost)
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Verification call (500ms to 30s);\: the call uses no environment proxy
+T}
+T{
+\fBmin_\:score\fR
+T}	T{
+float
+T}	T{
+\fB0\fR
+T}	T{
+Refuse tokens scored below it (providers that return a score);\: 0 disables
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBescalation\fR,\: \fBalways\fR
+T}	T{
+\fBescalation\fR
+T}	T{
+\fBalways\fR shows the widget on every challenge page,\: including route gates,\: in place of the proof of work
 T}
 .TE
 .SS "routes[].challenge"

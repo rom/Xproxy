@@ -52,6 +52,16 @@ or a mutual TLS listener, with viewer and operator roles, configuration
 editing with validation, graphs and live logs. It runs as its own user and
 talks to the management socket of the data plane.
 
+%package        fleet
+Summary:        Fleet controller for xproxy nodes
+Requires:       %{name} = %{version}-%{release}
+
+%description    fleet
+xproxy-fleet serves every xproxy node its configuration bundle over
+mutual TLS and collects the nodes' status. Editing the files under
+/var/lib/xproxy-fleet is the push; agents apply a changed bundle within
+seconds and report back.
+
 %package        selinux
 Summary:        SELinux policy module for xproxy
 BuildArch:      noarch
@@ -79,10 +89,12 @@ make build GOMODFLAG=-mod=vendor VERSION=%{version}-%{release} COMMIT=%{gitcommi
 install -D -m 0755 bin/xproxy        %{buildroot}%{_bindir}/xproxy
 install -D -m 0755 bin/xproxyctl     %{buildroot}%{_bindir}/xproxyctl
 install -D -m 0755 bin/xproxy-admin  %{buildroot}%{_bindir}/xproxy-admin
+install -D -m 0755 bin/xproxy-fleet  %{buildroot}%{_bindir}/xproxy-fleet
+install -d -m 0750 %{buildroot}%{_sharedstatedir}/xproxy-fleet
 
 # Units, sysctl, logrotate, sysusers, polkit. The shipped files reference
 # /usr/local/bin for source installs; rewrite for the packaged layout.
-for u in xproxy.service xproxy.socket xproxy-https.socket xproxy-h3.socket xproxy-admin.service; do
+for u in xproxy.service xproxy.socket xproxy-https.socket xproxy-h3.socket xproxy-admin.service xproxy-fleet.service; do
   sed 's|/usr/local/bin|%{_bindir}|g' deploy/systemd/$u > $u.tmp
   install -D -m 0644 $u.tmp %{buildroot}%{_unitdir}/$u
 done
@@ -105,8 +117,13 @@ install -d -m 0755 %{buildroot}%{_docdir}/%{name}
 install -m 0644 README.md docs/*.md %{buildroot}%{_docdir}/%{name}/
 install -D -m 0644 docs/man/xproxy.8      %{buildroot}%{_mandir}/man8/xproxy.8
 install -D -m 0644 docs/man/xproxyctl.8   %{buildroot}%{_mandir}/man8/xproxyctl.8
+install -D -m 0644 docs/man/xproxy-fleet.8 %{buildroot}%{_mandir}/man8/xproxy-fleet.8
 install -D -m 0644 docs/man/xproxy.yaml.5 %{buildroot}%{_mandir}/man5/xproxy.yaml.5
 install -D -m 0644 internal/config/schema/xproxy.schema.json %{buildroot}%{_datadir}/xproxy/xproxy.schema.json
+install -D -m 0644 deploy/grafana/xproxy-overview.json %{buildroot}%{_datadir}/xproxy/grafana/xproxy-overview.json
+install -D -m 0644 deploy/grafana/xproxy-security.json %{buildroot}%{_datadir}/xproxy/grafana/xproxy-security.json
+install -D -m 0644 deploy/grafana/README.md %{buildroot}%{_datadir}/xproxy/grafana/README.md
+install -D -m 0644 deploy/prometheus/xproxy-alerts.yaml %{buildroot}%{_datadir}/xproxy/prometheus/xproxy-alerts.yaml
 install -d -m 0755 %{buildroot}%{_datadir}/bash-completion/completions %{buildroot}%{_datadir}/zsh/site-functions %{buildroot}%{_datadir}/fish/vendor_completions.d
 bin/xproxyctl completion bash > %{buildroot}%{_datadir}/bash-completion/completions/xproxyctl
 bin/xproxyctl completion zsh  > %{buildroot}%{_datadir}/zsh/site-functions/_xproxyctl
@@ -142,6 +159,15 @@ sysctl -q -p %{_sysctldir}/90-xproxy.conf >/dev/null 2>&1 || :
 %postun admin
 %systemd_postun_with_restart xproxy-admin.service
 
+%post fleet
+%systemd_post xproxy-fleet.service
+
+%preun fleet
+%systemd_preun xproxy-fleet.service
+
+%postun fleet
+%systemd_postun_with_restart xproxy-fleet.service
+
 %pre selinux
 %selinux_relabel_pre -s %{selinuxtype}
 
@@ -166,6 +192,8 @@ fi
 %{_mandir}/man5/xproxy.yaml.5*
 %dir %{_datadir}/xproxy
 %{_datadir}/xproxy/xproxy.schema.json
+%{_datadir}/xproxy/grafana
+%{_datadir}/xproxy/prometheus
 %{_datadir}/bash-completion/completions/xproxyctl
 %{_datadir}/zsh/site-functions/_xproxyctl
 %{_datadir}/fish/vendor_completions.d/xproxyctl.fish
@@ -184,6 +212,12 @@ fi
 %files admin
 %{_bindir}/xproxy-admin
 %{_unitdir}/xproxy-admin.service
+
+%files fleet
+%{_bindir}/xproxy-fleet
+%{_unitdir}/xproxy-fleet.service
+%{_mandir}/man8/xproxy-fleet.8*
+%dir %attr(0750,xproxy-fleet,xproxy-fleet) %{_sharedstatedir}/xproxy-fleet
 %{_datadir}/polkit-1/rules.d/50-xproxy-admin.rules
 
 %files selinux

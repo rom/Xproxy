@@ -43,6 +43,8 @@ type Info struct {
     JA3, JA4  string   // TLS client fingerprints, "" on plaintext listeners
     ALPN      []string // protocols the client offered
     ChallengeVerified bool // the client carries a valid browser challenge cookie
+    CaptchaVerified   bool // that cookie was earned through the CAPTCHA tier
+    DeviceID          string // device identifier from the challenge cookie, "" without one
 }
 
 type Verdict struct {
@@ -54,6 +56,7 @@ type Verdict struct {
     Headers  map[string]string // response headers on a deny (WWW-Authenticate, Retry-After)
     Response *http.Response    // full response to send instead of a status page (block pages)
     Challenge bool             // serve the browser challenge instead of the status page (when configured and the client is unverified)
+    Captcha   bool             // with Challenge: ask for the CAPTCHA tier (the proof of work when none is configured)
 }
 ```
 
@@ -334,8 +337,9 @@ Version 1 guarantees:
   `Env`, new optional interfaces a filter may implement (as `Closer`),
   new stages. Version 1 gained `Info.Country`, `Info.JA3`, `Info.JA4`,
   `Info.ALPN`, `Info.ChallengeVerified` and `Verdict.Challenge` in 1.1
-  this way, `Info.HoneypotMarked` and `Verdict.Silent` in 1.2, and
-  `Env.Events` in 1.3. The
+  this way, `Info.HoneypotMarked` and `Verdict.Silent` in 1.2,
+  `Env.Events`, `Info.CaptchaVerified`, `Info.DeviceID` and
+  `Verdict.Captcha` in 1.3. The
   WebAssembly ABI gained body `get` kinds and `set_body` in 1.3 at
   version 1.
 - Incompatible changes bump `APIVersion`, are recorded in CHANGELOG.md

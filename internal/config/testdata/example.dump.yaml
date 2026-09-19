@@ -59,6 +59,14 @@ server:
         max_connections_per_ip: 256
         max_concurrent_requests: 16384
         max_tarpits: 1024
+    normalization:
+        reject_control_chars: null
+        reject_invalid_utf8: null
+        reject_double_encoding: false
+        reject_encoded_slashes: false
+        reject_backslashes: false
+        reject_ambiguous_framing: null
+        unicode: "off"
     server_header: ""
     error_pages: null
     session_tickets: null
@@ -140,10 +148,13 @@ logging:
         claims: hash
         drop_fields: []
     otlp: null
+    siem: null
 trusted_proxies: []
 rate_limits:
     - name: per-ip
       key: client_ip
+      net_v4: 24
+      net_v6: 48
       algorithm: token_bucket
       rate: 50
       burst: 100
@@ -154,6 +165,8 @@ rate_limits:
       tarpit_delay: 10s
     - name: login
       key: client_ip
+      net_v4: 24
+      net_v6: 48
       algorithm: token_bucket
       rate: 0.2
       burst: 5
@@ -173,6 +186,7 @@ upstreams:
           weight: 1
           canary: false
       discovery: null
+      origin_signature: null
       slow_start: 0s
       scheme: http
       h2c: false
@@ -227,6 +241,7 @@ upstreams:
           weight: 1
           canary: false
       discovery: null
+      origin_signature: null
       slow_start: 0s
       scheme: https
       h2c: false
@@ -309,6 +324,7 @@ routes:
       icap: null
       filters: []
       geo: null
+      policy: null
       cache: null
       mirror: null
       grpc: null
@@ -360,6 +376,8 @@ routes:
       waf:
         mode: block
         profile: api-strict
+        block_percent: null
+        block_cidrs: []
       priority_class: normal
       challenge: null
       jwt:
@@ -369,6 +387,7 @@ routes:
       filters:
         - scanners
       geo: null
+      policy: null
       cache: null
       mirror: null
       grpc: null
@@ -422,6 +441,7 @@ routes:
       icap: null
       filters: []
       geo: null
+      policy: null
       cache: null
       mirror: null
       grpc: null
@@ -480,6 +500,7 @@ routes:
         response: null
       filters: []
       geo: null
+      policy: null
       cache: null
       mirror: null
       grpc: null
@@ -539,6 +560,7 @@ routes:
       icap: null
       filters: []
       geo: null
+      policy: null
       cache: null
       mirror: null
       grpc: null
@@ -588,12 +610,15 @@ routes:
       waf:
         mode: detect
         profile: default
+        block_percent: null
+        block_cidrs: []
       priority_class: normal
       challenge: null
       jwt: null
       icap: null
       filters: []
       geo: null
+      policy: null
       cache: null
       mirror: null
       grpc: null
@@ -615,6 +640,10 @@ bans:
           duration: 15m0s
           escalation: 2
           max_duration: 24h0m0s
+          aggregate: address
+          net_v4: 24
+          net_v6: 48
+          min_sources: 1
         - name: brute-force
           reasons:
             - rate_limit
@@ -624,6 +653,10 @@ bans:
           duration: 1h0m0s
           escalation: 2
           max_duration: 24h0m0s
+          aggregate: address
+          net_v4: 24
+          net_v6: 48
+          min_sources: 1
 waf:
     profiles:
         - name: default
@@ -686,6 +719,9 @@ cluster:
     share_events: null
     max_keys_per_report: 4096
     exact_timeout: 50ms
+virtual_patches: []
+fleet: null
+api_inventory: null
 shedding:
     target_latency: 250ms
     window: 10s
@@ -703,6 +739,8 @@ challenge:
     exempt_cidrs:
         - 10.0.0.0/8
     title: Checking your browser
+    captcha: null
+    device: null
 jwt:
     providers:
         - name: idp

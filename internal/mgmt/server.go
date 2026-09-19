@@ -57,6 +57,9 @@ type Actions struct {
 	// Sandbox reports the in-process hardening status, nil before it is
 	// applied or when the process runs without it (tests).
 	Sandbox func() *sandbox.Status
+	// Fleet reports the fleet agent status, or nil when the node is not
+	// managed by a controller.
+	Fleet func() any
 }
 
 // Server serves the management API.
@@ -180,7 +183,7 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		})(w, r)
 	})
 	mux.HandleFunc("GET /v1/telemetry", func(w http.ResponseWriter, _ *http.Request) {
-		view := TelemetryView{Traces: s.proxy.Tracing(), Logs: s.logs.OTLP()}
+		view := TelemetryView{Traces: s.proxy.Tracing(), Logs: s.logs.OTLP(), SIEM: s.logs.SIEM()}
 		if s.actions.OTLP != nil {
 			m := s.actions.OTLP()
 			view.Metrics = &m
@@ -201,9 +204,38 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		}
 		writeJSON(w, 200, s.actions.Ingress())
 	})
+	mux.HandleFunc("GET /v1/fleet", func(w http.ResponseWriter, _ *http.Request) {
+		if s.actions.Fleet == nil {
+			writeJSON(w, 200, map[string]bool{"enabled": false})
+			return
+		}
+		writeJSON(w, 200, s.actions.Fleet())
+	})
 	mux.HandleFunc("GET /v1/dns", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.DNS()) })
 	mux.HandleFunc("DELETE /v1/dns", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]int{"purged": s.proxy.PurgeDNS()})
+	})
+	mux.HandleFunc("GET /v1/patches", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.VirtualPatches()) })
+	mux.HandleFunc("GET /v1/api", func(w http.ResponseWriter, r *http.Request) {
+		top := 100
+		if t := r.URL.Query().Get("top"); t != "" {
+			n, err := strconv.Atoi(t)
+			if err != nil || n < 1 || n > 100000 {
+				writeJSON(w, 400, result{Error: "top must be between 1 and 100000"})
+				return
+			}
+			top = n
+		}
+		view := r.URL.Query().Get("view")
+		switch view {
+		case "", "all":
+			view = "all"
+		case "shadow", "zombie", "versions", "documented", "undocumented":
+		default:
+			writeJSON(w, 400, result{Error: "view must be all, shadow, zombie, versions, documented or undocumented"})
+			return
+		}
+		writeJSON(w, 200, s.proxy.APIInventory(view, top))
 	})
 	mux.HandleFunc("GET /v1/honeypot", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "marks_dropped": s.proxy.HoneypotMarksDropped(), "decoys": proxy.DecoyNames()})
@@ -432,6 +464,7 @@ type TelemetryView struct {
 	Metrics *metrics.OTLPStatus `json:"metrics"`
 	Traces  *tracing.Status     `json:"traces"`
 	Logs    *logging.OTLPStatus `json:"logs"`
+	SIEM    *logging.SIEMStatus `json:"siem"`
 }
 
 // FiltersView is the response of GET /v1/filters.

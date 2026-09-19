@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"github.com/rom/xproxy/internal/apiinv"
 	"github.com/rom/xproxy/internal/tmpl"
 	"log/slog"
 	"net/http"
@@ -19,7 +20,9 @@ import (
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/originsig"
 	"github.com/rom/xproxy/internal/router"
+	"github.com/rom/xproxy/internal/secret"
 	"github.com/rom/xproxy/internal/shed"
 	"github.com/rom/xproxy/internal/upstream"
 	"github.com/rom/xproxy/internal/waf"
@@ -32,16 +35,19 @@ import (
 type runtime struct {
 	cfg        *config.Config
 	generation uint64
+	patches    []*compiledPatch
 	router     *router.Router
 	pools      map[string]*upstream.Pool
 	rateLimits map[string]*rateLimit
 	trusted    []netip.Prefix
 	routes     []*compiledRoute
 	waf        *waf.Engine
-	jwt        map[string]*jwt.Provider
-	icap       map[string]*icap.Service
-	filters    map[string]*customFilter
-	geo        *geoip.DB
+	// signers sign forwarded requests per upstream (origin_signature).
+	signers map[string]*originsig.Signer
+	jwt     map[string]*jwt.Provider
+	icap    map[string]*icap.Service
+	filters map[string]*customFilter
+	geo     *geoip.DB
 	// geoNeeded is set when any route or rate limit consults the country.
 	geoNeeded bool
 	// events is the generation's event bus (nil in unit tests that build
@@ -139,6 +145,43 @@ type compiledRoute struct {
 	geoAllow        map[string]bool
 	geoDeny         map[string]bool
 	geoUnknown      string
+	policy          *compiledPolicy
+	policyDenied    atomic.Uint64
+	// inventory marks a route whose requests feed the API inventory;
+	// describers are its OpenAPI filters.
+	inventory  bool
+	describers []apiinv.Describer
+}
+
+// inventoryRoute reports whether the inventory's host and route
+// selectors admit a route.
+func inventoryRoute(inv *config.APIInventory, r *config.Route) bool {
+	if len(inv.Routes) > 0 {
+		found := false
+		for _, n := range inv.Routes {
+			if n == r.Name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	if len(inv.Hosts) > 0 {
+		if len(r.Hosts) == 0 {
+			return false
+		}
+		for _, h := range r.Hosts {
+			for _, p := range inv.Hosts {
+				if hostMatches(p, h) || p == h {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // geoAllowed applies the route's country policy.
@@ -169,10 +212,11 @@ func wafSelection(cfg *config.Config, r *config.Route) (profile string, mode waf
 	return cfg.WAF.DefaultProfile, waf.Mode(cfg.WAF.DefaultMode)
 }
 
-func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events *eventBus, wafStats *waf.Stats) (*runtime, error) {
+func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events *eventBus, wafStats *waf.Stats, patches *patchCounters) (*runtime, error) {
 	rt := &runtime{
 		cfg:        cfg,
 		generation: generation,
+		patches:    compilePatches(cfg.VirtualPatches, patches),
 		router:     router.New(cfg.Routes),
 		pools:      make(map[string]*upstream.Pool, len(cfg.Upstreams)),
 		rateLimits: make(map[string]*rateLimit, len(cfg.RateLimits)),
@@ -188,6 +232,22 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 			return nil, err
 		}
 		rt.pools[u.Name] = p
+		if os := u.OriginSignature; os != nil {
+			ring, err := secret.LoadOrCreate(os.SecretFile)
+			if err != nil {
+				rt.stop()
+				return nil, fmt.Errorf("upstream %s: origin signature secret: %w", u.Name, err)
+			}
+			signer, err := originsig.New(os.Header, os.Include, ring.All())
+			if err != nil {
+				rt.stop()
+				return nil, fmt.Errorf("upstream %s: %w", u.Name, err)
+			}
+			if rt.signers == nil {
+				rt.signers = map[string]*originsig.Signer{}
+			}
+			rt.signers[u.Name] = signer
+		}
 	}
 	for i := range cfg.RateLimits {
 		rl := &cfg.RateLimits[i]
@@ -282,6 +342,9 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 				need[p] = map[waf.Mode]bool{}
 			}
 			need[p][m] = true
+			if cfg.Routes[i].WAF.Gradual() {
+				need[p][waf.ModeDetect] = true
+			}
 		}
 		engine, err := waf.New(cfg.WAF, need, wafStats, log)
 		if err != nil {
@@ -309,6 +372,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 			deny:  netutil.ParsePrefixes(r.DenyCIDRs),
 			class: shed.ParseClass(r.PriorityClass),
 		}
+		cr.policy = compilePolicy(r.Policy)
 		if r.Challenge != nil && r.Challenge.Mode != "off" && cfg.Challenge != nil {
 			cr.challenge = r.Challenge
 		}
@@ -415,6 +479,14 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 				rt.stop()
 				return nil, fmt.Errorf("route %s: %w", r.Name, err)
 			}
+			if r.WAF.Gradual() {
+				detect, err := rt.waf.Filter(p, waf.ModeDetect)
+				if err != nil {
+					rt.stop()
+					return nil, fmt.Errorf("route %s: %w", r.Name, err)
+				}
+				f = newSplitWAF(f, detect, r.WAF)
+			}
 			cr.filters = append(cr.filters, f)
 			cr.wafMode = string(m)
 		}
@@ -433,6 +505,16 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		if err := stage(config.StageAfterScan); err != nil {
 			rt.stop()
 			return nil, err
+		}
+		if inv := cfg.APIInventory; inv.IsEnabled() && r.Upstream != "" && inventoryRoute(inv, r) {
+			cr.inventory = true
+			for _, f := range cr.filters {
+				if c, ok := f.(*customFilter); ok {
+					if d, ok := c.f.(apiinv.Describer); ok {
+						cr.describers = append(cr.describers, d)
+					}
+				}
+			}
 		}
 		if err := cr.compileTemplates(); err != nil {
 			rt.stop()

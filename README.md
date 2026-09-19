@@ -83,17 +83,39 @@ an identifier from the access log to the upstream.
 - Connection limits at accept (global and per address), concurrency
   ceiling, header, body and idle timeouts, URI and body size limits,
   WebSocket opt-in per route
-- Keyed rate limits (address, header, cookie, country) with reject or
-  tarpit; CIDR allow and deny lists; trusted proxy handling for
-  forwarded addresses
+- Keyed rate limits (address, network, route, endpoint, country, TLS
+  fingerprint, header, cookie, token claim) with reject or tarpit; CIDR
+  allow and deny lists; trusted proxy handling for forwarded addresses
+- API inventory discovered from traffic, with shadow, zombie and
+  superseded endpoints against OpenAPI descriptions
+- Origin lock: per request signatures the origin verifies, mutual TLS
+  and network rules so an application accepts only proxied traffic
+- Sensitive data detection in both directions: cards, identity numbers,
+  IBANs, e-mail, tokens, keys and query credentials, logged, masked or
+  blocked per route
+- Upload protection: extension chains, content sniffing against name and
+  declared type, executable and web shell detection, size and count
+  bounds, combinable with ICAP scanning
+- Positive security model per route (methods, media types, typed query
+  parameters, size bounds) and virtual patches that block a published
+  vulnerability by request shape, with counters and expiry
 - Web application firewall on the bundled OWASP Core Rule Set through
   Coraza: block or detect per route, custom rules and exclusions,
   bounded request and response inspection
 - Ban list: repeated denies of any category become escalating temporary
   bans dropped at accept, persisted across restarts, shared across a
-  cluster and managed from the CLI
+  cluster and managed from the CLI; triggers aggregate by network or
+  TLS fingerprint against distributed attacks
+- Fleet operation: a controller pushes configuration bundles to many
+  nodes over mutual TLS and collects their status; SIEM export in
+  NDJSON, Splunk HEC, CEF or LEEF
 - Adaptive load shedding by priority class from upstream latency and
-  in-flight load; browser proof of work challenge, always or under load
+  in-flight load; browser proof of work challenge, always or under load,
+  with a CAPTCHA tier (Turnstile, hCaptcha, reCAPTCHA) for escalation
+  and device identifiers for logs and rate limits
+- Account protection: credential stuffing, brute force, registration,
+  reset, hoarding and scraping abuse with progressive delay, challenge
+  and block, and campaign detection across many addresses
 - Bot classification from JA3 and JA4 fingerprints, headers and
   behaviour, with log, challenge and deny thresholds; country policy
   from a local MaxMind or CSV database
@@ -155,6 +177,7 @@ an identifier from the access log to the upstream.
   schema of the configuration that gives editors completion and inline
   documentation
 - Prometheus exposition with latency histograms and per route counters,
+  Grafana dashboards and alert rules shipped with the product,
   on the socket or a hardened TCP endpoint, an in-process series buffer
   for graphs, and OpenTelemetry export of metrics, traces (W3C trace
   context propagated to upstreams) and logs

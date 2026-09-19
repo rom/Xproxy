@@ -52,6 +52,14 @@ type Config struct {
 	// Cluster enables sharing of rate limit consumption and bans between
 	// proxies when present.
 	Cluster *Cluster `yaml:"cluster"`
+	// VirtualPatches block known vulnerabilities by request shape.
+	VirtualPatches []VirtualPatch `yaml:"virtual_patches"`
+	// Fleet makes this node fetch its configuration bundle from a fleet
+	// controller and report its status there (xproxy-fleet).
+	Fleet *Fleet `yaml:"fleet"`
+	// APIInventory records the endpoints the proxy serves and reports
+	// shadow, zombie and superseded APIs.
+	APIInventory *APIInventory `yaml:"api_inventory"`
 	// Shedding enables adaptive load shedding by priority class when
 	// present.
 	Shedding *Shedding `yaml:"shedding"`
@@ -131,6 +139,9 @@ func (m *Metrics) PerRouteEnabled() bool { return m.PerRoute == nil || *m.PerRou
 type Server struct {
 	Listeners []Listener `yaml:"listeners"`
 	Limits    Limits     `yaml:"limits"`
+	// Normalization checks and canonicalises the request target before
+	// routing and analysis.
+	Normalization Normalization `yaml:"normalization"`
 	// ServerHeader is the value sent in the Server response header. Empty
 	// removes the header entirely (the default) to avoid fingerprinting.
 	ServerHeader string `yaml:"server_header"`
@@ -503,6 +514,54 @@ type Certificate struct {
 	KeyFile  string `yaml:"key_file"`
 }
 
+// Normalization decides what the proxy does with encoding tricks in the
+// request target before anything else looks at it. Routing already
+// decodes and cleans the path; these checks refuse the forms that make
+// two components disagree about what a request means, and optionally
+// fold Unicode spellings for routing.
+type Normalization struct {
+	// RejectControlChars refuses a decoded path or query containing a
+	// control character (below 0x20, or 0x7f), NUL included. Default true.
+	RejectControlChars *bool `yaml:"reject_control_chars"`
+	// RejectInvalidUTF8 refuses a decoded path that is not valid UTF-8
+	// (overlong and truncated sequences). Default true.
+	RejectInvalidUTF8 *bool `yaml:"reject_invalid_utf8"`
+	// RejectDoubleEncoding refuses a path that still contains a percent
+	// escape after one decoding (%252e%252e). Default false.
+	RejectDoubleEncoding bool `yaml:"reject_double_encoding"`
+	// RejectEncodedSlashes refuses %2F and %5C in the raw path: the
+	// routing decoder turns them into separators that the upstream may
+	// treat as data. Default false.
+	RejectEncodedSlashes bool `yaml:"reject_encoded_slashes"`
+	// RejectBackslashes refuses a backslash anywhere in the decoded path,
+	// which some servers read as a separator. Default false.
+	RejectBackslashes bool `yaml:"reject_backslashes"`
+	// RejectAmbiguousFraming refuses HTTP/1 requests whose framing is
+	// ambiguous: both Transfer-Encoding and Content-Length, several
+	// differing Content-Length values, or a transfer coding other than
+	// chunked. The Go parser already refuses most of these; the check
+	// closes the rest and counts them. Default true.
+	RejectAmbiguousFraming *bool `yaml:"reject_ambiguous_framing"`
+	// Unicode is off, nfc or nfkc: the decoded path is normalised to that
+	// form for routing (the upstream receives the original), so composed
+	// and decomposed spellings, and with nfkc compatibility forms such as
+	// fullwidth letters, match the same route. Default off.
+	Unicode string `yaml:"unicode"`
+}
+
+// ControlChars reports the setting with its default.
+func (n *Normalization) ControlChars() bool {
+	return n.RejectControlChars == nil || *n.RejectControlChars
+}
+
+// InvalidUTF8 reports the setting with its default.
+func (n *Normalization) InvalidUTF8() bool { return n.RejectInvalidUTF8 == nil || *n.RejectInvalidUTF8 }
+
+// AmbiguousFraming reports the setting with its default.
+func (n *Normalization) AmbiguousFraming() bool {
+	return n.RejectAmbiguousFraming == nil || *n.RejectAmbiguousFraming
+}
+
 // Limits are the global resource protections of the data plane. Every limit
 // has a conservative default and can only be raised deliberately.
 type Limits struct {
@@ -556,7 +615,53 @@ type Logging struct {
 	// OTLP configures the OpenTelemetry log sink used by streams listing
 	// otlp in their sinks.
 	OTLP *OTLPExport `yaml:"otlp"`
+	// SIEM configures the HTTPS batch sink for security information and
+	// event management systems, used by streams listing siem.
+	SIEM *SIEM `yaml:"siem"`
 }
+
+// SIEM is an HTTP collector of a SIEM: Splunk HTTP Event Collector,
+// Elastic or OpenSearch ingest, Microsoft Sentinel, or any endpoint that
+// accepts newline delimited JSON, CEF or LEEF.
+type SIEM struct {
+	// Endpoint is the collector URL.
+	Endpoint string `yaml:"endpoint"`
+	// AllowHTTP permits a plain http endpoint.
+	AllowHTTP bool `yaml:"allow_http"`
+	// Format is json (newline delimited JSON lines), hec (the Splunk HTTP
+	// Event Collector envelope), cef or leef. Default json.
+	Format string `yaml:"format"`
+	// Headers added to every request.
+	Headers map[string]string `yaml:"headers"`
+	// AuthFile holds the Authorization header value ("Splunk <token>",
+	// "Bearer <token>", "ApiKey <key>"), kept out of the configuration.
+	AuthFile string `yaml:"auth_file"`
+	// Timeout of one push. Default 10s.
+	Timeout Duration `yaml:"timeout"`
+	// CAFile pins the collector's CA; CertFile and KeyFile present a
+	// client certificate.
+	CAFile   string `yaml:"ca_file"`
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	// Compress gzips the request body. Default true.
+	Compress *bool `yaml:"compress"`
+	// Batch is the largest number of records per push. Default 512.
+	Batch int `yaml:"batch"`
+	// Interval is the longest time a record waits before a push. Default 5s.
+	Interval Duration `yaml:"interval"`
+	// Queue bounds records waiting for a push. Default 8192.
+	Queue int `yaml:"queue"`
+	// Vendor and Product fill the CEF and LEEF header fields. Defaults
+	// Sysctl and Xproxy.
+	Vendor  string `yaml:"vendor"`
+	Product string `yaml:"product"`
+	// Hostname is the device host name reported (dvchost, identHostName,
+	// the HEC host). Default the OS host name.
+	Hostname string `yaml:"hostname"`
+}
+
+// Compresses reports the compress setting with its default.
+func (s *SIEM) Compresses() bool { return s.Compress == nil || *s.Compress }
 
 // OTLPExport is a collector endpoint for traces or logs.
 type OTLPExport struct {
@@ -657,7 +762,9 @@ type Syslog struct {
 	Network string `yaml:"network"`
 	// Address is the socket path for unix (default /dev/log) or host:port.
 	Address string `yaml:"address"`
-	// Format is rfc5424 or rfc3164. Default rfc3164 for unix, rfc5424
+	// Format is rfc5424 or rfc3164 with the JSON line as the message, or
+	// cef or leef with the record rendered in that format behind an RFC
+	// 5424 header (RFC 3164 for unix). Default rfc3164 for unix, rfc5424
 	// otherwise.
 	Format string `yaml:"format"`
 	// Facility is kern, user, daemon, auth, authpriv, syslog, local0 to
@@ -707,8 +814,15 @@ func (r *Redaction) IsEnabled() bool { return r != nil && (r.Enabled == nil || *
 // bucket (rate and burst) or a sliding window (limit per window).
 type RateLimit struct {
 	Name string `yaml:"name"`
-	// Key selects the bucket identity: client_ip, route, or header:<name>.
+	// Key selects the bucket identity: client_ip, client_net, route,
+	// country, endpoint, ja4, header:<name>, cookie:<name> or
+	// jwt:<claim>. Keys that a request may lack fall back to the client
+	// address.
 	Key string `yaml:"key"`
+	// NetV4 and NetV6 are the prefix lengths for key client_net. Default
+	// 24 and 48.
+	NetV4 int `yaml:"net_v4"`
+	NetV6 int `yaml:"net_v6"`
 	// Algorithm is token_bucket (default; rate and burst) or
 	// sliding_window (limit and window).
 	Algorithm string `yaml:"algorithm"`
@@ -744,6 +858,10 @@ type Upstream struct {
 	// endpoints and discovered ones coexist; a pool needs at least one
 	// of the two.
 	Discovery *Discovery `yaml:"discovery"`
+	// OriginSignature signs every forwarded request with a key shared
+	// with the origin, so the origin can refuse traffic that did not pass
+	// through the proxy.
+	OriginSignature *OriginSignature `yaml:"origin_signature"`
 	// SlowStart ramps the share of an endpoint that (re)joins the pool,
 	// from 10 % to full weight over this duration, so a cold instance is
 	// not hit with its full share at once. Applies to endpoints added by
@@ -841,6 +959,22 @@ type Canary struct {
 	Values   []string `yaml:"values"`
 	Percent  float64  `yaml:"percent"`
 	Fallback *bool    `yaml:"fallback"`
+}
+
+// OriginSignature is the bypass protection an origin verifies: an HMAC
+// over method, host, path, query, time, client address, request id and
+// the listed extra headers, carried in one header.
+type OriginSignature struct {
+	// Header carries the signature. Default X-Xproxy-Signature.
+	Header string `yaml:"header"`
+	// SecretFile is the keyring shared with the origin (created when
+	// missing; rotate with xproxyctl rotate-secret, the previous key
+	// stays valid for verification).
+	SecretFile string `yaml:"secret_file"`
+	// TTL is how long the origin should accept a signature. Default 5m.
+	TTL Duration `yaml:"ttl"`
+	// Include lists extra request headers covered by the signature.
+	Include []string `yaml:"include"`
 }
 
 // UpstreamTLS configures TLS towards upstream endpoints.
@@ -1036,6 +1170,9 @@ type Route struct {
 	Filters []string `yaml:"filters"`
 	// Geo allows or denies by client country (needs the geoip section).
 	Geo *RouteGeo `yaml:"geo"`
+	// Policy is the route's positive security model: what a request may
+	// look like; everything else is refused before any other processing.
+	Policy *RoutePolicy `yaml:"policy"`
 	// Cache stores responses of this route (needs the cache section).
 	Cache *RouteCache `yaml:"cache"`
 	// Mirror copies requests of this route to a second upstream.
@@ -1050,6 +1187,122 @@ type Route struct {
 	// Compress overrides the compression section for this route: false
 	// turns it off, true requires the section.
 	Compress *bool `yaml:"compress"`
+}
+
+// RoutePolicy is a positive security model for a route: allowed
+// methods, media types and query parameters, and bounds on the URI,
+// headers and query. A request outside the policy is refused (405, 415,
+// 400, 414 or 431) with reason policy before rate limits, filters and
+// the WAF run, and the refusal feeds ban triggers under policy.
+type RoutePolicy struct {
+	// Methods allowed; others get 405 with an Allow header. Unlike
+	// routes[].methods, which selects the route, this refuses. Empty
+	// allows any method.
+	Methods []string `yaml:"methods"`
+	// ContentTypes allowed for requests with a body: media types or
+	// type/* patterns; others get 415. Empty allows any.
+	ContentTypes []string `yaml:"content_types"`
+	// RequireContentType refuses a body without a Content-Type header.
+	RequireContentType bool `yaml:"require_content_type"`
+	// MaxURILength lowers server.limits.max_uri_length for the route.
+	MaxURILength int `yaml:"max_uri_length"`
+	// MaxQueryBytes bounds the raw query string; MaxQueryParams the
+	// number of parameters (repeats counted). 0 means no bound.
+	MaxQueryBytes  int `yaml:"max_query_bytes"`
+	MaxQueryParams int `yaml:"max_query_params"`
+	// MaxHeaders bounds the number of header fields; MaxHeaderBytes the
+	// sum of their names and values. 0 means no bound (the server limit
+	// still applies).
+	MaxHeaders     int `yaml:"max_headers"`
+	MaxHeaderBytes int `yaml:"max_header_bytes"`
+	// Query describes the parameters; with DenyUnknown, parameters not
+	// listed are refused.
+	Query       []QueryParamPolicy `yaml:"query"`
+	DenyUnknown bool               `yaml:"deny_unknown_query"`
+}
+
+// QueryParamPolicy describes one allowed query parameter.
+type QueryParamPolicy struct {
+	Name string `yaml:"name"`
+	// Type is string (default), int, number, bool, uuid or enum (with
+	// Values).
+	Type string `yaml:"type"`
+	// Required refuses requests without the parameter.
+	Required bool `yaml:"required"`
+	// MaxLength bounds each value; 0 means no bound.
+	MaxLength int `yaml:"max_length"`
+	// Pattern is an RE2 expression every value must match in full.
+	Pattern string `yaml:"pattern"`
+	// Values are the allowed values for type enum.
+	Values []string `yaml:"values"`
+	// MaxRepeat bounds how many times the parameter may appear. Default 1.
+	MaxRepeat int `yaml:"max_repeat"`
+}
+
+// VirtualPatch blocks a known vulnerability by its request shape while
+// the application is being fixed: every listed condition must hold for
+// the patch to apply. Patches run right after route matching, before
+// rate limits, filters and the WAF, so they cost nothing for other
+// traffic and work without a WAF section.
+type VirtualPatch struct {
+	// ID names the patch in logs, status and metrics (for example
+	// cve-2024-1234).
+	ID          string `yaml:"id"`
+	Description string `yaml:"description"`
+	// Hosts and Routes narrow the patch to host patterns (exact or
+	// "*.example.com") and route names. Empty means every host or route.
+	Hosts  []string `yaml:"hosts"`
+	Routes []string `yaml:"routes"`
+	// Paths are prefixes of the cleaned path; PathRegex patterns match the
+	// whole path. At least one condition among paths, path_regex, query,
+	// headers, cookies and body is required.
+	Paths     []string `yaml:"paths"`
+	PathRegex []string `yaml:"path_regex"`
+	// Methods narrows the patch to these methods.
+	Methods []string `yaml:"methods"`
+	// Query, Headers and Cookies are conditions on parameters, header
+	// fields and cookies: the name must be present and, with a pattern,
+	// some value must match it.
+	Query   []PatchMatch `yaml:"query"`
+	Headers []PatchMatch `yaml:"headers"`
+	Cookies []PatchMatch `yaml:"cookies"`
+	// Body matches the request body (buffered up to max_bytes and
+	// replayed to the upstream).
+	Body *PatchBody `yaml:"body"`
+	// Action is block (default) or log.
+	Action string `yaml:"action"`
+	// Status is the response for block. Default 403.
+	Status int `yaml:"status"`
+	// Expires disables the patch after this date (RFC 3339 or
+	// YYYY-MM-DD) so a temporary measure does not outlive the fix
+	// unnoticed; the status shows expired patches.
+	Expires string `yaml:"expires"`
+	// Enabled false keeps the patch in the configuration without
+	// applying it. Default true.
+	Enabled *bool `yaml:"enabled"`
+}
+
+// IsEnabled reports whether the patch applies.
+func (p *VirtualPatch) IsEnabled() bool { return p.Enabled == nil || *p.Enabled }
+
+// PatchMatch is one condition on a named parameter, header or cookie.
+type PatchMatch struct {
+	Name string `yaml:"name"`
+	// Pattern is an RE2 expression matched anywhere in a value; empty
+	// means presence suffices.
+	Pattern string `yaml:"pattern"`
+}
+
+// PatchBody matches the request body.
+type PatchBody struct {
+	// Pattern is an RE2 expression matched anywhere in the body.
+	Pattern string `yaml:"pattern"`
+	// MaxBytes bounds the body inspected; a larger body does not match
+	// the patch. Default 64 KiB.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// ContentTypes narrows the inspection to these media types (type/*
+	// allowed). Empty inspects every body.
+	ContentTypes []string `yaml:"content_types"`
 }
 
 // HeaderMatch is one condition on a request header or cookie: exactly
@@ -1406,6 +1659,19 @@ type BanTrigger struct {
 	// address. Default 2. MaxDuration caps it, default 24h.
 	Escalation  float64  `yaml:"escalation"`
 	MaxDuration Duration `yaml:"max_duration"`
+	// Aggregate is what the trigger counts and bans: address (default),
+	// net (the client network of NetV4 or NetV6 bits, for attacks spread
+	// over one allocation) or ja4 (the TLS client fingerprint, for
+	// attacks spread over many networks from one tool).
+	Aggregate string `yaml:"aggregate"`
+	// NetV4 and NetV6 are the prefix lengths of aggregate net. Default 24
+	// and 48.
+	NetV4 int `yaml:"net_v4"`
+	NetV6 int `yaml:"net_v6"`
+	// MinSources is how many distinct client addresses must contribute
+	// to the window before a net or ja4 aggregate bans, so one noisy host
+	// does not ban its neighbours. Default 1.
+	MinSources int `yaml:"min_sources"`
 }
 
 // Sandbox configures the in-process hardening (docs/HARDENING.md). Every
@@ -1600,6 +1866,27 @@ type RouteWAF struct {
 	// Mode is off, detect or block.
 	Mode    string `yaml:"mode"`
 	Profile string `yaml:"profile"`
+	// BlockPercent rolls block mode out gradually: this share of the
+	// clients (a stable function of the client address) gets block mode,
+	// the rest detect mode. Default 100. Only with mode block.
+	BlockPercent *int `yaml:"block_percent"`
+	// BlockCIDRs always get block mode whatever the share: the canary
+	// clients (internal testers, a pilot customer). Only with mode block.
+	BlockCIDRs []string `yaml:"block_cidrs"`
+}
+
+// Percent returns the block share with its default.
+func (r *RouteWAF) Percent() int {
+	if r == nil || r.BlockPercent == nil {
+		return 100
+	}
+	return *r.BlockPercent
+}
+
+// Gradual reports whether the route splits clients between block and
+// detect mode.
+func (r *RouteWAF) Gradual() bool {
+	return r != nil && r.Mode == "block" && (r.Percent() < 100 || len(r.BlockCIDRs) > 0)
 }
 
 // Cluster configures peer to peer sharing over mutual TLS (AMR-009).
@@ -1629,6 +1916,75 @@ type Cluster struct {
 	// distributed: exact; on expiry the request is decided locally.
 	// Default 50ms.
 	ExactTimeout Duration `yaml:"exact_timeout"`
+}
+
+// APIInventory discovers the API surface from traffic: every proxied
+// request is attributed to a host, method and path template, with
+// counts, credentials seen, media types and the version in the path.
+// Routes with an openapi filter contribute their documented operations,
+// which makes shadow endpoints (traffic outside the description) and
+// zombies (documented operations without traffic) visible.
+type APIInventory struct {
+	// Enabled defaults to true when the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// MaxEndpoints bounds the table. Default 10000.
+	MaxEndpoints int `yaml:"max_endpoints"`
+	// Hosts and Routes narrow the inventory to these host patterns and
+	// route names. Default: every proxied route.
+	Hosts  []string `yaml:"hosts"`
+	Routes []string `yaml:"routes"`
+	// ZombieAfter is how long a documented endpoint may go without
+	// traffic before it is reported as a zombie. Default 720h.
+	ZombieAfter Duration `yaml:"zombie_after"`
+	// StateFile keeps the inventory across restarts. Optional.
+	StateFile string `yaml:"state_file"`
+	// SaveInterval is how often the state file is written. Default 5m.
+	SaveInterval Duration `yaml:"save_interval"`
+}
+
+// IsEnabled reports whether the inventory records traffic.
+func (a *APIInventory) IsEnabled() bool { return a != nil && (a.Enabled == nil || *a.Enabled) }
+
+// Fleet is the agent side of central configuration management: the node
+// long polls the controller for a bundle whose digest differs from the
+// applied one, writes the files under Dir, reloads and reports its
+// status. Changing the section requires a restart.
+type Fleet struct {
+	// Controller is the controller's base URL (https).
+	Controller string `yaml:"controller"`
+	// NodeID is the node's name at the controller; it must match the
+	// certificate name unless the controller runs with -any-name. Default
+	// cluster.node_id, else the host name.
+	NodeID string `yaml:"node_id"`
+	// TLS holds the node certificate, key and the fleet CA.
+	TLS FleetTLS `yaml:"tls"`
+	// Interval is the long poll length and the status report period.
+	// Default 30s.
+	Interval Duration `yaml:"interval"`
+	// Timeout bounds one request beyond the poll length. Default 10s.
+	Timeout Duration `yaml:"timeout"`
+	// Dir receives the bundle files; the configuration file must be
+	// Dir/xproxy.yaml (the -config path). Default: the directory of the
+	// configuration file.
+	Dir string `yaml:"dir"`
+	// Apply false reports status and pending bundles without writing or
+	// reloading anything. Default true.
+	Apply *bool `yaml:"apply"`
+	// Tags are reported to the controller for grouping.
+	Tags []string `yaml:"tags"`
+}
+
+// Applies reports the apply setting with its default.
+func (f *Fleet) Applies() bool { return f.Apply == nil || *f.Apply }
+
+// FleetTLS is the agent's client certificate and the controller CA.
+type FleetTLS struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	CAFile   string `yaml:"ca_file"`
+	// ServerName overrides the name verified in the controller's
+	// certificate. Default: the host of Controller.
+	ServerName string `yaml:"server_name"`
 }
 
 // ClusterTLS holds the node certificate and the cluster CA. Every peer
@@ -1694,10 +2050,43 @@ type Challenge struct {
 	ExemptCIDRs []string `yaml:"exempt_cidrs"`
 	// Title is the heading shown on the page.
 	Title string `yaml:"title"`
+	// Captcha adds a hosted CAPTCHA tier: verdicts that ask for one
+	// (an account_guard captcha step) show the provider's widget instead
+	// of the proof of work; with mode always every challenge page does.
+	Captcha *Captcha `yaml:"captcha"`
+	// Device includes a device identifier, computed by the challenge
+	// script from stable browser properties, in the cookie; it becomes
+	// the device attribute, Info.DeviceID for filters and the device
+	// rate limit key. Default true.
+	Device *bool `yaml:"device"`
 }
 
 // BindsIP reports whether cookies are bound to the client address.
 func (c *Challenge) BindsIP() bool { return c.BindIP == nil || *c.BindIP }
+
+// DevicesOn reports whether device identifiers are collected.
+func (c *Challenge) DevicesOn() bool { return c.Device == nil || *c.Device }
+
+// Captcha configures a hosted CAPTCHA provider for the challenge.
+type Captcha struct {
+	// Provider is turnstile, hcaptcha or recaptcha.
+	Provider string `yaml:"provider"`
+	// SiteKey is the public key rendered into the widget.
+	SiteKey string `yaml:"site_key"`
+	// SecretFile holds the provider's secret key (one line).
+	SecretFile string `yaml:"secret_file"`
+	// VerifyURL overrides the provider's siteverify endpoint (tests,
+	// enterprise endpoints).
+	VerifyURL string `yaml:"verify_url"`
+	// Timeout for the verification call. Default 5s.
+	Timeout Duration `yaml:"timeout"`
+	// MinScore refuses tokens the provider scores below it (reCAPTCHA v3
+	// and Enterprise return one). Default 0 (not checked).
+	MinScore float64 `yaml:"min_score"`
+	// Mode is escalation (default: the widget only for verdicts that ask
+	// for a CAPTCHA) or always (every challenge page).
+	Mode string `yaml:"mode"`
+}
 
 // RouteChallenge selects when a route challenges unverified clients.
 type RouteChallenge struct {

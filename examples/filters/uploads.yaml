@@ -1,0 +1,42 @@
+# Upload protection: the upload_guard filter inspects multipart uploads
+# before the application stores them. Images and documents only, ten
+# files of ten megabytes each per request, double extensions and content
+# that does not match its name refused, executables and server side
+# scripts refused whatever they are called.
+#
+# Validate: xproxy -config examples/filters/uploads.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+filters:
+  - name: uploads
+    kind: upload_guard
+    options:
+      max_files: 10
+      max_file_bytes: 10485760
+      max_total_bytes: 52428800
+      allowed_extensions: [jpg, jpeg, png, gif, webp, pdf, docx, xlsx, pptx, odt, txt, csv]
+      fields: [file, files, attachment]
+      double_extensions: deny
+      check_magic: true
+      deny_executables: true
+  - name: avatars
+    kind: upload_guard
+    options:
+      max_files: 1
+      max_file_bytes: 2097152
+      allowed_extensions: [jpg, jpeg, png, webp]
+      strict_magic: true
+      raw_uploads: true
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.10:8080"}]
+routes:
+  - {name: attachments, hosts: [app.example.com], paths: [/api/attachments], methods: [POST], upstream: app, filters: [uploads], max_body_bytes: 52428800}
+  - {name: avatar, hosts: [app.example.com], paths: [/api/me/avatar], methods: [PUT, POST], upstream: app, filters: [avatars], max_body_bytes: 2097152}
+  - {name: app, hosts: [app.example.com], upstream: app}

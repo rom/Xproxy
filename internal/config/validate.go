@@ -43,6 +43,9 @@ func (e *ValidationError) Error() string {
 
 type validator struct {
 	problems []string
+	// hasChallenge is set while validating a configuration with a
+	// challenge section (the device rate limit key needs one).
+	hasChallenge bool
 	// fileCheck is true when file existence should be verified. Tests turn
 	// this off.
 	fileCheck bool
@@ -95,6 +98,7 @@ func (v *validator) config(c *Config) {
 
 	rateLimits := map[string]bool{}
 	for i := range c.RateLimits {
+		v.hasChallenge = c.Challenge != nil
 		v.rateLimit(i, &c.RateLimits[i], rateLimits)
 	}
 	upstreams := map[string]bool{}
@@ -110,6 +114,28 @@ func (v *validator) config(c *Config) {
 	}
 	if c.Cluster != nil {
 		v.cluster(c.Cluster)
+	}
+	if c.Fleet != nil {
+		v.fleet(c.Fleet)
+	}
+	if a := c.APIInventory; a != nil {
+		if a.MaxEndpoints < 100 || a.MaxEndpoints > 1_000_000 {
+			v.errf("api_inventory.max_endpoints: must be between 100 and 1000000")
+		}
+		for i, h := range a.Hosts {
+			if !hostPatternOK(h) {
+				v.errf("api_inventory.hosts[%d]: %q is not a valid host pattern", i, h)
+			}
+		}
+		if a.ZombieAfter < Duration(time.Hour) || a.ZombieAfter > Duration(365*24*time.Hour) {
+			v.errf("api_inventory.zombie_after: must be between 1h and 8760h")
+		}
+		if a.StateFile != "" && !strings.HasPrefix(a.StateFile, "/") {
+			v.errf("api_inventory.state_file: must be an absolute path")
+		}
+		if a.SaveInterval < Duration(10*time.Second) || a.SaveInterval > Duration(24*time.Hour) {
+			v.errf("api_inventory.save_interval: must be between 10s and 24h")
+		}
 	}
 	v.sandbox(&c.Sandbox)
 	if cp := c.Compression; cp != nil {
@@ -384,12 +410,25 @@ func (v *validator) config(c *Config) {
 			}
 		}
 	}
+	v.virtualPatches(c.VirtualPatches, routes)
+	if a := c.APIInventory; a != nil {
+		for i, r := range a.Routes {
+			if !routes[r] {
+				v.errf("api_inventory.routes[%d]: unknown route %q", i, r)
+			}
+		}
+	}
 	if len(c.Server.Listeners) == 0 {
 		v.errf("server.listeners: at least one listener is required")
 	}
 }
 
 func (v *validator) server(s *Server) {
+	switch s.Normalization.Unicode {
+	case "off", "nfc", "nfkc":
+	default:
+		v.errf("server.normalization.unicode: must be off, nfc or nfkc")
+	}
 	names := map[string]bool{}
 	addrs := map[string]bool{}
 	for i := range s.Listeners {
@@ -677,8 +716,12 @@ func (v *validator) logging(l *Logging) {
 				if l.OTLP == nil {
 					v.errf("logging.%s.sinks[%d]: otlp requires a logging.otlp section", name, i)
 				}
+			case "siem":
+				if l.SIEM == nil {
+					v.errf("logging.%s.sinks[%d]: siem requires a logging.siem section", name, i)
+				}
 			default:
-				v.errf("logging.%s.sinks[%d]: must be file, journald, syslog or otlp", name, i)
+				v.errf("logging.%s.sinks[%d]: must be file, journald, syslog, otlp or siem", name, i)
 			}
 		}
 	}
@@ -692,6 +735,9 @@ func (v *validator) logging(l *Logging) {
 	}
 	if l.OTLP != nil {
 		v.otlpExport("logging.otlp", l.OTLP)
+	}
+	if l.SIEM != nil {
+		v.siem(l.SIEM)
 	}
 	for name, s := range map[string]*LogStream{"access": &l.Access, "error": &l.Error, "security": &l.Security, "audit": &l.Audit} {
 		switch s.Format {
@@ -729,8 +775,10 @@ func (v *validator) logging(l *Logging) {
 		default:
 			v.errf("logging.syslog.network: must be unix, udp, tcp or tcp+tls")
 		}
-		if s.Format != "rfc5424" && s.Format != "rfc3164" {
-			v.errf("logging.syslog.format: must be rfc5424 or rfc3164")
+		switch s.Format {
+		case "rfc5424", "rfc3164", "cef", "leef":
+		default:
+			v.errf("logging.syslog.format: must be rfc5424, rfc3164, cef or leef")
 		}
 		if _, ok := syslogFacilities[s.Facility]; !ok {
 			v.errf("logging.syslog.facility: unknown facility %q", s.Facility)
@@ -810,10 +858,34 @@ func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 	}
 	seen[r.Name] = true
 	switch {
-	case r.Key == "client_ip", r.Key == "route", r.Key == "country":
+	case r.Key == "client_ip", r.Key == "route", r.Key == "country", r.Key == "client_net", r.Key == "endpoint", r.Key == "ja4":
+	case r.Key == "device":
+		if !v.hasChallenge {
+			v.errf("%s.key: device needs the challenge section (the identifier comes from the challenge cookie)", p)
+		}
 	case strings.HasPrefix(r.Key, "header:") && len(r.Key) > len("header:"):
+		if !headerNameOK(r.Key[len("header:"):]) {
+			v.errf("%s.key: %q is not a header name", p, r.Key[len("header:"):])
+		}
+	case strings.HasPrefix(r.Key, "cookie:") && len(r.Key) > len("cookie:"):
+		if strings.ContainsAny(r.Key[len("cookie:"):], " ;=,") {
+			v.errf("%s.key: %q is not a cookie name", p, r.Key[len("cookie:"):])
+		}
+	case strings.HasPrefix(r.Key, "jwt:") && len(r.Key) > len("jwt:"):
+		if strings.ContainsAny(r.Key[len("jwt:"):], " \"") || len(r.Key) > 128 {
+			v.errf("%s.key: %q is not a claim name", p, r.Key[len("jwt:"):])
+		}
 	default:
-		v.errf("%s.key: must be client_ip, route, country or header:<name>", p)
+		v.errf("%s.key: must be client_ip, client_net, route, country, endpoint, ja4, device, header:<name>, cookie:<name> or jwt:<claim>", p)
+	}
+	if r.NetV4 < 8 || r.NetV4 > 32 {
+		v.errf("%s.net_v4: must be between 8 and 32", p)
+	}
+	if r.NetV6 < 16 || r.NetV6 > 128 {
+		v.errf("%s.net_v6: must be between 16 and 128", p)
+	}
+	if r.Key != "client_net" && (r.NetV4 != DefaultRateLimitNetV4 || r.NetV6 != DefaultRateLimitNetV6) {
+		v.errf("%s: net_v4 and net_v6 apply to key client_net", p)
 	}
 	switch r.Algorithm {
 	case "token_bucket":
@@ -862,6 +934,24 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		v.errf("%s.name: duplicate %q", p, u.Name)
 	}
 	seen[u.Name] = true
+	if os := u.OriginSignature; os != nil {
+		if os.Header != "" && !headerNameOK(os.Header) {
+			v.errf("%s.origin_signature.header: %q is not a header name", p, os.Header)
+		}
+		if os.SecretFile == "" {
+			v.errf("%s.origin_signature.secret_file: required", p)
+		} else if !strings.HasPrefix(os.SecretFile, "/") {
+			v.errf("%s.origin_signature.secret_file: must be an absolute path", p)
+		}
+		if os.TTL < Duration(10*time.Second) || os.TTL > Duration(24*time.Hour) {
+			v.errf("%s.origin_signature.ttl: must be between 10s and 24h", p)
+		}
+		for j, h := range os.Include {
+			if !headerNameOK(h) {
+				v.errf("%s.origin_signature.include[%d]: %q is not a header name", p, j, h)
+			}
+		}
+	}
 	switch u.Balancer {
 	case "round_robin", "weighted", "least_conn", "hash":
 	default:
@@ -1191,6 +1281,9 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	}
 	v.headerMatches(p+".headers", r.Headers, false)
 	v.headerMatches(p+".cookies", r.Cookies, true)
+	if r.Policy != nil {
+		v.routePolicy(p+".policy", r.Policy)
+	}
 
 	actions := 0
 	if r.Upstream != "" {
@@ -1409,6 +1502,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
+	"account_abuse": true,
 }
 
 // HoneypotDecoys are the built-in decoy names (bodies live in the proxy).
@@ -1459,6 +1553,23 @@ func (v *validator) bans(b *Bans) {
 		}
 		if t.MaxDuration < t.Duration {
 			v.errf("%s.max_duration: must be at least duration", p)
+		}
+		switch t.Aggregate {
+		case "address", "net", "ja4":
+		default:
+			v.errf("%s.aggregate: must be address, net or ja4", p)
+		}
+		if t.NetV4 < 8 || t.NetV4 > 32 {
+			v.errf("%s.net_v4: must be between 8 and 32", p)
+		}
+		if t.NetV6 < 32 || t.NetV6 > 128 {
+			v.errf("%s.net_v6: must be between 32 and 128", p)
+		}
+		if t.MinSources < 1 || t.MinSources > 100000 {
+			v.errf("%s.min_sources: must be between 1 and 100000", p)
+		}
+		if t.MinSources > t.Threshold {
+			v.errf("%s.min_sources: must not exceed threshold", p)
 		}
 	}
 }
@@ -2074,6 +2185,31 @@ func (v *validator) challenge(c *Challenge) {
 	if len(c.Title) > 200 || strings.ContainsAny(c.Title, "<>&\"'") {
 		v.errf("challenge.title: at most 200 characters, no HTML special characters")
 	}
+	if cp := c.Captcha; cp != nil {
+		switch cp.Provider {
+		case "turnstile", "hcaptcha", "recaptcha":
+		default:
+			v.errf("challenge.captcha.provider: must be turnstile, hcaptcha or recaptcha")
+		}
+		if cp.SiteKey == "" || len(cp.SiteKey) > 200 || strings.ContainsAny(cp.SiteKey, "<>&\"' \r\n") {
+			v.errf("challenge.captcha.site_key: required, at most 200 characters, no HTML or space characters")
+		}
+		if !strings.HasPrefix(cp.SecretFile, "/") {
+			v.errf("challenge.captcha.secret_file: must be an absolute path")
+		}
+		if cp.VerifyURL != "" && !strings.HasPrefix(cp.VerifyURL, "https://") && !strings.HasPrefix(cp.VerifyURL, "http://127.0.0.1") && !strings.HasPrefix(cp.VerifyURL, "http://localhost") {
+			v.errf("challenge.captcha.verify_url: must be an https URL (plain http only to localhost)")
+		}
+		if cp.Timeout < Duration(500_000_000) || cp.Timeout > Duration(30_000_000_000) {
+			v.errf("challenge.captcha.timeout: must be between 500ms and 30s")
+		}
+		if cp.MinScore < 0 || cp.MinScore > 1 {
+			v.errf("challenge.captcha.min_score: must be between 0 and 1")
+		}
+		if cp.Mode != "escalation" && cp.Mode != "always" {
+			v.errf("challenge.captcha.mode: must be escalation or always")
+		}
+	}
 }
 
 func wafModeOK(m string) bool { return m == "off" || m == "detect" || m == "block" }
@@ -2241,6 +2377,17 @@ func (v *validator) routeWAF(i int, rw *RouteWAF, w *WAF, profiles map[string]bo
 	}
 	if rw.Mode != "off" && !profiles[rw.Profile] {
 		v.errf("%s.profile: unknown profile %q", p, rw.Profile)
+	}
+	if rw.BlockPercent != nil && (*rw.BlockPercent < 0 || *rw.BlockPercent > 100) {
+		v.errf("%s.block_percent: must be between 0 and 100", p)
+	}
+	for j, c := range rw.BlockCIDRs {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.block_cidrs[%d]: %q is not a CIDR", p, j, c)
+		}
+	}
+	if rw.Mode != "block" && (rw.BlockPercent != nil || len(rw.BlockCIDRs) > 0) {
+		v.errf("%s: block_percent and block_cidrs apply to mode block", p)
 	}
 }
 
@@ -2476,6 +2623,284 @@ func templateOK(t string) error {
 }
 
 // otlpExport validates a trace or log collector endpoint.
+// methodList checks a list of upper-case method tokens.
+func (v *validator) methodList(p string, methods []string) {
+	seen := map[string]bool{}
+	for j, m := range methods {
+		if m != strings.ToUpper(m) || m == "" || len(m) > 32 || strings.ContainsAny(m, " \t,") {
+			v.errf("%s[%d]: %q must be an upper-case token", p, j, m)
+		} else if seen[m] {
+			v.errf("%s[%d]: duplicate %q", p, j, m)
+		}
+		seen[m] = true
+	}
+}
+
+// mediaTypes checks a list of media types or type/* patterns.
+func (v *validator) mediaTypes(p string, types []string) {
+	for j, t := range types {
+		main, sub, ok := strings.Cut(t, "/")
+		if !ok || main == "" || sub == "" || t != strings.ToLower(t) || strings.ContainsAny(t, " ;,") || (main == "*" && sub != "*") {
+			v.errf("%s[%d]: %q must be type/subtype or type/*", p, j, t)
+		}
+	}
+}
+
+func (v *validator) routePolicy(p string, pol *RoutePolicy) {
+	v.methodList(p+".methods", pol.Methods)
+	v.mediaTypes(p+".content_types", pol.ContentTypes)
+	if pol.MaxURILength < 0 || pol.MaxURILength > 1<<20 {
+		v.errf("%s.max_uri_length: must be between 0 and 1048576", p)
+	}
+	if pol.MaxQueryBytes < 0 || pol.MaxQueryBytes > 1<<20 {
+		v.errf("%s.max_query_bytes: must be between 0 and 1048576", p)
+	}
+	if pol.MaxQueryParams < 0 || pol.MaxQueryParams > 10000 {
+		v.errf("%s.max_query_params: must be between 0 and 10000", p)
+	}
+	if pol.MaxHeaders < 0 || pol.MaxHeaders > 10000 {
+		v.errf("%s.max_headers: must be between 0 and 10000", p)
+	}
+	if pol.MaxHeaderBytes < 0 || pol.MaxHeaderBytes > 1<<24 {
+		v.errf("%s.max_header_bytes: must be between 0 and 16777216", p)
+	}
+	if len(pol.Query) > 256 {
+		v.errf("%s.query: at most 256 parameters", p)
+	}
+	if pol.DenyUnknown && len(pol.Query) == 0 {
+		v.errf("%s.deny_unknown_query: requires a query list", p)
+	}
+	names := map[string]bool{}
+	for j, q := range pol.Query {
+		qp := fmt.Sprintf("%s.query[%d]", p, j)
+		if q.Name == "" || len(q.Name) > 128 {
+			v.errf("%s.name: required, at most 128 bytes", qp)
+		} else if names[q.Name] {
+			v.errf("%s.name: duplicate %q", qp, q.Name)
+		}
+		names[q.Name] = true
+		switch q.Type {
+		case "string", "int", "number", "bool", "uuid":
+			if len(q.Values) > 0 {
+				v.errf("%s.values: only for type enum", qp)
+			}
+		case "enum":
+			if len(q.Values) == 0 || len(q.Values) > 1024 {
+				v.errf("%s.values: type enum needs 1 to 1024 values", qp)
+			}
+		default:
+			v.errf("%s.type: must be string, int, number, bool, uuid or enum", qp)
+		}
+		if q.MaxLength < 0 || q.MaxLength > 1<<20 {
+			v.errf("%s.max_length: must be between 0 and 1048576", qp)
+		}
+		if q.MaxRepeat < 1 || q.MaxRepeat > 1000 {
+			v.errf("%s.max_repeat: must be between 1 and 1000", qp)
+		}
+		if q.Pattern != "" {
+			if len(q.Pattern) > 512 {
+				v.errf("%s.pattern: at most 512 bytes", qp)
+			} else if _, err := regexp.Compile("^(?:" + q.Pattern + ")$"); err != nil {
+				v.errf("%s.pattern: %v", qp, err)
+			}
+		}
+	}
+}
+
+func (v *validator) patchMatches(p string, list []PatchMatch) {
+	for j, m := range list {
+		if m.Name == "" || len(m.Name) > 256 {
+			v.errf("%s[%d].name: required, at most 256 bytes", p, j)
+		}
+		if m.Pattern != "" {
+			if len(m.Pattern) > 512 {
+				v.errf("%s[%d].pattern: at most 512 bytes", p, j)
+			} else if _, err := regexp.Compile(m.Pattern); err != nil {
+				v.errf("%s[%d].pattern: %v", p, j, err)
+			}
+		}
+	}
+}
+
+// patchIDRE allows dots in patch identifiers (cve-2024-1234, app.export.1).
+var patchIDRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]{0,62})$`)
+
+func (v *validator) virtualPatches(patches []VirtualPatch, routes map[string]bool) {
+	if len(patches) > 1024 {
+		v.errf("virtual_patches: at most 1024 patches")
+	}
+	ids := map[string]bool{}
+	for i := range patches {
+		vp := &patches[i]
+		p := fmt.Sprintf("virtual_patches[%d]", i)
+		if !patchIDRE.MatchString(vp.ID) {
+			v.errf("%s.id: %q is not a valid identifier (a-z, 0-9, . _ -)", p, vp.ID)
+		} else if ids[vp.ID] {
+			v.errf("%s.id: duplicate %q", p, vp.ID)
+		}
+		ids[vp.ID] = true
+		if len(vp.Description) > 512 {
+			v.errf("%s.description: at most 512 bytes", p)
+		}
+		for j, h := range vp.Hosts {
+			if !hostPatternOK(h) {
+				v.errf("%s.hosts[%d]: %q is not a valid host pattern", p, j, h)
+			}
+		}
+		for j, r := range vp.Routes {
+			if !routes[r] {
+				v.errf("%s.routes[%d]: unknown route %q", p, j, r)
+			}
+		}
+		for j, path := range vp.Paths {
+			if !strings.HasPrefix(path, "/") || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\ ") {
+				v.errf("%s.paths[%d]: %q must be an absolute, normalised prefix", p, j, path)
+			}
+		}
+		for j, re := range vp.PathRegex {
+			if re == "" || len(re) > 512 {
+				v.errf("%s.path_regex[%d]: must be 1 to 512 bytes", p, j)
+			} else if _, err := regexp.Compile("^(?:" + re + ")$"); err != nil {
+				v.errf("%s.path_regex[%d]: %v", p, j, err)
+			}
+		}
+		v.methodList(p+".methods", vp.Methods)
+		v.patchMatches(p+".query", vp.Query)
+		v.patchMatches(p+".headers", vp.Headers)
+		v.patchMatches(p+".cookies", vp.Cookies)
+		if b := vp.Body; b != nil {
+			if b.Pattern == "" || len(b.Pattern) > 512 {
+				v.errf("%s.body.pattern: required, at most 512 bytes", p)
+			} else if _, err := regexp.Compile(b.Pattern); err != nil {
+				v.errf("%s.body.pattern: %v", p, err)
+			}
+			if b.MaxBytes < 1 || b.MaxBytes > 16<<20 {
+				v.errf("%s.body.max_bytes: must be between 1 and 16 MiB", p)
+			}
+			v.mediaTypes(p+".body.content_types", b.ContentTypes)
+		}
+		if len(vp.Paths)+len(vp.PathRegex)+len(vp.Query)+len(vp.Headers)+len(vp.Cookies) == 0 && vp.Body == nil {
+			v.errf("%s: needs at least one of paths, path_regex, query, headers, cookies or body", p)
+		}
+		switch vp.Action {
+		case "block", "log":
+		default:
+			v.errf("%s.action: must be block or log", p)
+		}
+		if vp.Status < 400 || vp.Status > 599 {
+			v.errf("%s.status: must be a 4xx or 5xx status", p)
+		}
+		if vp.Expires != "" {
+			if _, err := ParsePatchExpiry(vp.Expires); err != nil {
+				v.errf("%s.expires: %v", p, err)
+			}
+		}
+	}
+}
+
+// ParsePatchExpiry parses an expiry as RFC 3339 or a date, which
+// expires at the end of that day in UTC.
+func ParsePatchExpiry(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t.Add(24*time.Hour - time.Nanosecond), nil
+	}
+	return time.Time{}, fmt.Errorf("%q is not RFC 3339 or YYYY-MM-DD", s)
+}
+
+func (v *validator) fleet(f *Fleet) {
+	u, err := url.Parse(f.Controller)
+	switch {
+	case f.Controller == "" || err != nil || u.Host == "":
+		v.errf("fleet.controller: must be a URL")
+	case u.Scheme != "https":
+		v.errf("fleet.controller: must be an https URL")
+	case u.Path != "" && u.Path != "/":
+		v.errf("fleet.controller: must not carry a path")
+	}
+	if !nameRE.MatchString(f.NodeID) {
+		v.errf("fleet.node_id: %q is not a valid name", f.NodeID)
+	}
+	if f.TLS.CertFile == "" || f.TLS.KeyFile == "" || f.TLS.CAFile == "" {
+		v.errf("fleet.tls: cert_file, key_file and ca_file are all required (mutual TLS is mandatory)")
+	} else {
+		v.file("fleet.tls.cert_file", f.TLS.CertFile)
+		v.file("fleet.tls.key_file", f.TLS.KeyFile)
+		v.file("fleet.tls.ca_file", f.TLS.CAFile)
+	}
+	if f.Interval < Duration(5*time.Second) || f.Interval > Duration(time.Hour) {
+		v.errf("fleet.interval: must be between 5s and 1h")
+	}
+	if f.Timeout < Duration(time.Second) || f.Timeout > Duration(time.Minute) {
+		v.errf("fleet.timeout: must be between 1s and 1m")
+	}
+	if f.Dir != "" {
+		v.dir("fleet.dir", f.Dir)
+	}
+	for i, t := range f.Tags {
+		if !nameRE.MatchString(t) {
+			v.errf("fleet.tags[%d]: %q is not a valid name", i, t)
+		}
+	}
+}
+
+func (v *validator) siem(s *SIEM) {
+	const p = "logging.siem"
+	u, err := url.Parse(s.Endpoint)
+	switch {
+	case s.Endpoint == "" || err != nil || u.Host == "":
+		v.errf("%s.endpoint: must be a URL", p)
+	case u.Scheme == "https":
+	case u.Scheme == "http" && s.AllowHTTP:
+	default:
+		v.errf("%s.endpoint: must be an https URL (http only with allow_http)", p)
+	}
+	switch s.Format {
+	case "json", "hec", "cef", "leef":
+	default:
+		v.errf("%s.format: must be json, hec, cef or leef", p)
+	}
+	if s.Timeout <= 0 || s.Timeout > Duration(time.Minute) {
+		v.errf("%s.timeout: must be positive and at most 1m", p)
+	}
+	for k := range s.Headers {
+		if !headerNameOK(k) {
+			v.errf("%s.headers: %q is not a header", p, k)
+		}
+	}
+	if s.AuthFile != "" {
+		v.file(p+".auth_file", s.AuthFile)
+	}
+	if s.CAFile != "" {
+		v.file(p+".ca_file", s.CAFile)
+	}
+	if (s.CertFile == "") != (s.KeyFile == "") {
+		v.errf("%s: cert_file and key_file go together", p)
+	} else if s.CertFile != "" {
+		v.file(p+".cert_file", s.CertFile)
+		v.file(p+".key_file", s.KeyFile)
+	}
+	if s.Batch < 1 || s.Batch > 10000 {
+		v.errf("%s.batch: must be between 1 and 10000", p)
+	}
+	if s.Interval < Duration(100*time.Millisecond) || s.Interval > Duration(5*time.Minute) {
+		v.errf("%s.interval: must be between 100ms and 5m", p)
+	}
+	if s.Queue < 1 || s.Queue > 1_000_000 {
+		v.errf("%s.queue: must be between 1 and 1000000", p)
+	}
+	for _, f := range []struct{ k, v string }{{"vendor", s.Vendor}, {"product", s.Product}} {
+		if f.v == "" || len(f.v) > 63 || strings.ContainsAny(f.v, "|\\\n") {
+			v.errf("%s.%s: 1 to 63 characters without | or backslash", p, f.k)
+		}
+	}
+	if len(s.Hostname) > 255 {
+		v.errf("%s.hostname: at most 255 characters", p)
+	}
+}
+
 func (v *validator) otlpExport(p string, o *OTLPExport) {
 	u, err := url.Parse(o.Endpoint)
 	switch {

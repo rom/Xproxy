@@ -215,8 +215,16 @@ func Derive(cfg *config.Config, cfgPath string) Rules {
 		}
 	})
 	// Log streams without a file setting go to the log directory; the
-	// management socket is the one socket the process creates.
+	// management socket is the one socket the process creates; the fleet
+	// agent writes bundles into its directory.
 	if d := cfg.Logging.Directory; d != "" {
+		addWrite(d, true)
+	}
+	if f := cfg.Fleet; f != nil && f.Applies() {
+		d := f.Dir
+		if d == "" {
+			d = filepath.Dir(cfgPath)
+		}
 		addWrite(d, true)
 	}
 	addWrite(cfg.Management.Socket, false)

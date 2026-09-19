@@ -249,6 +249,33 @@ procedure is in RELEASING.md.
 - WAF: CRS plugin loading, JSON body schema enforcement, behavioural
   anomaly detection beyond rule scoring (`crs.plugins_dir`,
   `json_schemas`, `waf.anomaly`): delivered
+- API discovery and inventory with shadow, zombie and superseded
+  detection (`api_inventory`, `xproxyctl api`): delivered
+- Sensitive data detection in requests and responses (`sensitive_data`
+  filter): delivered
+- Account protection: credential stuffing, brute force, registration,
+  reset, hoarding and scraping abuse with progressive actions and
+  distributed campaign detection (`account_guard` filter): delivered
+- CAPTCHA providers as a challenge tier and device identifiers in the
+  challenge cookie (`challenge.captcha`, `challenge.device`, rate limit
+  key `device`): delivered
+- Distributed attack response: network and fingerprint aggregated bans
+  (`bans.triggers[].aggregate`, `ja4:` ban targets): delivered
+- Bypass protection: origin request signatures and the origin locking
+  guide (`upstreams[].origin_signature`, HARDENING.md 5c): delivered
+- WAF operating modes with gradual enforcement (`block_percent`,
+  `block_cidrs`): delivered
+- Upload protection (`upload_guard` filter): delivered
+- Request normalisation before analysis (`server.normalization`):
+  delivered
+- Rate limit keys per session, account, token, network, endpoint and
+  fingerprint (`rate_limits[].key`): delivered
+- Positive security model per route and structured virtual patches
+  (`routes[].policy`, `virtual_patches`): delivered
+- Fleet operation: central configuration push and status collection
+  (`xproxy-fleet`, `fleet`), Grafana dashboards and alert rules shipped
+  with the product, SIEM export beyond syslog (`logging.siem`, CEF and
+  LEEF): delivered
 - In-process sandbox (Landlock, seccomp, capabilities, no_new_privs,
   non dumpable), systemd unit additions, macOS target with launchd,
   Seatbelt and pf: delivered (AMR-044, AMR-045)

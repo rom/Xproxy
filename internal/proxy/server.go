@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/rom/xproxy/internal/apiinv"
 	"log/slog"
 	"net"
 	"net/http"
@@ -66,6 +67,10 @@ type Server struct {
 	acme        *acme.Manager
 	// wafStats keeps per rule counters and learning across reloads.
 	wafStats *waf.Stats
+	// patches keeps virtual patch hit counters across generations.
+	patches patchCounters
+	// inventory is the API inventory, kept across generations.
+	inventory *apiinv.Table
 	// tickets manages shared session ticket keys; nil without the section.
 	tickets        *tlsconf.Tickets
 	ticketMismatch bound.Notice
@@ -105,7 +110,9 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		fingerprints: tlsconf.NewFingerprintTable(max(cfg.Server.Limits.MaxConnections, 1024)),
 		connLimiter:  limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
 		wafStats:     waf.NewStats(),
+		inventory:    apiinv.New(),
 	}
+	s.inventory.Configure(inventoryConfig(cfg), logs.Error)
 	if st := cfg.Server.SessionTickets; st != nil {
 		tk, err := tlsconf.NewTickets(st, logs.Error.With("component", "tickets"))
 		if err != nil {
@@ -143,7 +150,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		bl := s.bans.Load()
 		return bl != nil && bl.DropsConnections() && bl.Banned(addr)
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s), s.wafStats)
+	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s), s.wafStats, &s.patches)
 	if err != nil {
 		if bl := s.bans.Load(); bl != nil {
 			bl.Close()
@@ -256,10 +263,11 @@ func (s *Server) Stats() Snapshot {
 		}
 	}
 	if ch := s.challenger.Load(); ch != nil {
-		snap.ChallengesIssued, snap.ChallengesPassed, snap.ChallengesFailed = ch.Stats()
+		snap.ChallengesIssued, snap.ChallengesPassed, snap.ChallengesFailed, snap.CaptchasPassed = ch.Stats()
 	}
 	ls := s.logs.Stats()
 	snap.LogSyslogSent, snap.LogSyslogDropped, snap.LogJournalDropped, snap.LogRedaction = ls.SyslogSent, ls.SyslogDropped, ls.JournalDropped, ls.Redaction
+	snap.LogSIEMSent, snap.LogSIEMDropped = ls.SIEMSent, ls.SIEMDropped
 	snap.LogWriteErrors = ls.WriteErrors
 	snap.TarpitActive = s.tarpits.InFlight()
 	return snap
@@ -382,6 +390,11 @@ type WAFRoute struct {
 	Route   string `json:"route"`
 	Profile string `json:"profile"`
 	Mode    string `json:"mode"`
+	// BlockPercent is the share of clients in block mode (100 unless
+	// the route rolls block mode out gradually); BlockCIDRs are the
+	// canary prefixes always in block mode.
+	BlockPercent int      `json:"block_percent"`
+	BlockCIDRs   []string `json:"block_cidrs,omitempty"`
 }
 
 // WAF builds the WAF report with at most top rules.
@@ -395,11 +408,45 @@ func (s *Server) WAF(top int) WAFReport {
 	for _, cr := range rt.routes {
 		if cr.wafMode != "" && cr.wafMode != string(waf.ModeOff) {
 			p, _ := wafSelection(rt.cfg, cr.cfg)
-			rep.Routes = append(rep.Routes, WAFRoute{Route: cr.cfg.Name, Profile: p, Mode: cr.wafMode})
+			wr := WAFRoute{Route: cr.cfg.Name, Profile: p, Mode: cr.wafMode, BlockPercent: 100}
+			if cr.wafMode == string(waf.ModeBlock) {
+				wr.BlockPercent = cr.cfg.WAF.Percent()
+				if cr.cfg.WAF != nil {
+					wr.BlockCIDRs = cr.cfg.WAF.BlockCIDRs
+				}
+			} else {
+				wr.BlockPercent = 0
+			}
+			rep.Routes = append(rep.Routes, wr)
 		}
 	}
 	rep.Report = s.wafStats.Report(top, rt.routePaths())
 	return rep
+}
+
+// inventoryConfig maps the configuration section to the table's setting.
+func inventoryConfig(cfg *config.Config) apiinv.Config {
+	a := cfg.APIInventory
+	if !a.IsEnabled() {
+		return apiinv.Config{}
+	}
+	return apiinv.Config{Enabled: true, MaxEndpoints: a.MaxEndpoints, ZombieAfter: a.ZombieAfter.D(), StateFile: a.StateFile, SaveInterval: a.SaveInterval.D()}
+}
+
+// APIInventory builds the inventory view: all, shadow, zombie, versions,
+// documented or undocumented, at most top items.
+func (s *Server) APIInventory(view string, top int) apiinv.Report {
+	rt := s.rt.Load()
+	docs := map[string][]apiinv.Operation{}
+	for _, cr := range rt.routes {
+		if !cr.inventory {
+			continue
+		}
+		for _, d := range cr.describers {
+			docs[cr.cfg.Name] = append(docs[cr.cfg.Name], d.Operations()...)
+		}
+	}
+	return s.inventory.Report(view, top, docs, time.Now())
 }
 
 // WAFExclusions renders the learning proposals as SecLang.
@@ -728,7 +775,10 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s), s.wafStats)
+	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s), s.wafStats, &s.patches)
+	if err == nil {
+		s.inventory.Configure(inventoryConfig(cfg), s.logs.Error)
+	}
 	if err != nil {
 		s.stats.ReloadFailures.Add(1)
 		return err
@@ -1128,6 +1178,7 @@ func (s *Server) ReloadCertificates() error {
 // and upstream pools.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.tickets.Stop()
+	s.inventory.Stop()
 	s.mu.Lock()
 	lns := s.listeners
 	s.mu.Unlock()

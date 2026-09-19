@@ -132,7 +132,7 @@ func TestValidationBranches(t *testing.T) {
 		{"log rotation", rep("access: {sinks", "access: {max_files: -1, sinks"), "rotation values"},
 		{"sink journald without section", rep("  journald: {identifier: xproxy}\n", ""), "journald requires"},
 		{"sink syslog without section", rep("  syslog: {network: udp, address: 127.0.0.1:514, format: rfc3164, facility: local3}\n", ""), "syslog requires"},
-		{"sink unknown", rep("sinks: [file, syslog, journald]", "sinks: [file, pigeon]"), "must be file, journald, syslog or otlp"},
+		{"sink unknown", rep("sinks: [file, syslog, journald]", "sinks: [file, pigeon]"), "must be file, journald, syslog, otlp or siem"},
 		{"journald socket", rep("journald: {identifier: xproxy}", "journald: {identifier: xproxy, socket: rel}"), "journald.socket"},
 		{"journald identifier", rep("identifier: xproxy", "identifier: 'x y'"), "journald.identifier"},
 		{"syslog unix path", rep("network: udp, address: 127.0.0.1:514", "network: unix, address: rel"), "absolute socket path"},

@@ -1,0 +1,160 @@
+.\" Generated from Markdown by internal/manpage; do not edit.
+.TH XPROXY\-FLEET 8 "" "Xproxy" "System administration"
+.nh
+.ad l
+.SH "NAME"
+.PP
+xproxy\-fleet \- fleet controller: configuration bundles and status for many xproxy nodes
+.SH "SYNOPSIS"
+.PP
+\fBxproxy\-fleet serve\fR \fB\-dir\fR \fIDIR\fR \fB\-listen\fR \fIADDR\fR \fB\-cert\fR \fIPEM\fR \fB\-key\fR \fIPEM\fR \fB\-ca\fR \fIPEM\fR [\fB\-any\-name\fR] [\fB\-scan\fR \fID\fR] [\fB\-admin\-socket\fR \fIPATH\fR]
+.PP
+\fBxproxy\-fleet nodes\fR [\fB\-admin\-socket\fR \fIPATH\fR] [\fB\-json\fR]
+.PP
+\fBxproxy\-fleet node\fR \fIID\fR [\fB\-admin\-socket\fR \fIPATH\fR] [\fB\-json\fR]
+.PP
+\fBxproxy\-fleet bundle\fR \fIID\fR [\fB\-admin\-socket\fR \fIPATH\fR]
+.PP
+\fBxproxy\-fleet scan\fR [\fB\-admin\-socket\fR \fIPATH\fR]
+.PP
+\fBxproxy\-fleet validate\fR [\fB\-dir\fR \fIDIR\fR]
+.PP
+\fBxproxy\-fleet version\fR
+.SH "DESCRIPTION"
+.PP
+\fBxproxy\-fleet\fR runs on a management host. Every \fBxproxy\fR(8) node with a \fBfleet\fR section long polls it for the configuration bundle assigned to the node and reports its status; the controller never connects to a node. The directory holds:
+.PP
+.TS
+allbox;
+lbw(1.2i) lbx
+lw(1.2i) lx.
+T{
+Path
+T}	T{
+Content
+T}
+T{
+\fIDIR\fR\fB/\:common/\fR
+T}	T{
+Files every node receives
+T}
+T{
+\fIDIR\fR\fB/\:nodes/\fR*ID*\fB/\fR
+T}	T{
+A node\(aqs own files,\: overriding common ones;\: \fBxproxy.\:yaml\fR is its configuration
+T}
+T{
+\fIDIR\fR\fB/\:status/\fR
+T}	T{
+The last report per node,\: kept across restarts
+T}
+T{
+\fIDIR\fR\fB/\:fleet.\:sock\fR
+T}	T{
+The operator socket the query commands use
+T}
+.TE
+.PP
+Editing the files is the push: the controller rescans every \fB\-scan\fR interval, a bundle whose files no longer parse is not served (the last good one stays and the error shows in \fBnodes\fR), and the agents apply a changed bundle within seconds through the ordinary reload path, rolling back the files when the proxy refuses the configuration.
+.PP
+Agents authenticate with a client certificate from \fB\-ca\fR; the certificate\(aqs common name or DNS name must equal the node id unless \fB\-any\-name\fR is given.
+.SH "COMMANDS"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbx
+lw(0.9i) lx.
+T{
+Command
+T}	T{
+Description
+T}
+T{
+\fBserve\fR
+T}	T{
+Run the controller
+T}
+T{
+\fBnodes\fR
+T}	T{
+List every node with its state (\fBin sync\fR,\: \fBbehind\fR,\: \fBpending\fR,\: \fBfailed\fR,\: \fBstale\fR,\: \fBunassigned\fR,\: \fBnever seen\fR),\: digests,\: version,\: counters and errors
+T}
+T{
+\fBnode\fR \fIID\fR
+T}	T{
+One node in detail
+T}
+T{
+\fBbundle\fR \fIID\fR
+T}	T{
+The files of a node\(aqs current bundle (paths,\: modes,\: sizes)
+T}
+T{
+\fBscan\fR
+T}	T{
+Rescan the directory now and list the nodes
+T}
+T{
+\fBvalidate\fR
+T}	T{
+Parse every node\(aqs bundle without a running controller;\: exit 1 when one is invalid
+T}
+T{
+\fBversion\fR
+T}	T{
+Print the version
+T}
+.TE
+.SH "OPTIONS"
+.PP
+.TS
+allbox;
+lbw(0.7i) lbx
+lw(0.7i) lx.
+T{
+Option
+T}	T{
+Description
+T}
+T{
+\fB\-\:dir\fR \fIDIR\fR
+T}	T{
+Controller directory. Default \fB/\:var/\:lib/\:xproxy\-\:fleet\fR.
+T}
+T{
+\fB\-\:listen\fR \fIADDR\fR
+T}	T{
+Node listener. Default \fB:\:8447\fR.
+T}
+T{
+\fB\-\:cert\fR,\: \fB\-\:key\fR,\: \fB\-\:ca\fR \fIPEM\fR
+T}	T{
+Controller certificate,\: key and the CA that issues node certificates. Required for \fBserve\fR.
+T}
+T{
+\fB\-\:any\-\:name\fR
+T}	T{
+Accept any certificate from the CA for any node id.
+T}
+T{
+\fB\-\:scan\fR \fID\fR
+T}	T{
+Directory rescan interval. Default \fB2s\fR.
+T}
+T{
+\fB\-\:admin\-\:socket\fR \fIPATH\fR
+T}	T{
+Operator socket. Default \fIDIR\fR\fB/\:fleet.\:sock\fR.
+T}
+T{
+\fB\-\:json\fR
+T}	T{
+Machine readable output.
+T}
+.TE
+.SH "FILES"
+.PP
+\fB/var/lib/xproxy\-fleet\fR, \fB/etc/systemd/system/xproxy\-fleet.service\fR
+.SH "SEE ALSO"
+.PP
+\fBxproxy\fR(8), \fBxproxyctl\fR(8), \fBxproxy.yaml\fR(5) (the \fBfleet\fR section)

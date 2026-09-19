@@ -608,8 +608,11 @@ func run(args []string, out, errOut io.Writer) int {
 		if l := v.Logs; l != nil {
 			_, _ = fmt.Fprintf(tw, "logs\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n", l.Endpoint, l.Sent, l.Dropped, l.Pushes, l.Failed, l.Queued, dash(l.LastError))
 		}
-		if v.Metrics == nil && v.Traces == nil && v.Logs == nil {
-			_, _ = fmt.Fprintln(tw, "(no OpenTelemetry exporter configured)")
+		if s := v.SIEM; s != nil {
+			_, _ = fmt.Fprintf(tw, "siem (%s)\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n", s.Format, s.Endpoint, s.Sent, s.Dropped, s.Pushes, s.Failed, s.Queued, dash(s.LastError))
+		}
+		if v.Metrics == nil && v.Traces == nil && v.Logs == nil && v.SIEM == nil {
+			_, _ = fmt.Fprintln(tw, "(no OpenTelemetry exporter or SIEM sink configured)")
 		}
 		_ = tw.Flush()
 		return 0
@@ -636,6 +639,94 @@ func run(args []string, out, errOut io.Writer) int {
 			return fail(err)
 		}
 		_, _ = out.Write(b)
+		return 0
+	case "api":
+		afs := flag.NewFlagSet("api", flag.ContinueOnError)
+		afs.SetOutput(errOut)
+		top := afs.Int("top", 50, "endpoints listed")
+		if err := afs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		view := afs.Arg(0)
+		switch view {
+		case "":
+			view = "all"
+		case "all", "shadow", "zombie", "versions", "documented", "undocumented":
+		default:
+			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl api [all|shadow|zombie|versions|documented|undocumented] [-top N]")
+			return 2
+		}
+		rep, err := c.APIInventory(view, *top)
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, rep)
+		}
+		if !rep.Enabled {
+			_, _ = fmt.Fprintln(out, "api inventory: not configured")
+			return 0
+		}
+		_, _ = fmt.Fprintf(out, "since %s  endpoints %d/%d  dropped %d  shadow %d  zombie %d (after %s)  superseded %d\n",
+			rep.Since.Local().Format(time.RFC3339), rep.Endpoints, rep.MaxEndpoints, rep.Dropped, rep.Shadow, rep.Zombie, rep.ZombieAfter, rep.Superseded)
+		if len(rep.Items) == 0 {
+			_, _ = fmt.Fprintf(out, "no endpoints in view %s\n", view)
+			return 0
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "HOST\tMETHOD\tPATH\tROUTE\tVERSION\tSTATE\tREQUESTS\t2XX\t4XX\t5XX\tAUTH\tLAST SEEN")
+		for _, e := range rep.Items {
+			var flags []string
+			if e.Shadow {
+				flags = append(flags, "shadow")
+			}
+			if e.Zombie {
+				flags = append(flags, "zombie")
+			}
+			if e.Superseded {
+				flags = append(flags, "superseded")
+			}
+			if len(flags) == 0 {
+				if e.Documented == "yes" {
+					flags = append(flags, "documented")
+				} else {
+					flags = append(flags, "ok")
+				}
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\n", dash(e.Host), e.Method, e.Path, dash(e.Route), dash(e.Version), strings.Join(flags, ","),
+				e.Requests, e.Status2xx, e.Status4xx, e.Status5xx, dash(strings.Join(e.Auth, ",")), ago(e.LastSeen))
+		}
+		_ = tw.Flush()
+		return 0
+	case "patches":
+		ps, err := c.Patches()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, ps)
+		}
+		if len(ps) == 0 {
+			_, _ = fmt.Fprintln(out, "no virtual patches configured")
+			return 0
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "PATCH\tSTATE\tACTION\tSTATUS\tHITS\tLAST HIT\tEXPIRES\tDESCRIPTION")
+		for _, p := range ps {
+			state := "active"
+			switch {
+			case !p.Enabled:
+				state = "disabled"
+			case p.Expired:
+				state = "expired"
+			}
+			expires := "-"
+			if !p.Expires.IsZero() {
+				expires = p.Expires.Local().Format("2006-01-02")
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n", p.ID, state, p.Action, p.Status, p.Hits, ago(p.LastHit), expires, p.Description)
+		}
+		_ = tw.Flush()
 		return 0
 	case "honeypot":
 		if fs.NArg() >= 3 && fs.Arg(1) == "forget" {
@@ -766,6 +857,36 @@ func run(args []string, out, errOut io.Writer) int {
 			return fail(err)
 		}
 		_, _ = fmt.Fprintf(out, "%s  # %s, expires %s\n", tlsconf.SPKIPin(cert), cert.Subject.CommonName, cert.NotAfter.Format("2006-01-02"))
+		return 0
+	case "fleet":
+		st, err := c.FleetStatus()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, st)
+		}
+		if !st.Enabled {
+			_, _ = fmt.Fprintln(out, "fleet: not configured")
+			return 0
+		}
+		_, _ = fmt.Fprintf(out, "controller %s  node %s  dir %s  interval %s  apply %s  assigned %v\n", st.Controller, st.NodeID, st.Dir, st.Interval, onOff(st.Apply), st.Assigned)
+		_, _ = fmt.Fprintf(out, "polls %d  reports %d  applies %d  failures %d  last poll %s  last report %s\n", st.Polls, st.Reports, st.Applies, st.Failures, ago(st.LastPoll), ago(st.LastReport))
+		if st.Applied.Digest != "" {
+			_, _ = fmt.Fprintf(out, "applied %s ok=%v at %s", st.Applied.Digest, st.Applied.OK, st.Applied.At.Local().Format(time.RFC3339))
+			if st.Applied.Error != "" {
+				_, _ = fmt.Fprintf(out, "  error: %s", st.Applied.Error)
+			}
+			_, _ = fmt.Fprintln(out)
+		} else {
+			_, _ = fmt.Fprintln(out, "no bundle applied yet")
+		}
+		if st.PendingDigest != "" {
+			_, _ = fmt.Fprintf(out, "pending %s (apply is off)\n", st.PendingDigest)
+		}
+		if st.LastError != "" {
+			_, _ = fmt.Fprintf(out, "last error: %s\n", st.LastError)
+		}
 		return 0
 	case "cluster":
 		st, err := c.ClusterStatus()
@@ -1081,9 +1202,13 @@ func cmdWAF(c *mgmt.Client, args []string, asJSON bool, out, errOut io.Writer) i
 			_ = tw.Flush()
 		}
 		if len(rep.Routes) > 0 {
-			_, _ = fmt.Fprintln(tw, "ROUTE	PROFILE	MODE")
+			_, _ = fmt.Fprintln(tw, "ROUTE	PROFILE	MODE	ENFORCED")
 			for _, r := range rep.Routes {
-				_, _ = fmt.Fprintf(tw, "%s	%s	%s\n", r.Route, r.Profile, r.Mode)
+				enforced := fmt.Sprintf("%d%%", r.BlockPercent)
+				if len(r.BlockCIDRs) > 0 {
+					enforced += " + " + strings.Join(r.BlockCIDRs, ",")
+				}
+				_, _ = fmt.Fprintf(tw, "%s	%s	%s	%s\n", r.Route, r.Profile, r.Mode, enforced)
 			}
 			_ = tw.Flush()
 		}
@@ -1158,6 +1283,14 @@ func sandboxSummary(sb *sandbox.Status) string {
 		s += "  " + strings.Join(other, " ")
 	}
 	return s
+}
+
+// ago renders a time as a relative age, "-" for the zero time.
+func ago(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return time.Since(t).Round(time.Second).String() + " ago"
 }
 
 func onOff(b bool) string {

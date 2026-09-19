@@ -92,9 +92,42 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Header size, URI length and body size limits; the body limit can be
   lowered per route.
 - Concurrency ceiling with immediate 503.
-- Keyed token bucket rate limits by client address, route or header, with
-  reject or tarpit actions; bucket tables are bounded in memory.
-- Routing on a canonicalised path so dot segments cannot bypass a policy.
+- Keyed rate limits (token bucket or sliding window) by client address,
+  client network, route, endpoint template, country, TLS fingerprint,
+  header, cookie or token claim, with reject or tarpit actions; keys a
+  request may lack fall back to the client address; bucket tables are
+  bounded in memory.
+- Positive security model per route: allowed methods, media types and
+  query parameters with types, lengths, patterns and repeat counts, and
+  bounds on the URI, query and headers, refused before any other
+  processing with the failed check named in the log.
+- Upload protection (`upload_guard` filter): file count and sizes,
+  extension chains (double extensions), file names without paths or
+  control characters, executables and server side code recognised by
+  content, and bytes checked against the name and the declared type,
+  before the application stores anything; malware scanning through
+  ICAP combines with it.
+- Account protection (`account_guard` filter): failed logins counted
+  per address, account, pair, accounts per address and addresses per
+  account, registrations, resets, cart and catalogue requests counted
+  per class, progressive delay, challenge and timed block actions with
+  cluster-shared blocks, campaign detection over many addresses,
+  disposable registration domains; identities hashed before use.
+- Sensitive data detection (`sensitive_data` filter): validated
+  detectors for payment cards, Swedish personal identity numbers, IBANs,
+  US social security numbers, e-mail addresses, JWTs, private keys, API
+  keys and passwords in query strings, plus operator regular
+  expressions, in both directions, with log, mask or block per direction;
+  the log and the block response name the kinds, never the values.
+- Virtual patches: known vulnerabilities blocked by request shape (host,
+  route, path, method, parameter, header, cookie and body conditions),
+  before rate limits, filters and the WAF, with per patch counters, a
+  shadow action and an expiry date.
+- Routing on a canonicalised path so dot segments cannot bypass a policy;
+  request normalisation refuses control characters and invalid UTF-8 in
+  the target by default, can refuse double encoding, encoded separators
+  and backslashes, folds Unicode spellings for routing, and closes the
+  ambiguous framing cases the parser lets through.
 - Host header normalisation and strict host matching.
 - CIDR deny and allow lists per route.
 - WebSocket upgrades refused unless a route opts in.
@@ -139,6 +172,10 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Request headers and bodies inspected; bodies above the limit are
   rejected with 413 by default, or inspected partially when configured.
   Inspected bodies are replayed to the upstream unchanged.
+- Three operating modes per route (`off`, `detect`, `block`) and a
+  gradual roll-out of block mode: a stable share of clients by address,
+  plus canary prefixes always enforced, so a false positive surfaces
+  on a few clients before it reaches all of them.
 - Optional response inspection for data leakage rules, bounded by a size
   limit; larger bodies pass uninspected and that fact is visible in the
   configuration, never silent.
@@ -175,6 +212,11 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Repeated denies (WAF, rate limit, ACL and others, selectable per
   trigger) within a window ban the client address for an escalating
   duration with a cap.
+- Triggers can aggregate by client network or by TLS client fingerprint
+  and ban the network or the fingerprint, with a minimum number of
+  distinct source addresses before an aggregate is banned; networks
+  overlapping exempt ranges are never banned and fingerprint bans spare
+  exempt addresses.
 - Banned peers are closed at accept before any byte is read, or answered
   403 when the client address is derived from a trusted proxy chain.
 - Exempt ranges can never be banned. Loopback, unspecified and overly wide
@@ -204,6 +246,11 @@ to report a vulnerability. The threat analysis behind the controls is in
   and a state, rotate with a bounded grace for the previous secret and
   are revoked in place so an id is never reused; the filter forwards
   the id and scopes in headers it first strips from the client.
+- The API inventory discovers the exposed surface from traffic (host,
+  method, path template, credentials, versions), and against an
+  OpenAPI description reports shadow endpoints, zombies and superseded
+  versions, recording templates and counts only, never parameter
+  values or bodies.
 - OpenAPI validation is an allow list derived from the API description:
   undocumented paths, methods, parameters and media types and bodies
   that do not satisfy the schema are refused before the application,
@@ -231,6 +278,15 @@ to report a vulnerability. The threat analysis behind the controls is in
   scripts), `X-Frame-Options: DENY`, `noindex`, and returns to same-origin
   paths only. Failed verifications are security events that feed ban
   triggers under the `challenge` category.
+- The CAPTCHA tier (`challenge.captcha`) verifies provider tokens from
+  the proxy with the client address, fails closed when the provider is
+  down or rejects, never lets a proof of work cookie satisfy a CAPTCHA
+  verdict, admits only the provider's origins in the page's policy and
+  keeps the provider secret in a file re-read on reload.
+- The cookie records its tier and a device identifier the script derives
+  in the browser; the identifier is client supplied (correlation, not
+  identity) but signed into the cookie, so changing it costs another
+  solved challenge.
 
 ### Metrics
 
@@ -260,6 +316,25 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Losing every peer degrades to local limiting; stale reports expire after
   `peer_stale`.
 
+### Fleet
+
+- Nodes pull; the controller never connects to a node and holds no
+  credential for one. Both directions use mutual TLS 1.3 from a private
+  fleet CA, and a node id is bound to the certificate's name, so a node
+  can fetch only its own bundle and report only as itself.
+- Bundle paths are validated against traversal, hidden names, depth and
+  size; files are written through a directory handle that never follows
+  a link out of the configuration directory, and the configuration
+  goes through the same validation and sandbox check as any reload,
+  with the previous files restored on refusal.
+- The controller serves only bundles that parse; an invalid edit keeps
+  the last good bundle in service and is visible, never silently
+  applied. `apply: false` gives a review posture per node.
+- Compromise of the controller host means control of every node's
+  configuration: treat it as a tier zero system (HARDENING.md), keep
+  its directory under version control with review, and restrict who
+  may write it and who may use its operator socket.
+
 ### Upstreams
 
 - Connect, response header, idle and total timeouts per pool.
@@ -269,6 +344,13 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Retries only for connection level failures of replayable requests.
 - Affinity cookies are HMAC signed indexes with expiry, `HttpOnly`,
   `SameSite=Lax`, `Secure` on TLS.
+- Bypass protection for origins: mutual TLS to the upstream with a
+  client certificate and SPKI pinning, and a per request HMAC signature
+  (`origin_signature`) over method, host, path, query, time, client
+  address, request id and chosen headers that the origin verifies, with
+  key rotation through a keyring; HARDENING.md pairs both with network
+  filtering so an origin accepts nothing that did not pass the proxy.
+
 
 ### Layer 4 and forward listeners
 
@@ -421,6 +503,11 @@ to report a vulnerability. The threat analysis behind the controls is in
   TLS with a pinned CA and optional client certificate, or a Unix socket).
   Sending is asynchronous behind a bounded queue, so a collector outage
   can never stall or exhaust the proxy; drops are counted and visible.
+- SIEM export over HTTPS in newline delimited JSON, the Splunk HTTP
+  Event Collector envelope, CEF or LEEF (the last two also over syslog),
+  with the credential read from a file rather than the configuration,
+  a pinned CA and an optional client certificate, the same bounded
+  asynchronous queue, and redaction applied before export.
 
 ## Planned controls (see ROADMAP.md)
 

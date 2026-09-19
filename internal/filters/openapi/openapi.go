@@ -34,6 +34,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/rom/xproxy/internal/apiinv"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/jsonschema"
 )
@@ -322,6 +323,49 @@ type guard struct {
 func (g *guard) Name() string { return g.name }
 
 func (g *guard) Begin(context.Context, *filter.Info) filter.Instance { return &instance{g: g} }
+
+// Documented reports whether method and path match a documented
+// operation and returns its path template (the API inventory uses it
+// to tell shadow endpoints from documented ones).
+func (g *guard) Documented(method, path string) (string, bool) {
+	pi, _, ok := g.api.match(method, path)
+	if !ok {
+		return "", false
+	}
+	m := method
+	if m == http.MethodHead {
+		if _, has := pi.ops["HEAD"]; !has {
+			m = http.MethodGet
+		}
+	}
+	if _, has := pi.ops[m]; !has {
+		return "", false
+	}
+	return g.api.basePath + pi.template, true
+}
+
+// Operations lists every documented method and path template.
+func (g *guard) Operations() []apiinv.Operation {
+	var out []apiinv.Operation
+	add := func(pi *pathItem) {
+		for m := range pi.ops {
+			out = append(out, apiinv.Operation{Method: m, Path: g.api.basePath + pi.template})
+		}
+	}
+	for _, pi := range g.api.exact {
+		add(pi)
+	}
+	for _, pi := range g.api.templ {
+		add(pi)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Path != out[j].Path {
+			return out[i].Path < out[j].Path
+		}
+		return out[i].Method < out[j].Method
+	})
+	return out
+}
 
 type instance struct {
 	g *guard

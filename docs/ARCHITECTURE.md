@@ -58,8 +58,9 @@ internal/proxy      server, listeners, handler pipeline, transport, stats
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
-internal/filters    built-in kinds (header_guard, basic_auth, api_key, openapi, graphql, body_rewrite, bot_score, oidc, wasm) and the registration list
+internal/filters    built-in kinds (header_guard, basic_auth, api_key, openapi, graphql, upload_guard, sensitive_data, account_guard, body_rewrite, bot_score, oidc, wasm) and the registration list
 internal/jsonschema JSON Schema evaluator shared by the openapi filter and the WAF body schemas
+internal/apiinv     API inventory: endpoints discovered from traffic, shadow, zombie and superseded detection
 internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/secret     keyring files for the symmetric secrets, rotation with retained keys
@@ -76,6 +77,7 @@ internal/proxy/static.go  routes[].static: files through os.Root, index, listing
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
+internal/fleet      fleet bundles, the node agent and the controller (xproxy-fleet)
 internal/shed       adaptive load shedding by priority class
 internal/challenge  browser proof-of-work challenge
 internal/h3         HTTP/3 over QUIC (the only package importing quic-go)
@@ -206,11 +208,14 @@ the `denied` reason.
 | 2b | Ban list lookup on the derived client address | 403 | `denied_ban` |
 | 3 | Plaintext redirect listener: 308 to https | 308 | |
 | 4 | URI length | 414 | `denied_uri_length` |
+| 4b | Normalisation: control characters, invalid UTF-8, double encoding, encoded separators, backslashes, ambiguous framing; Unicode folding of the routing path | 400 | `denied_normalization` |
 | 5 | Host normalisation (`netutil.Host`) | 400 | `denied_bad_host` |
 | 5b | Reserved paths `/.xproxy/challenge` (proof verification) and `/.xproxy/challenge.js` | 303 / 403 | `challenges_*` |
 | 6 | Path cleaning (`netutil.CleanPath`) and route match (host, path prefix or anchored pattern, method, header and cookie conditions) | 404 | `denied_no_route` |
+| 6b | Virtual patches: host, route, method, path, parameter, header, cookie and body conditions; block with the configured status, or log and continue | 4xx / 5xx | `denied_virtual_patch`, per patch hits |
+| 6c | Route policy: methods, media types, URI, query and header bounds, query parameter types | 405 / 415 / 400 / 414 / 431 | `denied_policy` |
 | 7 | CIDR deny then allow | 403 | `denied_acl` |
-| 7b | Challenge gate: unverified clients on routes with `challenge` (always, or in `load` mode above the level) receive the page | 503 page | `challenges_issued` |
+| 7b | Challenge gate: the cookie is read once (tier and device identifier); unverified clients on routes with `challenge` (always, or in `load` mode above the level) receive the page, the proof of work or the CAPTCHA widget | 503 page | `challenges_issued` |
 | 7c | Adaptive shedding: the route's priority class against the load level | 503 + `Retry-After` | `shed` |
 | 8 | Rate limits in route order; reject or tarpit | 429 | `denied_rate_limit`, `tarpitted` |
 | 9 | Body limit: declared length checked, then `MaxBytesReader` | 413 | `denied_body_size` |
@@ -792,6 +797,8 @@ sinks):
 logger -> [redactHandler] -> multiHandler -> JSON handler -> file (0640, rotated), stdout
                                           -> lineHandler  -> journaldSink (native datagram protocol)
                                           -> lineHandler  -> syslogSink   (bounded queue, background writer)
+                                          -> lineHandler  -> otlpSink     (batched OTLP/HTTP pushes)
+                                          -> lineHandler  -> siemSink     (batched HTTPS pushes: NDJSON, HEC, CEF, LEEF)
 ```
 
 The redaction handler rewrites attributes by key before any sink sees the
@@ -804,7 +811,15 @@ carry tokens. Files are reopened on `SIGUSR1` or the API. The journald
 sink writes `MESSAGE` plus indexed `XPROXY_*` fields; the syslog sink
 formats RFC 5424 or 3164 with the stream as MSGID and never blocks the
 request path: a slow or unreachable collector fills a bounded queue and
-then drops with a counter visible in status.
+then drops with a counter visible in status. The SIEM sink
+(`internal/logging/siem.go`) batches like the OTLP sink and renders
+each record per its format; the CEF and LEEF renderers
+(`siemfmt.go`) flatten the record's attributes once, map the known
+ones to the format's standard and labelled custom keys, derive the
+event class from the stream and the `action` attribute and the
+severity from the status class, the action or the level, and emit the
+rest under their own names. The syslog sink uses the same renderers
+for its `cef` and `leef` formats.
 
 ## 10. Management plane
 
@@ -831,6 +846,8 @@ Endpoints:
 | GET | `/v1/waf` | WAF profiles (plugins, schemas), route assignments, per rule statistics (`?top=N`), learned exclusion proposals, schema violations and the anomaly baseline with flagged clients |
 | GET | `/v1/waf/exclusions` | the proposals as a SecLang file (text/plain) |
 | POST | `/v1/waf/reset` | clear WAF statistics and the learning table (audited) |
+| GET | `/v1/api` | API inventory (`?view=all|shadow|zombie|versions|documented|undocumented&top=N`) |
+| GET | `/v1/fleet` | fleet agent state: controller, applied bundle and result, pending digest, counters |
 | GET | `/v1/sandbox` | in-process hardening: mechanisms with state, Landlock rules and ABI |
 | GET | `/v1/config` | active configuration as YAML |
 | POST | `/v1/reload` | validate and apply the configuration file; `?dry_run=1` returns the changes without applying |
@@ -908,6 +925,30 @@ JWKS, then a role from the configured claim and an ordinary session
 (`via=oidc`) under the same idle and absolute limits. Failures redirect
 to the login page with a short reason code and are logged with the
 source address.
+
+### Fleet
+
+`internal/fleet` has three parts. A bundle is a sorted list of files
+(relative paths checked against traversal, hidden names, depth and
+size; the configuration must be `xproxy.yaml`) with a SHA-256 digest
+over paths, modes and contents; `Read` builds one from a common and a
+node directory through `os.Root`, `Validate` parses the configuration
+without file checks, and `Write` replaces files inside the node's
+configuration directory through `os.Root` (temporary file, fsync,
+rename; never following a link out of the directory) and returns a
+restore closure. The agent runs in the proxy: it long polls
+`GET /v1/fleet/nodes/{id}/config?digest=&wait=` with the node's client
+certificate, applies a differing bundle (`Write`, then the same reload
+closure the management API uses, then restore on refusal), records the
+applied digest in a marker file so a restart knows it, and posts the
+node's status after every poll; failures back off up to the interval.
+The controller (`xproxy-fleet serve`) scans its directory on an
+interval, keeps the last good bundle per node and the scan error,
+wakes waiting long polls through a channel it replaces on change,
+binds a node id to the certificate name, persists each report under
+`status/`, and serves operators over a local socket (`nodes`, `node`,
+`bundle`, `scan`). The sandbox derives a write rule for the bundle
+directory when the agent applies.
 
 ### Metrics and series
 

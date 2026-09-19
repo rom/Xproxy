@@ -312,6 +312,33 @@ public CA).
 | `max_concurrent_requests` | int | `16384` | positive | In-flight requests; 503 above |
 | `max_tarpits` | int | `1024` | 1 to 1000000 | Requests held in a tarpit at once. A tarpitted request releases its concurrency slot; above this bound it is rejected with 429 immediately (`tarpit_overflow` counts those) |
 
+### server.normalization
+
+What the proxy does with encoding tricks in the request target before
+routing, rate limits, filters and the WAF look at it. Routing already
+decodes the path once and resolves dot segments and duplicate slashes;
+these checks refuse the forms that make two components read a request
+differently, and optionally fold Unicode spellings for routing. A
+refusal answers 400 with reason `normalization` and the check as
+`detail`, counts in `denied_normalization` and feeds ban triggers under
+`normalization`. The WAF still inspects the raw request line, so its
+rules see what the client sent.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `reject_control_chars` | bool | `true` | A decoded path or query with a control character (below 0x20, or 0x7f), NUL included (`path_control_char`, `query_control_char`) |
+| `reject_invalid_utf8` | bool | `true` | A decoded path that is not valid UTF-8: overlong (`%c0%af`) and truncated sequences (`path_invalid_utf8`) |
+| `reject_double_encoding` | bool | `false` | A path that still holds a percent escape after one decoding (`%252e%252e`), the classic way past a filter that decodes once (`path_double_encoding`) |
+| `reject_encoded_slashes` | bool | `false` | `%2F` or `%5C` in the raw path: the routing decoder turns them into separators that the upstream may treat as data (`path_encoded_slash`) |
+| `reject_backslashes` | bool | `false` | A backslash in the decoded path, a separator to some servers (`path_backslash`) |
+| `reject_ambiguous_framing` | bool | `true` | HTTP/1 requests with several differing `Content-Length` values, a `Content-Length` next to a transfer coding, or a coding other than chunked (`framing_content_length`, `framing_te_cl`, `framing_transfer_encoding`). The Go parser already refuses most of these before the proxy sees them; the check closes the rest and makes them visible |
+| `unicode` | `off`, `nfc`, `nfkc` | `off` | Fold the decoded path to that form for routing: `nfc` makes composed and decomposed spellings (`café` either way) match one route, `nfkc` also compatibility forms such as fullwidth letters (`ｕsers`). The upstream receives the original path |
+
+Turn the strict checks on for applications that never use encoded
+separators or double encoding legitimately (most APIs), and leave them
+off in front of applications that carry encoded identifiers in the
+path; `examples/security/positive-model.yaml` shows the strict set.
+
 ### server.error_pages and routes[].error_pages
 
 Documents are read at load (at most 1 MiB each) and chosen by exact
@@ -403,6 +430,7 @@ header("Content-Length") > 1048576`, `capture("id") != "" && ja4 == ""`.
 | `syslog` | object | none | syslog sink, used by streams listing `syslog` |
 | `redaction` | object | none | Personal data rules applied before every sink |
 | `otlp` | object | none | OpenTelemetry log sink, used by streams listing `otlp`; see `logging.otlp` |
+| `siem` | object | none | HTTPS batch sink for a SIEM (NDJSON, Splunk HEC, CEF or LEEF), used by streams listing `siem`; see `logging.siem` |
 
 ### logging.<stream>
 
@@ -412,7 +440,7 @@ header("Content-Length") > 1048576`, `capture("id") != "" && ja4 == ""`.
 | `file` | file name | `access.log` etc. | Bare name inside `directory` |
 | `max_size_mb` | int | `0` (no internal rotation) | Rotate to `.1`, `.2`, ... when exceeded |
 | `max_files` | int | `5` | Archives kept |
-| `sinks` | list | `[file]` | Any of `file`, `journald`, `syslog`, `otlp`; a stream can go to several |
+| `sinks` | list | `[file]` | Any of `file`, `journald`, `syslog`, `otlp`, `siem`; a stream can go to several |
 | `format` | `json`, `common`, `combined`, `custom` | `json` | Access stream only for the text formats: `common` is the Common Log Format (`%h %l %u %t "%r" %>s %b`), `combined` adds the quoted referer and user agent, `custom` uses `template`. The error, security and audit streams stay JSON. Text lines go to every sink of the stream; redaction runs before formatting |
 | `template` | string | | For `format: custom`: literal text with `{field}` placeholders. Fields are the access log attributes (`request_id`, `client_ip`, `method`, `host`, `path`, `query_len`, `proto`, `status`, `bytes_in`, `bytes_out`, `duration_ms`, `route`, `upstream`, `endpoint`, `attempts`, `user_agent`, `referer`, `tls`, `sni`, `client_cn`, `country`, `ja4`, `cache`, `encoding`, `honeypot_marked`, `mirror`, `grpc`, `grpc_status`, `denied`, `upstream_error`, filter attributes such as `jwt_sub`, `oidc_sub`, `bot_score`) plus `time_clf` (`10/Oct/2000:13:55:36 -0700`), `time_iso`, `time_unix`, `request` (`METHOD path PROTO`), `user` (the first of `oidc_sub`, `basic_user`, `jwt_sub`, `jwt_preferred_username`, else `-`) and `bytes_out_clf` (`-` for zero). A missing or empty field prints `-`. Values are escaped Apache style (`\"`, `\\`, `\n`, `\xHH`), so one request is always one line; at most 1024 bytes |
 
@@ -438,7 +466,7 @@ transports use RFC 6587 octet counting and reconnect with back-off.
 |-----|------|---------|-------------|
 | `network` | `unix`, `udp`, `tcp`, `tcp+tls` | `unix` | |
 | `address` | path or host:port | `/dev/log` for unix | |
-| `format` | `rfc5424`, `rfc3164` | `rfc3164` for unix, else `rfc5424` | The JSON line is the message; the stream is the RFC 5424 MSGID |
+| `format` | `rfc5424`, `rfc3164`, `cef`, `leef` | `rfc3164` for unix, else `rfc5424` | With the RFC formats the JSON line is the message and the stream the RFC 5424 MSGID. `cef` and `leef` render the record in that format (see `logging.siem`) behind an RFC 5424 header, or an RFC 3164 header on `unix`, for collectors that parse CEF or LEEF from syslog |
 | `facility` | name | `local0` | `kern`, `user`, `mail`, `daemon`, `auth`, `syslog`, `lpr`, `news`, `uucp`, `cron`, `authpriv`, `ftp`, `local0` to `local7` |
 | `app_name` | name | `xproxy` | APP-NAME or tag |
 | `hostname` | string | OS host name | |
@@ -474,6 +502,66 @@ telemetry` and `GET /v1/telemetry` show the counters.
 | `interval` | duration | `5s` | Longest wait before a push (100ms to 5m) |
 | `queue` | int | `8192` | Records held while a push is in flight; more are dropped and counted (1 to 1000000) |
 
+### logging.siem
+
+Ships log records to a security information and event management
+system over HTTPS: Splunk's HTTP Event Collector, Elastic and
+OpenSearch ingest endpoints, Microsoft Sentinel's data collector, or any
+receiver of newline delimited JSON, CEF or LEEF. Records queue without
+blocking the request path, a full queue drops and counts, and a
+batching goroutine posts by size and interval and flushes at shutdown,
+the same way the `otlp` sink works. Redaction runs before the sink.
+`xproxyctl telemetry` and `GET /v1/telemetry` show the counters,
+`xproxyctl status` `log_siem_sent` and `log_siem_dropped`, and the
+metrics `xproxy_log_sent_total{sink="siem"}` and
+`xproxy_log_dropped_total{sink="siem"}`.
+
+Formats:
+
+- `json`: one JSON line per record, `application/x-ndjson`, the line
+  every other sink sees (with `stream`).
+- `hec`: the Splunk HTTP Event Collector envelope per record (`time`,
+  `host`, `source: xproxy`, `sourcetype: xproxy:<stream>`, `event`
+  holding the JSON object), `application/json`; put `Splunk <token>` in
+  `auth_file`.
+- `cef`: ArcSight Common Event Format, a header of the vendor, product,
+  version, event id (`stream` or `stream:action`), name and severity
+  followed by the extension. Severity is 1, 3 or 5 for access lines by status class, 7 for
+  security events (8 for bans), 3 for audit and 2, 4 or 6 for the error
+  stream by level. Extensions use the standard keys where one exists
+  (`rt`, `dvchost`, `cat`, `outcome`, `suser` from the identified user,
+  `src`, `dst` and `dpt` from the upstream endpoint, `requestMethod`,
+  `dhost`, `request`, `requestClientApplication`, `requestContext`,
+  `app`, `in`, `out`, `act`, `reason`, `msg`), the labelled custom
+  fields for `status` (`cn1`), `duration_ms` (`cn2`), `attempts`
+  (`cn3`), `request_id` (`cs1`), `route` (`cs2`), `upstream` (`cs3`),
+  `country` (`cs4`), `ja4` (`cs5`) and `detail` (`cs6`), and every other
+  attribute under its own name. Header fields escape `|` and `\`,
+  extension values `=`, `\` and line breaks.
+- `leef`: IBM QRadar Log Event Extended Format 2.0 with a tab
+  delimiter (`x09` in the header) and the same header fields except
+  name and severity, followed by `devTime`, `devTimeFormat`, `sev`, `cat`, `identHostName`,
+  `usrName`, `dst`, `dstPort`, `name` for non access events, then
+  `src`, `url`, `proto`, `userAgent`, `reason`, `action`, `msg` and the
+  remaining attributes under their own names.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `endpoint` | URL | required | The collector URL: the Splunk HEC `services/collector/event` path, an Elastic or OpenSearch ingest endpoint, a Logstash, Vector or Fluent Bit http input; `http://` only with `allow_http` |
+| `allow_http` | bool | `false` | |
+| `format` | `json`, `hec`, `cef`, `leef` | `json` | |
+| `headers` | map | `{}` | Request headers |
+| `auth_file` | path | none | File whose trimmed content is the `Authorization` header value (`Splunk <token>`, `Bearer <token>`, `ApiKey <key>`), so the secret stays out of the configuration |
+| `timeout` | duration | `10s` | One push; at most 1m |
+| `ca_file` | path | system pool | Pins the collector's CA |
+| `cert_file`, `key_file` | paths | none | Client certificate, both or neither |
+| `compress` | bool | `true` | gzip the request body |
+| `batch` | int | `512` | Records per push (1 to 10000) |
+| `interval` | duration | `5s` | Longest wait before a push (100ms to 5m) |
+| `queue` | int | `8192` | Records held while a push is in flight; more are dropped and counted (1 to 1000000) |
+| `vendor`, `product` | strings | `Sysctl`, `Xproxy` | CEF and LEEF header fields, 1 to 63 characters without `|` |
+| `hostname` | string | OS host name | `dvchost`, `identHostName` and the HEC `host` |
+
 ### logging.redaction
 
 Presence enables the rules; `enabled: false` switches them off while
@@ -496,7 +584,8 @@ and syslog all receive the same redacted record.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes |
-| `key` | `client_ip`, `route`, `country`, `header:<Name>` | `client_ip` | Bucket identity. A missing header or an unknown country falls back to the client address. |
+| `key` | see below | `client_ip` | Bucket identity |
+| `net_v4`, `net_v6` | int | `24`, `48` | Prefix lengths for `key: client_net` |
 | `algorithm` | `token_bucket`, `sliding_window` | `token_bucket` | `token_bucket` admits bursts up to `burst` and refills at `rate`; `sliding_window` admits at most `limit` requests in any window of length `window`, estimated from the current and the previous fixed window weighted by their overlap (no burst above `limit` at a window edge, an error bounded by the unevenness of arrivals inside one window) |
 | `rate` | float | required for `token_bucket`, positive | Tokens per second |
 | `burst` | int | `rate` rounded, at least 1 | Bucket capacity |
@@ -505,6 +594,25 @@ and syslog all receive the same redacted record.
 | `distributed` | `approximate`, `exact` | `approximate` | Cluster semantics. `approximate`: every node decides locally and refills at the rate minus its peers' gossiped consumption (one interval of delay). `exact`: one member owns each key (rendezvous hash of member and key over the connected members), the others ask it over the cluster connection and wait at most `cluster.exact_timeout`; the owner's bucket or window is the single count. A node that cannot reach the owner in time decides on its own limiter and counts an `exact_fallback`. Needs the `cluster` section |
 | `action` | `reject`, `tarpit` | `reject` | `reject` answers 429 at once |
 | `tarpit_delay` | duration | `10s` | Hold before answering 429 (released on client disconnect) |
+
+Keys:
+
+| Key | Bucket per | Without the identifier |
+|-----|------------|------------------------|
+| `client_ip` | client address | |
+| `client_net` | client network: the address truncated to `net_v4` or `net_v6` bits, so a distributed client rotating addresses inside one allocation shares a bucket | |
+| `route` | route | |
+| `endpoint` | method, route and path template (identifiers such as numbers, UUIDs, hashes and opaque tokens replaced by `*`, so `/users/42` and `/users/43` are one endpoint) | |
+| `country` | client country (needs `geoip`) | client address |
+| `ja4` | TLS client fingerprint | client address (plaintext listeners) |
+| `device` | device identifier from the challenge cookie (`challenge.device`), so a client rotating addresses keeps one bucket once it has passed a challenge | client address (no cookie yet) |
+| `header:<Name>` | first value of the header (256 bytes) | client address |
+| `cookie:<name>` | value of the cookie (256 bytes), a session or device identifier | client address |
+| `jwt:<claim>` | a string, number or boolean claim of the bearer token in `Authorization`, read without verification (the value only names a bucket; the `jwt` route setting still rejects a forged token) | client address |
+
+The fallback keeps a limit from being avoided by omitting the
+identifier; rotating it still buys fresh buckets, so pair an identifier
+key with a `client_ip` or `client_net` policy on the same route.
 
 Memory: at most 64 x 8192 buckets per policy.
 
@@ -549,6 +657,7 @@ Memory: at most 64 x 8192 buckets per policy.
 | `ca_file` | path | system pool | PEM bundle to verify against |
 | `min_version` | `"1.2"`, `"1.3"` | `"1.2"` | Minimum TLS version towards the upstream |
 | `client_cert_file`, `client_key_file` | path | | Mutual TLS to the upstream; set both. Re-read by `xproxyctl reload-certs` and by configuration reload; idle connections are dropped so new ones present the new certificate |
+| `origin_signature` | object | none | Sign every forwarded request so the origin can refuse traffic that bypassed the proxy; see `upstreams[].origin_signature` |
 | `spki_pins` | list of base64 SHA-256 | `[]` | Pins of the upstream leaf public key; the connection is refused unless the presented leaf matches one, in addition to chain verification. `xproxyctl spki CERT.pem` prints a pin. Cannot be combined with `insecure_skip_verify` |
 | `insecure_skip_verify` | bool | `false` | Requires `allow_insecure: true` as well |
 | `allow_insecure` | bool | `false` | Second opt-in |
@@ -649,6 +758,40 @@ the access log with `upstream_error: circuit_open`.
 | `cookie_name` | token | `XPSESS` | |
 | `ttl` | duration | `1h` | Cookie and signature lifetime |
 | `secret_file` | path | ephemeral | HMAC key or keyring, created `0600` on first use if absent; rotate with `xproxyctl rotate-secret` (cookies signed with kept keys stay valid) |
+
+### upstreams[].origin_signature
+
+Network filtering keeps most traffic off an origin, but not where the
+origin is reachable from the internet by design (a cloud service, a
+shared host) or where another tenant sits on the same network. A signed
+header lets the origin refuse anything that did not pass through the
+proxy. Every forwarded request carries
+
+```
+X-Xproxy-Signature: v1;t=<unix seconds>;kid=<key id>;sig=<base64url HMAC-SHA256>
+```
+
+where the MAC covers, as newline separated lines: `v1`, the method,
+the `Host` sent upstream (lower case), the path, the raw query, the
+timestamp, the client address (the `X-Real-Ip` value), the request id
+(`X-Request-Id`) and the values of the `include` headers in order
+(repeated values joined with commas). The key id is the first eight hex
+digits of the SHA-256 of the key. A signature header sent by a client
+is always replaced.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `header` | name | `X-Xproxy-Signature` | |
+| `secret_file` | path | required | Keyring shared with the origin (mode `0600`, created on first start; `xproxyctl rotate-secret` adds a new primary and keeps the previous key, so the origin verifies with either while it is updated) |
+| `ttl` | duration | `5m` | Age the origin should accept; a signature is also refused more than a minute in the future |
+| `include` | list of headers | `[]` | Extra request headers covered, for example a tenant header the proxy sets |
+
+At the origin, recompute the MAC with the shared key selected by `kid`,
+compare in constant time, and refuse when it differs, the key id is
+unknown or `t` is older than the TTL. HARDENING.md has verifier
+snippets; `internal/originsig` has `Verify` for origins written in Go.
+Combine with mutual TLS (`tls.client_cert_file`) and with network
+filtering: each closes what the others cannot.
 
 ## routes[]
 
@@ -811,7 +954,8 @@ Exposed families: `xproxy_requests_total`, `xproxy_responses_total{class}`,
 `xproxy_upstream_errors_total`, `xproxy_upstream_timeouts_total`,
 `xproxy_upstream_no_healthy_total`, `xproxy_client_aborts_total`,
 `xproxy_connections_rejected_total`, `xproxy_reloads_total{result}`,
-`xproxy_bans_total`, `xproxy_challenges_total{result}`,
+`xproxy_bans_total`, `xproxy_challenges_total{result}` (`issued`,
+`passed`, `failed`, `captcha_passed`),
 `xproxy_log_sent_total{sink}`, `xproxy_log_dropped_total{sink}`,
 `xproxy_connections_open`, `xproxy_requests_in_flight`,
 `xproxy_bans_active`, `xproxy_load_level`,
@@ -830,6 +974,45 @@ Series (per-second rates for counters, current values for gauges):
 `shed`, `bytes_in`, `bytes_out`, `upstream_errors`, `open_connections`,
 `in_flight`, `load_level`, `upstream_latency_ms`, `bans_active`,
 `cluster_connected`.
+
+## api_inventory
+
+Present means enabled. The proxy discovers the API surface it serves
+from traffic: every request of a proxied route (not redirects, static
+files or honeypots) is attributed to its host, method and path
+template, with first and last seen times, counts per status class, the
+kinds of credential clients present (`bearer`, `basic`, `api_key`,
+`cookie`, `client_cert`, `none`), request and response media types and
+the version segment of the path (`v1`, `v2`). Identifiers in the path
+(numbers, UUIDs, hashes, opaque tokens) fold into `*`, so `/users/42`
+and `/users/43` are one endpoint; on a route with an `openapi` filter
+the description's own template is used and the filter says whether the
+operation is documented. `xproxyctl api` and `GET /v1/api` show:
+
+- **shadow** APIs: traffic to a described route outside its
+  description (an undocumented path or method), the endpoints nobody
+  reviewed;
+- **zombie** APIs: documented operations without any traffic for
+  `zombie_after`, or never since the inventory started, the endpoints
+  nobody uses but everyone still maintains;
+- **superseded** versions: a `v1` still receiving traffic next to a
+  `v2` of the same host, method and path;
+- the plain inventory, sorted by requests, with `versions`,
+  `documented` and `undocumented` views.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | |
+| `max_endpoints` | int | `10000` | Bound on distinct endpoints; further ones are counted as dropped (100 to 1000000) |
+| `hosts` | list of host patterns | every proxied route | Only routes serving these hosts |
+| `routes` | list of names | every proxied route | Only these routes |
+| `zombie_after` | duration | `720h` | Silence after which a documented endpoint is a zombie; 1h to 8760h |
+| `state_file` | path | none | Keeps the inventory across restarts (written every `save_interval` and at shutdown, mode `0600`) |
+| `save_interval` | duration | `5m` | 10s to 24h |
+
+The table lives for the process and survives reloads; counts are
+cumulative since the start (or since the oldest record in the state
+file).
 
 ## bans
 
@@ -850,15 +1033,23 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `account_abuse` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
-| `escalation` | float | `2` | Multiplier applied for each repeat ban of the same address |
+| `escalation` | float | `2` | Multiplier applied for each repeat ban of the same target |
 | `max_duration` | duration | `24h` | Cap on escalated duration; at least `duration` |
+| `aggregate` | `address`, `net`, `ja4` | `address` | What the trigger counts and bans. `net` keys the window by the client network (`net_v4` or `net_v6` bits) and bans that network, for an attack spread over one allocation; `ja4` keys it by the TLS client fingerprint and bans the fingerprint (`ja4:<fp>`), for an attack spread over many networks from one tool; plaintext connections do not count towards a `ja4` trigger |
+| `net_v4`, `net_v6` | int | `24`, `48` | Prefix lengths for `aggregate: net` (8 to 32, 32 to 128) |
+| `min_sources` | int | `1` | For `net` and `ja4`: distinct client addresses that must have contributed to the window before the aggregate is banned, so one noisy host does not ban its neighbours or a common fingerprint; at most `threshold` |
 
-Manual bans (`xproxyctl ban`) accept addresses and CIDRs no wider than /8
-(IPv4) or /32 (IPv6); loopback and unspecified addresses are refused.
+Manual bans (`xproxyctl ban`) accept addresses, CIDRs no wider than /8
+(IPv4) or /32 (IPv6) and fingerprints as `ja4:<fp>`; loopback and
+unspecified addresses are refused. A network overlapping an exempt
+range is never banned, by trigger, operator or peer; a fingerprint ban
+is not applied to clients in exempt ranges. Fingerprint bans apply at
+the request stage (the fingerprint is known after the TLS handshake),
+not at accept; at most 4096 are held.
 
 ## waf
 
@@ -1099,8 +1290,56 @@ plaintext listener with `h2c: true`, and an `https` or `h2c` upstream.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `mode` | `off`, `detect`, `block` | `waf.default_mode` | |
+| `mode` | `off`, `detect`, `block` | `waf.default_mode` | `detect` logs what `block` would have done |
 | `profile` | name | `waf.default_profile` | |
+| `block_percent` | int | `100` | With `mode: block`, the share of clients that get block mode; the rest get detect mode. The choice is a stable function of the client address, so one client always sees one behaviour. `0` with `block_cidrs` is a test mode: only the canaries are enforced |
+| `block_cidrs` | list of CIDRs | `[]` | Clients always in block mode whatever the share (internal testers, a pilot customer) |
+
+Gradual roll-out: detect everywhere, then `block_percent: 0` with the
+testers in `block_cidrs`, then raise the share in steps while the
+security log's `waf_detected` entries (the requests detect mode would
+have blocked) stay explainable, then `100`. `xproxyctl waf` shows the
+share and the canary prefixes per route, and the access log carries
+`waf_enforced: true` or `false` for every request of such a route.
+
+## virtual_patches[]
+
+A virtual patch blocks a known vulnerability by the shape of the
+requests that exploit it, while the application is being fixed, and
+records how often it fired. Patches run right after route matching,
+before rate limits, filters and the WAF, so they cost nothing for other
+traffic and need no `waf` section. Every listed condition must hold for
+a patch to apply; at least one of `paths`, `path_regex`, `query`,
+`headers`, `cookies` or `body` is required. A match with `action: block`
+answers `status` with reason `virtual_patch` and the id as `detail`
+(ban category `virtual_patch`); with `action: log` the request continues
+and the security event and the access log carry `virtual_patch: <id>`.
+`xproxyctl patches` and `GET /v1/patches` list the patches with hits,
+last hit, expiry and state; `xproxy_virtual_patch_hits_total{patch}`
+counts per patch and hits survive reloads.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `id` | identifier | required, unique | `a-z`, `0-9`, `.`, `_`, `-`, at most 63 characters (`cve-2024-1234`) |
+| `description` | string | | Shown in the status; at most 512 bytes |
+| `hosts` | list | any | Host patterns, exact or `*.example.com` |
+| `routes` | list of names | any | Only requests matched to these routes |
+| `paths` | list of prefixes | | Prefixes of the cleaned path |
+| `path_regex` | list of regex | | Patterns matching the whole cleaned path |
+| `methods` | list | any | Upper-case methods |
+| `query` | list of `{name, pattern}` | | The parameter must be present and, with `pattern`, some value must contain a match |
+| `headers` | list of `{name, pattern}` | | Same for header fields (names case insensitive) |
+| `cookies` | list of `{name, pattern}` | | Same for cookies |
+| `body` | object | none | `pattern` (required) matched anywhere in the body, buffered up to `max_bytes` (default 64 KiB, at most 16 MiB) and replayed to the upstream; `content_types` narrows the inspection; a larger body or another media type does not match |
+| `action` | `block`, `log` | `block` | |
+| `status` | int | `403` | Response for `block`; 4xx or 5xx (404 hides the patched path) |
+| `expires` | date | none | RFC 3339 or `YYYY-MM-DD` (end of that day, UTC); an expired patch no longer applies and shows as expired |
+| `enabled` | bool | `true` | `false` keeps the patch without applying it |
+
+Hand-written SecLang in `waf.profiles[].directive_files` remains the
+tool for patches that need the rule engine's transformations or
+scoring; `examples/security/positive-model.yaml` shows both kinds side
+by side with a route policy.
 
 ## cluster
 
@@ -1142,6 +1381,37 @@ during a partition two owners may exist for a key, and a node without an
 answer in time decides locally, which over-admits rather than refuses.
 
 The cluster listener can be socket activated with `FileDescriptorName=cluster`.
+
+## fleet
+
+Present means the node is managed by a fleet controller (`xproxy-fleet`).
+The agent long polls the controller for a bundle whose digest differs
+from the applied one, writes the bundle's files into the directory of
+the configuration file, reloads through the ordinary path (validation,
+sandbox check) and restores the previous files when the reload is
+refused; after every poll it reports the node's status (version,
+generation, applied digest and result, request, error, deny, connection,
+upstream, endpoint, ban and certificate summary). The controller never
+connects to the node. Changing the section requires a restart.
+`xproxyctl fleet` and `GET /v1/fleet` show the agent state.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `controller` | URL | required | The controller's base URL, `https` without a path |
+| `node_id` | name | `cluster.node_id`, else the host name | The node's name at the controller; must equal the certificate's common name or DNS name unless the controller runs with `-any-name` |
+| `tls.cert_file`, `tls.key_file` | path | required | The node's client certificate |
+| `tls.ca_file` | path | required | CA that issued the controller's certificate |
+| `tls.server_name` | string | host of `controller` | Name verified in the controller's certificate |
+| `interval` | duration | `30s` | Long poll length and status report period; 5s to 1h |
+| `timeout` | duration | `10s` | Request time allowed beyond the poll length; 1s to 1m |
+| `dir` | path | directory of the configuration file | Where bundle files are written; must be the configuration file's directory, and the file must be named `xproxy.yaml` |
+| `apply` | bool | `true` | `false` reports status and pending bundles without writing or reloading (a review mode) |
+| `tags` | list of names | `[]` | Reported to the controller for grouping |
+
+The sandbox derives a write rule for `dir` when `apply` is on, so the
+agent can replace the files under Landlock; everything a bundle
+references must still lie within the sandbox's read rules, otherwise
+the reload is refused and the bundle rolled back.
 
 ## jwt
 
@@ -1244,7 +1514,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -1381,6 +1651,64 @@ score is the capped sum; a client that is
 already verified by the challenge is never challenged again. The JA4 of
 every TLS request is logged as `ja4`.
 
+### Kind `account_guard`
+
+Protects the endpoints where accounts are attacked. Each endpoint has
+a class with a default ladder of progressive actions over a window:
+`login` counts failed attempts (recognised in the response) per client
+address, per account, per address and account pair, distinct accounts
+per address (credential stuffing) and distinct addresses per account
+(spraying, distributed brute force); `register`, `reset`, `cart` and
+`scrape` count requests; `custom` needs its own steps. A step fires
+when any of its thresholds is reached and the highest firing step acts:
+`log` records, `delay` holds the request, `challenge` serves the
+browser challenge to unverified clients (a plain 403 without a
+`challenge` section), `captcha` serves the CAPTCHA tier
+(`challenge.captcha`; the proof of work without one) to clients that
+have not passed it, and `block` refuses the key that crossed the
+threshold for `duration`, on every node of a cluster. Blocks and
+denials use reason `account_abuse` (a ban trigger category) with
+status `block_status`; the access log carries `account_endpoint`,
+`account_action`, `account_by`, `account_counts`, `account_hash`,
+`account_campaign` and `account_outcome`. Identities are trimmed,
+lower cased and hashed before they are counted or logged. A campaign
+spread over many addresses, each under its own thresholds, is detected
+from the endpoint's totals (`distributed`): while it lasts every
+unverified request of the endpoint is challenged (or blocked).
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `endpoints` | list | required | 1 to 64 endpoints, unique names |
+| `endpoints[].class` | `login`, `register`, `reset`, `cart`, `scrape`, `custom` | `custom` | Selects the default ladder, methods and counting mode |
+| `endpoints[].paths` | list | required | Exact paths, or prefixes ending in `*` |
+| `endpoints[].methods` | list | `POST` (login, register, reset, cart), `GET` (scrape), any (custom) | |
+| `endpoints[].count` | `failures`, `requests` | `failures` for login, `requests` otherwise | What an event is |
+| `endpoints[].identity` | mapping | required for login, register and reset | Where the account identifier lives: `header`, `query`, `form` (a field of a form body) or `json` (a field of a JSON body, dots descend), tried in that order; bodies are buffered up to `max_body_bytes` and replayed |
+| `endpoints[].failure` | mapping | `{statuses: [401, 403]}` | Failure recognition for `failures` counting: `statuses`, `body_regex` on a 2xx body (up to `max_bytes`, default 65536), `location_regex` on a redirect. A success clears the account's and the pair's failures |
+| `endpoints[].window` | duration | `10m` | Counting window (1m to 24h) |
+| `endpoints[].steps` | list | per class, below | 1 to 8 steps of `{action, delay, duration, ip, account, pair, ip_accounts, account_ips, ip_paths}`; `action` is `log`, `delay` (holds `delay`, 10ms to 10s, default 1s), `challenge`, `captcha` or `block` (for `duration`, default the window); at least one threshold per step |
+| `endpoints[].distributed` | mapping | `{ips: 50, events: 200}` for login, off otherwise | Campaign detection: both `ips` (distinct addresses with events in the window) and `events` must be reached; `action` `challenge` (default), `captcha` or `block` for `duration` (default the window) |
+| `endpoints[].disposable` | `off`, `log`, `challenge`, `captcha`, `block` | `off` | What happens to an e-mail identity on a disposable domain (built-in list plus `disposable_domains`, subdomains included) |
+| `block_status` | int | `429` | Status of blocks (4xx or 5xx); challenges answer 403 |
+| `max_body_bytes` | int | `65536` | Request body buffered to read an identity (up to 8 MiB); a larger body yields no identity |
+| `max_delayed` | int | `256` | Requests held in delay steps at once; beyond it the delay is skipped and a throttled warning written |
+| `disposable_domains` | list | `[]` | Lower case domains added to the built-in list |
+
+Default ladders (thresholds reached within the window): `login` delays
+2s at 5 address, 3 account or 3 pair failures, challenges at 15
+address, 5 account, 5 pair, 10 accounts per address or 5 addresses per
+account, blocks 15m at 50 address, 20 account, 10 pair, 30 accounts
+per address or 20 addresses per account; `register` delays 2s at 2
+requests per address, challenges at 3 per address or 2 per identity,
+blocks 1h at 10 per address or 5 per identity; `reset` delays 2s at 3
+per address or 2 per account, challenges at 5 or 3, blocks 1h at 20 or
+10; `cart` delays 1s at 30, challenges at 60 and blocks 30m at 150
+requests per address or identity; `scrape` delays 1s at 200 requests
+or 100 distinct paths per address, challenges at 400 or 200 and blocks
+1h at 1000. Tables are bounded per endpoint (65536 keys each, oldest
+evicted with a throttled warning). A delay holds a request slot, so
+keep `max_delayed` under the route's concurrency.
+
 ### Kind `api_key`
 
 API keys with a life cycle: issued by `xproxyctl apikey add` (the
@@ -1456,6 +1784,80 @@ introspection. Nothing is executed or forwarded to a schema. Denials are
 | `introspection` | bool | `true` | `false` refuses `__schema` and `__type` |
 | `list_args` | list | `[first, last, limit]` | Arguments whose integer value multiplies the cost of the fields below |
 | `max_list` | int | `1000` | Cap of one multiplier, and the value assumed for a variable |
+
+### Kind `upload_guard`
+
+Inspects file uploads before the application stores them: multipart
+bodies (and, with `raw_uploads`, any other body of a write request)
+are buffered up to `max_total_bytes`, every file part is checked and
+the body is replayed to the upstream unchanged. Checks, in order: file
+count, the form field, the file name (no path separators, control
+characters or traversal, at most `max_filename_length`), the extension
+chain (`invoice.pdf.exe` has two; a denied extension anywhere in the
+chain refuses, and with an allow list an unexpected extension before
+the last one, `photo.html.jpg`, refuses too, while `report.2024.pdf`
+passes), the size, the content (PE, ELF and Mach-O images, `#!`
+scripts, PHP, JSP and ASP tags are refused whatever the name, unless
+`deny_executables` is off), and the bytes against the extension's
+family and the declared media type (a PNG named `.jpg`, a PDF declared
+as an image). Denials answer 400, 413 or 415 with reason `upload`, a
+detail `check:filename` and a JSON body; the access log carries
+`upload_files` and `upload_bytes`. Malware scanning stays with ICAP.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_files` | int | `10` | File parts per request (1 to 10000) |
+| `max_file_bytes` | int | `10485760` | Per file (up to 1 GiB) |
+| `max_total_bytes` | int | `67108864` | Per request, buffered; larger requests get 413 (up to 1 GiB, at least `max_file_bytes`) |
+| `allowed_extensions` | list | any | Only these final extensions; a file without an extension is refused. An entry overrides the built-in deny list |
+| `denied_extensions` | list | `[]` | Added to the built-in list: executables, installers, shell and interpreter scripts, PHP, JSP, ASP, CGI, Java archives, `.htaccess` |
+| `double_extensions` | `deny`, `allow` | `deny` | `deny` checks every extension in the chain; `allow` looks at the last one only |
+| `check_magic` | bool | `true` | Bytes must match the extension's family (images, PDF, Office and archive containers, media) and the declared media type |
+| `strict_magic` | bool | `false` | Also refuse content of an unrecognised type |
+| `deny_executables` | bool | `true` | Refuse programs and server side code by content |
+| `raw_uploads` | bool | `false` | Treat a non multipart body of a write request as one file, named from `Content-Disposition` or the last path segment |
+| `fields` | list | any | Form field names that may carry files |
+| `max_filename_length` | int | `255` | |
+
+### Kind `sensitive_data`
+
+Detects personal and secret data in requests and responses and, per
+direction, logs the findings, masks them or blocks the message. The
+request phase scans the query string (raw and decoded, plus parameter
+names that carry credentials), header values and the body; the
+response phase scans header values and the body. Bodies are buffered
+up to `max_bytes` when their media type is listed and they are not
+content encoded; a larger, encoded or unlisted body passes unscanned.
+Masking rewrites the value in place (`************1111`,
+`a***@example.com`, the first eight characters of a token) and updates
+`Content-Length`; blocking answers `block_status` with reason
+`sensitive_data`, a detail `response:card,email` and a JSON problem
+naming the kinds found, never the values. The access log carries
+`sensitive_types`, `sensitive_count` and `sensitive_where` for every
+message with a finding, in every mode.
+
+Built-in detectors: `card` (Luhn checked payment cards), `personnummer`
+(Swedish personal and coordination numbers with a valid date and
+checksum), `iban` (mod 97), `ssn_us`, `email`, `jwt` (three base64url
+parts with a JSON header), `private_key` (PEM headers), `api_keys`
+(AWS, Google, GitHub, Slack, Stripe and GitLab formats) and
+`password_query` (query parameter names such as `password`, `token`
+or `api_key` with a value; requests only).
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `detectors` | list | all built-in | Built-in detector names, each at most once |
+| `custom` | list | `[]` | Up to 32 `{name, regex}` operator detectors (RE2 syntax, at most 1024 bytes); a match is masked to its first eight characters |
+| `request` | mapping | | Request phase; at least one of `request` and `response` is required |
+| `response` | mapping | | Response phase |
+| `request.action`, `response.action` | `log`, `mask`, `block` | `log` | |
+| `request.scan` | list | all | `query`, `headers`, `body` |
+| `response.scan` | list | all | `headers`, `body` |
+| `*.types` | list | text, JSON, XML, form, JavaScript types | Body media types scanned, without parameters |
+| `*.max_bytes` | int | `1048576` | Body buffered per direction (1 to 64 MiB) |
+| `*.ignore_headers` | list | request: `Authorization`, `Cookie`, `X-Api-Key`, `Proxy-Authorization`; response: `Set-Cookie` | Headers never scanned or masked |
+| `block_status` | int | `403` | Status for `block` (4xx or 5xx) |
+| `min_findings` | int | `1` | Findings a message needs before mask or block act; fewer are logged only (1 to 64) |
 
 ### routes[].filters
 
@@ -1626,6 +2028,48 @@ Denies answer 403 with reason `geo` and feed ban triggers under the `geo`
 category. A `rate_limits[].key` of `country` keeps one bucket per
 country; an unknown country falls back to the client address.
 
+### routes[].policy
+
+The route's positive security model: what a request may look like.
+Everything outside it is refused right after route matching, before
+virtual patches' successors (rate limits, filters, the WAF) spend work
+on the request, with a terse status, reason `policy` and a `detail`
+attribute in the security event naming the check (`method:DELETE`,
+`content_type:application/xml`, `query:id:not_int`, `header_count:41`
+and so on). Refusals count in `denied_policy` and feed ban triggers
+under `policy`. `routes[].methods` selects the route; `policy.methods`
+refuses, with 405 and an `Allow` header.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `methods` | list | any | Allowed methods (upper case); others get 405 with `Allow` |
+| `content_types` | list | any | Media types allowed for requests with a body, exact (`application/json`) or `type/*`; parameters such as `charset` are ignored; others get 415 |
+| `require_content_type` | bool | `false` | A body without `Content-Type` gets 415 |
+| `max_uri_length` | int | server limit | Lower bound on the request URI for this route (414) |
+| `max_query_bytes` | int | none | Bound on the raw query string (414) |
+| `max_query_params` | int | none | Bound on the number of parameters, repeats counted (400) |
+| `max_headers` | int | none | Bound on the number of header fields (431) |
+| `max_header_bytes` | int | none | Bound on the sum of header names and values (431) |
+| `query` | list | `[]` | Parameter descriptions; see below |
+| `deny_unknown_query` | bool | `false` | Parameters not in `query` get 400; requires `query` |
+
+Each `query` entry:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required, unique | |
+| `type` | `string`, `int`, `number`, `bool`, `uuid`, `enum` | `string` | `bool` accepts `true`, `false`, `1`, `0`; `uuid` the 8-4-4-4-12 hex form; `enum` needs `values` |
+| `required` | bool | `false` | The parameter must be present |
+| `max_length` | int | none | Bound on each value in bytes |
+| `pattern` | regex | none | Every value must match the whole expression |
+| `values` | list | | Allowed values for `enum` (1 to 1024) |
+| `max_repeat` | int | `1` | How many times the parameter may appear |
+
+A malformed query string (bad percent encoding) is refused when the
+route has a `query` list or `max_query_params`. Bodies are not part of
+the policy: `waf.profiles[].json_schemas` and the `openapi` filter
+validate them.
+
 ## acme
 
 Required when any listener has `tls.acme` groups. One account per proxy;
@@ -1693,6 +2137,33 @@ host before routing.
 | `cookie_name` | token | `XPCHAL` | |
 | `exempt_cidrs` | list | `[]` | Never challenged (monitoring, partners) |
 | `title` | string | `Checking your browser` | Heading on the page; no HTML characters |
+| `device` | bool | `true` | The script derives a device identifier from stable browser properties (user agent, languages, platform, cores, memory, screen, pixel ratio, time zone, a canvas rendering) and the cookie carries its first eight bytes: `device` in the access log, `Info.DeviceID` for filters and the `device` rate limit key. Client supplied and therefore advisory, but fixed into the cookie it earned |
+| `captcha` | mapping | none | A hosted CAPTCHA tier, below |
+
+### challenge.captcha
+
+Adds a second tier to the challenge. A verdict that asks for it (an
+`account_guard` step or `disposable` action `captcha`, a `distributed`
+action `captcha`) renders the provider's widget instead of the proof
+of work; a client that solved only the proof of work is challenged
+again, and a client that passed the CAPTCHA satisfies both tiers. The
+token is verified with the provider from the proxy (`siteverify`, with
+the client address), fails closed when the provider is unreachable or
+rejects it, and the failure is a `challenge_failed` security event
+naming the class (`captcha rejected`, `captcha score`, `captcha
+unreachable`). The page's Content Security Policy admits the provider's
+script and frame origins only. Without this section a CAPTCHA verdict
+falls back to the proof of work.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `provider` | `turnstile`, `hcaptcha`, `recaptcha` | required | Cloudflare Turnstile, hCaptcha or Google reCAPTCHA (v2 checkbox, v3 or Enterprise with `min_score`) |
+| `site_key` | string | required | Public key rendered into the widget |
+| `secret_file` | path | required | The provider secret on one line; re-read on reload |
+| `verify_url` | URL | the provider's | Override for enterprise endpoints or tests (https, or http to localhost) |
+| `timeout` | duration | `5s` | Verification call (500ms to 30s); the call uses no environment proxy |
+| `min_score` | float | `0` | Refuse tokens scored below it (providers that return a score); 0 disables |
+| `mode` | `escalation`, `always` | `escalation` | `always` shows the widget on every challenge page, including route gates, in place of the proof of work |
 
 ### routes[].challenge
 

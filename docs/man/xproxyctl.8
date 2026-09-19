@@ -147,7 +147,7 @@ T}
 T{
 \fBban\fR [\fB\-\:duration\fR \fID\fR] [\fB\-\:reason\fR \fITEXT\fR] \fITARGET\fR
 T}	T{
-Ban an address or CIDR (default one hour)
+Ban an address,\: a CIDR or a TLS fingerprint as \fBja4:\fR*FP* (default one hour)
 T}
 T{
 \fBunban\fR \fITARGET\fR
@@ -158,6 +158,21 @@ T{
 \fBcluster\fR
 T}	T{
 Peers,\: inbound connections and gossip counters
+T}
+T{
+\fBapi\fR [\fBall\fR|\:\fBshadow\fR|\:\fBzombie\fR|\:\fBversions\fR|\:\fBdocumented\fR|\:\fBundocumented\fR]
+T}	T{
+API inventory discovered from traffic: host,\: method,\: path template,\: route,\: version,\: state (documented,\: shadow,\: zombie,\: superseded),\: counts,\: credentials seen and last seen (\fB\-\:top\fR \fIN\fR)
+T}
+T{
+\fBpatches\fR
+T}	T{
+Virtual patches with state (active,\: disabled,\: expired),\: action,\: hits,\: last hit and expiry
+T}
+T{
+\fBfleet\fR
+T}	T{
+Fleet agent state: controller,\: node id,\: applied bundle digest and result,\: pending bundle,\: poll and report counters
 T}
 T{
 \fBacme\fR [\fBrenew\fR]

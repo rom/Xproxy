@@ -64,7 +64,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `reopen-logs` | Reopen log files |
 | `tail STREAM` | Follow `access`, `error`, `security` or `audit` |
 | `bans` | List active bans with expiry, source and count |
-| `ban TARGET` | Ban an address or CIDR; `-duration 1h`, `-reason text` |
+| `ban TARGET` | Ban an address, CIDR or `ja4:<fingerprint>`; `-duration 1h`, `-reason text` |
 | `unban TARGET` | Remove a ban |
 | `cluster` | Peers, inbound connections and gossip counters |
 | `spki CERT.pem` | Print the `spki_pins` value of a certificate |
@@ -459,6 +459,33 @@ rate_limits:
 
 Requests without the header are limited by client address instead, so the
 limit cannot be avoided by omitting the header.
+
+### Limits per session, account, token, network and endpoint
+
+The key decides what a bucket belongs to, and several policies can sit on
+one route, so a login endpoint is bounded per session, per account and
+per network at once:
+
+```yaml
+rate_limits:
+  - {name: per-session, key: "cookie:sid", algorithm: sliding_window, limit: 30, window: 1m}
+  - {name: per-account, key: "jwt:sub", algorithm: sliding_window, limit: 600, window: 1h}
+  - {name: per-network, key: client_net, net_v4: 24, net_v6: 48, rate: 50, burst: 100}
+  - {name: per-endpoint, key: endpoint, algorithm: sliding_window, limit: 5000, window: 1m}
+  - {name: per-fingerprint, key: ja4, rate: 20, burst: 40}
+routes:
+  - {name: api, hosts: [api.example.com], upstream: api, rate_limits: [per-session, per-account, per-network, per-endpoint]}
+```
+
+`client_net` counts a whole allocation as one client, which is what a
+scraper rotating through a /24 looks like; `endpoint` folds identifiers
+in the path (`/users/42`, `/users/43`) into one template per method and
+route, so a single expensive endpoint is protected without a route per
+path; `ja4` groups clients by TLS stack, which catches a bot fleet
+behind many addresses; `jwt:<claim>` reads the claim without verifying
+the token, so it costs nothing and only names a bucket. Every
+identifier key falls back to the client address when the identifier is
+missing.
 
 ### Sliding windows and exact cluster limits
 
@@ -885,7 +912,20 @@ waf:
 
 Watch the security log for `waf_detected` entries and the access log for
 `waf_matched`. Add exclusions for legitimate traffic in a SecLang file,
-then switch to block:
+then move to block in steps rather than at once: first the testers, then
+a share of the clients, then everyone. The split is by client address,
+so a customer who reports a problem always sees the same behaviour and
+`waf_enforced` in the access log says which one:
+
+```yaml
+routes:
+  - name: shop
+    upstream: web
+    waf: {mode: block, block_percent: 0, block_cidrs: [10.0.0.0/8]}   # test mode: staff only
+  # later: block_percent: 10, 50, 100
+```
+
+Once the roll-out is through, the whole site runs in block:
 
 ```yaml
 waf:
@@ -1078,6 +1118,127 @@ feature, and move to `challenge` (browsers pass, scripts do not) or
 log scale, so a client is flagged for volume only when it sends
 several times what its peers do.
 
+### Locking origins to the proxy
+
+A control at the proxy holds only if the application accepts no other
+path. Besides firewalling the origin to the proxy addresses (HARDENING.md
+5c) and mutual TLS (`upstreams[].tls.client_cert_file`), the proxy can
+sign every request it forwards:
+
+```yaml
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.20:8080"}]
+    origin_signature:
+      secret_file: /var/lib/xproxy/origin-app.key
+      ttl: 5m
+      include: [X-Tenant]
+```
+
+The origin verifies `X-Xproxy-Signature` with the same key file (an
+HMAC over method, host, path, query, time, client address, request id
+and the listed headers; the exact recipe and verifier snippets are in
+CONFIG.md and HARDENING.md) and answers 403 to anything else, so a
+request that did not pass the proxy, or was altered after it, is
+refused whatever network it came from. `xproxyctl rotate-secret
+/var/lib/xproxy/origin-app.key` adds a new key while the old one keeps
+verifying until the origins have the new file.
+
+### Positive security model
+
+Where an API is documented, refusing everything else is cheaper and
+safer than recognising attacks in it. `routes[].policy` states what a
+request may look like and the proxy answers 405, 415, 400, 414 or 431
+to the rest, before rate limits, filters and the WAF run:
+
+```yaml
+routes:
+  - name: api
+    hosts: [api.example.com]
+    paths: [/v1/]
+    upstream: api
+    policy:
+      methods: [GET, POST, PUT, DELETE]
+      content_types: [application/json]
+      require_content_type: true
+      max_query_params: 16
+      max_headers: 40
+      deny_unknown_query: true
+      query:
+        - {name: page, type: int}
+        - {name: sort, type: enum, values: [created, updated]}
+        - {name: q, type: string, max_length: 128}
+        - {name: id, type: uuid, max_repeat: 50}
+```
+
+The security event names the failed check (`detail: query:page:not_int`)
+so a broken client is diagnosed from the log, `denied_policy` counts the
+refusals and a ban trigger on `policy` catches clients that keep probing.
+For bodies use `waf.profiles[].json_schemas` or the `openapi` filter,
+which derives the whole positive model, parameters included, from an
+OpenAPI description.
+
+### Request normalisation
+
+An attacker who knows the proxy and the application decode differently
+writes the path the application will accept and the proxy will not
+recognise. `server.normalization` refuses those forms before routing:
+
+```yaml
+server:
+  normalization:
+    reject_double_encoding: true     # %252e%252e
+    reject_encoded_slashes: true     # %2F, %5C
+    reject_backslashes: true
+    unicode: nfkc                    # ｕsers routes like users
+```
+
+Control characters and invalid UTF-8 are refused without any setting,
+as is ambiguous HTTP/1 framing (the parser refuses most of it; the
+check counts what remains). Each refusal carries the check in the
+security event (`detail: path_double_encoding`), so a legitimate client
+that double encodes is found in the log before the strict setting goes
+to production.
+
+### Virtual patching
+
+When a vulnerability is published and the fix is days away, a virtual
+patch blocks the exploit's request shape at the proxy:
+
+```yaml
+virtual_patches:
+  - id: cve-2024-1234
+    description: legacy export command injection
+    hosts: [www.example.com]
+    paths: [/plugins/legacy-export/]
+    query: [{name: cmd}]
+    status: 404
+    expires: "2026-12-31"
+  - id: prototype-pollution
+    routes: [api]
+    body: {pattern: '"__proto__"\s*:', content_types: [application/json]}
+```
+
+Conditions combine with AND, so a patch is as narrow as the exploit:
+path plus parameter, header pattern on a host, body pattern on a route.
+`action: log` runs a patch in shadow first; `expires` retires a
+temporary measure on a date so it cannot silently outlive the fix, and
+`xproxyctl patches` shows every patch with its hits, last hit and
+state:
+
+```
+$ xproxyctl patches
+PATCH                STATE    ACTION  STATUS  HITS  LAST HIT     EXPIRES     DESCRIPTION
+cve-2024-1234        active   block   404     37    2m14s ago    2026-12-31  legacy export command injection
+prototype-pollution  active   block   403     0     -            -
+log4shell-probe      active   log     403     1203  4s ago       -           JNDI lookups in any header
+```
+
+A patch needs no WAF section and runs before it; patches that need the
+rule engine's transformations (decoding, normalisation, scoring) are
+still written as SecLang in `directive_files`, as
+`examples/waf/custom-rules.conf` shows.
+
 ### Ban list
 
 ```yaml
@@ -1096,6 +1257,36 @@ minutes; a second ban within the escalation memory doubles it. With
 nothing per attempt. Use `reject` when the proxy sits behind a load
 balancer that sets `X-Forwarded-For`, because at accept only the balancer's
 address is visible.
+
+#### Distributed attacks: banning networks and tools
+
+An attacker with a thousand addresses stays under every per address
+threshold. Two aggregates catch what the addresses have in common:
+
+```yaml
+bans:
+  triggers:
+    - {name: waf-repeat, reasons: [waf], threshold: 5, window: 1m, duration: 15m}
+    - {name: net-sweep,  reasons: [waf, rate_limit, account_abuse], aggregate: net, net_v4: 24, net_v6: 48,
+       threshold: 50, min_sources: 5, window: 5m, duration: 1h}
+    - {name: tool,       reasons: [waf, account_abuse, challenge], aggregate: ja4,
+       threshold: 100, min_sources: 10, window: 5m, duration: 6h}
+```
+
+`net-sweep` counts denies per client network instead of per address
+and bans the whole `/24` (or `/48`) once fifty denies have come from at
+least five different addresses in it, so a rented range or a cloud
+allocation used for a sweep is closed while a single misbehaving host
+in an office network is not enough to ban its neighbours. `tool`
+counts per TLS client fingerprint (JA4) across every network and bans
+the fingerprint, so a stuffing tool rotating through residential
+proxies is refused wherever it connects, while `min_sources` keeps a
+fingerprint shared by a popular browser from being banned by one bad
+client. The entries show up in `xproxyctl bans` as `203.0.113.0/24` and
+`ja4:t13d0403h1_...`, propagate to cluster peers like address bans, and
+can be placed or lifted by hand (`xproxyctl ban ja4:<fp>`). Exempt
+ranges are never covered by a network ban and never refused by a
+fingerprint ban.
 
 ### Cluster of proxies
 
@@ -1127,6 +1318,68 @@ cluster` shows connection state and the counters per channel; a peer
 with `connected: false` and a `last_error` is being redialled with
 back-off. Firewall the cluster port to the peers' addresses
 (HARDENING.md).
+
+### Fleet management
+
+Many nodes are operated from one controller: `xproxy-fleet` serves each
+node the configuration bundle assigned to it and collects the nodes'
+status; every node runs the agent. On the management host:
+
+```sh
+mkdir -p /var/lib/xproxy-fleet/{common,nodes/edge-1,nodes/edge-2}
+cp shared-rules.conf /var/lib/xproxy-fleet/common/waf/custom.conf
+cp edge-1.yaml /var/lib/xproxy-fleet/nodes/edge-1/xproxy.yaml
+xproxy-fleet validate -dir /var/lib/xproxy-fleet
+systemctl enable --now xproxy-fleet        # serve -listen :8447 -cert ... -key ... -ca ...
+```
+
+Every node gets the files under `common/` plus its own directory (its
+files win), and `nodes/<id>/xproxy.yaml` is the node's configuration,
+which carries the `fleet` section that points back at the controller:
+
+```yaml
+fleet:
+  controller: https://fleet.example.internal:8447
+  node_id: edge-1
+  tls:
+    cert_file: /etc/xproxy/fleet/edge-1.pem
+    key_file: /etc/xproxy/fleet/edge-1-key.pem
+    ca_file: /etc/xproxy/fleet/ca.pem
+```
+
+Issue one certificate per node from a private fleet CA with the node id
+as its common name; the controller binds a node id to that name, so a
+node cannot fetch another node's bundle or report as it. Editing files
+under the directory is the push: the controller rescans every two
+seconds, computes a digest per node, and the agents, which long poll,
+receive the new bundle within seconds, write it next to their
+configuration file, reload and report. A bundle that does not parse is
+never served (the previous one stays, `xproxy-fleet nodes` shows the
+error); a bundle the node's own validation or sandbox refuses is rolled
+back on the node and the error appears in both `xproxyctl fleet` and the
+controller's view. `apply: false` on a node turns the agent into a
+reviewer: it reports the pending digest without touching anything.
+
+```
+$ xproxy-fleet nodes
+directory /var/lib/xproxy-fleet  scans 1842
+NODE    STATE     ASSIGNED      APPLIED       VERSION  LAST SEEN  REQUESTS  5XX  DENIED  UPSTREAMS  ERROR
+edge-1  in sync   7c1a9f0e2b44  7c1a9f0e2b44  1.3.0    12s ago    1848213   31   2201    2/2        -
+edge-2  failed    7c1a9f0e2b44  3e0d55a1c9f7  1.3.0    9s ago     1790022   28   2140    2/2        reload: sandbox: /srv/rules.conf (read) outside...
+$ xproxy-fleet node edge-2
+$ xproxy-fleet bundle edge-1
+```
+
+`nodes` states: `in sync` (applied digest equals the assigned one),
+`behind` (a newer bundle is assigned), `pending` (received, apply off),
+`failed` (the last apply was refused), `stale` (no report for five
+minutes), `unassigned` (reporting, no directory), `never seen`. The
+controller keeps the last report per node in `status/`, so the list
+survives its restart. The configuration history on each node records
+fleet applies like any reload, so `xproxyctl history` and `rollback`
+work as usual; a rollback is reported as a different applied digest
+and the controller shows the node `behind` until the directory is
+changed or the node reloads its bundle.
 
 ### Priority classes and load shedding
 
@@ -1881,6 +2134,76 @@ the access log then carries `bot_score`, `bot_signals` and `ja4` for
 every request, which gives the fingerprints of your own tools for
 `ja4_allow` and the score distribution for the thresholds.
 
+### Account protection: credential stuffing, brute force and abuse
+
+Login, registration, password reset, cart and catalogue endpoints are
+attacked by volume: leaked credential lists replayed against the login
+form, one account hammered, one password sprayed across many accounts,
+thousands of throwaway registrations, reset floods, bots emptying stock
+into carts, scrapers walking the catalogue. The `account_guard` filter
+watches these endpoints with a ladder of progressive actions:
+
+```yaml
+challenge: {secret_file: /var/lib/xproxy/challenge.key}
+filters:
+  - name: accounts
+    kind: account_guard
+    options:
+      endpoints:
+        - name: login
+          class: login
+          paths: [/api/login]
+          identity: {json: username, form: username}
+          failure: {statuses: [401], body_regex: '"error":"invalid_credentials"'}
+        - name: signup
+          class: register
+          paths: [/api/register]
+          identity: {json: email}
+          disposable: challenge
+        - name: reset
+          class: reset
+          paths: [/api/password/reset]
+          identity: {json: email}
+        - name: cart
+          class: cart
+          paths: [/api/cart/items]
+          identity: {header: X-Session-Id}
+        - name: catalogue
+          class: scrape
+          paths: [/products/*]
+routes:
+  - {name: app, hosts: [shop.example.com], upstream: app, filters: [accounts]}
+bans:
+  triggers:
+    - {name: account-abuse, reasons: [account_abuse], threshold: 5, window: 10m, duration: 1h}
+```
+
+For `login` the filter reads the account identifier from the request,
+learns from the response whether the attempt failed, and counts per
+address, per account, per address and account pair, distinct accounts
+per address and distinct addresses per account. Three failures on one
+pair earn a two second delay, five the browser challenge (a `captcha`
+step is available where a CAPTCHA provider is configured), ten a
+fifteen minute block of that pair; ten different accounts tried from
+one address is credential stuffing and gets the challenge, thirty a
+block; one account tried from five addresses is a distributed attack
+on that account. A successful login clears the account's failures, so
+a user who mistypes twice is never blocked. When the whole endpoint
+sees two hundred failures from fifty addresses inside the window, each
+under its own thresholds, a campaign is declared and every unverified
+client is challenged for the next window; peers in a cluster learn
+blocks and campaigns through the event bus. Registration with an
+address on a disposable domain is challenged, and repeat registrations
+of one identity or many from one address escalate; resets are counted
+per account and address; cart and catalogue endpoints count requests
+and distinct paths. Identities are hashed (`account_hash`) before they
+are counted or logged; the access log shows the endpoint, the action,
+the threshold that fired and the counts on every matched request, so a
+week in the default ladder shows what the thresholds should be for
+your traffic before `steps` tightens them. Blocks are `account_abuse`
+denials, which the ban trigger above turns into an address ban after
+five. `examples/filters/accounts.yaml` is a complete configuration.
+
 ### WebAssembly filters
 
 ```yaml
@@ -1938,8 +2261,9 @@ where something changed.
 ### Header policy and basic authentication (filters)
 
 Filters are middleware instances attached to routes; the built-in kinds
-are `header_guard`, `basic_auth`, `body_rewrite`, `bot_score`, `oidc`
-and `wasm` (`xproxyctl filters` lists what the binary has;
+are `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`,
+`upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`,
+`bot_score`, `oidc` and `wasm` (`xproxyctl filters` lists what the binary has;
 [EXTENDING.md](EXTENDING.md) shows how to add one).
 
 ```yaml
@@ -2019,6 +2343,118 @@ batches, introspection in production) without knowing the schema. The
 security log carries the filter name as the reason and the access log
 the key id (`api_key`).
 
+### Upload protection (filter)
+
+Uploads are where a web shell arrives. The `upload_guard` filter
+inspects every file part of a multipart request before the application
+sees it:
+
+```yaml
+filters:
+  - name: uploads
+    kind: upload_guard
+    options:
+      max_files: 10
+      max_file_bytes: 10485760
+      allowed_extensions: [jpg, jpeg, png, gif, webp, pdf, docx, xlsx]
+      fields: [file, attachment]
+routes:
+  - {name: attachments, paths: [/api/attachments], methods: [POST], upstream: app, filters: [uploads], max_body_bytes: 52428800}
+```
+
+`invoice.pdf.exe` is refused for the `exe` in its chain, `photo.html.jpg`
+for the unexpected `html` under an allow list, `cute.png` that starts
+with `MZ` for being a Windows program, `cute.jpg` with `<?php` inside
+for being server side code, a PNG named `.jpg` for not matching its
+name, and a file declared `application/pdf` whose bytes are an image
+for not matching its declaration. Each refusal names the check and the
+file in the security event (`detail: executable:pe:cute.png`), the
+request never reaches the application, and the body of an accepted
+upload is replayed unchanged. `strict_magic: true` also refuses content
+nobody recognises, right for an avatar endpoint; `raw_uploads: true`
+covers `PUT /files/name.png` style uploads without multipart. Virus
+scanning is the ICAP filter's job (`routes[].icap`), and the two
+combine on one route. `examples/filters/uploads.yaml` is a complete
+configuration.
+
+### Sensitive data in requests and responses (filter)
+
+An API that returns card numbers, personal identity numbers or tokens
+it should not, or a client that sends them where they do not belong,
+is a data protection incident waiting for a log line. The
+`sensitive_data` filter watches both directions:
+
+```yaml
+filters:
+  - name: dlp
+    kind: sensitive_data
+    options:
+      detectors: [card, personnummer, iban, email, jwt, private_key, api_keys, password_query]
+      custom: [{name: order_secret, regex: "OS-[0-9]{12}"}]
+      request: {action: log, scan: [query, headers, body]}
+      response: {action: mask, scan: [headers, body], types: [application/json, text/plain]}
+  - name: no-cards-out
+    kind: sensitive_data
+    options: {detectors: [card], response: {action: block}, block_status: 502}
+routes:
+  - {name: export, hosts: [api.example.com], paths: [/v1/export], upstream: api, filters: [no-cards-out]}
+  - {name: api, hosts: [api.example.com], upstream: api, filters: [dlp]}
+```
+
+Every detector validates its match (Luhn for cards, date and checksum
+for personnummer, mod 97 for IBANs, a JSON header for JWTs), so a
+sixteen digit order number does not count. `log` leaves the message
+alone and records `sensitive_types=card,email sensitive_count=2
+sensitive_where=response_body` in the access log; `mask` rewrites the
+values (`************1111`, `a***@example.com`) before the client or
+the upstream sees them; `block` refuses with a JSON problem that names
+the kinds and never the values. Start in `log`, review the log for a
+week, then mask the responses of the routes that leak and block the
+exports that must never carry cards. Credential headers are not
+scanned by default because they always carry secrets; `password_query`
+catches the mistake of a password in a query string, where it lands in
+every log on the path. `examples/filters/sensitive-data.yaml` is a
+complete configuration.
+
+### API inventory: discovery, shadow and zombie APIs
+
+An API programme starts with knowing what is exposed. With
+`api_inventory` present the proxy learns it from the traffic it
+proxies and, where a route has an `openapi` filter, compares it with
+the description:
+
+```yaml
+api_inventory:
+  state_file: /var/lib/xproxy/api-inventory.json
+  zombie_after: 720h
+filters:
+  - {name: orders-spec, kind: openapi, options: {spec_file: /etc/xproxy/openapi/orders.yaml, unknown_paths: allow}}
+routes:
+  - {name: orders, hosts: [api.example.com], upstream: api, filters: [orders-spec]}
+```
+
+`unknown_paths: allow` keeps the description advisory while the
+inventory fills; `deny` turns the same description into the positive
+model once the shadow list is empty.
+
+```
+$ xproxyctl api shadow
+since 2026-09-01T00:00:00Z  endpoints 214/10000  dropped 0  shadow 3  zombie 5 (after 720h0m0s)  superseded 2
+HOST             METHOD  PATH               ROUTE   VERSION  STATE   REQUESTS  2XX   4XX  5XX  AUTH    LAST SEEN
+api.example.com  GET     /v1/admin/export   orders  v1       shadow  1842      1840  2    0    cookie  12s ago
+api.example.com  POST    /v1/orders/*/note  orders  v1       shadow  77        77    0    0    bearer  3h12m0s ago
+api.example.com  GET     /internal/health   orders  -        shadow  9         9     0    0    none    1h0m3s ago
+$ xproxyctl api zombie
+$ xproxyctl api versions
+```
+
+The shadow view is the list of endpoints to document, protect or
+remove; the zombie view the list to retire; the versions view shows a
+`v1` marked `superseded` while a `v2` serves the same path, with the
+credentials and last use that tell whether anyone would notice its
+removal. Everything the inventory records is a template and a count:
+no path parameter values, no query strings, no bodies.
+
 ### Browser challenge
 
 ```yaml
@@ -2036,6 +2472,55 @@ requires one only while the load level is at or above 0.5, so a flood of
 plain HTTP clients is turned away with a static page while browsers carry
 on after a short delay. Do not gate API routes: clients without JavaScript
 cannot pass. Give monitoring systems `exempt_cidrs`.
+
+#### CAPTCHA tier and device identifiers
+
+The proof of work stops floods and plain scripts; it does not stop a
+headless browser working through a credential list. For the endpoints
+where that matters, add a hosted CAPTCHA as a second tier and let the
+account guard escalate to it:
+
+```yaml
+challenge:
+  secret_file: /var/lib/xproxy/challenge.key
+  captcha:
+    provider: turnstile            # or hcaptcha, recaptcha
+    site_key: 0x4AAAAAAAExampleSiteKey
+    secret_file: /etc/xproxy/turnstile.secret
+rate_limits:
+  - {name: per-device, key: device, rate: 5, burst: 20}
+filters:
+  - name: accounts
+    kind: account_guard
+    options:
+      endpoints:
+        - name: login
+          class: login
+          paths: [/api/login]
+          identity: {json: username}
+          steps:
+            - {action: challenge, pair: 3, ip: 10}
+            - {action: captcha, pair: 6, ip: 30, ip_accounts: 15}
+            - {action: block, duration: 15m, pair: 12, ip: 60}
+          distributed: {ips: 50, events: 200, action: captcha}
+routes:
+  - {name: login, hosts: [shop.example.com], paths: [/api/login], methods: [POST], upstream: app, filters: [accounts], rate_limits: [per-device]}
+```
+
+A `challenge` step earns a proof of work cookie; a `captcha` step shows
+the provider's widget, and a client holding only the proof cookie sees
+it too. The token is verified with the provider from the proxy, the
+cookie records the higher tier, and a campaign spread over many
+addresses sends every new client through the widget. `mode: always`
+under `captcha` replaces the proof of work on every challenge page,
+including route gates, for sites that prefer a familiar widget. The
+challenge script also derives a device identifier from stable browser
+properties; it travels in the cookie, shows up as `device` in the
+access log and keys the `device` rate limit above, so a client that
+passed a challenge and then rotates addresses still shares one bucket
+(it falls back to the address until a cookie exists). The identifier is
+computed by the client and is advisory: treat it as correlation, not
+identity. `examples/security/captcha.yaml` is a complete configuration.
 
 ## Web GUI
 
@@ -2187,6 +2672,36 @@ shows the same numbers the TUI and GUI graph, sampled in process for the
 configured retention, so a graph is available on a host with no
 monitoring stack at all.
 
+### Grafana dashboards and alert rules
+
+Two Grafana dashboards and a Prometheus rule file ship with the product
+(`deploy/grafana`, `deploy/prometheus`; installed under
+`/usr/share/xproxy/grafana` and `/usr/share/xproxy/prometheus`):
+
+- `xproxy-overview.json`: requests, status classes, request and
+  upstream latency percentiles, upstream failures and healthy endpoints,
+  per route rates and p99, bytes, load and shedding, in flight and
+  queued requests, cache, certificate expiry, reloads and a node table.
+- `xproxy-security.json`: denied requests by reason, WAF blocks and
+  detect mode hits, bans, challenges, rate limit decisions per policy,
+  filter denials, connections rejected at accept, honeypot and ICAP
+  results, forward proxy policy, DNS filtering, log delivery per sink,
+  cluster peers.
+- `xproxy-alerts.yaml`: availability rules (node down, no healthy
+  endpoint, unhealthy endpoint, circuit open, 5xx ratio, p99 latency,
+  shedding, queue refusals), operations rules (failed reload,
+  certificate expiring at 14 and 3 days, log drops and write errors,
+  cluster peer down, ICAP unreachable) and security rules (denies at
+  ten times the hourly baseline, WAF block spike, ban wave, honeypot
+  activity, saturated rate limit policy), each with a severity label
+  and a description that names the command to look at.
+
+Import the dashboards (Dashboards > New > Import) and pick the
+Prometheus data source; both have an `instance` variable and link to
+each other. Add the rule file to `rule_files` in `prometheus.yml`. A
+test in the repository checks that every metric the assets name is one
+the proxy exports, so they stay current with the binary.
+
 ## Logs
 
 All streams are JSON lines with `time`, `level`, `msg` and `stream`.
@@ -2218,6 +2733,40 @@ logging:
 `xproxyctl status` shows `log_syslog_sent`, `log_syslog_dropped` and
 `log_journald_dropped`; drops mean the collector is slow or unreachable,
 never that the proxy waited.
+
+### SIEM export
+
+Security teams rarely want raw syslog. The `siem` sink posts batches
+over HTTPS in the shape the receiving system expects, and the syslog
+sink can speak CEF or LEEF for collectors that parse those from syslog:
+
+```yaml
+logging:
+  security: {sinks: [file, siem]}
+  audit:    {sinks: [file, siem]}
+  access:   {sinks: [file]}
+  siem:
+    endpoint: https://splunk.example.com:8088/services/collector/event
+    format: hec                     # or json, cef, leef
+    auth_file: /etc/xproxy/siem-token   # "Splunk 1a2b3c..."
+    ca_file: /etc/xproxy/certs/splunk-ca.pem
+    batch: 256
+    interval: 2s
+```
+
+With `format: hec` every record arrives as a Splunk event with
+`sourcetype xproxy:security`, `xproxy:audit` and so on; with `json` the
+body is newline delimited JSON for Elastic, OpenSearch, Logstash, Vector
+or Fluent Bit inputs; `cef` and `leef` produce ArcSight and QRadar
+lines whose standard fields (`src`, `suser`, `requestMethod`, `act`,
+`reason`, `cn1` status...) map without a custom parser, and every other
+attribute keeps its name. Sending is asynchronous behind a bounded
+queue: an unreachable SIEM never slows a request, drops are counted and
+`xproxyctl telemetry` shows the last error. For a syslog based
+collector, `logging.syslog.format: cef` sends the same CEF line behind
+an RFC 5424 header instead. Redaction applies before either sink, so
+the SIEM receives the same pseudonymised addresses the files do unless
+the security stream is excluded from the rules.
 
 ### Redaction
 
@@ -2287,7 +2836,8 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 `client_aborts`, `denied_ban`, `denied_waf`, `waf_detected`, `bans_active`,
 `bans_total`, `cluster_peers`, `cluster_connected`, `shed`, `load_level`,
 `upstream_latency_ms`, `shedding_classes`, `challenges_issued`,
-`challenges_passed`, `challenges_failed`, `reloads`, `reload_failures`,
+`challenges_passed`, `challenges_failed`, `captchas_passed`, `reloads`,
+`reload_failures`,
 `open_connections`, `rejected_connections`, `in_flight`.
 
 ## Troubleshooting

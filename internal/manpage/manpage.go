@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Page describes one manual page.
@@ -56,6 +57,7 @@ func (r *renderer) render(md []byte) {
 			for i++; i < len(lines) && !strings.HasPrefix(lines[i], "```"); i++ {
 				code = append(code, lines[i])
 			}
+			r.endList()
 			r.code(code)
 		case strings.HasPrefix(line, "# "):
 			r.flush()
@@ -78,13 +80,18 @@ func (r *renderer) render(md []byte) {
 				rows = append(rows, lines[i])
 			}
 			i--
+			r.endList()
 			r.table(rows)
 		case strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* "):
 			r.flush()
+			// A hanging indent from plain requests rather than .IP: with
+			// groff 1.23 an .IP paragraph leaves every later tbl text
+			// block unable to adjust its lines.
 			if !r.list {
 				r.list = true
+				r.out.WriteString(".RS 3n\n")
 			}
-			r.out.WriteString(".IP \\(bu 2\n")
+			r.out.WriteString(".PP\n.ti -3n\n\\(bu\n")
 			item := strings.TrimSpace(line[2:])
 			// Continuation lines of the item are indented.
 			for i+1 < len(lines) && strings.HasPrefix(lines[i+1], "  ") && strings.TrimSpace(lines[i+1]) != "" && !strings.HasPrefix(strings.TrimSpace(lines[i+1]), "- ") {
@@ -109,18 +116,14 @@ func (r *renderer) flush() {
 	if len(r.para) == 0 {
 		return
 	}
-	if r.list {
-		r.out.WriteString(".IP\n")
-	} else {
-		r.out.WriteString(".PP\n")
-	}
+	r.out.WriteString(".PP\n")
 	r.out.WriteString(guardStart(inline(strings.Join(r.para, " "))) + "\n")
 	r.para = nil
 }
 
 func (r *renderer) endList() {
 	if r.list {
-		r.out.WriteString(".PP\n")
+		r.out.WriteString(".RE\n.PP\n")
 		r.list = false
 	}
 }
@@ -325,11 +328,12 @@ func inlineWith(s string, breakable bool) string {
 				i += len(word)
 				continue
 			}
-			out.WriteString(escape(s[i : i+1]))
-			if breakable && strings.IndexByte("|/,;", s[i]) >= 0 {
+			_, size := utf8.DecodeRuneInString(s[i:])
+			out.WriteString(escape(s[i : i+size]))
+			if breakable && size == 1 && strings.IndexByte("|/,;", s[i]) >= 0 {
 				out.WriteString(`\:`)
 			}
-			i++
+			i += size
 		}
 	}
 	return out.String()
@@ -368,6 +372,12 @@ func escape(s string) string {
 		case '\'':
 			out.WriteString(`\(aq`)
 		default:
+			if ch > 127 {
+				// groff reads the page as Latin-1 unless told otherwise;
+				// a named Unicode glyph renders everywhere.
+				fmt.Fprintf(&out, `\[u%04X]`, ch)
+				continue
+			}
 			out.WriteRune(ch)
 		}
 	}
@@ -388,6 +398,15 @@ func guardStart(line string) string {
 func escapeCode(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\e`)
 	s = strings.ReplaceAll(s, "-", `\-`)
+	var out strings.Builder
+	for _, ch := range s {
+		if ch > 127 {
+			fmt.Fprintf(&out, `\[u%04X]`, ch)
+			continue
+		}
+		out.WriteRune(ch)
+	}
+	s = out.String()
 	if strings.HasPrefix(s, ".") || strings.HasPrefix(s, "'") {
 		s = `\&` + s
 	}

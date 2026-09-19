@@ -1,0 +1,57 @@
+# xproxy-fleet: the fleet controller. Runs on a management host, serves
+# every node its configuration bundle over mutual TLS and collects the
+# nodes' status. Operators use `xproxy-fleet nodes` over the socket in
+# the state directory.
+#
+# Install:  cp xproxy-fleet.service /etc/systemd/system/
+#           mkdir -p /var/lib/xproxy-fleet/{common,nodes,status} /etc/xproxy-fleet
+#           (place controller.pem, controller-key.pem and ca.pem under /etc/xproxy-fleet)
+#           systemctl daemon-reload && systemctl enable --now xproxy-fleet
+[Unit]
+Description=xproxy fleet controller
+Documentation=https://github.com/rom/xproxy/tree/main/docs
+
+[Service]
+Type=simple
+User=xproxy-fleet
+Group=xproxy-fleet
+ExecStart=/usr/local/bin/xproxy-fleet serve -dir /var/lib/xproxy-fleet -listen :8447 -cert /etc/xproxy-fleet/controller.pem -key /etc/xproxy-fleet/controller-key.pem -ca /etc/xproxy-fleet/ca.pem
+Restart=on-failure
+RestartSec=2s
+UMask=0027
+StateDirectory=xproxy-fleet
+StateDirectoryMode=0750
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+PrivateMounts=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @cpu-emulation @debug @module @raw-io
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/etc/xproxy-fleet
+DevicePolicy=closed
+
+[Install]
+WantedBy=multi-user.target

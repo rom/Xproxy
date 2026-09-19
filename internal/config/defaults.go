@@ -46,6 +46,10 @@ const (
 	DefaultOutlierMaxEjectP = 50
 
 	DefaultTarpitDelay = 10 * time.Second
+	// DefaultRateLimitNetV4 and NetV6 are the prefix lengths of the
+	// client_net rate limit key.
+	DefaultRateLimitNetV4 = 24
+	DefaultRateLimitNetV6 = 48
 
 	DefaultBanMaxEntries  = 100000
 	DefaultBanEscalation  = 2.0
@@ -102,6 +106,7 @@ func applyDefaults(c *Config) {
 	setInt(&l.MaxConnectionsPerIP, DefaultMaxConnectionsPerIP)
 	setInt(&l.MaxConcurrentRequests, DefaultMaxConcurrentRequests)
 	setInt(&l.MaxTarpits, DefaultMaxTarpits)
+	setStr(&c.Server.Normalization.Unicode, "off")
 
 	for i := range s.Listeners {
 		setStr(&s.Listeners[i].Kind, "http")
@@ -236,6 +241,15 @@ func applyDefaults(c *Config) {
 		setStr(&j.Socket, "/run/systemd/journal/socket")
 		setStr(&j.Identifier, "xproxy")
 	}
+	if s := lg.SIEM; s != nil {
+		setStr(&s.Format, "json")
+		setDur(&s.Timeout, 10*time.Second)
+		setInt(&s.Batch, 512)
+		setDur(&s.Interval, 5*time.Second)
+		setInt(&s.Queue, 8192)
+		setStr(&s.Vendor, "Sysctl")
+		setStr(&s.Product, "Xproxy")
+	}
 	if sl := lg.Syslog; sl != nil {
 		setStr(&sl.Network, "unix")
 		if sl.Address == "" && sl.Network == "unix" {
@@ -268,6 +282,8 @@ func applyDefaults(c *Config) {
 		setStr(&rl.Action, "reject")
 		setStr(&rl.Algorithm, "token_bucket")
 		setStr(&rl.Distributed, "approximate")
+		setInt(&rl.NetV4, DefaultRateLimitNetV4)
+		setInt(&rl.NetV6, DefaultRateLimitNetV6)
 		if rl.Algorithm == "sliding_window" {
 			setDur(&rl.Window, time.Second)
 		} else if rl.Burst == 0 && rl.Rate > 0 {
@@ -281,6 +297,10 @@ func applyDefaults(c *Config) {
 
 	for i := range c.Upstreams {
 		u := &c.Upstreams[i]
+		if os := u.OriginSignature; os != nil {
+			setStr(&os.Header, "X-Xproxy-Signature")
+			setDur(&os.TTL, 5*time.Minute)
+		}
 		setStr(&u.Balancer, "round_robin")
 		setStr(&u.Scheme, "http")
 		setDur(&u.Timeouts.Connect, DefaultUpstreamConnect)
@@ -349,6 +369,10 @@ func applyDefaults(c *Config) {
 		setStr(&b.Action, "drop")
 		for i := range b.Triggers {
 			t := &b.Triggers[i]
+			setStr(&t.Aggregate, "address")
+			setInt(&t.NetV4, 24)
+			setInt(&t.NetV6, 48)
+			setInt(&t.MinSources, 1)
 			if t.Escalation == 0 {
 				t.Escalation = DefaultBanEscalation
 			}
@@ -403,6 +427,40 @@ func applyDefaults(c *Config) {
 		}
 	}
 
+	for i := range c.VirtualPatches {
+		p := &c.VirtualPatches[i]
+		setStr(&p.Action, "block")
+		setInt(&p.Status, 403)
+		if p.Body != nil && p.Body.MaxBytes == 0 {
+			p.Body.MaxBytes = 64 << 10
+		}
+	}
+	for i := range c.Routes {
+		if pol := c.Routes[i].Policy; pol != nil {
+			for j := range pol.Query {
+				setStr(&pol.Query[j].Type, "string")
+				setInt(&pol.Query[j].MaxRepeat, 1)
+			}
+		}
+	}
+	if a := c.APIInventory; a != nil {
+		setInt(&a.MaxEndpoints, 10000)
+		setDur(&a.ZombieAfter, 720*time.Hour)
+		setDur(&a.SaveInterval, 5*time.Minute)
+	}
+	if f := c.Fleet; f != nil {
+		setDur(&f.Interval, 30*time.Second)
+		setDur(&f.Timeout, 10*time.Second)
+		if f.NodeID == "" {
+			if c.Cluster != nil && c.Cluster.NodeID != "" {
+				f.NodeID = c.Cluster.NodeID
+			} else if h, err := os.Hostname(); err == nil {
+				f.NodeID = h
+			} else {
+				f.NodeID = "xproxy"
+			}
+		}
+	}
 	if cl := c.Cluster; cl != nil {
 		setDur(&cl.ExactTimeout, DefaultExactTimeout)
 		if cl.NodeID == "" {
@@ -534,6 +592,10 @@ func applyDefaults(c *Config) {
 		setDur(&ch.TTL, time.Hour)
 		setStr(&ch.CookieName, "XPCHAL")
 		setStr(&ch.Title, "Checking your browser")
+		if cp := ch.Captcha; cp != nil {
+			setDur(&cp.Timeout, 5*time.Second)
+			setStr(&cp.Mode, "escalation")
+		}
 	}
 
 	for i := range c.Routes {

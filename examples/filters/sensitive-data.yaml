@@ -1,0 +1,43 @@
+# Sensitive data detection: the sensitive_data filter finds payment
+# cards, Swedish personal identity numbers, IBANs, e-mail addresses,
+# tokens, keys and secrets in requests and responses. The API route logs
+# what clients send and masks what the application leaks; the export
+# route blocks any response carrying card numbers.
+#
+# Validate: xproxy -config examples/filters/sensitive-data.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+filters:
+  - name: dlp
+    kind: sensitive_data
+    options:
+      detectors: [card, personnummer, iban, email, jwt, private_key, api_keys, password_query]
+      custom:
+        - {name: order_secret, regex: "OS-[0-9]{12}"}
+      request:
+        action: log
+        scan: [query, headers, body]
+      response:
+        action: mask
+        scan: [headers, body]
+        types: [application/json, text/plain]
+        max_bytes: 4194304
+  - name: no-cards-out
+    kind: sensitive_data
+    options:
+      detectors: [card]
+      response:
+        action: block
+      block_status: 502
+upstreams:
+  - name: api
+    endpoints: [{address: "10.0.0.20:8080"}]
+routes:
+  - {name: export, hosts: [api.example.com], paths: [/v1/export], upstream: api, filters: [no-cards-out]}
+  - {name: api, hosts: [api.example.com], upstream: api, filters: [dlp]}

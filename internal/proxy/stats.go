@@ -41,6 +41,9 @@ type Stats struct {
 	DeniedICAP            atomic.Uint64
 	DeniedFilter          atomic.Uint64
 	DeniedGeo             atomic.Uint64
+	DeniedPolicy          atomic.Uint64
+	DeniedVirtualPatch    atomic.Uint64
+	DeniedNormalization   atomic.Uint64
 	HoneypotHits          atomic.Uint64
 	StaticServed          atomic.Uint64
 	StaticNotFound        atomic.Uint64
@@ -111,6 +114,9 @@ type Snapshot struct {
 	DeniedICAP            uint64     `json:"denied_icap"`
 	DeniedFilter          uint64     `json:"denied_filter"`
 	DeniedGeo             uint64     `json:"denied_geo"`
+	DeniedPolicy          uint64     `json:"denied_policy"`
+	DeniedVirtualPatch    uint64     `json:"denied_virtual_patch"`
+	DeniedNormalization   uint64     `json:"denied_normalization"`
 	HoneypotHits          uint64     `json:"honeypot_hits"`
 	StaticServed          uint64     `json:"static_served"`
 	StaticNotFound        uint64     `json:"static_not_found"`
@@ -158,9 +164,12 @@ type Snapshot struct {
 	ChallengesIssued      uint64     `json:"challenges_issued"`
 	ChallengesPassed      uint64     `json:"challenges_passed"`
 	ChallengesFailed      uint64     `json:"challenges_failed"`
+	CaptchasPassed        uint64     `json:"captchas_passed"`
 	LogSyslogSent         uint64     `json:"log_syslog_sent"`
 	LogSyslogDropped      uint64     `json:"log_syslog_dropped"`
 	LogJournalDropped     uint64     `json:"log_journald_dropped"`
+	LogSIEMSent           uint64     `json:"log_siem_sent"`
+	LogSIEMDropped        uint64     `json:"log_siem_dropped"`
 	LogRedaction          bool       `json:"log_redaction"`
 	LogWriteErrors        uint64     `json:"log_write_errors"`
 	UpstreamErrors        uint64     `json:"upstream_errors"`
@@ -208,6 +217,9 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedICAP:            s.DeniedICAP.Load(),
 		DeniedFilter:          s.DeniedFilter.Load(),
 		DeniedGeo:             s.DeniedGeo.Load(),
+		DeniedPolicy:          s.DeniedPolicy.Load(),
+		DeniedVirtualPatch:    s.DeniedVirtualPatch.Load(),
+		DeniedNormalization:   s.DeniedNormalization.Load(),
 		HoneypotHits:          s.HoneypotHits.Load(),
 		StaticServed:          s.StaticServed.Load(),
 		StaticNotFound:        s.StaticNotFound.Load(),

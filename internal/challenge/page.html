@@ -13,17 +13,27 @@ p{margin:.5rem 0;line-height:1.5}
 .bar{height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;margin-top:1rem}
 .bar i{display:block;height:100%;width:0;background:#2563eb;transition:width .3s}
 small{color:#6b7280}
+button{font:inherit;padding:.5rem 1.25rem;border:0;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer}
 @media (prefers-color-scheme:dark){html,body{background:#111315;color:#e5e7eb}main{background:#1a1d21}.bar{background:#2a2f36}}
 </style>
 </head>
-<body data-nonce="{{.Nonce}}" data-difficulty="{{.Difficulty}}" data-return="{{.Return}}" data-verify="{{.Verify}}">
+<body data-nonce="{{.Nonce}}" data-difficulty="{{.Difficulty}}" data-return="{{.Return}}" data-verify="{{.Verify}}"{{if .Device}} data-device="1"{{end}}{{if .Captcha}} data-captcha="{{.Provider}}"{{end}}>
 <main>
 <h1>{{.Title}}</h1>
-<p id="msg">Your browser is completing a short check before continuing. This takes a moment and needs JavaScript.</p>
+{{if .Captcha}}<p id="msg">Please confirm you are human to continue.</p>
+<form id="captcha" method="POST" action="{{.Verify}}">
+<input type="hidden" name="nonce" value="{{.Nonce}}">
+<input type="hidden" name="r" value="{{.Return}}">
+<input type="hidden" name="device" id="device" value="">
+<div class="{{.Widget}}" data-sitekey="{{.SiteKey}}" data-callback="xproxyCaptchaDone"></div>
+<p><button type="submit">Continue</button></p>
+</form>
+{{else}}<p id="msg">Your browser is completing a short check before continuing. This takes a moment and needs JavaScript.</p>
 <div class="bar"><i id="bar"></i></div>
-<noscript><p><strong>JavaScript is required</strong> to continue to this site.</p></noscript>
+{{end}}<noscript><p><strong>JavaScript is required</strong> to continue to this site.</p></noscript>
 <p><small>Protected by Xproxy</small></p>
 </main>
 <script src="{{.Script}}"></script>
-</body>
+{{if .Captcha}}<script src="{{.ProviderScript}}" async defer></script>
+{{end}}</body>
 </html>

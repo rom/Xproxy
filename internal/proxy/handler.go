@@ -3,8 +3,11 @@ package proxy
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"github.com/rom/xproxy/internal/apiinv"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -50,6 +53,8 @@ type reqState struct {
 	extra     []any // filter attributes for the access log
 	country   string
 	ja4       string
+	chalTier  int           // challenge cookie tier (challenge.TierNone without one)
+	device    string        // device identifier from the challenge cookie
 	span      *tracing.Span // server span, nil without tracing
 	upSpan    *tracing.Span // client span of the upstream exchange
 	propagate bool
@@ -129,7 +134,14 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	if bl := s.bans.Load(); bl != nil && bl.Banned(st.clientIP) {
+	// The TLS fingerprint of the connection, for fingerprint bans, ban
+	// triggers, filters and the access log.
+	if r.TLS != nil {
+		if fp, ok := s.fingerprints.Get(r.RemoteAddr); ok {
+			st.ja4 = fp.JA4
+		}
+	}
+	if bl := s.bans.Load(); bl != nil && bl.BannedClient(st.clientIP, st.ja4) {
 		s.stats.DeniedBan.Add(1)
 		st.denied = "banned"
 		s.deny(rw, r, st, http.StatusForbidden, "banned")
@@ -169,6 +181,14 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	norm := &rt.cfg.Server.Normalization
+	if detail := checkNormalization(norm, r); detail != "" {
+		s.stats.DeniedNormalization.Add(1)
+		st.denied = "normalization:" + detail
+		s.denyDetail(rw, r, st, http.StatusBadRequest, "normalization", detail)
+		return
+	}
+
 	st.host = netutil.Host(r.Host)
 	if st.host == "" && r.Host != "" {
 		s.stats.DeniedBadHost.Add(1)
@@ -176,7 +196,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.deny(rw, r, st, http.StatusBadRequest, "bad_host")
 		return
 	}
-	st.path = netutil.CleanPath(r.URL.Path)
+	st.path = netutil.CleanPath(routingPath(norm, r.URL.Path))
 	st.grpcWeb = isGRPCWeb(r)
 	st.grpc = isGRPC(r) || st.grpcWeb || isGRPCWebPreflight(r)
 
@@ -195,7 +215,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				s.logs.SecurityEvent(r.Context(), "challenge_failed", reason,
 					"request_id", st.id, "client_ip", st.clientIP.String(), "user_agent", r.UserAgent())
 				if bl := s.bans.Load(); bl != nil {
-					bl.Observe(st.clientIP, "challenge")
+					bl.ObserveClient(st.clientIP, st.ja4, "challenge")
 				}
 			}
 			return
@@ -233,6 +253,45 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		s.relayWebTransport(rw, r, st, cr)
 		return
+	}
+
+	// Virtual patches: known vulnerabilities blocked by request shape,
+	// before anything else spends work on the request.
+	for _, vp := range rt.patches {
+		if !vp.active(st.start) || !vp.selects(r, st.host, st.path, cr.cfg.Name) {
+			continue
+		}
+		if vp.bodyRE != nil && !vp.bodyMatches(r) {
+			continue
+		}
+		vp.hits.Add(1)
+		vp.lastHit.Store(st.start.UnixNano())
+		if vp.cfg.Action == "log" {
+			st.extra = append(st.extra, "virtual_patch", vp.cfg.ID)
+			s.logs.SecurityEvent(r.Context(), "virtual_patch", vp.cfg.ID,
+				"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
+				"host", r.Host, "path", r.URL.Path, "route", st.route, "action", "log", "user_agent", r.UserAgent())
+			continue
+		}
+		s.stats.DeniedVirtualPatch.Add(1)
+		st.denied = "virtual_patch:" + vp.cfg.ID
+		st.extra = append(st.extra, "virtual_patch", vp.cfg.ID)
+		s.denyDetail(rw, r, st, vp.cfg.Status, "virtual_patch", vp.cfg.ID)
+		return
+	}
+
+	// Positive security model of the route.
+	if cr.policy != nil {
+		if res := cr.policy.check(r); res != nil {
+			s.stats.DeniedPolicy.Add(1)
+			cr.policyDenied.Add(1)
+			st.denied = "policy:" + res.detail
+			if res.status == http.StatusMethodNotAllowed {
+				rw.Header().Set("Allow", cr.policy.allow)
+			}
+			s.denyDetail(rw, r, st, res.status, "policy", res.detail)
+			return
+		}
 	}
 	if cr.compress != nil && r.Method != http.MethodHead && !isUpgrade(r) && !isGRPC(r) {
 		if enc := cr.compress.negotiate(r); enc != "" {
@@ -277,6 +336,12 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The challenge cookie, read once: its tier gates routes and filter
+	// verdicts, its device identifier feeds the log and rate limit keys.
+	if ch := s.challenger.Load(); ch != nil {
+		st.chalTier, st.device = ch.Check(r, st.clientIP)
+	}
+
 	// Browser challenge gate: unverified clients get the page instead of
 	// the route. In load mode only while the shedder reports pressure.
 	if cr.challenge != nil {
@@ -287,7 +352,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					active = true
 				}
 			}
-			if active && !ch.Verified(r, st.clientIP) {
+			if active && st.chalTier < challenge.TierProof {
 				s.stats.Challenged.Add(1)
 				st.denied = "challenge"
 				ch.Serve(rw, r, st.clientIP)
@@ -310,7 +375,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Rate limits.
 	for _, rl := range cr.rateLimits {
-		key := rateKey(rl.cfg, r, st)
+		key := s.rateKey(rl.cfg, r, st)
 		allowed, decided := false, false
 		if rl.cfg.Distributed == "exact" {
 			if node := s.cluster.Load(); node != nil {
@@ -378,22 +443,30 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			info.JA3, info.JA4, info.ALPN = fp.JA3, fp.JA4, fp.ALPN
 			st.ja4 = fp.JA4
 		}
-		if ch := s.challenger.Load(); ch != nil {
-			info.ChallengeVerified = ch.Verified(r, st.clientIP)
+		if s.challenger.Load() != nil {
+			info.ChallengeVerified = st.chalTier >= challenge.TierProof
+			info.CaptchaVerified = st.chalTier >= challenge.TierCaptcha
+			info.DeviceID = st.device
 		}
 		instances = cr.filters.Begin(r.Context(), info)
 		defer func() { st.extra = append(st.extra, instances.End()...) }()
 		if v := instances.Request(r); v.Deny {
 			if v.Challenge {
 				if ch := s.challenger.Load(); ch != nil && !ch.Exempt(st.clientIP) {
-					if ch.Verified(r, st.clientIP) {
+					// A CAPTCHA verdict needs the CAPTCHA tier when one is
+					// configured; a proof of work cookie is not enough.
+					required := challenge.TierProof
+					if v.Captcha && ch.HasCaptcha() {
+						required = challenge.TierCaptcha
+					}
+					if st.chalTier >= required {
 						goto admitted
 					}
 					s.stats.Challenged.Add(1)
 					st.denied = "challenge:" + v.Reason
 					s.logs.SecurityEvent(r.Context(), "challenge", v.Reason, append([]any{
-						"request_id", st.id, "client_ip", st.clientIP.String(), "route", st.route, "detail", v.Detail}, v.Attrs...)...)
-					ch.Serve(rw, r, st.clientIP)
+						"request_id", st.id, "client_ip", st.clientIP.String(), "route", st.route, "detail", v.Detail, "captcha", required == challenge.TierCaptcha}, v.Attrs...)...)
+					ch.ServeTier(rw, r, st.clientIP, v.Captcha)
 					return
 				}
 			}
@@ -496,7 +569,7 @@ func (s *Server) filterDeny(rw *responseWriter, r *http.Request, st *reqState, v
 		"host", r.Host, "path", r.URL.Path, "route", st.route, "status", v.Status,
 		"detail", v.Detail, "user_agent", r.UserAgent()}, v.Attrs...)...)
 	if bl := s.bans.Load(); bl != nil {
-		bl.Observe(st.clientIP, banCategory(v.Reason))
+		bl.ObserveClient(st.clientIP, st.ja4, banCategory(v.Reason))
 	}
 	if rw.wrote {
 		return
@@ -726,6 +799,9 @@ func (s *Server) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 		}
 	}
 	cr.reqOps.apply(out.Header, &tvars{r: in, st: st})
+	if signer := rt.signers[cr.pool.Name]; signer != nil {
+		signer.Sign(out, time.Now(), st.clientIP.String(), st.id)
+	}
 }
 
 // outboundPath applies strip_prefix, rewrite_path or rewrite_regex and
@@ -856,15 +932,73 @@ func (s *Server) queueRefused(rw *responseWriter, r *http.Request, st *reqState,
 	s.plainStatus(rw, r, http.StatusServiceUnavailable)
 }
 
+// observeEndpoint feeds the API inventory with a finished request.
+func (s *Server) observeEndpoint(rw *responseWriter, r *http.Request, st *reqState, status int) {
+	o := apiinv.Observation{Host: st.host, Method: r.Method, Path: netutil.PathTemplate(st.path), Route: st.cr.cfg.Name, Status: status,
+		Auth: authKind(r), RequestType: mediaType(r.Header.Get("Content-Type")), ResponseType: mediaType(rw.Header().Get("Content-Type"))}
+	if len(st.cr.describers) > 0 {
+		o.Documented = apiinv.No
+		for _, d := range st.cr.describers {
+			if tmpl, ok := d.Documented(r.Method, st.path); ok {
+				o.Documented, o.Path = apiinv.Yes, tmpl
+				break
+			}
+		}
+	}
+	s.inventory.Observe(o, st.start)
+}
+
+// authKind names the credential a request carries.
+func authKind(r *http.Request) string {
+	if a := r.Header.Get("Authorization"); a != "" {
+		scheme, _, _ := strings.Cut(a, " ")
+		switch strings.ToLower(scheme) {
+		case "bearer":
+			return "bearer"
+		case "basic":
+			return "basic"
+		}
+		return "other"
+	}
+	if r.Header.Get("X-Api-Key") != "" || r.Header.Get("Api-Key") != "" {
+		return "api_key"
+	}
+	if r.Header.Get("Cookie") != "" {
+		return "cookie"
+	}
+	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		return "client_cert"
+	}
+	return "none"
+}
+
+func mediaType(ct string) string {
+	if ct == "" {
+		return ""
+	}
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(ct))
+}
+
 // deny writes a minimal error response and a security log entry.
 func (s *Server) deny(rw *responseWriter, r *http.Request, st *reqState, status int, reason string) {
+	s.denyDetail(rw, r, st, status, reason, "")
+}
+
+// denyDetail is deny with a detail attribute in the security event.
+func (s *Server) denyDetail(rw *responseWriter, r *http.Request, st *reqState, status int, reason, detail string) {
 	st.reason = reason
-	s.logs.SecurityEvent(r.Context(), "deny", reason,
-		"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
+	attrs := []any{"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
 		"host", r.Host, "path", r.URL.Path, "route", st.route, "status", status,
-		"user_agent", r.UserAgent())
+		"user_agent", r.UserAgent()}
+	if detail != "" {
+		attrs = append(attrs, "detail", detail)
+	}
+	s.logs.SecurityEvent(r.Context(), "deny", reason, attrs...)
 	if bl := s.bans.Load(); bl != nil && reason != "banned" {
-		bl.Observe(st.clientIP, banCategory(reason))
+		bl.ObserveClient(st.clientIP, st.ja4, banCategory(reason))
 	}
 	s.plainStatus(rw, r, status)
 }
@@ -877,7 +1011,7 @@ func (s *Server) tarpit(rw *responseWriter, r *http.Request, st *reqState, rl *c
 		"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
 		"host", r.Host, "path", r.URL.Path, "route", st.route, "delay", rl.TarpitDelay.D().String())
 	if bl := s.bans.Load(); bl != nil {
-		bl.Observe(st.clientIP, "rate_limit")
+		bl.ObserveClient(st.clientIP, st.ja4, "rate_limit")
 	}
 	select {
 	case <-time.After(rl.TarpitDelay.D()):
@@ -966,6 +1100,12 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	if st.ja4 != "" {
 		attrs = append(attrs, "ja4", st.ja4)
 	}
+	if st.device != "" {
+		attrs = append(attrs, "device", st.device)
+	}
+	if st.cr != nil && st.cr.inventory && s.inventory.Enabled() {
+		s.observeEndpoint(rw, r, st, status)
+	}
 	if st.cache != "" {
 		attrs = append(attrs, "cache", st.cache)
 	}
@@ -1038,30 +1178,100 @@ func isUpgrade(r *http.Request) bool {
 	return false
 }
 
-func rateKey(rl *config.RateLimit, r *http.Request, st *reqState) string {
+// rateKey derives the bucket identity of a request for a policy. Keys a
+// request may lack (a header, a cookie, a claim, a fingerprint, a
+// country) fall back to the client address, so a limit cannot be
+// avoided by omitting the identifier; rotating the identifier still
+// buys fresh buckets, which is why such keys are paired with a
+// client_ip or client_net policy.
+func (s *Server) rateKey(rl *config.RateLimit, r *http.Request, st *reqState) string {
+	ip := "ip:" + st.clientIP.String()
 	switch {
 	case rl.Key == "client_ip":
 		return st.clientIP.String()
+	case rl.Key == "client_net":
+		bits := rl.NetV4
+		if st.clientIP.Is6() && !st.clientIP.Is4In6() {
+			bits = rl.NetV6
+		}
+		if p, err := st.clientIP.Unmap().Prefix(bits); err == nil {
+			return "net:" + p.String()
+		}
+		return ip
 	case rl.Key == "route":
 		return st.route
+	case rl.Key == "endpoint":
+		return trim("ep:"+r.Method+" "+st.route+" "+netutil.PathTemplate(st.path), 256)
 	case rl.Key == "country":
 		if st.country == "" {
-			return "ip:" + st.clientIP.String()
+			return ip
 		}
 		return "c:" + st.country
+	case rl.Key == "device":
+		if st.device != "" {
+			return "dev:" + st.device
+		}
+		return ip
+	case rl.Key == "ja4":
+		if r.TLS != nil {
+			if fp, ok := s.fingerprints.Get(r.RemoteAddr); ok && fp.JA4 != "" {
+				return "ja4:" + fp.JA4
+			}
+		}
+		return ip
 	case strings.HasPrefix(rl.Key, "header:"):
 		v := r.Header.Get(rl.Key[len("header:"):])
 		if v == "" {
-			// Missing header falls back to the client IP so the limit can
-			// not be bypassed by omitting it.
-			return "ip:" + st.clientIP.String()
+			return ip
 		}
-		if len(v) > 256 {
-			v = v[:256]
+		return "h:" + trim(v, 256)
+	case strings.HasPrefix(rl.Key, "cookie:"):
+		if c, err := r.Cookie(rl.Key[len("cookie:"):]); err == nil && c.Value != "" {
+			return "ck:" + trim(c.Value, 256)
 		}
-		return "h:" + v
+		return ip
+	case strings.HasPrefix(rl.Key, "jwt:"):
+		if v := bearerClaim(r.Header.Get("Authorization"), rl.Key[len("jwt:"):]); v != "" {
+			return "jwt:" + trim(v, 256)
+		}
+		return ip
 	}
 	return st.clientIP.String()
+}
+
+// bearerClaim reads a claim from the payload of a bearer token without
+// verifying it: the value only names a bucket, and a forged token buys
+// its bearer nothing beyond a bucket of its own (the JWT filter still
+// rejects it). Only string, number and boolean claims are used.
+func bearerClaim(authorization, claim string) string {
+	tok, ok := strings.CutPrefix(authorization, "Bearer ")
+	if !ok {
+		tok, ok = strings.CutPrefix(authorization, "bearer ")
+		if !ok {
+			return ""
+		}
+	}
+	parts := strings.Split(strings.TrimSpace(tok), ".")
+	if len(parts) != 3 || len(parts[1]) > 16<<10 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims map[string]any
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	switch v := claims[claim].(type) {
+	case string:
+		return v
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(v)
+	}
+	return ""
 }
 
 func hashKey(u *config.Upstream, r *http.Request, st *reqState) string {

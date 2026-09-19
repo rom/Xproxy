@@ -38,6 +38,12 @@ type Info struct {
 	// ChallengeVerified is true when the client carries a valid browser
 	// challenge cookie (false when no challenge is configured).
 	ChallengeVerified bool
+	// CaptchaVerified is true when that cookie was earned through the
+	// CAPTCHA tier (it implies ChallengeVerified).
+	CaptchaVerified bool
+	// DeviceID is the device identifier carried by the challenge cookie
+	// (16 hex characters), or "" without one.
+	DeviceID string
 	// HoneypotMarked is true when the client hit a honeypot route within
 	// its mark window.
 	HoneypotMarked bool
@@ -62,6 +68,10 @@ type Verdict struct {
 	// of the status page, when a challenge is configured and the client is
 	// not yet verified; otherwise the verdict is a plain deny.
 	Challenge bool
+	// Captcha, with Challenge, asks for the CAPTCHA tier of the challenge
+	// when one is configured (the proof of work otherwise); a client
+	// verified by the proof of work alone is challenged again.
+	Captcha bool
 	// Silent marks a deny that is part of a normal flow (a login
 	// redirect, a logout): the response is sent but no security event is
 	// logged, no ban reason observed and no deny counted.
