@@ -770,6 +770,7 @@ challenge:
     difficulty: 16
     ttl: 1h0m0s
     bind_ip: null
+    bind_ja4: false
     cookie_name: XPCHAL
     exempt_cidrs:
         - 10.0.0.0/8

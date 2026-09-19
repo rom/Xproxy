@@ -2219,6 +2219,10 @@ type Challenge struct {
 	TTL Duration `yaml:"ttl"`
 	// BindIP ties the cookie to the client address. Default true.
 	BindIP *bool `yaml:"bind_ip"`
+	// BindJA4 ties the cookie to the client's JA4 TLS fingerprint (token
+	// binding): a cookie earned by one TLS client is refused when replayed
+	// by another, even from the same address. Off by default; TLS only.
+	BindJA4 bool `yaml:"bind_ja4"`
 	// CookieName defaults to XPCHAL.
 	CookieName string `yaml:"cookie_name"`
 	// ExemptCIDRs are never challenged.
@@ -2238,6 +2242,9 @@ type Challenge struct {
 
 // BindsIP reports whether cookies are bound to the client address.
 func (c *Challenge) BindsIP() bool { return c.BindIP == nil || *c.BindIP }
+
+// BindsJA4 reports whether cookies are bound to the client's JA4 fingerprint.
+func (c *Challenge) BindsJA4() bool { return c.BindJA4 }
 
 // DevicesOn reports whether device identifiers are collected.
 func (c *Challenge) DevicesOn() bool { return c.Device == nil || *c.Device }

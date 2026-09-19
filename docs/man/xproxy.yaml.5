@@ -8330,6 +8330,15 @@ T}	T{
 Cookie and nonce are bound to the client address
 T}
 T{
+\fBbind_\:ja4\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Bind the cookie to the client\(aqs JA4 TLS fingerprint (token binding): a cookie earned by one TLS client is refused when replayed by another,\: even from the same address. TLS only;\: a request without a fingerprint is treated as a distinct binding
+T}
+T{
 \fBcookie_\:name\fR
 T}	T{
 token

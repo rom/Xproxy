@@ -2303,6 +2303,7 @@ host before routing.
 | `difficulty` | int | `16` | Leading zero bits required; 8 to 24. 16 is roughly 65 000 hashes, under a second in a browser |
 | `ttl` | duration | `1h` | Validity of a passed challenge; at least 1m |
 | `bind_ip` | bool | `true` | Cookie and nonce are bound to the client address |
+| `bind_ja4` | bool | `false` | Bind the cookie to the client's JA4 TLS fingerprint (token binding): a cookie earned by one TLS client is refused when replayed by another, even from the same address. TLS only; a request without a fingerprint is treated as a distinct binding |
 | `cookie_name` | token | `XPCHAL` | |
 | `exempt_cidrs` | list | `[]` | Never challenged (monitoring, partners) |
 | `title` | string | `Checking your browser` | Heading on the page; no HTML characters |

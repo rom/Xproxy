@@ -146,6 +146,11 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			st.ja4 = fp.JA4
 		}
 	}
+	// Carry the fingerprint so a bind_ja4 challenge cookie's signature can
+	// cover it (token binding).
+	if st.ja4 != "" {
+		r = r.WithContext(challenge.WithJA4(r.Context(), st.ja4))
+	}
 	if bl := s.bans.Load(); bl != nil && bl.BannedClient(st.clientIP, st.ja4) {
 		s.stats.DeniedBan.Add(1)
 		st.denied = "banned"

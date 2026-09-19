@@ -222,6 +222,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Challenge cookie token binding (`challenge.bind_ja4`): the signed
+  challenge/CAPTCHA cookie can be bound to the client's JA4 TLS fingerprint,
+  so a stolen cookie replayed by a different TLS client is refused even from
+  the same address. Off by default; complements `bind_ip`.
 - Origin-lock verification command (`xproxyctl origin-check [upstream]`):
   probes the configured origins directly, sending an unsigned and a signed
   request to each endpoint of every upstream with an `origin_signature`, and

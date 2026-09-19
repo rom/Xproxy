@@ -115,6 +115,7 @@ type Challenger struct {
 	difficulty int
 	ttl        time.Duration
 	bindIP     bool
+	bindJA4    bool
 	cookie     string
 	exempt     []netip.Prefix
 	title      string
@@ -185,6 +186,7 @@ func (c *Challenger) Reconfigure(cfg *config.Challenge) {
 	c.difficulty = cfg.Difficulty
 	c.ttl = cfg.TTL.D()
 	c.bindIP = cfg.BindsIP()
+	c.bindJA4 = cfg.BindsJA4()
 	c.cookie = cfg.CookieName
 	c.exempt = netutil.ParsePrefixes(cfg.ExemptCIDRs)
 	c.title = cfg.Title
@@ -216,6 +218,48 @@ func (c *Challenger) ipBytes(ip netip.Addr) []byte {
 	}
 	b := ip.Unmap().As16()
 	return b[:]
+}
+
+// ja4CtxKey is the context key under which the proxy stores the client's
+// JA4 fingerprint for cookie binding.
+type ja4CtxKey struct{}
+
+// WithJA4 attaches the client's JA4 fingerprint to ctx so that a
+// bind_ja4 cookie's signature can cover it.
+func WithJA4(ctx context.Context, ja4 string) context.Context {
+	return context.WithValue(ctx, ja4CtxKey{}, ja4)
+}
+
+func ja4From(ctx context.Context) string {
+	v, _ := ctx.Value(ja4CtxKey{}).(string)
+	return v
+}
+
+// ja4Bytes is the JA4 contribution to a cookie's binding, or nil when
+// bind_ja4 is off. When on it is always 8 bytes — a hash of the fingerprint,
+// or zeros when none is available — so a fingerprinted client and an
+// unfingerprinted one never share a valid cookie.
+func (c *Challenger) ja4Bytes(r *http.Request) []byte {
+	if !c.bindJA4 {
+		return nil
+	}
+	var out [8]byte
+	if ja4 := ja4From(r.Context()); ja4 != "" {
+		sum := sha256.Sum256([]byte(ja4))
+		copy(out[:], sum[:8])
+	}
+	return out[:]
+}
+
+// bind is the per-client value a cookie's MAC covers: the address (bind_ip)
+// followed by the JA4 hash (bind_ja4), so a stolen cookie is refused from a
+// different address or TLS client.
+func (c *Challenger) bind(r *http.Request, ip netip.Addr) []byte {
+	b := c.ipBytes(ip)
+	if j := c.ja4Bytes(r); j != nil {
+		b = append(append([]byte{}, b...), j...)
+	}
+	return b
 }
 
 // Exempt reports whether ip is never challenged.
@@ -259,7 +303,7 @@ func (c *Challenger) Inspect(r *http.Request, ip netip.Addr) Cookie {
 	out := Cookie{Tier: TierProof}
 	switch len(raw) {
 	case 8 + macLen: // cookies issued before the tiered format
-		if !c.macOK(raw[8:], []byte("cookie"), raw[:8], c.ipBytes(ip)) {
+		if !c.macOK(raw[8:], []byte("cookie"), raw[:8], c.bind(r, ip)) {
 			return Cookie{}
 		}
 	case 8 + 1 + deviceLen + macLen, 8 + 1 + deviceLen + 1 + macLen:
@@ -269,7 +313,7 @@ func (c *Challenger) Inspect(r *http.Request, ip netip.Addr) Cookie {
 			label = "cookie3"
 			out.Automation = signalNames(raw[9+deviceLen])
 		}
-		if !c.macOK(raw[headLen:], []byte(label), raw[:headLen], c.ipBytes(ip)) {
+		if !c.macOK(raw[headLen:], []byte(label), raw[:headLen], c.bind(r, ip)) {
 			return Cookie{}
 		}
 		out.Tier = int(raw[8])
@@ -292,14 +336,14 @@ func (c *Challenger) Inspect(r *http.Request, ip netip.Addr) Cookie {
 
 // issueCookie returns a cookie value valid for ttl carrying the tier, the
 // device identifier and the automation markers.
-func (c *Challenger) issueCookie(ip netip.Addr, now time.Time, tier int, device []byte, signals byte) string {
+func (c *Challenger) issueCookie(r *http.Request, ip netip.Addr, now time.Time, tier int, device []byte, signals byte) string {
 	head := 8 + 1 + deviceLen + 1
 	buf := make([]byte, head, head+macLen)
 	binary.BigEndian.PutUint64(buf, uint64(now.Add(c.ttl).Unix())) //nolint:gosec // positive time
 	buf[8] = byte(tier)
 	copy(buf[9:], device)
 	buf[9+deviceLen] = signals
-	buf = append(buf, c.mac([]byte("cookie3"), buf[:head], c.ipBytes(ip))...)
+	buf = append(buf, c.mac([]byte("cookie3"), buf[:head], c.bind(r, ip))...)
 	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
@@ -541,7 +585,7 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 	if tier == TierCaptcha {
 		c.CaptchaPassed++
 	}
-	value := c.issueCookie(ip, now, tier, device, signals)
+	value := c.issueCookie(r, ip, now, tier, device, signals)
 	name := c.cookie
 	maxAge := int(c.ttl.Seconds())
 	c.mu.Unlock()
