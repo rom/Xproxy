@@ -41,6 +41,7 @@ server:
             max_streams: 100
             validate_addresses: always
             alt_svc_max_age: 24h0m0s
+            webtransport: false
           h2c: false
           kind: http
           tcp: null
@@ -175,6 +176,8 @@ upstreams:
       slow_start: 0s
       scheme: http
       h2c: false
+      h3: false
+      h3_fallback: null
       tls: null
       health_check:
         type: http
@@ -227,6 +230,8 @@ upstreams:
       slow_start: 0s
       scheme: https
       h2c: false
+      h3: false
+      h3_fallback: null
       tls:
         server_name: api.internal
         ca_file: /etc/xproxy/certs/internal-ca.pem
@@ -294,6 +299,7 @@ routes:
       max_body_bytes: 16384
       timeout: 0s
       websocket: false
+      webtransport: false
       waf: null
       priority_class: high
       challenge:
@@ -350,6 +356,7 @@ routes:
       max_body_bytes: null
       timeout: 0s
       websocket: false
+      webtransport: false
       waf:
         mode: block
         profile: api-strict
@@ -407,6 +414,7 @@ routes:
       max_body_bytes: null
       timeout: 0s
       websocket: false
+      webtransport: false
       waf: null
       priority_class: critical
       challenge: null
@@ -461,6 +469,7 @@ routes:
       max_body_bytes: null
       timeout: 0s
       websocket: false
+      webtransport: false
       waf: null
       priority_class: normal
       challenge: null
@@ -520,6 +529,7 @@ routes:
       max_body_bytes: null
       timeout: 0s
       websocket: true
+      webtransport: false
       waf: null
       priority_class: normal
       challenge:
@@ -574,6 +584,7 @@ routes:
       max_body_bytes: null
       timeout: 0s
       websocket: false
+      webtransport: false
       waf:
         mode: detect
         profile: default
@@ -618,14 +629,19 @@ waf:
         - name: default
           crs:
             dir: ""
+            plugins_dir: ""
+            plugins: []
             paranoia_level: 1
             inbound_threshold: 5
             outbound_threshold: 4
           directive_files: []
           directives: ""
+          json_schemas: []
         - name: api-strict
           crs:
             dir: ""
+            plugins_dir: ""
+            plugins: []
             paranoia_level: 2
             inbound_threshold: 5
             outbound_threshold: 4
@@ -634,6 +650,7 @@ waf:
             # Allow JSON bodies only on the API profile.
             SecRule REQUEST_HEADERS:Content-Type "!@rx ^application/json" \
               "id:100100,phase:1,deny,status:415,msg:'API accepts JSON only'"
+          json_schemas: []
     default_mode: block
     default_profile: default
     request_body_limit: 1048576
@@ -647,6 +664,7 @@ waf:
         - application/json
         - application/xml
     learning: null
+    anomaly: null
 cluster:
     node_id: edge-1
     listen: 10.0.0.1:7946
@@ -708,6 +726,7 @@ jwt:
           strip_token: null
           log_claims:
             - sub
+          introspection: null
 metrics:
     listen: 10.0.0.1:9100
     allow_cidrs:

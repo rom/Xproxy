@@ -41,7 +41,7 @@ locally; everything else goes through the socket.
 | `tls` | Served certificates per listener: names, issuer, expiry, source, OCSP staple state and Certificate Transparency verdict |
 | `tls tickets` | Session ticket keys: epoch, next rotation, key count, fingerprint and which cluster peers derive the same set |
 | `sandbox` | In-process hardening: each mechanism with its state and the file rules in force |
-| `waf` [`rules`\|`proposals`\|`exclusions`\|`reset`] | WAF profiles, counters and the most matched rules (`-top` *N*); `proposals` lists learned exclusion candidates, `exclusions` prints them as SecLang, `reset` clears the statistics |
+| `waf` [`rules`\|`proposals`\|`anomalies`\|`exclusions`\|`reset`] | WAF profiles (with their CRS plugins and JSON schemas), counters and the most matched rules (`-top` *N*); `proposals` lists learned exclusion candidates, `anomalies` the behavioural baseline and flagged clients, `exclusions` prints the proposals as SecLang, `reset` clears the statistics |
 | `rotate-secret` [`-keep` *N*] *FILE* | Add a fresh primary key to a secret file, keeping *N* (default 2) previous keys for verification; then `reload` |
 | `reload-certs` | Re-read certificate files |
 | `reopen-logs` | Reopen log files |
@@ -61,6 +61,7 @@ locally; everything else goes through the socket.
 | `otlp` | OpenTelemetry metrics exporter status |
 | `telemetry` | Every OpenTelemetry exporter with sent, dropped, pushes, failures, queue depth and last error |
 | `htpasswd` *FILE* *NAME* | Add or replace a `basic_auth` user; the password is read from standard input |
+| `apikey` `add`\|`rotate`\|`revoke`\|`remove`\|`list` [*ID*] [`-file` *PATH*] [`-scopes` *A,B*] [`-expires` *90d*] [`-note` *TEXT*] [`-grace` *24h*] | Manage the keys file of `api_key` filters: `add` prints the plaintext once, `rotate` issues a new secret and keeps the old one for the grace period, `revoke` and `remove` retire a key, `list` shows the file |
 | `spki` *CERT.pem* | Print the `spki_pins` value of a certificate |
 | `metrics` | Print the Prometheus exposition |
 | `series` [`-since` *D*] [`-last` *N*] | Print sampled series |

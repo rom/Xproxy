@@ -777,8 +777,8 @@ T}
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.9i) lbw(0.8i) lbx
-lw(1.0i) lw(0.9i) lw(0.8i) lx.
+lbw(1.3i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.3i) lw(0.9i) lw(0.8i) lx.
 T{
 Key
 T}	T{
@@ -814,6 +814,15 @@ T}	T{
 \fB24h\fR
 T}	T{
 Reserved for the \fBAlt\-\:Svc\fR \fBma\fR value (currently the library default)
+T}
+T{
+\fBwebtransport\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept WebTransport sessions on this endpoint: HTTP/\:3 datagrams and the WebTransport settings are enabled and routes with \fBwebtransport:\: true\fR relay them. The \fBOrigin\fR header is forwarded for the upstream to check
 T}
 .TE
 .PP
@@ -1254,6 +1263,11 @@ T}	T{
 a request header,\: cookie or query parameter
 T}
 T{
+\fBcert:\:field\fR
+T}	T{
+the client certificate of a listener with \fBclient_\:auth\fR (empty without one): \fBcn\fR,\: \fBsubject\fR and \fBissuer\fR (RFC 2253),\: \fBserial\fR (hex),\: \fBfingerprint\fR (SHA\-256 of the DER,\: hex),\: \fBsans\fR (DNS names,\: addresses,\: emails and URIs,\: comma separated),\: \fBnot_\:after\fR (RFC 3339),\: \fBxfcc\fR (an Envoy style \fBX\-\:Forwarded\-\:Client\-\:Cert\fR value with \fBHash\fR,\: \fBSubject\fR,\: \fBURI\fR and \fBDNS\fR) and \fBpem\fR (URL encoded PEM). Set the header with \fBrequest_\:headers.\:set\fR,\: which also discards a client supplied copy
+T}
+T{
 \fB1\fR to \fB9\fR,\: \fBname\fR
 T}	T{
 groups of \fBrewrite_\:regex.\:pattern\fR or,\: without one,\: of the matching \fBpath_\:regex\fR (numbered and named)
@@ -1311,6 +1325,11 @@ T{
 \fBhas_\:header("Name")\fR,\: \fBhas_\:cookie("name")\fR,\: \fBhas_\:query("name")\fR
 T}	T{
 Presence,\: also of an empty value
+T}
+T{
+\fBcert("field")\fR
+T}	T{
+A client certificate field as in the variable table (\fBcert("cn") =\:=\: "billing\-\:batch"\fR,\: \fBcert("fingerprint") in [.\:.\:.\:]\fR);\: empty without a client certificate
 T}
 T{
 \fBx in ["a",\: "b"]\fR,\: \fBx not in [.\:.\:.\:]\fR
@@ -2081,6 +2100,24 @@ T}	T{
 Speak HTTP/\:2 without TLS to \fBhttp\fR endpoints (gRPC backends);\: \fBhttps\fR negotiates HTTP/\:2 with ALPN on its own
 T}
 T{
+\fBh3\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Speak HTTP/\:3 (QUIC over UDP) to \fBhttps\fR endpoints;\: health probes use it too. Exclusive with \fBh2c\fR. \fBxproxyctl upstreams\fR shows the pool protocol
+T}
+T{
+\fBh3_\:fallback\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+With \fBh3\fR,\: retry a request whose QUIC connection fails before a response (UDP blocked,\: handshake timeout) over TCP on the same endpoint;\: counted as \fBh3_\:fallbacks\fR in the pool status. Off,\: such failures are errors like any other
+T}
+T{
 \fBtls\fR
 T}	T{
 object
@@ -2772,8 +2809,8 @@ Matching: exact host, then wildcard host, then hostless routes; within a host th
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(1.1i) lbw(1.2i) lbx
-lw(1.0i) lw(1.1i) lw(1.2i) lx.
+lbw(1.3i) lbw(1.1i) lbw(1.2i) lbx
+lw(1.3i) lw(1.1i) lw(1.2i) lx.
 T{
 Key
 T}	T{
@@ -3070,6 +3107,33 @@ T}	T{
 \fBfalse\fR
 T}	T{
 Allow \fBUpgrade\fR requests
+T}
+T{
+\fBwebtransport\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Relay WebTransport sessions (extended CONNECT over HTTP/\:3) to the upstream: bidirectional and unidirectional streams and datagrams in both directions,\: with the request header operations applied to the CONNECT. Needs a listener with \fBh3.\:webtransport:\: true\fR and an upstream with \fBh3:\: true\fR;\: on any other listener or protocol the session is refused
+T}
+T{
+\fBgrpc.\:web\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept gRPC\-web requests (\fBapplication/\:grpc\-\:web\fR,\: \fBgrpc\-\:web+proto\fR,\: \fBgrpc\-\:web\-\:text\fR,\: \fBgrpc\-\:web\-\:text+proto\fR,\: over HTTP/\:1.1 or HTTP/\:2) on this gRPC route and translate them: the upstream sees plain gRPC,\: the response trailers come back as a trailer frame in the body and the text variants are base64. Without it a gRPC\-web request is refused with gRPC status 2
+T}
+T{
+\fBgrpc.\:web_\:origins\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Browser origins (\fBhttps:\:/\:/\:app.\:example.\:com\fR,\: or \fB*\fR) whose CORS preflights are answered (\fBPOST\fR,\: the requested headers,\: ten minutes) and whose responses get \fBAccess\-\:Control\-\:Allow\-\:Origin\fR and the exposed \fBgrpc\-\:status\fR and \fBgrpc\-\:message\fR;\: needs \fBweb:\: true\fR. Empty leaves CORS to the upstream or to header operations
 T}
 .TE
 .SH "ingress"
@@ -3630,6 +3694,15 @@ none
 T}	T{
 Exclusion learning;\: see below
 T}
+T{
+\fBanomaly\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Behavioural anomaly detection per client;\: see below
+T}
 .TE
 .SS "waf.learning"
 .PP
@@ -3676,6 +3749,78 @@ T}	T{
 Bound on distinct (rule,\: variable,\: route) entries;\: further ones are counted as dropped;\: 100 to 1000000
 T}
 .TE
+.SS "waf.anomaly"
+.PP
+The rules judge one request at a time. Anomaly detection judges clients: every WAF protected request is attributed to its client address, and at the end of each window a client with at least \fBmin_requests\fR becomes a feature vector (request rate, share of requests that matched a rule, share that ended in an error or a deny, spread over distinct paths). The population\(aqs mean and variance per feature form a baseline that follows drift across windows; a client whose largest positive z\-score against the previous baseline reaches \fBthreshold\fR is flagged and its next requests get \fBaction\fR, until a later window scores it normal or it stays away for three windows. A window with fewer than eight scored clients updates nothing, so a quiet site never flags its only visitor. Flags, the baseline and the counters show under \fBxproxyctl waf anomalies\fR and \fBGET /v1/waf\fR.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.1i) lbw(0.8i) lbx
+lw(1.0i) lw(1.1i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+Observation period;\: 10s to 24h
+T}
+T{
+\fBmin_\:requests\fR
+T}	T{
+int
+T}	T{
+\fB30\fR
+T}	T{
+Requests a client needs in a window before it is scored;\: 1 to 1000000
+T}
+T{
+\fBthreshold\fR
+T}	T{
+float
+T}	T{
+\fB4\fR
+T}	T{
+z\-score at which a client is flagged;\: 1 to 100
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBlog\fR,\: \fBchallenge\fR,\: \fBblock\fR
+T}	T{
+\fBlog\fR
+T}	T{
+For requests of a flagged client: log attributes only,\: serve the browser challenge (a plain 403 without a \fBchallenge\fR section),\: or deny with 403 and reason \fBwaf_\:anomaly\fR
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Clients tracked per window;\: further ones are counted as dropped and not scored;\: 100 to 10000000
+T}
+.TE
 .SS "waf.profiles[]"
 .PP
 .TS
@@ -3717,6 +3862,24 @@ T}	T{
 embedded copy
 T}	T{
 Load the Core Rule Set from a directory in the release layout (\fBcrs\-\:setup.\:conf\fR or \fBcrs\-\:setup.\:conf.\:example\fR,\: \fBrules/\:*.\:conf\fR with their \fB.\:data\fR files);\: a reload picks up changed files,\: so rules update without a new binary. The directory is validated at load and a broken file fails the reload
+T}
+T{
+\fBcrs.\:plugins_\:dir\fR
+T}	T{
+absolute path
+T}	T{
+none
+T}	T{
+Directory of CRS plugins: files named \fB<plugin>\-\:config.\:conf\fR,\: \fB<plugin>\-\:before.\:conf\fR and \fB<plugin>\-\:after.\:conf\fR directly in it,\: in a subdirectory per plugin,\: or in that subdirectory\(aqs \fBplugins/\fR folder (a checked out plugin repository);\: data files next to them resolve by bare name and under \fBplugins/\fR. Config and before files load before the CRS rules,\: after files after them
+T}
+T{
+\fBcrs.\:plugins\fR
+T}	T{
+list of names
+T}	T{
+every plugin found
+T}	T{
+Load only these plugins;\: a listed plugin that is missing fails the load
 T}
 T{
 \fBcrs.\:paranoia_\:level\fR
@@ -3763,9 +3926,81 @@ T}	T{
 T}	T{
 Inline SecLang loaded in the same position,\: at most 1 MiB
 T}
+T{
+\fBjson_\:schemas\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+JSON body schemas enforced before the rules;\: see below
+T}
 .TE
 .PP
 A profile needs at least one of \fBcrs\fR, \fBdirective_files\fR or \fBdirectives\fR.
+.SS "waf.profiles[].json_schemas[]"
+.PP
+A schema binds a JSON Schema document to request paths. A matching request\(aqs JSON body is buffered (bounded by \fBwaf.request_body_limit\fR, 413 above it), validated and then handed to the rules unchanged. In \fBblock\fR mode a violation is denied with 400, reason \fBwaf\fR, detail \fBjson_schema:<name>:<first problem>\fR and a JSON problem body listing up to twenty issues; in \fBdetect\fR mode it is logged (\fBwaf_schema\fR, \fBwaf_schema_issue\fR) and the request continues. The evaluator is the one the \fBopenapi\fR filter uses: types, enums, constants, string lengths, patterns and formats, numeric bounds, array and object bounds, \fBproperties\fR, \fBpatternProperties\fR, \fBadditionalProperties\fR, \fBallOf\fR, \fBanyOf\fR, \fBoneOf\fR, \fBnot\fR and local \fB$ref\fR.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(1.0i) lbx
+lw(0.9i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required,\: unique in the profile
+T}	T{
+
+T}
+T{
+\fBpaths\fR
+T}	T{
+list of prefixes
+T}	T{
+required
+T}	T{
+Request path prefixes the schema applies to;\: the first schema whose method and prefix match wins
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+\fB[POST,\: PUT,\: PATCH]\fR
+T}	T{
+Upper\-case methods enforced
+T}
+T{
+\fBschema_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+JSON Schema document,\: JSON or YAML,\: at most 8 MiB,\: read at load and on reload
+T}
+T{
+\fBrequired\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a matching request without a body (400) or with a non JSON media type (415);\: otherwise such requests pass to the rules unchecked
+T}
+.TE
 .SS "routes[].honeypot"
 .PP
 A honeypot route answers with a decoy that looks like the real thing (a WordPress login, a leaked \fB.env\fR, a \fB.git/config\fR) and records the client: a \fBhoneypot\fR security event with the full request line, a mark on the address for \fBmark\fR so that its later requests on every route are logged with \fBhoneypot_marked: true\fR and reach filters as \fBInfo.HoneypotMarked\fR, and a count towards the \fBhoneypot\fR ban reason. Nothing is proxied. Put honeypots on paths no legitimate client uses.
@@ -4253,8 +4488,8 @@ Present means providers are available; routes opt in with a \fBjwt\fR block. Tok
 .PP
 .TS
 allbox;
-lbw(1.1i) lbw(0.9i) lbw(1.0i) lbx
-lw(1.1i) lw(0.9i) lw(1.0i) lx.
+lbw(1.5i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.5i) lw(0.9i) lw(1.0i) lx.
 T{
 Key
 T}	T{
@@ -4398,6 +4633,69 @@ T}	T{
 \fB[]\fR
 T}	T{
 Claims copied to the access log as \fBjwt_\:<claim>\fR
+T}
+T{
+\fBintrospection\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Validate tokens at an OAuth 2.0 token introspection endpoint (RFC 7662): every token of a provider without keys,\: tokens that are not compact JWS otherwise,\: all tokens with \fBalways\fR. The answer\(aqs claims pass the provider\(aqs \fBissuer\fR,\: \fBaudiences\fR (when present) and \fBrequired_\:claims\fR rules and feed \fBforward_\:claims\fR and \fBlog_\:claims\fR like a JWT payload;\: \fBactive:\: false\fR is refused with reason \fBinactive\fR,\: an unreachable endpoint answers 503 with \fBRetry\-\:After\fR
+T}
+T{
+\fBintrospection.\:url\fR
+T}	T{
+https URL
+T}	T{
+required
+T}	T{
+The endpoint
+T}
+T{
+\fBintrospection.\:client_\:id\fR,\: \fBintrospection.\:client_\:secret_\:file\fR
+T}	T{
+string,\: path
+T}	T{
+required
+T}	T{
+HTTP basic credentials of the proxy at the authorization server
+T}
+T{
+\fBintrospection.\:ca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+CA pinned for the endpoint
+T}
+T{
+\fBintrospection.\:cache_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+How long an answer (positive or negative) is kept,\: bounded by the token\(aqs \fBexp\fR;\: at most 65536 entries per provider;\: \fB0\fR caches nothing
+T}
+T{
+\fBintrospection.\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB3s\fR
+T}	T{
+Per call,\: 100ms to 30s
+T}
+T{
+\fBintrospection.\:always\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Introspect signed tokens too,\: for revocation
 T}
 .TE
 .PP
@@ -4627,7 +4925,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -5160,6 +5458,260 @@ T}
 .TE
 .PP
 Signals and default weights: \fBua_bot\fR 40 (curl, wget, python, Go, Java, scanners, headless browsers and the like), \fBua_missing\fR 30, \fBbrowser_headers_missing\fR 25 (a browser user agent without \fBAccept\fR or \fBAccept\-Language\fR), \fBfingerprint_mismatch\fR 35 (a browser user agent on a hello without \fBh2\fR ALPN or with fewer than ten cipher suites), \fBerror_rate\fR 30 (more than half of at least ten recent requests were 4xx or denied), \fBpath_spread\fR 15 (fifty or more distinct paths in the window), \fBregular_interval\fR 20 (eight or more requests with machine\-like timing), \fBhigh_rate\fR 15, \fBhoneypot_marked\fR 40 (the client touched a honeypot route on this node or, with cluster sharing, on a peer). The score is the capped sum; a client that is already verified by the challenge is never challenged again. The JA4 of every TLS request is logged as \fBja4\fR.
+.SS "Kind \fBapi_key\fR"
+.PP
+API keys with a life cycle: issued by \fBxproxyctl apikey add\fR (the plaintext \fBxpk_<id>_<secret>\fR is printed once; the file keeps a SHA\-256), scoped, expiring, rotated with a grace period for the previous secret (\fBapikey rotate \-grace 24h\fR) and revoked (\fBapikey revoke\fR, kept in the file so the id is never reused). The filter re\-reads the file when its contents change, at most every \fBreload\fR, and keeps the previous table when the new file does not parse.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBkeys_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Written by \fBxproxyctl apikey\fR;\: must not be world readable
+T}
+T{
+\fBsource\fR
+T}	T{
+\fBheader:\:<Name>\fR,\: \fBbearer\fR,\: \fBquery:\:<name>\fR
+T}	T{
+\fBheader:\:X\-\:Api\-\:Key\fR
+T}	T{
+Where the key is read;\: \fBbearer\fR accepts \fBAuthorization:\: Bearer\fR,\: \fBApiKey\fR or \fBApi\-\:Key\fR
+T}
+T{
+\fBrequired_\:scopes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Every listed scope must be granted to the key (a scope \fBorders\fR covers \fBorders:\:read\fR,\: \fB*\fR covers all);\: a key without one is refused with 403
+T}
+T{
+\fBforward_\:id_\:header\fR
+T}	T{
+header
+T}	T{
+\fBX\-\:Api\-\:Key\-\:Id\fR
+T}	T{
+Upstream header carrying the key id;\: \fB""\fR disables. A client supplied copy is always removed
+T}
+T{
+\fBforward_\:scopes_\:header\fR
+T}	T{
+header
+T}	T{
+\fBX\-\:Api\-\:Key\-\:Scopes\fR
+T}	T{
+Upstream header with the key\(aqs scopes,\: space separated;\: \fB""\fR disables
+T}
+T{
+\fBstrip\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Remove the key from the forwarded request
+T}
+T{
+\fBreload\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How often the file is checked for changes (1s to 1h)
+T}
+T{
+\fBexpiry_\:warning\fR
+T}	T{
+duration
+T}	T{
+\fB168h\fR
+T}	T{
+A key used within this time of its expiry is logged once a day;\: \fB0\fR disables
+T}
+.TE
+.PP
+Denials: 401 with \fBWWW\-Authenticate: ApiKey\fR and the detail \fBmissing\fR, \fBunknown\fR, \fBrevoked\fR, \fBexpired\fR or \fBrotated\fR (the previous secret after its grace), 403 \fBscope:<name>\fR; the access log carries \fBapi_key\fR with the id.
+.SS "Kind \fBopenapi\fR"
+.PP
+Validates requests against an OpenAPI 3.0 or 3.1 description (JSON or YAML): the path must be documented (concrete paths win over templated ones), the method defined for it (else 405 with \fBAllow\fR), path, query, header and cookie parameters present when required and matching their schema (strings are coerced to the declared type), the content type one the operation declares (else 415) and a JSON body valid against its schema. The schema subset covers types and \fBnullable\fR, \fBenum\fR, \fBconst\fR, \fBrequired\fR, \fBproperties\fR, \fBadditionalProperties\fR, \fBpatternProperties\fR, \fBitems\fR, \fBminItems\fR/\fBmaxItems\fR/\fBuniqueItems\fR, \fBminLength\fR/\fBmaxLength\fR/ \fBpattern\fR, \fBminimum\fR/\fBmaximum\fR (exclusive too), \fBmultipleOf\fR, \fBminProperties\fR/\fBmaxProperties\fR, \fBallOf\fR/\fBanyOf\fR/\fBoneOf\fR/\fBnot\fR, local \fB$ref\fR and the formats \fBdate\-time\fR, \fBdate\fR, \fBemail\fR, \fBuuid\fR, \fBipv4\fR, \fBipv6\fR, \fBuri\fR and \fBhostname\fR; other keywords and formats are ignored as the specification allows. Denials answer JSON with the reason and up to twenty \fBdetails\fR naming the offending path.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.6i) lbw(1.2i) lbx
+lw(1.0i) lw(0.6i) lw(1.2i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBspec_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The description;\: loaded at configuration load,\: so a change needs a reload
+T}
+T{
+\fBbase_\:path\fR
+T}	T{
+path
+T}	T{
+from \fBservers[0].\:url\fR
+T}	T{
+Prefix under which the paths are served
+T}
+T{
+\fBunknown_\:paths\fR
+T}	T{
+\fBdeny\fR,\: \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+\fBdeny\fR answers 404 for a path the description lacks
+T}
+T{
+\fBstrict_\:query\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse query parameters the operation does not declare
+T}
+T{
+\fBvalidate_\:body\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Parse and validate JSON bodies;\: off checks only the media type
+T}
+T{
+\fBmax_\:body_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+A JSON body above this is refused with 413 rather than parsed (1 to 64 MiB)
+T}
+.TE
+.SS "Kind \fBgraphql\fR"
+.PP
+Bounds GraphQL requests (\fBPOST\fR with \fBapplication/json\fR or \fBapplication/graphql\fR, \fBGET\fR with \fBquery\fR) before they reach the API: depth (nesting of selection sets, fragments expanded, a fragment cycle fails), complexity (each field costs 1 times the product of the list arguments of its ancestors; a variable in a list argument counts as \fBmax_list\fR), aliases, operations per batch, query size and introspection. Nothing is executed or forwarded to a schema. Denials are 400 with a GraphQL \fBerrors\fR body and the detail \fBdepth\fR, \fBcomplexity\fR, \fBaliases\fR, \fBbatch\fR, \fBsize\fR, \fBsyntax\fR or \fBintrospection\fR.
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.4i) lw(0.6i) lw(0.8i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmax_\:depth\fR
+T}	T{
+int
+T}	T{
+\fB10\fR
+T}	T{
+Deepest selection set allowed (1 to 1000)
+T}
+T{
+\fBmax_\:complexity\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Weighted field count per operation
+T}
+T{
+\fBmax_\:aliases\fR
+T}	T{
+int
+T}	T{
+\fB30\fR
+T}	T{
+Aliased fields per request (alias floods hide repeated resolvers)
+T}
+T{
+\fBmax_\:batch\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+Operations in an array request
+T}
+T{
+\fBmax_\:query_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Query text and body size (256 to 16 MiB)
+T}
+T{
+\fBintrospection\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+\fBfalse\fR refuses \fB_\:_\:schema\fR and \fB_\:_\:type\fR
+T}
+T{
+\fBlist_\:args\fR
+T}	T{
+list
+T}	T{
+\fB[first,\: last,\: limit]\fR
+T}	T{
+Arguments whose integer value multiplies the cost of the fields below
+T}
+T{
+\fBmax_\:list\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Cap of one multiplier,\: and the value assumed for a variable
+T}
+.TE
 .SS "routes[].filters"
 .PP
 A list of filter names, run in the listed order within each stage. A route may combine them with \fBjwt\fR, \fBwaf\fR and \fBicap\fR.

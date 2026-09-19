@@ -218,6 +218,32 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- WAF: Core Rule Set plugins from a directory (`crs.plugins_dir`,
+  `crs.plugins`), JSON body schemas enforced per profile and path
+  before the rules (`json_schemas`, with block and detect modes and a
+  problem body), and behavioural anomaly detection that scores clients
+  against the population per window and logs, challenges or blocks
+  the outliers (`waf.anomaly`, `xproxyctl waf anomalies`, the
+  `waf_anomaly` reason). The JSON Schema evaluator moved to
+  `internal/jsonschema`, shared with the `openapi` filter.
+- API security filters: `api_key` (keys issued, scoped, rotated with
+  grace and revoked by `xproxyctl apikey`, stored hashed, forwarded as
+  an id and scopes), `openapi` (requests validated against an OpenAPI 3
+  description: paths, methods, parameters, media types and JSON bodies
+  with a built-in schema evaluator) and `graphql` (depth, complexity,
+  aliases, batch, size and introspection bounds).
+- HTTP/3 to upstreams (`upstreams[].h3`, with a TCP fallback on QUIC
+  failures), gRPC-web translation for browser clients
+  (`routes[].grpc.web`, `web_origins` for CORS) and WebTransport relays
+  (`h3.webtransport` on a listener, `routes[].webtransport`) that carry
+  streams and datagrams to an HTTP/3 upstream.
+- Identity: OAuth 2.0 token introspection on JWT providers
+  (`jwt.providers[].introspection`) for opaque tokens or revocation
+  checks, with a bounded cache; client certificate fields as template
+  variables and an expression function (`${cert:cn}`, `${cert:xfcc}`,
+  `cert("fingerprint")`) to forward or route on a verified client
+  identity; single sign-on for the web GUI through an OpenID Connect
+  provider (`xproxy-admin serve -oidc-*`) with roles from a claim.
 - Rate limits beyond token buckets: `algorithm: sliding_window` with
   `limit` per `window` (weighted two-window estimate), and
   `distributed: exact` under which one cluster member owns each key

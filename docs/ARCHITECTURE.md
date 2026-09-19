@@ -58,7 +58,8 @@ internal/proxy      server, listeners, handler pipeline, transport, stats
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
-internal/filters    built-in kinds (header_guard, basic_auth, body_rewrite, bot_score, oidc, wasm) and the registration list
+internal/filters    built-in kinds (header_guard, basic_auth, api_key, openapi, graphql, body_rewrite, bot_score, oidc, wasm) and the registration list
+internal/jsonschema JSON Schema evaluator shared by the openapi filter and the WAF body schemas
 internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/secret     keyring files for the symmetric secrets, rotation with retained keys
@@ -702,6 +703,19 @@ status from the response, so the standard health service works without
 a protobuf library. The upstream response's `grpc-status` is captured
 at end of body for the access log and a per code counter.
 
+gRPC-web (`internal/proxy/grpcweb.go`) is a translation at the edge of
+the same pipeline: `isGRPCWeb` marks the request (it counts as gRPC for
+routing), the rewrite turns the content type into the gRPC one, adds
+`TE: trailers` and decodes a text body chunk by chunk (clients send one
+padded base64 chunk per frame); `ModifyResponse` restores the web
+content type and wraps the body in `grpcWebBody`, which streams the
+data frames (whole frames base64 encoded in text mode) and appends the
+trailer frame from the upstream trailers, or from the headers of a
+trailers-only response, when the body ends. CORS preflights for routes
+with `web_origins` are answered before admission, and proxy errors on
+gRPC-web requests are written as trailers-only responses with the web
+content type.
+
 ### Request mirroring
 
 `prepareMirror` runs in `proxyTo` before the live request is handed to
@@ -814,7 +828,7 @@ Endpoints:
 | GET | `/v1/tls/tickets` | session ticket key epoch, fingerprint and peer agreement (404 without `server.session_tickets`) |
 | GET | `/v1/telemetry` | OpenTelemetry exporters (metrics, traces, logs) with counters |
 | GET | `/v1/quotas` | usage per tenant, route and rate limit policy; `?top=N` consumers per policy |
-| GET | `/v1/waf` | WAF profiles, route assignments, per rule statistics (`?top=N`) and learned exclusion proposals |
+| GET | `/v1/waf` | WAF profiles (plugins, schemas), route assignments, per rule statistics (`?top=N`), learned exclusion proposals, schema violations and the anomaly baseline with flagged clients |
 | GET | `/v1/waf/exclusions` | the proposals as a SecLang file (text/plain) |
 | POST | `/v1/waf/reset` | clear WAF statistics and the learning table (audited) |
 | GET | `/v1/sandbox` | in-process hardening: mechanisms with state, Landlock rules and ABI |
@@ -882,6 +896,18 @@ viewers may only `GET`. Failed logins are rate limited per source and
 password checks are bounded in concurrency so the hash cost cannot be
 turned against the process. A non-loopback listener is refused unless
 server certificate, key and client CA are all configured.
+
+With OIDC options the GUI adds `GET /api/auth` (which logins exist),
+`GET /api/oidc/login` and `GET /api/oidc/callback`
+(`internal/admin/oidc.go`). The flow mirrors the OIDC filter's:
+discovery with an issuer check, a state cookie sealed with AES-GCM
+under a per-process key and bound to the `state` parameter by digest,
+PKCE S256, a nonce, the code exchange with basic client authentication,
+ID token verification by a `jwt.Provider` built from the discovered
+JWKS, then a role from the configured claim and an ordinary session
+(`via=oidc`) under the same idle and absolute limits. Failures redirect
+to the login page with a short reason code and are logged with the
+source address.
 
 ### Metrics and series
 
@@ -962,19 +988,51 @@ required claims. The filter removes client supplied copies of forwarded
 claim headers before anything else, so a claim header can never be
 spoofed even on optional routes.
 
+A provider with an `introspection` section owns an `introspector`
+(`internal/jwt/introspect.go`): a bounded HTTPS client with a pinned CA
+that posts the token with the proxy's basic credentials and maps the
+answer's fields to `Claims`; decisions are cached by SHA-256 of the
+token for `cache_ttl` capped by `exp`, positive and negative alike, in
+a table bounded at 65536 entries with a throttled warning when full.
+`Provider.Verify` routes a token to the introspector when the provider
+has no keys, when `always` is set, or when the token is not a compact
+JWS; the filter answers 503 with `Retry-After` while the endpoint is
+unreachable, as for missing keys.
+
 ### WAF filter
 
 One `waf.Engine` per generation compiles each profile that some route uses
 into a blocking Coraza instance, a detection-only instance, or both. The
 SecLang is assembled in a fixed order: Coraza recommended settings, body
 limits from the configuration, CRS setup, paranoia level and thresholds,
-operator directive files and inline directives (exclusions), CRS rules,
-and finally the engine mode. Per request the instance mirrors Coraza's own
-middleware: connection and URI, request headers, request body read into
+plugin config and before files, operator directive files and inline
+directives (exclusions), CRS rules, plugin after files, and finally the
+engine mode. Per request the instance mirrors Coraza's own
+middleware: connection and URI, request headers, the anomaly flag
+check and the JSON schema check (below), request body read into
 the transaction and replayed to the upstream from Coraza's buffer, then
 optionally response headers and a bounded response body. Matched attack
 rules, the blocking rule's total score and the interruption are logged;
 initialisation and reporting rules are filtered out.
+
+Plugins (`plugins.go`) are discovered under `crs.plugins_dir` by file
+name suffix, directly, one directory down or in that directory's
+`plugins/` folder, and inlined into the assembled SecLang rather than
+included, so the rule set file system needs no layout change; a
+`pluginFS` layers the plugin directories over the rule set so data
+files resolve by bare name and under `plugins/`. JSON body schemas
+(`schemas.go`) compile through `internal/jsonschema` at load; a
+matching request's body is buffered within the request body limit,
+validated, and reset for Coraza. Anomaly detection (`anomaly.go`)
+lives in `waf.Stats`: `End` attributes every transaction to its client
+in a table sharded 64 ways (requests, rule matches, errors, up to 64
+distinct paths); the first observation after the window closes rolls
+it under a single mutex, turns clients at or above `min_requests` into
+four features, scores them against the previous baseline (z-score with
+a per feature floor on the standard deviation) and folds the window's
+mean and variance into the baseline with a weight of 0.3. Flags sit in
+a concurrent map read lock free on the request path; `Request` applies
+the action before the body is read.
 
 The rule set comes from a `ruleSet`: the embedded `coreruleset.FS` or,
 with `crs.dir`, an `os.DirFS` over the operator's directory. The
@@ -995,6 +1053,23 @@ a path prefix, otherwise an unconditional `SecAction` with the same
 `ctl` (directive files load before the CRS rules, where
 `SecRuleUpdateTargetById` would not find its rule); ids are allocated
 from 10000 upwards in sorted order so a saved file is stable.
+
+The API security kinds follow the same shape. `api_key` keeps the keys
+file as an immutable table behind an atomic pointer (hash to key,
+previous hashes included), re-read when the file's digest changes and
+at most every `reload`; a file that fails to parse keeps the previous
+table and logs. `openapi` compiles the description at load into exact
+and templated path items (templates become anchored regular
+expressions, concrete paths win, longer literal prefixes first) with
+per operation parameters and request bodies, and validates with a
+small JSON Schema evaluator (`internal/jsonschema`, shared with the
+WAF body schemas): local `$ref` resolution with
+a cycle guard, a nesting limit, a bounded regular expression cache and
+at most twenty reported issues. `graphql` parses queries with a
+tolerant recursive descent parser under a token budget and measures
+depth, complexity (list argument multipliers capped by `max_list`),
+aliases and introspection with fragments expanded and cycles detected;
+denials are GraphQL error documents.
 
 ### Ban list
 
@@ -1112,6 +1187,26 @@ default; handshake and idle timeouts, streams per connection and header
 size come from the listener limits; 0-RTT is disabled. Requests arrive as
 `HTTP/3.0` with `r.TLS` set, so logging, forwarding headers and every
 pipeline stage behave as for HTTP/2.
+
+HTTP/3 is also spoken upstream. `h3.NewClientTransport` wraps quic-go's
+`http3.Transport` with the pool's client TLS configuration (server
+name, roots, client certificate) and timeouts; `Pool.RoundTripper`
+returns it when `h3` is set, health probes share it, and
+`poolTransport` retries a request whose QUIC connection failed before
+a response over the TCP transport of the same endpoint when
+`h3_fallback` allows (`h3.IsTransportError` recognises the QUIC error
+types), counting the fallback. A listener with `h3.webtransport`
+builds its `http3.Server` inside a `webtransport.Server`
+(quic-go's webtransport-go): datagrams and the WebTransport settings
+are enabled and each accepted QUIC connection is served through it so
+that session streams are demultiplexed. An extended CONNECT with the
+webtransport protocol on a route with `webtransport: true` reaches
+`relayWebTransport`: the upstream session is dialled first
+(`h3.DialWebTransport`, the CONNECT carrying the forwarding headers and
+the route's header operations), then the client's is accepted with
+`Upgrade`, and `h3.RelayWebTransport` pipes bidirectional streams,
+unidirectional streams and datagrams both ways, mirroring closes and
+resets with their codes, until either session ends.
 
 ## 15. Scale properties (measured, see PERFORMANCE.md)
 

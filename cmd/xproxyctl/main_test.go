@@ -103,6 +103,7 @@ func TestCommands(t *testing.T) {
 		{[]string{"waf"}, 0, "PROFILE"},
 		{[]string{"waf", "rules"}, 0, "no rule matches recorded"},
 		{[]string{"waf", "proposals"}, 0, "no exclusion proposals"},
+		{[]string{"waf", "anomalies"}, 0, "anomaly detection is not enabled"},
 		{[]string{"waf", "exclusions"}, 0, "(no proposals)"},
 		{[]string{"waf", "reset"}, 0, "reset"},
 		{[]string{"waf", "bogus"}, 2, "usage: xproxyctl waf"},

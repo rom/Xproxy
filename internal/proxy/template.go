@@ -1,10 +1,16 @@
 package proxy
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
@@ -135,6 +141,10 @@ func (v *tvars) Resolve(name, arg string) (string, bool) {
 				return vals[0], true
 			}
 		}
+	case "cert":
+		if r != nil && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			return certField(r.TLS.PeerCertificates[0], arg)
+		}
 	default:
 		if st != nil {
 			return st.capture(name)
@@ -229,4 +239,60 @@ func (o *compiledOps) apply(h http.Header, v *tvars) {
 	for _, op := range o.add {
 		h.Add(op.name, op.t.Expand(r))
 	}
+}
+
+// certField returns one field of the client certificate for ${cert:...}
+// and cert(...): cn, subject, issuer (RFC 2253), serial (hex),
+// fingerprint (SHA-256 hex of the DER), sans (DNS names, addresses,
+// emails and URIs, comma separated), not_after (RFC 3339), xfcc (an
+// Envoy style X-Forwarded-Client-Cert value) or pem (the URL encoded
+// PEM).
+func certField(c *x509.Certificate, field string) (string, bool) {
+	switch field {
+	case "cn":
+		return c.Subject.CommonName, c.Subject.CommonName != ""
+	case "subject":
+		return c.Subject.String(), true
+	case "issuer":
+		return c.Issuer.String(), true
+	case "serial":
+		if c.SerialNumber == nil {
+			return "", false
+		}
+		return c.SerialNumber.Text(16), true
+	case "fingerprint":
+		sum := sha256.Sum256(c.Raw)
+		return hex.EncodeToString(sum[:]), true
+	case "sans":
+		sans := certSANs(c)
+		return strings.Join(sans, ","), len(sans) > 0
+	case "not_after":
+		return c.NotAfter.UTC().Format(time.RFC3339), true
+	case "pem":
+		return url.QueryEscape(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}))), true
+	case "xfcc":
+		sum := sha256.Sum256(c.Raw)
+		parts := []string{"Hash=" + hex.EncodeToString(sum[:]), "Subject=" + strconv.Quote(c.Subject.String())}
+		for _, u := range c.URIs {
+			parts = append(parts, "URI="+u.String())
+		}
+		for _, d := range c.DNSNames {
+			parts = append(parts, "DNS="+d)
+		}
+		return strings.Join(parts, ";"), true
+	}
+	return "", false
+}
+
+func certSANs(c *x509.Certificate) []string {
+	out := make([]string, 0, len(c.DNSNames)+len(c.IPAddresses)+len(c.EmailAddresses)+len(c.URIs))
+	out = append(out, c.DNSNames...)
+	for _, ip := range c.IPAddresses {
+		out = append(out, ip.String())
+	}
+	out = append(out, c.EmailAddresses...)
+	for _, u := range c.URIs {
+		out = append(out, u.String())
+	}
+	return out
 }

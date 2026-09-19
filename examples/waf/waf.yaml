@@ -1,6 +1,8 @@
 # WAF configuration example: two profiles, detect mode roll-out for the
 # marketing site, block mode with a stricter paranoia level for the API,
-# the exclusion and custom rule files from this directory, learning on.
+# the exclusion and custom rule files from this directory, a CRS plugin
+# directory and a JSON body schema for the API, learning and anomaly
+# detection on.
 #
 # Validate: xproxy -config examples/waf/waf.yaml -validate
 version: 1
@@ -16,9 +18,16 @@ waf:
   default_profile: web
   inspect_responses: true
   learning: {enabled: true, min_hits: 10}
+  # Clients whose rate, rule matches, errors or path spread stand out
+  # from the rest by four standard deviations are challenged.
+  anomaly: {enabled: true, window: 5m, min_requests: 30, threshold: 4, action: challenge}
   profiles:
     - name: web
-      crs: {paranoia_level: 1}
+      crs:
+        paranoia_level: 1
+        # CRS plugins from this directory (loose files or checked out
+        # plugin repositories); the example plugin denies listed agents.
+        plugins_dir: /etc/xproxy/waf/plugins
       directive_files:
         - /etc/xproxy/waf/exclusions.conf
         - /etc/xproxy/waf/custom-rules.conf
@@ -26,6 +35,13 @@ waf:
       crs: {paranoia_level: 2, inbound_threshold: 5}
       directive_files:
         - /etc/xproxy/waf/custom-rules.conf
+      # Order writes must match the schema before the rules see them.
+      json_schemas:
+        - name: order
+          paths: [/api/orders]
+          methods: [POST, PUT]
+          schema_file: /etc/xproxy/waf/order-schema.json
+          required: true
     - name: updated
       # Rules from a directory in the release layout instead of the
       # embedded copy: a new CRS release applies with a reload.

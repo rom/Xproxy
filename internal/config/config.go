@@ -435,6 +435,10 @@ type H3 struct {
 	ValidateAddresses string `yaml:"validate_addresses"`
 	// AltSvcMaxAge is the ma value advertised in Alt-Svc. Default 24h.
 	AltSvcMaxAge Duration `yaml:"alt_svc_max_age"`
+	// WebTransport accepts WebTransport sessions (extended CONNECT with
+	// HTTP/3 datagrams) on this endpoint; routes with webtransport relay
+	// them. Default false.
+	WebTransport bool `yaml:"webtransport"`
 }
 
 // TLS configures server side TLS for a listener.
@@ -750,7 +754,15 @@ type Upstream struct {
 	Scheme string `yaml:"scheme"`
 	// H2C speaks HTTP/2 without TLS to http endpoints (gRPC backends).
 	// Default false.
-	H2C         bool            `yaml:"h2c"`
+	H2C bool `yaml:"h2c"`
+	// H3 speaks HTTP/3 (QUIC) to https endpoints. Health probes use it
+	// too. Default false.
+	H3 bool `yaml:"h3"`
+	// H3Fallback retries a request over TCP (HTTP/2 or HTTP/1.1) on the
+	// same endpoint when the QUIC connection cannot be established or
+	// fails before a response, so a network that drops UDP degrades to
+	// TCP rather than to errors. Default true.
+	H3Fallback  *bool           `yaml:"h3_fallback"`
 	TLS         *UpstreamTLS    `yaml:"tls"`
 	HealthCheck *HealthCheck    `yaml:"health_check"`
 	Timeouts    UpstreamTimeout `yaml:"timeouts"`
@@ -1003,6 +1015,11 @@ type Route struct {
 	Timeout Duration `yaml:"timeout"`
 	// WebSocket allows Upgrade: websocket to be forwarded. Default false.
 	WebSocket bool `yaml:"websocket"`
+	// WebTransport relays WebTransport sessions (extended CONNECT over
+	// HTTP/3 on a listener with h3) to the upstream, which must speak
+	// HTTP/3 (h3: true): bidirectional and unidirectional streams and
+	// datagrams in both directions. Default false.
+	WebTransport bool `yaml:"webtransport"`
 	// WAF overrides the global WAF mode and profile for this route.
 	WAF *RouteWAF `yaml:"waf"`
 	// PriorityClass is low, normal, high or critical (never shed). Default
@@ -1096,6 +1113,16 @@ type RouteGRPC struct {
 	Services []string `yaml:"services"`
 	// Methods are Service/Method pairs.
 	Methods []string `yaml:"methods"`
+	// Web accepts gRPC-web requests from browsers (application/grpc-web
+	// and grpc-web-text, over HTTP/1.1 or HTTP/2) and translates them to
+	// gRPC for the upstream: the response trailers become a trailer
+	// frame in the body and the text variant is base64 encoded. Default
+	// false.
+	Web bool `yaml:"web"`
+	// WebOrigins answers CORS preflights of gRPC-web clients from these
+	// origins (exact, or "*") and adds the allow and expose headers to
+	// responses. Empty handles no CORS.
+	WebOrigins []string `yaml:"web_origins"`
 }
 
 // RouteMirror sends a copy of each request (sampled by percent) to
@@ -1474,6 +1501,31 @@ type WAF struct {
 	// Learning collects the variables that trigger detection rules and
 	// proposes exclusions (GET /v1/waf, xproxyctl waf proposals).
 	Learning *WAFLearning `yaml:"learning"`
+	// Anomaly detects clients whose behaviour departs from the population
+	// (request rate, rule match ratio, error ratio, path spread) rather
+	// than requests that match a rule.
+	Anomaly *WAFAnomaly `yaml:"anomaly"`
+}
+
+// WAFAnomaly tunes behavioural anomaly detection. Every WAF protected
+// request is attributed to its client; at the end of each window the
+// clients' feature vectors update a population baseline (mean and
+// variance per feature) and a client whose largest z-score reaches the
+// threshold is flagged until it looks normal again.
+type WAFAnomaly struct {
+	Enabled bool `yaml:"enabled"`
+	// Window is the observation period. Default 5m.
+	Window Duration `yaml:"window"`
+	// MinRequests is the number of requests a client needs in a window
+	// before it is scored. Default 30.
+	MinRequests int `yaml:"min_requests"`
+	// Threshold is the z-score at which a client is flagged. Default 4.
+	Threshold float64 `yaml:"threshold"`
+	// Action for requests of a flagged client: log, challenge or block.
+	// Default log.
+	Action string `yaml:"action"`
+	// MaxClients bounds the tracked clients per window. Default 65536.
+	MaxClients int `yaml:"max_clients"`
 }
 
 // WAFLearning tunes exclusion learning. Matches are aggregated per rule,
@@ -1497,6 +1549,25 @@ type WAFProfile struct {
 	DirectiveFiles []string `yaml:"directive_files"`
 	// Directives is inline SecLang loaded in the same position.
 	Directives string `yaml:"directives"`
+	// JSONSchemas enforce a JSON Schema on request bodies under a path
+	// prefix, before the rules run.
+	JSONSchemas []WAFJSONSchema `yaml:"json_schemas"`
+}
+
+// WAFJSONSchema binds a schema file to request paths.
+type WAFJSONSchema struct {
+	Name string `yaml:"name"`
+	// Paths are the request path prefixes the schema applies to.
+	Paths []string `yaml:"paths"`
+	// Methods restricts enforcement to these methods. Default POST, PUT
+	// and PATCH.
+	Methods []string `yaml:"methods"`
+	// SchemaFile is a JSON Schema document (JSON or YAML).
+	SchemaFile string `yaml:"schema_file"`
+	// Required rejects requests under Paths without a JSON body. Default
+	// false: a request without a body or with another media type passes
+	// to the rules.
+	Required bool `yaml:"required"`
 }
 
 // CRS tunes the Core Rule Set.
@@ -1506,6 +1577,14 @@ type CRS struct {
 	// files) instead of the copy embedded in the binary, so that rules can
 	// be updated with a reload. Default: embedded.
 	Dir string `yaml:"dir"`
+	// PluginsDir holds CRS plugins, each a directory or a set of files
+	// named <plugin>-config.conf, <plugin>-before.conf and
+	// <plugin>-after.conf. Config and before files load before the CRS
+	// rules, after files after them.
+	PluginsDir string `yaml:"plugins_dir"`
+	// Plugins names the plugins under PluginsDir to load. Default: every
+	// plugin found.
+	Plugins []string `yaml:"plugins"`
 	// ParanoiaLevel 1 to 4. Default 1.
 	ParanoiaLevel int `yaml:"paranoia_level"`
 	// InboundThreshold is the anomaly score at which a request is blocked.
@@ -1671,6 +1750,30 @@ type JWTProvider struct {
 	StripToken *bool `yaml:"strip_token"`
 	// LogClaims lists claims copied into the access log (for example sub).
 	LogClaims []string `yaml:"log_claims"`
+	// Introspection validates tokens at an OAuth 2.0 token introspection
+	// endpoint (RFC 7662): opaque tokens always, signed tokens too with
+	// always. A provider may have introspection alone, without keys.
+	Introspection *TokenIntrospection `yaml:"introspection"`
+}
+
+// TokenIntrospection is an RFC 7662 introspection endpoint.
+type TokenIntrospection struct {
+	// URL is the introspection endpoint (https).
+	URL string `yaml:"url"`
+	// ClientID and ClientSecretFile authenticate the proxy to the
+	// endpoint with HTTP basic authentication.
+	ClientID         string `yaml:"client_id"`
+	ClientSecretFile string `yaml:"client_secret_file"`
+	// CAFile pins the CA for the endpoint. Default: system pool.
+	CAFile string `yaml:"ca_file"`
+	// CacheTTL keeps a decision for a token this long, bounded by the
+	// token's exp; 0 caches nothing. Default 60s.
+	CacheTTL Duration `yaml:"cache_ttl"`
+	// Timeout bounds one introspection call. Default 3s.
+	Timeout Duration `yaml:"timeout"`
+	// Always introspects signed tokens too (revocation checks); default
+	// false introspects only tokens that are not JWS compact serialisations.
+	Always bool `yaml:"always"`
 }
 
 // Strips reports whether the token is removed before forwarding.

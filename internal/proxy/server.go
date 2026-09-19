@@ -636,7 +636,7 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 			_, portStr, _ := net.SplitHostPort(pc.LocalAddr().String())
 			port, _ := strconv.Atoi(portStr)
 			h3srv, err := h3.New(h3.Options{
-				Conn: pc, Port: port, TLS: tc, Handler: h, Limits: lim, H3: *lc.H3,
+				Conn: pc, Port: port, TLS: tc, Handler: h, Limits: lim, H3: *lc.H3, WebTransport: lc.H3.WebTransport,
 				Limiter: s.connLimiter, Log: s.logs.Error.With("listener", lc.Name, "proto", "h3"),
 			})
 			if err != nil {

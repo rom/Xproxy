@@ -85,11 +85,28 @@ func serve(args []string, errOut io.Writer, fail func(error) int) int {
 	restart := fs.String("restart-cmd", "", `command for the restart action, without a shell (for example "systemctl restart xproxy.service"); empty disables it`)
 	fs.DurationVar(&o.SessionIdle, "session-idle", 30*time.Minute, "session idle timeout")
 	fs.DurationVar(&o.SessionMax, "session-max", 12*time.Hour, "session absolute lifetime")
+	var oidc admin.OIDCOptions
+	fs.StringVar(&oidc.Issuer, "oidc-issuer", "", "OpenID Connect issuer URL; enables single sign-on")
+	fs.StringVar(&oidc.ClientID, "oidc-client-id", "", "OIDC client id")
+	fs.StringVar(&oidc.ClientSecretFile, "oidc-client-secret-file", "", "file holding the OIDC client secret")
+	fs.StringVar(&oidc.ExternalURL, "oidc-external-url", "", "address users reach the GUI at, for the redirect URI (default: from the request)")
+	fs.StringVar(&oidc.CAFile, "oidc-ca", "", "CA that signs the provider's certificate (default: system pool)")
+	scopes := fs.String("oidc-scopes", "openid,profile,email", "scopes requested, comma separated")
+	fs.StringVar(&oidc.UserClaim, "oidc-user-claim", "email", "ID token claim that names the user")
+	fs.StringVar(&oidc.RoleClaim, "oidc-role-claim", "groups", "ID token claim matched against -oidc-operators and -oidc-viewers")
+	operators := fs.String("oidc-operators", "", "role claim values that grant the operator role, comma separated")
+	viewers := fs.String("oidc-viewers", "", `role claim values that grant the viewer role, comma separated ("*" accepts every user)`)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *restart != "" {
 		o.RestartCommand = strings.Fields(*restart)
+	}
+	if oidc.Issuer != "" {
+		oidc.Scopes = splitList(*scopes)
+		oidc.Operators = splitList(*operators)
+		oidc.Viewers = splitList(*viewers)
+		o.OIDC = &oidc
 	}
 	s, err := admin.New(o)
 	if err != nil {
@@ -246,4 +263,15 @@ func readPassword(in io.Reader, out io.Writer, confirm bool) (string, error) {
 		return "", errors.New("empty password")
 	}
 	return line, nil
+}
+
+// splitList splits a comma separated flag value, dropping empty items.
+func splitList(v string) []string {
+	var out []string
+	for _, x := range strings.Split(v, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			out = append(out, x)
+		}
+	}
+	return out
 }

@@ -17,11 +17,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/filter"
 	_ "github.com/rom/xproxy/internal/filters" // built-in kinds
+	"github.com/rom/xproxy/internal/filters/apikey"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/waf"
 )
@@ -60,9 +62,14 @@ func TestYAMLDocuments(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if strings.HasPrefix(string(data), "openapi:") {
+				return // an API description referenced by a filter, not a configuration
+			}
 			// Kinds that open their files at validation get a real one.
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/tools-users", usersFile(t)))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/filters/policy.wasm", filepath.Join(dir, "filters", "wasm", "policy.wasm")))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/api-keys", keysFile(t)))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/openapi/orders.yaml", filepath.Join(dir, "filters", "orders-openapi.yaml")))
 			if strings.Contains(string(data), "\nversion: 1\n") || strings.HasPrefix(string(data), "version: 1\n") {
 				if _, err := config.ParseWith(data, false); err != nil {
 					t.Fatalf("complete document: %v", err)
@@ -89,6 +96,16 @@ routes:
 }
 
 // usersFile writes a one user file for the basic_auth example.
+// keysFile writes an api_key keys file with one key.
+func keysFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "api-keys")
+	if _, err := apikey.Add(p, "acme", []string{"orders:read"}, time.Time{}, "example"); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func usersFile(t *testing.T) string {
 	t.Helper()
 	h, err := passwd.Hash("correct horse")
@@ -211,6 +228,50 @@ func TestWAFCustomRules(t *testing.T) {
 	}
 	if v := wafRequest(t, e, get("www.example.com", "/products?page=2")); v.Deny {
 		t.Fatalf("clean request: %+v", v)
+	}
+}
+
+// TestWAFPluginAndSchema compiles the example plugin directory and the
+// order schema into a profile.
+func TestWAFPluginAndSchema(t *testing.T) {
+	cfg := &config.WAF{
+		Profiles: []config.WAFProfile{{Name: "default",
+			CRS: &config.CRS{ParanoiaLevel: 1, InboundThreshold: 5, OutboundThreshold: 4, PluginsDir: filepath.Join(root(t), "waf", "plugins")},
+			JSONSchemas: []config.WAFJSONSchema{{Name: "order", Paths: []string{"/api/orders"}, Methods: []string{"POST", "PUT"},
+				SchemaFile: filepath.Join(root(t), "waf", "order-schema.json"), Required: true}}}},
+		DefaultMode: "block", DefaultProfile: "default", RequestBodyLimit: 65536, RequestBodyLimitAction: "reject", ResponseBodyLimit: 65536,
+	}
+	e, err := waf.New(cfg, waf.Need{"default": {waf.ModeBlock: true}}, nil, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps := e.Profiles(); len(ps) != 1 || len(ps[0].Plugins) != 1 || ps[0].Plugins[0] != "deny-agents" || len(ps[0].Schemas) != 1 {
+		t.Fatalf("profiles = %+v", ps)
+	}
+	r := httptest.NewRequest("GET", "http://www.example.com/", nil)
+	r.Header.Set("User-Agent", "Mozilla/5.0 zgrab/0.x")
+	if v := wafRequest(t, e, r); !v.Deny || v.Status != 403 {
+		t.Fatalf("listed agent: %+v", v)
+	}
+	r = httptest.NewRequest("GET", "http://www.example.com/", nil)
+	r.Header.Set("User-Agent", "Mozilla/5.0")
+	if v := wafRequest(t, e, r); v.Deny {
+		t.Fatalf("plain agent denied: %+v", v)
+	}
+	order := func(body string) *http.Request {
+		r := httptest.NewRequest("POST", "http://api.example.com/api/orders", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("User-Agent", "Mozilla/5.0")
+		return r
+	}
+	if v := wafRequest(t, e, order(`{"sku":"ABC-1234","quantity":2,"address":{"street":"Main 1","postcode":"11122","country":"SE"}}`)); v.Deny {
+		t.Fatalf("valid order denied: %+v", v)
+	}
+	if v := wafRequest(t, e, order(`{"sku":"abc","quantity":500,"address":{"street":"Main 1","postcode":"11122","country":"XX"}}`)); !v.Deny || v.Status != 400 || !strings.HasPrefix(v.Detail, "json_schema:order:") {
+		t.Fatalf("invalid order: %+v", v)
+	}
+	if v := wafRequest(t, e, httptest.NewRequest("POST", "http://api.example.com/api/orders", nil)); !v.Deny || v.Status != 400 {
+		t.Fatalf("missing body: %+v", v)
 	}
 }
 

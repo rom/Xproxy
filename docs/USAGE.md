@@ -79,6 +79,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `otlp` | OpenTelemetry metrics exporter status: pushes, failures, last error |
 | `telemetry` | Every OpenTelemetry exporter (metrics, traces, logs) with sent, dropped, pushes, failures, queue depth and last error |
 | `htpasswd FILE NAME` | Add or replace a `basic_auth` user; the password is read from stdin |
+| `apikey add\|rotate\|revoke\|remove\|list` | Manage the keys file of `api_key` filters: `add ID [-scopes a,b] [-expires 90d] [-note TEXT]` prints the plaintext once, `rotate ID [-grace 24h]` issues a new secret and keeps the old one for the grace, `revoke ID`, `remove ID`, `list`; `-file` names the file (default `/etc/xproxy/api-keys`) |
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
 | `series` | Print sampled series; `-since 10m`, `-last 30`, `-json` |
@@ -363,6 +364,59 @@ xproxy binds UDP 443 next to TCP 443 (or takes the datagram socket from
 same routes over QUIC. Open UDP 443 in the firewall. `xproxyctl status`
 lists the endpoint as `public/udp`; access log lines show
 `proto: HTTP/3.0`.
+
+### HTTP/3 to upstreams
+
+```yaml
+upstreams:
+  - name: edge-api
+    scheme: https
+    h3: true
+    endpoints: [{address: "10.0.5.10:443"}]
+    tls: {server_name: api.internal, ca_file: /etc/xproxy/ca/internal.pem}
+```
+
+The pool opens QUIC connections to its endpoints and multiplexes
+requests on them; health probes go over the same transport. When UDP
+is blocked or a handshake times out, the request is retried over TCP on
+the same endpoint and `xproxyctl upstreams` counts an `h3_fallbacks`
+per such request, so a QUIC-hostile network degrades to HTTP/2, not to
+errors; `h3_fallback: false` makes the failures visible instead.
+
+### WebTransport
+
+```yaml
+server:
+  listeners:
+    - name: public
+      address: ":443"
+      protocols: [h1, h2, h3]
+      h3: {webtransport: true}
+      tls: {certificates: [{cert_file: /etc/xproxy/tls/www.pem, key_file: /etc/xproxy/tls/www-key.pem}]}
+upstreams:
+  - name: realtime
+    scheme: https
+    h3: true
+    endpoints: [{address: "10.0.6.10:4433"}]
+    tls: {server_name: realtime.internal, ca_file: /etc/xproxy/ca/internal.pem}
+routes:
+  - name: wt
+    hosts: [rt.example.com]
+    paths: [/session]
+    upstream: realtime
+    webtransport: true
+```
+
+A browser's `new WebTransport("https://rt.example.com/session")` is an
+extended CONNECT over HTTP/3; the listener accepts it, the route opens
+a session to the upstream over HTTP/3 (with the request header
+operations and the usual forwarding headers on the CONNECT) and relays
+every bidirectional and unidirectional stream and every datagram in
+both directions until either side ends the session. The route's
+limits, bans, expressions and ACLs apply to the CONNECT like to any
+request; the access log line carries `webtransport`, the streams and
+datagrams relayed. The `Origin` header is forwarded unchanged so the
+upstream applies its own origin policy.
 
 ### Virtual hosts and path routing
 
@@ -926,6 +980,104 @@ never a guess. The engine settings that the embedded set carries
 (`coraza.conf-recommended`) are applied to a directory rule set as
 well, so the directory needs nothing besides the CRS files.
 
+#### Core Rule Set plugins
+
+CRS plugins (the official ones such as the WordPress, Nextcloud or
+fake bot exclusion plugins, or your own) load from a directory:
+
+```yaml
+waf:
+  profiles:
+    - name: default
+      crs:
+        paranoia_level: 1
+        plugins_dir: /etc/xproxy/crs-plugins
+        plugins: [wordpress-rule-exclusions, fake-bots]   # default: every plugin found
+```
+
+The directory holds the plugin files themselves
+(`<plugin>-config.conf`, `<plugin>-before.conf`, `<plugin>-after.conf`)
+or one subdirectory per plugin, which is what `git clone` of a plugin
+repository produces (the files sit in its `plugins/` folder). Config
+and before files load after the CRS setup and before the CRS rules,
+after files after the rules, the order the CRS documents; data files a
+plugin references with `@pmFromFile` resolve next to the plugin file
+and under `plugins/`. Plugins compile with the profile, so a broken
+plugin fails the reload and `xproxyctl reload -dry-run` catches it;
+`xproxyctl waf` lists the plugins each profile carries.
+
+#### JSON body schemas
+
+A profile can enforce a JSON Schema on request bodies before the
+rules see them, so an API accepts only the shapes it documents and
+fields that the rules would otherwise have to guess at (a free text
+comment, an encoded blob) are bounded by the schema:
+
+```yaml
+waf:
+  profiles:
+    - name: api
+      crs: {paranoia_level: 2}
+      json_schemas:
+        - name: order
+          paths: [/api/orders]
+          methods: [POST, PUT]
+          schema_file: /etc/xproxy/waf/order-schema.json
+          required: true
+```
+
+In block mode a violating body is refused with 400 and a JSON problem
+body naming the fields; in detect mode it is logged with `waf_schema`
+and `waf_schema_issue` and the request continues, so a schema rolls
+out the same way a rule set does. `xproxyctl waf` counts the
+violations (`schema violations`). For an API with a full OpenAPI
+description the `openapi` filter validates paths, parameters and
+bodies together; the WAF schemas suit an application that has a
+schema for a few sensitive endpoints and the CRS for the rest.
+
+#### Behavioural anomaly detection
+
+The CRS scores requests. Some abuse never scores: a credential
+stuffing run of well formed logins, a scraper walking every product
+page, a scanner probing for files that do not exist. Anomaly detection
+looks at clients over a window instead:
+
+```yaml
+waf:
+  anomaly: {enabled: true, window: 5m, min_requests: 30, threshold: 4, action: challenge}
+```
+
+Every WAF protected request is attributed to its client. At the end of
+each window every client with at least `min_requests` becomes a vector
+of four features: request rate, share of requests that matched a rule,
+share that ended in a deny or an error status, and spread over
+distinct paths. The population's mean and spread per feature form the
+baseline, carried across windows as a weighted average, so it follows
+the site's daily rhythm without being pulled by one burst. A client
+whose largest positive z-score reaches `threshold` is flagged; its
+requests are then logged with `waf_anomaly` and `waf_anomaly_score`,
+challenged, or denied with 403 and reason `waf_anomaly` (which a ban
+trigger can count) until a later window scores it normal or it stays
+away for three windows. A window with fewer than eight scored clients
+changes nothing, so a quiet site never flags its only user.
+
+```
+$ xproxyctl waf anomalies
+FEATURE      MEAN   STDDEV
+rate         4.428  0.225
+match_ratio  0.000  0.000
+error_ratio  0.023  0.146
+path_spread  0.162  0.075
+CLIENT        SCORE  FEATURE      VALUE  MEAN   SINCE                 EXPIRES
+203.0.113.99  11.2   path_spread  1.000  0.162  2026-09-19T07:15:00Z  2026-09-19T07:30:00Z
+```
+
+Start with `action: log`, watch which clients appear and with which
+feature, and move to `challenge` (browsers pass, scripts do not) or
+`block` once the flags match what the access log shows. `rate` is on a
+log scale, so a client is flagged for volume only when it sends
+several times what its peers do.
+
 ### Ban list
 
 ```yaml
@@ -1016,6 +1168,41 @@ by replacing the files and running `xproxyctl reload-certs`; a broken pair
 is rejected and the old one stays in use. Keep two pins during an upstream
 key rotation.
 
+### Forwarding the client certificate identity
+
+```yaml
+server:
+  listeners:
+    - name: partners
+      address: ":8443"
+      tls:
+        certificates: [{cert_file: /etc/xproxy/tls/api.pem, key_file: /etc/xproxy/tls/api-key.pem}]
+        client_auth: require
+        client_ca_file: /etc/xproxy/tls/partner-ca.pem
+routes:
+  - name: batch
+    hosts: [api.example.com]
+    when: 'cert("cn") == "billing-batch"'
+    upstream: batch
+  - name: partners
+    hosts: [api.example.com]
+    upstream: api
+    request_headers:
+      set:
+        X-Client-CN: "${cert:cn}"
+        X-Client-Fingerprint: "${cert:fingerprint}"
+        X-Forwarded-Client-Cert: "${cert:xfcc}"
+```
+
+The listener verifies the certificate against the partner CA; the
+route forwards the identity the application needs as headers (`set`
+discards whatever the client sent under those names, so the values are
+trustworthy downstream) and `cert("cn")` in `when` routes a machine
+identity to its own pool. `${cert:xfcc}` produces the
+`X-Forwarded-Client-Cert` format that applications behind Envoy or
+Istio already parse; `${cert:pem}` carries the whole certificate when
+the application validates it itself.
+
 ### Browser login with OpenID Connect
 
 ```yaml
@@ -1077,6 +1264,38 @@ a first-party service with a shared secret use `algorithms: [HS256]` and
 `hmac_secret_file`. Combine with `rate_limits` keyed by `header:X-User`
 on a downstream route if you need per-user limits today; token-keyed rate
 limits are planned.
+
+### OAuth 2.0 token introspection
+
+```yaml
+jwt:
+  providers:
+    - name: as
+      issuer: https://as.example.com
+      audiences: [api]
+      introspection:
+        url: https://as.example.com/oauth2/introspect
+        client_id: xproxy
+        client_secret_file: /etc/xproxy/as-client-secret
+        cache_ttl: 30s
+      forward_claims: {X-User: sub, X-Scope: scope}
+routes:
+  - name: api
+    paths: [/api]
+    upstream: api
+    jwt: {provider: as}
+```
+
+Opaque access tokens (reference tokens) cannot be verified locally: the
+proxy asks the authorization server's introspection endpoint with its
+own credentials and treats the answer as the token's claims, so
+`forward_claims`, `required_claims` and `log_claims` work as for a
+signed token. Answers are cached for `cache_ttl` (never past the
+token's `exp`), positive and negative alike, so a revoked token costs
+one call per `cache_ttl`, not one per request. A provider that also has
+keys introspects only tokens that are not JWS; `always: true` sends
+signed tokens too, which turns a JWT deployment into one with
+revocation at the price of a call per `cache_ttl` per token.
 
 ### Virus and content scanning (ICAP)
 
@@ -1405,6 +1624,31 @@ checks use the standard health service, so an endpoint that reports
 `NOT_SERVING` is taken out of rotation before clients see errors, and
 a rate limited call is refused with `RESOURCE_EXHAUSTED` rather than a
 text page a gRPC client cannot read.
+
+### gRPC-web for browsers
+
+```yaml
+upstreams:
+  - {name: rpc, h2c: true, endpoints: [{address: "10.0.4.10:9090"}]}
+routes:
+  - name: rpc-web
+    hosts: [api.example.com]
+    grpc: {web: true, web_origins: ["https://app.example.com"]}
+    upstream: rpc
+```
+
+Browsers cannot speak gRPC (no trailers, no HTTP/2 control), so
+gRPC-web clients send the same frames with a different content type
+over HTTP/1.1 or HTTP/2 and expect the trailers as a last frame in the
+body. The route translates: the upstream receives plain gRPC over the
+pool's transport (h2c or HTTPS), the response goes back as
+`application/grpc-web+proto` with the trailer frame, and the `-text`
+variants are decoded and encoded as base64. `web_origins` answers the
+CORS preflight and exposes `grpc-status` and `grpc-message` to the
+page; proxy errors (a rate limit, a denied ACL) are answered in
+gRPC-web form so the client library reports a status rather than a
+transport failure. A gRPC-web request on a gRPC route without `web`
+gets status 2 (UNKNOWN) with the proxy's reason.
 
 ### Routing by pattern, header and cookie
 
@@ -1736,6 +1980,45 @@ xproxyctl filters
 Denies are logged on the security stream with the filter name as reason
 and can drive ban triggers (`categories: [scanners]`).
 
+### API security: keys, OpenAPI validation and GraphQL bounds (filters)
+
+```
+$ xproxyctl apikey add acme -scopes orders:read,orders:write -expires 365d -note "Acme Corp, ticket 4711"
+xpk_acme_Qm9vay1vZi1zaGFkb3dz...        # shown once; hand it to the customer
+$ xproxyctl apikey rotate acme -grace 48h   # new secret, the old one works two more days
+$ xproxyctl apikey revoke acme
+```
+
+```yaml
+filters:
+  - name: keys
+    kind: api_key
+    options: {keys_file: /etc/xproxy/api-keys, required_scopes: [orders:read]}
+  - name: orders-spec
+    kind: openapi
+    options: {spec_file: /etc/xproxy/openapi/orders.yaml, strict_query: true}
+  - name: gql
+    kind: graphql
+    options: {max_depth: 8, max_complexity: 500, max_aliases: 10, introspection: false}
+routes:
+  - {name: orders, paths: [/v1/orders], upstream: orders, filters: [keys, orders-spec]}
+  - {name: graphql, paths: [/graphql], upstream: gateway, filters: [keys, gql]}
+```
+
+The key filter authenticates the caller and forwards `X-Api-Key-Id` and
+`X-Api-Key-Scopes` to the application, which never sees the secret; the
+file is re-read when `xproxyctl apikey` changes it, so issuing,
+rotating and revoking need no reload. Rate limit a partner by key with
+`rate_limits: [{name: partner, key: "header:X-Api-Key", ...}]` on the
+same route. The OpenAPI filter turns the API description into an
+allow list: undocumented paths, methods, parameters, media types and
+malformed bodies never reach the application, and the caller gets a
+JSON answer naming what was wrong. The GraphQL filter refuses the
+queries that take an API down (deep nesting, wide lists, alias floods,
+batches, introspection in production) without knowing the schema. The
+security log carries the filter name as the reason and the access log
+the key id (`api_key`).
+
 ### Browser challenge
 
 ```yaml
@@ -1767,6 +2050,10 @@ xproxy-admin serve [-listen 127.0.0.1:8443] [-socket /run/xproxy/mgmt.sock]
                    [-tls-cert PATH -tls-key PATH [-client-ca PATH]]
                    [-restart-cmd "systemctl restart xproxy.service"]
                    [-session-idle 30m] [-session-max 12h]
+                   [-oidc-issuer URL -oidc-client-id ID -oidc-client-secret-file PATH
+                    -oidc-operators GROUP,... [-oidc-viewers GROUP,...|"*"]
+                    [-oidc-role-claim groups] [-oidc-user-claim email]
+                    [-oidc-external-url https://admin.example.com] [-oidc-ca PATH]]
 xproxy-admin user add NAME -role viewer|operator [-cert-only]
 xproxy-admin user del NAME
 xproxy-admin user list
@@ -1828,6 +2115,20 @@ whose common name matches a user logs that user in without a password
 (`-cert-only` users have no password at all). Five failed logins from one
 address lock it out for five minutes. Sessions end after thirty minutes
 idle or twelve hours in total.
+
+Single sign-on: with `-oidc-issuer`, `-oidc-client-id` and
+`-oidc-client-secret-file` the login page offers "Sign in with
+<provider>". The GUI runs the authorization code flow with PKCE and a
+nonce, verifies the ID token against the provider's keys, names the
+user from `-oidc-user-claim` (default `email`) and takes the role from
+`-oidc-role-claim` (default `groups`): a value listed in
+`-oidc-operators` makes an operator, one in `-oidc-viewers` a viewer
+(`*` accepts every authenticated user as a viewer), anything else is
+refused. Register `https://<gui>/api/oidc/callback` as the redirect
+URI at the provider (`-oidc-external-url` when the GUI sits behind a
+proxy). Password and certificate logins keep working alongside; a
+single sign-on session is subject to the same idle and absolute limits
+and appears in the audit log with `via=oidc`.
 
 The first user:
 

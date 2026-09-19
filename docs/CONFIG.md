@@ -233,6 +233,7 @@ the caches. Metrics: `xproxy_dns_*{listener}`.
 | `max_streams` | int | `100` | Concurrent request streams per QUIC connection; 1 to 10000 |
 | `validate_addresses` | `always`, `under_load` | `always` | `always` makes every unvalidated client address complete a Retry round trip before the server allocates connection state; `under_load` does so only when open connections exceed a quarter of `max_connections` |
 | `alt_svc_max_age` | duration | `24h` | Reserved for the `Alt-Svc` `ma` value (currently the library default) |
+| `webtransport` | bool | `false` | Accept WebTransport sessions on this endpoint: HTTP/3 datagrams and the WebTransport settings are enabled and routes with `webtransport: true` relay them. The `Origin` header is forwarded for the upstream to check |
 
 QUIC connections share the listener's `max_connections`,
 `max_connections_per_ip`, ban list, header size and idle timeout;
@@ -346,6 +347,7 @@ rewrites and redirects and is kept literally in pages.
 | `country`, `ja4` | GeoIP country code and TLS client fingerprint, empty when unknown |
 | `tls_version`, `tls_cipher` | TLS parameters of the client connection |
 | `header:Name`, `cookie:name`, `query:name` | a request header, cookie or query parameter |
+| `cert:field` | the client certificate of a listener with `client_auth` (empty without one): `cn`, `subject` and `issuer` (RFC 2253), `serial` (hex), `fingerprint` (SHA-256 of the DER, hex), `sans` (DNS names, addresses, emails and URIs, comma separated), `not_after` (RFC 3339), `xfcc` (an Envoy style `X-Forwarded-Client-Cert` value with `Hash`, `Subject`, `URI` and `DNS`) and `pem` (URL encoded PEM). Set the header with `request_headers.set`, which also discards a client supplied copy |
 | `1` to `9`, `name` | groups of `rewrite_regex.pattern` or, without one, of the matching `path_regex` (numbered and named) |
 | `status`, `status_text`, `reason` | error pages only: the status, its phrase and the denial category (`acl`, `rate_limit`, `waf`, `banned`, `upstream`...) |
 | `time` | current time, RFC 3339, UTC |
@@ -368,6 +370,7 @@ A bare string is true when it is neither empty, `0` nor `false`.
 | `client_ip`, `host`, `path`, `raw_query`, `method`, `scheme`, `country`, `ja4`, `tls_version`, `tls_cipher`, `request_id`, `route`, `upstream`, `tenant`, `time`, `date`, `hour`, `minute`, `weekday` | The variables of the table above, as bare names (`route`, `upstream` and `tenant` are empty in `routes[].when`, which runs before the route is chosen) |
 | `header("Name")`, `cookie("name")`, `query("name")`, `capture("name")` | A request header (case insensitive, first value), cookie, query parameter or regular expression group by name or number; empty when absent |
 | `has_header("Name")`, `has_cookie("name")`, `has_query("name")` | Presence, also of an empty value |
+| `cert("field")` | A client certificate field as in the variable table (`cert("cn") == "billing-batch"`, `cert("fingerprint") in [...]`); empty without a client certificate |
 | `x in ["a", "b"]`, `x not in [...]` | Membership in a list of literals |
 | `client_ip in cidr("10.0.0.0/8", "2001:db8::/32", "203.0.113.7")` | Address containment in prefixes or single addresses; a value that is not an address is never contained |
 | `x matches "pattern"`, `matches(x, "pattern")` | RE2 match anywhere in the value; anchor with `^` and `$` for the whole value. Patterns are literals, compiled at load |
@@ -516,6 +519,8 @@ Memory: at most 64 x 8192 buckets per policy.
 | `canary` | object | none | Route selected requests to the canary endpoints; see below |
 | `scheme` | `http`, `https` | `http` | |
 | `h2c` | bool | `false` | Speak HTTP/2 without TLS to `http` endpoints (gRPC backends); `https` negotiates HTTP/2 with ALPN on its own |
+| `h3` | bool | `false` | Speak HTTP/3 (QUIC over UDP) to `https` endpoints; health probes use it too. Exclusive with `h2c`. `xproxyctl upstreams` shows the pool protocol |
+| `h3_fallback` | bool | `true` | With `h3`, retry a request whose QUIC connection fails before a response (UDP blocked, handshake timeout) over TCP on the same endpoint; counted as `h3_fallbacks` in the pool status. Off, such failures are errors like any other |
 | `tls` | object | | Only with `https`; see below |
 | `health_check` | object | none | Active probing; see below |
 | `outlier_ejection` | object | none | Passive ejection; see below |
@@ -690,6 +695,9 @@ not match is skipped and the next candidate is tried.
 | `max_body_bytes` | int | global | May only lower the global limit |
 | `timeout` | duration | none | Whole request deadline for this route |
 | `websocket` | bool | `false` | Allow `Upgrade` requests |
+| `webtransport` | bool | `false` | Relay WebTransport sessions (extended CONNECT over HTTP/3) to the upstream: bidirectional and unidirectional streams and datagrams in both directions, with the request header operations applied to the CONNECT. Needs a listener with `h3.webtransport: true` and an upstream with `h3: true`; on any other listener or protocol the session is refused |
+| `grpc.web` | bool | `false` | Accept gRPC-web requests (`application/grpc-web`, `grpc-web+proto`, `grpc-web-text`, `grpc-web-text+proto`, over HTTP/1.1 or HTTP/2) on this gRPC route and translate them: the upstream sees plain gRPC, the response trailers come back as a trailer frame in the body and the text variants are base64. Without it a gRPC-web request is refused with gRPC status 2 |
+| `grpc.web_origins` | list | `[]` | Browser origins (`https://app.example.com`, or `*`) whose CORS preflights are answered (`POST`, the requested headers, ten minutes) and whose responses get `Access-Control-Allow-Origin` and the exposed `grpc-status` and `grpc-message`; needs `web: true`. Empty leaves CORS to the upstream or to header operations |
 
 ## ingress
 
@@ -869,6 +877,7 @@ set fails the reload.
 | `response_body_limit` | int | `524288` | Larger response bodies pass uninspected |
 | `response_mime_types` | list | text and JSON/XML types | Bodies with other content types are not inspected |
 | `learning` | object | none | Exclusion learning; see below |
+| `anomaly` | object | none | Behavioural anomaly detection per client; see below |
 
 ### waf.learning
 
@@ -886,6 +895,31 @@ and survive reloads; `POST /v1/waf/reset` clears them.
 | `min_hits` | int | `5` | Matches before a proposal appears; 1 to 1000000 |
 | `max_entries` | int | `10000` | Bound on distinct (rule, variable, route) entries; further ones are counted as dropped; 100 to 1000000 |
 
+### waf.anomaly
+
+The rules judge one request at a time. Anomaly detection judges
+clients: every WAF protected request is attributed to its client
+address, and at the end of each window a client with at least
+`min_requests` becomes a feature vector (request rate, share of
+requests that matched a rule, share that ended in an error or a deny,
+spread over distinct paths). The population's mean and variance per
+feature form a baseline that follows drift across windows; a client
+whose largest positive z-score against the previous baseline reaches
+`threshold` is flagged and its next requests get `action`, until a
+later window scores it normal or it stays away for three windows. A
+window with fewer than eight scored clients updates nothing, so a
+quiet site never flags its only visitor. Flags, the baseline and the
+counters show under `xproxyctl waf anomalies` and `GET /v1/waf`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | |
+| `window` | duration | `5m` | Observation period; 10s to 24h |
+| `min_requests` | int | `30` | Requests a client needs in a window before it is scored; 1 to 1000000 |
+| `threshold` | float | `4` | z-score at which a client is flagged; 1 to 100 |
+| `action` | `log`, `challenge`, `block` | `log` | For requests of a flagged client: log attributes only, serve the browser challenge (a plain 403 without a `challenge` section), or deny with 403 and reason `waf_anomaly` |
+| `max_clients` | int | `65536` | Clients tracked per window; further ones are counted as dropped and not scored; 100 to 10000000 |
+
 ### waf.profiles[]
 
 | Key | Type | Default | Description |
@@ -893,13 +927,38 @@ and survive reloads; `POST /v1/waf/reset` clears them.
 | `name` | name | required, unique | |
 | `crs` | object | none | Enable the bundled OWASP Core Rule Set |
 | `crs.dir` | absolute path | embedded copy | Load the Core Rule Set from a directory in the release layout (`crs-setup.conf` or `crs-setup.conf.example`, `rules/*.conf` with their `.data` files); a reload picks up changed files, so rules update without a new binary. The directory is validated at load and a broken file fails the reload |
+| `crs.plugins_dir` | absolute path | none | Directory of CRS plugins: files named `<plugin>-config.conf`, `<plugin>-before.conf` and `<plugin>-after.conf` directly in it, in a subdirectory per plugin, or in that subdirectory's `plugins/` folder (a checked out plugin repository); data files next to them resolve by bare name and under `plugins/`. Config and before files load before the CRS rules, after files after them |
+| `crs.plugins` | list of names | every plugin found | Load only these plugins; a listed plugin that is missing fails the load |
 | `crs.paranoia_level` | int | `1` | 1 to 4 |
 | `crs.inbound_threshold` | int | `5` | Anomaly score that blocks a request |
 | `crs.outbound_threshold` | int | `4` | Anomaly score that blocks a response |
 | `directive_files` | list of paths | `[]` | SecLang files loaded after CRS setup and before CRS rules (exclusions go here) |
 | `directives` | string | `""` | Inline SecLang loaded in the same position, at most 1 MiB |
+| `json_schemas` | list | `[]` | JSON body schemas enforced before the rules; see below |
 
 A profile needs at least one of `crs`, `directive_files` or `directives`.
+
+### waf.profiles[].json_schemas[]
+
+A schema binds a JSON Schema document to request paths. A matching
+request's JSON body is buffered (bounded by `waf.request_body_limit`,
+413 above it), validated and then handed to the rules unchanged. In
+`block` mode a violation is denied with 400, reason `waf`, detail
+`json_schema:<name>:<first problem>` and a JSON problem body listing up
+to twenty issues; in `detect` mode it is logged (`waf_schema`,
+`waf_schema_issue`) and the request continues. The evaluator is the
+one the `openapi` filter uses: types, enums, constants, string
+lengths, patterns and formats, numeric bounds, array and object
+bounds, `properties`, `patternProperties`, `additionalProperties`,
+`allOf`, `anyOf`, `oneOf`, `not` and local `$ref`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required, unique in the profile | |
+| `paths` | list of prefixes | required | Request path prefixes the schema applies to; the first schema whose method and prefix match wins |
+| `methods` | list | `[POST, PUT, PATCH]` | Upper-case methods enforced |
+| `schema_file` | path | required | JSON Schema document, JSON or YAML, at most 8 MiB, read at load and on reload |
+| `required` | bool | `false` | Refuse a matching request without a body (400) or with a non JSON media type (415); otherwise such requests pass to the rules unchecked |
 
 ### routes[].honeypot
 
@@ -1111,6 +1170,13 @@ accepted.
 | `forward_claims` | map header -> claim | `{}` | Set upstream headers from claims; client supplied copies of these headers are always removed, token or not. `Authorization`, `Cookie` and `Host` cannot be targets |
 | `strip_token` | bool | `true` | Remove the token before forwarding |
 | `log_claims` | list | `[]` | Claims copied to the access log as `jwt_<claim>` |
+| `introspection` | object | none | Validate tokens at an OAuth 2.0 token introspection endpoint (RFC 7662): every token of a provider without keys, tokens that are not compact JWS otherwise, all tokens with `always`. The answer's claims pass the provider's `issuer`, `audiences` (when present) and `required_claims` rules and feed `forward_claims` and `log_claims` like a JWT payload; `active: false` is refused with reason `inactive`, an unreachable endpoint answers 503 with `Retry-After` |
+| `introspection.url` | https URL | required | The endpoint |
+| `introspection.client_id`, `introspection.client_secret_file` | string, path | required | HTTP basic credentials of the proxy at the authorization server |
+| `introspection.ca_file` | path | system pool | CA pinned for the endpoint |
+| `introspection.cache_ttl` | duration | `60s` | How long an answer (positive or negative) is kept, bounded by the token's `exp`; at most 65536 entries per provider; `0` caches nothing |
+| `introspection.timeout` | duration | `3s` | Per call, 100ms to 30s |
+| `introspection.always` | bool | `false` | Introspect signed tokens too, for revocation |
 
 A provider whose key set has never loaded (for example the JWKS URL is
 unreachable at start) rejects tokens with 503 and `Retry-After` until a
@@ -1178,7 +1244,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -1314,6 +1380,82 @@ honeypot route on this node or, with cluster sharing, on a peer). The
 score is the capped sum; a client that is
 already verified by the challenge is never challenged again. The JA4 of
 every TLS request is logged as `ja4`.
+
+### Kind `api_key`
+
+API keys with a life cycle: issued by `xproxyctl apikey add` (the
+plaintext `xpk_<id>_<secret>` is printed once; the file keeps a SHA-256),
+scoped, expiring, rotated with a grace period for the previous secret
+(`apikey rotate -grace 24h`) and revoked (`apikey revoke`, kept in the
+file so the id is never reused). The filter re-reads the file when its
+contents change, at most every `reload`, and keeps the previous table
+when the new file does not parse.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `keys_file` | path | required | Written by `xproxyctl apikey`; must not be world readable |
+| `source` | `header:<Name>`, `bearer`, `query:<name>` | `header:X-Api-Key` | Where the key is read; `bearer` accepts `Authorization: Bearer`, `ApiKey` or `Api-Key` |
+| `required_scopes` | list | `[]` | Every listed scope must be granted to the key (a scope `orders` covers `orders:read`, `*` covers all); a key without one is refused with 403 |
+| `forward_id_header` | header | `X-Api-Key-Id` | Upstream header carrying the key id; `""` disables. A client supplied copy is always removed |
+| `forward_scopes_header` | header | `X-Api-Key-Scopes` | Upstream header with the key's scopes, space separated; `""` disables |
+| `strip` | bool | `true` | Remove the key from the forwarded request |
+| `reload` | duration | `30s` | How often the file is checked for changes (1s to 1h) |
+| `expiry_warning` | duration | `168h` | A key used within this time of its expiry is logged once a day; `0` disables |
+
+Denials: 401 with `WWW-Authenticate: ApiKey` and the detail `missing`,
+`unknown`, `revoked`, `expired` or `rotated` (the previous secret after
+its grace), 403 `scope:<name>`; the access log carries `api_key` with
+the id.
+
+### Kind `openapi`
+
+Validates requests against an OpenAPI 3.0 or 3.1 description (JSON or
+YAML): the path must be documented (concrete paths win over templated
+ones), the method defined for it (else 405 with `Allow`), path, query,
+header and cookie parameters present when required and matching their
+schema (strings are coerced to the declared type), the content type one
+the operation declares (else 415) and a JSON body valid against its
+schema. The schema subset covers types and `nullable`, `enum`, `const`,
+`required`, `properties`, `additionalProperties`, `patternProperties`,
+`items`, `minItems`/`maxItems`/`uniqueItems`, `minLength`/`maxLength`/
+`pattern`, `minimum`/`maximum` (exclusive too), `multipleOf`,
+`minProperties`/`maxProperties`, `allOf`/`anyOf`/`oneOf`/`not`, local
+`$ref` and the formats `date-time`, `date`, `email`, `uuid`, `ipv4`,
+`ipv6`, `uri` and `hostname`; other keywords and formats are ignored as
+the specification allows. Denials answer JSON with the reason and up
+to twenty `details` naming the offending path.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `spec_file` | path | required | The description; loaded at configuration load, so a change needs a reload |
+| `base_path` | path | from `servers[0].url` | Prefix under which the paths are served |
+| `unknown_paths` | `deny`, `allow` | `deny` | `deny` answers 404 for a path the description lacks |
+| `strict_query` | bool | `false` | Refuse query parameters the operation does not declare |
+| `validate_body` | bool | `true` | Parse and validate JSON bodies; off checks only the media type |
+| `max_body_bytes` | int | `1048576` | A JSON body above this is refused with 413 rather than parsed (1 to 64 MiB) |
+
+### Kind `graphql`
+
+Bounds GraphQL requests (`POST` with `application/json` or
+`application/graphql`, `GET` with `query`) before they reach the API:
+depth (nesting of selection sets, fragments expanded, a fragment cycle
+fails), complexity (each field costs 1 times the product of the list
+arguments of its ancestors; a variable in a list argument counts as
+`max_list`), aliases, operations per batch, query size and
+introspection. Nothing is executed or forwarded to a schema. Denials are
+400 with a GraphQL `errors` body and the detail `depth`, `complexity`,
+`aliases`, `batch`, `size`, `syntax` or `introspection`.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_depth` | int | `10` | Deepest selection set allowed (1 to 1000) |
+| `max_complexity` | int | `1000` | Weighted field count per operation |
+| `max_aliases` | int | `30` | Aliased fields per request (alias floods hide repeated resolvers) |
+| `max_batch` | int | `1` | Operations in an array request |
+| `max_query_bytes` | int | `65536` | Query text and body size (256 to 16 MiB) |
+| `introspection` | bool | `true` | `false` refuses `__schema` and `__type` |
+| `list_args` | list | `[first, last, limit]` | Arguments whose integer value multiplies the cost of the fields below |
+| `max_list` | int | `1000` | Cap of one multiplier, and the value assumed for a variable |
 
 ### routes[].filters
 

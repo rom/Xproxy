@@ -58,6 +58,8 @@ type profile struct {
 	source  string
 	version string
 	rules   int
+	plugins []plugin
+	schemas []*bodySchema
 }
 
 // ProfileStatus describes one compiled profile (GET /v1/waf).
@@ -71,6 +73,10 @@ type ProfileStatus struct {
 	Version string `json:"version,omitempty"`
 	// RuleFiles counts the CRS rule files loaded.
 	RuleFiles int `json:"rule_files,omitempty"`
+	// Plugins names the CRS plugins loaded.
+	Plugins []string `json:"plugins,omitempty"`
+	// Schemas names the JSON body schemas enforced.
+	Schemas []string `json:"schemas,omitempty"`
 }
 
 // Profiles lists the compiled profiles in configuration order.
@@ -82,6 +88,12 @@ func (e *Engine) Profiles() []ProfileStatus {
 			continue
 		}
 		st := ProfileStatus{Name: p.name, Modes: []string{}, CRS: p.source, Version: p.version, RuleFiles: p.rules}
+		for _, pl := range p.plugins {
+			st.Plugins = append(st.Plugins, pl.name)
+		}
+		for _, sc := range p.schemas {
+			st.Schemas = append(st.Schemas, sc.name)
+		}
 		if p.block != nil {
 			st.Modes = append(st.Modes, string(ModeBlock))
 		}
@@ -102,7 +114,7 @@ type Need map[string]map[Mode]bool
 func New(cfg *config.WAF, need Need, stats *Stats, log *slog.Logger) (*Engine, error) {
 	e := &Engine{cfg: cfg, profiles: map[string]*profile{}, stats: stats, log: log.With("component", "waf")}
 	if stats != nil {
-		stats.Configure(cfg.Learning)
+		stats.Configure(cfg.Learning, cfg.Anomaly)
 	}
 	for i := range cfg.Profiles {
 		pc := &cfg.Profiles[i]
@@ -116,7 +128,16 @@ func New(cfg *config.WAF, need Need, stats *Stats, log *slog.Logger) (*Engine, e
 			return nil, fmt.Errorf("waf profile %s: %w", pc.Name, err)
 		}
 		p.source, p.version, p.rules = src.name, src.version, src.files
-		base, err := e.directives(pc, src)
+		if pc.CRS != nil && pc.CRS.PluginsDir != "" {
+			if p.plugins, err = loadPlugins(pc.CRS.PluginsDir, pc.CRS.Plugins); err != nil {
+				return nil, fmt.Errorf("waf profile %s: %w", pc.Name, err)
+			}
+			src.fs = newPluginFS(src.fs, p.plugins)
+		}
+		if p.schemas, err = loadSchemas(pc.JSONSchemas); err != nil {
+			return nil, fmt.Errorf("waf profile %s: %w", pc.Name, err)
+		}
+		base, err := e.directives(pc, src, p.plugins)
 		if err != nil {
 			return nil, fmt.Errorf("waf profile %s: %w", pc.Name, err)
 		}
@@ -221,9 +242,9 @@ func (rs *ruleSet) inspect() (*ruleSet, error) {
 }
 
 // directives assembles the SecLang for a profile. Order matters: engine
-// recommendations, body limits, CRS setup, tuning, operator exclusions,
-// CRS rules.
-func (e *Engine) directives(pc *config.WAFProfile, src *ruleSet) (string, error) {
+// recommendations, body limits, CRS setup, tuning, plugin configuration
+// and before-rules, operator exclusions, CRS rules, plugin after-rules.
+func (e *Engine) directives(pc *config.WAFProfile, src *ruleSet, plugins []plugin) (string, error) {
 	var b strings.Builder
 	rec, err := recommended()
 	if err != nil {
@@ -253,6 +274,12 @@ func (e *Engine) directives(pc *config.WAFProfile, src *ruleSet) (string, error)
 		fmt.Fprintf(&b, "SecAction \"id:900000,phase:1,pass,t:none,nolog,setvar:tx.blocking_paranoia_level=%d\"\n", crs.ParanoiaLevel)
 		fmt.Fprintf(&b, "SecAction \"id:900110,phase:1,pass,t:none,nolog,setvar:tx.inbound_anomaly_score_threshold=%d,setvar:tx.outbound_anomaly_score_threshold=%d\"\n", crs.InboundThreshold, crs.OutboundThreshold)
 	}
+	if err := writePluginFiles(&b, plugins, func(p *plugin) string { return p.config }); err != nil {
+		return "", err
+	}
+	if err := writePluginFiles(&b, plugins, func(p *plugin) string { return p.before }); err != nil {
+		return "", err
+	}
 	for _, f := range pc.DirectiveFiles {
 		data, err := os.ReadFile(f) //nolint:gosec // operator configured rule file
 		if err != nil {
@@ -269,6 +296,9 @@ func (e *Engine) directives(pc *config.WAFProfile, src *ruleSet) (string, error)
 	}
 	if pc.CRS != nil {
 		fmt.Fprintf(&b, "Include %s\n", src.rules)
+	}
+	if err := writePluginFiles(&b, plugins, func(p *plugin) string { return p.after }); err != nil {
+		return "", err
 	}
 	return b.String(), nil
 }
@@ -290,7 +320,7 @@ func (e *Engine) Filter(profileName string, mode Mode) (filter.Filter, error) {
 	if w == nil {
 		return nil, fmt.Errorf("waf profile %q not compiled for mode %s", profileName, mode)
 	}
-	return &wafFilter{engine: e, waf: w, profile: profileName, mode: mode}, nil
+	return &wafFilter{engine: e, waf: w, profile: profileName, mode: mode, schemas: p.schemas}, nil
 }
 
 type wafFilter struct {
@@ -298,6 +328,7 @@ type wafFilter struct {
 	waf     coraza.WAF
 	profile string
 	mode    Mode
+	schemas []*bodySchema
 }
 
 func (f *wafFilter) Name() string { return "waf:" + f.profile + ":" + string(f.mode) }
@@ -314,6 +345,14 @@ type instance struct {
 	done bool
 	// verdict is the request or response interruption, if any.
 	verdict *types.Interruption
+	// schema and schemaName record a JSON body schema violation (denied
+	// in block mode, logged in detect mode).
+	schema     *schemaResult
+	schemaName string
+	// flag is set when the client is flagged by anomaly detection.
+	flag *flag
+	// status is the upstream response status, 0 when none was seen.
+	status int
 }
 
 // errResponseBlocked is returned through the reverse proxy when the
@@ -344,6 +383,12 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	if it := tx.ProcessRequestHeaders(); it != nil {
 		return in.interrupt(it, "request_headers")
 	}
+	if v, deny := in.anomalyCheck(); deny {
+		return v
+	}
+	if v, deny := in.schemaCheck(r); deny {
+		return v
+	}
 	if tx.IsRequestBodyAccessible() && r.Body != nil && r.Body != http.NoBody {
 		it, _, err := tx.ReadRequestBodyFrom(r.Body)
 		if err != nil {
@@ -370,8 +415,63 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	return filter.Continue
 }
 
+// anomalyCheck applies the configured action when the client is flagged
+// by behavioural anomaly detection.
+func (in *instance) anomalyCheck() (filter.Verdict, bool) {
+	s := in.f.engine.stats
+	if s == nil {
+		return filter.Continue, false
+	}
+	f := s.anomaly.lookup(in.info.ClientIP.String())
+	if f == nil {
+		return filter.Continue, false
+	}
+	in.flag = f
+	detail := fmt.Sprintf("%s z=%.1f", f.feature, f.score)
+	switch s.anomaly.config().action {
+	case "block":
+		return filter.Verdict{Deny: true, Status: http.StatusForbidden, Reason: "waf_anomaly", Detail: detail, Attrs: in.anomalyAttrs()}, true
+	case "challenge":
+		return filter.Verdict{Deny: true, Challenge: true, Status: http.StatusForbidden, Reason: "waf_anomaly", Detail: detail, Attrs: in.anomalyAttrs()}, true
+	}
+	return filter.Continue, false
+}
+
+func (in *instance) anomalyAttrs() []any {
+	if in.flag == nil {
+		return nil
+	}
+	return []any{"waf_anomaly", in.flag.feature, "waf_anomaly_score", round(in.flag.score)}
+}
+
+// schemaCheck enforces the profile's JSON body schema bound to the
+// request, if any. In detect mode a violation is recorded and the
+// request continues.
+func (in *instance) schemaCheck(r *http.Request) (filter.Verdict, bool) {
+	sc := matchSchema(in.f.schemas, r.Method, r.URL.Path)
+	if sc == nil {
+		return filter.Continue, false
+	}
+	res, err := sc.check(r, in.f.engine.cfg.RequestBodyLimit)
+	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			return filter.Verdict{Deny: true, Status: http.StatusRequestEntityTooLarge, Reason: "body_size", Detail: "body exceeds limit"}, true
+		}
+		return filter.Verdict{Deny: true, Status: http.StatusBadRequest, Reason: "waf", Detail: "reading request body: " + err.Error()}, true
+	}
+	if res == nil {
+		return filter.Continue, false
+	}
+	in.schema, in.schemaName = res, sc.name
+	if in.f.mode == ModeBlock {
+		return res.verdict(sc.name, in.attrs()), true
+	}
+	return filter.Continue, false
+}
+
 func (in *instance) Response(resp *http.Response) filter.Verdict {
 	tx := in.tx
+	in.status = resp.StatusCode
 	if !in.f.engine.cfg.InspectResponses {
 		return filter.Continue
 	}
@@ -489,6 +589,10 @@ func (in *instance) attrs() []any {
 	if score >= 0 {
 		out = append(out, "waf_score", score)
 	}
+	if in.schema != nil {
+		out = append(out, "waf_schema", in.schemaName, "waf_schema_issue", in.schema.issue)
+	}
+	out = append(out, in.anomalyAttrs()...)
 	return out
 }
 
@@ -513,9 +617,9 @@ func (in *instance) End() []any {
 		s.record(in)
 	}
 	var out []any
-	if in.verdict != nil || in.detected() {
+	if in.verdict != nil || in.schema != nil || in.flag != nil || in.detected() {
 		out = in.attrs()
-		if in.verdict == nil && in.f.mode == ModeDetect {
+		if in.verdict == nil && in.f.mode == ModeDetect && (in.schema != nil || in.detected()) {
 			out = append(out, "waf_detected", true)
 		}
 	}

@@ -62,6 +62,13 @@ const (
 	DefaultWAFLearningMinHits    = 5
 	DefaultWAFLearningMaxEntries = 10000
 	DefaultCRSParanoia           = 1
+	// DefaultWAFAnomaly* tune behavioural anomaly detection: the window,
+	// the requests a client needs before it is scored and the z-score at
+	// which it is flagged; DefaultWAFAnomalyMaxClients bounds the tracker.
+	DefaultWAFAnomalyWindow      = 5 * time.Minute
+	DefaultWAFAnomalyMinRequests = 30
+	DefaultWAFAnomalyThreshold   = 4.0
+	DefaultWAFAnomalyMaxClients  = 65536
 	DefaultCRSInbound            = 5
 	DefaultCRSOutbound           = 4
 
@@ -309,6 +316,10 @@ func applyDefaults(c *Config) {
 		for j := range u.Endpoints {
 			setInt(&u.Endpoints[j].Weight, 1)
 		}
+		if u.H3 && u.H3Fallback == nil {
+			t := true
+			u.H3Fallback = &t
+		}
 		if hc := u.HealthCheck; hc != nil {
 			setStr(&hc.Type, "http")
 			setStr(&hc.Path, DefaultHealthCheckPath)
@@ -368,11 +379,26 @@ func applyDefaults(c *Config) {
 			setInt(&l.MinHits, DefaultWAFLearningMinHits)
 			setInt(&l.MaxEntries, DefaultWAFLearningMaxEntries)
 		}
+		if a := w.Anomaly; a != nil {
+			setDur(&a.Window, DefaultWAFAnomalyWindow)
+			setInt(&a.MinRequests, DefaultWAFAnomalyMinRequests)
+			if a.Threshold == 0 {
+				a.Threshold = DefaultWAFAnomalyThreshold
+			}
+			setStr(&a.Action, "log")
+			setInt(&a.MaxClients, DefaultWAFAnomalyMaxClients)
+		}
 		for i := range w.Profiles {
 			if crs := w.Profiles[i].CRS; crs != nil {
 				setInt(&crs.ParanoiaLevel, DefaultCRSParanoia)
 				setInt(&crs.InboundThreshold, DefaultCRSInbound)
 				setInt(&crs.OutboundThreshold, DefaultCRSOutbound)
+			}
+			for j := range w.Profiles[i].JSONSchemas {
+				js := &w.Profiles[i].JSONSchemas[j]
+				if len(js.Methods) == 0 {
+					js.Methods = []string{"POST", "PUT", "PATCH"}
+				}
 			}
 		}
 	}
@@ -417,6 +443,10 @@ func applyDefaults(c *Config) {
 				p.Algorithms = []string{"RS256", "ES256", "EdDSA"}
 			}
 			setDur(&p.JWKSRefresh, time.Hour)
+			if in := p.Introspection; in != nil {
+				setDur(&in.CacheTTL, DefaultIntrospectionCacheTTL)
+				setDur(&in.Timeout, DefaultIntrospectionTimeout)
+			}
 			setDur(&p.ClockSkew, 30*time.Second)
 			setStr(&p.Source, "bearer")
 		}
@@ -618,3 +648,9 @@ const DefaultOutlierLatencySamples = 20
 // DefaultExactTimeout bounds the wait for a key owner in exact
 // distributed rate limiting.
 const DefaultExactTimeout = 50 * time.Millisecond
+
+// Defaults of OAuth 2.0 token introspection.
+const (
+	DefaultIntrospectionCacheTTL = time.Minute
+	DefaultIntrospectionTimeout  = 3 * time.Second
+)

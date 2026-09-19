@@ -234,6 +234,29 @@ func (v *validator) config(c *Config) {
 			v.errf("rate_limits[%d].distributed: exact needs a cluster section", i)
 		}
 	}
+	wtListener := false
+	for i := range c.Server.Listeners {
+		if h := c.Server.Listeners[i].H3; h != nil && h.WebTransport {
+			wtListener = true
+		}
+	}
+	for i := range c.Routes {
+		r := &c.Routes[i]
+		if !r.WebTransport {
+			continue
+		}
+		if !wtListener {
+			v.errf("routes[%d].webtransport: no listener has h3.webtransport: true", i)
+		}
+		for j := range c.Upstreams {
+			if c.Upstreams[j].Name == r.Upstream && !c.Upstreams[j].H3 {
+				v.errf("routes[%d].webtransport: upstream %q must set h3: true", i, r.Upstream)
+			}
+		}
+		if r.Upstream == "" {
+			v.errf("routes[%d].webtransport: needs an upstream", i)
+		}
+	}
 	for i := range c.Server.Listeners {
 		if t := c.Server.Listeners[i].TCP; t != nil {
 			p := fmt.Sprintf("server.listeners[%d].tcp", i)
@@ -1000,6 +1023,14 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 	if u.MaxIdleConnsPerHost < 0 {
 		v.errf("%s.max_idle_conns_per_host: must not be negative", p)
 	}
+	if u.H3 {
+		if u.Scheme != "https" {
+			v.errf("%s.h3: needs scheme https", p)
+		}
+		if u.H2C {
+			v.errf("%s.h3: exclusive with h2c", p)
+		}
+	}
 	if hc := u.HealthCheck; hc != nil {
 		switch hc.Type {
 		case "http":
@@ -1263,6 +1294,14 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 		v.errf("%s: exactly one of upstream, redirect, respond, honeypot, doh or static is required", p)
 	}
 	if g := r.GRPC; g != nil {
+		for j, o := range g.WebOrigins {
+			if o != "*" && (!strings.HasPrefix(o, "https://") && !strings.HasPrefix(o, "http://") || strings.ContainsAny(o, " /\r\n\t") && strings.Count(o, "/") > 2) {
+				v.errf("%s.grpc.web_origins[%d]: %q is not an origin (scheme://host[:port])", p, j, o)
+			}
+		}
+		if len(g.WebOrigins) > 0 && !g.Web {
+			v.errf("%s.grpc.web_origins: needs web: true", p)
+		}
 		for j, sv := range g.Services {
 			if !grpcNameOK(sv) || strings.Contains(sv, "/") {
 				v.errf("%s.grpc.services[%d]: %q is not a service name", p, j, sv)
@@ -1963,8 +2002,27 @@ func (v *validator) jwt(j *JWT, seen map[string]bool) {
 		} else if hmac {
 			v.errf("%s: HS algorithms require hmac_secret_file", pp)
 		}
-		if sources == 0 && p.HMACSecretFile == "" {
-			v.errf("%s: jwks_file, jwks_url or hmac_secret_file is required", pp)
+		if p.Introspection == nil && sources == 0 && p.HMACSecretFile == "" {
+			v.errf("%s: jwks_file, jwks_url, hmac_secret_file or introspection is required", pp)
+		}
+		if in := p.Introspection; in != nil {
+			if u, err := url.Parse(in.URL); err != nil || u.Scheme != "https" || u.Host == "" {
+				v.errf("%s.introspection.url: must be an https URL", pp)
+			}
+			if in.ClientID == "" || !strings.HasPrefix(in.ClientSecretFile, "/") {
+				v.errf("%s.introspection: client_id and an absolute client_secret_file are required", pp)
+			} else {
+				v.file(pp+".introspection.client_secret_file", in.ClientSecretFile)
+			}
+			if in.CAFile != "" {
+				v.file(pp+".introspection.ca_file", in.CAFile)
+			}
+			if in.CacheTTL < 0 || in.CacheTTL > Duration(time.Hour) {
+				v.errf("%s.introspection.cache_ttl: must be between 0 and 1h", pp)
+			}
+			if in.Timeout < Duration(100*time.Millisecond) || in.Timeout > Duration(30*time.Second) {
+				v.errf("%s.introspection.timeout: must be between 100ms and 30s", pp)
+			}
 		}
 		if p.ClockSkew < 0 || p.ClockSkew > Duration(600_000_000_000) {
 			v.errf("%s.clock_skew: must be between 0 and 10m", pp)
@@ -2080,6 +2138,25 @@ func (v *validator) waf(w *WAF, profiles map[string]bool) {
 			v.errf("waf.learning.max_entries: must be between 100 and 1000000")
 		}
 	}
+	if a := w.Anomaly; a != nil {
+		if a.Window.D() < 10*time.Second || a.Window.D() > 24*time.Hour {
+			v.errf("waf.anomaly.window: must be between 10s and 24h")
+		}
+		if a.MinRequests < 1 || a.MinRequests > 1_000_000 {
+			v.errf("waf.anomaly.min_requests: must be between 1 and 1000000")
+		}
+		if a.Threshold < 1 || a.Threshold > 100 {
+			v.errf("waf.anomaly.threshold: must be between 1 and 100")
+		}
+		switch a.Action {
+		case "log", "challenge", "block":
+		default:
+			v.errf("waf.anomaly.action: must be log, challenge or block")
+		}
+		if a.MaxClients < 100 || a.MaxClients > 10_000_000 {
+			v.errf("waf.anomaly.max_clients: must be between 100 and 10000000")
+		}
+	}
 	for i, p := range w.Profiles {
 		pp := fmt.Sprintf("waf.profiles[%d]", i)
 		if !nameRE.MatchString(p.Name) {
@@ -2101,12 +2178,51 @@ func (v *validator) waf(w *WAF, profiles map[string]bool) {
 			if crs.Dir != "" {
 				v.dir(pp+".crs.dir", crs.Dir)
 			}
+			if crs.PluginsDir != "" {
+				v.dir(pp+".crs.plugins_dir", crs.PluginsDir)
+			} else if len(crs.Plugins) > 0 {
+				v.errf("%s.crs.plugins: requires plugins_dir", pp)
+			}
+			for j, name := range crs.Plugins {
+				if !nameRE.MatchString(name) {
+					v.errf("%s.crs.plugins[%d]: %q is not a valid plugin name", pp, j, name)
+				}
+			}
 		}
 		for j, f := range p.DirectiveFiles {
 			v.file(fmt.Sprintf("%s.directive_files[%d]", pp, j), f)
 		}
 		if len(p.Directives) > 1<<20 {
 			v.errf("%s.directives: exceeds 1 MiB", pp)
+		}
+		schemas := map[string]bool{}
+		for j := range p.JSONSchemas {
+			js := &p.JSONSchemas[j]
+			sp := fmt.Sprintf("%s.json_schemas[%d]", pp, j)
+			if !nameRE.MatchString(js.Name) {
+				v.errf("%s.name: %q is not a valid name", sp, js.Name)
+			} else if schemas[js.Name] {
+				v.errf("%s.name: duplicate %q", sp, js.Name)
+			}
+			schemas[js.Name] = true
+			if len(js.Paths) == 0 {
+				v.errf("%s.paths: at least one path prefix is required", sp)
+			}
+			for k, path := range js.Paths {
+				if !strings.HasPrefix(path, "/") {
+					v.errf("%s.paths[%d]: must start with /", sp, k)
+				}
+			}
+			for k, m := range js.Methods {
+				if m == "" || strings.ToUpper(m) != m {
+					v.errf("%s.methods[%d]: %q must be an upper-case method", sp, k, m)
+				}
+			}
+			if js.SchemaFile == "" {
+				v.errf("%s.schema_file: required", sp)
+			} else {
+				v.file(sp+".schema_file", js.SchemaFile)
+			}
 		}
 	}
 	if w.DefaultMode != "off" && !profiles[w.DefaultProfile] {

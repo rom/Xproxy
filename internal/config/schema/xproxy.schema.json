@@ -347,6 +347,17 @@
         "paranoia_level": {
           "description": "ParanoiaLevel 1 to 4. Default 1.",
           "type": "integer"
+        },
+        "plugins": {
+          "description": "Plugins names the plugins under PluginsDir to load. Default: every plugin found.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "plugins_dir": {
+          "description": "PluginsDir holds CRS plugins, each a directory or a set of files named \u003cplugin\u003e-config.conf, \u003cplugin\u003e-before.conf and \u003cplugin\u003e-after.conf. Config and before files load before the CRS rules, after files after them.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -983,6 +994,10 @@
         "validate_addresses": {
           "description": "ValidateAddresses is always (every new client address must complete a Retry round trip before any state is allocated) or under_load (only when open connections exceed a quarter of max_connections). Default always.",
           "type": "string"
+        },
+        "webtransport": {
+          "description": "WebTransport accepts WebTransport sessions (extended CONNECT with HTTP/3 datagrams) on this endpoint; routes with webtransport relay them. Default false.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -1317,6 +1332,14 @@
         "hmac_secret_file": {
           "description": "HMACSecretFile holds the shared secret for HS* algorithms.",
           "type": "string"
+        },
+        "introspection": {
+          "description": "Introspection validates tokens at an OAuth 2.0 token introspection endpoint (RFC 7662): opaque tokens always, signed tokens too with always. A provider may have introspection alone, without keys.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TokenIntrospection"
+            }
+          ]
         },
         "issuer": {
           "description": "Issuer must equal the token's iss claim.",
@@ -2250,6 +2273,10 @@
           "description": "WebSocket allows Upgrade: websocket to be forwarded. Default false.",
           "type": "boolean"
         },
+        "webtransport": {
+          "description": "WebTransport relays WebTransport sessions (extended CONNECT over HTTP/3 on a listener with h3) to the upstream, which must speak HTTP/3 (h3: true): bidirectional and unidirectional streams and datagrams in both directions. Default false.",
+          "type": "boolean"
+        },
         "when": {
           "description": "When is a condition in the expression language (docs/CONFIG.md, \"Expressions\") that must hold in addition to the matches above; it counts as one condition for specificity.",
           "type": "string"
@@ -2346,6 +2373,17 @@
         },
         "services": {
           "description": "Services are fully qualified service names.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "web": {
+          "description": "Web accepts gRPC-web requests from browsers (application/grpc-web and grpc-web-text, over HTTP/1.1 or HTTP/2) and translates them to gRPC for the upstream: the response trailers become a trailer frame in the body and the text variant is base64 encoded. Default false.",
+          "type": "boolean"
+        },
+        "web_origins": {
+          "description": "WebOrigins answers CORS preflights of gRPC-web clients from these origins (exact, or \"*\") and adds the allow and expose headers to responses. Empty handles no CORS.",
           "type": "array",
           "items": {
             "type": "string"
@@ -2848,6 +2886,42 @@
       },
       "additionalProperties": false
     },
+    "TokenIntrospection": {
+      "description": "TokenIntrospection is an RFC 7662 introspection endpoint.",
+      "type": "object",
+      "properties": {
+        "always": {
+          "description": "Always introspects signed tokens too (revocation checks); default false introspects only tokens that are not JWS compact serialisations.",
+          "type": "boolean"
+        },
+        "ca_file": {
+          "description": "CAFile pins the CA for the endpoint. Default: system pool.",
+          "type": "string"
+        },
+        "cache_ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "client_id": {
+          "description": "ClientID and ClientSecretFile authenticate the proxy to the endpoint with HTTP basic authentication.",
+          "type": "string"
+        },
+        "client_secret_file": {
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "url": {
+          "description": "URL is the introspection endpoint (https).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "Tracing": {
       "description": "Tracing configures W3C trace context handling and span export.",
       "type": "object",
@@ -2936,6 +3010,14 @@
         },
         "h2c": {
           "description": "H2C speaks HTTP/2 without TLS to http endpoints (gRPC backends). Default false.",
+          "type": "boolean"
+        },
+        "h3": {
+          "description": "H3 speaks HTTP/3 (QUIC) to https endpoints. Health probes use it too. Default false.",
+          "type": "boolean"
+        },
+        "h3_fallback": {
+          "description": "H3Fallback retries a request over TCP (HTTP/2 or HTTP/1.1) on the same endpoint when the QUIC connection cannot be established or fails before a response, so a network that drops UDP degrades to TCP rather than to errors. Default true.",
           "type": "boolean"
         },
         "hash_on": {
@@ -3086,6 +3168,14 @@
       "description": "WAF configures the web application firewall engine.",
       "type": "object",
       "properties": {
+        "anomaly": {
+          "description": "Anomaly detects clients whose behaviour departs from the population (request rate, rule match ratio, error ratio, path spread) rather than requests that match a rule.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/WAFAnomaly"
+            }
+          ]
+        },
         "default_mode": {
           "description": "DefaultMode applies to routes without a waf block: off, detect or block. Default block when the section is present.",
           "type": "string"
@@ -3134,6 +3224,69 @@
       },
       "additionalProperties": false
     },
+    "WAFAnomaly": {
+      "description": "WAFAnomaly tunes behavioural anomaly detection. Every WAF protected request is attributed to its client; at the end of each window the clients' feature vectors update a population baseline (mean and variance per feature) and a client whose largest z-score reaches the threshold is flagged until it looks normal again.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action for requests of a flagged client: log, challenge or block. Default log.",
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_clients": {
+          "description": "MaxClients bounds the tracked clients per window. Default 65536.",
+          "type": "integer"
+        },
+        "min_requests": {
+          "description": "MinRequests is the number of requests a client needs in a window before it is scored. Default 30.",
+          "type": "integer"
+        },
+        "threshold": {
+          "description": "Threshold is the z-score at which a client is flagged. Default 4.",
+          "type": "number"
+        },
+        "window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WAFJSONSchema": {
+      "description": "WAFJSONSchema binds a schema file to request paths.",
+      "type": "object",
+      "properties": {
+        "required": {
+          "description": "Required rejects requests under Paths without a JSON body. Default false: a request without a body or with another media type passes to the rules.",
+          "type": "boolean"
+        },
+        "methods": {
+          "description": "Methods restricts enforcement to these methods. Default POST, PUT and PATCH.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "paths": {
+          "description": "Paths are the request path prefixes the schema applies to.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schema_file": {
+          "description": "SchemaFile is a JSON Schema document (JSON or YAML).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "WAFLearning": {
       "description": "WAFLearning tunes exclusion learning. Matches are aggregated per rule, target variable and route across block and detect mode alike; a triple seen min_hits times becomes a proposal.",
       "type": "object",
@@ -3174,6 +3327,13 @@
         "directives": {
           "description": "Directives is inline SecLang loaded in the same position.",
           "type": "string"
+        },
+        "json_schemas": {
+          "description": "JSONSchemas enforce a JSON Schema on request bodies under a path prefix, before the rules run.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WAFJSONSchema"
+          }
         },
         "name": {
           "type": "string"

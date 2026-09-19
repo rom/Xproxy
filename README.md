@@ -51,7 +51,9 @@ an identifier from the access log to the upstream.
   certificates (request or require), ACME issuance and renewal (HTTP-01
   and TLS-ALPN-01)
 - HTTP/1.1, HTTP/2 (ALPN, or `h2c` on trusted networks) and HTTP/3 over
-  QUIC with address validation and Alt-Svc advertisement
+  QUIC with address validation and Alt-Svc advertisement; HTTP/3 to
+  upstreams with a TCP fallback, gRPC-web translation for browsers and
+  WebTransport relays (streams and datagrams) to HTTP/3 upstreams
 - Mutual TLS and public key pinning to upstreams; PROXY protocol
   towards layer 4 upstreams
 
@@ -139,8 +141,8 @@ an identifier from the access log to the upstream.
   journald or syslog, with per stream redaction of personal data and
   a request identifier end to end
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
-  status, upstreams, quotas per tenant and route, WAF rule statistics
-  and learned exclusions, reload with dry run,
+  status, upstreams, quotas per tenant and route, WAF rule statistics,
+  learned exclusions and flagged clients, reload with dry run,
   configuration diff, history and rollback, certificates, logs, bans,
   cache, honeypots, DNS, ingress, cluster, metrics and a full screen
   TUI; a web GUI with

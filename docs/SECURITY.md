@@ -38,6 +38,19 @@ to report a vulnerability. The threat analysis behind the controls is in
   so a ticket is decryptable for at most two epochs and a compromised
   key exposes at most that window. Peers publish a key set fingerprint
   and a disagreement is logged.
+- A verified client certificate's fields reach the upstream only
+  through header operations the operator writes (`${cert:cn}`,
+  `${cert:fingerprint}`, `${cert:xfcc}`...), which discard a client
+  supplied copy of the header; without a verified certificate the
+  variables are empty.
+- WebTransport sessions are relayed, never interpreted: the CONNECT
+  passes every route control (limits, bans, ACLs, expressions), the
+  upstream session is opened before the client's is accepted, streams
+  and datagrams are copied byte for byte with the session's flow
+  control, and the `Origin` header reaches the upstream for its own
+  policy. HTTP/3 to upstreams uses the pool's pinned CA and client
+  certificate like TCP; a QUIC failure falls back to TCP only on the
+  same endpoint and only before a response was received.
 - ALPN offers `h2` then `http/1.1`; h2c (cleartext HTTP/2) is never enabled.
 - HTTP/3 (QUIC) shares certificates and limits with its TLS listener; new
   client addresses must complete a Retry round trip before state is
@@ -105,6 +118,11 @@ to report a vulnerability. The threat analysis behind the controls is in
   fallback.
 - `exp` is mandatory; `nbf`, `iat`, `iss`, `aud` and required claims are
   enforced with a bounded clock skew.
+- Token introspection (RFC 7662) reaches the authorization server over
+  HTTPS with a pinned CA and the proxy's own credentials; answers are
+  cached no longer than `cache_ttl` and never past the token's `exp`,
+  negative answers included, and the same issuer, audience and claim
+  rules apply to introspected claims as to a JWT payload.
 - Key sets come from a file or an HTTPS URL with a pinned CA, refreshed
   on a timer and on unknown key identifiers with rate limiting; a provider
   without keys fails closed with 503.
@@ -139,6 +157,18 @@ to report a vulnerability. The threat analysis behind the controls is in
   instead of the embedded copy, so a CRS security release is applied
   with a reload. The directory is read only at load, validated for
   layout, and a file that fails to compile keeps the running rules.
+  CRS plugins load from a directory the same way and compile with the
+  profile.
+- JSON body schemas refuse request bodies that do not match the shape
+  an endpoint documents before any rule or the application parses
+  them, within the same body limit; block and detect modes apply.
+- Behavioural anomaly detection flags clients whose rate, rule match
+  ratio, error ratio or path spread departs from the population by a
+  configured number of standard deviations, so credential stuffing,
+  scraping and scanning that never trips a rule still gets logged,
+  challenged or blocked. It needs a population (eight scored clients
+  per window) before it flags anyone, flags expire, the tracker is
+  bounded and the action defaults to logging.
 
 ### Ban list
 
@@ -166,6 +196,23 @@ to report a vulnerability. The threat analysis behind the controls is in
   is counted and visible, so a misbehaving scanner is never silent.
 - Encapsulated responses are size bounded (4 MiB) and parsed with the
   standard library; malformed answers close the connection.
+
+### API security
+
+- API keys are stored as SHA-256 digests; the plaintext exists only in
+  the output of `xproxyctl apikey add`. Keys carry scopes, an expiry
+  and a state, rotate with a bounded grace for the previous secret and
+  are revoked in place so an id is never reused; the filter forwards
+  the id and scopes in headers it first strips from the client.
+- OpenAPI validation is an allow list derived from the API description:
+  undocumented paths, methods, parameters and media types and bodies
+  that do not satisfy the schema are refused before the application,
+  with bounded body buffering, a bounded schema nesting depth and a
+  bounded pattern cache.
+- GraphQL bounds (depth, complexity with list multipliers, aliases,
+  batches, size, introspection) are computed by a parser with a token
+  budget, so a hostile query is refused in bounded time and never
+  reaches a resolver.
 
 ### Load shedding and challenge
 
@@ -355,7 +402,11 @@ to report a vulnerability. The threat analysis behind the controls is in
   code, `HttpOnly` `SameSite=Strict` session cookies, three independent
   cross-site request forgery checks, server side role enforcement, PBKDF2
   password hashes with per-source login lockout, mutual TLS required for
-  any non-loopback listener. Configuration edits are validated before they
+  any non-loopback listener. Single sign-on, when configured, is the
+  authorization code flow with PKCE and a nonce against a pinned
+  provider; the ID token is verified for signature, issuer, audience,
+  expiry and nonce, the role comes from a claim mapped by the operator
+  and an unmapped user is refused. Configuration edits are validated before they
   are written, written atomically with a backup, and guarded by an entity
   tag.
 - Four separate JSON streams. Log files are created `0640`. Attacker

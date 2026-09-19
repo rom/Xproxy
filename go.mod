@@ -8,6 +8,7 @@ require (
 	github.com/corazawaf/coraza/v3 v3.7.0
 	github.com/klauspost/compress v1.20.0
 	github.com/quic-go/quic-go v0.61.0
+	github.com/quic-go/webtransport-go v0.12.0
 	github.com/tetratelabs/wazero v1.12.0
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/crypto v0.54.0
@@ -18,13 +19,13 @@ require (
 
 require (
 	github.com/corazawaf/libinjection-go v0.3.2 // indirect
+	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/goccy/go-yaml v1.18.0 // indirect
 	github.com/gotnospirit/makeplural v0.0.0-20180622080156-a5f48d94d976 // indirect
 	github.com/gotnospirit/messageformat v0.0.0-20221001023931-dfe49f1eb092 // indirect
 	github.com/kaptinlin/go-i18n v0.1.4 // indirect
 	github.com/kaptinlin/jsonschema v0.4.6 // indirect
-	github.com/kr/text v0.2.0 // indirect
 	github.com/magefile/mage v1.17.0 // indirect
 	github.com/petar-dambovaliev/aho-corasick v0.0.0-20250424160509-463d218d4745 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect

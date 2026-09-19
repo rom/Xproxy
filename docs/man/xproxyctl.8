@@ -115,9 +115,9 @@ T}	T{
 In\-process hardening: each mechanism with its state and the file rules in force
 T}
 T{
-\fBwaf\fR [\fBrules\fR|\:\fBproposals\fR|\:\fBexclusions\fR|\:\fBreset\fR]
+\fBwaf\fR [\fBrules\fR|\:\fBproposals\fR|\:\fBanomalies\fR|\:\fBexclusions\fR|\:\fBreset\fR]
 T}	T{
-WAF profiles,\: counters and the most matched rules (\fB\-\:top\fR \fIN\fR);\: \fBproposals\fR lists learned exclusion candidates,\: \fBexclusions\fR prints them as SecLang,\: \fBreset\fR clears the statistics
+WAF profiles (with their CRS plugins and JSON schemas),\: counters and the most matched rules (\fB\-\:top\fR \fIN\fR);\: \fBproposals\fR lists learned exclusion candidates,\: \fBanomalies\fR the behavioural baseline and flagged clients,\: \fBexclusions\fR prints the proposals as SecLang,\: \fBreset\fR clears the statistics
 T}
 T{
 \fBrotate\-\:secret\fR [\fB\-\:keep\fR \fIN\fR] \fIFILE\fR
@@ -213,6 +213,11 @@ T{
 \fBhtpasswd\fR \fIFILE\fR \fINAME\fR
 T}	T{
 Add or replace a \fBbasic_\:auth\fR user;\: the password is read from standard input
+T}
+T{
+\fBapikey\fR \fBadd\fR|\:\fBrotate\fR|\:\fBrevoke\fR|\:\fBremove\fR|\:\fBlist\fR [*ID*] [\fB\-\:file\fR \fIPATH\fR] [\fB\-\:scopes\fR \fIA,B\fR] [\fB\-\:expires\fR \fI90d\fR] [\fB\-\:note\fR \fITEXT\fR] [\fB\-\:grace\fR \fI24h\fR]
+T}	T{
+Manage the keys file of \fBapi_\:key\fR filters: \fBadd\fR prints the plaintext once,\: \fBrotate\fR issues a new secret and keeps the old one for the grace period,\: \fBrevoke\fR and \fBremove\fR retire a key,\: \fBlist\fR shows the file
 T}
 T{
 \fBspki\fR \fICERT.pem\fR

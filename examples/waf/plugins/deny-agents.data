@@ -1,0 +1,4 @@
+# One case-insensitive substring per line (@pmFromFile).
+masscan
+zgrab
+nikto
