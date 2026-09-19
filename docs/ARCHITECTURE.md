@@ -58,7 +58,7 @@ internal/proxy      server, listeners, handler pipeline, transport, stats
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
-internal/filters    built-in kinds (header_guard, basic_auth, body_rewrite, bot_score, oidc, wasm) and the registration list
+internal/filters    built-in kinds (header_guard, basic_auth, api_key, openapi, graphql, body_rewrite, bot_score, oidc, wasm) and the registration list
 internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
 internal/secret     keyring files for the symmetric secrets, rotation with retained keys
@@ -1031,6 +1031,22 @@ a path prefix, otherwise an unconditional `SecAction` with the same
 `ctl` (directive files load before the CRS rules, where
 `SecRuleUpdateTargetById` would not find its rule); ids are allocated
 from 10000 upwards in sorted order so a saved file is stable.
+
+The API security kinds follow the same shape. `api_key` keeps the keys
+file as an immutable table behind an atomic pointer (hash to key,
+previous hashes included), re-read when the file's digest changes and
+at most every `reload`; a file that fails to parse keeps the previous
+table and logs. `openapi` compiles the description at load into exact
+and templated path items (templates become anchored regular
+expressions, concrete paths win, longer literal prefixes first) with
+per operation parameters and request bodies, and validates with a
+small JSON Schema evaluator (`schema.go`): local `$ref` resolution with
+a cycle guard, a nesting limit, a bounded regular expression cache and
+at most twenty reported issues. `graphql` parses queries with a
+tolerant recursive descent parser under a token budget and measures
+depth, complexity (list argument multipliers capped by `max_list`),
+aliases and introspection with fragments expanded and cycles detected;
+denials are GraphQL error documents.
 
 ### Ban list
 

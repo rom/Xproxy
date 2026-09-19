@@ -215,6 +215,11 @@ T}	T{
 Add or replace a \fBbasic_\:auth\fR user;\: the password is read from standard input
 T}
 T{
+\fBapikey\fR \fBadd\fR|\:\fBrotate\fR|\:\fBrevoke\fR|\:\fBremove\fR|\:\fBlist\fR [*ID*] [\fB\-\:file\fR \fIPATH\fR] [\fB\-\:scopes\fR \fIA,B\fR] [\fB\-\:expires\fR \fI90d\fR] [\fB\-\:note\fR \fITEXT\fR] [\fB\-\:grace\fR \fI24h\fR]
+T}	T{
+Manage the keys file of \fBapi_\:key\fR filters: \fBadd\fR prints the plaintext once,\: \fBrotate\fR issues a new secret and keeps the old one for the grace period,\: \fBrevoke\fR and \fBremove\fR retire a key,\: \fBlist\fR shows the file
+T}
+T{
 \fBspki\fR \fICERT.pem\fR
 T}	T{
 Print the \fBspki_\:pins\fR value of a certificate

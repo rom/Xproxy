@@ -1,0 +1,45 @@
+# API security filters: managed API keys, OpenAPI validation and GraphQL
+# bounds. Validate with
+#   xproxy -config examples/filters/api-security.yaml -validate
+# (the keys file and the description must exist; see README.md).
+version: 1
+server:
+  listeners:
+    - {name: http, address: ":8080"}
+filters:
+  - name: keys
+    kind: api_key
+    options:
+      keys_file: /etc/xproxy/api-keys          # xproxyctl apikey add acme -scopes orders:read
+      required_scopes: [orders:read]
+      forward_id_header: X-Api-Key-Id
+  - name: orders-spec
+    kind: openapi
+    options:
+      spec_file: /etc/xproxy/openapi/orders.yaml   # examples/filters/orders-openapi.yaml
+      strict_query: true
+      max_body_bytes: 262144
+  - name: gql
+    kind: graphql
+    options:
+      max_depth: 8
+      max_complexity: 500
+      max_aliases: 10
+      max_batch: 1
+      introspection: false
+rate_limits:
+  - {name: per-key, key: "header:X-Api-Key", algorithm: sliding_window, limit: 600, window: 1m}
+upstreams:
+  - {name: orders, endpoints: [{address: "10.0.1.10:8080"}]}
+  - {name: gateway, endpoints: [{address: "10.0.2.10:8080"}]}
+routes:
+  - name: orders
+    paths: [/v1/orders]
+    upstream: orders
+    rate_limits: [per-key]
+    filters: [keys, orders-spec]
+  - name: graphql
+    paths: [/graphql]
+    upstream: gateway
+    rate_limits: [per-key]
+    filters: [keys, gql]

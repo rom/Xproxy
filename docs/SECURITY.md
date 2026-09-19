@@ -185,6 +185,23 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Encapsulated responses are size bounded (4 MiB) and parsed with the
   standard library; malformed answers close the connection.
 
+### API security
+
+- API keys are stored as SHA-256 digests; the plaintext exists only in
+  the output of `xproxyctl apikey add`. Keys carry scopes, an expiry
+  and a state, rotate with a bounded grace for the previous secret and
+  are revoked in place so an id is never reused; the filter forwards
+  the id and scopes in headers it first strips from the client.
+- OpenAPI validation is an allow list derived from the API description:
+  undocumented paths, methods, parameters and media types and bodies
+  that do not satisfy the schema are refused before the application,
+  with bounded body buffering, a bounded schema nesting depth and a
+  bounded pattern cache.
+- GraphQL bounds (depth, complexity with list multipliers, aliases,
+  batches, size, introspection) are computed by a parser with a token
+  budget, so a hostile query is refused in bounded time and never
+  reaches a resolver.
+
 ### Load shedding and challenge
 
 - Under pressure, routes are shed by priority class with immediate 503 and

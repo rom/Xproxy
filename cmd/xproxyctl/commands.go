@@ -51,6 +51,7 @@ var commandTable = []command{
 	{name: "otlp", summary: "OpenTelemetry metrics exporter status"},
 	{name: "telemetry", summary: "Every OpenTelemetry exporter with counters"},
 	{name: "htpasswd", args: "FILE NAME", summary: "Add or replace a basic_auth user (password on stdin)", files: true},
+	{name: "apikey", args: "add|rotate|revoke|remove|list [ID] [-file PATH] [-scopes a,b] [-expires 90d] [-note TEXT] [-grace 24h]", summary: "Manage api_key filter keys (issue, rotate with grace, revoke, remove, list)", words: []string{"add", "rotate", "revoke", "remove", "list"}, flags: []string{"-file", "-scopes", "-expires", "-note", "-grace"}, files: true},
 	{name: "spki", args: "CERT.pem", summary: "Print the spki_pins value of a certificate", files: true},
 	{name: "metrics", summary: "Print the Prometheus exposition"},
 	{name: "series", args: "[-since D] [-last N]", summary: "Print sampled series", flags: []string{"-since", "-last"}},

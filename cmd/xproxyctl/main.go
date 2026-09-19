@@ -56,6 +56,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -63,6 +64,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/config/schema"
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds for validate
+	"github.com/rom/xproxy/internal/filters/apikey"
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/paths"
@@ -686,6 +688,8 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_ = tw.Flush()
 		return 0
+	case "apikey":
+		return apikeyCmd(fs.Args()[1:], out, errOut)
 	case "htpasswd":
 		if fs.NArg() < 3 {
 			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl htpasswd FILE NAME   (password read from stdin, one line)")
@@ -1172,4 +1176,123 @@ func printChanges(out io.Writer, ch *config.Changes) {
 		_, _ = fmt.Fprintln(out)
 		_, _ = fmt.Fprint(out, ch.Text)
 	}
+}
+
+// apikeyCmd manages the keys file of api_key filters.
+func apikeyCmd(args []string, out, errOut io.Writer) int {
+	usage := func() int {
+		_, _ = fmt.Fprintln(errOut, "usage: xproxyctl apikey add ID [-file PATH] [-scopes a,b] [-expires 90d|2027-01-01T00:00:00Z] [-note TEXT]")
+		_, _ = fmt.Fprintln(errOut, "       xproxyctl apikey rotate ID [-file PATH] [-grace 24h]")
+		_, _ = fmt.Fprintln(errOut, "       xproxyctl apikey revoke|remove ID [-file PATH]")
+		_, _ = fmt.Fprintln(errOut, "       xproxyctl apikey list [-file PATH]")
+		return 2
+	}
+	if len(args) < 1 {
+		return usage()
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("xproxyctl apikey "+sub, flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	file := fs.String("file", filepath.Join(filepath.Dir(paths.ConfigFile), "api-keys"), "keys file")
+	scopes := fs.String("scopes", "", "scopes granted, comma separated")
+	expires := fs.String("expires", "", "expiry: a duration (90d, 720h) or an RFC 3339 time; default never")
+	note := fs.String("note", "", "free text (owner, ticket)")
+	grace := fs.Duration("grace", 24*time.Hour, "how long the previous secret stays valid after a rotation")
+	rest := args[1:]
+	id := ""
+	if sub != "list" {
+		if len(rest) < 1 || strings.HasPrefix(rest[0], "-") {
+			return usage()
+		}
+		id, rest = rest[0], rest[1:]
+	}
+	if err := fs.Parse(rest); err != nil {
+		return 2
+	}
+	fail := func(err error) int {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	switch sub {
+	case "add":
+		var exp time.Time
+		if *expires != "" {
+			if t, err := time.Parse(time.RFC3339, *expires); err == nil {
+				exp = t
+			} else if d, err := parseDays(*expires); err == nil {
+				exp = time.Now().Add(d)
+			} else {
+				return fail(fmt.Errorf("expires: %q is neither a duration nor an RFC 3339 time", *expires))
+			}
+		}
+		var sc []string
+		for _, s := range strings.Split(*scopes, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				sc = append(sc, s)
+			}
+		}
+		plain, err := apikey.Add(*file, id, sc, exp, *note)
+		if err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintf(out, "%s\n", plain)
+		_, _ = fmt.Fprintf(errOut, "key %s added to %s; the plaintext above is shown once and never stored\n", id, *file)
+		return 0
+	case "rotate":
+		plain, err := apikey.Rotate(*file, id, *grace)
+		if err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintf(out, "%s\n", plain)
+		_, _ = fmt.Fprintf(errOut, "key %s rotated; the previous secret works for %s\n", id, grace.String())
+		return 0
+	case "revoke":
+		if err := apikey.Revoke(*file, id); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintf(out, "key %s revoked\n", id)
+		return 0
+	case "remove":
+		if err := apikey.Remove(*file, id); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintf(out, "key %s removed\n", id)
+		return 0
+	case "list":
+		keys, err := apikey.Load(*file)
+		if err != nil {
+			return fail(err)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "ID\tSTATE\tEXPIRES\tSCOPES\tPREVIOUS-UNTIL\tCREATED\tNOTE")
+		for _, k := range keys {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", k.ID, k.State, timeOrNever(k.Expires), dash(strings.Join(k.Scopes, ",")), timeOrNever(k.PrevUntil), timeOrNever(k.Created), dash(k.Note))
+		}
+		_ = tw.Flush()
+		return 0
+	}
+	return usage()
+}
+
+// parseDays parses a Go duration or a number of days ("90d").
+func parseDays(s string) (time.Duration, error) {
+	if strings.HasSuffix(s, "d") {
+		n, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+		if err != nil || n <= 0 {
+			return 0, errors.New("bad day count")
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return 0, errors.New("bad duration")
+	}
+	return d, nil
+}
+
+func timeOrNever(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.UTC().Format(time.RFC3339)
 }

@@ -17,11 +17,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/filter"
 	_ "github.com/rom/xproxy/internal/filters" // built-in kinds
+	"github.com/rom/xproxy/internal/filters/apikey"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/waf"
 )
@@ -60,9 +62,14 @@ func TestYAMLDocuments(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if strings.HasPrefix(string(data), "openapi:") {
+				return // an API description referenced by a filter, not a configuration
+			}
 			// Kinds that open their files at validation get a real one.
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/tools-users", usersFile(t)))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/filters/policy.wasm", filepath.Join(dir, "filters", "wasm", "policy.wasm")))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/api-keys", keysFile(t)))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/openapi/orders.yaml", filepath.Join(dir, "filters", "orders-openapi.yaml")))
 			if strings.Contains(string(data), "\nversion: 1\n") || strings.HasPrefix(string(data), "version: 1\n") {
 				if _, err := config.ParseWith(data, false); err != nil {
 					t.Fatalf("complete document: %v", err)
@@ -89,6 +96,16 @@ routes:
 }
 
 // usersFile writes a one user file for the basic_auth example.
+// keysFile writes an api_key keys file with one key.
+func keysFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "api-keys")
+	if _, err := apikey.Add(p, "acme", []string{"orders:read"}, time.Time{}, "example"); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func usersFile(t *testing.T) string {
 	t.Helper()
 	h, err := passwd.Hash("correct horse")

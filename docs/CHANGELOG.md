@@ -218,6 +218,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- API security filters: `api_key` (keys issued, scoped, rotated with
+  grace and revoked by `xproxyctl apikey`, stored hashed, forwarded as
+  an id and scopes), `openapi` (requests validated against an OpenAPI 3
+  description: paths, methods, parameters, media types and JSON bodies
+  with a built-in schema evaluator) and `graphql` (depth, complexity,
+  aliases, batch, size and introspection bounds).
 - HTTP/3 to upstreams (`upstreams[].h3`, with a TCP fallback on QUIC
   failures), gRPC-web translation for browser clients
   (`routes[].grpc.web`, `web_origins` for CORS) and WebTransport relays

@@ -57,7 +57,7 @@ func TestFiltersConfig(t *testing.T) {
 	for name, y := range cases {
 		if _, err := config.Parse([]byte(y)); err == nil {
 			t.Errorf("%s: accepted", name)
-		} else if name == "unknown kind" && !strings.Contains(err.Error(), "registered: basic_auth, body_rewrite, bot_score, header_guard, oidc, wasm") {
+		} else if name == "unknown kind" && !strings.Contains(err.Error(), "registered: api_key, basic_auth, body_rewrite, bot_score, graphql, header_guard, oidc, openapi, wasm") {
 			t.Errorf("%s: error does not list kinds: %v", name, err)
 		}
 	}

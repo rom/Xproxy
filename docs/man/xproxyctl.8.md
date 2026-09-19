@@ -61,6 +61,7 @@ locally; everything else goes through the socket.
 | `otlp` | OpenTelemetry metrics exporter status |
 | `telemetry` | Every OpenTelemetry exporter with sent, dropped, pushes, failures, queue depth and last error |
 | `htpasswd` *FILE* *NAME* | Add or replace a `basic_auth` user; the password is read from standard input |
+| `apikey` `add`\|`rotate`\|`revoke`\|`remove`\|`list` [*ID*] [`-file` *PATH*] [`-scopes` *A,B*] [`-expires` *90d*] [`-note` *TEXT*] [`-grace` *24h*] | Manage the keys file of `api_key` filters: `add` prints the plaintext once, `rotate` issues a new secret and keeps the old one for the grace period, `revoke` and `remove` retire a key, `list` shows the file |
 | `spki` *CERT.pem* | Print the `spki_pins` value of a certificate |
 | `metrics` | Print the Prometheus exposition |
 | `series` [`-since` *D*] [`-last` *N*] | Print sampled series |

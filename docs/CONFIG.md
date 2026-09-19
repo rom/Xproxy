@@ -1193,7 +1193,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -1329,6 +1329,82 @@ honeypot route on this node or, with cluster sharing, on a peer). The
 score is the capped sum; a client that is
 already verified by the challenge is never challenged again. The JA4 of
 every TLS request is logged as `ja4`.
+
+### Kind `api_key`
+
+API keys with a life cycle: issued by `xproxyctl apikey add` (the
+plaintext `xpk_<id>_<secret>` is printed once; the file keeps a SHA-256),
+scoped, expiring, rotated with a grace period for the previous secret
+(`apikey rotate -grace 24h`) and revoked (`apikey revoke`, kept in the
+file so the id is never reused). The filter re-reads the file when its
+contents change, at most every `reload`, and keeps the previous table
+when the new file does not parse.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `keys_file` | path | required | Written by `xproxyctl apikey`; must not be world readable |
+| `source` | `header:<Name>`, `bearer`, `query:<name>` | `header:X-Api-Key` | Where the key is read; `bearer` accepts `Authorization: Bearer`, `ApiKey` or `Api-Key` |
+| `required_scopes` | list | `[]` | Every listed scope must be granted to the key (a scope `orders` covers `orders:read`, `*` covers all); a key without one is refused with 403 |
+| `forward_id_header` | header | `X-Api-Key-Id` | Upstream header carrying the key id; `""` disables. A client supplied copy is always removed |
+| `forward_scopes_header` | header | `X-Api-Key-Scopes` | Upstream header with the key's scopes, space separated; `""` disables |
+| `strip` | bool | `true` | Remove the key from the forwarded request |
+| `reload` | duration | `30s` | How often the file is checked for changes (1s to 1h) |
+| `expiry_warning` | duration | `168h` | A key used within this time of its expiry is logged once a day; `0` disables |
+
+Denials: 401 with `WWW-Authenticate: ApiKey` and the detail `missing`,
+`unknown`, `revoked`, `expired` or `rotated` (the previous secret after
+its grace), 403 `scope:<name>`; the access log carries `api_key` with
+the id.
+
+### Kind `openapi`
+
+Validates requests against an OpenAPI 3.0 or 3.1 description (JSON or
+YAML): the path must be documented (concrete paths win over templated
+ones), the method defined for it (else 405 with `Allow`), path, query,
+header and cookie parameters present when required and matching their
+schema (strings are coerced to the declared type), the content type one
+the operation declares (else 415) and a JSON body valid against its
+schema. The schema subset covers types and `nullable`, `enum`, `const`,
+`required`, `properties`, `additionalProperties`, `patternProperties`,
+`items`, `minItems`/`maxItems`/`uniqueItems`, `minLength`/`maxLength`/
+`pattern`, `minimum`/`maximum` (exclusive too), `multipleOf`,
+`minProperties`/`maxProperties`, `allOf`/`anyOf`/`oneOf`/`not`, local
+`$ref` and the formats `date-time`, `date`, `email`, `uuid`, `ipv4`,
+`ipv6`, `uri` and `hostname`; other keywords and formats are ignored as
+the specification allows. Denials answer JSON with the reason and up
+to twenty `details` naming the offending path.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `spec_file` | path | required | The description; loaded at configuration load, so a change needs a reload |
+| `base_path` | path | from `servers[0].url` | Prefix under which the paths are served |
+| `unknown_paths` | `deny`, `allow` | `deny` | `deny` answers 404 for a path the description lacks |
+| `strict_query` | bool | `false` | Refuse query parameters the operation does not declare |
+| `validate_body` | bool | `true` | Parse and validate JSON bodies; off checks only the media type |
+| `max_body_bytes` | int | `1048576` | A JSON body above this is refused with 413 rather than parsed (1 to 64 MiB) |
+
+### Kind `graphql`
+
+Bounds GraphQL requests (`POST` with `application/json` or
+`application/graphql`, `GET` with `query`) before they reach the API:
+depth (nesting of selection sets, fragments expanded, a fragment cycle
+fails), complexity (each field costs 1 times the product of the list
+arguments of its ancestors; a variable in a list argument counts as
+`max_list`), aliases, operations per batch, query size and
+introspection. Nothing is executed or forwarded to a schema. Denials are
+400 with a GraphQL `errors` body and the detail `depth`, `complexity`,
+`aliases`, `batch`, `size`, `syntax` or `introspection`.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_depth` | int | `10` | Deepest selection set allowed (1 to 1000) |
+| `max_complexity` | int | `1000` | Weighted field count per operation |
+| `max_aliases` | int | `30` | Aliased fields per request (alias floods hide repeated resolvers) |
+| `max_batch` | int | `1` | Operations in an array request |
+| `max_query_bytes` | int | `65536` | Query text and body size (256 to 16 MiB) |
+| `introspection` | bool | `true` | `false` refuses `__schema` and `__type` |
+| `list_args` | list | `[first, last, limit]` | Arguments whose integer value multiplies the cost of the fields below |
+| `max_list` | int | `1000` | Cap of one multiplier, and the value assumed for a variable |
 
 ### routes[].filters
 

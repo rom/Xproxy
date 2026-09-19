@@ -4754,7 +4754,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -5287,6 +5287,260 @@ T}
 .TE
 .PP
 Signals and default weights: \fBua_bot\fR 40 (curl, wget, python, Go, Java, scanners, headless browsers and the like), \fBua_missing\fR 30, \fBbrowser_headers_missing\fR 25 (a browser user agent without \fBAccept\fR or \fBAccept\-Language\fR), \fBfingerprint_mismatch\fR 35 (a browser user agent on a hello without \fBh2\fR ALPN or with fewer than ten cipher suites), \fBerror_rate\fR 30 (more than half of at least ten recent requests were 4xx or denied), \fBpath_spread\fR 15 (fifty or more distinct paths in the window), \fBregular_interval\fR 20 (eight or more requests with machine\-like timing), \fBhigh_rate\fR 15, \fBhoneypot_marked\fR 40 (the client touched a honeypot route on this node or, with cluster sharing, on a peer). The score is the capped sum; a client that is already verified by the challenge is never challenged again. The JA4 of every TLS request is logged as \fBja4\fR.
+.SS "Kind \fBapi_key\fR"
+.PP
+API keys with a life cycle: issued by \fBxproxyctl apikey add\fR (the plaintext \fBxpk_<id>_<secret>\fR is printed once; the file keeps a SHA\-256), scoped, expiring, rotated with a grace period for the previous secret (\fBapikey rotate \-grace 24h\fR) and revoked (\fBapikey revoke\fR, kept in the file so the id is never reused). The filter re\-reads the file when its contents change, at most every \fBreload\fR, and keeps the previous table when the new file does not parse.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBkeys_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Written by \fBxproxyctl apikey\fR;\: must not be world readable
+T}
+T{
+\fBsource\fR
+T}	T{
+\fBheader:\:<Name>\fR,\: \fBbearer\fR,\: \fBquery:\:<name>\fR
+T}	T{
+\fBheader:\:X\-\:Api\-\:Key\fR
+T}	T{
+Where the key is read;\: \fBbearer\fR accepts \fBAuthorization:\: Bearer\fR,\: \fBApiKey\fR or \fBApi\-\:Key\fR
+T}
+T{
+\fBrequired_\:scopes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Every listed scope must be granted to the key (a scope \fBorders\fR covers \fBorders:\:read\fR,\: \fB*\fR covers all);\: a key without one is refused with 403
+T}
+T{
+\fBforward_\:id_\:header\fR
+T}	T{
+header
+T}	T{
+\fBX\-\:Api\-\:Key\-\:Id\fR
+T}	T{
+Upstream header carrying the key id;\: \fB""\fR disables. A client supplied copy is always removed
+T}
+T{
+\fBforward_\:scopes_\:header\fR
+T}	T{
+header
+T}	T{
+\fBX\-\:Api\-\:Key\-\:Scopes\fR
+T}	T{
+Upstream header with the key\(aqs scopes,\: space separated;\: \fB""\fR disables
+T}
+T{
+\fBstrip\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Remove the key from the forwarded request
+T}
+T{
+\fBreload\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How often the file is checked for changes (1s to 1h)
+T}
+T{
+\fBexpiry_\:warning\fR
+T}	T{
+duration
+T}	T{
+\fB168h\fR
+T}	T{
+A key used within this time of its expiry is logged once a day;\: \fB0\fR disables
+T}
+.TE
+.PP
+Denials: 401 with \fBWWW\-Authenticate: ApiKey\fR and the detail \fBmissing\fR, \fBunknown\fR, \fBrevoked\fR, \fBexpired\fR or \fBrotated\fR (the previous secret after its grace), 403 \fBscope:<name>\fR; the access log carries \fBapi_key\fR with the id.
+.SS "Kind \fBopenapi\fR"
+.PP
+Validates requests against an OpenAPI 3.0 or 3.1 description (JSON or YAML): the path must be documented (concrete paths win over templated ones), the method defined for it (else 405 with \fBAllow\fR), path, query, header and cookie parameters present when required and matching their schema (strings are coerced to the declared type), the content type one the operation declares (else 415) and a JSON body valid against its schema. The schema subset covers types and \fBnullable\fR, \fBenum\fR, \fBconst\fR, \fBrequired\fR, \fBproperties\fR, \fBadditionalProperties\fR, \fBpatternProperties\fR, \fBitems\fR, \fBminItems\fR/\fBmaxItems\fR/\fBuniqueItems\fR, \fBminLength\fR/\fBmaxLength\fR/ \fBpattern\fR, \fBminimum\fR/\fBmaximum\fR (exclusive too), \fBmultipleOf\fR, \fBminProperties\fR/\fBmaxProperties\fR, \fBallOf\fR/\fBanyOf\fR/\fBoneOf\fR/\fBnot\fR, local \fB$ref\fR and the formats \fBdate\-time\fR, \fBdate\fR, \fBemail\fR, \fBuuid\fR, \fBipv4\fR, \fBipv6\fR, \fBuri\fR and \fBhostname\fR; other keywords and formats are ignored as the specification allows. Denials answer JSON with the reason and up to twenty \fBdetails\fR naming the offending path.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.6i) lbw(1.2i) lbx
+lw(1.0i) lw(0.6i) lw(1.2i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBspec_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The description;\: loaded at configuration load,\: so a change needs a reload
+T}
+T{
+\fBbase_\:path\fR
+T}	T{
+path
+T}	T{
+from \fBservers[0].\:url\fR
+T}	T{
+Prefix under which the paths are served
+T}
+T{
+\fBunknown_\:paths\fR
+T}	T{
+\fBdeny\fR,\: \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+\fBdeny\fR answers 404 for a path the description lacks
+T}
+T{
+\fBstrict_\:query\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse query parameters the operation does not declare
+T}
+T{
+\fBvalidate_\:body\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Parse and validate JSON bodies;\: off checks only the media type
+T}
+T{
+\fBmax_\:body_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+A JSON body above this is refused with 413 rather than parsed (1 to 64 MiB)
+T}
+.TE
+.SS "Kind \fBgraphql\fR"
+.PP
+Bounds GraphQL requests (\fBPOST\fR with \fBapplication/json\fR or \fBapplication/graphql\fR, \fBGET\fR with \fBquery\fR) before they reach the API: depth (nesting of selection sets, fragments expanded, a fragment cycle fails), complexity (each field costs 1 times the product of the list arguments of its ancestors; a variable in a list argument counts as \fBmax_list\fR), aliases, operations per batch, query size and introspection. Nothing is executed or forwarded to a schema. Denials are 400 with a GraphQL \fBerrors\fR body and the detail \fBdepth\fR, \fBcomplexity\fR, \fBaliases\fR, \fBbatch\fR, \fBsize\fR, \fBsyntax\fR or \fBintrospection\fR.
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.4i) lw(0.6i) lw(0.8i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmax_\:depth\fR
+T}	T{
+int
+T}	T{
+\fB10\fR
+T}	T{
+Deepest selection set allowed (1 to 1000)
+T}
+T{
+\fBmax_\:complexity\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Weighted field count per operation
+T}
+T{
+\fBmax_\:aliases\fR
+T}	T{
+int
+T}	T{
+\fB30\fR
+T}	T{
+Aliased fields per request (alias floods hide repeated resolvers)
+T}
+T{
+\fBmax_\:batch\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+Operations in an array request
+T}
+T{
+\fBmax_\:query_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Query text and body size (256 to 16 MiB)
+T}
+T{
+\fBintrospection\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+\fBfalse\fR refuses \fB_\:_\:schema\fR and \fB_\:_\:type\fR
+T}
+T{
+\fBlist_\:args\fR
+T}	T{
+list
+T}	T{
+\fB[first,\: last,\: limit]\fR
+T}	T{
+Arguments whose integer value multiplies the cost of the fields below
+T}
+T{
+\fBmax_\:list\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Cap of one multiplier,\: and the value assumed for a variable
+T}
+.TE
 .SS "routes[].filters"
 .PP
 A list of filter names, run in the listed order within each stage. A route may combine them with \fBjwt\fR, \fBwaf\fR and \fBicap\fR.

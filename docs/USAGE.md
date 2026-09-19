@@ -79,6 +79,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `otlp` | OpenTelemetry metrics exporter status: pushes, failures, last error |
 | `telemetry` | Every OpenTelemetry exporter (metrics, traces, logs) with sent, dropped, pushes, failures, queue depth and last error |
 | `htpasswd FILE NAME` | Add or replace a `basic_auth` user; the password is read from stdin |
+| `apikey add\|rotate\|revoke\|remove\|list` | Manage the keys file of `api_key` filters: `add ID [-scopes a,b] [-expires 90d] [-note TEXT]` prints the plaintext once, `rotate ID [-grace 24h]` issues a new secret and keeps the old one for the grace, `revoke ID`, `remove ID`, `list`; `-file` names the file (default `/etc/xproxy/api-keys`) |
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
 | `series` | Print sampled series; `-since 10m`, `-last 30`, `-json` |
@@ -1880,6 +1881,45 @@ xproxyctl filters
 
 Denies are logged on the security stream with the filter name as reason
 and can drive ban triggers (`categories: [scanners]`).
+
+### API security: keys, OpenAPI validation and GraphQL bounds (filters)
+
+```
+$ xproxyctl apikey add acme -scopes orders:read,orders:write -expires 365d -note "Acme Corp, ticket 4711"
+xpk_acme_Qm9vay1vZi1zaGFkb3dz...        # shown once; hand it to the customer
+$ xproxyctl apikey rotate acme -grace 48h   # new secret, the old one works two more days
+$ xproxyctl apikey revoke acme
+```
+
+```yaml
+filters:
+  - name: keys
+    kind: api_key
+    options: {keys_file: /etc/xproxy/api-keys, required_scopes: [orders:read]}
+  - name: orders-spec
+    kind: openapi
+    options: {spec_file: /etc/xproxy/openapi/orders.yaml, strict_query: true}
+  - name: gql
+    kind: graphql
+    options: {max_depth: 8, max_complexity: 500, max_aliases: 10, introspection: false}
+routes:
+  - {name: orders, paths: [/v1/orders], upstream: orders, filters: [keys, orders-spec]}
+  - {name: graphql, paths: [/graphql], upstream: gateway, filters: [keys, gql]}
+```
+
+The key filter authenticates the caller and forwards `X-Api-Key-Id` and
+`X-Api-Key-Scopes` to the application, which never sees the secret; the
+file is re-read when `xproxyctl apikey` changes it, so issuing,
+rotating and revoking need no reload. Rate limit a partner by key with
+`rate_limits: [{name: partner, key: "header:X-Api-Key", ...}]` on the
+same route. The OpenAPI filter turns the API description into an
+allow list: undocumented paths, methods, parameters, media types and
+malformed bodies never reach the application, and the caller gets a
+JSON answer naming what was wrong. The GraphQL filter refuses the
+queries that take an API down (deep nesting, wide lists, alias floods,
+batches, introspection in production) without knowing the schema. The
+security log carries the filter name as the reason and the access log
+the key id (`api_key`).
 
 ### Browser challenge
 
