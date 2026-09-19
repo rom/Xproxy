@@ -73,6 +73,51 @@ func TestShadowDiff(t *testing.T) {
 	}
 }
 
+func TestShadowHeaderAndNoBody(t *testing.T) {
+	// Same status and body but a different Content-Type: a header diff.
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = io.WriteString(w, "x")
+	}))
+	defer live.Close()
+	shadow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = io.WriteString(w, "x")
+	}))
+	defer shadow.Close()
+
+	s, url := startServer(t, fmt.Sprintf(shadowYAML,
+		live.Listener.Addr().String(), shadow.Listener.Addr().String()))
+
+	if resp, _ := get(t, url+"/x"); resp.StatusCode != 200 {
+		t.Fatalf("live: %d", resp.StatusCode)
+	}
+	waitStat(t, s, func(sn Snapshot) uint64 { return sn.MirrorDiffHeader }, 1)
+
+	// A HEAD response has no body: the empty-body capture path is exercised
+	// and, with matching status and headers, counts as a match.
+	before := s.Stats().MirrorDiffMatch
+	req, _ := http.NewRequest("HEAD", url+"/x", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	// Content-Type differs here too, so HEAD yields a header diff, not a
+	// match; assert the header counter advanced without a body diff.
+	waitStat(t, s, func(sn Snapshot) uint64 { return sn.MirrorDiffHeader }, 2)
+	if s.Stats().MirrorDiffBody != 0 {
+		t.Fatalf("unexpected body diff on HEAD: %+v", s.Stats())
+	}
+	_ = before
+}
+
 func TestShadowMatchAndStatus(t *testing.T) {
 	live := httptest.NewServer(fixed(200, "text/plain", "same"))
 	defer live.Close()

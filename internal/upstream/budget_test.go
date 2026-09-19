@@ -61,4 +61,19 @@ func TestPoolRetryBudgetAbsent(t *testing.T) {
 	if _, _, ok := p.RetryBudgetStats(); ok {
 		t.Fatal("stats reported for a pool without a budget")
 	}
+
+	// With a budget the accessor reports the live counts.
+	wb := &Pool{budget: newRetryBudget(50, 2)}
+	wb.BeginRequest()
+	wb.BeginRequest()
+	if !wb.AllowRetry() {
+		t.Fatal("floor retry denied")
+	}
+	active, retries, ok := wb.RetryBudgetStats()
+	if !ok || active != 2 || retries != 1 {
+		t.Fatalf("stats active=%d retries=%d ok=%v", active, retries, ok)
+	}
+	wb.ReleaseRetry()
+	wb.EndRequest()
+	wb.EndRequest()
 }

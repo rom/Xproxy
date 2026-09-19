@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -22,6 +23,39 @@ routes:
   - name: r
     upstream: pool
 `
+
+const hedgeFallbackYAML = `
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+logging: {access: {enabled: false}}
+upstreams:
+  - name: pool
+    balancer: round_robin
+    retries: 1
+    retry_on: ["503"]
+    hedge: {delay: 20ms, max: 1}
+    endpoints: [{address: "%s"}, {address: "%s"}]
+routes:
+  - name: r
+    upstream: pool
+`
+
+// TestHedgeAllRetryOn drives a hedged pool whose endpoints all answer a
+// retry_on status: no copy is usable, so the last held response (the
+// fallback) is returned to the client with its body rather than an error.
+func TestHedgeAllRetryOn(t *testing.T) {
+	a := httptest.NewServer(fixed(503, "text/plain", "A down"))
+	defer a.Close()
+	b := httptest.NewServer(fixed(503, "text/plain", "B down"))
+	defer b.Close()
+	_, url := startServer(t, fmt.Sprintf(hedgeFallbackYAML,
+		a.Listener.Addr().String(), b.Listener.Addr().String()))
+	resp, body := get(t, url+"/x")
+	if resp.StatusCode != 503 || (body != "A down" && body != "B down") {
+		t.Fatalf("fallback: %d %q", resp.StatusCode, body)
+	}
+}
 
 // TestHedge sends a slow and a fast endpoint into a hedged pool: whichever
 // endpoint is picked first, the fast one answers within the hedge delay, so
