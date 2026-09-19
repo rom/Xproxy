@@ -19,9 +19,8 @@ func apply(sb *config.Sandbox, rules Rules, st *Status, log *slog.Logger) {
 	st.Mechanism = append(st.Mechanism, dropCapabilities(sb))
 	nnp := noNewPrivs(sb)
 	st.Mechanism = append(st.Mechanism, nnp)
-	st.Mechanism = append(st.Mechanism, landlock(sb, rules, st, nnp.State == StateApplied || nnp.State == StateDisabled))
+	st.Mechanism = append(st.Mechanism, landlock(sb, rules, st, nnp.State == StateApplied || nnp.State == StateDisabled, log))
 	st.Mechanism = append(st.Mechanism, seccomp(sb, st))
-	_ = log
 }
 
 // debuggable makes the process non dumpable and forbids core files unless

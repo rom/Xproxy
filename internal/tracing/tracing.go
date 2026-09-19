@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/rom/xproxy/internal/bound"
 	"log/slog"
 	mathrand "math/rand/v2"
 	"net/http"
@@ -58,10 +59,11 @@ type Tracer struct {
 	client *otlp.Client
 	log    *slog.Logger
 
-	queue chan *Span
-	stop  chan struct{}
-	wg    sync.WaitGroup
-	once  sync.Once
+	queue     chan *Span
+	stop      chan struct{}
+	queueFull bound.Notice
+	wg        sync.WaitGroup
+	once      sync.Once
 
 	started, sampled, sent, dropped, pushes, failed atomic.Uint64
 	mu                                              sync.Mutex
@@ -225,6 +227,7 @@ func (s *Span) Finish(err bool) {
 	case t.queue <- s:
 	default:
 		t.dropped.Add(1)
+		t.queueFull.Hit(t.log, "trace queue full; spans are dropped", "table", "trace_queue")
 	}
 }
 

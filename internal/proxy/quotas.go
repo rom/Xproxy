@@ -48,14 +48,17 @@ type TenantQuota struct {
 
 // PolicyQuota is one rate limit policy's decisions and top consumers.
 type PolicyQuota struct {
-	Policy  string            `json:"policy"`
-	Key     string            `json:"key"`
-	Rate    float64           `json:"rate"`
-	Burst   int               `json:"burst"`
-	Keys    int               `json:"keys"`
-	Allowed uint64            `json:"allowed"`
-	Denied  uint64            `json:"denied"`
-	Top     []limits.KeyUsage `json:"top"`
+	Policy  string  `json:"policy"`
+	Key     string  `json:"key"`
+	Rate    float64 `json:"rate"`
+	Burst   int     `json:"burst"`
+	Keys    int     `json:"keys"`
+	Allowed uint64  `json:"allowed"`
+	Denied  uint64  `json:"denied"`
+	// Overflow counts decisions taken without a bucket because the key
+	// table was full of active keys (a warning is logged as well).
+	Overflow uint64            `json:"overflow,omitempty"`
+	Top      []limits.KeyUsage `json:"top"`
 }
 
 // UpstreamLoad is one pool's request share.
@@ -99,7 +102,7 @@ func (s *Server) Quotas(top int) QuotaReport {
 	}
 	sort.Slice(rep.Tenants, func(i, j int) bool { return rep.Tenants[i].Tenant < rep.Tenants[j].Tenant })
 	for name, rl := range rt.rateLimits {
-		rep.RateLimits = append(rep.RateLimits, PolicyQuota{Policy: name, Key: rl.cfg.Key, Rate: rl.cfg.Rate, Burst: rl.cfg.Burst,
+		rep.RateLimits = append(rep.RateLimits, PolicyQuota{Policy: name, Key: rl.cfg.Key, Rate: rl.cfg.Rate, Burst: rl.cfg.Burst, Overflow: rl.lim.Overflow(),
 			Keys: rl.lim.Len(), Allowed: rl.allowed.Load(), Denied: rl.denied.Load(), Top: rl.lim.Top(top)})
 	}
 	sort.Slice(rep.RateLimits, func(i, j int) bool { return rep.RateLimits[i].Policy < rep.RateLimits[j].Policy })

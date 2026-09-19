@@ -331,6 +331,9 @@ to report a vulnerability. The threat analysis behind the controls is in
   (docs/HARDENING_MACOS.md).
 - The WebAssembly engine uses the interpreter wherever executable memory
   is refused, so W^X policies never have to be relaxed for a filter.
+- Bounded tables never fail silently: reaching a cap is counted, warned
+  about (throttled) and visible in the status views, so an attack that
+  fills a table is seen rather than absorbed.
 
 ### Management and logging
 

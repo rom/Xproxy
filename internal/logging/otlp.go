@@ -3,6 +3,7 @@ package logging
 import (
 	"context"
 	"encoding/json"
+	"github.com/rom/xproxy/internal/bound"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -15,14 +16,15 @@ import (
 // JSON. Records queue without blocking the request path; a full queue
 // drops and counts; a batching goroutine pushes by size and interval.
 type otlpSink struct {
-	client   *otlp.Client
-	batch    int
-	interval time.Duration
-	queue    chan otlpRecord
-	stop     chan struct{}
-	wg       sync.WaitGroup
-	once     sync.Once
-	log      *slog.Logger
+	client    *otlp.Client
+	batch     int
+	interval  time.Duration
+	queue     chan otlpRecord
+	queueFull bound.Notice
+	stop      chan struct{}
+	wg        sync.WaitGroup
+	once      sync.Once
+	log       *slog.Logger
 
 	sent, dropped, pushes, failed atomic.Uint64
 	mu                            sync.Mutex
@@ -98,6 +100,7 @@ func (s *otlpSink) emit(level slog.Level, stream string, _ []byte, rec slog.Reco
 	case s.queue <- r:
 	default:
 		s.dropped.Add(1)
+		s.queueFull.Hit(s.log, "otlp log queue full; records are dropped", "table", "otlp_log_queue")
 	}
 }
 

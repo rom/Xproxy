@@ -3,6 +3,7 @@ package dns
 import (
 	"context"
 	"errors"
+	"github.com/rom/xproxy/internal/bound"
 	"net"
 	"net/http"
 	"net/netip"
@@ -70,6 +71,15 @@ type Server struct {
 	Queries, Hits, Blocked, Refused, Dropped, ServFail, Truncated, FormErr atomic.Uint64
 	// Per transport counters.
 	UDP, TCP, DoT, DoH atomic.Uint64
+	// dropNotice warns when queries are dropped for lack of workers.
+	dropNotice bound.Notice
+}
+
+// drop counts and warns about a query refused because every worker slot
+// was taken.
+func (s *Server) drop() {
+	s.Dropped.Add(1)
+	s.dropNotice.Hit(nil, "dns listener dropping queries: every worker slot is busy", "table", "dns_workers", "listener", s.Name)
 }
 
 // Status is the management view of a listener.
@@ -204,7 +214,7 @@ func (s *Server) serveUDP() {
 		select {
 		case s.sem <- struct{}{}:
 		default:
-			s.Dropped.Add(1)
+			s.drop()
 			continue
 		}
 		query := make([]byte, n)
@@ -269,7 +279,7 @@ func (s *Server) serveConn(c net.Conn) {
 		select {
 		case s.sem <- struct{}{}:
 		default:
-			s.Dropped.Add(1)
+			s.drop()
 			return
 		}
 		resp := s.handle(query, client, true, proto)
@@ -363,16 +373,16 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	}
 	h, err := ParseHeader(query)
 	if err != nil || h.Response() {
-		s.Dropped.Add(1)
+		s.drop()
 		return nil
 	}
 	if s.hooks.Banned != nil && s.hooks.Banned(client) {
-		s.Dropped.Add(1)
+		s.drop()
 		return nil
 	}
 	p := s.policy.Load()
 	if p.RateLimit != nil && !p.RateLimit.Allow(client.String()) {
-		s.Dropped.Add(1)
+		s.drop()
 		return nil
 	}
 	if h.QDCount != 1 {

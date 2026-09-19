@@ -199,7 +199,7 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		writeJSON(w, 200, map[string]int{"purged": s.proxy.PurgeDNS()})
 	})
 	mux.HandleFunc("GET /v1/honeypot", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "decoys": proxy.DecoyNames()})
+		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "marks_dropped": s.proxy.HoneypotMarksDropped(), "decoys": proxy.DecoyNames()})
 	})
 	mux.HandleFunc("DELETE /v1/honeypot", func(w http.ResponseWriter, r *http.Request) {
 		ip, err := netip.ParseAddr(r.URL.Query().Get("ip"))

@@ -56,6 +56,10 @@ type Status struct {
 	// Landlocked reports whether file system rules are in force, which
 	// makes Check meaningful.
 	Landlocked bool `json:"landlocked"`
+	// MissingPaths are configured or system paths that did not exist when
+	// the rules were applied; a file created there later is reachable
+	// only if its directory was admitted.
+	MissingPaths []string `json:"missing_paths,omitempty"`
 }
 
 // Rules are the file system paths a configuration needs after start.
@@ -143,6 +147,18 @@ var systemReadPaths = []string{
 	"/usr/share/ca-certificates", "/usr/local/share/ca-certificates", "/etc/crypto-policies",
 	"/proc/sys/net", "/proc/self", "/sys/kernel/mm/transparent_hugepage", "/dev/null", "/dev/urandom",
 	"/private/etc/hosts", "/private/etc/resolv.conf", "/var/run/resolv.conf",
+}
+
+// isSystemPath reports whether p is one of the well known system paths
+// rather than an operator configured one; a missing system path is
+// normal (not every distribution has every trust store directory).
+func isSystemPath(p string) bool {
+	for _, s := range systemReadPaths {
+		if p == s {
+			return true
+		}
+	}
+	return false
 }
 
 // Derive computes the paths cfg needs after start. Files are represented

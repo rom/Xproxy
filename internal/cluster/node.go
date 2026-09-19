@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/rom/xproxy/internal/bound"
 	"log/slog"
 	"net"
 	"os"
@@ -37,9 +38,10 @@ type BanStore interface {
 
 // Node is the cluster endpoint of one proxy.
 type Node struct {
-	id    string
-	log   *slog.Logger
-	rates RateSource
+	id        string
+	queueFull bound.Notice
+	log       *slog.Logger
+	rates     RateSource
 
 	mu       sync.Mutex
 	cfg      *config.Cluster
@@ -164,6 +166,7 @@ func (n *Node) AttachBans(b BanStore) {
 			case n.banQueue <- banChange{e: e, removed: removed}:
 			default:
 				n.dropped.Add(1)
+				n.queueFull.Hit(n.log, "cluster ban queue full; the change is not shared", "table", "cluster_ban_queue")
 			}
 		})
 	}
@@ -182,6 +185,7 @@ func (n *Node) PublishEvent(e Event) {
 	case n.eventQueue <- e:
 	default:
 		n.dropped.Add(1)
+		n.queueFull.Hit(n.log, "cluster event queue full; the event is not shared", "table", "cluster_event_queue", "kind", e.Kind)
 	}
 }
 

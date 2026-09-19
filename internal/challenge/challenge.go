@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/rom/xproxy/internal/bound"
 	"html/template"
 	"net/http"
 	"net/netip"
@@ -64,6 +65,7 @@ type Challenger struct {
 	title      string
 	seen       map[[macLen]byte]int64 // nonce mac -> expiry unix
 	now        func() time.Time
+	full       bound.Notice
 
 	Issued, Passed, Failed uint64
 }
@@ -218,6 +220,7 @@ func (c *Challenger) markUsed(key [macLen]byte, now time.Time) error {
 		}
 		if len(c.seen) >= maxSeen {
 			// Table full of live nonces: refuse rather than allow replay.
+			c.full.Hit(nil, "challenge verification table full; solved challenges are refused until nonces expire", "table", "challenge_nonces", "max", maxSeen)
 			return errors.New("verification table full")
 		}
 	}

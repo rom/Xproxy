@@ -27,3 +27,23 @@ func TestTop(t *testing.T) {
 		t.Fatal("flush cleared totals")
 	}
 }
+
+// TestOverflowCounted fills a shard with active keys and checks that the
+// decisions taken without a bucket are counted.
+func TestOverflowCounted(t *testing.T) {
+	l := NewKeyedLimiter(1, 1, 8192)
+	l.SetMaxKeysForTest(1)
+	if !l.Allow("first") {
+		t.Fatal("first key should have its burst")
+	}
+	// The shard of "first" is full of one active key; another key that
+	// hashes to the same shard cannot get a bucket. Try many keys: at least
+	// one of them shares the shard (64 shards).
+	before := l.Overflow()
+	for i := 0; i < 512; i++ {
+		l.Allow("k" + string(rune('a'+i%26)) + string(rune('a'+i/26%26)))
+	}
+	if l.Overflow() == before {
+		t.Fatal("no overflow counted although the shards are full")
+	}
+}

@@ -177,6 +177,11 @@ func TestApplyLinux(t *testing.T) {
 		if !st.Landlocked || st.LandlockABI == 0 || len(st.ReadPaths) == 0 || len(st.WritePaths) == 0 {
 			t.Errorf("landlock status %+v", st)
 		}
+		for _, p := range st.MissingPaths {
+			if !beneathAny(p, st.ReadPaths) && !beneathAny(p, st.WritePaths) {
+				t.Errorf("missing path %s is not one of the rules", p)
+			}
+		}
 		if res.ReadOutside != unix.EACCES.Error() || res.WriteReadOnly != unix.EACCES.Error() {
 			t.Errorf("landlock in force but outside read %q, read-only write %q", res.ReadOutside, res.WriteReadOnly)
 		}

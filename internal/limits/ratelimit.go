@@ -6,6 +6,7 @@
 package limits
 
 import (
+	"github.com/rom/xproxy/internal/bound"
 	"sort"
 	"sync"
 	"time"
@@ -41,7 +42,13 @@ type KeyedLimiter struct {
 	// peerStale is how long a peer report stays effective. Zero disables
 	// peer accounting.
 	peerStale time.Duration
+	// overflow counts decisions made without a bucket because a shard was
+	// full of active keys.
+	overflow bound.Notice
 }
+
+// Overflow returns the number of decisions made on a full shard.
+func (l *KeyedLimiter) Overflow() uint64 { return l.overflow.Total() }
 
 // PeerReport is one key's consumption as seen by a peer.
 type PeerReport struct {
@@ -107,6 +114,7 @@ func (l *KeyedLimiter) AllowFallback(key, fallback string, n float64) bool {
 		}
 		if len(sh.buckets) >= l.maxKeys {
 			sh.mu.Unlock()
+			l.overflow.Hit(nil, "rate limit key table full; decisions for new keys fall back to the shared key or the burst", "table", "rate_limit_keys", "max_per_shard", l.maxKeys)
 			if fallback != "" && fallback != key {
 				return l.AllowFallback(fallback, "", n)
 			}

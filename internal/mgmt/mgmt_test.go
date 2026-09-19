@@ -193,6 +193,9 @@ routes:
 	if err := c.Post("/v1/waf/reset"); err != nil {
 		t.Fatalf("waf reset: %v", err)
 	}
+	if b, err = c.Raw("/v1/honeypot"); err != nil || !strings.Contains(string(b), `"marks_dropped": 0`) {
+		t.Fatalf("honeypot: %v %s", err, b)
+	}
 	if _, err := c.Raw("/v1/sandbox"); err == nil {
 		t.Fatal("sandbox status without the action should be 404")
 	}
