@@ -123,10 +123,13 @@ type compiledRoute struct {
 	compress     *compressPolicy
 	mirror       *mirror
 	rateLimits   []*rateLimit
-	allow        []netip.Prefix
-	deny         []netip.Prefix
-	filters      filter.Chain
-	wafMode      string
+	// identityLimits key on the verified identity and so run after the
+	// filter chain; the others run before it.
+	identityLimits []*rateLimit
+	allow          []netip.Prefix
+	deny           []netip.Prefix
+	filters        filter.Chain
+	wafMode        string
 	// Templated header operations, regex rewrite, redirect target and
 	// error pages (nil without a route section).
 	reqOps, respOps compiledOps
@@ -441,7 +444,11 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 				rt.stop()
 				return nil, fmt.Errorf("route %s: unknown rate limit %s", r.Name, name)
 			}
-			cr.rateLimits = append(cr.rateLimits, rl)
+			if rl.cfg.IdentityKeyed() {
+				cr.identityLimits = append(cr.identityLimits, rl)
+			} else {
+				cr.rateLimits = append(cr.rateLimits, rl)
+			}
 		}
 		// Chain order: before_auth, JWT, after_auth, WAF, after_waf, ICAP,
 		// after_scan; custom filters keep their listed order within a stage.

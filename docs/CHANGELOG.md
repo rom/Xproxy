@@ -222,6 +222,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Identity-keyed rate limits: `rate_limits[].key` of `identity` or
+  `identity:<kind>` (`jwt`, `oidc`, `api_key`, `basic`) keys the bucket
+  on the principal an auth filter verified, evaluated after the filter
+  chain; filters publish the verified identity through the request
+  context (`filter.SetIdentity`).
 - Adversarial bypass harness (`test/bypass`): tests that try to evade
   every security control (WAF, normalisation, positive policy, virtual
   patches, rate limits, aggregate and honeypot bans, upload guard,

@@ -875,8 +875,15 @@ func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 		if strings.ContainsAny(r.Key[len("jwt:"):], " \"") || len(r.Key) > 128 {
 			v.errf("%s.key: %q is not a claim name", p, r.Key[len("jwt:"):])
 		}
+	case r.Key == "identity":
+	case strings.HasPrefix(r.Key, "identity:") && len(r.Key) > len("identity:"):
+		switch r.Key[len("identity:"):] {
+		case "jwt", "oidc", "api_key", "basic":
+		default:
+			v.errf("%s.key: identity kind must be jwt, oidc, api_key or basic", p)
+		}
 	default:
-		v.errf("%s.key: must be client_ip, client_net, route, country, endpoint, ja4, device, header:<name>, cookie:<name> or jwt:<claim>", p)
+		v.errf("%s.key: must be client_ip, client_net, route, country, endpoint, ja4, device, identity, identity:<kind>, header:<name>, cookie:<name> or jwt:<claim>", p)
 	}
 	if r.NetV4 < 8 || r.NetV4 > 32 {
 		v.errf("%s.net_v4: must be between 8 and 32", p)

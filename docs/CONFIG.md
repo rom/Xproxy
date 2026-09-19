@@ -609,10 +609,18 @@ Keys:
 | `header:<Name>` | first value of the header (256 bytes) | client address |
 | `cookie:<name>` | value of the cookie (256 bytes), a session or device identifier | client address |
 | `jwt:<claim>` | a string, number or boolean claim of the bearer token in `Authorization`, read without verification (the value only names a bucket; the `jwt` route setting still rejects a forged token) | client address |
+| `identity` | the identity a preceding auth filter verified this request against, preferring `oidc`, `jwt`, `api_key` then `basic`; unlike `jwt:<claim>` it cannot be spoofed, because the filter proved it. Evaluated after the filter chain, so the limiter sees the authenticated principal | client address (unauthenticated) |
+| `identity:<kind>` | the verified identity of one kind: `jwt` (the `sub` claim), `oidc` (the session subject), `api_key` (the key id) or `basic` (the user) | client address |
 
 The fallback keeps a limit from being avoided by omitting the
 identifier; rotating it still buys fresh buckets, so pair an identifier
-key with a `client_ip` or `client_net` policy on the same route.
+key with a `client_ip` or `client_net` policy on the same route. An
+`identity` key cannot be rotated within one authenticated principal:
+the value is what the `jwt`, `oidc`, `api_key` or `basic` filter
+verified, so a per-account or per-API-key limit holds regardless of the
+headers a client sends. Attach such a policy to a route that also runs
+the matching auth filter (or the `jwt` route setting); a request that
+fails authentication is refused by the filter before the limiter.
 
 Memory: at most 64 x 8192 buckets per policy.
 

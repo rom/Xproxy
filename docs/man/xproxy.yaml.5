@@ -2290,8 +2290,8 @@ Keys:
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(1.5i) lbx
-lw(0.9i) lw(1.5i) lx.
+lbw(1.0i) lbw(1.5i) lbx
+lw(1.0i) lw(1.5i) lx.
 T{
 Key
 T}	T{
@@ -2369,9 +2369,23 @@ a string,\: number or boolean claim of the bearer token in \fBAuthorization\fR,\
 T}	T{
 client address
 T}
+T{
+\fBidentity\fR
+T}	T{
+the identity a preceding auth filter verified this request against,\: preferring \fBoidc\fR,\: \fBjwt\fR,\: \fBapi_\:key\fR then \fBbasic\fR;\: unlike \fBjwt:\:<claim>\fR it cannot be spoofed,\: because the filter proved it. Evaluated after the filter chain,\: so the limiter sees the authenticated principal
+T}	T{
+client address (unauthenticated)
+T}
+T{
+\fBidentity:\:<kind>\fR
+T}	T{
+the verified identity of one kind: \fBjwt\fR (the \fBsub\fR claim),\: \fBoidc\fR (the session subject),\: \fBapi_\:key\fR (the key id) or \fBbasic\fR (the user)
+T}	T{
+client address
+T}
 .TE
 .PP
-The fallback keeps a limit from being avoided by omitting the identifier; rotating it still buys fresh buckets, so pair an identifier key with a \fBclient_ip\fR or \fBclient_net\fR policy on the same route.
+The fallback keeps a limit from being avoided by omitting the identifier; rotating it still buys fresh buckets, so pair an identifier key with a \fBclient_ip\fR or \fBclient_net\fR policy on the same route. An \fBidentity\fR key cannot be rotated within one authenticated principal: the value is what the \fBjwt\fR, \fBoidc\fR, \fBapi_key\fR or \fBbasic\fR filter verified, so a per\-account or per\-API\-key limit holds regardless of the headers a client sends. Attach such a policy to a route that also runs the matching auth filter (or the \fBjwt\fR route setting); a request that fails authentication is refused by the filter before the limiter.
 .PP
 Memory: at most 64 x 8192 buckets per policy.
 .SH "upstreams[]"

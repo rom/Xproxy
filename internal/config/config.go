@@ -15,6 +15,7 @@
 package config
 
 import (
+	"strings"
 	"time"
 )
 
@@ -1554,6 +1555,13 @@ type ErrorPages struct {
 type Redirect struct {
 	To     string `yaml:"to"`
 	Status int    `yaml:"status"`
+}
+
+// IdentityKeyed reports whether the limit keys on an authenticated
+// identity, so the data plane evaluates it after the filter chain that
+// establishes the identity rather than before it.
+func (r *RateLimit) IdentityKeyed() bool {
+	return r.Key == "identity" || strings.HasPrefix(r.Key, "identity:")
 }
 
 // Respond is a static response action.

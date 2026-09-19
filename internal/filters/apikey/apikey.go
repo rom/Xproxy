@@ -253,6 +253,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	}
 	a.warnExpiry(k, now)
 	in.keyID = k.ID
+	filter.SetIdentity(r.Context(), "api_key", k.ID)
 	a.Allowed.Add(1)
 	if cfg.Strip == nil || *cfg.Strip {
 		in.strip(r)

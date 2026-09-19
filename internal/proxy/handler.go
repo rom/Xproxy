@@ -54,11 +54,12 @@ type reqState struct {
 	extra      []any // filter attributes for the access log
 	country    string
 	ja4        string
-	chalTier   int           // challenge cookie tier (challenge.TierNone without one)
-	device     string        // device identifier from the challenge cookie
-	automation []string      // automation markers from the challenge cookie
-	span       *tracing.Span // server span, nil without tracing
-	upSpan     *tracing.Span // client span of the upstream exchange
+	chalTier   int              // challenge cookie tier (challenge.TierNone without one)
+	device     string           // device identifier from the challenge cookie
+	identity   *filter.Identity // verified identities from the filter chain
+	automation []string         // automation markers from the challenge cookie
+	span       *tracing.Span    // server span, nil without tracing
+	upSpan     *tracing.Span    // client span of the upstream exchange
 	propagate  bool
 	cache      string // hit, miss or bypass on a cached route
 	encoding   string // gzip when the proxy compressed the response
@@ -376,44 +377,8 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Rate limits.
-	for _, rl := range cr.rateLimits {
-		key := s.rateKey(rl.cfg, r, st)
-		allowed, decided := false, false
-		if rl.cfg.Distributed == "exact" {
-			if node := s.cluster.Load(); node != nil {
-				// The key's owner decides; without an answer in time the
-				// local limiter does.
-				allowed, decided = node.Take(rl.cfg.Name, key, 1)
-			}
-		}
-		if !decided {
-			allowed = rl.lim.AllowFallback(key, "ip:"+st.clientIP.String(), 1)
-		}
-		if allowed {
-			rl.allowed.Add(1)
-			continue
-		}
-		rl.denied.Add(1)
-		cr.rateLimited.Add(1)
-		st.denied = "rate_limit:" + rl.cfg.Name
-		if rl.cfg.Action == "tarpit" {
-			// A tarpit does no work, so it must not hold a concurrency slot
-			// (an attacker could otherwise fill max_concurrent_requests with
-			// idle held requests); it holds a tarpit slot instead, and above
-			// that bound the request is rejected immediately.
-			if tpRelease, ok := s.tarpits.Acquire(); ok {
-				release()
-				s.stats.Tarpitted.Add(1)
-				s.tarpit(rw, r, st, rl.cfg)
-				tpRelease()
-				return
-			}
-			s.stats.TarpitOverflow.Add(1)
-		}
-		s.stats.DeniedRateLimit.Add(1)
-		rw.Header().Set("Retry-After", strconv.Itoa(int(retryAfter(rl.cfg))))
-		s.deny(rw, r, st, http.StatusTooManyRequests, "rate_limit")
+	// Rate limits keyed on request data run before the filter chain.
+	if s.applyRateLimits(rw, r, st, cr, cr.rateLimits, release) {
 		return
 	}
 
@@ -452,6 +417,9 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			info.DeviceID = st.device
 			info.Automation = st.automation
 		}
+		ctx, idSet := filter.WithIdentity(r.Context())
+		r = r.WithContext(ctx)
+		st.identity = idSet
 		instances = cr.filters.Begin(r.Context(), info)
 		defer func() { st.extra = append(st.extra, instances.End()...) }()
 		if v := instances.Request(r); v.Deny {
@@ -479,6 +447,14 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 admitted:
+
+	// Rate limits keyed on the verified identity run after the filter
+	// chain that established it.
+	if len(cr.identityLimits) > 0 {
+		if s.applyRateLimits(rw, r, st, cr, cr.identityLimits, release) {
+			return
+		}
+	}
 
 	// Per-route timeout, tightened by a gRPC client's own deadline.
 	ctx := r.Context()
@@ -1189,6 +1165,53 @@ func isUpgrade(r *http.Request) bool {
 	return false
 }
 
+// applyRateLimits evaluates a set of rate limit policies; it returns
+// true when a policy denied the request and a response was written, so
+// the caller returns. release is the concurrency slot, released before a
+// tarpit holds its own slot.
+func (s *Server) applyRateLimits(rw *responseWriter, r *http.Request, st *reqState, cr *compiledRoute, limits []*rateLimit, release func()) bool {
+	for _, rl := range limits {
+		key := s.rateKey(rl.cfg, r, st)
+		allowed, decided := false, false
+		if rl.cfg.Distributed == "exact" {
+			if node := s.cluster.Load(); node != nil {
+				// The key's owner decides; without an answer in time the
+				// local limiter does.
+				allowed, decided = node.Take(rl.cfg.Name, key, 1)
+			}
+		}
+		if !decided {
+			allowed = rl.lim.AllowFallback(key, "ip:"+st.clientIP.String(), 1)
+		}
+		if allowed {
+			rl.allowed.Add(1)
+			continue
+		}
+		rl.denied.Add(1)
+		cr.rateLimited.Add(1)
+		st.denied = "rate_limit:" + rl.cfg.Name
+		if rl.cfg.Action == "tarpit" {
+			// A tarpit does no work, so it must not hold a concurrency slot
+			// (an attacker could otherwise fill max_concurrent_requests with
+			// idle held requests); it holds a tarpit slot instead, and above
+			// that bound the request is rejected immediately.
+			if tpRelease, ok := s.tarpits.Acquire(); ok {
+				release()
+				s.stats.Tarpitted.Add(1)
+				s.tarpit(rw, r, st, rl.cfg)
+				tpRelease()
+				return true
+			}
+			s.stats.TarpitOverflow.Add(1)
+		}
+		s.stats.DeniedRateLimit.Add(1)
+		rw.Header().Set("Retry-After", strconv.Itoa(int(retryAfter(rl.cfg))))
+		s.deny(rw, r, st, http.StatusTooManyRequests, "rate_limit")
+		return true
+	}
+	return false
+}
+
 // rateKey derives the bucket identity of a request for a policy. Keys a
 // request may lack (a header, a cookie, a claim, a fingerprint, a
 // country) fall back to the client address, so a limit cannot be
@@ -1218,6 +1241,16 @@ func (s *Server) rateKey(rl *config.RateLimit, r *http.Request, st *reqState) st
 			return ip
 		}
 		return "c:" + st.country
+	case rl.Key == "identity":
+		if v := st.identity.Any("oidc", "jwt", "api_key", "basic"); v != "" {
+			return "id:" + trim(v, 256)
+		}
+		return ip
+	case strings.HasPrefix(rl.Key, "identity:"):
+		if v := st.identity.Get(rl.Key[len("identity:"):]); v != "" {
+			return "id:" + rl.Key[len("identity:"):] + ":" + trim(v, 256)
+		}
+		return ip
 	case rl.Key == "device":
 		if st.device != "" {
 			return "dev:" + st.device

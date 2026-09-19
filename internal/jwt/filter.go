@@ -106,6 +106,9 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 			r.Header.Set(h, ClaimString(v))
 		}
 	}
+	if sub := ClaimString(claims["sub"]); sub != "" {
+		filter.SetIdentity(r.Context(), "jwt", sub)
+	}
 	in.attrs = append(in.attrs, "jwt_provider", cfg.Name)
 	for _, c := range cfg.LogClaims {
 		if v, ok := claims[c]; ok {
