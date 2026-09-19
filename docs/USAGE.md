@@ -67,6 +67,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `ban TARGET` | Ban an address, CIDR or `ja4:<fingerprint>`; `-duration 1h`, `-reason text` |
 | `unban TARGET` | Remove a ban |
 | `cluster` | Peers, inbound connections and gossip counters |
+| `accounts` | Account guard state: endpoints with tracked keys, active blocks (`-top N` per endpoint), campaign state and the action counters |
 | `spki CERT.pem` | Print the `spki_pins` value of a certificate |
 | `acme` | Managed certificates with expiry, issuer, last error; `acme renew` forces renewal and waits |
 | `icap` | ICAP services with reachability, preview size, ISTag and counters |
@@ -2836,7 +2837,9 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 `client_aborts`, `denied_ban`, `denied_waf`, `waf_detected`, `bans_active`,
 `bans_total`, `cluster_peers`, `cluster_connected`, `shed`, `load_level`,
 `upstream_latency_ms`, `shedding_classes`, `challenges_issued`,
-`challenges_passed`, `challenges_failed`, `captchas_passed`, `reloads`,
+`challenges_passed`, `challenges_failed`, `captchas_passed`,
+`denied_sensitive_data`, `denied_account_abuse`, `sensitive_findings`,
+`account_blocks`, `account_campaigns`, `account_blocks_active`, `reloads`,
 `reload_failures`,
 `open_connections`, `rejected_connections`, `in_flight`.
 

@@ -622,6 +622,11 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		return filter.Continue
 	}
 	ep := in.ep
+	defer func() {
+		if in.action != "" {
+			countAction(ep.Class, in.action)
+		}
+	}()
 	in.ip = in.info.ClientIP.String()
 	id := in.identity(r)
 	if id != "" {
@@ -645,6 +650,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	// Disposable registration addresses.
 	if ep.Disposable != "" && ep.Disposable != "off" && id != "" && g.disposableAddress(id) {
 		in.by = "disposable_email"
+		counters.disposable.Add(1)
 		switch ep.Disposable {
 		case "block":
 			in.action = "block"
@@ -869,6 +875,7 @@ func add(set *map[string]struct{}, v string, limit int) {
 
 // event records one counted event; caller holds the lock.
 func (t *table) event(now time.Time, ep *Endpoint, ip, hash, path string) {
+	counters.events.Add(1)
 	w := ep.window
 	ie := t.get(t.ips, ip, now, w)
 	ie.n++
@@ -956,6 +963,7 @@ func (t *table) block(now time.Time, by, ip, hash string, d, window time.Duratio
 	if until := now.Add(d); until.After(e.blockedUntil) {
 		e.blockedUntil, e.blockedBy = until, by
 	}
+	counters.blocks.Add(1)
 	return kind + "|" + key
 }
 
@@ -968,6 +976,7 @@ func (g *guard) checkCampaign(now time.Time, ep *Endpoint) {
 		return
 	}
 	t.campaignUntil = now.Add(d.duration)
+	counters.campaigns.Add(1)
 	g.publish(ep.Name, "campaign", "campaign", t.campaignUntil)
 	if g.log != nil {
 		g.log.Warn("account guard: distributed campaign detected", "filter", g.name, "endpoint", ep.Name, "events", t.cEvents, "ips", len(t.cIPs), "until", t.campaignUntil)
@@ -1078,6 +1087,7 @@ func newGuard(name string, opts filter.Options, env filter.Env) (*guard, error) 
 	if g.events != nil {
 		g.events.Subscribe(EventKind, g.receive)
 	}
+	register(g)
 	return g, nil
 }
 

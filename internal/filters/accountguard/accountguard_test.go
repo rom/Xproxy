@@ -42,12 +42,16 @@ func (f *fakeEvents) count() int {
 }
 
 func build(t *testing.T, opts filter.Options, ev filter.Events) *guard {
+	return buildNamed(t, "accounts", opts, ev)
+}
+
+func buildNamed(t *testing.T, name string, opts filter.Options, ev filter.Events) *guard {
 	t.Helper()
 	k, _ := filter.Lookup("account_guard")
 	if err := k.Validate(opts); err != nil {
 		t.Fatal(err)
 	}
-	f, err := k.New("accounts", opts, filter.Env{Events: ev})
+	f, err := k.New(name, opts, filter.Env{Events: ev})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,5 +498,70 @@ func TestValidateOptions(t *testing.T) {
 	res := filtertest.Run(f, httptest.NewRequest("GET", "http://a/other", nil), &http.Response{StatusCode: 200})
 	if res.Request.Deny || res.Attrs != nil {
 		t.Fatalf("unmatched: %+v", res)
+	}
+}
+
+func TestStatusAndCounters(t *testing.T) {
+	before := Snapshot()
+	g := buildNamed(t, "status-guard", loginOpts, nil)
+	now := time.Unix(1_700_000_000, 0)
+	g.now = func() time.Time { return now }
+	for i := 0; i < 9; i++ {
+		attempt(g, "203.0.113.5", "anna@example.com", 401, true)
+	}
+	// Ninth attempt reached the pair block (pair 8) on the previous run
+	// or this one; the status shows the endpoint, the block and counts.
+	rep := Status(10)
+	if !rep.Enabled {
+		t.Fatal("status disabled with a live guard")
+	}
+	var ep *EndpointStatus
+	for _, gs := range rep.Guards {
+		if gs.Filter != "status-guard" {
+			continue
+		}
+		for i := range gs.Endpoints {
+			if gs.Endpoints[i].Name == "login" {
+				ep = &gs.Endpoints[i]
+			}
+		}
+	}
+	if ep == nil || ep.Class != "login" || ep.Count != "failures" || ep.TrackedIPs != 1 || ep.TrackedAccts != 1 || ep.TrackedPairs != 1 || ep.ActiveBlocks != 1 || len(ep.Blocks) != 1 || ep.Blocks[0].Kind != "pair" || ep.Blocks[0].By != "pair" {
+		t.Fatalf("endpoint status %+v", ep)
+	}
+	if ep.WindowEvents < 8 || ep.WindowIPs != 1 || !ep.Distributed || ep.Campaign {
+		t.Fatalf("window totals %+v", ep)
+	}
+	after := Snapshot()
+	if after.Events-before.Events < 8 || after.Blocks-before.Blocks != 1 {
+		t.Fatalf("counters before %+v after %+v", before, after)
+	}
+	find := func(c Counters, class, action string) uint64 {
+		for _, a := range c.Actions {
+			if a.Class == class && a.Action == action {
+				return a.Count
+			}
+		}
+		return 0
+	}
+	if find(after, "login", "block")-find(before, "login", "block") < 1 || find(after, "login", "delay")-find(before, "login", "delay") < 1 {
+		t.Fatalf("action counters %+v", after.Actions)
+	}
+	// Top bounds the blocks listed; zero lists none but still counts.
+	mine := func(rep Report) *EndpointStatus {
+		for _, gs := range rep.Guards {
+			if gs.Filter == "status-guard" {
+				return &gs.Endpoints[0]
+			}
+		}
+		return nil
+	}
+	if e := mine(Status(0)); e == nil || e.ActiveBlocks != 1 || len(e.Blocks) != 0 {
+		t.Fatalf("top 0: %+v", e)
+	}
+	// Closing the guard removes it from the view.
+	_ = g.Close()
+	if mine(Status(1)) != nil {
+		t.Fatal("closed guard still listed")
 	}
 }

@@ -640,6 +640,57 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_, _ = out.Write(b)
 		return 0
+	case "accounts":
+		acfs := flag.NewFlagSet("accounts", flag.ContinueOnError)
+		acfs.SetOutput(errOut)
+		top := acfs.Int("top", 20, "active blocks listed per endpoint")
+		if err := acfs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		rep, err := c.Accounts(*top)
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, rep)
+		}
+		if !rep.Enabled {
+			_, _ = fmt.Fprintln(out, "no account guard configured")
+			return 0
+		}
+		cnt := rep.Counters
+		_, _ = fmt.Fprintf(out, "events %d  blocks %d  campaigns %d  disposable %d\n", cnt.Events, cnt.Blocks, cnt.Campaigns, cnt.Disposable)
+		var acts []string
+		for _, a := range cnt.Actions {
+			if a.Count > 0 {
+				acts = append(acts, fmt.Sprintf("%s/%s %d", a.Class, a.Action, a.Count))
+			}
+		}
+		if len(acts) > 0 {
+			_, _ = fmt.Fprintf(out, "actions  %s\n", strings.Join(acts, "  "))
+		}
+		for _, g := range rep.Guards {
+			_, _ = fmt.Fprintf(out, "filter %s\n", g.Filter)
+			tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+			_, _ = fmt.Fprintln(tw, "  ENDPOINT\tCLASS\tCOUNT\tWINDOW\tTRACKED IP/ACCT/PAIR\tBLOCKS\tWINDOW EVENTS/IPS\tCAMPAIGN")
+			for _, ep := range g.Endpoints {
+				campaign := "-"
+				if ep.Campaign && ep.CampaignUntil != nil {
+					campaign = "until " + ep.CampaignUntil.Local().Format("15:04:05")
+				} else if !ep.Distributed {
+					campaign = "off"
+				}
+				_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%d/%d/%d\t%d\t%d/%d\t%s\n", ep.Name, ep.Class, ep.Count, ep.Window,
+					ep.TrackedIPs, ep.TrackedAccts, ep.TrackedPairs, ep.ActiveBlocks, ep.WindowEvents, ep.WindowIPs, campaign)
+			}
+			_ = tw.Flush()
+			for _, ep := range g.Endpoints {
+				for _, b := range ep.Blocks {
+					_, _ = fmt.Fprintf(out, "    block %s %s=%s by %s until %s\n", ep.Name, b.Kind, b.Key, b.By, b.Until.Local().Format(time.RFC3339))
+				}
+			}
+		}
+		return 0
 	case "api":
 		afs := flag.NewFlagSet("api", flag.ContinueOnError)
 		afs.SetOutput(errOut)

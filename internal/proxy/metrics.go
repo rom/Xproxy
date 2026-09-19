@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rom/xproxy/internal/filters/accountguard"
+	"github.com/rom/xproxy/internal/filters/sensitive"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/upstream"
 	"github.com/rom/xproxy/internal/version"
@@ -23,7 +25,7 @@ func (s *Server) sample() metrics.Sample {
 	sn := s.Stats()
 	denied := sn.DeniedACL + sn.DeniedRateLimit + sn.Tarpitted + sn.DeniedConcurrency + sn.DeniedBodySize + sn.DeniedURILength +
 		sn.DeniedNoRoute + sn.DeniedWebSocket + sn.DeniedBadHost + sn.DeniedBan + sn.DeniedWAF + sn.DeniedJWT + sn.DeniedICAP + sn.DeniedFilter + sn.DeniedGeo +
-		sn.DeniedPolicy + sn.DeniedVirtualPatch + sn.DeniedNormalization
+		sn.DeniedPolicy + sn.DeniedVirtualPatch + sn.DeniedNormalization + sn.DeniedSensitive + sn.DeniedAccount
 	return metrics.Sample{
 		Counters: []float64{float64(sn.Requests), float64(sn.Responses2xx), float64(sn.Responses4xx), float64(sn.Responses5xx),
 			float64(denied), float64(sn.Shed), float64(sn.BytesIn), float64(sn.BytesOut), float64(sn.UpstreamErrors)},
@@ -67,10 +69,27 @@ func (s *Server) Collect(e metrics.Collector) {
 		{"body_size", sn.DeniedBodySize}, {"uri_length", sn.DeniedURILength}, {"no_route", sn.DeniedNoRoute}, {"websocket", sn.DeniedWebSocket},
 		{"bad_host", sn.DeniedBadHost}, {"ban", sn.DeniedBan}, {"waf", sn.DeniedWAF}, {"jwt", sn.DeniedJWT}, {"icap", sn.DeniedICAP}, {"filter", sn.DeniedFilter}, {"geo", sn.DeniedGeo}, {"shed", sn.Shed},
 		{"policy", sn.DeniedPolicy}, {"virtual_patch", sn.DeniedVirtualPatch}, {"normalization", sn.DeniedNormalization},
+		{"sensitive_data", sn.DeniedSensitive}, {"account_abuse", sn.DeniedAccount},
 	}
 	for _, d := range denied {
 		e.Counter("xproxy_denied_total", "Requests refused by the proxy, by reason.", L{"reason": d.reason}, float64(d.v))
 	}
+	sens := sensitive.Snapshot()
+	for _, f := range sens.Findings {
+		e.Counter("xproxy_sensitive_findings_total", "Sensitive data findings by detector kind, both directions.", L{"kind": f.Kind}, float64(f.Count))
+	}
+	for _, a := range sens.Actions {
+		e.Counter("xproxy_sensitive_messages_total", "Messages with sensitive data by direction and outcome.", L{"direction": a.Direction, "outcome": a.Outcome}, float64(a.Count))
+	}
+	acc := accountguard.Snapshot()
+	for _, a := range acc.Actions {
+		e.Counter("xproxy_account_actions_total", "Account guard actions by endpoint class.", L{"class": a.Class, "action": a.Action}, float64(a.Count))
+	}
+	e.Counter("xproxy_account_events_total", "Failed attempts or requests the account guard counted.", nil, float64(acc.Events))
+	e.Counter("xproxy_account_blocks_total", "Blocks the account guard placed.", nil, float64(acc.Blocks))
+	e.Counter("xproxy_account_campaigns_total", "Distributed campaigns the account guard declared.", nil, float64(acc.Campaigns))
+	e.Counter("xproxy_account_disposable_total", "Registrations with a disposable e-mail domain.", nil, float64(acc.Disposable))
+	e.Gauge("xproxy_account_blocks_active", "Account guard blocks in force.", nil, float64(sn.AccountBlocksActive))
 	e.Counter("xproxy_waf_detected_total", "Requests the WAF flagged in detect mode.", nil, float64(sn.WAFDetected))
 	e.Counter("xproxy_upstream_errors_total", "Upstream connection failures.", nil, float64(sn.UpstreamErrors))
 	e.Counter("xproxy_upstream_retries_total", "Attempts repeated on another endpoint.", L{"reason": "connect"}, float64(sn.UpstreamRetries-sn.UpstreamStatusRetries))

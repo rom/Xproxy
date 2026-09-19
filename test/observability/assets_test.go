@@ -159,7 +159,7 @@ func TestAlertRules(t *testing.T) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if len(doc.Groups) != 3 {
+	if len(doc.Groups) != 4 {
 		t.Fatalf("groups: %d", len(doc.Groups))
 	}
 	names := map[string]bool{}

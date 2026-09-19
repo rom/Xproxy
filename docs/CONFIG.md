@@ -956,6 +956,12 @@ Exposed families: `xproxy_requests_total`, `xproxy_responses_total{class}`,
 `xproxy_connections_rejected_total`, `xproxy_reloads_total{result}`,
 `xproxy_bans_total`, `xproxy_challenges_total{result}` (`issued`,
 `passed`, `failed`, `captcha_passed`),
+`xproxy_sensitive_findings_total{kind}`,
+`xproxy_sensitive_messages_total{direction,outcome}`,
+`xproxy_account_actions_total{class,action}`,
+`xproxy_account_events_total`, `xproxy_account_blocks_total`,
+`xproxy_account_campaigns_total`, `xproxy_account_disposable_total`,
+`xproxy_account_blocks_active`,
 `xproxy_log_sent_total{sink}`, `xproxy_log_dropped_total{sink}`,
 `xproxy_connections_open`, `xproxy_requests_in_flight`,
 `xproxy_bans_active`, `xproxy_load_level`,
@@ -1670,7 +1676,10 @@ threshold for `duration`, on every node of a cluster. Blocks and
 denials use reason `account_abuse` (a ban trigger category) with
 status `block_status`; the access log carries `account_endpoint`,
 `account_action`, `account_by`, `account_counts`, `account_hash`,
-`account_campaign` and `account_outcome`. Identities are trimmed,
+`account_campaign` and `account_outcome`; `xproxyctl accounts` and
+`GET /v1/accounts` show the live state (tracked keys, active blocks,
+campaigns) and the process wide counters, which the
+`xproxy_account_*` metric families export. Identities are trimmed,
 lower cased and hashed before they are counted or logged. A campaign
 spread over many addresses, each under its own thresholds, is detected
 from the endpoint's totals (`distributed`): while it lasts every
@@ -1834,7 +1843,9 @@ Masking rewrites the value in place (`************1111`,
 `sensitive_data`, a detail `response:card,email` and a JSON problem
 naming the kinds found, never the values. The access log carries
 `sensitive_types`, `sensitive_count` and `sensitive_where` for every
-message with a finding, in every mode.
+message with a finding, in every mode; blocks count in
+`denied_sensitive_data`, findings and message outcomes in the
+`xproxy_sensitive_*` metric families.
 
 Built-in detectors: `card` (Luhn checked payment cards), `personnummer`
 (Swedish personal and coordination numbers with a valid date and

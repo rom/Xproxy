@@ -21,6 +21,7 @@ import (
 	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/filters/accountguard"
 	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/otlp"
@@ -561,6 +562,10 @@ func (s *Server) filterDeny(rw *responseWriter, r *http.Request, st *reqState, v
 		s.stats.DeniedICAP.Add(1)
 	case "body_size":
 		s.stats.DeniedBodySize.Add(1)
+	case "sensitive_data":
+		s.stats.DeniedSensitive.Add(1)
+	case accountguard.Reason:
+		s.stats.DeniedAccount.Add(1)
 	default:
 		s.stats.DeniedFilter.Add(1)
 	}

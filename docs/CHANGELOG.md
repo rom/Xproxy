@@ -222,6 +222,15 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Counters and views for the newest filters: `denied_sensitive_data`
+  and `denied_account_abuse` in the status, `xproxy_sensitive_findings_total`,
+  `xproxy_sensitive_messages_total`, `xproxy_account_actions_total`,
+  `xproxy_account_events_total`, `xproxy_account_blocks_total`,
+  `xproxy_account_campaigns_total`, `xproxy_account_disposable_total`
+  and `xproxy_account_blocks_active` metrics, `xproxyctl accounts` and
+  `GET /v1/accounts` with tracked keys, active blocks and campaigns per
+  endpoint; the security dashboard and the alert rules cover account
+  abuse, sensitive data and CAPTCHA results.
 - Aggregated bans: `bans.triggers[].aggregate` counts and bans per
   client network (`net`, with `net_v4` and `net_v6`) or per TLS client
   fingerprint (`ja4`), with `min_sources` distinct addresses required

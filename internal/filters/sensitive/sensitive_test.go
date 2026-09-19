@@ -183,3 +183,45 @@ func TestSensitiveFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestCounters(t *testing.T) {
+	before := Snapshot()
+	f, err := filtertest.Build("sensitive_data", "dlp", filter.Options{"detectors": []any{"card", "email"},
+		"request": map[string]any{"action": "log"}, "response": map[string]any{"action": "block"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "http://a/x", strings.NewReader(`{"card":"4111 1111 1111 1111"}`))
+	r.Header.Set("Content-Type", "application/json")
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"e":"a@example.com"}`)), ContentLength: -1}
+	res := filtertest.Run(f, r, resp)
+	if res.Request.Deny || !res.Response.Deny {
+		t.Fatalf("verdicts %+v", res)
+	}
+	after := Snapshot()
+	kind := func(c Counters, k string) uint64 {
+		for _, f := range c.Findings {
+			if f.Kind == k {
+				return f.Count
+			}
+		}
+		return 0
+	}
+	act := func(c Counters, d, o string) uint64 {
+		for _, a := range c.Actions {
+			if a.Direction == d && a.Outcome == o {
+				return a.Count
+			}
+		}
+		return 0
+	}
+	if kind(after, "card")-kind(before, "card") != 1 || kind(after, "email")-kind(before, "email") != 1 {
+		t.Fatalf("findings %+v", after.Findings)
+	}
+	if act(after, "request", "logged")-act(before, "request", "logged") != 1 || act(after, "response", "blocked")-act(before, "response", "blocked") != 1 {
+		t.Fatalf("actions %+v", after.Actions)
+	}
+	if len(after.Actions) != 6 {
+		t.Fatalf("action combinations %d", len(after.Actions))
+	}
+}

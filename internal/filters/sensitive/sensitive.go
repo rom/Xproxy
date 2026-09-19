@@ -288,6 +288,18 @@ func (in *instance) record(where string, f findings) {
 	in.count += f.n
 	for k, n := range f.kinds {
 		in.kinds[k] += n
+		countFinding(k, n)
+	}
+}
+
+// outcome counts what happened to a message with findings.
+func (in *instance) outcome(direction string, found int, masked bool) {
+	switch {
+	case found == 0:
+	case masked:
+		countAction(direction, "masked")
+	default:
+		countAction(direction, "logged")
 	}
 }
 
@@ -341,11 +353,14 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		}
 	}
 	if in.count == 0 || in.count < in.g.cfg.MinFindings {
+		in.outcome("request", in.count, false)
 		return filter.Continue
 	}
 	if p.Action == "block" {
+		countAction("request", "blocked")
 		return in.deny(in.g.cfg.BlockStatus, "request")
 	}
+	in.outcome("request", in.count, mask)
 	return filter.Continue
 }
 
@@ -381,11 +396,14 @@ func (in *instance) Response(resp *http.Response) filter.Verdict {
 	}
 	found := in.count - before
 	if found == 0 || found < in.g.cfg.MinFindings {
+		in.outcome("response", found, false)
 		return filter.Continue
 	}
 	if p.Action == "block" {
+		countAction("response", "blocked")
 		return in.deny(in.g.cfg.BlockStatus, "response")
 	}
+	in.outcome("response", found, mask)
 	return filter.Continue
 }
 

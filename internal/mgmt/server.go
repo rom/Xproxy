@@ -216,6 +216,18 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		writeJSON(w, 200, map[string]int{"purged": s.proxy.PurgeDNS()})
 	})
 	mux.HandleFunc("GET /v1/patches", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.VirtualPatches()) })
+	mux.HandleFunc("GET /v1/accounts", func(w http.ResponseWriter, r *http.Request) {
+		top := 50
+		if t := r.URL.Query().Get("top"); t != "" {
+			n, err := strconv.Atoi(t)
+			if err != nil || n < 0 || n > 100000 {
+				writeJSON(w, 400, result{Error: "top must be between 0 and 100000"})
+				return
+			}
+			top = n
+		}
+		writeJSON(w, 200, s.proxy.Accounts(top))
+	})
 	mux.HandleFunc("GET /v1/api", func(w http.ResponseWriter, r *http.Request) {
 		top := 100
 		if t := r.URL.Query().Get("top"); t != "" {
