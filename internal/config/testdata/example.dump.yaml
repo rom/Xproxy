@@ -227,6 +227,8 @@ upstreams:
       max_idle_conns_per_host: 64
       retries: 1
       retry_on: []
+      retry_budget: null
+      hedge: null
       hash_on: ""
       affinity:
         cookie_name: XPSESS
@@ -277,6 +279,8 @@ upstreams:
       max_idle_conns_per_host: 64
       retries: 1
       retry_on: []
+      retry_budget: null
+      hedge: null
       hash_on: header:X-Tenant
       affinity: null
       outlier_ejection: null

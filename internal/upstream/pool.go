@@ -56,6 +56,9 @@ type Pool struct {
 	breaker *Breaker
 	gate    *Gate
 	canary  *canaryState
+	// budget bounds retries against live traffic; nil without a configured
+	// retry_budget.
+	budget *retryBudget
 	// disc is nil without a discovery section; hcCtx is the health check
 	// context once Start ran, used for endpoints added later.
 	disc  *discoverer
@@ -238,6 +241,9 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 	}
 	if cfg.CircuitBreaker != nil {
 		p.breaker = newBreaker(cfg.CircuitBreaker, p.now)
+	}
+	if b := cfg.RetryBudget; b != nil {
+		p.budget = newRetryBudget(b.Percent, b.MinConcurrency)
 	}
 	if c := cfg.Canary; c != nil {
 		cs := &canaryState{header: http.CanonicalHeaderKey(c.Header), cookie: c.Cookie, percent: c.Percent,

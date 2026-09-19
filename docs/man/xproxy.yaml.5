@@ -2682,6 +2682,96 @@ T}	T{
 T}	T{
 Response statuses treated as a failed attempt: \fB5xx\fR,\: \fB500\fR,\: \fB502\fR,\: \fB503\fR,\: \fB504\fR,\: \fB429\fR. The response is discarded,\: the endpoint marked as failed for outlier ejection,\: and the next endpoint tried within the \fBretries\fR budget;\: the last attempt\(aqs response is returned as it is. Needs \fBretries\fR above 0
 T}
+T{
+\fBretry_\:budget\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Caps retries (and hedged copies) against live traffic so a struggling pool is not buried under a retry storm;\: see below. Without it,\: every retry \fBretries\fR allows is sent
+T}
+T{
+\fBhedge\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Sends staggered copies of a slow idempotent request to other endpoints and keeps the first usable answer;\: see below
+T}
+.TE
+.SS "upstreams[].retry_budget"
+.PP
+A retry (or a hedged copy) is only sent while the retries in flight to the pool stay below \fBpercent\fR of the requests in flight, with \fBmin_concurrency\fR always allowed so a low\-traffic pool can still retry. As live traffic falls the allowance falls with it, so retries cannot amplify an outage.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.2i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBpercent\fR
+T}	T{
+float
+T}	T{
+\fB20\fR
+T}	T{
+1 to 1000;\: retries in flight capped at this share of requests in flight
+T}
+T{
+\fBmin_\:concurrency\fR
+T}	T{
+int
+T}	T{
+\fB3\fR
+T}	T{
+1 to 10000;\: concurrent retries always allowed regardless of \fBpercent\fR
+T}
+.TE
+.SS "upstreams[].hedge"
+.PP
+Hedging trades a little extra load for a shorter tail latency: if the request in flight has not answered within \fBdelay\fR, a copy goes to another endpoint, and whichever returns a usable response first wins while the others are cancelled. Only replayable requests (GET, HEAD, OPTIONS, TRACE without a body) are hedged, each copy is keyed to a distinct endpoint, and every copy beyond the first is gated by \fBretry_budget\fR when one is set.
+.PP
+.TS
+allbox;
+lbw(0.6i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.6i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdelay\fR
+T}	T{
+duration
+T}	T{
+required
+T}	T{
+1ms to 1m;\: wait this long for the request in flight before sending the next copy
+T}
+T{
+\fBmax\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+1 to 4;\: extra copies beyond the first
+T}
 .TE
 .SS "upstreams[].tls"
 .PP

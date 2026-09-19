@@ -1326,6 +1326,22 @@
       },
       "additionalProperties": false
     },
+    "Hedge": {
+      "description": "Hedge sends extra copies of a slow idempotent request to other endpoints. The first usable response wins and the others are cancelled.",
+      "type": "object",
+      "properties": {
+        "delay": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max": {
+          "description": "Max is the number of extra copies beyond the first, each keyed to a distinct endpoint and gated by the retry budget. Default 1; 1 to 4.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "Honeypot": {
       "description": "Honeypot is a decoy action: the response looks like a real page of the chosen kind, the client is logged as a security event, marked for `mark` so later requests on any route carry the label, and counted towards the `honeypot` ban reason.",
       "type": "object",
@@ -2426,6 +2442,21 @@
         },
         "status": {
           "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RetryBudget": {
+      "description": "RetryBudget limits the rate of retries relative to live requests. A retry (or a hedged copy) is only sent while the number of retries in flight to the pool stays below Percent of the requests in flight, with MinConcurrency always allowed so a low-traffic pool can still retry.",
+      "type": "object",
+      "properties": {
+        "min_concurrency": {
+          "description": "MinConcurrency is the number of concurrent retries always allowed regardless of Percent, so a pool with little live traffic can still retry. Default 3; 1 to 10000.",
+          "type": "integer"
+        },
+        "percent": {
+          "description": "Percent caps retries in flight at this share of requests in flight. Default 20; 1 to 1000.",
+          "type": "number"
         }
       },
       "additionalProperties": false
@@ -3670,6 +3701,14 @@
         "health_check": {
           "$ref": "#/$defs/HealthCheck"
         },
+        "hedge": {
+          "description": "Hedge sends a second copy of an idempotent request to another endpoint when the first is slow, and takes whichever answers first, trading a little extra load for a shorter tail latency.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Hedge"
+            }
+          ]
+        },
         "max_concurrent": {
           "description": "MaxConcurrent bounds requests in flight to the pool; 0 is unbounded.",
           "type": "integer"
@@ -3708,6 +3747,14 @@
         "retries": {
           "description": "Retries is the number of times an idempotent request is retried on a connection error against a different endpoint. Default 1.",
           "type": "integer"
+        },
+        "retry_budget": {
+          "description": "RetryBudget caps retries as a share of live traffic so a struggling pool is not buried under a retry storm. Without it every retry the Retries budget allows is sent.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RetryBudget"
+            }
+          ]
         },
         "retry_on": {
           "description": "RetryOn adds response statuses that are retried like connection errors, on another endpoint, within the same Retries budget and only for replayable requests: \"5xx\", \"500\", \"502\", \"503\", \"504\", \"429\". A retried status counts as a passive failure of the endpoint. Default none.",

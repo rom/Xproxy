@@ -222,6 +222,14 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Retry budgets (`upstreams[].retry_budget`): cap the retries in flight to
+  a pool at `percent` of the requests in flight, with a `min_concurrency`
+  floor, so retries cannot amplify an outage; without it every retry the
+  `retries` budget allows is still sent.
+- Request hedging (`upstreams[].hedge`): after `delay` with no answer, send
+  up to `max` extra copies of a replayable request to other endpoints and
+  keep the first usable response, cancelling the rest; each hedged copy is
+  gated by the retry budget and counts as an upstream retry.
 - Access-log sampling and field selection (`logging.access.sample_percent`,
   `always_log`, `fields`): log a fraction of lines while always keeping
   denied and error responses, and trim each line to a chosen set of

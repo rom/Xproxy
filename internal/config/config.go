@@ -923,6 +923,14 @@ type Upstream struct {
 	// "429". A retried status counts as a passive failure of the
 	// endpoint. Default none.
 	RetryOn []string `yaml:"retry_on"`
+	// RetryBudget caps retries as a share of live traffic so a struggling
+	// pool is not buried under a retry storm. Without it every retry the
+	// Retries budget allows is sent.
+	RetryBudget *RetryBudget `yaml:"retry_budget"`
+	// Hedge sends a second copy of an idempotent request to another
+	// endpoint when the first is slow, and takes whichever answers first,
+	// trading a little extra load for a shorter tail latency.
+	Hedge *Hedge `yaml:"hedge"`
 	// HashOn selects the hash input for the hash balancer: client_ip,
 	// header:<name> or cookie:<name>.
 	HashOn string `yaml:"hash_on"`
@@ -939,6 +947,31 @@ type Upstream struct {
 	Queue *UpstreamQueue `yaml:"queue"`
 	// Canary sends selected requests to endpoints marked canary.
 	Canary *Canary `yaml:"canary"`
+}
+
+// RetryBudget limits the rate of retries relative to live requests. A
+// retry (or a hedged copy) is only sent while the number of retries in
+// flight to the pool stays below Percent of the requests in flight, with
+// MinConcurrency always allowed so a low-traffic pool can still retry.
+type RetryBudget struct {
+	// Percent caps retries in flight at this share of requests in flight.
+	// Default 20; 1 to 1000.
+	Percent float64 `yaml:"percent"`
+	// MinConcurrency is the number of concurrent retries always allowed
+	// regardless of Percent, so a pool with little live traffic can still
+	// retry. Default 3; 1 to 10000.
+	MinConcurrency int `yaml:"min_concurrency"`
+}
+
+// Hedge sends extra copies of a slow idempotent request to other
+// endpoints. The first usable response wins and the others are cancelled.
+type Hedge struct {
+	// Delay is how long to wait for the request in flight before sending
+	// the next copy. 1ms to 1m.
+	Delay Duration `yaml:"delay"`
+	// Max is the number of extra copies beyond the first, each keyed to a
+	// distinct endpoint and gated by the retry budget. Default 1; 1 to 4.
+	Max int `yaml:"max"`
 }
 
 // Endpoint is a single upstream address.

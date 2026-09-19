@@ -1132,6 +1132,22 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 	if len(u.RetryOn) > 0 && u.Retries != nil && *u.Retries == 0 {
 		v.errf("%s.retry_on: set but retries is 0", p)
 	}
+	if b := u.RetryBudget; b != nil {
+		if b.Percent < 1 || b.Percent > 1000 {
+			v.errf("%s.retry_budget.percent: must be between 1 and 1000", p)
+		}
+		if b.MinConcurrency < 1 || b.MinConcurrency > 10000 {
+			v.errf("%s.retry_budget.min_concurrency: must be between 1 and 10000", p)
+		}
+	}
+	if h := u.Hedge; h != nil {
+		if h.Delay < Duration(time.Millisecond) || h.Delay > Duration(time.Minute) {
+			v.errf("%s.hedge.delay: must be between 1ms and 1m", p)
+		}
+		if h.Max < 1 || h.Max > 4 {
+			v.errf("%s.hedge.max: must be between 1 and 4", p)
+		}
+	}
 	if u.MaxIdleConnsPerHost < 0 {
 		v.errf("%s.max_idle_conns_per_host: must not be negative", p)
 	}

@@ -53,6 +53,25 @@ type poolTransport struct {
 	retries int
 	// retryOn lists the statuses retried on another endpoint.
 	retryOn []string
+	// hedge, when set, sends staggered copies of a slow idempotent request
+	// to other endpoints and keeps the first usable response.
+	hedge *hedgePolicy
+}
+
+// hedgePolicy is the compiled upstream hedge configuration.
+type hedgePolicy struct {
+	delay time.Duration
+	max   int
+}
+
+// newPoolTransport builds the RoundTripper for a pool, compiling its retry
+// and hedge policy.
+func newPoolTransport(pool *upstream.Pool) *poolTransport {
+	t := &poolTransport{pool: pool, retries: *pool.Cfg.Retries, retryOn: pool.Cfg.RetryOn}
+	if h := pool.Cfg.Hedge; h != nil {
+		t.hedge = &hedgePolicy{delay: h.Delay.D(), max: h.Max}
+	}
+	return t
 }
 
 // retryStatus reports whether a response status is in the retry_on list.
@@ -93,7 +112,15 @@ func (t *poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return nil, &circuitOpenError{retryAfter: wait}
 		}
 	}
-	resp, err := t.roundTrip(req, pi)
+	t.pool.BeginRequest()
+	defer t.pool.EndRequest()
+	var resp *http.Response
+	var err error
+	if t.hedge != nil && replayable(req) {
+		resp, err = t.hedged(req, pi)
+	} else {
+		resp, err = t.roundTrip(req, pi)
+	}
 	if done != nil {
 		switch {
 		case err != nil:
@@ -116,6 +143,14 @@ func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Respon
 		maxAttempts = t.retries + 1
 	}
 	var lastErr error
+	// holdingRetry is true while this iteration runs against a retry slot
+	// reserved from the pool's budget; it is freed once the attempt returns.
+	holdingRetry := false
+	defer func() {
+		if holdingRetry {
+			t.pool.ReleaseRetry()
+		}
+	}()
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		e, cookie := t.pool.Pick(pi.hashKey, pi.cookie, exclude, pi.canary)
 		if e == nil {
@@ -132,40 +167,36 @@ func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Respon
 		}
 		pi.mu.Unlock()
 
-		out := req.Clone(req.Context())
-		out.URL.Scheme = t.pool.Scheme
-		out.URL.Host = e.Address
-		t.pool.Begin(e)
-		t0 := time.Now()
-		resp, err := t.pool.RoundTripper().RoundTrip(out)
-		if err != nil && t.pool.H3Fallback() && h3.IsTransportError(err) && req.Context().Err() == nil {
-			// QUIC failed before a response (UDP blocked, handshake
-			// timeout): the same endpoint over TCP.
-			if retry, ok := t.tcpRetry(req, e.Address); ok {
-				t.pool.H3Fallbacks.Add(1)
-				resp, err = t.pool.TCPRoundTripper().RoundTrip(retry)
-			}
+		resp, ttfb, err := t.oneAttempt(req, e)
+		if holdingRetry {
+			t.pool.ReleaseRetry()
+			holdingRetry = false
 		}
-		ttfb := time.Since(t0)
 		if err != nil {
 			t.pool.End(e, isConnError(err), ttfb)
 			lastErr = err
 			if req.Context().Err() != nil || !isConnError(err) {
 				return nil, err
 			}
+			// Another endpoint may take the retry, budget permitting.
+			if attempt+1 >= maxAttempts || !t.pool.AllowRetry() {
+				return nil, err
+			}
+			holdingRetry = true
 			exclude[e] = true
 			continue
 		}
 		// A status in retry_on is a failed attempt: the body is dropped,
 		// the endpoint marked, and the next endpoint tried while the
 		// budget lasts. The last attempt's response is returned as it is.
-		if attempt+1 < maxAttempts && t.retryStatus(resp.StatusCode) && t.hasAlternative(pi, exclude, e) {
+		if attempt+1 < maxAttempts && t.retryStatus(resp.StatusCode) && t.hasAlternative(pi, exclude, e) && t.pool.AllowRetry() {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 			_ = resp.Body.Close()
 			t.pool.End(e, true, ttfb)
 			pi.mu.Lock()
 			pi.statusRetries++
 			pi.mu.Unlock()
+			holdingRetry = true
 			exclude[e] = true
 			continue
 		}
@@ -176,6 +207,29 @@ func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Respon
 		return resp, nil
 	}
 	return nil, lastErr
+}
+
+// oneAttempt sends req to a single endpoint and returns the raw response,
+// the time to first byte and any transport error. It handles the HTTP/3 to
+// TCP fallback but no retry or budget logic; the caller accounts for the
+// endpoint via pool.End. The endpoint is marked in flight (pool.Begin)
+// before the round trip.
+func (t *poolTransport) oneAttempt(req *http.Request, e *upstream.Endpoint) (*http.Response, time.Duration, error) {
+	out := req.Clone(req.Context())
+	out.URL.Scheme = t.pool.Scheme
+	out.URL.Host = e.Address
+	t.pool.Begin(e)
+	t0 := time.Now()
+	resp, err := t.pool.RoundTripper().RoundTrip(out)
+	if err != nil && t.pool.H3Fallback() && h3.IsTransportError(err) && req.Context().Err() == nil {
+		// QUIC failed before a response (UDP blocked, handshake timeout):
+		// the same endpoint over TCP.
+		if retry, ok := t.tcpRetry(req, e.Address); ok {
+			t.pool.H3Fallbacks.Add(1)
+			resp, err = t.pool.TCPRoundTripper().RoundTrip(retry)
+		}
+	}
+	return resp, time.Since(t0), err
 }
 
 // hasAlternative reports whether another endpoint could take the retry;

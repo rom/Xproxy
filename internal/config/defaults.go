@@ -29,6 +29,12 @@ const (
 	DefaultUpstreamTotal          = 5 * time.Minute
 	DefaultMaxIdleConnsPerHost    = 64
 	DefaultRetries                = 1
+	// DefaultRetryBudgetPercent caps retries in flight at this share of
+	// live requests; DefaultRetryBudgetMinConcurrency is the floor allowed
+	// regardless. DefaultHedgeMax is the extra copies a hedge sends.
+	DefaultRetryBudgetPercent        = 20
+	DefaultRetryBudgetMinConcurrency = 3
+	DefaultHedgeMax                  = 1
 
 	DefaultHealthInterval  = 5 * time.Second
 	DefaultHealthTimeout   = 2 * time.Second
@@ -317,6 +323,17 @@ func applyDefaults(c *Config) {
 		if u.Retries == nil {
 			r := DefaultRetries
 			u.Retries = &r
+		}
+		if b := u.RetryBudget; b != nil {
+			if b.Percent == 0 {
+				b.Percent = DefaultRetryBudgetPercent
+			}
+			if b.MinConcurrency == 0 {
+				b.MinConcurrency = DefaultRetryBudgetMinConcurrency
+			}
+		}
+		if h := u.Hedge; h != nil {
+			setInt(&h.Max, DefaultHedgeMax)
 		}
 		if cb := u.CircuitBreaker; cb != nil {
 			setInt(&cb.ConsecutiveFailures, 5)

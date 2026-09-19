@@ -659,6 +659,34 @@ Memory: at most 64 x 8192 buckets per policy.
 | `discovery` | object | none | Endpoints resolved from DNS and re-resolved periodically; see below. Static `endpoints` and discovered ones coexist; a pool needs at least one of the two |
 | `slow_start` | duration | `0` (off) | An endpoint that joins the pool (discovered) or returns to service (healthy again, ejection over) gets a share ramping from 10 % to its full weight over this time; at most 1h |
 | `retry_on` | list | `[]` | Response statuses treated as a failed attempt: `5xx`, `500`, `502`, `503`, `504`, `429`. The response is discarded, the endpoint marked as failed for outlier ejection, and the next endpoint tried within the `retries` budget; the last attempt's response is returned as it is. Needs `retries` above 0 |
+| `retry_budget` | object | none | Caps retries (and hedged copies) against live traffic so a struggling pool is not buried under a retry storm; see below. Without it, every retry `retries` allows is sent |
+| `hedge` | object | none | Sends staggered copies of a slow idempotent request to other endpoints and keeps the first usable answer; see below |
+
+### upstreams[].retry_budget
+
+A retry (or a hedged copy) is only sent while the retries in flight to the
+pool stay below `percent` of the requests in flight, with `min_concurrency`
+always allowed so a low-traffic pool can still retry. As live traffic falls
+the allowance falls with it, so retries cannot amplify an outage.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `percent` | float | `20` | 1 to 1000; retries in flight capped at this share of requests in flight |
+| `min_concurrency` | int | `3` | 1 to 10000; concurrent retries always allowed regardless of `percent` |
+
+### upstreams[].hedge
+
+Hedging trades a little extra load for a shorter tail latency: if the request
+in flight has not answered within `delay`, a copy goes to another endpoint,
+and whichever returns a usable response first wins while the others are
+cancelled. Only replayable requests (GET, HEAD, OPTIONS, TRACE without a
+body) are hedged, each copy is keyed to a distinct endpoint, and every copy
+beyond the first is gated by `retry_budget` when one is set.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `delay` | duration | required | 1ms to 1m; wait this long for the request in flight before sending the next copy |
+| `max` | int | `1` | 1 to 4; extra copies beyond the first |
 
 ### upstreams[].tls
 

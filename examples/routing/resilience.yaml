@@ -1,0 +1,35 @@
+# Resilience example: retry budget and request hedging.
+#
+# retry_budget caps the retries in flight to a pool as a share of the live
+# requests, so a struggling origin is not buried under a retry storm: as
+# traffic falls the allowance falls with it. hedge shortens tail latency by
+# sending a second copy of a slow idempotent request to another endpoint and
+# keeping whichever answers first; every hedged copy is gated by the budget.
+# Validate: xproxy -config examples/routing/resilience.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: api
+    balancer: least_conn
+    retries: 2
+    retry_on: [502, 503, 504]
+    # Retries (and hedged copies) in flight stay under 20 % of live
+    # requests, but at least 3 are always allowed for a quiet pool.
+    retry_budget: {percent: 20, min_concurrency: 3}
+    # If an endpoint has not answered within 30ms, race one more copy on
+    # another endpoint and take the first usable response.
+    hedge: {delay: 30ms, max: 1}
+    endpoints:
+      - {address: "10.0.1.10:8080"}
+      - {address: "10.0.1.11:8080"}
+      - {address: "10.0.1.12:8080"}
+routes:
+  - name: api
+    hosts: [api.example.com]
+    upstream: api

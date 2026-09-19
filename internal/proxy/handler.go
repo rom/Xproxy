@@ -673,7 +673,7 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		st.upSpan.Set(otlp.String("xproxy.upstream", pool.Name))
 	}
 	rp := &httputil.ReverseProxy{
-		Transport:     &poolTransport{pool: pool, retries: *pool.Cfg.Retries, retryOn: pool.Cfg.RetryOn},
+		Transport:     newPoolTransport(pool),
 		FlushInterval: -1,
 		ErrorLog:      nil,
 		Rewrite: func(pr *httputil.ProxyRequest) {
