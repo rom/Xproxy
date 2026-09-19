@@ -136,6 +136,9 @@ func (m *Metrics) PerRouteEnabled() bool { return m.PerRoute == nil || *m.PerRou
 type Server struct {
 	Listeners []Listener `yaml:"listeners"`
 	Limits    Limits     `yaml:"limits"`
+	// Normalization checks and canonicalises the request target before
+	// routing and analysis.
+	Normalization Normalization `yaml:"normalization"`
 	// ServerHeader is the value sent in the Server response header. Empty
 	// removes the header entirely (the default) to avoid fingerprinting.
 	ServerHeader string `yaml:"server_header"`
@@ -506,6 +509,54 @@ type ACMEGroup struct {
 type Certificate struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+}
+
+// Normalization decides what the proxy does with encoding tricks in the
+// request target before anything else looks at it. Routing already
+// decodes and cleans the path; these checks refuse the forms that make
+// two components disagree about what a request means, and optionally
+// fold Unicode spellings for routing.
+type Normalization struct {
+	// RejectControlChars refuses a decoded path or query containing a
+	// control character (below 0x20, or 0x7f), NUL included. Default true.
+	RejectControlChars *bool `yaml:"reject_control_chars"`
+	// RejectInvalidUTF8 refuses a decoded path that is not valid UTF-8
+	// (overlong and truncated sequences). Default true.
+	RejectInvalidUTF8 *bool `yaml:"reject_invalid_utf8"`
+	// RejectDoubleEncoding refuses a path that still contains a percent
+	// escape after one decoding (%252e%252e). Default false.
+	RejectDoubleEncoding bool `yaml:"reject_double_encoding"`
+	// RejectEncodedSlashes refuses %2F and %5C in the raw path: the
+	// routing decoder turns them into separators that the upstream may
+	// treat as data. Default false.
+	RejectEncodedSlashes bool `yaml:"reject_encoded_slashes"`
+	// RejectBackslashes refuses a backslash anywhere in the decoded path,
+	// which some servers read as a separator. Default false.
+	RejectBackslashes bool `yaml:"reject_backslashes"`
+	// RejectAmbiguousFraming refuses HTTP/1 requests whose framing is
+	// ambiguous: both Transfer-Encoding and Content-Length, several
+	// differing Content-Length values, or a transfer coding other than
+	// chunked. The Go parser already refuses most of these; the check
+	// closes the rest and counts them. Default true.
+	RejectAmbiguousFraming *bool `yaml:"reject_ambiguous_framing"`
+	// Unicode is off, nfc or nfkc: the decoded path is normalised to that
+	// form for routing (the upstream receives the original), so composed
+	// and decomposed spellings, and with nfkc compatibility forms such as
+	// fullwidth letters, match the same route. Default off.
+	Unicode string `yaml:"unicode"`
+}
+
+// ControlChars reports the setting with its default.
+func (n *Normalization) ControlChars() bool {
+	return n.RejectControlChars == nil || *n.RejectControlChars
+}
+
+// InvalidUTF8 reports the setting with its default.
+func (n *Normalization) InvalidUTF8() bool { return n.RejectInvalidUTF8 == nil || *n.RejectInvalidUTF8 }
+
+// AmbiguousFraming reports the setting with its default.
+func (n *Normalization) AmbiguousFraming() bool {
+	return n.RejectAmbiguousFraming == nil || *n.RejectAmbiguousFraming
 }
 
 // Limits are the global resource protections of the data plane. Every limit

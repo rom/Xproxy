@@ -171,6 +171,14 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	norm := &rt.cfg.Server.Normalization
+	if detail := checkNormalization(norm, r); detail != "" {
+		s.stats.DeniedNormalization.Add(1)
+		st.denied = "normalization:" + detail
+		s.denyDetail(rw, r, st, http.StatusBadRequest, "normalization", detail)
+		return
+	}
+
 	st.host = netutil.Host(r.Host)
 	if st.host == "" && r.Host != "" {
 		s.stats.DeniedBadHost.Add(1)
@@ -178,7 +186,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.deny(rw, r, st, http.StatusBadRequest, "bad_host")
 		return
 	}
-	st.path = netutil.CleanPath(r.URL.Path)
+	st.path = netutil.CleanPath(routingPath(norm, r.URL.Path))
 	st.grpcWeb = isGRPCWeb(r)
 	st.grpc = isGRPC(r) || st.grpcWeb || isGRPCWebPreflight(r)
 

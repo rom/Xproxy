@@ -1146,6 +1146,89 @@ T}	T{
 Requests held in a tarpit at once. A tarpitted request releases its concurrency slot;\: above this bound it is rejected with 429 immediately (\fBtarpit_\:overflow\fR counts those)
 T}
 .TE
+.SS "server.normalization"
+.PP
+What the proxy does with encoding tricks in the request target before routing, rate limits, filters and the WAF look at it. Routing already decodes the path once and resolves dot segments and duplicate slashes; these checks refuse the forms that make two components read a request differently, and optionally fold Unicode spellings for routing. A refusal answers 400 with reason \fBnormalization\fR and the check as \fBdetail\fR, counts in \fBdenied_normalization\fR and feeds ban triggers under \fBnormalization\fR. The WAF still inspects the raw request line, so its rules see what the client sent.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.2i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBreject_\:control_\:chars\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A decoded path or query with a control character (below 0x20,\: or 0x7f),\: NUL included (\fBpath_\:control_\:char\fR,\: \fBquery_\:control_\:char\fR)
+T}
+T{
+\fBreject_\:invalid_\:utf8\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A decoded path that is not valid UTF\-8: overlong (\fB%c0%af\fR) and truncated sequences (\fBpath_\:invalid_\:utf8\fR)
+T}
+T{
+\fBreject_\:double_\:encoding\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+A path that still holds a percent escape after one decoding (\fB%252e%252e\fR),\: the classic way past a filter that decodes once (\fBpath_\:double_\:encoding\fR)
+T}
+T{
+\fBreject_\:encoded_\:slashes\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+\fB%2F\fR or \fB%5C\fR in the raw path: the routing decoder turns them into separators that the upstream may treat as data (\fBpath_\:encoded_\:slash\fR)
+T}
+T{
+\fBreject_\:backslashes\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+A backslash in the decoded path,\: a separator to some servers (\fBpath_\:backslash\fR)
+T}
+T{
+\fBreject_\:ambiguous_\:framing\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+HTTP/\:1 requests with several differing \fBContent\-\:Length\fR values,\: a \fBContent\-\:Length\fR next to a transfer coding,\: or a coding other than chunked (\fBframing_\:content_\:length\fR,\: \fBframing_\:te_\:cl\fR,\: \fBframing_\:transfer_\:encoding\fR). The Go parser already refuses most of these before the proxy sees them;\: the check closes the rest and makes them visible
+T}
+T{
+\fBunicode\fR
+T}	T{
+\fBoff\fR,\: \fBnfc\fR,\: \fBnfkc\fR
+T}	T{
+\fBoff\fR
+T}	T{
+Fold the decoded path to that form for routing: \fBnfc\fR makes composed and decomposed spellings (\fBcaf\[u00E9]\fR either way) match one route,\: \fBnfkc\fR also compatibility forms such as fullwidth letters (\fB\[uFF55]sers\fR). The upstream receives the original path
+T}
+.TE
+.PP
+Turn the strict checks on for applications that never use encoded separators or double encoding legitimately (most APIs), and leave them off in front of applications that carry encoded identifiers in the path; \fBexamples/security/positive\-model.yaml\fR shows the strict set.
 .SS "server.error_pages and routes[].error_pages"
 .PP
 Documents are read at load (at most 1 MiB each) and chosen by exact status (\fB"404"\fR), class (\fB"4xx"\fR, \fB"5xx"\fR) or \fB"default"\fR. A route section replaces the server section entirely for that route. Every status the proxy writes itself goes through the pages: denials (ACL, rate limit, WAF, ban, JWT), unknown host or route, upstream failures (502, 503, 504), static file misses and the like; a gRPC request keeps its gRPC status. Upstream responses pass through unchanged unless their status is listed in \fBintercept_upstream\fR.

@@ -105,7 +105,11 @@ to report a vulnerability. The threat analysis behind the controls is in
   route, path, method, parameter, header, cookie and body conditions),
   before rate limits, filters and the WAF, with per patch counters, a
   shadow action and an expiry date.
-- Routing on a canonicalised path so dot segments cannot bypass a policy.
+- Routing on a canonicalised path so dot segments cannot bypass a policy;
+  request normalisation refuses control characters and invalid UTF-8 in
+  the target by default, can refuse double encoding, encoded separators
+  and backslashes, folds Unicode spellings for routing, and closes the
+  ambiguous framing cases the parser lets through.
 - Host header normalisation and strict host matching.
 - CIDR deny and allow lists per route.
 - WebSocket upgrades refused unless a route opts in.

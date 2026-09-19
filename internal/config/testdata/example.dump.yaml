@@ -59,6 +59,14 @@ server:
         max_connections_per_ip: 256
         max_concurrent_requests: 16384
         max_tarpits: 1024
+    normalization:
+        reject_control_chars: null
+        reject_invalid_utf8: null
+        reject_double_encoding: false
+        reject_encoded_slashes: false
+        reject_backslashes: false
+        reject_ambiguous_framing: null
+        unicode: "off"
     server_header: ""
     error_pages: null
     session_tickets: null

@@ -207,6 +207,7 @@ the `denied` reason.
 | 2b | Ban list lookup on the derived client address | 403 | `denied_ban` |
 | 3 | Plaintext redirect listener: 308 to https | 308 | |
 | 4 | URI length | 414 | `denied_uri_length` |
+| 4b | Normalisation: control characters, invalid UTF-8, double encoding, encoded separators, backslashes, ambiguous framing; Unicode folding of the routing path | 400 | `denied_normalization` |
 | 5 | Host normalisation (`netutil.Host`) | 400 | `denied_bad_host` |
 | 5b | Reserved paths `/.xproxy/challenge` (proof verification) and `/.xproxy/challenge.js` | 303 / 403 | `challenges_*` |
 | 6 | Path cleaning (`netutil.CleanPath`) and route match (host, path prefix or anchored pattern, method, header and cookie conditions) | 404 | `denied_no_route` |

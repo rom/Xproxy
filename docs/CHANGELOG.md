@@ -218,6 +218,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- Request normalisation (`server.normalization`): control characters
+  and invalid UTF-8 in the target refused by default, double encoding,
+  encoded slashes and backslashes refusable, ambiguous HTTP/1 framing
+  closed and counted, NFC or NFKC folding of the routing path.
 - Rate limit keys `client_net` (with `net_v4` and `net_v6`), `endpoint`
   (method, route and path template), `ja4`, `cookie:<name>` and
   `jwt:<claim>`, each falling back to the client address.

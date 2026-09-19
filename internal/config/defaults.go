@@ -106,6 +106,7 @@ func applyDefaults(c *Config) {
 	setInt(&l.MaxConnectionsPerIP, DefaultMaxConnectionsPerIP)
 	setInt(&l.MaxConcurrentRequests, DefaultMaxConcurrentRequests)
 	setInt(&l.MaxTarpits, DefaultMaxTarpits)
+	setStr(&c.Server.Normalization.Unicode, "off")
 
 	for i := range s.Listeners {
 		setStr(&s.Listeners[i].Kind, "http")

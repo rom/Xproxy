@@ -394,6 +394,11 @@ func (v *validator) config(c *Config) {
 }
 
 func (v *validator) server(s *Server) {
+	switch s.Normalization.Unicode {
+	case "off", "nfc", "nfkc":
+	default:
+		v.errf("server.normalization.unicode: must be off, nfc or nfkc")
+	}
 	names := map[string]bool{}
 	addrs := map[string]bool{}
 	for i := range s.Listeners {

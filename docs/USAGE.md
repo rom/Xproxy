@@ -1139,6 +1139,28 @@ For bodies use `waf.profiles[].json_schemas` or the `openapi` filter,
 which derives the whole positive model, parameters included, from an
 OpenAPI description.
 
+### Request normalisation
+
+An attacker who knows the proxy and the application decode differently
+writes the path the application will accept and the proxy will not
+recognise. `server.normalization` refuses those forms before routing:
+
+```yaml
+server:
+  normalization:
+    reject_double_encoding: true     # %252e%252e
+    reject_encoded_slashes: true     # %2F, %5C
+    reject_backslashes: true
+    unicode: nfkc                    # ｕsers routes like users
+```
+
+Control characters and invalid UTF-8 are refused without any setting,
+as is ambiguous HTTP/1 framing (the parser refuses most of it; the
+check counts what remains). Each refusal carries the check in the
+security event (`detail: path_double_encoding`), so a legitimate client
+that double encodes is found in the log before the strict setting goes
+to production.
+
 ### Virtual patching
 
 When a vulnerability is published and the fix is days away, a virtual

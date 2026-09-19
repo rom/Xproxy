@@ -1825,6 +1825,41 @@
       },
       "additionalProperties": false
     },
+    "Normalization": {
+      "description": "Normalization decides what the proxy does with encoding tricks in the request target before anything else looks at it. Routing already decodes and cleans the path; these checks refuse the forms that make two components disagree about what a request means, and optionally fold Unicode spellings for routing.",
+      "type": "object",
+      "properties": {
+        "reject_ambiguous_framing": {
+          "description": "RejectAmbiguousFraming refuses HTTP/1 requests whose framing is ambiguous: both Transfer-Encoding and Content-Length, several differing Content-Length values, or a transfer coding other than chunked. The Go parser already refuses most of these; the check closes the rest and counts them. Default true.",
+          "type": "boolean"
+        },
+        "reject_backslashes": {
+          "description": "RejectBackslashes refuses a backslash anywhere in the decoded path, which some servers read as a separator. Default false.",
+          "type": "boolean"
+        },
+        "reject_control_chars": {
+          "description": "RejectControlChars refuses a decoded path or query containing a control character (below 0x20, or 0x7f), NUL included. Default true.",
+          "type": "boolean"
+        },
+        "reject_double_encoding": {
+          "description": "RejectDoubleEncoding refuses a path that still contains a percent escape after one decoding (%252e%252e). Default false.",
+          "type": "boolean"
+        },
+        "reject_encoded_slashes": {
+          "description": "RejectEncodedSlashes refuses %2F and %5C in the raw path: the routing decoder turns them into separators that the upstream may treat as data. Default false.",
+          "type": "boolean"
+        },
+        "reject_invalid_utf8": {
+          "description": "RejectInvalidUTF8 refuses a decoded path that is not valid UTF-8 (overlong and truncated sequences). Default true.",
+          "type": "boolean"
+        },
+        "unicode": {
+          "description": "Unicode is off, nfc or nfkc: the decoded path is normalised to that form for routing (the upstream receives the original), so composed and decomposed spellings, and with nfkc compatibility forms such as fullwidth letters, match the same route. Default off.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "OCSPStapling": {
       "description": "OCSPStapling configures the background OCSP fetcher of a listener.",
       "type": "object",
@@ -2951,6 +2986,14 @@
           "items": {
             "$ref": "#/$defs/Listener"
           }
+        },
+        "normalization": {
+          "description": "Normalization checks and canonicalises the request target before routing and analysis.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Normalization"
+            }
+          ]
         },
         "server_header": {
           "description": "ServerHeader is the value sent in the Server response header. Empty removes the header entirely (the default) to avoid fingerprinting.",

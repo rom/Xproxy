@@ -43,6 +43,7 @@ type Stats struct {
 	DeniedGeo             atomic.Uint64
 	DeniedPolicy          atomic.Uint64
 	DeniedVirtualPatch    atomic.Uint64
+	DeniedNormalization   atomic.Uint64
 	HoneypotHits          atomic.Uint64
 	StaticServed          atomic.Uint64
 	StaticNotFound        atomic.Uint64
@@ -115,6 +116,7 @@ type Snapshot struct {
 	DeniedGeo             uint64     `json:"denied_geo"`
 	DeniedPolicy          uint64     `json:"denied_policy"`
 	DeniedVirtualPatch    uint64     `json:"denied_virtual_patch"`
+	DeniedNormalization   uint64     `json:"denied_normalization"`
 	HoneypotHits          uint64     `json:"honeypot_hits"`
 	StaticServed          uint64     `json:"static_served"`
 	StaticNotFound        uint64     `json:"static_not_found"`
@@ -216,6 +218,7 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedGeo:             s.DeniedGeo.Load(),
 		DeniedPolicy:          s.DeniedPolicy.Load(),
 		DeniedVirtualPatch:    s.DeniedVirtualPatch.Load(),
+		DeniedNormalization:   s.DeniedNormalization.Load(),
 		HoneypotHits:          s.HoneypotHits.Load(),
 		StaticServed:          s.StaticServed.Load(),
 		StaticNotFound:        s.StaticNotFound.Load(),

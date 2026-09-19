@@ -11,6 +11,14 @@ version: 1
 server:
   listeners:
     - {name: main, address: "0.0.0.0:8080"}
+  # Refuse the encoding tricks that make the proxy and the application
+  # read a path differently; control characters and invalid UTF-8 are
+  # refused without these settings.
+  normalization:
+    reject_double_encoding: true
+    reject_encoded_slashes: true
+    reject_backslashes: true
+    unicode: nfkc
 management:
   socket: /run/xproxy/mgmt.sock
 logging:

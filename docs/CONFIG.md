@@ -312,6 +312,33 @@ public CA).
 | `max_concurrent_requests` | int | `16384` | positive | In-flight requests; 503 above |
 | `max_tarpits` | int | `1024` | 1 to 1000000 | Requests held in a tarpit at once. A tarpitted request releases its concurrency slot; above this bound it is rejected with 429 immediately (`tarpit_overflow` counts those) |
 
+### server.normalization
+
+What the proxy does with encoding tricks in the request target before
+routing, rate limits, filters and the WAF look at it. Routing already
+decodes the path once and resolves dot segments and duplicate slashes;
+these checks refuse the forms that make two components read a request
+differently, and optionally fold Unicode spellings for routing. A
+refusal answers 400 with reason `normalization` and the check as
+`detail`, counts in `denied_normalization` and feeds ban triggers under
+`normalization`. The WAF still inspects the raw request line, so its
+rules see what the client sent.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `reject_control_chars` | bool | `true` | A decoded path or query with a control character (below 0x20, or 0x7f), NUL included (`path_control_char`, `query_control_char`) |
+| `reject_invalid_utf8` | bool | `true` | A decoded path that is not valid UTF-8: overlong (`%c0%af`) and truncated sequences (`path_invalid_utf8`) |
+| `reject_double_encoding` | bool | `false` | A path that still holds a percent escape after one decoding (`%252e%252e`), the classic way past a filter that decodes once (`path_double_encoding`) |
+| `reject_encoded_slashes` | bool | `false` | `%2F` or `%5C` in the raw path: the routing decoder turns them into separators that the upstream may treat as data (`path_encoded_slash`) |
+| `reject_backslashes` | bool | `false` | A backslash in the decoded path, a separator to some servers (`path_backslash`) |
+| `reject_ambiguous_framing` | bool | `true` | HTTP/1 requests with several differing `Content-Length` values, a `Content-Length` next to a transfer coding, or a coding other than chunked (`framing_content_length`, `framing_te_cl`, `framing_transfer_encoding`). The Go parser already refuses most of these before the proxy sees them; the check closes the rest and makes them visible |
+| `unicode` | `off`, `nfc`, `nfkc` | `off` | Fold the decoded path to that form for routing: `nfc` makes composed and decomposed spellings (`café` either way) match one route, `nfkc` also compatibility forms such as fullwidth letters (`ｕsers`). The upstream receives the original path |
+
+Turn the strict checks on for applications that never use encoded
+separators or double encoding legitimately (most APIs), and leave them
+off in front of applications that carry encoded identifiers in the
+path; `examples/security/positive-model.yaml` shows the strict set.
+
 ### server.error_pages and routes[].error_pages
 
 Documents are read at load (at most 1 MiB each) and chosen by exact

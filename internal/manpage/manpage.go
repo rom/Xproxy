@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Page describes one manual page.
@@ -327,11 +328,12 @@ func inlineWith(s string, breakable bool) string {
 				i += len(word)
 				continue
 			}
-			out.WriteString(escape(s[i : i+1]))
-			if breakable && strings.IndexByte("|/,;", s[i]) >= 0 {
+			_, size := utf8.DecodeRuneInString(s[i:])
+			out.WriteString(escape(s[i : i+size]))
+			if breakable && size == 1 && strings.IndexByte("|/,;", s[i]) >= 0 {
 				out.WriteString(`\:`)
 			}
-			i++
+			i += size
 		}
 	}
 	return out.String()
@@ -370,6 +372,12 @@ func escape(s string) string {
 		case '\'':
 			out.WriteString(`\(aq`)
 		default:
+			if ch > 127 {
+				// groff reads the page as Latin-1 unless told otherwise;
+				// a named Unicode glyph renders everywhere.
+				fmt.Fprintf(&out, `\[u%04X]`, ch)
+				continue
+			}
 			out.WriteRune(ch)
 		}
 	}
@@ -390,6 +398,15 @@ func guardStart(line string) string {
 func escapeCode(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\e`)
 	s = strings.ReplaceAll(s, "-", `\-`)
+	var out strings.Builder
+	for _, ch := range s {
+		if ch > 127 {
+			fmt.Fprintf(&out, `\[u%04X]`, ch)
+			continue
+		}
+		out.WriteRune(ch)
+	}
+	s = out.String()
 	if strings.HasPrefix(s, ".") || strings.HasPrefix(s, "'") {
 		s = `\&` + s
 	}
