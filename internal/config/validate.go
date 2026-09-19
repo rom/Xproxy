@@ -195,6 +195,9 @@ func (v *validator) config(c *Config) {
 	if c.Challenge != nil {
 		v.challenge(c.Challenge)
 	}
+	if c.Maintenance != nil {
+		v.maintenance(c.Maintenance)
+	}
 	jwtProviders := map[string]bool{}
 	if c.JWT != nil {
 		v.jwt(c.JWT, jwtProviders)
@@ -761,6 +764,18 @@ func (v *validator) logging(l *Logging) {
 		default:
 			v.errf("logging.%s.format: must be json, common, combined or custom", name)
 		}
+		if name != "access" {
+			if s.SamplePercent != nil || s.AlwaysLog != nil || len(s.Fields) > 0 {
+				v.errf("logging.%s: sample_percent, always_log and fields are for the access stream only", name)
+			}
+			continue
+		}
+		if p := s.SamplePercent; p != nil && (*p < 0 || *p > 100) {
+			v.errf("logging.access.sample_percent: must be between 0 and 100")
+		}
+		if len(s.Fields) > 64 {
+			v.errf("logging.access.fields: at most 64")
+		}
 	}
 	if s := l.Syslog; s != nil {
 		switch s.Network {
@@ -875,8 +890,15 @@ func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 		if strings.ContainsAny(r.Key[len("jwt:"):], " \"") || len(r.Key) > 128 {
 			v.errf("%s.key: %q is not a claim name", p, r.Key[len("jwt:"):])
 		}
+	case r.Key == "identity":
+	case strings.HasPrefix(r.Key, "identity:") && len(r.Key) > len("identity:"):
+		switch r.Key[len("identity:"):] {
+		case "jwt", "oidc", "api_key", "basic", "ldap":
+		default:
+			v.errf("%s.key: identity kind must be jwt, oidc, api_key, basic or ldap", p)
+		}
 	default:
-		v.errf("%s.key: must be client_ip, client_net, route, country, endpoint, ja4, device, header:<name>, cookie:<name> or jwt:<claim>", p)
+		v.errf("%s.key: must be client_ip, client_net, route, country, endpoint, ja4, device, identity, identity:<kind>, header:<name>, cookie:<name> or jwt:<claim>", p)
 	}
 	if r.NetV4 < 8 || r.NetV4 > 32 {
 		v.errf("%s.net_v4: must be between 8 and 32", p)
@@ -991,12 +1013,27 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			if d.Port < 1 || d.Port > 65535 {
 				v.errf("%s.port: required for type dns, 1 to 65535", dp)
 			}
+			v.discoveryDNSName(dp, d)
 		case "srv":
+			v.discoveryDNSName(dp, d)
+		case "http":
+			ru, err := url.Parse(d.Name)
+			if err != nil || (ru.Scheme != "http" && ru.Scheme != "https") || ru.Host == "" {
+				v.errf("%s.name: %q must be an http or https URL", dp, d.Name)
+			}
+			switch d.Format {
+			case "", "list", "consul":
+			default:
+				v.errf("%s.format: must be list or consul", dp)
+			}
+			if d.Port != 0 && (d.Port < 1 || d.Port > 65535) {
+				v.errf("%s.port: must be between 1 and 65535", dp)
+			}
+			if d.Resolver != "" {
+				v.errf("%s.resolver: only for dns and srv discovery", dp)
+			}
 		default:
-			v.errf("%s.type: must be dns or srv", dp)
-		}
-		if !hostPatternOK(strings.TrimSuffix(d.Name, ".")) || strings.HasPrefix(d.Name, "*") {
-			v.errf("%s.name: %q is not a valid DNS name", dp, d.Name)
+			v.errf("%s.type: must be dns, srv or http", dp)
 		}
 		if d.Interval < Duration(time.Second) || d.Interval > Duration(time.Hour) {
 			v.errf("%s.interval: must be between 1s and 1h", dp)
@@ -1004,7 +1041,7 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		if d.Timeout < Duration(100*time.Millisecond) || d.Timeout > Duration(time.Minute) {
 			v.errf("%s.timeout: must be between 100ms and 1m", dp)
 		}
-		if d.Resolver != "" {
+		if d.Resolver != "" && (d.Type == "dns" || d.Type == "srv") {
 			if _, _, err := net.SplitHostPort(d.Resolver); err != nil {
 				v.errf("%s.resolver: %q must be host:port", dp, d.Resolver)
 			}
@@ -1110,6 +1147,22 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 	if len(u.RetryOn) > 0 && u.Retries != nil && *u.Retries == 0 {
 		v.errf("%s.retry_on: set but retries is 0", p)
 	}
+	if b := u.RetryBudget; b != nil {
+		if b.Percent < 1 || b.Percent > 1000 {
+			v.errf("%s.retry_budget.percent: must be between 1 and 1000", p)
+		}
+		if b.MinConcurrency < 1 || b.MinConcurrency > 10000 {
+			v.errf("%s.retry_budget.min_concurrency: must be between 1 and 10000", p)
+		}
+	}
+	if h := u.Hedge; h != nil {
+		if h.Delay < Duration(time.Millisecond) || h.Delay > Duration(time.Minute) {
+			v.errf("%s.hedge.delay: must be between 1ms and 1m", p)
+		}
+		if h.Max < 1 || h.Max > 4 {
+			v.errf("%s.hedge.max: must be between 1 and 4", p)
+		}
+	}
 	if u.MaxIdleConnsPerHost < 0 {
 		v.errf("%s.max_idle_conns_per_host: must not be negative", p)
 	}
@@ -1205,6 +1258,13 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 	}
 }
 
+// discoveryDNSName checks the Name of a dns or srv discovery is a DNS name.
+func (v *validator) discoveryDNSName(dp string, d *Discovery) {
+	if !hostPatternOK(strings.TrimSuffix(d.Name, ".")) || strings.HasPrefix(d.Name, "*") {
+		v.errf("%s.name: %q is not a valid DNS name", dp, d.Name)
+	}
+}
+
 func (v *validator) upstreamTLS(p string, t *UpstreamTLS) {
 	if t.CAFile != "" {
 		v.file(p+".ca_file", t.CAFile)
@@ -1283,6 +1343,20 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	v.headerMatches(p+".cookies", r.Cookies, true)
 	if r.Policy != nil {
 		v.routePolicy(p+".policy", r.Policy)
+	}
+	if r.CORS != nil {
+		v.routeCORS(p+".cors", r.CORS)
+	}
+	if r.Timeouts != nil {
+		if r.Timeout != 0 {
+			v.errf("%s: set timeout or timeouts, not both", p)
+		}
+		if r.Timeouts.Total < 0 || r.Timeouts.Idle < 0 {
+			v.errf("%s.timeouts: must not be negative", p)
+		}
+		if t, i := r.Timeouts.Total, r.Timeouts.Idle; t > 0 && i > 0 && i > t {
+			v.errf("%s.timeouts.idle: must not exceed total", p)
+		}
 	}
 
 	actions := 0
@@ -2164,6 +2238,26 @@ func (v *validator) jwt(j *JWT, seen map[string]bool) {
 	}
 }
 
+func (v *validator) maintenance(m *Maintenance) {
+	if m.Status < 400 || m.Status > 599 {
+		v.errf("maintenance.status: must be a 4xx or 5xx status")
+	}
+	if m.RetryAfter < 0 {
+		v.errf("maintenance.retry_after: must not be negative")
+	}
+	for i, c := range m.AllowCIDRs {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("maintenance.allow_cidrs[%d]: %q is not a CIDR", i, c)
+		}
+	}
+	if h := m.AllowHeader; h != "" {
+		name, val, ok := strings.Cut(h, ":")
+		if !ok || !headerNameOK(strings.TrimSpace(name)) || strings.TrimSpace(val) == "" {
+			v.errf("maintenance.allow_header: must be \"Name: value\"")
+		}
+	}
+}
+
 func (v *validator) challenge(c *Challenge) {
 	if c.SecretFile != "" && !strings.HasPrefix(c.SecretFile, "/") {
 		v.errf("challenge.secret_file: must be an absolute path")
@@ -2208,6 +2302,11 @@ func (v *validator) challenge(c *Challenge) {
 		}
 		if cp.Mode != "escalation" && cp.Mode != "always" {
 			v.errf("challenge.captcha.mode: must be escalation or always")
+		}
+		for i, h := range cp.Hostnames {
+			if h == "" || strings.ContainsAny(h, "/ :") || h != strings.ToLower(h) {
+				v.errf("challenge.captcha.hostnames[%d]: %q is not a lower case host name", i, h)
+			}
 		}
 	}
 }
@@ -2643,6 +2742,46 @@ func (v *validator) mediaTypes(p string, types []string) {
 		if !ok || main == "" || sub == "" || t != strings.ToLower(t) || strings.ContainsAny(t, " ;,") || (main == "*" && sub != "*") {
 			v.errf("%s[%d]: %q must be type/subtype or type/*", p, j, t)
 		}
+	}
+}
+
+func (v *validator) routeCORS(p string, c *RouteCORS) {
+	if len(c.AllowOrigins) == 0 {
+		v.errf("%s.allow_origins: at least one origin", p)
+	}
+	star := false
+	for i, o := range c.AllowOrigins {
+		if o == "*" {
+			star = true
+			continue
+		}
+		if !strings.HasPrefix(o, "http://") && !strings.HasPrefix(o, "https://") {
+			v.errf("%s.allow_origins[%d]: %q must be a scheme://host origin or \"*\"", p, i, o)
+		}
+	}
+	if star && c.AllowCredentials {
+		v.errf("%s: allow_credentials cannot be combined with the \"*\" origin", p)
+	}
+	if star && len(c.AllowOrigins) > 1 {
+		v.errf("%s.allow_origins: \"*\" must be the only entry", p)
+	}
+	for i, m := range c.AllowMethods {
+		if m != strings.ToUpper(m) || strings.ContainsAny(m, " \r\n") {
+			v.errf("%s.allow_methods[%d]: %q is not a method", p, i, m)
+		}
+	}
+	for i, h := range c.AllowHeaders {
+		if h != "*" && !headerNameOK(h) {
+			v.errf("%s.allow_headers[%d]: %q is not a header name", p, i, h)
+		}
+	}
+	for i, h := range c.ExposeHeaders {
+		if !headerNameOK(h) {
+			v.errf("%s.expose_headers[%d]: %q is not a header name", p, i, h)
+		}
+	}
+	if c.MaxAge < 0 || c.MaxAge > Duration(24*3600*1e9) {
+		v.errf("%s.max_age: must be between 0 and 24h", p)
 	}
 }
 

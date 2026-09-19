@@ -1,0 +1,39 @@
+# Service discovery example: DNS, SRV and HTTP registry (Consul).
+#
+# A pool's endpoints can be discovered and re-resolved on an interval rather
+# than listed statically. Static endpoints and discovered ones coexist; a
+# failed resolution keeps the previous set. See `xproxyctl upstreams` for the
+# resolution counters and the last error.
+# Validate: xproxy -config examples/routing/discovery.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  # DNS: one endpoint per A/AAAA record, on the given port.
+  - name: web
+    discovery: {type: dns, name: web.svc.cluster.local, port: 8080, interval: 15s}
+  # SRV: target, port and weight come from the records; the lowest
+  # priority group is used.
+  - name: api
+    discovery: {type: srv, name: _http._tcp.api.svc.cluster.local}
+  # HTTP registry, Consul health API: only passing instances are used and
+  # Weights.Passing becomes the endpoint weight. The token authenticates
+  # the poll. A static endpoint stays in the pool as a fallback.
+  - name: orders
+    endpoints: [{address: "10.0.9.9:8080"}]
+    discovery:
+      type: http
+      format: consul
+      name: "https://consul.internal:8501/v1/health/service/orders?passing=true"
+      headers: {X-Consul-Token: "00000000-0000-0000-0000-000000000000"}
+      interval: 10s
+      port: 8080
+routes:
+  - {name: web, hosts: [www.example.com], upstream: web}
+  - {name: api, hosts: [api.example.com], upstream: api}
+  - {name: orders, hosts: [api.example.com], paths: [/orders/], upstream: orders}

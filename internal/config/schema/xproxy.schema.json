@@ -121,6 +121,14 @@
     "logging": {
       "$ref": "#/$defs/Logging"
     },
+    "maintenance": {
+      "description": "Maintenance serves a 503 to everyone but an allowlist while it is on. The section sets the policy and the boot state; the state is toggled at runtime (POST /v1/maintenance, xproxyctl maintenance).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Maintenance"
+        }
+      ]
+    },
     "management": {
       "$ref": "#/$defs/Management"
     },
@@ -503,6 +511,16 @@
       "description": "Captcha configures a hosted CAPTCHA provider for the challenge.",
       "type": "object",
       "properties": {
+        "hostname_check": {
+          "type": "boolean"
+        },
+        "hostnames": {
+          "description": "Hostnames the provider may report the token was solved on. Empty checks the token against the host the challenge page was served on, so a token solved for another site is refused. HostnameCheck off disables the check for providers that do not return a hostname.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "min_score": {
           "description": "MinScore refuses tokens the provider scores below it (reCAPTCHA v3 and Enterprise return one). Default 0 (not checked).",
           "type": "number"
@@ -898,11 +916,11 @@
       "additionalProperties": false
     },
     "Discovery": {
-      "description": "Discovery resolves a pool's endpoints from DNS.",
+      "description": "Discovery resolves a pool's endpoints from DNS or an HTTP registry.",
       "type": "object",
       "properties": {
         "type": {
-          "description": "Type is dns (A and AAAA records of Name, each with Port) or srv (SRV records of Name; targets and ports come from the records, the lowest priority group is used and record weights become endpoint weights).",
+          "description": "Type is dns (A and AAAA records of Name, each with Port), srv (SRV records of Name; targets and ports come from the records, the lowest priority group is used and record weights become endpoint weights) or http (Name is a URL polled on the interval; see Format).",
           "type": "string",
           "enum": [
             "dns",
@@ -913,21 +931,32 @@
           "description": "Canary marks discovered endpoints as canaries.",
           "type": "boolean"
         },
+        "format": {
+          "description": "Format is the response shape for type http: list (default, a JSON array of {address|host,port, weight?, canary?}) or consul (the Consul /v1/health/service response; only passing instances are used and their Weights.Passing becomes the endpoint weight).",
+          "type": "string"
+        },
+        "headers": {
+          "description": "Headers are extra request headers for type http, for example an authentication token (Consul: X-Consul-Token).",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
         "interval": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
         "name": {
-          "description": "Name is the DNS name to resolve (for srv the full _service._proto name).",
+          "description": "Name is the DNS name to resolve (for srv the full _service._proto name), or, for type http, the registry URL to poll.",
           "type": "string"
         },
         "port": {
-          "description": "Port is the endpoint port for type dns. Ignored for srv.",
+          "description": "Port is the endpoint port for type dns, and the default port for type http when the registry omits one. Ignored for srv.",
           "type": "integer"
         },
         "resolver": {
-          "description": "Resolver is an optional host:port of the DNS server to ask instead of the system resolver.",
+          "description": "Resolver is an optional host:port of the DNS server to ask instead of the system resolver. DNS types only.",
           "type": "string"
         },
         "timeout": {
@@ -936,7 +965,7 @@
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
         "weight": {
-          "description": "Weight given to discovered endpoints of type dns. Default 1.",
+          "description": "Weight given to discovered endpoints (type dns and http list format entries without their own weight). Default 1.",
           "type": "integer"
         }
       },
@@ -1303,6 +1332,22 @@
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
         "unhealthy_threshold": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Hedge": {
+      "description": "Hedge sends extra copies of a slow idempotent request to other endpoints. The first usable response wins and the others are cancelled.",
+      "type": "object",
+      "properties": {
+        "delay": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max": {
+          "description": "Max is the number of extra copies beyond the first, each keyed to a distinct endpoint and gated by the retry budget. Default 1; 1 to 4.",
           "type": "integer"
         }
       },
@@ -1740,8 +1785,19 @@
       "description": "LogStream configures one stream.",
       "type": "object",
       "properties": {
+        "always_log": {
+          "description": "AlwaysLog logs a line whatever the sampling when the response is a 4xx/5xx or the request was denied. Default true. Access stream only.",
+          "type": "boolean"
+        },
         "enabled": {
           "type": "boolean"
+        },
+        "fields": {
+          "description": "Fields, when set, keeps only these attributes on the access line (request_id, client_ip, method, host, path, status, ...); empty keeps them all. Access stream only.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "file": {
           "type": "string"
@@ -1756,6 +1812,10 @@
         "max_size_mb": {
           "description": "MaxSizeMB triggers rotation when the file exceeds this size. 0 disables internal rotation (use logrotate or journald instead).",
           "type": "integer"
+        },
+        "sample_percent": {
+          "description": "SamplePercent logs this percentage of access lines (0 to 100, default 100). Metrics count every request regardless. Access stream only.",
+          "type": "number"
         },
         "sinks": {
           "description": "Sinks lists where the stream goes: file, journald, syslog. Default [file].",
@@ -1843,6 +1903,41 @@
               "$ref": "#/$defs/Syslog"
             }
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Maintenance": {
+      "description": "Maintenance is the maintenance-mode policy.",
+      "type": "object",
+      "properties": {
+        "allow_cidrs": {
+          "description": "AllowCIDRs are always served (operators, health checkers).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_header": {
+          "description": "AllowHeader, \"Name: value\", exempts a request carrying it (a shared bypass token behind another gate).",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Enabled is the state at start; the runtime toggle overrides it.",
+          "type": "boolean"
+        },
+        "message": {
+          "description": "Message is the response body. Default a short text.",
+          "type": "string"
+        },
+        "retry_after": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "status": {
+          "description": "Status answers held requests. Default 503.",
+          "type": "integer"
         }
       },
       "additionalProperties": false
@@ -2362,6 +2457,21 @@
       },
       "additionalProperties": false
     },
+    "RetryBudget": {
+      "description": "RetryBudget limits the rate of retries relative to live requests. A retry (or a hedged copy) is only sent while the number of retries in flight to the pool stays below Percent of the requests in flight, with MinConcurrency always allowed so a low-traffic pool can still retry.",
+      "type": "object",
+      "properties": {
+        "min_concurrency": {
+          "description": "MinConcurrency is the number of concurrent retries always allowed regardless of Percent, so a pool with little live traffic can still retry. Default 3; 1 to 10000.",
+          "type": "integer"
+        },
+        "percent": {
+          "description": "Percent caps retries in flight at this share of requests in flight. Default 20; 1 to 1000.",
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
     "RewriteRegex": {
       "description": "RewriteRegex is a regular expression path rewrite. Replace may use ${1} to ${9} and ${name} for the pattern's groups, and the request variables of header templates (docs/CONFIG.md, \"Variables\").",
       "type": "object",
@@ -2414,6 +2524,14 @@
           "items": {
             "$ref": "#/$defs/HeaderMatch"
           }
+        },
+        "cors": {
+          "description": "CORS answers cross-origin requests for this route: it short-circuits preflight OPTIONS and adds the response headers to actual requests.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RouteCORS"
+            }
+          ]
         },
         "deny_cidrs": {
           "type": "array",
@@ -2501,6 +2619,10 @@
               "$ref": "#/$defs/RouteJWT"
             }
           ]
+        },
+        "maintenance": {
+          "description": "Maintenance overrides the global maintenance gate for this route: false always serves it (health, status), true always holds it.",
+          "type": "boolean"
         },
         "max_body_bytes": {
           "description": "MaxBodyBytes overrides the global body limit for this route (may only lower it unless allow_raise is set).",
@@ -2612,6 +2734,9 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "timeouts": {
+          "$ref": "#/$defs/RouteTimeouts"
+        },
         "upstream": {
           "type": "string"
         },
@@ -2634,6 +2759,50 @@
         "when": {
           "description": "When is a condition in the expression language (docs/CONFIG.md, \"Expressions\") that must hold in addition to the matches above; it counts as one condition for specificity.",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteCORS": {
+      "description": "RouteCORS is a Cross-Origin Resource Sharing policy for a route. It is independent of the gRPC-web preflight handling (grpc.web_origins).",
+      "type": "object",
+      "properties": {
+        "allow_credentials": {
+          "description": "AllowCredentials sets Access-Control-Allow-Credentials: true and echoes the specific origin (never \"*\").",
+          "type": "boolean"
+        },
+        "allow_headers": {
+          "description": "AllowHeaders are the request headers a preflight may allow; \"*\" reflects the requested headers. Default: reflect the request's Access-Control-Request-Headers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_methods": {
+          "description": "AllowMethods default to GET, HEAD, POST, PUT, PATCH, DELETE.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_origins": {
+          "description": "AllowOrigins are the permitted Origin values: exact (\"https://a.example\"), a single \"*\" (any origin; incompatible with allow_credentials), or a wildcard host pattern (\"https://*.example.com\"). Required.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expose_headers": {
+          "description": "ExposeHeaders are added to Access-Control-Expose-Headers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_age": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         }
       },
       "additionalProperties": false
@@ -2917,6 +3086,23 @@
         "root": {
           "description": "Root is the absolute directory served.",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteTimeouts": {
+      "description": "RouteTimeouts are a route's named timeouts. Connect and the response header timeout are configured per upstream (upstreams[].timeouts), since the connection pool is shared; these bound the exchange as a whole and the gaps between response bytes.",
+      "type": "object",
+      "properties": {
+        "idle": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "total": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         }
       },
       "additionalProperties": false
@@ -3526,6 +3712,14 @@
         "health_check": {
           "$ref": "#/$defs/HealthCheck"
         },
+        "hedge": {
+          "description": "Hedge sends a second copy of an idempotent request to another endpoint when the first is slow, and takes whichever answers first, trading a little extra load for a shorter tail latency.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Hedge"
+            }
+          ]
+        },
         "max_concurrent": {
           "description": "MaxConcurrent bounds requests in flight to the pool; 0 is unbounded.",
           "type": "integer"
@@ -3564,6 +3758,14 @@
         "retries": {
           "description": "Retries is the number of times an idempotent request is retried on a connection error against a different endpoint. Default 1.",
           "type": "integer"
+        },
+        "retry_budget": {
+          "description": "RetryBudget caps retries as a share of live traffic so a struggling pool is not buried under a retry storm. Without it every retry the Retries budget allows is sent.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RetryBudget"
+            }
+          ]
         },
         "retry_on": {
           "description": "RetryOn adds response statuses that are retried like connection errors, on another endpoint, within the same Retries budget and only for replayable requests: \"5xx\", \"500\", \"502\", \"503\", \"504\", \"429\". A retried status counts as a passive failure of the endpoint. Default none.",

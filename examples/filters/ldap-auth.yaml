@@ -1,0 +1,46 @@
+# Filters example: LDAP / Active Directory authentication.
+#
+# HTTP Basic credentials are checked against a directory. This example uses
+# the search-then-bind mode with a service account and a group requirement:
+# a service account binds, the user is found by sAMAccountName, then the
+# proxy binds as that entry and requires membership of the staff group. For
+# a simple deployment, drop bind_dn/base_dn/user_filter/require_group and set
+# bind_dn_template instead, e.g. "uid=%s,ou=people,dc=example,dc=com".
+#
+# The service account password lives in bind_password_file (not world
+# readable). Prefer ldaps:// (or start_tls) so credentials are encrypted.
+# Validate: xproxy -config examples/filters/ldap-auth.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+filters:
+  - name: directory-auth
+    kind: ldap_auth
+    options:
+      url: ldaps://ad.example.com:636
+      bind_dn: "cn=svc-proxy,ou=service,dc=example,dc=com"
+      bind_password_file: /etc/xproxy/ldap.secret
+      base_dn: "ou=people,dc=example,dc=com"
+      user_filter: "(sAMAccountName=%s)"
+      require_group: "cn=staff,ou=groups,dc=example,dc=com"
+      realm: "Staff"
+      forward_user_header: X-Remote-User
+      cache_ttl: 5m
+rate_limits:
+  # Slow down credential guessing, keyed by the authenticated identity when
+  # present and the client address otherwise.
+  - {name: logins, key: identity:ldap, rate: 1, burst: 20}
+upstreams:
+  - name: intranet
+    endpoints: [{address: "10.0.5.10:8080"}]
+routes:
+  - name: intranet
+    hosts: [intranet.example.com]
+    filters: [directory-auth]
+    rate_limits: [logins]
+    upstream: intranet

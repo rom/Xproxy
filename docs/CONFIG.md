@@ -442,6 +442,9 @@ header("Content-Length") > 1048576`, `capture("id") != "" && ja4 == ""`.
 | `max_files` | int | `5` | Archives kept |
 | `sinks` | list | `[file]` | Any of `file`, `journald`, `syslog`, `otlp`, `siem`; a stream can go to several |
 | `format` | `json`, `common`, `combined`, `custom` | `json` | Access stream only for the text formats: `common` is the Common Log Format (`%h %l %u %t "%r" %>s %b`), `combined` adds the quoted referer and user agent, `custom` uses `template`. The error, security and audit streams stay JSON. Text lines go to every sink of the stream; redaction runs before formatting |
+| `sample_percent` | float | `100` | Access stream only: log this percentage of lines. Every request is still counted in the metrics; only the written line is sampled |
+| `always_log` | bool | `true` | Access stream only: log a line whatever the sampling when the response is 4xx/5xx or the request was denied |
+| `fields` | list | all | Access stream only: keep only these attributes on the line (`request_id`, `client_ip`, `status`, `route`, ...); empty keeps them all |
 | `template` | string | | For `format: custom`: literal text with `{field}` placeholders. Fields are the access log attributes (`request_id`, `client_ip`, `method`, `host`, `path`, `query_len`, `proto`, `status`, `bytes_in`, `bytes_out`, `duration_ms`, `route`, `upstream`, `endpoint`, `attempts`, `user_agent`, `referer`, `tls`, `sni`, `client_cn`, `country`, `ja4`, `cache`, `encoding`, `honeypot_marked`, `mirror`, `grpc`, `grpc_status`, `denied`, `upstream_error`, filter attributes such as `jwt_sub`, `oidc_sub`, `bot_score`) plus `time_clf` (`10/Oct/2000:13:55:36 -0700`), `time_iso`, `time_unix`, `request` (`METHOD path PROTO`), `user` (the first of `oidc_sub`, `basic_user`, `jwt_sub`, `jwt_preferred_username`, else `-`) and `bytes_out_clf` (`-` for zero). A missing or empty field prints `-`. Values are escaped Apache style (`\"`, `\\`, `\n`, `\xHH`), so one request is always one line; at most 1024 bytes |
 
 ### logging.journald
@@ -609,10 +612,18 @@ Keys:
 | `header:<Name>` | first value of the header (256 bytes) | client address |
 | `cookie:<name>` | value of the cookie (256 bytes), a session or device identifier | client address |
 | `jwt:<claim>` | a string, number or boolean claim of the bearer token in `Authorization`, read without verification (the value only names a bucket; the `jwt` route setting still rejects a forged token) | client address |
+| `identity` | the identity a preceding auth filter verified this request against, preferring `oidc`, `jwt`, `api_key` then `basic`; unlike `jwt:<claim>` it cannot be spoofed, because the filter proved it. Evaluated after the filter chain, so the limiter sees the authenticated principal | client address (unauthenticated) |
+| `identity:<kind>` | the verified identity of one kind: `jwt` (the `sub` claim), `oidc` (the session subject), `api_key` (the key id), `basic` (the user) or `ldap` (the user) | client address |
 
 The fallback keeps a limit from being avoided by omitting the
 identifier; rotating it still buys fresh buckets, so pair an identifier
-key with a `client_ip` or `client_net` policy on the same route.
+key with a `client_ip` or `client_net` policy on the same route. An
+`identity` key cannot be rotated within one authenticated principal:
+the value is what the `jwt`, `oidc`, `api_key` or `basic` filter
+verified, so a per-account or per-API-key limit holds regardless of the
+headers a client sends. Attach such a policy to a route that also runs
+the matching auth filter (or the `jwt` route setting); a request that
+fails authentication is refused by the filter before the limiter.
 
 Memory: at most 64 x 8192 buckets per policy.
 
@@ -645,9 +656,37 @@ Memory: at most 64 x 8192 buckets per policy.
 | `rewrite_regex.pattern` | RE2 | none | Rewrite the outbound path by regular expression (see `rewrite_regex.replace`); applied to the cleaned path after `strip_prefix`, exclusive with `rewrite_path`; a path that does not match is sent unchanged |
 | `rewrite_regex.replace` | template | | New path, starting with `/`; `${1}` to `${9}` and `${name}` are the pattern's groups, and the request variables (below) may be used |
 | `error_pages` | object | inherits `server.error_pages` | Route override of the error pages, same keys as `server.error_pages` |
-| `discovery` | object | none | Endpoints resolved from DNS and re-resolved periodically; see below. Static `endpoints` and discovered ones coexist; a pool needs at least one of the two |
+| `discovery` | object | none | Endpoints resolved from DNS or an HTTP registry (Consul, etcd gateways, custom) and re-resolved periodically; see below. Static `endpoints` and discovered ones coexist; a pool needs at least one of the two |
 | `slow_start` | duration | `0` (off) | An endpoint that joins the pool (discovered) or returns to service (healthy again, ejection over) gets a share ramping from 10 % to its full weight over this time; at most 1h |
 | `retry_on` | list | `[]` | Response statuses treated as a failed attempt: `5xx`, `500`, `502`, `503`, `504`, `429`. The response is discarded, the endpoint marked as failed for outlier ejection, and the next endpoint tried within the `retries` budget; the last attempt's response is returned as it is. Needs `retries` above 0 |
+| `retry_budget` | object | none | Caps retries (and hedged copies) against live traffic so a struggling pool is not buried under a retry storm; see below. Without it, every retry `retries` allows is sent |
+| `hedge` | object | none | Sends staggered copies of a slow idempotent request to other endpoints and keeps the first usable answer; see below |
+
+### upstreams[].retry_budget
+
+A retry (or a hedged copy) is only sent while the retries in flight to the
+pool stay below `percent` of the requests in flight, with `min_concurrency`
+always allowed so a low-traffic pool can still retry. As live traffic falls
+the allowance falls with it, so retries cannot amplify an outage.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `percent` | float | `20` | 1 to 1000; retries in flight capped at this share of requests in flight |
+| `min_concurrency` | int | `3` | 1 to 10000; concurrent retries always allowed regardless of `percent` |
+
+### upstreams[].hedge
+
+Hedging trades a little extra load for a shorter tail latency: if the request
+in flight has not answered within `delay`, a copy goes to another endpoint,
+and whichever returns a usable response first wins while the others are
+cancelled. Only replayable requests (GET, HEAD, OPTIONS, TRACE without a
+body) are hedged, each copy is keyed to a distinct endpoint, and every copy
+beyond the first is gated by `retry_budget` when one is set.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `delay` | duration | required | 1ms to 1m; wait this long for the request in flight before sending the next copy |
+| `max` | int | `1` | 1 to 4; extra copies beyond the first |
 
 ### upstreams[].tls
 
@@ -666,12 +705,14 @@ Memory: at most 64 x 8192 buckets per policy.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `type` | `dns`, `srv` | `dns` | `dns` resolves the A and AAAA records of `name`, one endpoint per address on `port`; `srv` resolves SRV records, uses the lowest priority group, and takes target, port and weight from each record |
-| `name` | DNS name | required | The name to resolve; for `srv` the full `_service._proto.domain` name |
-| `port` | int | required for `dns` | Endpoint port for `dns` |
+| `type` | `dns`, `srv`, `http` | `dns` | `dns` resolves the A and AAAA records of `name`, one endpoint per address on `port`; `srv` resolves SRV records, uses the lowest priority group, and takes target, port and weight from each record; `http` polls the registry URL in `name` on the interval (see `format`) |
+| `name` | DNS name or URL | required | The name to resolve; for `srv` the full `_service._proto.domain` name; for `http` the registry URL to GET |
+| `port` | int | required for `dns` | Endpoint port for `dns`, and the default port for `http` entries that omit one |
+| `format` | `list`, `consul` | `list` | Response shape for `http`: `list` is a JSON array of `{address｜host,port, weight?, canary?}`; `consul` is the Consul `/v1/health/service` response (only instances whose checks all pass are used, `Weights.Passing` becomes the weight, a blank service address falls back to the node address) |
+| `headers` | map | none | Extra request headers for `http`, for example an authentication token (Consul: `X-Consul-Token`) |
 | `interval` | duration | `30s` | Time between resolutions; 1s to 1h. Endpoints that disappear are removed, new ones added with their statistics starting at zero, unchanged ones keep theirs |
-| `resolver` | host:port | system resolver | DNS server to ask instead of the system resolver |
-| `weight` | int | `1` | Weight of `dns` discovered endpoints |
+| `resolver` | host:port | system resolver | DNS server to ask instead of the system resolver (`dns` and `srv` only) |
+| `weight` | int | `1` | Weight of discovered endpoints that do not carry their own (`dns`, and `http` `list` entries without a `weight`) |
 | `canary` | bool | `false` | Mark discovered endpoints as canaries (needs the pool's `canary` section) |
 | `timeout` | duration | `5s` | Bound on one resolution, including the synchronous first one at start and reload; a failed resolution keeps the previous endpoint set and is counted in `xproxyctl upstreams` |
 
@@ -836,7 +877,9 @@ not match is skipped and the next candidate is tried.
 | `allow_cidrs` | list | `[]` (all) | Client must be inside one |
 | `deny_cidrs` | list | `[]` | Evaluated first |
 | `max_body_bytes` | int | global | May only lower the global limit |
-| `timeout` | duration | none | Whole request deadline for this route |
+| `timeout` | duration | none | Whole request deadline for this route (the total, accept to last response byte). The named `timeouts` block is the alternative and adds an idle timeout; set one or the other |
+| `timeouts.total` | duration | none | Same as `timeout` |
+| `timeouts.idle` | duration | none | Cancels a response that produces no bytes for this long, for streaming or long-poll routes where `total` is too coarse. Connect and response-header timeouts are configured per upstream (`upstreams[].timeouts`), since the connection pool is shared |
 | `websocket` | bool | `false` | Allow `Upgrade` requests |
 | `webtransport` | bool | `false` | Relay WebTransport sessions (extended CONNECT over HTTP/3) to the upstream: bidirectional and unidirectional streams and datagrams in both directions, with the request header operations applied to the CONNECT. Needs a listener with `h3.webtransport: true` and an upstream with `h3: true`; on any other listener or protocol the session is refused |
 | `grpc.web` | bool | `false` | Accept gRPC-web requests (`application/grpc-web`, `grpc-web+proto`, `grpc-web-text`, `grpc-web-text+proto`, over HTTP/1.1 or HTTP/2) on this gRPC route and translate them: the upstream sees plain gRPC, the response trailers come back as a trailer frame in the body and the text variants are base64. Without it a gRPC-web request is refused with gRPC status 2 |
@@ -1528,7 +1571,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -1560,6 +1603,42 @@ digest so the hash cost is paid once per client session.
 
 Denies answer 401 with `WWW-Authenticate` and reason `<filter name>`;
 the user name is added to the access log line as `auth_user`.
+
+### Kind `ldap_auth`
+
+HTTP Basic authentication against an LDAP or Active Directory server. Two
+modes: a **direct bind** substitutes the username into `bind_dn_template`
+and binds with the password; a **search then bind** binds an optional
+service account (`bind_dn`), searches `base_dn` with `user_filter` for the
+user's entry, then binds as that entry, optionally requiring group
+membership. The username is escaped (RFC 4514 for a DN, RFC 4515 for a
+filter) so it cannot alter the query. `ldaps://` and `start_tls` verify the
+server certificate against the system roots or `ca_file`. Verified
+credentials are cached by digest for `cache_ttl`; a directory or network
+error is never cached and denies the request.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `url` | URL | required | `ldap://host:port` or `ldaps://host:port` |
+| `start_tls` | bool | `false` | Upgrade an `ldap://` connection to TLS before binding |
+| `ca_file` | path | system roots | PEM roots for the server certificate |
+| `insecure_skip_verify` | bool | `false` | Skip certificate verification (test only; exclusive with `ca_file`) |
+| `bind_dn_template` | string | | Direct bind: `%s` is replaced by the escaped username, e.g. `uid=%s,ou=people,dc=example,dc=com`; exclusive with the search options |
+| `bind_dn` | DN | | Search bind: service account DN to bind before searching (anonymous search when empty) |
+| `bind_password_file` | path | required with `bind_dn` | Service account password; trailing newline trimmed |
+| `base_dn` | DN | required for search | Search base |
+| `user_filter` | filter | required for search | RFC 4515 filter with `%s` for the escaped username, e.g. `(sAMAccountName=%s)`; supports `&`, `|`, `!`, equality and presence |
+| `require_group` | DN | none | Require this DN among the user's `group_attr` values (search mode only) |
+| `group_attr` | attribute | `memberOf` | Attribute read from the user entry for `require_group` |
+| `realm` | string | `restricted` | `WWW-Authenticate` realm |
+| `cache_ttl` | duration | `5m` | Credential cache; `0` disables |
+| `forward_user_header` | header | none | Set to the user name on the upstream request |
+| `strip` | bool | `true` | Remove `Authorization` before forwarding |
+| `timeout` | duration | `5s` | Bound on the dial and each LDAP request; 1s to 1m |
+
+Denies answer 401 with `WWW-Authenticate` and reason `<filter name>`; the
+user name is added to the access log line as `auth_user` and set as the
+`ldap` identity for identity-keyed rate limits.
 
 ### Kind `oidc`
 
@@ -2164,6 +2243,28 @@ never locks in.
 `low`, `normal` (default), `high` or `critical`. Put health checks, login
 and payment on `critical` or `high`; search, feeds and exports on `low`.
 
+## maintenance
+
+Present means the maintenance gate is available; `enabled` is the state
+at start and the runtime toggle (`POST /v1/maintenance`, `xproxyctl
+maintenance on|off`) overrides it and survives reloads. While it is on,
+every request is answered with `status` and `Retry-After` except an
+allowlisted client and a route with `maintenance: false` (health and
+status endpoints). The gate runs right after routing, before
+authentication, rate limits and filters.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Maintenance on at start |
+| `status` | int | `503` | Status of held requests (4xx or 5xx) |
+| `retry_after` | duration | `5m` | `Retry-After` header; 0 omits it |
+| `message` | string | a short text | Response body |
+| `allow_cidrs` | list | `[]` | Clients always served |
+| `allow_header` | `Name: value` | none | A request carrying this exact header is served (a shared bypass token) |
+
+A route sets `maintenance: false` to stay up during maintenance or
+`maintenance: true` to be held even when the gate is off.
+
 ## challenge
 
 Present means the challenge engine is available; routes opt in with a
@@ -2209,6 +2310,27 @@ falls back to the proof of work.
 | `timeout` | duration | `5s` | Verification call (500ms to 30s); the call uses no environment proxy |
 | `min_score` | float | `0` | Refuse tokens scored below it (providers that return a score); 0 disables |
 | `mode` | `escalation`, `always` | `escalation` | `always` shows the widget on every challenge page, including route gates, in place of the proof of work |
+| `hostnames` | list | the request host | Host names the provider may report the token was solved on; empty checks the token against the host the challenge page was served on, so a token solved for another site is refused |
+| `hostname_check` | bool | `true` | Verify the hostname the provider reports; turn off for providers that do not return one |
+
+### routes[].cors
+
+A Cross-Origin Resource Sharing policy. A preflight `OPTIONS` (one that
+carries `Access-Control-Request-Method`) is answered by the proxy with
+`204` before authentication, rate limits and filters, since it carries
+no credentials; an actual request from an allowed origin gets the
+response headers added, and the route's policy replaces any the
+upstream set. This is separate from `grpc.web_origins`, which handles
+gRPC-web preflights.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `allow_origins` | list | required | Permitted `Origin` values: exact (`https://app.example`), a single `*` (any origin, incompatible with `allow_credentials`), or a wildcard host (`https://*.example.com`, matching one or more labels) |
+| `allow_methods` | list | `GET, HEAD, POST, PUT, PATCH, DELETE` | `Access-Control-Allow-Methods` of a preflight |
+| `allow_headers` | list | reflect the request | `Access-Control-Allow-Headers`; `*` or empty reflects the preflight's `Access-Control-Request-Headers` |
+| `expose_headers` | list | `[]` | `Access-Control-Expose-Headers` on actual responses |
+| `allow_credentials` | bool | `false` | Sets `Access-Control-Allow-Credentials: true` and echoes the exact origin, never `*` |
+| `max_age` | duration | `10m` | `Access-Control-Max-Age`, 0 to 24h |
 
 ### routes[].challenge
 

@@ -107,6 +107,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 			Headers: map[string]string{"WWW-Authenticate": `Basic realm="` + in.a.cfg.Realm + `", charset="UTF-8"`}}
 	}
 	in.user = user
+	filter.SetIdentity(r.Context(), "basic", user)
 	if in.a.cfg.Strip == nil || *in.a.cfg.Strip {
 		r.Header.Del("Authorization")
 	}

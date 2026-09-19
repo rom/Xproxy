@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"sync/atomic"
+	"time"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
@@ -43,11 +44,13 @@ type runtime struct {
 	routes     []*compiledRoute
 	waf        *waf.Engine
 	// signers sign forwarded requests per upstream (origin_signature).
-	signers map[string]*originsig.Signer
-	jwt     map[string]*jwt.Provider
-	icap    map[string]*icap.Service
-	filters map[string]*customFilter
-	geo     *geoip.DB
+	signers     map[string]*originsig.Signer
+	jwt         map[string]*jwt.Provider
+	maintenance *compiledMaintenance
+	accessLog   accessLogPolicy
+	icap        map[string]*icap.Service
+	filters     map[string]*customFilter
+	geo         *geoip.DB
 	// geoNeeded is set when any route or rate limit consults the country.
 	geoNeeded bool
 	// events is the generation's event bus (nil in unit tests that build
@@ -121,12 +124,17 @@ type compiledRoute struct {
 	honeypotType string
 	static       *staticSite
 	compress     *compressPolicy
+	cors         *compiledCORS
+	idleTimeout  time.Duration
 	mirror       *mirror
 	rateLimits   []*rateLimit
-	allow        []netip.Prefix
-	deny         []netip.Prefix
-	filters      filter.Chain
-	wafMode      string
+	// identityLimits key on the verified identity and so run after the
+	// filter chain; the others run before it.
+	identityLimits []*rateLimit
+	allow          []netip.Prefix
+	deny           []netip.Prefix
+	filters        filter.Chain
+	wafMode        string
 	// Templated header operations, regex rewrite, redirect target and
 	// error pages (nil without a route section).
 	reqOps, respOps compiledOps
@@ -224,6 +232,10 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		routes:     make([]*compiledRoute, len(cfg.Routes)),
 		events:     events,
 	}
+	if cfg.Maintenance != nil {
+		rt.maintenance = newMaintenance(cfg.Maintenance)
+	}
+	rt.accessLog = newAccessLogPolicy(cfg.Logging.Access)
 	for i := range cfg.Upstreams {
 		u := &cfg.Upstreams[i]
 		p, err := upstream.NewPool(u, log)
@@ -411,6 +423,10 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		if on := cfg.Compression.Enable(); on && (r.Compress == nil || *r.Compress) {
 			cr.compress = compressPol
 		}
+		if r.CORS != nil {
+			cr.cors = newCORS(r.CORS)
+		}
+		cr.idleTimeout = r.IdleTimeout().D()
 		if r.Static != nil {
 			ss, err := openStatic(r.Static)
 			if err != nil {
@@ -441,7 +457,11 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 				rt.stop()
 				return nil, fmt.Errorf("route %s: unknown rate limit %s", r.Name, name)
 			}
-			cr.rateLimits = append(cr.rateLimits, rl)
+			if rl.cfg.IdentityKeyed() {
+				cr.identityLimits = append(cr.identityLimits, rl)
+			} else {
+				cr.rateLimits = append(cr.rateLimits, rl)
+			}
 		}
 		// Chain order: before_auth, JWT, after_auth, WAF, after_waf, ICAP,
 		// after_scan; custom filters keep their listed order within a stage.

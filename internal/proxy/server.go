@@ -48,8 +48,9 @@ type Server struct {
 	logs  *logging.Logs
 	stats *Stats
 
-	rt         atomic.Pointer[runtime]
-	generation atomic.Uint64
+	rt          atomic.Pointer[runtime]
+	generation  atomic.Uint64
+	maintenance atomic.Bool // runtime maintenance-mode toggle
 
 	concurrency *limits.Concurrency
 	tarpits     *limits.Concurrency // bound on requests held in a tarpit
@@ -160,6 +161,9 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		return nil, err
 	}
 	s.rt.Store(rt)
+	if cfg.Maintenance != nil {
+		s.maintenance.Store(cfg.Maintenance.Enabled)
+	}
 	s.sampler = metrics.NewSampler(seriesCounters, seriesGauges, cfg.Metrics.SampleInterval.D(), cfg.Metrics.Retention.D(), s.sample)
 	if cfg.ACME != nil {
 		var groups [][]string

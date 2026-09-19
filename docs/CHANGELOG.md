@@ -222,6 +222,58 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- LDAP and Active Directory authentication (`ldap_auth` filter): HTTP Basic
+  credentials are verified against an LDAP server, by a direct bind
+  (`bind_dn_template`) or a service-account search then bind (`bind_dn`,
+  `base_dn`, `user_filter`), with an optional group requirement
+  (`require_group`). Usernames are escaped (RFC 4514/4515) against
+  injection; `ldaps://`, `start_tls` and `ca_file` secure the transport;
+  verified credentials are cached by digest. The user becomes the `ldap`
+  identity for identity-keyed rate limits. Built on an in-house minimal
+  LDAP client (`internal/ldap`), no new dependency.
+- HTTP registry service discovery (`upstreams[].discovery.type: http`):
+  poll a registry URL on the interval and feed its endpoints into the pool.
+  `format: list` reads a JSON array of `{address｜host,port, weight?,
+  canary?}`; `format: consul` reads the Consul `/v1/health/service`
+  response (passing instances only, `Weights.Passing` as the weight);
+  `headers` carries an auth token. Joins DNS (`dns`) and SRV (`srv`)
+  discovery; a failed poll keeps the previous endpoint set.
+- Retry budgets (`upstreams[].retry_budget`): cap the retries in flight to
+  a pool at `percent` of the requests in flight, with a `min_concurrency`
+  floor, so retries cannot amplify an outage; without it every retry the
+  `retries` budget allows is still sent.
+- Request hedging (`upstreams[].hedge`): after `delay` with no answer, send
+  up to `max` extra copies of a replayable request to other endpoints and
+  keep the first usable response, cancelling the rest; each hedged copy is
+  gated by the retry budget and counts as an upstream retry.
+- Access-log sampling and field selection (`logging.access.sample_percent`,
+  `always_log`, `fields`): log a fraction of lines while always keeping
+  denied and error responses, and trim each line to a chosen set of
+  attributes; metrics still count every request.
+- Maintenance mode (`maintenance` section): holds every request behind a
+  configurable 503 with Retry-After except an allowlist (CIDRs or a
+  bypass header) and routes marked `maintenance: false`; toggled at
+  runtime with `POST /v1/maintenance` and `xproxyctl maintenance
+  on|off`, surviving reloads, and counted as `denied_maintenance`.
+- Per-route timeouts (`routes[].timeouts`): a named `total` (the whole
+  exchange) and an `idle` timeout that cancels a response stalled with
+  no bytes, for streaming and long-poll routes; connect and
+  response-header timeouts remain per upstream.
+- CAPTCHA hostname binding: the challenge verifies the hostname the
+  provider reports the token was solved on against the request host or a
+  configured `challenge.captcha.hostnames` allowlist, refusing a token
+  solved for another site; `hostname_check` turns it off. A missing
+  hostname fails closed.
+- Per-route CORS (`routes[].cors`): allowed origins (exact, wildcard
+  host, or `*`), methods, headers, exposed headers, credentials and
+  max-age; preflight `OPTIONS` answered before authentication and the
+  route's policy overriding any the upstream set. Separate from the
+  gRPC-web preflight handling.
+- Identity-keyed rate limits: `rate_limits[].key` of `identity` or
+  `identity:<kind>` (`jwt`, `oidc`, `api_key`, `basic`) keys the bucket
+  on the principal an auth filter verified, evaluated after the filter
+  chain; filters publish the verified identity through the request
+  context (`filter.SetIdentity`).
 - Adversarial bypass harness (`test/bypass`): tests that try to evade
   every security control (WAF, normalisation, positive policy, virtual
   patches, rate limits, aggregate and honeypot bans, upload guard,

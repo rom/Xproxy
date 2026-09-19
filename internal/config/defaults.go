@@ -29,6 +29,12 @@ const (
 	DefaultUpstreamTotal          = 5 * time.Minute
 	DefaultMaxIdleConnsPerHost    = 64
 	DefaultRetries                = 1
+	// DefaultRetryBudgetPercent caps retries in flight at this share of
+	// live requests; DefaultRetryBudgetMinConcurrency is the floor allowed
+	// regardless. DefaultHedgeMax is the extra copies a hedge sends.
+	DefaultRetryBudgetPercent        = 20
+	DefaultRetryBudgetMinConcurrency = 3
+	DefaultHedgeMax                  = 1
 
 	DefaultHealthInterval  = 5 * time.Second
 	DefaultHealthTimeout   = 2 * time.Second
@@ -310,6 +316,9 @@ func applyDefaults(c *Config) {
 		setInt(&u.MaxIdleConnsPerHost, DefaultMaxIdleConnsPerHost)
 		if d := u.Discovery; d != nil {
 			setStr(&d.Type, "dns")
+			if d.Type == "http" {
+				setStr(&d.Format, "list")
+			}
 			setDur(&d.Interval, DefaultDiscoveryInterval)
 			setDur(&d.Timeout, DefaultDiscoveryTimeout)
 			setInt(&d.Weight, 1)
@@ -317,6 +326,17 @@ func applyDefaults(c *Config) {
 		if u.Retries == nil {
 			r := DefaultRetries
 			u.Retries = &r
+		}
+		if b := u.RetryBudget; b != nil {
+			if b.Percent == 0 {
+				b.Percent = DefaultRetryBudgetPercent
+			}
+			if b.MinConcurrency == 0 {
+				b.MinConcurrency = DefaultRetryBudgetMinConcurrency
+			}
+		}
+		if h := u.Hedge; h != nil {
+			setInt(&h.Max, DefaultHedgeMax)
 		}
 		if cb := u.CircuitBreaker; cb != nil {
 			setInt(&cb.ConsecutiveFailures, 5)
@@ -587,6 +607,11 @@ func applyDefaults(c *Config) {
 			o.Compress = &t
 		}
 	}
+	if m := c.Maintenance; m != nil {
+		setInt(&m.Status, 503)
+		setDur(&m.RetryAfter, 300*time.Second)
+		setStr(&m.Message, "The service is temporarily unavailable for maintenance.")
+	}
 	if ch := c.Challenge; ch != nil {
 		setInt(&ch.Difficulty, 16)
 		setDur(&ch.TTL, time.Hour)
@@ -601,6 +626,12 @@ func applyDefaults(c *Config) {
 	for i := range c.Routes {
 		r := &c.Routes[i]
 		setStr(&r.PriorityClass, "normal")
+		if r.CORS != nil {
+			if len(r.CORS.AllowMethods) == 0 {
+				r.CORS.AllowMethods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}
+			}
+			setDur(&r.CORS.MaxAge, 10*time.Minute)
+		}
 		if r.Challenge != nil {
 			setStr(&r.Challenge.Mode, "always")
 			if r.Challenge.Level == 0 {

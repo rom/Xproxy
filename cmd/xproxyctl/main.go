@@ -640,6 +640,33 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_, _ = out.Write(b)
 		return 0
+	case "maintenance":
+		var on *bool
+		switch fs.Arg(1) {
+		case "":
+		case "on":
+			v := true
+			on = &v
+		case "off":
+			v := false
+			on = &v
+		default:
+			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl maintenance [on|off]")
+			return 2
+		}
+		st, err := c.Maintenance(on)
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, st)
+		}
+		if !st.Configured {
+			_, _ = fmt.Fprintln(out, "maintenance: no maintenance section configured")
+			return 0
+		}
+		_, _ = fmt.Fprintf(out, "maintenance: %s\n", onOff(st.On))
+		return 0
 	case "accounts":
 		acfs := flag.NewFlagSet("accounts", flag.ContinueOnError)
 		acfs.SetOutput(errOut)

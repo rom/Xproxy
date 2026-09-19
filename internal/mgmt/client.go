@@ -125,6 +125,15 @@ func (c *Client) APIInventory(view string, top int) (*apiinv.Report, error) {
 	return &rep, c.do("GET", fmt.Sprintf("/v1/api?view=%s&top=%d", url.QueryEscape(view), top), &rep)
 }
 
+// Maintenance queries (on nil) or sets the runtime maintenance state.
+func (c *Client) Maintenance(on *bool) (*MaintenanceStatus, error) {
+	var st MaintenanceStatus
+	if on == nil {
+		return &st, c.do("GET", "/v1/maintenance", &st)
+	}
+	return &st, c.doBody("POST", "/v1/maintenance", MaintenanceRequest{On: *on}, &st)
+}
+
 // Accounts fetches the account guard view with up to top blocks per
 // endpoint.
 func (c *Client) Accounts(top int) (*accountguard.Report, error) {

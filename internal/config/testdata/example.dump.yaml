@@ -87,6 +87,9 @@ logging:
             - file
         format: json
         template: ""
+        sample_percent: null
+        always_log: null
+        fields: []
     error:
         enabled: null
         file: error.log
@@ -97,6 +100,9 @@ logging:
             - journald
         format: json
         template: ""
+        sample_percent: null
+        always_log: null
+        fields: []
     security:
         enabled: null
         file: security.log
@@ -108,6 +114,9 @@ logging:
             - syslog
         format: json
         template: ""
+        sample_percent: null
+        always_log: null
+        fields: []
     audit:
         enabled: null
         file: audit.log
@@ -118,6 +127,9 @@ logging:
             - syslog
         format: json
         template: ""
+        sample_percent: null
+        always_log: null
+        fields: []
     level: info
     stdout: false
     journald:
@@ -215,6 +227,8 @@ upstreams:
       max_idle_conns_per_host: 64
       retries: 1
       retry_on: []
+      retry_budget: null
+      hedge: null
       hash_on: ""
       affinity:
         cookie_name: XPSESS
@@ -265,6 +279,8 @@ upstreams:
       max_idle_conns_per_host: 64
       retries: 1
       retry_on: []
+      retry_budget: null
+      hedge: null
       hash_on: header:X-Tenant
       affinity: null
       outlier_ejection: null
@@ -313,6 +329,7 @@ routes:
       deny_cidrs: []
       max_body_bytes: 16384
       timeout: 0s
+      timeouts: null
       websocket: false
       webtransport: false
       waf: null
@@ -331,6 +348,8 @@ routes:
       doh: null
       static: null
       compress: null
+      maintenance: null
+      cors: null
     - name: api
       hosts:
         - api.example.com
@@ -371,6 +390,7 @@ routes:
       deny_cidrs: []
       max_body_bytes: null
       timeout: 0s
+      timeouts: null
       websocket: false
       webtransport: false
       waf:
@@ -394,6 +414,8 @@ routes:
       doh: null
       static: null
       compress: null
+      maintenance: null
+      cors: null
     - name: admin
       hosts:
         - example.com
@@ -432,6 +454,7 @@ routes:
       deny_cidrs: []
       max_body_bytes: null
       timeout: 0s
+      timeouts: null
       websocket: false
       webtransport: false
       waf: null
@@ -448,6 +471,8 @@ routes:
       doh: null
       static: null
       compress: null
+      maintenance: null
+      cors: null
     - name: upload
       hosts:
         - example.com
@@ -488,6 +513,7 @@ routes:
       deny_cidrs: []
       max_body_bytes: null
       timeout: 0s
+      timeouts: null
       websocket: false
       webtransport: false
       waf: null
@@ -507,6 +533,8 @@ routes:
       doh: null
       static: null
       compress: null
+      maintenance: null
+      cors: null
     - name: web
       hosts:
         - example.com
@@ -549,6 +577,7 @@ routes:
       deny_cidrs: []
       max_body_bytes: null
       timeout: 0s
+      timeouts: null
       websocket: true
       webtransport: false
       waf: null
@@ -567,6 +596,8 @@ routes:
       doh: null
       static: null
       compress: null
+      maintenance: null
+      cors: null
     - name: default
       hosts: []
       paths:
@@ -605,6 +636,7 @@ routes:
       deny_cidrs: []
       max_body_bytes: null
       timeout: 0s
+      timeouts: null
       websocket: false
       webtransport: false
       waf:
@@ -625,6 +657,8 @@ routes:
       doh: null
       static: null
       compress: null
+      maintenance: null
+      cors: null
 bans:
     state_file: /var/lib/xproxy/bans.db
     max_entries: 100000
@@ -730,6 +764,7 @@ shedding:
     high: 0.95
     hysteresis: 0.1
     retry_after: 2s
+maintenance: null
 challenge:
     secret_file: /var/lib/xproxy/challenge.key
     difficulty: 16

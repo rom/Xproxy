@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"sort"
 	"strconv"
 	"sync"
@@ -41,6 +42,8 @@ type discoverer struct {
 	errors      atomic.Uint64
 	count       atomic.Int64
 	errNotice   bound.Notice
+	// httpClient polls the registry for type http.
+	httpClient *http.Client
 	// refresh wakes the loop early (tests, reload).
 	refresh chan struct{}
 }
@@ -60,6 +63,13 @@ type DiscoveryStatus struct {
 
 func newDiscoverer(cfg *config.Discovery, p *Pool) *discoverer {
 	d := &discoverer{cfg: *cfg, pool: p, refresh: make(chan struct{}, 1)}
+	if cfg.Type == "http" {
+		// A dedicated client: no environment proxy, a bounded per-request
+		// timeout applied in resolve, connections not pooled across the long
+		// resolution interval.
+		d.httpClient = &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
+		return d
+	}
 	if cfg.Resolver != "" {
 		addr := cfg.Resolver
 		dialer := &net.Dialer{Timeout: cfg.Timeout.D()}
@@ -84,6 +94,13 @@ func (d *discoverer) status() *DiscoveryStatus {
 func (d *discoverer) resolve(ctx context.Context) ([]endpointSpec, error) {
 	ctx, cancel := context.WithTimeout(ctx, d.cfg.Timeout.D())
 	defer cancel()
+	if d.cfg.Type == "http" {
+		specs, err := d.resolveHTTP(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return finalizeSpecs(specs, d.cfg.Name)
+	}
 	var specs []endpointSpec
 	switch d.cfg.Type {
 	case "srv":
@@ -127,11 +144,18 @@ func (d *discoverer) resolve(ctx context.Context) ([]endpointSpec, error) {
 			specs = append(specs, endpointSpec{address: net.JoinHostPort(ip.IP.String(), strconv.Itoa(d.cfg.Port)), weight: d.cfg.Weight, canary: d.cfg.Canary})
 		}
 	}
+	return finalizeSpecs(specs, d.cfg.Name)
+}
+
+// finalizeSpecs sorts specs by address, drops duplicates and errors when the
+// set is empty, so a resolution never installs zero endpoints.
+func finalizeSpecs(specs []endpointSpec, name string) ([]endpointSpec, error) {
 	if len(specs) == 0 {
-		return nil, fmt.Errorf("%s resolved to no addresses", d.cfg.Name)
+		return nil, fmt.Errorf("%s resolved to no addresses", name)
 	}
 	sort.Slice(specs, func(i, j int) bool { return specs[i].address < specs[j].address })
-	// Duplicates (the same address from two SRV targets) keep the first.
+	// Duplicates (the same address from two SRV targets or registry
+	// entries) keep the first.
 	out := specs[:0]
 	for i, s := range specs {
 		if i > 0 && s.address == specs[i-1].address {

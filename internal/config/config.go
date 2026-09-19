@@ -15,6 +15,7 @@
 package config
 
 import (
+	"strings"
 	"time"
 )
 
@@ -63,6 +64,10 @@ type Config struct {
 	// Shedding enables adaptive load shedding by priority class when
 	// present.
 	Shedding *Shedding `yaml:"shedding"`
+	// Maintenance serves a 503 to everyone but an allowlist while it is
+	// on. The section sets the policy and the boot state; the state is
+	// toggled at runtime (POST /v1/maintenance, xproxyctl maintenance).
+	Maintenance *Maintenance `yaml:"maintenance"`
 	// Challenge configures the browser challenge used by routes with a
 	// challenge block.
 	Challenge *Challenge `yaml:"challenge"`
@@ -745,7 +750,30 @@ type LogStream struct {
 	// placeholders naming access log attributes plus time_clf, time_iso,
 	// time_unix, request, user and bytes_out_clf; a missing field prints "-".
 	Template string `yaml:"template"`
+	// SamplePercent logs this percentage of access lines (0 to 100,
+	// default 100). Metrics count every request regardless. Access stream
+	// only.
+	SamplePercent *float64 `yaml:"sample_percent"`
+	// AlwaysLog logs a line whatever the sampling when the response is a
+	// 4xx/5xx or the request was denied. Default true. Access stream only.
+	AlwaysLog *bool `yaml:"always_log"`
+	// Fields, when set, keeps only these attributes on the access line
+	// (request_id, client_ip, method, host, path, status, ...); empty
+	// keeps them all. Access stream only.
+	Fields []string `yaml:"fields"`
 }
+
+// AccessSamplePercent returns the effective sampling percentage.
+func (l *LogStream) AccessSamplePercent() float64 {
+	if l.SamplePercent == nil {
+		return 100
+	}
+	return *l.SamplePercent
+}
+
+// AlwaysLogsErrors reports whether denied and error responses are always
+// logged despite sampling.
+func (l *LogStream) AlwaysLogsErrors() bool { return l.AlwaysLog == nil || *l.AlwaysLog }
 
 // Journald is the native journald sink.
 type Journald struct {
@@ -895,6 +923,14 @@ type Upstream struct {
 	// "429". A retried status counts as a passive failure of the
 	// endpoint. Default none.
 	RetryOn []string `yaml:"retry_on"`
+	// RetryBudget caps retries as a share of live traffic so a struggling
+	// pool is not buried under a retry storm. Without it every retry the
+	// Retries budget allows is sent.
+	RetryBudget *RetryBudget `yaml:"retry_budget"`
+	// Hedge sends a second copy of an idempotent request to another
+	// endpoint when the first is slow, and takes whichever answers first,
+	// trading a little extra load for a shorter tail latency.
+	Hedge *Hedge `yaml:"hedge"`
 	// HashOn selects the hash input for the hash balancer: client_ip,
 	// header:<name> or cookie:<name>.
 	HashOn string `yaml:"hash_on"`
@@ -913,6 +949,31 @@ type Upstream struct {
 	Canary *Canary `yaml:"canary"`
 }
 
+// RetryBudget limits the rate of retries relative to live requests. A
+// retry (or a hedged copy) is only sent while the number of retries in
+// flight to the pool stays below Percent of the requests in flight, with
+// MinConcurrency always allowed so a low-traffic pool can still retry.
+type RetryBudget struct {
+	// Percent caps retries in flight at this share of requests in flight.
+	// Default 20; 1 to 1000.
+	Percent float64 `yaml:"percent"`
+	// MinConcurrency is the number of concurrent retries always allowed
+	// regardless of Percent, so a pool with little live traffic can still
+	// retry. Default 3; 1 to 10000.
+	MinConcurrency int `yaml:"min_concurrency"`
+}
+
+// Hedge sends extra copies of a slow idempotent request to other
+// endpoints. The first usable response wins and the others are cancelled.
+type Hedge struct {
+	// Delay is how long to wait for the request in flight before sending
+	// the next copy. 1ms to 1m.
+	Delay Duration `yaml:"delay"`
+	// Max is the number of extra copies beyond the first, each keyed to a
+	// distinct endpoint and gated by the retry budget. Default 1; 1 to 4.
+	Max int `yaml:"max"`
+}
+
 // Endpoint is a single upstream address.
 type Endpoint struct {
 	Address string `yaml:"address"`
@@ -922,24 +983,34 @@ type Endpoint struct {
 	Canary bool `yaml:"canary"`
 }
 
-// Discovery resolves a pool's endpoints from DNS.
+// Discovery resolves a pool's endpoints from DNS or an HTTP registry.
 type Discovery struct {
-	// Type is dns (A and AAAA records of Name, each with Port) or srv
-	// (SRV records of Name; targets and ports come from the records, the
-	// lowest priority group is used and record weights become endpoint
-	// weights).
+	// Type is dns (A and AAAA records of Name, each with Port), srv (SRV
+	// records of Name; targets and ports come from the records, the lowest
+	// priority group is used and record weights become endpoint weights)
+	// or http (Name is a URL polled on the interval; see Format).
 	Type string `yaml:"type"`
 	// Name is the DNS name to resolve (for srv the full _service._proto
-	// name).
+	// name), or, for type http, the registry URL to poll.
 	Name string `yaml:"name"`
-	// Port is the endpoint port for type dns. Ignored for srv.
+	// Port is the endpoint port for type dns, and the default port for
+	// type http when the registry omits one. Ignored for srv.
 	Port int `yaml:"port"`
+	// Format is the response shape for type http: list (default, a JSON
+	// array of {address|host,port, weight?, canary?}) or consul (the
+	// Consul /v1/health/service response; only passing instances are
+	// used and their Weights.Passing becomes the endpoint weight).
+	Format string `yaml:"format"`
+	// Headers are extra request headers for type http, for example an
+	// authentication token (Consul: X-Consul-Token).
+	Headers map[string]string `yaml:"headers"`
 	// Interval between resolutions. Default 30s; 1s to 1h.
 	Interval Duration `yaml:"interval"`
 	// Resolver is an optional host:port of the DNS server to ask instead
-	// of the system resolver.
+	// of the system resolver. DNS types only.
 	Resolver string `yaml:"resolver"`
-	// Weight given to discovered endpoints of type dns. Default 1.
+	// Weight given to discovered endpoints (type dns and http list format
+	// entries without their own weight). Default 1.
 	Weight int `yaml:"weight"`
 	// Canary marks discovered endpoints as canaries.
 	Canary bool `yaml:"canary"`
@@ -1145,8 +1216,11 @@ type Route struct {
 	// MaxBodyBytes overrides the global body limit for this route (may only
 	// lower it unless allow_raise is set).
 	MaxBodyBytes *int64 `yaml:"max_body_bytes"`
-	// Timeout bounds the entire request on this route.
-	Timeout Duration `yaml:"timeout"`
+	// Timeout bounds the entire request on this route (the total, from
+	// accept to the last response byte). Timeouts is the named form and
+	// adds an idle timeout; the two are mutually exclusive.
+	Timeout  Duration       `yaml:"timeout"`
+	Timeouts *RouteTimeouts `yaml:"timeouts"`
 	// WebSocket allows Upgrade: websocket to be forwarded. Default false.
 	WebSocket bool `yaml:"websocket"`
 	// WebTransport relays WebTransport sessions (extended CONNECT over
@@ -1187,6 +1261,62 @@ type Route struct {
 	// Compress overrides the compression section for this route: false
 	// turns it off, true requires the section.
 	Compress *bool `yaml:"compress"`
+	// Maintenance overrides the global maintenance gate for this route:
+	// false always serves it (health, status), true always holds it.
+	Maintenance *bool `yaml:"maintenance"`
+	// CORS answers cross-origin requests for this route: it short-circuits
+	// preflight OPTIONS and adds the response headers to actual requests.
+	CORS *RouteCORS `yaml:"cors"`
+}
+
+// RouteTimeouts are a route's named timeouts. Connect and the response
+// header timeout are configured per upstream (upstreams[].timeouts),
+// since the connection pool is shared; these bound the exchange as a
+// whole and the gaps between response bytes.
+type RouteTimeouts struct {
+	// Total bounds the whole exchange, accept to last response byte.
+	Total Duration `yaml:"total"`
+	// Idle cancels a response that produces no bytes for this long, for
+	// a streaming or long-poll route where Total would be too coarse.
+	Idle Duration `yaml:"idle"`
+}
+
+// TotalTimeout returns the effective total request timeout.
+func (r *Route) TotalTimeout() Duration {
+	if r.Timeouts != nil {
+		return r.Timeouts.Total
+	}
+	return r.Timeout
+}
+
+// IdleTimeout returns the route's idle response timeout, or 0.
+func (r *Route) IdleTimeout() Duration {
+	if r.Timeouts != nil {
+		return r.Timeouts.Idle
+	}
+	return 0
+}
+
+// RouteCORS is a Cross-Origin Resource Sharing policy for a route. It is
+// independent of the gRPC-web preflight handling (grpc.web_origins).
+type RouteCORS struct {
+	// AllowOrigins are the permitted Origin values: exact ("https://a.example"),
+	// a single "*" (any origin; incompatible with allow_credentials), or a
+	// wildcard host pattern ("https://*.example.com"). Required.
+	AllowOrigins []string `yaml:"allow_origins"`
+	// AllowMethods default to GET, HEAD, POST, PUT, PATCH, DELETE.
+	AllowMethods []string `yaml:"allow_methods"`
+	// AllowHeaders are the request headers a preflight may allow; "*"
+	// reflects the requested headers. Default: reflect the request's
+	// Access-Control-Request-Headers.
+	AllowHeaders []string `yaml:"allow_headers"`
+	// ExposeHeaders are added to Access-Control-Expose-Headers.
+	ExposeHeaders []string `yaml:"expose_headers"`
+	// AllowCredentials sets Access-Control-Allow-Credentials: true and
+	// echoes the specific origin (never "*").
+	AllowCredentials bool `yaml:"allow_credentials"`
+	// MaxAge is how long a preflight result may be cached. Default 10m.
+	MaxAge Duration `yaml:"max_age"`
 }
 
 // RoutePolicy is a positive security model for a route: allowed
@@ -1554,6 +1684,13 @@ type ErrorPages struct {
 type Redirect struct {
 	To     string `yaml:"to"`
 	Status int    `yaml:"status"`
+}
+
+// IdentityKeyed reports whether the limit keys on an authenticated
+// identity, so the data plane evaluates it after the filter chain that
+// establishes the identity rather than before it.
+func (r *RateLimit) IdentityKeyed() bool {
+	return r.Key == "identity" || strings.HasPrefix(r.Key, "identity:")
 }
 
 // Respond is a static response action.
@@ -2033,6 +2170,23 @@ type Shedding struct {
 	RetryAfter Duration `yaml:"retry_after"`
 }
 
+// Maintenance is the maintenance-mode policy.
+type Maintenance struct {
+	// Enabled is the state at start; the runtime toggle overrides it.
+	Enabled bool `yaml:"enabled"`
+	// Status answers held requests. Default 503.
+	Status int `yaml:"status"`
+	// RetryAfter sets the Retry-After header in seconds. Default 300.
+	RetryAfter Duration `yaml:"retry_after"`
+	// Message is the response body. Default a short text.
+	Message string `yaml:"message"`
+	// AllowCIDRs are always served (operators, health checkers).
+	AllowCIDRs []string `yaml:"allow_cidrs"`
+	// AllowHeader, "Name: value", exempts a request carrying it (a shared
+	// bypass token behind another gate).
+	AllowHeader string `yaml:"allow_header"`
+}
+
 // Challenge configures the browser proof-of-work challenge (AMR-023).
 type Challenge struct {
 	// SecretFile persists the HMAC key so cookies survive restarts.
@@ -2086,7 +2240,16 @@ type Captcha struct {
 	// Mode is escalation (default: the widget only for verdicts that ask
 	// for a CAPTCHA) or always (every challenge page).
 	Mode string `yaml:"mode"`
+	// Hostnames the provider may report the token was solved on. Empty
+	// checks the token against the host the challenge page was served on,
+	// so a token solved for another site is refused. HostnameCheck off
+	// disables the check for providers that do not return a hostname.
+	Hostnames     []string `yaml:"hostnames"`
+	HostnameCheck *bool    `yaml:"hostname_check"`
 }
+
+// ChecksHostname reports whether the CAPTCHA hostname is verified.
+func (c *Captcha) ChecksHostname() bool { return c.HostnameCheck == nil || *c.HostnameCheck }
 
 // RouteChallenge selects when a route challenges unverified clients.
 type RouteChallenge struct {

@@ -456,6 +456,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	}
 	if s, ok := f.session(r); ok {
 		in.user = s.Sub
+		filter.SetIdentity(r.Context(), "oidc", s.Sub)
 		for h, claim := range f.cfg.ForwardHeaders {
 			if v, ok := s.Claims[claim]; ok {
 				r.Header.Set(h, claimString(v))

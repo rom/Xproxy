@@ -1661,6 +1661,33 @@ T}	T{
 Access stream only for the text formats: \fBcommon\fR is the Common Log Format (\fB%h %l %u %t "%r" %>s %b\fR),\: \fBcombined\fR adds the quoted referer and user agent,\: \fBcustom\fR uses \fBtemplate\fR. The error,\: security and audit streams stay JSON. Text lines go to every sink of the stream;\: redaction runs before formatting
 T}
 T{
+\fBsample_\:percent\fR
+T}	T{
+float
+T}	T{
+\fB100\fR
+T}	T{
+Access stream only: log this percentage of lines. Every request is still counted in the metrics;\: only the written line is sampled
+T}
+T{
+\fBalways_\:log\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Access stream only: log a line whatever the sampling when the response is 4xx/\:5xx or the request was denied
+T}
+T{
+\fBfields\fR
+T}	T{
+list
+T}	T{
+all
+T}	T{
+Access stream only: keep only these attributes on the line (\fBrequest_\:id\fR,\: \fBclient_\:ip\fR,\: \fBstatus\fR,\: \fBroute\fR,\: ...);\: empty keeps them all
+T}
+T{
 \fBtemplate\fR
 T}	T{
 string
@@ -2290,8 +2317,8 @@ Keys:
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(1.5i) lbx
-lw(0.9i) lw(1.5i) lx.
+lbw(1.0i) lbw(1.5i) lbx
+lw(1.0i) lw(1.5i) lx.
 T{
 Key
 T}	T{
@@ -2369,9 +2396,23 @@ a string,\: number or boolean claim of the bearer token in \fBAuthorization\fR,\
 T}	T{
 client address
 T}
+T{
+\fBidentity\fR
+T}	T{
+the identity a preceding auth filter verified this request against,\: preferring \fBoidc\fR,\: \fBjwt\fR,\: \fBapi_\:key\fR then \fBbasic\fR;\: unlike \fBjwt:\:<claim>\fR it cannot be spoofed,\: because the filter proved it. Evaluated after the filter chain,\: so the limiter sees the authenticated principal
+T}	T{
+client address (unauthenticated)
+T}
+T{
+\fBidentity:\:<kind>\fR
+T}	T{
+the verified identity of one kind: \fBjwt\fR (the \fBsub\fR claim),\: \fBoidc\fR (the session subject),\: \fBapi_\:key\fR (the key id),\: \fBbasic\fR (the user) or \fBldap\fR (the user)
+T}	T{
+client address
+T}
 .TE
 .PP
-The fallback keeps a limit from being avoided by omitting the identifier; rotating it still buys fresh buckets, so pair an identifier key with a \fBclient_ip\fR or \fBclient_net\fR policy on the same route.
+The fallback keeps a limit from being avoided by omitting the identifier; rotating it still buys fresh buckets, so pair an identifier key with a \fBclient_ip\fR or \fBclient_net\fR policy on the same route. An \fBidentity\fR key cannot be rotated within one authenticated principal: the value is what the \fBjwt\fR, \fBoidc\fR, \fBapi_key\fR or \fBbasic\fR filter verified, so a per\-account or per\-API\-key limit holds regardless of the headers a client sends. Attach such a policy to a route that also runs the matching auth filter (or the \fBjwt\fR route setting); a request that fails authentication is refused by the filter before the limiter.
 .PP
 Memory: at most 64 x 8192 buckets per policy.
 .SH "upstreams[]"
@@ -2621,7 +2662,7 @@ object
 T}	T{
 none
 T}	T{
-Endpoints resolved from DNS and re\-resolved periodically;\: see below. Static \fBendpoints\fR and discovered ones coexist;\: a pool needs at least one of the two
+Endpoints resolved from DNS or an HTTP registry (Consul,\: etcd gateways,\: custom) and re\-resolved periodically;\: see below. Static \fBendpoints\fR and discovered ones coexist;\: a pool needs at least one of the two
 T}
 T{
 \fBslow_\:start\fR
@@ -2640,6 +2681,96 @@ T}	T{
 \fB[]\fR
 T}	T{
 Response statuses treated as a failed attempt: \fB5xx\fR,\: \fB500\fR,\: \fB502\fR,\: \fB503\fR,\: \fB504\fR,\: \fB429\fR. The response is discarded,\: the endpoint marked as failed for outlier ejection,\: and the next endpoint tried within the \fBretries\fR budget;\: the last attempt\(aqs response is returned as it is. Needs \fBretries\fR above 0
+T}
+T{
+\fBretry_\:budget\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Caps retries (and hedged copies) against live traffic so a struggling pool is not buried under a retry storm;\: see below. Without it,\: every retry \fBretries\fR allows is sent
+T}
+T{
+\fBhedge\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Sends staggered copies of a slow idempotent request to other endpoints and keeps the first usable answer;\: see below
+T}
+.TE
+.SS "upstreams[].retry_budget"
+.PP
+A retry (or a hedged copy) is only sent while the retries in flight to the pool stay below \fBpercent\fR of the requests in flight, with \fBmin_concurrency\fR always allowed so a low\-traffic pool can still retry. As live traffic falls the allowance falls with it, so retries cannot amplify an outage.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.2i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBpercent\fR
+T}	T{
+float
+T}	T{
+\fB20\fR
+T}	T{
+1 to 1000;\: retries in flight capped at this share of requests in flight
+T}
+T{
+\fBmin_\:concurrency\fR
+T}	T{
+int
+T}	T{
+\fB3\fR
+T}	T{
+1 to 10000;\: concurrent retries always allowed regardless of \fBpercent\fR
+T}
+.TE
+.SS "upstreams[].hedge"
+.PP
+Hedging trades a little extra load for a shorter tail latency: if the request in flight has not answered within \fBdelay\fR, a copy goes to another endpoint, and whichever returns a usable response first wins while the others are cancelled. Only replayable requests (GET, HEAD, OPTIONS, TRACE without a body) are hedged, each copy is keyed to a distinct endpoint, and every copy beyond the first is gated by \fBretry_budget\fR when one is set.
+.PP
+.TS
+allbox;
+lbw(0.6i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.6i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdelay\fR
+T}	T{
+duration
+T}	T{
+required
+T}	T{
+1ms to 1m;\: wait this long for the request in flight before sending the next copy
+T}
+T{
+\fBmax\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+1 to 4;\: extra copies beyond the first
 T}
 .TE
 .SS "upstreams[].tls"
@@ -2748,20 +2879,20 @@ T}
 T{
 \fBtype\fR
 T}	T{
-\fBdns\fR,\: \fBsrv\fR
+\fBdns\fR,\: \fBsrv\fR,\: \fBhttp\fR
 T}	T{
 \fBdns\fR
 T}	T{
-\fBdns\fR resolves the A and AAAA records of \fBname\fR,\: one endpoint per address on \fBport\fR;\: \fBsrv\fR resolves SRV records,\: uses the lowest priority group,\: and takes target,\: port and weight from each record
+\fBdns\fR resolves the A and AAAA records of \fBname\fR,\: one endpoint per address on \fBport\fR;\: \fBsrv\fR resolves SRV records,\: uses the lowest priority group,\: and takes target,\: port and weight from each record;\: \fBhttp\fR polls the registry URL in \fBname\fR on the interval (see \fBformat\fR)
 T}
 T{
 \fBname\fR
 T}	T{
-DNS name
+DNS name or URL
 T}	T{
 required
 T}	T{
-The name to resolve;\: for \fBsrv\fR the full \fB_\:service.\:_\:proto.\:domain\fR name
+The name to resolve;\: for \fBsrv\fR the full \fB_\:service.\:_\:proto.\:domain\fR name;\: for \fBhttp\fR the registry URL to GET
 T}
 T{
 \fBport\fR
@@ -2770,7 +2901,25 @@ int
 T}	T{
 required for \fBdns\fR
 T}	T{
-Endpoint port for \fBdns\fR
+Endpoint port for \fBdns\fR,\: and the default port for \fBhttp\fR entries that omit one
+T}
+T{
+\fBformat\fR
+T}	T{
+\fBlist\fR,\: \fBconsul\fR
+T}	T{
+\fBlist\fR
+T}	T{
+Response shape for \fBhttp\fR: \fBlist\fR is a JSON array of \fB{address\[uFF5C]host,\:port,\: weight?,\: canary?}\fR;\: \fBconsul\fR is the Consul \fB/\:v1/\:health/\:service\fR response (only instances whose checks all pass are used,\: \fBWeights.\:Passing\fR becomes the weight,\: a blank service address falls back to the node address)
+T}
+T{
+\fBheaders\fR
+T}	T{
+map
+T}	T{
+none
+T}	T{
+Extra request headers for \fBhttp\fR,\: for example an authentication token (Consul: \fBX\-\:Consul\-\:Token\fR)
 T}
 T{
 \fBinterval\fR
@@ -2788,7 +2937,7 @@ host:port
 T}	T{
 system resolver
 T}	T{
-DNS server to ask instead of the system resolver
+DNS server to ask instead of the system resolver (\fBdns\fR and \fBsrv\fR only)
 T}
 T{
 \fBweight\fR
@@ -2797,7 +2946,7 @@ int
 T}	T{
 \fB1\fR
 T}	T{
-Weight of \fBdns\fR discovered endpoints
+Weight of discovered endpoints that do not carry their own (\fBdns\fR,\: and \fBhttp\fR \fBlist\fR entries without a \fBweight\fR)
 T}
 T{
 \fBcanary\fR
@@ -3525,7 +3674,25 @@ duration
 T}	T{
 none
 T}	T{
-Whole request deadline for this route
+Whole request deadline for this route (the total,\: accept to last response byte). The named \fBtimeouts\fR block is the alternative and adds an idle timeout;\: set one or the other
+T}
+T{
+\fBtimeouts.\:total\fR
+T}	T{
+duration
+T}	T{
+none
+T}	T{
+Same as \fBtimeout\fR
+T}
+T{
+\fBtimeouts.\:idle\fR
+T}	T{
+duration
+T}	T{
+none
+T}	T{
+Cancels a response that produces no bytes for this long,\: for streaming or long\-poll routes where \fBtotal\fR is too coarse. Connect and response\-header timeouts are configured per upstream (\fBupstreams[].\:timeouts\fR),\: since the connection pool is shared
 T}
 T{
 \fBwebsocket\fR
@@ -5771,7 +5938,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -5911,6 +6078,170 @@ T}
 .TE
 .PP
 Denies answer 401 with \fBWWW\-Authenticate\fR and reason \fB<filter name>\fR; the user name is added to the access log line as \fBauth_user\fR.
+.SS "Kind \fBldap_auth\fR"
+.PP
+HTTP Basic authentication against an LDAP or Active Directory server. Two modes: a \fBdirect bind\fR substitutes the username into \fBbind_dn_template\fR and binds with the password; a \fBsearch then bind\fR binds an optional service account (\fBbind_dn\fR), searches \fBbase_dn\fR with \fBuser_filter\fR for the user\(aqs entry, then binds as that entry, optionally requiring group membership. The username is escaped (RFC 4514 for a DN, RFC 4515 for a filter) so it cannot alter the query. \fBldaps://\fR and \fBstart_tls\fR verify the server certificate against the system roots or \fBca_file\fR. Verified credentials are cached by digest for \fBcache_ttl\fR; a directory or network error is never cached and denies the request.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.0i) lbw(1.1i) lbx
+lw(1.0i) lw(1.0i) lw(1.1i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBurl\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+\fBldap:\:/\:/\:host:\:port\fR or \fBldaps:\:/\:/\:host:\:port\fR
+T}
+T{
+\fBstart_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Upgrade an \fBldap:\:/\:/\fR connection to TLS before binding
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system roots
+T}	T{
+PEM roots for the server certificate
+T}
+T{
+\fBinsecure_\:skip_\:verify\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Skip certificate verification (test only;\: exclusive with \fBca_\:file\fR)
+T}
+T{
+\fBbind_\:dn_\:template\fR
+T}	T{
+string
+T}	T{
+
+T}	T{
+Direct bind: \fB%s\fR is replaced by the escaped username,\: e.g. \fBuid=\:%s,\:ou=\:people,\:dc=\:example,\:dc=\:com\fR;\: exclusive with the search options
+T}
+T{
+\fBbind_\:dn\fR
+T}	T{
+DN
+T}	T{
+
+T}	T{
+Search bind: service account DN to bind before searching (anonymous search when empty)
+T}
+T{
+\fBbind_\:password_\:file\fR
+T}	T{
+path
+T}	T{
+required with \fBbind_\:dn\fR
+T}	T{
+Service account password;\: trailing newline trimmed
+T}
+T{
+\fBbase_\:dn\fR
+T}	T{
+DN
+T}	T{
+required for search
+T}	T{
+Search base
+T}
+T{
+\fBuser_\:filter\fR
+T}	T{
+filter
+T}	T{
+required for search
+T}	T{
+RFC 4515 filter with \fB%s\fR for the escaped username,\: e.g. \fB(sAMAccountName=\:%s)\fR;\: supports \fB&\fR,\: \fB|\fR,\: \fB!\fR,\: equality and presence
+T}
+T{
+\fBrequire_\:group\fR
+T}	T{
+DN
+T}	T{
+none
+T}	T{
+Require this DN among the user\(aqs \fBgroup_\:attr\fR values (search mode only)
+T}
+T{
+\fBgroup_\:attr\fR
+T}	T{
+attribute
+T}	T{
+\fBmemberOf\fR
+T}	T{
+Attribute read from the user entry for \fBrequire_\:group\fR
+T}
+T{
+\fBrealm\fR
+T}	T{
+string
+T}	T{
+\fBrestricted\fR
+T}	T{
+\fBWWW\-\:Authenticate\fR realm
+T}
+T{
+\fBcache_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+Credential cache;\: \fB0\fR disables
+T}
+T{
+\fBforward_\:user_\:header\fR
+T}	T{
+header
+T}	T{
+none
+T}	T{
+Set to the user name on the upstream request
+T}
+T{
+\fBstrip\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Remove \fBAuthorization\fR before forwarding
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Bound on the dial and each LDAP request;\: 1s to 1m
+T}
+.TE
+.PP
+Denies answer 401 with \fBWWW\-Authenticate\fR and reason \fB<filter name>\fR; the user name is added to the access log line as \fBauth_user\fR and set as the \fBldap\fR identity for identity\-keyed rate limits.
 .SS "Kind \fBoidc\fR"
 .PP
 Logs browsers in with OpenID Connect (authorization code flow with PKCE and a nonce) and keeps the result in an encrypted, HttpOnly, SameSite Lax session cookie. A request without a session is redirected to the provider; the callback exchanges the code at the token endpoint, verifies the ID token against the provider\(aqs JWKS (issuer, audience, expiry, signature, nonce), checks \fBrequire_claims\fR, sets the cookie and redirects to the page first asked for. Requests with a session carry the listed claims to the upstream as headers (client supplied values of those headers are always removed) and the cookie is stripped upstream. Provider metadata comes from \fBissuer/.well\-known/openid\-configuration\fR, fetched at load and retried on demand; while it is unavailable logins answer 503. Login and logout redirects are not security events; failed callbacks are, with reason \fBoidc\fR and a detail (\fBstate_mismatch\fR, \fBnonce\fR, \fBid_token\fR, \fBexchange\fR, \fBclaim:<name>\fR), and count towards ban triggers.
@@ -7815,6 +8146,80 @@ T}
 .SS "routes[].priority_class"
 .PP
 \fBlow\fR, \fBnormal\fR (default), \fBhigh\fR or \fBcritical\fR. Put health checks, login and payment on \fBcritical\fR or \fBhigh\fR; search, feeds and exports on \fBlow\fR.
+.SH "maintenance"
+.PP
+Present means the maintenance gate is available; \fBenabled\fR is the state at start and the runtime toggle (\fBPOST /v1/maintenance\fR, \fBxproxyctl maintenance on|off\fR) overrides it and survives reloads. While it is on, every request is answered with \fBstatus\fR and \fBRetry\-After\fR except an allowlisted client and a route with \fBmaintenance: false\fR (health and status endpoints). The gate runs right after routing, before authentication, rate limits and filters.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Maintenance on at start
+T}
+T{
+\fBstatus\fR
+T}	T{
+int
+T}	T{
+\fB503\fR
+T}	T{
+Status of held requests (4xx or 5xx)
+T}
+T{
+\fBretry_\:after\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+\fBRetry\-\:After\fR header;\: 0 omits it
+T}
+T{
+\fBmessage\fR
+T}	T{
+string
+T}	T{
+a short text
+T}	T{
+Response body
+T}
+T{
+\fBallow_\:cidrs\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Clients always served
+T}
+T{
+\fBallow_\:header\fR
+T}	T{
+\fBName:\: value\fR
+T}	T{
+none
+T}	T{
+A request carrying this exact header is served (a shared bypass token)
+T}
+.TE
+.PP
+A route sets \fBmaintenance: false\fR to stay up during maintenance or \fBmaintenance: true\fR to be held even when the gate is off.
 .SH "challenge"
 .PP
 Present means the challenge engine is available; routes opt in with a \fBchallenge\fR block. Unverified clients receive a 503 page with a signed nonce and a script that finds a SHA\-256 proof of work, posts it to \fB/.xproxy/challenge\fR, and receives a signed cookie. Both reserved paths (\fB/.xproxy/challenge\fR and \fB/.xproxy/challenge.js\fR) are served on every host before routing.
@@ -7920,8 +8325,8 @@ Adds a second tier to the challenge. A verdict that asks for it (an \fBaccount_g
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(1.2i) lbw(1.1i) lbx
-lw(0.9i) lw(1.2i) lw(1.1i) lx.
+lbw(1.0i) lbw(1.2i) lbw(1.1i) lbx
+lw(1.0i) lw(1.2i) lw(1.1i) lx.
 T{
 Key
 T}	T{
@@ -7993,6 +8398,96 @@ T}	T{
 \fBescalation\fR
 T}	T{
 \fBalways\fR shows the widget on every challenge page,\: including route gates,\: in place of the proof of work
+T}
+T{
+\fBhostnames\fR
+T}	T{
+list
+T}	T{
+the request host
+T}	T{
+Host names the provider may report the token was solved on;\: empty checks the token against the host the challenge page was served on,\: so a token solved for another site is refused
+T}
+T{
+\fBhostname_\:check\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Verify the hostname the provider reports;\: turn off for providers that do not return one
+T}
+.TE
+.SS "routes[].cors"
+.PP
+A Cross\-Origin Resource Sharing policy. A preflight \fBOPTIONS\fR (one that carries \fBAccess\-Control\-Request\-Method\fR) is answered by the proxy with \fB204\fR before authentication, rate limits and filters, since it carries no credentials; an actual request from an allowed origin gets the response headers added, and the route\(aqs policy replaces any the upstream set. This is separate from \fBgrpc.web_origins\fR, which handles gRPC\-web preflights.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.2i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBallow_\:origins\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+Permitted \fBOrigin\fR values: exact (\fBhttps:\:/\:/\:app.\:example\fR),\: a single \fB*\fR (any origin,\: incompatible with \fBallow_\:credentials\fR),\: or a wildcard host (\fBhttps:\:/\:/\:*.\:example.\:com\fR,\: matching one or more labels)
+T}
+T{
+\fBallow_\:methods\fR
+T}	T{
+list
+T}	T{
+\fBGET,\: HEAD,\: POST,\: PUT,\: PATCH,\: DELETE\fR
+T}	T{
+\fBAccess\-\:Control\-\:Allow\-\:Methods\fR of a preflight
+T}
+T{
+\fBallow_\:headers\fR
+T}	T{
+list
+T}	T{
+reflect the request
+T}	T{
+\fBAccess\-\:Control\-\:Allow\-\:Headers\fR;\: \fB*\fR or empty reflects the preflight\(aqs \fBAccess\-\:Control\-\:Request\-\:Headers\fR
+T}
+T{
+\fBexpose_\:headers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+\fBAccess\-\:Control\-\:Expose\-\:Headers\fR on actual responses
+T}
+T{
+\fBallow_\:credentials\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Sets \fBAccess\-\:Control\-\:Allow\-\:Credentials:\: true\fR and echoes the exact origin,\: never \fB*\fR
+T}
+T{
+\fBmax_\:age\fR
+T}	T{
+duration
+T}	T{
+\fB10m\fR
+T}	T{
+\fBAccess\-\:Control\-\:Max\-\:Age\fR,\: 0 to 24h
 T}
 .TE
 .SS "routes[].challenge"

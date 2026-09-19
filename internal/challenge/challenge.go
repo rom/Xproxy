@@ -518,7 +518,9 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 	}
 	if token != "" {
 		ctx, cancel := context.WithTimeout(r.Context(), cp.client.Timeout)
-		ok, reason := cp.check(ctx, token, ip)
+		// The provider reports the host the widget page was loaded on,
+		// which is the Host the browser sent to this challenge endpoint.
+		ok, reason := cp.check(ctx, token, r.Host, ip)
 		cancel()
 		if !ok {
 			c.fail(w, reason)

@@ -54,11 +54,13 @@ type reqState struct {
 	extra      []any // filter attributes for the access log
 	country    string
 	ja4        string
-	chalTier   int           // challenge cookie tier (challenge.TierNone without one)
-	device     string        // device identifier from the challenge cookie
-	automation []string      // automation markers from the challenge cookie
-	span       *tracing.Span // server span, nil without tracing
-	upSpan     *tracing.Span // client span of the upstream exchange
+	chalTier   int                // challenge cookie tier (challenge.TierNone without one)
+	device     string             // device identifier from the challenge cookie
+	identity   *filter.Identity   // verified identities from the filter chain
+	cancel     context.CancelFunc // cancels the request (idle timeout)
+	automation []string           // automation markers from the challenge cookie
+	span       *tracing.Span      // server span, nil without tracing
+	upSpan     *tracing.Span      // client span of the upstream exchange
 	propagate  bool
 	cache      string // hit, miss or bypass on a cached route
 	encoding   string // gzip when the proxy compressed the response
@@ -256,6 +258,26 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.relayWebTransport(rw, r, st, cr)
 		return
 	}
+	// A CORS preflight is answered before authentication, rate limits and
+	// filters: it carries no credentials and must not be blocked by them.
+	if cr.cors != nil && cr.cors.preflight(rw, r) {
+		st.route = cr.cfg.Name
+		return
+	}
+	// Maintenance mode: hold everything but the allowlist and exempt
+	// routes while it is on.
+	if m := rt.maintenance; m != nil && s.maintenance.Load() {
+		on := true
+		if cr.cfg.Maintenance != nil {
+			on = *cr.cfg.Maintenance
+		}
+		if on && !m.exempt(st.clientIP, r) {
+			s.stats.DeniedMaintenance.Add(1)
+			st.denied = "maintenance"
+			m.serve(rw, r)
+			return
+		}
+	}
 
 	// Virtual patches: known vulnerabilities blocked by request shape,
 	// before anything else spends work on the request.
@@ -376,44 +398,8 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Rate limits.
-	for _, rl := range cr.rateLimits {
-		key := s.rateKey(rl.cfg, r, st)
-		allowed, decided := false, false
-		if rl.cfg.Distributed == "exact" {
-			if node := s.cluster.Load(); node != nil {
-				// The key's owner decides; without an answer in time the
-				// local limiter does.
-				allowed, decided = node.Take(rl.cfg.Name, key, 1)
-			}
-		}
-		if !decided {
-			allowed = rl.lim.AllowFallback(key, "ip:"+st.clientIP.String(), 1)
-		}
-		if allowed {
-			rl.allowed.Add(1)
-			continue
-		}
-		rl.denied.Add(1)
-		cr.rateLimited.Add(1)
-		st.denied = "rate_limit:" + rl.cfg.Name
-		if rl.cfg.Action == "tarpit" {
-			// A tarpit does no work, so it must not hold a concurrency slot
-			// (an attacker could otherwise fill max_concurrent_requests with
-			// idle held requests); it holds a tarpit slot instead, and above
-			// that bound the request is rejected immediately.
-			if tpRelease, ok := s.tarpits.Acquire(); ok {
-				release()
-				s.stats.Tarpitted.Add(1)
-				s.tarpit(rw, r, st, rl.cfg)
-				tpRelease()
-				return
-			}
-			s.stats.TarpitOverflow.Add(1)
-		}
-		s.stats.DeniedRateLimit.Add(1)
-		rw.Header().Set("Retry-After", strconv.Itoa(int(retryAfter(rl.cfg))))
-		s.deny(rw, r, st, http.StatusTooManyRequests, "rate_limit")
+	// Rate limits keyed on request data run before the filter chain.
+	if s.applyRateLimits(rw, r, st, cr, cr.rateLimits, release) {
 		return
 	}
 
@@ -452,6 +438,9 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			info.DeviceID = st.device
 			info.Automation = st.automation
 		}
+		ctx, idSet := filter.WithIdentity(r.Context())
+		r = r.WithContext(ctx)
+		st.identity = idSet
 		instances = cr.filters.Begin(r.Context(), info)
 		defer func() { st.extra = append(st.extra, instances.End()...) }()
 		if v := instances.Request(r); v.Deny {
@@ -480,18 +469,37 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 admitted:
 
+	if cr.cors != nil {
+		cr.cors.apply(rw.Header(), r)
+	}
+
+	// Rate limits keyed on the verified identity run after the filter
+	// chain that established it.
+	if len(cr.identityLimits) > 0 {
+		if s.applyRateLimits(rw, r, st, cr, cr.identityLimits, release) {
+			return
+		}
+	}
+
 	// Per-route timeout, tightened by a gRPC client's own deadline.
 	ctx := r.Context()
-	deadline := cr.cfg.Timeout.D()
+	deadline := cr.cfg.TotalTimeout().D()
 	if st.grpc {
 		if d := parseGRPCTimeout(r.Header.Get("Grpc-Timeout")); d > 0 && (deadline == 0 || d < deadline) {
 			deadline = d
 		}
 	}
-	if deadline > 0 {
+	if deadline > 0 || cr.idleTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, deadline)
+		if deadline > 0 {
+			ctx, cancel = context.WithTimeout(ctx, deadline)
+		} else {
+			ctx, cancel = context.WithCancel(ctx)
+		}
 		defer cancel()
+		// The idle reader (set in ModifyResponse) cancels the request when
+		// the upstream stalls; keep the canceller reachable through st.
+		st.cancel = cancel
 		r = r.WithContext(ctx)
 	}
 
@@ -665,7 +673,7 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		st.upSpan.Set(otlp.String("xproxy.upstream", pool.Name))
 	}
 	rp := &httputil.ReverseProxy{
-		Transport:     &poolTransport{pool: pool, retries: *pool.Cfg.Retries, retryOn: pool.Cfg.RetryOn},
+		Transport:     newPoolTransport(pool),
 		FlushInterval: -1,
 		ErrorLog:      nil,
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -706,6 +714,14 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 				return &filterDenied{v: v}
 			}
 			cr.respOps.apply(resp.Header, &tvars{r: r, st: st})
+			if cr.idleTimeout > 0 && st.cancel != nil && resp.Body != nil && resp.Body != http.NoBody {
+				resp.Body = newIdleReader(resp.Body, cr.idleTimeout, st.cancel)
+			}
+			if cr.cors != nil {
+				// The route's policy is authoritative; drop any copy the
+				// upstream set so the header the proxy wrote to rw stands.
+				stripUpstreamCORS(resp.Header)
+			}
 			if ep := cr.errPages; ep != nil {
 				ep.interceptBody(resp, r, st)
 			} else if ep := s.rt.Load().errorPages; ep != nil {
@@ -1172,7 +1188,13 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 			}
 		}
 	}
-	s.logs.Access.Info("request", attrs...)
+	// Sampling and field selection affect only the written line; every
+	// request is already counted above.
+	pol := s.rt.Load().accessLog
+	if !pol.keep(status, st.denied) {
+		return
+	}
+	s.logs.Access.Info("request", pol.selectFields(attrs)...)
 }
 
 func isUpgrade(r *http.Request) bool {
@@ -1185,6 +1207,53 @@ func isUpgrade(r *http.Request) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// applyRateLimits evaluates a set of rate limit policies; it returns
+// true when a policy denied the request and a response was written, so
+// the caller returns. release is the concurrency slot, released before a
+// tarpit holds its own slot.
+func (s *Server) applyRateLimits(rw *responseWriter, r *http.Request, st *reqState, cr *compiledRoute, limits []*rateLimit, release func()) bool {
+	for _, rl := range limits {
+		key := s.rateKey(rl.cfg, r, st)
+		allowed, decided := false, false
+		if rl.cfg.Distributed == "exact" {
+			if node := s.cluster.Load(); node != nil {
+				// The key's owner decides; without an answer in time the
+				// local limiter does.
+				allowed, decided = node.Take(rl.cfg.Name, key, 1)
+			}
+		}
+		if !decided {
+			allowed = rl.lim.AllowFallback(key, "ip:"+st.clientIP.String(), 1)
+		}
+		if allowed {
+			rl.allowed.Add(1)
+			continue
+		}
+		rl.denied.Add(1)
+		cr.rateLimited.Add(1)
+		st.denied = "rate_limit:" + rl.cfg.Name
+		if rl.cfg.Action == "tarpit" {
+			// A tarpit does no work, so it must not hold a concurrency slot
+			// (an attacker could otherwise fill max_concurrent_requests with
+			// idle held requests); it holds a tarpit slot instead, and above
+			// that bound the request is rejected immediately.
+			if tpRelease, ok := s.tarpits.Acquire(); ok {
+				release()
+				s.stats.Tarpitted.Add(1)
+				s.tarpit(rw, r, st, rl.cfg)
+				tpRelease()
+				return true
+			}
+			s.stats.TarpitOverflow.Add(1)
+		}
+		s.stats.DeniedRateLimit.Add(1)
+		rw.Header().Set("Retry-After", strconv.Itoa(int(retryAfter(rl.cfg))))
+		s.deny(rw, r, st, http.StatusTooManyRequests, "rate_limit")
+		return true
 	}
 	return false
 }
@@ -1218,6 +1287,16 @@ func (s *Server) rateKey(rl *config.RateLimit, r *http.Request, st *reqState) st
 			return ip
 		}
 		return "c:" + st.country
+	case rl.Key == "identity":
+		if v := st.identity.Any("oidc", "jwt", "api_key", "basic", "ldap"); v != "" {
+			return "id:" + trim(v, 256)
+		}
+		return ip
+	case strings.HasPrefix(rl.Key, "identity:"):
+		if v := st.identity.Get(rl.Key[len("identity:"):]); v != "" {
+			return "id:" + rl.Key[len("identity:"):] + ":" + trim(v, 256)
+		}
+		return ip
 	case rl.Key == "device":
 		if st.device != "" {
 			return "dev:" + st.device
