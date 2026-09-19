@@ -8009,6 +8009,78 @@ T}	T{
 \fBalways\fR shows the widget on every challenge page,\: including route gates,\: in place of the proof of work
 T}
 .TE
+.SS "routes[].cors"
+.PP
+A Cross\-Origin Resource Sharing policy. A preflight \fBOPTIONS\fR (one that carries \fBAccess\-Control\-Request\-Method\fR) is answered by the proxy with \fB204\fR before authentication, rate limits and filters, since it carries no credentials; an actual request from an allowed origin gets the response headers added, and the route\(aqs policy replaces any the upstream set. This is separate from \fBgrpc.web_origins\fR, which handles gRPC\-web preflights.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.2i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBallow_\:origins\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+Permitted \fBOrigin\fR values: exact (\fBhttps:\:/\:/\:app.\:example\fR),\: a single \fB*\fR (any origin,\: incompatible with \fBallow_\:credentials\fR),\: or a wildcard host (\fBhttps:\:/\:/\:*.\:example.\:com\fR,\: matching one or more labels)
+T}
+T{
+\fBallow_\:methods\fR
+T}	T{
+list
+T}	T{
+\fBGET,\: HEAD,\: POST,\: PUT,\: PATCH,\: DELETE\fR
+T}	T{
+\fBAccess\-\:Control\-\:Allow\-\:Methods\fR of a preflight
+T}
+T{
+\fBallow_\:headers\fR
+T}	T{
+list
+T}	T{
+reflect the request
+T}	T{
+\fBAccess\-\:Control\-\:Allow\-\:Headers\fR;\: \fB*\fR or empty reflects the preflight\(aqs \fBAccess\-\:Control\-\:Request\-\:Headers\fR
+T}
+T{
+\fBexpose_\:headers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+\fBAccess\-\:Control\-\:Expose\-\:Headers\fR on actual responses
+T}
+T{
+\fBallow_\:credentials\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Sets \fBAccess\-\:Control\-\:Allow\-\:Credentials:\: true\fR and echoes the exact origin,\: never \fB*\fR
+T}
+T{
+\fBmax_\:age\fR
+T}	T{
+duration
+T}	T{
+\fB10m\fR
+T}	T{
+\fBAccess\-\:Control\-\:Max\-\:Age\fR,\: 0 to 24h
+T}
+.TE
 .SS "routes[].challenge"
 .PP
 .TS

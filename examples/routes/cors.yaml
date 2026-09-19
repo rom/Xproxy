@@ -1,0 +1,34 @@
+# Cross-origin resource sharing: the API route answers preflight OPTIONS
+# for the single-page app's origins and adds the headers to actual
+# responses; a public read-only route allows any origin without
+# credentials.
+#
+# Validate: xproxy -config examples/routes/cors.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: api
+    endpoints: [{address: "10.0.0.10:8080"}]
+routes:
+  - name: api
+    hosts: [api.example.com]
+    upstream: api
+    cors:
+      allow_origins: ["https://app.example.com", "https://*.preview.example.com"]
+      allow_methods: [GET, POST, PUT, DELETE]
+      allow_headers: [Authorization, Content-Type, X-Request-Id]
+      expose_headers: [X-Request-Id, X-Total-Count]
+      allow_credentials: true
+      max_age: 1h
+  - name: public
+    hosts: [cdn.example.com]
+    upstream: api
+    cors:
+      allow_origins: ["*"]
+      allow_methods: [GET, HEAD]

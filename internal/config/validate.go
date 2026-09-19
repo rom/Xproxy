@@ -1291,6 +1291,9 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	if r.Policy != nil {
 		v.routePolicy(p+".policy", r.Policy)
 	}
+	if r.CORS != nil {
+		v.routeCORS(p+".cors", r.CORS)
+	}
 
 	actions := 0
 	if r.Upstream != "" {
@@ -2650,6 +2653,46 @@ func (v *validator) mediaTypes(p string, types []string) {
 		if !ok || main == "" || sub == "" || t != strings.ToLower(t) || strings.ContainsAny(t, " ;,") || (main == "*" && sub != "*") {
 			v.errf("%s[%d]: %q must be type/subtype or type/*", p, j, t)
 		}
+	}
+}
+
+func (v *validator) routeCORS(p string, c *RouteCORS) {
+	if len(c.AllowOrigins) == 0 {
+		v.errf("%s.allow_origins: at least one origin", p)
+	}
+	star := false
+	for i, o := range c.AllowOrigins {
+		if o == "*" {
+			star = true
+			continue
+		}
+		if !strings.HasPrefix(o, "http://") && !strings.HasPrefix(o, "https://") {
+			v.errf("%s.allow_origins[%d]: %q must be a scheme://host origin or \"*\"", p, i, o)
+		}
+	}
+	if star && c.AllowCredentials {
+		v.errf("%s: allow_credentials cannot be combined with the \"*\" origin", p)
+	}
+	if star && len(c.AllowOrigins) > 1 {
+		v.errf("%s.allow_origins: \"*\" must be the only entry", p)
+	}
+	for i, m := range c.AllowMethods {
+		if m != strings.ToUpper(m) || strings.ContainsAny(m, " \r\n") {
+			v.errf("%s.allow_methods[%d]: %q is not a method", p, i, m)
+		}
+	}
+	for i, h := range c.AllowHeaders {
+		if h != "*" && !headerNameOK(h) {
+			v.errf("%s.allow_headers[%d]: %q is not a header name", p, i, h)
+		}
+	}
+	for i, h := range c.ExposeHeaders {
+		if !headerNameOK(h) {
+			v.errf("%s.expose_headers[%d]: %q is not a header name", p, i, h)
+		}
+	}
+	if c.MaxAge < 0 || c.MaxAge > Duration(24*3600*1e9) {
+		v.errf("%s.max_age: must be between 0 and 24h", p)
 	}
 }
 

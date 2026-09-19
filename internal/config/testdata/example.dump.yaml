@@ -331,6 +331,7 @@ routes:
       doh: null
       static: null
       compress: null
+      cors: null
     - name: api
       hosts:
         - api.example.com
@@ -394,6 +395,7 @@ routes:
       doh: null
       static: null
       compress: null
+      cors: null
     - name: admin
       hosts:
         - example.com
@@ -448,6 +450,7 @@ routes:
       doh: null
       static: null
       compress: null
+      cors: null
     - name: upload
       hosts:
         - example.com
@@ -507,6 +510,7 @@ routes:
       doh: null
       static: null
       compress: null
+      cors: null
     - name: web
       hosts:
         - example.com
@@ -567,6 +571,7 @@ routes:
       doh: null
       static: null
       compress: null
+      cors: null
     - name: default
       hosts: []
       paths:
@@ -625,6 +630,7 @@ routes:
       doh: null
       static: null
       compress: null
+      cors: null
 bans:
     state_file: /var/lib/xproxy/bans.db
     max_entries: 100000

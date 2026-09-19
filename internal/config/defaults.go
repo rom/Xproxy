@@ -601,6 +601,12 @@ func applyDefaults(c *Config) {
 	for i := range c.Routes {
 		r := &c.Routes[i]
 		setStr(&r.PriorityClass, "normal")
+		if r.CORS != nil {
+			if len(r.CORS.AllowMethods) == 0 {
+				r.CORS.AllowMethods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}
+			}
+			setDur(&r.CORS.MaxAge, 10*time.Minute)
+		}
 		if r.Challenge != nil {
 			setStr(&r.Challenge.Mode, "always")
 			if r.Challenge.Level == 0 {

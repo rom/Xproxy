@@ -222,6 +222,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Per-route CORS (`routes[].cors`): allowed origins (exact, wildcard
+  host, or `*`), methods, headers, exposed headers, credentials and
+  max-age; preflight `OPTIONS` answered before authentication and the
+  route's policy overriding any the upstream set. Separate from the
+  gRPC-web preflight handling.
 - Identity-keyed rate limits: `rate_limits[].key` of `identity` or
   `identity:<kind>` (`jwt`, `oidc`, `api_key`, `basic`) keys the bucket
   on the principal an auth filter verified, evaluated after the filter

@@ -257,6 +257,12 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.relayWebTransport(rw, r, st, cr)
 		return
 	}
+	// A CORS preflight is answered before authentication, rate limits and
+	// filters: it carries no credentials and must not be blocked by them.
+	if cr.cors != nil && cr.cors.preflight(rw, r) {
+		st.route = cr.cfg.Name
+		return
+	}
 
 	// Virtual patches: known vulnerabilities blocked by request shape,
 	// before anything else spends work on the request.
@@ -447,6 +453,10 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 admitted:
+
+	if cr.cors != nil {
+		cr.cors.apply(rw.Header(), r)
+	}
 
 	// Rate limits keyed on the verified identity run after the filter
 	// chain that established it.
@@ -682,6 +692,11 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 				return &filterDenied{v: v}
 			}
 			cr.respOps.apply(resp.Header, &tvars{r: r, st: st})
+			if cr.cors != nil {
+				// The route's policy is authoritative; drop any copy the
+				// upstream set so the header the proxy wrote to rw stands.
+				stripUpstreamCORS(resp.Header)
+			}
 			if ep := cr.errPages; ep != nil {
 				ep.interceptBody(resp, r, st)
 			} else if ep := s.rt.Load().errorPages; ep != nil {

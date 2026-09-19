@@ -1188,6 +1188,31 @@ type Route struct {
 	// Compress overrides the compression section for this route: false
 	// turns it off, true requires the section.
 	Compress *bool `yaml:"compress"`
+	// CORS answers cross-origin requests for this route: it short-circuits
+	// preflight OPTIONS and adds the response headers to actual requests.
+	CORS *RouteCORS `yaml:"cors"`
+}
+
+// RouteCORS is a Cross-Origin Resource Sharing policy for a route. It is
+// independent of the gRPC-web preflight handling (grpc.web_origins).
+type RouteCORS struct {
+	// AllowOrigins are the permitted Origin values: exact ("https://a.example"),
+	// a single "*" (any origin; incompatible with allow_credentials), or a
+	// wildcard host pattern ("https://*.example.com"). Required.
+	AllowOrigins []string `yaml:"allow_origins"`
+	// AllowMethods default to GET, HEAD, POST, PUT, PATCH, DELETE.
+	AllowMethods []string `yaml:"allow_methods"`
+	// AllowHeaders are the request headers a preflight may allow; "*"
+	// reflects the requested headers. Default: reflect the request's
+	// Access-Control-Request-Headers.
+	AllowHeaders []string `yaml:"allow_headers"`
+	// ExposeHeaders are added to Access-Control-Expose-Headers.
+	ExposeHeaders []string `yaml:"expose_headers"`
+	// AllowCredentials sets Access-Control-Allow-Credentials: true and
+	// echoes the specific origin (never "*").
+	AllowCredentials bool `yaml:"allow_credentials"`
+	// MaxAge is how long a preflight result may be cached. Default 10m.
+	MaxAge Duration `yaml:"max_age"`
 }
 
 // RoutePolicy is a positive security model for a route: allowed

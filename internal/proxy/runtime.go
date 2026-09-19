@@ -121,6 +121,7 @@ type compiledRoute struct {
 	honeypotType string
 	static       *staticSite
 	compress     *compressPolicy
+	cors         *compiledCORS
 	mirror       *mirror
 	rateLimits   []*rateLimit
 	// identityLimits key on the verified identity and so run after the
@@ -413,6 +414,9 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		}
 		if on := cfg.Compression.Enable(); on && (r.Compress == nil || *r.Compress) {
 			cr.compress = compressPol
+		}
+		if r.CORS != nil {
+			cr.cors = newCORS(r.CORS)
 		}
 		if r.Static != nil {
 			ss, err := openStatic(r.Static)

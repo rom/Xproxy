@@ -2218,6 +2218,25 @@ falls back to the proof of work.
 | `min_score` | float | `0` | Refuse tokens scored below it (providers that return a score); 0 disables |
 | `mode` | `escalation`, `always` | `escalation` | `always` shows the widget on every challenge page, including route gates, in place of the proof of work |
 
+### routes[].cors
+
+A Cross-Origin Resource Sharing policy. A preflight `OPTIONS` (one that
+carries `Access-Control-Request-Method`) is answered by the proxy with
+`204` before authentication, rate limits and filters, since it carries
+no credentials; an actual request from an allowed origin gets the
+response headers added, and the route's policy replaces any the
+upstream set. This is separate from `grpc.web_origins`, which handles
+gRPC-web preflights.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `allow_origins` | list | required | Permitted `Origin` values: exact (`https://app.example`), a single `*` (any origin, incompatible with `allow_credentials`), or a wildcard host (`https://*.example.com`, matching one or more labels) |
+| `allow_methods` | list | `GET, HEAD, POST, PUT, PATCH, DELETE` | `Access-Control-Allow-Methods` of a preflight |
+| `allow_headers` | list | reflect the request | `Access-Control-Allow-Headers`; `*` or empty reflects the preflight's `Access-Control-Request-Headers` |
+| `expose_headers` | list | `[]` | `Access-Control-Expose-Headers` on actual responses |
+| `allow_credentials` | bool | `false` | Sets `Access-Control-Allow-Credentials: true` and echoes the exact origin, never `*` |
+| `max_age` | duration | `10m` | `Access-Control-Max-Age`, 0 to 24h |
+
 ### routes[].challenge
 
 | Key | Type | Default | Description |
