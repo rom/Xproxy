@@ -222,6 +222,43 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Adversarial bypass harness (`test/bypass`): tests that try to evade
+  every security control (WAF, normalisation, positive policy, virtual
+  patches, rate limits, aggregate and honeypot bans, upload guard,
+  sensitive data, account guard, ACLs, header guard, API keys, the
+  challenge and the OpenAPI model) and assert each holds before the
+  backend, with documented gaps asserted as such.
+- `sensitive_data` filter: compressed bodies (`gzip`, `deflate`, `br`,
+  `zstd`) are decoded for scanning and bodies over `max_bytes` are
+  streamed through the scanner (`encoded`, `oversize`,
+  `max_decoded_bytes`); masked or streamed compressed bodies are
+  forwarded decoded and a streamed block cuts the transfer.
+- API inventory export: `xproxyctl api VIEW -openapi` and
+  `GET /v1/api?format=openapi` render a view as an OpenAPI 3.0
+  skeleton with named path parameters, methods, media types, status
+  classes, security schemes, servers and `x-xproxy` traffic evidence.
+- `openapi` filter: `spec_url` fetches the description over HTTPS and
+  refreshes it in the background with ETags and a `cache_file` for
+  outages; `spec_file` is re-read when it changes without a reload;
+  `refresh`, `timeout` and `ca_file` options; a description that fails
+  to load keeps the previous one.
+- Device identifiers and automation markers in the filters: the
+  challenge script reports WebDriver and headless markers, carried in
+  the cookie as `Info.Automation` and the `automation` log attribute;
+  `account_guard` counts per device (`device`, `device_accounts`
+  thresholds, device blocks shared with peers, `account_device` in the
+  log) and acts on markers (`automation`); `bot_score` gains
+  `automation_markers` and `device_shared` signals with
+  `device_addresses`.
+- Counters and views for the newest filters: `denied_sensitive_data`
+  and `denied_account_abuse` in the status, `xproxy_sensitive_findings_total`,
+  `xproxy_sensitive_messages_total`, `xproxy_account_actions_total`,
+  `xproxy_account_events_total`, `xproxy_account_blocks_total`,
+  `xproxy_account_campaigns_total`, `xproxy_account_disposable_total`
+  and `xproxy_account_blocks_active` metrics, `xproxyctl accounts` and
+  `GET /v1/accounts` with tracked keys, active blocks and campaigns per
+  endpoint; the security dashboard and the alert rules cover account
+  abuse, sensitive data and CAPTCHA results.
 - Aggregated bans: `bans.triggers[].aggregate` counts and bans per
   client network (`net`, with `net_v4` and `net_v6`) or per TLS client
   fingerprint (`ja4`), with `min_sources` distinct addresses required

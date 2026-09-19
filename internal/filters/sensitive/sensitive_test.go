@@ -1,11 +1,21 @@
 package sensitive
 
 import (
+	"bytes"
+	"compress/gzip"
+	"compress/zlib"
+	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
+
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/filter/filtertest"
@@ -145,7 +155,9 @@ func TestSensitiveFilter(t *testing.T) {
 		t.Fatalf("block response %+v %+v", res.Request, res.Response)
 	}
 
-	// Unlisted media types, encoded bodies and oversize bodies pass unscanned.
+	// Unlisted media types and bodies that claim an encoding they do not
+	// have pass unscanned; an oversize body is not judged at request
+	// time but its stream is cut at the finding in block mode.
 	f = build(t, filter.Options{"request": map[string]any{"action": "block", "max_bytes": 64}})
 	if res := filtertest.Run(f, post(`4111111111111111`, "application/octet-stream"), nil); res.Request.Deny {
 		t.Fatal("octet-stream scanned")
@@ -153,15 +165,15 @@ func TestSensitiveFilter(t *testing.T) {
 	enc := post(`4111111111111111`, "text/plain")
 	enc.Header.Set("Content-Encoding", "gzip")
 	if res := filtertest.Run(f, enc, nil); res.Request.Deny {
-		t.Fatal("encoded body scanned")
+		t.Fatal("undecodable body scanned")
 	}
 	big := post(strings.Repeat("x", 100)+" 4111111111111111", "text/plain")
 	res = filtertest.Run(f, big, nil)
 	if res.Request.Deny {
-		t.Fatal("oversize body scanned")
+		t.Fatal("oversize body judged before it flowed")
 	}
-	if b, _ := io.ReadAll(big.Body); len(b) != 117 {
-		t.Fatalf("oversize body not replayed: %d", len(b))
+	if _, err := io.ReadAll(big.Body); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("oversize body stream not cut: %v", err)
 	}
 	// Selected detectors, custom detectors and min_findings.
 	f = build(t, filter.Options{"detectors": []any{"email"}, "custom": []any{map[string]any{"name": "order_secret", "regex": "OS-[0-9]{12}"}},
@@ -180,6 +192,251 @@ func TestSensitiveFilter(t *testing.T) {
 	} {
 		if _, err := filtertest.Build("sensitive_data", "d", o); err == nil {
 			t.Errorf("options %v accepted", o)
+		}
+	}
+}
+
+func TestCounters(t *testing.T) {
+	before := Snapshot()
+	f, err := filtertest.Build("sensitive_data", "dlp", filter.Options{"detectors": []any{"card", "email"},
+		"request": map[string]any{"action": "log"}, "response": map[string]any{"action": "block"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "http://a/x", strings.NewReader(`{"card":"4111 1111 1111 1111"}`))
+	r.Header.Set("Content-Type", "application/json")
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"e":"a@example.com"}`)), ContentLength: -1}
+	res := filtertest.Run(f, r, resp)
+	if res.Request.Deny || !res.Response.Deny {
+		t.Fatalf("verdicts %+v", res)
+	}
+	after := Snapshot()
+	kind := func(c Counters, k string) uint64 {
+		for _, f := range c.Findings {
+			if f.Kind == k {
+				return f.Count
+			}
+		}
+		return 0
+	}
+	act := func(c Counters, d, o string) uint64 {
+		for _, a := range c.Actions {
+			if a.Direction == d && a.Outcome == o {
+				return a.Count
+			}
+		}
+		return 0
+	}
+	if kind(after, "card")-kind(before, "card") != 1 || kind(after, "email")-kind(before, "email") != 1 {
+		t.Fatalf("findings %+v", after.Findings)
+	}
+	if act(after, "request", "logged")-act(before, "request", "logged") != 1 || act(after, "response", "blocked")-act(before, "response", "blocked") != 1 {
+		t.Fatalf("actions %+v", after.Actions)
+	}
+	if len(after.Actions) != 6 {
+		t.Fatalf("action combinations %d", len(after.Actions))
+	}
+}
+
+func encode(t *testing.T, enc string, text string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	var w io.WriteCloser
+	switch enc {
+	case "gzip":
+		w = gzip.NewWriter(&buf)
+	case "deflate":
+		w = zlib.NewWriter(&buf)
+	case "br":
+		w = brotli.NewWriter(&buf)
+	case "zstd":
+		zw, err := zstd.NewWriter(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w = zw
+	}
+	_, _ = w.Write([]byte(text))
+	_ = w.Close()
+	return buf.Bytes()
+}
+
+func TestEncodedBodies(t *testing.T) {
+	build := func(reqAction, respAction string, extra map[string]any) filter.Filter {
+		req := map[string]any{"action": reqAction}
+		resp := map[string]any{"action": respAction}
+		for k, v := range extra {
+			req[k], resp[k] = v, v
+		}
+		f, err := filtertest.Build("sensitive_data", "dlp", filter.Options{"detectors": []any{"card", "email"}, "request": req, "response": resp})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	body := `{"card":"4111 1111 1111 1111","email":"anna@example.com"}`
+	for _, enc := range []string{"gzip", "deflate", "br", "zstd"} {
+		// A masked compressed request is forwarded decoded and rewritten.
+		f := build("mask", "log", nil)
+		r := httptest.NewRequest("POST", "http://a/x", bytes.NewReader(encode(t, enc, body)))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Content-Encoding", enc)
+		res := filtertest.Run(f, r, nil)
+		out, _ := io.ReadAll(r.Body)
+		if res.Request.Deny || r.Header.Get("Content-Encoding") != "" || !strings.Contains(string(out), "**** **** **** 1111") || strings.Contains(string(out), "anna@") || r.ContentLength != int64(len(out)) {
+			t.Fatalf("%s masked request: %+v enc %q body %q len %d", enc, res.Request, r.Header.Get("Content-Encoding"), out, r.ContentLength)
+		}
+		// A logged compressed response is scanned but forwarded as it was.
+		f = build("log", "log", nil)
+		raw := encode(t, enc, body)
+		resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}, "Content-Encoding": {enc}}, Body: io.NopCloser(bytes.NewReader(raw)), ContentLength: int64(len(raw))}
+		res = filtertest.Run(f, httptest.NewRequest("GET", "http://a/x", nil), resp)
+		got, _ := io.ReadAll(resp.Body)
+		if !bytes.Equal(got, raw) || resp.Header.Get("Content-Encoding") != enc || fmt.Sprint(res.Attrs) == "[]" || !strings.Contains(fmt.Sprint(res.Attrs), "card") {
+			t.Fatalf("%s logged response: %v %q", enc, res.Attrs, resp.Header)
+		}
+		// A blocked compressed response is refused.
+		f = build("log", "block", nil)
+		resp = &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}, "Content-Encoding": {enc}}, Body: io.NopCloser(bytes.NewReader(encode(t, enc, body))), ContentLength: -1}
+		if res = filtertest.Run(f, httptest.NewRequest("GET", "http://a/x", nil), resp); !res.Response.Deny {
+			t.Fatalf("%s blocked response passed", enc)
+		}
+	}
+	// encoded: skip leaves compressed bodies alone; unknown encodings
+	// and ranges are never touched.
+	f := build("block", "block", map[string]any{"encoded": "skip"})
+	r := httptest.NewRequest("POST", "http://a/x", bytes.NewReader(encode(t, "gzip", body)))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Content-Encoding", "gzip")
+	if res := filtertest.Run(f, r, nil); res.Request.Deny {
+		t.Fatalf("encoded skip scanned: %+v", res.Request)
+	}
+	f = build("block", "block", nil)
+	for _, h := range []http.Header{{"Content-Encoding": {"compress"}}, {"Content-Range": {"bytes 0-9/100"}}} {
+		r := httptest.NewRequest("POST", "http://a/x", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		for k, v := range h {
+			r.Header[k] = v
+		}
+		if res := filtertest.Run(f, r, nil); res.Request.Deny {
+			t.Fatalf("%v scanned: %+v", h, res.Request)
+		}
+	}
+	// Corrupt compressed data passes untouched.
+	r = httptest.NewRequest("POST", "http://a/x", strings.NewReader("not gzip at all"))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Content-Encoding", "gzip")
+	res := filtertest.Run(f, r, nil)
+	if out, _ := io.ReadAll(r.Body); res.Request.Deny || string(out) != "not gzip at all" {
+		t.Fatalf("corrupt gzip: %+v %q", res.Request, out)
+	}
+	// A body that decodes past max_decoded_bytes is streamed decoded.
+	f, err := filtertest.Build("sensitive_data", "dlp", filter.Options{"detectors": []any{"card"},
+		"request": map[string]any{"action": "log", "max_bytes": 4096, "max_decoded_bytes": 4096}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("a", 10000) + " 4111 1111 1111 1111 " + strings.Repeat("b", 10000)
+	r = httptest.NewRequest("POST", "http://a/x", bytes.NewReader(encode(t, "gzip", big)))
+	r.Header.Set("Content-Type", "text/plain")
+	r.Header.Set("Content-Encoding", "gzip")
+	in := f.Begin(context.Background(), &filter.Info{})
+	if v := in.Request(r); v.Deny {
+		t.Fatalf("bomb-ish request denied: %+v", v)
+	}
+	out, err := io.ReadAll(r.Body)
+	if err != nil || string(out) != big || r.ContentLength != -1 || r.Header.Get("Content-Encoding") != "" {
+		t.Fatalf("decoded stream: %v len %d cl %d enc %q", err, len(out), r.ContentLength, r.Header.Get("Content-Encoding"))
+	}
+	if attrs := fmt.Sprint(in.End()); !strings.Contains(attrs, "card") {
+		t.Fatalf("stream findings missing: %s", attrs)
+	}
+}
+
+func TestOversizeStreams(t *testing.T) {
+	build := func(action string, extra map[string]any) filter.Filter {
+		ph := map[string]any{"action": action, "max_bytes": 1024}
+		for k, v := range extra {
+			ph[k] = v
+		}
+		f, err := filtertest.Build("sensitive_data", "dlp", filter.Options{"detectors": []any{"card"}, "request": ph, "response": ph})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	// The card sits exactly across a read boundary of the source.
+	head := strings.Repeat("x", 40000)
+	body := head + " 4111 1111 1111 1111 " + strings.Repeat("y", 40000)
+	chunked := func() io.ReadCloser { return io.NopCloser(iotest.OneByteReader(strings.NewReader(body))) }
+	// Log mode: everything flows, the finding is recorded at the end.
+	f := build("log", nil)
+	r := httptest.NewRequest("POST", "http://a/x", strings.NewReader(body))
+	r.Header.Set("Content-Type", "text/plain")
+	in := f.Begin(context.Background(), &filter.Info{})
+	if v := in.Request(r); v.Deny || r.ContentLength != -1 {
+		t.Fatalf("log stream: %+v cl %d", v, r.ContentLength)
+	}
+	out, err := io.ReadAll(r.Body)
+	if err != nil || string(out) != body {
+		t.Fatalf("log stream body: %v %d", err, len(out))
+	}
+	if attrs := fmt.Sprint(in.End()); !strings.Contains(attrs, "card") || !strings.Contains(attrs, "body") {
+		t.Fatalf("log stream attrs: %s", attrs)
+	}
+	// Mask mode: the value is rewritten even when the source delivers a
+	// byte at a time.
+	f = build("mask", nil)
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/plain"}, "Etag": {"x"}}, Body: chunked(), ContentLength: int64(len(body))}
+	in = f.Begin(context.Background(), &filter.Info{})
+	if v := in.Response(resp); v.Deny || resp.ContentLength != -1 || resp.Header.Get("Etag") != "" {
+		t.Fatalf("mask stream: %+v", v)
+	}
+	out, err = io.ReadAll(resp.Body)
+	if err != nil || len(out) != len(body) || strings.Contains(string(out), "4111 1111 1111 1111") || !strings.Contains(string(out), "1111") {
+		t.Fatalf("mask stream body: %v %d %q", err, len(out), string(out[39990:40032]))
+	}
+	// Block mode: the stream ends with ErrBlocked at the finding; bytes
+	// before the held back tail may have flowed.
+	f = build("block", nil)
+	r = httptest.NewRequest("POST", "http://a/x", strings.NewReader(body))
+	r.Header.Set("Content-Type", "text/plain")
+	in = f.Begin(context.Background(), &filter.Info{})
+	if v := in.Request(r); v.Deny {
+		t.Fatalf("block stream denied at request time: %+v", v)
+	}
+	if _, err := io.ReadAll(r.Body); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("block stream error %v", err)
+	}
+	// oversize: skip forwards large bodies unscanned.
+	f = build("block", map[string]any{"oversize": "skip"})
+	r = httptest.NewRequest("POST", "http://a/x", strings.NewReader(body))
+	r.Header.Set("Content-Type", "text/plain")
+	in = f.Begin(context.Background(), &filter.Info{})
+	if v := in.Request(r); v.Deny || r.ContentLength != int64(len(body)) {
+		t.Fatalf("oversize skip: %+v", v)
+	}
+	if out, err := io.ReadAll(r.Body); err != nil || string(out) != body || in.End() != nil {
+		t.Fatalf("oversize skip body: %v %d %v", err, len(out), in.End())
+	}
+	// A body with an unknown length is buffered up to the bound and
+	// streamed beyond it.
+	f = build("log", nil)
+	r = httptest.NewRequest("POST", "http://a/x", strings.NewReader(body))
+	r.ContentLength = -1
+	r.Header.Set("Content-Type", "text/plain")
+	in = f.Begin(context.Background(), &filter.Info{})
+	in.Request(r)
+	if out, err := io.ReadAll(r.Body); err != nil || string(out) != body || !strings.Contains(fmt.Sprint(in.End()), "card") {
+		t.Fatalf("unknown length stream: %v %d", err, len(out))
+	}
+	for i, bad := range []map[string]any{{"encoded": "maybe"}, {"oversize": "buffer"}, {"max_decoded_bytes": 10}} {
+		ph := map[string]any{"action": "log", "max_bytes": 1024}
+		for k, v := range bad {
+			ph[k] = v
+		}
+		if _, err := filtertest.Build("sensitive_data", "dlp", filter.Options{"request": ph}); err == nil {
+			t.Errorf("options %d accepted", i)
 		}
 	}
 }

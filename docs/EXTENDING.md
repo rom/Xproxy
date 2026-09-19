@@ -45,6 +45,7 @@ type Info struct {
     ChallengeVerified bool // the client carries a valid browser challenge cookie
     CaptchaVerified   bool // that cookie was earned through the CAPTCHA tier
     DeviceID          string // device identifier from the challenge cookie, "" without one
+    Automation        []string // automation markers the challenge script saw (webdriver, ...), nil without
 }
 
 type Verdict struct {
@@ -338,8 +339,8 @@ Version 1 guarantees:
   new stages. Version 1 gained `Info.Country`, `Info.JA3`, `Info.JA4`,
   `Info.ALPN`, `Info.ChallengeVerified` and `Verdict.Challenge` in 1.1
   this way, `Info.HoneypotMarked` and `Verdict.Silent` in 1.2,
-  `Env.Events`, `Info.CaptchaVerified`, `Info.DeviceID` and
-  `Verdict.Captcha` in 1.3. The
+  `Env.Events`, `Info.CaptchaVerified`, `Info.DeviceID`, `Info.Automation`
+  and `Verdict.Captcha` in 1.3. The
   WebAssembly ABI gained body `get` kinds and `set_body` in 1.3 at
   version 1.
 - Incompatible changes bump `APIVersion`, are recorded in CHANGELOG.md

@@ -16,6 +16,7 @@ import (
 	"github.com/rom/xproxy/internal/apiinv"
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/cluster"
+	"github.com/rom/xproxy/internal/filters/accountguard"
 	"github.com/rom/xproxy/internal/fleet"
 	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/proxy"
@@ -122,6 +123,19 @@ func (c *Client) ClusterStatus() (*cluster.Status, error) {
 func (c *Client) APIInventory(view string, top int) (*apiinv.Report, error) {
 	var rep apiinv.Report
 	return &rep, c.do("GET", fmt.Sprintf("/v1/api?view=%s&top=%d", url.QueryEscape(view), top), &rep)
+}
+
+// Accounts fetches the account guard view with up to top blocks per
+// endpoint.
+func (c *Client) Accounts(top int) (*accountguard.Report, error) {
+	var rep accountguard.Report
+	return &rep, c.do("GET", fmt.Sprintf("/v1/accounts?top=%d", top), &rep)
+}
+
+// APISkeleton fetches the inventory view as an OpenAPI skeleton (YAML).
+func (c *Client) APISkeleton(view string, top int, title string) ([]byte, error) {
+	var b []byte
+	return b, c.do("GET", fmt.Sprintf("/v1/api?view=%s&top=%d&format=openapi&title=%s", url.QueryEscape(view), top, url.QueryEscape(title)), &b)
 }
 
 // Patches fetches the virtual patches with their counters.

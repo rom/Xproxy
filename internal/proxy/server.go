@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/rom/xproxy/internal/apiinv"
+	"github.com/rom/xproxy/internal/filters/accountguard"
+	"github.com/rom/xproxy/internal/filters/sensitive"
 	"log/slog"
 	"net"
 	"net/http"
@@ -265,6 +267,16 @@ func (s *Server) Stats() Snapshot {
 	if ch := s.challenger.Load(); ch != nil {
 		snap.ChallengesIssued, snap.ChallengesPassed, snap.ChallengesFailed, snap.CaptchasPassed = ch.Stats()
 	}
+	for _, f := range sensitive.Snapshot().Findings {
+		snap.SensitiveFindings += f.Count
+	}
+	ac := accountguard.Status(0)
+	snap.AccountBlocks, snap.AccountCampaigns = ac.Counters.Blocks, ac.Counters.Campaigns
+	for _, g := range ac.Guards {
+		for _, ep := range g.Endpoints {
+			snap.AccountBlocksActive += ep.ActiveBlocks
+		}
+	}
 	ls := s.logs.Stats()
 	snap.LogSyslogSent, snap.LogSyslogDropped, snap.LogJournalDropped, snap.LogRedaction = ls.SyslogSent, ls.SyslogDropped, ls.JournalDropped, ls.Redaction
 	snap.LogSIEMSent, snap.LogSIEMDropped = ls.SIEMSent, ls.SIEMDropped
@@ -435,6 +447,10 @@ func inventoryConfig(cfg *config.Config) apiinv.Config {
 
 // APIInventory builds the inventory view: all, shadow, zombie, versions,
 // documented or undocumented, at most top items.
+// Accounts returns the live state of the account_guard filters with up to
+// top active blocks per endpoint.
+func (s *Server) Accounts(top int) accountguard.Report { return accountguard.Status(top) }
+
 func (s *Server) APIInventory(view string, top int) apiinv.Report {
 	rt := s.rt.Load()
 	docs := map[string][]apiinv.Operation{}

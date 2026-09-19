@@ -27,10 +27,12 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -41,12 +43,28 @@ import (
 
 // Config is the options schema.
 type Config struct {
-	SpecFile     string `json:"spec_file"`
+	// SpecFile is the description on disk, re-read when it changes;
+	// SpecURL fetches it over HTTPS and refreshes it in the background.
+	// Exactly one is set.
+	SpecFile string `json:"spec_file"`
+	SpecURL  string `json:"spec_url"`
+	// Refresh is how often the file is checked for a change (default
+	// 30s) or the URL fetched again (default 5m).
+	Refresh string `json:"refresh"`
+	// Timeout bounds one fetch. Default 10s.
+	Timeout string `json:"timeout"`
+	// CAFile verifies the URL's server with a private CA.
+	CAFile string `json:"ca_file"`
+	// CacheFile keeps the last good fetched description, used when the
+	// URL is unreachable at start.
+	CacheFile    string `json:"cache_file"`
 	BasePath     string `json:"base_path"`
 	UnknownPaths string `json:"unknown_paths"`
 	StrictQuery  bool   `json:"strict_query"`
 	ValidateBody *bool  `json:"validate_body"`
 	MaxBodyBytes int64  `json:"max_body_bytes"`
+	refresh      time.Duration
+	timeout      time.Duration
 }
 
 const (
@@ -54,14 +72,54 @@ const (
 	maxSpecBytes   = 32 << 20
 )
 
-func parse(opts filter.Options) (*Config, *api, error) {
+// parse decodes and checks the options; the description itself is
+// loaded by newGuard (and, for a file, checked at validation too).
+func parse(opts filter.Options) (*Config, error) {
 	var c Config
 	if err := opts.Decode(&c); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	var errs []error
-	if c.SpecFile == "" || !strings.HasPrefix(c.SpecFile, "/") {
-		errs = append(errs, errors.New("spec_file: an absolute path is required"))
+	switch {
+	case c.SpecFile != "" && c.SpecURL != "":
+		errs = append(errs, errors.New("spec_file and spec_url are exclusive"))
+	case c.SpecFile != "":
+		if !strings.HasPrefix(c.SpecFile, "/") {
+			errs = append(errs, errors.New("spec_file: an absolute path is required"))
+		}
+	case c.SpecURL != "":
+		if !specURLOK(c.SpecURL) {
+			errs = append(errs, errors.New("spec_url: must be an https URL (plain http only to localhost)"))
+		}
+	default:
+		errs = append(errs, errors.New("spec_file or spec_url is required"))
+	}
+	if c.CAFile != "" && !strings.HasPrefix(c.CAFile, "/") {
+		errs = append(errs, errors.New("ca_file: must be an absolute path"))
+	}
+	if c.CacheFile != "" && (!strings.HasPrefix(c.CacheFile, "/") || c.SpecURL == "") {
+		errs = append(errs, errors.New("cache_file: an absolute path, only with spec_url"))
+	}
+	c.refresh = 30 * time.Second
+	if c.SpecURL != "" {
+		c.refresh = 5 * time.Minute
+	}
+	if c.Refresh != "" {
+		d, err := time.ParseDuration(c.Refresh)
+		if err != nil || d < time.Second || d > 24*time.Hour {
+			errs = append(errs, errors.New("refresh: must be a duration between 1s and 24h"))
+		} else {
+			c.refresh = d
+		}
+	}
+	c.timeout = 10 * time.Second
+	if c.Timeout != "" {
+		d, err := time.ParseDuration(c.Timeout)
+		if err != nil || d < time.Second || d > time.Minute {
+			errs = append(errs, errors.New("timeout: must be a duration between 1s and 1m"))
+		} else {
+			c.timeout = d
+		}
 	}
 	switch c.UnknownPaths {
 	case "":
@@ -80,13 +138,37 @@ func parse(opts filter.Options) (*Config, *api, error) {
 		errs = append(errs, errors.New("base_path: must start with / and not end with one"))
 	}
 	if len(errs) > 0 {
-		return nil, nil, errors.Join(errs...)
+		return nil, errors.Join(errs...)
 	}
-	a, err := loadSpec(c.SpecFile, c.BasePath)
+	return &c, nil
+}
+
+// specURLOK accepts https anywhere and plain http to the local host.
+func specURLOK(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	h := u.Hostname()
+	return u.Scheme == "http" && (h == "localhost" || h == "127.0.0.1" || h == "::1")
+}
+
+// validate checks the options and, for a file, that the description
+// compiles, so a broken file fails the configuration load.
+func validate(opts filter.Options) error {
+	c, err := parse(opts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("spec_file: %w", err)
+		return err
 	}
-	return &c, a, nil
+	if c.SpecFile != "" {
+		if _, err := loadSpec(c.SpecFile, c.BasePath); err != nil {
+			return fmt.Errorf("spec_file: %w", err)
+		}
+	}
+	return nil
 }
 
 // api is the compiled description.
@@ -121,12 +203,17 @@ type requestBody struct {
 	content  map[string]any // media type -> schema
 }
 
-// loadSpec reads and compiles a JSON or YAML document.
+// loadSpec reads and compiles a JSON or YAML document from a file.
 func loadSpec(path, basePath string) (*api, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // validated configuration path
 	if err != nil {
 		return nil, err
 	}
+	return compileSpec(data, basePath)
+}
+
+// compileSpec compiles a JSON or YAML document.
+func compileSpec(data []byte, basePath string) (*api, error) {
 	if len(data) > maxSpecBytes {
 		return nil, errors.New("larger than 32 MiB")
 	}
@@ -314,21 +401,18 @@ func (a *api) match(method, path string) (*pathItem, map[string]string, bool) {
 	return nil, nil, false
 }
 
-type guard struct {
-	name string
-	cfg  *Config
-	api  *api
-}
-
 func (g *guard) Name() string { return g.name }
 
-func (g *guard) Begin(context.Context, *filter.Info) filter.Instance { return &instance{g: g} }
+func (g *guard) Begin(context.Context, *filter.Info) filter.Instance {
+	return &instance{g: g, api: g.current()}
+}
 
 // Documented reports whether method and path match a documented
 // operation and returns its path template (the API inventory uses it
 // to tell shadow endpoints from documented ones).
 func (g *guard) Documented(method, path string) (string, bool) {
-	pi, _, ok := g.api.match(method, path)
+	a := g.current()
+	pi, _, ok := a.match(method, path)
 	if !ok {
 		return "", false
 	}
@@ -341,21 +425,22 @@ func (g *guard) Documented(method, path string) (string, bool) {
 	if _, has := pi.ops[m]; !has {
 		return "", false
 	}
-	return g.api.basePath + pi.template, true
+	return a.basePath + pi.template, true
 }
 
 // Operations lists every documented method and path template.
 func (g *guard) Operations() []apiinv.Operation {
+	a := g.current()
 	var out []apiinv.Operation
 	add := func(pi *pathItem) {
 		for m := range pi.ops {
-			out = append(out, apiinv.Operation{Method: m, Path: g.api.basePath + pi.template})
+			out = append(out, apiinv.Operation{Method: m, Path: a.basePath + pi.template})
 		}
 	}
-	for _, pi := range g.api.exact {
+	for _, pi := range a.exact {
 		add(pi)
 	}
-	for _, pi := range g.api.templ {
+	for _, pi := range a.templ {
 		add(pi)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -368,12 +453,13 @@ func (g *guard) Operations() []apiinv.Operation {
 }
 
 type instance struct {
-	g *guard
+	g   *guard
+	api *api // the description current when the request began
 }
 
 func (in *instance) Request(r *http.Request) filter.Verdict {
 	g := in.g
-	pi, pathVals, ok := g.api.match(r.Method, r.URL.Path)
+	pi, pathVals, ok := in.api.match(r.Method, r.URL.Path)
 	if !ok {
 		if g.cfg.UnknownPaths == "allow" {
 			return filter.Continue
@@ -432,7 +518,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 			continue
 		}
 		if p.schema != nil {
-			g.api.v.Validate(p.schema, jsonschema.Coerce(p.schema, raw), where, rep, 0)
+			in.api.v.Validate(p.schema, jsonschema.Coerce(p.schema, raw), where, rep, 0)
 		}
 	}
 	if g.cfg.StrictQuery {
@@ -504,7 +590,7 @@ func (in *instance) checkBody(r *http.Request, body *requestBody, rep *jsonschem
 		rep.Add("body", "%s", err.Error())
 		return nil
 	}
-	g.api.v.Validate(schema, value, "body", rep, 0)
+	in.api.v.Validate(schema, value, "body", rep, 0)
 	return nil
 }
 
@@ -531,16 +617,13 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "openapi",
 		Description: "request validation against an OpenAPI 3 description: paths, methods, parameters, media types and JSON bodies",
-		Validate: func(opts filter.Options) error {
-			_, _, err := parse(opts)
-			return err
-		},
-		New: func(name string, opts filter.Options, _ filter.Env) (filter.Filter, error) {
-			cfg, a, err := parse(opts)
+		Validate:    validate,
+		New: func(name string, opts filter.Options, env filter.Env) (filter.Filter, error) {
+			cfg, err := parse(opts)
 			if err != nil {
 				return nil, err
 			}
-			return &guard{name: name, cfg: cfg, api: a}, nil
+			return newGuard(name, cfg, env)
 		},
 	})
 }

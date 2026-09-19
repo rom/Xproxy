@@ -67,6 +67,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `ban TARGET` | Ban an address, CIDR or `ja4:<fingerprint>`; `-duration 1h`, `-reason text` |
 | `unban TARGET` | Remove a ban |
 | `cluster` | Peers, inbound connections and gossip counters |
+| `accounts` | Account guard state: endpoints with tracked keys, active blocks (`-top N` per endpoint), campaign state and the action counters |
 | `spki CERT.pem` | Print the `spki_pins` value of a certificate |
 | `acme` | Managed certificates with expiry, issuer, last error; `acme renew` forces renewal and waits |
 | `icap` | ICAP services with reachability, preview size, ISTag and counters |
@@ -2433,9 +2434,23 @@ routes:
   - {name: orders, hosts: [api.example.com], upstream: api, filters: [orders-spec]}
 ```
 
-`unknown_paths: allow` keeps the description advisory while the
-inventory fills; `deny` turns the same description into the positive
-model once the shadow list is empty.
+The description can also come from a registry (`spec_url`, refreshed
+in the background with a `cache_file` for outages), and a `spec_file`
+is re-read when it changes, so publishing a new version of the
+description needs no proxy reload. `unknown_paths: allow` keeps the
+description advisory while the inventory fills; `deny` turns the same description into the positive
+model once the shadow list is empty. The shortest way from a shadow
+list to a description is the export:
+
+```
+$ xproxyctl api undocumented -openapi -title "Orders (discovered)" > orders-discovered.yaml
+```
+
+The skeleton carries every observed path with named parameters, the
+methods, media types, status classes, credential kinds and an
+`x-xproxy` block with request counts and last seen times; complete the
+schemas and it becomes the `spec_file` (or the `spec_url` document) of
+an `openapi` filter on the route.
 
 ```
 $ xproxyctl api shadow
@@ -2518,9 +2533,16 @@ challenge script also derives a device identifier from stable browser
 properties; it travels in the cookie, shows up as `device` in the
 access log and keys the `device` rate limit above, so a client that
 passed a challenge and then rotates addresses still shares one bucket
-(it falls back to the address until a cookie exists). The identifier is
-computed by the client and is advisory: treat it as correlation, not
-identity. `examples/security/captcha.yaml` is a complete configuration.
+(it falls back to the address until a cookie exists). The account guard
+counts events and distinct accounts per device (`device`,
+`device_accounts` thresholds) and blocks a device wherever it connects
+from; `bot_score` adds `device_shared` when one device arrives from
+many addresses. The script also reports automation markers (WebDriver
+and friends); they reach the log as `automation`, weigh 45 in
+`bot_score` and an `account_guard` endpoint can send such clients
+through the CAPTCHA (`automation: captcha`). The identifier and the
+markers are computed by the client and are advisory: treat them as
+correlation, not identity. `examples/security/captcha.yaml` is a complete configuration.
 
 ## Web GUI
 
@@ -2836,7 +2858,9 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 `client_aborts`, `denied_ban`, `denied_waf`, `waf_detected`, `bans_active`,
 `bans_total`, `cluster_peers`, `cluster_connected`, `shed`, `load_level`,
 `upstream_latency_ms`, `shedding_classes`, `challenges_issued`,
-`challenges_passed`, `challenges_failed`, `captchas_passed`, `reloads`,
+`challenges_passed`, `challenges_failed`, `captchas_passed`,
+`denied_sensitive_data`, `denied_account_abuse`, `sensitive_findings`,
+`account_blocks`, `account_campaigns`, `account_blocks_active`, `reloads`,
 `reload_failures`,
 `open_connections`, `rejected_connections`, `in_flight`.
 

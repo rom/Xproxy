@@ -42,12 +42,16 @@ func (f *fakeEvents) count() int {
 }
 
 func build(t *testing.T, opts filter.Options, ev filter.Events) *guard {
+	return buildNamed(t, "accounts", opts, ev)
+}
+
+func buildNamed(t *testing.T, name string, opts filter.Options, ev filter.Events) *guard {
 	t.Helper()
 	k, _ := filter.Lookup("account_guard")
 	if err := k.Validate(opts); err != nil {
 		t.Fatal(err)
 	}
-	f, err := k.New("accounts", opts, filter.Env{Events: ev})
+	f, err := k.New(name, opts, filter.Env{Events: ev})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,5 +498,166 @@ func TestValidateOptions(t *testing.T) {
 	res := filtertest.Run(f, httptest.NewRequest("GET", "http://a/other", nil), &http.Response{StatusCode: 200})
 	if res.Request.Deny || res.Attrs != nil {
 		t.Fatalf("unmatched: %+v", res)
+	}
+}
+
+func TestStatusAndCounters(t *testing.T) {
+	before := Snapshot()
+	g := buildNamed(t, "status-guard", loginOpts, nil)
+	now := time.Unix(1_700_000_000, 0)
+	g.now = func() time.Time { return now }
+	for i := 0; i < 9; i++ {
+		attempt(g, "203.0.113.5", "anna@example.com", 401, true)
+	}
+	// Ninth attempt reached the pair block (pair 8) on the previous run
+	// or this one; the status shows the endpoint, the block and counts.
+	rep := Status(10)
+	if !rep.Enabled {
+		t.Fatal("status disabled with a live guard")
+	}
+	var ep *EndpointStatus
+	for _, gs := range rep.Guards {
+		if gs.Filter != "status-guard" {
+			continue
+		}
+		for i := range gs.Endpoints {
+			if gs.Endpoints[i].Name == "login" {
+				ep = &gs.Endpoints[i]
+			}
+		}
+	}
+	if ep == nil || ep.Class != "login" || ep.Count != "failures" || ep.TrackedIPs != 1 || ep.TrackedAccts != 1 || ep.TrackedPairs != 1 || ep.ActiveBlocks != 1 || len(ep.Blocks) != 1 || ep.Blocks[0].Kind != "pair" || ep.Blocks[0].By != "pair" {
+		t.Fatalf("endpoint status %+v", ep)
+	}
+	if ep.WindowEvents < 8 || ep.WindowIPs != 1 || !ep.Distributed || ep.Campaign {
+		t.Fatalf("window totals %+v", ep)
+	}
+	after := Snapshot()
+	if after.Events-before.Events < 8 || after.Blocks-before.Blocks != 1 {
+		t.Fatalf("counters before %+v after %+v", before, after)
+	}
+	find := func(c Counters, class, action string) uint64 {
+		for _, a := range c.Actions {
+			if a.Class == class && a.Action == action {
+				return a.Count
+			}
+		}
+		return 0
+	}
+	if find(after, "login", "block")-find(before, "login", "block") < 1 || find(after, "login", "delay")-find(before, "login", "delay") < 1 {
+		t.Fatalf("action counters %+v", after.Actions)
+	}
+	// Top bounds the blocks listed; zero lists none but still counts.
+	mine := func(rep Report) *EndpointStatus {
+		for _, gs := range rep.Guards {
+			if gs.Filter == "status-guard" {
+				return &gs.Endpoints[0]
+			}
+		}
+		return nil
+	}
+	if e := mine(Status(0)); e == nil || e.ActiveBlocks != 1 || len(e.Blocks) != 0 {
+		t.Fatalf("top 0: %+v", e)
+	}
+	// Closing the guard removes it from the view.
+	_ = g.Close()
+	if mine(Status(1)) != nil {
+		t.Fatal("closed guard still listed")
+	}
+}
+
+func TestDeviceAndAutomation(t *testing.T) {
+	ev := &fakeEvents{}
+	g := buildNamed(t, "devices", filter.Options{"endpoints": []any{map[string]any{
+		"name": "login", "class": "login", "paths": []any{"/api/login"}, "identity": map[string]any{"json": "user.name"},
+		"automation": "captcha",
+		"steps": []any{
+			map[string]any{"action": "challenge", "device_accounts": 3},
+			map[string]any{"action": "block", "duration": "10m", "device": 6},
+		}}}}, ev)
+	now := time.Unix(1_700_000_000, 0)
+	g.now = func() time.Time { return now }
+	verified := true
+	run := func(ip, user, device string, automation []string, status int) (filter.Verdict, *instance) {
+		r, info := login(ip, user)
+		info.DeviceID, info.Automation, info.ChallengeVerified = device, automation, verified
+		in := g.Begin(context.Background(), &info).(*instance)
+		v := in.Request(r)
+		if !v.Deny && status > 0 {
+			in.Response(&http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))})
+		}
+		return v, in
+	}
+	// One device, rotating addresses and accounts: the device count of
+	// distinct accounts reaches the challenge step where no address or
+	// account count would.
+	dev := "0123456789abcdef"
+	for i := 0; i < 3; i++ {
+		if v, _ := run("203.0.113."+strconv.Itoa(i+1), "u"+strconv.Itoa(i)+"@example.com", dev, nil, 401); v.Deny {
+			t.Fatalf("attempt %d: %+v", i, v)
+		}
+	}
+	verified = false
+	v, in := run("203.0.113.9", "u9@example.com", dev, nil, 401)
+	if !v.Deny || !v.Challenge || in.by != "device_accounts" || in.counts.deviceAccounts != 3 {
+		t.Fatalf("device accounts: %+v by %q %s", v, in.by, in.counts)
+	}
+	verified = true
+	// A client without a device identifier is judged on the other keys.
+	if v, in := run("203.0.113.10", "u10@example.com", "", nil, 401); v.Deny || in.counts.device != 0 {
+		t.Fatalf("no device: %+v", v)
+	}
+	// Six device events block the device, wherever it connects from; the
+	// block travels to peers under the device kind.
+	// Three failures (the challenged attempt above was not counted)
+	// bring the device to six events.
+	r, info := login("203.0.113.11", "u11@example.com")
+	info.DeviceID, info.ChallengeVerified, info.CaptchaVerified = dev, true, true
+	for i := 0; i < 3; i++ {
+		in := g.Begin(context.Background(), &info).(*instance)
+		in.Request(r)
+		in.Response(&http.Response{StatusCode: 401, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))})
+	}
+	r, info = login("203.0.113.12", "u12@example.com")
+	info.DeviceID, info.ChallengeVerified, info.CaptchaVerified = dev, true, true
+	v = g.Begin(context.Background(), &info).Request(r)
+	if !v.Deny || v.Challenge || !strings.Contains(v.Detail, "login:block:device") {
+		t.Fatalf("device block: %+v", v)
+	}
+	if n := ev.count(); n != 1 || !strings.HasSuffix(ev.published[0].Key, "|device|device|"+dev) {
+		t.Fatalf("device block event: %+v", ev.published)
+	}
+	if v, in := run("198.51.100.77", "fresh@example.com", dev, nil, 200); !v.Deny || in.outcome != "blocked" {
+		t.Fatalf("blocked device from a new address: %+v", v)
+	}
+	if v, _ := run("198.51.100.77", "fresh@example.com", "fedcba9876543210", nil, 200); v.Deny {
+		t.Fatalf("other device blocked: %+v", v)
+	}
+	// Automation markers ask for the CAPTCHA tier; a captcha cookie
+	// passes, a proof cookie does not.
+	v, in = run("198.51.100.80", "auto@example.com", "aaaaaaaaaaaaaaaa", []string{"webdriver", "no_plugins"}, 0)
+	if !v.Deny || !v.Captcha || in.by != "automation" || !strings.Contains(v.Detail, "automation:webdriver+no_plugins") {
+		t.Fatalf("automation: %+v", v)
+	}
+	r, info = login("198.51.100.80", "auto@example.com")
+	info.DeviceID, info.Automation, info.ChallengeVerified, info.CaptchaVerified = "aaaaaaaaaaaaaaaa", []string{"webdriver"}, true, true
+	if v := g.Begin(context.Background(), &info).Request(r); v.Deny {
+		t.Fatalf("automation with captcha cookie: %+v", v)
+	}
+	if Snapshot().Automation == 0 {
+		t.Fatal("automation counter")
+	}
+	// The status view tracks and lists devices.
+	var ep *EndpointStatus
+	for _, gs := range Status(10).Guards {
+		if gs.Filter == "devices" {
+			ep = &gs.Endpoints[0]
+		}
+	}
+	if ep == nil || ep.TrackedDevs != 1 || ep.Blocks[0].Kind != "device" || ep.Blocks[0].Key != dev {
+		t.Fatalf("device status %+v", ep)
+	}
+	if _, err := filtertest.Build("account_guard", "a", filter.Options{"endpoints": []any{map[string]any{"name": "x", "class": "scrape", "paths": []any{"/x"}, "automation": "maybe"}}}); err == nil {
+		t.Fatal("automation maybe accepted")
 	}
 }

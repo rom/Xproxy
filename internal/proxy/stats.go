@@ -44,6 +44,8 @@ type Stats struct {
 	DeniedPolicy          atomic.Uint64
 	DeniedVirtualPatch    atomic.Uint64
 	DeniedNormalization   atomic.Uint64
+	DeniedSensitive       atomic.Uint64
+	DeniedAccount         atomic.Uint64
 	HoneypotHits          atomic.Uint64
 	StaticServed          atomic.Uint64
 	StaticNotFound        atomic.Uint64
@@ -117,6 +119,12 @@ type Snapshot struct {
 	DeniedPolicy          uint64     `json:"denied_policy"`
 	DeniedVirtualPatch    uint64     `json:"denied_virtual_patch"`
 	DeniedNormalization   uint64     `json:"denied_normalization"`
+	DeniedSensitive       uint64     `json:"denied_sensitive_data"`
+	DeniedAccount         uint64     `json:"denied_account_abuse"`
+	SensitiveFindings     uint64     `json:"sensitive_findings"`
+	AccountBlocks         uint64     `json:"account_blocks"`
+	AccountCampaigns      uint64     `json:"account_campaigns"`
+	AccountBlocksActive   int        `json:"account_blocks_active"`
 	HoneypotHits          uint64     `json:"honeypot_hits"`
 	StaticServed          uint64     `json:"static_served"`
 	StaticNotFound        uint64     `json:"static_not_found"`
@@ -220,6 +228,8 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedPolicy:          s.DeniedPolicy.Load(),
 		DeniedVirtualPatch:    s.DeniedVirtualPatch.Load(),
 		DeniedNormalization:   s.DeniedNormalization.Load(),
+		DeniedSensitive:       s.DeniedSensitive.Load(),
+		DeniedAccount:         s.DeniedAccount.Load(),
 		HoneypotHits:          s.HoneypotHits.Load(),
 		StaticServed:          s.StaticServed.Load(),
 		StaticNotFound:        s.StaticNotFound.Load(),

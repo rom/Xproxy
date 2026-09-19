@@ -188,7 +188,7 @@ func (h *harness) client(t *testing.T, name string) *http.Client {
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second) // generous: the race detector and a loaded machine slow the TLS round trips
 	for time.Now().Before(deadline) {
 		if cond() {
 			return

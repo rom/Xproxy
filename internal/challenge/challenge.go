@@ -54,6 +54,41 @@ const (
 	deviceLen   = 8
 )
 
+// Automation markers the challenge script reports, in bit order. The
+// cookie carries them as one byte.
+var Signals = []string{"webdriver", "driver_globals", "chromedriver", "headless_ua", "no_languages", "no_plugins", "zero_window"}
+
+// Cookie is what a verified challenge cookie says about its client.
+type Cookie struct {
+	Tier   int
+	Device string
+	// Automation lists the markers the script observed when the
+	// challenge was solved (a subset of Signals).
+	Automation []string
+}
+
+func parseSignals(s string) byte {
+	var b byte
+	for _, name := range strings.Split(s, ",") {
+		for i, known := range Signals {
+			if name == known {
+				b |= 1 << i
+			}
+		}
+	}
+	return b
+}
+
+func signalNames(b byte) []string {
+	var out []string
+	for i, name := range Signals {
+		if b&(1<<i) != 0 {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // Reserved paths served by the proxy on every host.
 const (
 	VerifyPath = "/.xproxy/challenge"
@@ -201,57 +236,70 @@ func (c *Challenger) Verified(r *http.Request, ip netip.Addr) bool {
 // without a valid cookie) and the device identifier it carries (16 hex
 // characters, or "").
 func (c *Challenger) Check(r *http.Request, ip netip.Addr) (int, string) {
+	ck := c.Inspect(r, ip)
+	return ck.Tier, ck.Device
+}
+
+// Inspect reads the challenge cookie in full; the zero Cookie means no
+// valid cookie.
+func (c *Challenger) Inspect(r *http.Request, ip netip.Addr) Cookie {
 	c.mu.Lock()
 	name := c.cookie
 	c.mu.Unlock()
 	ck, err := r.Cookie(name)
 	if err != nil || len(ck.Value) > 64 {
-		return TierNone, ""
+		return Cookie{}
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(ck.Value)
 	if err != nil {
-		return TierNone, ""
+		return Cookie{}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var exp uint64
-	tier, device := TierProof, ""
+	out := Cookie{Tier: TierProof}
 	switch len(raw) {
 	case 8 + macLen: // cookies issued before the tiered format
 		if !c.macOK(raw[8:], []byte("cookie"), raw[:8], c.ipBytes(ip)) {
-			return TierNone, ""
+			return Cookie{}
 		}
-	case 8 + 1 + deviceLen + macLen:
-		head := raw[:8+1+deviceLen]
-		if !c.macOK(raw[len(head):], []byte("cookie2"), head, c.ipBytes(ip)) {
-			return TierNone, ""
+	case 8 + 1 + deviceLen + macLen, 8 + 1 + deviceLen + 1 + macLen:
+		headLen := len(raw) - macLen
+		label := "cookie2"
+		if headLen == 8+1+deviceLen+1 {
+			label = "cookie3"
+			out.Automation = signalNames(raw[9+deviceLen])
 		}
-		tier = int(raw[8])
-		if tier < TierProof || tier > TierCaptcha {
-			return TierNone, ""
+		if !c.macOK(raw[headLen:], []byte(label), raw[:headLen], c.ipBytes(ip)) {
+			return Cookie{}
+		}
+		out.Tier = int(raw[8])
+		if out.Tier < TierProof || out.Tier > TierCaptcha {
+			return Cookie{}
 		}
 		var zero [deviceLen]byte
 		if dev := raw[9 : 9+deviceLen]; !bytes.Equal(dev, zero[:]) {
-			device = hex.EncodeToString(dev)
+			out.Device = hex.EncodeToString(dev)
 		}
 	default:
-		return TierNone, ""
+		return Cookie{}
 	}
-	exp = binary.BigEndian.Uint64(raw[:8])
+	exp := binary.BigEndian.Uint64(raw[:8])
 	if exp >= 1<<62 || int64(exp) <= c.now().Unix() { //nolint:gosec // range checked
-		return TierNone, ""
+		return Cookie{}
 	}
-	return tier, device
+	return out
 }
 
-// issueCookie returns a cookie value valid for ttl carrying the tier and
-// the device identifier.
-func (c *Challenger) issueCookie(ip netip.Addr, now time.Time, tier int, device []byte) string {
-	buf := make([]byte, 8+1+deviceLen, 8+1+deviceLen+macLen)
+// issueCookie returns a cookie value valid for ttl carrying the tier, the
+// device identifier and the automation markers.
+func (c *Challenger) issueCookie(ip netip.Addr, now time.Time, tier int, device []byte, signals byte) string {
+	head := 8 + 1 + deviceLen + 1
+	buf := make([]byte, head, head+macLen)
 	binary.BigEndian.PutUint64(buf, uint64(now.Add(c.ttl).Unix())) //nolint:gosec // positive time
 	buf[8] = byte(tier)
 	copy(buf[9:], device)
-	buf = append(buf, c.mac([]byte("cookie2"), buf[:8+1+deviceLen], c.ipBytes(ip))...)
+	buf[9+deviceLen] = signals
+	buf = append(buf, c.mac([]byte("cookie3"), buf[:head], c.ipBytes(ip))...)
 	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
@@ -445,8 +493,10 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 	difficulty := c.difficulty
 	cp := c.captcha
 	var device []byte
+	var signals byte
 	if c.device {
 		device = parseDevice(r.PostForm.Get("device"))
+		signals = parseSignals(r.PostForm.Get("signals"))
 	}
 	c.mu.Unlock()
 	// A provider token selects the CAPTCHA tier; otherwise the proof.
@@ -489,7 +539,7 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 	if tier == TierCaptcha {
 		c.CaptchaPassed++
 	}
-	value := c.issueCookie(ip, now, tier, device)
+	value := c.issueCookie(ip, now, tier, device, signals)
 	name := c.cookie
 	maxAge := int(c.ttl.Seconds())
 	c.mu.Unlock()

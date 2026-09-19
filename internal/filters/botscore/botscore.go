@@ -14,7 +14,11 @@
 //	      window: 60s                 # behaviour window per client address
 //	      weights: {ua_bot: 40, ...}  # override a signal's weight
 //
-// Signals (default weights): ua_bot 40 (an automation user agent),
+// Signals (default weights): automation_markers 45 (the challenge script
+// saw WebDriver or another automation marker when the client solved its
+// challenge), device_shared 25 (the client's device identifier arrived
+// from device_addresses or more addresses in the window: one tool behind
+// a proxy pool), ua_bot 40 (an automation user agent),
 // ua_missing 30, browser_headers_missing 25 (a browser user agent without
 // Accept or Accept-Language), fingerprint_mismatch 35 (a browser user
 // agent on a connection whose TLS hello does not look like a browser's),
@@ -56,13 +60,18 @@ type Config struct {
 	RatePerWindow int            `json:"rate_per_window"`
 	Weights       map[string]int `json:"weights"`
 	Reason        string         `json:"reason"`
-	window        time.Duration
-	weights       map[string]int
+	// DeviceAddresses is how many distinct client addresses one device
+	// identifier must appear from within the window before device_shared
+	// fires. Default 5.
+	DeviceAddresses int `json:"device_addresses"`
+	window          time.Duration
+	weights         map[string]int
 }
 
 var defaultWeights = map[string]int{
 	"ua_bot": 40, "ua_missing": 30, "browser_headers_missing": 25, "fingerprint_mismatch": 35,
 	"error_rate": 30, "path_spread": 15, "regular_interval": 20, "high_rate": 15, "honeypot_marked": 40,
+	"automation_markers": 45, "device_shared": 25,
 }
 
 // botUA matches user agents of common automation; a match is a strong
@@ -72,11 +81,14 @@ var botUA = regexp.MustCompile(`(?i)\b(curl|wget|python-requests|python-urllib|g
 var browserUA = regexp.MustCompile(`(?i)\b(chrome|firefox|safari|edg|opera|mozilla)\b`)
 
 func parse(opts filter.Options) (*Config, error) {
-	c := Config{ChallengeAt: 0, DenyAt: 0, LogAt: 30, Window: "60s", RatePerWindow: 300}
+	c := Config{ChallengeAt: 0, DenyAt: 0, LogAt: 30, Window: "60s", RatePerWindow: 300, DeviceAddresses: 5}
 	if err := opts.Decode(&c); err != nil {
 		return nil, err
 	}
 	var errs []error
+	if c.DeviceAddresses < 2 || c.DeviceAddresses > 10000 {
+		errs = append(errs, errors.New("device_addresses: must be between 2 and 10000"))
+	}
 	for name, v := range map[string]int{"challenge_at": c.ChallengeAt, "deny_at": c.DenyAt, "log_at": c.LogAt} {
 		if v < 0 || v > 100 {
 			errs = append(errs, fmt.Errorf("%s: must be between 0 and 100 (0 disables)", name))
@@ -144,8 +156,19 @@ type scorer struct {
 
 	mu      sync.Mutex
 	clients map[netip.Addr]*history
+	devices map[string]*deviceHistory // device identifier -> addresses seen
 	full    bound.Notice
+	devFull bound.Notice
 }
+
+// deviceHistory is the set of addresses one device identifier came from
+// within the window.
+type deviceHistory struct {
+	addrs   map[netip.Addr]struct{}
+	updated time.Time
+}
+
+const maxDevices = 65536
 
 func (s *scorer) Name() string { return s.name }
 
@@ -196,7 +219,14 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		h := s.observe(in.info.ClientIP, in.info.Path)
 		total, errs, paths := h.total, h.errors, len(h.paths)
 		regular := regularInterval(h.times)
+		shared := s.observeDevice(in.info.DeviceID, in.info.ClientIP)
 		s.mu.Unlock()
+		if len(in.info.Automation) > 0 {
+			add("automation_markers")
+		}
+		if shared {
+			add("device_shared")
+		}
 		if in.info.HoneypotMarked {
 			add("honeypot_marked")
 		}
@@ -233,7 +263,11 @@ func (in *instance) detail() string {
 }
 
 func (in *instance) attrs() []any {
-	return []any{"bot_score", in.score, "bot_signals", strings.Join(in.signals, ","), "ja4", in.info.JA4}
+	out := []any{"bot_score", in.score, "bot_signals", strings.Join(in.signals, ","), "ja4", in.info.JA4}
+	if in.info.DeviceID != "" {
+		out = append(out, "device", in.info.DeviceID)
+	}
+	return out
 }
 
 // Response records error outcomes for the behaviour window.
@@ -283,6 +317,40 @@ func (s *scorer) observe(ip netip.Addr, path string) *history {
 		h.paths[path] = struct{}{}
 	}
 	return h
+}
+
+// observeDevice records the address behind a device identifier and
+// reports whether the identifier has come from device_addresses or more
+// addresses in the window; caller holds the lock.
+func (s *scorer) observeDevice(device string, ip netip.Addr) bool {
+	if device == "" {
+		return false
+	}
+	now := s.now()
+	d := s.devices[device]
+	if d == nil || now.Sub(d.updated) > s.cfg.window {
+		if d == nil {
+			if len(s.devices) >= maxDevices {
+				s.devFull.Hit(nil, "bot score device table full; stale devices are evicted", "table", "bot_score_devices", "filter", s.name, "max", maxDevices)
+				for k, dh := range s.devices {
+					if now.Sub(dh.updated) > s.cfg.window {
+						delete(s.devices, k)
+					}
+				}
+				if len(s.devices) >= maxDevices {
+					return false
+				}
+			}
+			d = &deviceHistory{}
+			s.devices[device] = d
+		}
+		d.addrs = make(map[netip.Addr]struct{}, 2)
+	}
+	d.updated = now
+	if len(d.addrs) < 4096 {
+		d.addrs[ip] = struct{}{}
+	}
+	return len(d.addrs) >= s.cfg.DeviceAddresses
 }
 
 // evict drops the stalest quarter of the clients; caller holds the lock.
@@ -369,7 +437,7 @@ func init() {
 			if c.Reason == "" {
 				c.Reason = name
 			}
-			s := &scorer{name: name, cfg: c, ja4Deny: map[string]bool{}, ja4Allow: map[string]bool{}, now: time.Now, clients: map[netip.Addr]*history{}}
+			s := &scorer{name: name, cfg: c, ja4Deny: map[string]bool{}, ja4Allow: map[string]bool{}, now: time.Now, clients: map[netip.Addr]*history{}, devices: map[string]*deviceHistory{}}
 			for _, f := range c.JA4Deny {
 				s.ja4Deny[f] = true
 			}

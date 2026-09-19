@@ -956,6 +956,12 @@ Exposed families: `xproxy_requests_total`, `xproxy_responses_total{class}`,
 `xproxy_connections_rejected_total`, `xproxy_reloads_total{result}`,
 `xproxy_bans_total`, `xproxy_challenges_total{result}` (`issued`,
 `passed`, `failed`, `captcha_passed`),
+`xproxy_sensitive_findings_total{kind}`,
+`xproxy_sensitive_messages_total{direction,outcome}`,
+`xproxy_account_actions_total{class,action}`,
+`xproxy_account_events_total`, `xproxy_account_blocks_total`,
+`xproxy_account_campaigns_total`, `xproxy_account_disposable_total`,
+`xproxy_account_blocks_active`,
 `xproxy_log_sent_total{sink}`, `xproxy_log_dropped_total{sink}`,
 `xproxy_connections_open`, `xproxy_requests_in_flight`,
 `xproxy_bans_active`, `xproxy_load_level`,
@@ -998,7 +1004,15 @@ operation is documented. `xproxyctl api` and `GET /v1/api` show:
 - **superseded** versions: a `v1` still receiving traffic next to a
   `v2` of the same host, method and path;
 - the plain inventory, sorted by requests, with `versions`,
-  `documented` and `undocumented` views.
+  `documented` and `undocumented` views;
+- any view as an OpenAPI 3.0 skeleton (`xproxyctl api undocumented
+  -openapi`, `GET /v1/api?view=undocumented&format=openapi`): one path
+  item per observed template with named path parameters, the observed
+  methods, request and response media types, response status classes,
+  the credential kinds as security schemes, hosts as servers and an
+  `x-xproxy` extension with the traffic evidence; schemas and
+  descriptions are left for the API team to complete, after which the
+  file serves an `openapi` filter.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -1634,6 +1648,7 @@ logs, challenges or denies by threshold.
 | `ja4_deny`, `ja4_allow` | lists of JA4 strings | | Fingerprints scored 100 or 0 regardless of other signals |
 | `window` | duration | `60s` | Behaviour window per client address (5s to 1h) |
 | `rate_per_window` | int | `300` | Requests in the window above which `high_rate` fires |
+| `device_addresses` | int | `5` | Distinct client addresses one device identifier must arrive from within the window before `device_shared` fires (2 to 10000) |
 | `weights` | mapping | see below | Override a signal's weight (0 to 100) |
 | `reason` | string | the filter name | Deny reason |
 
@@ -1646,7 +1661,14 @@ hello without `h2` ALPN or with fewer than ten cipher suites),
 4xx or denied), `path_spread` 15 (fifty or more distinct paths in the
 window), `regular_interval` 20 (eight or more requests with machine-like
 timing), `high_rate` 15, `honeypot_marked` 40 (the client touched a
-honeypot route on this node or, with cluster sharing, on a peer). The
+honeypot route on this node or, with cluster sharing, on a peer),
+`automation_markers` 45 (the challenge cookie says the script saw
+WebDriver, driver globals, chromedriver, a headless user agent, no
+languages, no plugins or a zero sized window when the client solved
+its challenge) and `device_shared` 25 (the cookie's device identifier
+came from `device_addresses` or more addresses in the window: one tool
+behind a proxy pool). The last two need a `challenge` section with
+`device` on and only apply once the client holds a cookie. The
 score is the capped sum; a client that is
 already verified by the challenge is never challenged again. The JA4 of
 every TLS request is logged as `ja4`.
@@ -1670,7 +1692,10 @@ threshold for `duration`, on every node of a cluster. Blocks and
 denials use reason `account_abuse` (a ban trigger category) with
 status `block_status`; the access log carries `account_endpoint`,
 `account_action`, `account_by`, `account_counts`, `account_hash`,
-`account_campaign` and `account_outcome`. Identities are trimmed,
+`account_campaign`, `account_device` and `account_outcome`; `xproxyctl accounts` and
+`GET /v1/accounts` show the live state (tracked keys, active blocks,
+campaigns) and the process wide counters, which the
+`xproxy_account_*` metric families export. Identities are trimmed,
 lower cased and hashed before they are counted or logged. A campaign
 spread over many addresses, each under its own thresholds, is detected
 from the endpoint's totals (`distributed`): while it lasts every
@@ -1686,8 +1711,9 @@ unverified request of the endpoint is challenged (or blocked).
 | `endpoints[].identity` | mapping | required for login, register and reset | Where the account identifier lives: `header`, `query`, `form` (a field of a form body) or `json` (a field of a JSON body, dots descend), tried in that order; bodies are buffered up to `max_body_bytes` and replayed |
 | `endpoints[].failure` | mapping | `{statuses: [401, 403]}` | Failure recognition for `failures` counting: `statuses`, `body_regex` on a 2xx body (up to `max_bytes`, default 65536), `location_regex` on a redirect. A success clears the account's and the pair's failures |
 | `endpoints[].window` | duration | `10m` | Counting window (1m to 24h) |
-| `endpoints[].steps` | list | per class, below | 1 to 8 steps of `{action, delay, duration, ip, account, pair, ip_accounts, account_ips, ip_paths}`; `action` is `log`, `delay` (holds `delay`, 10ms to 10s, default 1s), `challenge`, `captcha` or `block` (for `duration`, default the window); at least one threshold per step |
+| `endpoints[].steps` | list | per class, below | 1 to 8 steps of `{action, delay, duration, ip, account, pair, ip_accounts, account_ips, ip_paths, device, device_accounts}` (`device` counts events per device identifier from the challenge cookie, `device_accounts` distinct accounts per device; a client without a cookie has no device); `action` is `log`, `delay` (holds `delay`, 10ms to 10s, default 1s), `challenge`, `captcha` or `block` (for `duration`, default the window); at least one threshold per step |
 | `endpoints[].distributed` | mapping | `{ips: 50, events: 200}` for login, off otherwise | Campaign detection: both `ips` (distinct addresses with events in the window) and `events` must be reached; `action` `challenge` (default), `captcha` or `block` for `duration` (default the window) |
+| `endpoints[].automation` | `off`, `log`, `challenge`, `captcha`, `block` | `off` | What happens to a client whose challenge cookie carries automation markers (`Info.Automation`: WebDriver, driver globals, chromedriver, a headless user agent, no languages, no plugins, a zero sized window); `captcha` sends it through the CAPTCHA tier |
 | `endpoints[].disposable` | `off`, `log`, `challenge`, `captcha`, `block` | `off` | What happens to an e-mail identity on a disposable domain (built-in list plus `disposable_domains`, subdomains included) |
 | `block_status` | int | `429` | Status of blocks (4xx or 5xx); challenges answer 403 |
 | `max_body_bytes` | int | `65536` | Request body buffered to read an identity (up to 8 MiB); a larger body yields no identity |
@@ -1696,14 +1722,16 @@ unverified request of the endpoint is challenged (or blocked).
 
 Default ladders (thresholds reached within the window): `login` delays
 2s at 5 address, 3 account or 3 pair failures, challenges at 15
-address, 5 account, 5 pair, 10 accounts per address or 5 addresses per
-account, blocks 15m at 50 address, 20 account, 10 pair, 30 accounts
-per address or 20 addresses per account; `register` delays 2s at 2
-requests per address, challenges at 3 per address or 2 per identity,
-blocks 1h at 10 per address or 5 per identity; `reset` delays 2s at 3
-per address or 2 per account, challenges at 5 or 3, blocks 1h at 20 or
-10; `cart` delays 1s at 30, challenges at 60 and blocks 30m at 150
-requests per address or identity; `scrape` delays 1s at 200 requests
+address, 5 account, 5 pair, 10 accounts per address, 5 addresses per
+account or 10 accounts per device, blocks 15m at 50 address, 20
+account, 10 pair, 30 accounts per address, 20 addresses per account, 50
+events or 30 accounts per device; `register` delays 2s at 2 requests
+per address, challenges at 3 per address or device or 2 per identity,
+blocks 1h at 10 per address or device or 5 per identity; `reset`
+delays 2s at 3 per address or 2 per account, challenges at 5 per
+address or device or 3 per account, blocks 1h at 20 or 10; `cart`
+delays 1s at 30, challenges at 60 and blocks 30m at 150 requests per
+address, identity or device; `scrape` delays 1s at 200 requests
 or 100 distinct paths per address, challenges at 400 or 200 and blocks
 1h at 1000. Tables are bounded per endpoint (65536 keys each, oldest
 evicted with a throttled warning). A delay holds a request slot, so
@@ -1755,7 +1783,12 @@ to twenty `details` naming the offending path.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `spec_file` | path | required | The description; loaded at configuration load, so a change needs a reload |
+| `spec_file` | path | one of `spec_file`, `spec_url` | The description on disk, checked at configuration load; afterwards re-read when its change time or size moves, checked at most every `refresh` on the request path, so a spec update needs no reload; a file that no longer compiles keeps the last good description and is logged |
+| `spec_url` | URL | | Fetch the description over HTTPS (plain HTTP only to localhost) at start and every `refresh` in the background with `If-None-Match`; a fetch that fails or does not compile keeps the last good description and is logged. Both filters of the same route expose `Reloads` and `Failures` in the filter log lines |
+| `refresh` | duration | `30s` (file), `5m` (URL) | Check or fetch interval, 1s to 24h |
+| `timeout` | duration | `10s` | One fetch, 1s to 1m; the fetch uses no environment proxy |
+| `ca_file` | path | system roots | Private CA for `spec_url` |
+| `cache_file` | path | none | With `spec_url`: the last good description is written here (mode `0600`) and used when the URL is unreachable at start, so a registry outage does not stop the proxy |
 | `base_path` | path | from `servers[0].url` | Prefix under which the paths are served |
 | `unknown_paths` | `deny`, `allow` | `deny` | `deny` answers 404 for a path the description lacks |
 | `strict_query` | bool | `false` | Refuse query parameters the operation does not declare |
@@ -1825,16 +1858,25 @@ Detects personal and secret data in requests and responses and, per
 direction, logs the findings, masks them or blocks the message. The
 request phase scans the query string (raw and decoded, plus parameter
 names that carry credentials), header values and the body; the
-response phase scans header values and the body. Bodies are buffered
-up to `max_bytes` when their media type is listed and they are not
-content encoded; a larger, encoded or unlisted body passes unscanned.
-Masking rewrites the value in place (`************1111`,
+response phase scans header values and the body. Bodies of a listed
+media type are buffered up to `max_bytes` and scanned whole; `gzip`,
+`deflate`, `br` and `zstd` bodies are decoded first (up to
+`max_decoded_bytes`); a body larger than that is streamed through the
+scanner as it flows, with 4 KiB held back between reads so a value
+split across two reads is still seen; an unlisted media type, an
+unknown encoding or a partial (ranged) body passes unscanned. A masked
+or streamed compressed body is forwarded decoded (the encoding header
+is removed); a streamed body loses its content length. Blocking a
+streamed body cuts the transfer at the finding, since the head of the
+message has already been forwarded. Masking rewrites the value in place (`************1111`,
 `a***@example.com`, the first eight characters of a token) and updates
 `Content-Length`; blocking answers `block_status` with reason
 `sensitive_data`, a detail `response:card,email` and a JSON problem
 naming the kinds found, never the values. The access log carries
 `sensitive_types`, `sensitive_count` and `sensitive_where` for every
-message with a finding, in every mode.
+message with a finding, in every mode; blocks count in
+`denied_sensitive_data`, findings and message outcomes in the
+`xproxy_sensitive_*` metric families.
 
 Built-in detectors: `card` (Luhn checked payment cards), `personnummer`
 (Swedish personal and coordination numbers with a valid date and
@@ -1854,7 +1896,10 @@ or `api_key` with a value; requests only).
 | `request.scan` | list | all | `query`, `headers`, `body` |
 | `response.scan` | list | all | `headers`, `body` |
 | `*.types` | list | text, JSON, XML, form, JavaScript types | Body media types scanned, without parameters |
-| `*.max_bytes` | int | `1048576` | Body buffered per direction (1 to 64 MiB) |
+| `*.max_bytes` | int | `1048576` | Body buffered and scanned whole per direction (1 to 64 MiB); larger bodies are streamed |
+| `*.max_decoded_bytes` | int | 4 × `max_bytes` | A compressed body that decodes to more than this is streamed instead (up to 1 GiB) |
+| `*.encoded` | `scan`, `skip` | `scan` | Decode `gzip`, `deflate`, `br` and `zstd` bodies for scanning, or leave compressed bodies unscanned |
+| `*.oversize` | `stream`, `skip` | `stream` | Scan bodies larger than `max_bytes` as they flow, or leave them unscanned |
 | `*.ignore_headers` | list | request: `Authorization`, `Cookie`, `X-Api-Key`, `Proxy-Authorization`; response: `Set-Cookie` | Headers never scanned or masked |
 | `block_status` | int | `403` | Status for `block` (4xx or 5xx) |
 | `min_findings` | int | `1` | Findings a message needs before mask or block act; fewer are logged only (1 to 64) |
@@ -2137,7 +2182,7 @@ host before routing.
 | `cookie_name` | token | `XPCHAL` | |
 | `exempt_cidrs` | list | `[]` | Never challenged (monitoring, partners) |
 | `title` | string | `Checking your browser` | Heading on the page; no HTML characters |
-| `device` | bool | `true` | The script derives a device identifier from stable browser properties (user agent, languages, platform, cores, memory, screen, pixel ratio, time zone, a canvas rendering) and the cookie carries its first eight bytes: `device` in the access log, `Info.DeviceID` for filters and the `device` rate limit key. Client supplied and therefore advisory, but fixed into the cookie it earned |
+| `device` | bool | `true` | The script derives a device identifier from stable browser properties (user agent, languages, platform, cores, memory, screen, pixel ratio, time zone, a canvas rendering) and the cookie carries its first eight bytes: `device` in the access log, `Info.DeviceID` for filters and the `device` rate limit key; the script also reports automation markers (WebDriver, driver globals, chromedriver, headless user agent, no languages, no plugins, zero sized window), carried as `automation` in the access log and `Info.Automation` for the `bot_score` and `account_guard` filters. Client supplied and therefore advisory, but fixed into the cookie it earned |
 | `captcha` | mapping | none | A hosted CAPTCHA tier, below |
 
 ### challenge.captcha

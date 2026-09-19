@@ -37,6 +37,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/rom/xproxy/internal/filter"
 )
@@ -56,9 +57,20 @@ type Phase struct {
 	// IgnoreHeaders are not scanned (request default: Authorization,
 	// Cookie, X-Api-Key; response default: Set-Cookie).
 	IgnoreHeaders []string `json:"ignore_headers"`
-	scan          map[string]bool
-	types         map[string]bool
-	ignore        map[string]bool
+	// Encoded is scan (default: gzip, deflate, br and zstd bodies are
+	// decoded for scanning, a masked or streamed one is forwarded
+	// decoded) or skip.
+	Encoded string `json:"encoded"`
+	// Oversize is stream (default: a body larger than max_bytes is
+	// scanned as it flows, holding back 4 KiB between chunks; a block
+	// cuts the transfer) or skip.
+	Oversize string `json:"oversize"`
+	// MaxDecodedBytes bounds a decoded body buffered whole; a larger one
+	// is streamed. Default four times max_bytes.
+	MaxDecodedBytes int64 `json:"max_decoded_bytes"`
+	scan            map[string]bool
+	types           map[string]bool
+	ignore          map[string]bool
 }
 
 // Custom is an operator detector.
@@ -129,6 +141,26 @@ func parsePhase(name string, p *Phase, request bool) error {
 	}
 	if p.MaxBytes < 1 || p.MaxBytes > maxMaxBytes {
 		errs = append(errs, fmt.Errorf("%s.max_bytes: must be between 1 and %d", name, maxMaxBytes))
+	}
+	if p.MaxDecodedBytes == 0 {
+		p.MaxDecodedBytes = 4 * p.MaxBytes
+	}
+	if p.MaxDecodedBytes < p.MaxBytes || p.MaxDecodedBytes > 1<<30 {
+		errs = append(errs, fmt.Errorf("%s.max_decoded_bytes: must be between max_bytes and 1073741824", name))
+	}
+	switch p.Encoded {
+	case "":
+		p.Encoded = "scan"
+	case "scan", "skip":
+	default:
+		errs = append(errs, fmt.Errorf("%s.encoded: must be scan or skip", name))
+	}
+	switch p.Oversize {
+	case "":
+		p.Oversize = "stream"
+	case "stream", "skip":
+	default:
+		errs = append(errs, fmt.Errorf("%s.oversize: must be stream or skip", name))
 	}
 	if len(p.Types) == 0 {
 		p.Types = append([]string(nil), DefaultTypes...)
@@ -240,6 +272,7 @@ func (g *guard) Begin(context.Context, *filter.Info) filter.Instance {
 
 type instance struct {
 	g     *guard
+	mu    sync.Mutex // streamed bodies record from the transport's goroutine
 	kinds map[string]int
 	where map[string]bool
 	count int
@@ -284,10 +317,106 @@ func (in *instance) record(where string, f findings) {
 	if f.n == 0 {
 		return
 	}
+	in.mu.Lock()
 	in.where[where] = true
 	in.count += f.n
 	for k, n := range f.kinds {
 		in.kinds[k] += n
+		countFinding(k, n)
+	}
+	in.mu.Unlock()
+}
+
+// total is the findings so far.
+func (in *instance) total() int {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.count
+}
+
+// blockedStream counts a streamed body cut by a block.
+func (in *instance) blockedStream(direction string) {
+	countAction(direction, "blocked")
+}
+
+// body decides how a body is scanned and returns the body to forward
+// (nil when the message must not be touched): a small body is buffered
+// and scanned whole (decoded when compressed), a larger or larger-when-
+// decoded one is streamed through the scanner. newLen is the new
+// content length (-1 for a stream), plain whether the encoding header
+// must go (the body is forwarded decoded) and masked whether bytes
+// changed.
+func (in *instance) body(direction string, p *Phase, h http.Header, rc io.ReadCloser, length int64, mask bool) (out io.ReadCloser, newLen int64, plain, masked bool) {
+	enc, ok := encodingOf(h)
+	if !ok || (enc != "" && p.Encoded == "skip") {
+		return nil, 0, false, false
+	}
+	mt, _, err := mime.ParseMediaType(h.Get("Content-Type"))
+	if err != nil || !p.types[mt] {
+		return nil, 0, false, false
+	}
+	request := direction == "request"
+	where := "body"
+	if !request {
+		where = "response_body"
+	}
+	stream := func(src io.Reader) (io.ReadCloser, int64, bool, bool) {
+		if p.Oversize == "skip" {
+			return nil, 0, false, false
+		}
+		var r io.ReadCloser = struct {
+			io.Reader
+			io.Closer
+		}{src, rc}
+		if enc != "" {
+			d, err := decoder(enc, src)
+			if err != nil {
+				return nil, 0, false, false
+			}
+			r = struct {
+				io.Reader
+				io.Closer
+			}{d, rc}
+		}
+		return &streamScanner{src: r, in: in, direction: direction, where: where, mask: mask, block: p.Action == "block"}, -1, enc != "", mask
+	}
+	if length > p.MaxBytes {
+		return stream(rc)
+	}
+	raw, whole, rest, err := buffer(rc, p.MaxBytes)
+	if err != nil {
+		return io.NopCloser(bytes.NewReader(raw)), int64(len(raw)), false, false
+	}
+	if !whole {
+		return stream(rest)
+	}
+	text := raw
+	if enc != "" {
+		decoded, fits, derr := decode(enc, raw, p.MaxDecodedBytes)
+		switch {
+		case derr != nil:
+			return io.NopCloser(bytes.NewReader(raw)), int64(len(raw)), false, false
+		case !fits:
+			return stream(bytes.NewReader(raw))
+		}
+		text = decoded
+	}
+	scanned, f := in.g.scanText(string(text), request, mask)
+	in.record(where, f)
+	if mask && f.n > 0 {
+		return io.NopCloser(strings.NewReader(scanned)), int64(len(scanned)), enc != "", true
+	}
+	return io.NopCloser(bytes.NewReader(raw)), int64(len(raw)), false, false
+}
+
+// outcome counts what happened to a message with findings.
+func (in *instance) outcome(direction string, found int, masked bool) {
+	switch {
+	case found == 0:
+	case masked:
+		countAction(direction, "masked")
+	default:
+		countAction(direction, "logged")
 	}
 }
 
@@ -322,30 +451,37 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	if p.scan["headers"] {
 		in.scanHeaders(r.Header, p, true, mask)
 	}
-	if p.scan["body"] && r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0 && eligible(p, r.Header) && (r.ContentLength < 0 || r.ContentLength <= p.MaxBytes) {
-		body, whole, rest, err := buffer(r.Body, p.MaxBytes)
-		switch {
-		case err != nil:
-			r.Body = io.NopCloser(bytes.NewReader(body))
-		case !whole:
-			r.Body = rest
-		default:
-			out, f := in.g.scanText(string(body), true, mask)
-			in.record("body", f)
-			if mask && f.n > 0 && in.count >= in.g.cfg.MinFindings {
-				body = []byte(out)
-				r.ContentLength = int64(len(body))
-				r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	streamed := false
+	if p.scan["body"] && r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0 {
+		out, n, plain, masked := in.body("request", p, r.Header, r.Body, r.ContentLength, mask)
+		if out != nil {
+			r.Body = out
+			streamed = n < 0
+			if masked || plain || streamed {
+				r.ContentLength = n
+				if n < 0 {
+					r.Header.Del("Content-Length")
+				} else {
+					r.Header.Set("Content-Length", strconv.FormatInt(n, 10))
+				}
 			}
-			r.Body = io.NopCloser(bytes.NewReader(body))
+			if plain {
+				r.Header.Del("Content-Encoding")
+			}
 		}
 	}
-	if in.count == 0 || in.count < in.g.cfg.MinFindings {
+	count := in.total()
+	if count == 0 || count < in.g.cfg.MinFindings {
+		if !streamed {
+			in.outcome("request", count, false)
+		}
 		return filter.Continue
 	}
 	if p.Action == "block" {
+		countAction("request", "blocked")
 		return in.deny(in.g.cfg.BlockStatus, "request")
 	}
+	in.outcome("request", count, mask)
 	return filter.Continue
 }
 
@@ -354,38 +490,44 @@ func (in *instance) Response(resp *http.Response) filter.Verdict {
 	if p == nil {
 		return filter.Continue
 	}
-	before := in.count
+	before := in.total()
 	mask := p.Action == "mask"
 	if p.scan["headers"] {
 		in.scanHeaders(resp.Header, p, false, mask)
 	}
-	if p.scan["body"] && resp.Body != nil && resp.Body != http.NoBody && eligible(p, resp.Header) && (resp.ContentLength < 0 || resp.ContentLength <= p.MaxBytes) {
-		body, whole, rest, err := buffer(resp.Body, p.MaxBytes)
-		switch {
-		case err != nil:
-			resp.Body = io.NopCloser(bytes.NewReader(body))
-		case !whole:
-			resp.Body = rest
-		default:
-			out, f := in.g.scanText(string(body), false, mask)
-			in.record("response_body", f)
-			if mask && f.n > 0 && in.count-before >= in.g.cfg.MinFindings {
-				body = []byte(out)
-				resp.ContentLength = int64(len(body))
-				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	streamed := false
+	if p.scan["body"] && resp.Body != nil && resp.Body != http.NoBody {
+		out, n, plain, masked := in.body("response", p, resp.Header, resp.Body, resp.ContentLength, mask)
+		if out != nil {
+			resp.Body = out
+			streamed = n < 0
+			if masked || plain || streamed {
+				resp.ContentLength = n
+				if n < 0 {
+					resp.Header.Del("Content-Length")
+				} else {
+					resp.Header.Set("Content-Length", strconv.FormatInt(n, 10))
+				}
 				resp.Header.Del("ETag")
 				resp.Header.Del("Content-MD5")
 			}
-			resp.Body = io.NopCloser(bytes.NewReader(body))
+			if plain {
+				resp.Header.Del("Content-Encoding")
+			}
 		}
 	}
-	found := in.count - before
+	found := in.total() - before
 	if found == 0 || found < in.g.cfg.MinFindings {
+		if !streamed {
+			in.outcome("response", found, false)
+		}
 		return filter.Continue
 	}
 	if p.Action == "block" {
+		countAction("response", "blocked")
 		return in.deny(in.g.cfg.BlockStatus, "response")
 	}
+	in.outcome("response", found, mask)
 	return filter.Continue
 }
 
@@ -450,16 +592,6 @@ func (in *instance) End() []any {
 		return nil
 	}
 	return []any{"sensitive_types", strings.Join(in.kindList(), ","), "sensitive_count", in.count, "sensitive_where", strings.Join(in.whereList(), ",")}
-}
-
-// eligible reports whether a body may be scanned: a listed media type
-// and no content encoding.
-func eligible(p *Phase, h http.Header) bool {
-	if h.Get("Content-Encoding") != "" || h.Get("Content-Range") != "" {
-		return false
-	}
-	mt, _, err := mime.ParseMediaType(h.Get("Content-Type"))
-	return err == nil && p.types[mt]
 }
 
 // buffer reads up to limit+1 bytes; it returns the bytes, whether the

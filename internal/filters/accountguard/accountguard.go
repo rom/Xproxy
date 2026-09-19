@@ -108,8 +108,13 @@ type Step struct {
 	IPAccounts int `json:"ip_accounts"`
 	AccountIPs int `json:"account_ips"`
 	IPPaths    int `json:"ip_paths"`
-	delay      time.Duration
-	duration   time.Duration
+	// Device and DeviceAccounts count per device identifier from the
+	// challenge cookie (events, and distinct accounts per device); a
+	// client without a cookie has no device and these never fire.
+	Device         int `json:"device"`
+	DeviceAccounts int `json:"device_accounts"`
+	delay          time.Duration
+	duration       time.Duration
 }
 
 // Distributed detects a campaign on the endpoint as a whole.
@@ -152,6 +157,10 @@ type Endpoint struct {
 	// a disposable e-mail domain: off (default), log, challenge, captcha
 	// or block.
 	Disposable string `json:"disposable"`
+	// Automation is what happens to a client whose challenge cookie
+	// carries automation markers (WebDriver and the like): off
+	// (default), log, challenge, captcha or block.
+	Automation string `json:"automation"`
 	window     time.Duration
 	methods    map[string]bool
 	exact      map[string]bool
@@ -193,26 +202,26 @@ func defaultSteps(class string) []Step {
 	case "login":
 		return []Step{
 			{Action: "delay", Delay: "2s", IP: 5, Account: 3, Pair: 3},
-			{Action: "challenge", IP: 15, Account: 5, Pair: 5, IPAccounts: 10, AccountIPs: 5},
-			{Action: "block", Duration: "15m", IP: 50, Account: 20, Pair: 10, IPAccounts: 30, AccountIPs: 20},
+			{Action: "challenge", IP: 15, Account: 5, Pair: 5, IPAccounts: 10, AccountIPs: 5, DeviceAccounts: 10},
+			{Action: "block", Duration: "15m", IP: 50, Account: 20, Pair: 10, IPAccounts: 30, AccountIPs: 20, Device: 50, DeviceAccounts: 30},
 		}
 	case "register":
 		return []Step{
 			{Action: "delay", Delay: "2s", IP: 2},
-			{Action: "challenge", IP: 3, Account: 2},
-			{Action: "block", Duration: "1h", IP: 10, Account: 5},
+			{Action: "challenge", IP: 3, Account: 2, Device: 3},
+			{Action: "block", Duration: "1h", IP: 10, Account: 5, Device: 10},
 		}
 	case "reset":
 		return []Step{
 			{Action: "delay", Delay: "2s", IP: 3, Account: 2},
-			{Action: "challenge", IP: 5, Account: 3},
-			{Action: "block", Duration: "1h", IP: 20, Account: 10},
+			{Action: "challenge", IP: 5, Account: 3, Device: 5},
+			{Action: "block", Duration: "1h", IP: 20, Account: 10, Device: 20},
 		}
 	case "cart":
 		return []Step{
-			{Action: "delay", Delay: "1s", IP: 30, Account: 30},
-			{Action: "challenge", IP: 60, Account: 60},
-			{Action: "block", Duration: "30m", IP: 150, Account: 150},
+			{Action: "delay", Delay: "1s", IP: 30, Account: 30, Device: 30},
+			{Action: "challenge", IP: 60, Account: 60, Device: 60},
+			{Action: "block", Duration: "30m", IP: 150, Account: 150, Device: 150},
 		}
 	case "scrape":
 		return []Step{
@@ -347,10 +356,10 @@ func (e *Endpoint) compile(p string) error {
 		if s.duration, err = parseDur(sp+".duration", s.Duration, e.window, time.Second, 7*24*time.Hour); err != nil {
 			fail("%v", err)
 		}
-		if s.IP <= 0 && s.Account <= 0 && s.Pair <= 0 && s.IPAccounts <= 0 && s.AccountIPs <= 0 && s.IPPaths <= 0 {
-			fail("%s: at least one threshold (ip, account, pair, ip_accounts, account_ips, ip_paths)", sp)
+		if s.IP <= 0 && s.Account <= 0 && s.Pair <= 0 && s.IPAccounts <= 0 && s.AccountIPs <= 0 && s.IPPaths <= 0 && s.Device <= 0 && s.DeviceAccounts <= 0 {
+			fail("%s: at least one threshold (ip, account, pair, ip_accounts, account_ips, ip_paths, device, device_accounts)", sp)
 		}
-		for name, v := range map[string]int{"ip": s.IP, "account": s.Account, "pair": s.Pair, "ip_accounts": s.IPAccounts, "account_ips": s.AccountIPs, "ip_paths": s.IPPaths} {
+		for name, v := range map[string]int{"ip": s.IP, "account": s.Account, "pair": s.Pair, "ip_accounts": s.IPAccounts, "account_ips": s.AccountIPs, "ip_paths": s.IPPaths, "device": s.Device, "device_accounts": s.DeviceAccounts} {
 			if v < 0 || v > 1_000_000 {
 				fail("%s.%s: must be between 0 and 1000000", sp, name)
 			}
@@ -383,6 +392,11 @@ func (e *Endpoint) compile(p string) error {
 	}
 	if e.Disposable != "" && e.Disposable != "off" && e.Identity == (Identity{}) {
 		fail("disposable: needs an identity")
+	}
+	switch e.Automation {
+	case "", "off", "log", "challenge", "captcha", "block":
+	default:
+		fail("automation: must be off, log, challenge, captcha or block")
 	}
 	return errors.Join(errs...)
 }
@@ -450,6 +464,7 @@ type table struct {
 	ips      map[string]*entry
 	accounts map[string]*entry
 	pairs    map[string]*entry
+	devices  map[string]*entry
 	// campaign detection
 	cStart        time.Time
 	cEvents       int
@@ -459,7 +474,7 @@ type table struct {
 }
 
 func newTable() *table {
-	return &table{ips: map[string]*entry{}, accounts: map[string]*entry{}, pairs: map[string]*entry{}, cIPs: map[string]struct{}{}}
+	return &table{ips: map[string]*entry{}, accounts: map[string]*entry{}, pairs: map[string]*entry{}, devices: map[string]*entry{}, cIPs: map[string]struct{}{}}
 }
 
 type guard struct {
@@ -481,11 +496,15 @@ func (g *guard) Begin(ctx context.Context, info *filter.Info) filter.Instance {
 
 // counts are the numbers one request is judged by.
 type counts struct {
-	ip, account, pair, ipAccounts, accountIPs, ipPaths int
+	ip, account, pair, ipAccounts, accountIPs, ipPaths, device, deviceAccounts int
 }
 
 func (c counts) String() string {
-	return fmt.Sprintf("ip:%d account:%d pair:%d ip_accounts:%d account_ips:%d ip_paths:%d", c.ip, c.account, c.pair, c.ipAccounts, c.accountIPs, c.ipPaths)
+	s := fmt.Sprintf("ip:%d account:%d pair:%d ip_accounts:%d account_ips:%d ip_paths:%d", c.ip, c.account, c.pair, c.ipAccounts, c.accountIPs, c.ipPaths)
+	if c.device > 0 {
+		s += fmt.Sprintf(" device:%d device_accounts:%d", c.device, c.deviceAccounts)
+	}
+	return s
 }
 
 // reached reports whether the step fires on the counts.
@@ -503,6 +522,10 @@ func (s *Step) reached(c counts) (string, bool) {
 		return "account_ips", true
 	case s.IPPaths > 0 && c.ipPaths >= s.IPPaths:
 		return "ip_paths", true
+	case s.Device > 0 && c.device >= s.Device:
+		return "device", true
+	case s.DeviceAccounts > 0 && c.deviceAccounts >= s.DeviceAccounts:
+		return "device_accounts", true
 	}
 	return "", false
 }
@@ -514,6 +537,7 @@ type instance struct {
 	ep       *Endpoint
 	ip       string
 	hash     string
+	device   string
 	action   string
 	by       string
 	counts   counts
@@ -622,7 +646,13 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		return filter.Continue
 	}
 	ep := in.ep
+	defer func() {
+		if in.action != "" {
+			countAction(ep.Class, in.action)
+		}
+	}()
 	in.ip = in.info.ClientIP.String()
+	in.device = in.info.DeviceID
 	id := in.identity(r)
 	if id != "" {
 		in.hash = hashIdentity(id)
@@ -630,12 +660,12 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	now := g.now()
 	t := ep.table
 	t.mu.Lock()
-	blocked, by, until := t.blocked(now, in.ip, in.hash)
+	blocked, by, until := t.blocked(now, in.ip, in.hash, in.device)
 	if !blocked && !ep.failures {
-		t.event(now, ep, in.ip, in.hash, in.info.Path)
+		t.event(now, ep, in.ip, in.hash, in.device, in.info.Path)
 		g.checkCampaign(now, ep)
 	}
-	in.counts = t.counts(now, in.ip, in.hash, ep.window)
+	in.counts = t.counts(now, in.ip, in.hash, in.device, ep.window)
 	in.campaign = ep.Distributed != nil && now.Before(t.campaignUntil)
 	t.mu.Unlock()
 	if blocked {
@@ -645,6 +675,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	// Disposable registration addresses.
 	if ep.Disposable != "" && ep.Disposable != "off" && id != "" && g.disposableAddress(id) {
 		in.by = "disposable_email"
+		counters.disposable.Add(1)
 		switch ep.Disposable {
 		case "block":
 			in.action = "block"
@@ -656,6 +687,25 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 			}
 		default:
 			in.action = "log"
+		}
+	}
+	// Automation markers from the challenge cookie.
+	if ep.Automation != "" && ep.Automation != "off" && len(in.info.Automation) > 0 {
+		in.by = "automation"
+		counters.automation.Add(1)
+		switch ep.Automation {
+		case "block":
+			in.action = "block"
+			return in.deny(ep.Name+":automation:"+strings.Join(in.info.Automation, "+"), "block")
+		case "challenge", "captcha":
+			in.action = ep.Automation
+			if !in.verified(ep.Automation) {
+				return in.deny(ep.Name+":automation:"+strings.Join(in.info.Automation, "+"), ep.Automation)
+			}
+		default:
+			if in.action == "" {
+				in.action = "log"
+			}
 		}
 	}
 	// The ladder.
@@ -695,7 +745,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		if !campaignActs {
 			// A campaign blocks by presence, not per key.
 			t.mu.Lock()
-			key := t.block(now, in.by, in.ip, in.hash, d, ep.window)
+			key := t.block(now, in.by, in.ip, in.hash, in.device, d, ep.window)
 			t.mu.Unlock()
 			g.publish(ep.Name, in.by, key, now.Add(d))
 		}
@@ -748,6 +798,9 @@ func (in *instance) attrs() []any {
 	if in.hash != "" {
 		out = append(out, "account_hash", in.hash)
 	}
+	if in.device != "" {
+		out = append(out, "account_device", in.device)
+	}
 	if in.campaign {
 		out = append(out, "account_campaign")
 	}
@@ -786,7 +839,7 @@ func (in *instance) Response(resp *http.Response) filter.Verdict {
 	t.mu.Lock()
 	if failed {
 		in.outcome = "failure"
-		t.event(now, ep, in.ip, in.hash, in.info.Path)
+		t.event(now, ep, in.ip, in.hash, in.device, in.info.Path)
 		in.g.checkCampaign(now, ep)
 	} else if resp.StatusCode < 400 {
 		in.outcome = "success"
@@ -801,7 +854,7 @@ func (in *instance) Response(resp *http.Response) filter.Verdict {
 			}
 		}
 	}
-	in.counts = t.counts(now, in.ip, in.hash, ep.window)
+	in.counts = t.counts(now, in.ip, in.hash, in.device, ep.window)
 	t.mu.Unlock()
 	return filter.Continue
 }
@@ -868,7 +921,8 @@ func add(set *map[string]struct{}, v string, limit int) {
 }
 
 // event records one counted event; caller holds the lock.
-func (t *table) event(now time.Time, ep *Endpoint, ip, hash, path string) {
+func (t *table) event(now time.Time, ep *Endpoint, ip, hash, device, path string) {
+	counters.events.Add(1)
 	w := ep.window
 	ie := t.get(t.ips, ip, now, w)
 	ie.n++
@@ -879,6 +933,13 @@ func (t *table) event(now time.Time, ep *Endpoint, ip, hash, path string) {
 		ae.n++
 		add(&ae.distinct, ip, maxDistinct)
 		t.get(t.pairs, ip+"|"+hash, now, w).n++
+	}
+	if device != "" {
+		de := t.get(t.devices, device, now, w)
+		de.n++
+		if hash != "" {
+			add(&de.distinct, hash, maxDistinct)
+		}
 	}
 	if ep.Distributed != nil {
 		if now.Sub(t.cStart) > w {
@@ -893,7 +954,7 @@ func (t *table) event(now time.Time, ep *Endpoint, ip, hash, path string) {
 
 // counts reads the current numbers without creating entries; caller
 // holds the lock.
-func (t *table) counts(now time.Time, ip, hash string, w time.Duration) counts {
+func (t *table) counts(now time.Time, ip, hash, device string, w time.Duration) counts {
 	var c counts
 	live := func(e *entry, window time.Duration) *entry {
 		if e == nil || now.Sub(e.start) > window {
@@ -912,12 +973,17 @@ func (t *table) counts(now time.Time, ip, hash string, w time.Duration) counts {
 			c.pair = e.n
 		}
 	}
+	if device != "" {
+		if e := live(t.devices[device], w); e != nil {
+			c.device, c.deviceAccounts = e.n, len(e.distinct)
+		}
+	}
 	return c
 }
 
 // blocked reports an active block on the address, the account or the
 // pair; caller holds the lock.
-func (t *table) blocked(now time.Time, ip, hash string) (bool, string, time.Time) {
+func (t *table) blocked(now time.Time, ip, hash, device string) (bool, string, time.Time) {
 	check := func(e *entry) (bool, string, time.Time) {
 		if e != nil && now.Before(e.blockedUntil) {
 			return true, e.blockedBy, e.blockedUntil
@@ -935,12 +1001,17 @@ func (t *table) blocked(now time.Time, ip, hash string) (bool, string, time.Time
 			return ok, by, until
 		}
 	}
+	if device != "" {
+		if ok, by, until := check(t.devices[device]); ok {
+			return ok, by, until
+		}
+	}
 	return false, "", time.Time{}
 }
 
 // block marks the key behind a reached threshold and returns the
 // cluster key (kind|key); caller holds the lock.
-func (t *table) block(now time.Time, by, ip, hash string, d, window time.Duration) string {
+func (t *table) block(now time.Time, by, ip, hash, device string, d, window time.Duration) string {
 	m, kind, key := t.ips, "ip", ip
 	switch by {
 	case "account", "account_ips":
@@ -951,11 +1022,16 @@ func (t *table) block(now time.Time, by, ip, hash string, d, window time.Duratio
 		if hash != "" {
 			m, kind, key = t.pairs, "pair", ip+"|"+hash
 		}
+	case "device", "device_accounts":
+		if device != "" {
+			m, kind, key = t.devices, "device", device
+		}
 	}
 	e := t.get(m, key, now, window)
 	if until := now.Add(d); until.After(e.blockedUntil) {
 		e.blockedUntil, e.blockedBy = until, by
 	}
+	counters.blocks.Add(1)
 	return kind + "|" + key
 }
 
@@ -968,6 +1044,7 @@ func (g *guard) checkCampaign(now time.Time, ep *Endpoint) {
 		return
 	}
 	t.campaignUntil = now.Add(d.duration)
+	counters.campaigns.Add(1)
 	g.publish(ep.Name, "campaign", "campaign", t.campaignUntil)
 	if g.log != nil {
 		g.log.Warn("account guard: distributed campaign detected", "filter", g.name, "endpoint", ep.Name, "events", t.cEvents, "ips", len(t.cIPs), "until", t.campaignUntil)
@@ -1019,6 +1096,8 @@ func (g *guard) receive(e filter.Event) {
 		m = t.accounts
 	case "pair":
 		m = t.pairs
+	case "device":
+		m = t.devices
 	default:
 		return
 	}
@@ -1078,6 +1157,7 @@ func newGuard(name string, opts filter.Options, env filter.Env) (*guard, error) 
 	if g.events != nil {
 		g.events.Subscribe(EventKind, g.receive)
 	}
+	register(g)
 	return g, nil
 }
 

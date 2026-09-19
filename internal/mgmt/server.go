@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/rom/xproxy/internal/apiinv"
 	"io"
 	"net"
 	"net/http"
@@ -216,6 +217,18 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		writeJSON(w, 200, map[string]int{"purged": s.proxy.PurgeDNS()})
 	})
 	mux.HandleFunc("GET /v1/patches", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.VirtualPatches()) })
+	mux.HandleFunc("GET /v1/accounts", func(w http.ResponseWriter, r *http.Request) {
+		top := 50
+		if t := r.URL.Query().Get("top"); t != "" {
+			n, err := strconv.Atoi(t)
+			if err != nil || n < 0 || n > 100000 {
+				writeJSON(w, 400, result{Error: "top must be between 0 and 100000"})
+				return
+			}
+			top = n
+		}
+		writeJSON(w, 200, s.proxy.Accounts(top))
+	})
 	mux.HandleFunc("GET /v1/api", func(w http.ResponseWriter, r *http.Request) {
 		top := 100
 		if t := r.URL.Query().Get("top"); t != "" {
@@ -235,7 +248,20 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 			writeJSON(w, 400, result{Error: "view must be all, shadow, zombie, versions, documented or undocumented"})
 			return
 		}
-		writeJSON(w, 200, s.proxy.APIInventory(view, top))
+		rep := s.proxy.APIInventory(view, top)
+		if r.URL.Query().Get("format") == "openapi" {
+			out, err := apiinv.SkeletonYAML(rep, r.URL.Query().Get("title"), time.Now())
+			if err != nil {
+				writeJSON(w, 500, result{Error: err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(200)
+			_, _ = w.Write(out)
+			return
+		}
+		writeJSON(w, 200, rep)
 	})
 	mux.HandleFunc("GET /v1/honeypot", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "marks_dropped": s.proxy.HoneypotMarksDropped(), "decoys": proxy.DecoyNames()})

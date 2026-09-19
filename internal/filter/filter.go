@@ -44,6 +44,11 @@ type Info struct {
 	// DeviceID is the device identifier carried by the challenge cookie
 	// (16 hex characters), or "" without one.
 	DeviceID string
+	// Automation lists the automation markers (webdriver, driver
+	// globals, chromedriver, headless user agent, no languages, no
+	// plugins, zero window) the challenge script observed when the
+	// client solved its challenge; nil without a cookie or markers.
+	Automation []string
 	// HoneypotMarked is true when the client hit a honeypot route within
 	// its mark window.
 	HoneypotMarked bool
