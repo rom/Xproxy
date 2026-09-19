@@ -218,6 +218,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- Grafana dashboards (overview, security) and Prometheus alert rules
+  shipped with the product under `deploy/grafana` and
+  `deploy/prometheus`, installed to `/usr/share/xproxy`, checked by a
+  test against the exported metric families.
 - SIEM export: a `siem` log sink that posts batches over HTTPS as
   newline delimited JSON, the Splunk HTTP Event Collector envelope, CEF
   or LEEF (`logging.siem`, credential from `auth_file`), and CEF or LEEF

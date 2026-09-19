@@ -195,6 +195,10 @@ install: build
 	install -D -m 0644 docs/man/xproxyctl.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxyctl.8
 	install -D -m 0644 docs/man/xproxy.yaml.5 $(DESTDIR)$(PREFIX)/share/man/man5/xproxy.yaml.5
 	install -D -m 0644 internal/config/schema/xproxy.schema.json $(DESTDIR)$(PREFIX)/share/xproxy/xproxy.schema.json
+	install -D -m 0644 deploy/grafana/xproxy-overview.json $(DESTDIR)$(PREFIX)/share/xproxy/grafana/xproxy-overview.json
+	install -D -m 0644 deploy/grafana/xproxy-security.json $(DESTDIR)$(PREFIX)/share/xproxy/grafana/xproxy-security.json
+	install -D -m 0644 deploy/grafana/README.md $(DESTDIR)$(PREFIX)/share/xproxy/grafana/README.md
+	install -D -m 0644 deploy/prometheus/xproxy-alerts.yaml $(DESTDIR)$(PREFIX)/share/xproxy/prometheus/xproxy-alerts.yaml
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/share/bash-completion/completions $(DESTDIR)$(PREFIX)/share/zsh/site-functions $(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d
 	$(BIN)/xproxyctl completion bash > $(DESTDIR)$(PREFIX)/share/bash-completion/completions/xproxyctl
 	$(BIN)/xproxyctl completion zsh > $(DESTDIR)$(PREFIX)/share/zsh/site-functions/_xproxyctl

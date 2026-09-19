@@ -2187,6 +2187,36 @@ shows the same numbers the TUI and GUI graph, sampled in process for the
 configured retention, so a graph is available on a host with no
 monitoring stack at all.
 
+### Grafana dashboards and alert rules
+
+Two Grafana dashboards and a Prometheus rule file ship with the product
+(`deploy/grafana`, `deploy/prometheus`; installed under
+`/usr/share/xproxy/grafana` and `/usr/share/xproxy/prometheus`):
+
+- `xproxy-overview.json`: requests, status classes, request and
+  upstream latency percentiles, upstream failures and healthy endpoints,
+  per route rates and p99, bytes, load and shedding, in flight and
+  queued requests, cache, certificate expiry, reloads and a node table.
+- `xproxy-security.json`: denied requests by reason, WAF blocks and
+  detect mode hits, bans, challenges, rate limit decisions per policy,
+  filter denials, connections rejected at accept, honeypot and ICAP
+  results, forward proxy policy, DNS filtering, log delivery per sink,
+  cluster peers.
+- `xproxy-alerts.yaml`: availability rules (node down, no healthy
+  endpoint, unhealthy endpoint, circuit open, 5xx ratio, p99 latency,
+  shedding, queue refusals), operations rules (failed reload,
+  certificate expiring at 14 and 3 days, log drops and write errors,
+  cluster peer down, ICAP unreachable) and security rules (denies at
+  ten times the hourly baseline, WAF block spike, ban wave, honeypot
+  activity, saturated rate limit policy), each with a severity label
+  and a description that names the command to look at.
+
+Import the dashboards (Dashboards > New > Import) and pick the
+Prometheus data source; both have an `instance` variable and link to
+each other. Add the rule file to `rule_files` in `prometheus.yml`. A
+test in the repository checks that every metric the assets name is one
+the proxy exports, so they stay current with the binary.
+
 ## Logs
 
 All streams are JSON lines with `time`, `level`, `msg` and `stream`.

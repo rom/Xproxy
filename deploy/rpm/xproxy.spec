@@ -107,6 +107,10 @@ install -D -m 0644 docs/man/xproxy.8      %{buildroot}%{_mandir}/man8/xproxy.8
 install -D -m 0644 docs/man/xproxyctl.8   %{buildroot}%{_mandir}/man8/xproxyctl.8
 install -D -m 0644 docs/man/xproxy.yaml.5 %{buildroot}%{_mandir}/man5/xproxy.yaml.5
 install -D -m 0644 internal/config/schema/xproxy.schema.json %{buildroot}%{_datadir}/xproxy/xproxy.schema.json
+install -D -m 0644 deploy/grafana/xproxy-overview.json %{buildroot}%{_datadir}/xproxy/grafana/xproxy-overview.json
+install -D -m 0644 deploy/grafana/xproxy-security.json %{buildroot}%{_datadir}/xproxy/grafana/xproxy-security.json
+install -D -m 0644 deploy/grafana/README.md %{buildroot}%{_datadir}/xproxy/grafana/README.md
+install -D -m 0644 deploy/prometheus/xproxy-alerts.yaml %{buildroot}%{_datadir}/xproxy/prometheus/xproxy-alerts.yaml
 install -d -m 0755 %{buildroot}%{_datadir}/bash-completion/completions %{buildroot}%{_datadir}/zsh/site-functions %{buildroot}%{_datadir}/fish/vendor_completions.d
 bin/xproxyctl completion bash > %{buildroot}%{_datadir}/bash-completion/completions/xproxyctl
 bin/xproxyctl completion zsh  > %{buildroot}%{_datadir}/zsh/site-functions/_xproxyctl
@@ -166,6 +170,8 @@ fi
 %{_mandir}/man5/xproxy.yaml.5*
 %dir %{_datadir}/xproxy
 %{_datadir}/xproxy/xproxy.schema.json
+%{_datadir}/xproxy/grafana
+%{_datadir}/xproxy/prometheus
 %{_datadir}/bash-completion/completions/xproxyctl
 %{_datadir}/zsh/site-functions/_xproxyctl
 %{_datadir}/fish/vendor_completions.d/xproxyctl.fish

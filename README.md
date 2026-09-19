@@ -155,6 +155,7 @@ an identifier from the access log to the upstream.
   schema of the configuration that gives editors completion and inline
   documentation
 - Prometheus exposition with latency histograms and per route counters,
+  Grafana dashboards and alert rules shipped with the product,
   on the socket or a hardened TCP endpoint, an in-process series buffer
   for graphs, and OpenTelemetry export of metrics, traces (W3C trace
   context propagated to upstreams) and logs
