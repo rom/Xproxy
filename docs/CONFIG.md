@@ -1256,11 +1256,34 @@ mirrored. Upgrade requests are never mirrored. Only routes with an
 | `max_body_bytes` | int | `1048576` | Largest body buffered for mirroring; at most 64 MiB |
 | `timeout` | duration | `5s` | Bound on the copy including its response; at most 5m |
 | `max_in_flight` | int | `64` | Copies in flight for this route; beyond it copies are dropped and counted |
+| `diff` | object | none | Compare the shadow response with the live one and report the differences; see below |
 
 The access log carries `mirror: sent`, `dropped` or `body_too_large`.
 Counters: `mirror_sent`, `mirror_dropped`, `mirror_skipped`,
 `mirror_failed`; metric `xproxy_mirror_total{outcome}`. Mirror
 responses appear in the error log at debug level with their status.
+
+#### routes[].mirror.diff
+
+Turns the mirror into traffic shadowing for validating a new backend
+against the current one. The live response is summarised as it streams to
+the client — status, the listed headers, body length and a digest of the
+first `max_body_bytes` — without buffering it, and the shadow response is
+summarised the same way; the two are compared once the client has finished
+reading. The status is always compared, then the listed headers, then the
+body; the first category that differs is the reported result. Comparison
+runs in the background and never affects the client. When the live response
+does not finish within the mirror `timeout`, the comparison is skipped.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `sample_percent` | int | `100` | Share of differing exchanges whose detail is logged; the metric counts every comparison |
+| `headers` | list | `[]` | Response header names compared between the two responses (pick stable ones; `Date`, `ETag` and the like differ legitimately) |
+| `max_body_bytes` | int | `65536` | Bytes of each body digested for the comparison; at most 64 MiB |
+
+Outcomes are counted in `xproxy_mirror_diff_total{result}` with `result` one
+of `match`, `status`, `header` or `body`, and differences are logged (sampled)
+in the error log with the request id, route, result and a short detail.
 
 ### routes[].static
 

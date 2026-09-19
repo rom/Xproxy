@@ -1528,6 +1528,27 @@ type RouteMirror struct {
 	// MaxInFlight bounds copies in flight for this route; beyond it
 	// copies are dropped and counted. Default 64.
 	MaxInFlight int `yaml:"max_in_flight"`
+	// Diff compares the shadow response with the live one and reports the
+	// differences, turning the mirror into traffic shadowing for
+	// validating a new backend against the current one. Off when unset.
+	Diff *MirrorDiff `yaml:"diff"`
+}
+
+// MirrorDiff configures the comparison of a shadow response with the live
+// response. Status is always compared; headers are compared for the listed
+// names; bodies are compared by length and digest up to MaxBodyBytes. The
+// outcome is counted in xproxy_mirror_diff_total and a sampled share of the
+// differing exchanges is logged.
+type MirrorDiff struct {
+	// SamplePercent is the share of shadowed requests whose difference is
+	// logged (metrics count every one). Default 100.
+	SamplePercent int `yaml:"sample_percent"`
+	// Headers are the response header names compared between the two
+	// responses. Empty compares no headers (status and body only).
+	Headers []string `yaml:"headers"`
+	// MaxBodyBytes bounds the bytes of each response digested for the body
+	// comparison. Default 64 KiB.
+	MaxBodyBytes int64 `yaml:"max_body_bytes"`
 }
 
 // Cache bounds the response cache. Default 64 MiB total, 1 MiB per

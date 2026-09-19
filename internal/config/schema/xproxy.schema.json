@@ -2033,6 +2033,28 @@
       },
       "additionalProperties": false
     },
+    "MirrorDiff": {
+      "description": "MirrorDiff configures the comparison of a shadow response with the live response. Status is always compared; headers are compared for the listed names; bodies are compared by length and digest up to MaxBodyBytes. The outcome is counted in xproxy_mirror_diff_total and a sampled share of the differing exchanges is logged.",
+      "type": "object",
+      "properties": {
+        "headers": {
+          "description": "Headers are the response header names compared between the two responses. Empty compares no headers (status and body only).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_body_bytes": {
+          "description": "MaxBodyBytes bounds the bytes of each response digested for the body comparison. Default 64 KiB.",
+          "type": "integer"
+        },
+        "sample_percent": {
+          "description": "SamplePercent is the share of shadowed requests whose difference is logged (metrics count every one). Default 100.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "Normalization": {
       "description": "Normalization decides what the proxy does with encoding tricks in the request target before anything else looks at it. Routing already decodes and cleans the path; these checks refuse the forms that make two components disagree about what a request means, and optionally fold Unicode spellings for routing.",
       "type": "object",
@@ -2972,6 +2994,14 @@
       "description": "RouteMirror sends a copy of each request (sampled by percent) to another upstream in the background. The copy carries the same path rules, host and header operations as the live request plus X-Xproxy-Mirror: 1; its response is discarded and never affects the client. Bodies are buffered up to max_body_bytes; larger requests are proxied but not mirrored.",
       "type": "object",
       "properties": {
+        "diff": {
+          "description": "Diff compares the shadow response with the live one and reports the differences, turning the mirror into traffic shadowing for validating a new backend against the current one. Off when unset.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MirrorDiff"
+            }
+          ]
+        },
         "max_body_bytes": {
           "description": "MaxBodyBytes bounds the buffered body. Default 1 MiB.",
           "type": "integer"

@@ -222,6 +222,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Traffic shadowing with response diffing (`routes[].mirror.diff`): compare
+  the shadow upstream's response with the live one — status, chosen headers
+  and a body digest — to validate a new backend under real traffic. The
+  live response is summarised as it streams (no buffering, no client
+  impact); outcomes are counted in `xproxy_mirror_diff_total{result}` and
+  sampled differences are logged.
 - LDAP and Active Directory authentication (`ldap_auth` filter): HTTP Basic
   credentials are verified against an LDAP server, by a direct bind
   (`bind_dn_template`) or a service-account search then bind (`bind_dn`,

@@ -4883,9 +4883,65 @@ T}	T{
 T}	T{
 Copies in flight for this route;\: beyond it copies are dropped and counted
 T}
+T{
+\fBdiff\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Compare the shadow response with the live one and report the differences;\: see below
+T}
 .TE
 .PP
 The access log carries \fBmirror: sent\fR, \fBdropped\fR or \fBbody_too_large\fR. Counters: \fBmirror_sent\fR, \fBmirror_dropped\fR, \fBmirror_skipped\fR, \fBmirror_failed\fR; metric \fBxproxy_mirror_total{outcome}\fR. Mirror responses appear in the error log at debug level with their status.
+.SS "routes[].mirror.diff"
+.PP
+Turns the mirror into traffic shadowing for validating a new backend against the current one. The live response is summarised as it streams to the client \[u2014] status, the listed headers, body length and a digest of the first \fBmax_body_bytes\fR \[u2014] without buffering it, and the shadow response is summarised the same way; the two are compared once the client has finished reading. The status is always compared, then the listed headers, then the body; the first category that differs is the reported result. Comparison runs in the background and never affects the client. When the live response does not finish within the mirror \fBtimeout\fR, the comparison is skipped.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.8i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBsample_\:percent\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+Share of differing exchanges whose detail is logged;\: the metric counts every comparison
+T}
+T{
+\fBheaders\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Response header names compared between the two responses (pick stable ones;\: \fBDate\fR,\: \fBETag\fR and the like differ legitimately)
+T}
+T{
+\fBmax_\:body_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Bytes of each body digested for the comparison;\: at most 64 MiB
+T}
+.TE
+.PP
+Outcomes are counted in \fBxproxy_mirror_diff_total{result}\fR with \fBresult\fR one of \fBmatch\fR, \fBstatus\fR, \fBheader\fR or \fBbody\fR, and differences are logged (sampled) in the error log with the request id, route, result and a short detail.
 .SS "routes[].static"
 .PP
 A \fBstatic\fR route serves files from a directory: assets next to an application, a maintenance page, a single page application. The request path after \fBstrip_prefix\fR or \fBrewrite_path\fR selects the file. Files are opened through \fBos.Root\fR, so neither \fB..\fR (removed earlier by path cleaning) nor a symbolic link pointing outside the root can leave it; names starting with a dot (\fB.env\fR, \fB.git\fR) are refused unless \fBdot_files\fR is set; anything that is not a regular file or directory answers 404, as does every failure to open, so the tree\(aqs shape leaks nothing. \fBGET\fR and \fBHEAD\fR only (405 otherwise). Responses carry a weak \fBETag\fR from size and modification time, honour \fBIf\-None\-Match\fR, \fBIf\-Modified\-Since\fR and \fBRange\fR, and set the content type from a fixed table for the common web types (\fBtext/javascript\fR, \fBtext/css\fR, \fBimage/svg+xml\fR, \fBapplication/wasm\fR, ...) with \fBX\-Content\-Type\-Options: nosniff\fR. A directory without a trailing slash redirects to it (301), then serves \fBindex\fR, then a listing when enabled, else 404. The route\(aqs admission pipeline (bans, limits, ACLs, WAF, filters) applies before the file is opened, and \fBresponse_headers\fR apply to every answer.

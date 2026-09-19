@@ -23,40 +23,45 @@ type Stats struct {
 	BytesIn      atomic.Uint64
 	BytesOut     atomic.Uint64
 
-	DeniedACL             atomic.Uint64
-	DeniedRateLimit       atomic.Uint64
-	Tarpitted             atomic.Uint64
-	TarpitOverflow        atomic.Uint64
-	DeniedConcurrency     atomic.Uint64
-	DeniedBodySize        atomic.Uint64
-	DeniedURILength       atomic.Uint64
-	DeniedNoRoute         atomic.Uint64
-	DeniedWebSocket       atomic.Uint64
-	DeniedBadHost         atomic.Uint64
-	DeniedBan             atomic.Uint64
-	Shed                  atomic.Uint64
-	Challenged            atomic.Uint64
-	DeniedWAF             atomic.Uint64
-	DeniedJWT             atomic.Uint64
-	DeniedICAP            atomic.Uint64
-	DeniedFilter          atomic.Uint64
-	DeniedGeo             atomic.Uint64
-	DeniedPolicy          atomic.Uint64
-	DeniedVirtualPatch    atomic.Uint64
-	DeniedNormalization   atomic.Uint64
-	DeniedMaintenance     atomic.Uint64
-	DeniedSensitive       atomic.Uint64
-	DeniedAccount         atomic.Uint64
-	HoneypotHits          atomic.Uint64
-	StaticServed          atomic.Uint64
-	StaticNotFound        atomic.Uint64
-	Compressed            atomic.Uint64
-	CompressedRawBytes    atomic.Uint64
-	MirrorSent            atomic.Uint64
-	GRPCStatus            [17]atomic.Uint64 // responses by grpc-status code
-	MirrorDropped         atomic.Uint64
-	MirrorSkipped         atomic.Uint64
-	MirrorFailed          atomic.Uint64
+	DeniedACL           atomic.Uint64
+	DeniedRateLimit     atomic.Uint64
+	Tarpitted           atomic.Uint64
+	TarpitOverflow      atomic.Uint64
+	DeniedConcurrency   atomic.Uint64
+	DeniedBodySize      atomic.Uint64
+	DeniedURILength     atomic.Uint64
+	DeniedNoRoute       atomic.Uint64
+	DeniedWebSocket     atomic.Uint64
+	DeniedBadHost       atomic.Uint64
+	DeniedBan           atomic.Uint64
+	Shed                atomic.Uint64
+	Challenged          atomic.Uint64
+	DeniedWAF           atomic.Uint64
+	DeniedJWT           atomic.Uint64
+	DeniedICAP          atomic.Uint64
+	DeniedFilter        atomic.Uint64
+	DeniedGeo           atomic.Uint64
+	DeniedPolicy        atomic.Uint64
+	DeniedVirtualPatch  atomic.Uint64
+	DeniedNormalization atomic.Uint64
+	DeniedMaintenance   atomic.Uint64
+	DeniedSensitive     atomic.Uint64
+	DeniedAccount       atomic.Uint64
+	HoneypotHits        atomic.Uint64
+	StaticServed        atomic.Uint64
+	StaticNotFound      atomic.Uint64
+	Compressed          atomic.Uint64
+	CompressedRawBytes  atomic.Uint64
+	MirrorSent          atomic.Uint64
+	GRPCStatus          [17]atomic.Uint64 // responses by grpc-status code
+	MirrorDropped       atomic.Uint64
+	MirrorSkipped       atomic.Uint64
+	MirrorFailed        atomic.Uint64
+	// Mirror shadow diff outcomes.
+	MirrorDiffMatch       atomic.Uint64
+	MirrorDiffStatus      atomic.Uint64
+	MirrorDiffHeader      atomic.Uint64
+	MirrorDiffBody        atomic.Uint64
 	TCPConnections        atomic.Uint64
 	TCPRejected           atomic.Uint64
 	TCPErrors             atomic.Uint64
@@ -144,6 +149,10 @@ type Snapshot struct {
 	MirrorDropped         uint64     `json:"mirror_dropped"`
 	MirrorSkipped         uint64     `json:"mirror_skipped"`
 	MirrorFailed          uint64     `json:"mirror_failed"`
+	MirrorDiffMatch       uint64     `json:"mirror_diff_match"`
+	MirrorDiffStatus      uint64     `json:"mirror_diff_status"`
+	MirrorDiffHeader      uint64     `json:"mirror_diff_header"`
+	MirrorDiffBody        uint64     `json:"mirror_diff_body"`
 	HoneypotMarked        int        `json:"honeypot_marked"`
 	TCPConnections        uint64     `json:"tcp_connections"`
 	TCPRejected           uint64     `json:"tcp_rejected"`
@@ -243,6 +252,10 @@ func (s *Stats) snapshot() Snapshot {
 		MirrorDropped:         s.MirrorDropped.Load(),
 		MirrorSkipped:         s.MirrorSkipped.Load(),
 		MirrorFailed:          s.MirrorFailed.Load(),
+		MirrorDiffMatch:       s.MirrorDiffMatch.Load(),
+		MirrorDiffStatus:      s.MirrorDiffStatus.Load(),
+		MirrorDiffHeader:      s.MirrorDiffHeader.Load(),
+		MirrorDiffBody:        s.MirrorDiffBody.Load(),
 		TCPConnections:        s.TCPConnections.Load(),
 		TCPRejected:           s.TCPRejected.Load(),
 		TCPErrors:             s.TCPErrors.Load(),
