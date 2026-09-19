@@ -256,7 +256,7 @@ func (s *Server) honeypot(rw *responseWriter, r *http.Request, st *reqState, cr 
 	h := rw.Header()
 	h.Set("Content-Type", cr.honeypotType)
 	h.Set("Cache-Control", "no-store")
-	applyHeaderOps(h, cr.cfg.ResponseHeaders)
+	cr.respOps.apply(h, &tvars{r: r, st: st})
 	rw.WriteHeader(hp.Status)
 	if r.Method != http.MethodHead {
 		_, _ = rw.Write(cr.honeypotBody)

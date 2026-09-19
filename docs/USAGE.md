@@ -480,6 +480,59 @@ carry a `tenant` label with `xproxy_route_bytes_total` and
 Counters restart with each configuration generation; the metrics
 exporter keeps the long history.
 
+### Rewriting paths with captures and templating headers
+
+```yaml
+routes:
+  - name: api
+    hosts: [api.example.com]
+    paths: [/api/]
+    rewrite_regex: {pattern: "^/api/v([0-9]+)/(?P<rest>.*)$", replace: "/internal/v${1}/${rest}"}
+    request_headers:
+      set: {X-Client-Ip: "${client_ip}", X-Api-Version: "${1}", X-Tenant: "${header:X-Tenant}"}
+    response_headers:
+      set: {X-Served-By: "${route}", X-Request-Id: "${request_id}"}
+    upstream: api
+  - name: old-blog
+    hosts: [blog.example.com]
+    redirect: {to: "https://www.example.com/blog${path}?${raw_query}", status: 308}
+```
+
+`rewrite_regex` runs on the cleaned path after `strip_prefix`; a path
+that does not match is forwarded as is. The groups of the pattern are
+available as `${1}` to `${9}` and by name in the replacement, in header
+values and in the redirect target, together with the request variables
+listed in [CONFIG.md](CONFIG.md#variables). A header whose variable has
+no value (a missing header, a route without a tenant) is set to the
+empty string, so a downstream service can rely on the header existing.
+
+### Custom error pages
+
+```yaml
+server:
+  error_pages:
+    dir: /etc/xproxy/errors
+    pages: {"404": "404.html", "429": "429.html", "5xx": "5xx.html", "default": "error.html"}
+    intercept_upstream: [502, 503, 504]
+routes:
+  - name: api
+    hosts: [api.example.com]
+    error_pages: {dir: /etc/xproxy/errors, pages: {"default": "api.json"}, content_type: application/json, json: false}
+    upstream: api
+```
+
+Every status the proxy writes itself (denials, unknown hosts, upstream
+failures, static misses) is served from the matching document, chosen
+by exact status, class or `default`, with `${status}`, `${status_text}`,
+`${request_id}`, `${host}`, `${path}` and `${reason}` filled in; a client
+whose `Accept` prefers JSON gets a small JSON document unless `json` is
+off. Upstream responses are left alone unless their status is listed
+in `intercept_upstream`, which is the usual choice for 502, 503 and 504
+so that a failing backend never shows its own stack trace or a bare
+gateway error. A route section replaces the server section for that
+route. Documents are read at load and at reload, so an edit needs
+`xproxyctl reload`; a missing file fails the reload.
+
 ### Endpoints from DNS and slow start
 
 Instead of listing addresses, a pool can resolve them:

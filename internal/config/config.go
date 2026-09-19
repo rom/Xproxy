@@ -134,6 +134,9 @@ type Server struct {
 	// ServerHeader is the value sent in the Server response header. Empty
 	// removes the header entirely (the default) to avoid fingerprinting.
 	ServerHeader string `yaml:"server_header"`
+	// ErrorPages replaces the proxy's plain status bodies for every route
+	// (routes may override).
+	ErrorPages *ErrorPages `yaml:"error_pages"`
 	// ShutdownTimeout bounds graceful drain on stop or reload.
 	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
 }
@@ -930,6 +933,12 @@ type Route struct {
 
 	StripPrefix string `yaml:"strip_prefix"`
 	RewritePath string `yaml:"rewrite_path"`
+	// RewriteRegex rewrites the outbound path with a regular expression
+	// and capture groups; exclusive with rewrite_path, applied after
+	// strip_prefix. A path that does not match is sent unchanged.
+	RewriteRegex *RewriteRegex `yaml:"rewrite_regex"`
+	// ErrorPages overrides the server's error pages for this route.
+	ErrorPages *ErrorPages `yaml:"error_pages"`
 	// HostHeader overrides the Host header sent upstream. Default keeps the
 	// client Host.
 	HostHeader string `yaml:"host_header"`
@@ -1164,7 +1173,38 @@ const (
 	StageAfterScan  = "after_scan"
 )
 
-// Redirect is a static redirect action.
+// RewriteRegex is a regular expression path rewrite. Replace may use
+// ${1} to ${9} and ${name} for the pattern's groups, and the request
+// variables of header templates (docs/CONFIG.md, "Variables").
+type RewriteRegex struct {
+	Pattern string `yaml:"pattern"`
+	Replace string `yaml:"replace"`
+}
+
+// ErrorPages replaces the plain status bodies the proxy writes (denials,
+// upstream failures, unknown routes, static misses) with documents from
+// a directory, chosen by exact status ("404"), class ("4xx", "5xx") or
+// "default". Documents are read at load and may use ${status},
+// ${status_text}, ${request_id}, ${host}, ${path}, ${reason} and the other
+// request variables; unknown ${...} sequences are kept as they are.
+type ErrorPages struct {
+	// Dir holds the documents; page values are file names inside it or
+	// absolute paths.
+	Dir   string            `yaml:"dir"`
+	Pages map[string]string `yaml:"pages"`
+	// ContentType of the documents. Default text/html; charset=utf-8.
+	ContentType string `yaml:"content_type"`
+	// JSON answers clients whose Accept prefers application/json with a
+	// small JSON document instead of the page. Default true.
+	JSON *bool `yaml:"json"`
+	// InterceptUpstream lists upstream response statuses whose bodies are
+	// replaced by the matching page (typically 502, 503, 504). Default
+	// none: upstream bodies pass through.
+	InterceptUpstream []int `yaml:"intercept_upstream"`
+}
+
+// Redirect is a static redirect action. To may use the request variables
+// (${path}, ${raw_query}, ${host}, ${1}...) to build the target.
 type Redirect struct {
 	To     string `yaml:"to"`
 	Status int    `yaml:"status"`

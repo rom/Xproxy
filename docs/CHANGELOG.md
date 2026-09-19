@@ -186,6 +186,15 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   where executable memory is refused (`MemoryDenyWriteExecute`, the
   macOS hardened runtime).
 
+- Regular expression path rewrites (`routes[].rewrite_regex`) with
+  numbered and named groups; templated header values, redirect
+  targets and rewrite replacements with request variables (client
+  address, request id, host, path, query, route, tenant, country,
+  fingerprint, TLS parameters, headers, cookies, query parameters,
+  captures), validated at load; custom error pages
+  (`server.error_pages`, `routes[].error_pages`) by status, class or
+  default with JSON negotiation and optional replacement of upstream
+  error bodies.
 - Endpoint discovery: `upstreams[].discovery` resolves A/AAAA or SRV
   records on an interval (custom resolver, weights from SRV, lowest
   priority group), adds and removes endpoints without a reload while

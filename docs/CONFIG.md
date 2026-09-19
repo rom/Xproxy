@@ -31,6 +31,7 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `listeners` | list | required, at least one | See below |
 | `limits` | object | | Global protections |
 | `server_header` | string | `""` | Value of the `Server` response header. Empty removes it. |
+| `error_pages` | object | none | Replace the proxy's plain status bodies (denials, unknown routes, upstream failures, static misses) with documents; see "server.error_pages" below |
 | `shutdown_timeout` | duration | `30s` | Drain time on stop and for old generations after reload |
 
 ### server.listeners[]
@@ -290,6 +291,45 @@ public CA).
 | `max_concurrent_requests` | int | `16384` | positive | In-flight requests; 503 above |
 | `max_tarpits` | int | `1024` | 1 to 1000000 | Requests held in a tarpit at once. A tarpitted request releases its concurrency slot; above this bound it is rejected with 429 immediately (`tarpit_overflow` counts those) |
 
+### server.error_pages and routes[].error_pages
+
+Documents are read at load (at most 1 MiB each) and chosen by exact
+status (`"404"`), class (`"4xx"`, `"5xx"`) or `"default"`. A route section
+replaces the server section entirely for that route. Every status the
+proxy writes itself goes through the pages: denials (ACL, rate limit,
+WAF, ban, JWT), unknown host or route, upstream failures (502, 503,
+504), static file misses and the like; a gRPC request keeps its gRPC
+status. Upstream responses pass through unchanged unless their status is
+listed in `intercept_upstream`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `dir` | absolute path | none | Directory of the documents; required for relative page names |
+| `pages` | map | required | Status, class or `default` to a file name in `dir` or an absolute path; documents may use the variables below and keep unknown `${...}` sequences as they are (script code is safe) |
+| `content_type` | string | `text/html; charset=utf-8` | Content type of the documents |
+| `json` | bool | `true` | Answer clients whose `Accept` prefers `application/json` over `text/html` with `{"status":404,"error":"Not Found","request_id":"..."}` instead of the document |
+| `intercept_upstream` | list of int | `[]` | Upstream statuses (400 to 599) whose bodies are replaced by the matching page; headers describing the old body (`Content-Length`, `Content-Encoding`, `ETag`) are replaced |
+
+### Variables
+
+Header values, `rewrite_regex.replace`, `redirect.to` and error pages
+may use `${name}`; a misspelt name fails validation for headers,
+rewrites and redirects and is kept literally in pages.
+
+| Variable | Value |
+|----------|-------|
+| `client_ip` | client address after trusted proxy handling |
+| `request_id` | request identifier |
+| `host` | request host without port |
+| `path`, `raw_query`, `method`, `scheme` | request line parts (`scheme` is `http` or `https` as seen by the client) |
+| `route`, `upstream`, `tenant` | the matched route, its pool and tenant label |
+| `country`, `ja4` | GeoIP country code and TLS client fingerprint, empty when unknown |
+| `tls_version`, `tls_cipher` | TLS parameters of the client connection |
+| `header:Name`, `cookie:name`, `query:name` | a request header, cookie or query parameter |
+| `1` to `9`, `name` | groups of `rewrite_regex.pattern` or, without one, of the matching `path_regex` (numbered and named) |
+| `status`, `status_text`, `reason` | error pages only: the status, its phrase and the denial category (`acl`, `rate_limit`, `waf`, `banned`, `upstream`...) |
+| `time` | current time, RFC 3339, UTC |
+
 ## management
 
 | Key | Type | Default | Description |
@@ -436,6 +476,9 @@ Memory: at most 64 x 8192 buckets per policy.
 | `timeouts.total` | duration | `5m` | Whole exchange |
 | `max_idle_conns_per_host` | int | `64` | Pooled connections per endpoint |
 | `retries` | int | `1` | 0 to 5; only replayable requests (GET, HEAD, OPTIONS, TRACE without a body), each attempt on a different endpoint; connection errors always, statuses per `retry_on` |
+| `rewrite_regex.pattern` | RE2 | none | Rewrite the outbound path by regular expression (see `rewrite_regex.replace`); applied to the cleaned path after `strip_prefix`, exclusive with `rewrite_path`; a path that does not match is sent unchanged |
+| `rewrite_regex.replace` | template | | New path, starting with `/`; `${1}` to `${9}` and `${name}` are the pattern's groups, and the request variables (below) may be used |
+| `error_pages` | object | inherits `server.error_pages` | Route override of the error pages, same keys as `server.error_pages` |
 | `discovery` | object | none | Endpoints resolved from DNS and re-resolved periodically; see below. Static `endpoints` and discovered ones coexist; a pool needs at least one of the two |
 | `slow_start` | duration | `0` (off) | An endpoint that joins the pool (discovered) or returns to service (healthy again, ejection over) gets a share ramping from 10 % to its full weight over this time; at most 1h |
 | `retry_on` | list | `[]` | Response statuses treated as a failed attempt: `5xx`, `500`, `502`, `503`, `504`, `429`. The response is discarded, the endpoint marked as failed for outlier ejection, and the next endpoint tried within the `retries` budget; the last attempt's response is returned as it is. Needs `retries` above 0 |
@@ -567,7 +610,7 @@ not match is skipped and the next candidate is tried.
 | `priority` | int | `0` | Tie breaker |
 | `tenant` | name | none | Free label grouping routes for quota reporting (`xproxyctl quotas`, `GET /v1/quotas`) and added as a `tenant` label to the per route metrics |
 | `upstream` | name | | Exactly one of `upstream`, `redirect`, `respond`, `honeypot`, `doh`, `static` |
-| `redirect` | `{to, status}` | status `308` | `to` is a URL or path; status 301, 302, 303, 307 or 308 |
+| `redirect` | `{to, status}` | status `308` | `to` is a URL or path and may use the request variables (below), for example `https://new.example.com${path}?${raw_query}`; status 301, 302, 303, 307 or 308 |
 | `respond` | `{status, body}` | status `200` | Static response, body up to 64 KiB |
 | `honeypot` | object | | Decoy action; see `routes[].honeypot` |
 | `mirror` | object | | Copy requests to a second upstream; see `routes[].mirror` |
@@ -580,6 +623,7 @@ not match is skipped and the next candidate is tried.
 | `host_header` | string | client `Host` | Host sent upstream |
 | `request_headers` | `{set, add, remove}` | | Applied before forwarding; values may not contain CR, LF or NUL |
 | `response_headers` | `{set, add, remove}` | | Applied to responses, including redirect and respond actions |
+| `request_headers.*`, `response_headers.*` values | template | | `set` and `add` values may contain `${variable}` placeholders (see "Variables" below); `$$` is a literal dollar; a placeholder without a value expands to an empty string |
 | `rate_limits` | list of names | `[]` | Evaluated in order; first exhausted policy acts |
 | `allow_cidrs` | list | `[]` (all) | Client must be inside one |
 | `deny_cidrs` | list | `[]` | Evaluated first |

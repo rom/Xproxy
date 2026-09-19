@@ -1,0 +1,31 @@
+# Custom error pages: documents by status, class and default, JSON for
+# API clients, and replacement of upstream gateway errors. The documents
+# live next to this file; install them under /etc/xproxy/errors.
+# Validate: xproxy -config examples/rewrites/error-pages.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+  error_pages:
+    dir: /etc/xproxy/errors
+    pages: {"404": "404.html", "5xx": "5xx.html", "default": "default.html"}
+    intercept_upstream: [502, 503, 504]
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: web
+    endpoints: [{address: "10.0.3.10:8080"}]
+  - name: api
+    endpoints: [{address: "10.0.1.10:8080"}]
+routes:
+  # API clients get JSON errors only: a route section with a JSON
+  # document as the default page and content negotiation off.
+  - name: api
+    hosts: [api.example.com]
+    error_pages: {dir: /etc/xproxy/errors, pages: {"default": "api-error.json"}, content_type: "application/json", json: false}
+    upstream: api
+  - name: web
+    hosts: [www.example.com]
+    upstream: web

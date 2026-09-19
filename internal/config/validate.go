@@ -3,7 +3,9 @@ package config
 import (
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/tmpl"
 	"mime"
+	"path/filepath"
 	"time"
 
 	"crypto/tls"
@@ -109,6 +111,9 @@ func (v *validator) config(c *Config) {
 		v.cluster(c.Cluster)
 	}
 	v.sandbox(&c.Sandbox)
+	if c.Server.ErrorPages != nil {
+		v.errorPages("server.error_pages", c.Server.ErrorPages)
+	}
 	if c.Shedding != nil {
 		v.shedding(c.Shedding)
 	}
@@ -1092,7 +1097,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 		actions++
 		if r.Redirect.To == "" {
 			v.errf("%s.redirect.to: required", p)
-		} else if u, err := url.Parse(r.Redirect.To); err != nil || (u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https") {
+		} else if u, err := url.Parse(placeholderRE.ReplaceAllString(r.Redirect.To, "x")); err != nil || (u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https") {
 			v.errf("%s.redirect.to: %q is not a valid http(s) URL or path", p, r.Redirect.To)
 		}
 		switch r.Redirect.Status {
@@ -1230,6 +1235,29 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	}
 	if r.StripPrefix != "" && !strings.HasPrefix(r.StripPrefix, "/") {
 		v.errf("%s.strip_prefix: must start with /", p)
+	}
+	if rr := r.RewriteRegex; rr != nil {
+		if r.RewritePath != "" {
+			v.errf("%s.rewrite_regex: exclusive with rewrite_path", p)
+		}
+		re, err := regexp.Compile(rr.Pattern)
+		if err != nil || rr.Pattern == "" || len(rr.Pattern) > 1024 {
+			v.errf("%s.rewrite_regex.pattern: %q is not a valid RE2 pattern", p, rr.Pattern)
+		} else if !strings.HasPrefix(rr.Replace, "/") {
+			v.errf("%s.rewrite_regex.replace: must start with /", p)
+		} else if _, err := tmpl.Parse(rr.Replace, re.SubexpNames()...); err != nil {
+			v.errf("%s.rewrite_regex.replace: %v", p, err)
+		}
+	}
+	v.headerTemplates(p+".request_headers", r.RequestHeaders, r)
+	v.headerTemplates(p+".response_headers", r.ResponseHeaders, r)
+	if r.Redirect != nil {
+		if _, err := tmpl.Parse(r.Redirect.To, captureNames(r)...); err != nil {
+			v.errf("%s.redirect.to: %v", p, err)
+		}
+	}
+	if r.ErrorPages != nil {
+		v.errorPages(p+".error_pages", r.ErrorPages)
 	}
 	if r.RewritePath != "" && !strings.HasPrefix(r.RewritePath, "/") {
 		v.errf("%s.rewrite_path: must start with /", p)
@@ -2056,6 +2084,87 @@ func (v *validator) file(p, path string) {
 	}
 	if st.IsDir() {
 		v.errf("%s: %s is a directory", p, path)
+	}
+}
+
+// placeholderRE matches template placeholders, replaced by a token
+// before shape checks that templates would otherwise fail.
+var placeholderRE = regexp.MustCompile(`\$\{[^}]*\}`)
+
+// captureNames lists the named groups of a route's regular expressions,
+// which header templates may reference.
+func captureNames(r *Route) []string {
+	var names []string
+	if rr := r.RewriteRegex; rr != nil {
+		if re, err := regexp.Compile(rr.Pattern); err == nil {
+			names = append(names, re.SubexpNames()...)
+		}
+	}
+	for _, p := range r.PathRegex {
+		if re, err := regexp.Compile(p); err == nil {
+			names = append(names, re.SubexpNames()...)
+		}
+	}
+	out := names[:0]
+	for _, n := range names {
+		if n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// headerTemplates checks the placeholders of set and add values.
+func (v *validator) headerTemplates(p string, h HeaderOps, r *Route) {
+	names := captureNames(r)
+	for k, val := range h.Set {
+		if _, err := tmpl.Parse(val, names...); err != nil {
+			v.errf("%s.set.%s: %v", p, k, err)
+		}
+	}
+	for k, val := range h.Add {
+		if _, err := tmpl.Parse(val, names...); err != nil {
+			v.errf("%s.add.%s: %v", p, k, err)
+		}
+	}
+}
+
+// errorPageKey matches "404", "4xx", "5xx" or "default".
+var errorPageKey = regexp.MustCompile(`^([45][0-9][0-9]|4xx|5xx|default)$`)
+
+// errorPages checks an error pages section.
+func (v *validator) errorPages(p string, e *ErrorPages) {
+	if e.Dir != "" {
+		v.dir(p+".dir", e.Dir)
+	}
+	if len(e.Pages) == 0 {
+		v.errf("%s.pages: at least one page is required", p)
+	}
+	for k, f := range e.Pages {
+		if !errorPageKey.MatchString(k) {
+			v.errf("%s.pages.%s: key must be a status 400 to 599, 4xx, 5xx or default", p, k)
+		}
+		if f == "" || strings.ContainsRune(f, 0) {
+			v.errf("%s.pages.%s: file name is required", p, k)
+			continue
+		}
+		path := f
+		if !strings.HasPrefix(f, "/") {
+			if e.Dir == "" {
+				v.errf("%s.pages.%s: %q is relative but dir is not set", p, k, f)
+				continue
+			}
+			path = filepath.Join(e.Dir, f)
+		}
+		v.file(p+".pages."+k, path)
+	}
+	for i, st := range e.InterceptUpstream {
+		if st < 400 || st > 599 {
+			v.errf("%s.intercept_upstream[%d]: must be 400 to 599", p, i)
+		}
+	}
+	if strings.ContainsAny(e.ContentType, "\r\n") {
+		v.errf("%s.content_type: control characters", p)
 	}
 }
 

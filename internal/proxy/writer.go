@@ -15,6 +15,8 @@ type responseWriter struct {
 	bytes    int64
 	wrote    bool
 	hijacked bool
+	// st is the request state once created (error pages need the route).
+	st *reqState
 }
 
 func (w *responseWriter) WriteHeader(code int) {

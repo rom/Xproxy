@@ -59,6 +59,7 @@ server:
         max_concurrent_requests: 16384
         max_tarpits: 1024
     server_header: ""
+    error_pages: null
     shutdown_timeout: 30s
 management:
     socket: /run/xproxy/mgmt.sock
@@ -257,6 +258,8 @@ routes:
       honeypot: null
       strip_prefix: ""
       rewrite_path: ""
+      rewrite_regex: null
+      error_pages: null
       host_header: ""
       request_headers:
         set: {}
@@ -306,6 +309,8 @@ routes:
       honeypot: null
       strip_prefix: /v1
       rewrite_path: ""
+      rewrite_regex: null
+      error_pages: null
       host_header: ""
       request_headers:
         set: {}
@@ -360,6 +365,8 @@ routes:
       honeypot: null
       strip_prefix: ""
       rewrite_path: ""
+      rewrite_regex: null
+      error_pages: null
       host_header: ""
       request_headers:
         set: {}
@@ -410,6 +417,8 @@ routes:
       honeypot: null
       strip_prefix: ""
       rewrite_path: ""
+      rewrite_regex: null
+      error_pages: null
       host_header: ""
       request_headers:
         set: {}
@@ -460,6 +469,8 @@ routes:
       honeypot: null
       strip_prefix: ""
       rewrite_path: ""
+      rewrite_regex: null
+      error_pages: null
       host_header: ""
       request_headers:
         set: {}
@@ -514,6 +525,8 @@ routes:
       honeypot: null
       strip_prefix: ""
       rewrite_path: ""
+      rewrite_regex: null
+      error_pages: null
       host_header: ""
       request_headers:
         set: {}

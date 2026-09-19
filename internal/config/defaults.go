@@ -339,6 +339,10 @@ func applyDefaults(c *Config) {
 			setDur(&t.MaxDuration, DefaultBanMaxDuration)
 		}
 	}
+	errorPageDefaults(c.Server.ErrorPages)
+	for i := range c.Routes {
+		errorPageDefaults(c.Routes[i].ErrorPages)
+	}
 	if w := c.WAF; w != nil {
 		setStr(&w.DefaultMode, "block")
 		setStr(&w.DefaultProfile, "default")
@@ -566,4 +570,16 @@ func tracingOTLP(t *Tracing) *OTLPExport {
 		return nil
 	}
 	return t.OTLP
+}
+
+// errorPageDefaults fills an error pages section.
+func errorPageDefaults(e *ErrorPages) {
+	if e == nil {
+		return
+	}
+	setStr(&e.ContentType, "text/html; charset=utf-8")
+	if e.JSON == nil {
+		t := true
+		e.JSON = &t
+	}
 }

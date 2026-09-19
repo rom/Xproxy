@@ -301,6 +301,23 @@ multiplied by the ejection count (capped at 10) subject to
 The consistent hash ring uses 128 virtual nodes per weight unit. Removing
 an endpoint moves only its keys (`TestHashRing` asserts this).
 
+### Templates and error pages
+
+Header values, redirect targets, regex rewrite replacements and error
+documents share one placeholder syntax (`internal/tmpl`): `${name}`
+with a fixed set of names checked at load, so a typo is a validation
+error rather than an empty header in production. Templates are parsed
+once per generation into literal and variable parts; a value without
+placeholders costs nothing at request time. The proxy resolves
+variables from the request and its state, including the groups of the
+route's `rewrite_regex` or `path_regex` match, which are recorded
+before header operations run. Error documents are read at load, parsed
+leniently (unknown `${...}` stays literal, so script code survives) and
+rendered by the same status writer every denial and failure already
+uses; a route's section shadows the server's; upstream bodies are
+replaced only for the statuses listed in `intercept_upstream`, with the
+body describing headers corrected.
+
 ### Dynamic endpoint sets
 
 A pool's endpoint list is an atomically replaced slice. Discovery
