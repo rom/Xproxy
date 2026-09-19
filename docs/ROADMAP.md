@@ -249,6 +249,8 @@ procedure is in RELEASING.md.
 - WAF: CRS plugin loading, JSON body schema enforcement, behavioural
   anomaly detection beyond rule scoring (`crs.plugins_dir`,
   `json_schemas`, `waf.anomaly`): delivered
+- Rate limit keys per session, account, token, network, endpoint and
+  fingerprint (`rate_limits[].key`): delivered
 - Positive security model per route and structured virtual patches
   (`routes[].policy`, `virtual_patches`): delivered
 - Fleet operation: central configuration push and status collection

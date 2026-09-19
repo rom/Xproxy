@@ -46,6 +46,10 @@ const (
 	DefaultOutlierMaxEjectP = 50
 
 	DefaultTarpitDelay = 10 * time.Second
+	// DefaultRateLimitNetV4 and NetV6 are the prefix lengths of the
+	// client_net rate limit key.
+	DefaultRateLimitNetV4 = 24
+	DefaultRateLimitNetV6 = 48
 
 	DefaultBanMaxEntries  = 100000
 	DefaultBanEscalation  = 2.0
@@ -277,6 +281,8 @@ func applyDefaults(c *Config) {
 		setStr(&rl.Action, "reject")
 		setStr(&rl.Algorithm, "token_bucket")
 		setStr(&rl.Distributed, "approximate")
+		setInt(&rl.NetV4, DefaultRateLimitNetV4)
+		setInt(&rl.NetV6, DefaultRateLimitNetV6)
 		if rl.Algorithm == "sliding_window" {
 			setDur(&rl.Window, time.Second)
 		} else if rl.Burst == 0 && rl.Rate > 0 {

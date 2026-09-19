@@ -823,10 +823,30 @@ func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 	}
 	seen[r.Name] = true
 	switch {
-	case r.Key == "client_ip", r.Key == "route", r.Key == "country":
+	case r.Key == "client_ip", r.Key == "route", r.Key == "country", r.Key == "client_net", r.Key == "endpoint", r.Key == "ja4":
 	case strings.HasPrefix(r.Key, "header:") && len(r.Key) > len("header:"):
+		if !headerNameOK(r.Key[len("header:"):]) {
+			v.errf("%s.key: %q is not a header name", p, r.Key[len("header:"):])
+		}
+	case strings.HasPrefix(r.Key, "cookie:") && len(r.Key) > len("cookie:"):
+		if strings.ContainsAny(r.Key[len("cookie:"):], " ;=,") {
+			v.errf("%s.key: %q is not a cookie name", p, r.Key[len("cookie:"):])
+		}
+	case strings.HasPrefix(r.Key, "jwt:") && len(r.Key) > len("jwt:"):
+		if strings.ContainsAny(r.Key[len("jwt:"):], " \"") || len(r.Key) > 128 {
+			v.errf("%s.key: %q is not a claim name", p, r.Key[len("jwt:"):])
+		}
 	default:
-		v.errf("%s.key: must be client_ip, route, country or header:<name>", p)
+		v.errf("%s.key: must be client_ip, client_net, route, country, endpoint, ja4, header:<name>, cookie:<name> or jwt:<claim>", p)
+	}
+	if r.NetV4 < 8 || r.NetV4 > 32 {
+		v.errf("%s.net_v4: must be between 8 and 32", p)
+	}
+	if r.NetV6 < 16 || r.NetV6 > 128 {
+		v.errf("%s.net_v6: must be between 16 and 128", p)
+	}
+	if r.Key != "client_net" && (r.NetV4 != DefaultRateLimitNetV4 || r.NetV6 != DefaultRateLimitNetV6) {
+		v.errf("%s: net_v4 and net_v6 apply to key client_net", p)
 	}
 	switch r.Algorithm {
 	case "token_bucket":

@@ -92,8 +92,11 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Header size, URI length and body size limits; the body limit can be
   lowered per route.
 - Concurrency ceiling with immediate 503.
-- Keyed token bucket rate limits by client address, route or header, with
-  reject or tarpit actions; bucket tables are bounded in memory.
+- Keyed rate limits (token bucket or sliding window) by client address,
+  client network, route, endpoint template, country, TLS fingerprint,
+  header, cookie or token claim, with reject or tarpit actions; keys a
+  request may lack fall back to the client address; bucket tables are
+  bounded in memory.
 - Positive security model per route: allowed methods, media types and
   query parameters with types, lengths, patterns and repeat counts, and
   bounds on the URI, query and headers, refused before any other

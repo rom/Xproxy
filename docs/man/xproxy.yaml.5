@@ -2114,11 +2114,20 @@ T}
 T{
 \fBkey\fR
 T}	T{
-\fBclient_\:ip\fR,\: \fBroute\fR,\: \fBcountry\fR,\: \fBheader:\:<Name>\fR
+see below
 T}	T{
 \fBclient_\:ip\fR
 T}	T{
-Bucket identity. A missing header or an unknown country falls back to the client address.
+Bucket identity
+T}
+T{
+\fBnet_\:v4\fR,\: \fBnet_\:v6\fR
+T}	T{
+int
+T}	T{
+\fB24\fR,\: \fB48\fR
+T}	T{
+Prefix lengths for \fBkey:\: client_\:net\fR
 T}
 T{
 \fBalgorithm\fR
@@ -2193,6 +2202,86 @@ T}	T{
 Hold before answering 429 (released on client disconnect)
 T}
 .TE
+.PP
+Keys:
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.5i) lbx
+lw(0.9i) lw(1.5i) lx.
+T{
+Key
+T}	T{
+Bucket per
+T}	T{
+Without the identifier
+T}
+T{
+\fBclient_\:ip\fR
+T}	T{
+client address
+T}	T{
+
+T}
+T{
+\fBclient_\:net\fR
+T}	T{
+client network: the address truncated to \fBnet_\:v4\fR or \fBnet_\:v6\fR bits,\: so a distributed client rotating addresses inside one allocation shares a bucket
+T}	T{
+
+T}
+T{
+\fBroute\fR
+T}	T{
+route
+T}	T{
+
+T}
+T{
+\fBendpoint\fR
+T}	T{
+method,\: route and path template (identifiers such as numbers,\: UUIDs,\: hashes and opaque tokens replaced by \fB*\fR,\: so \fB/\:users/\:42\fR and \fB/\:users/\:43\fR are one endpoint)
+T}	T{
+
+T}
+T{
+\fBcountry\fR
+T}	T{
+client country (needs \fBgeoip\fR)
+T}	T{
+client address
+T}
+T{
+\fBja4\fR
+T}	T{
+TLS client fingerprint
+T}	T{
+client address (plaintext listeners)
+T}
+T{
+\fBheader:\:<Name>\fR
+T}	T{
+first value of the header (256 bytes)
+T}	T{
+client address
+T}
+T{
+\fBcookie:\:<name>\fR
+T}	T{
+value of the cookie (256 bytes),\: a session or device identifier
+T}	T{
+client address
+T}
+T{
+\fBjwt:\:<claim>\fR
+T}	T{
+a string,\: number or boolean claim of the bearer token in \fBAuthorization\fR,\: read without verification (the value only names a bucket;\: the \fBjwt\fR route setting still rejects a forged token)
+T}	T{
+client address
+T}
+.TE
+.PP
+The fallback keeps a limit from being avoided by omitting the identifier; rotating it still buys fresh buckets, so pair an identifier key with a \fBclient_ip\fR or \fBclient_net\fR policy on the same route.
 .PP
 Memory: at most 64 x 8192 buckets per policy.
 .SH "upstreams[]"

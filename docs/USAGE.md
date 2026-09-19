@@ -460,6 +460,33 @@ rate_limits:
 Requests without the header are limited by client address instead, so the
 limit cannot be avoided by omitting the header.
 
+### Limits per session, account, token, network and endpoint
+
+The key decides what a bucket belongs to, and several policies can sit on
+one route, so a login endpoint is bounded per session, per account and
+per network at once:
+
+```yaml
+rate_limits:
+  - {name: per-session, key: "cookie:sid", algorithm: sliding_window, limit: 30, window: 1m}
+  - {name: per-account, key: "jwt:sub", algorithm: sliding_window, limit: 600, window: 1h}
+  - {name: per-network, key: client_net, net_v4: 24, net_v6: 48, rate: 50, burst: 100}
+  - {name: per-endpoint, key: endpoint, algorithm: sliding_window, limit: 5000, window: 1m}
+  - {name: per-fingerprint, key: ja4, rate: 20, burst: 40}
+routes:
+  - {name: api, hosts: [api.example.com], upstream: api, rate_limits: [per-session, per-account, per-network, per-endpoint]}
+```
+
+`client_net` counts a whole allocation as one client, which is what a
+scraper rotating through a /24 looks like; `endpoint` folds identifiers
+in the path (`/users/42`, `/users/43`) into one template per method and
+route, so a single expensive endpoint is protected without a route per
+path; `ja4` groups clients by TLS stack, which catches a bot fleet
+behind many addresses; `jwt:<claim>` reads the claim without verifying
+the token, so it costs nothing and only names a bucket. Every
+identifier key falls back to the client address when the identifier is
+missing.
+
 ### Sliding windows and exact cluster limits
 
 ```yaml

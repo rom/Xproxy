@@ -760,8 +760,15 @@ func (r *Redaction) IsEnabled() bool { return r != nil && (r.Enabled == nil || *
 // bucket (rate and burst) or a sliding window (limit per window).
 type RateLimit struct {
 	Name string `yaml:"name"`
-	// Key selects the bucket identity: client_ip, route, or header:<name>.
+	// Key selects the bucket identity: client_ip, client_net, route,
+	// country, endpoint, ja4, header:<name>, cookie:<name> or
+	// jwt:<claim>. Keys that a request may lack fall back to the client
+	// address.
 	Key string `yaml:"key"`
+	// NetV4 and NetV6 are the prefix lengths for key client_net. Default
+	// 24 and 48.
+	NetV4 int `yaml:"net_v4"`
+	NetV6 int `yaml:"net_v6"`
 	// Algorithm is token_bucket (default; rate and burst) or
 	// sliding_window (limit and window).
 	Algorithm string `yaml:"algorithm"`

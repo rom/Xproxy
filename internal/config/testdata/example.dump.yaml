@@ -145,6 +145,8 @@ trusted_proxies: []
 rate_limits:
     - name: per-ip
       key: client_ip
+      net_v4: 24
+      net_v6: 48
       algorithm: token_bucket
       rate: 50
       burst: 100
@@ -155,6 +157,8 @@ rate_limits:
       tarpit_delay: 10s
     - name: login
       key: client_ip
+      net_v4: 24
+      net_v6: 48
       algorithm: token_bucket
       rate: 0.2
       burst: 5

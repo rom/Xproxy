@@ -3,7 +3,9 @@ package proxy
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -349,7 +351,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Rate limits.
 	for _, rl := range cr.rateLimits {
-		key := rateKey(rl.cfg, r, st)
+		key := s.rateKey(rl.cfg, r, st)
 		allowed, decided := false, false
 		if rl.cfg.Distributed == "exact" {
 			if node := s.cluster.Load(); node != nil {
@@ -1085,30 +1087,95 @@ func isUpgrade(r *http.Request) bool {
 	return false
 }
 
-func rateKey(rl *config.RateLimit, r *http.Request, st *reqState) string {
+// rateKey derives the bucket identity of a request for a policy. Keys a
+// request may lack (a header, a cookie, a claim, a fingerprint, a
+// country) fall back to the client address, so a limit cannot be
+// avoided by omitting the identifier; rotating the identifier still
+// buys fresh buckets, which is why such keys are paired with a
+// client_ip or client_net policy.
+func (s *Server) rateKey(rl *config.RateLimit, r *http.Request, st *reqState) string {
+	ip := "ip:" + st.clientIP.String()
 	switch {
 	case rl.Key == "client_ip":
 		return st.clientIP.String()
+	case rl.Key == "client_net":
+		bits := rl.NetV4
+		if st.clientIP.Is6() && !st.clientIP.Is4In6() {
+			bits = rl.NetV6
+		}
+		if p, err := st.clientIP.Unmap().Prefix(bits); err == nil {
+			return "net:" + p.String()
+		}
+		return ip
 	case rl.Key == "route":
 		return st.route
+	case rl.Key == "endpoint":
+		return trim("ep:"+r.Method+" "+st.route+" "+netutil.PathTemplate(st.path), 256)
 	case rl.Key == "country":
 		if st.country == "" {
-			return "ip:" + st.clientIP.String()
+			return ip
 		}
 		return "c:" + st.country
+	case rl.Key == "ja4":
+		if r.TLS != nil {
+			if fp, ok := s.fingerprints.Get(r.RemoteAddr); ok && fp.JA4 != "" {
+				return "ja4:" + fp.JA4
+			}
+		}
+		return ip
 	case strings.HasPrefix(rl.Key, "header:"):
 		v := r.Header.Get(rl.Key[len("header:"):])
 		if v == "" {
-			// Missing header falls back to the client IP so the limit can
-			// not be bypassed by omitting it.
-			return "ip:" + st.clientIP.String()
+			return ip
 		}
-		if len(v) > 256 {
-			v = v[:256]
+		return "h:" + trim(v, 256)
+	case strings.HasPrefix(rl.Key, "cookie:"):
+		if c, err := r.Cookie(rl.Key[len("cookie:"):]); err == nil && c.Value != "" {
+			return "ck:" + trim(c.Value, 256)
 		}
-		return "h:" + v
+		return ip
+	case strings.HasPrefix(rl.Key, "jwt:"):
+		if v := bearerClaim(r.Header.Get("Authorization"), rl.Key[len("jwt:"):]); v != "" {
+			return "jwt:" + trim(v, 256)
+		}
+		return ip
 	}
 	return st.clientIP.String()
+}
+
+// bearerClaim reads a claim from the payload of a bearer token without
+// verifying it: the value only names a bucket, and a forged token buys
+// its bearer nothing beyond a bucket of its own (the JWT filter still
+// rejects it). Only string, number and boolean claims are used.
+func bearerClaim(authorization, claim string) string {
+	tok, ok := strings.CutPrefix(authorization, "Bearer ")
+	if !ok {
+		tok, ok = strings.CutPrefix(authorization, "bearer ")
+		if !ok {
+			return ""
+		}
+	}
+	parts := strings.Split(strings.TrimSpace(tok), ".")
+	if len(parts) != 3 || len(parts[1]) > 16<<10 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims map[string]any
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	switch v := claims[claim].(type) {
+	case string:
+		return v
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(v)
+	}
+	return ""
 }
 
 func hashKey(u *config.Upstream, r *http.Request, st *reqState) string {

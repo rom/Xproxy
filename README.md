@@ -83,9 +83,9 @@ an identifier from the access log to the upstream.
 - Connection limits at accept (global and per address), concurrency
   ceiling, header, body and idle timeouts, URI and body size limits,
   WebSocket opt-in per route
-- Keyed rate limits (address, header, cookie, country) with reject or
-  tarpit; CIDR allow and deny lists; trusted proxy handling for
-  forwarded addresses
+- Keyed rate limits (address, network, route, endpoint, country, TLS
+  fingerprint, header, cookie, token claim) with reject or tarpit; CIDR
+  allow and deny lists; trusted proxy handling for forwarded addresses
 - Positive security model per route (methods, media types, typed query
   parameters, size bounds) and virtual patches that block a published
   vulnerability by request shape, with counters and expiry

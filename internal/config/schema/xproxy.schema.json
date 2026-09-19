@@ -2083,7 +2083,7 @@
           "type": "string"
         },
         "key": {
-          "description": "Key selects the bucket identity: client_ip, route, or header:\u003cname\u003e.",
+          "description": "Key selects the bucket identity: client_ip, client_net, route, country, endpoint, ja4, header:\u003cname\u003e, cookie:\u003cname\u003e or jwt:\u003cclaim\u003e. Keys that a request may lack fall back to the client address.",
           "type": "string"
         },
         "limit": {
@@ -2092,6 +2092,13 @@
         },
         "name": {
           "type": "string"
+        },
+        "net_v4": {
+          "description": "NetV4 and NetV6 are the prefix lengths for key client_net. Default 24 and 48.",
+          "type": "integer"
+        },
+        "net_v6": {
+          "type": "integer"
         },
         "rate": {
           "description": "Rate is tokens per second (token_bucket).",

@@ -557,7 +557,8 @@ and syslog all receive the same redacted record.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes |
-| `key` | `client_ip`, `route`, `country`, `header:<Name>` | `client_ip` | Bucket identity. A missing header or an unknown country falls back to the client address. |
+| `key` | see below | `client_ip` | Bucket identity |
+| `net_v4`, `net_v6` | int | `24`, `48` | Prefix lengths for `key: client_net` |
 | `algorithm` | `token_bucket`, `sliding_window` | `token_bucket` | `token_bucket` admits bursts up to `burst` and refills at `rate`; `sliding_window` admits at most `limit` requests in any window of length `window`, estimated from the current and the previous fixed window weighted by their overlap (no burst above `limit` at a window edge, an error bounded by the unevenness of arrivals inside one window) |
 | `rate` | float | required for `token_bucket`, positive | Tokens per second |
 | `burst` | int | `rate` rounded, at least 1 | Bucket capacity |
@@ -566,6 +567,24 @@ and syslog all receive the same redacted record.
 | `distributed` | `approximate`, `exact` | `approximate` | Cluster semantics. `approximate`: every node decides locally and refills at the rate minus its peers' gossiped consumption (one interval of delay). `exact`: one member owns each key (rendezvous hash of member and key over the connected members), the others ask it over the cluster connection and wait at most `cluster.exact_timeout`; the owner's bucket or window is the single count. A node that cannot reach the owner in time decides on its own limiter and counts an `exact_fallback`. Needs the `cluster` section |
 | `action` | `reject`, `tarpit` | `reject` | `reject` answers 429 at once |
 | `tarpit_delay` | duration | `10s` | Hold before answering 429 (released on client disconnect) |
+
+Keys:
+
+| Key | Bucket per | Without the identifier |
+|-----|------------|------------------------|
+| `client_ip` | client address | |
+| `client_net` | client network: the address truncated to `net_v4` or `net_v6` bits, so a distributed client rotating addresses inside one allocation shares a bucket | |
+| `route` | route | |
+| `endpoint` | method, route and path template (identifiers such as numbers, UUIDs, hashes and opaque tokens replaced by `*`, so `/users/42` and `/users/43` are one endpoint) | |
+| `country` | client country (needs `geoip`) | client address |
+| `ja4` | TLS client fingerprint | client address (plaintext listeners) |
+| `header:<Name>` | first value of the header (256 bytes) | client address |
+| `cookie:<name>` | value of the cookie (256 bytes), a session or device identifier | client address |
+| `jwt:<claim>` | a string, number or boolean claim of the bearer token in `Authorization`, read without verification (the value only names a bucket; the `jwt` route setting still rejects a forged token) | client address |
+
+The fallback keeps a limit from being avoided by omitting the
+identifier; rotating it still buys fresh buckets, so pair an identifier
+key with a `client_ip` or `client_net` policy on the same route.
 
 Memory: at most 64 x 8192 buckets per policy.
 

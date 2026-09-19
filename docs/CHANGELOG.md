@@ -218,6 +218,9 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- Rate limit keys `client_net` (with `net_v4` and `net_v6`), `endpoint`
+  (method, route and path template), `ja4`, `cookie:<name>` and
+  `jwt:<claim>`, each falling back to the client address.
 - Positive security model per route (`routes[].policy`: methods,
   media types, query parameter types and bounds, URI, query and header
   limits) and structured virtual patches (`virtual_patches`: host,
