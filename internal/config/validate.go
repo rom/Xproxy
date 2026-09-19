@@ -1554,6 +1554,23 @@ func (v *validator) bans(b *Bans) {
 		if t.MaxDuration < t.Duration {
 			v.errf("%s.max_duration: must be at least duration", p)
 		}
+		switch t.Aggregate {
+		case "address", "net", "ja4":
+		default:
+			v.errf("%s.aggregate: must be address, net or ja4", p)
+		}
+		if t.NetV4 < 8 || t.NetV4 > 32 {
+			v.errf("%s.net_v4: must be between 8 and 32", p)
+		}
+		if t.NetV6 < 32 || t.NetV6 > 128 {
+			v.errf("%s.net_v6: must be between 32 and 128", p)
+		}
+		if t.MinSources < 1 || t.MinSources > 100000 {
+			v.errf("%s.min_sources: must be between 1 and 100000", p)
+		}
+		if t.MinSources > t.Threshold {
+			v.errf("%s.min_sources: must not exceed threshold", p)
+		}
 	}
 }
 

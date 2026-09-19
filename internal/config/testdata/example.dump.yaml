@@ -640,6 +640,10 @@ bans:
           duration: 15m0s
           escalation: 2
           max_duration: 24h0m0s
+          aggregate: address
+          net_v4: 24
+          net_v6: 48
+          min_sources: 1
         - name: brute-force
           reasons:
             - rate_limit
@@ -649,6 +653,10 @@ bans:
           duration: 1h0m0s
           escalation: 2
           max_duration: 24h0m0s
+          aggregate: address
+          net_v4: 24
+          net_v6: 48
+          min_sources: 1
 waf:
     profiles:
         - name: default

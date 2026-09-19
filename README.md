@@ -104,7 +104,8 @@ an identifier from the access log to the upstream.
   bounded request and response inspection
 - Ban list: repeated denies of any category become escalating temporary
   bans dropped at accept, persisted across restarts, shared across a
-  cluster and managed from the CLI
+  cluster and managed from the CLI; triggers aggregate by network or
+  TLS fingerprint against distributed attacks
 - Fleet operation: a controller pushes configuration bundles to many
   nodes over mutual TLS and collects their status; SIEM export in
   NDJSON, Splunk HEC, CEF or LEEF

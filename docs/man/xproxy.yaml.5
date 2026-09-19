@@ -4112,7 +4112,7 @@ float
 T}	T{
 \fB2\fR
 T}	T{
-Multiplier applied for each repeat ban of the same address
+Multiplier applied for each repeat ban of the same target
 T}
 T{
 \fBmax_\:duration\fR
@@ -4123,9 +4123,36 @@ T}	T{
 T}	T{
 Cap on escalated duration;\: at least \fBduration\fR
 T}
+T{
+\fBaggregate\fR
+T}	T{
+\fBaddress\fR,\: \fBnet\fR,\: \fBja4\fR
+T}	T{
+\fBaddress\fR
+T}	T{
+What the trigger counts and bans. \fBnet\fR keys the window by the client network (\fBnet_\:v4\fR or \fBnet_\:v6\fR bits) and bans that network,\: for an attack spread over one allocation;\: \fBja4\fR keys it by the TLS client fingerprint and bans the fingerprint (\fBja4:\:<fp>\fR),\: for an attack spread over many networks from one tool;\: plaintext connections do not count towards a \fBja4\fR trigger
+T}
+T{
+\fBnet_\:v4\fR,\: \fBnet_\:v6\fR
+T}	T{
+int
+T}	T{
+\fB24\fR,\: \fB48\fR
+T}	T{
+Prefix lengths for \fBaggregate:\: net\fR (8 to 32,\: 32 to 128)
+T}
+T{
+\fBmin_\:sources\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+For \fBnet\fR and \fBja4\fR: distinct client addresses that must have contributed to the window before the aggregate is banned,\: so one noisy host does not ban its neighbours or a common fingerprint;\: at most \fBthreshold\fR
+T}
 .TE
 .PP
-Manual bans (\fBxproxyctl ban\fR) accept addresses and CIDRs no wider than /8 (IPv4) or /32 (IPv6); loopback and unspecified addresses are refused.
+Manual bans (\fBxproxyctl ban\fR) accept addresses, CIDRs no wider than /8 (IPv4) or /32 (IPv6) and fingerprints as \fBja4:<fp>\fR; loopback and unspecified addresses are refused. A network overlapping an exempt range is never banned, by trigger, operator or peer; a fingerprint ban is not applied to clients in exempt ranges. Fingerprint bans apply at the request stage (the fingerprint is known after the TLS handshake), not at accept; at most 4096 are held.
 .SH "waf"
 .PP
 Present means enabled. Routes without a \fBwaf\fR block use \fBdefault_mode\fR and \fBdefault_profile\fR. Profiles compile at load and at reload; a broken rule set fails the reload.

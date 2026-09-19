@@ -325,6 +325,10 @@
       "description": "BanTrigger bans a client after Threshold denies within Window.",
       "type": "object",
       "properties": {
+        "aggregate": {
+          "description": "Aggregate is what the trigger counts and bans: address (default), net (the client network of NetV4 or NetV6 bits, for attacks spread over one allocation) or ja4 (the TLS client fingerprint, for attacks spread over many networks from one tool).",
+          "type": "string"
+        },
         "duration": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
@@ -339,8 +343,19 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "min_sources": {
+          "description": "MinSources is how many distinct client addresses must contribute to the window before a net or ja4 aggregate bans, so one noisy host does not ban its neighbours. Default 1.",
+          "type": "integer"
+        },
         "name": {
           "type": "string"
+        },
+        "net_v4": {
+          "description": "NetV4 and NetV6 are the prefix lengths of aggregate net. Default 24 and 48.",
+          "type": "integer"
+        },
+        "net_v6": {
+          "type": "integer"
         },
         "reasons": {
           "description": "Reasons restricts which deny reasons count (acl, rate_limit, waf, body_size, uri_length, bad_host, no_route, websocket, concurrency). Empty counts every deny.",

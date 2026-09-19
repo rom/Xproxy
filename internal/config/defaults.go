@@ -369,6 +369,10 @@ func applyDefaults(c *Config) {
 		setStr(&b.Action, "drop")
 		for i := range b.Triggers {
 			t := &b.Triggers[i]
+			setStr(&t.Aggregate, "address")
+			setInt(&t.NetV4, 24)
+			setInt(&t.NetV6, 48)
+			setInt(&t.MinSources, 1)
 			if t.Escalation == 0 {
 				t.Escalation = DefaultBanEscalation
 			}

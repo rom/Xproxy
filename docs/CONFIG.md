@@ -1037,11 +1037,19 @@ comes from a trusted proxy chain or `action` is `reject`.
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
-| `escalation` | float | `2` | Multiplier applied for each repeat ban of the same address |
+| `escalation` | float | `2` | Multiplier applied for each repeat ban of the same target |
 | `max_duration` | duration | `24h` | Cap on escalated duration; at least `duration` |
+| `aggregate` | `address`, `net`, `ja4` | `address` | What the trigger counts and bans. `net` keys the window by the client network (`net_v4` or `net_v6` bits) and bans that network, for an attack spread over one allocation; `ja4` keys it by the TLS client fingerprint and bans the fingerprint (`ja4:<fp>`), for an attack spread over many networks from one tool; plaintext connections do not count towards a `ja4` trigger |
+| `net_v4`, `net_v6` | int | `24`, `48` | Prefix lengths for `aggregate: net` (8 to 32, 32 to 128) |
+| `min_sources` | int | `1` | For `net` and `ja4`: distinct client addresses that must have contributed to the window before the aggregate is banned, so one noisy host does not ban its neighbours or a common fingerprint; at most `threshold` |
 
-Manual bans (`xproxyctl ban`) accept addresses and CIDRs no wider than /8
-(IPv4) or /32 (IPv6); loopback and unspecified addresses are refused.
+Manual bans (`xproxyctl ban`) accept addresses, CIDRs no wider than /8
+(IPv4) or /32 (IPv6) and fingerprints as `ja4:<fp>`; loopback and
+unspecified addresses are refused. A network overlapping an exempt
+range is never banned, by trigger, operator or peer; a fingerprint ban
+is not applied to clients in exempt ranges. Fingerprint bans apply at
+the request stage (the fingerprint is known after the TLS handshake),
+not at accept; at most 4096 are held.
 
 ## waf
 

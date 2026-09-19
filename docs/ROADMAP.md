@@ -259,6 +259,8 @@ procedure is in RELEASING.md.
 - CAPTCHA providers as a challenge tier and device identifiers in the
   challenge cookie (`challenge.captcha`, `challenge.device`, rate limit
   key `device`): delivered
+- Distributed attack response: network and fingerprint aggregated bans
+  (`bans.triggers[].aggregate`, `ja4:` ban targets): delivered
 - Bypass protection: origin request signatures and the origin locking
   guide (`upstreams[].origin_signature`, HARDENING.md 5c): delivered
 - WAF operating modes with gradual enforcement (`block_percent`,

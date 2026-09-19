@@ -64,7 +64,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `reopen-logs` | Reopen log files |
 | `tail STREAM` | Follow `access`, `error`, `security` or `audit` |
 | `bans` | List active bans with expiry, source and count |
-| `ban TARGET` | Ban an address or CIDR; `-duration 1h`, `-reason text` |
+| `ban TARGET` | Ban an address, CIDR or `ja4:<fingerprint>`; `-duration 1h`, `-reason text` |
 | `unban TARGET` | Remove a ban |
 | `cluster` | Peers, inbound connections and gossip counters |
 | `spki CERT.pem` | Print the `spki_pins` value of a certificate |
@@ -1257,6 +1257,36 @@ minutes; a second ban within the escalation memory doubles it. With
 nothing per attempt. Use `reject` when the proxy sits behind a load
 balancer that sets `X-Forwarded-For`, because at accept only the balancer's
 address is visible.
+
+#### Distributed attacks: banning networks and tools
+
+An attacker with a thousand addresses stays under every per address
+threshold. Two aggregates catch what the addresses have in common:
+
+```yaml
+bans:
+  triggers:
+    - {name: waf-repeat, reasons: [waf], threshold: 5, window: 1m, duration: 15m}
+    - {name: net-sweep,  reasons: [waf, rate_limit, account_abuse], aggregate: net, net_v4: 24, net_v6: 48,
+       threshold: 50, min_sources: 5, window: 5m, duration: 1h}
+    - {name: tool,       reasons: [waf, account_abuse, challenge], aggregate: ja4,
+       threshold: 100, min_sources: 10, window: 5m, duration: 6h}
+```
+
+`net-sweep` counts denies per client network instead of per address
+and bans the whole `/24` (or `/48`) once fifty denies have come from at
+least five different addresses in it, so a rented range or a cloud
+allocation used for a sweep is closed while a single misbehaving host
+in an office network is not enough to ban its neighbours. `tool`
+counts per TLS client fingerprint (JA4) across every network and bans
+the fingerprint, so a stuffing tool rotating through residential
+proxies is refused wherever it connects, while `min_sources` keeps a
+fingerprint shared by a popular browser from being banned by one bad
+client. The entries show up in `xproxyctl bans` as `203.0.113.0/24` and
+`ja4:t13d0403h1_...`, propagate to cluster peers like address bans, and
+can be placed or lifted by hand (`xproxyctl ban ja4:<fp>`). Exempt
+ranges are never covered by a network ban and never refused by a
+fingerprint ban.
 
 ### Cluster of proxies
 

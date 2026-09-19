@@ -265,3 +265,127 @@ func TestReconfigure(t *testing.T) {
 		}
 	}
 }
+
+func TestAggregates(t *testing.T) {
+	c := cfg()
+	c.Triggers = []config.BanTrigger{
+		{Name: "net", Reasons: []string{"rate_limit"}, Threshold: 6, MinSources: 3, Aggregate: "net", NetV4: 24, NetV6: 48,
+			Window: config.Duration(time.Minute), Duration: config.Duration(time.Minute), Escalation: 2, MaxDuration: config.Duration(5 * time.Minute)},
+		{Name: "tool", Reasons: []string{"waf"}, Threshold: 4, MinSources: 2, Aggregate: "ja4",
+			Window: config.Duration(time.Minute), Duration: config.Duration(time.Minute), Escalation: 2, MaxDuration: config.Duration(5 * time.Minute)},
+	}
+	l, now := newList(t, c)
+	// Six denies from one address do not reach three sources: no ban.
+	one := netip.MustParseAddr("203.0.113.9")
+	for i := 0; i < 6; i++ {
+		if l.Observe(one, "rate_limit") != nil {
+			t.Fatal("single source banned the network")
+		}
+	}
+	// Two more addresses of the same /24 complete the sources: the
+	// network is banned and a fresh address in it is refused.
+	l.Observe(netip.MustParseAddr("203.0.113.10"), "rate_limit")
+	e := l.Observe(netip.MustParseAddr("203.0.113.11"), "rate_limit")
+	if e == nil || e.Target != "203.0.113.0/24" || e.Source != "trigger:net" {
+		t.Fatalf("network ban: %+v", e)
+	}
+	if !l.Banned(netip.MustParseAddr("203.0.113.200")) || l.Banned(netip.MustParseAddr("203.0.114.1")) {
+		t.Fatal("prefix lookup")
+	}
+	// IPv6 aggregates on the /48.
+	for i := 0; i < 5; i++ {
+		l.Observe(netip.MustParseAddr("2001:db8:1:"+string(rune('a'+i))+"::1"), "rate_limit")
+	}
+	if e := l.Observe(netip.MustParseAddr("2001:db8:1:f::9"), "rate_limit"); e == nil || e.Target != "2001:db8:1::/48" {
+		t.Fatalf("ipv6 network ban: %+v", e)
+	}
+	// A network overlapping an exempt range is never banned.
+	for i := 0; i < 6; i++ {
+		l.Observe(netip.MustParseAddr("10.0.0."+string(rune('1'+i))), "rate_limit")
+	}
+	if l.Banned(netip.MustParseAddr("10.0.0.99")) {
+		t.Fatal("exempt network banned")
+	}
+	// Fingerprint bans: plaintext clients (no ja4) do not count; two
+	// addresses sharing a fingerprint reach the threshold; the
+	// fingerprint is then refused from any address except exempt ones.
+	fp := "t13d0403h1_000000000000_000000000000"
+	for i := 0; i < 4; i++ {
+		if l.ObserveClient(netip.MustParseAddr("198.51.100.1"), "", "waf") != nil {
+			t.Fatal("plaintext client counted for ja4")
+		}
+	}
+	l.ObserveClient(netip.MustParseAddr("198.51.100.1"), fp, "waf")
+	l.ObserveClient(netip.MustParseAddr("198.51.100.1"), fp, "waf")
+	l.ObserveClient(netip.MustParseAddr("198.51.100.1"), fp, "waf")
+	e = l.ObserveClient(netip.MustParseAddr("198.51.100.2"), fp, "waf")
+	if e == nil || e.Target != FingerprintPrefix+fp || e.Count != 1 {
+		t.Fatalf("fingerprint ban: %+v", e)
+	}
+	if !l.BannedFingerprint(fp) || l.BannedFingerprint("other") || !l.BannedClient(netip.MustParseAddr("192.0.2.77"), fp) {
+		t.Fatal("fingerprint lookup")
+	}
+	if l.BannedClient(netip.MustParseAddr("10.2.3.4"), fp) || l.BannedClient(netip.MustParseAddr("192.0.2.77"), "") {
+		t.Fatal("exempt address or plaintext client refused by a fingerprint ban")
+	}
+	// Entries and stats include every kind; the fingerprint entry can be
+	// listed, unbanned, banned manually and refused when malformed.
+	if es := l.Entries(); len(es) != 3 {
+		t.Fatalf("entries %+v", es)
+	}
+	if active, _ := l.Stats(); active != 3 {
+		t.Fatalf("active %d", active)
+	}
+	if err := l.Unban(FingerprintPrefix + fp); err != nil || l.BannedFingerprint(fp) || l.hasFP.Load() {
+		t.Fatalf("unban fingerprint: %v", err)
+	}
+	if _, err := l.Ban(FingerprintPrefix+"t13d1516h2_8daaf6152771_b0da82dd1658", time.Hour, "tool"); err != nil {
+		t.Fatal(err)
+	}
+	if !l.BannedFingerprint("t13d1516h2_8daaf6152771_b0da82dd1658") {
+		t.Fatal("manual fingerprint ban")
+	}
+	for _, bad := range []string{FingerprintPrefix, FingerprintPrefix + "short", FingerprintPrefix + "UPPER_CASE_123456", FingerprintPrefix + "has space here_x"} {
+		if _, err := l.Ban(bad, time.Hour, "x"); err == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+	// Escalation follows the fingerprint target; expiry purges it.
+	*now = now.Add(2 * time.Hour)
+	l.Purge()
+	if l.hasFP.Load() || l.BannedFingerprint("t13d1516h2_8daaf6152771_b0da82dd1658") {
+		t.Fatal("expired fingerprint ban still active")
+	}
+	// A peer's fingerprint ban applies; a network ban touching an exempt
+	// range does not.
+	if err := l.Apply(Entry{Target: FingerprintPrefix + fp, Until: now.Add(time.Hour), Reason: "peer"}, false, "n2"); err != nil || !l.BannedFingerprint(fp) {
+		t.Fatalf("peer fingerprint ban: %v", err)
+	}
+	if err := l.Apply(Entry{Target: "10.0.0.0/24", Until: now.Add(time.Hour)}, false, "n2"); err != nil || l.Banned(netip.MustParseAddr("10.0.0.5")) {
+		t.Fatalf("peer exempt network ban: %v", err)
+	}
+	if err := l.Apply(Entry{Target: FingerprintPrefix + fp}, true, "n2"); err != nil || l.BannedFingerprint(fp) {
+		t.Fatalf("peer fingerprint unban: %v", err)
+	}
+}
+
+func TestFingerprintPersistence(t *testing.T) {
+	c := cfg()
+	c.StateFile = filepath.Join(t.TempDir(), "bans.db")
+	l, now := newList(t, c)
+	*now = time.Now() // the reloading list checks expiry against the wall clock
+	fp := "t13d0403h1_000000000000_000000000000"
+	if _, err := l.Ban(FingerprintPrefix+fp, time.Hour, "tool"); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	l2, err := New(c, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l2.now = func() time.Time { return *now }
+	defer l2.Close()
+	if !l2.BannedFingerprint(fp) {
+		t.Fatal("fingerprint ban not persisted")
+	}
+}

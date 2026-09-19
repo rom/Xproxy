@@ -222,6 +222,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Aggregated bans: `bans.triggers[].aggregate` counts and bans per
+  client network (`net`, with `net_v4` and `net_v6`) or per TLS client
+  fingerprint (`ja4`), with `min_sources` distinct addresses required
+  first; fingerprint bans as `ja4:<fp>` targets in triggers, manual
+  bans, persistence and cluster propagation, applied at the request
+  stage and sparing exempt addresses; networks overlapping exempt
+  ranges are never banned.
 - Challenge tiers: `challenge.captcha` adds Cloudflare Turnstile,
   hCaptcha or reCAPTCHA as a second tier (escalation from
   `account_guard` `captcha` steps, campaigns and disposable actions, or

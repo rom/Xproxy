@@ -212,6 +212,11 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Repeated denies (WAF, rate limit, ACL and others, selectable per
   trigger) within a window ban the client address for an escalating
   duration with a cap.
+- Triggers can aggregate by client network or by TLS client fingerprint
+  and ban the network or the fingerprint, with a minimum number of
+  distinct source addresses before an aggregate is banned; networks
+  overlapping exempt ranges are never banned and fingerprint bans spare
+  exempt addresses.
 - Banned peers are closed at accept before any byte is read, or answered
   403 when the client address is derived from a trusted proxy chain.
 - Exempt ranges can never be banned. Loopback, unspecified and overly wide

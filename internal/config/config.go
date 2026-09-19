@@ -1659,6 +1659,19 @@ type BanTrigger struct {
 	// address. Default 2. MaxDuration caps it, default 24h.
 	Escalation  float64  `yaml:"escalation"`
 	MaxDuration Duration `yaml:"max_duration"`
+	// Aggregate is what the trigger counts and bans: address (default),
+	// net (the client network of NetV4 or NetV6 bits, for attacks spread
+	// over one allocation) or ja4 (the TLS client fingerprint, for
+	// attacks spread over many networks from one tool).
+	Aggregate string `yaml:"aggregate"`
+	// NetV4 and NetV6 are the prefix lengths of aggregate net. Default 24
+	// and 48.
+	NetV4 int `yaml:"net_v4"`
+	NetV6 int `yaml:"net_v6"`
+	// MinSources is how many distinct client addresses must contribute
+	// to the window before a net or ja4 aggregate bans, so one noisy host
+	// does not ban its neighbours. Default 1.
+	MinSources int `yaml:"min_sources"`
 }
 
 // Sandbox configures the in-process hardening (docs/HARDENING.md). Every

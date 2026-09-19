@@ -134,7 +134,14 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	if bl := s.bans.Load(); bl != nil && bl.Banned(st.clientIP) {
+	// The TLS fingerprint of the connection, for fingerprint bans, ban
+	// triggers, filters and the access log.
+	if r.TLS != nil {
+		if fp, ok := s.fingerprints.Get(r.RemoteAddr); ok {
+			st.ja4 = fp.JA4
+		}
+	}
+	if bl := s.bans.Load(); bl != nil && bl.BannedClient(st.clientIP, st.ja4) {
 		s.stats.DeniedBan.Add(1)
 		st.denied = "banned"
 		s.deny(rw, r, st, http.StatusForbidden, "banned")
@@ -208,7 +215,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				s.logs.SecurityEvent(r.Context(), "challenge_failed", reason,
 					"request_id", st.id, "client_ip", st.clientIP.String(), "user_agent", r.UserAgent())
 				if bl := s.bans.Load(); bl != nil {
-					bl.Observe(st.clientIP, "challenge")
+					bl.ObserveClient(st.clientIP, st.ja4, "challenge")
 				}
 			}
 			return
@@ -562,7 +569,7 @@ func (s *Server) filterDeny(rw *responseWriter, r *http.Request, st *reqState, v
 		"host", r.Host, "path", r.URL.Path, "route", st.route, "status", v.Status,
 		"detail", v.Detail, "user_agent", r.UserAgent()}, v.Attrs...)...)
 	if bl := s.bans.Load(); bl != nil {
-		bl.Observe(st.clientIP, banCategory(v.Reason))
+		bl.ObserveClient(st.clientIP, st.ja4, banCategory(v.Reason))
 	}
 	if rw.wrote {
 		return
@@ -991,7 +998,7 @@ func (s *Server) denyDetail(rw *responseWriter, r *http.Request, st *reqState, s
 	}
 	s.logs.SecurityEvent(r.Context(), "deny", reason, attrs...)
 	if bl := s.bans.Load(); bl != nil && reason != "banned" {
-		bl.Observe(st.clientIP, banCategory(reason))
+		bl.ObserveClient(st.clientIP, st.ja4, banCategory(reason))
 	}
 	s.plainStatus(rw, r, status)
 }
@@ -1004,7 +1011,7 @@ func (s *Server) tarpit(rw *responseWriter, r *http.Request, st *reqState, rl *c
 		"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
 		"host", r.Host, "path", r.URL.Path, "route", st.route, "delay", rl.TarpitDelay.D().String())
 	if bl := s.bans.Load(); bl != nil {
-		bl.Observe(st.clientIP, "rate_limit")
+		bl.ObserveClient(st.clientIP, st.ja4, "rate_limit")
 	}
 	select {
 	case <-time.After(rl.TarpitDelay.D()):
