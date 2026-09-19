@@ -1318,6 +1318,14 @@
           "description": "HMACSecretFile holds the shared secret for HS* algorithms.",
           "type": "string"
         },
+        "introspection": {
+          "description": "Introspection validates tokens at an OAuth 2.0 token introspection endpoint (RFC 7662): opaque tokens always, signed tokens too with always. A provider may have introspection alone, without keys.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TokenIntrospection"
+            }
+          ]
+        },
         "issuer": {
           "description": "Issuer must equal the token's iss claim.",
           "type": "string"
@@ -2844,6 +2852,42 @@
               "$ref": "#/$defs/OCSPStapling"
             }
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TokenIntrospection": {
+      "description": "TokenIntrospection is an RFC 7662 introspection endpoint.",
+      "type": "object",
+      "properties": {
+        "always": {
+          "description": "Always introspects signed tokens too (revocation checks); default false introspects only tokens that are not JWS compact serialisations.",
+          "type": "boolean"
+        },
+        "ca_file": {
+          "description": "CAFile pins the CA for the endpoint. Default: system pool.",
+          "type": "string"
+        },
+        "cache_ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "client_id": {
+          "description": "ClientID and ClientSecretFile authenticate the proxy to the endpoint with HTTP basic authentication.",
+          "type": "string"
+        },
+        "client_secret_file": {
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "url": {
+          "description": "URL is the introspection endpoint (https).",
+          "type": "string"
         }
       },
       "additionalProperties": false

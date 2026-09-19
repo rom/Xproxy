@@ -74,10 +74,19 @@ async function boot() {
 function showLogin() {
   stopRefresh(); me = null;
   $('#app').classList.add('hidden'); $('#login').classList.remove('hidden');
+  get('/api/auth').then(a => {
+    $('#sso').classList.toggle('hidden', !a.oidc);
+    if (a.oidc && a.oidc_issuer) $('#sso-link').textContent = 'Sign in with ' + a.oidc_issuer;
+  }).catch(() => {});
+  const err = new URLSearchParams(location.search).get('sso_error');
+  if (err) {
+    $('#login-error').textContent = 'single sign-on failed: ' + err.replace(/[^a-zA-Z0-9_:-]/g, '');
+    history.replaceState(null, '', location.pathname + location.hash);
+  }
 }
 function showApp() {
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
-  $('#who').textContent = me.user + ' (' + me.role + (me.via === 'certificate' ? ', certificate' : '') + ')';
+  $('#who').textContent = me.user + ' (' + me.role + (me.via === 'certificate' ? ', certificate' : me.via === 'oidc' ? ', single sign-on' : '') + ')';
   $('#footer-version').textContent = 'xproxy-admin ' + me.version;
   route();
 }

@@ -55,6 +55,8 @@ type Options struct {
 	SessionMax  time.Duration
 	// Log receives the audit and error events (JSON to stderr by default).
 	Log *slog.Logger
+	// OIDC enables single sign-on through an OpenID Connect provider.
+	OIDC *OIDCOptions
 }
 
 // TLSOptions are the listener's certificate settings.
@@ -76,6 +78,7 @@ type Server struct {
 	srv      *http.Server
 	ln       net.Listener
 	tlsOn    bool
+	oidc     *oidcLogin    // nil without OIDC
 	verify   chan struct{} // bounds concurrent password checks
 	mu       sync.Mutex    // serialises configuration file writes
 }
@@ -129,6 +132,13 @@ func New(o Options) (*Server, error) {
 		mux:      http.NewServeMux(),
 		tlsOn:    o.TLS.CertFile != "",
 		verify:   make(chan struct{}, 4),
+	}
+	if o.OIDC.Enabled() {
+		l, err := newOIDCLogin(*o.OIDC, s.log)
+		if err != nil {
+			return nil, err
+		}
+		s.oidc = l
 	}
 	s.routes()
 	return s, nil
@@ -202,6 +212,9 @@ func (s *Server) Addr() string {
 
 // Shutdown stops serving.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.oidc != nil {
+		s.oidc.stop()
+	}
 	if s.srv == nil {
 		return nil
 	}
@@ -248,6 +261,11 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/login", s.login)
 	m.HandleFunc("POST /api/logout", s.logout)
 	m.HandleFunc("GET /api/me", s.me)
+	m.HandleFunc("GET /api/auth", s.authMethods)
+	if s.oidc != nil {
+		m.HandleFunc("GET "+oidcLoginPath, s.oidcStart)
+		m.HandleFunc("GET "+oidcCallback, s.oidcFinish)
+	}
 
 	// Read-only pass-through to the management API.
 	for name, path := range map[string]string{
@@ -318,7 +336,7 @@ func (s *Server) secure(next http.Handler) http.Handler {
 			return
 		}
 		h.Set("Cache-Control", "no-store")
-		if r.URL.Path == "/api/health" || r.URL.Path == "/api/login" {
+		if r.URL.Path == "/api/health" || r.URL.Path == "/api/login" || r.URL.Path == "/api/auth" || r.URL.Path == oidcLoginPath || r.URL.Path == oidcCallback {
 			if r.Method != http.MethodGet && !s.sameOrigin(r) {
 				writeJSON(w, 403, map[string]any{"error": "cross-site request refused"})
 				return

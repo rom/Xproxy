@@ -65,10 +65,11 @@ var Vars = map[string]string{
 	"header":      "request header value: ${header:Name}",
 	"cookie":      "request cookie value: ${cookie:name}",
 	"query":       "query parameter value: ${query:name}",
+	"cert":        "client certificate field: ${cert:cn}, subject, issuer, serial, fingerprint, sans, not_after, xfcc, pem",
 }
 
 // withArg are the names that take an argument.
-var withArg = map[string]bool{"header": true, "cookie": true, "query": true}
+var withArg = map[string]bool{"header": true, "cookie": true, "query": true, "cert": true}
 
 // TakesArg reports whether the variable takes an argument after a colon
 // (and is a function, not a bare variable, in expressions).

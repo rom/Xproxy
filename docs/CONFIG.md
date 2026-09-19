@@ -346,6 +346,7 @@ rewrites and redirects and is kept literally in pages.
 | `country`, `ja4` | GeoIP country code and TLS client fingerprint, empty when unknown |
 | `tls_version`, `tls_cipher` | TLS parameters of the client connection |
 | `header:Name`, `cookie:name`, `query:name` | a request header, cookie or query parameter |
+| `cert:field` | the client certificate of a listener with `client_auth` (empty without one): `cn`, `subject` and `issuer` (RFC 2253), `serial` (hex), `fingerprint` (SHA-256 of the DER, hex), `sans` (DNS names, addresses, emails and URIs, comma separated), `not_after` (RFC 3339), `xfcc` (an Envoy style `X-Forwarded-Client-Cert` value with `Hash`, `Subject`, `URI` and `DNS`) and `pem` (URL encoded PEM). Set the header with `request_headers.set`, which also discards a client supplied copy |
 | `1` to `9`, `name` | groups of `rewrite_regex.pattern` or, without one, of the matching `path_regex` (numbered and named) |
 | `status`, `status_text`, `reason` | error pages only: the status, its phrase and the denial category (`acl`, `rate_limit`, `waf`, `banned`, `upstream`...) |
 | `time` | current time, RFC 3339, UTC |
@@ -368,6 +369,7 @@ A bare string is true when it is neither empty, `0` nor `false`.
 | `client_ip`, `host`, `path`, `raw_query`, `method`, `scheme`, `country`, `ja4`, `tls_version`, `tls_cipher`, `request_id`, `route`, `upstream`, `tenant`, `time`, `date`, `hour`, `minute`, `weekday` | The variables of the table above, as bare names (`route`, `upstream` and `tenant` are empty in `routes[].when`, which runs before the route is chosen) |
 | `header("Name")`, `cookie("name")`, `query("name")`, `capture("name")` | A request header (case insensitive, first value), cookie, query parameter or regular expression group by name or number; empty when absent |
 | `has_header("Name")`, `has_cookie("name")`, `has_query("name")` | Presence, also of an empty value |
+| `cert("field")` | A client certificate field as in the variable table (`cert("cn") == "billing-batch"`, `cert("fingerprint") in [...]`); empty without a client certificate |
 | `x in ["a", "b"]`, `x not in [...]` | Membership in a list of literals |
 | `client_ip in cidr("10.0.0.0/8", "2001:db8::/32", "203.0.113.7")` | Address containment in prefixes or single addresses; a value that is not an address is never contained |
 | `x matches "pattern"`, `matches(x, "pattern")` | RE2 match anywhere in the value; anchor with `^` and `$` for the whole value. Patterns are literals, compiled at load |
@@ -1111,6 +1113,13 @@ accepted.
 | `forward_claims` | map header -> claim | `{}` | Set upstream headers from claims; client supplied copies of these headers are always removed, token or not. `Authorization`, `Cookie` and `Host` cannot be targets |
 | `strip_token` | bool | `true` | Remove the token before forwarding |
 | `log_claims` | list | `[]` | Claims copied to the access log as `jwt_<claim>` |
+| `introspection` | object | none | Validate tokens at an OAuth 2.0 token introspection endpoint (RFC 7662): every token of a provider without keys, tokens that are not compact JWS otherwise, all tokens with `always`. The answer's claims pass the provider's `issuer`, `audiences` (when present) and `required_claims` rules and feed `forward_claims` and `log_claims` like a JWT payload; `active: false` is refused with reason `inactive`, an unreachable endpoint answers 503 with `Retry-After` |
+| `introspection.url` | https URL | required | The endpoint |
+| `introspection.client_id`, `introspection.client_secret_file` | string, path | required | HTTP basic credentials of the proxy at the authorization server |
+| `introspection.ca_file` | path | system pool | CA pinned for the endpoint |
+| `introspection.cache_ttl` | duration | `60s` | How long an answer (positive or negative) is kept, bounded by the token's `exp`; at most 65536 entries per provider; `0` caches nothing |
+| `introspection.timeout` | duration | `3s` | Per call, 100ms to 30s |
+| `introspection.always` | bool | `false` | Introspect signed tokens too, for revocation |
 
 A provider whose key set has never loaded (for example the JWKS URL is
 unreachable at start) rejects tokens with 503 and `Retry-After` until a

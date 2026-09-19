@@ -1963,8 +1963,27 @@ func (v *validator) jwt(j *JWT, seen map[string]bool) {
 		} else if hmac {
 			v.errf("%s: HS algorithms require hmac_secret_file", pp)
 		}
-		if sources == 0 && p.HMACSecretFile == "" {
-			v.errf("%s: jwks_file, jwks_url or hmac_secret_file is required", pp)
+		if p.Introspection == nil && sources == 0 && p.HMACSecretFile == "" {
+			v.errf("%s: jwks_file, jwks_url, hmac_secret_file or introspection is required", pp)
+		}
+		if in := p.Introspection; in != nil {
+			if u, err := url.Parse(in.URL); err != nil || u.Scheme != "https" || u.Host == "" {
+				v.errf("%s.introspection.url: must be an https URL", pp)
+			}
+			if in.ClientID == "" || !strings.HasPrefix(in.ClientSecretFile, "/") {
+				v.errf("%s.introspection: client_id and an absolute client_secret_file are required", pp)
+			} else {
+				v.file(pp+".introspection.client_secret_file", in.ClientSecretFile)
+			}
+			if in.CAFile != "" {
+				v.file(pp+".introspection.ca_file", in.CAFile)
+			}
+			if in.CacheTTL < 0 || in.CacheTTL > Duration(time.Hour) {
+				v.errf("%s.introspection.cache_ttl: must be between 0 and 1h", pp)
+			}
+			if in.Timeout < Duration(100*time.Millisecond) || in.Timeout > Duration(30*time.Second) {
+				v.errf("%s.introspection.timeout: must be between 100ms and 30s", pp)
+			}
 		}
 		if p.ClockSkew < 0 || p.ClockSkew > Duration(600_000_000_000) {
 			v.errf("%s.clock_skew: must be between 0 and 10m", pp)

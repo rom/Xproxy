@@ -55,6 +55,7 @@ type Provider struct {
 	keys    atomic.Pointer[keySet]
 	secret  []byte
 	fetch   *fetcher
+	intro   *introspector // nil without introspection
 
 	mu           sync.Mutex
 	lastOnDemand time.Time
@@ -106,10 +107,36 @@ func NewProvider(cfg config.JWTProvider, log *slog.Logger) (*Provider, error) {
 		p.refresh(ctx)
 		cancel()
 	}
-	if p.keys.Load() == nil && p.secret == nil && p.fetch == nil {
+	if cfg.Introspection != nil {
+		in, err := newIntrospector(*cfg.Introspection)
+		if err != nil {
+			return nil, fmt.Errorf("jwt provider %s: introspection: %w", cfg.Name, err)
+		}
+		p.intro = in
+	}
+	if p.keys.Load() == nil && p.secret == nil && p.fetch == nil && p.intro == nil {
 		return nil, fmt.Errorf("jwt provider %s: no keys", cfg.Name)
 	}
 	return p, nil
+}
+
+// Introspects reports whether token goes to the introspection endpoint:
+// every token of a provider without keys or with always, else only one
+// that is not a compact JWS.
+func (p *Provider) Introspects(token string) bool {
+	if p.intro == nil {
+		return false
+	}
+	return p.intro.cfg.Always || !looksLikeJWS(token) || (p.keys.Load() == nil && p.secret == nil && p.fetch == nil)
+}
+
+// IntrospectionStats returns calls, errors, cache hits and cached
+// entries (zeros without introspection).
+func (p *Provider) IntrospectionStats() (calls, errs, hits uint64, cached int) {
+	if p.intro == nil {
+		return 0, 0, 0, 0
+	}
+	return p.intro.Calls.Load(), p.intro.Errors.Load(), p.intro.Hits.Load(), p.intro.cacheLen()
 }
 
 // Start begins periodic JWKS refresh.
@@ -203,13 +230,56 @@ type header struct {
 
 // Verify checks a compact serialised token and returns its claims.
 func (p *Provider) Verify(token string) (Claims, error) {
-	c, err := p.verify(token, p.now())
+	var c Claims
+	var err error
+	if p.Introspects(token) {
+		c, err = p.introspect(token, p.now())
+	} else {
+		c, err = p.verify(token, p.now())
+	}
 	if err != nil {
 		p.Rejected.Add(1)
 		return nil, err
 	}
 	p.Verified.Add(1)
 	return c, nil
+}
+
+// introspect validates token at the endpoint and applies the provider's
+// issuer, audience and required claim rules to what it says; exp is
+// checked when present (an introspected token need not carry one).
+func (p *Provider) introspect(token string, now time.Time) (Claims, error) {
+	if len(token) == 0 || len(token) > MaxTokenBytes {
+		return nil, ErrMalformed
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), p.intro.cfg.Timeout.D())
+	defer cancel()
+	claims, err := p.intro.verify(ctx, token, now)
+	if err != nil {
+		return nil, err
+	}
+	skew := p.cfg.ClockSkew.D().Seconds()
+	nowS := float64(now.Unix())
+	if exp, ok := numeric(claims["exp"]); ok && nowS > exp+skew {
+		return nil, ErrExpired
+	}
+	if nbf, ok := numeric(claims["nbf"]); ok && nowS+skew < nbf {
+		return nil, ErrNotYetValid
+	}
+	if iss, ok := claims["iss"].(string); ok && iss != p.cfg.Issuer {
+		return nil, ErrIssuer
+	}
+	if len(p.cfg.Audiences) > 0 {
+		if _, has := claims["aud"]; has && !audienceMatches(claims["aud"], p.cfg.Audiences) {
+			return nil, ErrAudience
+		}
+	}
+	for _, name := range p.cfg.RequiredClaims {
+		if _, ok := claims[name]; !ok {
+			return nil, fmt.Errorf("%w: %s", ErrClaim, name)
+		}
+	}
+	return claims, nil
 }
 
 func (p *Provider) verify(token string, now time.Time) (Claims, error) {

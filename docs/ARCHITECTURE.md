@@ -883,6 +883,18 @@ password checks are bounded in concurrency so the hash cost cannot be
 turned against the process. A non-loopback listener is refused unless
 server certificate, key and client CA are all configured.
 
+With OIDC options the GUI adds `GET /api/auth` (which logins exist),
+`GET /api/oidc/login` and `GET /api/oidc/callback`
+(`internal/admin/oidc.go`). The flow mirrors the OIDC filter's:
+discovery with an issuer check, a state cookie sealed with AES-GCM
+under a per-process key and bound to the `state` parameter by digest,
+PKCE S256, a nonce, the code exchange with basic client authentication,
+ID token verification by a `jwt.Provider` built from the discovered
+JWKS, then a role from the configured claim and an ordinary session
+(`via=oidc`) under the same idle and absolute limits. Failures redirect
+to the login page with a short reason code and are logged with the
+source address.
+
 ### Metrics and series
 
 Counters live in atomics that the request path already updates; the
@@ -961,6 +973,17 @@ matches the algorithm, then checks `exp`, `nbf`, `iat`, `iss`, `aud` and
 required claims. The filter removes client supplied copies of forwarded
 claim headers before anything else, so a claim header can never be
 spoofed even on optional routes.
+
+A provider with an `introspection` section owns an `introspector`
+(`internal/jwt/introspect.go`): a bounded HTTPS client with a pinned CA
+that posts the token with the proxy's basic credentials and maps the
+answer's fields to `Claims`; decisions are cached by SHA-256 of the
+token for `cache_ttl` capped by `exp`, positive and negative alike, in
+a table bounded at 65536 entries with a throttled warning when full.
+`Provider.Verify` routes a token to the introspector when the provider
+has no keys, when `always` is set, or when the token is not a compact
+JWS; the filter answers 503 with `Retry-After` while the endpoint is
+unreachable, as for missing keys.
 
 ### WAF filter
 

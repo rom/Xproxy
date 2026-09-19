@@ -417,6 +417,10 @@ func applyDefaults(c *Config) {
 				p.Algorithms = []string{"RS256", "ES256", "EdDSA"}
 			}
 			setDur(&p.JWKSRefresh, time.Hour)
+			if in := p.Introspection; in != nil {
+				setDur(&in.CacheTTL, DefaultIntrospectionCacheTTL)
+				setDur(&in.Timeout, DefaultIntrospectionTimeout)
+			}
 			setDur(&p.ClockSkew, 30*time.Second)
 			setStr(&p.Source, "bearer")
 		}
@@ -618,3 +622,9 @@ const DefaultOutlierLatencySamples = 20
 // DefaultExactTimeout bounds the wait for a key owner in exact
 // distributed rate limiting.
 const DefaultExactTimeout = 50 * time.Millisecond
+
+// Defaults of OAuth 2.0 token introspection.
+const (
+	DefaultIntrospectionCacheTTL = time.Minute
+	DefaultIntrospectionTimeout  = 3 * time.Second
+)

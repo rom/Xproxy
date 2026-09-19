@@ -38,6 +38,11 @@ to report a vulnerability. The threat analysis behind the controls is in
   so a ticket is decryptable for at most two epochs and a compromised
   key exposes at most that window. Peers publish a key set fingerprint
   and a disagreement is logged.
+- A verified client certificate's fields reach the upstream only
+  through header operations the operator writes (`${cert:cn}`,
+  `${cert:fingerprint}`, `${cert:xfcc}`...), which discard a client
+  supplied copy of the header; without a verified certificate the
+  variables are empty.
 - ALPN offers `h2` then `http/1.1`; h2c (cleartext HTTP/2) is never enabled.
 - HTTP/3 (QUIC) shares certificates and limits with its TLS listener; new
   client addresses must complete a Retry round trip before state is
@@ -105,6 +110,11 @@ to report a vulnerability. The threat analysis behind the controls is in
   fallback.
 - `exp` is mandatory; `nbf`, `iat`, `iss`, `aud` and required claims are
   enforced with a bounded clock skew.
+- Token introspection (RFC 7662) reaches the authorization server over
+  HTTPS with a pinned CA and the proxy's own credentials; answers are
+  cached no longer than `cache_ttl` and never past the token's `exp`,
+  negative answers included, and the same issuer, audience and claim
+  rules apply to introspected claims as to a JWT payload.
 - Key sets come from a file or an HTTPS URL with a pinned CA, refreshed
   on a timer and on unknown key identifiers with rate limiting; a provider
   without keys fails closed with 503.
@@ -355,7 +365,11 @@ to report a vulnerability. The threat analysis behind the controls is in
   code, `HttpOnly` `SameSite=Strict` session cookies, three independent
   cross-site request forgery checks, server side role enforcement, PBKDF2
   password hashes with per-source login lockout, mutual TLS required for
-  any non-loopback listener. Configuration edits are validated before they
+  any non-loopback listener. Single sign-on, when configured, is the
+  authorization code flow with PKCE and a nonce against a pinned
+  provider; the ID token is verified for signature, issuer, audience,
+  expiry and nonce, the role comes from a claim mapped by the operator
+  and an unmapped user is refused. Configuration edits are validated before they
   are written, written atomically with a backup, and guarded by an entity
   tag.
 - Four separate JSON streams. Log files are created `0640`. Attacker

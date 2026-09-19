@@ -218,6 +218,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- Identity: OAuth 2.0 token introspection on JWT providers
+  (`jwt.providers[].introspection`) for opaque tokens or revocation
+  checks, with a bounded cache; client certificate fields as template
+  variables and an expression function (`${cert:cn}`, `${cert:xfcc}`,
+  `cert("fingerprint")`) to forward or route on a verified client
+  identity; single sign-on for the web GUI through an OpenID Connect
+  provider (`xproxy-admin serve -oidc-*`) with roles from a claim.
 - Rate limits beyond token buckets: `algorithm: sliding_window` with
   `limit` per `window` (weighted two-window estimate), and
   `distributed: exact` under which one cluster member owns each key

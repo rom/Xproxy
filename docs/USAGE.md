@@ -1016,6 +1016,41 @@ by replacing the files and running `xproxyctl reload-certs`; a broken pair
 is rejected and the old one stays in use. Keep two pins during an upstream
 key rotation.
 
+### Forwarding the client certificate identity
+
+```yaml
+server:
+  listeners:
+    - name: partners
+      address: ":8443"
+      tls:
+        certificates: [{cert_file: /etc/xproxy/tls/api.pem, key_file: /etc/xproxy/tls/api-key.pem}]
+        client_auth: require
+        client_ca_file: /etc/xproxy/tls/partner-ca.pem
+routes:
+  - name: batch
+    hosts: [api.example.com]
+    when: 'cert("cn") == "billing-batch"'
+    upstream: batch
+  - name: partners
+    hosts: [api.example.com]
+    upstream: api
+    request_headers:
+      set:
+        X-Client-CN: "${cert:cn}"
+        X-Client-Fingerprint: "${cert:fingerprint}"
+        X-Forwarded-Client-Cert: "${cert:xfcc}"
+```
+
+The listener verifies the certificate against the partner CA; the
+route forwards the identity the application needs as headers (`set`
+discards whatever the client sent under those names, so the values are
+trustworthy downstream) and `cert("cn")` in `when` routes a machine
+identity to its own pool. `${cert:xfcc}` produces the
+`X-Forwarded-Client-Cert` format that applications behind Envoy or
+Istio already parse; `${cert:pem}` carries the whole certificate when
+the application validates it itself.
+
 ### Browser login with OpenID Connect
 
 ```yaml
@@ -1077,6 +1112,38 @@ a first-party service with a shared secret use `algorithms: [HS256]` and
 `hmac_secret_file`. Combine with `rate_limits` keyed by `header:X-User`
 on a downstream route if you need per-user limits today; token-keyed rate
 limits are planned.
+
+### OAuth 2.0 token introspection
+
+```yaml
+jwt:
+  providers:
+    - name: as
+      issuer: https://as.example.com
+      audiences: [api]
+      introspection:
+        url: https://as.example.com/oauth2/introspect
+        client_id: xproxy
+        client_secret_file: /etc/xproxy/as-client-secret
+        cache_ttl: 30s
+      forward_claims: {X-User: sub, X-Scope: scope}
+routes:
+  - name: api
+    paths: [/api]
+    upstream: api
+    jwt: {provider: as}
+```
+
+Opaque access tokens (reference tokens) cannot be verified locally: the
+proxy asks the authorization server's introspection endpoint with its
+own credentials and treats the answer as the token's claims, so
+`forward_claims`, `required_claims` and `log_claims` work as for a
+signed token. Answers are cached for `cache_ttl` (never past the
+token's `exp`), positive and negative alike, so a revoked token costs
+one call per `cache_ttl`, not one per request. A provider that also has
+keys introspects only tokens that are not JWS; `always: true` sends
+signed tokens too, which turns a JWT deployment into one with
+revocation at the price of a call per `cache_ttl` per token.
 
 ### Virus and content scanning (ICAP)
 
@@ -1767,6 +1834,10 @@ xproxy-admin serve [-listen 127.0.0.1:8443] [-socket /run/xproxy/mgmt.sock]
                    [-tls-cert PATH -tls-key PATH [-client-ca PATH]]
                    [-restart-cmd "systemctl restart xproxy.service"]
                    [-session-idle 30m] [-session-max 12h]
+                   [-oidc-issuer URL -oidc-client-id ID -oidc-client-secret-file PATH
+                    -oidc-operators GROUP,... [-oidc-viewers GROUP,...|"*"]
+                    [-oidc-role-claim groups] [-oidc-user-claim email]
+                    [-oidc-external-url https://admin.example.com] [-oidc-ca PATH]]
 xproxy-admin user add NAME -role viewer|operator [-cert-only]
 xproxy-admin user del NAME
 xproxy-admin user list
@@ -1828,6 +1899,20 @@ whose common name matches a user logs that user in without a password
 (`-cert-only` users have no password at all). Five failed logins from one
 address lock it out for five minutes. Sessions end after thirty minutes
 idle or twelve hours in total.
+
+Single sign-on: with `-oidc-issuer`, `-oidc-client-id` and
+`-oidc-client-secret-file` the login page offers "Sign in with
+<provider>". The GUI runs the authorization code flow with PKCE and a
+nonce, verifies the ID token against the provider's keys, names the
+user from `-oidc-user-claim` (default `email`) and takes the role from
+`-oidc-role-claim` (default `groups`): a value listed in
+`-oidc-operators` makes an operator, one in `-oidc-viewers` a viewer
+(`*` accepts every authenticated user as a viewer), anything else is
+refused. Register `https://<gui>/api/oidc/callback` as the redirect
+URI at the provider (`-oidc-external-url` when the GUI sits behind a
+proxy). Password and certificate logins keep working alongside; a
+single sign-on session is subject to the same idle and absolute limits
+and appears in the audit log with `via=oidc`.
 
 The first user:
 

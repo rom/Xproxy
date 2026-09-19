@@ -1671,6 +1671,30 @@ type JWTProvider struct {
 	StripToken *bool `yaml:"strip_token"`
 	// LogClaims lists claims copied into the access log (for example sub).
 	LogClaims []string `yaml:"log_claims"`
+	// Introspection validates tokens at an OAuth 2.0 token introspection
+	// endpoint (RFC 7662): opaque tokens always, signed tokens too with
+	// always. A provider may have introspection alone, without keys.
+	Introspection *TokenIntrospection `yaml:"introspection"`
+}
+
+// TokenIntrospection is an RFC 7662 introspection endpoint.
+type TokenIntrospection struct {
+	// URL is the introspection endpoint (https).
+	URL string `yaml:"url"`
+	// ClientID and ClientSecretFile authenticate the proxy to the
+	// endpoint with HTTP basic authentication.
+	ClientID         string `yaml:"client_id"`
+	ClientSecretFile string `yaml:"client_secret_file"`
+	// CAFile pins the CA for the endpoint. Default: system pool.
+	CAFile string `yaml:"ca_file"`
+	// CacheTTL keeps a decision for a token this long, bounded by the
+	// token's exp; 0 caches nothing. Default 60s.
+	CacheTTL Duration `yaml:"cache_ttl"`
+	// Timeout bounds one introspection call. Default 3s.
+	Timeout Duration `yaml:"timeout"`
+	// Always introspects signed tokens too (revocation checks); default
+	// false introspects only tokens that are not JWS compact serialisations.
+	Always bool `yaml:"always"`
 }
 
 // Strips reports whether the token is removed before forwarding.

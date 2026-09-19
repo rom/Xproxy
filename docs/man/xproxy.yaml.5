@@ -1254,6 +1254,11 @@ T}	T{
 a request header,\: cookie or query parameter
 T}
 T{
+\fBcert:\:field\fR
+T}	T{
+the client certificate of a listener with \fBclient_\:auth\fR (empty without one): \fBcn\fR,\: \fBsubject\fR and \fBissuer\fR (RFC 2253),\: \fBserial\fR (hex),\: \fBfingerprint\fR (SHA\-256 of the DER,\: hex),\: \fBsans\fR (DNS names,\: addresses,\: emails and URIs,\: comma separated),\: \fBnot_\:after\fR (RFC 3339),\: \fBxfcc\fR (an Envoy style \fBX\-\:Forwarded\-\:Client\-\:Cert\fR value with \fBHash\fR,\: \fBSubject\fR,\: \fBURI\fR and \fBDNS\fR) and \fBpem\fR (URL encoded PEM). Set the header with \fBrequest_\:headers.\:set\fR,\: which also discards a client supplied copy
+T}
+T{
 \fB1\fR to \fB9\fR,\: \fBname\fR
 T}	T{
 groups of \fBrewrite_\:regex.\:pattern\fR or,\: without one,\: of the matching \fBpath_\:regex\fR (numbered and named)
@@ -1311,6 +1316,11 @@ T{
 \fBhas_\:header("Name")\fR,\: \fBhas_\:cookie("name")\fR,\: \fBhas_\:query("name")\fR
 T}	T{
 Presence,\: also of an empty value
+T}
+T{
+\fBcert("field")\fR
+T}	T{
+A client certificate field as in the variable table (\fBcert("cn") =\:=\: "billing\-\:batch"\fR,\: \fBcert("fingerprint") in [.\:.\:.\:]\fR);\: empty without a client certificate
 T}
 T{
 \fBx in ["a",\: "b"]\fR,\: \fBx not in [.\:.\:.\:]\fR
@@ -4253,8 +4263,8 @@ Present means providers are available; routes opt in with a \fBjwt\fR block. Tok
 .PP
 .TS
 allbox;
-lbw(1.1i) lbw(0.9i) lbw(1.0i) lbx
-lw(1.1i) lw(0.9i) lw(1.0i) lx.
+lbw(1.5i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.5i) lw(0.9i) lw(1.0i) lx.
 T{
 Key
 T}	T{
@@ -4398,6 +4408,69 @@ T}	T{
 \fB[]\fR
 T}	T{
 Claims copied to the access log as \fBjwt_\:<claim>\fR
+T}
+T{
+\fBintrospection\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Validate tokens at an OAuth 2.0 token introspection endpoint (RFC 7662): every token of a provider without keys,\: tokens that are not compact JWS otherwise,\: all tokens with \fBalways\fR. The answer\(aqs claims pass the provider\(aqs \fBissuer\fR,\: \fBaudiences\fR (when present) and \fBrequired_\:claims\fR rules and feed \fBforward_\:claims\fR and \fBlog_\:claims\fR like a JWT payload;\: \fBactive:\: false\fR is refused with reason \fBinactive\fR,\: an unreachable endpoint answers 503 with \fBRetry\-\:After\fR
+T}
+T{
+\fBintrospection.\:url\fR
+T}	T{
+https URL
+T}	T{
+required
+T}	T{
+The endpoint
+T}
+T{
+\fBintrospection.\:client_\:id\fR,\: \fBintrospection.\:client_\:secret_\:file\fR
+T}	T{
+string,\: path
+T}	T{
+required
+T}	T{
+HTTP basic credentials of the proxy at the authorization server
+T}
+T{
+\fBintrospection.\:ca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+CA pinned for the endpoint
+T}
+T{
+\fBintrospection.\:cache_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+How long an answer (positive or negative) is kept,\: bounded by the token\(aqs \fBexp\fR;\: at most 65536 entries per provider;\: \fB0\fR caches nothing
+T}
+T{
+\fBintrospection.\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB3s\fR
+T}	T{
+Per call,\: 100ms to 30s
+T}
+T{
+\fBintrospection.\:always\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Introspect signed tokens too,\: for revocation
 T}
 .TE
 .PP

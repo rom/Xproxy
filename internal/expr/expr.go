@@ -260,7 +260,7 @@ func (n call) eval(env Env) value {
 		return env.Resolve(name, a)
 	}
 	switch n.name {
-	case "header", "cookie", "query", "capture":
+	case "header", "cookie", "query", "capture", "cert":
 		s, _ := resolve(n.name, arg(0))
 		return str(s)
 	case "has_header", "has_cookie", "has_query":
@@ -295,7 +295,7 @@ func (r regexArg) eval(Env) value { return str(r.re.String()) }
 
 // functions maps a name to its arity.
 var functions = map[string]int{
-	"header": 1, "cookie": 1, "query": 1, "capture": 1,
+	"header": 1, "cookie": 1, "query": 1, "capture": 1, "cert": 1,
 	"has_header": 1, "has_cookie": 1, "has_query": 1,
 	"lower": 1, "upper": 1, "trim": 1, "len": 1,
 	"starts_with": 2, "ends_with": 2, "contains": 2, "matches": 2,

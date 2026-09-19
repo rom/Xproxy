@@ -93,6 +93,9 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		if errors.Is(err, ErrKeysUnavail) {
 			return filter.Verdict{Deny: true, Status: http.StatusServiceUnavailable, Reason: "jwt", Detail: "keys_unavailable", Headers: map[string]string{"Retry-After": "5"}}
 		}
+		if errors.Is(err, ErrIntrospection) {
+			return filter.Verdict{Deny: true, Status: http.StatusServiceUnavailable, Reason: "jwt", Detail: "introspection_unavailable", Headers: map[string]string{"Retry-After": "5"}}
+		}
 		return deny(http.StatusUnauthorized, category(err), `Bearer realm="xproxy", error="invalid_token"`)
 	}
 	if cfg.Strips() {
@@ -134,6 +137,8 @@ func category(err error) string {
 		return "signature"
 	case errors.Is(err, ErrClaim):
 		return "claim"
+	case errors.Is(err, ErrInactive):
+		return "inactive"
 	default:
 		return "malformed"
 	}
