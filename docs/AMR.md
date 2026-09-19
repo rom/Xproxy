@@ -109,6 +109,8 @@ record.
 | `golang.org/x/*` | BSD | Extended standard library (`net`, `crypto`, `sys`, `time`); `x/crypto/ocsp` and `x/crypto/cryptobyte` are imported directly since 1.3 for OCSP stapling and SCT verification, `x/sys/unix` since 1.3 for Landlock, seccomp, capabilities and the macOS peer credentials (AMR-044, AMR-045) | as needed |
 | `github.com/tetratelabs/wazero` | Apache 2.0 | WebAssembly runtime for the `wasm` filter kind (AMR-013, AMR-042); pure Go, no cgo | 1.2 |
 | `golang.org/x/term` | BSD | Raw terminal mode for the TUI (AMR-027); replaces the bubbletea plan | phase 2 |
+| `github.com/andybalholm/brotli` | MIT | Brotli encoder for response compression; pure Go port of the reference encoder | 1.3 |
+| `github.com/klauspost/compress` | Apache 2.0 / BSD | zstd encoder for response compression (already a transitive dependency of quic-go) | 1.3 |
 
 Coraza brings a transitive set that is larger than the rest of the binary
 combined: `libinjection-go`, `aho-corasick`, `binaryregexp`, `gjson`,
@@ -152,8 +154,9 @@ and a privileged process that stays alive). `AmbientCapabilities=CAP_NET_BIND_SE
 the socket and is the Fedora idiom).
 
 **Consequences.** `xproxy` also binds ports itself when not socket activated,
-for development and other platforms. Listener changes require a restart;
-`Reload` refuses them.
+for development and other platforms. Since 1.3 a reload adds, removes and
+rebuilds listeners; a rebuilt listener on the same address inherits the
+accept socket, so a systemd owned socket is never re-bound.
 
 **Status.** Accepted.
 
@@ -1411,6 +1414,81 @@ macOS 10.14).
 Seatbelt profile that operators extend by hand when the configuration
 names paths outside the standard directories. Fedora remains the
 reference platform for production.
+
+**Status.** Accepted (1.3).
+
+---
+
+## AMR-046: Manual pages and the configuration schema are generated from the source
+
+**Context.** Operators asked for manual pages, shell completion and
+editor support for the configuration. Each of these restates
+information that already exists once: the command set in `xproxyctl`,
+the key reference in `docs/CONFIG.md` and the field set in
+`internal/config/config.go`. Hand-maintained copies drift.
+
+**Decision.** `xproxyctl` owns one command table that produces its
+usage, `help` and the bash, zsh and fish completion scripts
+(`xproxyctl completion`). `xproxyctl(8)` and `xproxy(8)` are written as
+Markdown under `docs/man` and `xproxy.yaml(5)` is `docs/CONFIG.md`
+itself; `internal/manpage` renders them to troff (man macros and tbl)
+and the result is committed so packaging needs no generator. The JSON
+schema is derived from the configuration types by `schemagen` (yaml
+tags, doc comments, typed constants, a short table of documented value
+sets and required keys), committed and embedded, so `xproxyctl schema`
+and the installed file are the same document. Tests fail when a
+committed artefact is stale, when the command table and the dispatch
+disagree, when a schema reference dangles, when the golden example dump
+does not fit the schema, or when groff reports a warning on a page.
+
+**Alternatives.** A CLI framework with built-in completion and man
+output (rejected: a dependency for a flat command set the standard
+library handles); pandoc or scdoc at build time (rejected: a build
+dependency on every packaging host; the renderer covers the Markdown
+subset the docs use); a schema written by hand (rejected: it would
+drift from the types); reflection at run time for the schema (rejected:
+doc comments are not available then).
+
+**Consequences.** Adding a configuration key or a command means running
+`make docs` (or the tests say so). The Markdown of `docs/CONFIG.md` has
+to stay within the renderer's subset (ATX headings, pipe tables, fenced
+code, bullet lists, inline code, bold, emphasis, links).
+
+**Status.** Accepted (1.3).
+
+---
+
+## AMR-047: Exact distributed rate limits by key ownership, not consensus
+
+**Context.** AMR-021 made cluster rate limits approximate by design:
+each node subtracts its peers' gossiped consumption from its own
+refill. Customers with contractual quotas asked for a limit that holds
+exactly across the cluster.
+
+**Decision.** A policy may declare `distributed: exact`. Each key has
+one owner among the connected members, chosen by rendezvous hashing so
+that all nodes agree without a coordinator and a member's departure
+moves only its keys; non-owners ask the owner over the existing mTLS
+connection (one request/answer pair per decision, bounded by
+`cluster.exact_timeout`) and the owner's local limiter is the single
+count. Without an answer in time the asking node decides on its own
+limiter and counts a fallback: the failure mode is over-admission,
+never a refused request. The accepting side answers a hello with its
+own so the dialler learns the peer's id; older nodes ignore the new
+messages and are not members.
+
+**Alternatives.** Consensus or a shared store (rejected, as in AMR-021:
+a dependency and a latency floor for every request); a central limiter
+process (rejected: a single point of failure the product has avoided
+everywhere else); staying approximate (kept as the default; exact is
+opt-in per policy).
+
+**Consequences.** One cluster round trip per decision for keys owned
+elsewhere, so exact mode suits quotas with limits per minute or hour
+rather than per second defences. During a partition two owners may
+exist for a key and the limit is exact per partition. Membership
+depends on hellos being answered, so a mixed cluster with pre-1.3 nodes
+has fewer members than nodes.
 
 **Status.** Accepted (1.3).
 

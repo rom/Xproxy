@@ -243,7 +243,7 @@ func renderUpstreams(d Data, sty Style) []string {
 			}
 			out = append(out, fmt.Sprintf("  %-16s %-28s %6d %s %s %6d %10d %8d", n, e.Address, e.Weight, health, ej, e.Active, e.Requests, e.Errors))
 		}
-		if p, ok := d.Pools[n]; ok && (p.Circuit != nil || p.Queue != nil || p.Canary != nil) {
+		if p, ok := d.Pools[n]; ok && (p.Circuit != nil || p.Queue != nil || p.Canary != nil || p.Discovery != nil || p.SlowStart != "") {
 			var parts []string
 			if c := p.Circuit; c != nil {
 				col := sty.Green
@@ -257,6 +257,16 @@ func renderUpstreams(d Data, sty Style) []string {
 			}
 			if c := p.Canary; c != nil {
 				parts = append(parts, fmt.Sprintf("canary %.0f%% requests %d fallbacks %d", c.Percent, c.Requests, c.Fallbacks))
+			}
+			if dsc := p.Discovery; dsc != nil {
+				line := fmt.Sprintf("discovery %s %s: %d endpoints, %d resolutions, %d changes, %d errors", dsc.Type, dsc.Name, dsc.Endpoints, dsc.Resolutions, dsc.Changes, dsc.Errors)
+				if dsc.LastError != "" {
+					line += "  " + sty.Red + dsc.LastError + sty.Reset
+				}
+				parts = append(parts, line)
+			}
+			if p.SlowStart != "" {
+				parts = append(parts, "slow start "+p.SlowStart)
 			}
 			for _, part := range parts {
 				out = append(out, sty.Dim+"  "+strings.Repeat(" ", 16)+" "+part+sty.Reset)

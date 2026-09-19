@@ -30,6 +30,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/rom/xproxy/internal/bound"
 	"math"
 	"net/http"
 	"net/netip"
@@ -143,6 +144,7 @@ type scorer struct {
 
 	mu      sync.Mutex
 	clients map[netip.Addr]*history
+	full    bound.Notice
 }
 
 func (s *scorer) Name() string { return s.name }
@@ -261,6 +263,7 @@ func (s *scorer) observe(ip netip.Addr, path string) *history {
 	if h == nil || now.Sub(h.updated) > s.cfg.window {
 		if h == nil {
 			if len(s.clients) >= maxClients {
+				s.full.Hit(nil, "bot score client table full; the oldest histories are evicted", "table", "bot_score_clients", "filter", s.name, "max", maxClients)
 				s.evict(now)
 			}
 			h = &history{}

@@ -14,6 +14,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -66,6 +67,7 @@ func run(args []string) int {
 		return 1
 	}
 	defer logs.Close()
+	slog.SetDefault(logs.Error)
 	logs.Error.Info("starting", "version", version.String(), "config", *cfgPath, "pid", os.Getpid(), "uid", os.Getuid())
 	if os.Getuid() == 0 {
 		logs.Security.Warn("running as root; use systemd socket activation and a dedicated user instead")

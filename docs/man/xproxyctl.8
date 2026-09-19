@@ -1,0 +1,281 @@
+.\" Generated from Markdown by internal/manpage; do not edit.
+.TH XPROXYCTL 8 "" "Xproxy" "System administration"
+.nh
+.ad l
+.SH "NAME"
+.PP
+xproxyctl \- control and inspect a running xproxy
+.SH "SYNOPSIS"
+.PP
+\fBxproxyctl\fR [\fB\-socket\fR \fIPATH\fR] [\fB\-config\fR \fIPATH\fR] [\fB\-json\fR] \fICOMMAND\fR [*ARGS*]
+.SH "DESCRIPTION"
+.PP
+\fBxproxyctl\fR talks to the management socket of \fBxproxy\fR(8) and prints status, applies operations and follows logs. The user running it must be in the \fBxproxy\fR group (the socket is mode \fB0660\fR) or be root. Commands that need the configuration file (\fBvalidate\fR, \fBreload\fR, \fBtail\fR) read it locally; everything else goes through the socket.
+.SH "OPTIONS"
+.PP
+.TS
+allbox;
+lbw(0.7i) lbx
+lw(0.7i) lx.
+T{
+Option
+T}	T{
+Description
+T}
+T{
+\fB\-\:socket\fR \fIPATH\fR
+T}	T{
+Management socket. Default \fB/\:run/\:xproxy/\:mgmt.\:sock\fR.
+T}
+T{
+\fB\-\:config\fR \fIPATH\fR
+T}	T{
+Configuration file for \fBvalidate\fR,\: \fBreload\fR and \fBtail\fR. Default \fB/\:etc/\:xproxy/\:xproxy.\:yaml\fR.
+T}
+T{
+\fB\-\:json\fR
+T}	T{
+Machine readable output for the status views (\fBstatus\fR,\: \fBstats\fR,\: \fBupstreams\fR,\: \fBquotas\fR,\: \fBwaf\fR,\: \fBsandbox\fR,\: \fBtls\fR,\: \fBseries\fR and the others).
+T}
+.TE
+.SH "COMMANDS"
+.PP
+.TS
+allbox;
+lbw(1.8i) lbx
+lw(1.8i) lx.
+T{
+Command
+T}	T{
+Description
+T}
+T{
+\fBstatus\fR
+T}	T{
+Version,\: pid,\: generation,\: listeners,\: counters,\: sandbox state
+T}
+T{
+\fBstats\fR
+T}	T{
+Counters only
+T}
+T{
+\fBupstreams\fR
+T}	T{
+Endpoints with health,\: ejection,\: active requests,\: request and error counts
+T}
+T{
+\fBquotas\fR [\fB\-\:top\fR \fIN\fR]
+T}	T{
+Usage per tenant,\: per route and per rate limit policy with the top consumers,\: plus request share per upstream
+T}
+T{
+\fBconfig\fR
+T}	T{
+Active configuration as YAML,\: defaults filled in
+T}
+T{
+\fBvalidate\fR
+T}	T{
+Validate the configuration file locally
+T}
+T{
+\fBreload\fR [\fB\-\:dry\-\:run\fR]
+T}	T{
+Validate locally,\: then ask the daemon to reload;\: \fB\-\:dry\-\:run\fR shows what the file would change (per item,\: restart list,\: connection drains,\: text diff) without applying
+T}
+T{
+\fBdiff\fR [*FROM*] [*TO*]
+T}	T{
+Compare \fBactive\fR,\: \fBfile\fR or a history id (default \fBactive file\fR);\: exit status 1 when they differ
+T}
+T{
+\fBhistory\fR
+T}	T{
+Recorded configurations with generation,\: time,\: note and size (needs \fBmanagement.\:history_\:dir\fR)
+T}
+T{
+\fBrollback\fR \fIID\fR
+T}	T{
+Apply a recorded configuration (audited;\: becomes a new history entry)
+T}
+T{
+\fBtls\fR
+T}	T{
+Served certificates per listener: names,\: issuer,\: expiry,\: source,\: OCSP staple state and Certificate Transparency verdict
+T}
+T{
+\fBtls tickets\fR
+T}	T{
+Session ticket keys: epoch,\: next rotation,\: key count,\: fingerprint and which cluster peers derive the same set
+T}
+T{
+\fBsandbox\fR
+T}	T{
+In\-process hardening: each mechanism with its state and the file rules in force
+T}
+T{
+\fBwaf\fR [\fBrules\fR|\:\fBproposals\fR|\:\fBexclusions\fR|\:\fBreset\fR]
+T}	T{
+WAF profiles,\: counters and the most matched rules (\fB\-\:top\fR \fIN\fR);\: \fBproposals\fR lists learned exclusion candidates,\: \fBexclusions\fR prints them as SecLang,\: \fBreset\fR clears the statistics
+T}
+T{
+\fBrotate\-\:secret\fR [\fB\-\:keep\fR \fIN\fR] \fIFILE\fR
+T}	T{
+Add a fresh primary key to a secret file,\: keeping \fIN\fR (default 2) previous keys for verification;\: then \fBreload\fR
+T}
+T{
+\fBreload\-\:certs\fR
+T}	T{
+Re\-read certificate files
+T}
+T{
+\fBreopen\-\:logs\fR
+T}	T{
+Reopen log files
+T}
+T{
+\fBtail\fR \fISTREAM\fR
+T}	T{
+Follow \fBaccess\fR,\: \fBerror\fR,\: \fBsecurity\fR or \fBaudit\fR
+T}
+T{
+\fBbans\fR
+T}	T{
+List active bans with expiry,\: source and count
+T}
+T{
+\fBban\fR [\fB\-\:duration\fR \fID\fR] [\fB\-\:reason\fR \fITEXT\fR] \fITARGET\fR
+T}	T{
+Ban an address or CIDR (default one hour)
+T}
+T{
+\fBunban\fR \fITARGET\fR
+T}	T{
+Remove a ban
+T}
+T{
+\fBcluster\fR
+T}	T{
+Peers,\: inbound connections and gossip counters
+T}
+T{
+\fBacme\fR [\fBrenew\fR]
+T}	T{
+Managed certificates with expiry,\: issuer and last error;\: \fBrenew\fR forces renewal and waits
+T}
+T{
+\fBicap\fR
+T}	T{
+ICAP services with reachability,\: preview size,\: ISTag and counters
+T}
+T{
+\fBfilters\fR
+T}	T{
+Middleware API version,\: registered kinds,\: configured filters with routes and deny counts
+T}
+T{
+\fBgeoip\fR
+T}	T{
+Country database kind,\: path,\: build date,\: lookup and unknown counters
+T}
+T{
+\fBcache\fR [\fBpurge\fR [*HOST* [*PATH\-PREFIX*]]]
+T}	T{
+Cache entries,\: bytes and counters;\: \fBpurge\fR removes entries
+T}
+T{
+\fBhoneypot\fR [\fBforget\fR \fIIP\fR]
+T}	T{
+Clients marked by honeypot routes;\: \fBforget\fR removes a mark
+T}
+T{
+\fBdns\fR [\fBpurge\fR]
+T}	T{
+DNS listener counters;\: \fBpurge\fR empties the caches
+T}
+T{
+\fBingress\fR
+T}	T{
+Kubernetes ingress controller status
+T}
+T{
+\fBotlp\fR
+T}	T{
+OpenTelemetry metrics exporter status
+T}
+T{
+\fBtelemetry\fR
+T}	T{
+Every OpenTelemetry exporter with sent,\: dropped,\: pushes,\: failures,\: queue depth and last error
+T}
+T{
+\fBhtpasswd\fR \fIFILE\fR \fINAME\fR
+T}	T{
+Add or replace a \fBbasic_\:auth\fR user;\: the password is read from standard input
+T}
+T{
+\fBspki\fR \fICERT.pem\fR
+T}	T{
+Print the \fBspki_\:pins\fR value of a certificate
+T}
+T{
+\fBmetrics\fR
+T}	T{
+Print the Prometheus exposition
+T}
+T{
+\fBseries\fR [\fB\-\:since\fR \fID\fR] [\fB\-\:last\fR \fIN\fR]
+T}	T{
+Print sampled series
+T}
+T{
+\fBtui\fR [\fB\-\:refresh\fR \fID\fR] [\fB\-\:no\-\:color\fR]
+T}	T{
+Full\-screen live view (\fBNO_\:COLOR\fR also disables colours)
+T}
+T{
+\fBschema\fR
+T}	T{
+Print the JSON schema of the configuration (also installed at \fB/\:usr/\:share/\:xproxy/\:xproxy.\:schema.\:json\fR)
+T}
+T{
+\fBcompletion\fR \fBbash\fR|\:\fBzsh\fR|\:\fBfish\fR
+T}	T{
+Print a completion script for \fBxproxyctl\fR and \fBxproxy\fR
+T}
+T{
+\fBhelp\fR
+T}	T{
+List the commands with a summary
+T}
+T{
+\fBversion\fR
+T}	T{
+Print version
+T}
+.TE
+.SH "EXIT STATUS"
+.PP
+0 on success; 1 when the daemon reports an error or cannot be reached; 2 on a usage error. \fBdiff\fR exits 1 when the two configurations differ.
+.SH "FILES"
+.PP
+\fB/run/xproxy/mgmt.sock\fR, \fB/etc/xproxy/xproxy.yaml\fR.
+.SH "EXAMPLES"
+.PP
+.RS 4
+.nf
+.ft CR
+xproxyctl status
+xproxyctl \-json stats | jq .denied_rate_limit
+xproxyctl tail security | jq \-c '{t:.time, ip:.client_ip, r:.reason}'
+xproxyctl reload \-dry\-run
+xproxyctl ban \-duration 24h \-reason "credential stuffing" 203.0.113.0/24
+xproxyctl rotate\-secret /var/lib/xproxy/challenge.key && xproxyctl reload
+xproxyctl completion bash > /etc/bash_completion.d/xproxyctl
+.ft
+.fi
+.RE
+.SH "SEE ALSO"
+.PP
+\fBxproxy\fR(8), \fBxproxy.yaml\fR(5), \fBdocs/USAGE.md\fR.

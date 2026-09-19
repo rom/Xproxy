@@ -50,6 +50,31 @@ type HistogramSnapshot struct {
 	Count  uint64
 }
 
+// Quantile estimates the q-th quantile (0 < q <= 1) from the buckets by
+// linear interpolation inside the bucket that holds it; observations
+// above the last bound return that bound. It returns 0 without
+// observations.
+func (s HistogramSnapshot) Quantile(q float64) float64 {
+	if s.Count == 0 || len(s.Bounds) == 0 {
+		return 0
+	}
+	target := q * float64(s.Count)
+	var seen uint64
+	lower := 0.0
+	for i, c := range s.Counts {
+		if float64(seen+c) >= target {
+			if c == 0 {
+				return s.Bounds[i]
+			}
+			frac := (target - float64(seen)) / float64(c)
+			return lower + frac*(s.Bounds[i]-lower)
+		}
+		seen += c
+		lower = s.Bounds[i]
+	}
+	return s.Bounds[len(s.Bounds)-1]
+}
+
 // Snapshot copies the histogram state.
 func (h *Histogram) Snapshot() HistogramSnapshot {
 	s := HistogramSnapshot{Bounds: h.bounds, Counts: make([]uint64, len(h.bounds))}

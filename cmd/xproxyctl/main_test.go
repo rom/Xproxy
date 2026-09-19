@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +110,12 @@ func TestCommands(t *testing.T) {
 		{[]string{"sandbox"}, 0, "read   /etc/xproxy"},
 		{[]string{"-json", "sandbox"}, 0, `"landlock_abi": 5`},
 		{[]string{"tls"}, 0, ""},
+		{[]string{"schema"}, 0, `"$schema"`},
+		{[]string{"completion", "bash"}, 0, "complete -F _xproxyctl xproxyctl"},
+		{[]string{"completion", "zsh"}, 0, "#compdef xproxyctl xproxy"},
+		{[]string{"completion", "fish"}, 0, "complete -c xproxyctl -n 'not __fish_seen_subcommand_from"},
+		{[]string{"completion", "tcsh"}, 2, "usage: xproxyctl completion"},
+		{[]string{"help"}, 0, "rotate-secret [-keep N] FILE"},
 		{[]string{"telemetry"}, 0, ""},
 		{[]string{"config"}, 0, "version: 1"},
 		{[]string{"reload"}, 0, "reloaded"},
@@ -219,5 +227,59 @@ func TestSandboxSummary(t *testing.T) {
 	st := &sandbox.Status{Enabled: true, Mechanism: []sandbox.Mechanism{{Name: "a", State: sandbox.StateApplied}, {Name: "b", State: sandbox.StateFailed}}}
 	if s := sandboxSummary(st); s != "applied a  b=failed" {
 		t.Fatalf("summary: %q", s)
+	}
+}
+
+// TestCommandTable checks that the command table (usage, help and
+// completion) and the dispatch in run agree, and that the bash script
+// parses.
+func TestCommandTable(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	start, end := strings.Index(body, "switch fs.Arg(0) {"), 0
+	if start >= 0 {
+		end = strings.Index(body[start:], "\n}\n")
+	}
+	if start < 0 || end < 0 {
+		t.Fatal("dispatch switch not found in main.go")
+	}
+	body = body[start : start+end]
+	dispatched := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^\tcase ("[^"]+"(?:, )?)+:`).FindAllString(body, -1) {
+		for _, name := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(m, -1) {
+			dispatched[name[1]] = true
+		}
+	}
+	listed := map[string]bool{}
+	for _, c := range commandTable {
+		listed[c.name] = true
+		if !dispatched[c.name] {
+			t.Errorf("%s listed but not dispatched", c.name)
+		}
+		if strings.Contains(c.summary, ":") {
+			t.Errorf("%s: summary with a colon breaks the zsh script", c.name)
+		}
+	}
+	for name := range dispatched {
+		if !listed[name] {
+			t.Errorf("%s dispatched but not listed", name)
+		}
+	}
+	if bash, err := exec.LookPath("bash"); err == nil {
+		cmd := exec.Command(bash, "-n")
+		cmd.Stdin = strings.NewReader(bashCompletion())
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("bash -n: %v %s", err, out)
+		}
+	}
+	if zsh, err := exec.LookPath("zsh"); err == nil {
+		cmd := exec.Command(zsh, "-n")
+		cmd.Stdin = strings.NewReader(zshCompletion())
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("zsh -n: %v %s", err, out)
+		}
 	}
 }

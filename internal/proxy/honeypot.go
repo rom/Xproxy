@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"errors"
+	"github.com/rom/xproxy/internal/bound"
 	"io"
 	"net/http"
 	"net/netip"
@@ -122,9 +123,13 @@ const maxMarks = 65536
 // requests on other routes are labelled. It is bounded and sweeps expired
 // entries lazily.
 type marks struct {
-	mu sync.Mutex
-	m  map[netip.Addr]*Mark
+	mu   sync.Mutex
+	m    map[netip.Addr]*Mark
+	full bound.Notice
 }
+
+// Dropped counts marks refused because the table was full of live ones.
+func (m *marks) Dropped() uint64 { return m.full.Total() }
 
 func newMarks() *marks { return &marks{m: map[netip.Addr]*Mark{}} }
 
@@ -144,6 +149,7 @@ func (m *marks) add(ip netip.Addr, route string, ttl time.Duration, now time.Tim
 	if len(m.m) >= maxMarks {
 		m.sweep(now)
 		if len(m.m) >= maxMarks {
+			m.full.Hit(nil, "honeypot mark table full; new marks are dropped until marks expire", "table", "honeypot_marks", "max", maxMarks)
 			return // full of live marks: keep what we have rather than grow
 		}
 	}
@@ -199,6 +205,9 @@ func (m *marks) remove(ip netip.Addr) bool {
 // first.
 func (s *Server) HoneypotMarks() []Mark { return s.marks.list(time.Now()) }
 
+// HoneypotMarksDropped counts marks refused by a full table.
+func (s *Server) HoneypotMarksDropped() uint64 { return s.marks.Dropped() }
+
 // UnmarkHoneypot forgets a marked client.
 func (s *Server) UnmarkHoneypot(ip netip.Addr) bool {
 	ok := s.marks.remove(ip.Unmap())
@@ -247,7 +256,7 @@ func (s *Server) honeypot(rw *responseWriter, r *http.Request, st *reqState, cr 
 	h := rw.Header()
 	h.Set("Content-Type", cr.honeypotType)
 	h.Set("Cache-Control", "no-store")
-	applyHeaderOps(h, cr.cfg.ResponseHeaders)
+	cr.respOps.apply(h, &tvars{r: r, st: st})
 	rw.WriteHeader(hp.Status)
 	if r.Method != http.MethodHead {
 		_, _ = rw.Write(cr.honeypotBody)

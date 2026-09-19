@@ -65,24 +65,41 @@ func (t *tcpServer) serve() {
 			_ = c.Close()
 			continue
 		}
-		t.track(c, true)
-		t.wg.Add(1)
+		if !t.admit(c) {
+			// Closed between the accept and the admission (a reload
+			// retired the listener); the connection is dropped.
+			t.open.Add(-1)
+			_ = c.Close()
+			return
+		}
 		go func() {
 			defer t.wg.Done()
 			defer t.open.Add(-1)
-			defer t.track(c, false)
+			defer t.untrack(c)
 			t.handle(c)
 		}()
 	}
 }
 
-func (t *tcpServer) track(c net.Conn, add bool) {
+// admit registers a connection and its goroutine unless the server is
+// shutting down; the wait group is only added to under the same mutex
+// that closes done, so shutdown's Wait cannot race a late Add.
+func (t *tcpServer) admit(c net.Conn) bool {
 	t.mu.Lock()
-	if add {
-		t.cons[c] = struct{}{}
-	} else {
-		delete(t.cons, c)
+	defer t.mu.Unlock()
+	select {
+	case <-t.done:
+		return false
+	default:
 	}
+	t.cons[c] = struct{}{}
+	t.wg.Add(1)
+	return true
+}
+
+func (t *tcpServer) untrack(c net.Conn) {
+	t.mu.Lock()
+	delete(t.cons, c)
 	t.mu.Unlock()
 }
 
@@ -90,7 +107,9 @@ func (t *tcpServer) track(c net.Conn, add bool) {
 // the rest.
 func (t *tcpServer) shutdown(ctx context.Context) {
 	t.once.Do(func() {
+		t.mu.Lock()
 		close(t.done)
+		t.mu.Unlock()
 		_ = t.ln.Close()
 	})
 	if t.quic != nil {
@@ -192,7 +211,7 @@ func (t *tcpServer) handle(client net.Conn) {
 		c, err := d.DialContext(context.Background(), "tcp", e.Address)
 		pool.Begin(e)
 		if err != nil {
-			pool.End(e, true)
+			pool.End(e, true, 0)
 			s.logs.Error.Warn("tcp upstream dial failed", "listener", t.cfg.Name, "endpoint", e.Address, "err", err.Error())
 			continue
 		}
@@ -206,20 +225,20 @@ func (t *tcpServer) handle(client net.Conn) {
 	}
 	if t.cfg.TCP.ProxyProtocol {
 		if _, err := up.Write(proxyV2Header(client.RemoteAddr(), client.LocalAddr())); err != nil {
-			pool.End(ep, true)
+			pool.End(ep, true, 0)
 			_ = up.Close()
 			t.finish(client, clientIP, start, sni, upName, ep.Address, "upstream_write", 0, 0)
 			return
 		}
 	}
 	if _, err := up.Write(buf); err != nil {
-		pool.End(ep, true)
+		pool.End(ep, true, 0)
 		_ = up.Close()
 		t.finish(client, clientIP, start, sni, upName, ep.Address, "upstream_write", 0, 0)
 		return
 	}
 	in, out := splice(client, up, t.cfg.TCP.IdleTimeout.D())
-	pool.End(ep, false)
+	pool.End(ep, false, 0)
 	s.stats.TCPBytesIn.Add(uint64(in + int64(len(buf)))) //nolint:gosec // non-negative
 	s.stats.TCPBytesOut.Add(uint64(out))                 //nolint:gosec // non-negative
 	t.finish(client, clientIP, start, sni, upName, ep.Address, "", in+int64(len(buf)), out)

@@ -3,6 +3,7 @@ package admin
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"github.com/rom/xproxy/internal/bound"
 	"sync"
 	"time"
 )
@@ -24,6 +25,7 @@ type sessions struct {
 	idle time.Duration
 	max  time.Duration
 	now  func() time.Time
+	full bound.Notice
 }
 
 const maxSessions = 1000
@@ -49,6 +51,7 @@ func (s *sessions) create(user string, role Role, via string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.by) >= maxSessions {
+		s.full.Hit(nil, "admin session table full; the least recently used session is evicted", "table", "admin_sessions", "max", maxSessions)
 		var oldest string
 		var oldestAt time.Time
 		for k, v := range s.by {

@@ -14,16 +14,36 @@ func (r rateSource) Flush(limit int) map[string]map[string]float64 {
 	rt := r.s.rt.Load()
 	out := make(map[string]map[string]float64, len(rt.rateLimits))
 	for name, rl := range rt.rateLimits {
-		if m := rl.lim.Flush(limit); len(m) > 0 {
+		m := rl.lim.Flush(limit)
+		// An exact policy's owner is authoritative; the other nodes'
+		// consumption (fallback decisions only) is not gossiped.
+		if len(m) > 0 && rl.cfg.Distributed != "exact" {
 			out[name] = m
 		}
 	}
 	return out
 }
 
+// Decide is the owner side of an exact policy: the local limiter answers
+// for the peer that asked.
+func (r rateSource) Decide(policy, key string, n float64) (allowed, ok bool) {
+	rt := r.s.rt.Load()
+	rl, ok := rt.rateLimits[policy]
+	if !ok || rl.cfg.Distributed != "exact" {
+		return false, false
+	}
+	allowed = rl.lim.AllowFallback(key, "", n)
+	if allowed {
+		rl.allowed.Add(1)
+	} else {
+		rl.denied.Add(1)
+	}
+	return allowed, true
+}
+
 func (r rateSource) Report(peer, policy string, reports []limits.PeerReport) {
 	rt := r.s.rt.Load()
-	if rl, ok := rt.rateLimits[policy]; ok {
+	if rl, ok := rt.rateLimits[policy]; ok && rl.cfg.Distributed != "exact" {
 		rl.lim.ReportPeer(peer, reports)
 	}
 }

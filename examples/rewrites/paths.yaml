@@ -16,11 +16,14 @@ upstreams:
   - name: web
     endpoints: [{address: "10.0.3.10:8080"}]
 routes:
-  # Strip the public prefix: /api/v1/users -> /v1/users at the upstream.
+  # Regular expression rewrite with captures: /api/v2/users/7 becomes
+  # /internal/v2/users/7 and the version travels in a header.
   - name: api
     hosts: [www.example.com]
     paths: [/api/]
-    rewrite_path: /
+    rewrite_regex: {pattern: "^/api/v([0-9]+)/(?P<rest>.*)$", replace: "/internal/v${1}/${rest}"}
+    request_headers:
+      set: {X-Api-Version: "${1}", X-Client-Ip: "${client_ip}", X-Request-Id: "${request_id}"}
     upstream: api
   # Mount a documentation site under a sub path of the main host.
   - name: docs
@@ -35,9 +38,10 @@ routes:
     hosts: [www.example.com]
     paths: [/blog/]
     redirect: {to: "https://blog.example.com/", status: 301}
+  # The bare domain keeps path and query on its way to www.
   - name: apex
     hosts: [example.com]
-    redirect: {to: "https://www.example.com/", status: 308}
+    redirect: {to: "https://www.example.com${path}?${raw_query}", status: 308}
   # Header rewriting on the way in and out.
   - name: web
     hosts: [www.example.com]

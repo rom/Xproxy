@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ type fakeRates struct {
 	mu      sync.Mutex
 	pending map[string]map[string]float64
 	reports []report
+	decided []string
 }
 
 type report struct {
@@ -42,6 +44,18 @@ func (f *fakeRates) Report(peer, policy string, rs []limits.PeerReport) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reports = append(f.reports, report{peer, policy, rs})
+}
+
+// Decide answers exact requests: policy "exact" allows keys that do not
+// start with "deny" and records the call; other policies are unknown.
+func (f *fakeRates) Decide(policy, key string, n float64) (bool, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.decided = append(f.decided, policy+"/"+key)
+	if policy != "exact" {
+		return false, false
+	}
+	return !strings.HasPrefix(key, "deny"), true
 }
 
 func (f *fakeRates) queue(policy, key string, n float64) {
@@ -320,4 +334,75 @@ func TestProtocolErrors(t *testing.T) {
 		return len(a.rates.got()) == 1 && a.bans.Banned(netip.MustParseAddr("203.0.113.77"))
 	})
 	c.Close()
+}
+
+func TestExactTake(t *testing.T) {
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	certA, keyA := ca.Issue(t, dir, "n1")
+	certB, keyB := ca.Issue(t, dir, "n2")
+	cfgA := clusterCfg("n1", certA, keyA, ca.Path, nil)
+	cfgA.ExactTimeout = config.Duration(300 * time.Millisecond)
+	a := startNode(t, cfgA)
+	cfgB := clusterCfg("n2", certB, keyB, ca.Path, []string{a.addr})
+	cfgB.ExactTimeout = config.Duration(300 * time.Millisecond)
+	b := startNode(t, cfgB)
+	cfgA2 := clusterCfg("n1", certA, keyA, ca.Path, []string{b.addr})
+	cfgA2.ExactTimeout = config.Duration(300 * time.Millisecond)
+	a.node.Reconfigure(cfgA2)
+	// Both learn the other's id from the hello answer.
+	waitFor(t, "membership", func() bool {
+		return len(a.node.Members()) == 2 && len(b.node.Members()) == 2
+	})
+	if a.node.Owner("k") != b.node.Owner("k") {
+		t.Fatalf("owners disagree: %s vs %s", a.node.Owner("k"), b.node.Owner("k"))
+	}
+	// Find keys owned by each side, and a "deny" key owned by B.
+	var ownedByB, ownedByA, denyKey string
+	for i := 0; ownedByA == "" || ownedByB == "" || denyKey == ""; i++ {
+		k := "key" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+		if a.node.Owner(k) == "n2" {
+			ownedByB = k
+		} else {
+			ownedByA = k
+		}
+		if d := "deny" + k; a.node.Owner(d) == "n2" {
+			denyKey = d
+		}
+	}
+	// A asks B for B's key: B's rate source decides.
+	allowed, decided := a.node.Take("exact", ownedByB, 1)
+	if !decided || !allowed {
+		t.Fatalf("take %s: allowed=%v decided=%v", ownedByB, allowed, decided)
+	}
+	b.rates.mu.Lock()
+	served := append([]string(nil), b.rates.decided...)
+	b.rates.mu.Unlock()
+	if len(served) != 1 || served[0] != "exact/"+ownedByB {
+		t.Fatalf("owner decided %v", served)
+	}
+	if allowed, decided := a.node.Take("exact", denyKey, 1); !decided || allowed {
+		t.Fatalf("denied key: allowed=%v decided=%v", allowed, decided)
+	}
+	// A key owned locally is not asked.
+	if _, decided := a.node.Take("exact", ownedByA, 1); decided {
+		t.Fatal("locally owned key was asked of a peer")
+	}
+	// An unknown policy is undecided: the asker falls back.
+	if _, decided := a.node.Take("nope", ownedByB, 1); decided {
+		t.Fatal("unknown policy decided")
+	}
+	st := a.node.Status()
+	if st.ExactAsked != 3 || st.ExactDecided != 2 || st.ExactFallbacks != 1 || len(st.Members) != 2 {
+		t.Fatalf("status %+v", st)
+	}
+	if bs := b.node.Status(); bs.ExactServed != 3 {
+		t.Fatalf("owner status %+v", bs)
+	}
+	// A stopped owner: the take times out into a local decision.
+	b.node.Stop()
+	waitFor(t, "peer gone", func() bool { return len(a.node.Members()) == 1 })
+	if _, decided := a.node.Take("exact", ownedByB, 1); decided {
+		t.Fatal("take decided without an owner")
+	}
 }

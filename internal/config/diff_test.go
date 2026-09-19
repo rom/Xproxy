@@ -91,8 +91,11 @@ func TestDiff(t *testing.T) {
 		}
 	}
 	restart := strings.Join(ch.RestartNeeded, "\n")
-	if !strings.Contains(restart, "listener alt added") || !strings.Contains(restart, "management.socket") {
+	if strings.Contains(restart, "listener alt") || !strings.Contains(restart, "management.socket") {
 		t.Errorf("restart needed: %v", ch.RestartNeeded)
+	}
+	if len(ch.Drains) != 0 {
+		t.Errorf("an added listener drains nothing: %v", ch.Drains)
 	}
 	removedLegacy := regexp.MustCompile(`(?m)^-\s+- name: legacy$`)
 	addedAPI := regexp.MustCompile(`(?m)^\+\s+- name: api$`)

@@ -135,9 +135,11 @@ func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Respon
 		out.URL.Scheme = t.pool.Scheme
 		out.URL.Host = e.Address
 		t.pool.Begin(e)
+		t0 := time.Now()
 		resp, err := t.pool.RoundTripper().RoundTrip(out)
+		ttfb := time.Since(t0)
 		if err != nil {
-			t.pool.End(e, isConnError(err))
+			t.pool.End(e, isConnError(err), ttfb)
 			lastErr = err
 			if req.Context().Err() != nil || !isConnError(err) {
 				return nil, err
@@ -151,7 +153,7 @@ func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Respon
 		if attempt+1 < maxAttempts && t.retryStatus(resp.StatusCode) && t.hasAlternative(pi, exclude, e) {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 			_ = resp.Body.Close()
-			t.pool.End(e, true)
+			t.pool.End(e, true, ttfb)
 			pi.mu.Lock()
 			pi.statusRetries++
 			pi.mu.Unlock()
@@ -161,7 +163,7 @@ func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Respon
 		// Count 503 (and every retry_on status) as a passive failure
 		// signal; other statuses are the application's business.
 		failed := resp.StatusCode == http.StatusServiceUnavailable || t.retryStatus(resp.StatusCode)
-		resp.Body = &endBody{ReadCloser: resp.Body, done: func() { t.pool.End(e, failed) }}
+		resp.Body = &endBody{ReadCloser: resp.Body, done: func() { t.pool.End(e, failed, ttfb) }}
 		return resp, nil
 	}
 	return nil, lastErr

@@ -186,7 +186,7 @@ data plane does not trust it more than any other socket client.
 | Cross-site scripting and injection | No inline script or style, `script-src 'self'` only, all data rendered through `textContent`, JSON responses `nosniff`, `frame-ancestors 'none'` |
 | Viewer escalates to operator | Roles enforced on the server by method: non-`GET` requires the operator role, independent of anything in the page |
 | Group member plants a symbolic link in `/etc/xproxy` | Backups open with `O_NOFOLLOW`, temporary files are created exclusively with random names (SR-3) |
-| Compromised GUI process edits the configuration | Accepted within the design: the GUI user owns the file for that purpose; every save is validated, atomic, backed up and audited; the data plane still validates on reload and keeps the old generation on error; listeners, cluster and ACME changes need a restart the polkit rule limits to one verb on one unit |
+| Compromised GUI process edits the configuration | Accepted within the design: the GUI user owns the file for that purpose; every save is validated, atomic, backed up and audited; the data plane still validates on reload and keeps the old generation on error; cluster and ACME changes need a restart the polkit rule limits to one verb on one unit |
 | Compromised GUI process reaches the data plane | Only through the same socket and API as `xproxyctl`, with its own uid in the audit log; it cannot bind data ports, read the account key or change the units |
 | Log disclosure through the GUI | Logs are readable by viewers by design (same as the `xproxy` group); redaction applies before the file is written, so the GUI sees redacted data |
 

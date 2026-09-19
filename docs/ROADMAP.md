@@ -61,7 +61,8 @@ Delivered:
   bbolt persistence, survival across reloads, management API and CLI
   (ASR-S2, AMR-012, AMR-019)
 - Cluster: mutual TLS peer connections, consumption reports that make rate
-  limits approximately cluster wide, ban and unban propagation with
+  limits approximately cluster wide (1.3: exact per key ownership as an
+  option, sliding window policies), ban and unban propagation with
   snapshots for new peers, bounded protocol, reload of peers in place,
   management view (ASR-S3, AMR-009, AMR-021)
 - Adaptive load shedding by priority class from in-flight ratio and

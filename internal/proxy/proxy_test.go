@@ -391,10 +391,19 @@ routes:
 	if _, body := get(t, url+"/"); body != "b:/" {
 		t.Fatal(body)
 	}
-	// Listener change is refused.
-	cfg3, _ := config.Parse([]byte(strings.Replace(fmt.Sprintf(yaml, b.addr()), "127.0.0.1:0", "127.0.0.1:1", 1)))
+	// A listener moved to an address that cannot be bound fails the
+	// reload as a whole.
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	cfg3, _ := config.Parse([]byte(strings.Replace(fmt.Sprintf(yaml, b.addr()), "127.0.0.1:0", busy.Addr().String(), 1)))
 	if err := s.Reload(cfg3); err == nil {
-		t.Fatal("listener change accepted")
+		t.Fatal("listener on a busy address accepted")
+	}
+	if _, body := get(t, url+"/"); body != "b:/" {
+		t.Fatal(body)
 	}
 	if s.Stats().Reloads != 1 || s.Stats().ReloadFailures != 1 {
 		t.Fatalf("%+v", s.Stats())

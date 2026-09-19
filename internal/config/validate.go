@@ -2,8 +2,11 @@ package config
 
 import (
 	"github.com/rom/xproxy/internal/dns"
+	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/tmpl"
 	"mime"
+	"path/filepath"
 	"time"
 
 	"crypto/tls"
@@ -109,6 +112,37 @@ func (v *validator) config(c *Config) {
 		v.cluster(c.Cluster)
 	}
 	v.sandbox(&c.Sandbox)
+	if cp := c.Compression; cp != nil {
+		seen := map[string]bool{}
+		for i, e := range cp.Encodings {
+			switch e {
+			case "gzip", "br", "zstd":
+			default:
+				v.errf("compression.encodings[%d]: must be gzip, br or zstd", i)
+			}
+			if seen[e] {
+				v.errf("compression.encodings[%d]: duplicate %q", i, e)
+			}
+			seen[e] = true
+		}
+		if cp.BrotliLevel != nil && (*cp.BrotliLevel < 0 || *cp.BrotliLevel > 11) {
+			v.errf("compression.brotli_level: must be 0 to 11")
+		}
+		if cp.ZstdLevel < 1 || cp.ZstdLevel > 4 {
+			v.errf("compression.zstd_level: must be 1 to 4")
+		}
+	}
+	if c.Server.ErrorPages != nil {
+		v.errorPages("server.error_pages", c.Server.ErrorPages)
+	}
+	if st := c.Server.SessionTickets; st != nil {
+		if !strings.HasPrefix(st.SecretFile, "/") {
+			v.errf("server.session_tickets.secret_file: must be an absolute path")
+		}
+		if st.Rotate < Duration(time.Hour) || st.Rotate > Duration(168*time.Hour) {
+			v.errf("server.session_tickets.rotate: must be between 1h and 168h")
+		}
+	}
 	if c.Shedding != nil {
 		v.shedding(c.Shedding)
 	}
@@ -195,6 +229,9 @@ func (v *validator) config(c *Config) {
 	for i := range c.RateLimits {
 		if c.RateLimits[i].Key == "country" && c.GeoIP == nil {
 			v.errf("rate_limits[%d].key: country needs a geoip section", i)
+		}
+		if c.RateLimits[i].Distributed == "exact" && c.Cluster == nil {
+			v.errf("rate_limits[%d].distributed: exact needs a cluster section", i)
 		}
 	}
 	for i := range c.Server.Listeners {
@@ -755,11 +792,34 @@ func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 	default:
 		v.errf("%s.key: must be client_ip, route, country or header:<name>", p)
 	}
-	if r.Rate <= 0 {
-		v.errf("%s.rate: must be positive", p)
+	switch r.Algorithm {
+	case "token_bucket":
+		if r.Rate <= 0 {
+			v.errf("%s.rate: must be positive", p)
+		}
+		if r.Burst < 1 {
+			v.errf("%s.burst: must be at least 1", p)
+		}
+		if r.Limit != 0 || r.Window != 0 {
+			v.errf("%s: limit and window belong to algorithm sliding_window", p)
+		}
+	case "sliding_window":
+		if r.Limit < 1 || r.Limit > 1_000_000_000 {
+			v.errf("%s.limit: must be between 1 and 1000000000", p)
+		}
+		if r.Window < Duration(100*time.Millisecond) || r.Window > Duration(24*time.Hour) {
+			v.errf("%s.window: must be between 100ms and 24h", p)
+		}
+		if r.Rate != 0 || r.Burst != 0 {
+			v.errf("%s: rate and burst belong to algorithm token_bucket; use limit and window", p)
+		}
+	default:
+		v.errf("%s.algorithm: must be token_bucket or sliding_window", p)
 	}
-	if r.Burst < 1 {
-		v.errf("%s.burst: must be at least 1", p)
+	switch r.Distributed {
+	case "approximate", "exact":
+	default:
+		v.errf("%s.distributed: must be approximate or exact", p)
 	}
 	switch r.Action {
 	case "reject", "tarpit":
@@ -808,8 +868,43 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 	default:
 		v.errf("%s.scheme: must be http or https", p)
 	}
-	if len(u.Endpoints) == 0 {
-		v.errf("%s.endpoints: at least one endpoint is required", p)
+	if len(u.Endpoints) == 0 && u.Discovery == nil {
+		v.errf("%s.endpoints: at least one endpoint or a discovery section is required", p)
+	}
+	if d := u.Discovery; d != nil {
+		dp := p + ".discovery"
+		switch d.Type {
+		case "dns":
+			if d.Port < 1 || d.Port > 65535 {
+				v.errf("%s.port: required for type dns, 1 to 65535", dp)
+			}
+		case "srv":
+		default:
+			v.errf("%s.type: must be dns or srv", dp)
+		}
+		if !hostPatternOK(strings.TrimSuffix(d.Name, ".")) || strings.HasPrefix(d.Name, "*") {
+			v.errf("%s.name: %q is not a valid DNS name", dp, d.Name)
+		}
+		if d.Interval < Duration(time.Second) || d.Interval > Duration(time.Hour) {
+			v.errf("%s.interval: must be between 1s and 1h", dp)
+		}
+		if d.Timeout < Duration(100*time.Millisecond) || d.Timeout > Duration(time.Minute) {
+			v.errf("%s.timeout: must be between 100ms and 1m", dp)
+		}
+		if d.Resolver != "" {
+			if _, _, err := net.SplitHostPort(d.Resolver); err != nil {
+				v.errf("%s.resolver: %q must be host:port", dp, d.Resolver)
+			}
+		}
+		if d.Weight < 1 || d.Weight > 1000 {
+			v.errf("%s.weight: must be between 1 and 1000", dp)
+		}
+		if d.Canary && u.Canary == nil {
+			v.errf("%s.canary: set without a canary section", dp)
+		}
+	}
+	if u.SlowStart < 0 || u.SlowStart > Duration(time.Hour) {
+		v.errf("%s.slow_start: must be between 0 and 1h", p)
 	}
 	addrs := map[string]bool{}
 	for j, e := range u.Endpoints {
@@ -944,6 +1039,17 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 				v.errf("%s.health_check.expected_status: %d is not an HTTP status", p, st)
 			}
 		}
+		if (hc.BodyContains != "" || hc.BodyRegex != "") && hc.Type != "http" {
+			v.errf("%s.health_check: body_contains and body_regex need type http", p)
+		}
+		if len(hc.BodyContains) > 4096 || len(hc.BodyRegex) > 4096 {
+			v.errf("%s.health_check: body_contains and body_regex are limited to 4096 bytes", p)
+		}
+		if hc.BodyRegex != "" {
+			if _, err := regexp.Compile(hc.BodyRegex); err != nil {
+				v.errf("%s.health_check.body_regex: %v", p, err)
+			}
+		}
 	}
 	if a := u.Affinity; a != nil {
 		if !cookieNameOK(a.CookieName) {
@@ -965,6 +1071,15 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		}
 		if o.MaxEjectionPercent < 0 || o.MaxEjectionPercent > 100 {
 			v.errf("%s.outlier_ejection.max_ejection_percent: must be 0..100", p)
+		}
+		if o.LatencyThreshold < 0 {
+			v.errf("%s.outlier_ejection.latency_threshold: must not be negative", p)
+		}
+		if o.LatencyFactor != 0 && (o.LatencyFactor < 1.5 || o.LatencyFactor > 100) {
+			v.errf("%s.outlier_ejection.latency_factor: must be between 1.5 and 100, or 0", p)
+		}
+		if o.LatencyMinSamples < 1 || o.LatencyMinSamples > 100000 {
+			v.errf("%s.outlier_ejection.latency_min_samples: must be between 1 and 100000", p)
 		}
 	}
 }
@@ -1057,7 +1172,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 		actions++
 		if r.Redirect.To == "" {
 			v.errf("%s.redirect.to: required", p)
-		} else if u, err := url.Parse(r.Redirect.To); err != nil || (u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https") {
+		} else if u, err := url.Parse(placeholderRE.ReplaceAllString(r.Redirect.To, "x")); err != nil || (u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https") {
 			v.errf("%s.redirect.to: %q is not a valid http(s) URL or path", p, r.Redirect.To)
 		}
 		switch r.Redirect.Status {
@@ -1196,6 +1311,30 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	if r.StripPrefix != "" && !strings.HasPrefix(r.StripPrefix, "/") {
 		v.errf("%s.strip_prefix: must start with /", p)
 	}
+	if rr := r.RewriteRegex; rr != nil {
+		if r.RewritePath != "" {
+			v.errf("%s.rewrite_regex: exclusive with rewrite_path", p)
+		}
+		re, err := regexp.Compile(rr.Pattern)
+		if err != nil || rr.Pattern == "" || len(rr.Pattern) > 1024 {
+			v.errf("%s.rewrite_regex.pattern: %q is not a valid RE2 pattern", p, rr.Pattern)
+		} else if !strings.HasPrefix(rr.Replace, "/") {
+			v.errf("%s.rewrite_regex.replace: must start with /", p)
+		} else if _, err := tmpl.Parse(rr.Replace, re.SubexpNames()...); err != nil {
+			v.errf("%s.rewrite_regex.replace: %v", p, err)
+		}
+	}
+	v.headerTemplates(p+".request_headers", r.RequestHeaders, r)
+	v.headerTemplates(p+".response_headers", r.ResponseHeaders, r)
+	v.when(p+".when", r.When, r)
+	if r.Redirect != nil {
+		if _, err := tmpl.Parse(r.Redirect.To, CaptureNames(r)...); err != nil {
+			v.errf("%s.redirect.to: %v", p, err)
+		}
+	}
+	if r.ErrorPages != nil {
+		v.errorPages(p+".error_pages", r.ErrorPages)
+	}
 	if r.RewritePath != "" && !strings.HasPrefix(r.RewritePath, "/") {
 		v.errf("%s.rewrite_path: must start with /", p)
 	}
@@ -1319,6 +1458,9 @@ func (v *validator) cluster(c *Cluster) {
 	}
 	if c.PeerStale < c.GossipInterval*2 {
 		v.errf("cluster.peer_stale: must be at least twice gossip_interval")
+	}
+	if c.ExactTimeout < Duration(5*time.Millisecond) || c.ExactTimeout > Duration(2*time.Second) {
+		v.errf("cluster.exact_timeout: must be between 5ms and 2s")
 	}
 	if c.MaxKeysPerReport < 1 || c.MaxKeysPerReport > 65536 {
 		v.errf("cluster.max_keys_per_report: must be 1..65536")
@@ -2024,6 +2166,88 @@ func (v *validator) file(p, path string) {
 	}
 }
 
+// placeholderRE matches template placeholders, replaced by a token
+// before shape checks that templates would otherwise fail.
+var placeholderRE = regexp.MustCompile(`\$\{[^}]*\}`)
+
+// CaptureNames lists the named groups of a route's regular expressions,
+// which header templates may reference.
+func CaptureNames(r *Route) []string {
+	var names []string
+	if rr := r.RewriteRegex; rr != nil {
+		if re, err := regexp.Compile(rr.Pattern); err == nil {
+			names = append(names, re.SubexpNames()...)
+		}
+	}
+	for _, p := range r.PathRegex {
+		if re, err := regexp.Compile(p); err == nil {
+			names = append(names, re.SubexpNames()...)
+		}
+	}
+	out := names[:0]
+	for _, n := range names {
+		if n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// headerTemplates checks the placeholders of set and add values.
+func (v *validator) headerTemplates(p string, h HeaderOps, r *Route) {
+	names := CaptureNames(r)
+	v.when(p+".when", h.When, r)
+	for k, val := range h.Set {
+		if _, err := tmpl.Parse(val, names...); err != nil {
+			v.errf("%s.set.%s: %v", p, k, err)
+		}
+	}
+	for k, val := range h.Add {
+		if _, err := tmpl.Parse(val, names...); err != nil {
+			v.errf("%s.add.%s: %v", p, k, err)
+		}
+	}
+}
+
+// errorPageKey matches "404", "4xx", "5xx" or "default".
+var errorPageKey = regexp.MustCompile(`^([45][0-9][0-9]|4xx|5xx|default)$`)
+
+// errorPages checks an error pages section.
+func (v *validator) errorPages(p string, e *ErrorPages) {
+	if e.Dir != "" {
+		v.dir(p+".dir", e.Dir)
+	}
+	if len(e.Pages) == 0 {
+		v.errf("%s.pages: at least one page is required", p)
+	}
+	for k, f := range e.Pages {
+		if !errorPageKey.MatchString(k) {
+			v.errf("%s.pages.%s: key must be a status 400 to 599, 4xx, 5xx or default", p, k)
+		}
+		if f == "" || strings.ContainsRune(f, 0) {
+			v.errf("%s.pages.%s: file name is required", p, k)
+			continue
+		}
+		path := f
+		if !strings.HasPrefix(f, "/") {
+			if e.Dir == "" {
+				v.errf("%s.pages.%s: %q is relative but dir is not set", p, k, f)
+				continue
+			}
+			path = filepath.Join(e.Dir, f)
+		}
+		v.file(p+".pages."+k, path)
+	}
+	for i, st := range e.InterceptUpstream {
+		if st < 400 || st > 599 {
+			v.errf("%s.intercept_upstream[%d]: must be 400 to 599", p, i)
+		}
+	}
+	if strings.ContainsAny(e.ContentType, "\r\n") {
+		v.errf("%s.content_type: control characters", p)
+	}
+}
+
 // sandbox checks the extra Landlock paths.
 func (v *validator) sandbox(s *Sandbox) {
 	for i, p := range s.Landlock.ReadPaths {
@@ -2173,5 +2397,20 @@ func (v *validator) otlpExport(p string, o *OTLPExport) {
 	}
 	if o.Queue < 1 || o.Queue > 1_000_000 {
 		v.errf("%s.queue: must be between 1 and 1000000", p)
+	}
+}
+
+// when checks an expression of the route: syntax, functions, variables
+// and capture names.
+func (v *validator) when(p, src string, r *Route) {
+	if src == "" {
+		return
+	}
+	if len(src) > 4096 {
+		v.errf("%s: expression longer than 4096 bytes", p)
+		return
+	}
+	if _, err := expr.Parse(src, ExprVars(), CaptureNames(r)...); err != nil {
+		v.errf("%s: %v", p, err)
 	}
 }

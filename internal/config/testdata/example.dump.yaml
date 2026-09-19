@@ -59,6 +59,8 @@ server:
         max_concurrent_requests: 16384
         max_tarpits: 1024
     server_header: ""
+    error_pages: null
+    session_tickets: null
     shutdown_timeout: 30s
 management:
     socket: /run/xproxy/mgmt.sock
@@ -141,14 +143,22 @@ trusted_proxies: []
 rate_limits:
     - name: per-ip
       key: client_ip
+      algorithm: token_bucket
       rate: 50
       burst: 100
+      limit: 0
+      window: 0s
+      distributed: approximate
       action: reject
       tarpit_delay: 10s
     - name: login
       key: client_ip
+      algorithm: token_bucket
       rate: 0.2
       burst: 5
+      limit: 0
+      window: 0s
+      distributed: approximate
       action: tarpit
       tarpit_delay: 10s
 upstreams:
@@ -161,6 +171,8 @@ upstreams:
         - address: 10.0.1.11:8080
           weight: 1
           canary: false
+      discovery: null
+      slow_start: 0s
       scheme: http
       h2c: false
       tls: null
@@ -176,6 +188,8 @@ upstreams:
             - 200
         max_concurrent: 32
         keep_alive: false
+        body_contains: ""
+        body_regex: ""
       timeouts:
         connect: 5s
         response_header: 30s
@@ -193,6 +207,9 @@ upstreams:
         consecutive_failures: 5
         base_ejection_time: 30s
         max_ejection_percent: 50
+        latency_threshold: 0s
+        latency_factor: 0
+        latency_min_samples: 20
       circuit_breaker: null
       max_concurrent: 0
       queue: null
@@ -206,6 +223,8 @@ upstreams:
         - address: 10.0.2.11:8443
           weight: 1
           canary: false
+      discovery: null
+      slow_start: 0s
       scheme: https
       h2c: false
       tls:
@@ -246,6 +265,7 @@ routes:
       headers: []
       cookies: []
       tenant: ""
+      when: ""
       priority: 0
       upstream: web
       redirect: null
@@ -253,15 +273,19 @@ routes:
       honeypot: null
       strip_prefix: ""
       rewrite_path: ""
+      rewrite_regex: null
+      error_pages: null
       host_header: ""
       request_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       response_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       rate_limits:
         - login
         - per-ip
@@ -295,6 +319,7 @@ routes:
       headers: []
       cookies: []
       tenant: ""
+      when: ""
       priority: 0
       upstream: api
       redirect: null
@@ -302,18 +327,22 @@ routes:
       honeypot: null
       strip_prefix: /v1
       rewrite_path: ""
+      rewrite_regex: null
+      error_pages: null
       host_header: ""
       request_headers:
         set: {}
         add: {}
         remove:
             - Cookie
+        when: ""
       response_headers:
         set:
             Strict-Transport-Security: max-age=63072000; includeSubDomains
             X-Content-Type-Options: nosniff
         add: {}
         remove: []
+        when: ""
       rate_limits:
         - per-ip
       allow_cidrs: []
@@ -349,6 +378,7 @@ routes:
       headers: []
       cookies: []
       tenant: ""
+      when: ""
       priority: 0
       upstream: web
       redirect: null
@@ -356,15 +386,19 @@ routes:
       honeypot: null
       strip_prefix: ""
       rewrite_path: ""
+      rewrite_regex: null
+      error_pages: null
       host_header: ""
       request_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       response_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       rate_limits: []
       allow_cidrs:
         - 10.0.0.0/8
@@ -399,6 +433,7 @@ routes:
       headers: []
       cookies: []
       tenant: ""
+      when: ""
       priority: 0
       upstream: web
       redirect: null
@@ -406,15 +441,19 @@ routes:
       honeypot: null
       strip_prefix: ""
       rewrite_path: ""
+      rewrite_regex: null
+      error_pages: null
       host_header: ""
       request_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       response_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       rate_limits:
         - per-ip
       allow_cidrs: []
@@ -449,6 +488,7 @@ routes:
       headers: []
       cookies: []
       tenant: ""
+      when: ""
       priority: 0
       upstream: web
       redirect: null
@@ -456,11 +496,14 @@ routes:
       honeypot: null
       strip_prefix: ""
       rewrite_path: ""
+      rewrite_regex: null
+      error_pages: null
       host_header: ""
       request_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       response_headers:
         set:
             Referrer-Policy: strict-origin-when-cross-origin
@@ -469,6 +512,7 @@ routes:
             X-Frame-Options: DENY
         add: {}
         remove: []
+        when: ""
       rate_limits:
         - per-ip
       allow_cidrs: []
@@ -500,6 +544,7 @@ routes:
       headers: []
       cookies: []
       tenant: ""
+      when: ""
       priority: -100
       upstream: ""
       redirect: null
@@ -510,15 +555,19 @@ routes:
       honeypot: null
       strip_prefix: ""
       rewrite_path: ""
+      rewrite_regex: null
+      error_pages: null
       host_header: ""
       request_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       response_headers:
         set: {}
         add: {}
         remove: []
+        when: ""
       rate_limits: []
       allow_cidrs: []
       deny_cidrs: []
@@ -618,6 +667,7 @@ cluster:
     share_bans: null
     share_events: null
     max_keys_per_report: 4096
+    exact_timeout: 50ms
 shedding:
     target_latency: 250ms
     window: 10s

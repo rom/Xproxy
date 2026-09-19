@@ -186,7 +186,89 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   where executable memory is refused (`MemoryDenyWriteExecute`, the
   macOS hardened runtime).
 
+- Brotli and zstd response compression next to gzip: `compression.encodings`
+  sets the offer and preference, `brotli_level` and `zstd_level` the
+  cost; negotiation follows the client's quality values.
+- Regular expression path rewrites (`routes[].rewrite_regex`) with
+  numbered and named groups; templated header values, redirect
+  targets and rewrite replacements with request variables (client
+  address, request id, host, path, query, route, tenant, country,
+  fingerprint, TLS parameters, headers, cookies, query parameters,
+  captures), validated at load; custom error pages
+  (`server.error_pages`, `routes[].error_pages`) by status, class or
+  default with JSON negotiation and optional replacement of upstream
+  error bodies.
+- Endpoint discovery: `upstreams[].discovery` resolves A/AAAA or SRV
+  records on an interval (custom resolver, weights from SRV, lowest
+  priority group), adds and removes endpoints without a reload while
+  surviving ones keep their statistics; failures keep the previous set
+  and are counted. `slow_start` ramps a joining or recovering endpoint
+  from 10 % to full weight.
+- `server.session_tickets`: TLS session ticket keys derived from a
+  shared master keyring and the time epoch, so a ticket issued by one
+  node of a cluster resumes on every other node and survives restarts;
+  the previous epoch's key is kept across a rotation. `xproxyctl tls
+  tickets` and `GET /v1/tls/tickets` show the epoch and the peers'
+  agreement; the fingerprint travels as the cluster event
+  `ticket_keys`.
+- Listeners are added, removed, renamed and rebuilt by a reload. A
+  changed listener on the same address inherits the accept socket, so
+  a systemd owned or privileged socket is never re-bound and no
+  connection is refused; the old generation drains for
+  `shutdown_timeout`. The dry run reports the drains (`drains`) and
+  only a listener with a UDP socket changed on the same address still
+  needs a restart.
+- Rate limits beyond token buckets: `algorithm: sliding_window` with
+  `limit` per `window` (weighted two-window estimate), and
+  `distributed: exact` under which one cluster member owns each key
+  (rendezvous hashing over the connected members) and decides for the
+  others within `cluster.exact_timeout`, falling back to a local
+  decision when it does not answer. The cluster now acknowledges hellos
+  so members know each other's ids; `xproxyctl cluster` lists members
+  and exact decision counters, `xproxyctl quotas` the algorithm and
+  mode per policy.
+- Latency based outlier ejection (`outlier_ejection.latency_threshold`,
+  `latency_factor`, `latency_min_samples`): an endpoint whose smoothed
+  time to first byte is slow in absolute terms or relative to its pool
+  is ejected like one that fails; `xproxyctl upstreams` shows the
+  smoothed latency and the ejections. Health checks can require a
+  response body (`health_check.body_contains`, `body_regex`). Every
+  route has a request duration histogram
+  (`xproxy_route_request_duration_seconds`) and the quota report and
+  `xproxyctl quotas` show p50, p95 and p99 per route.
+- Expression language: `routes[].when` and `request_headers.when` /
+  `response_headers.when` hold a condition (`and`, `or`, `not`,
+  comparisons, `in` lists, `cidr()` address sets, `matches` patterns,
+  string functions, `header()`, `cookie()`, `query()`, `capture()` and
+  the request variables plus `date`, `hour`, `minute`, `weekday`),
+  parsed and checked at load and evaluated per request; a route with
+  `when` ranks like a route with one header condition.
+- Operator tooling: `xproxyctl completion bash|zsh|fish` prints
+  completion scripts for `xproxyctl` and `xproxy` (installed by `make
+  install` and the RPM), `xproxyctl help` lists the commands, the manual
+  pages `xproxy(8)`, `xproxyctl(8)` and `xproxy.yaml(5)` are generated
+  from the documentation and installed, and a JSON schema of the
+  configuration generated from the Go types (`xproxyctl schema`,
+  `/usr/share/xproxy/xproxy.schema.json`) gives editors completion and
+  inline documentation.
+
+### Changed (1.3)
+- No bounded table is silent any more. Every cap that evicts, refuses
+  or drops (rate limit key shards, ban trigger windows, honeypot marks,
+  challenge nonces, bot score client histories, admin sessions, WAF
+  rule statistics and learning entries, dns worker slots, trace, log
+  and cluster queues) counts each occurrence and writes a warning at
+  most once a minute with the count since the previous one
+  (`internal/bound`); the counts appear in the status views (`overflow`
+  per rate limit policy, `marks_dropped`, `rules_dropped`, `dropped`,
+  `missing_paths` for the sandbox). Configured limits that cannot be
+  honoured remain hard errors at load. The error log is the process
+  default logger.
+
 ### Fixed (1.3)
+- WAF statistics took one mutex per request; the per rule counters are
+  atomics in a concurrent map and the learning table is sharded, so
+  concurrent requests no longer serialise on the statistics.
 - WAF learning proposals without a route path used
   `SecRuleUpdateTargetById`, which does not compile in a directive file
   loaded before the CRS rules; they are now an unconditional `SecAction`

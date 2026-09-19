@@ -1,0 +1,3185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xproxy.sysctl.se/schema/xproxy.schema.json",
+  "title": "xproxy configuration",
+  "description": "One YAML document read by xproxy. Unknown keys are errors; omitted values take the documented defaults. See docs/CONFIG.md and xproxy.yaml(5).",
+  "type": "object",
+  "required": [
+    "version"
+  ],
+  "properties": {
+    "acme": {
+      "description": "ACME configures automatic certificates for listeners with tls.acme.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/ACME"
+        }
+      ]
+    },
+    "bans": {
+      "description": "Bans enables the ban list when present.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Bans"
+        }
+      ]
+    },
+    "cache": {
+      "description": "Cache sizes the in-memory response cache used by routes[].cache.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Cache"
+        }
+      ]
+    },
+    "challenge": {
+      "description": "Challenge configures the browser challenge used by routes with a challenge block.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Challenge"
+        }
+      ]
+    },
+    "cluster": {
+      "description": "Cluster enables sharing of rate limit consumption and bans between proxies when present.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Cluster"
+        }
+      ]
+    },
+    "compression": {
+      "description": "Compression enables gzip of eligible responses on every route (routes[].compress overrides per route).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Compression"
+        }
+      ]
+    },
+    "filters": {
+      "description": "Filters are middleware instances of registered kinds (see docs/EXTENDING.md) that routes attach by name.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/FilterConfig"
+      }
+    },
+    "geoip": {
+      "description": "GeoIP names the country database used by routes[].geo and by rate limits keyed on country.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/GeoIP"
+        }
+      ]
+    },
+    "icap": {
+      "description": "ICAP configures external scanning services referenced by routes.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/ICAP"
+        }
+      ]
+    },
+    "includes": {
+      "description": "Includes are absolute glob patterns of fragment files whose upstreams, routes, rate_limits and filters are appended to this document, in lexical order of path. Fragments may contain nothing else; names must not repeat. Read at every load and reload.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "ingress": {
+      "description": "Ingress turns Kubernetes Ingress resources into routes, upstreams and certificates (ingress controller mode).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Ingress"
+        }
+      ]
+    },
+    "jwt": {
+      "description": "JWT configures token providers referenced by routes.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/JWT"
+        }
+      ]
+    },
+    "logging": {
+      "$ref": "#/$defs/Logging"
+    },
+    "management": {
+      "$ref": "#/$defs/Management"
+    },
+    "metrics": {
+      "description": "Metrics tunes exposition and the time series buffer.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Metrics"
+        }
+      ]
+    },
+    "rate_limits": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RateLimit"
+      }
+    },
+    "routes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Route"
+      }
+    },
+    "sandbox": {
+      "description": "Sandbox configures the in-process hardening applied once the listeners are bound: Landlock file system rules, a seccomp system call filter, capability dropping and debugger denial on Linux; debugger denial and core dump suppression on macOS. On by default.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Sandbox"
+        }
+      ]
+    },
+    "server": {
+      "$ref": "#/$defs/Server"
+    },
+    "shedding": {
+      "description": "Shedding enables adaptive load shedding by priority class when present.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Shedding"
+        }
+      ]
+    },
+    "tracing": {
+      "description": "Tracing gives requests a W3C trace context and exports spans.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Tracing"
+        }
+      ]
+    },
+    "trusted_proxies": {
+      "description": "TrustedProxies lists CIDRs whose X-Forwarded-For / Forwarded headers are trusted for client IP derivation. Empty means never trust such headers.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "upstreams": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Upstream"
+      }
+    },
+    "version": {
+      "description": "Version is the schema version. Must equal CurrentVersion.",
+      "type": "integer"
+    },
+    "waf": {
+      "description": "WAF enables the web application firewall when present.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/WAF"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "ACME": {
+      "description": "ACME configures the certificate authority account (RFC 8555; AMR-029).",
+      "type": "object",
+      "properties": {
+        "accept_terms": {
+          "description": "AcceptTerms must be true; the CA's terms are agreed on registration.",
+          "type": "boolean"
+        },
+        "ca_file": {
+          "description": "CAFile pins the CA of the directory server (private CAs, tests).",
+          "type": "string"
+        },
+        "challenge": {
+          "description": "Challenge is http-01 (needs a plaintext listener on port 80) or tls-alpn-01 (needs the TLS listener on port 443). Default http-01.",
+          "type": "string"
+        },
+        "check_interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "directory": {
+          "description": "Directory is the CA's directory URL.",
+          "type": "string"
+        },
+        "email": {
+          "description": "Email is the account contact.",
+          "type": "string"
+        },
+        "renew_before": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "state_dir": {
+          "description": "StateDir holds the account key and issued certificates. Default /var/lib/xproxy/acme.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ACMEGroup": {
+      "description": "ACMEGroup is one automatically managed certificate.",
+      "type": "object",
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Affinity": {
+      "description": "Affinity is signed cookie session affinity.",
+      "type": "object",
+      "properties": {
+        "cookie_name": {
+          "type": "string"
+        },
+        "secret_file": {
+          "description": "SecretFile holds the HMAC key. Generated at first start when absent and the directory is writable.",
+          "type": "string"
+        },
+        "ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "BanTrigger": {
+      "description": "BanTrigger bans a client after Threshold denies within Window.",
+      "type": "object",
+      "properties": {
+        "duration": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "escalation": {
+          "description": "Escalation multiplies the duration for every repeat ban of the same address. Default 2. MaxDuration caps it, default 24h.",
+          "type": "number"
+        },
+        "max_duration": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "name": {
+          "type": "string"
+        },
+        "reasons": {
+          "description": "Reasons restricts which deny reasons count (acl, rate_limit, waf, body_size, uri_length, bad_host, no_route, websocket, concurrency). Empty counts every deny.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "threshold": {
+          "type": "integer"
+        },
+        "window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Bans": {
+      "description": "Bans configures the ban list: addresses that are refused outright for a period after repeated security denies or by operator action.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is drop (close connections at accept and answer 403 when the client is derived from a trusted proxy) or reject (403 only). Default drop.",
+          "type": "string"
+        },
+        "exempt_cidrs": {
+          "description": "ExemptCIDRs are never banned (monitoring, office ranges).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_entries": {
+          "description": "MaxEntries bounds the number of banned addresses. Default 100000.",
+          "type": "integer"
+        },
+        "state_file": {
+          "description": "StateFile persists bans across restarts (bbolt). Empty keeps them in memory only.",
+          "type": "string"
+        },
+        "triggers": {
+          "description": "Triggers turn repeated denies into bans.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BanTrigger"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "CRS": {
+      "description": "CRS tunes the Core Rule Set.",
+      "type": "object",
+      "properties": {
+        "dir": {
+          "description": "Dir loads the rule set from a directory laid out like a CRS release (crs-setup.conf or crs-setup.conf.example, rules/*.conf and the data files) instead of the copy embedded in the binary, so that rules can be updated with a reload. Default: embedded.",
+          "type": "string"
+        },
+        "inbound_threshold": {
+          "description": "InboundThreshold is the anomaly score at which a request is blocked. Default 5 (one critical rule).",
+          "type": "integer"
+        },
+        "outbound_threshold": {
+          "description": "OutboundThreshold is the anomaly score at which a response is blocked. Default 4.",
+          "type": "integer"
+        },
+        "paranoia_level": {
+          "description": "ParanoiaLevel 1 to 4. Default 1.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CT": {
+      "description": "CT is the Certificate Transparency policy for file certificates.",
+      "type": "object",
+      "properties": {
+        "enforce": {
+          "description": "Enforce fails the load or reload of a certificate below Require instead of logging it.",
+          "type": "boolean"
+        },
+        "log_list_file": {
+          "description": "LogListFile is a log list in Google's JSON format with the logs' keys; with it SCT signatures are verified.",
+          "type": "string"
+        },
+        "require": {
+          "description": "Require is the number of embedded SCTs a certificate must carry (verified ones when LogListFile is set). 0 only reports.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Cache": {
+      "description": "Cache bounds the response cache. Default 64 MiB total, 1 MiB per object.",
+      "type": "object",
+      "properties": {
+        "max_bytes": {
+          "type": "integer"
+        },
+        "max_object_bytes": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Canary": {
+      "description": "Canary routes selected requests to the pool's canary endpoints: those carrying Header or Cookie (with one of Values when listed) and a Percent share of the rest. Other requests avoid the canaries. Each side falls back to the other when its endpoints are all unavailable unless Fallback is false.",
+      "type": "object",
+      "properties": {
+        "cookie": {
+          "type": "string"
+        },
+        "fallback": {
+          "type": "boolean"
+        },
+        "header": {
+          "type": "string"
+        },
+        "percent": {
+          "type": "number"
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Certificate": {
+      "description": "Certificate references a PEM certificate chain and private key on disk.",
+      "type": "object",
+      "required": [
+        "cert_file",
+        "key_file"
+      ],
+      "properties": {
+        "cert_file": {
+          "type": "string"
+        },
+        "key_file": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Challenge": {
+      "description": "Challenge configures the browser proof-of-work challenge (AMR-023).",
+      "type": "object",
+      "properties": {
+        "title": {
+          "description": "Title is the heading shown on the page.",
+          "type": "string"
+        },
+        "bind_ip": {
+          "description": "BindIP ties the cookie to the client address. Default true.",
+          "type": "boolean"
+        },
+        "cookie_name": {
+          "description": "CookieName defaults to XPCHAL.",
+          "type": "string"
+        },
+        "difficulty": {
+          "description": "Difficulty is the number of leading zero bits required. Default 16 (about 65 000 hashes, well under a second in a browser).",
+          "type": "integer"
+        },
+        "exempt_cidrs": {
+          "description": "ExemptCIDRs are never challenged.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "secret_file": {
+          "description": "SecretFile persists the HMAC key so cookies survive restarts.",
+          "type": "string"
+        },
+        "ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CircuitBreaker": {
+      "description": "CircuitBreaker is a pool wide breaker: closed counts consecutive failures (connection errors, timeouts, 503 and retry_on statuses), open refuses requests with 503 for OpenFor (times the number of reopens, at most ten), half open lets HalfOpenRequests trials through.",
+      "type": "object",
+      "properties": {
+        "consecutive_failures": {
+          "type": "integer"
+        },
+        "half_open_requests": {
+          "type": "integer"
+        },
+        "open_for": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Cluster": {
+      "description": "Cluster configures peer to peer sharing over mutual TLS (AMR-009).",
+      "type": "object",
+      "properties": {
+        "exact_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "gossip_interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "listen": {
+          "description": "Listen is the address of the cluster listener (TCP, mTLS). Bind it to an internal interface.",
+          "type": "string"
+        },
+        "max_keys_per_report": {
+          "description": "MaxKeysPerReport bounds one report. Default 4096.",
+          "type": "integer"
+        },
+        "node_id": {
+          "description": "NodeID identifies this node to peers. Default: host name.",
+          "type": "string"
+        },
+        "peer_stale": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "peers": {
+          "description": "Peers are the cluster addresses of the other nodes.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "share_bans": {
+          "type": "boolean"
+        },
+        "share_events": {
+          "type": "boolean"
+        },
+        "share_rate_limits": {
+          "description": "ShareRateLimits, ShareBans and ShareEvents select what is exchanged. All default to true. Events are honeypot marks and revoked OIDC sessions; nodes older than 1.3 close a connection that carries them.",
+          "type": "boolean"
+        },
+        "tls": {
+          "$ref": "#/$defs/ClusterTLS"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClusterTLS": {
+      "description": "ClusterTLS holds the node certificate and the cluster CA. Every peer must present a certificate from this CA; there is no other authentication.",
+      "type": "object",
+      "properties": {
+        "allowed_names": {
+          "description": "AllowedNames optionally restricts peers to these certificate common names or DNS SANs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ca_file": {
+          "type": "string"
+        },
+        "cert_file": {
+          "type": "string"
+        },
+        "key_file": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Compression": {
+      "description": "Compression is the gzip policy for responses the proxy writes: proxied, cached, static and respond bodies alike. Responses the upstream already encoded, ranges, `no-transform` and unlisted media types pass through.",
+      "type": "object",
+      "properties": {
+        "brotli_level": {
+          "description": "BrotliLevel is 0 (fastest) to 11 (smallest). Default 4.",
+          "type": "integer"
+        },
+        "enabled": {
+          "description": "Enabled defaults to true when the section is present.",
+          "type": "boolean"
+        },
+        "encodings": {
+          "description": "Encodings lists the content encodings offered, in the order the proxy prefers them when a client accepts several with equal quality: br (Brotli), zstd and gzip. Default [br, zstd, gzip].",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "gzip",
+              "br",
+              "zstd"
+            ]
+          }
+        },
+        "level": {
+          "description": "Level is the gzip level 1 (fastest) to 9 (smallest). Default 5.",
+          "type": "integer"
+        },
+        "min_bytes": {
+          "description": "MinBytes is the smallest body compressed when its length is known or once that much has been buffered. Default 1024.",
+          "type": "integer"
+        },
+        "types": {
+          "description": "Types lists the media types compressed (without parameters). Default: the common text, script, style, JSON, XML, SVG and wasm types.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "zstd_level": {
+          "description": "ZstdLevel is 1 (fastest), 2 (default), 3 (better) or 4 (best). Default 2.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DNSCache": {
+      "description": "DNSCache bounds the cache of a dns listener.",
+      "type": "object",
+      "properties": {
+        "max_entries": {
+          "description": "MaxEntries. Default 10000.",
+          "type": "integer"
+        },
+        "max_ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "min_ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "negative_ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DNSListener": {
+      "description": "DNSListener is a forwarding DNS proxy on the listener address over UDP and TCP: a bounded cache, a block policy and forwarding to upstream resolvers with fresh transaction ids and source ports. The policy, upstreams and cache bounds reload; the address needs a restart.",
+      "type": "object",
+      "properties": {
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs (others get REFUSED). Empty allows any client.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "block": {
+          "description": "Block lists names: a bare name blocks it and its subdomains, *.suffix only subdomains, =name only that name.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "block_action": {
+          "description": "BlockAction is nxdomain (default), refuse or sinkhole.",
+          "type": "string"
+        },
+        "block_file": {
+          "description": "BlockFile adds names from a file (one per line, hosts file lines accepted), read at load and reload.",
+          "type": "string"
+        },
+        "cache": {
+          "description": "Cache bounds the response cache.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/DNSCache"
+            }
+          ]
+        },
+        "dnssec": {
+          "description": "DNSSEC validates upstream answers against a trust anchor.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/DNSSEC"
+            }
+          ]
+        },
+        "doh_path": {
+          "description": "DoHPath is the DNS over HTTPS path served on an encrypted dns listener (one with tls). Default /dns-query.",
+          "type": "string"
+        },
+        "log_queries": {
+          "description": "LogQueries writes one dns line per query to the access log. Default false (query logs are personal data).",
+          "type": "boolean"
+        },
+        "max_in_flight": {
+          "description": "MaxInFlight bounds queries being handled. Default 1024.",
+          "type": "integer"
+        },
+        "rate_limit": {
+          "description": "RateLimit bounds queries per client; over it queries are dropped.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/DNSRateLimit"
+            }
+          ]
+        },
+        "sinkhole_ipv4": {
+          "description": "SinkholeIPv4 and SinkholeIPv6 answer A and AAAA for blocked names with block_action sinkhole. Default 0.0.0.0 and ::.",
+          "type": "string"
+        },
+        "sinkhole_ipv6": {
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "upstream_ca_file": {
+          "description": "UpstreamCAFile pins the CA of tls:// and https:// upstreams. Default: system pool.",
+          "type": "string"
+        },
+        "upstreams": {
+          "description": "Upstreams are resolvers tried in turn: host:port (UDP with TCP fallback), tls://host:port (DNS over TLS) or https://host/path (DNS over HTTPS). Required.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "DNSRateLimit": {
+      "description": "DNSRateLimit is a per client token bucket.",
+      "type": "object",
+      "properties": {
+        "burst": {
+          "type": "integer"
+        },
+        "qps": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DNSSEC": {
+      "description": "DNSSEC configures validation on a dns listener: answers are fetched with the DO bit, signatures and denial proofs are checked up to a trust anchor, secure answers carry AD, bogus answers become SERVFAIL (unless the client set CD), insecure answers pass without AD.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enabled defaults to true when the section is present.",
+          "type": "boolean"
+        },
+        "max_lookups": {
+          "description": "MaxLookups bounds DNSKEY and DS queries per answer. Default 48.",
+          "type": "integer"
+        },
+        "trust_anchors": {
+          "description": "TrustAnchors are DS records (\"zone keytag algorithm digesttype digest\"); the IANA root keys are built in.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "trust_anchors_file": {
+          "description": "TrustAnchorsFile adds DS lines from a file (comments with #).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Discovery": {
+      "description": "Discovery resolves a pool's endpoints from DNS.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Type is dns (A and AAAA records of Name, each with Port) or srv (SRV records of Name; targets and ports come from the records, the lowest priority group is used and record weights become endpoint weights).",
+          "type": "string",
+          "enum": [
+            "dns",
+            "srv"
+          ]
+        },
+        "canary": {
+          "description": "Canary marks discovered endpoints as canaries.",
+          "type": "boolean"
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "name": {
+          "description": "Name is the DNS name to resolve (for srv the full _service._proto name).",
+          "type": "string"
+        },
+        "port": {
+          "description": "Port is the endpoint port for type dns. Ignored for srv.",
+          "type": "integer"
+        },
+        "resolver": {
+          "description": "Resolver is an optional host:port of the DNS server to ask instead of the system resolver.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "weight": {
+          "description": "Weight given to discovered endpoints of type dns. Default 1.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Endpoint": {
+      "description": "Endpoint is a single upstream address.",
+      "type": "object",
+      "required": [
+        "address"
+      ],
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "canary": {
+          "description": "Canary marks the endpoint as the pool's canary: it receives the requests the pool's canary policy selects and no others.",
+          "type": "boolean"
+        },
+        "weight": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ErrorPages": {
+      "description": "ErrorPages replaces the plain status bodies the proxy writes (denials, upstream failures, unknown routes, static misses) with documents from a directory, chosen by exact status (\"404\"), class (\"4xx\", \"5xx\") or \"default\". Documents are read at load and may use ${status}, ${status_text}, ${request_id}, ${host}, ${path}, ${reason} and the other request variables; unknown ${...} sequences are kept as they are.",
+      "type": "object",
+      "properties": {
+        "content_type": {
+          "description": "ContentType of the documents. Default text/html; charset=utf-8.",
+          "type": "string"
+        },
+        "dir": {
+          "description": "Dir holds the documents; page values are file names inside it or absolute paths.",
+          "type": "string"
+        },
+        "intercept_upstream": {
+          "description": "InterceptUpstream lists upstream response statuses whose bodies are replaced by the matching page (typically 502, 503, 504). Default none: upstream bodies pass through.",
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "json": {
+          "description": "JSON answers clients whose Accept prefers application/json with a small JSON document instead of the page. Default true.",
+          "type": "boolean"
+        },
+        "pages": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "FilterConfig": {
+      "description": "FilterConfig is one middleware instance.",
+      "type": "object",
+      "required": [
+        "name",
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "description": "Kind is a registered filter kind (xproxyctl filters lists them).",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "options": {
+          "description": "Options are kind specific and validated by the kind at load.",
+          "type": "object"
+        },
+        "stage": {
+          "description": "Stage places the filter relative to the built-in chain: before_auth (before JWT), after_auth (default; after JWT, before the WAF), after_waf (before ICAP) or after_scan (last).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ForwardAuth": {
+      "description": "ForwardAuth is the credential source of a forward listener.",
+      "type": "object",
+      "properties": {
+        "realm": {
+          "description": "Realm is sent in Proxy-Authenticate. Default \"proxy\".",
+          "type": "string"
+        },
+        "users_file": {
+          "description": "UsersFile holds name:hash lines from xproxyctl htpasswd. Re-read on reload.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ForwardListener": {
+      "description": "ForwardListener is an explicit forward proxy: clients send CONNECT host:port for tunnels (TLS stays end to end) or absolute http:// URIs for plain requests. Destinations are policy checked by name, resolved address and port; private and loopback addresses are refused unless allow_private is set, and the checked address is the one dialled.",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Allow restricts destinations to these names (exact or *.suffix), addresses or CIDRs. Empty allows any destination not denied.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_private": {
+          "description": "AllowPrivate permits loopback, link local, private and unique local destination addresses. Default false.",
+          "type": "boolean"
+        },
+        "auth": {
+          "description": "Auth requires Proxy-Authorization Basic credentials.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ForwardAuth"
+            }
+          ]
+        },
+        "connect_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "deny": {
+          "description": "Deny refuses destinations matching these names, addresses or CIDRs. Deny wins over allow and is checked against the resolved addresses too.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_response_bytes": {
+          "description": "MaxResponseBytes bounds the body of a plain (non CONNECT) response relayed to the client. Default 64 MiB; 0 disables.",
+          "type": "integer"
+        },
+        "max_tunnels": {
+          "description": "MaxTunnels bounds open CONNECT tunnels on this listener. Default 10000.",
+          "type": "integer"
+        },
+        "ports": {
+          "description": "Ports destinations may be reached on (CONNECT and plain). Default [80, 443].",
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "GeoIP": {
+      "description": "GeoIP configures the country database: a MaxMind DB file (GeoLite2 or GeoIP2 Country, or any MMDB with country.iso_code) or a CSV of \"network,country\" lines.",
+      "type": "object",
+      "properties": {
+        "csv": {
+          "type": "string"
+        },
+        "database": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "H3": {
+      "description": "H3 configures the QUIC listener of a TLS listener (AMR-024).",
+      "type": "object",
+      "properties": {
+        "alt_svc_max_age": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_streams": {
+          "description": "MaxStreams bounds concurrent request streams per connection. Default 100.",
+          "type": "integer"
+        },
+        "validate_addresses": {
+          "description": "ValidateAddresses is always (every new client address must complete a Retry round trip before any state is allocated) or under_load (only when open connections exceed a quarter of max_connections). Default always.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "HeaderMatch": {
+      "description": "HeaderMatch is one condition on a request header or cookie: exactly one of Exact, Prefix, Regex or Present. Header names are matched case insensitively and the first value is used; cookie names are exact.",
+      "type": "object",
+      "properties": {
+        "exact": {
+          "description": "Exact requires the value to equal this string.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "prefix": {
+          "description": "Prefix requires the value to start with this string.",
+          "type": "string"
+        },
+        "present": {
+          "description": "Present true requires the header or cookie to exist with any value; false requires it to be absent.",
+          "type": "boolean"
+        },
+        "regex": {
+          "description": "Regex is an RE2 pattern matched against the whole value.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "HeaderOps": {
+      "description": "HeaderOps describes header mutations.",
+      "type": "object",
+      "properties": {
+        "add": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "remove": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "set": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "when": {
+          "description": "When restricts the operations to requests for which the expression holds (docs/CONFIG.md, \"Expressions\"); empty applies them always.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "HealthCheck": {
+      "description": "HealthCheck configures active health probing of an upstream.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Type is http (GET path, expected_status) or grpc (the standard grpc.health.v1 Check over HTTP/2, needs h2c or https). Default http.",
+          "type": "string"
+        },
+        "body_contains": {
+          "description": "BodyContains requires the first 64 KiB of the probe response to contain this text (type http); BodyRegex an RE2 pattern to match anywhere in it. Both may be set; both must hold.",
+          "type": "string"
+        },
+        "body_regex": {
+          "type": "string"
+        },
+        "expected_status": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "grpc_service": {
+          "description": "GRPCService is the service name asked in a grpc check. Default \"\" (the server as a whole).",
+          "type": "string"
+        },
+        "healthy_threshold": {
+          "type": "integer"
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "keep_alive": {
+          "description": "KeepAlive reuses pooled connections for probes. Off (the default) opens a fresh connection per probe, which verifies the whole connect path and holds no descriptor between probes; on saves the handshake at the cost of one idle connection per endpoint.",
+          "type": "boolean"
+        },
+        "max_concurrent": {
+          "description": "MaxConcurrent bounds probes in flight per pool so that a pool with thousands of endpoints does not burst. Default 32.",
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "unhealthy_threshold": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Honeypot": {
+      "description": "Honeypot is a decoy action: the response looks like a real page of the chosen kind, the client is logged as a security event, marked for `mark` so later requests on any route carry the label, and counted towards the `honeypot` ban reason.",
+      "type": "object",
+      "properties": {
+        "body": {
+          "description": "Body is an inline decoy, at most 64 KiB.",
+          "type": "string"
+        },
+        "body_file": {
+          "description": "BodyFile is a decoy read at load and reload, at most 1 MiB.",
+          "type": "string"
+        },
+        "content_type": {
+          "description": "ContentType of body or body_file. Default text/html; charset=utf-8.",
+          "type": "string"
+        },
+        "decoy": {
+          "description": "Decoy names a built-in body: wp-login, env, git-config, phpinfo, admin-login or robots. Exclusive with body and body_file.",
+          "type": "string"
+        },
+        "delay": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "mark": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "status": {
+          "description": "Status of the decoy response. Default 200.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ICAP": {
+      "description": "ICAP holds scanning services (RFC 3507; AMR-015, AMR-028).",
+      "type": "object",
+      "properties": {
+        "services": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ICAPService"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ICAPService": {
+      "description": "ICAPService is one ICAP endpoint.",
+      "type": "object",
+      "properties": {
+        "body_limit_action": {
+          "description": "BodyLimitAction is bypass (pass without scanning) or reject (413) for bodies above MaxBody. Default reject.",
+          "type": "string"
+        },
+        "connect_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "fail": {
+          "description": "Fail is open (pass when the service errors or times out) or closed (answer 502). Default closed.",
+          "type": "string"
+        },
+        "max_body": {
+          "description": "MaxBody bounds the body sent for scanning. Default 10 MiB.",
+          "type": "integer"
+        },
+        "max_conns": {
+          "description": "MaxConns bounds pooled idle connections. Default 8.",
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "preview": {
+          "description": "Preview is auto (from OPTIONS), off, or a byte count.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "tls": {
+          "$ref": "#/$defs/ICAPTLS"
+        },
+        "url": {
+          "description": "URL is icap://host[:port]/service or icaps://... for TLS.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ICAPTLS": {
+      "description": "ICAPTLS pins the CA and name for icaps.",
+      "type": "object",
+      "properties": {
+        "ca_file": {
+          "type": "string"
+        },
+        "server_name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Ingress": {
+      "description": "Ingress is Kubernetes ingress controller mode: the proxy reads Ingress, Service, EndpointSlice and TLS Secret resources of one ingress class from the API server with the pod's service account, appends the resulting routes, upstreams and certificates to this configuration and reloads when they change. Routes and upstreams in this file are kept and take precedence by name.",
+      "type": "object",
+      "properties": {
+        "allow_http": {
+          "description": "AllowHTTP permits a plain http api_server (tests, kubectl proxy).",
+          "type": "boolean"
+        },
+        "api_server": {
+          "description": "APIServer URL. Default https://kubernetes.default.svc.",
+          "type": "string"
+        },
+        "ca_file": {
+          "description": "CAFile verifies the API server. Default /var/run/secrets/kubernetes.io/serviceaccount/ca.crt.",
+          "type": "string"
+        },
+        "cert_dir": {
+          "description": "CertDir receives the certificate files. Default /var/lib/xproxy/ingress.",
+          "type": "string"
+        },
+        "class": {
+          "description": "Class is the ingressClassName served. Default xproxy.",
+          "type": "string"
+        },
+        "debounce": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "listener": {
+          "description": "Listener names the TLS listener that receives certificates from Ingress TLS secrets. Empty ignores TLS secrets.",
+          "type": "string"
+        },
+        "namespaces": {
+          "description": "Namespaces restricts the watch. Empty watches every namespace.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resync": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "token_file": {
+          "description": "TokenFile is the bearer token (the service account token). Default /var/run/secrets/kubernetes.io/serviceaccount/token.",
+          "type": "string"
+        },
+        "watch": {
+          "description": "Watch opens watch streams on the resources so that a change syncs within debounce instead of resync. Default true.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "JWT": {
+      "description": "JWT holds token providers (AMR-025).",
+      "type": "object",
+      "properties": {
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JWTProvider"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "JWTProvider": {
+      "description": "JWTProvider describes one issuer and where its keys come from.",
+      "type": "object",
+      "properties": {
+        "algorithms": {
+          "description": "Algorithms allowed, from RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512, EdDSA, HS256, HS384, HS512. \"none\" is never allowed. Default: [RS256, ES256, EdDSA].",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "audiences": {
+          "description": "Audiences: the token's aud must contain at least one. Empty accepts any audience (not recommended).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clock_skew": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "forward_claims": {
+          "description": "ForwardClaims maps upstream header names to claim names. Client supplied values of these headers are always removed first.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "hmac_secret_file": {
+          "description": "HMACSecretFile holds the shared secret for HS* algorithms.",
+          "type": "string"
+        },
+        "issuer": {
+          "description": "Issuer must equal the token's iss claim.",
+          "type": "string"
+        },
+        "jwks_ca_file": {
+          "description": "JWKSCAFile pins the CA for the JWKS fetch. Default: system pool.",
+          "type": "string"
+        },
+        "jwks_file": {
+          "description": "JWKSFile is a JSON Web Key Set on disk (re-read on reload).",
+          "type": "string"
+        },
+        "jwks_refresh": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "jwks_url": {
+          "description": "JWKSURL fetches the key set over HTTPS at start and every JWKSRefresh, and on an unknown key id (rate limited).",
+          "type": "string"
+        },
+        "log_claims": {
+          "description": "LogClaims lists claims copied into the access log (for example sub).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "required_claims": {
+          "description": "RequiredClaims must be present. exp is always required.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source": {
+          "description": "Source is where the token is read from: bearer (Authorization: Bearer), header:\u003cName\u003e or cookie:\u003cName\u003e. Default bearer.",
+          "type": "string"
+        },
+        "strip_token": {
+          "description": "StripToken removes the token from the forwarded request. Default true.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Journald": {
+      "description": "Journald is the native journald sink.",
+      "type": "object",
+      "properties": {
+        "identifier": {
+          "description": "Identifier is SYSLOG_IDENTIFIER. Default xproxy.",
+          "type": "string"
+        },
+        "socket": {
+          "description": "Socket is the journald datagram socket. Default /run/systemd/journal/socket.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Limits": {
+      "description": "Limits are the global resource protections of the data plane. Every limit has a conservative default and can only be raised deliberately.",
+      "type": "object",
+      "properties": {
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_body_bytes": {
+          "type": "integer"
+        },
+        "max_concurrent_requests": {
+          "type": "integer"
+        },
+        "max_connections": {
+          "type": "integer"
+        },
+        "max_connections_per_ip": {
+          "type": "integer"
+        },
+        "max_header_bytes": {
+          "type": "integer"
+        },
+        "max_tarpits": {
+          "description": "MaxTarpits bounds requests held in a tarpit at once. A tarpitted request releases its concurrency slot first; above this bound the request is rejected at once instead of held. Default 1024.",
+          "type": "integer"
+        },
+        "max_uri_length": {
+          "type": "integer"
+        },
+        "read_header_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "read_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "write_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Listener": {
+      "description": "Listener describes a single accepting socket.",
+      "type": "object",
+      "required": [
+        "name",
+        "address"
+      ],
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "dns": {
+          "description": "DNS configures a kind: dns listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/DNSListener"
+            }
+          ]
+        },
+        "forward": {
+          "description": "Forward configures a kind: forward listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ForwardListener"
+            }
+          ]
+        },
+        "h2c": {
+          "description": "H2C accepts HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext http listener, for gRPC clients inside a trusted network. Default false.",
+          "type": "boolean"
+        },
+        "h3": {
+          "description": "H3 tunes HTTP/3 when the protocols include h3.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/H3"
+            }
+          ]
+        },
+        "kind": {
+          "description": "Kind is http (default), tcp (an L4 listener that forwards connections by TLS server name without terminating TLS), forward (an explicit HTTP proxy for clients: CONNECT tunnels and absolute URI requests to destinations the policy allows) or dns (a DNS proxy).",
+          "type": "string",
+          "enum": [
+            "http",
+            "tcp",
+            "forward",
+            "dns"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "protocols": {
+          "description": "Protocols accepted. Defaults to [h1, h2] with TLS and [h1] without.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "h1",
+              "h2",
+              "h3"
+            ]
+          }
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol enables PROXY protocol v1/v2 parsing on accepted connections. Only enable behind a trusted L4 balancer.",
+          "type": "boolean"
+        },
+        "redirect_to_https": {
+          "description": "RedirectToHTTPS makes a plaintext listener answer every request with a 308 redirect to https. Useful for the :80 listener.",
+          "type": "boolean"
+        },
+        "tcp": {
+          "description": "TCP configures a kind: tcp listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TCPListener"
+            }
+          ]
+        },
+        "tls": {
+          "$ref": "#/$defs/TLS"
+        }
+      },
+      "additionalProperties": false
+    },
+    "LogStream": {
+      "description": "LogStream configures one stream.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "file": {
+          "type": "string"
+        },
+        "format": {
+          "description": "Format is json (default), or for the access stream common (Common Log Format), combined (NCSA combined) or custom with Template. The other streams are structured and stay JSON.",
+          "type": "string"
+        },
+        "max_files": {
+          "type": "integer"
+        },
+        "max_size_mb": {
+          "description": "MaxSizeMB triggers rotation when the file exceeds this size. 0 disables internal rotation (use logrotate or journald instead).",
+          "type": "integer"
+        },
+        "sinks": {
+          "description": "Sinks lists where the stream goes: file, journald, syslog. Default [file].",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "template": {
+          "description": "Template is the line for format custom: literal text with {field} placeholders naming access log attributes plus time_clf, time_iso, time_unix, request, user and bytes_out_clf; a missing field prints \"-\".",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Logging": {
+      "description": "Logging configures the four log streams (AMR-014).",
+      "type": "object",
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/LogStream"
+        },
+        "audit": {
+          "$ref": "#/$defs/LogStream"
+        },
+        "directory": {
+          "type": "string"
+        },
+        "error": {
+          "$ref": "#/$defs/LogStream"
+        },
+        "journald": {
+          "description": "Journald configures the journald sink used by streams listing it.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Journald"
+            }
+          ]
+        },
+        "level": {
+          "description": "Level is the minimum level for the error log: debug, info, warn, error.",
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ]
+        },
+        "otlp": {
+          "description": "OTLP configures the OpenTelemetry log sink used by streams listing otlp in their sinks.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/OTLPExport"
+            }
+          ]
+        },
+        "redaction": {
+          "description": "Redaction removes or pseudonymises personal data before any sink.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Redaction"
+            }
+          ]
+        },
+        "security": {
+          "$ref": "#/$defs/LogStream"
+        },
+        "stdout": {
+          "description": "Stdout mirrors all streams to standard output (useful under journald and in containers).",
+          "type": "boolean"
+        },
+        "syslog": {
+          "description": "Syslog configures the syslog sink used by streams listing it.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Syslog"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Management": {
+      "description": "Management configures the control plane listener used by xproxyctl.",
+      "type": "object",
+      "properties": {
+        "history_dir": {
+          "description": "HistoryDir keeps every applied configuration as a file for xproxyctl history, diff and rollback. Empty disables history.",
+          "type": "string"
+        },
+        "history_keep": {
+          "description": "HistoryKeep is how many entries are kept. Default 20.",
+          "type": "integer"
+        },
+        "socket": {
+          "description": "Socket is the path of the Unix domain socket. Empty disables management.",
+          "type": "string"
+        },
+        "socket_mode": {
+          "description": "SocketMode is the octal permission mode of the socket, default 0660.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Metrics": {
+      "description": "Metrics configures Prometheus exposition and sampled series (AMR-026). The management socket always serves /metrics; Listen adds a TCP endpoint for scrapers.",
+      "type": "object",
+      "properties": {
+        "allow_cidrs": {
+          "description": "AllowCIDRs restricts scrapers by source address. Empty allows any address that reaches the listener.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "endpoint_series": {
+          "description": "EndpointSeries exposes five series per upstream endpoint. Default true; turn off above a few thousand endpoints (about 1 KiB per endpoint per scrape).",
+          "type": "boolean"
+        },
+        "listen": {
+          "description": "Listen is an optional host:port serving only /metrics. Binding all interfaces requires TLS with a client CA.",
+          "type": "string"
+        },
+        "otlp": {
+          "description": "OTLP pushes the same metrics to an OpenTelemetry collector.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/OTLP"
+            }
+          ]
+        },
+        "per_route": {
+          "description": "PerRoute exposes request counters per route (one series per route and status class). Default true.",
+          "type": "boolean"
+        },
+        "retention": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "sample_interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "tls": {
+          "description": "TLS makes the listener HTTPS; ClientCAFile requires client certificates.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MetricsTLS"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "MetricsTLS": {
+      "description": "MetricsTLS is the metrics listener certificate and optional client CA.",
+      "type": "object",
+      "properties": {
+        "cert_file": {
+          "type": "string"
+        },
+        "client_ca_file": {
+          "type": "string"
+        },
+        "key_file": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "OCSPStapling": {
+      "description": "OCSPStapling configures the background OCSP fetcher of a listener.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "refresh": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "OTLP": {
+      "description": "OTLP is the OpenTelemetry push exporter: every interval the metric families are sent as OTLP/HTTP with JSON encoding to a collector (counters as cumulative monotonic sums, gauges, histograms as cumulative explicit bucket histograms).",
+      "type": "object",
+      "properties": {
+        "allow_http": {
+          "description": "AllowHTTP permits a plain http endpoint.",
+          "type": "boolean"
+        },
+        "attributes": {
+          "description": "Attributes are extra resource attributes.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "ca_file": {
+          "description": "CAFile pins the collector's CA. Default: system pool.",
+          "type": "string"
+        },
+        "compress": {
+          "description": "Compress gzips the request body. Default true.",
+          "type": "boolean"
+        },
+        "endpoint": {
+          "description": "Endpoint is the collector's metrics URL, for example https://otel.example.com:4318/v1/metrics.",
+          "type": "string"
+        },
+        "headers": {
+          "description": "Headers added to every request (for example Authorization).",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "service_name": {
+          "description": "ServiceName is the service.name resource attribute. Default xproxy.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "OTLPExport": {
+      "description": "OTLPExport is a collector endpoint for traces or logs.",
+      "type": "object",
+      "properties": {
+        "allow_http": {
+          "description": "AllowHTTP permits a plain http endpoint.",
+          "type": "boolean"
+        },
+        "attributes": {
+          "description": "Attributes are extra resource attributes.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "batch": {
+          "description": "Batch is the largest number of items per push. Default 512.",
+          "type": "integer"
+        },
+        "ca_file": {
+          "description": "CAFile pins the collector's CA. Default: system pool.",
+          "type": "string"
+        },
+        "compress": {
+          "description": "Compress gzips the request body. Default true.",
+          "type": "boolean"
+        },
+        "endpoint": {
+          "description": "Endpoint is the collector URL (/v1/traces or /v1/logs).",
+          "type": "string"
+        },
+        "headers": {
+          "description": "Headers added to every request.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "queue": {
+          "description": "Queue bounds items waiting for a push. Default 8192.",
+          "type": "integer"
+        },
+        "service_name": {
+          "description": "ServiceName is the service.name resource attribute. Default xproxy.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "OutlierEjection": {
+      "description": "OutlierEjection configures passive health checking: consecutive failures and, when latency_threshold or latency_factor is set, an endpoint whose smoothed time to first byte is slow.",
+      "type": "object",
+      "properties": {
+        "base_ejection_time": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "consecutive_failures": {
+          "type": "integer"
+        },
+        "latency_factor": {
+          "description": "LatencyFactor ejects an endpoint whose smoothed latency exceeds the pool's smoothed latency times this factor (at least 1.5), when the pool has two or more endpoints. 0 disables.",
+          "type": "number"
+        },
+        "latency_min_samples": {
+          "description": "LatencyMinSamples is how many responses an endpoint must have answered since it last became available before its latency is judged. Default 20.",
+          "type": "integer"
+        },
+        "latency_threshold": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_ejection_percent": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RateLimit": {
+      "description": "RateLimit is a named rate limit policy referenced by routes: a token bucket (rate and burst) or a sliding window (limit per window).",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "action": {
+          "description": "Action is reject (429) or tarpit. Default reject.",
+          "type": "string"
+        },
+        "algorithm": {
+          "description": "Algorithm is token_bucket (default; rate and burst) or sliding_window (limit and window).",
+          "type": "string"
+        },
+        "burst": {
+          "description": "Burst is the bucket capacity (token_bucket).",
+          "type": "integer"
+        },
+        "distributed": {
+          "description": "Distributed selects the cluster semantics: approximate (default; each node refills at the rate minus its peers' reported consumption) or exact (one node owns each key, chosen by rendezvous hashing over the connected members, and decides for the others; a node that cannot reach the owner within cluster.exact_timeout decides locally). Needs the cluster section.",
+          "type": "string"
+        },
+        "key": {
+          "description": "Key selects the bucket identity: client_ip, route, or header:\u003cname\u003e.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Limit is the number of requests allowed per Window (sliding_window).",
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "rate": {
+          "description": "Rate is tokens per second (token_bucket).",
+          "type": "number"
+        },
+        "tarpit_delay": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Redaction": {
+      "description": "Redaction rules. Presence enables them; Enabled false switches them off without removing the configuration.",
+      "type": "object",
+      "properties": {
+        "claims": {
+          "description": "Claims is keep, hash or drop and applies to jwt_* attributes and client_cn. Default hash.",
+          "type": "string"
+        },
+        "client_ip": {
+          "description": "ClientIP is keep, truncate (IPv4 /24, IPv6 /48) or hash (keyed HMAC-SHA256, stable per installation). Default truncate.",
+          "type": "string"
+        },
+        "drop_fields": {
+          "description": "DropFields lists further attribute names removed from log lines.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "hash_secret_file": {
+          "description": "HashSecretFile holds the key for hash mode; created on first use.",
+          "type": "string"
+        },
+        "referer": {
+          "description": "Referer is keep, origin (scheme and host only) or drop. Default origin.",
+          "type": "string"
+        },
+        "streams": {
+          "description": "Streams the rules apply to. Default [access, security, error]; the audit stream keeps full detail unless listed.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "user_agent": {
+          "description": "UserAgent is keep or drop. Default keep.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Redirect": {
+      "description": "Redirect is a static redirect action. To may use the request variables (${path}, ${raw_query}, ${host}, ${1}...) to build the target.",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "integer"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Respond": {
+      "description": "Respond is a static response action.",
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RewriteRegex": {
+      "description": "RewriteRegex is a regular expression path rewrite. Replace may use ${1} to ${9} and ${name} for the pattern's groups, and the request variables of header templates (docs/CONFIG.md, \"Variables\").",
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "replace": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Route": {
+      "description": "Route maps a request to an upstream and attaches policies.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "allow_cidrs": {
+          "description": "AllowCIDRs / DenyCIDRs implement simple IP access control. Deny is evaluated first. Empty allow means allow all.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cache": {
+          "description": "Cache stores responses of this route (needs the cache section).",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RouteCache"
+            }
+          ]
+        },
+        "challenge": {
+          "description": "Challenge gates unverified clients with the browser challenge.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RouteChallenge"
+            }
+          ]
+        },
+        "compress": {
+          "description": "Compress overrides the compression section for this route: false turns it off, true requires the section.",
+          "type": "boolean"
+        },
+        "cookies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeaderMatch"
+          }
+        },
+        "deny_cidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "doh": {
+          "description": "DoH answers DNS over HTTPS on this route through a dns listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RouteDoH"
+            }
+          ]
+        },
+        "error_pages": {
+          "description": "ErrorPages overrides the server's error pages for this route.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ErrorPages"
+            }
+          ]
+        },
+        "filters": {
+          "description": "Filters names entries of the top-level filters list, run in the listed order within their stage.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "geo": {
+          "description": "Geo allows or denies by client country (needs the geoip section).",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RouteGeo"
+            }
+          ]
+        },
+        "grpc": {
+          "description": "GRPC restricts the route to gRPC requests, optionally to listed services or methods.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RouteGRPC"
+            }
+          ]
+        },
+        "headers": {
+          "description": "Headers and Cookies are conditions on the request: every listed match must hold. Entries with conditions rank above entries without at the same path length (more conditions first).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeaderMatch"
+          }
+        },
+        "honeypot": {
+          "description": "Honeypot serves a decoy and marks the client instead of proxying.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Honeypot"
+            }
+          ]
+        },
+        "host_header": {
+          "description": "HostHeader overrides the Host header sent upstream. Default keeps the client Host.",
+          "type": "string"
+        },
+        "hosts": {
+          "description": "Hosts are exact host names or wildcard patterns (\"*.example.com\"). Empty matches any host.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "icap": {
+          "description": "ICAP hands requests and/or responses to a scanning service.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RouteICAP"
+            }
+          ]
+        },
+        "jwt": {
+          "description": "JWT requires or accepts a validated token from a provider.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RouteJWT"
+            }
+          ]
+        },
+        "max_body_bytes": {
+          "description": "MaxBodyBytes overrides the global body limit for this route (may only lower it unless allow_raise is set).",
+          "type": "integer"
+        },
+        "methods": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mirror": {
+          "description": "Mirror copies requests of this route to a second upstream.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RouteMirror"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "path_regex": {
+          "description": "PathRegex lists RE2 patterns that must match the whole cleaned path (anchored at both ends by the proxy). A regex entry ranks by the length of its literal prefix; at equal length it beats a prefix entry. With PathRegex set, Paths has no default.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "paths": {
+          "description": "Paths are prefixes. \"/\" matches everything. Longest prefix wins.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "priority": {
+          "description": "Priority breaks ties between routes with identical specificity. Higher wins. Default 0.",
+          "type": "integer"
+        },
+        "priority_class": {
+          "description": "PriorityClass is low, normal, high or critical (never shed). Default normal.",
+          "type": "string"
+        },
+        "rate_limits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "redirect": {
+          "description": "Redirect answers with a redirect instead of proxying.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Redirect"
+            }
+          ]
+        },
+        "request_headers": {
+          "$ref": "#/$defs/HeaderOps"
+        },
+        "respond": {
+          "description": "Respond answers with a static status instead of proxying.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Respond"
+            }
+          ]
+        },
+        "response_headers": {
+          "$ref": "#/$defs/HeaderOps"
+        },
+        "rewrite_path": {
+          "type": "string"
+        },
+        "rewrite_regex": {
+          "description": "RewriteRegex rewrites the outbound path with a regular expression and capture groups; exclusive with rewrite_path, applied after strip_prefix. A path that does not match is sent unchanged.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RewriteRegex"
+            }
+          ]
+        },
+        "static": {
+          "description": "Static serves files from a directory instead of proxying.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RouteStatic"
+            }
+          ]
+        },
+        "strip_prefix": {
+          "type": "string"
+        },
+        "tenant": {
+          "description": "Tenant is a free label that groups routes for quota reporting (GET /v1/quotas, xproxyctl quotas) and the per route metrics.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "upstream": {
+          "type": "string"
+        },
+        "waf": {
+          "description": "WAF overrides the global WAF mode and profile for this route.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RouteWAF"
+            }
+          ]
+        },
+        "websocket": {
+          "description": "WebSocket allows Upgrade: websocket to be forwarded. Default false.",
+          "type": "boolean"
+        },
+        "when": {
+          "description": "When is a condition in the expression language (docs/CONFIG.md, \"Expressions\") that must hold in addition to the matches above; it counts as one condition for specificity.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteCache": {
+      "description": "RouteCache is a route's caching policy.",
+      "type": "object",
+      "properties": {
+        "cookies": {
+          "description": "Cookies allows caching requests that carry a Cookie header. Default false: such requests bypass the cache.",
+          "type": "boolean"
+        },
+        "headers": {
+          "description": "Headers are request headers whose values join the key (for example Accept-Encoding when the upstream does not send Vary).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ignore_cache_control": {
+          "description": "IgnoreCacheControl stores responses regardless of Cache-Control and applies ttl. Default false.",
+          "type": "boolean"
+        },
+        "methods": {
+          "description": "Methods cached. Default [GET, HEAD].",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "query": {
+          "description": "Query is \"all\" (default), \"none\" (ignore the query string in the key) or \"listed\" (only the names in query_params, sorted).",
+          "type": "string"
+        },
+        "query_params": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "statuses": {
+          "description": "Statuses cached. Default [200, 203, 204, 300, 301, 404, 410].",
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteChallenge": {
+      "description": "RouteChallenge selects when a route challenges unverified clients.",
+      "type": "object",
+      "properties": {
+        "level": {
+          "description": "Level is the load level that activates load mode. Default 0.5.",
+          "type": "number"
+        },
+        "mode": {
+          "description": "Mode is off, always or load. In load mode clients are challenged only while the shedding load level is at or above Level.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteDoH": {
+      "description": "RouteDoH is the DNS over HTTPS action (RFC 8484): GET with a base64url dns parameter or POST with an application/dns-message body, answered by the named kind: dns listener's policy and cache.",
+      "type": "object",
+      "properties": {
+        "listener": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteGRPC": {
+      "description": "RouteGRPC matches gRPC requests (content type application/grpc) by the service and method in the path (/package.Service/Method). Empty lists match every gRPC request. Denials and proxy errors on such a route are answered as gRPC statuses.",
+      "type": "object",
+      "properties": {
+        "methods": {
+          "description": "Methods are Service/Method pairs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "services": {
+          "description": "Services are fully qualified service names.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteGeo": {
+      "description": "RouteGeo is a country policy. Deny is evaluated first; a non-empty Allow admits only the listed countries. Unknown says what happens to an address the database does not know: allow (default) or deny.",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unknown": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteICAP": {
+      "description": "RouteICAP attaches a service to a route.",
+      "type": "object",
+      "properties": {
+        "request": {
+          "description": "Request sends requests (REQMOD); Response sends responses (RESPMOD). Request defaults to true, Response to false.",
+          "type": "boolean"
+        },
+        "response": {
+          "type": "boolean"
+        },
+        "service": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteJWT": {
+      "description": "RouteJWT attaches a provider to a route.",
+      "type": "object",
+      "properties": {
+        "required": {
+          "description": "Required rejects requests without a token with 401. Default true. When false, a missing token passes and an invalid one is rejected.",
+          "type": "boolean"
+        },
+        "provider": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteMirror": {
+      "description": "RouteMirror sends a copy of each request (sampled by percent) to another upstream in the background. The copy carries the same path rules, host and header operations as the live request plus X-Xproxy-Mirror: 1; its response is discarded and never affects the client. Bodies are buffered up to max_body_bytes; larger requests are proxied but not mirrored.",
+      "type": "object",
+      "properties": {
+        "max_body_bytes": {
+          "description": "MaxBodyBytes bounds the buffered body. Default 1 MiB.",
+          "type": "integer"
+        },
+        "max_in_flight": {
+          "description": "MaxInFlight bounds copies in flight for this route; beyond it copies are dropped and counted. Default 64.",
+          "type": "integer"
+        },
+        "methods": {
+          "description": "Methods restricts copies to these methods. Empty copies every method except upgrades.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "percent": {
+          "description": "Percent of requests copied. Default 100.",
+          "type": "integer"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "upstream": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteStatic": {
+      "description": "RouteStatic serves files from a directory. Paths are resolved inside Root with os.Root, so neither \"..\" nor a symbolic link can leave it.",
+      "type": "object",
+      "properties": {
+        "cache_control": {
+          "description": "CacheControl is sent with every file. Default none.",
+          "type": "string"
+        },
+        "dot_files": {
+          "description": "DotFiles serves names starting with a dot. Default false.",
+          "type": "boolean"
+        },
+        "fallback": {
+          "description": "Fallback is a path inside Root served when the requested file does not exist (single page applications: /index.html). Default none.",
+          "type": "string"
+        },
+        "index": {
+          "description": "Index is the file served for a directory. Default index.html; empty string disables (\"\" in YAML).",
+          "type": "string"
+        },
+        "listing": {
+          "description": "Listing renders a directory without an index. Default false.",
+          "type": "boolean"
+        },
+        "max_file_bytes": {
+          "description": "MaxFileBytes refuses larger files with 404. Default 0 (no bound).",
+          "type": "integer"
+        },
+        "root": {
+          "description": "Root is the absolute directory served.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteWAF": {
+      "description": "RouteWAF selects the WAF profile and mode for a route.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "Mode is off, detect or block.",
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Sandbox": {
+      "description": "Sandbox configures the in-process hardening (docs/HARDENING.md). Every mechanism is applied after the listeners, log files, state files and the management socket are open, so the rules describe what the process still needs afterwards: the directories of every configured file for reading, the log, state and history directories for writing. A reload that names a file outside those directories is refused with a message to restart, because Landlock rules cannot be widened once applied.",
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "description": "Capabilities clears the bounding, ambient, permitted, effective and inheritable sets (Linux). Default true.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SandboxCapabilities"
+            }
+          ]
+        },
+        "debuggable": {
+          "description": "Debuggable keeps the process attachable by a debugger and able to dump core. Default false: the process is made non dumpable and the core size limit is set to zero, so memory holding keys and request data cannot be read by another process of the same user or written to disk.",
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "Enabled applies the sandbox. Default true.",
+          "type": "boolean"
+        },
+        "landlock": {
+          "description": "Landlock restricts file system access to the derived directories (Linux 5.13 or newer) and, on ABI 4 or newer, refuses new TCP binds.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SandboxLandlock"
+            }
+          ]
+        },
+        "no_new_privs": {
+          "description": "NoNewPrivs sets PR_SET_NO_NEW_PRIVS so that no later exec (there is none) could regain privileges; Landlock and unprivileged seccomp require it. Default true.",
+          "type": "boolean"
+        },
+        "seccomp": {
+          "description": "Seccomp installs a system call deny list: process tracing, module loading, mounts, namespaces, keyrings, BPF, io_uring, identity changes, exec and the kernel administration calls return EPERM (Linux).",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SandboxSeccomp"
+            }
+          ]
+        },
+        "strict": {
+          "description": "Strict refuses to start when a mechanism the platform should offer is unavailable (old kernel, container without the syscall) instead of logging and continuing. Default false.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SandboxCapabilities": {
+      "description": "SandboxCapabilities tunes capability handling.",
+      "type": "object",
+      "properties": {
+        "drop": {
+          "description": "Drop clears every capability set. Default true.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SandboxLandlock": {
+      "description": "SandboxLandlock tunes the Landlock rules.",
+      "type": "object",
+      "properties": {
+        "bind": {
+          "description": "Bind refuses TCP binds after start (Landlock ABI 4, Linux 6.7 or newer). Listeners are bound before the sandbox; a reload that adds a listener requires a restart in any case. Default true.",
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "Enabled applies Landlock when the kernel offers it. Default true.",
+          "type": "boolean"
+        },
+        "read_paths": {
+          "description": "ReadPaths are extra files or directories the process may read (a filter that opens files of its own, a certificate directory that reloads will add files to).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "write_paths": {
+          "description": "WritePaths are extra directories the process may write.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SandboxSeccomp": {
+      "description": "SandboxSeccomp tunes the system call filter.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enabled installs the filter. Default true.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Server": {
+      "description": "Server holds listener and global limit settings for the data plane.",
+      "type": "object",
+      "properties": {
+        "error_pages": {
+          "description": "ErrorPages replaces the proxy's plain status bodies for every route (routes may override).",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ErrorPages"
+            }
+          ]
+        },
+        "limits": {
+          "$ref": "#/$defs/Limits"
+        },
+        "listeners": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Listener"
+          }
+        },
+        "server_header": {
+          "description": "ServerHeader is the value sent in the Server response header. Empty removes the header entirely (the default) to avoid fingerprinting.",
+          "type": "string"
+        },
+        "session_tickets": {
+          "description": "SessionTickets derives the TLS session ticket keys of every TLS listener from a master secret file and the time, so nodes sharing the file resume each other's sessions and keys rotate on schedule without a restart. Without the section each process uses random keys that rotate every 24 hours and are never shared.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SessionTickets"
+            }
+          ]
+        },
+        "shutdown_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SessionTickets": {
+      "description": "SessionTickets configures shared, rotating TLS session ticket keys.",
+      "type": "object",
+      "properties": {
+        "rotate": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "secret_file": {
+          "description": "SecretFile is the master keyring (created when missing, 0600); deploy the same file to every node of a cluster. Rotate the master with xproxyctl rotate-secret.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Shedding": {
+      "description": "Shedding configures adaptive load shedding (AMR-022). The load level is the larger of the in-flight ratio (in-flight requests over max_concurrent_requests) and the latency level (how far recent upstream latency exceeds target_latency, reaching 1 at twice the target). A priority class is shed while the level is at or above its threshold, with hysteresis so that admission does not flap.",
+      "type": "object",
+      "properties": {
+        "high": {
+          "type": "number"
+        },
+        "hysteresis": {
+          "description": "Hysteresis is subtracted from a threshold before a class is admitted again. Default 0.1.",
+          "type": "number"
+        },
+        "low": {
+          "description": "Thresholds per class as a load level between 0 and 1. Defaults: low 0.6, normal 0.8, high 0.95. Critical is never shed.",
+          "type": "number"
+        },
+        "normal": {
+          "type": "number"
+        },
+        "retry_after": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "target_latency": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Syslog": {
+      "description": "Syslog is the syslog sink.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "description": "Address is the socket path for unix (default /dev/log) or host:port.",
+          "type": "string"
+        },
+        "app_name": {
+          "description": "AppName is the APP-NAME or tag. Default xproxy.",
+          "type": "string"
+        },
+        "ca_file": {
+          "description": "TLS settings for tcp+tls.",
+          "type": "string"
+        },
+        "cert_file": {
+          "type": "string"
+        },
+        "facility": {
+          "description": "Facility is kern, user, daemon, auth, authpriv, syslog, local0 to local7. Default local0.",
+          "type": "string"
+        },
+        "format": {
+          "description": "Format is rfc5424 or rfc3164. Default rfc3164 for unix, rfc5424 otherwise.",
+          "type": "string"
+        },
+        "hostname": {
+          "description": "Hostname overrides the HOSTNAME field. Default the OS host name.",
+          "type": "string"
+        },
+        "key_file": {
+          "type": "string"
+        },
+        "network": {
+          "description": "Network is unix, udp, tcp or tcp+tls. Default unix.",
+          "type": "string"
+        },
+        "queue_size": {
+          "description": "QueueSize bounds messages waiting for a slow or unreachable collector; beyond it messages are dropped and counted. Default 8192.",
+          "type": "integer"
+        },
+        "server_name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TCPListener": {
+      "description": "TCPListener routes raw connections to upstream pools. TLS connections are routed by the server name of the ClientHello (peeked, never terminated); other connections and unmatched names go to the default upstream when one is set and are closed otherwise.",
+      "type": "object",
+      "properties": {
+        "default": {
+          "description": "Default is the upstream for connections without a matching SNI (including non-TLS ones).",
+          "type": "string"
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds open connections on this listener (in addition to the global limits). Default 10000.",
+          "type": "integer"
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header to the upstream with the client address.",
+          "type": "boolean"
+        },
+        "quic": {
+          "description": "QUIC also relays QUIC (UDP on the same address): the ClientHello of each flow is read from the Initial packet and routed by server name to the same upstreams. Default false.",
+          "type": "boolean"
+        },
+        "quic_idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TCPRoute"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "TCPRoute": {
+      "description": "TCPRoute maps server names (exact or *.suffix) to an upstream.",
+      "type": "object",
+      "properties": {
+        "sni": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "upstream": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TLS": {
+      "description": "TLS configures server side TLS for a listener.",
+      "type": "object",
+      "properties": {
+        "acme": {
+          "description": "ACME lists host groups that get an automatically issued certificate each (one certificate per group, hosts as SANs). Requires the top-level acme section.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ACMEGroup"
+          }
+        },
+        "certificates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Certificate"
+          }
+        },
+        "cipher_suites": {
+          "description": "CipherSuites optionally restricts TLS 1.2 suites (TLS 1.3 suites are not configurable in Go). Names as in crypto/tls, e.g. TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "client_auth": {
+          "description": "ClientAuth is one of none, request, require. Default none.",
+          "type": "string",
+          "enum": [
+            "none",
+            "request",
+            "require"
+          ]
+        },
+        "client_ca_file": {
+          "description": "ClientCAFile is a PEM bundle used to verify client certificates.",
+          "type": "string"
+        },
+        "ct": {
+          "description": "CT checks the signed certificate timestamps embedded in the file certificates at load.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/CT"
+            }
+          ]
+        },
+        "min_version": {
+          "description": "MinVersion is \"1.2\" or \"1.3\". Default \"1.2\".",
+          "type": "string",
+          "enum": [
+            "1.2",
+            "1.3"
+          ]
+        },
+        "ocsp_stapling": {
+          "description": "OCSPStapling fetches OCSP responses for the served certificates and staples them into handshakes.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/OCSPStapling"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Tracing": {
+      "description": "Tracing configures W3C trace context handling and span export.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enabled defaults to true when the section is present.",
+          "type": "boolean"
+        },
+        "otlp": {
+          "description": "OTLP exports spans; without it the context is only propagated and logged.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/OTLPExport"
+            }
+          ]
+        },
+        "propagate": {
+          "description": "Propagate sends traceparent and tracestate to the upstream. Default true.",
+          "type": "boolean"
+        },
+        "sample_percent": {
+          "description": "SamplePercent is the share of new traces (no incoming traceparent) that are recorded. Default 100.",
+          "type": "number"
+        },
+        "trust_incoming": {
+          "description": "TrustIncoming honours the sampled flag of an incoming traceparent. Off (the default) the incoming trace id is continued for correlation but the sampling decision stays local, so a client cannot force every request into the exporter.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Upstream": {
+      "description": "Upstream is a named pool of endpoints.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "affinity": {
+          "description": "Affinity enables signed cookie session affinity.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Affinity"
+            }
+          ]
+        },
+        "balancer": {
+          "description": "Balancer is round_robin, weighted, least_conn or hash.",
+          "type": "string",
+          "enum": [
+            "round_robin",
+            "weighted",
+            "least_conn",
+            "hash"
+          ]
+        },
+        "canary": {
+          "description": "Canary sends selected requests to endpoints marked canary.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Canary"
+            }
+          ]
+        },
+        "circuit_breaker": {
+          "description": "CircuitBreaker stops sending to the pool as a whole after consecutive failures and probes it back with half open trials.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/CircuitBreaker"
+            }
+          ]
+        },
+        "discovery": {
+          "description": "Discovery adds endpoints resolved from DNS (A/AAAA records of a name, or SRV records) and re-resolves them periodically. Static endpoints and discovered ones coexist; a pool needs at least one of the two.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Discovery"
+            }
+          ]
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Endpoint"
+          }
+        },
+        "h2c": {
+          "description": "H2C speaks HTTP/2 without TLS to http endpoints (gRPC backends). Default false.",
+          "type": "boolean"
+        },
+        "hash_on": {
+          "description": "HashOn selects the hash input for the hash balancer: client_ip, header:\u003cname\u003e or cookie:\u003cname\u003e.",
+          "type": "string"
+        },
+        "health_check": {
+          "$ref": "#/$defs/HealthCheck"
+        },
+        "max_concurrent": {
+          "description": "MaxConcurrent bounds requests in flight to the pool; 0 is unbounded.",
+          "type": "integer"
+        },
+        "max_idle_conns_per_host": {
+          "description": "MaxIdleConnsPerHost bounds the pooled connections per endpoint.",
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "outlier_ejection": {
+          "description": "OutlierEjection removes endpoints that fail passively.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/OutlierEjection"
+            }
+          ]
+        },
+        "queue": {
+          "description": "Queue holds requests beyond MaxConcurrent for a bounded time.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamQueue"
+            }
+          ]
+        },
+        "retries": {
+          "description": "Retries is the number of times an idempotent request is retried on a connection error against a different endpoint. Default 1.",
+          "type": "integer"
+        },
+        "retry_on": {
+          "description": "RetryOn adds response statuses that are retried like connection errors, on another endpoint, within the same Retries budget and only for replayable requests: \"5xx\", \"500\", \"502\", \"503\", \"504\", \"429\". A retried status counts as a passive failure of the endpoint. Default none.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scheme": {
+          "description": "Scheme is http or https. Default http.",
+          "type": "string"
+        },
+        "slow_start": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "timeouts": {
+          "$ref": "#/$defs/UpstreamTimeout"
+        },
+        "tls": {
+          "$ref": "#/$defs/UpstreamTLS"
+        }
+      },
+      "additionalProperties": false
+    },
+    "UpstreamQueue": {
+      "description": "UpstreamQueue bounds the requests waiting for a MaxConcurrent slot.",
+      "type": "object",
+      "properties": {
+        "size": {
+          "description": "Size is the number of waiting requests; more are refused at once.",
+          "type": "integer"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "UpstreamTLS": {
+      "description": "UpstreamTLS configures TLS towards upstream endpoints.",
+      "type": "object",
+      "properties": {
+        "allow_insecure": {
+          "type": "boolean"
+        },
+        "ca_file": {
+          "type": "string"
+        },
+        "client_cert_file": {
+          "description": "ClientCertFile / ClientKeyFile enable mTLS to the upstream. The pair is re-read by reload-certs and by configuration reload.",
+          "type": "string"
+        },
+        "client_key_file": {
+          "type": "string"
+        },
+        "insecure_skip_verify": {
+          "description": "InsecureSkipVerify disables verification. Refused unless allow_insecure is also true; logged as a security warning at start.",
+          "type": "boolean"
+        },
+        "min_version": {
+          "description": "MinVersion is \"1.2\" or \"1.3\". Default \"1.2\".",
+          "type": "string"
+        },
+        "server_name": {
+          "type": "string"
+        },
+        "spki_pins": {
+          "description": "SPKIPins are base64 SHA-256 digests of the upstream leaf public key (as in HTTP Public Key Pinning). When set, the connection is refused unless the presented leaf matches one pin, in addition to chain verification.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "UpstreamTimeout": {
+      "description": "UpstreamTimeout bounds each phase of an upstream exchange.",
+      "type": "object",
+      "properties": {
+        "connect": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "idle": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "response_header": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "total": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WAF": {
+      "description": "WAF configures the web application firewall engine.",
+      "type": "object",
+      "properties": {
+        "default_mode": {
+          "description": "DefaultMode applies to routes without a waf block: off, detect or block. Default block when the section is present.",
+          "type": "string"
+        },
+        "default_profile": {
+          "description": "DefaultProfile applies to routes without a waf block. Default \"default\".",
+          "type": "string"
+        },
+        "inspect_responses": {
+          "description": "InspectResponses enables response header and body inspection.",
+          "type": "boolean"
+        },
+        "learning": {
+          "description": "Learning collects the variables that trigger detection rules and proposes exclusions (GET /v1/waf, xproxyctl waf proposals).",
+          "allOf": [
+            {
+              "$ref": "#/$defs/WAFLearning"
+            }
+          ]
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WAFProfile"
+          }
+        },
+        "request_body_limit": {
+          "description": "RequestBodyLimit bounds the request body inspected. Default 1 MiB.",
+          "type": "integer"
+        },
+        "request_body_limit_action": {
+          "description": "RequestBodyLimitAction is reject (413) or partial (inspect the first RequestBodyLimit bytes and pass the rest). Default reject.",
+          "type": "string"
+        },
+        "response_body_limit": {
+          "description": "ResponseBodyLimit bounds the response body inspected. Default 512 KiB; larger bodies are passed uninspected.",
+          "type": "integer"
+        },
+        "response_mime_types": {
+          "description": "ResponseMIMETypes lists content types whose bodies are inspected.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WAFLearning": {
+      "description": "WAFLearning tunes exclusion learning. Matches are aggregated per rule, target variable and route across block and detect mode alike; a triple seen min_hits times becomes a proposal.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_entries": {
+          "description": "MaxEntries bounds the learning table. Default 10000.",
+          "type": "integer"
+        },
+        "min_hits": {
+          "description": "MinHits is the number of matches before a proposal appears. Default 5.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WAFProfile": {
+      "description": "WAFProfile is a named rule set.",
+      "type": "object",
+      "properties": {
+        "crs": {
+          "description": "CRS enables the OWASP Core Rule Set bundled with the binary.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/CRS"
+            }
+          ]
+        },
+        "directive_files": {
+          "description": "DirectiveFiles are SecLang files loaded after the CRS setup and before the CRS rules (the right place for exclusions).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "directives": {
+          "description": "Directives is inline SecLang loaded in the same position.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

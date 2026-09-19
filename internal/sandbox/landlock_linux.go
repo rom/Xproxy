@@ -3,6 +3,7 @@ package sandbox
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"unsafe"
 
@@ -60,7 +61,7 @@ func handledFS(abi int) uint64 {
 
 // landlock installs the file system rules and, when configured and
 // supported, refuses further TCP binds.
-func landlock(sb *config.Sandbox, rules Rules, st *Status, nnp bool) Mechanism {
+func landlock(sb *config.Sandbox, rules Rules, st *Status, nnp bool, log *slog.Logger) Mechanism {
 	m := Mechanism{Name: "landlock"}
 	if sb.Landlock.Enabled != nil && !*sb.Landlock.Enabled {
 		m.State = StateDisabled
@@ -90,12 +91,13 @@ func landlock(sb *config.Sandbox, rules Rules, st *Status, nnp bool) Mechanism {
 	rs := int(fd) //nolint:gosec // file descriptor
 	defer func() { _ = unix.Close(rs) }()
 
-	var read, write []string
+	var read, write, missing []string
 	add := func(p string, access uint64) error {
 		pfd, err := unix.Open(p, unix.O_PATH|unix.O_CLOEXEC, 0)
 		if err != nil {
 			if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) {
-				return nil // configured but absent: nothing to admit
+				missing = append(missing, p) // configured but absent: nothing to admit
+				return nil
 			}
 			return fmt.Errorf("%s: %w", p, err)
 		}
@@ -137,6 +139,12 @@ func landlock(sb *config.Sandbox, rules Rules, st *Status, nnp bool) Mechanism {
 	// reload naming a not yet created file under an admitted directory
 	// passes while one outside is refused.
 	st.ReadPaths, st.WritePaths, st.Landlocked = rules.Read, rules.Write, true
+	st.MissingPaths = missing
+	for _, p := range missing {
+		if !isSystemPath(p) {
+			log.Warn("sandbox: configured path does not exist; it is not admitted by the Landlock rules", "path", p)
+		}
+	}
 	m.State = StateApplied
 	m.Detail = fmt.Sprintf("ABI %d, %d read and %d write rules present", abi, len(read), len(write))
 	if bind {

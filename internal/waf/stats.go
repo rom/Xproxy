@@ -2,6 +2,7 @@ package waf
 
 import (
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/corazawaf/coraza/v3/types"
 
+	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/config"
 )
 
@@ -18,17 +20,28 @@ import (
 // life of the process and is shared by every configuration generation, so
 // counts survive reloads while an operator tunes a rule set (reset it with
 // POST /v1/waf/reset).
+//
+// The request path touches no shared lock: the per rule counters are
+// atomics in a concurrent map keyed by rule id (a new rule takes one
+// insertion), and the learning table is sharded by key hash so that
+// concurrent requests only meet when they match the same rule on the same
+// target and route.
 type Stats struct {
-	started time.Time
+	started atomic.Int64 // unix nanoseconds
 	now     func() time.Time
 
 	requests atomic.Uint64
 	blocked  atomic.Uint64
 	detected atomic.Uint64
 
-	mu       sync.Mutex
-	rules    map[int]*RuleStat
-	learning learning
+	rules        sync.Map // int -> *ruleCounter
+	ruleCount    atomic.Int64
+	rulesDropped bound.Notice
+
+	learning atomic.Pointer[learnConfig]
+	shards   [learnShards]learnShard
+	entries  atomic.Int64
+	dropped  bound.Notice
 }
 
 // maxRules bounds the rule table; the CRS has a few hundred rules and
@@ -39,13 +52,33 @@ const maxRules = 8192
 // no max_entries.
 const maxLearnEntries = 10000
 
+// learnShards is the number of independently locked learning tables.
+const learnShards = 16
+
 // NewStats creates an empty statistics table.
 func NewStats() *Stats {
-	now := time.Now
-	return &Stats{started: now(), now: now, rules: map[int]*RuleStat{}, learning: learning{entries: map[learnKey]*learnEntry{}}}
+	s := &Stats{now: time.Now}
+	s.started.Store(s.now().UnixNano())
+	for i := range s.shards {
+		s.shards[i].entries = map[learnKey]*learnEntry{}
+	}
+	return s
 }
 
-// RuleStat is one rule's counters.
+// ruleCounter is one rule's live counters.
+type ruleCounter struct {
+	id       int
+	message  string
+	severity string
+	tags     []string
+	matches  atomic.Uint64
+	blocks   atomic.Uint64
+	detects  atomic.Uint64
+	lastSeen atomic.Int64
+	lastURI  atomic.Pointer[string]
+}
+
+// RuleStat is one rule's counters as reported.
 type RuleStat struct {
 	ID       int    `json:"id"`
 	Message  string `json:"message,omitempty"`
@@ -62,13 +95,17 @@ type RuleStat struct {
 	LastURI  string    `json:"last_uri,omitempty"`
 }
 
-// learning is the exclusion learning state.
-type learning struct {
+// learnConfig is the learning setting of the active generation.
+type learnConfig struct {
 	enabled    bool
 	minHits    int
 	maxEntries int
-	entries    map[learnKey]*learnEntry
-	dropped    uint64
+}
+
+// learnShard is one lock's worth of the learning table.
+type learnShard struct {
+	mu      sync.Mutex
+	entries map[learnKey]*learnEntry
 }
 
 // learnKey identifies a (rule, target, route) triple.
@@ -76,6 +113,13 @@ type learnKey struct {
 	rule   int
 	target string
 	route  string
+}
+
+func (k learnKey) shard() int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(k.target))
+	_, _ = h.Write([]byte(k.route))
+	return int(h.Sum32()^uint32(k.rule)) % learnShards //nolint:gosec // rule ids are small positive
 }
 
 type learnEntry struct {
@@ -92,31 +136,39 @@ const maxClientsPerEntry = 64
 
 // Configure applies the learning settings of a configuration generation.
 func (s *Stats) Configure(l *config.WAFLearning) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if l == nil || !l.Enabled {
-		s.learning.enabled = false
+		s.learning.Store(&learnConfig{})
 		return
 	}
-	s.learning.enabled = true
-	s.learning.minHits = l.MinHits
-	s.learning.maxEntries = l.MaxEntries
-	if s.learning.maxEntries <= 0 {
-		s.learning.maxEntries = maxLearnEntries
+	c := &learnConfig{enabled: true, minHits: l.MinHits, maxEntries: l.MaxEntries}
+	if c.maxEntries <= 0 {
+		c.maxEntries = maxLearnEntries
 	}
+	s.learning.Store(c)
+}
+
+func (s *Stats) config() *learnConfig {
+	if c := s.learning.Load(); c != nil {
+		return c
+	}
+	return &learnConfig{}
 }
 
 // Reset clears every counter and the learning table.
 func (s *Stats) Reset() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.requests.Store(0)
 	s.blocked.Store(0)
 	s.detected.Store(0)
-	s.rules = map[int]*RuleStat{}
-	s.learning.entries = map[learnKey]*learnEntry{}
-	s.learning.dropped = 0
-	s.started = s.now()
+	s.rules.Range(func(k, _ any) bool { s.rules.Delete(k); return true })
+	s.ruleCount.Store(0)
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		sh.entries = map[learnKey]*learnEntry{}
+		sh.mu.Unlock()
+	}
+	s.entries.Store(0)
+	s.started.Store(s.now().UnixNano())
 }
 
 // record accounts one finished transaction.
@@ -135,34 +187,48 @@ func (s *Stats) record(in *instance) {
 		return
 	}
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	cfg := s.config()
 	for _, m := range rules {
 		if !relevant(m) {
 			continue
 		}
 		r := m.Rule()
-		st := s.rules[r.ID()]
-		if st == nil {
-			if len(s.rules) >= maxRules {
-				continue
-			}
-			st = &RuleStat{ID: r.ID(), Message: m.Message(), Severity: r.Severity().String(), Tags: keepTags(r.Tags())}
-			s.rules[r.ID()] = st
+		rc := s.counter(r, m)
+		if rc == nil {
+			continue
 		}
-		st.Matches++
+		rc.matches.Add(1)
 		if blocked {
-			st.Blocks++
+			rc.blocks.Add(1)
 		}
 		if detected {
-			st.Detects++
+			rc.detects.Add(1)
 		}
-		st.LastSeen = now
-		st.LastURI = trimURI(m.URI())
-		if s.learning.enabled && isAttackRule(r) {
-			s.learn(m, in, now)
+		rc.lastSeen.Store(now.UnixNano())
+		uri := trimURI(m.URI())
+		rc.lastURI.Store(&uri)
+		if cfg.enabled && isAttackRule(r) {
+			s.learn(cfg, m, in, now)
 		}
 	}
+}
+
+// counter returns the live counters of a rule, creating them on first
+// sight; nil when the table is full (counted and warned).
+func (s *Stats) counter(r types.RuleMetadata, m types.MatchedRule) *ruleCounter {
+	if v, ok := s.rules.Load(r.ID()); ok {
+		return v.(*ruleCounter)
+	}
+	if s.ruleCount.Load() >= maxRules {
+		s.rulesDropped.Hit(nil, "waf rule statistics table full; further rules are not counted", "table", "waf_rules", "max", maxRules, "rule", r.ID())
+		return nil
+	}
+	rc := &ruleCounter{id: r.ID(), message: m.Message(), severity: r.Severity().String(), tags: keepTags(r.Tags())}
+	if v, loaded := s.rules.LoadOrStore(r.ID(), rc); loaded {
+		return v.(*ruleCounter)
+	}
+	s.ruleCount.Add(1)
+	return rc
 }
 
 // isAttackRule reports whether r is a detection rule whose targets can be
@@ -207,22 +273,25 @@ func trimURI(u string) string {
 }
 
 // learn records the matched variables of a detection rule.
-func (s *Stats) learn(m types.MatchedRule, in *instance, now time.Time) {
-	l := &s.learning
+func (s *Stats) learn(cfg *learnConfig, m types.MatchedRule, in *instance, now time.Time) {
 	for _, md := range m.MatchedDatas() {
 		target := md.Variable().Name()
 		if k := md.Key(); k != "" {
 			target += ":" + k
 		}
 		key := learnKey{rule: m.Rule().ID(), target: target, route: in.info.Route}
-		e := l.entries[key]
+		sh := &s.shards[key.shard()]
+		sh.mu.Lock()
+		e := sh.entries[key]
 		if e == nil {
-			if len(l.entries) >= l.maxEntries {
-				l.dropped++
+			if s.entries.Load() >= int64(cfg.maxEntries) {
+				sh.mu.Unlock()
+				s.dropped.Hit(nil, "waf learning table full; new (rule, target, route) entries are dropped", "table", "waf_learning", "max", cfg.maxEntries)
 				continue
 			}
 			e = &learnEntry{clients: map[string]struct{}{}, message: m.Message()}
-			l.entries[key] = e
+			sh.entries[key] = e
+			s.entries.Add(1)
 		}
 		e.hits++
 		if len(e.clients) < maxClientsPerEntry {
@@ -233,6 +302,7 @@ func (s *Stats) learn(m types.MatchedRule, in *instance, now time.Time) {
 		if e.sample == "" {
 			e.sample = trimURI(md.Value())
 		}
+		sh.mu.Unlock()
 	}
 }
 
@@ -243,10 +313,13 @@ type Report struct {
 	Blocked  uint64    `json:"blocked"`
 	Detected uint64    `json:"detected"`
 	// Rules lists the matched rules, most matched first, at most top
-	// entries; TotalRules is the number of distinct rules seen.
-	Rules      []RuleStat      `json:"rules"`
-	TotalRules int             `json:"total_rules"`
-	Learning   *LearningReport `json:"learning"`
+	// entries; TotalRules is the number of distinct rules seen and
+	// RulesDropped how many matches of further rules the full table
+	// could not record.
+	Rules        []RuleStat      `json:"rules"`
+	TotalRules   int             `json:"total_rules"`
+	RulesDropped uint64          `json:"rules_dropped,omitempty"`
+	Learning     *LearningReport `json:"learning"`
 }
 
 // LearningReport describes the learning table and its proposals.
@@ -280,15 +353,22 @@ type Proposal struct {
 // Report builds the management view with at most top rules. paths maps
 // route names to path prefixes for scoping proposals.
 func (s *Stats) Report(top int, paths map[string]string) Report {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rep := Report{Since: s.started, Requests: s.requests.Load(), Blocked: s.blocked.Load(), Detected: s.detected.Load(),
-		Rules: make([]RuleStat, 0, len(s.rules)), TotalRules: len(s.rules)}
-	for _, r := range s.rules {
-		c := *r
-		c.Tags = append([]string(nil), r.Tags...)
-		rep.Rules = append(rep.Rules, c)
-	}
+	rep := Report{Since: time.Unix(0, s.started.Load()), Requests: s.requests.Load(), Blocked: s.blocked.Load(), Detected: s.detected.Load(),
+		Rules: []RuleStat{}, RulesDropped: s.rulesDropped.Total()}
+	s.rules.Range(func(_, v any) bool {
+		rc := v.(*ruleCounter)
+		st := RuleStat{ID: rc.id, Message: rc.message, Severity: rc.severity, Tags: append([]string(nil), rc.tags...),
+			Matches: rc.matches.Load(), Blocks: rc.blocks.Load(), Detects: rc.detects.Load()}
+		if ns := rc.lastSeen.Load(); ns != 0 {
+			st.LastSeen = time.Unix(0, ns)
+		}
+		if u := rc.lastURI.Load(); u != nil {
+			st.LastURI = *u
+		}
+		rep.Rules = append(rep.Rules, st)
+		return true
+	})
+	rep.TotalRules = len(rep.Rules)
 	sort.Slice(rep.Rules, func(i, j int) bool {
 		if rep.Rules[i].Matches != rep.Rules[j].Matches {
 			return rep.Rules[i].Matches > rep.Rules[j].Matches
@@ -298,29 +378,28 @@ func (s *Stats) Report(top int, paths map[string]string) Report {
 	if top >= 0 && len(rep.Rules) > top {
 		rep.Rules = rep.Rules[:top]
 	}
-	l := &s.learning
-	rep.Learning = &LearningReport{Enabled: l.enabled, MinHits: l.minHits, Entries: len(l.entries),
-		MaxEntries: l.maxEntries, Dropped: l.dropped, Proposals: s.proposalsLocked(paths)}
+	cfg := s.config()
+	rep.Learning = &LearningReport{Enabled: cfg.enabled, MinHits: cfg.minHits, Entries: int(s.entries.Load()),
+		MaxEntries: cfg.maxEntries, Dropped: s.dropped.Total(), Proposals: s.Proposals(paths)}
 	return rep
 }
 
 // Proposals returns the current exclusion proposals.
 func (s *Stats) Proposals(paths map[string]string) []Proposal {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.proposalsLocked(paths)
-}
-
-func (s *Stats) proposalsLocked(paths map[string]string) []Proposal {
-	l := &s.learning
+	cfg := s.config()
+	minHits := uint64(max(cfg.minHits, 1)) //nolint:gosec // validated positive
 	out := []Proposal{}
-	for k, e := range l.entries {
-		if e.hits < uint64(max(l.minHits, 1)) { //nolint:gosec // minHits is validated positive
-			continue
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		for k, e := range sh.entries {
+			if e.hits < minHits {
+				continue
+			}
+			out = append(out, Proposal{Rule: k.rule, Message: e.message, Target: k.target, Route: k.route, Path: paths[k.route],
+				Hits: e.hits, Clients: len(e.clients), LastSeen: e.lastSeen, LastURI: e.lastURI, Sample: e.sample})
 		}
-		p := Proposal{Rule: k.rule, Message: e.message, Target: k.target, Route: k.route, Path: paths[k.route],
-			Hits: e.hits, Clients: len(e.clients), LastSeen: e.lastSeen, LastURI: e.lastURI, Sample: e.sample}
-		out = append(out, p)
+		sh.mu.Unlock()
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Hits != out[j].Hits {

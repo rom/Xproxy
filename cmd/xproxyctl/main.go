@@ -61,6 +61,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/config/schema"
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds for validate
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/passwd"
@@ -76,11 +77,6 @@ import (
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
-}
-
-func usage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas waf sandbox config validate reload diff history rollback rotate-secret tls reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp telemetry htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
@@ -163,7 +159,7 @@ func run(args []string, out, errOut io.Writer) int {
 			_ = json.Unmarshal(pb, &pools)
 		}
 		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tCANARY\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS")
+		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tCANARY\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS\tRAMP\tLATENCY-MS\tSOURCE")
 		names := make([]string, 0, len(ups))
 		for n := range ups {
 			names = append(names, n)
@@ -171,10 +167,31 @@ func run(args []string, out, errOut io.Writer) int {
 		sort.Strings(names)
 		for _, n := range names {
 			for _, e := range ups[n] {
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%v\t%d\t%d\t%d\n", n, e.Address, e.Weight, e.Canary, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors)
+				src := "static"
+				if e.Discovered {
+					src = "dns"
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%v\t%d\t%d\t%d\t%.0f%%\t%g\t%s\n", n, e.Address, e.Weight, e.Canary, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors, e.Ramp*100, e.LatencyMS, src)
 			}
 		}
 		_ = tw.Flush()
+		// Discovery and slow start per pool, when configured.
+		for _, n := range names {
+			ps, ok := pools[n]
+			if !ok {
+				continue
+			}
+			if d := ps.Discovery; d != nil {
+				line := fmt.Sprintf("%s: discovery %s %s every %s, %d endpoints, %d resolutions, %d changes, %d errors", n, d.Type, d.Name, d.Interval, d.Endpoints, d.Resolutions, d.Changes, d.Errors)
+				if d.LastError != "" {
+					line += ", last error: " + d.LastError
+				}
+				_, _ = fmt.Fprintln(out, line)
+			}
+			if ps.SlowStart != "" {
+				_, _ = fmt.Fprintf(out, "%s: slow start %s\n", n, ps.SlowStart)
+			}
+		}
 		// Pool level state: circuit breakers and queues, when configured.
 		shown := false
 		for _, n := range names {
@@ -230,20 +247,24 @@ func run(args []string, out, errOut io.Writer) int {
 			_ = tw.Flush()
 			_, _ = fmt.Fprintln(out)
 		}
-		_, _ = fmt.Fprintln(tw, "ROUTE\tTENANT\tUPSTREAM\tREQUESTS\t2XX\t3XX\t4XX\t5XX\tDENIED\tRATE-LIMITED\tBYTES-IN\tBYTES-OUT")
+		_, _ = fmt.Fprintln(tw, "ROUTE\tTENANT\tUPSTREAM\tREQUESTS\t2XX\t3XX\t4XX\t5XX\tDENIED\tRATE-LIMITED\tBYTES-IN\tBYTES-OUT\tP50-MS\tP95-MS\tP99-MS")
 		for _, r := range q.Routes {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Route, dash(r.Tenant), dash(r.Upstream), r.Requests, r.Status2xx, r.Status3xx, r.Status4xx, r.Status5xx, r.Denied, r.RateLimited, r.BytesIn, r.BytesOut)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%g\t%g\t%g\n", r.Route, dash(r.Tenant), dash(r.Upstream), r.Requests, r.Status2xx, r.Status3xx, r.Status4xx, r.Status5xx, r.Denied, r.RateLimited, r.BytesIn, r.BytesOut, r.LatencyP50MS, r.LatencyP95MS, r.LatencyP99MS)
 		}
 		_ = tw.Flush()
 		if len(q.RateLimits) > 0 {
 			_, _ = fmt.Fprintln(out)
-			_, _ = fmt.Fprintln(tw, "POLICY\tKEY\tRATE\tBURST\tKEYS\tALLOWED\tDENIED\tTOP CONSUMERS (key=total/tokens left)")
+			_, _ = fmt.Fprintln(tw, "POLICY\tKEY\tALGORITHM\tLIMIT\tMODE\tKEYS\tALLOWED\tDENIED\tTOP CONSUMERS (key=total/left)")
 			for _, p := range q.RateLimits {
 				tops := make([]string, 0, len(p.Top))
 				for _, u := range p.Top {
 					tops = append(tops, fmt.Sprintf("%s=%.0f/%.1f", u.Key, u.Total, u.Tokens))
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%g\t%d\t%d\t%d\t%d\t%s\n", p.Policy, p.Key, p.Rate, p.Burst, p.Keys, p.Allowed, p.Denied, dash(strings.Join(tops, " ")))
+				limit := fmt.Sprintf("%g/s burst %d", p.Rate, p.Burst)
+				if p.Algorithm == "sliding_window" {
+					limit = fmt.Sprintf("%d per %s", p.Limit, p.Window)
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\n", p.Policy, p.Key, p.Algorithm, limit, p.Distributed, p.Keys, p.Allowed, p.Denied, dash(strings.Join(tops, " ")))
 			}
 			_ = tw.Flush()
 		}
@@ -329,6 +350,30 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		return 0
 	case "tls":
+		if fs.NArg() > 1 && fs.Arg(1) == "tickets" {
+			b, err := c.Raw("/v1/tls/tickets")
+			if err != nil {
+				return fail(err)
+			}
+			if *asJSON {
+				_, _ = out.Write(b)
+				return 0
+			}
+			var ts tlsconf.TicketStatus
+			if err := json.Unmarshal(b, &ts); err != nil {
+				return fail(err)
+			}
+			_, _ = fmt.Fprintf(out, "session tickets: epoch %d (since %s, next rotation %s, every %s)\n", ts.Epoch, ts.EpochStarted.Local().Format(time.RFC3339), ts.NextRotation.Local().Format(time.RFC3339), ts.Rotate)
+			_, _ = fmt.Fprintf(out, "keys %d from %d master key(s)  fingerprint %s  rotations %d\n", ts.Keys, ts.MasterKeys, ts.Fingerprint, ts.Rotations)
+			for p, fp := range ts.Peers {
+				state := "agrees"
+				if fp != ts.Fingerprint {
+					state = "MISMATCH"
+				}
+				_, _ = fmt.Fprintf(out, "peer %s %s (%s)\n", p, state, fp)
+			}
+			return 0
+		}
 		b, err := c.Raw("/v1/tls")
 		if err != nil {
 			return fail(err)
@@ -729,6 +774,8 @@ func run(args []string, out, errOut io.Writer) int {
 		_, _ = fmt.Fprintf(out, "node %s  listen %s\n", st.NodeID, st.Listen)
 		_, _ = fmt.Fprintf(out, "rates sent %d received %d (keys %d)  bans sent %d received %d  rejected %d dropped %d\n",
 			st.RatesSent, st.RatesReceived, st.KeysReceived, st.BansSent, st.BansReceived, st.Rejected, st.Dropped)
+		_, _ = fmt.Fprintf(out, "members %s  exact decisions asked %d answered %d served %d local fallbacks %d\n",
+			strings.Join(st.Members, ","), st.ExactAsked, st.ExactDecided, st.ExactServed, st.ExactFallbacks)
 		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(tw, "PEER\tCONNECTED\tSINCE\tMESSAGES\tRECONNECTS\tLAST ERROR")
 		for _, p := range st.Peers {
@@ -787,6 +834,21 @@ func run(args []string, out, errOut io.Writer) int {
 			return fail(err)
 		}
 		_, _ = fmt.Fprintf(out, "unbanned %s\n", fs.Arg(1))
+		return 0
+	case "schema":
+		_, _ = out.Write(schema.JSON)
+		return 0
+	case "completion":
+		if fs.NArg() == 2 {
+			if script, ok := completionScript(fs.Arg(1)); ok {
+				_, _ = io.WriteString(out, script)
+				return 0
+			}
+		}
+		_, _ = fmt.Fprintln(errOut, "usage: xproxyctl completion bash|zsh|fish")
+		return 2
+	case "help":
+		help(out)
 		return 0
 	default:
 		usage(errOut)
@@ -1095,6 +1157,12 @@ func printChanges(out io.Writer, ch *config.Changes) {
 	if len(ch.RestartNeeded) > 0 {
 		_, _ = fmt.Fprintln(out, "restart needed for:")
 		for _, r := range ch.RestartNeeded {
+			_, _ = fmt.Fprintln(out, " ", r)
+		}
+	}
+	if len(ch.Drains) > 0 {
+		_, _ = fmt.Fprintln(out, "applied on reload with a connection drain:")
+		for _, r := range ch.Drains {
 			_, _ = fmt.Fprintln(out, " ", r)
 		}
 	}

@@ -46,13 +46,13 @@ func (ss *staticSite) close() {
 // `fallback` when set (single page applications) or answers 404.
 func (s *Server) static(rw *responseWriter, r *http.Request, st *reqState, cr *compiledRoute) {
 	ss := cr.static
-	applyHeaderOps(rw.Header(), cr.cfg.ResponseHeaders)
+	cr.respOps.apply(rw.Header(), &tvars{r: r, st: st})
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		rw.Header().Set("Allow", "GET, HEAD")
 		s.plainStatus(rw, r, http.StatusMethodNotAllowed)
 		return
 	}
-	rel, _ := rewritePath(st.path, "", cr.cfg)
+	rel, _ := cr.outboundPath(st.path, "", r, st)
 	rel = netutil.CleanPath(rel)
 	if !ss.cfg.DotFiles && hasDotSegment(rel) {
 		s.stats.StaticNotFound.Add(1)

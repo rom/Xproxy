@@ -1,0 +1,6002 @@
+.\" Generated from Markdown by internal/manpage; do not edit.
+.TH XPROXY.YAML 5 "" "Xproxy" "File formats"
+.nh
+.ad l
+.SH "NAME"
+.PP
+xproxy.yaml \- configuration of xproxy
+.SH "SYNOPSIS"
+.PP
+\fB/etc/xproxy/xproxy.yaml\fR
+.SH "DESCRIPTION"
+.PP
+xproxy reads one YAML document. Unknown keys are errors. Every omitted value takes the default listed here; a zero duration or count means "default", never "disabled". Paths must be absolute. Durations use Go syntax: \fB500ms\fR, \fB10s\fR, \fB5m\fR, \fB1h\fR. Names match \fB[A\-Za\-z0\-9][A\-Za\-z0\-9_.\-]{0,63}\fR.
+.PP
+Validate with \fBxproxy \-config FILE \-validate\fR; all problems are reported at once. The example in \fBdeploy/config/xproxy.yaml\fR exercises most keys.
+.PP
+This reference is also installed as the manual page \fBxproxy.yaml(5)\fR, and a JSON schema generated from the same types (\fB/usr/share/xproxy/xproxy.schema.json\fR, \fBxproxyctl schema\fR) gives editors completion and inline documentation; put \fB# yaml\-language\-server: $schema=/usr/share/xproxy/xproxy.schema.json\fR on the first line of the file to enable it.
+.SH "Top level"
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.7i) lbw(0.9i) lbx
+lw(1.2i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBversion\fR
+T}	T{
+int
+T}	T{
+required
+T}	T{
+Schema version. Must be \fB1\fR.
+T}
+T{
+\fBincludes\fR
+T}	T{
+list of globs
+T}	T{
+\fB[]\fR
+T}	T{
+Absolute paths or globs of fragment files whose \fBupstreams\fR,\: \fBroutes\fR,\: \fBrate_\:limits\fR and \fBfilters\fR are appended in lexical order of path;\: a fragment may contain nothing else,\: names must not repeat,\: a pattern that matches no file is an error,\: fragments must not be world writable;\: read at every load and reload
+T}
+T{
+\fBserver\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Listeners and global limits
+T}
+T{
+\fBmanagement\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Control socket
+T}
+T{
+\fBlogging\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Log streams
+T}
+T{
+\fBtrusted_\:proxies\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+Peers whose \fBX\-\:Forwarded\-\:For\fR is believed,\: and whose PROXY protocol header is parsed on listeners with \fBproxy_\:protocol:\: true\fR. Empty means never.
+T}
+T{
+\fBrate_\:limits\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Named rate limit policies
+T}
+T{
+\fBupstreams\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Named endpoint pools
+T}
+T{
+\fBroutes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Request matching and actions
+T}
+T{
+\fBcompression\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+gzip of eligible responses;\: see \fBcompression\fR
+T}
+T{
+\fBtracing\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+W3C trace context and span export;\: see \fBtracing\fR
+T}
+.TE
+.SH "server"
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.0i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBlisteners\fR
+T}	T{
+list
+T}	T{
+required,\: at least one
+T}	T{
+See below
+T}
+T{
+\fBlimits\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Global protections
+T}
+T{
+\fBserver_\:header\fR
+T}	T{
+string
+T}	T{
+\fB""\fR
+T}	T{
+Value of the \fBServer\fR response header. Empty removes it.
+T}
+T{
+\fBerror_\:pages\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Replace the proxy\(aqs plain status bodies (denials,\: unknown routes,\: upstream failures,\: static misses) with documents;\: see "server.error_pages" below
+T}
+T{
+\fBsession_\:tickets\fR
+T}	T{
+object
+T}	T{
+none (keys per process,\: rotated by the Go runtime)
+T}	T{
+Derive the TLS session ticket keys of every TLS listener from a shared secret file so that a ticket issued by one node resumes on every node;\: see "server.\:session_\:tickets" below. Changing the section needs a restart
+T}
+T{
+\fBshutdown_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Drain time on stop and for old generations after reload
+T}
+.TE
+.SS "server.session_tickets"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.8i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBsecret_\:file\fR
+T}	T{
+absolute path
+T}	T{
+required
+T}	T{
+Master keyring,\: created with mode \fB0600\fR when missing. Deploy the same file to every node;\: rotate the master with \fBxproxyctl rotate\-\:secret\fR (the kept keys still open tickets sealed under the old master for one more epoch)
+T}
+T{
+\fBrotate\fR
+T}	T{
+duration
+T}	T{
+\fB24h\fR
+T}	T{
+Epoch length,\: \fB1h\fR to \fB168h\fR. Each epoch\(aqs key is derived from the master and the epoch number,\: so nodes with synchronised clocks switch keys together without exchanging messages;\: the previous epoch\(aqs key is kept for decryption,\: so a ticket lives at most two epochs
+T}
+.TE
+.PP
+The key set\(aqs fingerprint is shown by \fBxproxyctl tls tickets\fR and \fBGET /v1/tls/tickets\fR; a cluster publishes it and a node whose peers derive a different set (a different secret file or a clock more than an epoch off) logs a warning and lists them under \fBmismatched_peers\fR.
+.SS "server.listeners[]"
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.0i) lbw(1.0i) lbx
+lw(1.0i) lw(1.0i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required,\: unique
+T}	T{
+Also used to match systemd socket names
+T}
+T{
+\fBaddress\fR
+T}	T{
+host:port
+T}	T{
+required
+T}	T{
+\fB":\:443"\fR,\: \fB"0.\:0.\:0.\:0:\:80"\fR,\: \fB"[:\::\:1]:\:8080"\fR. Port \fB0\fR picks a free port (tests).
+T}
+T{
+\fBprotocols\fR
+T}	T{
+list
+T}	T{
+\fB[h1,\: h2]\fR with TLS,\: \fB[h1]\fR without
+T}	T{
+\fBh2\fR and \fBh3\fR require \fBtls\fR. \fBh3\fR adds a QUIC endpoint on UDP at the same port and requires \fBh1\fR or \fBh2\fR alongside it (clients discover HTTP/\:3 through \fBAlt\-\:Svc\fR).
+T}
+T{
+\fBh3\fR
+T}	T{
+object
+T}	T{
+defaults when \fBh3\fR is listed
+T}	T{
+QUIC tuning;\: see below
+T}
+T{
+\fBh2c\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept HTTP/\:2 without TLS (prior knowledge and Upgrade) on a plaintext listener,\: for gRPC clients inside a trusted network
+T}
+T{
+\fBtls\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+TLS termination;\: see below
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in \fBtrusted_\:proxies\fR: the client address it carries becomes the peer for limits,\: bans,\: ACLs,\: logs and forwarding headers,\: and the per address connection count moves to it. A trusted peer that sends no header,\: or a malformed one,\: is dropped without a response (\fBdrop_\:connection\fR with reason \fBproxy_\:protocol\fR,\: counted in \fBrejected_\:connections\fR);\: \fBLOCAL\fR headers keep the balancer\(aqs address;\: connections from other peers are served unchanged,\: so a client cannot choose its own address. Requires \fBtrusted_\:proxies\fR;\: not on \fBkind:\: tcp\fR (which forwards a header instead) or \fBdns\fR.
+T}
+T{
+\fBkind\fR
+T}	T{
+\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR
+T}	T{
+\fBhttp\fR
+T}	T{
+\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients and \fBdns\fR a DNS proxy;\: see below
+T}
+T{
+\fBredirect_\:to_\:https\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Answer every request with 308 to \fBhttps:\:/\:/\:host/\:path?query\fR. Plaintext listeners only.
+T}
+.TE
+.SS "server.listeners[].tcp (kind: tcp)"
+.PP
+A \fBkind: tcp\fR listener forwards connections at layer 4. TLS connections are routed by the server name of the ClientHello, which is peeked and passed through unchanged, so the upstream terminates TLS with its own certificate and the client verifies that one. Connections that are not TLS, or whose name matches no route, go to \fBdefault\fR when set and are closed otherwise. A tcp listener takes no \fBtls\fR, \fBprotocols\fR, \fBh3\fR or \fBredirect_to_https\fR; bans and the global connection limits apply at accept as on every listener.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.0i) lbw(0.8i) lbx
+lw(1.2i) lw(1.0i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBroutes\fR
+T}	T{
+list of \fB{sni:\: [names],\: upstream}\fR
+T}	T{
+
+T}	T{
+Names are exact or \fB*.\:suffix\fR;\: first match wins
+T}
+T{
+\fBdefault\fR
+T}	T{
+upstream
+T}	T{
+none
+T}	T{
+Upstream for unmatched and non\-TLS connections;\: without it they are closed and logged as \fBtcp_\:no_\:route\fR (a ban category)
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10m\fR
+T}	T{
+Close after no bytes in either direction;\: at most 24h
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header with the client address to the upstream
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB10000\fR
+T}	T{
+Open connections on this listener;\: also bounds QUIC flows
+T}
+T{
+\fBquic\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Also relay QUIC: UDP on the same address,\: the ClientHello read from the version 1 Initial packet (decrypted with the Initial keys every observer can derive),\: the flow routed by server name to the same upstreams and every later datagram of that client address forwarded unread;\: not with \fBproxy_\:protocol\fR
+T}
+T{
+\fBquic_\:idle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+End a QUIC flow with no datagrams either way;\: at most 1h
+T}
+.TE
+.PP
+Endpoints are picked with the upstream\(aqs balancer (hash on the client address for \fBhash\fR), dial failures try the next endpoint and feed outlier ejection; active health checks run as configured on the upstream. Every connection writes one \fBtcp\fR line to the access log with the name, upstream, endpoint, bytes and duration (\fBproto: quic\fR for QUIC flows). Counters: \fBtcp_connections\fR, \fBtcp_rejected\fR, \fBtcp_errors\fR, \fBtcp_bytes_in\fR, \fBtcp_bytes_out\fR, \fBquic_flows\fR, \fBquic_rejected\fR, \fBquic_flows_open\fR; \fBxproxy_tcp_*\fR and \fBxproxy_quic_*\fR metrics. QUIC flows are keyed by client address, so a client that migrates to a new address starts a new flow (its first packet is not an Initial and is dropped; the client falls back or retries); QUIC versions other than 1 are dropped. Changing a tcp listener needs a restart.
+.SS "server.listeners[].forward (kind: forward)"
+.PP
+A \fBkind: forward\fR listener is an explicit proxy that clients configure in their browser or \fBHTTPS_PROXY\fR. \fBCONNECT host:port\fR opens a tunnel (TLS stays end to end between the client and the destination; nothing is inspected) and absolute \fBhttp://\fR request lines are relayed with hop\-by\-hop headers removed and \fBVia: 1.1 xproxy\fR added. Requests that are neither (an ordinary origin\-form request, an \fBhttps://\fR URI) get 400. Every destination passes the policy below before a connection is made: the port must be listed, the name is resolved, the resolved addresses must not be private unless \fBallow_private\fR is set, \fBdeny\fR wins, and a non\-empty \fBallow\fR must match. The address that passed the check is the one dialled, so a name cannot rebind between check and connect. Refusals answer 403, are logged as security events (\fBforward_port\fR, \fBforward_private\fR, \fBforward_deny\fR, \fBforward_not_allowed\fR, \fBforward_resolve\fR) and count towards the \fBforward_denied\fR ban reason. A forward listener may terminate TLS from the client (\fBtls\fR), and with TLS may list \fBh2\fR so clients tunnel \fBCONNECT\fR over an HTTP/2 stream (the stream carries the tunnel, one per request, ending when the destination closes or the client resets); it takes no \fBtcp\fR, \fBredirect_to_https\fR, \fBh3\fR or \fBh2c\fR. Bans, the connection limits and the header timeouts apply as on every listener.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBports\fR
+T}	T{
+list of int
+T}	T{
+\fB[80,\: 443]\fR
+T}	T{
+Destination ports clients may reach,\: for CONNECT and plain requests alike
+T}
+T{
+\fBallow\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Destination names (exact or \fB*.\:suffix\fR),\: addresses or CIDRs;\: when set,\: a destination must match by name or by a resolved address
+T}
+T{
+\fBdeny\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Same forms;\: a match by name or by any resolved address refuses the request,\: before \fBallow\fR
+T}
+T{
+\fBallow_\:private\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Permit loopback,\: link local,\: RFC 1918,\: CGNAT,\: unique local,\: multicast and unspecified destination addresses (the SSRF guard)
+T}
+T{
+\fBauth\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Require \fBProxy\-\:Authorization:\: Basic\fR credentials;\: without it the listener is open to every client the bans and limits admit
+T}
+T{
+\fBauth.\:users_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+\fBname:\:hash\fR lines from \fBxproxyctl htpasswd\fR;\: re\-read on reload and a bad file fails the reload;\: verified credentials are cached for five minutes and the cache is dropped on reload
+T}
+T{
+\fBauth.\:realm\fR
+T}	T{
+string
+T}	T{
+\fBproxy\fR
+T}	T{
+Sent in \fBProxy\-\:Authenticate\fR with 407
+T}
+T{
+\fBconnect_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+Name resolution and dial bound per destination;\: at most 5m
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10m\fR
+T}	T{
+Close a tunnel after no bytes in either direction;\: at most 24h
+T}
+T{
+\fBmax_\:tunnels\fR
+T}	T{
+int
+T}	T{
+\fB10000\fR
+T}	T{
+Open CONNECT tunnels on this listener;\: over it CONNECT answers 503
+T}
+T{
+\fBmax_\:response_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB67108864\fR
+T}	T{
+Largest plain response body relayed;\: a larger one is cut off and the connection closed;\: 0 disables
+T}
+.TE
+.PP
+Each request writes one \fBforward\fR line to the access log with the client address, user, method, destination, status, bytes and duration. Counters: \fBforward_requests\fR, \fBforward_tunnels\fR, \fBforward_tunnels_open\fR, \fBforward_denied\fR, \fBforward_auth_failed\fR, \fBforward_rejected\fR, \fBforward_errors\fR, \fBforward_bytes_in\fR, \fBforward_bytes_out\fR; \fBxproxy_forward_*\fR metrics. The policy and the users file reload; the address and TLS settings need a restart like every listener.
+.SS "server.listeners[].dns (kind: dns)"
+.PP
+A \fBkind: dns\fR listener is a forwarding DNS proxy on the listener address over UDP and TCP. Queries are answered from a bounded cache when they can be, refused or blocked by policy, and otherwise forwarded to the upstream resolvers with a fresh transaction id on a fresh socket (random source port) per query; the answer must echo the id and the question. A truncated UDP answer is retried over TCP to the upstream, and an answer larger than the client\(aqs UDP size (512 bytes or its EDNS advertisement) is truncated so the client retries over TCP. Only one question per query and the QUERY opcode are handled (FORMERR and NOTIMP otherwise); responses arriving as queries and packets from banned clients are dropped. A dns listener takes \fBaddress\fR, \fBdns\fR and optionally \fBtls\fR; bans and the global connection limits apply to TCP clients as on every listener. The policy, upstreams and cache bounds reload (the cache is kept); the address needs a restart.
+.PP
+With \fBtls\fR (certificates only, no ACME) the listener is encrypted: no plain UDP is bound, the TCP port serves DNS over TLS (RFC 7858, ALPN \fBdot\fR or none) and DNS over HTTPS (RFC 8484, ALPN \fBh2\fR or \fBhttp/1.1\fR) at \fBdoh_path\fR, chosen per connection by the negotiated protocol. The same policy, cache and counters serve both; \fBqueries_dot\fR and \fBqueries_doh\fR count them, and \fBxproxyctl tls\fR shows the certificate. Run a plain listener on 53 and an encrypted one on 853 (and 443 when browsers should use it) side by side.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.0i) lbw(0.9i) lbx
+lw(1.0i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstreams\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+Resolvers tried in turn,\: rotating the first choice per query: \fBhost:\:port\fR (UDP,\: TCP on truncation),\: \fBtls:\:/\:/\:host:\:port\fR (DNS over TLS,\: connections reused),\: \fBhttps:\:/\:/\:host[:\:port]/\:path\fR (DNS over HTTPS,\: POST \fBapplication/\:dns\-\:message\fR with id 0)
+T}
+T{
+\fBupstream_\:ca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+Pins the CA of \fBtls:\:/\:/\fR and \fBhttps:\:/\:/\fR upstreams;\: the host in the upstream string is the name verified
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB2s\fR
+T}	T{
+One upstream attempt;\: at most 30s
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Other clients get REFUSED
+T}
+T{
+\fBblock\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+\fBname\fR blocks the name and its subdomains,\: \fB*.\:suffix\fR subdomains only,\: \fB=\:name\fR that name only
+T}
+T{
+\fBblock_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+Names added from a file: one per line,\: \fB#\fR comments,\: hosts file lines (\fB0.\:0.\:0.\:0 name\fR) accepted;\: read at load and reload,\: a missing file fails the reload;\: at most 2 million entries
+T}
+T{
+\fBblock_\:action\fR
+T}	T{
+\fBnxdomain\fR,\: \fBrefuse\fR,\: \fBsinkhole\fR
+T}	T{
+\fBnxdomain\fR
+T}	T{
+A blocked query is a \fBdns_\:blocked\fR security event and ban reason whatever the action
+T}
+T{
+\fBsinkhole_\:ipv4\fR
+T}	T{
+address
+T}	T{
+\fB0.\:0.\:0.\:0\fR
+T}	T{
+A answer for blocked names with \fBsinkhole\fR (TTL 60)
+T}
+T{
+\fBsinkhole_\:ipv6\fR
+T}	T{
+address
+T}	T{
+\fB:\::\fR
+T}	T{
+AAAA answer for blocked names with \fBsinkhole\fR;\: other types get an empty answer
+T}
+T{
+\fBcache.\:max_\:entries\fR
+T}	T{
+int
+T}	T{
+\fB10000\fR
+T}	T{
+LRU bound
+T}
+T{
+\fBcache.\:min_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Floor applied to upstream TTLs
+T}
+T{
+\fBcache.\:max_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB1h\fR
+T}	T{
+Ceiling applied to upstream TTLs;\: at most 168h
+T}
+T{
+\fBcache.\:negative_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+NXDOMAIN and empty answers;\: 0 disables
+T}
+T{
+\fBrate_\:limit\fR
+T}	T{
+\fB{qps,\: burst}\fR
+T}	T{
+none
+T}	T{
+Per client token bucket (defaults 50 and 100 when the section is present);\: over it queries are dropped,\: not answered
+T}
+T{
+\fBmax_\:in_\:flight\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Queries being handled at once;\: beyond it UDP queries are dropped
+T}
+T{
+\fBlog_\:queries\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+One \fBdns\fR access log line per query (client,\: name,\: type,\: rcode,\: source,\: bytes,\: duration). Query logs are personal data;\: leave off unless needed
+T}
+T{
+\fBdoh_\:path\fR
+T}	T{
+path
+T}	T{
+\fB/\:dns\-\:query\fR
+T}	T{
+DNS over HTTPS path on an encrypted listener;\: other paths answer 404
+T}
+T{
+\fBdnssec\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Validate answers;\: see below
+T}
+.TE
+.SS "server.listeners[].dns.dnssec"
+.PP
+With the section present the listener is a validating resolver in front of its upstreams: every upstream query carries the DO bit, and each answer is checked before it reaches the client or the cache. Positive answers need a verified RRSIG on every RRset, chained through DNSKEY and DS records up to a trust anchor; negative answers need a verified NSEC or NSEC3 proof (NXDOMAIN, NODATA, wildcard, opt\-out); an insecure delegation proven by the parent makes answers below it insecure. The outcome shapes the answer: secure answers carry AD when the client set AD or DO, bogus answers become SERVFAIL (a \fBdns_bogus\fR security event) unless the client set CD, insecure and indeterminate answers pass without AD. Clients without DO never receive RRSIG, NSEC or NSEC3 records. Algorithms 5, 7, 8, 10, 13, 14 and 15 and DS digests 1, 2 and 4 are supported; a zone signed only with others counts as insecure (RFC 4035). DNSKEY and DS lookups go to the same upstreams and are cached per zone until the shorter of their TTL and signature validity, bounded to 10000 zones. \fBxproxyctl dns\fR shows secure, insecure, bogus and indeterminate counts, the key cache size and lookups.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(1.0i) lbx
+lw(0.9i) lw(0.6i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Switch for the section
+T}
+T{
+\fBtrust_\:anchors\fR
+T}	T{
+list
+T}	T{
+the IANA root keys (KSK\-2017 20326,\: KSK\-2024 38696)
+T}	T{
+DS records as \fBzone keytag algorithm digesttype digest\fR (\fBIN DS\fR accepted);\: setting any replaces the built\-in list
+T}
+T{
+\fBtrust_\:anchors_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+More DS lines from a file (\fB#\fR comments),\: read at load and reload
+T}
+T{
+\fBmax_\:lookups\fR
+T}	T{
+int
+T}	T{
+\fB48\fR
+T}	T{
+DNSKEY and DS queries per answer (4 to 1000);\: beyond it the answer is bogus
+T}
+.TE
+.PP
+\fBGET /v1/dns\fR and \fBxproxyctl dns\fR show per listener counters (queries, cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated, upstream failures); \fBDELETE /v1/dns\fR and \fBxproxyctl dns purge\fR empty the caches. Metrics: \fBxproxy_dns_*{listener}\fR.
+.SS "server.listeners[].h3"
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.0i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmax_\:streams\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+Concurrent request streams per QUIC connection;\: 1 to 10000
+T}
+T{
+\fBvalidate_\:addresses\fR
+T}	T{
+\fBalways\fR,\: \fBunder_\:load\fR
+T}	T{
+\fBalways\fR
+T}	T{
+\fBalways\fR makes every unvalidated client address complete a Retry round trip before the server allocates connection state;\: \fBunder_\:load\fR does so only when open connections exceed a quarter of \fBmax_\:connections\fR
+T}
+T{
+\fBalt_\:svc_\:max_\:age\fR
+T}	T{
+duration
+T}	T{
+\fB24h\fR
+T}	T{
+Reserved for the \fBAlt\-\:Svc\fR \fBma\fR value (currently the library default)
+T}
+.TE
+.PP
+QUIC connections share the listener\(aqs \fBmax_connections\fR, \fBmax_connections_per_ip\fR, ban list, header size and idle timeout; \fBread_header_timeout\fR bounds the handshake. \fBread_timeout\fR and \fBwrite_timeout\fR do not apply to HTTP/3 streams; use route \fBtimeout\fR and upstream \fBtotal\fR for those. 0\-RTT is never enabled.
+.SS "server.listeners[].tls"
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.9i) lbw(1.3i) lbx
+lw(1.3i) lw(0.9i) lw(1.3i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBcertificates\fR
+T}	T{
+list
+T}	T{
+one of \fBcertificates\fR or \fBacme\fR
+T}	T{
+\fB{cert_\:file,\: key_\:file}\fR PEM pairs;\: selected by SNI,\: first is the fallback
+T}
+T{
+\fBacme\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+\fB{hosts:\: [.\:.\:.\:]}\fR groups issued and renewed through the top\-level \fBacme\fR section;\: one certificate per group,\: named after its first host. Hosts are fully qualified names without wildcards and unique across the listener. Selected by SNI after the file certificates
+T}
+T{
+\fBmin_\:version\fR
+T}	T{
+\fB"1.\:2"\fR or \fB"1.\:3"\fR
+T}	T{
+\fB"1.\:2"\fR
+T}	T{
+TLS 1.0 and 1.1 cannot be configured
+T}
+T{
+\fBclient_\:auth\fR
+T}	T{
+\fBnone\fR,\: \fBrequest\fR,\: \fBrequire\fR
+T}	T{
+\fBnone\fR
+T}	T{
+Client certificates;\: \fBrequest\fR verifies if presented
+T}
+T{
+\fBclient_\:ca_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+Required for \fBrequest\fR and \fBrequire\fR
+T}
+T{
+\fBcipher_\:suites\fR
+T}	T{
+list of names
+T}	T{
+ECDHE AEAD suites
+T}	T{
+TLS 1.2 suites,\: crypto/\:tls names. Insecure suites are rejected. TLS 1.3 suites are not configurable.
+T}
+T{
+\fBocsp_\:stapling\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Fetch OCSP responses for the served certificates in the background and staple them into handshakes;\: see below
+T}
+T{
+\fBct\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Check the Certificate Transparency SCTs embedded in file certificates at load;\: see below
+T}
+.TE
+.SS "server.listeners[].tls.ocsp_stapling"
+.PP
+A stapled OCSP response spares clients the responder round trip and keeps working when the responder is down or firewalled from them. The proxy fetches a response for every served certificate (file and ACME alike) from the responder named in the certificate, using the issuer that follows the leaf in the chain file, and refreshes it at half its validity, at \fBrefresh\fR at the latest, and one minute after a failure. A handshake never waits: it carries the current response when there is one and none otherwise, and a still valid response is kept through fetch failures. A \fBrevoked\fR answer is stapled as well, since clients must see it, and logged as an error. \fBxproxyctl tls\fR and \fBGET /v1/tls\fR show the state per certificate.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Switch for the section
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+One responder request (1s to 1m)
+T}
+T{
+\fBrefresh\fR
+T}	T{
+duration
+T}	T{
+\fB1h\fR
+T}	T{
+Longest interval between fetches (5m to 24h)
+T}
+.TE
+.SS "server.listeners[].tls.ct"
+.PP
+Browsers refuse certificates that were not logged in Certificate Transparency logs; a certificate issued without the signed certificate timestamps (SCTs) then breaks a site quietly at the next reload. The proxy parses the SCTs embedded in every file certificate at load and, with a log list, verifies each signature over the precertificate entry (the certificate without its SCT extension and the issuer\(aqs key hash) against the log\(aqs key. The verdict appears in \fBxproxyctl tls\fR; a shortfall is a security log event, or a failed load with \fBenforce\fR.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.8i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrequire\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (report only)
+T}	T{
+Embedded SCTs a certificate must carry,\: verified ones when \fBlog_\:list_\:file\fR is set (0 to 10)
+T}
+T{
+\fBlog_\:list_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+A log list in the JSON format Google publishes (\fBlog_\:list.\:json\fR,\: v3 with \fBoperators[].\:logs[]\fR and \fBtiled_\:logs[]\fR);\: the logs\(aq keys verify the SCT signatures
+T}
+T{
+\fBenforce\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Fail the load or reload of a certificate below \fBrequire\fR instead of logging it
+T}
+.TE
+.PP
+SCTs delivered through the TLS extension or the OCSP response rather than embedded are not counted. ACME certificates are reported but not checked at load (the ACME client already requires embedded SCTs from a public CA).
+.SS "server.limits"
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.9i) lbw(0.9i) lbw(1.2i) lbx
+lw(1.3i) lw(0.9i) lw(0.9i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Range
+T}	T{
+Description
+T}
+T{
+\fBmax_\:header_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+1024 to 1 MiB
+T}	T{
+Request header block,\: including HTTP/\:2 header list
+T}
+T{
+\fBmax_\:body_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB10485760\fR
+T}	T{
+0 or more
+T}	T{
+Request body;\: \fB0\fR disables the global cap (routes can still set one)
+T}
+T{
+\fBmax_\:uri_\:length\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+256 to 65536
+T}	T{
+Request line target length;\: 414 above
+T}
+T{
+\fBread_\:header_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+positive
+T}	T{
+Slowloris defence
+T}
+T{
+\fBread_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+positive
+T}	T{
+Whole request including body
+T}
+T{
+\fBwrite_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+positive
+T}	T{
+Whole response
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB120s\fR
+T}	T{
+positive
+T}	T{
+Keep\-alive idle
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+positive
+T}	T{
+Open connections across all listeners
+T}
+T{
+\fBmax_\:connections_\:per_\:ip\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+positive,\: at most \fBmax_\:connections\fR
+T}	T{
+Per source address
+T}
+T{
+\fBmax_\:concurrent_\:requests\fR
+T}	T{
+int
+T}	T{
+\fB16384\fR
+T}	T{
+positive
+T}	T{
+In\-flight requests;\: 503 above
+T}
+T{
+\fBmax_\:tarpits\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+1 to 1000000
+T}	T{
+Requests held in a tarpit at once. A tarpitted request releases its concurrency slot;\: above this bound it is rejected with 429 immediately (\fBtarpit_\:overflow\fR counts those)
+T}
+.TE
+.SS "server.error_pages and routes[].error_pages"
+.PP
+Documents are read at load (at most 1 MiB each) and chosen by exact status (\fB"404"\fR), class (\fB"4xx"\fR, \fB"5xx"\fR) or \fB"default"\fR. A route section replaces the server section entirely for that route. Every status the proxy writes itself goes through the pages: denials (ACL, rate limit, WAF, ban, JWT), unknown host or route, upstream failures (502, 503, 504), static file misses and the like; a gRPC request keeps its gRPC status. Upstream responses pass through unchanged unless their status is listed in \fBintercept_upstream\fR.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.1i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdir\fR
+T}	T{
+absolute path
+T}	T{
+none
+T}	T{
+Directory of the documents;\: required for relative page names
+T}
+T{
+\fBpages\fR
+T}	T{
+map
+T}	T{
+required
+T}	T{
+Status,\: class or \fBdefault\fR to a file name in \fBdir\fR or an absolute path;\: documents may use the variables below and keep unknown \fB${.\:.\:.\:}\fR sequences as they are (script code is safe)
+T}
+T{
+\fBcontent_\:type\fR
+T}	T{
+string
+T}	T{
+\fBtext/\:html; charset=\:utf\-\:8\fR
+T}	T{
+Content type of the documents
+T}
+T{
+\fBjson\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Answer clients whose \fBAccept\fR prefers \fBapplication/\:json\fR over \fBtext/\:html\fR with \fB{"status":\:404,\:"error":\:"Not Found",\:"request_\:id":\:".\:.\:.\:"}\fR instead of the document
+T}
+T{
+\fBintercept_\:upstream\fR
+T}	T{
+list of int
+T}	T{
+\fB[]\fR
+T}	T{
+Upstream statuses (400 to 599) whose bodies are replaced by the matching page;\: headers describing the old body (\fBContent\-\:Length\fR,\: \fBContent\-\:Encoding\fR,\: \fBETag\fR) are replaced
+T}
+.TE
+.SS "Variables"
+.PP
+Header values, \fBrewrite_regex.replace\fR, \fBredirect.to\fR and error pages may use \fB${name}\fR; a misspelt name fails validation for headers, rewrites and redirects and is kept literally in pages.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbx
+lw(1.0i) lx.
+T{
+Variable
+T}	T{
+Value
+T}
+T{
+\fBclient_\:ip\fR
+T}	T{
+client address after trusted proxy handling
+T}
+T{
+\fBrequest_\:id\fR
+T}	T{
+request identifier
+T}
+T{
+\fBhost\fR
+T}	T{
+request host without port
+T}
+T{
+\fBpath\fR,\: \fBraw_\:query\fR,\: \fBmethod\fR,\: \fBscheme\fR
+T}	T{
+request line parts (\fBscheme\fR is \fBhttp\fR or \fBhttps\fR as seen by the client)
+T}
+T{
+\fBroute\fR,\: \fBupstream\fR,\: \fBtenant\fR
+T}	T{
+the matched route,\: its pool and tenant label
+T}
+T{
+\fBcountry\fR,\: \fBja4\fR
+T}	T{
+GeoIP country code and TLS client fingerprint,\: empty when unknown
+T}
+T{
+\fBtls_\:version\fR,\: \fBtls_\:cipher\fR
+T}	T{
+TLS parameters of the client connection
+T}
+T{
+\fBheader:\:Name\fR,\: \fBcookie:\:name\fR,\: \fBquery:\:name\fR
+T}	T{
+a request header,\: cookie or query parameter
+T}
+T{
+\fB1\fR to \fB9\fR,\: \fBname\fR
+T}	T{
+groups of \fBrewrite_\:regex.\:pattern\fR or,\: without one,\: of the matching \fBpath_\:regex\fR (numbered and named)
+T}
+T{
+\fBstatus\fR,\: \fBstatus_\:text\fR,\: \fBreason\fR
+T}	T{
+error pages only: the status,\: its phrase and the denial category (\fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbanned\fR,\: \fBupstream\fR...)
+T}
+T{
+\fBtime\fR
+T}	T{
+current time,\: RFC 3339,\: UTC
+T}
+T{
+\fBdate\fR,\: \fBhour\fR,\: \fBminute\fR,\: \fBweekday\fR
+T}	T{
+current date (\fB2026\-\:09\-\:19\fR),\: hour (\fB0\fR to \fB23\fR),\: minute and weekday (\fBMon\fR to \fBSun\fR),\: UTC
+T}
+.TE
+.SS "Expressions"
+.PP
+\fBroutes[].when\fR, \fBrequest_headers.when\fR and \fBresponse_headers.when\fR hold a condition that is parsed at load (unknown names, functions, arities, patterns and capture groups are errors) and evaluated per request. Values are strings; a variable without a value is the empty string. \fB==\fR and \fB!=\fR compare as strings; \fB<\fR, \fB<=\fR, \fB>\fR and \fB>=\fR compare numerically when both sides are numbers and by string otherwise. A bare string is true when it is neither empty, \fB0\fR nor \fBfalse\fR.
+.PP
+.TS
+allbox;
+lbw(1.6i) lbx
+lw(1.6i) lx.
+T{
+Element
+T}	T{
+Meaning
+T}
+T{
+\fBa && b\fR,\: \fBa and b\fR,\: \fBa || b\fR,\: \fBa or b\fR,\: \fB!a\fR,\: \fBnot a\fR,\: \fB(a)\fR
+T}	T{
+Boolean operators,\: lowest precedence first: or,\: and,\: not
+T}
+T{
+\fB"text"\fR,\: \fB\(aqtext\(aq\fR,\: \fB42\fR,\: \fBtrue\fR,\: \fBfalse\fR
+T}	T{
+Literals;\: strings take \fB\e"\fR,\: \fB\e\(aq\fR,\: \fB\e\e\fR,\: \fB\en\fR and \fB\et\fR escapes
+T}
+T{
+\fBclient_\:ip\fR,\: \fBhost\fR,\: \fBpath\fR,\: \fBraw_\:query\fR,\: \fBmethod\fR,\: \fBscheme\fR,\: \fBcountry\fR,\: \fBja4\fR,\: \fBtls_\:version\fR,\: \fBtls_\:cipher\fR,\: \fBrequest_\:id\fR,\: \fBroute\fR,\: \fBupstream\fR,\: \fBtenant\fR,\: \fBtime\fR,\: \fBdate\fR,\: \fBhour\fR,\: \fBminute\fR,\: \fBweekday\fR
+T}	T{
+The variables of the table above,\: as bare names (\fBroute\fR,\: \fBupstream\fR and \fBtenant\fR are empty in \fBroutes[].\:when\fR,\: which runs before the route is chosen)
+T}
+T{
+\fBheader("Name")\fR,\: \fBcookie("name")\fR,\: \fBquery("name")\fR,\: \fBcapture("name")\fR
+T}	T{
+A request header (case insensitive,\: first value),\: cookie,\: query parameter or regular expression group by name or number;\: empty when absent
+T}
+T{
+\fBhas_\:header("Name")\fR,\: \fBhas_\:cookie("name")\fR,\: \fBhas_\:query("name")\fR
+T}	T{
+Presence,\: also of an empty value
+T}
+T{
+\fBx in ["a",\: "b"]\fR,\: \fBx not in [.\:.\:.\:]\fR
+T}	T{
+Membership in a list of literals
+T}
+T{
+\fBclient_\:ip in cidr("10.\:0.\:0.\:0/\:8",\: "2001:\:db8:\::\:/\:32",\: "203.\:0.\:113.\:7")\fR
+T}	T{
+Address containment in prefixes or single addresses;\: a value that is not an address is never contained
+T}
+T{
+\fBx matches "pattern"\fR,\: \fBmatches(x,\: "pattern")\fR
+T}	T{
+RE2 match anywhere in the value;\: anchor with \fB^\fR and \fB$\fR for the whole value. Patterns are literals,\: compiled at load
+T}
+T{
+\fBstarts_\:with(x,\: "p")\fR,\: \fBends_\:with(x,\: "s")\fR,\: \fBcontains(x,\: "part")\fR
+T}	T{
+Substring tests
+T}
+T{
+\fBlower(x)\fR,\: \fBupper(x)\fR,\: \fBtrim(x)\fR,\: \fBlen(x)\fR
+T}	T{
+Case folding,\: whitespace trimming and byte length
+T}
+.TE
+.PP
+Examples: \fBmethod in ["GET", "HEAD"] and hour >= 22 or hour < 6\fR (read\-only traffic in the night window), \fBcountry in ["SE", "NO", "DK"] && not has_cookie("consent")\fR, \fBpath matches "^/api/v[0\-9]+/" && header("Content\-Length") > 1048576\fR, \fBcapture("id") != "" && ja4 == ""\fR.
+.SH "management"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.7i) lbw(1.1i) lbx
+lw(0.9i) lw(0.7i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBsocket\fR
+T}	T{
+path
+T}	T{
+\fB""\fR (disabled)
+T}	T{
+Unix socket for \fBxproxyctl\fR
+T}
+T{
+\fBsocket_\:mode\fR
+T}	T{
+octal string
+T}	T{
+\fB"0660"\fR
+T}	T{
+Any \fBother\fR permission is rejected
+T}
+T{
+\fBhistory_\:dir\fR
+T}	T{
+path
+T}	T{
+none (history off)
+T}	T{
+Directory (created \fB0700\fR) where every applied configuration is recorded as a self\-contained YAML file (\fB0600\fR) for \fBxproxyctl history\fR,\: \fBdiff\fR and \fBrollback\fR;\: \fB/\:var/\:lib/\:xproxy/\:history\fR on Fedora
+T}
+T{
+\fBhistory_\:keep\fR
+T}	T{
+int
+T}	T{
+\fB20\fR
+T}	T{
+Entries kept;\: older ones are removed (1 to 1000)
+T}
+.TE
+.SH "logging"
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(0.8i) lbx
+lw(1.0i) lw(0.7i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdirectory\fR
+T}	T{
+path
+T}	T{
+\fB/\:var/\:log/\:xproxy\fR
+T}	T{
+Must exist and be writable
+T}
+T{
+\fBlevel\fR
+T}	T{
+\fBdebug\fR,\: \fBinfo\fR,\: \fBwarn\fR,\: \fBerror\fR
+T}	T{
+\fBinfo\fR
+T}	T{
+Minimum level for the error stream
+T}
+T{
+\fBstdout\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Mirror all streams to stdout (journald,\: containers)
+T}
+T{
+\fBaccess\fR,\: \fBerror\fR,\: \fBsecurity\fR,\: \fBaudit\fR
+T}	T{
+stream
+T}	T{
+
+T}	T{
+Per stream settings
+T}
+T{
+\fBjournald\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+journald sink,\: used by streams listing \fBjournald\fR
+T}
+T{
+\fBsyslog\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+syslog sink,\: used by streams listing \fBsyslog\fR
+T}
+T{
+\fBredaction\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Personal data rules applied before every sink
+T}
+T{
+\fBotlp\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+OpenTelemetry log sink,\: used by streams listing \fBotlp\fR;\: see \fBlogging.\:otlp\fR
+T}
+.TE
+.SS "logging.<stream>"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.0i) lbw(1.0i) lbx
+lw(0.9i) lw(1.0i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+
+T}
+T{
+\fBfile\fR
+T}	T{
+file name
+T}	T{
+\fBaccess.\:log\fR etc.
+T}	T{
+Bare name inside \fBdirectory\fR
+T}
+T{
+\fBmax_\:size_\:mb\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (no internal rotation)
+T}	T{
+Rotate to \fB.\:1\fR,\: \fB.\:2\fR,\: ... when exceeded
+T}
+T{
+\fBmax_\:files\fR
+T}	T{
+int
+T}	T{
+\fB5\fR
+T}	T{
+Archives kept
+T}
+T{
+\fBsinks\fR
+T}	T{
+list
+T}	T{
+\fB[file]\fR
+T}	T{
+Any of \fBfile\fR,\: \fBjournald\fR,\: \fBsyslog\fR,\: \fBotlp\fR;\: a stream can go to several
+T}
+T{
+\fBformat\fR
+T}	T{
+\fBjson\fR,\: \fBcommon\fR,\: \fBcombined\fR,\: \fBcustom\fR
+T}	T{
+\fBjson\fR
+T}	T{
+Access stream only for the text formats: \fBcommon\fR is the Common Log Format (\fB%h %l %u %t "%r" %>s %b\fR),\: \fBcombined\fR adds the quoted referer and user agent,\: \fBcustom\fR uses \fBtemplate\fR. The error,\: security and audit streams stay JSON. Text lines go to every sink of the stream;\: redaction runs before formatting
+T}
+T{
+\fBtemplate\fR
+T}	T{
+string
+T}	T{
+
+T}	T{
+For \fBformat:\: custom\fR: literal text with \fB{field}\fR placeholders. Fields are the access log attributes (\fBrequest_\:id\fR,\: \fBclient_\:ip\fR,\: \fBmethod\fR,\: \fBhost\fR,\: \fBpath\fR,\: \fBquery_\:len\fR,\: \fBproto\fR,\: \fBstatus\fR,\: \fBbytes_\:in\fR,\: \fBbytes_\:out\fR,\: \fBduration_\:ms\fR,\: \fBroute\fR,\: \fBupstream\fR,\: \fBendpoint\fR,\: \fBattempts\fR,\: \fBuser_\:agent\fR,\: \fBreferer\fR,\: \fBtls\fR,\: \fBsni\fR,\: \fBclient_\:cn\fR,\: \fBcountry\fR,\: \fBja4\fR,\: \fBcache\fR,\: \fBencoding\fR,\: \fBhoneypot_\:marked\fR,\: \fBmirror\fR,\: \fBgrpc\fR,\: \fBgrpc_\:status\fR,\: \fBdenied\fR,\: \fBupstream_\:error\fR,\: filter attributes such as \fBjwt_\:sub\fR,\: \fBoidc_\:sub\fR,\: \fBbot_\:score\fR) plus \fBtime_\:clf\fR (\fB10/\:Oct/\:2000:\:13:\:55:\:36 \-\:0700\fR),\: \fBtime_\:iso\fR,\: \fBtime_\:unix\fR,\: \fBrequest\fR (\fBMETHOD path PROTO\fR),\: \fBuser\fR (the first of \fBoidc_\:sub\fR,\: \fBbasic_\:user\fR,\: \fBjwt_\:sub\fR,\: \fBjwt_\:preferred_\:username\fR,\: else \fB\-\fR) and \fBbytes_\:out_\:clf\fR (\fB\-\fR for zero). A missing or empty field prints \fB\-\fR. Values are escaped Apache style (\fB\e"\fR,\: \fB\e\e\fR,\: \fB\en\fR,\: \fB\exHH\fR),\: so one request is always one line;\: at most 1024 bytes
+T}
+.TE
+.SS "logging.journald"
+.PP
+Native journald protocol over the journal\(aqs datagram socket, no cgo. The JSON line is \fBMESSAGE\fR; the level maps to \fBPRIORITY\fR; the stream and every top\-level attribute become \fBXPROXY_*\fR fields, so \fBjournalctl XPROXY_CLIENT_IP=203.0.113.9\fR works without parsing.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.6i) lbw(0.9i) lbx
+lw(1.1i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBsocket\fR
+T}	T{
+path
+T}	T{
+\fB/\:run/\:systemd/\:journal/\:socket\fR
+T}	T{
+
+T}
+T{
+\fBidentifier\fR
+T}	T{
+name
+T}	T{
+\fBxproxy\fR
+T}	T{
+\fBSYSLOG_\:IDENTIFIER\fR
+T}
+.TE
+.SS "logging.syslog"
+.PP
+Messages are queued and sent by a background writer; the request path never waits for a collector. A full queue drops and counts. Stream transports use RFC 6587 octet counting and reconnect with back\-off.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.0i) lbw(0.8i) lbx
+lw(0.9i) lw(1.0i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBnetwork\fR
+T}	T{
+\fBunix\fR,\: \fBudp\fR,\: \fBtcp\fR,\: \fBtcp+tls\fR
+T}	T{
+\fBunix\fR
+T}	T{
+
+T}
+T{
+\fBaddress\fR
+T}	T{
+path or host:port
+T}	T{
+\fB/\:dev/\:log\fR for unix
+T}	T{
+
+T}
+T{
+\fBformat\fR
+T}	T{
+\fBrfc5424\fR,\: \fBrfc3164\fR
+T}	T{
+\fBrfc3164\fR for unix,\: else \fBrfc5424\fR
+T}	T{
+The JSON line is the message;\: the stream is the RFC 5424 MSGID
+T}
+T{
+\fBfacility\fR
+T}	T{
+name
+T}	T{
+\fBlocal0\fR
+T}	T{
+\fBkern\fR,\: \fBuser\fR,\: \fBmail\fR,\: \fBdaemon\fR,\: \fBauth\fR,\: \fBsyslog\fR,\: \fBlpr\fR,\: \fBnews\fR,\: \fBuucp\fR,\: \fBcron\fR,\: \fBauthpriv\fR,\: \fBftp\fR,\: \fBlocal0\fR to \fBlocal7\fR
+T}
+T{
+\fBapp_\:name\fR
+T}	T{
+name
+T}	T{
+\fBxproxy\fR
+T}	T{
+APP\-NAME or tag
+T}
+T{
+\fBhostname\fR
+T}	T{
+string
+T}	T{
+OS host name
+T}	T{
+
+T}
+T{
+\fBca_\:file\fR,\: \fBcert_\:file\fR,\: \fBkey_\:file\fR,\: \fBserver_\:name\fR
+T}	T{
+
+T}	T{
+
+T}	T{
+\fBtcp+tls\fR: pinned CA,\: optional client certificate,\: verified name
+T}
+T{
+\fBqueue_\:size\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Messages held for a slow collector;\: 64 to 1000000
+T}
+.TE
+.PP
+Datagram transports truncate messages at 8 KiB.
+.SS "logging.otlp"
+.PP
+Ships log records to an OpenTelemetry collector as OTLP/HTTP with JSON encoding. Each record carries the time, the severity (\fBDEBUG\fR 5, \fBINFO\fR 9, \fBWARN\fR 13, \fBERROR\fR 17), the message as the body, every attribute of the line (integers, booleans and floats typed, the rest as strings), \fBxproxy.stream\fR, and the trace and span ids of access lines when tracing is on, so a collector links logs to traces. Records queue without blocking the request path; a full queue drops and counts; a batching goroutine pushes by size and interval and flushes at shutdown. Redaction runs before the sink like for every other sink. \fBxproxyctl telemetry\fR and \fBGET /v1/telemetry\fR show the counters.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.1i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBendpoint\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+The collector\(aqs logs URL (\fBhttps:\:/\:/\:otel.\:example.\:com:\:4318/\:v1/\:logs\fR);\: \fBhttp:\:/\:/\fR only with \fBallow_\:http\fR
+T}
+T{
+\fBallow_\:http\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+One push;\: at most 1m
+T}
+T{
+\fBheaders\fR
+T}	T{
+map
+T}	T{
+\fB{}\fR
+T}	T{
+Request headers,\: for example \fBAuthorization\fR
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+Pins the collector\(aqs CA
+T}
+T{
+\fBservice_\:name\fR
+T}	T{
+string
+T}	T{
+\fBxproxy\fR
+T}	T{
+\fBservice.\:name\fR resource attribute;\: \fBservice.\:version\fR and \fBhost.\:name\fR are added
+T}
+T{
+\fBattributes\fR
+T}	T{
+map
+T}	T{
+\fB{}\fR
+T}	T{
+Extra resource attributes
+T}
+T{
+\fBcompress\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+gzip the request body
+T}
+T{
+\fBbatch\fR
+T}	T{
+int
+T}	T{
+\fB512\fR
+T}	T{
+Records per push (1 to 10000)
+T}
+T{
+\fBinterval\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Longest wait before a push (100ms to 5m)
+T}
+T{
+\fBqueue\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Records held while a push is in flight;\: more are dropped and counted (1 to 1000000)
+T}
+.TE
+.SS "logging.redaction"
+.PP
+Presence enables the rules; \fBenabled: false\fR switches them off while keeping the configuration. Rules run before every sink, so files, journald and syslog all receive the same redacted record.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(1.0i) lbw(1.0i) lbx
+lw(0.8i) lw(1.0i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+
+T}
+T{
+\fBstreams\fR
+T}	T{
+list
+T}	T{
+\fB[access,\: security,\: error]\fR
+T}	T{
+The audit stream keeps full detail unless listed
+T}
+T{
+\fBclient_\:ip\fR
+T}	T{
+\fBkeep\fR,\: \fBtruncate\fR,\: \fBhash\fR
+T}	T{
+\fBtruncate\fR
+T}	T{
+\fBtruncate\fR masks to /\:24 (IPv4) or /\:48 (IPv6);\: \fBhash\fR writes a keyed pseudonym (\fBh:\fR + 16 hex) that is stable per key and lets you correlate one client across lines without storing the address
+T}
+T{
+\fBhash_\:secret_\:file\fR
+T}	T{
+path
+T}	T{
+ephemeral
+T}	T{
+Key (or the primary key of a keyring) for \fBhash\fR;\: set it so pseudonyms survive restarts and match across nodes. Rotating it starts a new series of pseudonyms at the next restart
+T}
+T{
+\fBuser_\:agent\fR
+T}	T{
+\fBkeep\fR,\: \fBdrop\fR
+T}	T{
+\fBkeep\fR
+T}	T{
+
+T}
+T{
+\fBreferer\fR
+T}	T{
+\fBkeep\fR,\: \fBorigin\fR,\: \fBdrop\fR
+T}	T{
+\fBorigin\fR
+T}	T{
+\fBorigin\fR keeps scheme and host only
+T}
+T{
+\fBclaims\fR
+T}	T{
+\fBkeep\fR,\: \fBhash\fR,\: \fBdrop\fR
+T}	T{
+\fBhash\fR
+T}	T{
+Applies to \fBjwt_\:*\fR (except \fBjwt_\:provider\fR) and \fBclient_\:cn\fR
+T}
+T{
+\fBdrop_\:fields\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Further attribute names removed from lines;\: \fBtime\fR,\: \fBlevel\fR,\: \fBmsg\fR and \fBstream\fR cannot be dropped
+T}
+.TE
+.SH "rate_limits[]"
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.3i) lbw(1.2i) lbx
+lw(1.2i) lw(1.3i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required,\: unique
+T}	T{
+Referenced by routes
+T}
+T{
+\fBkey\fR
+T}	T{
+\fBclient_\:ip\fR,\: \fBroute\fR,\: \fBcountry\fR,\: \fBheader:\:<Name>\fR
+T}	T{
+\fBclient_\:ip\fR
+T}	T{
+Bucket identity. A missing header or an unknown country falls back to the client address.
+T}
+T{
+\fBalgorithm\fR
+T}	T{
+\fBtoken_\:bucket\fR,\: \fBsliding_\:window\fR
+T}	T{
+\fBtoken_\:bucket\fR
+T}	T{
+\fBtoken_\:bucket\fR admits bursts up to \fBburst\fR and refills at \fBrate\fR;\: \fBsliding_\:window\fR admits at most \fBlimit\fR requests in any window of length \fBwindow\fR,\: estimated from the current and the previous fixed window weighted by their overlap (no burst above \fBlimit\fR at a window edge,\: an error bounded by the unevenness of arrivals inside one window)
+T}
+T{
+\fBrate\fR
+T}	T{
+float
+T}	T{
+required for \fBtoken_\:bucket\fR,\: positive
+T}	T{
+Tokens per second
+T}
+T{
+\fBburst\fR
+T}	T{
+int
+T}	T{
+\fBrate\fR rounded,\: at least 1
+T}	T{
+Bucket capacity
+T}
+T{
+\fBlimit\fR
+T}	T{
+int
+T}	T{
+required for \fBsliding_\:window\fR
+T}	T{
+Requests per \fBwindow\fR,\: 1 to 1000000000
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB1s\fR
+T}	T{
+Sliding window length,\: 100ms to 24h
+T}
+T{
+\fBdistributed\fR
+T}	T{
+\fBapproximate\fR,\: \fBexact\fR
+T}	T{
+\fBapproximate\fR
+T}	T{
+Cluster semantics. \fBapproximate\fR: every node decides locally and refills at the rate minus its peers\(aq gossiped consumption (one interval of delay). \fBexact\fR: one member owns each key (rendezvous hash of member and key over the connected members),\: the others ask it over the cluster connection and wait at most \fBcluster.\:exact_\:timeout\fR;\: the owner\(aqs bucket or window is the single count. A node that cannot reach the owner in time decides on its own limiter and counts an \fBexact_\:fallback\fR. Needs the \fBcluster\fR section
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBreject\fR,\: \fBtarpit\fR
+T}	T{
+\fBreject\fR
+T}	T{
+\fBreject\fR answers 429 at once
+T}
+T{
+\fBtarpit_\:delay\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+Hold before answering 429 (released on client disconnect)
+T}
+.TE
+.PP
+Memory: at most 64 x 8192 buckets per policy.
+.SH "upstreams[]"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(1.0i) lbw(1.2i) lbx
+lw(1.1i) lw(1.0i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required,\: unique
+T}	T{
+
+T}
+T{
+\fBbalancer\fR
+T}	T{
+\fBround_\:robin\fR,\: \fBweighted\fR,\: \fBleast_\:conn\fR,\: \fBhash\fR
+T}	T{
+\fBround_\:robin\fR
+T}	T{
+
+T}
+T{
+\fBhash_\:on\fR
+T}	T{
+\fBclient_\:ip\fR,\: \fBheader:\:<Name>\fR,\: \fBcookie:\:<Name>\fR
+T}	T{
+\fBclient_\:ip\fR
+T}	T{
+For \fBhash\fR;\: missing input falls back to the client address
+T}
+T{
+\fBendpoints\fR
+T}	T{
+list
+T}	T{
+required,\: at least one
+T}	T{
+\fB{address:\: host:\:port,\: weight:\: 1.\:.\:1000,\: canary:\: bool}\fR;\: \fBcanary\fR marks the endpoints the \fBcanary\fR policy selects
+T}
+T{
+\fBcanary\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Route selected requests to the canary endpoints;\: see below
+T}
+T{
+\fBscheme\fR
+T}	T{
+\fBhttp\fR,\: \fBhttps\fR
+T}	T{
+\fBhttp\fR
+T}	T{
+
+T}
+T{
+\fBh2c\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Speak HTTP/\:2 without TLS to \fBhttp\fR endpoints (gRPC backends);\: \fBhttps\fR negotiates HTTP/\:2 with ALPN on its own
+T}
+T{
+\fBtls\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Only with \fBhttps\fR;\: see below
+T}
+T{
+\fBhealth_\:check\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Active probing;\: see below
+T}
+T{
+\fBoutlier_\:ejection\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Passive ejection;\: see below
+T}
+T{
+\fBcircuit_\:breaker\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Pool wide breaker with half open probing;\: see below
+T}
+T{
+\fBmax_\:concurrent\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (unbounded)
+T}	T{
+Requests in flight to the pool;\: the excess waits in \fBqueue\fR or is refused with 503
+T}
+T{
+\fBqueue\fR
+T}	T{
+\fB{size,\: timeout}\fR
+T}	T{
+none
+T}	T{
+With \fBmax_\:concurrent\fR: requests waiting for a slot (\fBsize\fR 1 to 1000000,\: default 100) and how long each waits (\fBtimeout\fR 10ms to 5m,\: default 1s) before 503 with \fBRetry\-\:After:\: 1\fR;\: a full queue refuses at once
+T}
+T{
+\fBaffinity\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Cookie stickiness;\: see below
+T}
+T{
+\fBtimeouts.\:connect\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Dial and TLS handshake
+T}
+T{
+\fBtimeouts.\:response_\:header\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Time to first response byte
+T}
+T{
+\fBtimeouts.\:idle\fR
+T}	T{
+duration
+T}	T{
+\fB90s\fR
+T}	T{
+Pooled connection idle
+T}
+T{
+\fBtimeouts.\:total\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+Whole exchange
+T}
+T{
+\fBmax_\:idle_\:conns_\:per_\:host\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+Pooled connections per endpoint
+T}
+T{
+\fBretries\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+0 to 5;\: only replayable requests (GET,\: HEAD,\: OPTIONS,\: TRACE without a body),\: each attempt on a different endpoint;\: connection errors always,\: statuses per \fBretry_\:on\fR
+T}
+T{
+\fBrewrite_\:regex.\:pattern\fR
+T}	T{
+RE2
+T}	T{
+none
+T}	T{
+Rewrite the outbound path by regular expression (see \fBrewrite_\:regex.\:replace\fR);\: applied to the cleaned path after \fBstrip_\:prefix\fR,\: exclusive with \fBrewrite_\:path\fR;\: a path that does not match is sent unchanged
+T}
+T{
+\fBrewrite_\:regex.\:replace\fR
+T}	T{
+template
+T}	T{
+
+T}	T{
+New path,\: starting with \fB/\fR;\: \fB${1}\fR to \fB${9}\fR and \fB${name}\fR are the pattern\(aqs groups,\: and the request variables (below) may be used
+T}
+T{
+\fBerror_\:pages\fR
+T}	T{
+object
+T}	T{
+inherits \fBserver.\:error_\:pages\fR
+T}	T{
+Route override of the error pages,\: same keys as \fBserver.\:error_\:pages\fR
+T}
+T{
+\fBdiscovery\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Endpoints resolved from DNS and re\-resolved periodically;\: see below. Static \fBendpoints\fR and discovered ones coexist;\: a pool needs at least one of the two
+T}
+T{
+\fBslow_\:start\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+An endpoint that joins the pool (discovered) or returns to service (healthy again,\: ejection over) gets a share ramping from 10 % to its full weight over this time;\: at most 1h
+T}
+T{
+\fBretry_\:on\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Response statuses treated as a failed attempt: \fB5xx\fR,\: \fB500\fR,\: \fB502\fR,\: \fB503\fR,\: \fB504\fR,\: \fB429\fR. The response is discarded,\: the endpoint marked as failed for outlier ejection,\: and the next endpoint tried within the \fBretries\fR budget;\: the last attempt\(aqs response is returned as it is. Needs \fBretries\fR above 0
+T}
+.TE
+.SS "upstreams[].tls"
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.8i) lbw(0.9i) lbx
+lw(1.0i) lw(0.8i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBserver_\:name\fR
+T}	T{
+string
+T}	T{
+endpoint host
+T}	T{
+SNI and verification name
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+PEM bundle to verify against
+T}
+T{
+\fBmin_\:version\fR
+T}	T{
+\fB"1.\:2"\fR,\: \fB"1.\:3"\fR
+T}	T{
+\fB"1.\:2"\fR
+T}	T{
+Minimum TLS version towards the upstream
+T}
+T{
+\fBclient_\:cert_\:file\fR,\: \fBclient_\:key_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+Mutual TLS to the upstream;\: set both. Re\-read by \fBxproxyctl reload\-\:certs\fR and by configuration reload;\: idle connections are dropped so new ones present the new certificate
+T}
+T{
+\fBspki_\:pins\fR
+T}	T{
+list of base64 SHA\-256
+T}	T{
+\fB[]\fR
+T}	T{
+Pins of the upstream leaf public key;\: the connection is refused unless the presented leaf matches one,\: in addition to chain verification. \fBxproxyctl spki CERT.\:pem\fR prints a pin. Cannot be combined with \fBinsecure_\:skip_\:verify\fR
+T}
+T{
+\fBinsecure_\:skip_\:verify\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Requires \fBallow_\:insecure:\: true\fR as well
+T}
+T{
+\fBallow_\:insecure\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Second opt\-in
+T}
+.TE
+.SS "upstreams[].discovery"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.0i) lbw(0.9i) lbx
+lw(0.9i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBtype\fR
+T}	T{
+\fBdns\fR,\: \fBsrv\fR
+T}	T{
+\fBdns\fR
+T}	T{
+\fBdns\fR resolves the A and AAAA records of \fBname\fR,\: one endpoint per address on \fBport\fR;\: \fBsrv\fR resolves SRV records,\: uses the lowest priority group,\: and takes target,\: port and weight from each record
+T}
+T{
+\fBname\fR
+T}	T{
+DNS name
+T}	T{
+required
+T}	T{
+The name to resolve;\: for \fBsrv\fR the full \fB_\:service.\:_\:proto.\:domain\fR name
+T}
+T{
+\fBport\fR
+T}	T{
+int
+T}	T{
+required for \fBdns\fR
+T}	T{
+Endpoint port for \fBdns\fR
+T}
+T{
+\fBinterval\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Time between resolutions;\: 1s to 1h. Endpoints that disappear are removed,\: new ones added with their statistics starting at zero,\: unchanged ones keep theirs
+T}
+T{
+\fBresolver\fR
+T}	T{
+host:port
+T}	T{
+system resolver
+T}	T{
+DNS server to ask instead of the system resolver
+T}
+T{
+\fBweight\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+Weight of \fBdns\fR discovered endpoints
+T}
+T{
+\fBcanary\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Mark discovered endpoints as canaries (needs the pool\(aqs \fBcanary\fR section)
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Bound on one resolution,\: including the synchronous first one at start and reload;\: a failed resolution keeps the previous endpoint set and is counted in \fBxproxyctl upstreams\fR
+T}
+.TE
+.SS "upstreams[].health_check"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.1i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBtype\fR
+T}	T{
+\fBhttp\fR,\: \fBgrpc\fR
+T}	T{
+\fBhttp\fR
+T}	T{
+\fBgrpc\fR calls the standard \fBgrpc.\:health.\:v1.\:Health/\:Check\fR over HTTP/\:2 and needs \fBh2c\fR or \fBscheme:\: https\fR;\: \fBpath\fR and \fBexpected_\:status\fR are not used
+T}
+T{
+\fBgrpc_\:service\fR
+T}	T{
+string
+T}	T{
+\fB""\fR
+T}	T{
+Service asked in a grpc check;\: empty asks about the server as a whole
+T}
+T{
+\fBpath\fR
+T}	T{
+path
+T}	T{
+\fB/\fR
+T}	T{
+GET target
+T}
+T{
+\fBinterval\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+At least 500ms;\: start is jittered
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB2s\fR
+T}	T{
+Must be shorter than \fBinterval\fR
+T}
+T{
+\fBhealthy_\:threshold\fR
+T}	T{
+int
+T}	T{
+\fB2\fR
+T}	T{
+Consecutive successes to mark healthy
+T}
+T{
+\fBunhealthy_\:threshold\fR
+T}	T{
+int
+T}	T{
+\fB3\fR
+T}	T{
+Consecutive failures to mark unhealthy
+T}
+T{
+\fBexpected_\:status\fR
+T}	T{
+list of int
+T}	T{
+\fB[200]\fR
+T}	T{
+
+T}
+T{
+\fBmax_\:concurrent\fR
+T}	T{
+int
+T}	T{
+\fB32\fR
+T}	T{
+Probes in flight per pool;\: 1 to 4096. Bounds the burst when a pool has thousands of endpoints
+T}
+T{
+\fBkeep_\:alive\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Reuse pooled connections for probes. Off opens a fresh connection per probe (verifies the whole connect path,\: no descriptor held between probes);\: on saves the handshake at the cost of one idle connection per endpoint
+T}
+T{
+\fBbody_\:contains\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The first 64 KiB of the probe response must contain this text (type \fBhttp\fR);\: a status in \fBexpected_\:status\fR alone is not enough
+T}
+T{
+\fBbody_\:regex\fR
+T}	T{
+RE2
+T}	T{
+none
+T}	T{
+The first 64 KiB must match this pattern anywhere (anchor with \fB^\fR and \fB$\fR);\: may be combined with \fBbody_\:contains\fR,\: both must hold. At most 4096 bytes each
+T}
+.TE
+.SS "upstreams[].outlier_ejection"
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.3i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBconsecutive_\:failures\fR
+T}	T{
+int
+T}	T{
+\fB5\fR
+T}	T{
+Connection errors or 503 responses in a row
+T}
+T{
+\fBbase_\:ejection_\:time\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Multiplied by the ejection count,\: capped at 10x
+T}
+T{
+\fBmax_\:ejection_\:percent\fR
+T}	T{
+int
+T}	T{
+\fB50\fR
+T}	T{
+Never eject more than this share of the pool
+T}
+T{
+\fBlatency_\:threshold\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+Eject an endpoint whose smoothed time to first byte (exponential moving average,\: factor 0.2,\: over responses and failed attempts) exceeds this
+T}
+T{
+\fBlatency_\:factor\fR
+T}	T{
+float
+T}	T{
+\fB0\fR (off)
+T}	T{
+Eject an endpoint whose smoothed latency exceeds the mean smoothed latency of the pool\(aqs other endpoints times this factor (1.5 to 100),\: so the outlier does not move its own reference;\: needs another endpoint with samples. Either rule ejects for \fBbase_\:ejection_\:time\fR with the same back\-off and \fBmax_\:ejection_\:percent\fR bound as failures,\: the average is reset,\: and \fBxproxyctl upstreams\fR shows \fBlatency_\:ms\fR and \fBlatency_\:ejections\fR
+T}
+T{
+\fBlatency_\:min_\:samples\fR
+T}	T{
+int
+T}	T{
+\fB20\fR
+T}	T{
+Responses an endpoint must have answered since it last became available before its latency is judged (1 to 100000)
+T}
+.TE
+.SS "upstreams[].canary"
+.PP
+A canary release inside one pool: the endpoints marked \fBcanary: true\fR receive the requests the policy selects and no others, so a new version can be exercised by testers (a header or a cookie), then by a share of everyone (\fBpercent\fR), then promoted by marking the old endpoints out. Selected requests fall back to the ordinary endpoints when no canary is available, and ordinary requests fall back to the canaries when the rest is down, unless \fBfallback: false\fR. Session affinity and hashing apply within the chosen side. \fBcanary: true\fR in the access log marks responses from a canary endpoint; \fBGET /v1/pools\fR counts canary requests and fallbacks. For a canary on a separate pool selected by header, use \fBroutes[].headers\fR instead.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.7i) lbw(0.8i) lbx
+lw(0.9i) lw(0.7i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBheader\fR
+T}	T{
+header name
+T}	T{
+none
+T}	T{
+Requests carrying this header go to the canaries
+T}
+T{
+\fBcookie\fR
+T}	T{
+cookie name
+T}	T{
+none
+T}	T{
+Requests carrying this cookie go to the canaries
+T}
+T{
+\fBvalues\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any value)
+T}	T{
+With \fBheader\fR or \fBcookie\fR: only these values select
+T}
+T{
+\fBpercent\fR
+T}	T{
+0 to 100
+T}	T{
+\fB0\fR
+T}	T{
+Share of the other requests also sent to the canaries
+T}
+T{
+\fBfallback\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Use the other side when the selected one has no available endpoint
+T}
+.TE
+.PP
+At least one of \fBheader\fR, \fBcookie\fR or \fBpercent\fR is required, at least one endpoint must be a canary and at least one must not.
+.SS "upstreams[].circuit_breaker"
+.PP
+Outlier ejection removes one failing endpoint from a healthy pool; the circuit breaker stops sending to a pool that fails as a whole and probes it back. Closed, it counts consecutive failed attempts across the pool (connection errors, timeouts, 503 and \fBretry_on\fR statuses; a success resets the count). At \fBconsecutive_failures\fR it opens: every request is refused at once with 503 and \fBRetry\-After\fR set to the remaining open time, without touching the upstream, for \fBopen_for\fR times the number of consecutive reopens (capped at ten). Then it is half open: \fBhalf_open_requests\fR trials may be in flight, a success closes the circuit and resets the back\-off, a failure reopens it. \fBxproxyctl upstreams\fR and \fBGET /v1/pools\fR show the state, the count, opens and refusals; \fBxproxy_upstream_circuit_state\fR and \fBxproxy_upstream_circuit_open_total\fR export them; refusals appear in the access log with \fBupstream_error: circuit_open\fR.
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.3i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBconsecutive_\:failures\fR
+T}	T{
+int
+T}	T{
+\fB5\fR
+T}	T{
+Failed attempts in a row that open the circuit (1 to 10000)
+T}
+T{
+\fBopen_\:for\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+Base open time,\: multiplied by the reopen count (100ms to 1h)
+T}
+T{
+\fBhalf_\:open_\:requests\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+Trials allowed at once while half open (1 to 1000)
+T}
+.TE
+.SS "upstreams[].affinity"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(1.0i) lbx
+lw(0.8i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBcookie_\:name\fR
+T}	T{
+token
+T}	T{
+\fBXPSESS\fR
+T}	T{
+
+T}
+T{
+\fBttl\fR
+T}	T{
+duration
+T}	T{
+\fB1h\fR
+T}	T{
+Cookie and signature lifetime
+T}
+T{
+\fBsecret_\:file\fR
+T}	T{
+path
+T}	T{
+ephemeral
+T}	T{
+HMAC key or keyring,\: created \fB0600\fR on first use if absent;\: rotate with \fBxproxyctl rotate\-\:secret\fR (cookies signed with kept keys stay valid)
+T}
+.TE
+.SH "routes[]"
+.PP
+Matching: exact host, then wildcard host, then hostless routes; within a host the longest path (a \fBpath_regex\fR entry counts as the length of its literal prefix and, at equal length, beats a plain prefix); then the number of \fBheaders\fR and \fBcookies\fR conditions (more first, so a conditioned route is tried before the plain route on the same path); then \fBpriority\fR (higher wins); then configuration order. \fBmethods\fR and the conditions are filters: a route whose method set or conditions do not match is skipped and the next candidate is tried.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.1i) lbw(1.2i) lbx
+lw(1.0i) lw(1.1i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required,\: unique
+T}	T{
+Appears in logs
+T}
+T{
+\fBhosts\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+\fBexample.\:com\fR or \fB*.\:example.\:com\fR (one label)
+T}
+T{
+\fBpaths\fR
+T}	T{
+list
+T}	T{
+\fB["/\:"]\fR (none when \fBpath_\:regex\fR is set)
+T}	T{
+Prefixes on segment boundaries
+T}
+T{
+\fBpath_\:regex\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+RE2 patterns matched against the whole cleaned path (anchored at both ends by the proxy);\: must start with \fB/\fR;\: at most 32,\: each at most 512 bytes. \fBstrip_\:prefix\fR and \fBrewrite_\:path\fR apply as usual
+T}
+T{
+\fBheaders\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Conditions on request headers,\: all of which must hold: \fB{name,\: exact | prefix | regex | present}\fR;\: names are case insensitive,\: the first value is examined,\: \fBregex\fR matches the whole value,\: \fBpresent:\: false\fR requires absence;\: at most 16 conditions with \fBcookies\fR
+T}
+T{
+\fBcookies\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The same conditions on cookies by name
+T}
+T{
+\fBwhen\fR
+T}	T{
+expression
+T}	T{
+none
+T}	T{
+A condition in the expression language (see "Expressions" below) that must hold as well,\: for example \fBclient_\:ip in cidr("10.\:0.\:0.\:0/\:8") && header("X\-\:Env") =\:=\: "beta"\fR;\: counts as one condition for specificity. At most 4096 bytes
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Upper\-case tokens
+T}
+T{
+\fBpriority\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Tie breaker
+T}
+T{
+\fBtenant\fR
+T}	T{
+name
+T}	T{
+none
+T}	T{
+Free label grouping routes for quota reporting (\fBxproxyctl quotas\fR,\: \fBGET /\:v1/\:quotas\fR) and added as a \fBtenant\fR label to the per route metrics
+T}
+T{
+\fBupstream\fR
+T}	T{
+name
+T}	T{
+
+T}	T{
+Exactly one of \fBupstream\fR,\: \fBredirect\fR,\: \fBrespond\fR,\: \fBhoneypot\fR,\: \fBdoh\fR,\: \fBstatic\fR
+T}
+T{
+\fBredirect\fR
+T}	T{
+\fB{to,\: status}\fR
+T}	T{
+status \fB308\fR
+T}	T{
+\fBto\fR is a URL or path and may use the request variables (below),\: for example \fBhttps:\:/\:/\:new.\:example.\:com${path}?${raw_\:query}\fR;\: status 301,\: 302,\: 303,\: 307 or 308
+T}
+T{
+\fBrespond\fR
+T}	T{
+\fB{status,\: body}\fR
+T}	T{
+status \fB200\fR
+T}	T{
+Static response,\: body up to 64 KiB
+T}
+T{
+\fBhoneypot\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Decoy action;\: see \fBroutes[].\:honeypot\fR
+T}
+T{
+\fBmirror\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Copy requests to a second upstream;\: see \fBroutes[].\:mirror\fR
+T}
+T{
+\fBgrpc\fR
+T}	T{
+\fB{services,\: methods}\fR
+T}	T{
+
+T}	T{
+Restrict the route to gRPC requests;\: see \fBroutes[].\:grpc\fR
+T}
+T{
+\fBdoh\fR
+T}	T{
+\fB{listener}\fR
+T}	T{
+
+T}	T{
+DNS over HTTPS action;\: see \fBroutes[].\:doh\fR
+T}
+T{
+\fBstatic\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Serve files from a directory;\: see \fBroutes[].\:static\fR
+T}
+T{
+\fBcompress\fR
+T}	T{
+bool
+T}	T{
+follows \fBcompression\fR
+T}	T{
+\fBfalse\fR leaves this route\(aqs responses as they are;\: \fBtrue\fR needs an enabled \fBcompression\fR section
+T}
+T{
+\fBstrip_\:prefix\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+Remove this prefix before forwarding
+T}
+T{
+\fBrewrite_\:path\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+Replace the path entirely;\: exclusive with \fBstrip_\:prefix\fR
+T}
+T{
+\fBhost_\:header\fR
+T}	T{
+string
+T}	T{
+client \fBHost\fR
+T}	T{
+Host sent upstream
+T}
+T{
+\fBrequest_\:headers\fR
+T}	T{
+\fB{set,\: add,\: remove,\: when}\fR
+T}	T{
+
+T}	T{
+Applied before forwarding;\: values may not contain CR,\: LF or NUL
+T}
+T{
+\fBrequest_\:headers.\:when\fR,\: \fBresponse_\:headers.\:when\fR
+T}	T{
+expression
+T}	T{
+none
+T}	T{
+Apply the block only when the expression holds (see "Expressions" below),\: for example \fBquery("debug") =\:=\: "1"\fR or \fBnot has_\:cookie("consent")\fR;\: \fB${variable}\fR values are still expanded
+T}
+T{
+\fBresponse_\:headers\fR
+T}	T{
+\fB{set,\: add,\: remove}\fR
+T}	T{
+
+T}	T{
+Applied to responses,\: including redirect and respond actions
+T}
+T{
+\fBrequest_\:headers.\:*\fR,\: \fBresponse_\:headers.\:*\fR values
+T}	T{
+template
+T}	T{
+
+T}	T{
+\fBset\fR and \fBadd\fR values may contain \fB${variable}\fR placeholders (see "Variables" below);\: \fB$$\fR is a literal dollar;\: a placeholder without a value expands to an empty string
+T}
+T{
+\fBrate_\:limits\fR
+T}	T{
+list of names
+T}	T{
+\fB[]\fR
+T}	T{
+Evaluated in order;\: first exhausted policy acts
+T}
+T{
+\fBallow_\:cidrs\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (all)
+T}	T{
+Client must be inside one
+T}
+T{
+\fBdeny_\:cidrs\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Evaluated first
+T}
+T{
+\fBmax_\:body_\:bytes\fR
+T}	T{
+int
+T}	T{
+global
+T}	T{
+May only lower the global limit
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+none
+T}	T{
+Whole request deadline for this route
+T}
+T{
+\fBwebsocket\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Allow \fBUpgrade\fR requests
+T}
+.TE
+.SH "ingress"
+.PP
+Kubernetes ingress controller mode. When enabled, the proxy reads the Ingress, Service, EndpointSlice and TLS Secret resources of one ingress class, and the Gateway API resources (Gateway, HTTPRoute) of the same class when the cluster has them, from the API server with the pod\(aqs service account (no client library), translates them and appends the result to this file\(aqs routes, upstreams and certificates: the running configuration is the file plus the cluster. The file\(aqs own routes and upstreams are kept and a name collision is an error. Watch streams on the resources trigger a sync within \fBdebounce\fR of a change, with a full poll every \fBresync\fR as the fallback; a change reloads the proxy like a SIGHUP, and a SIGHUP or \fBxproxyctl reload\fR re\-reads the file and merges the latest snapshot. The API server being unreachable at start is a warning, not a failure: the file configuration serves until the first successful sync.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.2i) lbx
+lw(1.1i) lw(0.9i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+
+T}
+T{
+\fBapi_\:server\fR
+T}	T{
+URL
+T}	T{
+\fBhttps:\:/\:/\:kubernetes.\:default.\:svc\fR
+T}	T{
+\fBhttp:\:/\:/\fR only with \fBallow_\:http\fR (tests,\: \fBkubectl proxy\fR)
+T}
+T{
+\fBtoken_\:file\fR
+T}	T{
+path
+T}	T{
+the service account token
+T}	T{
+Bearer token
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+the service account CA
+T}	T{
+Verifies the API server
+T}
+T{
+\fBallow_\:http\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+
+T}
+T{
+\fBclass\fR
+T}	T{
+name
+T}	T{
+\fBxproxy\fR
+T}	T{
+\fBingressClassName\fR (or the \fBkubernetes.\:io/\:ingress.\:class\fR annotation) served;\: other classes are ignored
+T}
+T{
+\fBnamespaces\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (all)
+T}	T{
+Namespaces read
+T}
+T{
+\fBlistener\fR
+T}	T{
+name
+T}	T{
+none
+T}	T{
+TLS \fBhttp\fR listener that receives certificates from Ingress TLS secrets;\: without it TLS secrets are ignored
+T}
+T{
+\fBcert_\:dir\fR
+T}	T{
+path
+T}	T{
+\fB/\:var/\:lib/\:xproxy/\:ingress\fR
+T}	T{
+Certificate files written \fB0600\fR per secret (\fBnamespace\-\:\-\:name.\:crt/\:.\:key\fR);\: files of secrets no longer referenced are removed
+T}
+T{
+\fBresync\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Full poll interval,\: 1s to 1h;\: with watches the fallback,\: without them the propagation delay
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+One API request
+T}
+T{
+\fBwatch\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Open watch streams on Ingresses,\: Services,\: EndpointSlices,\: Secrets,\: Gateways and HTTPRoutes;\: streams reconnect with backoff,\: a resource the cluster does not serve is retried every five minutes
+T}
+T{
+\fBdebounce\fR
+T}	T{
+duration
+T}	T{
+\fB500ms\fR
+T}	T{
+A burst of watch events becomes one sync;\: 50ms to 1m
+T}
+.TE
+.PP
+Translation: every \fBrules[].http.paths[]\fR entry becomes a route named \fBk8s\-<namespace>\-<ingress>\-<n>\fR with the rule\(aqs host, the path as a prefix (\fBpathType: Exact\fR gets priority 10 so it wins over a prefix of the same length; \fBImplementationSpecific\fR paths with wildcards are skipped with a warning), and an upstream \fBk8s\-<namespace>\-<service>\-<port>\fR whose endpoints are the ready addresses of the service\(aqs EndpointSlices on the port the service maps to (a service without ready endpoints gets an unreachable placeholder so the route answers 503 rather than disappearing). \fBdefaultBackend\fR becomes a hostless \fB/\fR route with priority \-100; only the first Ingress with one counts. Annotations with the prefix \fBxproxy.sysctl.se/\fR set route options: \fBwebsocket\fR (\fB"true"\fR), \fBpriority\-class\fR, \fBrate\-limits\fR and \fBfilters\fR (comma separated names from this file), \fBtimeout\fR, \fBmax\-body\-bytes\fR, \fBstrip\-prefix\fR (\fB"true"\fR strips the matched path), \fBhost\-header\fR. Names over 64 bytes are shortened with a digest.
+.PP
+Gateway API: Gateways whose \fBgatewayClassName\fR is \fBclass\fR and the HTTPRoutes whose \fBparentRefs\fR name them translate as well. Route hostnames come from the HTTPRoute or, when it has none, from the parent listeners\(aq hostnames (wildcards allowed). Each rule and match becomes a route \fBk8s\-gw\-<namespace>\-<httproute>\-<rule>\-<match>\fR: \fBPathPrefix\fR and \fBExact\fR paths (priority 10 for exact), \fBRegularExpression\fR paths as \fBpath_regex\fR, a \fBmethod\fR match, and header matches of type \fBExact\fR and \fBRegularExpression\fR as \fBheaders\fR conditions (a match with an unknown header match type or a pattern that does not compile is skipped with a warning). Filters: \fBRequestHeaderModifier\fR and \fBResponseHeaderModifier\fR become header operations, \fBURLRewrite\fR with \fBReplaceFullPath\fR becomes \fBrewrite_path\fR, with \fBReplacePrefixMatch: /\fR \fBstrip_prefix\fR, and a \fBhostname\fR \fBhost_header\fR; \fBRequestRedirect\fR with a \fBhostname\fR becomes a redirect action (a redirect without a hostname is not supported). A rule with one backend uses that service; several \fBbackendRefs\fR become one \fBweighted\fR upstream over all their endpoints with the reference weights (weight 0 excluded). Listener \fBcertificateRefs\fR install the secrets like Ingress TLS. \fBGET /v1/ingress\fR and \fBxproxyctl ingress\fR show syncs, errors, watch streams and events, counts (Ingresses, Gateways, HTTPRoutes, routes, upstreams, certificates) and the translation warnings. \fBdeploy/kubernetes/xproxy.yaml\fR is a complete deployment with RBAC, an IngressClass and a ConfigMap; \fBdeploy/kubernetes/Containerfile\fR builds the image.
+.SH "metrics"
+.PP
+The management socket always serves \fB/metrics\fR in Prometheus text format and \fB/v1/series\fR with sampled series. This section adds an optional TCP endpoint for scrapers and sizes the series buffer.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(1.0i) lbw(1.1i) lbx
+lw(1.1i) lw(1.0i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBlisten\fR
+T}	T{
+host:port
+T}	T{
+\fB""\fR (disabled)
+T}	T{
+Serves only \fB/\:metrics\fR. Binding all interfaces requires \fBtls\fR with \fBclient_\:ca_\:file\fR
+T}
+T{
+\fBallow_\:cidrs\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Scraper source addresses;\: others get 403 and a security event
+T}
+T{
+\fBtls.\:cert_\:file\fR,\: \fBtls.\:key_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+Make the endpoint HTTPS
+T}
+T{
+\fBtls.\:client_\:ca_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+Require client certificates from this CA (mutual TLS)
+T}
+T{
+\fBper_\:route\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Expose the per route families: \fBxproxy_\:route_\:requests_\:total{route,\:outcome}\fR,\: \fBxproxy_\:route_\:bytes_\:total\fR,\: \fBxproxy_\:route_\:rate_\:limited_\:total\fR and the latency histogram \fBxproxy_\:route_\:request_\:duration_\:seconds{route}\fR (one series per route,\: bucket and outcome;\: a \fBtenant\fR label when set)
+T}
+T{
+\fBendpoint_\:series\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Expose five series per upstream endpoint (\fBxproxy_\:upstream_\:endpoint_\:*\fR). About 1 KiB per endpoint per scrape;\: turn off above a few thousand endpoints and rely on the per\-pool \fBxproxy_\:upstream_\:endpoints_\:healthy\fR
+T}
+T{
+\fBsample_\:interval\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+Series sampling period;\: 1s to 5m
+T}
+T{
+\fBretention\fR
+T}	T{
+duration
+T}	T{
+\fB1h\fR
+T}	T{
+Series kept in memory;\: at most 100000 points
+T}
+T{
+\fBotlp.\:endpoint\fR
+T}	T{
+URL
+T}	T{
+none
+T}	T{
+Enables the OpenTelemetry push exporter: the collector\(aqs metrics URL (\fBhttps:\:/\:/\:otel.\:example.\:com:\:4318/\:v1/\:metrics\fR);\: \fBhttp:\:/\:/\fR only with \fBotlp.\:allow_\:http\fR
+T}
+T{
+\fBotlp.\:allow_\:http\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+
+T}
+T{
+\fBotlp.\:interval\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Push period;\: 1s to 1h. The last push happens at shutdown
+T}
+T{
+\fBotlp.\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+One push;\: at most \fBinterval\fR
+T}
+T{
+\fBotlp.\:headers\fR
+T}	T{
+map
+T}	T{
+\fB{}\fR
+T}	T{
+Request headers,\: for example \fBAuthorization\fR
+T}
+T{
+\fBotlp.\:ca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+Pins the collector\(aqs CA
+T}
+T{
+\fBotlp.\:service_\:name\fR
+T}	T{
+string
+T}	T{
+\fBxproxy\fR
+T}	T{
+\fBservice.\:name\fR resource attribute;\: \fBservice.\:version\fR and \fBhost.\:name\fR are added
+T}
+T{
+\fBotlp.\:attributes\fR
+T}	T{
+map
+T}	T{
+\fB{}\fR
+T}	T{
+Extra resource attributes
+T}
+T{
+\fBotlp.\:compress\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+gzip the request body
+T}
+.TE
+.PP
+The OTLP exporter sends the same families as OTLP/HTTP with JSON encoding: counters as cumulative monotonic sums since process start, gauges as gauges, histograms as cumulative explicit bucket histograms; labels become data point attributes. \fBGET /v1/otlp\fR and \fBxproxyctl otlp\fR show pushes, failures, the last error and the size of the last request.
+.PP
+Exposed families: \fBxproxy_requests_total\fR, \fBxproxy_responses_total{class}\fR, \fBxproxy_denied_total{reason}\fR, \fBxproxy_bytes_in_total\fR, \fBxproxy_bytes_out_total\fR, \fBxproxy_waf_detected_total\fR, \fBxproxy_upstream_errors_total\fR, \fBxproxy_upstream_timeouts_total\fR, \fBxproxy_upstream_no_healthy_total\fR, \fBxproxy_client_aborts_total\fR, \fBxproxy_connections_rejected_total\fR, \fBxproxy_reloads_total{result}\fR, \fBxproxy_bans_total\fR, \fBxproxy_challenges_total{result}\fR, \fBxproxy_log_sent_total{sink}\fR, \fBxproxy_log_dropped_total{sink}\fR, \fBxproxy_connections_open\fR, \fBxproxy_requests_in_flight\fR, \fBxproxy_bans_active\fR, \fBxproxy_load_level\fR, \fBxproxy_upstream_latency_seconds\fR, \fBxproxy_shedding{class}\fR, \fBxproxy_cluster_peers\fR, \fBxproxy_cluster_peers_connected\fR, \fBxproxy_cluster_messages_total{direction,type}\fR, \fBxproxy_cluster_rejected_total\fR, \fBxproxy_request_duration_seconds\fR (histogram), \fBxproxy_upstream_ttfb_seconds\fR (histogram), \fBxproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}\fR, \fBxproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}\fR, \fBxproxy_route_requests_total{route,outcome}\fR, \fBxproxy_build_info\fR, \fBxproxy_uptime_seconds\fR, \fBxproxy_config_generation\fR.
+.PP
+Series (per\-second rates for counters, current values for gauges): \fBrequests\fR, \fBresponses_2xx\fR, \fBresponses_4xx\fR, \fBresponses_5xx\fR, \fBdenied\fR, \fBshed\fR, \fBbytes_in\fR, \fBbytes_out\fR, \fBupstream_errors\fR, \fBopen_connections\fR, \fBin_flight\fR, \fBload_level\fR, \fBupstream_latency_ms\fR, \fBbans_active\fR, \fBcluster_connected\fR.
+.SH "bans"
+.PP
+Present means enabled. Bans apply before routing; banned peers are closed at accept when \fBaction\fR is \fBdrop\fR, and answered 403 when the client address comes from a trusted proxy chain or \fBaction\fR is \fBreject\fR.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.7i) lbw(0.8i) lbx
+lw(0.9i) lw(0.7i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBstate_\:file\fR
+T}	T{
+path
+T}	T{
+\fB""\fR (memory only)
+T}	T{
+bbolt file that persists bans across restarts
+T}
+T{
+\fBmax_\:entries\fR
+T}	T{
+int
+T}	T{
+\fB100000\fR
+T}	T{
+Bound on banned addresses;\: the soonest expiring are evicted when full
+T}
+T{
+\fBexempt_\:cidrs\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Never banned,\: by trigger or by operator
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBdrop\fR,\: \fBreject\fR
+T}	T{
+\fBdrop\fR
+T}	T{
+Close at accept,\: or answer 403 only
+T}
+T{
+\fBtriggers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Automatic bans;\: see below
+T}
+.TE
+.SS "bans.triggers[]"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.1i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required,\: unique
+T}	T{
+Appears in the ban entry as \fBtrigger:\:<name>\fR
+T}
+T{
+\fBreasons\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (all)
+T}	T{
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR
+T}
+T{
+\fBthreshold\fR
+T}	T{
+int
+T}	T{
+required
+T}	T{
+Denies within \fBwindow\fR that trigger the ban
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+required
+T}	T{
+At most 24h
+T}
+T{
+\fBduration\fR
+T}	T{
+duration
+T}	T{
+required
+T}	T{
+First ban length
+T}
+T{
+\fBescalation\fR
+T}	T{
+float
+T}	T{
+\fB2\fR
+T}	T{
+Multiplier applied for each repeat ban of the same address
+T}
+T{
+\fBmax_\:duration\fR
+T}	T{
+duration
+T}	T{
+\fB24h\fR
+T}	T{
+Cap on escalated duration;\: at least \fBduration\fR
+T}
+.TE
+.PP
+Manual bans (\fBxproxyctl ban\fR) accept addresses and CIDRs no wider than /8 (IPv4) or /32 (IPv6); loopback and unspecified addresses are refused.
+.SH "waf"
+.PP
+Present means enabled. Routes without a \fBwaf\fR block use \fBdefault_mode\fR and \fBdefault_profile\fR. Profiles compile at load and at reload; a broken rule set fails the reload.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.8i) lbw(1.0i) lbx
+lw(1.0i) lw(0.8i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBprofiles\fR
+T}	T{
+list
+T}	T{
+required,\: at least one
+T}	T{
+Rule sets;\: see below
+T}
+T{
+\fBdefault_\:mode\fR
+T}	T{
+\fBoff\fR,\: \fBdetect\fR,\: \fBblock\fR
+T}	T{
+\fBblock\fR
+T}	T{
+\fBdetect\fR logs what \fBblock\fR would have done
+T}
+T{
+\fBdefault_\:profile\fR
+T}	T{
+name
+T}	T{
+\fBdefault\fR
+T}	T{
+
+T}
+T{
+\fBrequest_\:body_\:limit\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+Bytes of request body inspected;\: 1024 to 1 GiB
+T}
+T{
+\fBrequest_\:body_\:limit_\:action\fR
+T}	T{
+\fBreject\fR,\: \fBpartial\fR
+T}	T{
+\fBreject\fR
+T}	T{
+413 above the limit,\: or inspect the first bytes and pass the rest
+T}
+T{
+\fBinspect_\:responses\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Enable response header and body rules (data leakage)
+T}
+T{
+\fBresponse_\:body_\:limit\fR
+T}	T{
+int
+T}	T{
+\fB524288\fR
+T}	T{
+Larger response bodies pass uninspected
+T}
+T{
+\fBresponse_\:mime_\:types\fR
+T}	T{
+list
+T}	T{
+text and JSON/\:XML types
+T}	T{
+Bodies with other content types are not inspected
+T}
+T{
+\fBlearning\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Exclusion learning;\: see below
+T}
+.TE
+.SS "waf.learning"
+.PP
+Learning aggregates every match of a detection rule by rule id, matched variable (for example \fBARGS:q\fR) and route, in block and detect mode alike. A triple seen \fBmin_hits\fR times becomes a proposal with a ready to review SecLang exclusion, scoped to the route\(aqs path prefix when it has one (\fBGET /v1/waf\fR, \fBGET /v1/waf/exclusions\fR, \fBxproxyctl waf proposals\fR). The table and the per rule statistics live for the process and survive reloads; \fBPOST /v1/waf/reset\fR clears them.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.8i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Collect matched variables
+T}
+T{
+\fBmin_\:hits\fR
+T}	T{
+int
+T}	T{
+\fB5\fR
+T}	T{
+Matches before a proposal appears;\: 1 to 1000000
+T}
+T{
+\fBmax_\:entries\fR
+T}	T{
+int
+T}	T{
+\fB10000\fR
+T}	T{
+Bound on distinct (rule,\: variable,\: route) entries;\: further ones are counted as dropped;\: 100 to 1000000
+T}
+.TE
+.SS "waf.profiles[]"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.1i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required,\: unique
+T}	T{
+
+T}
+T{
+\fBcrs\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Enable the bundled OWASP Core Rule Set
+T}
+T{
+\fBcrs.\:dir\fR
+T}	T{
+absolute path
+T}	T{
+embedded copy
+T}	T{
+Load the Core Rule Set from a directory in the release layout (\fBcrs\-\:setup.\:conf\fR or \fBcrs\-\:setup.\:conf.\:example\fR,\: \fBrules/\:*.\:conf\fR with their \fB.\:data\fR files);\: a reload picks up changed files,\: so rules update without a new binary. The directory is validated at load and a broken file fails the reload
+T}
+T{
+\fBcrs.\:paranoia_\:level\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+1 to 4
+T}
+T{
+\fBcrs.\:inbound_\:threshold\fR
+T}	T{
+int
+T}	T{
+\fB5\fR
+T}	T{
+Anomaly score that blocks a request
+T}
+T{
+\fBcrs.\:outbound_\:threshold\fR
+T}	T{
+int
+T}	T{
+\fB4\fR
+T}	T{
+Anomaly score that blocks a response
+T}
+T{
+\fBdirective_\:files\fR
+T}	T{
+list of paths
+T}	T{
+\fB[]\fR
+T}	T{
+SecLang files loaded after CRS setup and before CRS rules (exclusions go here)
+T}
+T{
+\fBdirectives\fR
+T}	T{
+string
+T}	T{
+\fB""\fR
+T}	T{
+Inline SecLang loaded in the same position,\: at most 1 MiB
+T}
+.TE
+.PP
+A profile needs at least one of \fBcrs\fR, \fBdirective_files\fR or \fBdirectives\fR.
+.SS "routes[].honeypot"
+.PP
+A honeypot route answers with a decoy that looks like the real thing (a WordPress login, a leaked \fB.env\fR, a \fB.git/config\fR) and records the client: a \fBhoneypot\fR security event with the full request line, a mark on the address for \fBmark\fR so that its later requests on every route are logged with \fBhoneypot_marked: true\fR and reach filters as \fBInfo.HoneypotMarked\fR, and a count towards the \fBhoneypot\fR ban reason. Nothing is proxied. Put honeypots on paths no legitimate client uses.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.9i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdecoy\fR
+T}	T{
+name
+T}	T{
+\fBadmin\-\:login\fR when nothing else is set
+T}	T{
+Built\-in body: \fBwp\-\:login\fR,\: \fBenv\fR,\: \fBgit\-\:config\fR,\: \fBphpinfo\fR,\: \fBadmin\-\:login\fR,\: \fBrobots\fR;\: sets the content type
+T}
+T{
+\fBbody\fR
+T}	T{
+string
+T}	T{
+
+T}	T{
+Inline decoy,\: at most 64 KiB;\: exclusive with \fBdecoy\fR and \fBbody_\:file\fR
+T}
+T{
+\fBbody_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+Decoy read at load and on reload (a missing file fails the reload),\: at most 1 MiB
+T}
+T{
+\fBstatus\fR
+T}	T{
+int
+T}	T{
+\fB200\fR
+T}	T{
+Response status
+T}
+T{
+\fBcontent_\:type\fR
+T}	T{
+string
+T}	T{
+\fBtext/\:html; charset=\:utf\-\:8\fR
+T}	T{
+For \fBbody\fR and \fBbody_\:file\fR
+T}
+T{
+\fBdelay\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Hold the connection before answering,\: in a tarpit slot (\fBmax_\:tarpits\fR),\: never in a request slot;\: at most 60s
+T}
+T{
+\fBmark\fR
+T}	T{
+duration
+T}	T{
+\fB1h\fR
+T}	T{
+How long the client stays marked;\: at most 720h
+T}
+.TE
+.PP
+\fBresponse_headers\fR apply, so a decoy can carry a \fBServer\fR header of its own. \fBGET /v1/honeypot\fR lists marked clients (address, route, hits, first, last, expires) and the decoy names; \fBDELETE /v1/honeypot?ip=\fR and \fBxproxyctl honeypot forget IP\fR remove a mark. The mark table holds at most 65536 addresses. Counters: \fBhoneypot_hits\fR, \fBhoneypot_marked\fR; metrics \fBxproxy_honeypot_hits_total\fR, \fBxproxy_honeypot_marked\fR.
+.SS "routes[].mirror"
+.PP
+A mirrored route sends a copy of each request (sampled by \fBpercent\fR) to another upstream in the background while the live request proceeds as usual. The copy is built like the live outbound request (path rules, \fBhost_header\fR, forwarding headers, \fBrequest_headers\fR) and carries \fBX\-Xproxy\-Mirror: 1\fR and the same \fBX\-Request\-Id\fR; its response is read and discarded, so a slow, failing or absent mirror never changes what the client sees. Bodies are buffered up to \fBmax_body_bytes\fR so that both requests can read them; larger requests are proxied and not mirrored. Upgrade requests are never mirrored. Only routes with an \fBupstream\fR can mirror.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.9i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+Receives the copies;\: must differ from the route\(aqs upstream
+T}
+T{
+\fBpercent\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+Share of requests copied,\: 1 to 100
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (all)
+T}	T{
+Upper\-case tokens;\: copies are limited to these methods
+T}
+T{
+\fBmax_\:body_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+Largest body buffered for mirroring;\: at most 64 MiB
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Bound on the copy including its response;\: at most 5m
+T}
+T{
+\fBmax_\:in_\:flight\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+Copies in flight for this route;\: beyond it copies are dropped and counted
+T}
+.TE
+.PP
+The access log carries \fBmirror: sent\fR, \fBdropped\fR or \fBbody_too_large\fR. Counters: \fBmirror_sent\fR, \fBmirror_dropped\fR, \fBmirror_skipped\fR, \fBmirror_failed\fR; metric \fBxproxy_mirror_total{outcome}\fR. Mirror responses appear in the error log at debug level with their status.
+.SS "routes[].static"
+.PP
+A \fBstatic\fR route serves files from a directory: assets next to an application, a maintenance page, a single page application. The request path after \fBstrip_prefix\fR or \fBrewrite_path\fR selects the file. Files are opened through \fBos.Root\fR, so neither \fB..\fR (removed earlier by path cleaning) nor a symbolic link pointing outside the root can leave it; names starting with a dot (\fB.env\fR, \fB.git\fR) are refused unless \fBdot_files\fR is set; anything that is not a regular file or directory answers 404, as does every failure to open, so the tree\(aqs shape leaks nothing. \fBGET\fR and \fBHEAD\fR only (405 otherwise). Responses carry a weak \fBETag\fR from size and modification time, honour \fBIf\-None\-Match\fR, \fBIf\-Modified\-Since\fR and \fBRange\fR, and set the content type from a fixed table for the common web types (\fBtext/javascript\fR, \fBtext/css\fR, \fBimage/svg+xml\fR, \fBapplication/wasm\fR, ...) with \fBX\-Content\-Type\-Options: nosniff\fR. A directory without a trailing slash redirects to it (301), then serves \fBindex\fR, then a listing when enabled, else 404. The route\(aqs admission pipeline (bans, limits, ACLs, WAF, filters) applies before the file is opened, and \fBresponse_headers\fR apply to every answer.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.7i) lbw(0.9i) lbx
+lw(0.9i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBroot\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Absolute directory;\: must exist at load (a missing root fails the reload and the previous generation keeps serving)
+T}
+T{
+\fBindex\fR
+T}	T{
+file name
+T}	T{
+\fBindex.\:html\fR
+T}	T{
+Served for a directory;\: \fB""\fR disables
+T}
+T{
+\fBlisting\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Render a directory without an index as an HTML list (dot files hidden unless \fBdot_\:files\fR)
+T}
+T{
+\fBfallback\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+File inside the root served when the requested one does not exist,\: for single page applications (\fB/\:index.\:html\fR);\: assets that do exist are served as themselves
+T}
+T{
+\fBcache_\:control\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Sent as \fBCache\-\:Control\fR with every file
+T}
+T{
+\fBdot_\:files\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Serve names starting with a dot
+T}
+T{
+\fBmax_\:file_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (no bound)
+T}	T{
+Larger files answer 404
+T}
+.TE
+.PP
+\fBcache\fR, \fBmirror\fR, \fBgrpc\fR and \fBwebsocket\fR cannot be combined with \fBstatic\fR.
+.SS "routes[].doh"
+.PP
+A \fBdoh\fR route answers DNS over HTTPS (RFC 8484) for clients: \fBGET\fR with the query in the \fBdns\fR parameter (base64url without padding) or \fBPOST\fR with an \fBapplication/dns\-message\fR body. The query goes through the named \fBkind: dns\fR listener\(aqs policy and cache (bans, client allow list, rate limit, block list) as if it had arrived over UDP, and the answer is returned as \fBapplication/dns\-message\fR with \fBCache\-Control: max\-age\fR set to the smallest TTL in it. A query the policy drops answers 403; bad requests 400, a wrong content type 415, other methods 405. The route\(aqs own admission pipeline (rate limits, ACLs, WAF) applies first, so a DoH endpoint can be limited like any other route.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(0.9i) lbx
+lw(0.9i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBlistener\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+A \fBkind:\: dns\fR listener whose policy and cache answer
+T}
+.TE
+.PP
+The access log line carries \fBdns_rcode\fR.
+.SS "routes[].grpc"
+.PP
+A route with a \fBgrpc\fR section matches only gRPC requests (content type \fBapplication/grpc\fR or \fBapplication/grpc+...\fR), and with lists only the named services or \fBService/Method\fR pairs read from the request path (\fB/package.Service/Method\fR). Among routes of equal path length and priority, one with named services wins over one with an empty \fBgrpc\fR section, which wins over a plain route, so a gRPC catch\-all and an HTTP catch\-all can share \fB/\fR. Only routes with an \fBupstream\fR can match gRPC. Requests and responses stream through unchanged with their trailers; the client\(aqs \fBgrpc\-timeout\fR header tightens the route \fBtimeout\fR. When the proxy cannot forward a gRPC request it answers as a gRPC client expects, a trailers\-only response with HTTP 200 and a \fBgrpc\-status\fR: 7 PERMISSION_DENIED for 403, 16 UNAUTHENTICATED for 401, 12 UNIMPLEMENTED for no route, 8 RESOURCE_EXHAUSTED for rate and size limits, 14 UNAVAILABLE for no healthy endpoint or a connection error, 4 DEADLINE_EXCEEDED for a timeout, 13 INTERNAL otherwise, with the proxy\(aqs own status in \fBgrpc\-message\fR.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.9i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBservices\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Fully qualified service names,\: \fBpackage.\:Service\fR
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+\fBpackage.\:Service/\:Method\fR pairs
+T}
+.TE
+.PP
+The access log carries \fBgrpc: true\fR and \fBgrpc_status\fR from the response; \fBxproxy_grpc_responses_total{code}\fR counts responses by status. gRPC needs HTTP/2 end to end: a TLS listener with \fBh2\fR, or a plaintext listener with \fBh2c: true\fR, and an \fBhttps\fR or \fBh2c\fR upstream.
+.SS "routes[].waf"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.8i) lbw(0.9i) lbx
+lw(0.8i) lw(0.8i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBoff\fR,\: \fBdetect\fR,\: \fBblock\fR
+T}	T{
+\fBwaf.\:default_\:mode\fR
+T}	T{
+
+T}
+T{
+\fBprofile\fR
+T}	T{
+name
+T}	T{
+\fBwaf.\:default_\:profile\fR
+T}	T{
+
+T}
+.TE
+.SH "cluster"
+.PP
+Present means enabled. Nodes exchange rate limit consumption and ban changes over mutual TLS (AMR\-009, AMR\-021). Every node listens and dials every peer; there is no leader. Enabling or disabling the section, and changing \fBlisten\fR, \fBnode_id\fR or \fBtls\fR, require a restart. Peers, intervals and sharing flags reload.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.0i) lbw(0.9i) lbx
+lw(0.9i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBnode_\:id\fR
+T}	T{
+name
+T}	T{
+host name
+T}	T{
+Identity announced to peers and used as the ban source (\fBpeer:\:<node_\:id>\fR)
+T}
+T{
+\fBlisten\fR
+T}	T{
+host:port
+T}	T{
+required
+T}	T{
+Cluster listener. Must be a specific internal address,\: not all interfaces
+T}
+T{
+\fBpeers\fR
+T}	T{
+list of host:port
+T}	T{
+\fB[]\fR
+T}	T{
+Cluster addresses of the other nodes
+T}
+T{
+\fBtls.\:cert_\:file\fR,\: \fBtls.\:key_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+This node\(aqs certificate,\: used for both directions
+T}
+T{
+\fBtls.\:ca_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Cluster CA;\: every peer must present a certificate from it
+T}
+T{
+\fBtls.\:allowed_\:names\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any name from the CA)
+T}	T{
+Restrict peers to these certificate common names or DNS SANs
+T}
+T{
+\fBgossip_\:interval\fR
+T}	T{
+duration
+T}	T{
+\fB1s\fR
+T}	T{
+How often consumption and ban batches are sent;\: 100ms to 60s
+T}
+T{
+\fBpeer_\:stale\fR
+T}	T{
+duration
+T}	T{
+3 x \fBgossip_\:interval\fR
+T}	T{
+How long a peer report keeps reducing local refill after its last update;\: at least 2 x the interval
+T}
+T{
+\fBshare_\:rate_\:limits\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Exchange consumption reports
+T}
+T{
+\fBshare_\:bans\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Exchange bans and unbans,\: and send a snapshot to a newly connected peer
+T}
+T{
+\fBshare_\:events\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Exchange security events: honeypot marks and unmarks (applied to the peer\(aqs mark table with route \fBpeer:\:<node>/\:<route>\fR) and OIDC session revocations (per filter name). Events are bounded (128 byte kind,\: 512 byte key,\: lifetime clamped to a year),\: queued without blocking and dropped when the queue is full. Nodes older than 1.3 close a connection that carries them: set \fBfalse\fR during a rolling upgrade from 1.2
+T}
+T{
+\fBmax_\:keys_\:per_\:report\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+Largest consumers kept per report
+T}
+T{
+\fBexact_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB50ms\fR
+T}	T{
+Longest wait for a key owner\(aqs answer under \fBdistributed:\: exact\fR (5ms to 2s);\: on expiry the request is decided locally
+T}
+.TE
+.PP
+Semantics: with sharing on, a rate limit policy\(aqs \fBrate\fR becomes an approximate cluster wide rate per key. Each node refills a key\(aqs bucket at \fBrate\fR minus the sum of fresh peer consumption for that key; \fBburst\fR stays per node. Accuracy is bounded by one gossip interval of delay and reports expire after \fBpeer_stale\fR, so losing a peer degrades to local limiting. A policy with \fBdistributed: exact\fR is instead decided by one owner per key: the members (this node and every peer whose hello was received on a live connection, \fBxproxyctl cluster\fR lists them) agree on the owner through rendezvous hashing, requests for a key owned elsewhere carry one round trip to the owner within \fBexact_timeout\fR, and the owner\(aqs limiter is the single count, so the limit holds exactly cluster wide while the members agree. Membership changes move only the departed member\(aqs keys; during a partition two owners may exist for a key, and a node without an answer in time decides locally, which over\-admits rather than refuses.
+.PP
+The cluster listener can be socket activated with \fBFileDescriptorName=cluster\fR.
+.SH "jwt"
+.PP
+Present means providers are available; routes opt in with a \fBjwt\fR block. Tokens are validated on the standard library: RSA (PKCS#1 v1.5 and PSS), ECDSA, Ed25519 and HMAC signatures, JSON Web Key Sets from a file or an HTTPS URL, and the standard time and audience claims. \fBnone\fR is never accepted.
+.SS "jwt.providers[]"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.1i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required,\: unique
+T}	T{
+Referenced by routes
+T}
+T{
+\fBissuer\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+Must equal the token\(aqs \fBiss\fR
+T}
+T{
+\fBaudiences\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The token\(aqs \fBaud\fR must contain one;\: set it
+T}
+T{
+\fBalgorithms\fR
+T}	T{
+list
+T}	T{
+\fB[RS256,\: ES256,\: EdDSA]\fR
+T}	T{
+Allow list from RS256/\:384/\:512,\: PS256/\:384/\:512,\: ES256/\:384/\:512,\: EdDSA,\: HS256/\:384/\:512
+T}
+T{
+\fBjwks_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+Key set on disk,\: re\-read on reload
+T}
+T{
+\fBjwks_\:url\fR
+T}	T{
+https URL
+T}	T{
+
+T}	T{
+Key set fetched at start,\: every \fBjwks_\:refresh\fR,\: and on an unknown key id (at most once a minute)
+T}
+T{
+\fBjwks_\:ca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+CA pinned for the fetch
+T}
+T{
+\fBjwks_\:refresh\fR
+T}	T{
+duration
+T}	T{
+\fB1h\fR
+T}	T{
+At least 1m
+T}
+T{
+\fBhmac_\:secret_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+Shared secret (at least 32 bytes) for HS algorithms;\: symmetric keys are never taken from a key set
+T}
+T{
+\fBclock_\:skew\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Tolerance on \fBexp\fR,\: \fBnbf\fR and \fBiat\fR;\: 0 to 10m
+T}
+T{
+\fBrequired_\:claims\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Claims that must be present;\: \fBexp\fR always is
+T}
+T{
+\fBsource\fR
+T}	T{
+\fBbearer\fR,\: \fBheader:\:<Name>\fR,\: \fBcookie:\:<Name>\fR
+T}	T{
+\fBbearer\fR
+T}	T{
+Where the token is read from
+T}
+T{
+\fBforward_\:claims\fR
+T}	T{
+map header \-> claim
+T}	T{
+\fB{}\fR
+T}	T{
+Set upstream headers from claims;\: client supplied copies of these headers are always removed,\: token or not. \fBAuthorization\fR,\: \fBCookie\fR and \fBHost\fR cannot be targets
+T}
+T{
+\fBstrip_\:token\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Remove the token before forwarding
+T}
+T{
+\fBlog_\:claims\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Claims copied to the access log as \fBjwt_\:<claim>\fR
+T}
+.TE
+.PP
+A provider whose key set has never loaded (for example the JWKS URL is unreachable at start) rejects tokens with 503 and \fBRetry\-After\fR until a fetch succeeds; a fetch that returns no keys keeps the previous set.
+.SS "routes[].jwt"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(0.9i) lbx
+lw(0.9i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBprovider\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+
+T}
+T{
+\fBrequired\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+\fBfalse\fR lets requests without a token through (spoofed claim headers still removed) and rejects invalid ones
+T}
+.TE
+.PP
+Rejections answer 401 with \fBWWW\-Authenticate: Bearer\fR (\fBerror="invalid_token"\fR for a present but invalid token), are logged with the failure category (expired, signature, issuer, audience, algorithm, unknown_key, claim, malformed) and feed ban triggers under the \fBjwt\fR category. The JWT filter runs before the WAF on the same route.
+.SH "icap"
+.PP
+Present means scanning services are available; routes opt in with an \fBicap\fR block. Requests (REQMOD) and responses (RESPMOD) are handed to the service per RFC 3507 with preview and \fB204 No Content\fR support. A \fB200\fR answer with an encapsulated response is sent to the client as is (a block page); one with an encapsulated request replaces the method, path, headers and body sent upstream, except the protected headers (\fBHost\fR, the forwarding headers, \fBAuthorization\fR, \fBCookie\fR).
+.SS "icap.services[]"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(1.0i) lbx
+lw(0.9i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required,\: unique
+T}	T{
+Referenced by routes
+T}
+T{
+\fBurl\fR
+T}	T{
+\fBicap:\:/\:/\:host[:\:port]/\:service\fR or \fBicaps:\:/\:/\:.\:.\:.\fR
+T}	T{
+required
+T}	T{
+Default ports 1344 and 11344
+T}
+T{
+\fBtls.\:ca_\:file\fR,\: \fBtls.\:server_\:name\fR
+T}	T{
+
+T}	T{
+
+T}	T{
+Pinned CA and verified name for \fBicaps\fR
+T}
+T{
+\fBconnect_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB2s\fR
+T}	T{
+
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Whole exchange;\: at most 2m
+T}
+T{
+\fBmax_\:conns\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+Pooled idle connections
+T}
+T{
+\fBmax_\:body\fR
+T}	T{
+int
+T}	T{
+\fB10485760\fR
+T}	T{
+Largest body sent for scanning;\: 1024 to 1 GiB
+T}
+T{
+\fBbody_\:limit_\:action\fR
+T}	T{
+\fBreject\fR,\: \fBbypass\fR
+T}	T{
+\fBreject\fR
+T}	T{
+413,\: or pass unscanned and count as bypassed
+T}
+T{
+\fBfail\fR
+T}	T{
+\fBclosed\fR,\: \fBopen\fR
+T}	T{
+\fBclosed\fR
+T}	T{
+On a service error or timeout: 502 with \fBRetry\-\:After\fR,\: or pass unscanned and count as bypassed
+T}
+T{
+\fBpreview\fR
+T}	T{
+\fBauto\fR,\: \fBoff\fR,\: bytes
+T}	T{
+\fBauto\fR
+T}	T{
+Preview size from OPTIONS,\: none,\: or a fixed count
+T}
+.TE
+.PP
+The service is probed with OPTIONS at load and reload; an unreachable service is logged, not fatal, and behaves according to \fBfail\fR until it answers.
+.SS "routes[].icap"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(0.9i) lbx
+lw(0.9i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBservice\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+
+T}
+T{
+\fBrequest\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Send requests (REQMOD)
+T}
+T{
+\fBresponse\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send responses (RESPMOD);\: the response body is buffered up to \fBmax_\:body\fR
+T}
+.TE
+.PP
+Blocks are logged with reason \fBicap\fR and feed ban triggers under the \fBicap\fR category. The ICAP filter runs after JWT and WAF on the same route.
+.SH "filters[]"
+.PP
+Middleware instances of registered kinds, attached to routes by name (\fBroutes[].filters\fR). \fBxproxyctl filters\fR lists the kinds compiled into the binary; EXTENDING.md describes how to add one.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.8i) lbw(1.0i) lbx
+lw(0.8i) lw(0.8i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required,\: unique
+T}	T{
+Referenced by routes;\: the default deny reason
+T}
+T{
+\fBkind\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+T}
+T{
+\fBstage\fR
+T}	T{
+\fBbefore_\:auth\fR,\: \fBafter_\:auth\fR,\: \fBafter_\:waf\fR,\: \fBafter_\:scan\fR
+T}	T{
+\fBafter_\:auth\fR
+T}	T{
+Position relative to the built\-in JWT,\: WAF and ICAP filters
+T}
+T{
+\fBoptions\fR
+T}	T{
+mapping
+T}	T{
+
+T}	T{
+Kind specific;\: unknown keys are rejected
+T}
+.TE
+.SS "Kind \fBheader_guard\fR"
+.PP
+Requires or denies requests by header patterns (RE2 syntax).
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrequire\fR
+T}	T{
+list of \fB{header,\: pattern}\fR
+T}	T{
+
+T}	T{
+Every rule must match the header\(aqs value (a missing header is the empty string)
+T}
+T{
+\fBdeny\fR
+T}	T{
+list of \fB{header,\: pattern}\fR
+T}	T{
+
+T}	T{
+Any match denies;\: evaluated before \fBrequire\fR
+T}
+T{
+\fBstatus\fR
+T}	T{
+int
+T}	T{
+\fB403\fR
+T}	T{
+4xx status on deny
+T}
+T{
+\fBreason\fR
+T}	T{
+string
+T}	T{
+the filter name
+T}	T{
+Deny reason in logs,\: counters and ban triggers
+T}
+.TE
+.SS "Kind \fBbasic_auth\fR"
+.PP
+HTTP Basic authentication against a file of \fBname:hash\fR lines written by \fBxproxyctl htpasswd FILE NAME\fR (PBKDF2\-HMAC\-SHA256, 600 000 iterations; the file must not be world readable). Verified credentials are cached by digest so the hash cost is paid once per client session.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(1.1i) lbx
+lw(0.9i) lw(0.9i) lw(1.1i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBusers_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Users file
+T}
+T{
+\fBrealm\fR
+T}	T{
+string
+T}	T{
+\fBrestricted\fR
+T}	T{
+\fBWWW\-\:Authenticate\fR realm
+T}
+T{
+\fBcache_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+Credential cache;\: \fB0\fR disables
+T}
+T{
+\fBforward_\:user_\:header\fR
+T}	T{
+header
+T}	T{
+none
+T}	T{
+Set to the user name on the upstream request
+T}
+T{
+\fBstrip\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Remove \fBAuthorization\fR before forwarding
+T}
+.TE
+.PP
+Denies answer 401 with \fBWWW\-Authenticate\fR and reason \fB<filter name>\fR; the user name is added to the access log line as \fBauth_user\fR.
+.SS "Kind \fBoidc\fR"
+.PP
+Logs browsers in with OpenID Connect (authorization code flow with PKCE and a nonce) and keeps the result in an encrypted, HttpOnly, SameSite Lax session cookie. A request without a session is redirected to the provider; the callback exchanges the code at the token endpoint, verifies the ID token against the provider\(aqs JWKS (issuer, audience, expiry, signature, nonce), checks \fBrequire_claims\fR, sets the cookie and redirects to the page first asked for. Requests with a session carry the listed claims to the upstream as headers (client supplied values of those headers are always removed) and the cookie is stripped upstream. Provider metadata comes from \fBissuer/.well\-known/openid\-configuration\fR, fetched at load and retried on demand; while it is unavailable logins answer 503. Login and logout redirects are not security events; failed callbacks are, with reason \fBoidc\fR and a detail (\fBstate_mismatch\fR, \fBnonce\fR, \fBid_token\fR, \fBexchange\fR, \fBclaim:<name>\fR), and count towards ban triggers.
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(0.9i) lbw(1.4i) lbx
+lw(1.4i) lw(0.9i) lw(1.4i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBissuer\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+\fBhttps:\:/\:/\fR (plain \fBhttp:\:/\:/\fR only with \fBallow_\:http\fR,\: for tests)
+T}
+T{
+\fBclient_\:id\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+
+T}
+T{
+\fBclient_\:secret_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Not world readable;\: sent as \fBclient_\:secret_\:basic\fR (\fBtoken_\:auth:\: post\fR sends it in the form)
+T}
+T{
+\fBcookie_\:secret_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+32 or more random bytes or a keyring,\: created \fB0600\fR if absent;\: sessions survive reloads and restarts while the key stays,\: and a rotation with \fBxproxyctl rotate\-\:secret\fR keeps sessions sealed under the kept keys
+T}
+T{
+\fBscopes\fR
+T}	T{
+list
+T}	T{
+\fB[openid]\fR
+T}	T{
+Must include \fBopenid\fR
+T}
+T{
+\fBredirect_\:path\fR
+T}	T{
+path
+T}	T{
+\fB/\:oauth2/\:callback\fR
+T}	T{
+Registered at the provider as \fBexternal_\:url\fR + path
+T}
+T{
+\fBlogout_\:path\fR
+T}	T{
+path
+T}	T{
+\fB/\:oauth2/\:logout\fR
+T}	T{
+Clears the session and sends the browser to the provider\(aqs end session endpoint (when it has one) with \fBlogout_\:redirect\fR as the return,\: else to \fBlogout_\:redirect\fR
+T}
+T{
+\fBlogout_\:redirect\fR
+T}	T{
+path
+T}	T{
+\fB/\fR
+T}	T{
+
+T}
+T{
+\fBfrontchannel_\:logout_\:path\fR
+T}	T{
+path
+T}	T{
+\fB/\:oauth2/\:frontchannel\-\:logout\fR
+T}	T{
+OpenID Connect Front\-Channel Logout endpoint: register \fBexternal_\:url\fR + path as the \fBfrontchannel_\:logout_\:uri\fR at the provider;\: a \fBGET\fR with \fBsid\fR (and \fBiss\fR,\: checked against \fBissuer\fR) revokes that provider session so every session carrying it stops working,\: and clears the cookie when present
+T}
+T{
+\fBrevoked_\:max\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Bound of the revoked session id index;\: entries expire with the sessions they end,\: and over the bound the soonest to expire is dropped
+T}
+T{
+\fBexternal_\:url\fR
+T}	T{
+URL
+T}	T{
+derived
+T}	T{
+\fBscheme:\:/\:/\:host\fR the browser reaches the proxy on;\: derived from the request (\fBHost\fR,\: TLS or \fBX\-\:Forwarded\-\:Proto\fR) when unset
+T}
+T{
+\fBcookie_\:name\fR
+T}	T{
+token
+T}	T{
+\fBXPOIDC\fR
+T}	T{
+The state cookie is \fB<cookie_\:name>_\:state\fR,\: ten minutes
+T}
+T{
+\fBcookie_\:domain\fR
+T}	T{
+string
+T}	T{
+host only
+T}	T{
+
+T}
+T{
+\fBsession_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB8h\fR
+T}	T{
+1m to 720h;\: the cookie and its payload expire together
+T}
+T{
+\fBforward_\:headers\fR
+T}	T{
+map
+T}	T{
+\fB{}\fR
+T}	T{
+Header name to claim (for example \fBX\-\:Remote\-\:User:\: sub\fR)
+T}
+T{
+\fBrequire_\:claims\fR
+T}	T{
+map
+T}	T{
+\fB{}\fR
+T}	T{
+Claim to required value;\: a login whose ID token differs is refused with 403
+T}
+T{
+\fBlog_\:claims\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Claims copied to the access log as \fBoidc_\:<claim>\fR
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+Pins the CA for the provider\(aqs endpoints
+T}
+T{
+\fBtoken_\:auth\fR
+T}	T{
+\fBbasic\fR,\: \fBpost\fR
+T}	T{
+\fBbasic\fR
+T}	T{
+Client authentication at the token endpoint
+T}
+T{
+\fBallow_\:http\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Permit a plain \fBhttp:\:/\:/\fR issuer and external URL
+T}
+.TE
+.PP
+The access log carries \fBoidc_user\fR for requests with a session and \fBflow: <name>:login\fR, \fBlogin_complete\fR, \fBlogout\fR or \fBfrontchannel_logout\fR for the flow steps. Sessions record the ID token\(aqs \fBsid\fR claim when the provider sends one; a logout at the proxy revokes it as well, so other browsers sharing that provider session end too.
+.SS "Kind \fBwasm\fR"
+.PP
+Runs a WebAssembly module per request in a sandbox. The module follows the ABI in EXTENDING.md (exports \fBxproxy_abi_version\fR, \fBxproxy_alloc\fR, \fBxproxy_on_request\fR, optionally \fBxproxy_on_response\fR; imports \fBget\fR, \fBset_header\fR, \fBremove_header\fR, \fBdeny\fR, \fBlog\fR, \fBlog_attr\fR from module \fBxproxy\fR). It is read and compiled at load and on reload; a broken module or a wrong ABI version is a load error.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.2i) lbw(0.9i) lbx
+lw(1.0i) lw(1.2i) lw(0.9i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmodule\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Absolute path of the \fB.\:wasm\fR file,\: at most 64 MiB
+T}
+T{
+\fBconfig\fR
+T}	T{
+string
+T}	T{
+\fB""\fR
+T}	T{
+Free text the module reads with \fBget(config)\fR,\: at most 64 KiB
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB50ms\fR
+T}	T{
+Per call bound;\: 1ms to 10s
+T}
+T{
+\fBmemory_\:limit_\:pages\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+64 KiB pages per instance (16 MiB);\: 1 to 16384
+T}
+T{
+\fBinstances\fR
+T}	T{
+int
+T}	T{
+\fB16\fR
+T}	T{
+Pooled instances;\: more are created on demand and dropped after use
+T}
+T{
+\fBon_\:error\fR
+T}	T{
+\fBdeny\fR,\: \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+What a trap,\: timeout or bad result means: 500 with the filter name as reason,\: or continue with \fBwasm_\:error:\: allowed\fR in the access log
+T}
+T{
+\fBengine\fR
+T}	T{
+\fBauto\fR,\: \fBcompiler\fR,\: \fBinterpreter\fR
+T}	T{
+\fBauto\fR
+T}	T{
+The compiler emits machine code into executable memory,\: which the shipped systemd unit (\fBMemoryDenyWriteExecute=\:yes\fR) and the macOS hardened runtime refuse;\: \fBauto\fR probes once per process and falls back to the interpreter,\: which needs no executable pages and is several times slower per call
+T}
+T{
+\fBbody_\:limit\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Bytes of a request or response body a module may read or set;\: a larger body is not exposed and streams through;\: 0 disables body access;\: at most 16 MiB
+T}
+.TE
+.PP
+Denies carry the status, reason and detail the module set with \fBdeny\fR; \fBlog_attr\fR values appear in the access log as \fBwasm_<key>\fR.
+.SS "Kind \fBbot_score\fR"
+.PP
+Scores each request as automation from the user agent, the headers a browser always sends, the TLS fingerprint of the connection (JA3 and JA4, computed from the ClientHello) and the client\(aqs recent behaviour, then logs, challenges or denies by threshold.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.1i) lw(0.9i) lw(0.8i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdeny_\:at\fR
+T}	T{
+0 to 100
+T}	T{
+\fB0\fR (off)
+T}	T{
+Deny with 403 from this score
+T}
+T{
+\fBchallenge_\:at\fR
+T}	T{
+0 to 100
+T}	T{
+\fB0\fR (off)
+T}	T{
+Serve the browser challenge from this score (needs a \fBchallenge\fR section;\: must be below \fBdeny_\:at\fR)
+T}
+T{
+\fBlog_\:at\fR
+T}	T{
+0 to 100
+T}	T{
+\fB30\fR
+T}	T{
+Add \fBbot_\:score\fR and \fBbot_\:signals\fR to the access log line from this score
+T}
+T{
+\fBheader\fR
+T}	T{
+header name
+T}	T{
+none
+T}	T{
+Forward the score to the upstream in this header
+T}
+T{
+\fBja4_\:deny\fR,\: \fBja4_\:allow\fR
+T}	T{
+lists of JA4 strings
+T}	T{
+
+T}	T{
+Fingerprints scored 100 or 0 regardless of other signals
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+Behaviour window per client address (5s to 1h)
+T}
+T{
+\fBrate_\:per_\:window\fR
+T}	T{
+int
+T}	T{
+\fB300\fR
+T}	T{
+Requests in the window above which \fBhigh_\:rate\fR fires
+T}
+T{
+\fBweights\fR
+T}	T{
+mapping
+T}	T{
+see below
+T}	T{
+Override a signal\(aqs weight (0 to 100)
+T}
+T{
+\fBreason\fR
+T}	T{
+string
+T}	T{
+the filter name
+T}	T{
+Deny reason
+T}
+.TE
+.PP
+Signals and default weights: \fBua_bot\fR 40 (curl, wget, python, Go, Java, scanners, headless browsers and the like), \fBua_missing\fR 30, \fBbrowser_headers_missing\fR 25 (a browser user agent without \fBAccept\fR or \fBAccept\-Language\fR), \fBfingerprint_mismatch\fR 35 (a browser user agent on a hello without \fBh2\fR ALPN or with fewer than ten cipher suites), \fBerror_rate\fR 30 (more than half of at least ten recent requests were 4xx or denied), \fBpath_spread\fR 15 (fifty or more distinct paths in the window), \fBregular_interval\fR 20 (eight or more requests with machine\-like timing), \fBhigh_rate\fR 15, \fBhoneypot_marked\fR 40 (the client touched a honeypot route on this node or, with cluster sharing, on a peer). The score is the capped sum; a client that is already verified by the challenge is never challenged again. The JA4 of every TLS request is logged as \fBja4\fR.
+.SS "routes[].filters"
+.PP
+A list of filter names, run in the listed order within each stage. A route may combine them with \fBjwt\fR, \fBwaf\fR and \fBicap\fR.
+.SS "Kind \fBbody_rewrite\fR"
+.PP
+Rewrites request and response bodies with literal or regular expression rules, for the cases that need no WebAssembly module: absolute links an application emits for its internal name, a field to mask on the way out, a key to rename on the way in. Each phase is optional and has its own media type list, size bound and rules, applied in order.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(1.2i) lbx
+lw(0.9i) lw(0.6i) lw(1.2i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrequest\fR,\: \fBresponse\fR
+T}	T{
+phase
+T}	T{
+
+T}	T{
+At least one
+T}
+T{
+\fB<phase>.\:types\fR
+T}	T{
+list
+T}	T{
+text,\: JSON,\: XML,\: JavaScript,\: SVG and form types
+T}	T{
+Media types rewritten,\: without parameters
+T}
+T{
+\fB<phase>.\:max_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR (1 MiB)
+T}	T{
+Bodies above this size pass through unchanged (1 to 64 MiB)
+T}
+T{
+\fB<phase>.\:rules\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+1 to 64 rules of \fB{find,\: replace}\fR (literal) or \fB{regex,\: replace}\fR (RE2;\: \fB$1\fR groups in \fBreplace\fR),\: each with an optional \fBmax\fR count (0 means all)
+T}
+.TE
+.PP
+A body is buffered up to \fBmax_bytes\fR and rewritten in memory; a larger body, one the upstream already encoded (\fBContent\-Encoding\fR), a range and any media type outside the list pass through untouched, so the filter never breaks a download. After a change \fBContent\-Length\fR is set and \fBETag\fR and \fBContent\-MD5\fR removed; nothing changes when no rule matched. The access log carries \fBbody_rewrite: request\fR, \fBresponse\fR or \fBrequest,response\fR on lines where a body changed. Response rewriting runs before compression and after the WAF\(aqs response inspection, so the WAF sees the upstream\(aqs bytes and the client sees the rewritten ones. Put the filter on the routes that need it rather than on every route: buffering costs memory per request up to the bound.
+.SH "tracing"
+.PP
+Every request gets a W3C trace context: an incoming \fBtraceparent\fR is continued (its trace id kept, a fresh span id issued, \fBtracestate\fR passed through), otherwise a new trace starts. The proxy records one server span per request (method, path, host, protocol, status, client address, request id, route, upstream, denial reason) and one client span per upstream exchange (endpoint, status, attempts, or the error), sends \fBtraceparent\fR and \fBtracestate\fR to the upstream so its spans hang under the client span, and writes \fBtrace_id\fR, \fBspan_id\fR and \fBtrace_sampled\fR into the access log. Spans are exported as OTLP/HTTP JSON when \fBotlp\fR is set; without it the context is propagated and logged only. Sampling is decided locally by \fBsample_percent\fR; an incoming sampled flag is honoured only with \fBtrust_incoming\fR, so a client cannot push every request into the exporter. \fBxproxyctl telemetry\fR and \fBGET /v1/telemetry\fR show the counters.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(0.8i) lbx
+lw(1.0i) lw(0.7i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Switch for the section
+T}
+T{
+\fBsample_\:percent\fR
+T}	T{
+0 to 100
+T}	T{
+\fB100\fR
+T}	T{
+Share of traces recorded and exported;\: propagation happens regardless
+T}
+T{
+\fBpropagate\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Send \fBtraceparent\fR and \fBtracestate\fR to the upstream;\: off,\: an incoming header is stripped
+T}
+T{
+\fBtrust_\:incoming\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Honour the sampled flag of an incoming \fBtraceparent\fR (behind a trusted balancer that samples)
+T}
+T{
+\fBotlp\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Span exporter with the same keys as \fBlogging.\:otlp\fR (\fBendpoint\fR is the traces URL,\: \fB/\:v1/\:traces\fR)
+T}
+.TE
+.PP
+A reload that changes the section rebuilds the tracer; spans in flight finish on the old exporter, which is flushed and stopped.
+.SH "compression"
+.PP
+gzip for the responses the proxy writes: proxied, cached, static and \fBrespond\fR bodies alike. The decision is made per response when its header is committed: the client must list \fBgzip\fR (or \fB*\fR) in \fBAccept\-Encoding\fR with a non\-zero quality, the request must not be \fBHEAD\fR, an upgrade or gRPC, the status must carry a body (not 1xx, 204, 206, 304), the response must carry no \fBContent\-Encoding\fR or \fBContent\-Range\fR, no \fBCache\-Control: no\-transform\fR, and a media type from \fBtypes\fR. A known \fBContent\-Length\fR below \fBmin_bytes\fR passes as it is; without a known length the body is held up to \fBmin_bytes\fR before deciding, and a flush (a streamed response, which is how proxied bodies arrive) decides at once for compression when the type matches. Compressed responses lose \fBContent\-Length\fR, gain \fBContent\-Encoding: gzip\fR, and a strong \fBETag\fR becomes weak; every response of an eligible type gains \fBVary: Accept\-Encoding\fR so caches keep the variants apart. Bodies the upstream already encoded pass through untouched. Only gzip is offered (the standard library has no Brotli); a client that prefers Brotli still receives gzip when it accepts it. The access log has \fBencoding: gzip\fR; \fBcompressed\fR and \fBcompressed_raw_bytes\fR count.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.0i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Switch for the section
+T}
+T{
+\fBlevel\fR
+T}	T{
+int
+T}	T{
+\fB5\fR
+T}	T{
+gzip level 1 (fastest) to 9 (smallest)
+T}
+T{
+\fBencodings\fR
+T}	T{
+list
+T}	T{
+\fB[br,\: zstd,\: gzip]\fR
+T}	T{
+Content encodings offered and the server\(aqs preference among encodings the client accepts with equal quality;\: a client\(aqs higher \fBq\fR wins;\: \fB*\fR in \fBAccept\-\:Encoding\fR matches the offered ones
+T}
+T{
+\fBbrotli_\:level\fR
+T}	T{
+int
+T}	T{
+\fB4\fR
+T}	T{
+Brotli quality 0 (fastest) to 11 (smallest);\: above 6 the CPU cost grows quickly for dynamic responses
+T}
+T{
+\fBzstd_\:level\fR
+T}	T{
+int
+T}	T{
+\fB2\fR
+T}	T{
+zstd level 1 (fastest),\: 2 (default),\: 3 (better) or 4 (best)
+T}
+T{
+\fBmin_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Bodies below this length are not compressed;\: 0 to 1 MiB
+T}
+T{
+\fBtypes\fR
+T}	T{
+list
+T}	T{
+text,\: script,\: style,\: JSON,\: XML,\: SVG,\: wasm and font types
+T}	T{
+Media types compressed,\: without parameters
+T}
+.TE
+.PP
+The default \fBtypes\fR are \fBtext/html\fR, \fBtext/plain\fR, \fBtext/css\fR, \fBtext/csv\fR, \fBtext/xml\fR, \fBtext/javascript\fR, \fBapplication/javascript\fR, \fBapplication/json\fR, \fBapplication/ld+json\fR, \fBapplication/manifest+json\fR, \fBapplication/xml\fR, \fBapplication/xhtml+xml\fR, \fBapplication/rss+xml\fR, \fBapplication/atom+xml\fR, \fBimage/svg+xml\fR, \fBapplication/wasm\fR, \fBfont/ttf\fR, \fBfont/otf\fR and \fBapplication/vnd.api+json\fR. Images, video, archives and fonts in \fBwoff2\fR are already compressed and are never listed by default. Compressing responses that mix a secret with attacker\-controlled input in one body exposes the BREACH class of attacks; keep \fBcompress: false\fR on routes that render CSRF tokens next to reflected parameters, or make sure the application masks its tokens.
+.SH "cache"
+.PP
+An in\-memory response cache. The section sizes it; routes opt in with \fBroutes[].cache\fR. The cache is owned by the process, not by a configuration generation, so a reload keeps its contents (and resizes it); a restart empties it.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.6i) lbw(0.9i) lbx
+lw(0.8i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmax_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB67108864\fR (64 MiB)
+T}	T{
+Total bound;\: least recently used entries are evicted
+T}
+T{
+\fBmax_\:object_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR (1 MiB)
+T}	T{
+Largest response stored;\: larger ones stream through uncached
+T}
+.TE
+.SS "routes[].cache"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.9i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBttl\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+Lifetime when the response has no \fBmax\-\:age\fR,\: \fBs\-\:maxage\fR or \fBExpires\fR,\: or with \fBignore_\:cache_\:control\fR
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+\fB[GET,\: HEAD]\fR
+T}	T{
+Only GET and HEAD can be cached;\: HEAD is served from GET\(aqs entry
+T}
+T{
+\fBstatuses\fR
+T}	T{
+list of int
+T}	T{
+\fB[200,\: 203,\: 204,\: 300,\: 301,\: 404,\: 410]\fR
+T}	T{
+Statuses stored
+T}
+T{
+\fBquery\fR
+T}	T{
+\fBall\fR,\: \fBnone\fR,\: \fBlisted\fR
+T}	T{
+\fBall\fR
+T}	T{
+Whether the query string is part of the key,\: or only the sorted \fBquery_\:params\fR
+T}
+T{
+\fBquery_\:params\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Names for \fBquery:\: listed\fR
+T}
+T{
+\fBheaders\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Request headers whose values join the key (for example \fBAccept\-\:Encoding\fR when the upstream sends no \fBVary\fR)
+T}
+T{
+\fBcookies\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Cache requests that carry a \fBCookie\fR header;\: off,\: such requests bypass the cache
+T}
+T{
+\fBignore_\:cache_\:control\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Store regardless of the response\(aqs \fBCache\-\:Control\fR and apply \fBttl\fR
+T}
+.TE
+.PP
+What is never cached: requests with \fBAuthorization\fR (unless the response says \fBCache\-Control: public\fR) or \fBRange\fR; responses with \fBSet\-Cookie\fR, \fBCache\-Control: no\-store\fR, \fBno\-cache\fR or \fBprivate\fR, \fBVary: *\fR, or a body above \fBmax_object_bytes\fR. \fBVary\fR is honoured: one entry per combination of the named request headers. Hits carry \fBX\-Cache: HIT\fR and \fBAge\fR, answer \fBIf\-None\-Match\fR and \fBIf\-Modified\-Since\fR with 304, and skip the response filters (which ran when the entry was stored); misses carry \fBX\-Cache: MISS\fR; bypassed requests \fBX\-Cache: BYPASS\fR. The access log has \fBcache\fR. \fBGET /v1/cache\fR and \fBxproxyctl cache\fR show counters; \fBDELETE /v1/cache?host=&path=\fR and \fBxproxyctl cache purge [HOST [PATH\-PREFIX]]\fR remove entries (audited).
+.SH "geoip"
+.PP
+A country database for \fBroutes[].geo\fR and for rate limits keyed on \fBcountry\fR. Exactly one source:
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbx
+lw(0.9i) lw(0.6i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBdatabase\fR
+T}	T{
+path
+T}	T{
+A MaxMind DB file with \fBcountry.\:iso_\:code\fR (GeoLite2 Country,\: GeoIP2 Country,\: DB\-IP Lite in MMDB form). Read by the built\-in reader,\: no external library
+T}
+T{
+\fBcsv\fR
+T}	T{
+path
+T}	T{
+Lines of \fBnetwork,\:country\fR (CIDR and ISO 3166\-1 alpha\-2),\: a header row allowed;\: longest prefix wins
+T}
+.TE
+.PP
+The file is read at load and on every reload (replace the file and reload to update). Lookups are cached per address. Status: \fBxproxyctl geoip\fR, \fBxproxy_geoip_lookups_total\fR, \fBxproxy_geoip_unknown_total\fR. The country is written to the access log line as \fBcountry\fR and passed to filters in \fBInfo.Country\fR.
+.SS "routes[].geo"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.7i) lbw(0.8i) lbx
+lw(0.8i) lw(0.7i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBallow\fR
+T}	T{
+list of codes
+T}	T{
+
+T}	T{
+When set,\: only these countries are admitted
+T}
+T{
+\fBdeny\fR
+T}	T{
+list of codes
+T}	T{
+
+T}	T{
+Denied first,\: before \fBallow\fR
+T}
+T{
+\fBunknown\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR
+T}	T{
+\fBallow\fR
+T}	T{
+Addresses the database does not know (private ranges,\: new allocations)
+T}
+.TE
+.PP
+Denies answer 403 with reason \fBgeo\fR and feed ban triggers under the \fBgeo\fR category. A \fBrate_limits[].key\fR of \fBcountry\fR keeps one bucket per country; an unknown country falls back to the client address.
+.SH "acme"
+.PP
+Required when any listener has \fBtls.acme\fR groups. One account per proxy; the account key, account URL and issued certificates live under \fBstate_dir\fR (mode \fB0700\fR, files \fB0600\fR), so a restart serves the existing certificates immediately and only renews what is due.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdirectory\fR
+T}	T{
+\fBhttps:\:/\:/\fR URL
+T}	T{
+required
+T}	T{
+The CA\(aqs directory (RFC 8555)
+T}
+T{
+\fBemail\fR
+T}	T{
+address
+T}	T{
+required
+T}	T{
+Account contact
+T}
+T{
+\fBaccept_\:terms\fR
+T}	T{
+bool
+T}	T{
+must be \fBtrue\fR
+T}	T{
+Agree to the CA\(aqs terms on registration
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+Pins the CA of the directory server (private CAs,\: tests)
+T}
+T{
+\fBstate_\:dir\fR
+T}	T{
+absolute path
+T}	T{
+\fB/\:var/\:lib/\:xproxy/\:acme\fR
+T}	T{
+Account and certificates;\: must be writable by the service (it is under \fBStateDirectory\fR in the shipped unit)
+T}
+T{
+\fBchallenge\fR
+T}	T{
+\fBhttp\-\:01\fR,\: \fBtls\-\:alpn\-\:01\fR
+T}	T{
+\fBhttp\-\:01\fR
+T}	T{
+\fBhttp\-\:01\fR answers \fB/\:.\:well\-\:known/\:acme\-\:challenge/\fR on every plaintext listener before the HTTPS redirect and routing;\: \fBtls\-\:alpn\-\:01\fR answers the \fBacme\-\:tls/\:1\fR ALPN on the TLS listener
+T}
+T{
+\fBrenew_\:before\fR
+T}	T{
+duration
+T}	T{
+\fB720h\fR
+T}	T{
+Renew when less than this remains;\: 24h to 89 days
+T}
+T{
+\fBcheck_\:interval\fR
+T}	T{
+duration
+T}	T{
+\fB12h\fR
+T}	T{
+How often expiry is checked;\: 1m to 7d. A failed order backs off one hour
+T}
+.TE
+.PP
+Orders use a fresh P\-256 key per certificate and an ES256 account key. A certificate is installed only after the returned chain is verified to cover every host in the group. Status is at \fBGET /v1/acme\fR and \fBxproxyctl acme\fR; \fBxproxyctl acme renew\fR forces renewal of every group and waits for the outcome (a renewal already running is joined, not duplicated).
+.SH "shedding"
+.PP
+Present means enabled. The load level is the larger of the in\-flight ratio (\fBin_flight / max_concurrent_requests\fR) and the latency level (\fB(latency \- target) / target\fR, capped at 1, where latency is the average upstream time to first byte over \fBwindow\fR). A class is shed with 503 while the level is at or above its threshold and admitted again once the level falls below the threshold minus \fBhysteresis\fR. Critical routes are never shed. A window without samples drains the latency signal, so shedding never locks in.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.1i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBtarget_\:latency\fR
+T}	T{
+duration
+T}	T{
+\fB250ms\fR
+T}	T{
+Upstream time to first byte the site is designed for
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+Averaging window;\: 1s to 10m
+T}
+T{
+\fBlow\fR,\: \fBnormal\fR,\: \fBhigh\fR
+T}	T{
+float
+T}	T{
+\fB0.\:6\fR,\: \fB0.\:8\fR,\: \fB0.\:95\fR
+T}	T{
+Shed thresholds per class;\: must be non\-decreasing
+T}
+T{
+\fBhysteresis\fR
+T}	T{
+float
+T}	T{
+\fB0.\:1\fR
+T}	T{
+Readmission margin below the threshold
+T}
+T{
+\fBretry_\:after\fR
+T}	T{
+duration
+T}	T{
+\fB2s\fR
+T}	T{
+\fBRetry\-\:After\fR on shed responses
+T}
+.TE
+.SS "routes[].priority_class"
+.PP
+\fBlow\fR, \fBnormal\fR (default), \fBhigh\fR or \fBcritical\fR. Put health checks, login and payment on \fBcritical\fR or \fBhigh\fR; search, feeds and exports on \fBlow\fR.
+.SH "challenge"
+.PP
+Present means the challenge engine is available; routes opt in with a \fBchallenge\fR block. Unverified clients receive a 503 page with a signed nonce and a script that finds a SHA\-256 proof of work, posts it to \fB/.xproxy/challenge\fR, and receives a signed cookie. Both reserved paths (\fB/.xproxy/challenge\fR and \fB/.xproxy/challenge.js\fR) are served on every host before routing.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.1i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBsecret_\:file\fR
+T}	T{
+path
+T}	T{
+ephemeral
+T}	T{
+HMAC key or keyring for nonces and cookies;\: set it so cookies survive restarts and are valid across a cluster;\: a rotation is picked up on reload and cookies under the kept keys stay valid
+T}
+T{
+\fBdifficulty\fR
+T}	T{
+int
+T}	T{
+\fB16\fR
+T}	T{
+Leading zero bits required;\: 8 to 24. 16 is roughly 65 000 hashes,\: under a second in a browser
+T}
+T{
+\fBttl\fR
+T}	T{
+duration
+T}	T{
+\fB1h\fR
+T}	T{
+Validity of a passed challenge;\: at least 1m
+T}
+T{
+\fBbind_\:ip\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Cookie and nonce are bound to the client address
+T}
+T{
+\fBcookie_\:name\fR
+T}	T{
+token
+T}	T{
+\fBXPCHAL\fR
+T}	T{
+
+T}
+T{
+\fBexempt_\:cidrs\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Never challenged (monitoring,\: partners)
+T}
+T{
+\fBtitle\fR
+T}	T{
+string
+T}	T{
+\fBChecking your browser\fR
+T}	T{
+Heading on the page;\: no HTML characters
+T}
+.TE
+.SS "routes[].challenge"
+.PP
+.TS
+allbox;
+lbw(0.6i) lbw(0.8i) lbw(0.8i) lbx
+lw(0.6i) lw(0.8i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBoff\fR,\: \fBalways\fR,\: \fBload\fR
+T}	T{
+\fBalways\fR
+T}	T{
+\fBload\fR challenges only while the shedding load level is at or above \fBlevel\fR and requires a \fBshedding\fR section
+T}
+T{
+\fBlevel\fR
+T}	T{
+float
+T}	T{
+\fB0.\:5\fR
+T}	T{
+Activation level for \fBload\fR mode
+T}
+.TE
+.PP
+The challenge is for browser\-facing routes: API clients cannot solve it.
+.SH "sandbox"
+.PP
+In\-process hardening applied once the listeners, log files, state files and the management socket are open (docs/HARDENING.md section 1a, docs/HARDENING_MACOS.md on macOS). On by default; \fBGET /v1/sandbox\fR and \fBxproxyctl sandbox\fR show what was applied. The Landlock rules are derived from the configuration: the directory of every configured file is readable, the log, state, history and certificate directories are writable, and nothing else is reachable. A reload that names a file outside those directories is refused with a message to restart.
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.4i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Apply the sandbox
+T}
+T{
+\fBstrict\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse to start when a mechanism the platform should offer is unavailable or fails,\: instead of logging a warning
+T}
+T{
+\fBlandlock.\:enabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Landlock file system rules (Linux 5.13 or newer with the LSM enabled)
+T}
+T{
+\fBlandlock.\:read_\:paths\fR
+T}	T{
+list of paths
+T}	T{
+\fB[]\fR
+T}	T{
+Extra files or directories the process may read (a compiled\-in filter that opens files,\: a directory that reloads will add files to)
+T}
+T{
+\fBlandlock.\:write_\:paths\fR
+T}	T{
+list of paths
+T}	T{
+\fB[]\fR
+T}	T{
+Extra directories the process may write
+T}
+T{
+\fBlandlock.\:bind\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse TCP binds after start (Landlock ABI 4,\: Linux 6.7 or newer);\: listeners are bound before the sandbox and adding one needs a restart anyway
+T}
+T{
+\fBseccomp.\:enabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+System call deny list: tracing,\: module loading,\: mounts,\: namespaces,\: keyrings,\: BPF,\: io_uring,\: identity changes,\: exec and kernel administration return EPERM (Linux amd64 and arm64)
+T}
+T{
+\fBcapabilities.\:drop\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Clear the bounding,\: ambient,\: permitted,\: effective and inheritable sets (Linux)
+T}
+T{
+\fBno_\:new_\:privs\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Set PR_SET_NO_NEW_PRIVS (required by Landlock and unprivileged seccomp;\: systemd\(aqs \fBNoNewPrivileges=\fR sets it too)
+T}
+T{
+\fBdebuggable\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Keep the process attachable by a debugger and able to dump core;\: the default makes it non dumpable with a zero core size limit (Linux),\: or denies debugger attachment with a zero core size limit (macOS)
+T}
+.TE
+.SH "Headers set on forwarded requests"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbx
+lw(1.1i) lx.
+T{
+Header
+T}	T{
+Value
+T}
+T{
+\fBX\-\:Forwarded\-\:For\fR
+T}	T{
+client chain (trusted hops preserved) plus peer
+T}
+T{
+\fBX\-\:Forwarded\-\:Host\fR
+T}	T{
+original \fBHost\fR
+T}
+T{
+\fBX\-\:Forwarded\-\:Proto\fR
+T}	T{
+\fBhttp\fR or \fBhttps\fR
+T}
+T{
+\fBX\-\:Real\-\:Ip\fR
+T}	T{
+derived client address
+T}
+T{
+\fBX\-\:Request\-\:Id\fR
+T}	T{
+per request identifier,\: also returned to the client
+T}
+.TE
+.PP
+\fBForwarded\fR and hop\-by\-hop headers are removed.
+.SH "Reload semantics"
+.PP
+Changed by \fBSIGHUP\fR or \fBxproxyctl reload\fR without restart: routes, upstreams, rate limits, trusted proxies, logging levels, limits other than listeners, certificate files, WAF profiles and modes, ban triggers and exemptions (active bans are kept; changing \fBbans.state_file\fR opens a new list), cluster peers, intervals and sharing flags, shedding thresholds, challenge settings (the key is kept), priority classes. Listeners are matched by name: an added listener is bound and served by the reload, a removed one stops accepting and drains its connections for \fBshutdown_timeout\fR, and one whose settings changed beyond certificate files, forward policy and dns policy is rebuilt with the same drain; on an unchanged address the accept socket is kept (also when the listener is renamed), so nothing is refused during the switch and a systemd owned socket survives. A bind that fails (port in use or privileged) fails the whole reload with the old set still serving. Requires restart: a listener with a UDP socket (\fBh3\fR, \fBtcp.quic\fR, plain \fBdns\fR) changed on the same address, \fBmanagement.socket\fR, cluster \fBlisten\fR, \fBnode_id\fR or \fBtls\fR, and the \fBacme\fR section.
+.PP
+Before applying, \fBxproxyctl reload \-dry\-run\fR (or \fBPOST /v1/reload?dry_run=1\fR) loads and validates the file and reports what would change against the running generation: per named item (listeners, upstreams, routes, rate limits, filters) added, removed or changed, every other section as a whole, the items in the list above that need a restart, and a unified text diff of the two documents. \fBxproxyctl diff [FROM] [TO]\fR compares any two of \fBactive\fR (running), \fBfile\fR (on disk) and a history id. With \fBmanagement.history_dir\fR set, every applied generation is recorded (start, reload, rollback); \fBxproxyctl history\fR lists them and \fBxproxyctl rollback ID\fR applies one through the ordinary reload path, so validation, the restart list and the audit log apply as for a reload, and the rollback itself becomes a new entry. In ingress controller mode the recorded document is the merged one; a rollback restores the routes as they were merged at the time.
+.SH "SEE ALSO"
+.PP
+\fBxproxy\fR(8), \fBxproxyctl\fR(8). The same reference is \fBdocs/CONFIG.md\fR; a JSON schema for editors is installed at \fB/usr/share/xproxy/xproxy.schema.json\fR and printed by \fBxproxyctl schema\fR.

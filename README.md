@@ -146,6 +146,12 @@ an identifier from the access log to the upstream.
   TUI; a web GUI with
   viewer and operator roles, configuration editing with validation,
   graphs and live logs
+- An expression language for routes and header operations: `when`
+  conditions over addresses, headers, cookies, query parameters,
+  patterns, captures and the time of day, checked at load
+- Shell completion for bash, zsh and fish, manual pages and a JSON
+  schema of the configuration that gives editors completion and inline
+  documentation
 - Prometheus exposition with latency histograms and per route counters,
   on the socket or a hardened TCP endpoint, an in-process series buffer
   for graphs, and OpenTelemetry export of metrics, traces (W3C trace

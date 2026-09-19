@@ -229,4 +229,8 @@ type PoolStatus struct {
 	Circuit   *CircuitStatus `json:"circuit,omitempty"`
 	Queue     *QueueStatus   `json:"queue,omitempty"`
 	Canary    *CanaryStatus  `json:"canary,omitempty"`
+	// SlowStart is the configured ramp, "" when off; Discovery is nil
+	// without a discovery section.
+	SlowStart string           `json:"slow_start,omitempty"`
+	Discovery *DiscoveryStatus `json:"discovery,omitempty"`
 }

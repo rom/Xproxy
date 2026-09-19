@@ -8,6 +8,13 @@ never "disabled". Paths must be absolute. Durations use Go syntax: `500ms`,
 Validate with `xproxy -config FILE -validate`; all problems are reported at
 once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 
+This reference is also installed as the manual page `xproxy.yaml(5)`,
+and a JSON schema generated from the same types
+(`/usr/share/xproxy/xproxy.schema.json`, `xproxyctl schema`) gives
+editors completion and inline documentation; put
+`# yaml-language-server: $schema=/usr/share/xproxy/xproxy.schema.json`
+on the first line of the file to enable it.
+
 ## Top level
 
 | Key | Type | Default | Description |
@@ -31,7 +38,21 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `listeners` | list | required, at least one | See below |
 | `limits` | object | | Global protections |
 | `server_header` | string | `""` | Value of the `Server` response header. Empty removes it. |
+| `error_pages` | object | none | Replace the proxy's plain status bodies (denials, unknown routes, upstream failures, static misses) with documents; see "server.error_pages" below |
+| `session_tickets` | object | none (keys per process, rotated by the Go runtime) | Derive the TLS session ticket keys of every TLS listener from a shared secret file so that a ticket issued by one node resumes on every node; see "server.session_tickets" below. Changing the section needs a restart |
 | `shutdown_timeout` | duration | `30s` | Drain time on stop and for old generations after reload |
+
+### server.session_tickets
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `secret_file` | absolute path | required | Master keyring, created with mode `0600` when missing. Deploy the same file to every node; rotate the master with `xproxyctl rotate-secret` (the kept keys still open tickets sealed under the old master for one more epoch) |
+| `rotate` | duration | `24h` | Epoch length, `1h` to `168h`. Each epoch's key is derived from the master and the epoch number, so nodes with synchronised clocks switch keys together without exchanging messages; the previous epoch's key is kept for decryption, so a ticket lives at most two epochs |
+
+The key set's fingerprint is shown by `xproxyctl tls tickets` and `GET
+/v1/tls/tickets`; a cluster publishes it and a node whose peers derive a
+different set (a different secret file or a clock more than an epoch
+off) logs a warning and lists them under `mismatched_peers`.
 
 ### server.listeners[]
 
@@ -290,6 +311,74 @@ public CA).
 | `max_concurrent_requests` | int | `16384` | positive | In-flight requests; 503 above |
 | `max_tarpits` | int | `1024` | 1 to 1000000 | Requests held in a tarpit at once. A tarpitted request releases its concurrency slot; above this bound it is rejected with 429 immediately (`tarpit_overflow` counts those) |
 
+### server.error_pages and routes[].error_pages
+
+Documents are read at load (at most 1 MiB each) and chosen by exact
+status (`"404"`), class (`"4xx"`, `"5xx"`) or `"default"`. A route section
+replaces the server section entirely for that route. Every status the
+proxy writes itself goes through the pages: denials (ACL, rate limit,
+WAF, ban, JWT), unknown host or route, upstream failures (502, 503,
+504), static file misses and the like; a gRPC request keeps its gRPC
+status. Upstream responses pass through unchanged unless their status is
+listed in `intercept_upstream`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `dir` | absolute path | none | Directory of the documents; required for relative page names |
+| `pages` | map | required | Status, class or `default` to a file name in `dir` or an absolute path; documents may use the variables below and keep unknown `${...}` sequences as they are (script code is safe) |
+| `content_type` | string | `text/html; charset=utf-8` | Content type of the documents |
+| `json` | bool | `true` | Answer clients whose `Accept` prefers `application/json` over `text/html` with `{"status":404,"error":"Not Found","request_id":"..."}` instead of the document |
+| `intercept_upstream` | list of int | `[]` | Upstream statuses (400 to 599) whose bodies are replaced by the matching page; headers describing the old body (`Content-Length`, `Content-Encoding`, `ETag`) are replaced |
+
+### Variables
+
+Header values, `rewrite_regex.replace`, `redirect.to` and error pages
+may use `${name}`; a misspelt name fails validation for headers,
+rewrites and redirects and is kept literally in pages.
+
+| Variable | Value |
+|----------|-------|
+| `client_ip` | client address after trusted proxy handling |
+| `request_id` | request identifier |
+| `host` | request host without port |
+| `path`, `raw_query`, `method`, `scheme` | request line parts (`scheme` is `http` or `https` as seen by the client) |
+| `route`, `upstream`, `tenant` | the matched route, its pool and tenant label |
+| `country`, `ja4` | GeoIP country code and TLS client fingerprint, empty when unknown |
+| `tls_version`, `tls_cipher` | TLS parameters of the client connection |
+| `header:Name`, `cookie:name`, `query:name` | a request header, cookie or query parameter |
+| `1` to `9`, `name` | groups of `rewrite_regex.pattern` or, without one, of the matching `path_regex` (numbered and named) |
+| `status`, `status_text`, `reason` | error pages only: the status, its phrase and the denial category (`acl`, `rate_limit`, `waf`, `banned`, `upstream`...) |
+| `time` | current time, RFC 3339, UTC |
+| `date`, `hour`, `minute`, `weekday` | current date (`2026-09-19`), hour (`0` to `23`), minute and weekday (`Mon` to `Sun`), UTC |
+
+### Expressions
+
+`routes[].when`, `request_headers.when` and `response_headers.when`
+hold a condition that is parsed at load (unknown names, functions,
+arities, patterns and capture groups are errors) and evaluated per
+request. Values are strings; a variable without a value is the empty
+string. `==` and `!=` compare as strings; `<`, `<=`, `>` and `>=`
+compare numerically when both sides are numbers and by string otherwise.
+A bare string is true when it is neither empty, `0` nor `false`.
+
+| Element | Meaning |
+|---------|---------|
+| `a && b`, `a and b`, `a \|\| b`, `a or b`, `!a`, `not a`, `(a)` | Boolean operators, lowest precedence first: or, and, not |
+| `"text"`, `'text'`, `42`, `true`, `false` | Literals; strings take `\"`, `\'`, `\\`, `\n` and `\t` escapes |
+| `client_ip`, `host`, `path`, `raw_query`, `method`, `scheme`, `country`, `ja4`, `tls_version`, `tls_cipher`, `request_id`, `route`, `upstream`, `tenant`, `time`, `date`, `hour`, `minute`, `weekday` | The variables of the table above, as bare names (`route`, `upstream` and `tenant` are empty in `routes[].when`, which runs before the route is chosen) |
+| `header("Name")`, `cookie("name")`, `query("name")`, `capture("name")` | A request header (case insensitive, first value), cookie, query parameter or regular expression group by name or number; empty when absent |
+| `has_header("Name")`, `has_cookie("name")`, `has_query("name")` | Presence, also of an empty value |
+| `x in ["a", "b"]`, `x not in [...]` | Membership in a list of literals |
+| `client_ip in cidr("10.0.0.0/8", "2001:db8::/32", "203.0.113.7")` | Address containment in prefixes or single addresses; a value that is not an address is never contained |
+| `x matches "pattern"`, `matches(x, "pattern")` | RE2 match anywhere in the value; anchor with `^` and `$` for the whole value. Patterns are literals, compiled at load |
+| `starts_with(x, "p")`, `ends_with(x, "s")`, `contains(x, "part")` | Substring tests |
+| `lower(x)`, `upper(x)`, `trim(x)`, `len(x)` | Case folding, whitespace trimming and byte length |
+
+Examples: `method in ["GET", "HEAD"] and hour >= 22 or hour < 6`
+(read-only traffic in the night window), `country in ["SE", "NO", "DK"]
+&& not has_cookie("consent")`, `path matches "^/api/v[0-9]+/" &&
+header("Content-Length") > 1048576`, `capture("id") != "" && ja4 == ""`.
+
 ## management
 
 | Key | Type | Default | Description |
@@ -405,8 +494,12 @@ and syslog all receive the same redacted record.
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes |
 | `key` | `client_ip`, `route`, `country`, `header:<Name>` | `client_ip` | Bucket identity. A missing header or an unknown country falls back to the client address. |
-| `rate` | float | required, positive | Tokens per second |
+| `algorithm` | `token_bucket`, `sliding_window` | `token_bucket` | `token_bucket` admits bursts up to `burst` and refills at `rate`; `sliding_window` admits at most `limit` requests in any window of length `window`, estimated from the current and the previous fixed window weighted by their overlap (no burst above `limit` at a window edge, an error bounded by the unevenness of arrivals inside one window) |
+| `rate` | float | required for `token_bucket`, positive | Tokens per second |
 | `burst` | int | `rate` rounded, at least 1 | Bucket capacity |
+| `limit` | int | required for `sliding_window` | Requests per `window`, 1 to 1000000000 |
+| `window` | duration | `1s` | Sliding window length, 100ms to 24h |
+| `distributed` | `approximate`, `exact` | `approximate` | Cluster semantics. `approximate`: every node decides locally and refills at the rate minus its peers' gossiped consumption (one interval of delay). `exact`: one member owns each key (rendezvous hash of member and key over the connected members), the others ask it over the cluster connection and wait at most `cluster.exact_timeout`; the owner's bucket or window is the single count. A node that cannot reach the owner in time decides on its own limiter and counts an `exact_fallback`. Needs the `cluster` section |
 | `action` | `reject`, `tarpit` | `reject` | `reject` answers 429 at once |
 | `tarpit_delay` | duration | `10s` | Hold before answering 429 (released on client disconnect) |
 
@@ -436,6 +529,11 @@ Memory: at most 64 x 8192 buckets per policy.
 | `timeouts.total` | duration | `5m` | Whole exchange |
 | `max_idle_conns_per_host` | int | `64` | Pooled connections per endpoint |
 | `retries` | int | `1` | 0 to 5; only replayable requests (GET, HEAD, OPTIONS, TRACE without a body), each attempt on a different endpoint; connection errors always, statuses per `retry_on` |
+| `rewrite_regex.pattern` | RE2 | none | Rewrite the outbound path by regular expression (see `rewrite_regex.replace`); applied to the cleaned path after `strip_prefix`, exclusive with `rewrite_path`; a path that does not match is sent unchanged |
+| `rewrite_regex.replace` | template | | New path, starting with `/`; `${1}` to `${9}` and `${name}` are the pattern's groups, and the request variables (below) may be used |
+| `error_pages` | object | inherits `server.error_pages` | Route override of the error pages, same keys as `server.error_pages` |
+| `discovery` | object | none | Endpoints resolved from DNS and re-resolved periodically; see below. Static `endpoints` and discovered ones coexist; a pool needs at least one of the two |
+| `slow_start` | duration | `0` (off) | An endpoint that joins the pool (discovered) or returns to service (healthy again, ejection over) gets a share ramping from 10 % to its full weight over this time; at most 1h |
 | `retry_on` | list | `[]` | Response statuses treated as a failed attempt: `5xx`, `500`, `502`, `503`, `504`, `429`. The response is discarded, the endpoint marked as failed for outlier ejection, and the next endpoint tried within the `retries` budget; the last attempt's response is returned as it is. Needs `retries` above 0 |
 
 ### upstreams[].tls
@@ -449,6 +547,19 @@ Memory: at most 64 x 8192 buckets per policy.
 | `spki_pins` | list of base64 SHA-256 | `[]` | Pins of the upstream leaf public key; the connection is refused unless the presented leaf matches one, in addition to chain verification. `xproxyctl spki CERT.pem` prints a pin. Cannot be combined with `insecure_skip_verify` |
 | `insecure_skip_verify` | bool | `false` | Requires `allow_insecure: true` as well |
 | `allow_insecure` | bool | `false` | Second opt-in |
+
+### upstreams[].discovery
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `type` | `dns`, `srv` | `dns` | `dns` resolves the A and AAAA records of `name`, one endpoint per address on `port`; `srv` resolves SRV records, uses the lowest priority group, and takes target, port and weight from each record |
+| `name` | DNS name | required | The name to resolve; for `srv` the full `_service._proto.domain` name |
+| `port` | int | required for `dns` | Endpoint port for `dns` |
+| `interval` | duration | `30s` | Time between resolutions; 1s to 1h. Endpoints that disappear are removed, new ones added with their statistics starting at zero, unchanged ones keep theirs |
+| `resolver` | host:port | system resolver | DNS server to ask instead of the system resolver |
+| `weight` | int | `1` | Weight of `dns` discovered endpoints |
+| `canary` | bool | `false` | Mark discovered endpoints as canaries (needs the pool's `canary` section) |
+| `timeout` | duration | `5s` | Bound on one resolution, including the synchronous first one at start and reload; a failed resolution keeps the previous endpoint set and is counted in `xproxyctl upstreams` |
 
 ### upstreams[].health_check
 
@@ -464,6 +575,8 @@ Memory: at most 64 x 8192 buckets per policy.
 | `expected_status` | list of int | `[200]` | |
 | `max_concurrent` | int | `32` | Probes in flight per pool; 1 to 4096. Bounds the burst when a pool has thousands of endpoints |
 | `keep_alive` | bool | `false` | Reuse pooled connections for probes. Off opens a fresh connection per probe (verifies the whole connect path, no descriptor held between probes); on saves the handshake at the cost of one idle connection per endpoint |
+| `body_contains` | string | none | The first 64 KiB of the probe response must contain this text (type `http`); a status in `expected_status` alone is not enough |
+| `body_regex` | RE2 | none | The first 64 KiB must match this pattern anywhere (anchor with `^` and `$`); may be combined with `body_contains`, both must hold. At most 4096 bytes each |
 
 ### upstreams[].outlier_ejection
 
@@ -472,6 +585,9 @@ Memory: at most 64 x 8192 buckets per policy.
 | `consecutive_failures` | int | `5` | Connection errors or 503 responses in a row |
 | `base_ejection_time` | duration | `30s` | Multiplied by the ejection count, capped at 10x |
 | `max_ejection_percent` | int | `50` | Never eject more than this share of the pool |
+| `latency_threshold` | duration | `0` (off) | Eject an endpoint whose smoothed time to first byte (exponential moving average, factor 0.2, over responses and failed attempts) exceeds this |
+| `latency_factor` | float | `0` (off) | Eject an endpoint whose smoothed latency exceeds the mean smoothed latency of the pool's other endpoints times this factor (1.5 to 100), so the outlier does not move its own reference; needs another endpoint with samples. Either rule ejects for `base_ejection_time` with the same back-off and `max_ejection_percent` bound as failures, the average is reset, and `xproxyctl upstreams` shows `latency_ms` and `latency_ejections` |
+| `latency_min_samples` | int | `20` | Responses an endpoint must have answered since it last became available before its latency is judged (1 to 100000) |
 
 ### upstreams[].canary
 
@@ -548,11 +664,12 @@ not match is skipped and the next candidate is tried.
 | `path_regex` | list | `[]` | RE2 patterns matched against the whole cleaned path (anchored at both ends by the proxy); must start with `/`; at most 32, each at most 512 bytes. `strip_prefix` and `rewrite_path` apply as usual |
 | `headers` | list | `[]` | Conditions on request headers, all of which must hold: `{name, exact | prefix | regex | present}`; names are case insensitive, the first value is examined, `regex` matches the whole value, `present: false` requires absence; at most 16 conditions with `cookies` |
 | `cookies` | list | `[]` | The same conditions on cookies by name |
+| `when` | expression | none | A condition in the expression language (see "Expressions" below) that must hold as well, for example `client_ip in cidr("10.0.0.0/8") && header("X-Env") == "beta"`; counts as one condition for specificity. At most 4096 bytes |
 | `methods` | list | `[]` (any) | Upper-case tokens |
 | `priority` | int | `0` | Tie breaker |
 | `tenant` | name | none | Free label grouping routes for quota reporting (`xproxyctl quotas`, `GET /v1/quotas`) and added as a `tenant` label to the per route metrics |
 | `upstream` | name | | Exactly one of `upstream`, `redirect`, `respond`, `honeypot`, `doh`, `static` |
-| `redirect` | `{to, status}` | status `308` | `to` is a URL or path; status 301, 302, 303, 307 or 308 |
+| `redirect` | `{to, status}` | status `308` | `to` is a URL or path and may use the request variables (below), for example `https://new.example.com${path}?${raw_query}`; status 301, 302, 303, 307 or 308 |
 | `respond` | `{status, body}` | status `200` | Static response, body up to 64 KiB |
 | `honeypot` | object | | Decoy action; see `routes[].honeypot` |
 | `mirror` | object | | Copy requests to a second upstream; see `routes[].mirror` |
@@ -563,8 +680,10 @@ not match is skipped and the next candidate is tried.
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
-| `request_headers` | `{set, add, remove}` | | Applied before forwarding; values may not contain CR, LF or NUL |
+| `request_headers` | `{set, add, remove, when}` | | Applied before forwarding; values may not contain CR, LF or NUL |
+| `request_headers.when`, `response_headers.when` | expression | none | Apply the block only when the expression holds (see "Expressions" below), for example `query("debug") == "1"` or `not has_cookie("consent")`; `${variable}` values are still expanded |
 | `response_headers` | `{set, add, remove}` | | Applied to responses, including redirect and respond actions |
+| `request_headers.*`, `response_headers.*` values | template | | `set` and `add` values may contain `${variable}` placeholders (see "Variables" below); `$$` is a literal dollar; a placeholder without a value expands to an empty string |
 | `rate_limits` | list of names | `[]` | Evaluated in order; first exhausted policy acts |
 | `allow_cidrs` | list | `[]` (all) | Client must be inside one |
 | `deny_cidrs` | list | `[]` | Evaluated first |
@@ -657,7 +776,7 @@ endpoint for scrapers and sizes the series buffer.
 | `allow_cidrs` | list | `[]` (any) | Scraper source addresses; others get 403 and a security event |
 | `tls.cert_file`, `tls.key_file` | path | | Make the endpoint HTTPS |
 | `tls.client_ca_file` | path | | Require client certificates from this CA (mutual TLS) |
-| `per_route` | bool | `true` | Expose `xproxy_route_requests_total{route,outcome}` (one series per route and outcome) |
+| `per_route` | bool | `true` | Expose the per route families: `xproxy_route_requests_total{route,outcome}`, `xproxy_route_bytes_total`, `xproxy_route_rate_limited_total` and the latency histogram `xproxy_route_request_duration_seconds{route}` (one series per route, bucket and outcome; a `tenant` label when set) |
 | `endpoint_series` | bool | `true` | Expose five series per upstream endpoint (`xproxy_upstream_endpoint_*`). About 1 KiB per endpoint per scrape; turn off above a few thousand endpoints and rely on the per-pool `xproxy_upstream_endpoints_healthy` |
 | `sample_interval` | duration | `10s` | Series sampling period; 1s to 5m |
 | `retention` | duration | `1h` | Series kept in memory; at most 100000 points |
@@ -946,12 +1065,22 @@ and sharing flags reload.
 | `share_bans` | bool | `true` | Exchange bans and unbans, and send a snapshot to a newly connected peer |
 | `share_events` | bool | `true` | Exchange security events: honeypot marks and unmarks (applied to the peer's mark table with route `peer:<node>/<route>`) and OIDC session revocations (per filter name). Events are bounded (128 byte kind, 512 byte key, lifetime clamped to a year), queued without blocking and dropped when the queue is full. Nodes older than 1.3 close a connection that carries them: set `false` during a rolling upgrade from 1.2 |
 | `max_keys_per_report` | int | `4096` | Largest consumers kept per report |
+| `exact_timeout` | duration | `50ms` | Longest wait for a key owner's answer under `distributed: exact` (5ms to 2s); on expiry the request is decided locally |
 
 Semantics: with sharing on, a rate limit policy's `rate` becomes an
 approximate cluster wide rate per key. Each node refills a key's bucket at
 `rate` minus the sum of fresh peer consumption for that key; `burst` stays
 per node. Accuracy is bounded by one gossip interval of delay and reports
 expire after `peer_stale`, so losing a peer degrades to local limiting.
+A policy with `distributed: exact` is instead decided by one owner per
+key: the members (this node and every peer whose hello was received on
+a live connection, `xproxyctl cluster` lists them) agree on the owner
+through rendezvous hashing, requests for a key owned elsewhere carry one
+round trip to the owner within `exact_timeout`, and the owner's limiter
+is the single count, so the limit holds exactly cluster wide while the
+members agree. Membership changes move only the departed member's keys;
+during a partition two owners may exist for a key, and a node without an
+answer in time decides locally, which over-admits rather than refuses.
 
 The cluster listener can be socket activated with `FileDescriptorName=cluster`.
 
@@ -1271,6 +1400,9 @@ Brotli still receives gzip when it accepts it. The access log has
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Switch for the section |
 | `level` | int | `5` | gzip level 1 (fastest) to 9 (smallest) |
+| `encodings` | list | `[br, zstd, gzip]` | Content encodings offered and the server's preference among encodings the client accepts with equal quality; a client's higher `q` wins; `*` in `Accept-Encoding` matches the offered ones |
+| `brotli_level` | int | `4` | Brotli quality 0 (fastest) to 11 (smallest); above 6 the CPU cost grows quickly for dynamic responses |
+| `zstd_level` | int | `2` | zstd level 1 (fastest), 2 (default), 3 (better) or 4 (best) |
 | `min_bytes` | int | `1024` | Bodies below this length are not compressed; 0 to 1 MiB |
 | `types` | list | text, script, style, JSON, XML, SVG, wasm and font types | Media types compressed, without parameters |
 
@@ -1472,9 +1604,17 @@ upstreams, rate limits, trusted proxies, logging levels, limits other than
 listeners, certificate files, WAF profiles and modes, ban triggers and
 exemptions (active bans are kept; changing `bans.state_file` opens a new
 list), cluster peers, intervals and sharing flags, shedding thresholds,
-challenge settings (the key is kept), priority classes. Requires restart: any
-change under `server.listeners` other than certificate file contents
-(including the `tls.acme` groups), `management.socket`, cluster `listen`,
+challenge settings (the key is kept), priority classes. Listeners are
+matched by name: an added listener is bound and served by the reload, a
+removed one stops accepting and drains its connections for
+`shutdown_timeout`, and one whose settings changed beyond certificate
+files, forward policy and dns policy is rebuilt with the same drain; on
+an unchanged address the accept socket is kept (also when the listener
+is renamed), so nothing is refused during the switch and a systemd
+owned socket survives. A bind that fails (port in use or privileged)
+fails the whole reload with the old set still serving. Requires
+restart: a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`)
+changed on the same address, `management.socket`, cluster `listen`,
 `node_id` or `tls`, and the `acme` section.
 
 Before applying, `xproxyctl reload -dry-run` (or `POST /v1/reload?dry_run=1`)

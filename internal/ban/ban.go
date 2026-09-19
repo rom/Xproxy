@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/rom/xproxy/internal/bound"
 	"log/slog"
 	"net/netip"
 	"sort"
@@ -84,6 +85,7 @@ type trigger struct {
 	reasons map[string]bool
 	mu      sync.Mutex
 	windows map[netip.Addr]*window
+	full    bound.Notice
 }
 
 type window struct {
@@ -282,6 +284,7 @@ func (t *trigger) hit(addr netip.Addr, now time.Time) bool {
 				}
 			}
 			if len(t.windows) >= maxWindowsPerTrigger {
+				t.full.Hit(nil, "ban trigger window table full; new addresses are not tracked until windows expire", "table", "ban_windows", "trigger", t.cfg.Name, "max", maxWindowsPerTrigger)
 				return false
 			}
 		}

@@ -2,12 +2,14 @@ package waf
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	coreruleset "github.com/corazawaf/coraza-coreruleset/v4"
@@ -217,9 +219,7 @@ func TestLearningTableBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.mu.Lock()
-	st.learning.maxEntries = 2
-	st.mu.Unlock()
+	st.Configure(&config.WAFLearning{Enabled: true, MinHits: 1, MaxEntries: 2})
 	for _, q := range []string{"a", "b", "c", "d"} {
 		r := httptest.NewRequest("GET", "http://example.com/?"+q+"=<script>alert(1)</script>", nil)
 		runInfo(t, e, ModeDetect, r, info())
@@ -227,6 +227,42 @@ func TestLearningTableBound(t *testing.T) {
 	rep := st.Report(10, nil)
 	if rep.Learning.Entries != 2 || rep.Learning.Dropped == 0 {
 		t.Fatalf("bound not applied: %+v", rep.Learning)
+	}
+}
+
+// TestStatsConcurrent hammers the hot path from many goroutines (the race
+// detector checks the atomics and shards) and checks the totals.
+func TestStatsConcurrent(t *testing.T) {
+	st := NewStats()
+	e, err := New(wafConfig(&config.WAFLearning{Enabled: true, MinHits: 1, MaxEntries: 1000}), Need{"default": {ModeBlock: true}}, st, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := e.Filter("default", ModeBlock)
+	const workers, per = 8, 25
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < per; i++ {
+				r := httptest.NewRequest("GET", fmt.Sprintf("http://example.com/p%d?q=<script>alert(%d)</script>", w, i), nil)
+				in := f.Begin(context.Background(), info())
+				in.Request(r)
+				in.End()
+			}
+		}(w)
+	}
+	wg.Wait()
+	rep := st.Report(5, nil)
+	if rep.Requests != workers*per || rep.Blocked != workers*per {
+		t.Fatalf("counters %+v", rep)
+	}
+	if rs := findRule(rep, 941100); rs == nil || rs.Matches != workers*per {
+		t.Fatalf("941100 %+v", rs)
+	}
+	if rep.RulesDropped != 0 || rep.Learning.Dropped != 0 || rep.Learning.Entries == 0 {
+		t.Fatalf("learning %+v dropped %d", rep.Learning, rep.RulesDropped)
 	}
 }
 

@@ -52,8 +52,9 @@ func (b *weighted) pick(eps []*Endpoint, _ string, exclude map[*Endpoint]bool, n
 		if !available(e, exclude, now) {
 			continue
 		}
-		e.current += e.Weight
-		total += e.Weight
+		w := e.effectiveWeight(now)
+		e.current += w
+		total += w
 		if best == nil || e.current > best.current {
 			best = e
 		}
@@ -82,7 +83,7 @@ func (b *leastConn) pick(eps []*Endpoint, _ string, exclude map[*Endpoint]bool, 
 		if !available(e, exclude, now) {
 			continue
 		}
-		score := float64(e.active.Load()+1) / float64(e.Weight)
+		score := float64(e.active.Load()+1) / float64(e.effectiveWeight(now))
 		if best == nil || score < bestScore {
 			best, bestScore = e, score
 		}

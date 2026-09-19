@@ -285,6 +285,11 @@ func (s *Server) Collect(e metrics.Collector) {
 				e.Counter("xproxy_route_rate_limited_total", "Requests refused by a rate limit per route.", labels(cr), float64(v))
 			}
 		}
+		for _, cr := range rt.routes {
+			if snap := cr.hist.Snapshot(); snap.Count > 0 {
+				e.Histogram("xproxy_route_request_duration_seconds", "Time from request start to response end per route.", labels(cr), snap)
+			}
+		}
 		names := make([]string, 0, len(rt.rateLimits))
 		for name := range rt.rateLimits {
 			names = append(names, name)

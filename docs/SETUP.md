@@ -85,6 +85,9 @@ sysctl --system
 | `/etc/sysctl.d/90-xproxy.conf` | kernel profile |
 | `/etc/logrotate.d/xproxy` | rotation calling `xproxyctl reopen-logs` |
 | `/etc/xproxy/xproxy.yaml` | example configuration (existing file backed up) |
+| `/usr/local/share/man/man8/xproxy.8`, `xproxyctl.8`, `/usr/local/share/man/man5/xproxy.yaml.5` | manual pages |
+| `/usr/local/share/xproxy/xproxy.schema.json` | JSON schema of the configuration for editors |
+| `/usr/local/share/bash-completion/completions/xproxyctl`, `zsh/site-functions/_xproxyctl`, `fish/vendor_completions.d/xproxyctl.fish` | shell completion |
 
 systemd creates `/etc/xproxy`, `/var/log/xproxy`, `/run/xproxy` and
 `/var/lib/xproxy` with the right owner on first start.

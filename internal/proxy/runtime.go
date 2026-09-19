@@ -3,9 +3,11 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"github.com/rom/xproxy/internal/tmpl"
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"regexp"
 	"sort"
 	"sync/atomic"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/jwt"
 	"github.com/rom/xproxy/internal/limits"
+	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/router"
 	"github.com/rom/xproxy/internal/shed"
@@ -44,6 +47,8 @@ type runtime struct {
 	// events is the generation's event bus (nil in unit tests that build
 	// a runtime without a server).
 	events *eventBus
+	// errorPages are the server level pages, nil when not configured.
+	errorPages *errorPages
 }
 
 // customFilter wraps a configured middleware instance with its deny
@@ -116,15 +121,24 @@ type compiledRoute struct {
 	deny         []netip.Prefix
 	filters      filter.Chain
 	wafMode      string
-	class        shed.Class
-	challenge    *config.RouteChallenge // nil or mode off means no gate
-	counts       [5]atomic.Uint64       // 2xx, 3xx, 4xx, 5xx, denied
-	bytesIn      atomic.Uint64
-	bytesOut     atomic.Uint64
-	rateLimited  atomic.Uint64
-	geoAllow     map[string]bool
-	geoDeny      map[string]bool
-	geoUnknown   string
+	// Templated header operations, regex rewrite, redirect target and
+	// error pages (nil without a route section).
+	reqOps, respOps compiledOps
+	rewriteRE       *regexp.Regexp
+	pathREs         []*regexp.Regexp
+	rewriteTo       *tmpl.Template
+	redirectTo      *tmpl.Template
+	errPages        *errorPages
+	class           shed.Class
+	challenge       *config.RouteChallenge // nil or mode off means no gate
+	counts          [5]atomic.Uint64       // 2xx, 3xx, 4xx, 5xx, denied
+	hist            *metrics.Histogram     // request duration per route
+	bytesIn         atomic.Uint64
+	bytesOut        atomic.Uint64
+	rateLimited     atomic.Uint64
+	geoAllow        map[string]bool
+	geoDeny         map[string]bool
+	geoUnknown      string
 }
 
 // geoAllowed applies the route's country policy.
@@ -180,7 +194,12 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		// Bound tracked keys so that a distributed source cannot grow memory
 		// without limit: 64 shards * 8192 keys * ~64 bytes ≈ 32 MiB worst case
 		// per policy.
-		lim := limits.NewKeyedLimiter(rl.Rate, rl.Burst, 8192)
+		var lim *limits.KeyedLimiter
+		if rl.Algorithm == "sliding_window" {
+			lim = limits.NewWindowLimiter(float64(rl.Limit), rl.Window.D(), 8192)
+		} else {
+			lim = limits.NewKeyedLimiter(rl.Rate, rl.Burst, 8192)
+		}
 		if cfg.Cluster != nil && cfg.Cluster.SharesRateLimits() {
 			lim.SetPeerStale(cfg.Cluster.PeerStale.D())
 		}
@@ -275,10 +294,17 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 	if cfg.Compression.Enable() {
 		compressPol = newCompressPolicy(cfg.Compression)
 	}
+	if ep, err := loadErrorPages(cfg.Server.ErrorPages); err != nil {
+		rt.stop()
+		return nil, fmt.Errorf("server.%w", err)
+	} else {
+		rt.errorPages = ep
+	}
 	for i := range cfg.Routes {
 		r := &cfg.Routes[i]
 		cr := &compiledRoute{
 			cfg:   r,
+			hist:  metrics.NewHistogram(metrics.DurationBuckets),
 			allow: netutil.ParsePrefixes(r.AllowCIDRs),
 			deny:  netutil.ParsePrefixes(r.DenyCIDRs),
 			class: shed.ParseClass(r.PriorityClass),
@@ -408,9 +434,67 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 			rt.stop()
 			return nil, err
 		}
+		if err := cr.compileTemplates(); err != nil {
+			rt.stop()
+			return nil, fmt.Errorf("route %s: %w", r.Name, err)
+		}
 		rt.routes[i] = cr
 	}
 	return rt, nil
+}
+
+// captureFrom records the groups of the first path_regex that matches
+// the request path, for templates; rewrite_regex captures replace them
+// when the outbound path is built.
+func (cr *compiledRoute) captureFrom(st *reqState) {
+	for _, re := range cr.pathREs {
+		if m := re.FindStringSubmatch(st.path); m != nil {
+			st.captures, st.captureNames = m, re.SubexpNames()
+			return
+		}
+	}
+}
+
+// compileTemplates parses the route's header templates, regex rewrite,
+// redirect target and error pages.
+func (cr *compiledRoute) compileTemplates() error {
+	r := cr.cfg
+	var captures []string
+	if rr := r.RewriteRegex; rr != nil {
+		re, err := regexp.Compile(rr.Pattern)
+		if err != nil {
+			return fmt.Errorf("rewrite_regex: %w", err)
+		}
+		cr.rewriteRE = re
+		captures = append(captures, re.SubexpNames()...)
+		t, err := tmpl.Parse(rr.Replace, re.SubexpNames()...)
+		if err != nil {
+			return fmt.Errorf("rewrite_regex.replace: %w", err)
+		}
+		cr.rewriteTo = t
+	}
+	for _, p := range r.PathRegex {
+		if re, err := regexp.Compile(p); err == nil {
+			captures = append(captures, re.SubexpNames()...)
+			cr.pathREs = append(cr.pathREs, re)
+		}
+	}
+	var err error
+	if cr.reqOps, err = compileOps(r.RequestHeaders, captures); err != nil {
+		return fmt.Errorf("request_headers: %w", err)
+	}
+	if cr.respOps, err = compileOps(r.ResponseHeaders, captures); err != nil {
+		return fmt.Errorf("response_headers: %w", err)
+	}
+	if r.Redirect != nil {
+		if cr.redirectTo, err = tmpl.Parse(r.Redirect.To, captures...); err != nil {
+			return fmt.Errorf("redirect.to: %w", err)
+		}
+	}
+	if cr.errPages, err = loadErrorPages(r.ErrorPages); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (rt *runtime) start() {

@@ -160,12 +160,14 @@ views.upstreams = { refresh: 5000, async render() {
       facts.push(['Balancer', p.balancer], ['Available', p.available + ' / ' + p.endpoints], ['Active', p.active]);
       if (p.circuit) facts.push(['Circuit', circuitState(p.circuit)], ['Circuit opens / rejected', fmtNum(p.circuit.opens) + ' / ' + fmtNum(p.circuit.rejected)]);
       if (p.queue) facts.push(['Concurrency', p.queue.in_flight + ' / ' + p.queue.max_concurrent + ' in flight, ' + p.queue.waiting + ' / ' + p.queue.queue_size + ' queued'], ['Queue timeouts / full', fmtNum(p.queue.timeouts) + ' / ' + fmtNum(p.queue.full)]);
+      if (p.discovery) facts.push(['Discovery', p.discovery.type + ' ' + p.discovery.name + ' (' + p.discovery.endpoints + ' endpoints, ' + p.discovery.changes + ' changes' + (p.discovery.errors ? ', ' + p.discovery.errors + ' errors' : '') + ')'], ['Last resolved', p.discovery.last_error ? h('span', { class: 'bad' }, p.discovery.last_error) : fmtTime(p.discovery.last_resolved)]);
+      if (p.slow_start) facts.push(['Slow start', p.slow_start]);
       if (p.canary) facts.push(['Canary', (p.canary.header ? 'header ' + p.canary.header + ' ' : '') + (p.canary.cookie ? 'cookie ' + p.canary.cookie + ' ' : '') + p.canary.percent + '% on ' + p.canary.endpoints + ' endpoint(s)'], ['Canary requests / fallbacks', fmtNum(p.canary.requests) + ' / ' + fmtNum(p.canary.fallbacks)]);
     }
     view.append(h('div', { class: 'card' }, h('h2', null, n),
       facts.length ? h('div', { class: 'grid' }, facts.map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))) : null,
       table(['Address', { label: 'Weight', num: true }, 'Health', { label: 'Active', num: true }, { label: 'Requests', num: true }, { label: 'Errors', num: true }, { label: 'Ejections', num: true }],
-        ups[n].map(e => [e.address, e.weight, e.ejected ? h('span', { class: 'bad' }, 'ejected') : e.healthy ? h('span', { class: 'ok' }, 'healthy') : h('span', { class: 'bad' }, 'unhealthy'), e.active, fmtNum(e.requests), fmtNum(e.errors), e.ejections]))));
+        ups[n].map(e => [e.address + (e.discovered ? ' (dns)' : ''), e.weight, e.ejected ? h('span', { class: 'bad' }, 'ejected') : e.healthy ? h('span', { class: 'ok' }, e.ramp < 1 ? 'warming ' + Math.round(e.ramp * 100) + '%' : 'healthy') : h('span', { class: 'bad' }, 'unhealthy'), e.active, fmtNum(e.requests), fmtNum(e.errors), e.ejections]))));
   }
 }};
 function circuitState(c) {
@@ -247,8 +249,11 @@ views.cluster = { refresh: 5000, async render() {
 }};
 
 views.certificates = { refresh: 30000, async render() {
-  const [served, certs] = await Promise.all([get('/api/tls').catch(() => ({})), get('/api/acme').catch(() => null)]);
+  const [served, certs, tickets] = await Promise.all([get('/api/tls').catch(() => ({})), get('/api/acme').catch(() => null), get('/api/tls-tickets').catch(() => null)]);
   clear(view);
+  if (tickets) view.append(h('div', { class: 'grid' }, [['Session ticket keys', 'epoch ' + tickets.epoch + ', ' + tickets.keys + ' keys from ' + tickets.master_keys + ' master key(s)'], ['Fingerprint', h('code', null, tickets.fingerprint)], ['Next rotation', fmtTime(tickets.next_rotation) + ' (every ' + tickets.rotate + ')'],
+    ['Cluster peers', (tickets.mismatched_peers || []).length ? h('span', { class: 'bad' }, 'mismatch: ' + tickets.mismatched_peers.join(', ')) : (Object.keys(tickets.peers || {}).length ? h('span', { class: 'ok' }, 'all agree') : '-')]]
+    .map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))));
   const now = Date.now();
   const rows = [];
   for (const ln of Object.keys(served).sort()) for (const c of served[ln]) {
@@ -438,8 +443,8 @@ views.routes = { refresh: 10000, async render() {
     table(['Tenant', { label: 'Routes', num: true }, { label: 'Requests', num: true }, { label: 'Denied', num: true }, { label: 'Rate limited', num: true }, { label: 'Bytes in', num: true }, { label: 'Bytes out', num: true }],
       q.tenants.map(t => [t.tenant, t.routes, fmtNum(t.requests), fmtNum(t.denied), fmtNum(t.rate_limited), fmtBytes(t.bytes_in), fmtBytes(t.bytes_out)]))));
   view.append(h('div', { class: 'card' }, h('h2', null, 'Routes (generation ' + q.generation + ')'),
-    table(['Route', 'Tenant', 'Upstream', { label: 'Requests', num: true }, { label: '2xx', num: true }, { label: '3xx', num: true }, { label: '4xx', num: true }, { label: '5xx', num: true }, { label: 'Denied', num: true }, { label: 'Rate limited', num: true }, { label: 'Bytes out', num: true }],
-      (q.routes || []).map(r => [r.route, r.tenant || '-', r.upstream || '-', fmtNum(r.requests), fmtNum(r.status_2xx), fmtNum(r.status_3xx), fmtNum(r.status_4xx), fmtNum(r.status_5xx), fmtNum(r.denied), fmtNum(r.rate_limited), fmtBytes(r.bytes_out)]))));
+    table(['Route', 'Tenant', 'Upstream', { label: 'Requests', num: true }, { label: '2xx', num: true }, { label: '3xx', num: true }, { label: '4xx', num: true }, { label: '5xx', num: true }, { label: 'Denied', num: true }, { label: 'Rate limited', num: true }, { label: 'Bytes out', num: true }, { label: 'p50 ms', num: true }, { label: 'p95 ms', num: true }, { label: 'p99 ms', num: true }],
+      (q.routes || []).map(r => [r.route, r.tenant || '-', r.upstream || '-', fmtNum(r.requests), fmtNum(r.status_2xx), fmtNum(r.status_3xx), fmtNum(r.status_4xx), fmtNum(r.status_5xx), fmtNum(r.denied), fmtNum(r.rate_limited), fmtBytes(r.bytes_out), r.latency_p50_ms, r.latency_p95_ms, r.latency_p99_ms]))));
   if ((q.rate_limits || []).length) view.append(h('div', { class: 'card' }, h('h2', null, 'Rate limit policies'),
     table(['Policy', 'Key', { label: 'Rate', num: true }, { label: 'Burst', num: true }, { label: 'Keys', num: true }, { label: 'Allowed', num: true }, { label: 'Denied', num: true }, 'Top consumers'],
       q.rate_limits.map(p => [p.policy, p.key, p.rate, p.burst, p.keys, fmtNum(p.allowed), fmtNum(p.denied), (p.top || []).map(u => u.key + '=' + fmtNum(u.total)).join(', ') || '-']))));
@@ -502,6 +507,7 @@ views.history = { async render() {
   else pend.append(table(['Section', 'Item', 'Change'], pending.changes.map(it => [it.section, it.name || '-', it.kind])),
     (pending.summary || []).length ? h('ul', null, pending.summary.map(l => h('li', null, l))) : null,
     (pending.restart_needed || []).length ? h('p', { class: 'warn mt-s' }, 'needs a restart: ' + pending.restart_needed.join(', ')) : null,
+    (pending.drains || []).length ? h('p', { class: 'muted mt-s' }, 'applied with a connection drain: ' + pending.drains.join(', ')) : null,
     pending.text ? h('pre', { class: 'diff' }, pending.text + (pending.truncated ? '\n... (truncated)' : '')) : null);
   view.append(pend);
   const hist = h('div', { class: 'card' }, h('h2', null, 'Recorded configurations'));

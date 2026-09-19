@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/rom/xproxy/internal/bound"
 	"log/slog"
 	"net"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +28,15 @@ type RateSource interface {
 	Flush(limit int) map[string]map[string]float64
 	// Report applies a peer's consumption of one policy.
 	Report(peer, policy string, reports []limits.PeerReport)
+	// Decide takes n from key of policy on behalf of a peer (this node
+	// owns the key under distributed: exact); ok is false for an
+	// unknown policy.
+	Decide(policy, key string, n float64) (allowed, ok bool)
+}
+
+// takeReply is an owner's answer to Take.
+type takeReply struct {
+	allowed, decided bool
 }
 
 // BanStore is the local ban list.
@@ -37,9 +48,10 @@ type BanStore interface {
 
 // Node is the cluster endpoint of one proxy.
 type Node struct {
-	id    string
-	log   *slog.Logger
-	rates RateSource
+	id        string
+	queueFull bound.Notice
+	log       *slog.Logger
+	rates     RateSource
 
 	mu       sync.Mutex
 	cfg      *config.Cluster
@@ -64,7 +76,16 @@ type Node struct {
 
 	ratesSent, ratesRecv, keysRecv, bansSent, bansRecv, rejected, dropped atomic.Uint64
 	eventsSent, eventsRecv, ignored                                       atomic.Uint64
+
+	// pending holds Take requests awaiting an owner's answer by request id.
+	pendingMu sync.Mutex
+	pending   map[uint64]chan takeReply
+
+	exactAsked, exactDecided, exactServed, exactFallbacks atomic.Uint64
 }
+
+// maxPending bounds Take requests in flight.
+const maxPending = 65536
 
 type banChange struct {
 	e       ban.Entry
@@ -83,6 +104,7 @@ func New(cfg *config.Cluster, rates RateSource, log *slog.Logger) (*Node, error)
 		interval: cfg.GossipInterval.D(),
 		banQueue: make(chan banChange, banQueueSize),
 		stop:     make(chan struct{}),
+		pending:  map[uint64]chan takeReply{},
 	}
 	n.eventQueue = make(chan Event, eventQueueSize)
 	srv, cli, err := buildTLS(&cfg.TLS)
@@ -164,6 +186,7 @@ func (n *Node) AttachBans(b BanStore) {
 			case n.banQueue <- banChange{e: e, removed: removed}:
 			default:
 				n.dropped.Add(1)
+				n.queueFull.Hit(n.log, "cluster ban queue full; the change is not shared", "table", "cluster_ban_queue")
 			}
 		})
 	}
@@ -182,6 +205,7 @@ func (n *Node) PublishEvent(e Event) {
 	case n.eventQueue <- e:
 	default:
 		n.dropped.Add(1)
+		n.queueFull.Hit(n.log, "cluster event queue full; the event is not shared", "table", "cluster_event_queue", "kind", e.Kind)
 	}
 }
 
@@ -300,6 +324,7 @@ type peer struct {
 	once sync.Once
 
 	mu          sync.Mutex
+	id          string // node id, learned from the hello the peer answers with
 	conn        net.Conn
 	w           *bufio.Writer
 	connectedAt time.Time
@@ -355,18 +380,35 @@ func (p *peer) loop() {
 		if err := p.send(&message{T: typeHello, Node: p.node.id, Ver: ProtocolVersion}); err == nil {
 			p.node.sendSnapshot(p)
 		}
-		// Drain reads so a close is noticed; peers never send us anything
-		// meaningful on the connection we dialled.
-		buf := make([]byte, 512)
+		// Read what the peer answers on the connection we dialled: its
+		// hello (which names it for key ownership) and exact rate limit
+		// decisions. Anything else is ignored; a close is noticed here.
+		r := bufio.NewReaderSize(conn, 64<<10)
 		for {
 			_ = conn.SetReadDeadline(time.Now().Add(24 * time.Hour))
-			if _, rerr := conn.Read(buf); rerr != nil {
+			line, rerr := readLine(r, MaxMessageBytes)
+			if rerr != nil {
 				break
+			}
+			var m message
+			if json.Unmarshal(line, &m) != nil {
+				continue
+			}
+			switch m.T {
+			case typeHello:
+				if m.Node != "" && len(m.Node) <= 64 {
+					p.mu.Lock()
+					p.id = m.Node
+					p.mu.Unlock()
+				}
+			case typeTook:
+				p.node.deliver(&m)
 			}
 		}
 		p.mu.Lock()
 		p.conn = nil
 		p.w = nil
+		p.id = ""
 		p.mu.Unlock()
 		p.reconnects.Add(1)
 		select {
@@ -565,6 +607,22 @@ type inbound struct {
 	since    time.Time
 	lastSeen atomic.Int64
 	in       atomic.Uint64
+	// wmu serialises the answers written back on this connection (the
+	// hello acknowledgement and exact decisions).
+	wmu sync.Mutex
+}
+
+// reply writes one message back to the peer that dialled us.
+func (in *inbound) reply(m *message) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	in.wmu.Lock()
+	defer in.wmu.Unlock()
+	_ = in.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_, err = in.conn.Write(append(b, '\n'))
+	return err
 }
 
 func (n *Node) acceptLoop(ln net.Listener) {
@@ -681,6 +739,9 @@ func (n *Node) handle(in *inbound, m *message) error {
 		id := m.Node
 		in.nodeID.Store(&id)
 		n.log.Info("cluster peer joined", "remote", in.remote, "node", id, "cert", in.certName)
+		// Answer with our own hello so the dialler learns our id (older
+		// nodes ignore it).
+		_ = in.reply(&message{T: typeHello, Node: n.id, Ver: ProtocolVersion})
 		return nil
 	case typePing:
 		return nil
@@ -766,6 +827,19 @@ func (n *Node) handle(in *inbound, m *message) error {
 			n.eventsRecv.Add(1)
 		}
 		return nil
+	case typeTake:
+		if deref(in.nodeID.Load()) == "" {
+			return errors.New("take before hello")
+		}
+		if m.Policy == "" || len(m.Policy) > 64 || m.Key == "" || len(m.Key) > 300 || m.N <= 0 || m.N > 1e6 {
+			return errors.New("bad take")
+		}
+		reply := &message{T: typeTook, Node: n.id, Req: m.Req}
+		if allowed, ok := n.rates.Decide(m.Policy, m.Key, m.N); ok {
+			reply.Allowed = &allowed
+		}
+		n.exactServed.Add(1)
+		return in.reply(reply)
 	default:
 		// A newer peer may send types this node does not know; they are
 		// counted and skipped so that a rolling upgrade keeps the
@@ -775,36 +849,183 @@ func (n *Node) handle(in *inbound, m *message) error {
 	}
 }
 
+// ---- exact rate limiting ---------------------------------------------------
+
+// Members lists the node ids that take part in key ownership: this node
+// and every peer whose hello has been received on a live connection,
+// sorted.
+func (n *Node) Members() []string {
+	n.mu.Lock()
+	peers := make([]*peer, 0, len(n.peers))
+	for _, p := range n.peers {
+		peers = append(peers, p)
+	}
+	n.mu.Unlock()
+	out := []string{n.id}
+	for _, p := range peers {
+		p.mu.Lock()
+		if p.conn != nil && p.id != "" {
+			out = append(out, p.id)
+		}
+		p.mu.Unlock()
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Owner returns the id of the member that owns key: the member with the
+// highest rendezvous hash of member and key, so every node that sees the
+// same membership picks the same owner and a member's departure moves
+// only its keys.
+func (n *Node) Owner(key string) string {
+	best, bestHash := "", uint64(0)
+	for _, m := range n.Members() {
+		if h := rendezvous(m, key); best == "" || h > bestHash || h == bestHash && m < best {
+			best, bestHash = m, h
+		}
+	}
+	return best
+}
+
+func rendezvous(member, key string) uint64 {
+	h := uint64(14695981039346656037)
+	for i := 0; i < len(member); i++ {
+		h ^= uint64(member[i])
+		h *= 1099511628211
+	}
+	h ^= 0
+	h *= 1099511628211
+	for i := 0; i < len(key); i++ {
+		h ^= uint64(key[i])
+		h *= 1099511628211
+	}
+	return h
+}
+
+// Take asks the owner of key for n of policy. decided is false when this
+// node owns the key, when no owner is reachable or when the owner does
+// not answer within exact_timeout; the caller then decides locally.
+func (n *Node) Take(policy, key string, amount float64) (allowed, decided bool) {
+	owner := n.Owner(key)
+	if owner == "" || owner == n.id {
+		return false, false
+	}
+	var target *peer
+	n.mu.Lock()
+	timeout := n.cfg.ExactTimeout.D()
+	for _, p := range n.peers {
+		p.mu.Lock()
+		if p.id == owner && p.conn != nil {
+			target = p
+		}
+		p.mu.Unlock()
+		if target != nil {
+			break
+		}
+	}
+	n.mu.Unlock()
+	if target == nil {
+		n.exactFallbacks.Add(1)
+		return false, false
+	}
+	req := n.seq.Add(1)
+	ch := make(chan takeReply, 1)
+	n.pendingMu.Lock()
+	if len(n.pending) >= maxPending {
+		n.pendingMu.Unlock()
+		n.exactFallbacks.Add(1)
+		return false, false
+	}
+	n.pending[req] = ch
+	n.pendingMu.Unlock()
+	forget := func() {
+		n.pendingMu.Lock()
+		delete(n.pending, req)
+		n.pendingMu.Unlock()
+	}
+	if err := target.send(&message{T: typeTake, Node: n.id, Req: req, Policy: policy, Key: key, N: amount}); err != nil {
+		forget()
+		n.exactFallbacks.Add(1)
+		return false, false
+	}
+	n.exactAsked.Add(1)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		if !r.decided {
+			n.exactFallbacks.Add(1)
+			return false, false
+		}
+		n.exactDecided.Add(1)
+		return r.allowed, true
+	case <-timer.C:
+		forget()
+		n.exactFallbacks.Add(1)
+		return false, false
+	case <-n.stop:
+		forget()
+		return false, false
+	}
+}
+
+// deliver hands an owner's answer to the waiting Take.
+func (n *Node) deliver(m *message) {
+	n.pendingMu.Lock()
+	ch, ok := n.pending[m.Req]
+	if ok {
+		delete(n.pending, m.Req)
+	}
+	n.pendingMu.Unlock()
+	if !ok {
+		return
+	}
+	r := takeReply{decided: m.Allowed != nil}
+	if m.Allowed != nil {
+		r.allowed = *m.Allowed
+	}
+	ch <- r
+}
+
 // Status returns the management view.
 func (n *Node) Status() Status {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	st := Status{
-		NodeID:        n.id,
-		RatesSent:     n.ratesSent.Load(),
-		RatesReceived: n.ratesRecv.Load(),
-		KeysReceived:  n.keysRecv.Load(),
-		BansSent:      n.bansSent.Load(),
-		BansReceived:  n.bansRecv.Load(),
-		EventsSent:    n.eventsSent.Load(),
-		EventsRecv:    n.eventsRecv.Load(),
-		Ignored:       n.ignored.Load(),
-		Rejected:      n.rejected.Load(),
-		Dropped:       n.dropped.Load(),
-		Peers:         []PeerStatus{},
-		Inbound:       []InboundStatus{},
+		NodeID:         n.id,
+		RatesSent:      n.ratesSent.Load(),
+		RatesReceived:  n.ratesRecv.Load(),
+		KeysReceived:   n.keysRecv.Load(),
+		BansSent:       n.bansSent.Load(),
+		BansReceived:   n.bansRecv.Load(),
+		EventsSent:     n.eventsSent.Load(),
+		EventsRecv:     n.eventsRecv.Load(),
+		Ignored:        n.ignored.Load(),
+		Rejected:       n.rejected.Load(),
+		Dropped:        n.dropped.Load(),
+		Peers:          []PeerStatus{},
+		Inbound:        []InboundStatus{},
+		ExactAsked:     n.exactAsked.Load(),
+		ExactDecided:   n.exactDecided.Load(),
+		ExactServed:    n.exactServed.Load(),
+		ExactFallbacks: n.exactFallbacks.Load(),
 	}
+	st.Members = []string{n.id}
 	if n.ln != nil {
 		st.Listen = n.ln.Addr().String()
 	}
 	for _, p := range n.peers {
 		p.mu.Lock()
 		st.Peers = append(st.Peers, PeerStatus{
-			Address: p.addr, Connected: p.conn != nil, ConnectedAt: p.connectedAt,
+			Address: p.addr, NodeID: p.id, Connected: p.conn != nil, ConnectedAt: p.connectedAt,
 			LastError: p.lastErr, MessagesOut: p.out.Load(), Reconnects: p.reconnects.Load(),
 		})
+		if p.conn != nil && p.id != "" {
+			st.Members = append(st.Members, p.id)
+		}
 		p.mu.Unlock()
 	}
+	sort.Strings(st.Members)
 	for in := range n.inbound {
 		st.Inbound = append(st.Inbound, InboundStatus{
 			Remote: in.remote, NodeID: deref(in.nodeID.Load()), CertName: in.certName,

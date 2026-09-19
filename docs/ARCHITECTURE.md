@@ -84,6 +84,10 @@ internal/metrics    Prometheus text encoder, histogram, sampled series
 internal/tui        terminal UI of xproxyctl (pure renderer plus a raw-mode loop)
 internal/admin      web GUI server: users file, sessions, API over the management client, static/ assets
 internal/version    build information
+internal/expr       condition language of routes[].when and header when (lexer, parser, evaluator)
+internal/config/schema  JSON schema of the configuration, generated from the types (schemagen) and embedded
+internal/manpage    Markdown to troff renderer and the generation of docs/man from docs/man/*.md and CONFIG.md
+docs/man/           manual pages (sources *.md, generated xproxy.8, xproxyctl.8, xproxy.yaml.5)
 deploy/             systemd units, sysusers, sysctl, SELinux policy, polkit, logrotate, RPM spec, example config
 docs/               this documentation
 test/               cross package and binary level tests (grows in 1.0)
@@ -168,8 +172,23 @@ The old runtime's pools are stopped after `shutdown_timeout`. Any failure
 before the swap leaves the old generation active and increments
 `reload_failures`.
 
-Listener changes (address, TLS mode, protocols, client auth) are refused by
-`Reload` because sockets may be systemd owned; they need a restart.
+Listeners are part of the reload. Each accept socket is owned by an
+`acceptor` (`internal/proxy/acceptor.go`) whose goroutine hands
+connections over an unbuffered channel to the current `front`, the
+`net.Listener` a listener generation serves from; closing a front stops
+that generation without touching the socket. `Reload` plans the listener
+set by name, then by address for renames: unchanged listeners keep
+running (certificate files, forward and dns policies apply in place),
+added ones are bound, and changed ones are rebuilt, on the old acceptor
+when the address is the same so a systemd owned or privileged socket is
+never re-bound and no connection is refused. Every bind and build
+happens before the runtime swap; a failure releases what was built and
+leaves the old set serving. After the swap, replaced and removed
+listeners close their front and drain (`http.Server.Shutdown` and the
+per kind equivalents) for `shutdown_timeout`; the socket is closed only
+when no replacement inherited it. A listener with a UDP socket cannot be
+rebuilt on the same address because the old socket stays bound until
+the drain ends, so that change still needs a restart.
 
 ## 5. Request path
 
@@ -301,6 +320,75 @@ multiplied by the ejection count (capped at 10) subject to
 The consistent hash ring uses 128 virtual nodes per weight unit. Removing
 an endpoint moves only its keys (`TestHashRing` asserts this).
 
+### Latency outliers
+
+Besides consecutive failures, `Pool.End` folds the time to first byte
+of every attempt into an exponential moving average per endpoint
+(factor 0.2, atomics, no allocation). With `latency_threshold` an
+endpoint whose average exceeds the bound is ejected; with
+`latency_factor` one whose average exceeds the mean of the other
+endpoints' averages by the factor is, so the outlier does not move its
+own reference. Both wait for
+`latency_min_samples` responses since the endpoint last became
+available, respect `max_ejection_percent` and the back-off of the
+failure rule, and reset the endpoint's average so that it is judged
+afresh on return. Health probes can require a body (`body_contains`,
+`body_regex` on the first 64 KiB) so that an application that answers
+200 while its dependencies are down is not considered healthy. Every
+compiled route owns a duration histogram (the same buckets as the
+global one), exposed per route with `metrics.per_route` and summarised
+as p50, p95 and p99 in the quota report.
+
+### Expressions
+
+`internal/expr` parses `routes[].when` and the `when` of header
+operations into a small tree (or, and, not, comparisons, `in` over a
+literal list or a `cidr()` prefix set, `matches` with a pattern compiled
+at load, and functions over strings) and evaluates it per request
+against the same `Resolver` the header templates use (`tvars`), so the
+variable set is one. Unknown names, functions, arities, patterns and
+capture groups are rejected by validation; evaluation cannot fail (a
+missing value is the empty string, a non-address in `cidr` is not
+contained). The router evaluates a route's expression after its static
+matches and counts it as one condition for specificity; the handler
+passes a `tvars` bound to the request before the route is known, which
+resolves `country` on demand through the runtime's GeoIP database.
+
+### Templates and error pages
+
+Header values, redirect targets, regex rewrite replacements and error
+documents share one placeholder syntax (`internal/tmpl`): `${name}`
+with a fixed set of names checked at load, so a typo is a validation
+error rather than an empty header in production. Templates are parsed
+once per generation into literal and variable parts; a value without
+placeholders costs nothing at request time. The proxy resolves
+variables from the request and its state, including the groups of the
+route's `rewrite_regex` or `path_regex` match, which are recorded
+before header operations run. Error documents are read at load, parsed
+leniently (unknown `${...}` stays literal, so script code survives) and
+rendered by the same status writer every denial and failure already
+uses; a route's section shadows the server's; upstream bodies are
+replaced only for the statuses listed in `intercept_upstream`, with the
+body describing headers corrected.
+
+### Dynamic endpoint sets
+
+A pool's endpoint list is an atomically replaced slice. Discovery
+resolves the configured name (A/AAAA with a fixed port, or SRV with
+target, port and weight from the records, lowest priority group only)
+once synchronously in `Start` and then on an interval, and merges the
+result by address: static endpoints and addresses that persist keep
+their `Endpoint` objects, so statistics, health state and in-flight
+counts continue; new addresses get a fresh object with a slow start
+ramp and, when active checks are on, their own probe loop under the
+pool's context; removed addresses lose their loop and drop out of the
+next pick. The hash ring is rebuilt on every change. Affinity cookies
+carry a pool-unique endpoint index rather than a position, so a cookie
+survives set changes. Slow start is a per endpoint ramp start time:
+weighted and least connection balancers scale the weight by the ramp,
+round robin and hash keep a ramping pick with the ramp's probability
+and otherwise pick again among the others.
+
 ## 7. Limits
 
 - `KeyedLimiter`: 64 shards, each a map of lazily refilled token buckets.
@@ -310,6 +398,11 @@ an endpoint moves only its keys (`TestHashRing` asserts this).
   With clustering, each bucket also holds up to 64 peer rate reports with
   timestamps; refill uses `rate - sum(fresh peer rates)`, clamped at zero,
   and `Flush` returns and resets per key consumption for gossip.
+  `NewWindowLimiter` builds the same structure as a sliding window
+  counter: each key keeps the count of the current and the previous
+  fixed window; the estimate weights the previous count by the part of
+  it still inside the sliding window, and peers count as their reported
+  rate over one window.
 - `ConnLimiter`: wraps the listener; counts per IP in a map guarded by one
   mutex (accept rate, not request rate) and globally with an atomic. Limits
   are adjustable on reload.
@@ -317,6 +410,21 @@ an endpoint moves only its keys (`TestHashRing` asserts this).
 - Timeouts come from `net/http` (`ReadHeaderTimeout`, `ReadTimeout`,
   `WriteTimeout`, `IdleTimeout`) and from contexts (route timeout, upstream
   total).
+
+### Bounded tables
+
+Every in-memory table grows with attacker controlled input (client
+addresses, rate limit keys, matched rule targets) and is therefore
+capped. What happens at the cap is a security decision: rate limit
+shards fall back to the shared key or the burst, ban triggers stop
+tracking new addresses, honeypot marks and challenge nonces refuse new
+entries, bot score histories and admin sessions evict the oldest, WAF
+statistics stop recording new rules and learning entries, and export
+queues drop. None of this is silent: each site holds a `bound.Notice`
+that counts every occurrence and warns at most once per minute with the
+count since the previous warning, and the count is exposed where the
+subsystem has a status view. Configured limits that cannot be satisfied
+(a file too large, a value out of range) fail validation instead.
 
 ## 8. TLS
 
@@ -347,6 +455,20 @@ parses the SCT extension of each file certificate (`internal/tlsconf/ct.go`),
 rebuilds the precertificate TBS with `cryptobyte` and verifies each SCT
 signature against the log list; the verdict is kept per certificate for
 `GET /v1/tls` and, with `enforce`, fails the load.
+
+`tlsconf.Tickets` (`internal/tlsconf/tickets.go`) replaces the runtime's
+per process session ticket keys when `server.session_tickets` is set.
+Every key is `HKDF-SHA256(master, info = "xpticket" || epoch)` for the
+current and the previous epoch (`epoch = now / rotate`) and for every
+key of the master keyring, so nodes that share the file derive the same
+set without a message; the current epoch's first key encrypts new
+tickets, the rest only decrypt. The set is installed on every listener's
+`tls.Config` (and the QUIC one) with `SetSessionTicketKeys` and a
+one-minute loop re-derives it when the epoch changes. A fingerprint of
+the set (`sha256` of the keys, 16 hex digits) is published as the
+cluster event `ticket_keys` on start and after every rotation; a peer's
+fingerprint that differs is recorded and warned about through a bounded
+notice.
 
 ### Layer 4 passthrough
 
@@ -532,15 +654,19 @@ fallback is one more open inside the same root.
 
 ### Response compression
 
-When a route compresses and the client accepts gzip, the handler slips a
-`compressWriter` (`internal/proxy/compress.go`) between the logging
-`responseWriter` and the connection before the action runs, so every
-action writes through it. The writer decides when the header is
+When a route compresses and the client accepts one of the offered
+encodings (Brotli, zstd or gzip, negotiated by quality and then by the
+configured order), the handler slips a `compressWriter`
+(`internal/proxy/compress.go`) between the logging `responseWriter` and
+the connection before the action runs, so every action writes through
+it. The writer decides when the header is
 committed (status, existing encoding, `no-transform`, media type,
 length), buffers an unknown-length body up to `min_bytes`, decides at
 the first flush for streamed bodies, and is closed by a deferred call
-when the handler returns, which writes the gzip trailer or releases a
-small buffered body unchanged. gzip writers are pooled per generation.
+when the handler returns, which writes the encoder's trailer or releases
+a small buffered body unchanged. Encoders are pooled per encoding and
+generation; Brotli comes from `andybalholm/brotli` and zstd from
+`klauspost/compress`, both pure Go.
 The cache stores upstream bodies before this layer, so one entry serves
 both encodings.
 
@@ -685,6 +811,7 @@ Endpoints:
 | GET | `/v1/upstreams` | endpoint health and load |
 | GET | `/v1/pools` | pool level state: circuit breaker, concurrency gate and queue |
 | GET | `/v1/tls` | served certificates per listener with OCSP staple and CT state |
+| GET | `/v1/tls/tickets` | session ticket key epoch, fingerprint and peer agreement (404 without `server.session_tickets`) |
 | GET | `/v1/telemetry` | OpenTelemetry exporters (metrics, traces, logs) with counters |
 | GET | `/v1/quotas` | usage per tenant, route and rate limit policy; `?top=N` consumers per policy |
 | GET | `/v1/waf` | WAF profiles, route assignments, per rule statistics (`?top=N`) and learned exclusion proposals |
@@ -912,6 +1039,21 @@ configured rate approximately cluster wide. Ban changes originating locally
 the same cycle; peers apply them with source `peer:<node>` and never
 re-announce them, so there are no loops. A newly connected peer receives a
 snapshot of all active bans. Idle cycles send a ping so deadlines hold.
+
+Exact rate limits ride the same connections. The accepting side now
+answers a `hello` with its own, so the dialler learns the peer's node
+id; the members are this node plus every peer whose id is known on a
+live outbound connection, and `Owner(key)` is the member with the
+highest rendezvous hash of member and key, which every node computes
+alike from the same membership. `Take` sends a `take` (policy, key,
+amount, request id) to the owner on the outbound connection and waits
+for the `took` the owner writes back on that connection (the only
+traffic in that direction) for at most `exact_timeout`; the owner's
+`RateSource.Decide` runs its local limiter. No answer in time, an
+unknown owner or a full pending table (65536) means a local decision
+and an `exact_fallbacks` count, so the failure mode is over-admission,
+never a refused request. Older nodes ignore `take` and never answer a
+hello, so they are simply not members.
 
 Protocol version 2 (1.3) adds an `events` message: bounded facts with a
 kind, a key, an optional route and an expiry. The server publishes

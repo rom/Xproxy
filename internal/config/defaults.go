@@ -55,6 +55,10 @@ const (
 	DefaultWAFResponseBodyLimit = 512 << 10
 	// DefaultWAFLearningMinHits is the matches before an exclusion is
 	// proposed; DefaultWAFLearningMaxEntries bounds the learning table.
+	// DefaultDiscoveryInterval is how often discovered endpoints are
+	// re-resolved; DefaultDiscoveryTimeout bounds one resolution.
+	DefaultDiscoveryInterval     = 30 * time.Second
+	DefaultDiscoveryTimeout      = 5 * time.Second
 	DefaultWAFLearningMinHits    = 5
 	DefaultWAFLearningMaxEntries = 10000
 	DefaultCRSParanoia           = 1
@@ -255,7 +259,11 @@ func applyDefaults(c *Config) {
 		rl := &c.RateLimits[i]
 		setStr(&rl.Key, "client_ip")
 		setStr(&rl.Action, "reject")
-		if rl.Burst == 0 && rl.Rate > 0 {
+		setStr(&rl.Algorithm, "token_bucket")
+		setStr(&rl.Distributed, "approximate")
+		if rl.Algorithm == "sliding_window" {
+			setDur(&rl.Window, time.Second)
+		} else if rl.Burst == 0 && rl.Rate > 0 {
 			rl.Burst = int(rl.Rate)
 			if rl.Burst < 1 {
 				rl.Burst = 1
@@ -273,6 +281,12 @@ func applyDefaults(c *Config) {
 		setDur(&u.Timeouts.Idle, DefaultUpstreamIdle)
 		setDur(&u.Timeouts.Total, DefaultUpstreamTotal)
 		setInt(&u.MaxIdleConnsPerHost, DefaultMaxIdleConnsPerHost)
+		if d := u.Discovery; d != nil {
+			setStr(&d.Type, "dns")
+			setDur(&d.Interval, DefaultDiscoveryInterval)
+			setDur(&d.Timeout, DefaultDiscoveryTimeout)
+			setInt(&d.Weight, 1)
+		}
 		if u.Retries == nil {
 			r := DefaultRetries
 			u.Retries = &r
@@ -315,6 +329,7 @@ func applyDefaults(c *Config) {
 			setInt(&o.ConsecutiveFailures, DefaultOutlierFailures)
 			setDur(&o.BaseEjectionTime, DefaultOutlierBaseTime)
 			setInt(&o.MaxEjectionPercent, DefaultOutlierMaxEjectP)
+			setInt(&o.LatencyMinSamples, DefaultOutlierLatencySamples)
 		}
 	}
 
@@ -328,6 +343,13 @@ func applyDefaults(c *Config) {
 			}
 			setDur(&t.MaxDuration, DefaultBanMaxDuration)
 		}
+	}
+	errorPageDefaults(c.Server.ErrorPages)
+	if st := c.Server.SessionTickets; st != nil {
+		setDur(&st.Rotate, DefaultTicketRotate)
+	}
+	for i := range c.Routes {
+		errorPageDefaults(c.Routes[i].ErrorPages)
 	}
 	if w := c.WAF; w != nil {
 		setStr(&w.DefaultMode, "block")
@@ -356,6 +378,7 @@ func applyDefaults(c *Config) {
 	}
 
 	if cl := c.Cluster; cl != nil {
+		setDur(&cl.ExactTimeout, DefaultExactTimeout)
 		if cl.NodeID == "" {
 			if h, err := os.Hostname(); err == nil {
 				cl.NodeID = h
@@ -422,6 +445,14 @@ func applyDefaults(c *Config) {
 		setStr(&c.Filters[i].Stage, StageAfterAuth)
 	}
 	if cp := c.Compression; cp != nil {
+		if len(cp.Encodings) == 0 {
+			cp.Encodings = []string{"br", "zstd", "gzip"}
+		}
+		if cp.BrotliLevel == nil {
+			l := DefaultBrotliLevel
+			cp.BrotliLevel = &l
+		}
+		setInt(&cp.ZstdLevel, DefaultZstdLevel)
 		setInt(&cp.Level, 5)
 		setInt(&cp.MinBytes, 1024)
 		if len(cp.Types) == 0 {
@@ -557,3 +588,33 @@ func tracingOTLP(t *Tracing) *OTLPExport {
 	}
 	return t.OTLP
 }
+
+// errorPageDefaults fills an error pages section.
+func errorPageDefaults(e *ErrorPages) {
+	if e == nil {
+		return
+	}
+	setStr(&e.ContentType, "text/html; charset=utf-8")
+	if e.JSON == nil {
+		t := true
+		e.JSON = &t
+	}
+}
+
+// Compression encoder defaults: Brotli 4 and zstd 2 balance ratio and CPU
+// for dynamic responses.
+const (
+	DefaultBrotliLevel = 4
+	DefaultZstdLevel   = 2
+)
+
+// DefaultTicketRotate is the session ticket key epoch.
+const DefaultTicketRotate = 24 * time.Hour
+
+// DefaultOutlierLatencySamples is the number of responses before an
+// endpoint's latency can eject it.
+const DefaultOutlierLatencySamples = 20
+
+// DefaultExactTimeout bounds the wait for a key owner in exact
+// distributed rate limiting.
+const DefaultExactTimeout = 50 * time.Millisecond

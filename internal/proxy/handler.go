@@ -62,6 +62,13 @@ type reqState struct {
 	grpc      bool   // request is gRPC: errors are answered as gRPC statuses
 	grpcCode  string // grpc-status of the upstream response
 	release   func() // concurrency slot; idempotent
+	// cr is the matched route; captures and captureNames hold the
+	// route's regular expression match for templates.
+	cr           *compiledRoute
+	captures     []string
+	captureNames []string
+	// reason is the denial category for error pages.
+	reason string
 }
 
 // filterDenied carries a response phase verdict through ReverseProxy's
@@ -81,6 +88,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rt := s.rt.Load()
 	rw := &responseWriter{ResponseWriter: w}
 	st := &reqState{id: newRequestID(), start: time.Now()}
+	rw.st = st
 	st.clientIP = netutil.ClientIP(r, rt.trusted)
 	if tr := s.tracer.Load(); tr != nil {
 		st.span = tr.StartServer(r, r.Method)
@@ -190,7 +198,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	match := rt.router.MatchRequest(st.host, st.path, r.Method, st.grpc, r.Header)
+	match := rt.router.MatchRequest(st.host, st.path, r.Method, st.grpc, r.Header, &tvars{r: r, st: st, rt: rt})
 	if match == nil {
 		s.stats.DeniedNoRoute.Add(1)
 		st.denied = "no_route"
@@ -199,24 +207,30 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	cr := rt.routes[match.Index]
 	st.route = cr.cfg.Name
+	st.cr = cr
+	cr.captureFrom(st)
 	route = cr
-	if cr.compress != nil && r.Method != http.MethodHead && !isUpgrade(r) && !isGRPC(r) && wantsGzip(r) {
-		cw := newCompressWriter(rw.ResponseWriter, cr.compress)
-		rw.ResponseWriter = cw
-		defer func() {
-			cw.Close()
-			if cw.compress {
-				st.encoding = "gzip"
-				s.stats.Compressed.Add(1)
-				s.stats.CompressedRawBytes.Add(uint64(max(cw.raw, 0))) //nolint:gosec // non-negative
-			}
-		}()
+	if cr.compress != nil && r.Method != http.MethodHead && !isUpgrade(r) && !isGRPC(r) {
+		if enc := cr.compress.negotiate(r); enc != "" {
+			cw := newCompressWriter(rw.ResponseWriter, cr.compress, enc)
+			rw.ResponseWriter = cw
+			defer func() {
+				cw.Close()
+				if cw.compress {
+					st.encoding = enc
+					s.stats.Compressed.Add(1)
+					s.stats.CompressedRawBytes.Add(uint64(max(cw.raw, 0))) //nolint:gosec // non-negative
+				}
+			}()
+		}
 	}
 	st.marked = s.marks.marked(st.clientIP, st.start)
 
 	// Country lookup and policy (after the address ACL, which is cheaper).
 	if rt.geo != nil && rt.geoNeeded {
-		st.country = rt.geo.Country(st.clientIP)
+		if st.country == "" {
+			st.country = rt.geo.Country(st.clientIP)
+		}
 	}
 	if !cr.geoAllowed(st.country) {
 		s.stats.DeniedGeo.Add(1)
@@ -273,7 +287,18 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Rate limits.
 	for _, rl := range cr.rateLimits {
 		key := rateKey(rl.cfg, r, st)
-		if rl.lim.AllowFallback(key, "ip:"+st.clientIP.String(), 1) {
+		allowed, decided := false, false
+		if rl.cfg.Distributed == "exact" {
+			if node := s.cluster.Load(); node != nil {
+				// The key's owner decides; without an answer in time the
+				// local limiter does.
+				allowed, decided = node.Take(rl.cfg.Name, key, 1)
+			}
+		}
+		if !decided {
+			allowed = rl.lim.AllowFallback(key, "ip:"+st.clientIP.String(), 1)
+		}
+		if allowed {
 			rl.allowed.Add(1)
 			continue
 		}
@@ -372,8 +397,8 @@ admitted:
 	// Actions.
 	switch {
 	case cr.cfg.Redirect != nil:
-		applyHeaderOps(rw.Header(), cr.cfg.ResponseHeaders)
-		http.Redirect(rw, r, cr.cfg.Redirect.To, cr.cfg.Redirect.Status)
+		cr.respOps.apply(rw.Header(), &tvars{r: r, st: st})
+		http.Redirect(rw, r, cr.redirectTo.Expand(&tvars{r: r, st: st}), cr.cfg.Redirect.Status)
 	case cr.cfg.Honeypot != nil:
 		s.honeypot(rw, r, st, cr, release)
 	case cr.cfg.DoH != nil:
@@ -381,7 +406,7 @@ admitted:
 	case cr.cfg.Static != nil:
 		s.static(rw, r, st, cr)
 	case cr.cfg.Respond != nil:
-		applyHeaderOps(rw.Header(), cr.cfg.ResponseHeaders)
+		cr.respOps.apply(rw.Header(), &tvars{r: r, st: st})
 		if rw.Header().Get("Content-Type") == "" {
 			rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		}
@@ -575,7 +600,12 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			if v := instances.Response(resp); v.Deny {
 				return &filterDenied{v: v}
 			}
-			applyHeaderOps(resp.Header, cr.cfg.ResponseHeaders)
+			cr.respOps.apply(resp.Header, &tvars{r: r, st: st})
+			if ep := cr.errPages; ep != nil {
+				ep.interceptBody(resp, r, st)
+			} else if ep := s.rt.Load().errorPages; ep != nil {
+				ep.interceptBody(resp, r, st)
+			}
 			if st.grpc {
 				if code := grpcStatusOf(resp); code != "" {
 					st.grpcCode = code
@@ -631,7 +661,7 @@ func (s *Server) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 	rt := s.rt.Load()
 	out.URL.Scheme = cr.pool.Scheme
 	out.URL.Host = "pool" // replaced by poolTransport per attempt
-	out.URL.Path, out.URL.RawPath = rewritePath(in.URL.Path, in.URL.RawPath, cr.cfg)
+	out.URL.Path, out.URL.RawPath = cr.outboundPath(in.URL.Path, in.URL.RawPath, in, st)
 	if cr.cfg.HostHeader != "" {
 		out.Host = cr.cfg.HostHeader
 	} else {
@@ -662,7 +692,25 @@ func (s *Server) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 			}
 		}
 	}
-	applyHeaderOps(out.Header, cr.cfg.RequestHeaders)
+	cr.reqOps.apply(out.Header, &tvars{r: in, st: st})
+}
+
+// outboundPath applies strip_prefix, rewrite_path or rewrite_regex and
+// records regular expression captures for templates.
+func (cr *compiledRoute) outboundPath(path, rawPath string, r *http.Request, st *reqState) (string, string) {
+	if cr.rewriteRE == nil {
+		return rewritePath(path, rawPath, cr.cfg)
+	}
+	clean := netutil.CleanPath(path)
+	if cr.cfg.StripPrefix != "" {
+		clean, _ = rewritePath(clean, "", cr.cfg)
+	}
+	m := cr.rewriteRE.FindStringSubmatch(clean)
+	if m == nil {
+		return clean, ""
+	}
+	st.captures, st.captureNames = m, cr.rewriteRE.SubexpNames()
+	return cr.rewriteTo.Expand(&tvars{r: r, st: st}), ""
 }
 
 // rewritePath applies strip_prefix / rewrite_path to the outbound path.
@@ -777,6 +825,7 @@ func (s *Server) queueRefused(rw *responseWriter, r *http.Request, st *reqState,
 
 // deny writes a minimal error response and a security log entry.
 func (s *Server) deny(rw *responseWriter, r *http.Request, st *reqState, status int, reason string) {
+	st.reason = reason
 	s.logs.SecurityEvent(r.Context(), "deny", reason,
 		"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
 		"host", r.Host, "path", r.URL.Path, "route", st.route, "status", status,
@@ -817,7 +866,18 @@ func (s *Server) plainStatus(rw *responseWriter, r *http.Request, status int) {
 		return
 	}
 	h := rw.Header()
-	h.Set("Content-Type", "text/plain; charset=utf-8")
+	body := []byte(strconv.Itoa(status) + " " + http.StatusText(status) + "\n")
+	ctype := "text/plain; charset=utf-8"
+	if ep := s.errorPagesFor(rw); ep != nil {
+		var reason string
+		if rw.st != nil {
+			reason = rw.st.reason
+		}
+		if b, ct, ok := ep.render(r, rw.st, status, reason); ok {
+			body, ctype = b, ct
+		}
+	}
+	h.Set("Content-Type", ctype)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "no-store")
 	if status >= 500 || status == http.StatusTooManyRequests {
@@ -825,7 +885,7 @@ func (s *Server) plainStatus(rw *responseWriter, r *http.Request, status int) {
 	}
 	rw.WriteHeader(status)
 	if r.Method != http.MethodHead {
-		_, _ = rw.Write([]byte(strconv.Itoa(status) + " " + http.StatusText(status) + "\n"))
+		_, _ = rw.Write(body)
 	}
 }
 
@@ -835,6 +895,9 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	s.stats.BytesOut.Add(uint64(max(rw.bytes, 0))) //nolint:gosec // non-negative
 	dur := time.Since(st.start)
 	s.stats.RequestDuration.Observe(dur.Seconds())
+	if st.cr != nil {
+		st.cr.hist.Observe(dur.Seconds())
+	}
 	attrs := []any{
 		"request_id", st.id,
 		"client_ip", st.clientIP.String(),
@@ -936,18 +999,6 @@ func isUpgrade(r *http.Request) bool {
 		}
 	}
 	return false
-}
-
-func applyHeaderOps(h http.Header, ops config.HeaderOps) {
-	for _, k := range ops.Remove {
-		h.Del(k)
-	}
-	for k, v := range ops.Set {
-		h.Set(k, v)
-	}
-	for k, v := range ops.Add {
-		h.Add(k, v)
-	}
 }
 
 func rateKey(rl *config.RateLimit, r *http.Request, st *reqState) string {

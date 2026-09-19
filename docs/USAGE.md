@@ -56,6 +56,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `history` | Recorded configurations with generation, time, note and size (needs `management.history_dir`) |
 | `rollback ID` | Apply a recorded configuration (audited; becomes a new history entry) |
 | `tls` | Served certificates per listener: names, issuer, expiry, source (file or ACME), OCSP staple state and Certificate Transparency verdict |
+| `tls tickets` | Session ticket keys: epoch, next rotation, key count, fingerprint and which cluster peers derive the same set |
 | `sandbox` | In-process hardening: platform, each mechanism (Landlock, seccomp, capabilities, no_new_privs, debuggable; Seatbelt on macOS) with applied, unavailable, failed or disabled and a detail, the Landlock ABI and the read and write rules in force |
 | `waf [rules\|proposals\|exclusions\|reset]` | WAF profiles with rule set source and version, route assignments, counters and the most matched rules (`-top 20`); `proposals` lists learned exclusion candidates, `exclusions` prints them as SecLang for review, `reset` clears the statistics (audited) |
 | `rotate-secret FILE` | Add a fresh primary key to a secret file (affinity, challenge, OIDC cookie, redaction hash), keeping `-keep 2` previous keys for verification; then `reload` |
@@ -81,6 +82,9 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
 | `series` | Print sampled series; `-since 10m`, `-last 30`, `-json` |
+| `schema` | Print the JSON schema of the configuration (see below) |
+| `completion bash\|zsh\|fish` | Print a shell completion script for `xproxyctl` and `xproxy` |
+| `help` | List the commands with a summary |
 | `version` | Print version |
 
 `-json` switches `status`, `stats` and `upstreams` to machine readable
@@ -99,6 +103,46 @@ xproxyctl bans
 xproxyctl ban -duration 24h -reason "credential stuffing" 203.0.113.0/24
 xproxyctl unban 203.0.113.0/24
 ```
+
+### Shell completion, manual pages and the configuration schema
+
+`make install` and the RPM install completion for bash, zsh and fish
+(`xproxyctl` commands, their words and flags, and the flags of
+`xproxy`), the manual pages `xproxy(8)`, `xproxyctl(8)` and
+`xproxy.yaml(5)`, and the JSON schema of the configuration at
+`/usr/share/xproxy/xproxy.schema.json`. For a source build without the
+install step:
+
+```sh
+xproxyctl completion bash > ~/.local/share/bash-completion/completions/xproxyctl
+xproxyctl completion zsh > ~/.zfunc/_xproxyctl      # with fpath+=~/.zfunc before compinit
+xproxyctl completion fish > ~/.config/fish/completions/xproxyctl.fish
+man -l docs/man/xproxyctl.8
+```
+
+The schema (JSON Schema draft 2020-12) is generated from the
+configuration types with every key, its type, the value sets of
+enumerated keys, required keys and the documentation comment of each
+key, and forbids unknown keys as the loader does. Editors with a YAML
+language server pick it up from a modeline at the top of the file:
+
+```yaml
+# yaml-language-server: $schema=/usr/share/xproxy/xproxy.schema.json
+version: 1
+server:
+  listeners: [{name: main, address: ":8080"}]
+upstreams:
+  - {name: app, endpoints: [{address: "127.0.0.1:3000"}]}
+routes:
+  - {name: all, upstream: app}
+```
+
+Visual Studio Code (with the Red Hat YAML extension), Neovim with
+`yamlls` and JetBrains IDEs then complete keys, show the documentation
+on hover and mark unknown keys and wrong types while you type; the
+authoritative check remains `xproxy -validate`, which also verifies
+references, files and cross-field rules the schema cannot express.
+`xproxyctl schema` prints the same document for tooling.
 
 ## Configuration patterns
 
@@ -236,6 +280,38 @@ server:
 
 Add more certificates to the list; SNI selects the matching one.
 
+### Session tickets shared across a cluster
+
+```yaml
+server:
+  session_tickets: {secret_file: /var/lib/xproxy/tickets.key, rotate: 12h}
+```
+
+Without the section every process picks its own ticket keys, so a
+client that lands on another node behind the balancer, or on the same
+node after a restart, does a full handshake. With it the keys are
+derived from the shared file and the wall clock (epoch `now / rotate`),
+so all nodes holding the file encrypt with the same key at the same
+time and any of them resumes a ticket from any other; the previous
+epoch's key is kept so a rotation never cuts a fresh ticket off. Copy
+the file (`0600`, owner `xproxy`) to every node, or rotate it on all of
+them within one epoch with `xproxyctl rotate-secret`. `xproxyctl tls
+tickets` shows the epoch, the next rotation and, in a cluster, which
+peers derive the same set:
+
+```
+$ xproxyctl tls tickets
+session tickets: epoch 20732 (since 2026-09-19T00:00:00Z, next rotation 2026-09-19T12:00:00Z, every 12h0m0s)
+keys 2 from 1 master key(s)  fingerprint 4c1f0e9a7b2d5e31  rotations 0
+peer edge-2 agrees (4c1f0e9a7b2d5e31)
+peer edge-3 MISMATCH (9a02b7c4d1e8f356)
+```
+
+A mismatch means that peer holds another secret file or its clock is an
+epoch off; its tickets do not resume here and vice versa, which costs a
+handshake per client, not correctness. Changing the section needs a
+restart.
+
 ### Automatic certificates (ACME)
 
 ```yaml
@@ -268,8 +344,9 @@ xproxyctl acme renew      # force, for example after changing hosts
 ```
 
 Certificates and the account live under `/var/lib/xproxy/acme`; back that
-directory up with the configuration. Adding or removing a group is a
-listener change and needs a restart.
+directory up with the configuration. Adding or removing a group rebuilds
+the listener on the next reload (its connections drain, the socket is
+kept).
 
 ### HTTP/3
 
@@ -328,6 +405,30 @@ rate_limits:
 
 Requests without the header are limited by client address instead, so the
 limit cannot be avoided by omitting the header.
+
+### Sliding windows and exact cluster limits
+
+```yaml
+rate_limits:
+  - {name: login, key: client_ip, algorithm: sliding_window, limit: 20, window: 1m}
+  - {name: partner, key: "header:X-Api-Key", algorithm: sliding_window, limit: 10000, window: 1h, distributed: exact}
+cluster:
+  exact_timeout: 30ms
+```
+
+A token bucket lets a client spend its whole `burst` at once and then
+trickle at `rate`; a sliding window says "at most 20 per minute" and
+holds it across the minute boundary, which is the shape of most
+contractual and abuse limits. `distributed: exact` makes the count one
+per key across the cluster: the key's owner (chosen by hashing over the
+connected members, so all nodes agree) decides and the others ask it,
+adding one round trip on the cluster link. Use it for per customer
+quotas where over-admission costs money; keep the default approximate
+mode for abuse limits, where a node that cannot reach the owner within
+`exact_timeout` deciding on its own is the right trade. `xproxyctl
+quotas` shows the algorithm, limit and mode per policy, `xproxyctl
+cluster` the members and how many decisions were asked, answered and
+decided locally.
 
 ### Restricting an admin path
 
@@ -411,7 +512,8 @@ $ xproxyctl reload
 ```
 
 Secret files (`affinity.secret_file`, `challenge.secret_file`, the
-OIDC `cookie_secret_file`, `logging.redaction.hash_secret_file`) hold a
+OIDC `cookie_secret_file`, `logging.redaction.hash_secret_file`,
+`server.session_tickets.secret_file`) hold a
 single raw key when created and become a keyring on the first rotation:
 a text file whose first key signs and seals and whose other keys only
 verify and open. Cookies and sessions issued under a kept key stay
@@ -459,6 +561,36 @@ leaves it in place. Rollback goes through the same validation and
 audit trail as a reload and never touches the file on disk: after
 rolling back, fix the file, or the next `reload` re-applies it.
 
+### Adding, removing and changing listeners without a restart
+
+```yaml
+server:
+  listeners:
+    - {name: public, address: ":443", tls: {certificates: [{cert_file: /etc/xproxy/tls/www.pem, key_file: /etc/xproxy/tls/www-key.pem}]}}
+    - {name: public-http, address: ":80", redirect_to_https: true}   # new
+```
+
+```
+$ xproxyctl reload -dry-run
+  added    server.listeners public-http
+$ xproxyctl reload
+```
+
+A reload binds the listeners it does not have yet and serves them at
+once; a listener taken out of the file stops accepting and its open
+connections get `shutdown_timeout` to finish. A listener whose settings
+changed (protocols, TLS mode, client authentication, `redirect_to_https`,
+`h2c`, ACME groups, kind) is rebuilt: on the same address the accept
+socket is handed to the new listener, so a socket passed by systemd or
+bound on a privileged port is kept and no client sees a refused
+connection; the old generation drains as for a removal. Certificate
+files, forward and dns policies still apply in place without a drain.
+The dry run lists the drains and the one case that still needs a
+restart, a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`)
+changed on the same address, because that socket stays bound until the
+drain ends. A port that cannot be bound fails the reload with the
+running set untouched.
+
 ### Usage per tenant and route
 
 ```yaml
@@ -479,6 +611,93 @@ carry a `tenant` label with `xproxy_route_bytes_total` and
 `xproxy_rate_limit_decisions_total` next to the request counters.
 Counters restart with each configuration generation; the metrics
 exporter keeps the long history.
+
+### Rewriting paths with captures and templating headers
+
+```yaml
+routes:
+  - name: api
+    hosts: [api.example.com]
+    paths: [/api/]
+    rewrite_regex: {pattern: "^/api/v([0-9]+)/(?P<rest>.*)$", replace: "/internal/v${1}/${rest}"}
+    request_headers:
+      set: {X-Client-Ip: "${client_ip}", X-Api-Version: "${1}", X-Tenant: "${header:X-Tenant}"}
+    response_headers:
+      set: {X-Served-By: "${route}", X-Request-Id: "${request_id}"}
+    upstream: api
+  - name: old-blog
+    hosts: [blog.example.com]
+    redirect: {to: "https://www.example.com/blog${path}?${raw_query}", status: 308}
+```
+
+`rewrite_regex` runs on the cleaned path after `strip_prefix`; a path
+that does not match is forwarded as is. The groups of the pattern are
+available as `${1}` to `${9}` and by name in the replacement, in header
+values and in the redirect target, together with the request variables
+listed in [CONFIG.md](CONFIG.md#variables). A header whose variable has
+no value (a missing header, a route without a tenant) is set to the
+empty string, so a downstream service can rely on the header existing.
+
+### Custom error pages
+
+```yaml
+server:
+  error_pages:
+    dir: /etc/xproxy/errors
+    pages: {"404": "404.html", "429": "429.html", "5xx": "5xx.html", "default": "error.html"}
+    intercept_upstream: [502, 503, 504]
+routes:
+  - name: api
+    hosts: [api.example.com]
+    error_pages: {dir: /etc/xproxy/errors, pages: {"default": "api.json"}, content_type: application/json, json: false}
+    upstream: api
+```
+
+Every status the proxy writes itself (denials, unknown hosts, upstream
+failures, static misses) is served from the matching document, chosen
+by exact status, class or `default`, with `${status}`, `${status_text}`,
+`${request_id}`, `${host}`, `${path}` and `${reason}` filled in; a client
+whose `Accept` prefers JSON gets a small JSON document unless `json` is
+off. Upstream responses are left alone unless their status is listed
+in `intercept_upstream`, which is the usual choice for 502, 503 and 504
+so that a failing backend never shows its own stack trace or a bare
+gateway error. A route section replaces the server section for that
+route. Documents are read at load and at reload, so an edit needs
+`xproxyctl reload`; a missing file fails the reload.
+
+### Endpoints from DNS and slow start
+
+Instead of listing addresses, a pool can resolve them:
+
+```yaml
+upstreams:
+  - name: api
+    discovery: {type: dns, name: api.internal.example., port: 8080, interval: 15s}
+    slow_start: 30s
+  - name: workers
+    discovery: {type: srv, name: _http._tcp.workers.internal.example., resolver: 10.0.0.53:53}
+    health_check: {path: /healthz, interval: 5s}
+```
+
+`dns` turns every A and AAAA record into an endpoint on `port`; `srv`
+takes target, port and weight from the records and uses the lowest
+priority group. The name is resolved once at start (synchronously,
+bounded by `timeout`, so the pool serves from its first request) and
+then every `interval`: addresses that disappear are removed, new ones
+added, and an endpoint that stays keeps its counters and health state.
+A failed resolution keeps the previous set and shows up as `errors` and
+`last_error` under `discovery` in `xproxyctl upstreams` and the pool
+views. Static `endpoints` may be listed next to a discovery block; they
+are never removed.
+
+`slow_start` gives an endpoint that joins (discovered) or returns to
+service (healthy again, or its ejection over) a share ramping from
+10 % to its full weight over the duration, so a cold instance warms
+its caches before it carries a full share. Weighted and least
+connection balancers scale the weight; round robin and hash admit a
+ramping endpoint with the ramp's probability and pick another
+otherwise. Endpoints present at start do not ramp. The current share
+is the `ramp` column of `xproxyctl upstreams`.
 
 ### Retrying failed responses on another endpoint
 
@@ -568,6 +787,34 @@ upstreams:
 
 Active checks mark endpoints unhealthy; passive ejection reacts to real
 traffic failures with growing back-off. At most half the pool is ejected.
+
+```yaml
+upstreams:
+  - name: api
+    endpoints: [...]
+    health_check:
+      path: /healthz
+      body_contains: '"status":"ok"'
+      body_regex: '"database":"(up|degraded)"'
+    outlier_ejection:
+      consecutive_failures: 5
+      base_ejection_time: 30s
+      latency_threshold: 800ms
+      latency_factor: 3
+      latency_min_samples: 20
+```
+
+An application that answers 200 while its database is down passes a
+status-only probe; `body_contains` and `body_regex` make the probe read
+the first 64 KiB and require the text and the pattern. The latency rules
+eject an endpoint that still answers but slowly: `latency_threshold` is
+absolute, `latency_factor` relative to the pool (an endpoint three times
+slower than the others), both on a smoothed time to first byte after
+`latency_min_samples` responses, with the same ejection time, back-off
+and 50 % bound as failures. `xproxyctl upstreams` shows `latency_ms` and
+`latency_ejections` per endpoint; `xproxyctl quotas` shows p50, p95 and
+p99 per route from the route histograms
+(`xproxy_route_request_duration_seconds` in the exposition).
 
 ### Web application firewall
 
@@ -1187,6 +1434,41 @@ everything else goes to the current version. Conditioned routes are
 tried before the plain route on the same path, so the order above does
 not matter.
 
+### Routing and headers by expression
+
+```yaml
+routes:
+  - name: internal-beta
+    hosts: [app.example.com]
+    when: 'client_ip in cidr("10.0.0.0/8", "192.168.0.0/16") && (header("X-Env") == "beta" || has_cookie("beta"))'
+    upstream: app-v2
+  - name: night-readonly
+    hosts: [app.example.com]
+    methods: [POST, PUT, PATCH, DELETE]
+    when: 'hour >= 1 && hour < 3 && weekday in ["Sun"]'
+    respond: {status: 503, body: "maintenance window"}
+  - name: app
+    hosts: [app.example.com]
+    upstream: app-v1
+    request_headers:
+      set: {X-Debug: "1"}
+      when: 'query("debug") == "1" && client_ip in cidr("10.0.0.0/8")'
+    response_headers:
+      set: {Cache-Control: "no-store"}
+      when: 'has_cookie("session") || starts_with(path, "/account")'
+```
+
+`when` adds a condition the static matches cannot express: address
+ranges, combinations with `or`, comparisons, patterns on any variable,
+the time of day. A route with `when` ranks like a route with one header
+condition (more conditions win at equal path length), so the order of
+the routes above does not matter. The same language gates header
+operations, which keeps a debugging header off production clients
+without a second route. Expressions are checked at load: a misspelt
+variable, function or pattern fails `xproxy -validate` with the route
+and position. The grammar and every function are in `docs/CONFIG.md`,
+"Expressions".
+
 ### Canary endpoints inside one pool
 
 ```yaml
@@ -1210,7 +1492,7 @@ shows `canary: true` on responses the canary served.
 ### Response compression
 
 ```yaml
-compression: {level: 5, min_bytes: 1024}
+compression: {level: 5, min_bytes: 1024, encodings: [br, zstd, gzip]}
 routes:
   - name: api
     hosts: [api.example.com]
@@ -1229,6 +1511,15 @@ alone, and `Vary: Accept-Encoding` is set on everything that could be
 compressed so shared caches stay correct. The access log shows
 `encoding: gzip` on compressed answers and `xproxyctl status` counts
 them.
+
+Three encodings are offered: Brotli (`br`), zstd and gzip. The client's
+`Accept-Encoding` decides: the acceptable encoding with the highest
+quality wins and ties go to the order of `encodings`, so the default
+prefers Brotli for browsers, zstd for clients that ask for it and gzip
+otherwise. Restrict `encodings` to `[gzip]` for a fleet of old clients
+or to save CPU; `brotli_level` and `zstd_level` trade ratio for time.
+The access log's `encoding` field and `xproxy_compressed_total` show
+what was sent.
 
 ### Static files and single page applications
 
@@ -1710,6 +2001,7 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 | 502 to an https upstream after enabling pins or mTLS | `xproxyctl spki` on the upstream certificate; check the client certificate is issued by the CA the upstream trusts |
 | Scanner block page (status from the scanner, `reason: icap`) | The ICAP service replaced the request or response; `icap_verdict: replaced` in the access line |
 | 502 with `detail: reqmod_unavailable` | The ICAP service failed or timed out and `fail: closed`; `xproxyctl icap` |
+| `... table full` warning in the error log | A bounded table reached its cap: the message names the table (`rate_limit_keys`, `ban_windows`, `honeypot_marks`, `challenge_nonces`, `bot_score_clients`, `waf_rules`, `waf_learning`, `dns_workers`, a queue) and the occurrences since the previous warning; the status views carry the totals. Under attack this is expected; otherwise raise the bound where it is configurable or look for a key that never repeats |
 | 403 with `reason: waf` | A rule blocked the request; `waf_matched` names the rules. Add an exclusion or lower the paranoia level for that route |
 | 403 with `reason: banned` or connections closed immediately | `xproxyctl bans`; unban or add the range to `exempt_cidrs` |
 | Reload fails with a WAF compile error | The error names the file and line of the bad directive; the old rules stay active |
@@ -1720,5 +2012,5 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 | 503 with `Retry-After: 1` | Concurrency ceiling reached |
 | 503 with `Retry-After: 2` and `denied: shed:<class>` in the access log | Load shedding; check `load_level` and upstream latency |
 | 503 HTML page titled "Checking your browser" | Challenge gate; a browser solves it, an API client cannot |
-| Reload says listener changed | Restart instead; sockets may be systemd owned |
+| Reload says a listener needs a restart | Only a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`) changed on the same address; every other listener change applies on reload with a drain |
 | `management socket ... already in use` | Another xproxy is running |

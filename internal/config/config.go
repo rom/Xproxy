@@ -134,6 +134,15 @@ type Server struct {
 	// ServerHeader is the value sent in the Server response header. Empty
 	// removes the header entirely (the default) to avoid fingerprinting.
 	ServerHeader string `yaml:"server_header"`
+	// ErrorPages replaces the proxy's plain status bodies for every route
+	// (routes may override).
+	ErrorPages *ErrorPages `yaml:"error_pages"`
+	// SessionTickets derives the TLS session ticket keys of every TLS
+	// listener from a master secret file and the time, so nodes sharing
+	// the file resume each other's sessions and keys rotate on schedule
+	// without a restart. Without the section each process uses random
+	// keys that rotate every 24 hours and are never shared.
+	SessionTickets *SessionTickets `yaml:"session_tickets"`
 	// ShutdownTimeout bounds graceful drain on stop or reload.
 	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
 }
@@ -172,9 +181,10 @@ type Listener struct {
 	// Default false.
 	H2C bool `yaml:"h2c"`
 	// Kind is http (default), tcp (an L4 listener that forwards
-	// connections by TLS server name without terminating TLS) or forward
+	// connections by TLS server name without terminating TLS), forward
 	// (an explicit HTTP proxy for clients: CONNECT tunnels and absolute
-	// URI requests to destinations the policy allows).
+	// URI requests to destinations the policy allows) or dns (a DNS
+	// proxy).
 	Kind string `yaml:"kind"`
 	// TCP configures a kind: tcp listener.
 	TCP *TCPListener `yaml:"tcp"`
@@ -689,15 +699,30 @@ type Redaction struct {
 // IsEnabled reports whether redaction is switched on.
 func (r *Redaction) IsEnabled() bool { return r != nil && (r.Enabled == nil || *r.Enabled) }
 
-// RateLimit is a named token bucket policy referenced by routes.
+// RateLimit is a named rate limit policy referenced by routes: a token
+// bucket (rate and burst) or a sliding window (limit per window).
 type RateLimit struct {
 	Name string `yaml:"name"`
 	// Key selects the bucket identity: client_ip, route, or header:<name>.
 	Key string `yaml:"key"`
-	// Rate is tokens per second.
+	// Algorithm is token_bucket (default; rate and burst) or
+	// sliding_window (limit and window).
+	Algorithm string `yaml:"algorithm"`
+	// Rate is tokens per second (token_bucket).
 	Rate float64 `yaml:"rate"`
-	// Burst is the bucket capacity.
+	// Burst is the bucket capacity (token_bucket).
 	Burst int `yaml:"burst"`
+	// Limit is the number of requests allowed per Window (sliding_window).
+	Limit int `yaml:"limit"`
+	// Window is the sliding window length (sliding_window). Default 1s.
+	Window Duration `yaml:"window"`
+	// Distributed selects the cluster semantics: approximate (default;
+	// each node refills at the rate minus its peers' reported
+	// consumption) or exact (one node owns each key, chosen by
+	// rendezvous hashing over the connected members, and decides for
+	// the others; a node that cannot reach the owner within
+	// cluster.exact_timeout decides locally). Needs the cluster section.
+	Distributed string `yaml:"distributed"`
 	// Action is reject (429) or tarpit. Default reject.
 	Action string `yaml:"action"`
 	// TarpitDelay is how long a tarpitted request is held before rejection.
@@ -710,6 +735,17 @@ type Upstream struct {
 	// Balancer is round_robin, weighted, least_conn or hash.
 	Balancer  string     `yaml:"balancer"`
 	Endpoints []Endpoint `yaml:"endpoints"`
+	// Discovery adds endpoints resolved from DNS (A/AAAA records of a
+	// name, or SRV records) and re-resolves them periodically. Static
+	// endpoints and discovered ones coexist; a pool needs at least one
+	// of the two.
+	Discovery *Discovery `yaml:"discovery"`
+	// SlowStart ramps the share of an endpoint that (re)joins the pool,
+	// from 10 % to full weight over this duration, so a cold instance is
+	// not hit with its full share at once. Applies to endpoints added by
+	// discovery and to endpoints returning from unhealthy or ejected.
+	// Default 0 (off).
+	SlowStart Duration `yaml:"slow_start"`
 	// Scheme is http or https. Default http.
 	Scheme string `yaml:"scheme"`
 	// H2C speaks HTTP/2 without TLS to http endpoints (gRPC backends).
@@ -754,6 +790,32 @@ type Endpoint struct {
 	// Canary marks the endpoint as the pool's canary: it receives the
 	// requests the pool's canary policy selects and no others.
 	Canary bool `yaml:"canary"`
+}
+
+// Discovery resolves a pool's endpoints from DNS.
+type Discovery struct {
+	// Type is dns (A and AAAA records of Name, each with Port) or srv
+	// (SRV records of Name; targets and ports come from the records, the
+	// lowest priority group is used and record weights become endpoint
+	// weights).
+	Type string `yaml:"type"`
+	// Name is the DNS name to resolve (for srv the full _service._proto
+	// name).
+	Name string `yaml:"name"`
+	// Port is the endpoint port for type dns. Ignored for srv.
+	Port int `yaml:"port"`
+	// Interval between resolutions. Default 30s; 1s to 1h.
+	Interval Duration `yaml:"interval"`
+	// Resolver is an optional host:port of the DNS server to ask instead
+	// of the system resolver.
+	Resolver string `yaml:"resolver"`
+	// Weight given to discovered endpoints of type dns. Default 1.
+	Weight int `yaml:"weight"`
+	// Canary marks discovered endpoints as canaries.
+	Canary bool `yaml:"canary"`
+	// Timeout of one resolution and of the initial synchronous one at
+	// start. Default 5s.
+	Timeout Duration `yaml:"timeout"`
 }
 
 // Canary routes selected requests to the pool's canary endpoints: those
@@ -812,6 +874,11 @@ type HealthCheck struct {
 	// path and holds no descriptor between probes; on saves the handshake
 	// at the cost of one idle connection per endpoint.
 	KeepAlive bool `yaml:"keep_alive"`
+	// BodyContains requires the first 64 KiB of the probe response to
+	// contain this text (type http); BodyRegex an RE2 pattern to match
+	// anywhere in it. Both may be set; both must hold.
+	BodyContains string `yaml:"body_contains"`
+	BodyRegex    string `yaml:"body_regex"`
 }
 
 // UpstreamTimeout bounds each phase of an upstream exchange.
@@ -832,11 +899,25 @@ type Affinity struct {
 	SecretFile string `yaml:"secret_file"`
 }
 
-// OutlierEjection configures passive health checking.
+// OutlierEjection configures passive health checking: consecutive
+// failures and, when latency_threshold or latency_factor is set, an
+// endpoint whose smoothed time to first byte is slow.
 type OutlierEjection struct {
 	ConsecutiveFailures int      `yaml:"consecutive_failures"`
 	BaseEjectionTime    Duration `yaml:"base_ejection_time"`
 	MaxEjectionPercent  int      `yaml:"max_ejection_percent"`
+	// LatencyThreshold ejects an endpoint whose smoothed latency
+	// (exponential moving average of the time to first byte, factor 0.2)
+	// exceeds it. 0 disables.
+	LatencyThreshold Duration `yaml:"latency_threshold"`
+	// LatencyFactor ejects an endpoint whose smoothed latency exceeds
+	// the pool's smoothed latency times this factor (at least 1.5),
+	// when the pool has two or more endpoints. 0 disables.
+	LatencyFactor float64 `yaml:"latency_factor"`
+	// LatencyMinSamples is how many responses an endpoint must have
+	// answered since it last became available before its latency is
+	// judged. Default 20.
+	LatencyMinSamples int `yaml:"latency_min_samples"`
 }
 
 // CircuitBreaker is a pool wide breaker: closed counts consecutive
@@ -879,6 +960,10 @@ type Route struct {
 	// Tenant is a free label that groups routes for quota reporting
 	// (GET /v1/quotas, xproxyctl quotas) and the per route metrics.
 	Tenant string `yaml:"tenant"`
+	// When is a condition in the expression language (docs/CONFIG.md,
+	// "Expressions") that must hold in addition to the matches above;
+	// it counts as one condition for specificity.
+	When string `yaml:"when"`
 	// Priority breaks ties between routes with identical specificity. Higher
 	// wins. Default 0.
 	Priority int `yaml:"priority"`
@@ -893,6 +978,12 @@ type Route struct {
 
 	StripPrefix string `yaml:"strip_prefix"`
 	RewritePath string `yaml:"rewrite_path"`
+	// RewriteRegex rewrites the outbound path with a regular expression
+	// and capture groups; exclusive with rewrite_path, applied after
+	// strip_prefix. A path that does not match is sent unchanged.
+	RewriteRegex *RewriteRegex `yaml:"rewrite_regex"`
+	// ErrorPages overrides the server's error pages for this route.
+	ErrorPages *ErrorPages `yaml:"error_pages"`
 	// HostHeader overrides the Host header sent upstream. Default keeps the
 	// client Host.
 	HostHeader string `yaml:"host_header"`
@@ -1044,6 +1135,15 @@ type Compression struct {
 	Enabled *bool `yaml:"enabled"`
 	// Level is the gzip level 1 (fastest) to 9 (smallest). Default 5.
 	Level int `yaml:"level"`
+	// Encodings lists the content encodings offered, in the order the
+	// proxy prefers them when a client accepts several with equal
+	// quality: br (Brotli), zstd and gzip. Default [br, zstd, gzip].
+	Encodings []string `yaml:"encodings"`
+	// BrotliLevel is 0 (fastest) to 11 (smallest). Default 4.
+	BrotliLevel *int `yaml:"brotli_level"`
+	// ZstdLevel is 1 (fastest), 2 (default), 3 (better) or 4 (best).
+	// Default 2.
+	ZstdLevel int `yaml:"zstd_level"`
 	// MinBytes is the smallest body compressed when its length is known
 	// or once that much has been buffered. Default 1024.
 	MinBytes int `yaml:"min_bytes"`
@@ -1127,7 +1227,50 @@ const (
 	StageAfterScan  = "after_scan"
 )
 
-// Redirect is a static redirect action.
+// SessionTickets configures shared, rotating TLS session ticket keys.
+type SessionTickets struct {
+	// SecretFile is the master keyring (created when missing, 0600);
+	// deploy the same file to every node of a cluster. Rotate the master
+	// with xproxyctl rotate-secret.
+	SecretFile string `yaml:"secret_file"`
+	// Rotate is the epoch length: the current epoch's key encrypts new
+	// tickets and the previous epoch's key still decrypts. Default 24h;
+	// 1h to 168h.
+	Rotate Duration `yaml:"rotate"`
+}
+
+// RewriteRegex is a regular expression path rewrite. Replace may use
+// ${1} to ${9} and ${name} for the pattern's groups, and the request
+// variables of header templates (docs/CONFIG.md, "Variables").
+type RewriteRegex struct {
+	Pattern string `yaml:"pattern"`
+	Replace string `yaml:"replace"`
+}
+
+// ErrorPages replaces the plain status bodies the proxy writes (denials,
+// upstream failures, unknown routes, static misses) with documents from
+// a directory, chosen by exact status ("404"), class ("4xx", "5xx") or
+// "default". Documents are read at load and may use ${status},
+// ${status_text}, ${request_id}, ${host}, ${path}, ${reason} and the other
+// request variables; unknown ${...} sequences are kept as they are.
+type ErrorPages struct {
+	// Dir holds the documents; page values are file names inside it or
+	// absolute paths.
+	Dir   string            `yaml:"dir"`
+	Pages map[string]string `yaml:"pages"`
+	// ContentType of the documents. Default text/html; charset=utf-8.
+	ContentType string `yaml:"content_type"`
+	// JSON answers clients whose Accept prefers application/json with a
+	// small JSON document instead of the page. Default true.
+	JSON *bool `yaml:"json"`
+	// InterceptUpstream lists upstream response statuses whose bodies are
+	// replaced by the matching page (typically 502, 503, 504). Default
+	// none: upstream bodies pass through.
+	InterceptUpstream []int `yaml:"intercept_upstream"`
+}
+
+// Redirect is a static redirect action. To may use the request variables
+// (${path}, ${raw_query}, ${host}, ${1}...) to build the target.
 type Redirect struct {
 	To     string `yaml:"to"`
 	Status int    `yaml:"status"`
@@ -1167,6 +1310,9 @@ type HeaderOps struct {
 	Set    map[string]string `yaml:"set"`
 	Add    map[string]string `yaml:"add"`
 	Remove []string          `yaml:"remove"`
+	// When restricts the operations to requests for which the expression
+	// holds (docs/CONFIG.md, "Expressions"); empty applies them always.
+	When string `yaml:"when"`
 }
 
 // Duration is a time.Duration that unmarshals from strings like "30s".
@@ -1400,6 +1546,10 @@ type Cluster struct {
 	ShareEvents     *bool `yaml:"share_events"`
 	// MaxKeysPerReport bounds one report. Default 4096.
 	MaxKeysPerReport int `yaml:"max_keys_per_report"`
+	// ExactTimeout bounds the wait for a key owner's decision under
+	// distributed: exact; on expiry the request is decided locally.
+	// Default 50ms.
+	ExactTimeout Duration `yaml:"exact_timeout"`
 }
 
 // ClusterTLS holds the node certificate and the cluster CA. Every peer
