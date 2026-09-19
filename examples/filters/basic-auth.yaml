@@ -1,0 +1,36 @@
+# Filters example: HTTP basic authentication in front of an internal
+# tool, with the verified user forwarded to the upstream.
+#
+# Create the users file with:
+#   xproxyctl htpasswd /etc/xproxy/tools-users alice
+# (lines are name:hash, PBKDF2-SHA256; the file must be readable by the
+# xproxy group and not world readable).
+# Validate: xproxy -config examples/filters/basic-auth.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+filters:
+  - name: tools-auth
+    kind: basic_auth
+    options:
+      users_file: /etc/xproxy/tools-users
+      realm: "Internal tools"
+      cache_ttl: 5m
+      forward_user_header: X-Authenticated-User
+      strip: true
+rate_limits:
+  - {name: login-attempts, key: client_ip, rate: 1, burst: 10}
+upstreams:
+  - name: tools
+    endpoints: [{address: "10.0.4.10:8080"}]
+routes:
+  - name: tools
+    hosts: [tools.example.com]
+    rate_limits: [login-attempts]
+    filters: [tools-auth]
+    upstream: tools

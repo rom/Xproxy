@@ -3,18 +3,16 @@ package logging
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
 	"net/url"
-	"os"
 	"strings"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/secret"
 )
 
 // Redactor rewrites personal data in log attributes before any sink sees
@@ -47,28 +45,15 @@ func NewRedactor(cfg *config.Redaction) (*Redactor, error) {
 	return r, nil
 }
 
+// loadOrCreateKey returns the primary key of the hash secret (a raw key
+// or a keyring). Only the primary is used: a pseudonym must be stable, so
+// rotating this secret starts a new series of pseudonyms.
 func loadOrCreateKey(path string) ([]byte, error) {
-	if path == "" {
-		k := make([]byte, 32)
-		_, err := rand.Read(k)
-		return k, err
+	ring, err := secret.LoadOrCreate(path)
+	if err != nil {
+		return nil, fmt.Errorf("redaction hash secret: %w", err)
 	}
-	if b, err := os.ReadFile(path); err == nil { //nolint:gosec // operator configured path
-		if len(b) < 32 {
-			return nil, fmt.Errorf("redaction hash secret %s is shorter than 32 bytes", path)
-		}
-		return b, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("read redaction hash secret: %w", err)
-	}
-	k := make([]byte, 32)
-	if _, err := rand.Read(k); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(path, k, 0o600); err != nil {
-		return nil, fmt.Errorf("create redaction hash secret: %w", err)
-	}
-	return k, nil
+	return ring.Primary(), nil
 }
 
 func (r *Redactor) hash(s string) string {

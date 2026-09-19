@@ -43,6 +43,9 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Token forgery: `alg: none`, algorithm confusion, wrong curve, unknown key | No `none`; per-provider allow list; HMAC only from a secret file; ECDSA curve must match; unknown key ids cause one rate limited refresh and otherwise rejection |
 | Replay of expired or premature tokens | `exp` mandatory, `nbf` and `iat` checked, bounded skew |
 | Key set poisoning | JWKS fetched only over HTTPS with a pinned CA, bounded in size, no redirects; an empty refresh keeps the previous keys |
+| Forged or altered DNS answers from a compromised path or upstream reach clients of the dns listener | `dnssec` validates every answer up to a trust anchor before it is cached or served; bogus answers become SERVFAIL and `dns_bogus` events feed the ban list (`TestDNSSECValidation`) |
+| Revoked server certificate keeps being trusted by clients that cannot reach the responder | OCSP stapling delivers the responder's answer in the handshake, refreshed in the background; a revoked answer is stapled rather than hidden (`TestOCSPStapling`) |
+| Misissued or unlogged certificate deployed unnoticed | Embedded SCTs are counted and, with a log list, verified at every load; `ct.enforce` refuses the certificate and the previous one keeps serving (`TestCertificateTransparency`) |
 | TLS SNI mismatch with `Host` | Routing uses `Host`; certificate is chosen by SNI. 1.0 adds an optional strict SNI equals Host check |
 
 ### Tampering
@@ -214,7 +217,11 @@ data plane does not trust it more than any other socket client.
 | Rate limit buckets reset on reload | Accepted; a flood cannot exploit it without also triggering reloads, which require operator access |
 | Volumetric attacks above the host's link capacity | Out of scope; requires upstream scrubbing or anycast |
 | A full rate limit table fails open for the rate dimension | Accepted and documented; connection and concurrency ceilings still hold; table size is generous |
-| WAF false positives can block legitimate traffic | Mitigated by `detect` mode for roll-out, per route profiles and exclusion files; residual risk is operational |
+| WAF false positives can block legitimate traffic | Mitigated by `detect` mode for roll-out, per route profiles and exclusion files; per rule statistics and learned exclusion proposals (`xproxyctl waf`) show which rules fire on which variables so tuning is evidence based; residual risk is operational |
+| Attacker trains the learning table so an operator excludes a real attack vector | Proposals are never applied automatically; each carries the distinct client count and a sample value so a handful of addresses repeating a payload is distinguishable from application traffic; the table is bounded so flooding cannot grow memory, only evict its own new entries |
+| Compromise of the proxy process (memory corruption in a parser, a malicious filter) escalating to the host | The process has no capabilities, cannot gain privileges, and confines itself after start: Landlock limits the file system to the configured directories, seccomp refuses tracing, module loading, mounts, namespaces, keyrings, BPF, io_uring, identity changes and exec, new TCP binds are refused, and the process is non dumpable; the systemd unit (and on macOS the Seatbelt profile and launchd job) adds the same limits from outside, so either layer alone still holds |
+| Another process of the same user reads keys from the daemon's memory or a core file | Non dumpable with a zero core size limit on Linux, `PT_DENY_ATTACH` with a zero core size limit on macOS; `debuggable: true` is an explicit, logged choice |
+| Tampered on-disk rule set (`crs.dir`) | The directory is operator owned like the configuration; it is read only at load, validated for layout, and a file that fails to compile keeps the running rules; the version in service is reported over the management socket |
 | An attacker can get a shared NAT address banned | Accepted; `exempt_cidrs` for known shared egress, `reject` action and short durations reduce impact; bans never apply to exempt ranges |
 | `WriteTimeout` may cut long downloads | Operator tunes per deployment; 1.0 adds per route write deadlines |
 | Certificate private keys readable by the service user | Inherent in a single process design (AMR-005); mitigated by file modes, SELinux and no shell in the unit |

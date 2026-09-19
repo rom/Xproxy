@@ -1,0 +1,410 @@
+// Package examples validates everything under examples/: the YAML
+// documents against the configuration schema, the SecLang files against
+// the engine with sample traffic, the block list against the DNS loader,
+// the WebAssembly module against the filter, and the rewriting rules
+// against sample bodies.
+package examples
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/dns"
+	"github.com/rom/xproxy/internal/filter"
+	_ "github.com/rom/xproxy/internal/filters" // built-in kinds
+	"github.com/rom/xproxy/internal/passwd"
+	"github.com/rom/xproxy/internal/waf"
+)
+
+var nolog = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+func root(t *testing.T) string {
+	t.Helper()
+	p, err := filepath.Abs("../../examples")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestYAMLDocuments parses every complete document and wraps every
+// fragment in a main file that includes it.
+func TestYAMLDocuments(t *testing.T) {
+	dir := root(t)
+	var files []string
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".yaml") {
+			files = append(files, p)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) < 8 {
+		t.Fatalf("only %d example documents found", len(files))
+	}
+	for _, f := range files {
+		t.Run(strings.TrimPrefix(f, dir+"/"), func(t *testing.T) {
+			data, err := os.ReadFile(f) //nolint:gosec // test input
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Kinds that open their files at validation get a real one.
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/tools-users", usersFile(t)))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/filters/policy.wasm", filepath.Join(dir, "filters", "wasm", "policy.wasm")))
+			if strings.Contains(string(data), "\nversion: 1\n") || strings.HasPrefix(string(data), "version: 1\n") {
+				if _, err := config.ParseWith(data, false); err != nil {
+					t.Fatalf("complete document: %v", err)
+				}
+				return
+			}
+			// A fragment: include it from a minimal main file.
+			main := fmt.Sprintf(`
+version: 1
+includes: [%q]
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+upstreams:
+  - name: web
+    endpoints: [{address: "10.0.0.1:8080"}]
+routes:
+  - {name: default, upstream: web}
+`, f)
+			if _, err := config.ParseWith([]byte(main), false); err != nil {
+				t.Fatalf("fragment: %v", err)
+			}
+		})
+	}
+}
+
+// usersFile writes a one user file for the basic_auth example.
+func usersFile(t *testing.T) string {
+	t.Helper()
+	h, err := passwd.Hash("correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "users")
+	if err := os.WriteFile(p, []byte("alice:"+h+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func wafEngine(t *testing.T, files ...string) *waf.Engine {
+	t.Helper()
+	abs := make([]string, 0, len(files))
+	for _, f := range files {
+		abs = append(abs, filepath.Join(root(t), "waf", f))
+	}
+	cfg := &config.WAF{
+		Profiles:               []config.WAFProfile{{Name: "default", CRS: &config.CRS{ParanoiaLevel: 1, InboundThreshold: 5, OutboundThreshold: 4}, DirectiveFiles: abs}},
+		DefaultMode:            "block",
+		DefaultProfile:         "default",
+		RequestBodyLimit:       65536,
+		RequestBodyLimitAction: "reject",
+		InspectResponses:       true,
+		ResponseBodyLimit:      65536,
+		ResponseMIMETypes:      []string{"text/html", "text/plain", "application/json"},
+	}
+	e, err := waf.New(cfg, waf.Need{"default": {waf.ModeBlock: true}}, nil, nolog)
+	if err != nil {
+		t.Fatalf("compile %v: %v", files, err)
+	}
+	return e
+}
+
+func wafRequest(t *testing.T, e *waf.Engine, r *http.Request) filter.Verdict {
+	t.Helper()
+	f, err := e.Filter("default", waf.ModeBlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := f.Begin(context.Background(), &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9"), Route: "r", Host: r.Host, Path: r.URL.Path})
+	v := in.Request(r)
+	in.End()
+	return v
+}
+
+func TestWAFExclusions(t *testing.T) {
+	e := wafEngine(t, "exclusions.conf")
+	// The excluded parameter passes on its path...
+	post := func(path, body string) *http.Request {
+		r := httptest.NewRequest("POST", "http://www.example.com"+path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Content-Length", fmt.Sprint(len(body)))
+		r.Header.Set("User-Agent", "Mozilla/5.0")
+		return r
+	}
+	if v := wafRequest(t, e, post("/posts", "body=<b>bold</b><a href=x onclick=alert(1)>hi</a>")); v.Deny {
+		t.Fatalf("excluded target still blocked: %+v", v)
+	}
+	// ...but the same payload in another parameter or on another path
+	// is still blocked.
+	if v := wafRequest(t, e, post("/posts", "title=<script>alert(1)</script>")); !v.Deny {
+		t.Fatal("other parameter not blocked")
+	}
+	if v := wafRequest(t, e, post("/comments", "body=<script>alert(1)</script>")); !v.Deny {
+		t.Fatal("other path not blocked")
+	}
+	// Uploads skip body inspection; the body still reaches the upstream.
+	big := post("/files/upload", "data=<script>alert(1)</script>")
+	if v := wafRequest(t, e, big); v.Deny {
+		t.Fatalf("upload body inspected: %+v", v)
+	}
+	if b, _ := io.ReadAll(big.Body); !strings.Contains(string(b), "alert") {
+		t.Fatal("upload body not replayed")
+	}
+}
+
+func TestWAFCustomRules(t *testing.T) {
+	e := wafEngine(t, "exclusions.conf", "custom-rules.conf")
+	get := func(host, path string, hdr ...string) *http.Request {
+		r := httptest.NewRequest("GET", "http://"+host+path, nil)
+		r.Header.Set("User-Agent", "Mozilla/5.0")
+		for i := 0; i+1 < len(hdr); i += 2 {
+			r.Header.Set(hdr[i], hdr[i+1])
+		}
+		return r
+	}
+	cases := []struct {
+		name   string
+		r      *http.Request
+		status int
+	}{
+		{"debug header", get("www.example.com", "/", "X-Debug", "true"), 403},
+		{"virtual patch", get("www.example.com", "/plugins/legacy-export/run?x=1"), 404},
+		{"ip host", get("203.0.113.5", "/"), 400},
+		{"secret probe scores", get("www.example.com", "/.env"), 403},
+	}
+	for _, c := range cases {
+		v := wafRequest(t, e, c.r)
+		if !v.Deny || v.Status != c.status {
+			t.Errorf("%s: %+v", c.name, v)
+		}
+	}
+	// API write without JSON: 415; with JSON: passes.
+	r := httptest.NewRequest("POST", "http://api.example.com/api/orders", strings.NewReader("a=1"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Content-Length", "3")
+	r.Header.Set("User-Agent", "client/1.0")
+	if v := wafRequest(t, e, r); !v.Deny || v.Status != 415 {
+		t.Fatalf("form to api: %+v", v)
+	}
+	r = httptest.NewRequest("POST", "http://api.example.com/api/orders", strings.NewReader(`{"id":1}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Content-Length", "8")
+	r.Header.Set("User-Agent", "client/1.0")
+	if v := wafRequest(t, e, r); v.Deny {
+		t.Fatalf("json to api: %+v", v)
+	}
+	if v := wafRequest(t, e, get("www.example.com", "/products?page=2")); v.Deny {
+		t.Fatalf("clean request: %+v", v)
+	}
+}
+
+func TestDNSBlockList(t *testing.T) {
+	bl, err := dns.NewBlockList(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := bl.LoadBlockFile(filepath.Join(root(t), "blocklists", "dns-blocklist.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n < 7 {
+		t.Fatalf("%d entries loaded", n)
+	}
+	blocked := []string{"telemetry.example-vendor.net", "x.telemetry.example-vendor.net", "metrics.example-tracker.com",
+		"beacon.example-ads.org", "c2.example-malicious.top", "a.dyn.example-botnet.xyz", "ads.example-cdn.com", "files.zip"}
+	allowed := []string{"example-vendor.net", "dyn.example-botnet.xyz", "www.ads.example-cdn.com", "zip", "example.com"}
+	for _, n := range blocked {
+		if !bl.Match(n) {
+			t.Errorf("%s should be blocked", n)
+		}
+	}
+	for _, n := range allowed {
+		if bl.Match(n) {
+			t.Errorf("%s should not be blocked", n)
+		}
+	}
+}
+
+// filterFromExample builds the named filter of an example document.
+func filterFromExample(t *testing.T, file, name string) filter.Filter {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root(t), file)) //nolint:gosec // test input
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.ParseWith(data, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fc := range cfg.Filters {
+		if fc.Name != name {
+			continue
+		}
+		k, ok := filter.Lookup(fc.Kind)
+		if !ok {
+			t.Fatalf("kind %s not registered", fc.Kind)
+		}
+		f, err := k.New(fc.Name, filter.Options(fc.Options), filter.Env{Log: nolog})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	t.Fatalf("filter %s not in %s", name, file)
+	return nil
+}
+
+func TestHeaderPolicy(t *testing.T) {
+	f := filterFromExample(t, "filters/header-policy.yaml", "api-headers")
+	info := &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9")}
+	r := httptest.NewRequest("GET", "http://api.example.com/v1/users", nil)
+	r.Header.Set("X-API-Version", "2024-06-01")
+	r.Header.Set("Accept", "application/json")
+	if v := f.Begin(context.Background(), info).Request(r); v.Deny {
+		t.Fatalf("conforming request denied: %+v", v)
+	}
+	r.Header.Set("X-Real-IP", "10.0.0.1")
+	if v := f.Begin(context.Background(), info).Request(r); !v.Deny || v.Status != 400 || v.Reason != "api_header_policy" {
+		t.Fatalf("spoofed header accepted: %+v", v)
+	}
+	r = httptest.NewRequest("GET", "http://api.example.com/v1/users", nil)
+	if v := f.Begin(context.Background(), info).Request(r); !v.Deny {
+		t.Fatal("missing version header accepted")
+	}
+}
+
+func TestBadBots(t *testing.T) {
+	main := fmt.Sprintf(`
+version: 1
+includes: [%q]
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+upstreams:
+  - name: web
+    endpoints: [{address: "10.0.0.1:8080"}]
+routes:
+  - {name: default, filters: [bad-bots], upstream: web}
+`, filepath.Join(root(t), "blocklists", "bad-bots.yaml"))
+	cfg, err := config.ParseWith([]byte(main), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, _ := filter.Lookup(cfg.Filters[0].Kind)
+	f, err := k.New("bad-bots", filter.Options(cfg.Filters[0].Options), filter.Env{Log: nolog})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9")}
+	for ua, deny := range map[string]bool{"Mozilla/5.0 (X11; Linux) Firefox/130.0": false, "sqlmap/1.8": true,
+		"python-requests/2.32": true, "Mozilla/5.0 (compatible; AhrefsBot/7.0)": true, "": true} {
+		r := httptest.NewRequest("GET", "http://www.example.com/", nil)
+		if ua != "" {
+			r.Header.Set("User-Agent", ua)
+		}
+		v := f.Begin(context.Background(), info).Request(r)
+		if v.Deny != deny {
+			t.Errorf("%q: deny=%v", ua, v.Deny)
+		}
+	}
+}
+
+func TestBodyRewrite(t *testing.T) {
+	f := filterFromExample(t, "rewrites/body.yaml", "public-links")
+	info := &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9")}
+	in := f.Begin(context.Background(), info)
+	r := httptest.NewRequest("GET", "http://www.example.com/", nil)
+	in.Request(r)
+	body := `<a href="http://intranet.example.internal:8080/x">x</a><script src="/vendor/tracker.js"></script>
+{"internalId": "42", "name": "n"}`
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/html"}}, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body))}
+	if v := in.Response(resp); v.Deny {
+		t.Fatalf("response denied: %+v", v)
+	}
+	out, _ := io.ReadAll(resp.Body)
+	got := string(out)
+	if strings.Contains(got, "intranet.example.internal") || strings.Contains(got, "tracker.js") || strings.Contains(got, `"42"`) || !strings.Contains(got, "https://www.example.com/x") || !strings.Contains(got, `"redacted"`) {
+		t.Fatalf("rewritten body:\n%s", got)
+	}
+	// Other content types pass untouched.
+	in2 := f.Begin(context.Background(), info)
+	in2.Request(httptest.NewRequest("GET", "http://www.example.com/i.png", nil))
+	png := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"image/png"}}, Body: io.NopCloser(strings.NewReader("intranet.example.internal")), ContentLength: 25}
+	in2.Response(png)
+	if b, _ := io.ReadAll(png.Body); string(b) != "intranet.example.internal" {
+		t.Fatalf("binary body touched: %q", b)
+	}
+
+	req := filterFromExample(t, "rewrites/body.yaml", "legacy-fields")
+	in3 := req.Begin(context.Background(), info)
+	pr := httptest.NewRequest("POST", "http://api.example.com/orders", strings.NewReader(`{"customer_no": 7}`))
+	pr.Header.Set("Content-Type", "application/json")
+	if v := in3.Request(pr); v.Deny {
+		t.Fatalf("request denied: %+v", v)
+	}
+	if b, _ := io.ReadAll(pr.Body); string(b) != `{"customerNumber": 7}` {
+		t.Fatalf("request body: %s", b)
+	}
+}
+
+func TestWasmPolicy(t *testing.T) {
+	module := filepath.Join(root(t), "filters", "wasm", "policy.wasm")
+	data, err := os.ReadFile(filepath.Join(root(t), "filters", "wasm", "wasm.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.ParseWith([]byte(strings.ReplaceAll(string(data), "/etc/xproxy/filters/policy.wasm", module)), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, _ := filter.Lookup("wasm")
+	f, err := k.New("policy", filter.Options(cfg.Filters[0].Options), filter.Env{Log: nolog})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9"), Route: "web"}
+	r := httptest.NewRequest("GET", "http://www.example.com/", nil)
+	r.Header.Set("X-Debug", "1")
+	in := f.Begin(context.Background(), info)
+	if v := in.Request(r); !v.Deny || v.Status != 403 || v.Reason != "debug_header" {
+		t.Fatalf("debug request: %+v", v)
+	}
+	in.End()
+	in = f.Begin(context.Background(), info)
+	r = httptest.NewRequest("GET", "http://www.example.com/", nil)
+	if v := in.Request(r); v.Deny {
+		t.Fatalf("plain request denied: %+v", v)
+	}
+	resp := &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok"))}
+	if v := in.Response(resp); v.Deny {
+		t.Fatalf("response denied: %+v", v)
+	}
+	if resp.Header.Get("X-Policy") != "v1" {
+		t.Fatalf("response header not set: %v", resp.Header)
+	}
+	attrs := in.End()
+	found := false
+	for i := 0; i+1 < len(attrs); i += 2 {
+		if attrs[i] == "wasm_policy" && attrs[i+1] == "checked" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("log attribute missing: %v", attrs)
+	}
+}

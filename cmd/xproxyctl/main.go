@@ -11,7 +11,12 @@
 //	upstreams      show endpoint health and load
 //	config         print the active configuration
 //	validate       validate the configuration file without applying it
-//	reload         validate and apply the configuration file
+//	reload         validate and apply the configuration file (-dry-run shows the changes)
+//	diff [FROM] [TO]  compare configurations: active, file or a history id (default active file)
+//	history        list recorded configurations
+//	rollback ID    apply a recorded configuration
+//	rotate-secret FILE  add a fresh primary key to a secret file (-keep 2 old keys)
+//	tls            served certificates with expiry, OCSP staple and Certificate Transparency state
 //	reload-certs   re-read TLS certificate files
 //	reopen-logs    reopen log files after rotation
 //	tail STREAM    follow a log stream (access, error, security, audit)
@@ -28,9 +33,11 @@
 //	honeypot       list clients marked by honeypots; honeypot forget IP removes one
 //	dns            show dns listener counters; "dns purge" empties the caches
 //	ingress        show the Kubernetes ingress controller status
-//	otlp           show the OpenTelemetry exporter status
+//	otlp           show the OpenTelemetry metrics exporter status
+//	telemetry      show every OpenTelemetry exporter: metrics, traces, logs
 //	cache          show cache statistics; "cache purge [HOST [PATH-PREFIX]]" removes entries
 //	htpasswd FILE NAME  add or replace a basic_auth user (password on stdin)
+//	quotas         usage per tenant, route and rate limit policy (-top 10)
 //	metrics        print the Prometheus exposition
 //	series         print sampled series (-since 10m -last 20)
 //	version        print version
@@ -57,7 +64,10 @@ import (
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds for validate
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/passwd"
+	"github.com/rom/xproxy/internal/paths"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/sandbox"
+	"github.com/rom/xproxy/internal/secret"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tui"
 	"github.com/rom/xproxy/internal/upstream"
@@ -70,14 +80,14 @@ func main() {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: xproxyctl [-socket PATH] [-config PATH] [-json] COMMAND")
-	_, _ = fmt.Fprintln(w, "commands: status stats upstreams config validate reload reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp htpasswd spki metrics series tui version")
+	_, _ = fmt.Fprintln(w, "commands: status stats upstreams quotas waf sandbox config validate reload diff history rollback rotate-secret tls reload-certs reopen-logs tail bans ban unban cluster acme icap filters geoip cache honeypot dns ingress otlp telemetry htpasswd spki metrics series tui version")
 }
 
 func run(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("xproxyctl", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	socket := fs.String("socket", "/run/xproxy/mgmt.sock", "management socket")
-	cfgPath := fs.String("config", "/etc/xproxy/xproxy.yaml", "configuration file (validate, tail)")
+	socket := fs.String("socket", paths.Socket, "management socket")
+	cfgPath := fs.String("config", paths.ConfigFile, "configuration file (validate, tail)")
 	asJSON := fs.Bool("json", false, "machine readable output")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -121,6 +131,9 @@ func run(args []string, out, errOut io.Writer) int {
 			_, _ = fmt.Fprintf(out, "listener %-12s %s\n", n, st.Listeners[n])
 		}
 		printStats(out, st.Stats)
+		if sb := st.Sandbox; sb != nil {
+			_, _ = fmt.Fprintln(out, "sandbox", sandboxSummary(sb))
+		}
 		return 0
 	case "stats":
 		st, err := c.Status()
@@ -145,8 +158,12 @@ func run(args []string, out, errOut io.Writer) int {
 		if err := json.Unmarshal(b, &ups); err != nil {
 			return fail(err)
 		}
+		pools := map[string]upstream.PoolStatus{}
+		if pb, err := c.Raw("/v1/pools"); err == nil {
+			_ = json.Unmarshal(pb, &pools)
+		}
 		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS")
+		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tCANARY\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS")
 		names := make([]string, 0, len(ups))
 		for n := range ups {
 			names = append(names, n)
@@ -154,10 +171,90 @@ func run(args []string, out, errOut io.Writer) int {
 		sort.Strings(names)
 		for _, n := range names {
 			for _, e := range ups[n] {
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%d\t%d\t%d\n", n, e.Address, e.Weight, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors)
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%v\t%d\t%d\t%d\n", n, e.Address, e.Weight, e.Canary, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors)
 			}
 		}
 		_ = tw.Flush()
+		// Pool level state: circuit breakers and queues, when configured.
+		shown := false
+		for _, n := range names {
+			ps, ok := pools[n]
+			if !ok || (ps.Circuit == nil && ps.Queue == nil) {
+				continue
+			}
+			if !shown {
+				_, _ = fmt.Fprintln(out)
+				_, _ = fmt.Fprintln(tw, "UPSTREAM\tCIRCUIT\tFAILURES\tOPENS\tREFUSED\tIN-FLIGHT\tWAITING\tQUEUED\tTIMEOUTS\tFULL")
+				shown = true
+			}
+			circuit, failures, opens, refused := "-", "-", "-", "-"
+			if cs := ps.Circuit; cs != nil {
+				circuit, failures, opens, refused = cs.State, fmt.Sprintf("%d/%d", cs.Failures, cs.Threshold), fmt.Sprint(cs.Opens), fmt.Sprint(cs.Rejected)
+				if cs.State == upstream.CircuitOpen {
+					circuit += " until " + cs.Until.Local().Format("15:04:05")
+				}
+			}
+			inFlight, waiting, queued, timeouts, full := "-", "-", "-", "-", "-"
+			if q := ps.Queue; q != nil {
+				inFlight, waiting, queued, timeouts, full = fmt.Sprintf("%d/%d", q.InFlight, q.MaxConcurrent), fmt.Sprintf("%d/%d", q.Waiting, q.QueueSize), fmt.Sprint(q.Queued), fmt.Sprint(q.Timeouts), fmt.Sprint(q.Full)
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n, circuit, failures, opens, refused, inFlight, waiting, queued, timeouts, full)
+		}
+		_ = tw.Flush()
+		return 0
+	case "quotas":
+		qfs := flag.NewFlagSet("quotas", flag.ContinueOnError)
+		qfs.SetOutput(errOut)
+		top := qfs.Int("top", 10, "consumers listed per rate limit policy")
+		if err := qfs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		b, err := c.Raw(fmt.Sprintf("/v1/quotas?top=%d", *top))
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			_, _ = out.Write(b)
+			return 0
+		}
+		var q proxy.QuotaReport
+		if err := json.Unmarshal(b, &q); err != nil {
+			return fail(err)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		if len(q.Tenants) > 0 {
+			_, _ = fmt.Fprintln(tw, "TENANT\tROUTES\tREQUESTS\tDENIED\tRATE-LIMITED\tBYTES-IN\tBYTES-OUT")
+			for _, t := range q.Tenants {
+				_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\n", t.Tenant, t.Routes, t.Requests, t.Denied, t.RateLimited, t.BytesIn, t.BytesOut)
+			}
+			_ = tw.Flush()
+			_, _ = fmt.Fprintln(out)
+		}
+		_, _ = fmt.Fprintln(tw, "ROUTE\tTENANT\tUPSTREAM\tREQUESTS\t2XX\t3XX\t4XX\t5XX\tDENIED\tRATE-LIMITED\tBYTES-IN\tBYTES-OUT")
+		for _, r := range q.Routes {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Route, dash(r.Tenant), dash(r.Upstream), r.Requests, r.Status2xx, r.Status3xx, r.Status4xx, r.Status5xx, r.Denied, r.RateLimited, r.BytesIn, r.BytesOut)
+		}
+		_ = tw.Flush()
+		if len(q.RateLimits) > 0 {
+			_, _ = fmt.Fprintln(out)
+			_, _ = fmt.Fprintln(tw, "POLICY\tKEY\tRATE\tBURST\tKEYS\tALLOWED\tDENIED\tTOP CONSUMERS (key=total/tokens left)")
+			for _, p := range q.RateLimits {
+				tops := make([]string, 0, len(p.Top))
+				for _, u := range p.Top {
+					tops = append(tops, fmt.Sprintf("%s=%.0f/%.1f", u.Key, u.Total, u.Tokens))
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%g\t%d\t%d\t%d\t%d\t%s\n", p.Policy, p.Key, p.Rate, p.Burst, p.Keys, p.Allowed, p.Denied, dash(strings.Join(tops, " ")))
+			}
+			_ = tw.Flush()
+		}
+		if len(q.Upstreams) > 0 {
+			_, _ = fmt.Fprintln(out)
+			_, _ = fmt.Fprintln(tw, "UPSTREAM\tREQUESTS\tERRORS\tACTIVE")
+			for _, u := range q.Upstreams {
+				_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\n", u.Upstream, u.Requests, u.Errors, u.Active)
+			}
+			_ = tw.Flush()
+		}
 		return 0
 	case "config":
 		b, err := c.Raw("/v1/config")
@@ -167,14 +264,179 @@ func run(args []string, out, errOut io.Writer) int {
 		_, _ = out.Write(b)
 		return 0
 	case "reload":
+		rf := flag.NewFlagSet("reload", flag.ContinueOnError)
+		rf.SetOutput(errOut)
+		dry := rf.Bool("dry-run", false, "show what the file would change without applying it")
+		if err := rf.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
 		if _, err := config.Load(*cfgPath); err != nil {
 			_, _ = fmt.Fprintln(errOut, "refusing to reload: local validation failed")
 			return fail(err)
+		}
+		if *dry {
+			var ch config.Changes
+			if err := c.Do("POST", "/v1/reload?dry_run=1", nil, &ch); err != nil {
+				return fail(err)
+			}
+			if *asJSON {
+				b, _ := json.MarshalIndent(ch, "", "  ")
+				_, _ = out.Write(append(b, '\n'))
+				return 0
+			}
+			printChanges(out, &ch)
+			return 0
 		}
 		if err := c.Post("/v1/reload"); err != nil {
 			return fail(err)
 		}
 		_, _ = fmt.Fprintln(out, "reloaded")
+		return 0
+	case "waf":
+		return cmdWAF(c, fs.Args()[1:], *asJSON, out, errOut)
+	case "sandbox":
+		b, err := c.Raw("/v1/sandbox")
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			_, _ = out.Write(b)
+			return 0
+		}
+		var sb sandbox.Status
+		if err := json.Unmarshal(b, &sb); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintf(out, "platform %s  enabled %v  strict %v", sb.Platform, sb.Enabled, sb.Strict)
+		if !sb.AppliedAt.IsZero() {
+			_, _ = fmt.Fprintf(out, "  applied %s", sb.AppliedAt.Local().Format(time.RFC3339))
+		}
+		_, _ = fmt.Fprintln(out)
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "MECHANISM\tSTATE\tDETAIL")
+		for _, m := range sb.Mechanism {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", m.Name, m.State, dash(m.Detail))
+		}
+		_ = tw.Flush()
+		if sb.Landlocked {
+			_, _ = fmt.Fprintf(out, "landlock ABI %d\n", sb.LandlockABI)
+			for _, p := range sb.ReadPaths {
+				_, _ = fmt.Fprintf(out, "  read   %s\n", p)
+			}
+			for _, p := range sb.WritePaths {
+				_, _ = fmt.Fprintf(out, "  write  %s\n", p)
+			}
+		}
+		return 0
+	case "tls":
+		b, err := c.Raw("/v1/tls")
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			_, _ = out.Write(b)
+			return 0
+		}
+		var certs map[string][]tlsconf.CertInfo
+		if err := json.Unmarshal(b, &certs); err != nil {
+			return fail(err)
+		}
+		names := make([]string, 0, len(certs))
+		for n := range certs {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "LISTENER\tNAMES\tISSUER\tEXPIRES\tSOURCE\tOCSP\tCT")
+		for _, n := range names {
+			for _, ci := range certs[n] {
+				source := "file"
+				if ci.Managed {
+					source = "acme"
+				}
+				ocspCol := ci.OCSP.Status
+				if ci.OCSP.Error != "" && ci.OCSP.Status != "disabled" {
+					ocspCol += " (" + ci.OCSP.Error + ")"
+				} else if !ci.OCSP.NextUpdate.IsZero() {
+					ocspCol += " until " + ci.OCSP.NextUpdate.Local().Format("01-02 15:04")
+				}
+				ctCol := fmt.Sprintf("%d scts", ci.CT.Embedded)
+				if ci.CT.Verified > 0 {
+					ctCol = fmt.Sprintf("%d/%d verified", ci.CT.Verified, ci.CT.Embedded)
+				}
+				if !ci.CT.OK {
+					ctCol += " FAIL: " + ci.CT.Error
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n, strings.Join(ci.Names, ","), dash(ci.Issuer), ci.NotAfter.Local().Format(time.RFC3339), source, ocspCol, ctCol)
+			}
+		}
+		_ = tw.Flush()
+		return 0
+	case "rotate-secret":
+		rs := flag.NewFlagSet("rotate-secret", flag.ContinueOnError)
+		rs.SetOutput(errOut)
+		keep := rs.Int("keep", 2, "previous keys kept for verification")
+		if err := rs.Parse(fs.Args()[1:]); err != nil || rs.NArg() != 1 {
+			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl rotate-secret [-keep 2] FILE")
+			return 2
+		}
+		ring, err := secret.Rotate(rs.Arg(0), *keep)
+		if err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintf(out, "%s: new primary key, %d key(s) in the ring; run xproxyctl reload to apply\n", rs.Arg(0), ring.Len())
+		return 0
+	case "diff":
+		from, to := "active", "file"
+		if a := fs.Args(); len(a) > 1 {
+			to = a[1]
+			if len(a) > 2 {
+				from, to = a[1], a[2]
+			}
+		}
+		var ch config.Changes
+		if err := c.Do("GET", "/v1/diff?from="+url.QueryEscape(from)+"&to="+url.QueryEscape(to), nil, &ch); err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			b, _ := json.MarshalIndent(ch, "", "  ")
+			_, _ = out.Write(append(b, '\n'))
+			return 0
+		}
+		printChanges(out, &ch)
+		if ch.Same {
+			return 0
+		}
+		return 1
+	case "history":
+		b, err := c.Raw("/v1/history")
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			_, _ = out.Write(b)
+			return 0
+		}
+		var entries []config.Entry
+		if err := json.Unmarshal(b, &entries); err != nil {
+			return fail(err)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "ID\tGENERATION\tAPPLIED\tNOTE\tSIZE")
+		for _, e := range entries {
+			_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\n", e.ID, e.Generation, e.Applied.Local().Format(time.RFC3339), e.Note, e.Size)
+		}
+		_ = tw.Flush()
+		return 0
+	case "rollback":
+		if fs.NArg() != 2 {
+			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl rollback ID   (an id from xproxyctl history)")
+			return 2
+		}
+		if err := c.Post("/v1/rollback?id=" + url.QueryEscape(fs.Arg(1))); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintln(out, "rolled back to", fs.Arg(1))
 		return 0
 	case "reload-certs":
 		if err := c.Post("/v1/reload-certs"); err != nil {
@@ -273,6 +535,36 @@ func run(args []string, out, errOut io.Writer) int {
 			return fail(err)
 		}
 		_, _ = out.Write(b)
+		return 0
+	case "telemetry":
+		b, err := c.Raw("/v1/telemetry")
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			_, _ = out.Write(b)
+			return 0
+		}
+		var v mgmt.TelemetryView
+		if err := json.Unmarshal(b, &v); err != nil {
+			return fail(err)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "SIGNAL\tENDPOINT\tSENT\tDROPPED\tPUSHES\tFAILED\tQUEUED\tLAST ERROR")
+		if m := v.Metrics; m != nil {
+			_, _ = fmt.Fprintf(tw, "metrics\t%s\t%d\t-\t%d\t%d\t-\t%s\n", m.Endpoint, m.Sent, m.Sent+m.Failed, m.Failed, dash(m.LastError))
+		}
+		if t := v.Traces; t != nil {
+			_, _ = fmt.Fprintf(tw, "traces\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n", dash(t.Endpoint), t.Sent, t.Dropped, t.Pushes, t.Failed, t.Queued, dash(t.LastError))
+			_, _ = fmt.Fprintf(tw, "  spans\tstarted %d, sampled %d, sample %g%%, propagate %v\t\t\t\t\t\t\n", t.Started, t.Sampled, t.SamplePercent, t.Propagate)
+		}
+		if l := v.Logs; l != nil {
+			_, _ = fmt.Fprintf(tw, "logs\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n", l.Endpoint, l.Sent, l.Dropped, l.Pushes, l.Failed, l.Queued, dash(l.LastError))
+		}
+		if v.Metrics == nil && v.Traces == nil && v.Logs == nil {
+			_, _ = fmt.Fprintln(tw, "(no OpenTelemetry exporter configured)")
+		}
+		_ = tw.Flush()
 		return 0
 	case "ingress":
 		var b []byte
@@ -645,5 +937,171 @@ func tail(cfgPath, stream string, out, errOut io.Writer) int {
 			_, _ = fmt.Fprintln(errOut, "error:", err)
 			return 1
 		}
+	}
+}
+
+// dash prints "-" for an empty cell.
+// cmdWAF implements "xproxyctl waf [rules|proposals|exclusions|reset]".
+func cmdWAF(c *mgmt.Client, args []string, asJSON bool, out, errOut io.Writer) int {
+	wfs := flag.NewFlagSet("waf", flag.ContinueOnError)
+	wfs.SetOutput(errOut)
+	top := wfs.Int("top", 20, "rules listed")
+	if err := wfs.Parse(args); err != nil {
+		return 2
+	}
+	fail := func(err error) int {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	sub := wfs.Arg(0)
+	switch sub {
+	case "exclusions":
+		b, err := c.Raw("/v1/waf/exclusions")
+		if err != nil {
+			return fail(err)
+		}
+		_, _ = out.Write(b)
+		return 0
+	case "reset":
+		if err := c.Post("/v1/waf/reset"); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintln(out, "waf statistics reset")
+		return 0
+	case "", "rules", "proposals":
+	default:
+		_, _ = fmt.Fprintln(errOut, "usage: xproxyctl waf [-top N] [rules|proposals|exclusions|reset]")
+		return 2
+	}
+	b, err := c.Raw(fmt.Sprintf("/v1/waf?top=%d", *top))
+	if err != nil {
+		return fail(err)
+	}
+	if asJSON {
+		_, _ = out.Write(b)
+		return 0
+	}
+	var rep proxy.WAFReport
+	if err := json.Unmarshal(b, &rep); err != nil {
+		return fail(err)
+	}
+	if !rep.Enabled {
+		_, _ = fmt.Fprintln(out, "waf: not configured")
+		if rep.Requests == 0 {
+			return 0
+		}
+	}
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	if sub == "" {
+		_, _ = fmt.Fprintf(out, "since %s  requests %d  blocked %d  detected %d  rules seen %d\n",
+			rep.Since.Local().Format(time.RFC3339), rep.Requests, rep.Blocked, rep.Detected, rep.TotalRules)
+		if l := rep.Learning; l != nil {
+			_, _ = fmt.Fprintf(out, "learning %s  min_hits %d  entries %d/%d  dropped %d  proposals %d\n",
+				onOff(l.Enabled), l.MinHits, l.Entries, l.MaxEntries, l.Dropped, len(l.Proposals))
+		}
+		if len(rep.Profiles) > 0 {
+			_, _ = fmt.Fprintln(tw, "PROFILE	MODES	CRS	VERSION	RULE-FILES")
+			for _, p := range rep.Profiles {
+				_, _ = fmt.Fprintf(tw, "%s	%s	%s	%s	%d\n", p.Name, strings.Join(p.Modes, ","), dash(p.CRS), dash(p.Version), p.RuleFiles)
+			}
+			_ = tw.Flush()
+		}
+		if len(rep.Routes) > 0 {
+			_, _ = fmt.Fprintln(tw, "ROUTE	PROFILE	MODE")
+			for _, r := range rep.Routes {
+				_, _ = fmt.Fprintf(tw, "%s	%s	%s\n", r.Route, r.Profile, r.Mode)
+			}
+			_ = tw.Flush()
+		}
+	}
+	if sub == "" || sub == "rules" {
+		if len(rep.Rules) == 0 {
+			_, _ = fmt.Fprintln(out, "no rule matches recorded")
+		} else {
+			_, _ = fmt.Fprintln(tw, "RULE	MATCHES	BLOCKS	DETECTS	SEVERITY	LAST-SEEN	MESSAGE")
+			for _, r := range rep.Rules {
+				_, _ = fmt.Fprintf(tw, "%d	%d	%d	%d	%s	%s	%s\n", r.ID, r.Matches, r.Blocks, r.Detects, dash(r.Severity), r.LastSeen.Local().Format(time.RFC3339), r.Message)
+			}
+			_ = tw.Flush()
+		}
+	}
+	if sub == "proposals" || (sub == "" && rep.Learning != nil && len(rep.Learning.Proposals) > 0) {
+		if rep.Learning == nil || len(rep.Learning.Proposals) == 0 {
+			_, _ = fmt.Fprintln(out, "no exclusion proposals")
+			return 0
+		}
+		_, _ = fmt.Fprintln(tw, "RULE	TARGET	ROUTE	HITS	CLIENTS	LAST-SEEN	MESSAGE")
+		for _, p := range rep.Learning.Proposals {
+			_, _ = fmt.Fprintf(tw, "%d	%s	%s	%d	%d	%s	%s\n", p.Rule, p.Target, dash(p.Route), p.Hits, p.Clients, p.LastSeen.Local().Format(time.RFC3339), p.Message)
+		}
+		_ = tw.Flush()
+		_, _ = fmt.Fprintln(out, "review the directives with: xproxyctl waf exclusions")
+	}
+	return 0
+}
+
+// sandboxSummary is the one line form used by status: applied mechanisms
+// first, then the rest with their state.
+func sandboxSummary(sb *sandbox.Status) string {
+	if !sb.Enabled {
+		return "disabled"
+	}
+	var applied, other []string
+	for _, m := range sb.Mechanism {
+		if m.State == sandbox.StateApplied {
+			applied = append(applied, m.Name)
+		} else {
+			other = append(other, m.Name+"="+m.State)
+		}
+	}
+	s := "applied " + dash(strings.Join(applied, ","))
+	if len(other) > 0 {
+		s += "  " + strings.Join(other, " ")
+	}
+	return s
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+func dash(v string) string {
+	if v == "" {
+		return "-"
+	}
+	return v
+}
+
+// printChanges renders a configuration comparison.
+func printChanges(out io.Writer, ch *config.Changes) {
+	if ch.Same {
+		_, _ = fmt.Fprintf(out, "%s and %s are identical\n", ch.From, ch.To)
+		return
+	}
+	_, _ = fmt.Fprintf(out, "%s -> %s\n", ch.From, ch.To)
+	for _, line := range ch.Summary {
+		_, _ = fmt.Fprintln(out, " ", line)
+	}
+	for _, c := range ch.Changes {
+		if c.Name != "" {
+			_, _ = fmt.Fprintf(out, "  %-8s %s %s\n", c.Kind, c.Section, c.Name)
+		} else {
+			_, _ = fmt.Fprintf(out, "  %-8s %s\n", c.Kind, c.Section)
+		}
+	}
+	if len(ch.RestartNeeded) > 0 {
+		_, _ = fmt.Fprintln(out, "restart needed for:")
+		for _, r := range ch.RestartNeeded {
+			_, _ = fmt.Fprintln(out, " ", r)
+		}
+	}
+	if ch.Truncated {
+		_, _ = fmt.Fprintln(out, "(text diff omitted: documents too large)")
+	} else if ch.Text != "" {
+		_, _ = fmt.Fprintln(out)
+		_, _ = fmt.Fprint(out, ch.Text)
 	}
 }

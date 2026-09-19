@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"net/netip"
 	"strconv"
 	"sync"
@@ -29,6 +30,8 @@ type Policy struct {
 	NegativeTTL  time.Duration
 	RateLimit    *limits.KeyedLimiter // nil disables
 	LogQueries   bool
+	// DNSSEC validates upstream answers when set.
+	DNSSEC *Validator
 }
 
 // Hooks connect the server to the proxy's logs and ban list.
@@ -41,7 +44,9 @@ type Hooks struct {
 	Banned func(client netip.Addr) bool
 }
 
-// Server answers DNS over one UDP socket and one TCP listener.
+// Server answers DNS over one UDP socket and one TCP listener. When the
+// TCP listener is a TLS listener (Encrypted), connections are DNS over
+// TLS by default and DNS over HTTPS when their ALPN is HTTP.
 type Server struct {
 	Name   string
 	udp    net.PacketConn
@@ -50,6 +55,11 @@ type Server struct {
 	policy atomic.Pointer[Policy]
 	hooks  Hooks
 	sem    chan struct{}
+	// Encrypted marks a TLS listener; DoHPath is the RFC 8484 path.
+	Encrypted bool
+	DoHPath   string
+	doh       *chanListener
+	dohSrv    *http.Server
 
 	mu   sync.Mutex
 	cons map[net.Conn]struct{}
@@ -58,23 +68,32 @@ type Server struct {
 	done chan struct{}
 
 	Queries, Hits, Blocked, Refused, Dropped, ServFail, Truncated, FormErr atomic.Uint64
+	// Per transport counters.
+	UDP, TCP, DoT, DoH atomic.Uint64
 }
 
 // Status is the management view of a listener.
 type Status struct {
-	Listener     string   `json:"listener"`
-	Queries      uint64   `json:"queries"`
-	CacheHits    uint64   `json:"cache_hits"`
-	CacheEntries int      `json:"cache_entries"`
-	Blocked      uint64   `json:"blocked"`
-	BlockEntries int      `json:"block_entries"`
-	Refused      uint64   `json:"refused"`
-	Dropped      uint64   `json:"dropped"`
-	ServFail     uint64   `json:"servfail"`
-	Truncated    uint64   `json:"truncated"`
-	FormErr      uint64   `json:"formerr"`
-	Upstreams    []string `json:"upstreams"`
-	UpstreamFail uint64   `json:"upstream_failures"`
+	Listener     string        `json:"listener"`
+	Queries      uint64        `json:"queries"`
+	CacheHits    uint64        `json:"cache_hits"`
+	CacheEntries int           `json:"cache_entries"`
+	Blocked      uint64        `json:"blocked"`
+	BlockEntries int           `json:"block_entries"`
+	Refused      uint64        `json:"refused"`
+	Dropped      uint64        `json:"dropped"`
+	ServFail     uint64        `json:"servfail"`
+	Truncated    uint64        `json:"truncated"`
+	FormErr      uint64        `json:"formerr"`
+	Upstreams    []string      `json:"upstreams"`
+	UpstreamFail uint64        `json:"upstream_failures"`
+	Encrypted    bool          `json:"encrypted"`
+	DoHPath      string        `json:"doh_path,omitempty"`
+	QueriesUDP   uint64        `json:"queries_udp"`
+	QueriesTCP   uint64        `json:"queries_tcp"`
+	QueriesDoT   uint64        `json:"queries_dot"`
+	QueriesDoH   uint64        `json:"queries_doh"`
+	DNSSEC       *DNSSECStatus `json:"dnssec,omitempty"`
 }
 
 // New creates a server on the given sockets (either may be nil) with a
@@ -110,8 +129,19 @@ func (s *Server) Status() Status {
 	p := s.policy.Load()
 	st := Status{Listener: s.Name, Queries: s.Queries.Load(), CacheHits: s.Hits.Load(), CacheEntries: s.cache.Len(),
 		Blocked: s.Blocked.Load(), Refused: s.Refused.Load(), Dropped: s.Dropped.Load(), ServFail: s.ServFail.Load(),
-		Truncated: s.Truncated.Load(), FormErr: s.FormErr.Load()}
+		Truncated: s.Truncated.Load(), FormErr: s.FormErr.Load(), Encrypted: s.Encrypted,
+		QueriesUDP: s.UDP.Load(), QueriesTCP: s.TCP.Load(), QueriesDoT: s.DoT.Load(), QueriesDoH: s.DoH.Load()}
+	if s.Encrypted {
+		st.DoHPath = s.DoHPath
+		if st.DoHPath == "" {
+			st.DoHPath = DefaultDoHPath
+		}
+	}
 	if p != nil {
+		if p.DNSSEC != nil {
+			d := p.DNSSEC.Status()
+			st.DNSSEC = &d
+		}
 		if p.Block != nil {
 			st.BlockEntries = p.Block.Len()
 		}
@@ -123,13 +153,24 @@ func (s *Server) Status() Status {
 	return st
 }
 
-// Serve runs the UDP and TCP loops until Shutdown.
+// Serve runs the UDP and TCP loops until Shutdown. On an encrypted
+// listener it also runs the DoH http server behind the ALPN demultiplexer.
 func (s *Server) Serve() {
 	if s.udp != nil {
 		s.wg.Add(1)
 		go s.serveUDP()
 	}
 	if s.tcp != nil {
+		if s.Encrypted {
+			s.doh = newChanListener(s.tcp.Addr())
+			s.dohSrv = &http.Server{Handler: s, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+				WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 16 << 10}
+			s.wg.Add(1)
+			go func() {
+				defer s.wg.Done()
+				_ = s.dohSrv.Serve(s.doh)
+			}()
+		}
 		s.wg.Add(1)
 		go s.serveTCP()
 	}
@@ -210,8 +251,15 @@ func (s *Server) serveTCP() {
 }
 
 func (s *Server) serveConn(c net.Conn) {
+	if s.Encrypted && !s.demux(c) {
+		return // handed to the DoH server, or failed the handshake
+	}
 	defer func() { _ = c.Close() }()
 	client := clientOf(c.RemoteAddr())
+	proto := "tcp"
+	if s.Encrypted {
+		proto = "dot"
+	}
 	for i := 0; i < 1000; i++ { // queries per connection
 		_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
 		query, err := ReadTCP(c, MaxMessage)
@@ -224,7 +272,7 @@ func (s *Server) serveConn(c net.Conn) {
 			s.Dropped.Add(1)
 			return
 		}
-		resp := s.Handle(query, client, true)
+		resp := s.handle(query, client, true, proto)
 		<-s.sem
 		if resp == nil {
 			return
@@ -257,6 +305,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 		if s.tcp != nil {
 			_ = s.tcp.Close()
 		}
+		if s.dohSrv != nil {
+			_ = s.dohSrv.Shutdown(ctx)
+			_ = s.doh.Close()
+		}
 	})
 	finished := make(chan struct{})
 	go func() { s.wg.Wait(); close(finished) }()
@@ -286,10 +338,29 @@ func clientOf(a net.Addr) netip.Addr {
 	return ap.Addr().Unmap()
 }
 
-// Handle answers one query; nil means drop without a response.
+// Handle answers one query; nil means drop without a response. tcp
+// says the client used a stream transport (the answer is not truncated).
 func (s *Server) Handle(query []byte, client netip.Addr, tcp bool) []byte {
+	proto := "udp"
+	if tcp {
+		proto = "tcp"
+	}
+	return s.handle(query, client, tcp, proto)
+}
+
+func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string) []byte {
 	start := time.Now()
 	s.Queries.Add(1)
+	switch proto {
+	case "udp":
+		s.UDP.Add(1)
+	case "tcp":
+		s.TCP.Add(1)
+	case "dot":
+		s.DoT.Add(1)
+	case "doh":
+		s.DoH.Add(1)
+	}
 	h, err := ParseHeader(query)
 	if err != nil || h.Response() {
 		s.Dropped.Add(1)
@@ -303,10 +374,6 @@ func (s *Server) Handle(query []byte, client netip.Addr, tcp bool) []byte {
 	if p.RateLimit != nil && !p.RateLimit.Allow(client.String()) {
 		s.Dropped.Add(1)
 		return nil
-	}
-	proto := "udp"
-	if tcp {
-		proto = "tcp"
 	}
 	if h.QDCount != 1 {
 		s.FormErr.Add(1)
@@ -345,21 +412,52 @@ func (s *Server) Handle(query []byte, client netip.Addr, tcp bool) []byte {
 		return s.finish(query, qEnd, h, q, client, proto, start, "blocked", resp)
 	}
 	now := time.Now()
+	var qm *Message // parsed client query, only with validation on
+	if p.DNSSEC != nil {
+		qm, _ = ParseMessage(query)
+	}
 	if h.RecursionDesired() {
 		if resp, rEnd := s.cache.Get(q, h.ID, now); resp != nil {
 			s.Hits.Add(1)
+			if qm != nil {
+				resp = s.finalizeDNSSEC(resp, qm, h)
+				if _, e, err := ParseQuestion(resp); err == nil {
+					rEnd = e
+				}
+			}
 			return s.finish(query, qEnd, h, q, client, proto, start, "cache", s.fit(query, qEnd, h, resp, rEnd, tcp))
 		}
 	}
 	// Upstream transport is the resolver's business: UDP first with TCP
 	// on truncation for plain servers whatever the client used, so a
 	// stream client (TCP, DoH) does not force a TCP dial per query.
-	ctx, cancel := context.WithTimeout(context.Background(), p.Resolver.timeout*time.Duration(max(len(p.Resolver.servers), 1)))
-	resp, err := p.Resolver.Exchange(ctx, query, qEnd, q, len(query) > maxUDP)
-	cancel()
+	budget := p.Resolver.timeout * time.Duration(max(len(p.Resolver.servers), 1))
+	if p.DNSSEC != nil {
+		budget *= 4 // chain lookups
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	upQuery := query
+	if p.DNSSEC != nil {
+		upQuery = withDO(query) // the upstream must return signatures
+	}
+	resp, err := p.Resolver.Exchange(ctx, upQuery, qEnd, q, len(query) > maxUDP)
 	if err != nil {
 		s.ServFail.Add(1)
 		return s.finish(query, qEnd, h, q, client, proto, start, "servfail", Reply(query, qEnd, h, RcodeServFail))
+	}
+	source := "upstream"
+	if p.DNSSEC != nil {
+		var res Result
+		res, resp = p.DNSSEC.Validate(ctx, query, qEnd, h, resp)
+		source = "upstream:" + res.String()
+		if res == Bogus && h.Flags&flagCD == 0 {
+			s.ServFail.Add(1)
+			if s.hooks.Event != nil {
+				s.hooks.Event(client, "dns_bogus", "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
+			}
+			return s.finish(query, qEnd, h, q, client, proto, start, source, resp)
+		}
 	}
 	rh, _ := ParseHeader(resp)
 	_, rEnd, qerr := ParseQuestion(resp)
@@ -382,7 +480,29 @@ func (s *Server) Handle(query []byte, client netip.Addr, tcp bool) []byte {
 	if qerr != nil {
 		rEnd = qEnd
 	}
-	return s.finish(query, qEnd, h, q, client, proto, start, "upstream", s.fit(query, qEnd, h, resp, rEnd, tcp))
+	if qm != nil {
+		resp = s.finalizeDNSSEC(resp, qm, h)
+		if _, e, err := ParseQuestion(resp); err == nil {
+			rEnd = e
+		}
+	}
+	return s.finish(query, qEnd, h, q, client, proto, start, source, s.fit(query, qEnd, h, resp, rEnd, tcp))
+}
+
+// finalizeDNSSEC shapes a validated response for the client: AD only
+// when the client asked (AD or DO set), signatures only with DO.
+func (s *Server) finalizeDNSSEC(resp []byte, qm *Message, h Header) []byte {
+	do, _ := clientDO(qm)
+	out := StripDNSSEC(resp, qm)
+	if !do && h.Flags&flagAD == 0 && len(out) >= 4 {
+		if out[2]&(flagAD>>8) != 0 {
+			if len(out) == len(resp) && &out[0] == &resp[0] {
+				out = append([]byte(nil), out...)
+			}
+			out[2] &^= flagAD >> 8
+		}
+	}
+	return out
 }
 
 // fit truncates a UDP response that exceeds what the client can take.
@@ -429,8 +549,22 @@ func TypeName(t uint16) string {
 		return "OPT"
 	case TypeANY:
 		return "ANY"
-	case 33:
+	case TypeSRV:
 		return "SRV"
+	case TypeDNAME:
+		return "DNAME"
+	case TypeDS:
+		return "DS"
+	case TypeRRSIG:
+		return "RRSIG"
+	case TypeNSEC:
+		return "NSEC"
+	case TypeDNSKEY:
+		return "DNSKEY"
+	case TypeNSEC3:
+		return "NSEC3"
+	case TypeNSEC3PARAM:
+		return "NSEC3PARAM"
 	case 65:
 		return "HTTPS"
 	}

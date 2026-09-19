@@ -11,11 +11,13 @@ Wants=network-online.target
 Requires=xproxy.socket
 
 [Service]
-Type=notify
+# notify-reload: systemctl reload sends ReloadSignal and waits for the
+# RELOADING/READY notifications, so no helper binary runs in the sandbox.
+Type=notify-reload
+ReloadSignal=SIGHUP
 User=xproxy
 Group=xproxy
 ExecStart=/usr/local/bin/xproxy -config /etc/xproxy/xproxy.yaml
-ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=45s
@@ -34,6 +36,10 @@ StateDirectory=xproxy
 StateDirectoryMode=0700
 
 # Sandboxing. Every directive here is verified by `systemd-analyze security`.
+# The process adds its own layer after start (Landlock rules derived from
+# the configuration, a seccomp deny list, capability clearing, non
+# dumpable; see the sandbox section of docs/CONFIG.md), so the two are
+# defence in depth: a directive missing here is still enforced there.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -54,10 +60,17 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RemoveIPC=yes
+KeyringMode=private
+PrivateMounts=yes
+# The binary is static: nothing else may be mapped executable.
+NoExecPaths=/
+ExecPaths=/usr/local/bin/xproxy
+# Only ordinary file systems (ignored where the BPF LSM is unavailable).
+RestrictFileSystems=@basic-api @common-block tmpfs
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @cpu-emulation @debug @module @raw-io
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @cpu-emulation @debug @module @raw-io @clock @keyring @pkey
 SystemCallErrorNumber=EPERM
 CapabilityBoundingSet=
 AmbientCapabilities=
@@ -65,6 +78,9 @@ ReadOnlyPaths=/etc/xproxy
 ReadWritePaths=/var/log/xproxy /run/xproxy /var/lib/xproxy
 IPAddressDeny=
 DevicePolicy=closed
+# Binds after start are refused by Landlock inside the process; to have
+# systemd enforce the same for a fixed port set, install the drop-in
+# 10-socket-bind.conf next to this unit and list the ports it needs.
 
 [Install]
 WantedBy=multi-user.target

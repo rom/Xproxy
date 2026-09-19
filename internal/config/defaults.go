@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/rom/xproxy/internal/paths"
 	"os"
 	"strings"
 	"time"
@@ -52,11 +53,15 @@ const (
 
 	DefaultWAFRequestBodyLimit  = 1 << 20
 	DefaultWAFResponseBodyLimit = 512 << 10
-	DefaultCRSParanoia          = 1
-	DefaultCRSInbound           = 5
-	DefaultCRSOutbound          = 4
+	// DefaultWAFLearningMinHits is the matches before an exclusion is
+	// proposed; DefaultWAFLearningMaxEntries bounds the learning table.
+	DefaultWAFLearningMinHits    = 5
+	DefaultWAFLearningMaxEntries = 10000
+	DefaultCRSParanoia           = 1
+	DefaultCRSInbound            = 5
+	DefaultCRSOutbound           = 4
 
-	DefaultLogDirectory = "/var/log/xproxy"
+	DefaultLogDirectory = paths.LogDir
 	DefaultLogLevel     = "info"
 	DefaultSocketMode   = "0660"
 )
@@ -116,6 +121,10 @@ func applyDefaults(c *Config) {
 			if d.Cache == nil {
 				d.Cache = &DNSCache{}
 			}
+			setStr(&d.DoHPath, "/dns-query")
+			if d.DNSSEC != nil {
+				setInt(&d.DNSSEC.MaxLookups, 48)
+			}
 			setInt(&d.Cache.MaxEntries, 10000)
 			setDur(&d.Cache.MinTTL, 5*time.Second)
 			setDur(&d.Cache.MaxTTL, time.Hour)
@@ -132,7 +141,13 @@ func applyDefaults(c *Config) {
 		}
 		ln := &s.Listeners[i]
 		if ln.Kind == "tcp" || ln.Kind == "dns" {
-			continue // no HTTP protocol or TLS defaults on a non-HTTP listener
+			// No HTTP protocol defaults on a non-HTTP listener; an
+			// encrypted dns listener still gets the TLS defaults.
+			if ln.Kind == "dns" && ln.TLS != nil {
+				setStr(&ln.TLS.MinVersion, "1.2")
+				setStr(&ln.TLS.ClientAuth, "none")
+			}
+			continue
 		}
 		if len(ln.Protocols) == 0 {
 			switch {
@@ -168,6 +183,23 @@ func applyDefaults(c *Config) {
 		}
 	}
 
+	setInt(&c.Management.HistoryKeep, 20)
+	for _, o := range []*OTLPExport{c.Logging.OTLP, tracingOTLP(c.Tracing)} {
+		if o == nil {
+			continue
+		}
+		setDur(&o.Timeout, 10*time.Second)
+		setStr(&o.ServiceName, "xproxy")
+		setInt(&o.Batch, 512)
+		setDur(&o.Interval, 5*time.Second)
+		setInt(&o.Queue, 8192)
+	}
+	for i := range c.Server.Listeners {
+		if t := c.Server.Listeners[i].TLS; t != nil && t.OCSPStapling != nil {
+			setDur(&t.OCSPStapling.Timeout, 5*time.Second)
+			setDur(&t.OCSPStapling.Refresh, time.Hour)
+		}
+	}
 	if c.Management.SocketMode == "" {
 		c.Management.SocketMode = DefaultSocketMode
 	}
@@ -187,6 +219,7 @@ func applyDefaults(c *Config) {
 		if len(s.Sinks) == 0 {
 			s.Sinks = []string{"file"}
 		}
+		setStr(&s.Format, "json")
 	}
 	if j := lg.Journald; j != nil {
 		setStr(&j.Socket, "/run/systemd/journal/socket")
@@ -244,6 +277,15 @@ func applyDefaults(c *Config) {
 			r := DefaultRetries
 			u.Retries = &r
 		}
+		if cb := u.CircuitBreaker; cb != nil {
+			setInt(&cb.ConsecutiveFailures, 5)
+			setDur(&cb.OpenFor, 10*time.Second)
+			setInt(&cb.HalfOpenRequests, 1)
+		}
+		if q := u.Queue; q != nil {
+			setInt(&q.Size, 100)
+			setDur(&q.Timeout, time.Second)
+		}
 		if u.Balancer == "hash" {
 			setStr(&u.HashOn, "client_ip")
 		}
@@ -299,6 +341,10 @@ func applyDefaults(c *Config) {
 		}
 		if len(w.ResponseMIMETypes) == 0 {
 			w.ResponseMIMETypes = []string{"text/plain", "text/html", "text/xml", "application/json", "application/xml"}
+		}
+		if l := w.Learning; l != nil {
+			setInt(&l.MinHits, DefaultWAFLearningMinHits)
+			setInt(&l.MaxEntries, DefaultWAFLearningMaxEntries)
 		}
 		for i := range w.Profiles {
 			if crs := w.Profiles[i].CRS; crs != nil {
@@ -367,7 +413,7 @@ func applyDefaults(c *Config) {
 		}
 	}
 	if a := c.ACME; a != nil {
-		setStr(&a.StateDir, "/var/lib/xproxy/acme")
+		setStr(&a.StateDir, paths.StateDir+"/acme")
 		setStr(&a.Challenge, "http-01")
 		setDur(&a.RenewBefore, 30*24*time.Hour)
 		setDur(&a.CheckInterval, 12*time.Hour)
@@ -481,7 +527,7 @@ func ingressDefaults(c *Config) {
 	setStr(&in.TokenFile, "/var/run/secrets/kubernetes.io/serviceaccount/token")
 	setStr(&in.CAFile, "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
 	setStr(&in.Class, "xproxy")
-	setStr(&in.CertDir, "/var/lib/xproxy/ingress")
+	setStr(&in.CertDir, paths.StateDir+"/ingress")
 	setDur(&in.Resync, 30*time.Second)
 	setDur(&in.Timeout, 10*time.Second)
 	setDur(&in.Debounce, 500*time.Millisecond)
@@ -503,4 +549,11 @@ func setStr(p *string, v string) {
 	if *p == "" {
 		*p = v
 	}
+}
+
+func tracingOTLP(t *Tracing) *OTLPExport {
+	if t == nil {
+		return nil
+	}
+	return t.OTLP
 }

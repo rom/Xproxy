@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/rom/xproxy/internal/sandbox"
 )
 
 // View identifies a screen.
@@ -18,10 +20,13 @@ const (
 	ViewCluster
 	ViewGraphs
 	ViewLog
+	ViewRoutes
+	ViewWAF
+	ViewTLS
 	viewCount
 )
 
-var viewNames = [...]string{"Overview", "Upstreams", "Bans", "Cluster", "Graphs", "Security log"}
+var viewNames = [...]string{"Overview", "Upstreams", "Bans", "Cluster", "Graphs", "Log", "Routes", "WAF", "TLS"}
 
 // Style holds ANSI sequences; Plain has none (NO_COLOR, tests).
 type Style struct {
@@ -71,6 +76,12 @@ func Render(d Data, st State, sty Style) []string {
 		content = renderGraphs(d, sty, w, body)
 	case ViewLog:
 		content = renderLog(d, body)
+	case ViewRoutes:
+		content = renderRoutes(d, sty)
+	case ViewWAF:
+		content = renderWAF(d, sty)
+	case ViewTLS:
+		content = renderTLS(d, sty)
 	default:
 		content = renderOverview(d, sty, w)
 	}
@@ -129,7 +140,7 @@ func header(d Data, st State, sty Style, w int) string {
 }
 
 func footer(st State, sty Style, w int) string {
-	keys := "1-6/tab views  r refresh  p pause  +/- interval  q quit"
+	keys := "1-9/tab views  r refresh  p pause  +/- interval  q quit"
 	if st.View == ViewBans {
 		keys = "j/k select  u unban  b ban  " + keys
 	}
@@ -183,6 +194,26 @@ func renderOverview(d Data, sty Style, w int) []string {
 	if len(s.SheddingClasses) > 0 {
 		out = append(out, "", sty.Yellow+"  shedding: "+strings.Join(s.SheddingClasses, ", ")+sty.Reset)
 	}
+	out = append(out, "", "  sandbox    "+sandboxLine(d.Status.Sandbox, sty))
+	if t := d.Telemetry; t != nil && (t.Metrics != nil || t.Traces != nil || t.Logs != nil) {
+		var parts []string
+		if t.Metrics != nil {
+			parts = append(parts, fmt.Sprintf("metrics sent %d failed %d", t.Metrics.Sent, t.Metrics.Failed))
+		}
+		if t.Traces != nil {
+			parts = append(parts, fmt.Sprintf("traces sampled %d sent %d failed %d", t.Traces.Sampled, t.Traces.Sent, t.Traces.Failed))
+		}
+		if t.Logs != nil {
+			parts = append(parts, fmt.Sprintf("logs sent %d dropped %d", t.Logs.Sent, t.Logs.Dropped))
+		}
+		out = append(out, "  telemetry  "+strings.Join(parts, "  "))
+	}
+	for _, l := range d.DNS {
+		out = append(out, fmt.Sprintf("  dns %-8s queries %d (udp %d tcp %d dot %d doh %d) hits %d blocked %d servfail %d", l.Listener, l.Queries, l.QueriesUDP, l.QueriesTCP, l.QueriesDoT, l.QueriesDoH, l.CacheHits, l.Blocked, l.ServFail))
+		if l.DNSSEC != nil {
+			out = append(out, fmt.Sprintf("  %-12s dnssec secure %d insecure %d bogus %d indeterminate %d", "", l.DNSSEC.Secure, l.DNSSEC.Insecure, l.DNSSEC.Bogus, l.DNSSEC.Indeterminate))
+		}
+	}
 	if d.Series != nil && len(d.Series.Points) > 1 {
 		out = append(out, "", "  "+sparkRow("req/s", seriesValues(d.Series, "requests"), w-12, sty))
 		out = append(out, "  "+sparkRow("denied", seriesValues(d.Series, "denied"), w-12, sty))
@@ -212,8 +243,177 @@ func renderUpstreams(d Data, sty Style) []string {
 			}
 			out = append(out, fmt.Sprintf("  %-16s %-28s %6d %s %s %6d %10d %8d", n, e.Address, e.Weight, health, ej, e.Active, e.Requests, e.Errors))
 		}
+		if p, ok := d.Pools[n]; ok && (p.Circuit != nil || p.Queue != nil || p.Canary != nil) {
+			var parts []string
+			if c := p.Circuit; c != nil {
+				col := sty.Green
+				if c.State != "closed" {
+					col = sty.Yellow
+				}
+				parts = append(parts, fmt.Sprintf("circuit %s%s%s failures %d opens %d rejected %d", col, c.State, sty.Reset, c.Failures, c.Opens, c.Rejected))
+			}
+			if q := p.Queue; q != nil {
+				parts = append(parts, fmt.Sprintf("in flight %d/%d queued %d/%d timeouts %d full %d", q.InFlight, q.MaxConcurrent, q.Waiting, q.QueueSize, q.Timeouts, q.Full))
+			}
+			if c := p.Canary; c != nil {
+				parts = append(parts, fmt.Sprintf("canary %.0f%% requests %d fallbacks %d", c.Percent, c.Requests, c.Fallbacks))
+			}
+			for _, part := range parts {
+				out = append(out, sty.Dim+"  "+strings.Repeat(" ", 16)+" "+part+sty.Reset)
+			}
+		}
 	}
 	return out
+}
+
+// sandboxLine summarises the hardening status for the overview.
+func sandboxLine(sb *sandbox.Status, sty Style) string {
+	if sb == nil {
+		return sty.Dim + "not reported" + sty.Reset
+	}
+	if !sb.Enabled {
+		return sty.Yellow + "disabled" + sty.Reset
+	}
+	var applied, other []string
+	for _, m := range sb.Mechanism {
+		if m.State == sandbox.StateApplied {
+			applied = append(applied, m.Name)
+		} else {
+			other = append(other, m.Name+"="+m.State)
+		}
+	}
+	line := sty.Green + strings.Join(applied, ",") + sty.Reset
+	if len(other) > 0 {
+		line += "  " + sty.Yellow + strings.Join(other, " ") + sty.Reset
+	}
+	return line
+}
+
+func renderRoutes(d Data, sty Style) []string {
+	q := d.Quotas
+	if q == nil {
+		return []string{"no usage data"}
+	}
+	out := []string{sty.Bold + fmt.Sprintf("  %-20s %-10s %-14s %9s %8s %8s %8s %8s %8s %10s", "ROUTE", "TENANT", "UPSTREAM", "REQUESTS", "2XX", "4XX", "5XX", "DENIED", "RATE-LIM", "BYTES-OUT") + sty.Reset}
+	for _, r := range q.Routes {
+		out = append(out, fmt.Sprintf("  %-20s %-10s %-14s %9d %8d %8d %8d %8d %8d %10s", clip(r.Route, 20), clip(orDash(r.Tenant), 10), clip(orDash(r.Upstream), 14), r.Requests, r.Status2xx, r.Status4xx, r.Status5xx, r.Denied, r.RateLimited, humanBytes(r.BytesOut)))
+	}
+	if len(q.Tenants) > 0 {
+		out = append(out, "", sty.Bold+fmt.Sprintf("  %-20s %6s %9s %8s %8s %10s %10s", "TENANT", "ROUTES", "REQUESTS", "DENIED", "RATE-LIM", "BYTES-IN", "BYTES-OUT")+sty.Reset)
+		for _, t := range q.Tenants {
+			out = append(out, fmt.Sprintf("  %-20s %6d %9d %8d %8d %10s %10s", clip(t.Tenant, 20), t.Routes, t.Requests, t.Denied, t.RateLimited, humanBytes(t.BytesIn), humanBytes(t.BytesOut)))
+		}
+	}
+	if len(q.RateLimits) > 0 {
+		out = append(out, "", sty.Bold+fmt.Sprintf("  %-16s %-14s %7s %6s %6s %9s %8s  %s", "POLICY", "KEY", "RATE", "BURST", "KEYS", "ALLOWED", "DENIED", "TOP")+sty.Reset)
+		for _, p := range q.RateLimits {
+			tops := make([]string, 0, len(p.Top))
+			for _, u := range p.Top {
+				tops = append(tops, fmt.Sprintf("%s=%.0f", u.Key, u.Total))
+			}
+			out = append(out, fmt.Sprintf("  %-16s %-14s %7.1f %6d %6d %9d %8d  %s", clip(p.Policy, 16), clip(p.Key, 14), p.Rate, p.Burst, p.Keys, p.Allowed, p.Denied, strings.Join(tops, " ")))
+		}
+	}
+	return out
+}
+
+func renderWAF(d Data, sty Style) []string {
+	w := d.WAF
+	if w == nil {
+		return []string{"no WAF data"}
+	}
+	if !w.Enabled && w.Requests == 0 {
+		return []string{"WAF not configured"}
+	}
+	out := []string{fmt.Sprintf("  requests %d  blocked %s%d%s  detected %s%d%s  rules seen %d", w.Requests, sty.Red, w.Blocked, sty.Reset, sty.Yellow, w.Detected, sty.Reset, w.TotalRules)}
+	if l := w.Learning; l != nil {
+		state := "off"
+		if l.Enabled {
+			state = "on"
+		}
+		out = append(out, fmt.Sprintf("  learning %s  min hits %d  entries %d/%d  dropped %d  proposals %d", state, l.MinHits, l.Entries, l.MaxEntries, l.Dropped, len(l.Proposals)))
+	}
+	if len(w.Profiles) > 0 {
+		out = append(out, "", sty.Bold+fmt.Sprintf("  %-16s %-14s %-24s %-8s %s", "PROFILE", "MODES", "RULE SET", "VERSION", "FILES")+sty.Reset)
+		for _, p := range w.Profiles {
+			out = append(out, fmt.Sprintf("  %-16s %-14s %-24s %-8s %d", clip(p.Name, 16), strings.Join(p.Modes, ","), clip(orDash(p.CRS), 24), orDash(p.Version), p.RuleFiles))
+		}
+	}
+	if len(w.Routes) > 0 {
+		var rs []string
+		for _, r := range w.Routes {
+			rs = append(rs, r.Route+"="+r.Profile+"/"+r.Mode)
+		}
+		out = append(out, "", "  routes: "+strings.Join(rs, "  "))
+	}
+	out = append(out, "", sty.Bold+fmt.Sprintf("  %-8s %8s %7s %8s %-9s %s", "RULE", "MATCHES", "BLOCKS", "DETECTS", "SEVERITY", "MESSAGE")+sty.Reset)
+	if len(w.Rules) == 0 {
+		out = append(out, "  no rule matches recorded")
+	}
+	for _, r := range w.Rules {
+		out = append(out, fmt.Sprintf("  %-8d %8d %7d %8d %-9s %s", r.ID, r.Matches, r.Blocks, r.Detects, clip(orDash(r.Severity), 9), r.Message))
+	}
+	if l := w.Learning; l != nil && len(l.Proposals) > 0 {
+		out = append(out, "", sty.Bold+fmt.Sprintf("  %-8s %-28s %-16s %6s %7s  %s", "RULE", "TARGET", "ROUTE", "HITS", "CLIENTS", "MESSAGE")+sty.Reset)
+		for _, p := range l.Proposals {
+			out = append(out, fmt.Sprintf("  %-8d %-28s %-16s %6d %7d  %s", p.Rule, clip(p.Target, 28), clip(orDash(p.Route), 16), p.Hits, p.Clients, p.Message))
+		}
+		out = append(out, sty.Dim+"  xproxyctl waf exclusions prints the directives"+sty.Reset)
+	}
+	return out
+}
+
+func renderTLS(d Data, sty Style) []string {
+	if d.TLS == nil {
+		return []string{"no certificate data"}
+	}
+	names := make([]string, 0, len(d.TLS))
+	for n := range d.TLS {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := []string{sty.Bold + fmt.Sprintf("  %-12s %-30s %-20s %-12s %-6s %-10s %s", "LISTENER", "NAMES", "ISSUER", "EXPIRES", "SOURCE", "OCSP", "CT") + sty.Reset}
+	if len(names) == 0 {
+		out = append(out, "  no TLS listeners")
+	}
+	for _, n := range names {
+		for _, c := range d.TLS[n] {
+			left := time.Until(c.NotAfter).Round(24 * time.Hour)
+			days := fmt.Sprintf("%dd", int(left.Hours()/24))
+			col := sty.Green
+			if left < 7*24*time.Hour {
+				col = sty.Red
+			} else if left < 30*24*time.Hour {
+				col = sty.Yellow
+			}
+			src := "file"
+			if c.Managed {
+				src = "acme"
+			}
+			ocsp := c.OCSP.Status
+			if ocsp == "" {
+				ocsp = "-"
+			}
+			ct := "-"
+			if c.CT.Required > 0 {
+				ct = fmt.Sprintf("%d/%d", c.CT.Verified, c.CT.Required)
+				if !c.CT.OK {
+					ct = sty.Yellow + ct + " failed" + sty.Reset
+				}
+			} else if c.CT.Embedded > 0 {
+				ct = fmt.Sprintf("%d scts", c.CT.Embedded)
+			}
+			out = append(out, fmt.Sprintf("  %-12s %-30s %-20s %s%-12s%s %-6s %-10s %s", clip(n, 12), clip(strings.Join(c.Names, ","), 30), clip(orDash(c.Issuer), 20), col, days, sty.Reset, src, clip(ocsp, 10), ct))
+		}
+	}
+	return out
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 func renderBans(d Data, st State, sty Style) []string {

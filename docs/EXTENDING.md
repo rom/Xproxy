@@ -233,6 +233,7 @@ filters:
       memory_limit_pages: 256   # 64 KiB pages per instance (16 MiB)
       instances: 16             # pooled instances
       on_error: deny            # or allow
+      engine: auto              # compiler where executable memory is allowed, else interpreter
 ```
 
 ### Guest exports

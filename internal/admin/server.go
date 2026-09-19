@@ -253,9 +253,14 @@ func (s *Server) routes() {
 	for name, path := range map[string]string{
 		"status": "/v1/status", "stats": "/v1/stats", "upstreams": "/v1/upstreams", "bans": "/v1/bans",
 		"cluster": "/v1/cluster", "acme": "/v1/acme", "icap": "/v1/icap", "active-config": "/v1/config",
+		"pools": "/v1/pools", "quotas": "/v1/quotas?top=10", "waf": "/v1/waf?top=50", "tls": "/v1/tls",
+		"telemetry": "/v1/telemetry", "sandbox": "/v1/sandbox", "dns": "/v1/dns", "honeypot": "/v1/honeypot",
+		"geoip": "/v1/geoip", "cache": "/v1/cache", "filters": "/v1/filters", "ingress": "/v1/ingress",
+		"otlp": "/v1/otlp", "history": "/v1/history", "diff": "/v1/diff",
 	} {
 		m.HandleFunc("GET /api/"+name, s.passthrough(path, "application/json"))
 	}
+	m.HandleFunc("GET /api/waf/exclusions", s.passthrough("/v1/waf/exclusions", "text/plain; charset=utf-8"))
 	m.HandleFunc("GET /api/metrics", s.passthrough("/metrics", "text/plain; version=0.0.4; charset=utf-8"))
 	m.HandleFunc("GET /api/series", s.series)
 	m.HandleFunc("GET /api/users", s.listUsers)
@@ -267,6 +272,9 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/reload-certs", s.action("reload-certs", "/v1/reload-certs"))
 	m.HandleFunc("POST /api/reopen-logs", s.action("reopen-logs", "/v1/logs/reopen"))
 	m.HandleFunc("POST /api/acme/renew", s.action("acme-renew", "/v1/acme/renew"))
+	m.HandleFunc("POST /api/waf/reset", s.action("waf-reset", "/v1/waf/reset"))
+	m.HandleFunc("POST /api/rollback", s.rollback)
+	m.HandleFunc("POST /api/reload/dry-run", s.dryRun)
 	m.HandleFunc("POST /api/restart", s.restart)
 
 	// Configuration file.
@@ -598,6 +606,31 @@ func (s *Server) action(name, path string) http.HandlerFunc {
 		s.audit(r, sess, name, "ok", true)
 		writeJSON(w, 200, map[string]any{"ok": true})
 	}
+}
+
+// rollback applies a recorded configuration by id (audited).
+func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := readJSON(r, &req); err != nil || req.ID == "" {
+		writeJSON(w, 400, map[string]any{"error": "id is required"})
+		return
+	}
+	s.action("rollback "+req.ID, "/v1/rollback?id="+url.QueryEscape(req.ID))(w, r)
+}
+
+// dryRun asks the daemon what applying the configuration file would
+// change, without applying it. It changes nothing, so any role may call
+// it, but it is a POST on the management side.
+func (s *Server) dryRun(w http.ResponseWriter, _ *http.Request) {
+	var body []byte
+	if err := s.client.Do(http.MethodPost, "/v1/reload?dry_run=1", nil, &body); err != nil {
+		s.mgmtError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(body)
 }
 
 func (s *Server) addBan(w http.ResponseWriter, r *http.Request) {

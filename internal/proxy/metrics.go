@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/metrics"
+	"github.com/rom/xproxy/internal/upstream"
 	"github.com/rom/xproxy/internal/version"
 )
 
@@ -70,8 +71,13 @@ func (s *Server) Collect(e metrics.Collector) {
 	}
 	e.Counter("xproxy_waf_detected_total", "Requests the WAF flagged in detect mode.", nil, float64(sn.WAFDetected))
 	e.Counter("xproxy_upstream_errors_total", "Upstream connection failures.", nil, float64(sn.UpstreamErrors))
+	e.Counter("xproxy_upstream_retries_total", "Attempts repeated on another endpoint.", L{"reason": "connect"}, float64(sn.UpstreamRetries-sn.UpstreamStatusRetries))
+	e.Counter("xproxy_upstream_retries_total", "Attempts repeated on another endpoint.", L{"reason": "status"}, float64(sn.UpstreamStatusRetries))
 	e.Counter("xproxy_upstream_timeouts_total", "Upstream timeouts.", nil, float64(sn.UpstreamTimeouts))
 	e.Counter("xproxy_upstream_no_healthy_total", "Requests with no healthy endpoint.", nil, float64(sn.UpstreamNoHealthy))
+	e.Counter("xproxy_upstream_circuit_open_total", "Requests refused by an open circuit breaker.", nil, float64(sn.UpstreamCircuitOpen))
+	e.Counter("xproxy_upstream_queue_refused_total", "Requests refused by a pool's queue.", L{"reason": "full"}, float64(sn.UpstreamQueueFull))
+	e.Counter("xproxy_upstream_queue_refused_total", "Requests refused by a pool's queue.", L{"reason": "timeout"}, float64(sn.UpstreamQueueTimeouts))
 	e.Counter("xproxy_client_aborts_total", "Requests abandoned by the client.", nil, float64(sn.ClientAborts))
 	e.Counter("xproxy_connections_rejected_total", "Connections closed at accept by limits or bans.", nil, float64(sn.RejectedConns))
 	e.Counter("xproxy_reloads_total", "Configuration reloads.", L{"result": "ok"}, float64(sn.Reloads))
@@ -219,6 +225,22 @@ func (s *Server) Collect(e metrics.Collector) {
 			}
 		}
 		e.Gauge("xproxy_upstream_endpoints", "Configured endpoints in the pool.", L{"upstream": name}, float64(len(eps)))
+		ps := rt.pools[name].Status()
+		if ps.Circuit != nil {
+			state := 0.0
+			switch ps.Circuit.State {
+			case upstream.CircuitHalfOpen:
+				state = 1
+			case upstream.CircuitOpen:
+				state = 2
+			}
+			e.Gauge("xproxy_upstream_circuit_state", "Circuit breaker state: 0 closed, 1 half open, 2 open.", L{"upstream": name}, state)
+			e.Counter("xproxy_upstream_circuit_opens_total", "Times the circuit opened.", L{"upstream": name}, float64(ps.Circuit.Opens))
+		}
+		if ps.Queue != nil {
+			e.Gauge("xproxy_upstream_queue_waiting", "Requests waiting for a pool slot.", L{"upstream": name}, float64(ps.Queue.Waiting))
+			e.Gauge("xproxy_upstream_in_flight", "Requests holding a pool slot.", L{"upstream": name}, float64(ps.Queue.InFlight))
+		}
 		e.Gauge("xproxy_upstream_endpoints_healthy", "Endpoints passing health checks and not ejected.", L{"upstream": name}, float64(healthy))
 		if !rt.cfg.Metrics.EndpointSeriesEnabled() {
 			continue
@@ -234,13 +256,47 @@ func (s *Server) Collect(e metrics.Collector) {
 	}
 
 	// Per route counters (bounded by the number of routes).
+	// Each family is emitted contiguously (the exposition declares a
+	// family once), so the routes are walked once per family.
 	if rt.cfg.Metrics.PerRouteEnabled() {
+		labels := func(cr *compiledRoute, extra ...string) L {
+			l := L{"route": cr.cfg.Name}
+			if cr.cfg.Tenant != "" {
+				l["tenant"] = cr.cfg.Tenant
+			}
+			for i := 0; i+1 < len(extra); i += 2 {
+				l[extra[i]] = extra[i+1]
+			}
+			return l
+		}
 		for _, cr := range rt.routes {
 			for i, class := range routeClasses {
 				if v := cr.counts[i].Load(); v > 0 || i == 0 {
-					e.Counter("xproxy_route_requests_total", "Requests per route and outcome.", L{"route": cr.cfg.Name, "outcome": class}, float64(v))
+					e.Counter("xproxy_route_requests_total", "Requests per route and outcome.", labels(cr, "outcome", class), float64(v))
 				}
 			}
+		}
+		for _, cr := range rt.routes {
+			e.Counter("xproxy_route_bytes_total", "Bytes per route and direction.", labels(cr, "direction", "in"), float64(cr.bytesIn.Load()))
+			e.Counter("xproxy_route_bytes_total", "Bytes per route and direction.", labels(cr, "direction", "out"), float64(cr.bytesOut.Load()))
+		}
+		for _, cr := range rt.routes {
+			if v := cr.rateLimited.Load(); v > 0 {
+				e.Counter("xproxy_route_rate_limited_total", "Requests refused by a rate limit per route.", labels(cr), float64(v))
+			}
+		}
+		names := make([]string, 0, len(rt.rateLimits))
+		for name := range rt.rateLimits {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			rl := rt.rateLimits[name]
+			e.Counter("xproxy_rate_limit_decisions_total", "Rate limit decisions per policy.", L{"policy": name, "outcome": "allowed"}, float64(rl.allowed.Load()))
+			e.Counter("xproxy_rate_limit_decisions_total", "Rate limit decisions per policy.", L{"policy": name, "outcome": "denied"}, float64(rl.denied.Load()))
+		}
+		for _, name := range names {
+			e.Gauge("xproxy_rate_limit_keys", "Keys tracked per policy.", L{"policy": name}, float64(rt.rateLimits[name].lim.Len()))
 		}
 	}
 }
@@ -254,8 +310,14 @@ func b2f(b bool) float64 {
 	return 0
 }
 
-// observeRoute records the outcome of a request on its route.
-func (cr *compiledRoute) observe(status int, denied bool) {
+// observeRoute records the outcome and the bytes of a request on its route.
+func (cr *compiledRoute) observe(status int, denied bool, bytesIn, bytesOut int64) {
+	if bytesIn > 0 {
+		cr.bytesIn.Add(uint64(bytesIn)) //nolint:gosec // positive
+	}
+	if bytesOut > 0 {
+		cr.bytesOut.Add(uint64(bytesOut)) //nolint:gosec // positive
+	}
 	switch {
 	case denied:
 		cr.counts[4].Add(1)

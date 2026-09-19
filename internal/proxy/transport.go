@@ -6,7 +6,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -25,6 +27,10 @@ type pickInfo struct {
 	endpoint  *upstream.Endpoint
 	setCookie string
 	attempts  int
+	// statusRetries counts responses discarded under retry_on.
+	statusRetries int
+	// canary is the request's mode under the pool's canary policy.
+	canary upstream.CanaryMode
 }
 
 type pickKey struct{}
@@ -44,13 +50,65 @@ func pickFrom(ctx context.Context) *pickInfo {
 type poolTransport struct {
 	pool    *upstream.Pool
 	retries int
+	// retryOn lists the statuses retried on another endpoint.
+	retryOn []string
 }
+
+// retryStatus reports whether a response status is in the retry_on list.
+func (t *poolTransport) retryStatus(code int) bool {
+	if len(t.retryOn) == 0 {
+		return false
+	}
+	for _, on := range t.retryOn {
+		switch on {
+		case "5xx":
+			if code >= 500 && code <= 599 {
+				return true
+			}
+		default:
+			if n, err := strconv.Atoi(on); err == nil && n == code {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// circuitOpenError carries the remaining open time for Retry-After.
+type circuitOpenError struct{ retryAfter time.Duration }
+
+func (e *circuitOpenError) Error() string { return upstream.ErrCircuitOpen.Error() }
+func (e *circuitOpenError) Unwrap() error { return upstream.ErrCircuitOpen }
 
 func (t *poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	pi := pickFrom(req.Context())
 	if pi == nil {
 		pi = &pickInfo{}
 	}
+	var done func(bool)
+	if b := t.pool.Breaker(); b != nil {
+		var wait time.Duration
+		if done, wait = b.Allow(); done == nil {
+			return nil, &circuitOpenError{retryAfter: wait}
+		}
+	}
+	resp, err := t.roundTrip(req, pi)
+	if done != nil {
+		switch {
+		case err != nil:
+			// Timeouts and connection errors are the upstream's; a client
+			// cancel or a missing endpoint is not an outcome.
+			if isConnError(err) || errors.Is(err, context.DeadlineExceeded) && req.Context().Err() == nil {
+				done(false)
+			}
+		default:
+			done(resp.StatusCode != http.StatusServiceUnavailable && !t.retryStatus(resp.StatusCode))
+		}
+	}
+	return resp, err
+}
+
+func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Response, error) {
 	exclude := map[*upstream.Endpoint]bool{}
 	maxAttempts := 1
 	if replayable(req) {
@@ -58,7 +116,7 @@ func (t *poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		e, cookie := t.pool.Pick(pi.hashKey, pi.cookie, exclude)
+		e, cookie := t.pool.Pick(pi.hashKey, pi.cookie, exclude, pi.canary)
 		if e == nil {
 			if lastErr != nil {
 				return nil, lastErr
@@ -87,13 +145,35 @@ func (t *poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			exclude[e] = true
 			continue
 		}
-		// Count 503 as a passive failure signal; other statuses are the
-		// application's business.
-		failed := resp.StatusCode == http.StatusServiceUnavailable
+		// A status in retry_on is a failed attempt: the body is dropped,
+		// the endpoint marked, and the next endpoint tried while the
+		// budget lasts. The last attempt's response is returned as it is.
+		if attempt+1 < maxAttempts && t.retryStatus(resp.StatusCode) && t.hasAlternative(pi, exclude, e) {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+			_ = resp.Body.Close()
+			t.pool.End(e, true)
+			pi.mu.Lock()
+			pi.statusRetries++
+			pi.mu.Unlock()
+			exclude[e] = true
+			continue
+		}
+		// Count 503 (and every retry_on status) as a passive failure
+		// signal; other statuses are the application's business.
+		failed := resp.StatusCode == http.StatusServiceUnavailable || t.retryStatus(resp.StatusCode)
 		resp.Body = &endBody{ReadCloser: resp.Body, done: func() { t.pool.End(e, failed) }}
 		return resp, nil
 	}
 	return nil, lastErr
+}
+
+// hasAlternative reports whether another endpoint could take the retry;
+// without one the response in hand is better than a synthetic error.
+func (t *poolTransport) hasAlternative(pi *pickInfo, exclude map[*upstream.Endpoint]bool, cur *upstream.Endpoint) bool {
+	exclude[cur] = true
+	next, _ := t.pool.Pick(pi.hashKey, pi.cookie, exclude, pi.canary)
+	delete(exclude, cur)
+	return next != nil
 }
 
 // replayable reports whether a request may be sent to a second endpoint

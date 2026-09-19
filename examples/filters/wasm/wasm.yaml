@@ -1,0 +1,30 @@
+# Filters example: the WebAssembly policy module from this directory
+# attached to a route. The module is compiled at load (xproxy -validate
+# compiles it too); engine auto uses the interpreter where executable
+# memory is refused.
+# Validate: xproxy -config examples/filters/wasm/wasm.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+filters:
+  - name: policy
+    kind: wasm
+    options:
+      module: /etc/xproxy/filters/policy.wasm
+      config: "tenant=example"
+      timeout: 20ms
+      memory_limit_pages: 64
+      instances: 32
+      on_error: deny
+      engine: auto
+      body_limit: 0
+upstreams:
+  - name: web
+    endpoints: [{address: "10.0.3.10:8080"}]
+routes:
+  - {name: web, hosts: [www.example.com], filters: [policy], upstream: web}

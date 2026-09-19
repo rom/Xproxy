@@ -1,6 +1,6 @@
 # Xproxy
 
-Xproxy is a security focused edge proxy for Fedora Linux: an HTTP/1.1,
+Xproxy is a security focused edge proxy for Fedora Linux and macOS: an HTTP/1.1,
 HTTP/2 and HTTP/3 reverse proxy and load balancer with a web
 application firewall, a ban list, rate limiting and load shedding at
 its core, plus the listener kinds an edge needs around it (layer 4 TLS
@@ -47,8 +47,9 @@ an identifier from the access log to the upstream.
 **Termination and transport**
 
 - TLS 1.2 and 1.3 with hardened defaults, SNI, hot reload of
-  certificates, client certificates (request or require), ACME issuance
-  and renewal (HTTP-01 and TLS-ALPN-01)
+  certificates, OCSP stapling, Certificate Transparency checks, client
+  certificates (request or require), ACME issuance and renewal (HTTP-01
+  and TLS-ALPN-01)
 - HTTP/1.1, HTTP/2 (ALPN, or `h2c` on trusted networks) and HTTP/3 over
   QUIC with address validation and Alt-Svc advertisement
 - Mutual TLS and public key pinning to upstreams; PROXY protocol
@@ -62,7 +63,10 @@ an identifier from the access log to the upstream.
   header operations, per route timeouts and body limits
 - Upstream pools with round robin, weighted, least connections and
   consistent hashing; active HTTP or gRPC health checks, passive outlier
-  ejection, connection level retries, signed cookie affinity
+  ejection, a circuit breaker with half open probing, concurrency
+  limits with a bounded queue, retries on connection errors and chosen
+  statuses, signed cookie affinity, canary endpoints selected by header,
+  cookie or share
 - Response caching with per route key policies, `Vary` and conditional
   requests; gzip compression of eligible responses; request mirroring
   of sampled traffic to a candidate upstream, bounded and invisible to
@@ -111,18 +115,23 @@ an identifier from the access log to the upstream.
 - `kind: forward`: an explicit proxy for clients with CONNECT tunnels,
   a destination policy that refuses private ranges by default, and
   proxy credentials
-- `kind: dns`: a DNS proxy over UDP and TCP with a cache, block lists,
-  sinkholes, client allow lists and per client rate limits
+- `kind: dns`: a DNS proxy over UDP, TCP, TLS and HTTPS with DNSSEC
+  validation, a cache, block lists, sinkholes, client allow lists and
+  per client rate limits
 
 **Extensibility and platforms**
 
-- A stable middleware interface for compiled-in filters, and a
-  WebAssembly ABI that runs sandboxed modules per request with memory
-  and time bounds
+- A stable middleware interface for compiled-in filters (header
+  policy, basic authentication, body rewriting, bot scoring, OpenID
+  Connect), and a WebAssembly ABI that runs sandboxed modules per
+  request with memory and time bounds
 - Kubernetes ingress controller mode: Ingress and Gateway API resources
   become routes, upstreams and certificates, reloaded within a second
   of a change through watches; manifests and a container build
   included
+- Fedora is the reference platform (RPM, systemd, SELinux); macOS is
+  supported with launchd jobs, a Seatbelt profile, a pf anchor and an
+  installer, cross compiled by the same build
 
 **Operations**
 
@@ -130,16 +139,24 @@ an identifier from the access log to the upstream.
   journald or syslog, with per stream redaction of personal data and
   a request identifier end to end
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
-  status, upstreams, reload, certificates, logs, bans, cache, honeypots,
-  DNS, ingress, cluster, metrics and a full screen TUI; a web GUI with
+  status, upstreams, quotas per tenant and route, WAF rule statistics
+  and learned exclusions, reload with dry run,
+  configuration diff, history and rollback, certificates, logs, bans,
+  cache, honeypots, DNS, ingress, cluster, metrics and a full screen
+  TUI; a web GUI with
   viewer and operator roles, configuration editing with validation,
   graphs and live logs
 - Prometheus exposition with latency histograms and per route counters,
-  on the socket or a hardened TCP endpoint, and an in-process series
-  buffer for graphs
+  on the socket or a hardened TCP endpoint, an in-process series buffer
+  for graphs, and OpenTelemetry export of metrics, traces (W3C trace
+  context propagated to upstreams) and logs
 - Hot reload, graceful shutdown, systemd socket activation and notify;
   hardened unit, sysctl profile, SELinux policy, logrotate configuration,
   RPM packaging
+- An in-process sandbox applied after start: Landlock rules derived from
+  the configuration, a seccomp deny list, no capabilities, no new
+  privileges, non dumpable; on macOS debugger denial plus the Seatbelt
+  profile; its state visible in `xproxyctl sandbox`
 
 ## Quick start
 
@@ -175,6 +192,9 @@ every feature above.
 | [docs/USAGE.md](docs/USAGE.md) | Operating the proxy: an example per feature, the control tool, logging |
 | [docs/CONFIG.md](docs/CONFIG.md) | Configuration reference, every key with its default |
 | [docs/SETUP.md](docs/SETUP.md) | Installation on Fedora |
+| [docs/SETUP_MACOS.md](docs/SETUP_MACOS.md) | Installation on macOS |
+| [examples/](examples/) | WAF rules, block lists, filters, a WebAssembly module, rewriting and routing examples, all validated by tests |
+| [docs/HARDENING_MACOS.md](docs/HARDENING_MACOS.md) | Host hardening on macOS |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, request path, data flows |
 | [docs/SECURITY.md](docs/SECURITY.md) | Security posture, controls, secure development, reporting |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | STRIDE analysis per trust boundary |
@@ -198,6 +218,7 @@ make cover-gate     # coverage under race with the 80 % gate
 make mutate         # mutation testing on the admission packages
 make fuzz           # all fuzz targets, 20s each
 make rpm            # Fedora package with the SELinux policy
+make build-darwin   # macOS binaries (arm64 and amd64), see docs/SETUP_MACOS.md
 ```
 
 Go 1.25 or newer. No cgo. Dependencies are few, listed and justified in

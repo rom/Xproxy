@@ -2,15 +2,14 @@ package upstream
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
-	"errors"
 	"fmt"
-	"os"
 	"time"
+
+	"github.com/rom/xproxy/internal/secret"
 )
 
 // affinity issues and verifies signed session cookies. The cookie value is
@@ -19,53 +18,40 @@ import (
 // configuration, and the signature stops a client from steering itself to
 // a chosen backend.
 type affinity struct {
-	key    []byte
+	keys   [][]byte // primary first; every key verifies
 	ttl    time.Duration
 	cookie string
 }
 
 const macLen = 16
 
+// newAffinity loads the secret (a raw key or a keyring, see
+// internal/secret); an empty path makes an ephemeral key that survives
+// reloads (the pool keeps it) but not restarts.
 func newAffinity(cookie string, ttl time.Duration, secretFile string) (*affinity, error) {
-	key, err := loadOrCreateSecret(secretFile)
+	ring, err := secret.LoadOrCreate(secretFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("affinity secret: %w", err)
 	}
-	return &affinity{key: key, ttl: ttl, cookie: cookie}, nil
+	return &affinity{keys: ring.All(), ttl: ttl, cookie: cookie}, nil
 }
 
-func loadOrCreateSecret(path string) ([]byte, error) {
-	if path == "" {
-		// Ephemeral key: affinity survives reloads (the pool keeps the key)
-		// but not restarts, which is acceptable for a single instance.
-		k := make([]byte, 32)
-		if _, err := rand.Read(k); err != nil {
-			return nil, err
-		}
-		return k, nil
-	}
-	if b, err := os.ReadFile(path); err == nil { //nolint:gosec // operator configured path
-		if len(b) < 32 {
-			return nil, fmt.Errorf("affinity secret %s is shorter than 32 bytes", path)
-		}
-		return b, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("read affinity secret: %w", err)
-	}
-	k := make([]byte, 32)
-	if _, err := rand.Read(k); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(path, k, 0o600); err != nil {
-		return nil, fmt.Errorf("create affinity secret: %w", err)
-	}
-	return k, nil
-}
-
-func (a *affinity) sign(msg []byte) []byte {
-	m := hmac.New(sha256.New, a.key)
+func signWith(key, msg []byte) []byte {
+	m := hmac.New(sha256.New, key)
 	m.Write(msg)
 	return m.Sum(nil)[:macLen]
+}
+
+func (a *affinity) sign(msg []byte) []byte { return signWith(a.keys[0], msg) }
+
+// verifyMAC accepts a signature by any key of the ring, so cookies issued
+// before a rotation stay valid until the old key is dropped.
+func (a *affinity) verifyMAC(msg, mac []byte) bool {
+	ok := 0
+	for _, k := range a.keys {
+		ok |= subtle.ConstantTimeCompare(signWith(k, msg), mac)
+	}
+	return ok == 1
 }
 
 // issue creates a cookie value for endpoint index.
@@ -86,7 +72,7 @@ func (a *affinity) verify(value string, now time.Time) int {
 	if err != nil || len(buf) != 2+8+macLen {
 		return -1
 	}
-	if subtle.ConstantTimeCompare(a.sign(buf[:10]), buf[10:]) != 1 {
+	if !a.verifyMAC(buf[:10], buf[10:]) {
 		return -1
 	}
 	exp := binary.BigEndian.Uint64(buf[2:])

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/filter"
 	"mime"
 	"time"
@@ -107,6 +108,7 @@ func (v *validator) config(c *Config) {
 	if c.Cluster != nil {
 		v.cluster(c.Cluster)
 	}
+	v.sandbox(&c.Sandbox)
 	if c.Shedding != nil {
 		v.shedding(c.Shedding)
 	}
@@ -156,6 +158,14 @@ func (v *validator) config(c *Config) {
 			v.file("geoip.csv", g.CSV)
 		}
 	}
+	if t := c.Tracing; t != nil {
+		if p := t.Sample(); p < 0 || p > 100 {
+			v.errf("tracing.sample_percent: must be between 0 and 100")
+		}
+		if t.OTLP != nil {
+			v.otlpExport("tracing.otlp", t.OTLP)
+		}
+	}
 	if cp := c.Compression; cp != nil {
 		if cp.Level < 1 || cp.Level > 9 {
 			v.errf("compression.level: must be between 1 and 9")
@@ -164,7 +174,7 @@ func (v *validator) config(c *Config) {
 			v.errf("compression.min_bytes: must be between 0 and 1048576")
 		}
 		for j, t := range cp.Types {
-			if mt, _, err := mime.ParseMediaType(t); err != nil || mt != strings.ToLower(t) {
+			if mt, _, err := mime.ParseMediaType(t); err != nil || mt != strings.ToLower(t) || !strings.Contains(mt, "/") {
 				v.errf("compression.types[%d]: %q is not a media type without parameters", j, t)
 			}
 		}
@@ -376,8 +386,14 @@ func (v *validator) server(s *Server) {
 				v.tcpListener(p+".tcp", ln.TCP)
 			}
 		case "dns":
-			if ln.TLS != nil || len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.H2C {
-				v.errf("%s: a dns listener takes only address and dns", p)
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.H2C {
+				v.errf("%s: a dns listener takes only address, dns and tls", p)
+			}
+			if ln.TLS != nil && len(ln.TLS.ACME) > 0 {
+				v.errf("%s.tls.acme: not on a dns listener (no http-01 or tls-alpn-01 there); use certificates", p)
+			}
+			if ln.DNS != nil && (!strings.HasPrefix(ln.DNS.DoHPath, "/") || strings.ContainsAny(ln.DNS.DoHPath, "?# ")) {
+				v.errf("%s.dns.doh_path: must be an absolute path", p)
 			}
 			if ln.DNS == nil {
 				v.errf("%s.dns: required for kind dns", p)
@@ -470,6 +486,25 @@ func (v *validator) server(s *Server) {
 }
 
 func (v *validator) tls(p string, t *TLS) {
+	if o := t.OCSPStapling; o != nil {
+		if o.Timeout < Duration(time.Second) || o.Timeout > Duration(time.Minute) {
+			v.errf("%s.ocsp_stapling.timeout: must be between 1s and 1m", p)
+		}
+		if o.Refresh < Duration(5*time.Minute) || o.Refresh > Duration(24*time.Hour) {
+			v.errf("%s.ocsp_stapling.refresh: must be between 5m and 24h", p)
+		}
+	}
+	if c := t.CT; c != nil {
+		if c.Require < 0 || c.Require > 10 {
+			v.errf("%s.ct.require: must be between 0 and 10", p)
+		}
+		if c.LogListFile != "" {
+			v.file(p+".ct.log_list_file", c.LogListFile)
+		}
+		if c.Enforce && c.Require == 0 {
+			v.errf("%s.ct.enforce: needs require above 0", p)
+		}
+	}
 	if len(t.Certificates) == 0 && len(t.ACME) == 0 {
 		v.errf("%s: certificates or acme is required", p)
 	}
@@ -531,6 +566,12 @@ func (v *validator) tls(p string, t *TLS) {
 }
 
 func (v *validator) management(m *Management) {
+	if m.HistoryDir != "" && !strings.HasPrefix(m.HistoryDir, "/") {
+		v.errf("management.history_dir: must be an absolute path")
+	}
+	if m.HistoryKeep < 1 || m.HistoryKeep > 1000 {
+		v.errf("management.history_keep: must be between 1 and 1000")
+	}
 	if m.Socket == "" {
 		return
 	}
@@ -572,8 +613,12 @@ func (v *validator) logging(l *Logging) {
 				if l.Syslog == nil {
 					v.errf("logging.%s.sinks[%d]: syslog requires a logging.syslog section", name, i)
 				}
+			case "otlp":
+				if l.OTLP == nil {
+					v.errf("logging.%s.sinks[%d]: otlp requires a logging.otlp section", name, i)
+				}
 			default:
-				v.errf("logging.%s.sinks[%d]: must be file, journald or syslog", name, i)
+				v.errf("logging.%s.sinks[%d]: must be file, journald, syslog or otlp", name, i)
 			}
 		}
 	}
@@ -583,6 +628,32 @@ func (v *validator) logging(l *Logging) {
 		}
 		if !nameRE.MatchString(j.Identifier) {
 			v.errf("logging.journald.identifier: %q is not a valid identifier", j.Identifier)
+		}
+	}
+	if l.OTLP != nil {
+		v.otlpExport("logging.otlp", l.OTLP)
+	}
+	for name, s := range map[string]*LogStream{"access": &l.Access, "error": &l.Error, "security": &l.Security, "audit": &l.Audit} {
+		switch s.Format {
+		case "json":
+			if s.Template != "" {
+				v.errf("logging.%s.template: only for format custom", name)
+			}
+		case "common", "combined", "custom":
+			if name != "access" {
+				v.errf("logging.%s.format: only the access stream has text formats", name)
+			}
+			if s.Format == "custom" {
+				if s.Template == "" || len(s.Template) > 1024 {
+					v.errf("logging.%s.template: required for format custom, at most 1024 bytes", name)
+				} else if err := templateOK(s.Template); err != nil {
+					v.errf("logging.%s.template: %v", name, err)
+				}
+			} else if s.Template != "" {
+				v.errf("logging.%s.template: only for format custom", name)
+			}
+		default:
+			v.errf("logging.%s.format: must be json, common, combined or custom", name)
 		}
 	}
 	if s := l.Syslog; s != nil {
@@ -762,6 +833,75 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 	if u.Retries != nil && (*u.Retries < 0 || *u.Retries > 5) {
 		v.errf("%s.retries: must be between 0 and 5", p)
 	}
+	if c := u.Canary; c != nil {
+		canaries := 0
+		for _, e := range u.Endpoints {
+			if e.Canary {
+				canaries++
+			}
+		}
+		if canaries == 0 {
+			v.errf("%s.canary: no endpoint is marked canary: true", p)
+		} else if canaries == len(u.Endpoints) {
+			v.errf("%s.canary: every endpoint is a canary; mark the ordinary ones too", p)
+		}
+		if c.Header == "" && c.Cookie == "" && c.Percent <= 0 {
+			v.errf("%s.canary: header, cookie or percent is required", p)
+		}
+		if c.Header != "" && !headerNameOK(c.Header) {
+			v.errf("%s.canary.header: %q is not a header name", p, c.Header)
+		}
+		if c.Cookie != "" && strings.ContainsAny(c.Cookie, " \t;=,\r\n") {
+			v.errf("%s.canary.cookie: %q is not a cookie name", p, c.Cookie)
+		}
+		if c.Percent < 0 || c.Percent > 100 {
+			v.errf("%s.canary.percent: must be between 0 and 100", p)
+		}
+		if len(c.Values) > 32 {
+			v.errf("%s.canary.values: at most 32", p)
+		}
+	} else {
+		for j, e := range u.Endpoints {
+			if e.Canary {
+				v.errf("%s.endpoints[%d].canary: set without a canary section", p, j)
+			}
+		}
+	}
+	if cb := u.CircuitBreaker; cb != nil {
+		if cb.ConsecutiveFailures < 1 || cb.ConsecutiveFailures > 10000 {
+			v.errf("%s.circuit_breaker.consecutive_failures: must be between 1 and 10000", p)
+		}
+		if cb.OpenFor < Duration(100*time.Millisecond) || cb.OpenFor > Duration(time.Hour) {
+			v.errf("%s.circuit_breaker.open_for: must be between 100ms and 1h", p)
+		}
+		if cb.HalfOpenRequests < 1 || cb.HalfOpenRequests > 1000 {
+			v.errf("%s.circuit_breaker.half_open_requests: must be between 1 and 1000", p)
+		}
+	}
+	if u.MaxConcurrent < 0 || u.MaxConcurrent > 1_000_000 {
+		v.errf("%s.max_concurrent: must be between 0 and 1000000", p)
+	}
+	if q := u.Queue; q != nil {
+		if u.MaxConcurrent == 0 {
+			v.errf("%s.queue: needs max_concurrent", p)
+		}
+		if q.Size < 1 || q.Size > 1_000_000 {
+			v.errf("%s.queue.size: must be between 1 and 1000000", p)
+		}
+		if q.Timeout < Duration(10*time.Millisecond) || q.Timeout > Duration(5*time.Minute) {
+			v.errf("%s.queue.timeout: must be between 10ms and 5m", p)
+		}
+	}
+	for j, on := range u.RetryOn {
+		switch on {
+		case "5xx", "500", "502", "503", "504", "429":
+		default:
+			v.errf("%s.retry_on[%d]: %q is not one of 5xx, 500, 502, 503, 504, 429", p, j, on)
+		}
+	}
+	if len(u.RetryOn) > 0 && u.Retries != nil && *u.Retries == 0 {
+		v.errf("%s.retry_on: set but retries is 0", p)
+	}
 	if u.MaxIdleConnsPerHost < 0 {
 		v.errf("%s.max_idle_conns_per_host: must not be negative", p)
 	}
@@ -881,6 +1021,9 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 		if m != strings.ToUpper(m) || m == "" || strings.ContainsAny(m, " \t") {
 			v.errf("%s.methods[%d]: %q must be an upper-case token", p, j, m)
 		}
+	}
+	if r.Tenant != "" && (len(r.Tenant) > 64 || !nameRE.MatchString(r.Tenant)) {
+		v.errf("%s.tenant: %q is not a valid name", p, r.Tenant)
 	}
 	if len(r.PathRegex) > 32 {
 		v.errf("%s.path_regex: at most 32 patterns", p)
@@ -1087,7 +1230,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
-	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true,
+	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
 }
 
 // HoneypotDecoys are the built-in decoy names (bodies live in the proxy).
@@ -1435,6 +1578,19 @@ func (v *validator) ingress(in *Ingress, listeners map[string]*Listener) {
 }
 
 func (v *validator) dnsListener(p string, d *DNSListener) {
+	if ds := d.DNSSEC; ds != nil {
+		for i, a := range ds.TrustAnchors {
+			if _, err := dns.ParseTrustAnchor(a); err != nil {
+				v.errf("%s.dnssec.trust_anchors[%d]: %v", p, i, err)
+			}
+		}
+		if ds.TrustAnchorsFile != "" {
+			v.file(p+".dnssec.trust_anchors_file", ds.TrustAnchorsFile)
+		}
+		if ds.MaxLookups < 4 || ds.MaxLookups > 1000 {
+			v.errf("%s.dnssec.max_lookups: must be between 4 and 1000", p)
+		}
+	}
 	if len(d.Upstreams) == 0 {
 		v.errf("%s.upstreams: at least one resolver is required", p)
 	}
@@ -1774,6 +1930,14 @@ func (v *validator) waf(w *WAF, profiles map[string]bool) {
 	if len(w.Profiles) == 0 {
 		v.errf("waf.profiles: at least one profile is required")
 	}
+	if l := w.Learning; l != nil {
+		if l.MinHits < 1 || l.MinHits > 1_000_000 {
+			v.errf("waf.learning.min_hits: must be between 1 and 1000000")
+		}
+		if l.MaxEntries < 100 || l.MaxEntries > 1_000_000 {
+			v.errf("waf.learning.max_entries: must be between 100 and 1000000")
+		}
+	}
 	for i, p := range w.Profiles {
 		pp := fmt.Sprintf("waf.profiles[%d]", i)
 		if !nameRE.MatchString(p.Name) {
@@ -1791,6 +1955,9 @@ func (v *validator) waf(w *WAF, profiles map[string]bool) {
 			}
 			if crs.InboundThreshold < 1 || crs.OutboundThreshold < 1 {
 				v.errf("%s.crs: thresholds must be at least 1", pp)
+			}
+			if crs.Dir != "" {
+				v.dir(pp+".crs.dir", crs.Dir)
 			}
 		}
 		for j, f := range p.DirectiveFiles {
@@ -1857,6 +2024,42 @@ func (v *validator) file(p, path string) {
 	}
 }
 
+// sandbox checks the extra Landlock paths.
+func (v *validator) sandbox(s *Sandbox) {
+	for i, p := range s.Landlock.ReadPaths {
+		if !strings.HasPrefix(p, "/") || strings.Contains(p, "\x00") {
+			v.errf("sandbox.landlock.read_paths[%d]: must be an absolute path", i)
+		}
+	}
+	for i, p := range s.Landlock.WritePaths {
+		if !strings.HasPrefix(p, "/") || strings.Contains(p, "\x00") {
+			v.errf("sandbox.landlock.write_paths[%d]: must be an absolute path", i)
+		}
+	}
+	if len(s.Landlock.ReadPaths)+len(s.Landlock.WritePaths) > 256 {
+		v.errf("sandbox.landlock: at most 256 extra paths")
+	}
+}
+
+// dir checks an absolute directory path.
+func (v *validator) dir(p, path string) {
+	if !strings.HasPrefix(path, "/") {
+		v.errf("%s: must be an absolute path", p)
+		return
+	}
+	if !v.fileCheck {
+		return
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		v.errf("%s: %v", p, errors.Unwrap(err))
+		return
+	}
+	if !st.IsDir() {
+		v.errf("%s: %s is not a directory", p, path)
+	}
+}
+
 func hostPatternOK(h string) bool {
 	if h == "" || len(h) > 253 {
 		return false
@@ -1910,4 +2113,65 @@ func cookieNameOK(n string) bool {
 		}
 	}
 	return true
+}
+
+// templateOK checks a custom access log template: every { closes and
+// names a field.
+func templateOK(t string) error {
+	for len(t) > 0 {
+		i := strings.IndexByte(t, '{')
+		if i < 0 {
+			return nil
+		}
+		j := strings.IndexByte(t[i:], '}')
+		if j < 0 {
+			return fmt.Errorf("unclosed { at offset %d", i)
+		}
+		if name := t[i+1 : i+j]; name == "" || strings.ContainsAny(name, " {\"\\") {
+			return fmt.Errorf("bad field name %q", name)
+		}
+		t = t[i+j+1:]
+	}
+	return nil
+}
+
+// otlpExport validates a trace or log collector endpoint.
+func (v *validator) otlpExport(p string, o *OTLPExport) {
+	u, err := url.Parse(o.Endpoint)
+	switch {
+	case o.Endpoint == "" || err != nil || u.Host == "":
+		v.errf("%s.endpoint: must be a URL", p)
+	case u.Scheme == "https":
+	case u.Scheme == "http" && o.AllowHTTP:
+	default:
+		v.errf("%s.endpoint: must be an https URL (http only with allow_http)", p)
+	}
+	if o.Timeout <= 0 || o.Timeout > Duration(time.Minute) {
+		v.errf("%s.timeout: must be positive and at most 1m", p)
+	}
+	for k := range o.Headers {
+		if !headerNameOK(k) {
+			v.errf("%s.headers: %q is not a header", p, k)
+		}
+	}
+	if o.CAFile != "" {
+		v.file(p+".ca_file", o.CAFile)
+	}
+	if len(o.ServiceName) > 255 {
+		v.errf("%s.service_name: at most 255 characters", p)
+	}
+	for k := range o.Attributes {
+		if k == "" || len(k) > 255 {
+			v.errf("%s.attributes: empty or overlong key", p)
+		}
+	}
+	if o.Batch < 1 || o.Batch > 10000 {
+		v.errf("%s.batch: must be between 1 and 10000", p)
+	}
+	if o.Interval < Duration(100*time.Millisecond) || o.Interval > Duration(5*time.Minute) {
+		v.errf("%s.interval: must be between 100ms and 5m", p)
+	}
+	if o.Queue < 1 || o.Queue > 1_000_000 {
+		v.errf("%s.queue: must be between 1 and 1000000", p)
+	}
 }

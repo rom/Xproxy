@@ -23,7 +23,6 @@ import (
 	"html/template"
 	"net/http"
 	"net/netip"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +30,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/secret"
 )
 
 // Reserved paths served by the proxy on every host.
@@ -54,7 +54,8 @@ var page = template.Must(template.New("challenge").Parse(pageSrc))
 // Challenger issues and verifies challenges.
 type Challenger struct {
 	mu         sync.Mutex
-	key        []byte
+	keys       [][]byte // primary first; every key verifies
+	keyPath    string
 	difficulty int
 	ttl        time.Duration
 	bindIP     bool
@@ -69,19 +70,32 @@ type Challenger struct {
 
 // New creates a challenger, loading or generating the key.
 func New(cfg *config.Challenge) (*Challenger, error) {
-	key, err := loadOrCreateKey(cfg.SecretFile)
+	ring, err := secret.LoadOrCreate(cfg.SecretFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("challenge secret: %w", err)
 	}
-	c := &Challenger{key: key, seen: make(map[[macLen]byte]int64), now: time.Now}
+	c := &Challenger{keys: ring.All(), keyPath: cfg.SecretFile, seen: make(map[[macLen]byte]int64), now: time.Now}
 	c.Reconfigure(cfg)
 	return c, nil
 }
 
-// Reconfigure applies settings other than the key.
+// Reconfigure applies settings and re-reads the secret file when one is
+// configured, so a rotation (xproxyctl rotate-secret) takes effect on the
+// next reload while cookies signed with the previous key stay valid. An
+// unreadable file keeps the keys in memory.
 func (c *Challenger) Reconfigure(cfg *config.Challenge) {
+	var keys [][]byte
+	if cfg.SecretFile != "" {
+		if ring, err := secret.Load(cfg.SecretFile); err == nil {
+			keys = ring.All()
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if keys != nil {
+		c.keys = keys
+	}
+	c.keyPath = cfg.SecretFile
 	c.difficulty = cfg.Difficulty
 	c.ttl = cfg.TTL.D()
 	c.bindIP = cfg.BindsIP()
@@ -90,36 +104,24 @@ func (c *Challenger) Reconfigure(cfg *config.Challenge) {
 	c.title = cfg.Title
 }
 
-func loadOrCreateKey(path string) ([]byte, error) {
-	if path == "" {
-		k := make([]byte, 32)
-		_, err := rand.Read(k)
-		return k, err
-	}
-	if b, err := os.ReadFile(path); err == nil { //nolint:gosec // operator configured path
-		if len(b) < 32 {
-			return nil, fmt.Errorf("challenge secret %s is shorter than 32 bytes", path)
-		}
-		return b, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("read challenge secret: %w", err)
-	}
-	k := make([]byte, 32)
-	if _, err := rand.Read(k); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(path, k, 0o600); err != nil {
-		return nil, fmt.Errorf("create challenge secret: %w", err)
-	}
-	return k, nil
-}
-
-func (c *Challenger) mac(parts ...[]byte) []byte {
-	m := hmac.New(sha256.New, c.key)
+func macWith(key []byte, parts ...[]byte) []byte {
+	m := hmac.New(sha256.New, key)
 	for _, p := range parts {
 		m.Write(p)
 	}
 	return m.Sum(nil)[:macLen]
+}
+
+// mac signs with the primary key.
+func (c *Challenger) mac(parts ...[]byte) []byte { return macWith(c.keys[0], parts...) }
+
+// macOK accepts a signature by any key of the ring.
+func (c *Challenger) macOK(sig []byte, parts ...[]byte) bool {
+	ok := 0
+	for _, k := range c.keys {
+		ok |= subtle.ConstantTimeCompare(macWith(k, parts...), sig)
+	}
+	return ok == 1
 }
 
 func (c *Challenger) ipBytes(ip netip.Addr) []byte {
@@ -152,7 +154,7 @@ func (c *Challenger) Verified(r *http.Request, ip netip.Addr) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if subtle.ConstantTimeCompare(c.mac([]byte("cookie"), raw[:8], c.ipBytes(ip)), raw[8:]) != 1 {
+	if !c.macOK(raw[8:], []byte("cookie"), raw[:8], c.ipBytes(ip)) {
 		return false
 	}
 	exp := binary.BigEndian.Uint64(raw[:8])
@@ -188,7 +190,7 @@ func (c *Challenger) checkNonce(nonce string, ip netip.Addr, now time.Time) ([ma
 	if err != nil || len(raw) != 16+macLen {
 		return key, errors.New("malformed nonce")
 	}
-	if subtle.ConstantTimeCompare(c.mac([]byte("nonce"), raw[:16], c.ipBytes(ip)), raw[16:]) != 1 {
+	if !c.macOK(raw[16:], []byte("nonce"), raw[:16], c.ipBytes(ip)) {
 		return key, errors.New("bad nonce signature")
 	}
 	ts := binary.BigEndian.Uint64(raw[:8])

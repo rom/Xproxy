@@ -21,6 +21,7 @@ type bucket struct {
 	tokens   float64
 	last     time.Time
 	consumed float64 // tokens taken since the last Flush
+	total    float64 // tokens taken over the bucket's life (quota reporting)
 	peers    []peerRate
 }
 
@@ -119,6 +120,7 @@ func (l *KeyedLimiter) AllowFallback(key, fallback string, n float64) bool {
 	if b.tokens >= n {
 		b.tokens -= n
 		b.consumed += n
+		b.total += n
 		return true
 	}
 	return false
@@ -256,3 +258,39 @@ func (l *KeyedLimiter) Len() int {
 // SetMaxKeysForTest lowers the per shard key bound; tests use it to fill
 // the table quickly.
 func (l *KeyedLimiter) SetMaxKeysForTest(n int) { l.maxKeys = n }
+
+// KeyUsage is one key's consumption for quota reporting.
+type KeyUsage struct {
+	Key    string  `json:"key"`
+	Total  float64 `json:"total"`
+	Tokens float64 `json:"tokens"`
+}
+
+// Top returns the n keys that consumed the most tokens over their
+// bucket's life, most first, with the tokens they have left now.
+func (l *KeyedLimiter) Top(n int) []KeyUsage {
+	now := l.now()
+	var all []KeyUsage
+	for i := range l.shards {
+		sh := &l.shards[i]
+		sh.mu.Lock()
+		for k, b := range sh.buckets {
+			if b.total <= 0 {
+				continue
+			}
+			l.refill(b, now)
+			all = append(all, KeyUsage{Key: k, Total: b.total, Tokens: b.tokens})
+		}
+		sh.mu.Unlock()
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Total != all[j].Total {
+			return all[i].Total > all[j].Total
+		}
+		return all[i].Key < all[j].Key
+	})
+	if n > 0 && len(all) > n {
+		all = all[:n]
+	}
+	return all
+}

@@ -39,6 +39,16 @@ to report a vulnerability. The threat analysis behind the controls is in
   connection are bounded, and QUIC connections count against the same
   connection ceilings and ban list as TCP.
 - SNI based certificate selection; certificates reload without restart.
+- DNS listeners validate DNSSEC when configured: signatures and denial
+  proofs are checked up to the root trust anchors, bogus answers are
+  refused and logged, DNSSEC records never leak to clients that did not
+  ask, and lookups per answer are bounded.
+- OCSP stapling per listener: responses fetched in the background from
+  the responder the certificate names, refreshed at half their validity,
+  never blocking a handshake, revoked answers stapled and logged.
+- Certificate Transparency: embedded SCTs parsed at load and verified
+  against a configured log list (RFC 6962 precertificate entry); a
+  shortfall is logged or, with `enforce`, refuses the certificate.
 - ACME issued certificates: ES256 account key and P-256 certificate keys
   generated in the process and stored `0600` in a `0700` state directory;
   the returned chain is verified against the configured hosts before use;
@@ -112,6 +122,17 @@ to report a vulnerability. The threat analysis behind the controls is in
   CRS rules; a rule set that fails to compile fails the reload.
 - Every block and every detection is logged with matched rule identifiers,
   the CRS total score and the WAF phase.
+- Per rule statistics over the management socket show which rules fire
+  and how often, so a rule set is tuned from evidence rather than by
+  lowering the paranoia level. Optional learning proposes exclusions
+  scoped to a route's path for repeatedly matched (rule, variable)
+  pairs; proposals are never applied automatically, the output states
+  that a proposal is not a judgement of legitimacy, and the tables are
+  bounded in rules, entries and clients per entry.
+- The rule set can be loaded from an operator directory (`crs.dir`)
+  instead of the embedded copy, so a CRS security release is applied
+  with a reload. The directory is read only at load, validated for
+  layout, and a file that fails to compile keeps the running rules.
 
 ### Ban list
 
@@ -264,6 +285,11 @@ to report a vulnerability. The threat analysis behind the controls is in
 - ID tokens are verified for signature, issuer, audience, expiry and
   nonce; `require_claims` refuses logins with 403; identity headers
   from clients are removed before the session's are set.
+- Every symmetric secret file (affinity, challenge, OIDC cookie,
+  redaction hash) is a keyring: `xproxyctl rotate-secret` adds a fresh
+  primary key and keeps a bounded number of old ones for verification,
+  so keys rotate on a schedule without logging users out or dropping
+  sessions; files are written `0600` through a rename.
 - Return URLs are same-origin paths only; the client secret and cookie
   key files must not be world readable.
 - Front channel logout revokes provider session ids into a bounded
@@ -288,6 +314,23 @@ to report a vulnerability. The threat analysis behind the controls is in
   and an empty capability bounding set.
 - Socket activation removes the need for any privilege to bind ports.
 - A start as root is logged on the security stream as a warning.
+
+### Process confinement
+
+- After start the daemon confines itself (`sandbox`, on by default):
+  Landlock rules derived from the configuration leave only the
+  configured directories reachable and refuse new TCP binds; a seccomp
+  deny list on every thread refuses tracing, module loading, mounts,
+  namespaces, keyrings, BPF, io_uring, identity changes and exec; every
+  capability set is cleared; `no_new_privs` is set; the process is non
+  dumpable with no core files. `strict` makes an unavailable mechanism a
+  failed start. A reload naming a file outside the rules is refused.
+- On macOS the process denies debugger attachment and core files; the
+  launchd job runs it under a Seatbelt profile with the same file
+  system view, as a hidden system user, and pf fronts it
+  (docs/HARDENING_MACOS.md).
+- The WebAssembly engine uses the interpreter wherever executable memory
+  is refused, so W^X policies never have to be relaxed for a filter.
 
 ### Management and logging
 

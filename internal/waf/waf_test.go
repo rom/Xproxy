@@ -28,7 +28,7 @@ func engine(t *testing.T, inspect bool) *Engine {
 		ResponseBodyLimit:      4096,
 		ResponseMIMETypes:      []string{"text/html", "text/plain"},
 	}
-	e, err := New(cfg, Need{"default": {ModeBlock: true, ModeDetect: true}}, nolog)
+	e, err := New(cfg, Need{"default": {ModeBlock: true, ModeDetect: true}}, NewStats(), nolog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestCustomDirectivesAndBadRules(t *testing.T) {
 		Profiles:    []config.WAFProfile{{Name: "custom", Directives: `SecRule REQUEST_HEADERS:X-Evil "@streq yes" "id:100001,phase:1,deny,status:406,msg:'evil header'"`}},
 		DefaultMode: "block", DefaultProfile: "custom", RequestBodyLimit: 4096, RequestBodyLimitAction: "reject", ResponseBodyLimit: 4096,
 	}
-	e, err := New(cfg, Need{"custom": {ModeBlock: true}}, nolog)
+	e, err := New(cfg, Need{"custom": {ModeBlock: true}}, nil, nolog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestCustomDirectivesAndBadRules(t *testing.T) {
 		t.Fatal("off mode should return nil, nil")
 	}
 	cfg.Profiles[0].Directives = `SecRule THIS IS NOT VALID`
-	if _, err := New(cfg, Need{"custom": {ModeBlock: true}}, nolog); err == nil {
+	if _, err := New(cfg, Need{"custom": {ModeBlock: true}}, nil, nolog); err == nil {
 		t.Fatal("invalid rule compiled")
 	}
 }
@@ -202,7 +202,7 @@ func TestCustomDirectivesAndBadRules(t *testing.T) {
 func TestOnlyNeededModesCompiled(t *testing.T) {
 	cfg := &config.WAF{Profiles: []config.WAFProfile{{Name: "a", CRS: &config.CRS{ParanoiaLevel: 1, InboundThreshold: 5, OutboundThreshold: 4}}, {Name: "b", CRS: &config.CRS{ParanoiaLevel: 1, InboundThreshold: 5, OutboundThreshold: 4}}},
 		DefaultMode: "block", DefaultProfile: "a", RequestBodyLimit: 4096, RequestBodyLimitAction: "reject", ResponseBodyLimit: 4096}
-	e, err := New(cfg, Need{"a": {ModeDetect: true}}, nolog)
+	e, err := New(cfg, Need{"a": {ModeDetect: true}}, nil, nolog)
 	if err != nil {
 		t.Fatal(err)
 	}

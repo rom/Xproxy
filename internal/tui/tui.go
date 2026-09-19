@@ -159,8 +159,10 @@ func handleKey(st *State, k []byte, d *Data, act Actions) (quit, refresh bool) {
 		st.View = (st.View + 1) % viewCount
 	case "\x1b[Z", "\x1b[D", "h":
 		st.View = (st.View + viewCount - 1) % viewCount
-	case "1", "2", "3", "4", "5", "6":
-		st.View = View(s[0] - '1')
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		if v := View(s[0] - '1'); v < viewCount {
+			st.View = v
+		}
 	case "r":
 		return false, true
 	case "p":

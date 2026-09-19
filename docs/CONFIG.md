@@ -22,6 +22,7 @@ once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 | `upstreams` | list | `[]` | Named endpoint pools |
 | `routes` | list | `[]` | Request matching and actions |
 | `compression` | object | none | gzip of eligible responses; see `compression` |
+| `tracing` | object | none | W3C trace context and span export; see `tracing` |
 
 ## server
 
@@ -137,10 +138,19 @@ and an answer larger than the client's UDP size (512 bytes or its EDNS
 advertisement) is truncated so the client retries over TCP. Only one
 question per query and the QUERY opcode are handled (FORMERR and
 NOTIMP otherwise); responses arriving as queries and packets from
-banned clients are dropped. A dns listener takes only `address` and
-`dns`; bans and the global connection limits apply to TCP clients as
-on every listener. The policy, upstreams and cache bounds reload (the
-cache is kept); the address needs a restart.
+banned clients are dropped. A dns listener takes `address`, `dns` and
+optionally `tls`; bans and the global connection limits apply to TCP
+clients as on every listener. The policy, upstreams and cache bounds
+reload (the cache is kept); the address needs a restart.
+
+With `tls` (certificates only, no ACME) the listener is encrypted: no
+plain UDP is bound, the TCP port serves DNS over TLS (RFC 7858, ALPN
+`dot` or none) and DNS over HTTPS (RFC 8484, ALPN `h2` or `http/1.1`)
+at `doh_path`, chosen per connection by the negotiated protocol. The
+same policy, cache and counters serve both; `queries_dot` and
+`queries_doh` count them, and `xproxyctl tls` shows the certificate.
+Run a plain listener on 53 and an encrypted one on 853 (and 443 when
+browsers should use it) side by side.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -160,6 +170,35 @@ cache is kept); the address needs a restart.
 | `rate_limit` | `{qps, burst}` | none | Per client token bucket (defaults 50 and 100 when the section is present); over it queries are dropped, not answered |
 | `max_in_flight` | int | `1024` | Queries being handled at once; beyond it UDP queries are dropped |
 | `log_queries` | bool | `false` | One `dns` access log line per query (client, name, type, rcode, source, bytes, duration). Query logs are personal data; leave off unless needed |
+| `doh_path` | path | `/dns-query` | DNS over HTTPS path on an encrypted listener; other paths answer 404 |
+| `dnssec` | object | none | Validate answers; see below |
+
+#### server.listeners[].dns.dnssec
+
+With the section present the listener is a validating resolver in front
+of its upstreams: every upstream query carries the DO bit, and each
+answer is checked before it reaches the client or the cache. Positive
+answers need a verified RRSIG on every RRset, chained through DNSKEY
+and DS records up to a trust anchor; negative answers need a verified
+NSEC or NSEC3 proof (NXDOMAIN, NODATA, wildcard, opt-out); an insecure
+delegation proven by the parent makes answers below it insecure. The
+outcome shapes the answer: secure answers carry AD when the client set
+AD or DO, bogus answers become SERVFAIL (a `dns_bogus` security event)
+unless the client set CD, insecure and indeterminate answers pass
+without AD. Clients without DO never receive RRSIG, NSEC or NSEC3
+records. Algorithms 5, 7, 8, 10, 13, 14 and 15 and DS digests 1, 2 and
+4 are supported; a zone signed only with others counts as insecure (RFC
+4035). DNSKEY and DS lookups go to the same upstreams and are cached per
+zone until the shorter of their TTL and signature validity, bounded to
+10000 zones. `xproxyctl dns` shows secure, insecure, bogus and
+indeterminate counts, the key cache size and lookups.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Switch for the section |
+| `trust_anchors` | list | the IANA root keys (KSK-2017 20326, KSK-2024 38696) | DS records as `zone keytag algorithm digesttype digest` (`IN DS` accepted); setting any replaces the built-in list |
+| `trust_anchors_file` | path | none | More DS lines from a file (`#` comments), read at load and reload |
+| `max_lookups` | int | `48` | DNSKEY and DS queries per answer (4 to 1000); beyond it the answer is bogus |
 
 `GET /v1/dns` and `xproxyctl dns` show per listener counters (queries,
 cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated,
@@ -190,6 +229,50 @@ upstream `total` for those. 0-RTT is never enabled.
 | `client_auth` | `none`, `request`, `require` | `none` | Client certificates; `request` verifies if presented |
 | `client_ca_file` | path | | Required for `request` and `require` |
 | `cipher_suites` | list of names | ECDHE AEAD suites | TLS 1.2 suites, crypto/tls names. Insecure suites are rejected. TLS 1.3 suites are not configurable. |
+| `ocsp_stapling` | object | none | Fetch OCSP responses for the served certificates in the background and staple them into handshakes; see below |
+| `ct` | object | none | Check the Certificate Transparency SCTs embedded in file certificates at load; see below |
+
+#### server.listeners[].tls.ocsp_stapling
+
+A stapled OCSP response spares clients the responder round trip and
+keeps working when the responder is down or firewalled from them. The
+proxy fetches a response for every served certificate (file and ACME
+alike) from the responder named in the certificate, using the issuer
+that follows the leaf in the chain file, and refreshes it at half its
+validity, at `refresh` at the latest, and one minute after a failure.
+A handshake never waits: it carries the current response when there is
+one and none otherwise, and a still valid response is kept through
+fetch failures. A `revoked` answer is stapled as well, since clients
+must see it, and logged as an error. `xproxyctl tls` and `GET /v1/tls`
+show the state per certificate.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Switch for the section |
+| `timeout` | duration | `5s` | One responder request (1s to 1m) |
+| `refresh` | duration | `1h` | Longest interval between fetches (5m to 24h) |
+
+#### server.listeners[].tls.ct
+
+Browsers refuse certificates that were not logged in Certificate
+Transparency logs; a certificate issued without the signed certificate
+timestamps (SCTs) then breaks a site quietly at the next reload. The
+proxy parses the SCTs embedded in every file certificate at load and,
+with a log list, verifies each signature over the precertificate entry
+(the certificate without its SCT extension and the issuer's key hash)
+against the log's key. The verdict appears in `xproxyctl tls`; a
+shortfall is a security log event, or a failed load with `enforce`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `require` | int | `0` (report only) | Embedded SCTs a certificate must carry, verified ones when `log_list_file` is set (0 to 10) |
+| `log_list_file` | path | none | A log list in the JSON format Google publishes (`log_list.json`, v3 with `operators[].logs[]` and `tiled_logs[]`); the logs' keys verify the SCT signatures |
+| `enforce` | bool | `false` | Fail the load or reload of a certificate below `require` instead of logging it |
+
+SCTs delivered through the TLS extension or the OCSP response rather
+than embedded are not counted. ACME certificates are reported but not
+checked at load (the ACME client already requires embedded SCTs from a
+public CA).
 
 ### server.limits
 
@@ -213,6 +296,8 @@ upstream `total` for those. 0-RTT is never enabled.
 |-----|------|---------|-------------|
 | `socket` | path | `""` (disabled) | Unix socket for `xproxyctl` |
 | `socket_mode` | octal string | `"0660"` | Any `other` permission is rejected |
+| `history_dir` | path | none (history off) | Directory (created `0700`) where every applied configuration is recorded as a self-contained YAML file (`0600`) for `xproxyctl history`, `diff` and `rollback`; `/var/lib/xproxy/history` on Fedora |
+| `history_keep` | int | `20` | Entries kept; older ones are removed (1 to 1000) |
 
 ## logging
 
@@ -225,6 +310,7 @@ upstream `total` for those. 0-RTT is never enabled.
 | `journald` | object | none | journald sink, used by streams listing `journald` |
 | `syslog` | object | none | syslog sink, used by streams listing `syslog` |
 | `redaction` | object | none | Personal data rules applied before every sink |
+| `otlp` | object | none | OpenTelemetry log sink, used by streams listing `otlp`; see `logging.otlp` |
 
 ### logging.<stream>
 
@@ -234,7 +320,9 @@ upstream `total` for those. 0-RTT is never enabled.
 | `file` | file name | `access.log` etc. | Bare name inside `directory` |
 | `max_size_mb` | int | `0` (no internal rotation) | Rotate to `.1`, `.2`, ... when exceeded |
 | `max_files` | int | `5` | Archives kept |
-| `sinks` | list | `[file]` | Any of `file`, `journald`, `syslog`; a stream can go to several |
+| `sinks` | list | `[file]` | Any of `file`, `journald`, `syslog`, `otlp`; a stream can go to several |
+| `format` | `json`, `common`, `combined`, `custom` | `json` | Access stream only for the text formats: `common` is the Common Log Format (`%h %l %u %t "%r" %>s %b`), `combined` adds the quoted referer and user agent, `custom` uses `template`. The error, security and audit streams stay JSON. Text lines go to every sink of the stream; redaction runs before formatting |
+| `template` | string | | For `format: custom`: literal text with `{field}` placeholders. Fields are the access log attributes (`request_id`, `client_ip`, `method`, `host`, `path`, `query_len`, `proto`, `status`, `bytes_in`, `bytes_out`, `duration_ms`, `route`, `upstream`, `endpoint`, `attempts`, `user_agent`, `referer`, `tls`, `sni`, `client_cn`, `country`, `ja4`, `cache`, `encoding`, `honeypot_marked`, `mirror`, `grpc`, `grpc_status`, `denied`, `upstream_error`, filter attributes such as `jwt_sub`, `oidc_sub`, `bot_score`) plus `time_clf` (`10/Oct/2000:13:55:36 -0700`), `time_iso`, `time_unix`, `request` (`METHOD path PROTO`), `user` (the first of `oidc_sub`, `basic_user`, `jwt_sub`, `jwt_preferred_username`, else `-`) and `bytes_out_clf` (`-` for zero). A missing or empty field prints `-`. Values are escaped Apache style (`\"`, `\\`, `\n`, `\xHH`), so one request is always one line; at most 1024 bytes |
 
 ### logging.journald
 
@@ -267,6 +355,33 @@ transports use RFC 6587 octet counting and reconnect with back-off.
 
 Datagram transports truncate messages at 8 KiB.
 
+### logging.otlp
+
+Ships log records to an OpenTelemetry collector as OTLP/HTTP with JSON
+encoding. Each record carries the time, the severity (`DEBUG` 5,
+`INFO` 9, `WARN` 13, `ERROR` 17), the message as the body, every
+attribute of the line (integers, booleans and floats typed, the rest as
+strings), `xproxy.stream`, and the trace and span ids of access lines
+when tracing is on, so a collector links logs to traces. Records queue
+without blocking the request path; a full queue drops and counts; a
+batching goroutine pushes by size and interval and flushes at shutdown.
+Redaction runs before the sink like for every other sink. `xproxyctl
+telemetry` and `GET /v1/telemetry` show the counters.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `endpoint` | URL | required | The collector's logs URL (`https://otel.example.com:4318/v1/logs`); `http://` only with `allow_http` |
+| `allow_http` | bool | `false` | |
+| `timeout` | duration | `10s` | One push; at most 1m |
+| `headers` | map | `{}` | Request headers, for example `Authorization` |
+| `ca_file` | path | system pool | Pins the collector's CA |
+| `service_name` | string | `xproxy` | `service.name` resource attribute; `service.version` and `host.name` are added |
+| `attributes` | map | `{}` | Extra resource attributes |
+| `compress` | bool | `true` | gzip the request body |
+| `batch` | int | `512` | Records per push (1 to 10000) |
+| `interval` | duration | `5s` | Longest wait before a push (100ms to 5m) |
+| `queue` | int | `8192` | Records held while a push is in flight; more are dropped and counted (1 to 1000000) |
+
 ### logging.redaction
 
 Presence enables the rules; `enabled: false` switches them off while
@@ -278,7 +393,7 @@ and syslog all receive the same redacted record.
 | `enabled` | bool | `true` | |
 | `streams` | list | `[access, security, error]` | The audit stream keeps full detail unless listed |
 | `client_ip` | `keep`, `truncate`, `hash` | `truncate` | `truncate` masks to /24 (IPv4) or /48 (IPv6); `hash` writes a keyed pseudonym (`h:` + 16 hex) that is stable per key and lets you correlate one client across lines without storing the address |
-| `hash_secret_file` | path | ephemeral | Key for `hash`; set it so pseudonyms survive restarts and match across nodes |
+| `hash_secret_file` | path | ephemeral | Key (or the primary key of a keyring) for `hash`; set it so pseudonyms survive restarts and match across nodes. Rotating it starts a new series of pseudonyms at the next restart |
 | `user_agent` | `keep`, `drop` | `keep` | |
 | `referer` | `keep`, `origin`, `drop` | `origin` | `origin` keeps scheme and host only |
 | `claims` | `keep`, `hash`, `drop` | `hash` | Applies to `jwt_*` (except `jwt_provider`) and `client_cn` |
@@ -304,19 +419,24 @@ Memory: at most 64 x 8192 buckets per policy.
 | `name` | name | required, unique | |
 | `balancer` | `round_robin`, `weighted`, `least_conn`, `hash` | `round_robin` | |
 | `hash_on` | `client_ip`, `header:<Name>`, `cookie:<Name>` | `client_ip` | For `hash`; missing input falls back to the client address |
-| `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000}` |
+| `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000, canary: bool}`; `canary` marks the endpoints the `canary` policy selects |
+| `canary` | object | none | Route selected requests to the canary endpoints; see below |
 | `scheme` | `http`, `https` | `http` | |
 | `h2c` | bool | `false` | Speak HTTP/2 without TLS to `http` endpoints (gRPC backends); `https` negotiates HTTP/2 with ALPN on its own |
 | `tls` | object | | Only with `https`; see below |
 | `health_check` | object | none | Active probing; see below |
 | `outlier_ejection` | object | none | Passive ejection; see below |
+| `circuit_breaker` | object | none | Pool wide breaker with half open probing; see below |
+| `max_concurrent` | int | `0` (unbounded) | Requests in flight to the pool; the excess waits in `queue` or is refused with 503 |
+| `queue` | `{size, timeout}` | none | With `max_concurrent`: requests waiting for a slot (`size` 1 to 1000000, default 100) and how long each waits (`timeout` 10ms to 5m, default 1s) before 503 with `Retry-After: 1`; a full queue refuses at once |
 | `affinity` | object | none | Cookie stickiness; see below |
 | `timeouts.connect` | duration | `5s` | Dial and TLS handshake |
 | `timeouts.response_header` | duration | `30s` | Time to first response byte |
 | `timeouts.idle` | duration | `90s` | Pooled connection idle |
 | `timeouts.total` | duration | `5m` | Whole exchange |
 | `max_idle_conns_per_host` | int | `64` | Pooled connections per endpoint |
-| `retries` | int | `1` | 0 to 5; only replayable requests, only on connection errors |
+| `retries` | int | `1` | 0 to 5; only replayable requests (GET, HEAD, OPTIONS, TRACE without a body), each attempt on a different endpoint; connection errors always, statuses per `retry_on` |
+| `retry_on` | list | `[]` | Response statuses treated as a failed attempt: `5xx`, `500`, `502`, `503`, `504`, `429`. The response is discarded, the endpoint marked as failed for outlier ejection, and the next endpoint tried within the `retries` budget; the last attempt's response is returned as it is. Needs `retries` above 0 |
 
 ### upstreams[].tls
 
@@ -353,13 +473,61 @@ Memory: at most 64 x 8192 buckets per policy.
 | `base_ejection_time` | duration | `30s` | Multiplied by the ejection count, capped at 10x |
 | `max_ejection_percent` | int | `50` | Never eject more than this share of the pool |
 
+### upstreams[].canary
+
+A canary release inside one pool: the endpoints marked `canary: true`
+receive the requests the policy selects and no others, so a new version
+can be exercised by testers (a header or a cookie), then by a share of
+everyone (`percent`), then promoted by marking the old endpoints out.
+Selected requests fall back to the ordinary endpoints when no canary is
+available, and ordinary requests fall back to the canaries when the
+rest is down, unless `fallback: false`. Session affinity and hashing
+apply within the chosen side. `canary: true` in the access log marks
+responses from a canary endpoint; `GET /v1/pools` counts canary
+requests and fallbacks. For a canary on a separate pool selected by
+header, use `routes[].headers` instead.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `header` | header name | none | Requests carrying this header go to the canaries |
+| `cookie` | cookie name | none | Requests carrying this cookie go to the canaries |
+| `values` | list | `[]` (any value) | With `header` or `cookie`: only these values select |
+| `percent` | 0 to 100 | `0` | Share of the other requests also sent to the canaries |
+| `fallback` | bool | `true` | Use the other side when the selected one has no available endpoint |
+
+At least one of `header`, `cookie` or `percent` is required, at least
+one endpoint must be a canary and at least one must not.
+
+### upstreams[].circuit_breaker
+
+Outlier ejection removes one failing endpoint from a healthy pool; the
+circuit breaker stops sending to a pool that fails as a whole and
+probes it back. Closed, it counts consecutive failed attempts across
+the pool (connection errors, timeouts, 503 and `retry_on` statuses; a
+success resets the count). At `consecutive_failures` it opens: every
+request is refused at once with 503 and `Retry-After` set to the
+remaining open time, without touching the upstream, for `open_for`
+times the number of consecutive reopens (capped at ten). Then it is
+half open: `half_open_requests` trials may be in flight, a success
+closes the circuit and resets the back-off, a failure reopens it.
+`xproxyctl upstreams` and `GET /v1/pools` show the state, the count,
+opens and refusals; `xproxy_upstream_circuit_state` and
+`xproxy_upstream_circuit_open_total` export them; refusals appear in
+the access log with `upstream_error: circuit_open`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `consecutive_failures` | int | `5` | Failed attempts in a row that open the circuit (1 to 10000) |
+| `open_for` | duration | `10s` | Base open time, multiplied by the reopen count (100ms to 1h) |
+| `half_open_requests` | int | `1` | Trials allowed at once while half open (1 to 1000) |
+
 ### upstreams[].affinity
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `cookie_name` | token | `XPSESS` | |
 | `ttl` | duration | `1h` | Cookie and signature lifetime |
-| `secret_file` | path | ephemeral | HMAC key, created `0600` on first use if absent |
+| `secret_file` | path | ephemeral | HMAC key or keyring, created `0600` on first use if absent; rotate with `xproxyctl rotate-secret` (cookies signed with kept keys stay valid) |
 
 ## routes[]
 
@@ -382,6 +550,7 @@ not match is skipped and the next candidate is tried.
 | `cookies` | list | `[]` | The same conditions on cookies by name |
 | `methods` | list | `[]` (any) | Upper-case tokens |
 | `priority` | int | `0` | Tie breaker |
+| `tenant` | name | none | Free label grouping routes for quota reporting (`xproxyctl quotas`, `GET /v1/quotas`) and added as a `tenant` label to the per route metrics |
 | `upstream` | name | | Exactly one of `upstream`, `redirect`, `respond`, `honeypot`, `doh`, `static` |
 | `redirect` | `{to, status}` | status `308` | `to` is a URL or path; status 301, 302, 303, 307 or 308 |
 | `respond` | `{status, body}` | status `200` | Static response, body up to 64 KiB |
@@ -580,6 +749,23 @@ set fails the reload.
 | `inspect_responses` | bool | `false` | Enable response header and body rules (data leakage) |
 | `response_body_limit` | int | `524288` | Larger response bodies pass uninspected |
 | `response_mime_types` | list | text and JSON/XML types | Bodies with other content types are not inspected |
+| `learning` | object | none | Exclusion learning; see below |
+
+### waf.learning
+
+Learning aggregates every match of a detection rule by rule id, matched
+variable (for example `ARGS:q`) and route, in block and detect mode
+alike. A triple seen `min_hits` times becomes a proposal with a ready to
+review SecLang exclusion, scoped to the route's path prefix when it has
+one (`GET /v1/waf`, `GET /v1/waf/exclusions`, `xproxyctl waf
+proposals`). The table and the per rule statistics live for the process
+and survive reloads; `POST /v1/waf/reset` clears them.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Collect matched variables |
+| `min_hits` | int | `5` | Matches before a proposal appears; 1 to 1000000 |
+| `max_entries` | int | `10000` | Bound on distinct (rule, variable, route) entries; further ones are counted as dropped; 100 to 1000000 |
 
 ### waf.profiles[]
 
@@ -587,6 +773,7 @@ set fails the reload.
 |-----|------|---------|-------------|
 | `name` | name | required, unique | |
 | `crs` | object | none | Enable the bundled OWASP Core Rule Set |
+| `crs.dir` | absolute path | embedded copy | Load the Core Rule Set from a directory in the release layout (`crs-setup.conf` or `crs-setup.conf.example`, `rules/*.conf` with their `.data` files); a reload picks up changed files, so rules update without a new binary. The directory is validated at load and a broken file fails the reload |
 | `crs.paranoia_level` | int | `1` | 1 to 4 |
 | `crs.inbound_threshold` | int | `5` | Anomaly score that blocks a request |
 | `crs.outbound_threshold` | int | `4` | Anomaly score that blocks a response |
@@ -862,7 +1049,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -918,7 +1105,7 @@ redirects are not security events; failed callbacks are, with reason
 | `issuer` | URL | required | `https://` (plain `http://` only with `allow_http`, for tests) |
 | `client_id` | string | required | |
 | `client_secret_file` | path | required | Not world readable; sent as `client_secret_basic` (`token_auth: post` sends it in the form) |
-| `cookie_secret_file` | path | required | 32 or more random bytes, created `0600` if absent; sessions survive reloads and restarts while the key stays |
+| `cookie_secret_file` | path | required | 32 or more random bytes or a keyring, created `0600` if absent; sessions survive reloads and restarts while the key stays, and a rotation with `xproxyctl rotate-secret` keeps sessions sealed under the kept keys |
 | `scopes` | list | `[openid]` | Must include `openid` |
 | `redirect_path` | path | `/oauth2/callback` | Registered at the provider as `external_url` + path |
 | `logout_path` | path | `/oauth2/logout` | Clears the session and sends the browser to the provider's end session endpoint (when it has one) with `logout_redirect` as the return, else to `logout_redirect` |
@@ -960,6 +1147,7 @@ module or a wrong ABI version is a load error.
 | `memory_limit_pages` | int | `256` | 64 KiB pages per instance (16 MiB); 1 to 16384 |
 | `instances` | int | `16` | Pooled instances; more are created on demand and dropped after use |
 | `on_error` | `deny`, `allow` | `deny` | What a trap, timeout or bad result means: 500 with the filter name as reason, or continue with `wasm_error: allowed` in the access log |
+| `engine` | `auto`, `compiler`, `interpreter` | `auto` | The compiler emits machine code into executable memory, which the shipped systemd unit (`MemoryDenyWriteExecute=yes`) and the macOS hardened runtime refuse; `auto` probes once per process and falls back to the interpreter, which needs no executable pages and is several times slower per call |
 | `body_limit` | int | `65536` | Bytes of a request or response body a module may read or set; a larger body is not exposed and streams through; 0 disables body access; at most 16 MiB |
 
 Denies carry the status, reason and detail the module set with
@@ -1002,6 +1190,61 @@ every TLS request is logged as `ja4`.
 
 A list of filter names, run in the listed order within each stage. A
 route may combine them with `jwt`, `waf` and `icap`.
+
+### Kind `body_rewrite`
+
+Rewrites request and response bodies with literal or regular expression
+rules, for the cases that need no WebAssembly module: absolute links an
+application emits for its internal name, a field to mask on the way
+out, a key to rename on the way in. Each phase is optional and has its
+own media type list, size bound and rules, applied in order.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `request`, `response` | phase | | At least one |
+| `<phase>.types` | list | text, JSON, XML, JavaScript, SVG and form types | Media types rewritten, without parameters |
+| `<phase>.max_bytes` | int | `1048576` (1 MiB) | Bodies above this size pass through unchanged (1 to 64 MiB) |
+| `<phase>.rules` | list | required | 1 to 64 rules of `{find, replace}` (literal) or `{regex, replace}` (RE2; `$1` groups in `replace`), each with an optional `max` count (0 means all) |
+
+A body is buffered up to `max_bytes` and rewritten in memory; a larger
+body, one the upstream already encoded (`Content-Encoding`), a range
+and any media type outside the list pass through untouched, so the
+filter never breaks a download. After a change `Content-Length` is set
+and `ETag` and `Content-MD5` removed; nothing changes when no rule
+matched. The access log carries `body_rewrite: request`, `response` or
+`request,response` on lines where a body changed. Response rewriting
+runs before compression and after the WAF's response inspection, so
+the WAF sees the upstream's bytes and the client sees the rewritten
+ones. Put the filter on the routes that need it rather than on every
+route: buffering costs memory per request up to the bound.
+
+## tracing
+
+Every request gets a W3C trace context: an incoming `traceparent` is
+continued (its trace id kept, a fresh span id issued, `tracestate`
+passed through), otherwise a new trace starts. The proxy records one
+server span per request (method, path, host, protocol, status, client
+address, request id, route, upstream, denial reason) and one client
+span per upstream exchange (endpoint, status, attempts, or the error),
+sends `traceparent` and `tracestate` to the upstream so its spans hang
+under the client span, and writes `trace_id`, `span_id` and
+`trace_sampled` into the access log. Spans are exported as OTLP/HTTP
+JSON when `otlp` is set; without it the context is propagated and
+logged only. Sampling is decided locally by `sample_percent`; an
+incoming sampled flag is honoured only with `trust_incoming`, so a
+client cannot push every request into the exporter. `xproxyctl
+telemetry` and `GET /v1/telemetry` show the counters.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Switch for the section |
+| `sample_percent` | 0 to 100 | `100` | Share of traces recorded and exported; propagation happens regardless |
+| `propagate` | bool | `true` | Send `traceparent` and `tracestate` to the upstream; off, an incoming header is stripped |
+| `trust_incoming` | bool | `false` | Honour the sampled flag of an incoming `traceparent` (behind a trusted balancer that samples) |
+| `otlp` | object | none | Span exporter with the same keys as `logging.otlp` (`endpoint` is the traces URL, `/v1/traces`) |
+
+A reload that changes the section rebuilds the tracer; spans in flight
+finish on the old exporter, which is flushed and stopped.
 
 ## compression
 
@@ -1169,7 +1412,7 @@ host before routing.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `secret_file` | path | ephemeral | HMAC key for nonces and cookies; set it so cookies survive restarts and are valid across a cluster |
+| `secret_file` | path | ephemeral | HMAC key or keyring for nonces and cookies; set it so cookies survive restarts and are valid across a cluster; a rotation is picked up on reload and cookies under the kept keys stay valid |
 | `difficulty` | int | `16` | Leading zero bits required; 8 to 24. 16 is roughly 65 000 hashes, under a second in a browser |
 | `ttl` | duration | `1h` | Validity of a passed challenge; at least 1m |
 | `bind_ip` | bool | `true` | Cookie and nonce are bound to the client address |
@@ -1185,6 +1428,30 @@ host before routing.
 | `level` | float | `0.5` | Activation level for `load` mode |
 
 The challenge is for browser-facing routes: API clients cannot solve it.
+
+## sandbox
+
+In-process hardening applied once the listeners, log files, state files
+and the management socket are open (docs/HARDENING.md section 1a,
+docs/HARDENING_MACOS.md on macOS). On by default; `GET /v1/sandbox` and
+`xproxyctl sandbox` show what was applied. The Landlock rules are derived
+from the configuration: the directory of every configured file is
+readable, the log, state, history and certificate directories are
+writable, and nothing else is reachable. A reload that names a file
+outside those directories is refused with a message to restart.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Apply the sandbox |
+| `strict` | bool | `false` | Refuse to start when a mechanism the platform should offer is unavailable or fails, instead of logging a warning |
+| `landlock.enabled` | bool | `true` | Landlock file system rules (Linux 5.13 or newer with the LSM enabled) |
+| `landlock.read_paths` | list of paths | `[]` | Extra files or directories the process may read (a compiled-in filter that opens files, a directory that reloads will add files to) |
+| `landlock.write_paths` | list of paths | `[]` | Extra directories the process may write |
+| `landlock.bind` | bool | `true` | Refuse TCP binds after start (Landlock ABI 4, Linux 6.7 or newer); listeners are bound before the sandbox and adding one needs a restart anyway |
+| `seccomp.enabled` | bool | `true` | System call deny list: tracing, module loading, mounts, namespaces, keyrings, BPF, io_uring, identity changes, exec and kernel administration return EPERM (Linux amd64 and arm64) |
+| `capabilities.drop` | bool | `true` | Clear the bounding, ambient, permitted, effective and inheritable sets (Linux) |
+| `no_new_privs` | bool | `true` | Set PR_SET_NO_NEW_PRIVS (required by Landlock and unprivileged seccomp; systemd's `NoNewPrivileges=` sets it too) |
+| `debuggable` | bool | `false` | Keep the process attachable by a debugger and able to dump core; the default makes it non dumpable with a zero core size limit (Linux), or denies debugger attachment with a zero core size limit (macOS) |
 
 ## Headers set on forwarded requests
 
@@ -1209,3 +1476,18 @@ challenge settings (the key is kept), priority classes. Requires restart: any
 change under `server.listeners` other than certificate file contents
 (including the `tls.acme` groups), `management.socket`, cluster `listen`,
 `node_id` or `tls`, and the `acme` section.
+
+Before applying, `xproxyctl reload -dry-run` (or `POST /v1/reload?dry_run=1`)
+loads and validates the file and reports what would change against the
+running generation: per named item (listeners, upstreams, routes, rate
+limits, filters) added, removed or changed, every other section as a
+whole, the items in the list above that need a restart, and a unified
+text diff of the two documents. `xproxyctl diff [FROM] [TO]` compares
+any two of `active` (running), `file` (on disk) and a history id. With
+`management.history_dir` set, every applied generation is recorded
+(start, reload, rollback); `xproxyctl history` lists them and
+`xproxyctl rollback ID` applies one through the ordinary reload path,
+so validation, the restart list and the audit log apply as for a
+reload, and the rollback itself becomes a new entry. In ingress
+controller mode the recorded document is the merged one; a rollback
+restores the routes as they were merged at the time.

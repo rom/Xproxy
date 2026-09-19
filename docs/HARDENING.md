@@ -22,6 +22,69 @@ systemctl show xproxy.service -p User -p CapabilityBoundingSet -p NoNewPrivilege
 Do not add `AmbientCapabilities`; if a port below 1024 is needed, add a
 `ListenStream` to the socket unit instead.
 
+The unit is `Type=notify-reload` (systemd 253, Fedora 38 and newer):
+`systemctl reload` sends `SIGHUP` and waits for the daemon's
+`RELOADING`/`READY` notifications, so no helper program runs inside the
+sandbox and `NoExecPaths=/` with `ExecPaths=` for the binary alone can
+be enforced. `KeyringMode=private`, `PrivateMounts=yes` and
+`RestrictFileSystems=` (ignored on kernels without the BPF LSM) complete
+the set. To have systemd refuse every bind except a fixed port list,
+install `deploy/systemd/xproxy.service.d/10-socket-bind.conf` and list
+the ports the daemon binds itself.
+
+## 1a. The in-process sandbox
+
+After the listeners, log files, state files and the management socket
+are open, and before it reports ready, the daemon confines itself
+(`sandbox` section of [CONFIG.md](CONFIG.md), on by default):
+
+- Landlock file system rules derived from the configuration: the
+  directory of every configured file is readable, the log, state,
+  history and certificate directories are writable, the resolver files,
+  trust stores and time zone data are readable, and nothing else exists.
+  On kernels with Landlock ABI 4 (6.7 and newer) new TCP binds are
+  refused as well. The rules are the file system view the process keeps
+  for its lifetime; a reload naming a file outside them is refused with
+  "restart to apply", never silently widened.
+- A seccomp deny list installed on every thread: process tracing and
+  memory access to other processes, module loading, kexec and reboot,
+  mounts, namespaces, chroot, keyrings, BPF, `perf_event_open`,
+  io_uring, memory policy, identity changes, `execve` and `clone3`
+  return `EPERM`; a system call from a foreign architecture (including
+  the x32 ABI on x86_64) kills the process.
+- Capability clearing: ambient, bounding, effective, permitted and
+  inheritable sets are emptied. Under the unit they already are and the
+  step verifies it.
+- `PR_SET_NO_NEW_PRIVS` (idempotent with the unit's directive) and non
+  dumpable with a core size limit of zero, so no process of the same
+  user can read the daemon's memory and no crash writes keys to disk.
+
+The unit and the in-process layer overlap on purpose: a container image
+or a hand written unit that lacks a directive still gets the in-process
+control, and a kernel without Landlock still gets the unit's mount
+namespace. With `strict: true` the daemon refuses to start when a
+mechanism is unavailable, which is the right setting on a host where
+the kernel is known.
+
+Verify:
+
+```sh
+xproxyctl sandbox
+# platform linux  enabled true  strict false  applied 2026-09-18T10:00:00+02:00
+# MECHANISM     STATE    DETAIL
+# debuggable    applied  non dumpable, core size 0
+# capabilities  applied  already empty
+# no_new_privs  applied  -
+# landlock      applied  ABI 5, 14 read and 4 write rules present, TCP bind refused
+# seccomp       applied  filter installed on every thread, 97 system calls refused
+grep -E 'Seccomp|NoNewPrivs|CapBnd' /proc/$(systemctl show -p MainPID --value xproxy.service)/status
+```
+
+`Seccomp: 2`, `NoNewPrivs: 1` and `CapBnd: 0000000000000000` are the
+expected values. A `landlock: unavailable` line means the kernel lacks
+the LSM (`cat /sys/kernel/security/lsm` should list `landlock`; add
+`lsm=landlock,...` to the kernel command line on a custom kernel).
+
 ## 2. SELinux enforcing with the xproxy module
 
 Install `xproxy-selinux` (or load the module from `deploy/selinux`), label
@@ -171,6 +234,7 @@ current Go toolchain for standard library fixes, restart with
 
 ```
 [ ] systemd-analyze security xproxy.service in the OK band
+[ ] xproxyctl sandbox: every mechanism applied (strict: true on known kernels)
 [ ] getenforce = Enforcing, no AVC denials for xproxy_t after a traffic run
 [ ] sysctl profile applied
 [ ] nftables policy drop with per-source new connection limit

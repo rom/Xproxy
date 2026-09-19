@@ -38,6 +38,41 @@ type Pool struct {
 	// hcTransport carries probes: the pool transport with keep_alive, or a
 	// dedicated one that opens a fresh connection per probe.
 	hcTransport *http.Transport
+	// breaker, gate and canary are nil when not configured.
+	breaker *Breaker
+	gate    *Gate
+	canary  *canaryState
+}
+
+// Breaker returns the circuit breaker, or nil.
+func (p *Pool) Breaker() *Breaker { return p.breaker }
+
+// Gate returns the concurrency gate, or nil.
+func (p *Pool) Gate() *Gate { return p.gate }
+
+// Status returns the pool level management view.
+func (p *Pool) Status() PoolStatus {
+	now := p.now()
+	st := PoolStatus{Name: p.Name, Balancer: p.Cfg.Balancer, Endpoints: len(p.endpoints)}
+	for _, e := range p.endpoints {
+		if e.Available(now) {
+			st.Available++
+		}
+		st.Active += e.active.Load()
+	}
+	if p.breaker != nil {
+		c := p.breaker.Status()
+		st.Circuit = &c
+	}
+	if p.gate != nil {
+		q := p.gate.Status()
+		st.Queue = &q
+	}
+	if c := p.canary; c != nil {
+		st.Canary = &CanaryStatus{Header: c.header, Cookie: c.cookie, Percent: c.percent, Endpoints: c.count,
+			Requests: c.requests.Load(), Fallbacks: c.fallbacks.Load()}
+	}
+	return st
 }
 
 // NewPool builds a pool from configuration. Call Start to begin health
@@ -45,7 +80,7 @@ type Pool struct {
 func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 	p := &Pool{Name: cfg.Name, Cfg: cfg, Scheme: cfg.Scheme, log: log.With("upstream", cfg.Name), now: time.Now}
 	for i, e := range cfg.Endpoints {
-		ep := &Endpoint{Address: e.Address, Weight: e.Weight, index: i}
+		ep := &Endpoint{Address: e.Address, Weight: e.Weight, Canary: e.Canary, index: i}
 		// Without active checks every endpoint starts healthy. With checks,
 		// endpoints start healthy too so that a restart does not drop all
 		// traffic until the first probe; the first failed probe ejects.
@@ -61,6 +96,29 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 		p.bal = newRing(p.endpoints)
 	default:
 		p.bal = &roundRobin{}
+	}
+	if cfg.CircuitBreaker != nil {
+		p.breaker = newBreaker(cfg.CircuitBreaker, p.now)
+	}
+	if c := cfg.Canary; c != nil {
+		cs := &canaryState{header: http.CanonicalHeaderKey(c.Header), cookie: c.Cookie, percent: c.Percent,
+			fallback: c.Fallback == nil || *c.Fallback, values: map[string]bool{}}
+		for _, v := range c.Values {
+			cs.values[v] = true
+		}
+		for _, e := range p.endpoints {
+			if e.Canary {
+				cs.count++
+			}
+		}
+		p.canary = cs
+	}
+	if cfg.MaxConcurrent > 0 {
+		size, timeout := 0, time.Duration(0)
+		if cfg.Queue != nil {
+			size, timeout = cfg.Queue.Size, cfg.Queue.Timeout.D()
+		}
+		p.gate = newGate(cfg.MaxConcurrent, size, timeout)
 	}
 	if cfg.Affinity != nil {
 		a, err := newAffinity(cfg.Affinity.CookieName, cfg.Affinity.TTL.D(), cfg.Affinity.SecretFile)
@@ -183,9 +241,10 @@ func (p *Pool) AffinityCookie() string {
 
 // Pick selects an endpoint. hashKey feeds the hash balancer; cookie is the
 // affinity cookie value from the request, if any. exclude lists endpoints
-// already tried. The second result is a fresh cookie value to set on the
-// response, or "" when none is needed.
-func (p *Pool) Pick(hashKey, cookie string, exclude map[*Endpoint]bool) (*Endpoint, string) {
+// already tried; mode applies the canary policy (CanaryAny without one).
+// The second result is a fresh cookie value to set on the response, or
+// "" when none is needed.
+func (p *Pool) Pick(hashKey, cookie string, exclude map[*Endpoint]bool, mode CanaryMode) (*Endpoint, string) {
 	now := p.now()
 	if p.aff != nil && cookie != "" {
 		if i := p.aff.verify(cookie, now); i >= 0 && i < len(p.endpoints) {
@@ -194,9 +253,17 @@ func (p *Pool) Pick(hashKey, cookie string, exclude map[*Endpoint]bool) (*Endpoi
 			}
 		}
 	}
-	e := p.bal.pick(p.endpoints, hashKey, exclude, now)
+	e := p.bal.pick(p.endpoints, hashKey, p.canaryExclude(mode, exclude), now)
+	if e == nil && mode != CanaryAny && p.canary != nil && p.canary.fallback {
+		// The selected side is empty: the other side takes the request.
+		p.canary.fallbacks.Add(1)
+		e = p.bal.pick(p.endpoints, hashKey, exclude, now)
+	}
 	if e == nil {
 		return nil, ""
+	}
+	if e.Canary && p.canary != nil {
+		p.canary.requests.Add(1)
 	}
 	if p.aff != nil {
 		return e, p.aff.issue(e.index, now)

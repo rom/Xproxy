@@ -3,11 +3,11 @@ package mgmt
 import (
 	"context"
 	"net"
-	"syscall"
 )
 
 // PeerCred identifies the process at the other end of a Unix socket, taken
-// from the kernel (SO_PEERCRED) so it cannot be spoofed by the client.
+// from the kernel (SO_PEERCRED on Linux, LOCAL_PEERCRED on macOS) so it
+// cannot be spoofed by the client.
 type PeerCred struct {
 	UID uint32
 	GID uint32
@@ -34,11 +34,6 @@ func connContext(ctx context.Context, c net.Conn) context.Context {
 		return ctx
 	}
 	var cred PeerCred
-	_ = raw.Control(func(fd uintptr) {
-		u, err := syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
-		if err == nil {
-			cred = PeerCred{UID: u.Uid, GID: u.Gid, PID: u.Pid, OK: true}
-		}
-	})
+	_ = raw.Control(func(fd uintptr) { cred = peerCredentials(int(fd)) })
 	return context.WithValue(ctx, peerKey{}, cred)
 }

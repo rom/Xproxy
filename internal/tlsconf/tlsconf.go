@@ -11,8 +11,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -35,6 +37,121 @@ type Reloadable struct {
 	Fingerprints *FingerprintTable
 	// QUIC marks the config as serving HTTP/3 (JA4 prefix "q").
 	QUIC bool
+
+	// ocsp and ct come from the listener's tls section.
+	ocsp    *config.OCSPStapling
+	ct      *config.CT
+	logs    *LogList
+	stapler *stapler
+	ctMu    sync.Mutex
+	ctState map[[32]byte]CTStatus
+}
+
+// CertInfo is the management view of one served certificate.
+type CertInfo struct {
+	Names     []string   `json:"names"`
+	Subject   string     `json:"subject"`
+	Issuer    string     `json:"issuer"`
+	NotBefore time.Time  `json:"not_before"`
+	NotAfter  time.Time  `json:"not_after"`
+	Managed   bool       `json:"managed"`
+	OCSP      OCSPStatus `json:"ocsp"`
+	CT        CTStatus   `json:"ct"`
+}
+
+// StartStapling begins fetching OCSP responses when the listener enables
+// it. Safe to call once per Reloadable.
+func (r *Reloadable) StartStapling(log *slog.Logger) {
+	if !r.ocsp.IsEnabled() || r.stapler != nil {
+		return
+	}
+	r.stapler = newStapler(*r.ocsp, r.allCertificates, log.With("component", "ocsp"))
+	r.stapler.start()
+}
+
+// Close stops background work.
+func (r *Reloadable) Close() {
+	if r.stapler != nil {
+		r.stapler.close()
+	}
+}
+
+// allCertificates lists file and managed certificates.
+func (r *Reloadable) allCertificates() []tls.Certificate {
+	var all []tls.Certificate
+	if certs := r.certs.Load(); certs != nil {
+		all = append(all, *certs...)
+	}
+	if r.Managed != nil {
+		all = append(all, r.Managed()...)
+	}
+	return all
+}
+
+// withStaple returns c with the current OCSP response attached, or c.
+func (r *Reloadable) withStaple(c *tls.Certificate) *tls.Certificate {
+	if r.stapler == nil {
+		return c
+	}
+	der := r.stapler.current(c)
+	if der == nil {
+		return c
+	}
+	cp := *c
+	cp.OCSPStaple = der
+	return &cp
+}
+
+// Certificates describes every served certificate with its staple and
+// CT state.
+func (r *Reloadable) Certificates() []CertInfo {
+	var out []CertInfo
+	add := func(c tls.Certificate, managed bool) {
+		leaf := c.Leaf
+		if leaf == nil && len(c.Certificate) > 0 {
+			leaf, _ = x509.ParseCertificate(c.Certificate[0])
+		}
+		if leaf == nil {
+			return
+		}
+		info := CertInfo{Names: leaf.DNSNames, Subject: leaf.Subject.CommonName, Issuer: leaf.Issuer.CommonName,
+			NotBefore: leaf.NotBefore, NotAfter: leaf.NotAfter, Managed: managed, OCSP: OCSPStatus{Status: "disabled"}}
+		if r.stapler != nil {
+			info.OCSP = r.stapler.status(&c)
+		}
+		key := sha256.Sum256(c.Certificate[0])
+		r.ctMu.Lock()
+		st, ok := r.ctState[key]
+		r.ctMu.Unlock()
+		if !ok {
+			st = ctCheck(leaf, issuerOf(&c), r.logs, 0)
+		}
+		info.CT = st
+		out = append(out, info)
+	}
+	if certs := r.certs.Load(); certs != nil {
+		for _, c := range *certs {
+			add(c, false)
+		}
+	}
+	if r.Managed != nil {
+		for _, c := range r.Managed() {
+			add(c, true)
+		}
+	}
+	return out
+}
+
+// issuerOf returns the second certificate of the chain, if any.
+func issuerOf(c *tls.Certificate) *x509.Certificate {
+	if len(c.Certificate) < 2 {
+		return nil
+	}
+	issuer, err := x509.ParseCertificate(c.Certificate[1])
+	if err != nil {
+		return nil
+	}
+	return issuer
 }
 
 // recordFingerprint is installed as GetConfigForClient; it never changes
@@ -65,8 +182,46 @@ func (r *Reloadable) Load() error {
 		}
 		certs = append(certs, cert)
 	}
+	// Certificate Transparency: every file certificate is checked
+	// against the policy; a failure is fatal only with enforce.
+	state := map[[32]byte]CTStatus{}
+	required := 0
+	if r.ct != nil {
+		required = r.ct.Require
+	}
+	for i := range certs {
+		c := &certs[i]
+		if c.Leaf == nil {
+			continue
+		}
+		st := ctCheck(c.Leaf, issuerOf(c), r.logs, required)
+		state[sha256.Sum256(c.Certificate[0])] = st
+		if !st.OK && r.ct != nil && r.ct.Enforce {
+			return fmt.Errorf("certificate %s: certificate transparency: %s", r.cfgs[i].CertFile, st.Error)
+		}
+	}
+	r.ctMu.Lock()
+	r.ctState = state
+	r.ctMu.Unlock()
 	r.certs.Store(&certs)
+	if r.stapler != nil {
+		r.stapler.wake()
+	}
 	return nil
+}
+
+// CTWarnings lists the file certificates that fall short of the CT
+// policy without enforce (empty when all pass or no policy is set).
+func (r *Reloadable) CTWarnings() []string {
+	r.ctMu.Lock()
+	defer r.ctMu.Unlock()
+	var out []string
+	for _, st := range r.ctState {
+		if !st.OK {
+			out = append(out, st.Error)
+		}
+	}
+	return out
 }
 
 // NotAfter returns the earliest expiry among the loaded file certificates,
@@ -114,20 +269,27 @@ func (r *Reloadable) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificat
 		return nil, errors.New("no certificates loaded")
 	}
 	if len(all) == 1 {
-		return &all[0], nil
+		return r.withStaple(&all[0]), nil
 	}
 	for i := range all {
 		if err := hello.SupportsCertificate(&all[i]); err == nil {
-			return &all[i], nil
+			return r.withStaple(&all[i]), nil
 		}
 	}
-	return &all[0], nil
+	return r.withStaple(&all[0]), nil
 }
 
 // Server builds a server tls.Config for a listener. The returned Reloadable
 // can be used to hot reload certificates.
 func Server(cfg *config.TLS, protocols []config.Protocol) (*tls.Config, *Reloadable, error) {
-	r := &Reloadable{cfgs: cfg.Certificates}
+	r := &Reloadable{cfgs: cfg.Certificates, ocsp: cfg.OCSPStapling, ct: cfg.CT}
+	if cfg.CT != nil && cfg.CT.LogListFile != "" {
+		ll, err := LoadLogList(cfg.CT.LogListFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ct log_list_file: %w", err)
+		}
+		r.logs = ll
+	}
 	if err := r.Load(); err != nil {
 		return nil, nil, err
 	}

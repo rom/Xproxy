@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"strings"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dns"
@@ -45,6 +47,33 @@ func dnsPolicy(cfg *config.DNSListener) (*dns.Policy, error) {
 	}
 	if rl := cfg.RateLimit; rl != nil {
 		p.RateLimit = limits.NewKeyedLimiter(rl.QPS, rl.Burst, 65536)
+	}
+	if d := cfg.DNSSEC; d.IsEnabled() {
+		var anchors []dns.TrustAnchor
+		lines := append([]string(nil), d.TrustAnchors...)
+		if d.TrustAnchorsFile != "" {
+			data, err := os.ReadFile(d.TrustAnchorsFile) //nolint:gosec // validated configuration path
+			if err != nil {
+				return nil, fmt.Errorf("dnssec.trust_anchors_file: %w", err)
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+					continue
+				}
+				lines = append(lines, line)
+			}
+		}
+		for _, line := range lines {
+			a, err := dns.ParseTrustAnchor(line)
+			if err != nil {
+				return nil, fmt.Errorf("dnssec: %w", err)
+			}
+			anchors = append(anchors, a)
+		}
+		v := dns.NewValidator(resolver, anchors)
+		v.MaxLookups = d.MaxLookups
+		p.DNSSEC = v
 	}
 	return p, nil
 }

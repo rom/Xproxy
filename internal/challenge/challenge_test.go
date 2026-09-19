@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/secret"
 )
 
 func cfg() *config.Challenge {
@@ -172,6 +173,45 @@ func TestPersistentKey(t *testing.T) {
 	r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: val})
 	if !b.Verified(r, ip) {
 		t.Fatal("cookie from first instance rejected by second with same key file")
+	}
+}
+
+func TestKeyRotation(t *testing.T) {
+	c := cfg()
+	c.SecretFile = filepath.Join(t.TempDir(), "k")
+	a, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip := netip.MustParseAddr("203.0.113.1")
+	old := a.issueCookie(ip, time.Now())
+	if _, err := secret.Rotate(c.SecretFile, 1); err != nil {
+		t.Fatal(err)
+	}
+	a.Reconfigure(c) // a reload picks the new ring up
+	r := httptest.NewRequest("GET", "/", nil)
+	r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: old})
+	if !a.Verified(r, ip) {
+		t.Fatal("cookie from before the rotation rejected")
+	}
+	fresh := a.issueCookie(ip, time.Now())
+	if fresh == old {
+		t.Fatal("primary key did not change")
+	}
+	// A second rotation with keep 0 drops the original key.
+	if _, err := secret.Rotate(c.SecretFile, 0); err != nil {
+		t.Fatal(err)
+	}
+	a.Reconfigure(c)
+	r = httptest.NewRequest("GET", "/", nil)
+	r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: old})
+	if a.Verified(r, ip) {
+		t.Fatal("cookie under a dropped key accepted")
+	}
+	r = httptest.NewRequest("GET", "/", nil)
+	r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: fresh})
+	if a.Verified(r, ip) {
+		t.Fatal("cookie under the second dropped key accepted")
 	}
 }
 

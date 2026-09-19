@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/otlp"
 )
 
 // Logs bundles the four streams.
@@ -34,6 +35,7 @@ type Logs struct {
 	mu       sync.Mutex
 	journald *journaldSink
 	syslog   *syslogSink
+	otlp     *otlpSink
 	redactor *Redactor
 	// writeErrors counts failed file writes across all streams.
 	writeErrors atomic.Uint64
@@ -56,6 +58,16 @@ func Open(cfg config.Logging) (*Logs, error) {
 		}
 		l.syslog = s
 	}
+	if o := cfg.OTLP; o != nil {
+		sink, err := newOTLPSink(otlp.Config{Endpoint: o.Endpoint, Timeout: o.Timeout.D(), Headers: o.Headers, CAFile: o.CAFile,
+			ServiceName: o.ServiceName, Attributes: o.Attributes, Compress: o.Compresses(), Version: Version},
+			o.Batch, o.Queue, o.Interval.D(), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+		if err != nil {
+			l.Close()
+			return nil, err
+		}
+		l.otlp = sink
+	}
 	redacted := map[string]bool{}
 	if cfg.Redaction.IsEnabled() {
 		r, err := NewRedactor(cfg.Redaction)
@@ -73,6 +85,7 @@ func Open(cfg config.Logging) (*Logs, error) {
 			return slog.New(slog.NewJSONHandler(io.Discard, nil)), nil
 		}
 		var handlers multiHandler
+		tmpl := TemplateFor(s.Format, s.Template)
 		sinks := s.Sinks
 		if len(sinks) == 0 {
 			sinks = []string{"file"}
@@ -94,19 +107,39 @@ func Open(cfg config.Logging) (*Logs, error) {
 				if cfg.Stdout {
 					w = io.MultiWriter(fw, os.Stdout)
 				}
-				handlers = append(handlers, slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl}))
+				if tmpl != "" {
+					handlers = append(handlers, newTextHandler(w, nil, tmpl, lvl))
+				} else {
+					handlers = append(handlers, slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl}))
+				}
 			case "journald":
 				if l.journald != nil {
-					handlers = append(handlers, newLineHandler(l.journald, lvl))
+					if tmpl != "" {
+						handlers = append(handlers, newTextHandler(nil, l.journald, tmpl, lvl))
+					} else {
+						handlers = append(handlers, newLineHandler(l.journald, lvl))
+					}
 				}
 			case "syslog":
 				if l.syslog != nil {
-					handlers = append(handlers, newLineHandler(l.syslog, lvl))
+					if tmpl != "" {
+						handlers = append(handlers, newTextHandler(nil, l.syslog, tmpl, lvl))
+					} else {
+						handlers = append(handlers, newLineHandler(l.syslog, lvl))
+					}
+				}
+			case "otlp":
+				if l.otlp != nil {
+					handlers = append(handlers, newLineHandler(l.otlp, lvl))
 				}
 			}
 		}
 		if len(handlers) == 0 && cfg.Stdout {
-			handlers = append(handlers, slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+			if tmpl != "" {
+				handlers = append(handlers, newTextHandler(os.Stdout, nil, tmpl, lvl))
+			} else {
+				handlers = append(handlers, slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+			}
 		}
 		var h slog.Handler = handlers
 		if len(handlers) == 1 {
@@ -169,6 +202,21 @@ func (l *Logs) Close() {
 		l.journald.close()
 		l.journald = nil
 	}
+	if l.otlp != nil {
+		l.otlp.close()
+		l.otlp = nil
+	}
+}
+
+// OTLP returns the log exporter status, or nil when not configured.
+func (l *Logs) OTLP() *OTLPStatus {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.otlp == nil {
+		return nil
+	}
+	st := l.otlp.status()
+	return &st
 }
 
 // SinkStats reports messages dropped and sent by the network sinks.
@@ -178,6 +226,8 @@ type SinkStats struct {
 	JournalDropped uint64 `json:"journald_dropped"`
 	WriteErrors    uint64 `json:"write_errors"`
 	Redaction      bool   `json:"redaction"`
+	OTLPSent       uint64 `json:"otlp_sent"`
+	OTLPDropped    uint64 `json:"otlp_dropped"`
 }
 
 // Stats returns sink counters.
@@ -194,6 +244,9 @@ func (l *Logs) Stats() SinkStats {
 	}
 	st.Redaction = l.redactor != nil
 	st.WriteErrors = l.writeErrors.Load()
+	if l.otlp != nil {
+		st.OTLPSent, st.OTLPDropped = l.otlp.sent.Load(), l.otlp.dropped.Load()
+	}
 	return st
 }
 
@@ -241,3 +294,7 @@ func argsToAttrs(args []any) []slog.Attr {
 	}
 	return out
 }
+
+// Version is the service.version resource attribute of the OTLP log
+// sink; the daemon sets it at start.
+var Version string

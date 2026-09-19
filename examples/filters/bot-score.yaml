@@ -1,0 +1,50 @@
+# Filters example: behavioural bot scoring with a challenge step before
+# a deny, JA4 fingerprint lists and the score exposed to the upstream.
+# Validate: xproxy -config examples/filters/bot-score.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+challenge:
+  secret_file: /etc/xproxy/challenge.key
+  ttl: 12h
+filters:
+  - name: bots
+    kind: bot_score
+    options:
+      log_at: 30
+      challenge_at: 50
+      deny_at: 80
+      header: X-Bot-Score
+      window: 10s
+      rate_per_window: 60
+      ja4_deny:
+        - "t13d190900_9dc949149365_97f8aa674fd9"   # a known scanner fingerprint (illustrative)
+      ja4_allow:
+        - "t13d1516h2_8daaf6152771_02713d6af862"   # a monitoring agent (illustrative)
+      # Signals and their default weights: ua_bot 40, ua_missing 30,
+      # browser_headers_missing 25, fingerprint_mismatch 35, error_rate 30,
+      # path_spread 15, regular_interval 20, high_rate 15,
+      # honeypot_marked 40. Override the ones that matter for the site.
+      weights:
+        ua_missing: 40
+        honeypot_marked: 60
+        browser_headers_missing: 15
+        high_rate: 30
+      reason: bot
+upstreams:
+  - name: web
+    endpoints: [{address: "10.0.3.10:8080"}]
+routes:
+  # The challenge block gives the challenge_at threshold something to
+  # send clients to; "always" here, or "load" together with a shedding
+  # section to challenge only under load.
+  - name: web
+    hosts: [www.example.com]
+    filters: [bots]
+    challenge: {mode: always}
+    upstream: web

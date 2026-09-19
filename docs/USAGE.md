@@ -29,7 +29,11 @@ Signals:
 | `SIGUSR1` | Reopen log files (after external rotation) |
 | `SIGTERM`, `SIGINT` | Drain within `server.shutdown_timeout`, then exit |
 
-Under systemd use `systemctl reload xproxy` and `systemctl restart xproxy`.
+Under systemd use `systemctl reload xproxy` and `systemctl restart xproxy`;
+on macOS `launchctl kill HUP system/com.sysctl.xproxy` and `launchctl
+kickstart -k system/com.sysctl.xproxy`. A reload that names a file
+outside the directories the sandbox admitted at start is refused with
+"restart to apply"; `xproxyctl sandbox` lists those directories.
 With socket activation a restart does not lose the listening socket, so
 listener changes (which reload refuses) cost only the drain time.
 
@@ -44,9 +48,17 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `status` | Version, pid, generation, listeners, counters |
 | `stats` | Counters only |
 | `upstreams` | Table of endpoints with health, ejection, active requests, request and error counts |
+| `quotas` | Usage per tenant, per route (requests by class, denied, rate limited, bytes) and per rate limit policy (decisions, top consumers with tokens left, `-top 10`), plus request share per upstream |
 | `config` | Active configuration as YAML, defaults filled in |
 | `validate` | Validate the configuration file locally |
-| `reload` | Validate locally, then ask the daemon to reload |
+| `reload` | Validate locally, then ask the daemon to reload; `-dry-run` shows what the file would change (per item, restart list, text diff) without applying |
+| `diff [FROM] [TO]` | Compare `active`, `file` or a history id (default `active file`); exit status 1 when they differ |
+| `history` | Recorded configurations with generation, time, note and size (needs `management.history_dir`) |
+| `rollback ID` | Apply a recorded configuration (audited; becomes a new history entry) |
+| `tls` | Served certificates per listener: names, issuer, expiry, source (file or ACME), OCSP staple state and Certificate Transparency verdict |
+| `sandbox` | In-process hardening: platform, each mechanism (Landlock, seccomp, capabilities, no_new_privs, debuggable; Seatbelt on macOS) with applied, unavailable, failed or disabled and a detail, the Landlock ABI and the read and write rules in force |
+| `waf [rules\|proposals\|exclusions\|reset]` | WAF profiles with rule set source and version, route assignments, counters and the most matched rules (`-top 20`); `proposals` lists learned exclusion candidates, `exclusions` prints them as SecLang for review, `reset` clears the statistics (audited) |
+| `rotate-secret FILE` | Add a fresh primary key to a secret file (affinity, challenge, OIDC cookie, redaction hash), keeping `-keep 2` previous keys for verification; then `reload` |
 | `reload-certs` | Re-read certificate files |
 | `reopen-logs` | Reopen log files |
 | `tail STREAM` | Follow `access`, `error`, `security` or `audit` |
@@ -63,7 +75,8 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `honeypot` | Clients marked by honeypot routes and the decoy names; `honeypot forget IP` removes a mark |
 | `dns` | DNS listener counters (queries, cache, blocked, refused, dropped, upstream failures); `dns purge` empties the caches |
 | `ingress` | Kubernetes ingress controller status: syncs, watches, counts, warnings |
-| `otlp` | OpenTelemetry exporter status: pushes, failures, last error |
+| `otlp` | OpenTelemetry metrics exporter status: pushes, failures, last error |
+| `telemetry` | Every OpenTelemetry exporter (metrics, traces, logs) with sent, dropped, pushes, failures, queue depth and last error |
 | `htpasswd FILE NAME` | Add or replace a `basic_auth` user; the password is read from stdin |
 | `tui` | Full-screen live view; `-refresh 2s`, `-no-color` (or `NO_COLOR`) |
 | `metrics` | Print the Prometheus exposition |
@@ -121,13 +134,43 @@ Every family in `/metrics` reaches the collector as OTLP with the same
 names, so dashboards built on the Prometheus exposition carry over;
 `xproxyctl otlp` shows whether pushes succeed.
 
+### Distributed tracing and logs to an OpenTelemetry collector
+
+```yaml
+tracing:
+  sample_percent: 10
+  otlp: {endpoint: https://otel.example.internal:4318/v1/traces, headers: {Authorization: "Bearer replace-me"}}
+logging:
+  otlp: {endpoint: https://otel.example.internal:4318/v1/logs, headers: {Authorization: "Bearer replace-me"}}
+  access: {sinks: [file, otlp]}
+  security: {sinks: [file, otlp]}
+```
+
+Every request carries a `traceparent` to the upstream, so an
+application that already traces sees the proxy's server and upstream
+spans above its own; one request in ten is exported. The access and
+security streams reach the collector as log records with the trace id
+of their request, and the files keep receiving everything. Applications
+behind the proxy only need to read `traceparent` from the request (most
+frameworks do so out of the box). `xproxyctl telemetry` shows whether
+spans and records arrive:
+
+```
+SIGNAL   ENDPOINT                                       SENT   DROPPED  PUSHES  FAILED  QUEUED  LAST ERROR
+metrics  https://otel.example.internal:4318/v1/metrics  120    -        120     0       -       -
+traces   https://otel.example.internal:4318/v1/traces   9310   0        41      0       12      -
+logs     https://otel.example.internal:4318/v1/logs     93102  0        190     0       0       -
+```
+
 ### Splitting the configuration into fragments
 
 ```yaml
 # /etc/xproxy/xproxy.yaml
 version: 1
 includes: ["/etc/xproxy/conf.d/*.yaml"]
-server: {listeners: [{name: https, address: ":443", tls: {certificates: [...]}}]}
+server:
+  listeners:
+    - {name: https, address: ":443", tls: {certificates: [{cert_file: /etc/xproxy/certs/site.pem, key_file: /etc/xproxy/certs/site.key}]}}
 ```
 
 ```yaml
@@ -153,6 +196,30 @@ saved and loaded as a main file without expanding the fragments twice.
 The Kubernetes ingress merge works on the expanded document the same
 way.
 
+
+### OCSP stapling and Certificate Transparency checks
+
+```yaml
+server:
+  listeners:
+    - name: public
+      address: ":443"
+      tls:
+        certificates: [{cert_file: /etc/xproxy/tls/www.pem, key_file: /etc/xproxy/tls/www-key.pem}]
+        ocsp_stapling: {refresh: 1h}
+        ct: {require: 2, log_list_file: /etc/xproxy/ct/log_list.json, enforce: true}
+```
+
+The chain file must hold the issuer after the leaf: the OCSP request
+and the SCT verification both need it. `xproxyctl tls` shows every
+certificate with its staple (`good until 09-18 14:00`, or the fetch
+error) and its SCTs (`2/2 verified`). With `enforce`, a reload that
+brings in a certificate with fewer than two verifiable SCTs is refused
+and the previous certificate keeps serving, which is the outcome you
+want when a CA misissues without logging. Download `log_list.json`
+from the Chrome CT policy site into the path above and refresh it with
+your certificate tooling; a log that is not in the list leaves its SCT
+unverified.
 
 ### TLS edge with HTTP redirect
 
@@ -276,6 +343,35 @@ routes:
 Deny lists are evaluated before allow lists. Client addresses come from the
 peer unless it is in `trusted_proxies`.
 
+### Access log in Common Log Format
+
+```yaml
+logging:
+  access: {format: combined}
+```
+
+Tools built for Apache and nginx logs (GoAccess, AWStats, fail2ban
+filters) read the access stream directly:
+
+```
+203.0.113.9 - - [18/Sep/2026:10:12:01 +0000] "GET /index.html HTTP/2.0" 200 2326 "https://www.example.com/" "Mozilla/5.0 ..."
+```
+
+`format: common` drops the two quoted fields; `format: custom` with a
+`template` picks any access log attribute, so a line can carry the
+route, the upstream endpoint, the duration or the bot score:
+
+```yaml
+logging:
+  access:
+    format: custom
+    template: '{time_iso} {client_ip} {country} "{request}" {status} {duration_ms}ms route={route} endpoint={endpoint} denied={denied}'
+```
+
+Redaction (`logging.redaction`) still applies before the line is
+rendered, and the other streams stay JSON, since their records vary by
+event. The query string is never logged in any format.
+
 ### Behind a load balancer that sets X-Forwarded-For
 
 ```yaml
@@ -305,6 +401,124 @@ connection from any other peer is served as before, so nobody outside
 the balancer range can choose an address. Layer 4 listeners (`kind:
 tcp`) do the opposite: their `proxy_protocol` sends the header to the
 upstream.
+
+### Rotating secrets
+
+```
+$ xproxyctl rotate-secret /var/lib/xproxy/challenge.key
+/var/lib/xproxy/challenge.key: new primary key, 3 key(s) in the ring; run xproxyctl reload to apply
+$ xproxyctl reload
+```
+
+Secret files (`affinity.secret_file`, `challenge.secret_file`, the
+OIDC `cookie_secret_file`, `logging.redaction.hash_secret_file`) hold a
+single raw key when created and become a keyring on the first rotation:
+a text file whose first key signs and seals and whose other keys only
+verify and open. Cookies and sessions issued under a kept key stay
+valid until a later rotation drops it (`-keep 0` drops everything at
+once). A rotation takes effect on the next reload for the challenge,
+affinity and OIDC keys and at the next restart for the redaction key,
+whose pseudonyms then start a new series. In a cluster rotate the same
+file on every node within the retention window, or copy the ring; the
+ring is the whole secret, so keep it `0600` and out of backups that are
+not encrypted. Copy a ring rather than a raw key when moving a node.
+
+### Previewing, comparing and rolling back configuration
+
+```
+$ xproxyctl reload -dry-run
+active -> file
+  routes: 1 added, 1 changed
+  upstreams: 1 changed
+  added    routes checkout
+  changed  routes web
+  changed  upstreams app
+
+--- active
++++ file
+@@ -41,6 +41,7 @@
+ ...
+$ xproxyctl reload
+reloaded
+$ xproxyctl history
+ID                                   GENERATION  APPLIED                    NOTE     SIZE
+20260918T101522.184201000-gen4       4           2026-09-18T12:15:22+02:00  reload   6120
+20260918T093001.002144000-gen3       3           2026-09-18T11:30:01+02:00  reload   5988
+20260918T090000.000000000-gen1       1           2026-09-18T11:00:00+02:00  start    5988
+$ xproxyctl diff 20260918T093001.002144000-gen3 active
+$ xproxyctl rollback 20260918T093001.002144000-gen3
+rolled back to 20260918T093001.002144000-gen3
+```
+
+Set `management: {history_dir: /var/lib/xproxy/history}` to keep the
+last twenty applied configurations (the RPM creates the directory).
+A dry run validates the file exactly as a reload would, including file
+existence checks, and names the changes that need a restart, so a
+change to a listener address is caught before the reload silently
+leaves it in place. Rollback goes through the same validation and
+audit trail as a reload and never touches the file on disk: after
+rolling back, fix the file, or the next `reload` re-applies it.
+
+### Usage per tenant and route
+
+```yaml
+routes:
+  - {name: shop-web, hosts: [shop.example.com], tenant: shop, upstream: shop}
+  - {name: shop-api, hosts: [api.shop.example.com], tenant: shop, rate_limits: [api], upstream: shop-api}
+  - {name: blog, hosts: [blog.example.com], tenant: blog, upstream: blog}
+```
+
+`xproxyctl quotas` then prints one line per tenant (requests, denied,
+rate limited, bytes in and out over the routes that carry the label),
+one per route with the status classes, and one per rate limit policy
+with its decisions and the keys that consumed the most tokens together
+with the tokens they have left, so the client hitting a limit is
+visible without reading logs. `GET /v1/quotas?top=N` returns the same
+as JSON for billing or capacity scripts, and the per route metrics
+carry a `tenant` label with `xproxy_route_bytes_total` and
+`xproxy_rate_limit_decisions_total` next to the request counters.
+Counters restart with each configuration generation; the metrics
+exporter keeps the long history.
+
+### Retrying failed responses on another endpoint
+
+```yaml
+upstreams:
+  - name: api
+    retries: 2
+    retry_on: ["502", "503", "504"]
+    endpoints: [{address: 10.0.1.10:8080}, {address: 10.0.1.11:8080}, {address: 10.0.1.12:8080}]
+    outlier_ejection: {consecutive_failures: 3, base_ejection_time: 30s}
+```
+
+Connection failures are retried on another endpoint by default; with
+`retry_on`, a gateway status from an endpoint counts the same way, so
+one endpoint that answers 503 while restarting costs the client nothing
+and gets ejected after a few such answers. Only replayable requests
+(safe methods without a body) are retried, at most `retries` times, and
+when every endpoint fails the last answer is passed through unchanged.
+`upstream_retries` and `upstream_status_retries` count the attempts.
+
+### Protecting a slow upstream: concurrency, queue and circuit breaker
+
+```yaml
+upstreams:
+  - name: reports
+    max_concurrent: 20
+    queue: {size: 50, timeout: 2s}
+    circuit_breaker: {consecutive_failures: 5, open_for: 15s, half_open_requests: 2}
+    endpoints: [{address: 10.0.3.10:8080}, {address: 10.0.3.11:8080}]
+```
+
+At most twenty requests are in flight to the report service; the next
+fifty wait up to two seconds for a slot and get 503 with `Retry-After`
+when none frees up, and anything beyond that is refused at once, so a
+burst never piles hundreds of connections onto a service that is
+already slow. If the service fails five attempts in a row the circuit
+opens: for fifteen seconds every request is answered 503 locally, then
+two trial requests probe it, and one success closes the circuit again
+(each reopen doubles the wait, up to ten times). `xproxyctl upstreams`
+shows the circuit state and queue depth per pool.
 
 ### Weighted and sticky pools
 
@@ -397,6 +611,73 @@ SecRule REQUEST_URI "@beginsWith /posts" \
 ```
 
 Custom rules without the CRS work the same way through `directives`.
+
+#### Rule statistics and learned exclusions
+
+`xproxyctl waf` shows the compiled profiles (rule set source and CRS
+version), which route runs which profile in which mode, and the rules
+that matched most with their block and detect counts, severity and
+last seen time; `xproxyctl waf rules -top 50` lists more. The counters
+belong to the process, not to a configuration generation, so they keep
+accumulating while a rule set is tuned across reloads; `xproxyctl waf
+reset` starts them over (audited).
+
+Turning on learning makes the same tuning data driven:
+
+```yaml
+waf:
+  default_mode: detect
+  learning: {enabled: true, min_hits: 10}
+  profiles:
+    - name: default
+      crs: {paranoia_level: 2}
+```
+
+Every detection rule match is aggregated by rule, matched variable and
+route. Once a combination reaches `min_hits`, `xproxyctl waf proposals`
+lists it with the number of distinct clients and a sample value, and
+`xproxyctl waf exclusions > /etc/xproxy/waf/learned.conf` writes the
+proposals as SecLang, scoped to the route's path prefix:
+
+```
+# rule 941100: XSS Attack Detected via libinjection
+# route posts, 37 hits from 12 clients, last 2026-09-18T10:22:41Z
+SecRule REQUEST_URI "@beginsWith /posts" "id:10000,phase:1,pass,t:none,nolog,ctl:ruleRemoveTargetById=941100;ARGS:body"
+```
+
+Review every line: a proposal means the rule fired on that variable
+repeatedly, which is what both a false positive and a persistent
+attacker look like. Many distinct clients and a sample that is plainly
+application data point to the former; a handful of addresses and
+payload-like samples point to the latter and belong in a ban trigger
+instead. Keep the reviewed lines in a `directive_files` entry, reload,
+and the matching entries stop appearing. Learning runs in block mode
+too, so exclusions for rules that already deny traffic surface the
+same way.
+
+#### Updating the Core Rule Set without a new binary
+
+The embedded rule set is the version the binary was built with. To run
+a newer release, or a patched one, unpack it into a directory and point
+the profile at it:
+
+```yaml
+waf:
+  profiles:
+    - name: default
+      crs: {dir: /etc/xproxy/crs, paranoia_level: 1}
+```
+
+The directory holds `crs-setup.conf.example` (or a tuned
+`crs-setup.conf`, which is preferred) and `rules/` with the `.conf`
+and `.data` files, exactly as the upstream archive lays them out. It is
+read once per load: `xproxyctl reload -dry-run` validates a new
+version before it is applied, a syntax error in any file fails the
+reload and keeps the running rules, and `xproxyctl waf` reports the
+directory and its `crs_setup_version` so the version in service is
+never a guess. The engine settings that the embedded set carries
+(`coraza.conf-recommended`) are applied to a directory rule set as
+well, so the directory needs nothing besides the CRS files.
 
 ### Ban list
 
@@ -731,6 +1012,51 @@ the same block list and cache. `xproxyctl dns` shows the
 counters; `log_queries: true` writes every question to the access log
 when an investigation needs it.
 
+### Validating DNSSEC for clients
+
+```yaml
+server:
+  listeners:
+    - name: dns
+      address: "10.0.0.53:53"
+      kind: dns
+      dns:
+        upstreams: ["9.9.9.9:53", "149.112.112.112:53"]
+        dnssec: {}
+```
+
+Answers now come with the AD bit for clients that ask for it, forged or
+broken answers are refused with SERVFAIL and logged as `dns_bogus`, and
+unsigned zones keep working. The root keys are built in; an internal
+zone with its own trust anchor adds a DS line to `trust_anchors`.
+Clients that set CD (debugging with `dig +cd`) get the raw answer.
+`xproxyctl dns` counts secure, insecure and bogus answers per listener.
+
+### Encrypted DNS for clients (DoT and DoH)
+
+```yaml
+server:
+  listeners:
+    - name: dns
+      address: "10.0.0.53:53"
+      kind: dns
+      dns: {upstreams: ["tls://9.9.9.9:853"], block_file: /etc/xproxy/dns/blocklist.txt}
+    - name: dns-tls
+      address: "10.0.0.53:853"
+      kind: dns
+      tls: {certificates: [{cert_file: /etc/xproxy/tls/dns.pem, key_file: /etc/xproxy/tls/dns-key.pem}]}
+      dns: {upstreams: ["tls://9.9.9.9:853"], block_file: /etc/xproxy/dns/blocklist.txt, doh_path: /dns-query}
+```
+
+Phones and browsers with private DNS settings reach the second
+listener over TLS (`dns.example.com` on 853) or HTTPS
+(`https://dns.example.com:853/dns-query`); the first keeps serving the
+network's plain resolvers. Both apply the same block list and share
+the counters, and `xproxyctl dns` shows `queries_dot` and
+`queries_doh` next to the UDP and TCP ones. For DoH on 443 next to web
+sites, a `doh` route on the https listener (see above) does the same
+through the http pipeline.
+
 ### Forward proxy for outbound clients (CONNECT)
 
 ```yaml
@@ -859,9 +1185,27 @@ version whatever its path; `/api/v3/items/42` reaches the item service
 while `/api/v3/items/list` does not (patterns match the whole path);
 everything else goes to the current version. Conditioned routes are
 tried before the plain route on the same path, so the order above does
-not matter. For a canary by share of traffic rather than by header,
-use a `weighted` upstream; for one by header on the same route, see
-`canary` on the upstream pool (traffic management).
+not matter.
+
+### Canary endpoints inside one pool
+
+```yaml
+upstreams:
+  - name: app
+    canary: {header: X-Canary, cookie: canary, percent: 5}
+    endpoints:
+      - {address: 10.0.1.10:8080}
+      - {address: 10.0.1.11:8080}
+      - {address: 10.0.1.12:8080, canary: true}
+```
+
+The third endpoint runs the new build. Testers reach it with an
+`X-Canary` header or a `canary` cookie, five percent of everyone else
+lands on it too, and the remaining traffic never does. If the canary
+fails its health checks its traffic falls back to the other two. Raise
+`percent` as confidence grows; to promote, mark the old endpoints
+`canary: true` and the new one not, or drop the policy. The access log
+shows `canary: true` on responses the canary served.
 
 ### Response compression
 
@@ -1027,11 +1371,41 @@ with a memory bound and a deadline; a module that traps or overruns
 fails closed unless `on_error: allow`. Build it with any toolchain that
 targets WebAssembly; EXTENDING.md has the ABI and a minimal guest.
 
+### Rewriting bodies without WebAssembly
+
+```yaml
+filters:
+  - name: links
+    kind: body_rewrite
+    options:
+      response:
+        types: [text/html, application/json]
+        rules:
+          - {find: "http://app.internal:8080/", replace: "https://www.example.com/"}
+          - {regex: '"card":\s*"\d{12}(\d{4})"', replace: '"card": "************$1"'}
+      request:
+        types: [application/json]
+        rules: [{regex: '"userName"', replace: '"user_name"'}]
+routes:
+  - name: app
+    hosts: [www.example.com]
+    filters: [links]
+    upstream: app
+```
+
+Links the application renders with its internal name come out with the
+public one, card numbers in JSON answers are masked to their last four
+digits, and a client still sending the old key name reaches the new
+API. Bodies above `max_bytes`, encoded bodies and other media types
+pass through unchanged; the access log shows `body_rewrite` on lines
+where something changed.
+
 ### Header policy and basic authentication (filters)
 
 Filters are middleware instances attached to routes; the built-in kinds
-are `header_guard` and `basic_auth` (`xproxyctl filters` lists what the
-binary has; [EXTENDING.md](EXTENDING.md) shows how to add one).
+are `header_guard`, `basic_auth`, `body_rewrite`, `bot_score`, `oidc`
+and `wasm` (`xproxyctl filters` lists what the binary has;
+[EXTENDING.md](EXTENDING.md) shows how to add one).
 
 ```yaml
 filters:
@@ -1112,8 +1486,8 @@ Roles:
 
 | Role | May |
 |------|-----|
-| `viewer` | See every screen: overview, upstreams, bans, graphs, cluster, certificates, ICAP, the configuration file and the logs |
-| `operator` | Everything a viewer may, plus ban and unban, reload, reload certificates, reopen logs, renew certificates, edit and save the configuration file, restart the data plane |
+| `viewer` | See every screen: overview, upstreams, routes, WAF, bans, graphs, cluster, certificates, subsystems, history, the configuration file and the logs |
+| `operator` | Everything a viewer may, plus ban and unban, reload, reload certificates, reopen logs, renew certificates, reset the WAF statistics, roll back to a recorded configuration, edit and save the configuration file, restart the data plane |
 
 Screens:
 
@@ -1121,14 +1495,31 @@ Screens:
   denials by reason, load level, listeners; the action buttons for
   operators.
 - **Upstreams**: every endpoint with health, ejection, active requests and
-  error counts, refreshed every five seconds.
+  error counts, refreshed every five seconds; per pool the balancer,
+  availability, circuit breaker state, concurrency gate and queue
+  counters, and the canary share with its fallbacks.
+- **Routes**: usage per tenant, per route (requests by status class,
+  denied, rate limited, bytes) and per rate limit policy with the top
+  consumers, plus the request share per upstream (the quota report).
+- **WAF**: counters, learning state, profiles with rule set source and
+  CRS version, route assignments, the most matched rules with block and
+  detect counts, the exclusion proposals with their directives and a
+  SecLang download; operators reset the statistics.
 - **Bans**: the active list with expiry, source and count; add a ban with a
   duration and reason (recorded as `admin:<user>: <reason>`), unban.
 - **Graphs**: requests, denials, bytes, connections, load level, upstream
   latency, bans and cluster peers from the sampled series buffer, with a
   selectable window.
-- **Cluster**, **Certificates** (ACME status with days left and a renew
-  button), **ICAP** (service reachability and counters).
+- **Cluster**; **Certificates**: every served certificate per listener
+  with issuer, days left, source, OCSP status and Certificate
+  Transparency verdict, then the ACME status with a renew button.
+- **Subsystems**: one page for the status documents of the sandbox
+  (mechanisms and Landlock rules), telemetry exporters, dns listeners,
+  ICAP, cache, GeoIP, honeypots, filters, ingress and the OpenTelemetry
+  metrics exporter; unconfigured ones say so.
+- **History**: the pending changes between the file and the active
+  configuration (a dry run), and the recorded generations with a roll
+  back button for operators.
 - **Config**: the active configuration as the data plane loaded it, and an
   editor for the file. *Validate* runs the full validation without
   touching the file and lists every problem; *Validate and save* writes
@@ -1161,14 +1552,17 @@ management socket:
 
 | Screen | Content |
 |--------|---------|
-| 1 Overview | Version, listeners, counters, shedding state, request and denied sparklines |
-| 2 Upstreams | Endpoint health, ejection, in-flight, requests and errors |
+| 1 Overview | Version, listeners, counters, shedding state, the sandbox summary, telemetry exporter counters, dns listener counters with DNSSEC results, request and denied sparklines |
+| 2 Upstreams | Endpoint health, ejection, in-flight, requests and errors; per pool the circuit breaker state, concurrency gate and queue, and canary counters |
 | 3 Bans | Active bans; `j`/`k` select, `u` unban (confirm with `y`), `b` ban with `address [duration] [reason]` |
 | 4 Cluster | Peers, inbound connections, message counters |
 | 5 Graphs | Sparklines of the sampled series over the retention window |
-| 6 Security log | Last events from the security log file (needs `-config` to locate it) |
+| 6 Log | Last events from the security log file (needs `-config` to locate it) |
+| 7 Routes | Usage per route (requests by class, denied, rate limited, bytes), per tenant, and per rate limit policy with the top consumers |
+| 8 WAF | Counters, learning state, profiles with rule set source and version, route assignments, the most matched rules and the exclusion proposals |
+| 9 TLS | Served certificates per listener: names, issuer, days left, source, OCSP status and CT verdict |
 
-Keys: `1` to `6` or `tab` and `shift-tab` switch screens, `r` refreshes,
+Keys: `1` to `9` or `tab` and `shift-tab` switch screens, `r` refreshes,
 `p` pauses, `+` and `-` change the interval, `q` quits. Bans and unbans
 from the TUI go through the same audited API as the CLI.
 

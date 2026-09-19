@@ -48,11 +48,14 @@ automation. The version in the binaries (`xproxy -version`) comes from
 ## 4. Build
 
 ```sh
-make release            # dist/: binaries tarball, source tarball, RPMs when rpmbuild exists, SHA256SUMS, SBOM
+make release            # dist/: Linux binaries tarball, macOS tarballs (arm64, amd64), source tarball, RPMs when rpmbuild exists, SHA256SUMS, SBOM
 make release SIGN_KEY=~/.ssh/release_ed25519   # also SHA256SUMS.sig (ssh-keygen -Y sign)
 ```
 
 `make release` builds with `CGO_ENABLED=0 -trimpath`, produces
+`xproxy-<version>-darwin-arm64.tar.gz` and `-darwin-amd64.tar.gz` (the
+three binaries with `deploy/macos`, the example configuration and the
+documentation, installed with `deploy/macos/install.sh`),
 `xproxy-<version>-linux-amd64.tar.gz` (the three binaries, the deploy
 tree, the documentation, the licence), the vendored source tarball from
 `make dist`, the RPMs when `rpmbuild` is installed (on Fedora with the

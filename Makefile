@@ -20,7 +20,7 @@ RPMDIR       ?= $(CURDIR)/rpmbuild
 
 BIN = bin
 
-.PHONY: all build test test-race cover cover-gate mutate fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint scale bench load release
+.PHONY: all build test test-race cover cover-gate mutate fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint scale bench load release build-darwin dist-darwin install-macos vet-all
 
 all: build
 
@@ -113,11 +113,48 @@ sbom:
 # with an SSH key (SIGN_KEY). See docs/RELEASING.md.
 DIST     = dist
 RELNAME  = xproxy-$(BASE_VERSION)-linux-amd64
+# macOS binaries, cross compiled (cgo is never needed). See docs/SETUP_MACOS.md.
+DARWIN_ARCHS ?= arm64 amd64
+build-darwin: export CGO_ENABLED = 0
+build-darwin:
+	@for a in $(DARWIN_ARCHS); do \
+	  mkdir -p $(BIN)/darwin-$$a; \
+	  for c in xproxy xproxyctl xproxy-admin; do \
+	    GOOS=darwin GOARCH=$$a $(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/darwin-$$a/$$c ./cmd/$$c || exit 1; \
+	  done; \
+	done
+	@ls -l $(BIN)/darwin-*/
+
+# Tarball per architecture with the launchd, sandbox and pf files.
+dist-darwin: build-darwin
+	@mkdir -p $(DIST)
+	@for a in $(DARWIN_ARCHS); do \
+	  d=$(DIST)/xproxy-$(BASE_VERSION)-darwin-$$a; rm -rf $$d && mkdir -p $$d; \
+	  cp $(BIN)/darwin-$$a/* LICENSE README.md VERSION $$d/; \
+	  cp -r deploy/macos deploy/config docs $$d/; \
+	  tar -C $(DIST) -czf $$d.tar.gz $$(basename $$d) && rm -rf $$d; \
+	done
+	@ls -l $(DIST)/*darwin*
+
+# Install onto this Mac (run with sudo on macOS). Builds for the host
+# architecture, then runs deploy/macos/install.sh.
+install-macos:
+	@test "$$(uname -s)" = Darwin || { echo "install-macos runs on macOS"; exit 1; }
+	$(MAKE) build-darwin DARWIN_ARCHS=$$(uname -m | sed 's/x86_64/amd64/')
+	sh deploy/macos/install.sh $(BIN)/darwin-$$(uname -m | sed 's/x86_64/amd64/')
+
+# Type check every supported target.
+vet-all: vet
+	GOOS=linux GOARCH=arm64 $(GO) vet ./...
+	GOOS=darwin GOARCH=arm64 $(GO) vet ./...
+	GOOS=darwin GOARCH=amd64 $(GO) vet ./...
+
 release: build dist
 	rm -rf $(DIST) && mkdir -p $(DIST)/$(RELNAME)
 	cp $(BIN)/xproxy $(BIN)/xproxyctl $(BIN)/xproxy-admin LICENSE README.md VERSION $(DIST)/$(RELNAME)/
 	cp -r deploy docs $(DIST)/$(RELNAME)/
 	tar -C $(DIST) -czf $(DIST)/$(RELNAME).tar.gz $(RELNAME) && rm -rf $(DIST)/$(RELNAME)
+	$(MAKE) dist-darwin
 	cp $(RPMDIR)/SOURCES/xproxy-$(BASE_VERSION).tar.gz $(DIST)/xproxy-$(BASE_VERSION)-src.tar.gz
 	$(GO) version -m $(BIN)/xproxy > $(DIST)/xproxy-$(BASE_VERSION).sbom.txt
 	@if command -v rpmbuild >/dev/null 2>&1 && [ -f /usr/lib/rpm/macros.d/macros.systemd ]; then \
@@ -127,7 +164,7 @@ release: build dist
 	@if [ -n "$(SIGN_KEY)" ]; then ssh-keygen -Y sign -f $(SIGN_KEY) -n xproxy-release $(DIST)/SHA256SUMS && echo "signed $(DIST)/SHA256SUMS.sig"; fi
 	@ls -l $(DIST)
 
-check: fmt vet test-race lint
+check: fmt vet-all test-race lint
 
 clean:
 	rm -rf $(BIN) coverage.out $(RPMDIR) deploy/selinux/xproxy.pp deploy/selinux/xproxy.pp.bz2 deploy/selinux/tmp

@@ -1,0 +1,18 @@
+# Include fragment: a header_guard filter that refuses well known scanner
+# and scraper user agents, and requires a User-Agent at all. Attach it to
+# routes with filters: [bad-bots]. Patterns are RE2, matched against the
+# header value; a missing header does not match a deny rule, so the
+# require rule covers that case.
+filters:
+  - name: bad-bots
+    kind: header_guard
+    options:
+      status: 403
+      reason: bad_bot
+      require:
+        - {header: User-Agent, pattern: "."}
+      deny:
+        - {header: User-Agent, pattern: "(?i)(sqlmap|nikto|nessus|masscan|zgrab|nuclei|acunetix|dirbuster|gobuster|wpscan)"}
+        - {header: User-Agent, pattern: "(?i)^(python-requests|python-urllib|go-http-client|curl|wget|libwww-perl)/"}
+        - {header: User-Agent, pattern: "(?i)(ahrefsbot|semrushbot|mj12bot|dotbot|petalbot|bytespider)"}
+        - {header: X-Forwarded-Host, pattern: "."}

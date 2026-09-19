@@ -73,11 +73,18 @@ type Config struct {
 	// Ingress turns Kubernetes Ingress resources into routes, upstreams
 	// and certificates (ingress controller mode).
 	Ingress *Ingress `yaml:"ingress"`
+	// Sandbox configures the in-process hardening applied once the
+	// listeners are bound: Landlock file system rules, a seccomp system
+	// call filter, capability dropping and debugger denial on Linux;
+	// debugger denial and core dump suppression on macOS. On by default.
+	Sandbox Sandbox `yaml:"sandbox"`
 	// Cache sizes the in-memory response cache used by routes[].cache.
 	Cache *Cache `yaml:"cache"`
 	// Compression enables gzip of eligible responses on every route
 	// (routes[].compress overrides per route).
 	Compression *Compression `yaml:"compression"`
+	// Tracing gives requests a W3C trace context and exports spans.
+	Tracing *Tracing `yaml:"tracing"`
 	// ACME configures automatic certificates for listeners with tls.acme.
 	ACME *ACME `yaml:"acme"`
 }
@@ -215,7 +222,31 @@ type DNSListener struct {
 	// LogQueries writes one dns line per query to the access log.
 	// Default false (query logs are personal data).
 	LogQueries bool `yaml:"log_queries"`
+	// DoHPath is the DNS over HTTPS path served on an encrypted dns
+	// listener (one with tls). Default /dns-query.
+	DoHPath string `yaml:"doh_path"`
+	// DNSSEC validates upstream answers against a trust anchor.
+	DNSSEC *DNSSEC `yaml:"dnssec"`
 }
+
+// DNSSEC configures validation on a dns listener: answers are fetched
+// with the DO bit, signatures and denial proofs are checked up to a
+// trust anchor, secure answers carry AD, bogus answers become SERVFAIL
+// (unless the client set CD), insecure answers pass without AD.
+type DNSSEC struct {
+	// Enabled defaults to true when the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// TrustAnchors are DS records ("zone keytag algorithm digesttype
+	// digest"); the IANA root keys are built in.
+	TrustAnchors []string `yaml:"trust_anchors"`
+	// TrustAnchorsFile adds DS lines from a file (comments with #).
+	TrustAnchorsFile string `yaml:"trust_anchors_file"`
+	// MaxLookups bounds DNSKEY and DS queries per answer. Default 48.
+	MaxLookups int `yaml:"max_lookups"`
+}
+
+// IsEnabled reports whether validation is on.
+func (d *DNSSEC) IsEnabled() bool { return d != nil && (d.Enabled == nil || *d.Enabled) }
 
 // DNSCache bounds the cache of a dns listener.
 type DNSCache struct {
@@ -413,6 +444,38 @@ type TLS struct {
 	// each (one certificate per group, hosts as SANs). Requires the
 	// top-level acme section.
 	ACME []ACMEGroup `yaml:"acme"`
+	// OCSPStapling fetches OCSP responses for the served certificates
+	// and staples them into handshakes.
+	OCSPStapling *OCSPStapling `yaml:"ocsp_stapling"`
+	// CT checks the signed certificate timestamps embedded in the file
+	// certificates at load.
+	CT *CT `yaml:"ct"`
+}
+
+// OCSPStapling configures the background OCSP fetcher of a listener.
+type OCSPStapling struct {
+	Enabled *bool `yaml:"enabled"`
+	// Timeout of one responder request. Default 5s.
+	Timeout Duration `yaml:"timeout"`
+	// Refresh is the longest interval between fetches; responses are
+	// also refreshed at half their validity. Default 1h.
+	Refresh Duration `yaml:"refresh"`
+}
+
+// IsEnabled reports whether stapling is on.
+func (o *OCSPStapling) IsEnabled() bool { return o != nil && (o.Enabled == nil || *o.Enabled) }
+
+// CT is the Certificate Transparency policy for file certificates.
+type CT struct {
+	// Require is the number of embedded SCTs a certificate must carry
+	// (verified ones when LogListFile is set). 0 only reports.
+	Require int `yaml:"require"`
+	// LogListFile is a log list in Google's JSON format with the logs'
+	// keys; with it SCT signatures are verified.
+	LogListFile string `yaml:"log_list_file"`
+	// Enforce fails the load or reload of a certificate below Require
+	// instead of logging it.
+	Enforce bool `yaml:"enforce"`
 }
 
 // ACMEGroup is one automatically managed certificate.
@@ -451,6 +514,11 @@ type Management struct {
 	Socket string `yaml:"socket"`
 	// SocketMode is the octal permission mode of the socket, default 0660.
 	SocketMode string `yaml:"socket_mode"`
+	// HistoryDir keeps every applied configuration as a file for
+	// xproxyctl history, diff and rollback. Empty disables history.
+	HistoryDir string `yaml:"history_dir"`
+	// HistoryKeep is how many entries are kept. Default 20.
+	HistoryKeep int `yaml:"history_keep"`
 }
 
 // Logging configures the four log streams (AMR-014).
@@ -471,7 +539,73 @@ type Logging struct {
 	Syslog *Syslog `yaml:"syslog"`
 	// Redaction removes or pseudonymises personal data before any sink.
 	Redaction *Redaction `yaml:"redaction"`
+	// OTLP configures the OpenTelemetry log sink used by streams listing
+	// otlp in their sinks.
+	OTLP *OTLPExport `yaml:"otlp"`
 }
+
+// OTLPExport is a collector endpoint for traces or logs.
+type OTLPExport struct {
+	// Endpoint is the collector URL (/v1/traces or /v1/logs).
+	Endpoint string `yaml:"endpoint"`
+	// AllowHTTP permits a plain http endpoint.
+	AllowHTTP bool `yaml:"allow_http"`
+	// Timeout of one push. Default 10s.
+	Timeout Duration `yaml:"timeout"`
+	// Headers added to every request.
+	Headers map[string]string `yaml:"headers"`
+	// CAFile pins the collector's CA. Default: system pool.
+	CAFile string `yaml:"ca_file"`
+	// ServiceName is the service.name resource attribute. Default xproxy.
+	ServiceName string `yaml:"service_name"`
+	// Attributes are extra resource attributes.
+	Attributes map[string]string `yaml:"attributes"`
+	// Compress gzips the request body. Default true.
+	Compress *bool `yaml:"compress"`
+	// Batch is the largest number of items per push. Default 512.
+	Batch int `yaml:"batch"`
+	// Interval is the longest time an item waits before a push. Default 5s.
+	Interval Duration `yaml:"interval"`
+	// Queue bounds items waiting for a push. Default 8192.
+	Queue int `yaml:"queue"`
+}
+
+// Compresses reports the compress setting with its default.
+func (o *OTLPExport) Compresses() bool { return o.Compress == nil || *o.Compress }
+
+// Tracing configures W3C trace context handling and span export.
+type Tracing struct {
+	// Enabled defaults to true when the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// SamplePercent is the share of new traces (no incoming traceparent)
+	// that are recorded. Default 100.
+	SamplePercent *float64 `yaml:"sample_percent"`
+	// Propagate sends traceparent and tracestate to the upstream. Default
+	// true.
+	Propagate *bool `yaml:"propagate"`
+	// TrustIncoming honours the sampled flag of an incoming traceparent.
+	// Off (the default) the incoming trace id is continued for
+	// correlation but the sampling decision stays local, so a client
+	// cannot force every request into the exporter.
+	TrustIncoming bool `yaml:"trust_incoming"`
+	// OTLP exports spans; without it the context is only propagated and
+	// logged.
+	OTLP *OTLPExport `yaml:"otlp"`
+}
+
+// IsEnabled reports whether tracing is on.
+func (t *Tracing) IsEnabled() bool { return t != nil && (t.Enabled == nil || *t.Enabled) }
+
+// Sample returns the sampling share with its default.
+func (t *Tracing) Sample() float64 {
+	if t == nil || t.SamplePercent == nil {
+		return 100
+	}
+	return *t.SamplePercent
+}
+
+// Propagates reports whether trace context is forwarded.
+func (t *Tracing) Propagates() bool { return t != nil && (t.Propagate == nil || *t.Propagate) }
 
 // LogStream configures one stream.
 type LogStream struct {
@@ -484,6 +618,14 @@ type LogStream struct {
 	// Sinks lists where the stream goes: file, journald, syslog. Default
 	// [file].
 	Sinks []string `yaml:"sinks"`
+	// Format is json (default), or for the access stream common
+	// (Common Log Format), combined (NCSA combined) or custom with
+	// Template. The other streams are structured and stay JSON.
+	Format string `yaml:"format"`
+	// Template is the line for format custom: literal text with {field}
+	// placeholders naming access log attributes plus time_clf, time_iso,
+	// time_unix, request, user and bytes_out_clf; a missing field prints "-".
+	Template string `yaml:"template"`
 }
 
 // Journald is the native journald sink.
@@ -581,6 +723,12 @@ type Upstream struct {
 	// Retries is the number of times an idempotent request is retried on a
 	// connection error against a different endpoint. Default 1.
 	Retries *int `yaml:"retries"`
+	// RetryOn adds response statuses that are retried like connection
+	// errors, on another endpoint, within the same Retries budget and
+	// only for replayable requests: "5xx", "500", "502", "503", "504",
+	// "429". A retried status counts as a passive failure of the
+	// endpoint. Default none.
+	RetryOn []string `yaml:"retry_on"`
 	// HashOn selects the hash input for the hash balancer: client_ip,
 	// header:<name> or cookie:<name>.
 	HashOn string `yaml:"hash_on"`
@@ -588,12 +736,37 @@ type Upstream struct {
 	Affinity *Affinity `yaml:"affinity"`
 	// OutlierEjection removes endpoints that fail passively.
 	OutlierEjection *OutlierEjection `yaml:"outlier_ejection"`
+	// CircuitBreaker stops sending to the pool as a whole after
+	// consecutive failures and probes it back with half open trials.
+	CircuitBreaker *CircuitBreaker `yaml:"circuit_breaker"`
+	// MaxConcurrent bounds requests in flight to the pool; 0 is unbounded.
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// Queue holds requests beyond MaxConcurrent for a bounded time.
+	Queue *UpstreamQueue `yaml:"queue"`
+	// Canary sends selected requests to endpoints marked canary.
+	Canary *Canary `yaml:"canary"`
 }
 
 // Endpoint is a single upstream address.
 type Endpoint struct {
 	Address string `yaml:"address"`
 	Weight  int    `yaml:"weight"`
+	// Canary marks the endpoint as the pool's canary: it receives the
+	// requests the pool's canary policy selects and no others.
+	Canary bool `yaml:"canary"`
+}
+
+// Canary routes selected requests to the pool's canary endpoints: those
+// carrying Header or Cookie (with one of Values when listed) and a
+// Percent share of the rest. Other requests avoid the canaries. Each
+// side falls back to the other when its endpoints are all unavailable
+// unless Fallback is false.
+type Canary struct {
+	Header   string   `yaml:"header"`
+	Cookie   string   `yaml:"cookie"`
+	Values   []string `yaml:"values"`
+	Percent  float64  `yaml:"percent"`
+	Fallback *bool    `yaml:"fallback"`
 }
 
 // UpstreamTLS configures TLS towards upstream endpoints.
@@ -666,6 +839,24 @@ type OutlierEjection struct {
 	MaxEjectionPercent  int      `yaml:"max_ejection_percent"`
 }
 
+// CircuitBreaker is a pool wide breaker: closed counts consecutive
+// failures (connection errors, timeouts, 503 and retry_on statuses),
+// open refuses requests with 503 for OpenFor (times the number of
+// reopens, at most ten), half open lets HalfOpenRequests trials through.
+type CircuitBreaker struct {
+	ConsecutiveFailures int      `yaml:"consecutive_failures"`
+	OpenFor             Duration `yaml:"open_for"`
+	HalfOpenRequests    int      `yaml:"half_open_requests"`
+}
+
+// UpstreamQueue bounds the requests waiting for a MaxConcurrent slot.
+type UpstreamQueue struct {
+	// Size is the number of waiting requests; more are refused at once.
+	Size int `yaml:"size"`
+	// Timeout is how long a request waits before 503. Default 1s.
+	Timeout Duration `yaml:"timeout"`
+}
+
 // Route maps a request to an upstream and attaches policies.
 type Route struct {
 	Name string `yaml:"name"`
@@ -685,6 +876,9 @@ type Route struct {
 	// without at the same path length (more conditions first).
 	Headers []HeaderMatch `yaml:"headers"`
 	Cookies []HeaderMatch `yaml:"cookies"`
+	// Tenant is a free label that groups routes for quota reporting
+	// (GET /v1/quotas, xproxyctl quotas) and the per route metrics.
+	Tenant string `yaml:"tenant"`
 	// Priority breaks ties between routes with identical specificity. Higher
 	// wins. Default 0.
 	Priority int `yaml:"priority"`
@@ -1041,6 +1235,75 @@ type BanTrigger struct {
 	MaxDuration Duration `yaml:"max_duration"`
 }
 
+// Sandbox configures the in-process hardening (docs/HARDENING.md). Every
+// mechanism is applied after the listeners, log files, state files and
+// the management socket are open, so the rules describe what the process
+// still needs afterwards: the directories of every configured file for
+// reading, the log, state and history directories for writing. A reload
+// that names a file outside those directories is refused with a message
+// to restart, because Landlock rules cannot be widened once applied.
+type Sandbox struct {
+	// Enabled applies the sandbox. Default true.
+	Enabled *bool `yaml:"enabled"`
+	// Strict refuses to start when a mechanism the platform should
+	// offer is unavailable (old kernel, container without the syscall)
+	// instead of logging and continuing. Default false.
+	Strict bool `yaml:"strict"`
+	// Landlock restricts file system access to the derived directories
+	// (Linux 5.13 or newer) and, on ABI 4 or newer, refuses new TCP
+	// binds.
+	Landlock SandboxLandlock `yaml:"landlock"`
+	// Seccomp installs a system call deny list: process tracing,
+	// module loading, mounts, namespaces, keyrings, BPF, io_uring,
+	// identity changes, exec and the kernel administration calls
+	// return EPERM (Linux).
+	Seccomp SandboxSeccomp `yaml:"seccomp"`
+	// Capabilities clears the bounding, ambient, permitted, effective
+	// and inheritable sets (Linux). Default true.
+	Capabilities SandboxCapabilities `yaml:"capabilities"`
+	// NoNewPrivs sets PR_SET_NO_NEW_PRIVS so that no later exec (there
+	// is none) could regain privileges; Landlock and unprivileged
+	// seccomp require it. Default true.
+	NoNewPrivs *bool `yaml:"no_new_privs"`
+	// Debuggable keeps the process attachable by a debugger and able to
+	// dump core. Default false: the process is made non dumpable and
+	// the core size limit is set to zero, so memory holding keys and
+	// request data cannot be read by another process of the same user
+	// or written to disk.
+	Debuggable bool `yaml:"debuggable"`
+}
+
+// SandboxLandlock tunes the Landlock rules.
+type SandboxLandlock struct {
+	// Enabled applies Landlock when the kernel offers it. Default true.
+	Enabled *bool `yaml:"enabled"`
+	// ReadPaths are extra files or directories the process may read
+	// (a filter that opens files of its own, a certificate directory
+	// that reloads will add files to).
+	ReadPaths []string `yaml:"read_paths"`
+	// WritePaths are extra directories the process may write.
+	WritePaths []string `yaml:"write_paths"`
+	// Bind refuses TCP binds after start (Landlock ABI 4, Linux 6.7 or
+	// newer). Listeners are bound before the sandbox; a reload that adds
+	// a listener requires a restart in any case. Default true.
+	Bind *bool `yaml:"bind"`
+}
+
+// SandboxSeccomp tunes the system call filter.
+type SandboxSeccomp struct {
+	// Enabled installs the filter. Default true.
+	Enabled *bool `yaml:"enabled"`
+}
+
+// SandboxCapabilities tunes capability handling.
+type SandboxCapabilities struct {
+	// Drop clears every capability set. Default true.
+	Drop *bool `yaml:"drop"`
+}
+
+// On reports whether the sandbox applies.
+func (s *Sandbox) On() bool { return s.Enabled == nil || *s.Enabled }
+
 // WAF configures the web application firewall engine.
 type WAF struct {
 	Profiles []WAFProfile `yaml:"profiles"`
@@ -1062,6 +1325,20 @@ type WAF struct {
 	ResponseBodyLimit int64 `yaml:"response_body_limit"`
 	// ResponseMIMETypes lists content types whose bodies are inspected.
 	ResponseMIMETypes []string `yaml:"response_mime_types"`
+	// Learning collects the variables that trigger detection rules and
+	// proposes exclusions (GET /v1/waf, xproxyctl waf proposals).
+	Learning *WAFLearning `yaml:"learning"`
+}
+
+// WAFLearning tunes exclusion learning. Matches are aggregated per rule,
+// target variable and route across block and detect mode alike; a triple
+// seen min_hits times becomes a proposal.
+type WAFLearning struct {
+	Enabled bool `yaml:"enabled"`
+	// MinHits is the number of matches before a proposal appears. Default 5.
+	MinHits int `yaml:"min_hits"`
+	// MaxEntries bounds the learning table. Default 10000.
+	MaxEntries int `yaml:"max_entries"`
 }
 
 // WAFProfile is a named rule set.
@@ -1078,6 +1355,11 @@ type WAFProfile struct {
 
 // CRS tunes the Core Rule Set.
 type CRS struct {
+	// Dir loads the rule set from a directory laid out like a CRS release
+	// (crs-setup.conf or crs-setup.conf.example, rules/*.conf and the data
+	// files) instead of the copy embedded in the binary, so that rules can
+	// be updated with a reload. Default: embedded.
+	Dir string `yaml:"dir"`
 	// ParanoiaLevel 1 to 4. Default 1.
 	ParanoiaLevel int `yaml:"paranoia_level"`
 	// InboundThreshold is the anomaly score at which a request is blocked.

@@ -33,7 +33,9 @@ import (
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/shed"
 	"github.com/rom/xproxy/internal/tlsconf"
+	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/upstream"
+	"github.com/rom/xproxy/internal/waf"
 )
 
 // Server runs the data plane for one configuration and supports hot reload.
@@ -57,8 +59,11 @@ type Server struct {
 	cluster     atomic.Pointer[cluster.Node]
 	shedder     atomic.Pointer[shed.Shedder]
 	challenger  atomic.Pointer[challenge.Challenger]
+	tracer      atomic.Pointer[tracing.Tracer]
 	sampler     *metrics.Sampler
 	acme        *acme.Manager
+	// wafStats keeps per rule counters and learning across reloads.
+	wafStats *waf.Stats
 
 	mu        sync.Mutex
 	listeners []*boundListener
@@ -90,6 +95,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		marks:        newMarks(),
 		fingerprints: tlsconf.NewFingerprintTable(max(cfg.Server.Limits.MaxConnections, 1024)),
 		connLimiter:  limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
+		wafStats:     waf.NewStats(),
 	}
 	s.connLimiter.OnReject = func(addr netip.Addr, reason string) {
 		s.logs.SecurityEvent(context.Background(), "drop_connection", reason, "client_ip", addr.String())
@@ -118,7 +124,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		bl := s.bans.Load()
 		return bl != nil && bl.DropsConnections() && bl.Banned(addr)
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s))
+	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s), s.wafStats)
 	if err != nil {
 		if bl := s.bans.Load(); bl != nil {
 			bl.Close()
@@ -151,6 +157,14 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	}
 	if cfg.Cache != nil {
 		s.cache.Store(cache.New(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes))
+	}
+	if cfg.Tracing.IsEnabled() {
+		tr, err := newTracer(cfg.Tracing, logs.Error)
+		if err != nil {
+			rt.stop()
+			return nil, err
+		}
+		s.tracer.Store(tr)
 	}
 	if cfg.Cluster != nil {
 		node, err := cluster.New(cfg.Cluster, rateSource{s: s}, logs.Error)
@@ -252,6 +266,30 @@ func (s *Server) CertificateExpiry() map[string]time.Time {
 	return out
 }
 
+// Tracing returns the tracer status, or nil when tracing is off.
+func (s *Server) Tracing() *tracing.Status {
+	tr := s.tracer.Load()
+	if tr == nil {
+		return nil
+	}
+	st := tr.Status()
+	return &st
+}
+
+// Certificates lists the served certificates per TLS listener with their
+// OCSP staple and Certificate Transparency state.
+func (s *Server) Certificates() map[string][]tlsconf.CertInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string][]tlsconf.CertInfo{}
+	for _, bl := range s.listeners {
+		if bl.tlsReload != nil {
+			out[bl.cfg.Name] = bl.tlsReload.Certificates()
+		}
+	}
+	return out
+}
+
 // Cache returns the response cache, or nil when none is configured.
 func (s *Server) Cache() *cache.Cache { return s.cache.Load() }
 
@@ -294,8 +332,73 @@ func (s *Server) Upstreams() map[string][]upstream.Stats {
 	return out
 }
 
+// Pools returns the pool level status (circuit breaker, queue) by name.
+func (s *Server) Pools() map[string]upstream.PoolStatus {
+	rt := s.rt.Load()
+	out := make(map[string]upstream.PoolStatus, len(rt.pools))
+	for name, p := range rt.pools {
+		out[name] = p.Status()
+	}
+	return out
+}
+
 // Generation returns the configuration generation counter.
 func (s *Server) Generation() uint64 { return s.rt.Load().generation }
+
+// WAFReport is the response of GET /v1/waf: the compiled profiles of the
+// active generation, the route assignments, and the process wide rule
+// statistics and learning proposals.
+type WAFReport struct {
+	Enabled  bool                `json:"enabled"`
+	Profiles []waf.ProfileStatus `json:"profiles"`
+	Routes   []WAFRoute          `json:"routes"`
+	waf.Report
+}
+
+// WAFRoute is one route's WAF assignment.
+type WAFRoute struct {
+	Route   string `json:"route"`
+	Profile string `json:"profile"`
+	Mode    string `json:"mode"`
+}
+
+// WAF builds the WAF report with at most top rules.
+func (s *Server) WAF(top int) WAFReport {
+	rt := s.rt.Load()
+	rep := WAFReport{Profiles: []waf.ProfileStatus{}, Routes: []WAFRoute{}}
+	if rt.waf != nil {
+		rep.Enabled = true
+		rep.Profiles = rt.waf.Profiles()
+	}
+	for _, cr := range rt.routes {
+		if cr.wafMode != "" && cr.wafMode != string(waf.ModeOff) {
+			p, _ := wafSelection(rt.cfg, cr.cfg)
+			rep.Routes = append(rep.Routes, WAFRoute{Route: cr.cfg.Name, Profile: p, Mode: cr.wafMode})
+		}
+	}
+	rep.Report = s.wafStats.Report(top, rt.routePaths())
+	return rep
+}
+
+// WAFExclusions renders the learning proposals as SecLang.
+func (s *Server) WAFExclusions() string { return s.wafStats.Exclusions(s.rt.Load().routePaths()) }
+
+// WAFReset clears the WAF statistics and learning table.
+func (s *Server) WAFReset() { s.wafStats.Reset() }
+
+// routePaths maps every route to its first path prefix, "" for regex
+// routes, for scoping exclusion proposals.
+func (rt *runtime) routePaths() map[string]string {
+	out := make(map[string]string, len(rt.routes))
+	for _, cr := range rt.routes {
+		if len(cr.cfg.PathRegex) == 0 && len(cr.cfg.Paths) > 0 {
+			out[cr.cfg.Name] = cr.cfg.Paths[0]
+		} else {
+			out[cr.cfg.Name] = ""
+		}
+	}
+	return out
+}
 
 // Start opens all listeners and begins serving. It returns once every
 // listener is bound; serving continues in the background until Shutdown.
@@ -381,6 +484,30 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		}
 		return bl, nil
 	}
+	if lc.Kind == "dns" && lc.TLS != nil {
+		// Encrypted: DNS over TLS and DNS over HTTPS on the TCP port, no
+		// plain UDP.
+		tc, rl, err := tlsconf.Server(lc.TLS, nil)
+		if err != nil {
+			_ = ln.Close()
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		tc.NextProtos = []string{dns.ALPNDoT, dns.ALPNH2, dns.ALPNHTTP}
+		rl.Fingerprints = s.fingerprints
+		rl.StartStapling(s.logs.Error)
+		bl.tlsReload = rl
+		bl.ln = tls.NewListener(bl.ln, tc)
+		d, err := s.newDNSServer(lc, nil, bl.ln)
+		if err != nil {
+			_ = ln.Close()
+			rl.Close()
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		d.Encrypted = true
+		d.DoHPath = lc.DNS.DoHPath
+		bl.dns = d
+		return bl, nil
+	}
 	if lc.Kind == "dns" {
 		// UDP on the same port as TCP, also when the port was chosen by
 		// the system (":0" in tests).
@@ -443,6 +570,10 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 			rl.Challenge = s.acme.TLSALPN01
 		}
 		rl.Fingerprints = s.fingerprints
+		for _, w := range rl.CTWarnings() {
+			s.logs.Security.Warn("certificate transparency", "listener", lc.Name, "issue", w)
+		}
+		rl.StartStapling(s.logs.Error)
 		bl.httpSrv.ConnState = func(c net.Conn, st http.ConnState) {
 			if st == http.StateClosed || st == http.StateHijacked {
 				s.fingerprints.Delete(c.RemoteAddr().String())
@@ -548,7 +679,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s))
+	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s), s.wafStats)
 	if err != nil {
 		s.stats.ReloadFailures.Add(1)
 		return err
@@ -648,6 +779,21 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.shedder.Store(shed.New(cfg.Shedding, s.concurrency.InFlight, cfg.Server.Limits.MaxConcurrentRequests))
 	case sh != nil:
 		s.shedder.Store(nil)
+	}
+	// Tracing: rebuilt when its section changed, so a reload can move
+	// the collector or the sampling share.
+	if !sameTracing(old.cfg.Tracing, cfg.Tracing) {
+		var next *tracing.Tracer
+		if cfg.Tracing.IsEnabled() {
+			if tr, err := newTracer(cfg.Tracing, s.logs.Error); err == nil {
+				next = tr
+			} else {
+				s.logs.Error.Error("tracing exporter unavailable", "err", err.Error())
+			}
+		}
+		if prev := s.tracer.Swap(next); prev != nil {
+			go prev.Stop()
+		}
 	}
 	switch ch := s.challenger.Load(); {
 	case cfg.Challenge != nil && ch != nil:
@@ -763,9 +909,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			if bl.dns != nil {
 				bl.dns.Shutdown(ctx)
 				bl.dns.Close()
+				if bl.tlsReload != nil {
+					bl.tlsReload.Close()
+				}
 				return
 			}
 			err := bl.httpSrv.Shutdown(ctx)
+			if bl.tlsReload != nil {
+				bl.tlsReload.Close()
+			}
 			if bl.forward != nil {
 				bl.forward.shutdown(ctx)
 			}
@@ -789,6 +941,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if s.acme != nil {
 			s.acme.Stop()
 		}
+	}
+	if tr := s.tracer.Load(); tr != nil {
+		tr.Stop()
 	}
 	if node := s.cluster.Load(); node != nil {
 		node.Stop()

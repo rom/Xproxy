@@ -256,3 +256,73 @@ routes:
 		t.Fatalf("after removing bans: %d", resp.StatusCode)
 	}
 }
+
+func TestWAFReport(t *testing.T) {
+	a := newBackend(t, "a")
+	yaml := strings.Replace(fmt.Sprintf(defenceYAML, a.addr()), "waf:\n  default_mode: block\n", "waf:\n  default_mode: block\n  learning: {enabled: true, min_hits: 2}\n", 1)
+	s, url := startServer(t, yaml)
+	for i, ip := range []string{"192.0.2.10", "192.0.2.11"} {
+		resp, _ := getAs(t, url+"/items?id=1%27%20OR%20%271%27=%271", "block.test", ip)
+		if resp.StatusCode != 403 {
+			t.Fatalf("attack %d: %d", i, resp.StatusCode)
+		}
+	}
+	resp, _ := getAs(t, url+"/?q=<script>alert(1)</script>", "detect.test", "192.0.2.12")
+	if resp.StatusCode != 200 {
+		t.Fatalf("detect: %d", resp.StatusCode)
+	}
+
+	// The detect route's filter finishes after the response is written.
+	deadline := time.Now().Add(5 * time.Second)
+	for s.WAF(0).Requests < 3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	rep := s.WAF(20)
+	if !rep.Enabled || len(rep.Profiles) != 2 || rep.Profiles[0].CRS != "embedded" || rep.Profiles[0].Version == "" {
+		t.Fatalf("profiles %+v", rep.Profiles)
+	}
+	modes := map[string]string{}
+	for _, r := range rep.Routes {
+		modes[r.Route] = r.Mode + "/" + r.Profile
+	}
+	if modes["blocked"] != "block/default" || modes["detect"] != "detect/default" || modes["custom"] != "block/custom" || modes["off"] != "" {
+		t.Fatalf("routes %v", modes)
+	}
+	if rep.Requests != 3 || rep.Blocked != 2 || rep.Detected != 1 || rep.TotalRules == 0 {
+		t.Fatalf("counters %+v", rep.Report)
+	}
+	if rep.Learning == nil || !rep.Learning.Enabled || len(rep.Learning.Proposals) == 0 {
+		t.Fatalf("learning %+v", rep.Learning)
+	}
+	p := rep.Learning.Proposals[0]
+	if p.Route != "blocked" || p.Path != "/" || p.Hits != 2 || p.Clients != 2 || !strings.Contains(p.Directive, "@beginsWith /") {
+		t.Fatalf("proposal %+v", p)
+	}
+	if text := s.WAFExclusions(); !strings.Contains(text, p.Directive) {
+		t.Fatalf("exclusions:\n%s", text)
+	}
+
+	// Statistics survive a reload; reset clears them.
+	if err := s.Reload(mustParse(t, yaml)); err != nil {
+		t.Fatal(err)
+	}
+	if rep := s.WAF(20); rep.Requests != 3 || len(rep.Learning.Proposals) == 0 {
+		t.Fatalf("after reload %+v", rep.Report)
+	}
+	s.WAFReset()
+	if rep := s.WAF(20); rep.Requests != 0 || rep.TotalRules != 0 || len(rep.Learning.Proposals) != 0 {
+		t.Fatalf("after reset %+v", rep.Report)
+	}
+	// Turning learning off at reload stops collection but keeps counters.
+	if err := s.Reload(mustParse(t, fmt.Sprintf(defenceYAML, a.addr()))); err != nil {
+		t.Fatal(err)
+	}
+	getAs(t, url+"/items?id=1%27%20OR%20%271%27=%271", "block.test", "192.0.2.13")
+	deadline = time.Now().Add(5 * time.Second)
+	for s.WAF(0).Requests < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rep := s.WAF(20); rep.Requests != 1 || rep.Learning == nil || rep.Learning.Enabled || rep.Learning.Entries != 0 {
+		t.Fatalf("learning off %+v %+v", rep.Report, rep.Learning)
+	}
+}

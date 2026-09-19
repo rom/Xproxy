@@ -68,8 +68,130 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `exact`, `prefix`, `regex` and `present`); conditioned routes rank
   before plain routes on the same path. Gateway API `RegularExpression`
   paths and header matches now translate instead of warning.
+- `upstreams[].retry_on`: response statuses (`5xx`, `500`, `502`,
+  `503`, `504`, `429`) retried on another endpoint within the
+  `retries` budget for replayable requests, counted as passive
+  failures; `upstream_retries` and `upstream_status_retries` counters
+  and `xproxy_upstream_retries_total` by reason.
+- Access log text formats: `logging.access.format` `common` (Common
+  Log Format), `combined` and `custom` with a `template` of `{field}`
+  placeholders over every access log attribute plus derived `time_clf`,
+  `request`, `user` and `bytes_out_clf`; Apache style escaping; the
+  same line to every sink.
+- `body_rewrite` filter kind: literal and regular expression rules over
+  request and response bodies with media type lists and size bounds,
+  `Content-Length` and validators maintained, `body_rewrite` in the
+  access log.
+- Traffic management: `upstreams[].circuit_breaker` (pool wide breaker
+  with half open trials and growing back-off, distinct from outlier
+  ejection), `upstreams[].max_concurrent` with `queue` (bounded
+  waiters with a deadline); `GET /v1/pools`, pool rows in `xproxyctl
+  upstreams`, `upstream_circuit_open`, `upstream_queue_full`,
+  `upstream_queue_timeouts` and per pool gauges.
+- Canary endpoints: `endpoints[].canary` with `upstreams[].canary`
+  (header, cookie, values, percent, fallback) sends selected requests
+  to the canary endpoints of a pool and keeps the rest away; `canary`
+  in the access log, endpoint stats and `GET /v1/pools`.
+- Quota reporting: `routes[].tenant` label, `GET /v1/quotas` and
+  `xproxyctl quotas` with usage per tenant, per route (status classes,
+  denied, rate limited, bytes) and per rate limit policy (decisions,
+  top consumers with tokens left), request share per upstream; metrics
+  `xproxy_route_bytes_total`, `xproxy_route_rate_limited_total`,
+  `xproxy_rate_limit_decisions_total`, `xproxy_rate_limit_keys` and a
+  `tenant` label on per route counters.
+- Configuration operations: `xproxyctl reload -dry-run` reports per
+  item changes, the restart list and a unified diff without applying;
+  `xproxyctl diff` compares the running configuration, the file and
+  history entries; `management.history_dir` records every applied
+  generation for `xproxyctl history` and `xproxyctl rollback ID`;
+  endpoints `POST /v1/reload?dry_run=1`, `GET /v1/diff`, `GET
+  /v1/history`, `POST /v1/rollback`. `xproxyctl config` and the history
+  use one self-contained dump (`config.Dump`).
+- Key rotation: secret files for affinity, the challenge, OIDC cookies
+  and log pseudonyms accept a keyring (`internal/secret`), the first
+  key signs and seals and every key verifies; `xproxyctl rotate-secret
+  FILE` adds a fresh primary key and keeps a bounded number of old
+  ones; the challenge re-reads its ring on reload.
+- OCSP stapling: `tls.ocsp_stapling` fetches responses in the
+  background for file and ACME certificates and staples them without
+  blocking handshakes; `GET /v1/tls` and `xproxyctl tls` show the state.
+- Certificate Transparency checks: `tls.ct` parses embedded SCTs at
+  load, verifies their signatures against a log list file and reports,
+  logs or (with `enforce`) refuses certificates below `require`.
+- Distributed tracing: `tracing` gives every request a W3C trace
+  context, propagates it to the upstream, records a server span and an
+  upstream client span and exports them as OTLP/HTTP JSON with local
+  sampling (`sample_percent`, `trust_incoming`); `trace_id`, `span_id`
+  and `trace_sampled` in the access log.
+- OTLP logs: `logging.otlp` and the `otlp` sink ship log records with
+  typed attributes and trace ids to a collector; `GET /v1/telemetry`
+  and `xproxyctl telemetry` show metrics, traces and logs exporters
+  together. The OTLP/HTTP client is shared (`internal/otlp`).
+- Encrypted dns listeners: `tls` on `kind: dns` serves DNS over TLS
+  and DNS over HTTPS (`doh_path`) on one port by ALPN, with per
+  transport counters `queries_udp`, `queries_tcp`, `queries_dot` and
+  `queries_doh`.
+- DNSSEC validation on dns listeners (`dns.dnssec`): RRSIG
+  verification for RSA, ECDSA P-256/P-384 and Ed25519, DS and DNSKEY
+  chains from the built-in root anchors or configured ones, NSEC and
+  NSEC3 denial proofs with wildcard and opt-out handling, a bounded
+  key cache, AD for secure answers, SERVFAIL and `dns_bogus` for bogus
+  ones, CD passthrough, DNSSEC records stripped for clients without DO.
+- WAF operations: per rule statistics (matches, blocks, detects, last
+  seen, severity, tags) and profile status with rule set source and
+  CRS version; `waf.learning` aggregates matched variables per rule
+  and route and proposes path scoped SecLang exclusions once
+  `min_hits` is reached; `crs.dir` loads the Core Rule Set from a
+  directory so rules update with a reload instead of a rebuild;
+  `GET /v1/waf`, `GET /v1/waf/exclusions`, `POST /v1/waf/reset`,
+  `xproxyctl waf [rules|proposals|exclusions|reset]`.
+- In-process sandbox (`sandbox` section, on by default): Landlock file
+  system rules derived from the configuration with TCP bind refusal on
+  ABI 4, a seccomp deny list on every thread, capability clearing,
+  `no_new_privs`, non dumpable with no core files; strict mode; a
+  reload naming a path outside the rules is refused; `GET /v1/sandbox`,
+  `xproxyctl sandbox`, a `sandbox` summary in `status`.
+- systemd unit: `Type=notify-reload` with `ReloadSignal=SIGHUP` (no
+  helper binary in the sandbox), `NoExecPaths=/` with the binary as the
+  only `ExecPaths=`, `KeyringMode=private`, `PrivateMounts=yes`,
+  `RestrictFileSystems=`, `@clock @keyring @pkey` filtered; an optional
+  `SocketBindDeny` drop-in.
+- macOS as a target platform: `make build-darwin`, `dist-darwin` and
+  `install-macos`; launchd jobs under hidden system users, a Seatbelt
+  profile, a pf anchor, newsyslog rotation and an installer in
+  `deploy/macos`; platform defaults under `/usr/local`; management peer
+  credentials through `LOCAL_PEERCRED`; debugger denial and core limit
+  in process; `make check` type checks the macOS targets.
+- `examples/` directory: WAF exclusions and custom rules, a DNS block
+  list with a sinkhole listener, CIDR and bad bot include fragments,
+  header policy, basic authentication, bot scoring, a WebAssembly
+  policy module with text source and generator, path and body
+  rewriting, advanced routing; every file validated by
+  `go test ./test/examples/`.
+- Documentation syntax test: every `yaml` block in the documentation is
+  checked against the configuration schema on each `make check`.
+- TUI screens 7 to 9 (routes, WAF, TLS), pool state under upstreams,
+  sandbox, telemetry and dns lines in the overview; GUI pages Routes,
+  WAF (with reset and SecLang download), Subsystems, History (dry run
+  and roll back), served certificates on the Certificates page and pool
+  state on Upstreams, so every management endpoint is visible in the
+  CLI, the TUI and the GUI.
+- Tests: `xproxyctl` exercised end to end against a management server
+  (every command), fuzz targets for the PROXY protocol header, access
+  log templates, DNS messages, trust anchors and the configuration
+  differ, benchmarks for the WAF, DNS parsing and PROXY parsing, a
+  golden test of the example configuration's dump.
+- `wasm` filter `engine` option (`auto`, `compiler`, `interpreter`):
+  `auto` probes the compiler once and falls back to the interpreter
+  where executable memory is refused (`MemoryDenyWriteExecute`, the
+  macOS hardened runtime).
 
 ### Fixed (1.3)
+- WAF learning proposals without a route path used
+  `SecRuleUpdateTargetById`, which does not compile in a directive file
+  loaded before the CRS rules; they are now an unconditional `SecAction`
+  with the same `ctl:ruleRemoveTargetById`, and the test compiles both
+  forms into an engine.
 - Ingress merge on a configuration with `includes` expanded the
   fragments a second time, failing the merge on duplicate names.
 - Reloading a dns listener's policy leaked the previous resolver's

@@ -220,6 +220,40 @@ procedure is in RELEASING.md.
 - Response compression (`compression`, `routes[].compress`): delivered
 - Regular expression, header and cookie routing (`path_regex`,
   `headers`, `cookies`): delivered
+- `retry_on` status policy for upstream retries: delivered
+- Access log formats beyond JSON (`common`, `combined`, `custom`
+  template): delivered
+- Request and response body rewriting outside WebAssembly
+  (`body_rewrite` filter kind): delivered
+- Circuit breaker with half open probing, per upstream concurrency
+  limits and request queueing with deadlines: delivered
+- Canary by header or cookie beyond weights (`upstreams[].canary`):
+  delivered
+- Per tenant and per route quota reporting (`tenant`, `/v1/quotas`,
+  `xproxyctl quotas`): delivered
+- Configuration dry run, diff between generations, history and rollback
+  beyond the previous file: delivered
+- Key rotation for the affinity, OIDC and challenge secrets (keyring
+  files, `xproxyctl rotate-secret`): delivered
+- OCSP stapling and Certificate Transparency log checks
+  (`tls.ocsp_stapling`, `tls.ct`, `xproxyctl tls`): delivered
+- Distributed tracing (W3C trace context, OTLP spans) and OTLP for
+  logs (`tracing`, `logging.otlp`, `xproxyctl telemetry`): delivered
+- DNS over TLS and HTTPS for clients on dns listeners (`tls` on `kind:
+  dns`, `doh_path`): delivered
+- DNSSEC validation on dns listeners (`dns.dnssec`): delivered
+- WAF operations: learning mode with exclusion proposals, per rule
+  statistics, rule set updates from a directory (`waf.learning`,
+  `crs.dir`, `xproxyctl waf`): delivered
+- In-process sandbox (Landlock, seccomp, capabilities, no_new_privs,
+  non dumpable), systemd unit additions, macOS target with launchd,
+  Seatbelt and pf: delivered (AMR-044, AMR-045)
+- Validated `examples/` (WAF rules, block lists, filters, a WebAssembly
+  module, rewriting, routing), a documentation syntax test, CLI end to
+  end tests, new fuzz targets, benchmarks and a golden configuration
+  dump: delivered
+- Every management endpoint visible in the CLI, the TUI (nine screens)
+  and the GUI (twelve pages): delivered
 
 ## After 1.3 (candidates, unranked)
 

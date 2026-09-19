@@ -98,6 +98,8 @@ type FilterStatus struct {
 type rateLimit struct {
 	cfg *config.RateLimit
 	lim *limits.KeyedLimiter
+	// allowed and denied count decisions for quota reporting.
+	allowed, denied atomic.Uint64
 }
 
 // compiledRoute caches per-route derived data.
@@ -117,6 +119,9 @@ type compiledRoute struct {
 	class        shed.Class
 	challenge    *config.RouteChallenge // nil or mode off means no gate
 	counts       [5]atomic.Uint64       // 2xx, 3xx, 4xx, 5xx, denied
+	bytesIn      atomic.Uint64
+	bytesOut     atomic.Uint64
+	rateLimited  atomic.Uint64
 	geoAllow     map[string]bool
 	geoDeny      map[string]bool
 	geoUnknown   string
@@ -150,7 +155,7 @@ func wafSelection(cfg *config.Config, r *config.Route) (profile string, mode waf
 	return cfg.WAF.DefaultProfile, waf.Mode(cfg.WAF.DefaultMode)
 }
 
-func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events *eventBus) (*runtime, error) {
+func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events *eventBus, wafStats *waf.Stats) (*runtime, error) {
 	rt := &runtime{
 		cfg:        cfg,
 		generation: generation,
@@ -259,7 +264,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 			}
 			need[p][m] = true
 		}
-		engine, err := waf.New(cfg.WAF, need, log)
+		engine, err := waf.New(cfg.WAF, need, wafStats, log)
 		if err != nil {
 			rt.stop()
 			return nil, err

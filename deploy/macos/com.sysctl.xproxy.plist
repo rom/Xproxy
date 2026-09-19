@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  xproxy data plane as a launchd system daemon.
+
+  Install:  sudo cp com.sysctl.xproxy.plist /Library/LaunchDaemons/
+            sudo chown root:wheel /Library/LaunchDaemons/com.sysctl.xproxy.plist
+            sudo launchctl bootstrap system /Library/LaunchDaemons/com.sysctl.xproxy.plist
+  Reload:   sudo launchctl kill HUP system/com.sysctl.xproxy
+  Restart:  sudo launchctl kickstart -k system/com.sysctl.xproxy
+  Logs:     /usr/local/var/log/xproxy (the configured streams) and
+            launchd.log for anything written before the logs open.
+
+  The daemon runs as the _xproxy user inside the sandbox-exec profile
+  xproxy.sb (file system, network and process confinement) and applies
+  its own debugger denial and core limit on start. Ports below 1024 need
+  no privilege on macOS 10.14 or newer, so nothing here runs as root.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sysctl.xproxy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/sandbox-exec</string>
+    <string>-f</string>
+    <string>/usr/local/etc/xproxy/xproxy.sb</string>
+    <string>/usr/local/bin/xproxy</string>
+    <string>-config</string>
+    <string>/usr/local/etc/xproxy/xproxy.yaml</string>
+  </array>
+  <key>UserName</key>
+  <string>_xproxy</string>
+  <key>GroupName</key>
+  <string>_xproxy</string>
+  <key>InitGroups</key>
+  <false/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>2</integer>
+  <key>ExitTimeOut</key>
+  <integer>45</integer>
+  <key>Umask</key>
+  <integer>23</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>XPROXY_SEATBELT</key>
+    <string>/usr/local/etc/xproxy/xproxy.sb</string>
+  </dict>
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>65536</integer>
+    <key>Core</key>
+    <integer>0</integer>
+  </dict>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>65536</integer>
+    <key>Core</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/usr/local/var/log/xproxy/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/usr/local/var/log/xproxy/launchd.log</string>
+</dict>
+</plist>

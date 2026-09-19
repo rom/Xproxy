@@ -106,7 +106,7 @@ record.
 | `github.com/corazawaf/coraza-coreruleset/v4` | Apache 2.0 | OWASP CRS embedded as a file system, no network fetch | phase 2 |
 | `go.etcd.io/bbolt` | MIT | Embedded state store for bans (AMR-012) | phase 2 |
 | `github.com/quic-go/quic-go` (with `qpack`) | MIT | HTTP/3 (AMR-002, AMR-024); pinned to the newest release that builds with the minimum toolchain | phase 2 |
-| `golang.org/x/*` | BSD | Extended standard library (`net`, `crypto`, `sys`, `time`) | as needed |
+| `golang.org/x/*` | BSD | Extended standard library (`net`, `crypto`, `sys`, `time`); `x/crypto/ocsp` and `x/crypto/cryptobyte` are imported directly since 1.3 for OCSP stapling and SCT verification, `x/sys/unix` since 1.3 for Landlock, seccomp, capabilities and the macOS peer credentials (AMR-044, AMR-045) | as needed |
 | `github.com/tetratelabs/wazero` | Apache 2.0 | WebAssembly runtime for the `wasm` filter kind (AMR-013, AMR-042); pure Go, no cgo | 1.2 |
 | `golang.org/x/term` | BSD | Raw terminal mode for the TUI (AMR-027); replaces the bubbletea plan | phase 2 |
 
@@ -444,7 +444,11 @@ performance, memory bounds and operability.
 **Decision.**
 
 - The CRS is embedded in the binary through `coraza-coreruleset`; no rule
-  download at run time, and rule set upgrades are release upgrades.
+  download at run time. Rule set upgrades are release upgrades by
+  default; since 1.3 a profile may instead load the CRS from an operator
+  directory (`crs.dir`, read and validated at load, never fetched), so a
+  CRS security release can be applied with a reload while the embedded
+  copy remains the fallback and the no-network property holds.
 - A profile compiles into separate blocking and detection-only Coraza
   instances, only for the modes routes actually use, because Coraza's
   engine mode is per instance. Detection-only doubles as shadow mode.
@@ -461,6 +465,12 @@ performance, memory bounds and operability.
   rules; Coraza's audit engine is off so there is one log format.
 - Operator exclusions load between CRS setup and CRS rules, the position
   the CRS documents for `ctl:ruleRemove*` directives.
+- Per rule statistics and exclusion learning (1.3) are computed from the
+  matched rules xproxy already reads for logging, in a process wide
+  table bounded in rules, entries and clients; proposals are rendered
+  as SecLang for review and never applied by the proxy itself, because
+  an automatic exclusion would let an attacker weaken the rule set by
+  repetition.
 
 **Consequences.** Memory per compiled instance is tens of megabytes; with
 two modes and several profiles this is the dominant memory cost of the
@@ -1323,6 +1333,86 @@ expression paths, scheme-only redirects) is warned about rather than
 approximated.
 
 **Status.** Accepted; watches and the Gateway API delivered in 1.3.
+
+---
+
+## AMR-044: The process confines itself after start, in addition to the unit
+
+**Context.** The systemd unit already removes capabilities, mounts a
+private view and filters system calls. Those controls live outside the
+binary: a container image, a hand written unit or another init system
+loses them, and the unit cannot know which directories a particular
+configuration needs, so its file system view is coarse.
+
+**Decision.** After the listeners, logs, state files and the management
+socket are open and before `READY=1`, the daemon applies Landlock rules
+derived from its own configuration (directories of configured files for
+reading; log, state, history and certificate directories for writing;
+the standard library's resolver and trust store paths), refuses new TCP
+binds where the ABI allows, installs a seccomp deny list with
+`TSYNC` on every thread, clears every capability set, sets
+`no_new_privs` and becomes non dumpable. The syscall filter is a deny
+list rather than an allow list because the Go runtime, the network
+stack and the WebAssembly engine together use a wide and version
+dependent set of calls; an allow list would break on a toolchain
+upgrade in a way that only shows in production, while the deny list
+names the calls that matter for escalation and persistence and cannot
+be needed by a proxy. Landlock is derived rather than configured
+because operators would otherwise copy the same list into two places;
+extra paths remain configurable. Since Landlock cannot be widened, a
+reload naming a path outside the rules is refused with a message to
+restart. Each mechanism reports its state over the management socket;
+`strict` turns an unavailable mechanism into a failed start.
+
+**Alternatives.** Relying on the unit alone (rejected: the reasons in
+the context); an allow list filter generated from a trace (rejected:
+brittle across Go versions, and a missed call kills the process in
+production); applying the sandbox before opening files with pre-opened
+descriptors (rejected: reload and log reopening need the file system).
+
+**Consequences.** The rules fix the file system view for the life of
+the process: a certificate moved to a new directory needs a restart.
+`x/sys/unix` becomes a direct dependency. Tests of the package confine
+a child process; the rest of the test suite never runs sandboxed.
+
+**Status.** Accepted (1.3).
+
+---
+
+## AMR-045: macOS is a supported platform with its own hardening layer
+
+**Context.** Developers and small edge deployments run macOS. The code
+is portable Go without cgo, so the port is a matter of platform
+defaults, peer credentials on the management socket and the hardening
+around the process, which macOS provides with different tools.
+
+**Decision.** macOS builds are produced by the same Makefile
+(`build-darwin`, `dist-darwin`, `install-macos`) and type checked by
+`make check` on every run so that the port cannot rot. Platform
+defaults live under `/usr/local` (`internal/paths`), the management
+socket reads `LOCAL_PEERCRED` and `LOCAL_PEERPID`, and the in-process
+layer denies debugger attachment and core files. Landlock and seccomp
+have no macOS equivalent reachable from a static binary, so file
+system, network and process confinement come from a Seatbelt profile
+run by `sandbox-exec` in the launchd job, which also sets the hidden
+system user, umask and limits; pf provides the per-source connection
+rate; newsyslog the rotation. The WebAssembly engine falls back to the
+interpreter under the hardened runtime instead of asking for the JIT
+entitlement.
+
+**Alternatives.** Calling `sandbox_init` from the process (rejected: it
+needs cgo or dlopen and the API is deprecated without a replacement
+outside the App Sandbox); a Homebrew formula as the only distribution
+(deferred: the tarball and installer cover it and a formula can wrap
+them); running as root to bind privileged ports (unnecessary since
+macOS 10.14).
+
+**Consequences.** Two hardening documents instead of one, and a
+Seatbelt profile that operators extend by hand when the configuration
+names paths outside the standard directories. Fedora remains the
+reference platform for production.
+
+**Status.** Accepted (1.3).
 
 ---
 

@@ -58,9 +58,12 @@ internal/proxy      server, listeners, handler pipeline, transport, stats
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
-internal/filters    built-in kinds (header_guard, basic_auth, bot_score, oidc, wasm) and the registration list
+internal/filters    built-in kinds (header_guard, basic_auth, body_rewrite, bot_score, oidc, wasm) and the registration list
 internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
+internal/secret     keyring files for the symmetric secrets, rotation with retained keys
+internal/otlp       OTLP/HTTP JSON client shared by the metrics, trace and log exporters
+internal/tracing    W3C trace context, spans and the OTLP trace exporter
 internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/proxy/tcp.go  kind: tcp listeners (SNI routing, PROXY v2, splice)
@@ -116,7 +119,27 @@ One process, one user, no capabilities. systemd passes the listening sockets
 (`LISTEN_FDS`), the process matches them to configured listeners by name or
 address and binds any listener that was not passed. Datagram sockets are
 matched the same way (name `<listener>-udp` or address) for HTTP/3. The process sends
-`READY=1`, `RELOADING=1` and `STOPPING=1` over `NOTIFY_SOCKET`.
+`READY=1`, `RELOADING=1` (with `MONOTONIC_USEC`, as `Type=notify-reload`
+requires) and `STOPPING=1` over `NOTIFY_SOCKET`.
+
+Start order: configuration, logs, ingress controller, proxy runtime and
+listeners, configuration history, management socket, metrics listener,
+then the sandbox (`internal/sandbox`), then `READY=1`. The sandbox is
+last because it can only narrow what the process may do afterwards: on
+Linux it derives Landlock rules from the configuration (the directory of
+every configured file for reading; log, state, history and certificate
+directories for writing; the resolver and trust store paths the standard
+library opens), installs them together with a refusal of new TCP binds,
+installs a seccomp deny list on every thread, clears the capability
+sets, sets `no_new_privs` and makes the process non dumpable. On macOS
+it denies debugger attachment and core files, and reports the Seatbelt
+profile the launchd job runs it under. Each mechanism records applied,
+unavailable, failed or disabled; `strict` turns unavailable into a
+failed start. Because Landlock cannot be widened, the reload path checks
+a candidate configuration against the rules in force and refuses one
+that names a path outside them with "restart to apply". Tests never
+apply the sandbox: it lives in `cmd/xproxy`, and the package's own test
+confines a child process instead.
 
 Signals: `SIGHUP` reloads the configuration, `SIGUSR1` reopens log files,
 `SIGTERM` and `SIGINT` drain and stop within `server.shutdown_timeout`.
@@ -223,6 +246,26 @@ but not `/apix`.
 
 ### Upstream selection and retries
 
+Two pool wide controls sit in front of endpoint selection. The gate
+(`upstream.Gate`, `max_concurrent` and `queue`) is a semaphore taken in
+`proxyTo` for the whole exchange, with a bounded number of waiters and
+a per waiter deadline; a refused request is a 503 with `Retry-After`
+and an `upstream_error` of `queue_full` or `queue_timeout`, never a
+security event. The breaker (`upstream.Breaker`, `circuit_breaker`) is
+consulted in `poolTransport.RoundTrip` around the attempt loop: closed
+it counts consecutive failed attempts, open it refuses with the
+remaining time, half open it admits a bounded number of trials whose
+outcome closes or reopens it with a growing back-off. Both report
+through `Pool.Status` to `GET /v1/pools` and the metrics.
+
+A response whose status is listed in the pool's `retry_on` is treated by
+`poolTransport` like a connection error: its body is drained and
+closed, the endpoint is marked as failed for outlier ejection, and the
+next attempt goes to another endpoint while the `retries` budget and
+the replayability rule allow; the last attempt's response is returned
+unchanged. The attempt count and the number of status retries travel
+back in `pickInfo` for the access log and the counters.
+
 `poolTransport.RoundTrip` picks an endpoint per attempt:
 
 1. If the pool has affinity and the request carries a valid cookie for an
@@ -293,6 +336,18 @@ pending challenge such a handshake is refused rather than answered with a
 real certificate. Listeners with ACME groups add `acme-tls/1` to their
 ALPN list.
 
+With `ocsp_stapling`, a `stapler` goroutine per listener fetches an OCSP
+response for every served certificate (file and managed) and keeps them
+in a map by leaf digest; `GetCertificate` returns a copy of the selected
+certificate with the current response attached, so the shared
+certificate is never written and a handshake never waits. Fetches use
+`golang.org/x/crypto/ocsp`, the issuer from the chain file, a bounded
+client and a refresh at half the response validity. With `ct`, `Load`
+parses the SCT extension of each file certificate (`internal/tlsconf/ct.go`),
+rebuilds the precertificate TBS with `cryptobyte` and verifies each SCT
+signature against the log list; the verdict is kept per certificate for
+`GET /v1/tls` and, with `enforce`, fails the load.
+
 ### Layer 4 passthrough
 
 A `kind: tcp` listener (`internal/proxy/tcp.go`) accepts through the same
@@ -324,6 +379,20 @@ OTLP/HTTP JSON request (counters as cumulative monotonic sums from the
 process start time, gauges, histograms with explicit bounds) that it
 pushes on an interval with a bounded client, gzip and pinned CA. No
 metrics library is linked on either path.
+
+### Traces and logs export
+
+`internal/otlp` is the one OTLP/HTTP client (bounded, pinned CA, gzip,
+fixed headers) and the JSON attribute shapes; the metrics, trace and log
+exporters share it. `internal/tracing` parses and issues W3C trace
+context and keeps finished, sampled spans in a bounded queue that a
+goroutine batches by size and interval; the handler starts the server
+span with the request, the upstream client span in `proxyTo`, ends them
+in `ModifyResponse`, the error path and the access log, and `rewrite`
+sets `traceparent` on the outbound request. The `otlp` log sink
+(`internal/logging/otlp.go`) is a `lineSink` like journald and syslog:
+it turns the record's attributes into typed OTLP attributes and pushes
+batches the same way. All three report through `GET /v1/telemetry`.
 
 ### Kubernetes ingress mode
 
@@ -372,6 +441,29 @@ A `doh` route (`internal/proxy/doh.go`) decodes an RFC 8484 request on
 an http listener and hands the query to the named dns listener's
 `Handle`, so DNS over HTTPS clients get the same policy and cache as
 UDP clients plus the route's own admission pipeline.
+
+An encrypted dns listener (`tls` on `kind: dns`) wraps the TCP listener
+in TLS with the ALPN list `dot`, `h2`, `http/1.1` and binds no UDP.
+`serveConn` completes the handshake and demultiplexes: DoT and no ALPN
+stay on the DNS stream loop, HTTP goes to an `http.Server` inside the
+dns server through a channel listener (`internal/dns/doh.go`), whose
+handler answers RFC 8484 on the configured path with the same
+`handle` path and the client address of the connection. The route
+based `doh` action shares the request and response helpers.
+
+With `dnssec`, `internal/dns/dnssec.go` validates each upstream answer
+before caching: records are parsed with decompressed rdata (`rr.go`),
+grouped into RRsets with their RRSIGs, and every signature is checked
+over the RFC 4034 canonical form with the keys of the signer zone. Keys
+come from a bounded per zone cache built on demand: the DNSKEY set of a
+zone is accepted when a DS from the parent (or a trust anchor) matches
+one of its keys and the set is self signed; a NODATA DS answer with a
+verified NSEC or NSEC3 proof marks the delegation insecure. Denial
+proofs implement NSEC name error and no data, NSEC3 closest encloser,
+opt-out and wildcard cases. Lookups reuse the listener's resolver with
+the DO bit and are bounded per answer. The result sets AD, turns bogus
+answers into SERVFAIL (unless CD) and strips DNSSEC records for clients
+without DO.
 
 ### Forward proxy
 
@@ -551,7 +643,10 @@ disabled with two flags (`insecure_skip_verify` and `allow_insecure`).
 ## 9. Logging
 
 Four `slog` loggers with a `stream` attribute. Each stream is a handler
-chain:
+chain (the access stream swaps the JSON handler for `textHandler` when a
+text `format` is configured; it renders the record's attributes through
+the format's template with Apache style escaping and feeds the same
+sinks):
 
 ```
 logger -> [redactHandler] -> multiHandler -> JSON handler -> file (0640, rotated), stdout
@@ -588,8 +683,19 @@ Endpoints:
 | GET | `/v1/status` | version, pid, generation, listeners, counters |
 | GET | `/v1/stats` | counters |
 | GET | `/v1/upstreams` | endpoint health and load |
+| GET | `/v1/pools` | pool level state: circuit breaker, concurrency gate and queue |
+| GET | `/v1/tls` | served certificates per listener with OCSP staple and CT state |
+| GET | `/v1/telemetry` | OpenTelemetry exporters (metrics, traces, logs) with counters |
+| GET | `/v1/quotas` | usage per tenant, route and rate limit policy; `?top=N` consumers per policy |
+| GET | `/v1/waf` | WAF profiles, route assignments, per rule statistics (`?top=N`) and learned exclusion proposals |
+| GET | `/v1/waf/exclusions` | the proposals as a SecLang file (text/plain) |
+| POST | `/v1/waf/reset` | clear WAF statistics and the learning table (audited) |
+| GET | `/v1/sandbox` | in-process hardening: mechanisms with state, Landlock rules and ABI |
 | GET | `/v1/config` | active configuration as YAML |
-| POST | `/v1/reload` | validate and apply the configuration file |
+| POST | `/v1/reload` | validate and apply the configuration file; `?dry_run=1` returns the changes without applying |
+| GET | `/v1/diff` | compare `from` and `to` (`active`, `file` or a history id) |
+| GET | `/v1/history` | recorded configurations, newest first |
+| POST | `/v1/rollback` | apply the recorded configuration `id` (audited) |
 | POST | `/v1/reload-certs` | re-read certificates |
 | POST | `/v1/logs/reopen` | reopen log files |
 | GET | `/v1/bans`, POST `/v1/bans`, DELETE `/v1/bans?target=` | ban list |
@@ -602,7 +708,11 @@ The TUI is a mode of `xproxyctl`: a pure renderer (`tui.Render`, data and
 terminal size in, lines out, tested without a terminal) driven by a raw
 mode loop on `golang.org/x/term` that fetches all views concurrently with
 a deadline each refresh and reads keys from stdin. It uses the same client
-and therefore the same audited API for bans.
+and therefore the same audited API for bans. Nine screens cover the
+management API: overview (with sandbox, telemetry and dns lines),
+upstreams with pool state, bans, cluster, graphs, the security log,
+routes (the quota report), WAF statistics and served certificates; a
+fetch that fails leaves its screen empty and names the error.
 
 An optional TCP listener (`metrics.listen`) serves `/metrics` only, with a
 source allow list and optional TLS with client certificates; it never
@@ -618,7 +728,11 @@ framework and no external resource) under a strict Content Security
 Policy (`default-src 'none'`, scripts and styles from `'self'` only, no
 inline code, `frame-ancestors 'none'`), and a JSON API under `/api/` that
 forwards to the management client: read endpoints pass the socket's
-responses through unchanged, actions post to the same audited endpoints,
+responses through unchanged (status, pools, quotas, WAF with the SecLang
+download, certificates, telemetry, sandbox, dns, history, diff and every
+subsystem status), actions post to the same audited endpoints (reload,
+certificates, logs, ACME renewal, WAF reset, rollback by id; a dry run
+posts to the reload endpoint without applying),
 and the two things the socket does not offer, editing the configuration
 file and following log files, are done by the GUI process itself on files
 it owns or may read. Configuration edits go through the full validator
@@ -734,6 +848,26 @@ the transaction and replayed to the upstream from Coraza's buffer, then
 optionally response headers and a bounded response body. Matched attack
 rules, the blocking rule's total score and the interruption are logged;
 initialisation and reporting rules are filtered out.
+
+The rule set comes from a `ruleSet`: the embedded `coreruleset.FS` or,
+with `crs.dir`, an `os.DirFS` over the operator's directory. The
+engine recommendations that the embedded copy ships are inlined into
+the assembled SecLang so both sources compile the same way; the setup
+file's `crs_setup_version` and the number of rule files are recorded
+for the status. Every instance reports to one `waf.Stats` owned by the
+`Server` and passed into each generation's engine, so counts survive
+reloads: `End` walks the transaction's matched rules and, per rule,
+increments matches, blocks and detects with the last URI, bounded to
+8192 rules. With learning on, the matched data of every detection rule
+(variable name and key) is aggregated by (rule, target, route) in a
+table bounded by `max_entries`, with a bounded set of distinct clients
+and the first sample value. `Report` sorts rules by matches and turns
+entries at or above `min_hits` into proposals: a `SecRule REQUEST_URI
+"@beginsWith <path>"` with `ctl:ruleRemoveTargetById` when the route has
+a path prefix, otherwise an unconditional `SecAction` with the same
+`ctl` (directive files load before the CRS rules, where
+`SecRuleUpdateTargetById` would not find its rule); ids are allocated
+from 10000 upwards in sorted order so a saved file is stable.
 
 ### Ban list
 

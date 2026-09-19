@@ -1,0 +1,59 @@
+# Routing example: regular expression paths, header and cookie
+# conditions, a canary by header or cookie, retry policy, circuit
+# breaker and a concurrency gate with a queue.
+# Validate: xproxy -config examples/routing/routing.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: api
+    balancer: least_conn
+    retry_on: [502, 503, 504]
+    retries: 2
+    circuit_breaker: {consecutive_failures: 5, open_for: 10s, half_open_requests: 3}
+    max_concurrent: 200
+    queue: {size: 100, timeout: 2s}
+    canary: {header: X-Canary, values: [always], cookie: canary, percent: 5}
+    endpoints:
+      - {address: "10.0.1.10:8080"}
+      - {address: "10.0.1.11:8080"}
+      - {address: "10.0.1.20:8080", canary: true}
+  - name: legacy
+    endpoints: [{address: "10.0.2.10:8080"}]
+  - name: web
+    endpoints: [{address: "10.0.3.10:8080"}]
+routes:
+  # Versioned API paths by regular expression; the whole cleaned path
+  # must match. Longest literal prefix ranks the route.
+  - name: api-v2
+    hosts: [api.example.com]
+    path_regex: ["^/v2/(users|orders)(/[0-9]+)?$"]
+    upstream: api
+  # Header condition: internal clients with a signed header reach the
+  # legacy backend on the same host and path.
+  - name: api-legacy
+    hosts: [api.example.com]
+    paths: [/v1/]
+    headers:
+      - {name: X-Client-Tier, exact: legacy}
+    upstream: legacy
+  # Cookie condition: a beta cookie routes to the same pool, where the
+  # canary settings send it to the canary endpoint.
+  - name: api-beta
+    hosts: [api.example.com]
+    paths: [/v1/]
+    cookies:
+      - {name: beta, present: true}
+    upstream: api
+  - name: api-v1
+    hosts: [api.example.com]
+    paths: [/v1/]
+    upstream: api
+  - name: web
+    hosts: [www.example.com]
+    upstream: web

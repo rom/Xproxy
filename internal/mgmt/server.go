@@ -21,14 +21,14 @@ import (
 	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/sandbox"
+	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/version"
 )
 
@@ -44,6 +44,19 @@ type Actions struct {
 	Ingress func() any
 	// OTLP reports the OpenTelemetry exporter status, or nil when off.
 	OTLP func() metrics.OTLPStatus
+	// DryRun loads and validates the configuration file and reports what
+	// applying it would change, without applying it.
+	DryRun func() (*config.Changes, error)
+	// History lists recorded configurations, newest first.
+	History func() ([]config.Entry, error)
+	// Rollback applies a recorded configuration.
+	Rollback func(id string) error
+	// Diff compares two configurations named "active", "file" or a
+	// history id.
+	Diff func(from, to string) (*config.Changes, error)
+	// Sandbox reports the in-process hardening status, nil before it is
+	// applied or when the process runs without it (tests).
+	Sandbox func() *sandbox.Status
 }
 
 // Server serves the management API.
@@ -65,8 +78,75 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("GET /v1/status", s.status)
 	mux.HandleFunc("GET /v1/stats", s.stats)
 	mux.HandleFunc("GET /v1/upstreams", s.upstreams)
+	mux.HandleFunc("GET /v1/pools", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Pools()) })
+	mux.HandleFunc("GET /v1/tls", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Certificates()) })
+	mux.HandleFunc("GET /v1/quotas", func(w http.ResponseWriter, r *http.Request) {
+		top := 10
+		if v, err := strconv.Atoi(r.URL.Query().Get("top")); err == nil && v >= 0 && v <= 1000 {
+			top = v
+		}
+		writeJSON(w, 200, s.proxy.Quotas(top))
+	})
+	mux.HandleFunc("GET /v1/waf", func(w http.ResponseWriter, r *http.Request) {
+		top := 50
+		if v, err := strconv.Atoi(r.URL.Query().Get("top")); err == nil && v >= 0 && v <= 10000 {
+			top = v
+		}
+		writeJSON(w, 200, s.proxy.WAF(top))
+	})
+	mux.HandleFunc("GET /v1/waf/exclusions", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, s.proxy.WAFExclusions())
+	})
+	mux.HandleFunc("POST /v1/waf/reset", s.audited("waf_reset", func() error { s.proxy.WAFReset(); return nil }))
+	mux.HandleFunc("GET /v1/sandbox", func(w http.ResponseWriter, _ *http.Request) {
+		if st := s.sandbox(); st != nil {
+			writeJSON(w, 200, st)
+			return
+		}
+		writeJSON(w, 404, result{Error: "sandbox status not available"})
+	})
 	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("POST /v1/reload", s.reload)
+	mux.HandleFunc("GET /v1/history", func(w http.ResponseWriter, _ *http.Request) {
+		if s.actions.History == nil {
+			writeJSON(w, 501, result{Error: "history not available"})
+			return
+		}
+		entries, err := s.actions.History()
+		if err != nil {
+			writeJSON(w, 409, result{Error: err.Error()})
+			return
+		}
+		writeJSON(w, 200, entries)
+	})
+	mux.HandleFunc("POST /v1/rollback", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		if s.actions.Rollback == nil {
+			writeJSON(w, 501, result{Error: "rollback not available"})
+			return
+		}
+		s.audited("rollback "+id, func() error { return s.actions.Rollback(id) })(w, r)
+	})
+	mux.HandleFunc("GET /v1/diff", func(w http.ResponseWriter, r *http.Request) {
+		if s.actions.Diff == nil {
+			writeJSON(w, 501, result{Error: "diff not available"})
+			return
+		}
+		from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
+		if from == "" {
+			from = "active"
+		}
+		if to == "" {
+			to = "file"
+		}
+		ch, err := s.actions.Diff(from, to)
+		if err != nil {
+			writeJSON(w, 409, result{Error: err.Error()})
+			return
+		}
+		writeJSON(w, 200, ch)
+	})
 	mux.HandleFunc("POST /v1/reload-certs", s.reloadCerts)
 	mux.HandleFunc("POST /v1/logs/reopen", s.reopenLogs)
 	mux.HandleFunc("GET /v1/bans", s.listBans)
@@ -91,6 +171,14 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 			defer cancel()
 			return m.Renew(ctx)
 		})(w, r)
+	})
+	mux.HandleFunc("GET /v1/telemetry", func(w http.ResponseWriter, _ *http.Request) {
+		view := TelemetryView{Traces: s.proxy.Tracing(), Logs: s.logs.OTLP()}
+		if s.actions.OTLP != nil {
+			m := s.actions.OTLP()
+			view.Metrics = &m
+		}
+		writeJSON(w, 200, view)
 	})
 	mux.HandleFunc("GET /v1/otlp", func(w http.ResponseWriter, _ *http.Request) {
 		if s.actions.OTLP == nil {
@@ -241,6 +329,16 @@ type Status struct {
 	Routes     int               `json:"routes"`
 	Upstreams  int               `json:"upstreams"`
 	Stats      proxy.Snapshot    `json:"stats"`
+	// Sandbox summarises the in-process hardening; nil when not applied.
+	Sandbox *sandbox.Status `json:"sandbox,omitempty"`
+}
+
+// sandbox returns the hardening status, or nil.
+func (s *Server) sandbox() *sandbox.Status {
+	if s.actions.Sandbox == nil {
+		return nil
+	}
+	return s.actions.Sandbox()
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -271,6 +369,7 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 		Routes:     len(cfg.Routes),
 		Upstreams:  len(cfg.Upstreams),
 		Stats:      s.proxy.Stats(),
+		Sandbox:    s.sandbox(),
 	})
 }
 
@@ -287,9 +386,7 @@ func (s *Server) upstreams(w http.ResponseWriter, _ *http.Request) {
 // cleared (a copy fed back would otherwise append them a second time) and
 // the files that were read are listed in a leading comment.
 func (s *Server) config(w http.ResponseWriter, _ *http.Request) {
-	cfg := *s.proxy.Config()
-	cfg.Includes = nil
-	b, err := yaml.Marshal(&cfg)
+	b, err := config.Dump(s.proxy.Config())
 	if err != nil {
 		writeJSON(w, 500, result{Error: err.Error()})
 		return
@@ -320,6 +417,14 @@ func (s *Server) audited(name string, fn func() error) http.HandlerFunc {
 		s.logs.Audit.Info("management action", attrs...)
 		writeJSON(w, 200, result{OK: true})
 	}
+}
+
+// TelemetryView is the response of GET /v1/telemetry: every OpenTelemetry
+// exporter with its counters, nil when not configured.
+type TelemetryView struct {
+	Metrics *metrics.OTLPStatus `json:"metrics"`
+	Traces  *tracing.Status     `json:"traces"`
+	Logs    *logging.OTLPStatus `json:"logs"`
 }
 
 // FiltersView is the response of GET /v1/filters.
@@ -419,7 +524,24 @@ func (s *Server) clusterStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, node.Status())
 }
 
+// reload applies the file, or with ?dry_run=1 reports what applying it
+// would change (validation included) without touching the running
+// generation. A dry run is read only and not audited.
 func (s *Server) reload(w http.ResponseWriter, r *http.Request) {
+	if q := r.URL.Query().Get("dry_run"); q == "1" || q == "true" {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if s.actions.DryRun == nil {
+			writeJSON(w, 501, result{Error: "dry run not available"})
+			return
+		}
+		ch, err := s.actions.DryRun()
+		if err != nil {
+			writeJSON(w, 409, result{Error: err.Error()})
+			return
+		}
+		writeJSON(w, 200, ch)
+		return
+	}
 	s.audited("reload", s.actions.Reload)(w, r)
 }
 
