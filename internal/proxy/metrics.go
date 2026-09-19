@@ -85,7 +85,7 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_reloads_total", "Configuration reloads.", L{"result": "ok"}, float64(sn.Reloads))
 	e.Counter("xproxy_reloads_total", "Configuration reloads.", L{"result": "failed"}, float64(sn.ReloadFailures))
 	e.Counter("xproxy_bans_total", "Bans applied.", nil, float64(sn.BansTotal))
-	for result, v := range map[string]uint64{"issued": sn.ChallengesIssued, "passed": sn.ChallengesPassed, "failed": sn.ChallengesFailed} {
+	for result, v := range map[string]uint64{"issued": sn.ChallengesIssued, "passed": sn.ChallengesPassed, "failed": sn.ChallengesFailed, "captcha_passed": sn.CaptchasPassed} {
 		e.Counter("xproxy_challenges_total", "Browser challenges by result.", L{"result": result}, float64(v))
 	}
 	e.Counter("xproxy_log_sent_total", "Log records delivered to network sinks.", L{"sink": "syslog"}, float64(sn.LogSyslogSent))

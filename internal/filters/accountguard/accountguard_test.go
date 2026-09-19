@@ -340,6 +340,41 @@ func TestRegisterResetScrape(t *testing.T) {
 	}
 }
 
+func TestCaptchaAction(t *testing.T) {
+	g := build(t, filter.Options{"endpoints": []any{
+		map[string]any{"name": "login", "class": "login", "paths": []any{"/api/login"}, "identity": map[string]any{"json": "user.name"},
+			"steps":       []any{map[string]any{"action": "challenge", "pair": 1}, map[string]any{"action": "captcha", "pair": 2}},
+			"distributed": map[string]any{"ips": 2, "events": 4, "action": "captcha"}},
+	}}, nil)
+	now := time.Unix(1_700_000_000, 0)
+	g.now = func() time.Time { return now }
+	attempt(g, "203.0.113.1", "a@example.com", 401, false)
+	// One failure: the challenge step; a proof cookie passes it.
+	v, in := attempt(g, "203.0.113.1", "a@example.com", 401, true)
+	if v.Deny || in.action != "challenge" {
+		t.Fatalf("challenge step with proof: %+v %q", v, in.action)
+	}
+	// Two failures: the captcha step; a proof cookie is not enough, a
+	// captcha cookie is.
+	v, in = attempt(g, "203.0.113.1", "a@example.com", 401, true)
+	if !v.Deny || !v.Challenge || !v.Captcha || in.action != "captcha" || !strings.Contains(v.Detail, "login:captcha:pair") {
+		t.Fatalf("captcha step: %+v", v)
+	}
+	r, info := login("203.0.113.1", "a@example.com")
+	info.ChallengeVerified, info.CaptchaVerified = true, true
+	if v := g.Begin(context.Background(), &info).Request(r); v.Deny {
+		t.Fatalf("captcha verified denied: %+v", v)
+	}
+	// A campaign with a captcha action outranks a challenge step.
+	for i := 0; i < 4; i++ {
+		attempt(g, "203.0.113."+strconv.Itoa(10+i), "b"+strconv.Itoa(i)+"@example.com", 401, false)
+	}
+	v, in = attempt(g, "203.0.113.50", "c@example.com", 401, true)
+	if !v.Deny || !v.Captcha || in.by != "campaign" {
+		t.Fatalf("campaign captcha: %+v by %q", v, in.by)
+	}
+}
+
 func TestIdentityAndBodies(t *testing.T) {
 	g := build(t, filter.Options{"max_body_bytes": 64, "endpoints": []any{map[string]any{
 		"name": "login", "class": "login", "paths": []any{"/login"}, "identity": map[string]any{"json": "email", "form": "email"}}}}, nil)
@@ -415,6 +450,7 @@ func TestValidateOptions(t *testing.T) {
 		ep(map[string]any{"window": "1s"}),
 		ep(map[string]any{"steps": []any{map[string]any{"action": "block"}}}),
 		ep(map[string]any{"steps": []any{map[string]any{"action": "nuke", "ip": 1}}}),
+		ep(map[string]any{"disposable": "captcha", "identity": map[string]any{}, "class": "custom", "steps": []any{map[string]any{"action": "log", "ip": 1}}}),
 		ep(map[string]any{"steps": []any{map[string]any{"action": "delay", "delay": "1m", "ip": 1}}}),
 		ep(map[string]any{"distributed": map[string]any{"ips": 1, "events": 1}}),
 		ep(map[string]any{"distributed": map[string]any{"ips": 10, "events": 5}}),

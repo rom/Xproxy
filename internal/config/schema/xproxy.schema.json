@@ -484,6 +484,42 @@
       },
       "additionalProperties": false
     },
+    "Captcha": {
+      "description": "Captcha configures a hosted CAPTCHA provider for the challenge.",
+      "type": "object",
+      "properties": {
+        "min_score": {
+          "description": "MinScore refuses tokens the provider scores below it (reCAPTCHA v3 and Enterprise return one). Default 0 (not checked).",
+          "type": "number"
+        },
+        "mode": {
+          "description": "Mode is escalation (default: the widget only for verdicts that ask for a CAPTCHA) or always (every challenge page).",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider is turnstile, hcaptcha or recaptcha.",
+          "type": "string"
+        },
+        "secret_file": {
+          "description": "SecretFile holds the provider's secret key (one line).",
+          "type": "string"
+        },
+        "site_key": {
+          "description": "SiteKey is the public key rendered into the widget.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "verify_url": {
+          "description": "VerifyURL overrides the provider's siteverify endpoint (tests, enterprise endpoints).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "Certificate": {
       "description": "Certificate references a PEM certificate chain and private key on disk.",
       "type": "object",
@@ -513,9 +549,21 @@
           "description": "BindIP ties the cookie to the client address. Default true.",
           "type": "boolean"
         },
+        "captcha": {
+          "description": "Captcha adds a hosted CAPTCHA tier: verdicts that ask for one (an account_guard captcha step) show the provider's widget instead of the proof of work; with mode always every challenge page does.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Captcha"
+            }
+          ]
+        },
         "cookie_name": {
           "description": "CookieName defaults to XPCHAL.",
           "type": "string"
+        },
+        "device": {
+          "description": "Device includes a device identifier, computed by the challenge script from stable browser properties, in the cookie; it becomes the device attribute, Info.DeviceID for filters and the device rate limit key. Default true.",
+          "type": "boolean"
         },
         "difficulty": {
           "description": "Difficulty is the number of leading zero bits required. Default 16 (about 65 000 hashes, well under a second in a browser).",

@@ -109,7 +109,9 @@ an identifier from the access log to the upstream.
   nodes over mutual TLS and collects their status; SIEM export in
   NDJSON, Splunk HEC, CEF or LEEF
 - Adaptive load shedding by priority class from upstream latency and
-  in-flight load; browser proof of work challenge, always or under load
+  in-flight load; browser proof of work challenge, always or under load,
+  with a CAPTCHA tier (Turnstile, hCaptcha, reCAPTCHA) for escalation
+  and device identifiers for logs and rate limits
 - Account protection: credential stuffing, brute force, registration,
   reset, hoarding and scraping abuse with progressive delay, challenge
   and block, and campaign detection across many addresses

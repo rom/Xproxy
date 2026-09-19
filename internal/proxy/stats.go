@@ -164,6 +164,7 @@ type Snapshot struct {
 	ChallengesIssued      uint64     `json:"challenges_issued"`
 	ChallengesPassed      uint64     `json:"challenges_passed"`
 	ChallengesFailed      uint64     `json:"challenges_failed"`
+	CaptchasPassed        uint64     `json:"captchas_passed"`
 	LogSyslogSent         uint64     `json:"log_syslog_sent"`
 	LogSyslogDropped      uint64     `json:"log_syslog_dropped"`
 	LogJournalDropped     uint64     `json:"log_journald_dropped"`

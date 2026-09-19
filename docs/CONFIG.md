@@ -605,6 +605,7 @@ Keys:
 | `endpoint` | method, route and path template (identifiers such as numbers, UUIDs, hashes and opaque tokens replaced by `*`, so `/users/42` and `/users/43` are one endpoint) | |
 | `country` | client country (needs `geoip`) | client address |
 | `ja4` | TLS client fingerprint | client address (plaintext listeners) |
+| `device` | device identifier from the challenge cookie (`challenge.device`), so a client rotating addresses keeps one bucket once it has passed a challenge | client address (no cookie yet) |
 | `header:<Name>` | first value of the header (256 bytes) | client address |
 | `cookie:<name>` | value of the cookie (256 bytes), a session or device identifier | client address |
 | `jwt:<claim>` | a string, number or boolean claim of the bearer token in `Authorization`, read without verification (the value only names a bucket; the `jwt` route setting still rejects a forged token) | client address |
@@ -953,7 +954,8 @@ Exposed families: `xproxy_requests_total`, `xproxy_responses_total{class}`,
 `xproxy_upstream_errors_total`, `xproxy_upstream_timeouts_total`,
 `xproxy_upstream_no_healthy_total`, `xproxy_client_aborts_total`,
 `xproxy_connections_rejected_total`, `xproxy_reloads_total{result}`,
-`xproxy_bans_total`, `xproxy_challenges_total{result}`,
+`xproxy_bans_total`, `xproxy_challenges_total{result}` (`issued`,
+`passed`, `failed`, `captcha_passed`),
 `xproxy_log_sent_total{sink}`, `xproxy_log_dropped_total{sink}`,
 `xproxy_connections_open`, `xproxy_requests_in_flight`,
 `xproxy_bans_active`, `xproxy_load_level`,
@@ -1653,7 +1655,9 @@ per address (credential stuffing) and distinct addresses per account
 when any of its thresholds is reached and the highest firing step acts:
 `log` records, `delay` holds the request, `challenge` serves the
 browser challenge to unverified clients (a plain 403 without a
-`challenge` section) and `block` refuses the key that crossed the
+`challenge` section), `captcha` serves the CAPTCHA tier
+(`challenge.captcha`; the proof of work without one) to clients that
+have not passed it, and `block` refuses the key that crossed the
 threshold for `duration`, on every node of a cluster. Blocks and
 denials use reason `account_abuse` (a ban trigger category) with
 status `block_status`; the access log carries `account_endpoint`,
@@ -1674,9 +1678,9 @@ unverified request of the endpoint is challenged (or blocked).
 | `endpoints[].identity` | mapping | required for login, register and reset | Where the account identifier lives: `header`, `query`, `form` (a field of a form body) or `json` (a field of a JSON body, dots descend), tried in that order; bodies are buffered up to `max_body_bytes` and replayed |
 | `endpoints[].failure` | mapping | `{statuses: [401, 403]}` | Failure recognition for `failures` counting: `statuses`, `body_regex` on a 2xx body (up to `max_bytes`, default 65536), `location_regex` on a redirect. A success clears the account's and the pair's failures |
 | `endpoints[].window` | duration | `10m` | Counting window (1m to 24h) |
-| `endpoints[].steps` | list | per class, below | 1 to 8 steps of `{action, delay, duration, ip, account, pair, ip_accounts, account_ips, ip_paths}`; `action` is `log`, `delay` (holds `delay`, 10ms to 10s, default 1s), `challenge` or `block` (for `duration`, default the window); at least one threshold per step |
-| `endpoints[].distributed` | mapping | `{ips: 50, events: 200}` for login, off otherwise | Campaign detection: both `ips` (distinct addresses with events in the window) and `events` must be reached; `action` `challenge` (default) or `block` for `duration` (default the window) |
-| `endpoints[].disposable` | `off`, `log`, `challenge`, `block` | `off` | What happens to an e-mail identity on a disposable domain (built-in list plus `disposable_domains`, subdomains included) |
+| `endpoints[].steps` | list | per class, below | 1 to 8 steps of `{action, delay, duration, ip, account, pair, ip_accounts, account_ips, ip_paths}`; `action` is `log`, `delay` (holds `delay`, 10ms to 10s, default 1s), `challenge`, `captcha` or `block` (for `duration`, default the window); at least one threshold per step |
+| `endpoints[].distributed` | mapping | `{ips: 50, events: 200}` for login, off otherwise | Campaign detection: both `ips` (distinct addresses with events in the window) and `events` must be reached; `action` `challenge` (default), `captcha` or `block` for `duration` (default the window) |
+| `endpoints[].disposable` | `off`, `log`, `challenge`, `captcha`, `block` | `off` | What happens to an e-mail identity on a disposable domain (built-in list plus `disposable_domains`, subdomains included) |
 | `block_status` | int | `429` | Status of blocks (4xx or 5xx); challenges answer 403 |
 | `max_body_bytes` | int | `65536` | Request body buffered to read an identity (up to 8 MiB); a larger body yields no identity |
 | `max_delayed` | int | `256` | Requests held in delay steps at once; beyond it the delay is skipped and a throttled warning written |
@@ -2125,6 +2129,33 @@ host before routing.
 | `cookie_name` | token | `XPCHAL` | |
 | `exempt_cidrs` | list | `[]` | Never challenged (monitoring, partners) |
 | `title` | string | `Checking your browser` | Heading on the page; no HTML characters |
+| `device` | bool | `true` | The script derives a device identifier from stable browser properties (user agent, languages, platform, cores, memory, screen, pixel ratio, time zone, a canvas rendering) and the cookie carries its first eight bytes: `device` in the access log, `Info.DeviceID` for filters and the `device` rate limit key. Client supplied and therefore advisory, but fixed into the cookie it earned |
+| `captcha` | mapping | none | A hosted CAPTCHA tier, below |
+
+### challenge.captcha
+
+Adds a second tier to the challenge. A verdict that asks for it (an
+`account_guard` step or `disposable` action `captcha`, a `distributed`
+action `captcha`) renders the provider's widget instead of the proof
+of work; a client that solved only the proof of work is challenged
+again, and a client that passed the CAPTCHA satisfies both tiers. The
+token is verified with the provider from the proxy (`siteverify`, with
+the client address), fails closed when the provider is unreachable or
+rejects it, and the failure is a `challenge_failed` security event
+naming the class (`captcha rejected`, `captcha score`, `captcha
+unreachable`). The page's Content Security Policy admits the provider's
+script and frame origins only. Without this section a CAPTCHA verdict
+falls back to the proof of work.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `provider` | `turnstile`, `hcaptcha`, `recaptcha` | required | Cloudflare Turnstile, hCaptcha or Google reCAPTCHA (v2 checkbox, v3 or Enterprise with `min_score`) |
+| `site_key` | string | required | Public key rendered into the widget |
+| `secret_file` | path | required | The provider secret on one line; re-read on reload |
+| `verify_url` | URL | the provider's | Override for enterprise endpoints or tests (https, or http to localhost) |
+| `timeout` | duration | `5s` | Verification call (500ms to 30s); the call uses no environment proxy |
+| `min_score` | float | `0` | Refuse tokens scored below it (providers that return a score); 0 disables |
+| `mode` | `escalation`, `always` | `escalation` | `always` shows the widget on every challenge page, including route gates, in place of the proof of work |
 
 ### routes[].challenge
 

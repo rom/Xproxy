@@ -2037,10 +2037,43 @@ type Challenge struct {
 	ExemptCIDRs []string `yaml:"exempt_cidrs"`
 	// Title is the heading shown on the page.
 	Title string `yaml:"title"`
+	// Captcha adds a hosted CAPTCHA tier: verdicts that ask for one
+	// (an account_guard captcha step) show the provider's widget instead
+	// of the proof of work; with mode always every challenge page does.
+	Captcha *Captcha `yaml:"captcha"`
+	// Device includes a device identifier, computed by the challenge
+	// script from stable browser properties, in the cookie; it becomes
+	// the device attribute, Info.DeviceID for filters and the device
+	// rate limit key. Default true.
+	Device *bool `yaml:"device"`
 }
 
 // BindsIP reports whether cookies are bound to the client address.
 func (c *Challenge) BindsIP() bool { return c.BindIP == nil || *c.BindIP }
+
+// DevicesOn reports whether device identifiers are collected.
+func (c *Challenge) DevicesOn() bool { return c.Device == nil || *c.Device }
+
+// Captcha configures a hosted CAPTCHA provider for the challenge.
+type Captcha struct {
+	// Provider is turnstile, hcaptcha or recaptcha.
+	Provider string `yaml:"provider"`
+	// SiteKey is the public key rendered into the widget.
+	SiteKey string `yaml:"site_key"`
+	// SecretFile holds the provider's secret key (one line).
+	SecretFile string `yaml:"secret_file"`
+	// VerifyURL overrides the provider's siteverify endpoint (tests,
+	// enterprise endpoints).
+	VerifyURL string `yaml:"verify_url"`
+	// Timeout for the verification call. Default 5s.
+	Timeout Duration `yaml:"timeout"`
+	// MinScore refuses tokens the provider scores below it (reCAPTCHA v3
+	// and Enterprise return one). Default 0 (not checked).
+	MinScore float64 `yaml:"min_score"`
+	// Mode is escalation (default: the widget only for verdicts that ask
+	// for a CAPTCHA) or always (every challenge page).
+	Mode string `yaml:"mode"`
+}
 
 // RouteChallenge selects when a route challenges unverified clients.
 type RouteChallenge struct {

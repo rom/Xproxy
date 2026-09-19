@@ -1,5 +1,7 @@
 /* Xproxy browser challenge: find counter such that SHA-256(nonce ":" counter)
-   has the required number of leading zero bits, then post it back. */
+   has the required number of leading zero bits, then post it back. On a
+   CAPTCHA page the provider widget supplies the token instead. Either way
+   a device identifier derived from stable browser properties is sent. */
 (function () {
   "use strict";
   var K = [
@@ -13,9 +15,17 @@
     0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
   var W = new Int32Array(64);
 
-  // sha256 of an ASCII string; returns the first 4 bytes as a 32-bit int
-  // and the full digest is not needed: difficulty is at most 24 bits.
-  function sha256Prefix(str) {
+  // sha256Words returns the eight 32-bit words of the digest of an ASCII
+  // string; sha256Prefix keeps the first (difficulty is at most 24 bits).
+  function sha256Prefix(str) { return sha256Words(str)[0] >>> 0; }
+
+  function sha256Hex(str) {
+    var w = sha256Words(str), out = "";
+    for (var i = 0; i < 8; i++) out += ("00000000" + (w[i] >>> 0).toString(16)).slice(-8);
+    return out;
+  }
+
+  function sha256Words(str) {
     var n = str.length, bytes = new Uint8Array(((n + 9 + 63) >> 6) << 6);
     for (var i = 0; i < n; i++) bytes[i] = str.charCodeAt(i) & 0xff;
     bytes[n] = 0x80;
@@ -46,7 +56,29 @@
       }
       h0=(h0+a)|0;h1=(h1+b)|0;h2=(h2+c)|0;h3=(h3+d)|0;h4=(h4+e)|0;h5=(h5+f)|0;h6=(h6+g)|0;h7=(h7+h)|0;
     }
-    return h0 >>> 0;
+    return [h0, h1, h2, h3, h4, h5, h6, h7];
+  }
+
+  // deviceID hashes properties that stay the same across a browser's
+  // sessions on one machine. It is advisory: a client may lie, but the
+  // value is fixed into the cookie it earns.
+  function deviceID() {
+    try {
+      var n = navigator, s = screen, parts = [
+        n.userAgent || "", n.language || "", (n.languages || []).join(","), n.platform || "",
+        n.hardwareConcurrency || 0, n.deviceMemory || 0, n.maxTouchPoints || 0,
+        s.width + "x" + s.height + "x" + s.colorDepth, window.devicePixelRatio || 1,
+        new Date().getTimezoneOffset(), (Intl && Intl.DateTimeFormat) ? Intl.DateTimeFormat().resolvedOptions().timeZone : ""
+      ];
+      try {
+        var cv = document.createElement("canvas"), ctx = cv.getContext("2d");
+        cv.width = 200; cv.height = 40;
+        ctx.textBaseline = "top"; ctx.font = "16px sans-serif"; ctx.fillStyle = "#f60"; ctx.fillRect(10, 5, 60, 20);
+        ctx.fillStyle = "#069"; ctx.fillText("xproxy \u2603 device", 2, 15);
+        parts.push(cv.toDataURL().slice(-64));
+      } catch (e) { parts.push("nocanvas"); }
+      return sha256Hex(parts.join("|"));
+    } catch (e) { return ""; }
   }
 
   function leadingZeros32(x) {
@@ -61,17 +93,30 @@
   var difficulty = parseInt(body.getAttribute("data-difficulty"), 10) || 16;
   var ret = body.getAttribute("data-return") || "/";
   var verify = body.getAttribute("data-verify");
+  var wantDevice = body.getAttribute("data-device") === "1";
+  var captcha = body.getAttribute("data-captcha");
   var bar = document.getElementById("bar");
   var msg = document.getElementById("msg");
   var expected = Math.pow(2, difficulty);
   var counter = 0;
+  var device = wantDevice ? deviceID() : "";
+
+  if (captcha) {
+    // The provider widget fills its response field; its callback (or
+    // the button) submits the form with the nonce and the device id.
+    var form = document.getElementById("captcha");
+    var dev = document.getElementById("device");
+    if (dev) dev.value = device;
+    window.xproxyCaptchaDone = function () { if (form) form.submit(); };
+    return;
+  }
 
   function submit(found) {
     var form = document.createElement("form");
     form.method = "POST";
     form.action = verify;
     var add = function (k, v) { var i = document.createElement("input"); i.type = "hidden"; i.name = k; i.value = v; form.appendChild(i); };
-    add("nonce", nonce); add("counter", String(found)); add("r", ret);
+    add("nonce", nonce); add("counter", String(found)); add("r", ret); add("device", device);
     document.body.appendChild(form);
     form.submit();
   }

@@ -1,5 +1,5 @@
 // Package challenge implements the browser proof-of-work challenge
-// (docs/AMR.md, AMR-023).
+// (docs/AMR.md, AMR-023) and its optional CAPTCHA tier.
 //
 // An unverified client receives a 503 page with a signed nonce and a
 // small script. The script finds a counter such that
@@ -8,9 +8,19 @@
 // cookie that is optionally bound to the client address. The cost is paid
 // by the client in CPU; the proxy pays one HMAC per page and one HMAC plus
 // one SHA-256 per verification. Nonces are single use and expire.
+//
+// With a CAPTCHA provider configured, a verdict that asks for the CAPTCHA
+// tier (or every page, in mode always) renders the provider's widget in
+// place of the proof of work; the token is verified with the provider
+// and the cookie records the higher tier. The script also derives a
+// device identifier from stable browser properties, which the cookie
+// carries for logs, filters and rate limits; it is client supplied and
+// therefore advisory, but it cannot change without solving again.
 package challenge
 
 import (
+	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -18,10 +28,11 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/rom/xproxy/internal/bound"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -29,9 +40,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/secret"
+)
+
+// Tiers of a verified cookie.
+const (
+	TierNone    = 0
+	TierProof   = 1
+	TierCaptcha = 2
+	deviceLen   = 8
 )
 
 // Reserved paths served by the proxy on every host.
@@ -63,11 +83,14 @@ type Challenger struct {
 	cookie     string
 	exempt     []netip.Prefix
 	title      string
+	captcha    *captcha
+	device     bool
 	seen       map[[macLen]byte]int64 // nonce mac -> expiry unix
 	now        func() time.Time
 	full       bound.Notice
 
 	Issued, Passed, Failed uint64
+	CaptchaPassed          uint64
 }
 
 // New creates a challenger, loading or generating the key.
@@ -77,8 +100,22 @@ func New(cfg *config.Challenge) (*Challenger, error) {
 		return nil, fmt.Errorf("challenge secret: %w", err)
 	}
 	c := &Challenger{keys: ring.All(), keyPath: cfg.SecretFile, seen: make(map[[macLen]byte]int64), now: time.Now}
+	if cfg.Captcha != nil {
+		cp, err := loadCaptcha(cfg.Captcha)
+		if err != nil {
+			return nil, err
+		}
+		c.captcha = cp
+	}
 	c.Reconfigure(cfg)
 	return c, nil
+}
+
+// HasCaptcha reports whether a CAPTCHA tier is configured.
+func (c *Challenger) HasCaptcha() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.captcha != nil
 }
 
 // Reconfigure applies settings and re-reads the secret file when one is
@@ -92,11 +129,23 @@ func (c *Challenger) Reconfigure(cfg *config.Challenge) {
 			keys = ring.All()
 		}
 	}
+	var cp *captcha
+	if cfg.Captcha != nil {
+		var err error
+		if cp, err = loadCaptcha(cfg.Captcha); err != nil {
+			slog.Warn("challenge: captcha not reconfigured", "error", err)
+			c.mu.Lock()
+			cp = c.captcha
+			c.mu.Unlock()
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if keys != nil {
 		c.keys = keys
 	}
+	c.captcha = cp
+	c.device = cfg.DevicesOn()
 	c.keyPath = cfg.SecretFile
 	c.difficulty = cfg.Difficulty
 	c.ttl = cfg.TTL.D()
@@ -141,34 +190,82 @@ func (c *Challenger) Exempt(ip netip.Addr) bool {
 	return netutil.Contains(c.exempt, ip)
 }
 
-// Verified reports whether the request carries a valid challenge cookie.
+// Verified reports whether the request carries a valid challenge cookie
+// of any tier.
 func (c *Challenger) Verified(r *http.Request, ip netip.Addr) bool {
+	tier, _ := c.Check(r, ip)
+	return tier >= TierProof
+}
+
+// Check reads the challenge cookie: the tier it was earned at (TierNone
+// without a valid cookie) and the device identifier it carries (16 hex
+// characters, or "").
+func (c *Challenger) Check(r *http.Request, ip netip.Addr) (int, string) {
 	c.mu.Lock()
 	name := c.cookie
 	c.mu.Unlock()
 	ck, err := r.Cookie(name)
 	if err != nil || len(ck.Value) > 64 {
-		return false
+		return TierNone, ""
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(ck.Value)
-	if err != nil || len(raw) != 8+macLen {
-		return false
+	if err != nil {
+		return TierNone, ""
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.macOK(raw[8:], []byte("cookie"), raw[:8], c.ipBytes(ip)) {
-		return false
+	var exp uint64
+	tier, device := TierProof, ""
+	switch len(raw) {
+	case 8 + macLen: // cookies issued before the tiered format
+		if !c.macOK(raw[8:], []byte("cookie"), raw[:8], c.ipBytes(ip)) {
+			return TierNone, ""
+		}
+	case 8 + 1 + deviceLen + macLen:
+		head := raw[:8+1+deviceLen]
+		if !c.macOK(raw[len(head):], []byte("cookie2"), head, c.ipBytes(ip)) {
+			return TierNone, ""
+		}
+		tier = int(raw[8])
+		if tier < TierProof || tier > TierCaptcha {
+			return TierNone, ""
+		}
+		var zero [deviceLen]byte
+		if dev := raw[9 : 9+deviceLen]; !bytes.Equal(dev, zero[:]) {
+			device = hex.EncodeToString(dev)
+		}
+	default:
+		return TierNone, ""
 	}
-	exp := binary.BigEndian.Uint64(raw[:8])
-	return exp < 1<<62 && int64(exp) > c.now().Unix() //nolint:gosec // range checked
+	exp = binary.BigEndian.Uint64(raw[:8])
+	if exp >= 1<<62 || int64(exp) <= c.now().Unix() { //nolint:gosec // range checked
+		return TierNone, ""
+	}
+	return tier, device
 }
 
-// issueCookie returns a cookie value valid for ttl.
-func (c *Challenger) issueCookie(ip netip.Addr, now time.Time) string {
-	buf := make([]byte, 8, 8+macLen)
+// issueCookie returns a cookie value valid for ttl carrying the tier and
+// the device identifier.
+func (c *Challenger) issueCookie(ip netip.Addr, now time.Time, tier int, device []byte) string {
+	buf := make([]byte, 8+1+deviceLen, 8+1+deviceLen+macLen)
 	binary.BigEndian.PutUint64(buf, uint64(now.Add(c.ttl).Unix())) //nolint:gosec // positive time
-	buf = append(buf, c.mac([]byte("cookie"), buf[:8], c.ipBytes(ip))...)
+	buf[8] = byte(tier)
+	copy(buf[9:], device)
+	buf = append(buf, c.mac([]byte("cookie2"), buf[:8+1+deviceLen], c.ipBytes(ip))...)
 	return base64.RawURLEncoding.EncodeToString(buf)
+}
+
+// parseDevice accepts the script's hexadecimal device hash (16 to 64
+// characters) and keeps its first eight bytes; anything else is no device.
+func parseDevice(s string) []byte {
+	if len(s) < 2*deviceLen || len(s) > 64 || len(s)%2 != 0 {
+		return nil
+	}
+	raw, err := hex.DecodeString(s)
+	if err != nil {
+		return nil
+	}
+	return raw[:deviceLen]
 }
 
 // newNonce returns a signed nonce: ts(8) || rand(8) || mac(16).
@@ -268,22 +365,46 @@ type pageData struct {
 	Return     string
 	Verify     string
 	Script     string
+	Device     bool
+	// Captcha fields are set when the page renders the provider widget.
+	Captcha        bool
+	Provider       string
+	SiteKey        string
+	Widget         string
+	ProviderScript string
 }
 
-// Serve writes the challenge page for r.
+// Serve writes the proof of work page for r (the CAPTCHA page in mode
+// always).
 func (c *Challenger) Serve(w http.ResponseWriter, r *http.Request, ip netip.Addr) {
+	c.ServeTier(w, r, ip, false)
+}
+
+// ServeTier writes the challenge page; captcha asks for the CAPTCHA
+// widget, served when a provider is configured and otherwise replaced by
+// the proof of work.
+func (c *Challenger) ServeTier(w http.ResponseWriter, r *http.Request, ip netip.Addr, captcha bool) {
 	now := c.now()
 	c.mu.Lock()
 	c.Issued++
-	d := pageData{Title: c.title, Nonce: c.newNonce(ip, now), Difficulty: c.difficulty, Return: safeReturn(r.URL.RequestURI()), Verify: VerifyPath, Script: ScriptPath}
+	d := pageData{Title: c.title, Nonce: c.newNonce(ip, now), Difficulty: c.difficulty, Return: safeReturn(r.URL.RequestURI()), Verify: VerifyPath, Script: ScriptPath, Device: c.device}
+	cp := c.captcha
 	c.mu.Unlock()
+	csp := "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'"
+	if cp != nil && (captcha || cp.always) {
+		d.Captcha, d.Provider, d.SiteKey, d.Widget, d.ProviderScript = true, cp.name, cp.siteKey, cp.widget, cp.script
+		csp = "default-src 'none'; script-src 'self' " + cp.scripts + "; frame-src " + cp.frames + "; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'"
+		if cp.connect != "" {
+			csp += "; connect-src " + cp.connect
+		}
+	}
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
-	h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'")
+	h.Set("Content-Security-Policy", csp)
 	h.Set("Retry-After", "5")
 	w.WriteHeader(http.StatusServiceUnavailable)
 	if r.Method != http.MethodHead {
@@ -319,20 +440,42 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 	nonce := r.PostForm.Get("nonce")
 	counter := r.PostForm.Get("counter")
 	ret := safeReturn(r.PostForm.Get("r"))
-	if len(counter) == 0 || len(counter) > 20 || strings.Trim(counter, "0123456789") != "" {
-		http.Error(w, "400 Bad Request", http.StatusBadRequest)
-		return false, "counter"
-	}
 	now := c.now()
 	c.mu.Lock()
 	difficulty := c.difficulty
+	cp := c.captcha
+	var device []byte
+	if c.device {
+		device = parseDevice(r.PostForm.Get("device"))
+	}
+	c.mu.Unlock()
+	// A provider token selects the CAPTCHA tier; otherwise the proof.
+	token := ""
+	if cp != nil {
+		token = r.PostForm.Get(cp.field)
+	}
+	tier := TierProof
+	if token == "" && (len(counter) == 0 || len(counter) > 20 || strings.Trim(counter, "0123456789") != "") {
+		http.Error(w, "400 Bad Request", http.StatusBadRequest)
+		return false, "counter"
+	}
+	c.mu.Lock()
 	key, err := c.checkNonce(nonce, ip, now)
 	c.mu.Unlock()
 	if err != nil {
 		c.fail(w, err.Error())
 		return false, err.Error()
 	}
-	if !Solves(nonce, counter, difficulty) {
+	if token != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), cp.client.Timeout)
+		ok, reason := cp.check(ctx, token, ip)
+		cancel()
+		if !ok {
+			c.fail(w, reason)
+			return false, reason
+		}
+		tier = TierCaptcha
+	} else if !Solves(nonce, counter, difficulty) {
 		c.fail(w, "wrong proof")
 		return false, "proof"
 	}
@@ -343,7 +486,10 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 		return false, err.Error()
 	}
 	c.Passed++
-	value := c.issueCookie(ip, now)
+	if tier == TierCaptcha {
+		c.CaptchaPassed++
+	}
+	value := c.issueCookie(ip, now, tier, device)
 	name := c.cookie
 	maxAge := int(c.ttl.Seconds())
 	c.mu.Unlock()
@@ -369,9 +515,10 @@ func safeReturn(p string) string {
 	return p
 }
 
-// Stats returns counters.
-func (c *Challenger) Stats() (issued, passed, failed uint64) {
+// Stats returns counters: pages issued, verifications passed (captcha
+// among them) and failed.
+func (c *Challenger) Stats() (issued, passed, failed, captcha uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.Issued, c.Passed, c.Failed
+	return c.Issued, c.Passed, c.Failed, c.CaptchaPassed
 }

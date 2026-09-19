@@ -95,7 +95,7 @@ type Outcome struct {
 // Step is one rung of the action ladder: it fires when any listed
 // count reaches its threshold; the highest firing step acts.
 type Step struct {
-	// Action is log, delay, challenge or block.
+	// Action is log, delay, challenge, captcha or block.
 	Action string `json:"action"`
 	// Delay is how long a delay step holds the request (at most 10s).
 	Delay string `json:"delay"`
@@ -119,7 +119,7 @@ type Distributed struct {
 	IPs    int `json:"ips"`
 	Events int `json:"events"`
 	// Action applies to every request of the endpoint while the
-	// campaign lasts: challenge (default) or block.
+	// campaign lasts: challenge (default), captcha or block.
 	Action string `json:"action"`
 	// Duration is how long the campaign state lasts. Default the window.
 	Duration string `json:"duration"`
@@ -149,7 +149,8 @@ type Endpoint struct {
 	// Distributed enables campaign detection; on by default for login.
 	Distributed *Distributed `json:"distributed"`
 	// Disposable is what happens to a registration with an address on
-	// a disposable e-mail domain: off (default), log, challenge or block.
+	// a disposable e-mail domain: off (default), log, challenge, captcha
+	// or block.
 	Disposable string `json:"disposable"`
 	window     time.Duration
 	methods    map[string]bool
@@ -336,9 +337,9 @@ func (e *Endpoint) compile(p string) error {
 		s := &e.Steps[i]
 		sp := fmt.Sprintf("steps[%d]", i)
 		switch s.Action {
-		case "log", "delay", "challenge", "block":
+		case "log", "delay", "challenge", "captcha", "block":
 		default:
-			fail("%s.action: must be log, delay, challenge or block", sp)
+			fail("%s.action: must be log, delay, challenge, captcha or block", sp)
 		}
 		if s.delay, err = parseDur(sp+".delay", s.Delay, time.Second, 10*time.Millisecond, maxDelay); err != nil {
 			fail("%v", err)
@@ -368,17 +369,17 @@ func (e *Endpoint) compile(p string) error {
 		if d.Action == "" {
 			d.Action = "challenge"
 		}
-		if d.Action != "challenge" && d.Action != "block" {
-			fail("distributed.action: must be challenge or block")
+		if d.Action != "challenge" && d.Action != "captcha" && d.Action != "block" {
+			fail("distributed.action: must be challenge, captcha or block")
 		}
 		if d.duration, err = parseDur("distributed.duration", d.Duration, e.window, time.Minute, 24*time.Hour); err != nil {
 			fail("%v", err)
 		}
 	}
 	switch e.Disposable {
-	case "", "off", "log", "challenge", "block":
+	case "", "off", "log", "challenge", "captcha", "block":
 	default:
-		fail("disposable: must be off, log, challenge or block")
+		fail("disposable: must be off, log, challenge, captcha or block")
 	}
 	if e.Disposable != "" && e.Disposable != "off" && e.Identity == (Identity{}) {
 		fail("disposable: needs an identity")
@@ -639,7 +640,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	t.mu.Unlock()
 	if blocked {
 		in.action, in.by, in.outcome = "block", by, "blocked"
-		return in.deny(ep.Name+":blocked:"+by+":until "+until.UTC().Format(time.RFC3339), false)
+		return in.deny(ep.Name+":blocked:"+by+":until "+until.UTC().Format(time.RFC3339), "block")
 	}
 	// Disposable registration addresses.
 	if ep.Disposable != "" && ep.Disposable != "off" && id != "" && g.disposableAddress(id) {
@@ -647,11 +648,11 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		switch ep.Disposable {
 		case "block":
 			in.action = "block"
-			return in.deny(ep.Name+":disposable_email", false)
-		case "challenge":
-			in.action = "challenge"
-			if !in.info.ChallengeVerified {
-				return in.deny(ep.Name+":disposable_email", true)
+			return in.deny(ep.Name+":disposable_email", "block")
+		case "challenge", "captcha":
+			in.action = ep.Disposable
+			if !in.verified(ep.Disposable) {
+				return in.deny(ep.Name+":disposable_email", ep.Disposable)
 			}
 		default:
 			in.action = "log"
@@ -668,23 +669,23 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	if step != nil {
 		action = step.Action
 	}
-	campaignActs := in.campaign && (ep.Distributed.Action == "block" || action == "" || action == "log" || action == "delay")
+	campaignActs := in.campaign && rank[ep.Distributed.Action] > rank[action]
 	if campaignActs {
 		action, in.by = ep.Distributed.Action, "campaign"
 	}
 	if action == "" {
 		return filter.Continue
 	}
-	if in.action != "block" && in.action != "challenge" {
+	if rank[action] > rank[in.action] {
 		in.action = action
 	}
 	switch action {
 	case "log":
 	case "delay":
 		in.delay(step.delay)
-	case "challenge":
-		if !in.info.ChallengeVerified {
-			return in.deny(ep.Name+":challenge:"+in.by, true)
+	case "challenge", "captcha":
+		if !in.verified(action) {
+			return in.deny(ep.Name+":"+action+":"+in.by, action)
 		}
 	case "block":
 		d := ep.window
@@ -698,9 +699,21 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 			t.mu.Unlock()
 			g.publish(ep.Name, in.by, key, now.Add(d))
 		}
-		return in.deny(ep.Name+":block:"+in.by, false)
+		return in.deny(ep.Name+":block:"+in.by, "block")
 	}
 	return filter.Continue
+}
+
+// rank orders actions by severity.
+var rank = map[string]int{"": 0, "log": 1, "delay": 2, "challenge": 3, "captcha": 4, "block": 5}
+
+// verified reports whether the client already holds the tier an action
+// asks for.
+func (in *instance) verified(action string) bool {
+	if action == "captcha" {
+		return in.info.CaptchaVerified
+	}
+	return in.info.ChallengeVerified
 }
 
 // delay holds the request, bounded in time and in concurrent holders.
@@ -720,12 +733,13 @@ func (in *instance) delay(d time.Duration) {
 	}
 }
 
-func (in *instance) deny(detail string, challenge bool) filter.Verdict {
+func (in *instance) deny(detail, action string) filter.Verdict {
 	status := in.g.cfg.BlockStatus
+	challenge := action == "challenge" || action == "captcha"
 	if challenge {
 		status = http.StatusForbidden
 	}
-	return filter.Verdict{Deny: true, Challenge: challenge, Status: status, Reason: Reason, Detail: detail,
+	return filter.Verdict{Deny: true, Challenge: challenge, Captcha: action == "captcha", Status: status, Reason: Reason, Detail: detail,
 		Headers: map[string]string{"Cache-Control": "no-store"}, Attrs: in.attrs()}
 }
 

@@ -215,7 +215,7 @@ the `denied` reason.
 | 6b | Virtual patches: host, route, method, path, parameter, header, cookie and body conditions; block with the configured status, or log and continue | 4xx / 5xx | `denied_virtual_patch`, per patch hits |
 | 6c | Route policy: methods, media types, URI, query and header bounds, query parameter types | 405 / 415 / 400 / 414 / 431 | `denied_policy` |
 | 7 | CIDR deny then allow | 403 | `denied_acl` |
-| 7b | Challenge gate: unverified clients on routes with `challenge` (always, or in `load` mode above the level) receive the page | 503 page | `challenges_issued` |
+| 7b | Challenge gate: the cookie is read once (tier and device identifier); unverified clients on routes with `challenge` (always, or in `load` mode above the level) receive the page, the proof of work or the CAPTCHA widget | 503 page | `challenges_issued` |
 | 7c | Adaptive shedding: the route's priority class against the load level | 503 + `Retry-After` | `shed` |
 | 8 | Rate limits in route order; reject or tarpit | 429 | `denied_rate_limit`, `tarpitted` |
 | 9 | Body limit: declared length checked, then `MaxBytesReader` | 413 | `denied_body_size` |

@@ -273,6 +273,15 @@ to report a vulnerability. The threat analysis behind the controls is in
   scripts), `X-Frame-Options: DENY`, `noindex`, and returns to same-origin
   paths only. Failed verifications are security events that feed ban
   triggers under the `challenge` category.
+- The CAPTCHA tier (`challenge.captcha`) verifies provider tokens from
+  the proxy with the client address, fails closed when the provider is
+  down or rejects, never lets a proof of work cookie satisfy a CAPTCHA
+  verdict, admits only the provider's origins in the page's policy and
+  keeps the provider secret in a file re-read on reload.
+- The cookie records its tier and a device identifier the script derives
+  in the browser; the identifier is client supplied (correlation, not
+  identity) but signed into the cookie, so changing it costs another
+  solved challenge.
 
 ### Metrics
 

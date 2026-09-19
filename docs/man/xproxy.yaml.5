@@ -2342,6 +2342,13 @@ T}	T{
 client address (plaintext listeners)
 T}
 T{
+\fBdevice\fR
+T}	T{
+device identifier from the challenge cookie (\fBchallenge.\:device\fR),\: so a client rotating addresses keeps one bucket once it has passed a challenge
+T}	T{
+client address (no cookie yet)
+T}
+T{
 \fBheader:\:<Name>\fR
 T}	T{
 first value of the header (256 bytes)
@@ -3870,7 +3877,7 @@ T}
 .PP
 The OTLP exporter sends the same families as OTLP/HTTP with JSON encoding: counters as cumulative monotonic sums since process start, gauges as gauges, histograms as cumulative explicit bucket histograms; labels become data point attributes. \fBGET /v1/otlp\fR and \fBxproxyctl otlp\fR show pushes, failures, the last error and the size of the last request.
 .PP
-Exposed families: \fBxproxy_requests_total\fR, \fBxproxy_responses_total{class}\fR, \fBxproxy_denied_total{reason}\fR, \fBxproxy_bytes_in_total\fR, \fBxproxy_bytes_out_total\fR, \fBxproxy_waf_detected_total\fR, \fBxproxy_upstream_errors_total\fR, \fBxproxy_upstream_timeouts_total\fR, \fBxproxy_upstream_no_healthy_total\fR, \fBxproxy_client_aborts_total\fR, \fBxproxy_connections_rejected_total\fR, \fBxproxy_reloads_total{result}\fR, \fBxproxy_bans_total\fR, \fBxproxy_challenges_total{result}\fR, \fBxproxy_log_sent_total{sink}\fR, \fBxproxy_log_dropped_total{sink}\fR, \fBxproxy_connections_open\fR, \fBxproxy_requests_in_flight\fR, \fBxproxy_bans_active\fR, \fBxproxy_load_level\fR, \fBxproxy_upstream_latency_seconds\fR, \fBxproxy_shedding{class}\fR, \fBxproxy_cluster_peers\fR, \fBxproxy_cluster_peers_connected\fR, \fBxproxy_cluster_messages_total{direction,type}\fR, \fBxproxy_cluster_rejected_total\fR, \fBxproxy_request_duration_seconds\fR (histogram), \fBxproxy_upstream_ttfb_seconds\fR (histogram), \fBxproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}\fR, \fBxproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}\fR, \fBxproxy_route_requests_total{route,outcome}\fR, \fBxproxy_build_info\fR, \fBxproxy_uptime_seconds\fR, \fBxproxy_config_generation\fR.
+Exposed families: \fBxproxy_requests_total\fR, \fBxproxy_responses_total{class}\fR, \fBxproxy_denied_total{reason}\fR, \fBxproxy_bytes_in_total\fR, \fBxproxy_bytes_out_total\fR, \fBxproxy_waf_detected_total\fR, \fBxproxy_upstream_errors_total\fR, \fBxproxy_upstream_timeouts_total\fR, \fBxproxy_upstream_no_healthy_total\fR, \fBxproxy_client_aborts_total\fR, \fBxproxy_connections_rejected_total\fR, \fBxproxy_reloads_total{result}\fR, \fBxproxy_bans_total\fR, \fBxproxy_challenges_total{result}\fR (\fBissued\fR, \fBpassed\fR, \fBfailed\fR, \fBcaptcha_passed\fR), \fBxproxy_log_sent_total{sink}\fR, \fBxproxy_log_dropped_total{sink}\fR, \fBxproxy_connections_open\fR, \fBxproxy_requests_in_flight\fR, \fBxproxy_bans_active\fR, \fBxproxy_load_level\fR, \fBxproxy_upstream_latency_seconds\fR, \fBxproxy_shedding{class}\fR, \fBxproxy_cluster_peers\fR, \fBxproxy_cluster_peers_connected\fR, \fBxproxy_cluster_messages_total{direction,type}\fR, \fBxproxy_cluster_rejected_total\fR, \fBxproxy_request_duration_seconds\fR (histogram), \fBxproxy_upstream_ttfb_seconds\fR (histogram), \fBxproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}\fR, \fBxproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}\fR, \fBxproxy_route_requests_total{route,outcome}\fR, \fBxproxy_build_info\fR, \fBxproxy_uptime_seconds\fR, \fBxproxy_config_generation\fR.
 .PP
 Series (per\-second rates for counters, current values for gauges): \fBrequests\fR, \fBresponses_2xx\fR, \fBresponses_4xx\fR, \fBresponses_5xx\fR, \fBdenied\fR, \fBshed\fR, \fBbytes_in\fR, \fBbytes_out\fR, \fBupstream_errors\fR, \fBopen_connections\fR, \fBin_flight\fR, \fBload_level\fR, \fBupstream_latency_ms\fR, \fBbans_active\fR, \fBcluster_connected\fR.
 .SH "api_inventory"
@@ -6268,7 +6275,7 @@ T}
 Signals and default weights: \fBua_bot\fR 40 (curl, wget, python, Go, Java, scanners, headless browsers and the like), \fBua_missing\fR 30, \fBbrowser_headers_missing\fR 25 (a browser user agent without \fBAccept\fR or \fBAccept\-Language\fR), \fBfingerprint_mismatch\fR 35 (a browser user agent on a hello without \fBh2\fR ALPN or with fewer than ten cipher suites), \fBerror_rate\fR 30 (more than half of at least ten recent requests were 4xx or denied), \fBpath_spread\fR 15 (fifty or more distinct paths in the window), \fBregular_interval\fR 20 (eight or more requests with machine\-like timing), \fBhigh_rate\fR 15, \fBhoneypot_marked\fR 40 (the client touched a honeypot route on this node or, with cluster sharing, on a peer). The score is the capped sum; a client that is already verified by the challenge is never challenged again. The JA4 of every TLS request is logged as \fBja4\fR.
 .SS "Kind \fBaccount_guard\fR"
 .PP
-Protects the endpoints where accounts are attacked. Each endpoint has a class with a default ladder of progressive actions over a window: \fBlogin\fR counts failed attempts (recognised in the response) per client address, per account, per address and account pair, distinct accounts per address (credential stuffing) and distinct addresses per account (spraying, distributed brute force); \fBregister\fR, \fBreset\fR, \fBcart\fR and \fBscrape\fR count requests; \fBcustom\fR needs its own steps. A step fires when any of its thresholds is reached and the highest firing step acts: \fBlog\fR records, \fBdelay\fR holds the request, \fBchallenge\fR serves the browser challenge to unverified clients (a plain 403 without a \fBchallenge\fR section) and \fBblock\fR refuses the key that crossed the threshold for \fBduration\fR, on every node of a cluster. Blocks and denials use reason \fBaccount_abuse\fR (a ban trigger category) with status \fBblock_status\fR; the access log carries \fBaccount_endpoint\fR, \fBaccount_action\fR, \fBaccount_by\fR, \fBaccount_counts\fR, \fBaccount_hash\fR, \fBaccount_campaign\fR and \fBaccount_outcome\fR. Identities are trimmed, lower cased and hashed before they are counted or logged. A campaign spread over many addresses, each under its own thresholds, is detected from the endpoint\(aqs totals (\fBdistributed\fR): while it lasts every unverified request of the endpoint is challenged (or blocked).
+Protects the endpoints where accounts are attacked. Each endpoint has a class with a default ladder of progressive actions over a window: \fBlogin\fR counts failed attempts (recognised in the response) per client address, per account, per address and account pair, distinct accounts per address (credential stuffing) and distinct addresses per account (spraying, distributed brute force); \fBregister\fR, \fBreset\fR, \fBcart\fR and \fBscrape\fR count requests; \fBcustom\fR needs its own steps. A step fires when any of its thresholds is reached and the highest firing step acts: \fBlog\fR records, \fBdelay\fR holds the request, \fBchallenge\fR serves the browser challenge to unverified clients (a plain 403 without a \fBchallenge\fR section), \fBcaptcha\fR serves the CAPTCHA tier (\fBchallenge.captcha\fR; the proof of work without one) to clients that have not passed it, and \fBblock\fR refuses the key that crossed the threshold for \fBduration\fR, on every node of a cluster. Blocks and denials use reason \fBaccount_abuse\fR (a ban trigger category) with status \fBblock_status\fR; the access log carries \fBaccount_endpoint\fR, \fBaccount_action\fR, \fBaccount_by\fR, \fBaccount_counts\fR, \fBaccount_hash\fR, \fBaccount_campaign\fR and \fBaccount_outcome\fR. Identities are trimmed, lower cased and hashed before they are counted or logged. A campaign spread over many addresses, each under its own thresholds, is detected from the endpoint\(aqs totals (\fBdistributed\fR): while it lasts every unverified request of the endpoint is challenged (or blocked).
 .PP
 .TS
 allbox;
@@ -6362,7 +6369,7 @@ list
 T}	T{
 per class,\: below
 T}	T{
-1 to 8 steps of \fB{action,\: delay,\: duration,\: ip,\: account,\: pair,\: ip_\:accounts,\: account_\:ips,\: ip_\:paths}\fR;\: \fBaction\fR is \fBlog\fR,\: \fBdelay\fR (holds \fBdelay\fR,\: 10ms to 10s,\: default 1s),\: \fBchallenge\fR or \fBblock\fR (for \fBduration\fR,\: default the window);\: at least one threshold per step
+1 to 8 steps of \fB{action,\: delay,\: duration,\: ip,\: account,\: pair,\: ip_\:accounts,\: account_\:ips,\: ip_\:paths}\fR;\: \fBaction\fR is \fBlog\fR,\: \fBdelay\fR (holds \fBdelay\fR,\: 10ms to 10s,\: default 1s),\: \fBchallenge\fR,\: \fBcaptcha\fR or \fBblock\fR (for \fBduration\fR,\: default the window);\: at least one threshold per step
 T}
 T{
 \fBendpoints[].\:distributed\fR
@@ -6371,12 +6378,12 @@ mapping
 T}	T{
 \fB{ips:\: 50,\: events:\: 200}\fR for login,\: off otherwise
 T}	T{
-Campaign detection: both \fBips\fR (distinct addresses with events in the window) and \fBevents\fR must be reached;\: \fBaction\fR \fBchallenge\fR (default) or \fBblock\fR for \fBduration\fR (default the window)
+Campaign detection: both \fBips\fR (distinct addresses with events in the window) and \fBevents\fR must be reached;\: \fBaction\fR \fBchallenge\fR (default),\: \fBcaptcha\fR or \fBblock\fR for \fBduration\fR (default the window)
 T}
 T{
 \fBendpoints[].\:disposable\fR
 T}	T{
-\fBoff\fR,\: \fBlog\fR,\: \fBchallenge\fR,\: \fBblock\fR
+\fBoff\fR,\: \fBlog\fR,\: \fBchallenge\fR,\: \fBcaptcha\fR,\: \fBblock\fR
 T}	T{
 \fBoff\fR
 T}	T{
@@ -7766,6 +7773,105 @@ T}	T{
 \fBChecking your browser\fR
 T}	T{
 Heading on the page;\: no HTML characters
+T}
+T{
+\fBdevice\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+The script derives a device identifier from stable browser properties (user agent,\: languages,\: platform,\: cores,\: memory,\: screen,\: pixel ratio,\: time zone,\: a canvas rendering) and the cookie carries its first eight bytes: \fBdevice\fR in the access log,\: \fBInfo.\:DeviceID\fR for filters and the \fBdevice\fR rate limit key. Client supplied and therefore advisory,\: but fixed into the cookie it earned
+T}
+T{
+\fBcaptcha\fR
+T}	T{
+mapping
+T}	T{
+none
+T}	T{
+A hosted CAPTCHA tier,\: below
+T}
+.TE
+.SS "challenge.captcha"
+.PP
+Adds a second tier to the challenge. A verdict that asks for it (an \fBaccount_guard\fR step or \fBdisposable\fR action \fBcaptcha\fR, a \fBdistributed\fR action \fBcaptcha\fR) renders the provider\(aqs widget instead of the proof of work; a client that solved only the proof of work is challenged again, and a client that passed the CAPTCHA satisfies both tiers. The token is verified with the provider from the proxy (\fBsiteverify\fR, with the client address), fails closed when the provider is unreachable or rejects it, and the failure is a \fBchallenge_failed\fR security event naming the class (\fBcaptcha rejected\fR, \fBcaptcha score\fR, \fBcaptcha unreachable\fR). The page\(aqs Content Security Policy admits the provider\(aqs script and frame origins only. Without this section a CAPTCHA verdict falls back to the proof of work.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.2i) lbw(1.1i) lbx
+lw(0.9i) lw(1.2i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBprovider\fR
+T}	T{
+\fBturnstile\fR,\: \fBhcaptcha\fR,\: \fBrecaptcha\fR
+T}	T{
+required
+T}	T{
+Cloudflare Turnstile,\: hCaptcha or Google reCAPTCHA (v2 checkbox,\: v3 or Enterprise with \fBmin_\:score\fR)
+T}
+T{
+\fBsite_\:key\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+Public key rendered into the widget
+T}
+T{
+\fBsecret_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The provider secret on one line;\: re\-read on reload
+T}
+T{
+\fBverify_\:url\fR
+T}	T{
+URL
+T}	T{
+the provider\(aqs
+T}	T{
+Override for enterprise endpoints or tests (https,\: or http to localhost)
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Verification call (500ms to 30s);\: the call uses no environment proxy
+T}
+T{
+\fBmin_\:score\fR
+T}	T{
+float
+T}	T{
+\fB0\fR
+T}	T{
+Refuse tokens scored below it (providers that return a score);\: 0 disables
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBescalation\fR,\: \fBalways\fR
+T}	T{
+\fBescalation\fR
+T}	T{
+\fBalways\fR shows the widget on every challenge page,\: including route gates,\: in place of the proof of work
 T}
 .TE
 .SS "routes[].challenge"

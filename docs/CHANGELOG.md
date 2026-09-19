@@ -222,6 +222,15 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Challenge tiers: `challenge.captcha` adds Cloudflare Turnstile,
+  hCaptcha or reCAPTCHA as a second tier (escalation from
+  `account_guard` `captcha` steps, campaigns and disposable actions, or
+  `mode: always`), verified with the provider from the proxy; the
+  cookie records its tier and a device identifier the challenge script
+  derives (`challenge.device`), exposed as `device` in the access log,
+  `Info.DeviceID` and the `device` rate limit key; `Verdict.Captcha`,
+  `Info.CaptchaVerified`, `captchas_passed` and the `captcha_passed`
+  challenge metric result.
 - `account_guard` filter kind: login, registration, reset, cart and
   scrape endpoint classes with default ladders of delay, challenge and
   block per address, account, pair, accounts per address and addresses

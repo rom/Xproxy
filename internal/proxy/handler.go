@@ -53,6 +53,8 @@ type reqState struct {
 	extra     []any // filter attributes for the access log
 	country   string
 	ja4       string
+	chalTier  int           // challenge cookie tier (challenge.TierNone without one)
+	device    string        // device identifier from the challenge cookie
 	span      *tracing.Span // server span, nil without tracing
 	upSpan    *tracing.Span // client span of the upstream exchange
 	propagate bool
@@ -327,6 +329,12 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The challenge cookie, read once: its tier gates routes and filter
+	// verdicts, its device identifier feeds the log and rate limit keys.
+	if ch := s.challenger.Load(); ch != nil {
+		st.chalTier, st.device = ch.Check(r, st.clientIP)
+	}
+
 	// Browser challenge gate: unverified clients get the page instead of
 	// the route. In load mode only while the shedder reports pressure.
 	if cr.challenge != nil {
@@ -337,7 +345,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					active = true
 				}
 			}
-			if active && !ch.Verified(r, st.clientIP) {
+			if active && st.chalTier < challenge.TierProof {
 				s.stats.Challenged.Add(1)
 				st.denied = "challenge"
 				ch.Serve(rw, r, st.clientIP)
@@ -428,22 +436,30 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			info.JA3, info.JA4, info.ALPN = fp.JA3, fp.JA4, fp.ALPN
 			st.ja4 = fp.JA4
 		}
-		if ch := s.challenger.Load(); ch != nil {
-			info.ChallengeVerified = ch.Verified(r, st.clientIP)
+		if s.challenger.Load() != nil {
+			info.ChallengeVerified = st.chalTier >= challenge.TierProof
+			info.CaptchaVerified = st.chalTier >= challenge.TierCaptcha
+			info.DeviceID = st.device
 		}
 		instances = cr.filters.Begin(r.Context(), info)
 		defer func() { st.extra = append(st.extra, instances.End()...) }()
 		if v := instances.Request(r); v.Deny {
 			if v.Challenge {
 				if ch := s.challenger.Load(); ch != nil && !ch.Exempt(st.clientIP) {
-					if ch.Verified(r, st.clientIP) {
+					// A CAPTCHA verdict needs the CAPTCHA tier when one is
+					// configured; a proof of work cookie is not enough.
+					required := challenge.TierProof
+					if v.Captcha && ch.HasCaptcha() {
+						required = challenge.TierCaptcha
+					}
+					if st.chalTier >= required {
 						goto admitted
 					}
 					s.stats.Challenged.Add(1)
 					st.denied = "challenge:" + v.Reason
 					s.logs.SecurityEvent(r.Context(), "challenge", v.Reason, append([]any{
-						"request_id", st.id, "client_ip", st.clientIP.String(), "route", st.route, "detail", v.Detail}, v.Attrs...)...)
-					ch.Serve(rw, r, st.clientIP)
+						"request_id", st.id, "client_ip", st.clientIP.String(), "route", st.route, "detail", v.Detail, "captcha", required == challenge.TierCaptcha}, v.Attrs...)...)
+					ch.ServeTier(rw, r, st.clientIP, v.Captcha)
 					return
 				}
 			}
@@ -1077,6 +1093,9 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	if st.ja4 != "" {
 		attrs = append(attrs, "ja4", st.ja4)
 	}
+	if st.device != "" {
+		attrs = append(attrs, "device", st.device)
+	}
 	if st.cr != nil && st.cr.inventory && s.inventory.Enabled() {
 		s.observeEndpoint(rw, r, st, status)
 	}
@@ -1181,6 +1200,11 @@ func (s *Server) rateKey(rl *config.RateLimit, r *http.Request, st *reqState) st
 			return ip
 		}
 		return "c:" + st.country
+	case rl.Key == "device":
+		if st.device != "" {
+			return "dev:" + st.device
+		}
+		return ip
 	case rl.Key == "ja4":
 		if r.TLS != nil {
 			if fp, ok := s.fingerprints.Get(r.RemoteAddr); ok && fp.JA4 != "" {

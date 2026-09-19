@@ -2152,7 +2152,8 @@ For `login` the filter reads the account identifier from the request,
 learns from the response whether the attempt failed, and counts per
 address, per account, per address and account pair, distinct accounts
 per address and distinct addresses per account. Three failures on one
-pair earn a two second delay, five the browser challenge, ten a
+pair earn a two second delay, five the browser challenge (a `captcha`
+step is available where a CAPTCHA provider is configured), ten a
 fifteen minute block of that pair; ten different accounts tried from
 one address is credential stuffing and gets the challenge, thirty a
 block; one account tried from five addresses is a distributed attack
@@ -2441,6 +2442,55 @@ requires one only while the load level is at or above 0.5, so a flood of
 plain HTTP clients is turned away with a static page while browsers carry
 on after a short delay. Do not gate API routes: clients without JavaScript
 cannot pass. Give monitoring systems `exempt_cidrs`.
+
+#### CAPTCHA tier and device identifiers
+
+The proof of work stops floods and plain scripts; it does not stop a
+headless browser working through a credential list. For the endpoints
+where that matters, add a hosted CAPTCHA as a second tier and let the
+account guard escalate to it:
+
+```yaml
+challenge:
+  secret_file: /var/lib/xproxy/challenge.key
+  captcha:
+    provider: turnstile            # or hcaptcha, recaptcha
+    site_key: 0x4AAAAAAAExampleSiteKey
+    secret_file: /etc/xproxy/turnstile.secret
+rate_limits:
+  - {name: per-device, key: device, rate: 5, burst: 20}
+filters:
+  - name: accounts
+    kind: account_guard
+    options:
+      endpoints:
+        - name: login
+          class: login
+          paths: [/api/login]
+          identity: {json: username}
+          steps:
+            - {action: challenge, pair: 3, ip: 10}
+            - {action: captcha, pair: 6, ip: 30, ip_accounts: 15}
+            - {action: block, duration: 15m, pair: 12, ip: 60}
+          distributed: {ips: 50, events: 200, action: captcha}
+routes:
+  - {name: login, hosts: [shop.example.com], paths: [/api/login], methods: [POST], upstream: app, filters: [accounts], rate_limits: [per-device]}
+```
+
+A `challenge` step earns a proof of work cookie; a `captcha` step shows
+the provider's widget, and a client holding only the proof cookie sees
+it too. The token is verified with the provider from the proxy, the
+cookie records the higher tier, and a campaign spread over many
+addresses sends every new client through the widget. `mode: always`
+under `captcha` replaces the proof of work on every challenge page,
+including route gates, for sites that prefer a familiar widget. The
+challenge script also derives a device identifier from stable browser
+properties; it travels in the cookie, shows up as `device` in the
+access log and keys the `device` rate limit above, so a client that
+passed a challenge and then rotates addresses still shares one bucket
+(it falls back to the address until a cookie exists). The identifier is
+computed by the client and is advisory: treat it as correlation, not
+identity. `examples/security/captcha.yaml` is a complete configuration.
 
 ## Web GUI
 
@@ -2756,7 +2806,8 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 `client_aborts`, `denied_ban`, `denied_waf`, `waf_detected`, `bans_active`,
 `bans_total`, `cluster_peers`, `cluster_connected`, `shed`, `load_level`,
 `upstream_latency_ms`, `shedding_classes`, `challenges_issued`,
-`challenges_passed`, `challenges_failed`, `reloads`, `reload_failures`,
+`challenges_passed`, `challenges_failed`, `captchas_passed`, `reloads`,
+`reload_failures`,
 `open_connections`, `rejected_connections`, `in_flight`.
 
 ## Troubleshooting

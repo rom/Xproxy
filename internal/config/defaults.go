@@ -588,6 +588,10 @@ func applyDefaults(c *Config) {
 		setDur(&ch.TTL, time.Hour)
 		setStr(&ch.CookieName, "XPCHAL")
 		setStr(&ch.Title, "Checking your browser")
+		if cp := ch.Captcha; cp != nil {
+			setDur(&cp.Timeout, 5*time.Second)
+			setStr(&cp.Mode, "escalation")
+		}
 	}
 
 	for i := range c.Routes {

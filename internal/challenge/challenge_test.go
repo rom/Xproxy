@@ -2,10 +2,14 @@ package challenge
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,7 +112,7 @@ func TestFlow(t *testing.T) {
 	if !c.Exempt(netip.MustParseAddr("10.9.9.9")) || c.Exempt(ip) {
 		t.Fatal("exempt")
 	}
-	issued, passed, failed := c.Stats()
+	issued, passed, failed, _ := c.Stats()
 	if issued != 1 || passed != 1 || failed != 3 {
 		t.Fatalf("stats %d %d %d", issued, passed, failed)
 	}
@@ -168,7 +172,7 @@ func TestPersistentKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	ip := netip.MustParseAddr("203.0.113.1")
-	val := a.issueCookie(ip, time.Now())
+	val := a.issueCookie(ip, time.Now(), TierProof, nil)
 	r := httptest.NewRequest("GET", "/", nil)
 	r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: val})
 	if !b.Verified(r, ip) {
@@ -184,7 +188,7 @@ func TestKeyRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	ip := netip.MustParseAddr("203.0.113.1")
-	old := a.issueCookie(ip, time.Now())
+	old := a.issueCookie(ip, time.Now(), TierProof, nil)
 	if _, err := secret.Rotate(c.SecretFile, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +198,7 @@ func TestKeyRotation(t *testing.T) {
 	if !a.Verified(r, ip) {
 		t.Fatal("cookie from before the rotation rejected")
 	}
-	fresh := a.issueCookie(ip, time.Now())
+	fresh := a.issueCookie(ip, time.Now(), TierProof, nil)
 	if fresh == old {
 		t.Fatal("primary key did not change")
 	}
@@ -234,9 +238,232 @@ func TestScriptSHA256MatchesGo(t *testing.T) {
 	// the round constants and the verification form fields the Go side
 	// expects.
 	s := string(script)
-	for _, needle := range []string{"0x428a2f98", "0xc67178f2", `add("nonce", nonce)`, `add("counter", String(found))`, `add("r", ret)`} {
+	for _, needle := range []string{"0x428a2f98", "0xc67178f2", `add("nonce", nonce)`, `add("counter", String(found))`, `add("r", ret)`, `add("device", device)`, "xproxyCaptchaDone", "sha256Hex"} {
 		if !strings.Contains(s, needle) {
 			t.Fatalf("script missing %q", needle)
 		}
+	}
+}
+
+func TestTiersAndDevice(t *testing.T) {
+	c, err := New(cfg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip := netip.MustParseAddr("203.0.113.1")
+	now := time.Now()
+	// A proof cookie with a device, a captcha cookie, a legacy cookie and
+	// a cookie with no device.
+	dev := parseDevice("0123456789abcdef0123456789abcdef")
+	cases := []struct {
+		value  string
+		tier   int
+		device string
+	}{
+		{c.issueCookie(ip, now, TierProof, dev), TierProof, "0123456789abcdef"},
+		{c.issueCookie(ip, now, TierCaptcha, dev), TierCaptcha, "0123456789abcdef"},
+		{c.issueCookie(ip, now, TierProof, nil), TierProof, ""},
+		{legacyCookie(c, ip, now), TierProof, ""},
+	}
+	for i, tc := range cases {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: tc.value})
+		tier, device := c.Check(r, ip)
+		if tier != tc.tier || device != tc.device || !c.Verified(r, ip) {
+			t.Fatalf("case %d: tier %d device %q", i, tier, device)
+		}
+		if tier2, _ := c.Check(r, netip.MustParseAddr("203.0.113.9")); tier2 != TierNone {
+			t.Fatalf("case %d: accepted from another address", i)
+		}
+	}
+	// A tier byte outside the range is refused even with a valid MAC.
+	forged := c.issueCookie(ip, now, 7, dev)
+	r := httptest.NewRequest("GET", "/", nil)
+	r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: forged})
+	if tier, _ := c.Check(r, ip); tier != TierNone {
+		t.Fatal("tier 7 accepted")
+	}
+	// Device parsing: too short, odd, non hex, and a full hash truncated.
+	for _, bad := range []string{"", "abc", "0123456789abcde", "zz23456789abcdef", strings.Repeat("a", 66)} {
+		if parseDevice(bad) != nil {
+			t.Fatalf("device %q accepted", bad)
+		}
+	}
+	if got := parseDevice(strings.Repeat("ab", 32)); len(got) != deviceLen {
+		t.Fatalf("device length %d", len(got))
+	}
+	// The device posted with a proof lands in the cookie; a request
+	// without one gets a cookie without a device.
+	rec := httptest.NewRecorder()
+	c.Serve(rec, httptest.NewRequest("GET", "http://example.com/x", nil), ip)
+	if !strings.Contains(rec.Body.String(), `data-device="1"`) {
+		t.Fatal("page does not ask for a device id")
+	}
+	nonce := extractNonce(t, rec.Body.String())
+	form := url.Values{"nonce": {nonce}, "counter": {Solve(nonce, 10)}, "r": {"/x"}, "device": {strings.Repeat("cd", 32)}}
+	req := httptest.NewRequest("POST", "http://example.com"+VerifyPath, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	if ok, reason := c.Verify(w, req, ip, true); !ok {
+		t.Fatalf("verify: %s", reason)
+	}
+	ck := w.Result().Cookies()[0]
+	if !ck.Secure {
+		t.Fatal("cookie not secure on TLS")
+	}
+	r = httptest.NewRequest("GET", "/", nil)
+	r.AddCookie(ck)
+	if tier, device := c.Check(r, ip); tier != TierProof || device != strings.Repeat("cd", 8) {
+		t.Fatalf("device cookie: %d %q", tier, device)
+	}
+	// Devices off: the page does not ask and the cookie carries none.
+	off := cfg()
+	f := false
+	off.Device = &f
+	c.Reconfigure(off)
+	rec = httptest.NewRecorder()
+	c.Serve(rec, httptest.NewRequest("GET", "http://example.com/x", nil), ip)
+	if strings.Contains(rec.Body.String(), `data-device`) {
+		t.Fatal("page asks for a device id with devices off")
+	}
+}
+
+// legacyCookie builds a cookie in the format before tiers.
+func legacyCookie(c *Challenger, ip netip.Addr, now time.Time) string {
+	buf := make([]byte, 8, 8+macLen)
+	binary.BigEndian.PutUint64(buf, uint64(now.Add(c.ttl).Unix())) //nolint:gosec // positive time
+	buf = append(buf, c.mac([]byte("cookie"), buf[:8], c.ipBytes(ip))...)
+	return base64.RawURLEncoding.EncodeToString(buf)
+}
+
+func TestCaptcha(t *testing.T) {
+	var lastForm url.Values
+	answer := `{"success":true,"score":0.9,"hostname":"example.com"}`
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		lastForm = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, answer)
+	}))
+	defer provider.Close()
+	secretFile := filepath.Join(t.TempDir(), "turnstile.secret")
+	if err := os.WriteFile(secretFile, []byte("0x4AAAAAAA_secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conf := cfg()
+	conf.Captcha = &config.Captcha{Provider: "turnstile", SiteKey: "0x4AAAAAAA_site", SecretFile: secretFile, VerifyURL: provider.URL, Timeout: config.Duration(2 * time.Second), Mode: "escalation", MinScore: 0.5}
+	c, err := New(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.HasCaptcha() {
+		t.Fatal("captcha not loaded")
+	}
+	ip := netip.MustParseAddr("203.0.113.1")
+	// Escalation mode: a plain page keeps the proof of work; a captcha
+	// page renders the widget with the provider's script and CSP.
+	rec := httptest.NewRecorder()
+	c.ServeTier(rec, httptest.NewRequest("GET", "http://example.com/login", nil), ip, false)
+	if body := rec.Body.String(); strings.Contains(body, "cf-turnstile") || !strings.Contains(body, `id="bar"`) {
+		t.Fatalf("plain page: %s", body)
+	}
+	rec = httptest.NewRecorder()
+	c.ServeTier(rec, httptest.NewRequest("GET", "http://example.com/login", nil), ip, true)
+	body := rec.Body.String()
+	csp := rec.Header().Get("Content-Security-Policy")
+	if !strings.Contains(body, `class="cf-turnstile" data-sitekey="0x4AAAAAAA_site"`) || !strings.Contains(body, `data-captcha="turnstile"`) ||
+		!strings.Contains(body, "https://challenges.cloudflare.com/turnstile/v0/api.js") || !strings.Contains(csp, "script-src 'self' https://challenges.cloudflare.com") || !strings.Contains(csp, "frame-src https://challenges.cloudflare.com") {
+		t.Fatalf("captcha page: %s\n%s", csp, body)
+	}
+	nonce := extractNonce(t, body)
+	post := func(fields url.Values) (*httptest.ResponseRecorder, string) {
+		fields.Set("nonce", nonce)
+		fields.Set("r", "/login")
+		req := httptest.NewRequest("POST", "http://example.com"+VerifyPath, strings.NewReader(fields.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		_, reason := c.Verify(w, req, ip, false)
+		return w, reason
+	}
+	// A rejected token, a low score, an unreachable provider, then success.
+	answer = `{"success":false,"error-codes":["invalid-input-response"]}`
+	if w, reason := post(url.Values{"cf-turnstile-response": {"tok1"}}); w.Code != 403 || reason != "captcha rejected" {
+		t.Fatalf("rejected token: %d %s", w.Code, reason)
+	}
+	answer = `{"success":true,"score":0.1}`
+	if w, reason := post(url.Values{"cf-turnstile-response": {"tok2"}}); w.Code != 403 || reason != "captcha score" {
+		t.Fatalf("low score: %d %s", w.Code, reason)
+	}
+	answer = `{"success":true,"score":0.9,"hostname":"example.com"}`
+	// A token without a counter is not a proof attempt (no 400), and a
+	// nonce is not burnt by a provider failure.
+	w, reason := post(url.Values{"cf-turnstile-response": {"tok3"}, "device": {strings.Repeat("ef", 32)}})
+	if w.Code != 303 || reason != "" {
+		t.Fatalf("captcha pass: %d %s", w.Code, reason)
+	}
+	if lastForm.Get("secret") != "0x4AAAAAAA_secret" || lastForm.Get("response") != "tok3" || lastForm.Get("remoteip") != "203.0.113.1" {
+		t.Fatalf("provider form %v", lastForm)
+	}
+	ck := w.Result().Cookies()[0]
+	r := httptest.NewRequest("GET", "/", nil)
+	r.AddCookie(ck)
+	if tier, device := c.Check(r, ip); tier != TierCaptcha || device != strings.Repeat("ef", 8) {
+		t.Fatalf("captcha cookie: %d %q", tier, device)
+	}
+	// The nonce is used up.
+	if w, _ := post(url.Values{"cf-turnstile-response": {"tok4"}}); w.Code != 403 {
+		t.Fatalf("replay: %d", w.Code)
+	}
+	// A proof still works alongside (a plain page's nonce).
+	rec = httptest.NewRecorder()
+	c.Serve(rec, httptest.NewRequest("GET", "http://example.com/x", nil), ip)
+	nonce = extractNonce(t, rec.Body.String())
+	if w, reason := post(url.Values{"counter": {Solve(nonce, 10)}}); w.Code != 303 {
+		t.Fatalf("proof with captcha configured: %d %s", w.Code, reason)
+	}
+	issued, passed, failed, captcha := c.Stats()
+	if issued != 3 || passed != 2 || failed != 3 || captcha != 1 {
+		t.Fatalf("stats %d %d %d %d", issued, passed, failed, captcha)
+	}
+	// Mode always renders the widget on every page; the provider being
+	// down fails closed with its own reason.
+	conf.Captcha.Mode = "always"
+	c.Reconfigure(conf)
+	rec = httptest.NewRecorder()
+	c.Serve(rec, httptest.NewRequest("GET", "http://example.com/x", nil), ip)
+	if !strings.Contains(rec.Body.String(), "cf-turnstile") {
+		t.Fatal("mode always without the widget")
+	}
+	nonce = extractNonce(t, rec.Body.String())
+	provider.Close()
+	if w, reason := post(url.Values{"cf-turnstile-response": {"tok5"}}); w.Code != 403 || reason != "captcha unreachable" {
+		t.Fatalf("provider down: %d %s", w.Code, reason)
+	}
+	// Other providers carry their own script, class and CSP origins.
+	for name, want := range map[string][]string{
+		"hcaptcha":  {"h-captcha", "https://js.hcaptcha.com/1/api.js", "frame-src https://*.hcaptcha.com", "connect-src https://*.hcaptcha.com"},
+		"recaptcha": {"g-recaptcha", "https://www.google.com/recaptcha/api.js", "https://www.gstatic.com/recaptcha/"},
+	} {
+		conf.Captcha.Provider = name
+		c.Reconfigure(conf)
+		rec = httptest.NewRecorder()
+		c.Serve(rec, httptest.NewRequest("GET", "http://example.com/x", nil), ip)
+		out := rec.Body.String() + "\n" + rec.Header().Get("Content-Security-Policy")
+		for _, w := range want {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s: missing %q", name, w)
+			}
+		}
+	}
+	// A missing secret file refuses construction; an empty one too.
+	conf.Captcha.SecretFile = filepath.Join(t.TempDir(), "missing")
+	if _, err := New(conf); err == nil {
+		t.Fatal("missing secret accepted")
+	}
+	empty := filepath.Join(t.TempDir(), "empty")
+	_ = os.WriteFile(empty, []byte("\n"), 0o600)
+	conf.Captcha.SecretFile = empty
+	if _, err := New(conf); err == nil {
+		t.Fatal("empty secret accepted")
 	}
 }

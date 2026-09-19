@@ -256,6 +256,9 @@ procedure is in RELEASING.md.
 - Account protection: credential stuffing, brute force, registration,
   reset, hoarding and scraping abuse with progressive actions and
   distributed campaign detection (`account_guard` filter): delivered
+- CAPTCHA providers as a challenge tier and device identifiers in the
+  challenge cookie (`challenge.captcha`, `challenge.device`, rate limit
+  key `device`): delivered
 - Bypass protection: origin request signatures and the origin locking
   guide (`upstreams[].origin_signature`, HARDENING.md 5c): delivered
 - WAF operating modes with gradual enforcement (`block_percent`,

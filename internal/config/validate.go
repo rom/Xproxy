@@ -43,6 +43,9 @@ func (e *ValidationError) Error() string {
 
 type validator struct {
 	problems []string
+	// hasChallenge is set while validating a configuration with a
+	// challenge section (the device rate limit key needs one).
+	hasChallenge bool
 	// fileCheck is true when file existence should be verified. Tests turn
 	// this off.
 	fileCheck bool
@@ -95,6 +98,7 @@ func (v *validator) config(c *Config) {
 
 	rateLimits := map[string]bool{}
 	for i := range c.RateLimits {
+		v.hasChallenge = c.Challenge != nil
 		v.rateLimit(i, &c.RateLimits[i], rateLimits)
 	}
 	upstreams := map[string]bool{}
@@ -855,6 +859,10 @@ func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 	seen[r.Name] = true
 	switch {
 	case r.Key == "client_ip", r.Key == "route", r.Key == "country", r.Key == "client_net", r.Key == "endpoint", r.Key == "ja4":
+	case r.Key == "device":
+		if !v.hasChallenge {
+			v.errf("%s.key: device needs the challenge section (the identifier comes from the challenge cookie)", p)
+		}
 	case strings.HasPrefix(r.Key, "header:") && len(r.Key) > len("header:"):
 		if !headerNameOK(r.Key[len("header:"):]) {
 			v.errf("%s.key: %q is not a header name", p, r.Key[len("header:"):])
@@ -868,7 +876,7 @@ func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 			v.errf("%s.key: %q is not a claim name", p, r.Key[len("jwt:"):])
 		}
 	default:
-		v.errf("%s.key: must be client_ip, client_net, route, country, endpoint, ja4, header:<name>, cookie:<name> or jwt:<claim>", p)
+		v.errf("%s.key: must be client_ip, client_net, route, country, endpoint, ja4, device, header:<name>, cookie:<name> or jwt:<claim>", p)
 	}
 	if r.NetV4 < 8 || r.NetV4 > 32 {
 		v.errf("%s.net_v4: must be between 8 and 32", p)
@@ -2159,6 +2167,31 @@ func (v *validator) challenge(c *Challenge) {
 	}
 	if len(c.Title) > 200 || strings.ContainsAny(c.Title, "<>&\"'") {
 		v.errf("challenge.title: at most 200 characters, no HTML special characters")
+	}
+	if cp := c.Captcha; cp != nil {
+		switch cp.Provider {
+		case "turnstile", "hcaptcha", "recaptcha":
+		default:
+			v.errf("challenge.captcha.provider: must be turnstile, hcaptcha or recaptcha")
+		}
+		if cp.SiteKey == "" || len(cp.SiteKey) > 200 || strings.ContainsAny(cp.SiteKey, "<>&\"' \r\n") {
+			v.errf("challenge.captcha.site_key: required, at most 200 characters, no HTML or space characters")
+		}
+		if !strings.HasPrefix(cp.SecretFile, "/") {
+			v.errf("challenge.captcha.secret_file: must be an absolute path")
+		}
+		if cp.VerifyURL != "" && !strings.HasPrefix(cp.VerifyURL, "https://") && !strings.HasPrefix(cp.VerifyURL, "http://127.0.0.1") && !strings.HasPrefix(cp.VerifyURL, "http://localhost") {
+			v.errf("challenge.captcha.verify_url: must be an https URL (plain http only to localhost)")
+		}
+		if cp.Timeout < Duration(500_000_000) || cp.Timeout > Duration(30_000_000_000) {
+			v.errf("challenge.captcha.timeout: must be between 500ms and 30s")
+		}
+		if cp.MinScore < 0 || cp.MinScore > 1 {
+			v.errf("challenge.captcha.min_score: must be between 0 and 1")
+		}
+		if cp.Mode != "escalation" && cp.Mode != "always" {
+			v.errf("challenge.captcha.mode: must be escalation or always")
+		}
 	}
 }
 
