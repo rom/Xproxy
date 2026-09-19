@@ -2,10 +2,13 @@ package proxy
 
 import (
 	"fmt"
+	"github.com/rom/xproxy/internal/apiinv"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 const inventorySpec = `openapi: 3.0.3
@@ -98,6 +101,11 @@ routes:
 	}
 	if rep.Zombie != 2 {
 		t.Fatalf("zombies %d (POST /v1/orders and DELETE /v1/orders/{id} expected)", rep.Zombie)
+	}
+	// The undocumented view exports as an OpenAPI skeleton naming the
+	// observed paths.
+	if doc, err := apiinv.SkeletonYAML(s.APIInventory("undocumented", 0), "Discovered", time.Now()); err != nil || !strings.Contains(string(doc), "openapi: 3.0.3") || !strings.Contains(string(doc), "x-xproxy") {
+		t.Fatalf("skeleton: %v\n%s", err, doc)
 	}
 	if z := s.APIInventory("zombie", 0); len(z.Items) != 2 || z.Items[0].Requests != 0 {
 		t.Fatalf("zombie view %+v", z.Items)

@@ -222,6 +222,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- API inventory export: `xproxyctl api VIEW -openapi` and
+  `GET /v1/api?format=openapi` render a view as an OpenAPI 3.0
+  skeleton with named path parameters, methods, media types, status
+  classes, security schemes, servers and `x-xproxy` traffic evidence.
 - `openapi` filter: `spec_url` fetches the description over HTTPS and
   refreshes it in the background with ETags and a `cache_file` for
   outages; `spec_file` is re-read when it changes without a reload;

@@ -49,7 +49,7 @@ var commandTable = []command{
 	{name: "cache", args: "[purge [HOST [PATH-PREFIX]]]", summary: "Response cache counters; purge removes entries", words: []string{"purge"}},
 	{name: "honeypot", args: "[forget IP]", summary: "Clients marked by honeypot routes", words: []string{"forget"}},
 	{name: "patches", summary: "Virtual patches with state, hits and expiry"},
-	{name: "api", args: "[all|shadow|zombie|versions|documented|undocumented] [-top N]", summary: "API inventory discovered from traffic, with shadow, zombie and superseded endpoints", words: []string{"all", "shadow", "zombie", "versions", "documented", "undocumented"}, flags: []string{"-top"}},
+	{name: "api", args: "[all|shadow|zombie|versions|documented|undocumented] [-top N] [-openapi [-title T]]", summary: "API inventory discovered from traffic, with shadow, zombie and superseded endpoints, or an OpenAPI skeleton of a view", words: []string{"all", "shadow", "zombie", "versions", "documented", "undocumented"}, flags: []string{"-top", "-openapi", "-title"}},
 	{name: "dns", args: "[purge]", summary: "DNS listener counters; purge empties the caches", words: []string{"purge"}},
 	{name: "ingress", summary: "Kubernetes ingress controller status"},
 	{name: "otlp", summary: "OpenTelemetry metrics exporter status"},

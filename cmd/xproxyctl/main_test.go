@@ -142,6 +142,7 @@ func TestCommands(t *testing.T) {
 		{[]string{"accounts"}, 0, "no account guard configured"},
 		{[]string{"api"}, 0, "api inventory: not configured"},
 		{[]string{"api", "bogus"}, 2, "usage: xproxyctl api"},
+		{[]string{"api", "undocumented", "-openapi", "-title", "Discovered"}, 0, "openapi: 3.0.3"},
 		{[]string{"acme"}, 1, ""},
 		{[]string{"metrics"}, 0, "xproxy_"},
 		{[]string{"series", "-since", "1m", "-last", "5"}, 0, ""},

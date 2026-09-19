@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/rom/xproxy/internal/apiinv"
 	"io"
 	"net"
 	"net/http"
@@ -247,7 +248,20 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 			writeJSON(w, 400, result{Error: "view must be all, shadow, zombie, versions, documented or undocumented"})
 			return
 		}
-		writeJSON(w, 200, s.proxy.APIInventory(view, top))
+		rep := s.proxy.APIInventory(view, top)
+		if r.URL.Query().Get("format") == "openapi" {
+			out, err := apiinv.SkeletonYAML(rep, r.URL.Query().Get("title"), time.Now())
+			if err != nil {
+				writeJSON(w, 500, result{Error: err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(200)
+			_, _ = w.Write(out)
+			return
+		}
+		writeJSON(w, 200, rep)
 	})
 	mux.HandleFunc("GET /v1/honeypot", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "marks_dropped": s.proxy.HoneypotMarksDropped(), "decoys": proxy.DecoyNames()})

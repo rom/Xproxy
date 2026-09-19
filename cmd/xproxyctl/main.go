@@ -695,17 +695,33 @@ func run(args []string, out, errOut io.Writer) int {
 		afs := flag.NewFlagSet("api", flag.ContinueOnError)
 		afs.SetOutput(errOut)
 		top := afs.Int("top", 50, "endpoints listed")
+		asOpenAPI := afs.Bool("openapi", false, "print the view as an OpenAPI 3.0 skeleton (YAML)")
+		title := afs.String("title", "", "title of the skeleton")
 		if err := afs.Parse(fs.Args()[1:]); err != nil {
 			return 2
 		}
 		view := afs.Arg(0)
+		// Flags may follow the view (xproxyctl api shadow -top 10).
+		if afs.NArg() > 1 {
+			if err := afs.Parse(afs.Args()[1:]); err != nil {
+				return 2
+			}
+		}
 		switch view {
 		case "":
 			view = "all"
 		case "all", "shadow", "zombie", "versions", "documented", "undocumented":
 		default:
-			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl api [all|shadow|zombie|versions|documented|undocumented] [-top N]")
+			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl api [all|shadow|zombie|versions|documented|undocumented] [-top N] [-openapi [-title T]]")
 			return 2
+		}
+		if *asOpenAPI {
+			doc, err := c.APISkeleton(view, *top, *title)
+			if err != nil {
+				return fail(err)
+			}
+			_, _ = out.Write(doc)
+			return 0
 		}
 		rep, err := c.APIInventory(view, *top)
 		if err != nil {

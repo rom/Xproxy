@@ -1004,7 +1004,15 @@ operation is documented. `xproxyctl api` and `GET /v1/api` show:
 - **superseded** versions: a `v1` still receiving traffic next to a
   `v2` of the same host, method and path;
 - the plain inventory, sorted by requests, with `versions`,
-  `documented` and `undocumented` views.
+  `documented` and `undocumented` views;
+- any view as an OpenAPI 3.0 skeleton (`xproxyctl api undocumented
+  -openapi`, `GET /v1/api?view=undocumented&format=openapi`): one path
+  item per observed template with named path parameters, the observed
+  methods, request and response media types, response status classes,
+  the credential kinds as security schemes, hosts as servers and an
+  `x-xproxy` extension with the traffic evidence; schemas and
+  descriptions are left for the API team to complete, after which the
+  file serves an `openapi` filter.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

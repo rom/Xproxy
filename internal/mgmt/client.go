@@ -132,6 +132,12 @@ func (c *Client) Accounts(top int) (*accountguard.Report, error) {
 	return &rep, c.do("GET", fmt.Sprintf("/v1/accounts?top=%d", top), &rep)
 }
 
+// APISkeleton fetches the inventory view as an OpenAPI skeleton (YAML).
+func (c *Client) APISkeleton(view string, top int, title string) ([]byte, error) {
+	var b []byte
+	return b, c.do("GET", fmt.Sprintf("/v1/api?view=%s&top=%d&format=openapi&title=%s", url.QueryEscape(view), top, url.QueryEscape(title)), &b)
+}
+
 // Patches fetches the virtual patches with their counters.
 func (c *Client) Patches() ([]proxy.PatchStatus, error) {
 	var out []proxy.PatchStatus

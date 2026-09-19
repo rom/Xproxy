@@ -3899,7 +3899,11 @@ Present means enabled. The proxy discovers the API surface it serves from traffi
 .PP
 .ti -3n
 \(bu
-the plain inventory, sorted by requests, with \fBversions\fR, \fBdocumented\fR and \fBundocumented\fR views.
+the plain inventory, sorted by requests, with \fBversions\fR, \fBdocumented\fR and \fBundocumented\fR views;
+.PP
+.ti -3n
+\(bu
+any view as an OpenAPI 3.0 skeleton (\fBxproxyctl api undocumented \-openapi\fR, \fBGET /v1/api?view=undocumented&format=openapi\fR): one path item per observed template with named path parameters, the observed methods, request and response media types, response status classes, the credential kinds as security schemes, hosts as servers and an \fBx\-xproxy\fR extension with the traffic evidence; schemas and descriptions are left for the API team to complete, after which the file serves an \fBopenapi\fR filter.
 .RE
 .PP
 .PP

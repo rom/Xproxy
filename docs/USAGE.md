@@ -2439,7 +2439,18 @@ in the background with a `cache_file` for outages), and a `spec_file`
 is re-read when it changes, so publishing a new version of the
 description needs no proxy reload. `unknown_paths: allow` keeps the
 description advisory while the inventory fills; `deny` turns the same description into the positive
-model once the shadow list is empty.
+model once the shadow list is empty. The shortest way from a shadow
+list to a description is the export:
+
+```
+$ xproxyctl api undocumented -openapi -title "Orders (discovered)" > orders-discovered.yaml
+```
+
+The skeleton carries every observed path with named parameters, the
+methods, media types, status classes, credential kinds and an
+`x-xproxy` block with request counts and last seen times; complete the
+schemas and it becomes the `spec_file` (or the `spec_url` document) of
+an `openapi` filter on the route.
 
 ```
 $ xproxyctl api shadow

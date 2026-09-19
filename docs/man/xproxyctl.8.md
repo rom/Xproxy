@@ -50,7 +50,7 @@ locally; everything else goes through the socket.
 | `ban` [`-duration` *D*] [`-reason` *TEXT*] *TARGET* | Ban an address, a CIDR or a TLS fingerprint as `ja4:`*FP* (default one hour) |
 | `unban` *TARGET* | Remove a ban |
 | `cluster` | Peers, inbound connections and gossip counters |
-| `api` [`all`\|`shadow`\|`zombie`\|`versions`\|`documented`\|`undocumented`] | API inventory discovered from traffic: host, method, path template, route, version, state (documented, shadow, zombie, superseded), counts, credentials seen and last seen (`-top` *N*) |
+| `api` [`all`\|`shadow`\|`zombie`\|`versions`\|`documented`\|`undocumented`] | API inventory discovered from traffic: host, method, path template, route, version, state (documented, shadow, zombie, superseded), counts, credentials seen and last seen (`-top` *N*); with `-openapi` [`-title` *T*] the view as an OpenAPI 3.0 skeleton in YAML |
 | `patches` | Virtual patches with state (active, disabled, expired), action, hits, last hit and expiry |
 | `fleet` | Fleet agent state: controller, node id, applied bundle digest and result, pending bundle, poll and report counters |
 | `accounts` [`-top` *N*] | Account guard state: endpoints with tracked addresses, accounts and pairs, active blocks (*N* per endpoint), window totals, campaign state and the action counters |
