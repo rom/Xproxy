@@ -43,6 +43,7 @@ var commandTable = []command{
 	{name: "fleet", summary: "Fleet agent state (controller, applied bundle, poll and report counters)"},
 	{name: "accounts", args: "[-top N]", summary: "Account guard state (endpoints, active blocks, campaigns, action counters)", flags: []string{"-top"}},
 	{name: "maintenance", args: "[on|off]", summary: "Show or set maintenance mode", words: []string{"on", "off"}},
+	{name: "origin-check", args: "[upstream] [-host H] [-path P]", summary: "Probe origins directly to verify origin-lock is enforced", flags: []string{"-host", "-path"}},
 	{name: "acme", args: "[renew]", summary: "Managed certificates; renew forces renewal", words: []string{"renew"}},
 	{name: "icap", summary: "ICAP services with reachability and counters"},
 	{name: "filters", summary: "Registered filter kinds and configured filters"},

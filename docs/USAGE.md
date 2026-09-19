@@ -69,6 +69,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `cluster` | Peers, inbound connections and gossip counters |
 | `accounts` | Account guard state: endpoints with tracked keys, active blocks (`-top N` per endpoint), campaign state and the action counters |
 | `maintenance` [`on`\|`off`] | Show or set maintenance mode; on holds every request but the allowlist behind a 503 |
+| `origin-check` [`upstream`] [`-host H`] [`-path P`] | Probe origins directly to verify origin-lock is enforced: sends an unsigned and a signed request to each endpoint of every upstream with an `origin_signature` (or the named one) and reports the verdict; exits non-zero if any origin is not `enforced` |
 | `spki CERT.pem` | Print the `spki_pins` value of a certificate |
 | `acme` | Managed certificates with expiry, issuer, last error; `acme renew` forces renewal and waits |
 | `icap` | ICAP services with reachability, preview size, ISTag and counters |
@@ -1145,6 +1146,15 @@ request that did not pass the proxy, or was altered after it, is
 refused whatever network it came from. `xproxyctl rotate-secret
 /var/lib/xproxy/origin-app.key` adds a new key while the old one keeps
 verifying until the origins have the new file.
+
+Verify the lock is actually in force with `xproxyctl origin-check`: it
+sends an unsigned and a signed request straight to each origin endpoint
+(bypassing the proxy) and reports `enforced` only when the origin refuses
+the unsigned one and accepts the signed one. It exits non-zero if any
+origin is `not_enforced`, so it can gate a deploy. Point it at one
+upstream with `xproxyctl origin-check <upstream>`, and override the probe
+target with `-host` and `-path` when the origin's health path is
+protected differently.
 
 ### Positive security model
 

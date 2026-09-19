@@ -134,6 +134,23 @@ func (c *Client) Maintenance(on *bool) (*MaintenanceStatus, error) {
 	return &st, c.doBody("POST", "/v1/maintenance", MaintenanceRequest{On: *on}, &st)
 }
 
+// OriginCheck probes the configured origins directly to verify origin-lock
+// enforcement. upstream, host and path are optional filters and overrides.
+func (c *Client) OriginCheck(upstream, host, path string) ([]proxy.OriginCheckResult, error) {
+	q := url.Values{}
+	if upstream != "" {
+		q.Set("upstream", upstream)
+	}
+	if host != "" {
+		q.Set("host", host)
+	}
+	if path != "" {
+		q.Set("path", path)
+	}
+	var res []proxy.OriginCheckResult
+	return res, c.do("GET", "/v1/origin-check?"+q.Encode(), &res)
+}
+
 // Accounts fetches the account guard view with up to top blocks per
 // endpoint.
 func (c *Client) Accounts(top int) (*accountguard.Report, error) {

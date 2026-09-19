@@ -222,6 +222,14 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		writeJSON(w, 200, MaintenanceStatus{Configured: configured, On: on})
 	})
 	mux.HandleFunc("POST /v1/maintenance", s.setMaintenance)
+	mux.HandleFunc("GET /v1/origin-check", func(w http.ResponseWriter, r *http.Request) {
+		res, err := s.proxy.OriginCheck(r.URL.Query().Get("upstream"), r.URL.Query().Get("host"), r.URL.Query().Get("path"))
+		if err != nil {
+			writeJSON(w, 400, result{Error: err.Error()})
+			return
+		}
+		writeJSON(w, 200, res)
+	})
 	mux.HandleFunc("GET /v1/accounts", func(w http.ResponseWriter, r *http.Request) {
 		top := 50
 		if t := r.URL.Query().Get("top"); t != "" {

@@ -222,6 +222,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Origin-lock verification command (`xproxyctl origin-check [upstream]`):
+  probes the configured origins directly, sending an unsigned and a signed
+  request to each endpoint of every upstream with an `origin_signature`, and
+  reports whether the origin refuses unsigned traffic (`enforced`) or serves
+  it (`not_enforced`). Exits non-zero when any origin is not enforced, so it
+  fits a deployment check. Served at `GET /v1/origin-check`.
 - Traffic shadowing with response diffing (`routes[].mirror.diff`): compare
   the shadow upstream's response with the live one — status, chosen headers
   and a body digest — to validate a new backend under real traffic. The
