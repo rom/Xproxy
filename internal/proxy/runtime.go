@@ -17,6 +17,7 @@ import (
 	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/jwt"
 	"github.com/rom/xproxy/internal/limits"
+	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/router"
 	"github.com/rom/xproxy/internal/shed"
@@ -131,6 +132,7 @@ type compiledRoute struct {
 	class           shed.Class
 	challenge       *config.RouteChallenge // nil or mode off means no gate
 	counts          [5]atomic.Uint64       // 2xx, 3xx, 4xx, 5xx, denied
+	hist            *metrics.Histogram     // request duration per route
 	bytesIn         atomic.Uint64
 	bytesOut        atomic.Uint64
 	rateLimited     atomic.Uint64
@@ -297,6 +299,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		r := &cfg.Routes[i]
 		cr := &compiledRoute{
 			cfg:   r,
+			hist:  metrics.NewHistogram(metrics.DurationBuckets),
 			allow: netutil.ParsePrefixes(r.AllowCIDRs),
 			deny:  netutil.ParsePrefixes(r.DenyCIDRs),
 			class: shed.ParseClass(r.PriorityClass),

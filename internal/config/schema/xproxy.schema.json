@@ -1045,6 +1045,13 @@
           "description": "Type is http (GET path, expected_status) or grpc (the standard grpc.health.v1 Check over HTTP/2, needs h2c or https). Default http.",
           "type": "string"
         },
+        "body_contains": {
+          "description": "BodyContains requires the first 64 KiB of the probe response to contain this text (type http); BodyRegex an RE2 pattern to match anywhere in it. Both may be set; both must hold.",
+          "type": "string"
+        },
+        "body_regex": {
+          "type": "string"
+        },
         "expected_status": {
           "type": "array",
           "items": {
@@ -1830,7 +1837,7 @@
       "additionalProperties": false
     },
     "OutlierEjection": {
-      "description": "OutlierEjection configures passive health checking.",
+      "description": "OutlierEjection configures passive health checking: consecutive failures and, when latency_threshold or latency_factor is set, an endpoint whose smoothed time to first byte is slow.",
       "type": "object",
       "properties": {
         "base_ejection_time": {
@@ -1840,6 +1847,19 @@
         },
         "consecutive_failures": {
           "type": "integer"
+        },
+        "latency_factor": {
+          "description": "LatencyFactor ejects an endpoint whose smoothed latency exceeds the pool's smoothed latency times this factor (at least 1.5), when the pool has two or more endpoints. 0 disables.",
+          "type": "number"
+        },
+        "latency_min_samples": {
+          "description": "LatencyMinSamples is how many responses an endpoint must have answered since it last became available before its latency is judged. Default 20.",
+          "type": "integer"
+        },
+        "latency_threshold": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
         "max_ejection_percent": {
           "type": "integer"

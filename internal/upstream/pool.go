@@ -5,9 +5,11 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,6 +45,8 @@ type Pool struct {
 	// hcTransport carries probes: the pool transport with keep_alive, or a
 	// dedicated one that opens a fresh connection per probe.
 	hcTransport *http.Transport
+	// hcBodyRE is the compiled health_check.body_regex.
+	hcBodyRE *regexp.Regexp
 	// breaker, gate and canary are nil when not configured.
 	breaker *Breaker
 	gate    *Gate
@@ -310,6 +314,9 @@ func (p *Pool) Start() {
 	p.hcCtx = ctx
 	if p.Cfg.HealthCheck != nil {
 		p.hcSem = make(chan struct{}, max(p.Cfg.HealthCheck.MaxConcurrent, 1))
+		if re := p.Cfg.HealthCheck.BodyRegex; re != "" {
+			p.hcBodyRE = regexp.MustCompile(re) // validated
+		}
 		p.epMu.Lock()
 		for _, e := range p.endpoints() {
 			p.startHealthLoop(e)
@@ -454,32 +461,86 @@ func (p *Pool) Begin(e *Endpoint) {
 }
 
 // End records the outcome of a request on e. A failure is a transport level
-// error or a 5xx if the outlier policy counts those.
-func (p *Pool) End(e *Endpoint, failed bool) {
+// error or a 5xx if the outlier policy counts those. latency is the time
+// to the response headers (or to the failure); 0 records no sample.
+func (p *Pool) End(e *Endpoint, failed bool, latency time.Duration) {
 	e.active.Add(-1)
+	oe := p.Cfg.OutlierEjection
+	if latency > 0 && oe != nil && (oe.LatencyThreshold > 0 || oe.LatencyFactor > 0) {
+		p.observeLatency(e, latency)
+	}
 	if !failed {
 		e.failures.Store(0)
 		return
 	}
 	e.errors.Add(1)
-	oe := p.Cfg.OutlierEjection
 	if oe == nil {
 		return
 	}
 	if n := e.failures.Add(1); n >= int64(oe.ConsecutiveFailures) {
-		if p.canEject() {
-			e.ejections.Add(1)
-			// Exponential back-off: base * number of ejections, capped.
-			mult := int64(min(e.ejections.Load(), 10)) //nolint:gosec // capped at 10
-			until := p.now().Add(oe.BaseEjectionTime.D() * time.Duration(mult))
-			e.ejectedNS.Store(until.UnixNano())
-			if e.slowStart > 0 {
-				e.readyNS.Store(until.UnixNano()) // ramp from the moment the ejection ends
-			}
+		if p.eject(e, "failures") {
 			e.failures.Store(0)
-			p.log.Warn("endpoint ejected", "endpoint", e.Address, "until", until)
 		}
 	}
+}
+
+// eject takes e out of rotation for the base time times its ejection
+// count (capped at ten), within max_ejection_percent.
+func (p *Pool) eject(e *Endpoint, why string) bool {
+	oe := p.Cfg.OutlierEjection
+	if !p.canEject() {
+		return false
+	}
+	e.ejections.Add(1)
+	mult := int64(min(e.ejections.Load(), 10)) //nolint:gosec // capped at 10
+	until := p.now().Add(oe.BaseEjectionTime.D() * time.Duration(mult))
+	e.ejectedNS.Store(until.UnixNano())
+	if e.slowStart > 0 {
+		e.readyNS.Store(until.UnixNano()) // ramp from the moment the ejection ends
+	}
+	e.resetLatency() // judged afresh when it returns
+	p.log.Warn("endpoint ejected", "endpoint", e.Address, "reason", why, "until", until)
+	return true
+}
+
+// observeLatency folds a sample into the endpoint's moving average and
+// ejects the endpoint when it is slow by the absolute threshold or
+// relative to the other endpoints of the pool.
+func (p *Pool) observeLatency(e *Endpoint, d time.Duration) {
+	oe := p.Cfg.OutlierEjection
+	avg, n := e.observeLatency(d)
+	if n < int64(oe.LatencyMinSamples) || e.ejectedNS.Load() > p.now().UnixNano() {
+		return
+	}
+	slow := oe.LatencyThreshold > 0 && avg > float64(oe.LatencyThreshold)
+	ref := 0.0
+	if !slow && oe.LatencyFactor > 0 {
+		ref = p.peerLatency(e)
+		slow = ref > 0 && avg > oe.LatencyFactor*ref
+	}
+	if slow && p.eject(e, "latency") {
+		e.latencyEjections.Add(1)
+		p.log.Warn("endpoint slow", "endpoint", e.Address, "latency_ms", math.Round(avg/1e6), "peers_ms", math.Round(ref/1e6))
+	}
+}
+
+// peerLatency is the mean smoothed latency of the other endpoints that
+// have samples (0 when none): the reference for latency_factor, which
+// the outlier itself does not move.
+func (p *Pool) peerLatency(e *Endpoint) float64 {
+	var sum float64
+	var n int
+	for _, o := range p.endpoints() {
+		if o == e || o.latencySamples.Load() == 0 {
+			continue
+		}
+		sum += o.latencyNS()
+		n++
+	}
+	if n == 0 {
+		return 0
+	}
+	return sum / float64(n)
 }
 
 // canEject checks the max_ejection_percent bound.

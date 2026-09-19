@@ -2488,6 +2488,24 @@ T}	T{
 T}	T{
 Reuse pooled connections for probes. Off opens a fresh connection per probe (verifies the whole connect path,\: no descriptor held between probes);\: on saves the handshake at the cost of one idle connection per endpoint
 T}
+T{
+\fBbody_\:contains\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The first 64 KiB of the probe response must contain this text (type \fBhttp\fR);\: a status in \fBexpected_\:status\fR alone is not enough
+T}
+T{
+\fBbody_\:regex\fR
+T}	T{
+RE2
+T}	T{
+none
+T}	T{
+The first 64 KiB must match this pattern anywhere (anchor with \fB^\fR and \fB$\fR);\: may be combined with \fBbody_\:contains\fR,\: both must hold. At most 4096 bytes each
+T}
 .TE
 .SS "upstreams[].outlier_ejection"
 .PP
@@ -2530,6 +2548,33 @@ T}	T{
 \fB50\fR
 T}	T{
 Never eject more than this share of the pool
+T}
+T{
+\fBlatency_\:threshold\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+Eject an endpoint whose smoothed time to first byte (exponential moving average,\: factor 0.2,\: over responses and failed attempts) exceeds this
+T}
+T{
+\fBlatency_\:factor\fR
+T}	T{
+float
+T}	T{
+\fB0\fR (off)
+T}	T{
+Eject an endpoint whose smoothed latency exceeds the mean smoothed latency of the pool\(aqs other endpoints times this factor (1.5 to 100),\: so the outlier does not move its own reference;\: needs another endpoint with samples. Either rule ejects for \fBbase_\:ejection_\:time\fR with the same back\-off and \fBmax_\:ejection_\:percent\fR bound as failures,\: the average is reset,\: and \fBxproxyctl upstreams\fR shows \fBlatency_\:ms\fR and \fBlatency_\:ejections\fR
+T}
+T{
+\fBlatency_\:min_\:samples\fR
+T}	T{
+int
+T}	T{
+\fB20\fR
+T}	T{
+Responses an endpoint must have answered since it last became available before its latency is judged (1 to 100000)
 T}
 .TE
 .SS "upstreams[].canary"
@@ -3190,7 +3235,7 @@ bool
 T}	T{
 \fBtrue\fR
 T}	T{
-Expose \fBxproxy_\:route_\:requests_\:total{route,\:outcome}\fR (one series per route and outcome)
+Expose the per route families: \fBxproxy_\:route_\:requests_\:total{route,\:outcome}\fR,\: \fBxproxy_\:route_\:bytes_\:total\fR,\: \fBxproxy_\:route_\:rate_\:limited_\:total\fR and the latency histogram \fBxproxy_\:route_\:request_\:duration_\:seconds{route}\fR (one series per route,\: bucket and outcome;\: a \fBtenant\fR label when set)
 T}
 T{
 \fBendpoint_\:series\fR

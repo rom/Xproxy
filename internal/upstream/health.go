@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"math/rand/v2"
@@ -102,10 +103,33 @@ func (p *Pool) probe(ctx context.Context, client *http.Client, url string) bool 
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
-	// Drain a bounded amount so the connection can be reused.
-	_, _ = io.CopyN(io.Discard, resp.Body, 4096)
-	for _, s := range p.Cfg.HealthCheck.ExpectedStatus {
-		if resp.StatusCode == s {
+	hc := p.Cfg.HealthCheck
+	if hc.BodyContains == "" && p.hcBodyRE == nil {
+		// Drain a bounded amount so the connection can be reused.
+		_, _ = io.CopyN(io.Discard, resp.Body, 4096)
+		return statusExpected(hc.ExpectedStatus, resp.StatusCode)
+	}
+	if !statusExpected(hc.ExpectedStatus, resp.StatusCode) {
+		_, _ = io.CopyN(io.Discard, resp.Body, 4096)
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, probeBodyLimit))
+	if err != nil {
+		return false
+	}
+	if hc.BodyContains != "" && !bytes.Contains(body, []byte(hc.BodyContains)) {
+		return false
+	}
+	return p.hcBodyRE == nil || p.hcBodyRE.Match(body)
+}
+
+// probeBodyLimit bounds how much of a probe response is read for
+// body_contains and body_regex.
+const probeBodyLimit = 64 << 10
+
+func statusExpected(expected []int, status int) bool {
+	for _, s := range expected {
+		if status == s {
 			return true
 		}
 	}

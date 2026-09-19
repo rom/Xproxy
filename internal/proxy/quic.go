@@ -167,7 +167,7 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 		c, err := net.DialUDP("udp", nil, ra)
 		if err != nil {
 			pool.Begin(e)
-			pool.End(e, true)
+			pool.End(e, true, 0)
 			continue
 		}
 		uc, ep = c, e
@@ -235,7 +235,7 @@ func (q *quicRelay) finish(f *quicFlow, reason string) {
 	in, out := f.in.Load(), f.out.Load()
 	if f.up != nil {
 		_ = f.up.Close()
-		f.pool.End(f.endpoint, false)
+		f.pool.End(f.endpoint, false, 0)
 		s.stats.TCPBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
 		s.stats.TCPBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 	}

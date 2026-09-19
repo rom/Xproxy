@@ -571,6 +571,8 @@ Memory: at most 64 x 8192 buckets per policy.
 | `expected_status` | list of int | `[200]` | |
 | `max_concurrent` | int | `32` | Probes in flight per pool; 1 to 4096. Bounds the burst when a pool has thousands of endpoints |
 | `keep_alive` | bool | `false` | Reuse pooled connections for probes. Off opens a fresh connection per probe (verifies the whole connect path, no descriptor held between probes); on saves the handshake at the cost of one idle connection per endpoint |
+| `body_contains` | string | none | The first 64 KiB of the probe response must contain this text (type `http`); a status in `expected_status` alone is not enough |
+| `body_regex` | RE2 | none | The first 64 KiB must match this pattern anywhere (anchor with `^` and `$`); may be combined with `body_contains`, both must hold. At most 4096 bytes each |
 
 ### upstreams[].outlier_ejection
 
@@ -579,6 +581,9 @@ Memory: at most 64 x 8192 buckets per policy.
 | `consecutive_failures` | int | `5` | Connection errors or 503 responses in a row |
 | `base_ejection_time` | duration | `30s` | Multiplied by the ejection count, capped at 10x |
 | `max_ejection_percent` | int | `50` | Never eject more than this share of the pool |
+| `latency_threshold` | duration | `0` (off) | Eject an endpoint whose smoothed time to first byte (exponential moving average, factor 0.2, over responses and failed attempts) exceeds this |
+| `latency_factor` | float | `0` (off) | Eject an endpoint whose smoothed latency exceeds the mean smoothed latency of the pool's other endpoints times this factor (1.5 to 100), so the outlier does not move its own reference; needs another endpoint with samples. Either rule ejects for `base_ejection_time` with the same back-off and `max_ejection_percent` bound as failures, the average is reset, and `xproxyctl upstreams` shows `latency_ms` and `latency_ejections` |
+| `latency_min_samples` | int | `20` | Responses an endpoint must have answered since it last became available before its latency is judged (1 to 100000) |
 
 ### upstreams[].canary
 
@@ -767,7 +772,7 @@ endpoint for scrapers and sizes the series buffer.
 | `allow_cidrs` | list | `[]` (any) | Scraper source addresses; others get 403 and a security event |
 | `tls.cert_file`, `tls.key_file` | path | | Make the endpoint HTTPS |
 | `tls.client_ca_file` | path | | Require client certificates from this CA (mutual TLS) |
-| `per_route` | bool | `true` | Expose `xproxy_route_requests_total{route,outcome}` (one series per route and outcome) |
+| `per_route` | bool | `true` | Expose the per route families: `xproxy_route_requests_total{route,outcome}`, `xproxy_route_bytes_total`, `xproxy_route_rate_limited_total` and the latency histogram `xproxy_route_request_duration_seconds{route}` (one series per route, bucket and outcome; a `tenant` label when set) |
 | `endpoint_series` | bool | `true` | Expose five series per upstream endpoint (`xproxy_upstream_endpoint_*`). About 1 KiB per endpoint per scrape; turn off above a few thousand endpoints and rely on the per-pool `xproxy_upstream_endpoints_healthy` |
 | `sample_interval` | duration | `10s` | Series sampling period; 1s to 5m |
 | `retention` | duration | `1h` | Series kept in memory; at most 100000 points |

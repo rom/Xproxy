@@ -159,7 +159,7 @@ func run(args []string, out, errOut io.Writer) int {
 			_ = json.Unmarshal(pb, &pools)
 		}
 		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tCANARY\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS\tRAMP\tSOURCE")
+		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tCANARY\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS\tRAMP\tLATENCY-MS\tSOURCE")
 		names := make([]string, 0, len(ups))
 		for n := range ups {
 			names = append(names, n)
@@ -171,7 +171,7 @@ func run(args []string, out, errOut io.Writer) int {
 				if e.Discovered {
 					src = "dns"
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%v\t%d\t%d\t%d\t%.0f%%\t%s\n", n, e.Address, e.Weight, e.Canary, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors, e.Ramp*100, src)
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%v\t%d\t%d\t%d\t%.0f%%\t%g\t%s\n", n, e.Address, e.Weight, e.Canary, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors, e.Ramp*100, e.LatencyMS, src)
 			}
 		}
 		_ = tw.Flush()
@@ -247,9 +247,9 @@ func run(args []string, out, errOut io.Writer) int {
 			_ = tw.Flush()
 			_, _ = fmt.Fprintln(out)
 		}
-		_, _ = fmt.Fprintln(tw, "ROUTE\tTENANT\tUPSTREAM\tREQUESTS\t2XX\t3XX\t4XX\t5XX\tDENIED\tRATE-LIMITED\tBYTES-IN\tBYTES-OUT")
+		_, _ = fmt.Fprintln(tw, "ROUTE\tTENANT\tUPSTREAM\tREQUESTS\t2XX\t3XX\t4XX\t5XX\tDENIED\tRATE-LIMITED\tBYTES-IN\tBYTES-OUT\tP50-MS\tP95-MS\tP99-MS")
 		for _, r := range q.Routes {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Route, dash(r.Tenant), dash(r.Upstream), r.Requests, r.Status2xx, r.Status3xx, r.Status4xx, r.Status5xx, r.Denied, r.RateLimited, r.BytesIn, r.BytesOut)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%g\t%g\t%g\n", r.Route, dash(r.Tenant), dash(r.Upstream), r.Requests, r.Status2xx, r.Status3xx, r.Status4xx, r.Status5xx, r.Denied, r.RateLimited, r.BytesIn, r.BytesOut, r.LatencyP50MS, r.LatencyP95MS, r.LatencyP99MS)
 		}
 		_ = tw.Flush()
 		if len(q.RateLimits) > 0 {

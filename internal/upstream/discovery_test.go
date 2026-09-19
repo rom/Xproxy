@@ -102,7 +102,7 @@ func TestDiscoveryDNS(t *testing.T) {
 		}
 	}
 	p.Begin(kept)
-	p.End(kept, false)
+	p.End(kept, false, 0)
 	fl.set("backend.example.", "10.0.0.2", "10.0.0.3")
 	p.ResolveNowForTest()
 	if got := addresses(p); len(got) != 3 || got[0] != "10.0.0.2:8080" || got[1] != "10.0.0.3:8080" {
@@ -239,7 +239,7 @@ func TestSlowStart(t *testing.T) {
 	}
 	// Ejection schedules the ramp from the ejection's end.
 	u.OutlierEjection = &config.OutlierEjection{ConsecutiveFailures: 1, BaseEjectionTime: config.Duration(30 * time.Second), MaxEjectionPercent: 100}
-	p.End(a, true)
+	p.End(a, true, 0)
 	if a.readyNS.Load() != now.Add(30*time.Second).UnixNano() {
 		t.Fatalf("ramp start after ejection %d", a.readyNS.Load())
 	}

@@ -320,6 +320,25 @@ multiplied by the ejection count (capped at 10) subject to
 The consistent hash ring uses 128 virtual nodes per weight unit. Removing
 an endpoint moves only its keys (`TestHashRing` asserts this).
 
+### Latency outliers
+
+Besides consecutive failures, `Pool.End` folds the time to first byte
+of every attempt into an exponential moving average per endpoint
+(factor 0.2, atomics, no allocation). With `latency_threshold` an
+endpoint whose average exceeds the bound is ejected; with
+`latency_factor` one whose average exceeds the mean of the other
+endpoints' averages by the factor is, so the outlier does not move its
+own reference. Both wait for
+`latency_min_samples` responses since the endpoint last became
+available, respect `max_ejection_percent` and the back-off of the
+failure rule, and reset the endpoint's average so that it is judged
+afresh on return. Health probes can require a body (`body_contains`,
+`body_regex` on the first 64 KiB) so that an application that answers
+200 while its dependencies are down is not considered healthy. Every
+compiled route owns a duration histogram (the same buckets as the
+global one), exposed per route with `metrics.per_route` and summarised
+as p50, p95 and p99 in the quota report.
+
 ### Expressions
 
 `internal/expr` parses `routes[].when` and the `when` of header

@@ -4,6 +4,7 @@ package upstream
 
 import (
 	"context"
+	"math"
 	"sync/atomic"
 	"time"
 )
@@ -30,6 +31,12 @@ type Endpoint struct {
 	requests  atomic.Uint64
 	errors    atomic.Uint64
 	ejections atomic.Uint64
+	// latency is the smoothed time to first byte in nanoseconds (float
+	// bits), samples the responses since the endpoint last became
+	// available and latencyEjections the ejections it caused.
+	latency          atomic.Uint64
+	latencySamples   atomic.Int64
+	latencyEjections atomic.Uint64
 	// smooth weighted round robin state, guarded by pool.mu
 	current int
 }
@@ -104,20 +111,54 @@ type Stats struct {
 	// 1 at full weight.
 	Discovered bool    `json:"discovered,omitempty"`
 	Ramp       float64 `json:"ramp"`
+	// LatencyMS is the smoothed time to first byte; LatencyEjections
+	// counts ejections for latency.
+	LatencyMS        float64 `json:"latency_ms"`
+	LatencyEjections uint64  `json:"latency_ejections"`
+}
+
+// latencyNS returns the smoothed latency in nanoseconds (0 without a
+// sample).
+func (e *Endpoint) latencyNS() float64 { return math.Float64frombits(e.latency.Load()) }
+
+// observeLatency folds one sample into the moving average (factor 0.2)
+// and returns the new average and sample count.
+func (e *Endpoint) observeLatency(d time.Duration) (float64, int64) {
+	const alpha = 0.2
+	for {
+		old := e.latency.Load()
+		cur := math.Float64frombits(old)
+		next := float64(d)
+		if cur > 0 {
+			next = cur + alpha*(float64(d)-cur)
+		}
+		if e.latency.CompareAndSwap(old, math.Float64bits(next)) {
+			return next, e.latencySamples.Add(1)
+		}
+	}
+}
+
+// resetLatency forgets the average, for an endpoint that becomes
+// available again.
+func (e *Endpoint) resetLatency() {
+	e.latency.Store(0)
+	e.latencySamples.Store(0)
 }
 
 func (e *Endpoint) stats(now time.Time) Stats {
 	return Stats{
-		Address:    e.Address,
-		Weight:     e.Weight,
-		Canary:     e.Canary,
-		Discovered: e.Discovered,
-		Ramp:       e.ramp(now),
-		Healthy:    e.healthy.Load(),
-		Ejected:    e.ejectedNS.Load() > now.UnixNano(),
-		Active:     e.active.Load(),
-		Requests:   e.requests.Load(),
-		Errors:     e.errors.Load(),
-		Ejections:  e.ejections.Load(),
+		Address:          e.Address,
+		Weight:           e.Weight,
+		Canary:           e.Canary,
+		Discovered:       e.Discovered,
+		Ramp:             e.ramp(now),
+		Healthy:          e.healthy.Load(),
+		Ejected:          e.ejectedNS.Load() > now.UnixNano(),
+		Active:           e.active.Load(),
+		Requests:         e.requests.Load(),
+		Errors:           e.errors.Load(),
+		Ejections:        e.ejections.Load(),
+		LatencyMS:        math.Round(e.latencyNS()/1e3) / 1e3,
+		LatencyEjections: e.latencyEjections.Load(),
 	}
 }

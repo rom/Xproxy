@@ -218,6 +218,15 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- Latency based outlier ejection (`outlier_ejection.latency_threshold`,
+  `latency_factor`, `latency_min_samples`): an endpoint whose smoothed
+  time to first byte is slow in absolute terms or relative to its pool
+  is ejected like one that fails; `xproxyctl upstreams` shows the
+  smoothed latency and the ejections. Health checks can require a
+  response body (`health_check.body_contains`, `body_regex`). Every
+  route has a request duration histogram
+  (`xproxy_route_request_duration_seconds`) and the quota report and
+  `xproxyctl quotas` show p50, p95 and p99 per route.
 - Expression language: `routes[].when` and `request_headers.when` /
   `response_headers.when` hold a condition (`and`, `or`, `not`,
   comparisons, `in` lists, `cidr()` address sets, `matches` patterns,

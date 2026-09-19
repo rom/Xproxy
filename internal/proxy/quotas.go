@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"math"
 	"sort"
 	"time"
 
@@ -33,6 +34,11 @@ type RouteQuota struct {
 	RateLimited uint64 `json:"rate_limited"`
 	BytesIn     uint64 `json:"bytes_in"`
 	BytesOut    uint64 `json:"bytes_out"`
+	// Latency quantiles in milliseconds, estimated from the route's
+	// duration histogram (0 without requests).
+	LatencyP50MS float64 `json:"latency_p50_ms"`
+	LatencyP95MS float64 `json:"latency_p95_ms"`
+	LatencyP99MS float64 `json:"latency_p99_ms"`
 }
 
 // TenantQuota aggregates the routes sharing a tenant label.
@@ -81,6 +87,11 @@ func (s *Server) Quotas(top int) QuotaReport {
 			Status5xx: cr.counts[3].Load(), Denied: cr.counts[4].Load(), RateLimited: cr.rateLimited.Load(),
 			BytesIn: cr.bytesIn.Load(), BytesOut: cr.bytesOut.Load()}
 		q.Requests = q.Status2xx + q.Status3xx + q.Status4xx + q.Status5xx + q.Denied
+		if snap := cr.hist.Snapshot(); snap.Count > 0 {
+			q.LatencyP50MS = ms(snap.Quantile(0.5))
+			q.LatencyP95MS = ms(snap.Quantile(0.95))
+			q.LatencyP99MS = ms(snap.Quantile(0.99))
+		}
 		rep.Routes = append(rep.Routes, q)
 		if q.Tenant == "" {
 			continue
@@ -118,3 +129,6 @@ func (s *Server) Quotas(top int) QuotaReport {
 	sort.Slice(rep.Upstreams, func(i, j int) bool { return rep.Upstreams[i].Upstream < rep.Upstreams[j].Upstream })
 	return rep
 }
+
+// ms converts seconds to milliseconds with one decimal.
+func ms(seconds float64) float64 { return math.Round(seconds*10000) / 10 }

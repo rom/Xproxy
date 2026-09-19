@@ -1013,6 +1013,17 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 				v.errf("%s.health_check.expected_status: %d is not an HTTP status", p, st)
 			}
 		}
+		if (hc.BodyContains != "" || hc.BodyRegex != "") && hc.Type != "http" {
+			v.errf("%s.health_check: body_contains and body_regex need type http", p)
+		}
+		if len(hc.BodyContains) > 4096 || len(hc.BodyRegex) > 4096 {
+			v.errf("%s.health_check: body_contains and body_regex are limited to 4096 bytes", p)
+		}
+		if hc.BodyRegex != "" {
+			if _, err := regexp.Compile(hc.BodyRegex); err != nil {
+				v.errf("%s.health_check.body_regex: %v", p, err)
+			}
+		}
 	}
 	if a := u.Affinity; a != nil {
 		if !cookieNameOK(a.CookieName) {
@@ -1034,6 +1045,15 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		}
 		if o.MaxEjectionPercent < 0 || o.MaxEjectionPercent > 100 {
 			v.errf("%s.outlier_ejection.max_ejection_percent: must be 0..100", p)
+		}
+		if o.LatencyThreshold < 0 {
+			v.errf("%s.outlier_ejection.latency_threshold: must not be negative", p)
+		}
+		if o.LatencyFactor != 0 && (o.LatencyFactor < 1.5 || o.LatencyFactor > 100) {
+			v.errf("%s.outlier_ejection.latency_factor: must be between 1.5 and 100, or 0", p)
+		}
+		if o.LatencyMinSamples < 1 || o.LatencyMinSamples > 100000 {
+			v.errf("%s.outlier_ejection.latency_min_samples: must be between 1 and 100000", p)
 		}
 	}
 }

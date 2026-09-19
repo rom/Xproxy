@@ -884,6 +884,9 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	s.stats.BytesOut.Add(uint64(max(rw.bytes, 0))) //nolint:gosec // non-negative
 	dur := time.Since(st.start)
 	s.stats.RequestDuration.Observe(dur.Seconds())
+	if st.cr != nil {
+		st.cr.hist.Observe(dur.Seconds())
+	}
 	attrs := []any{
 		"request_id", st.id,
 		"client_ip", st.clientIP.String(),

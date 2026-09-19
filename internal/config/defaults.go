@@ -325,6 +325,7 @@ func applyDefaults(c *Config) {
 			setInt(&o.ConsecutiveFailures, DefaultOutlierFailures)
 			setDur(&o.BaseEjectionTime, DefaultOutlierBaseTime)
 			setInt(&o.MaxEjectionPercent, DefaultOutlierMaxEjectP)
+			setInt(&o.LatencyMinSamples, DefaultOutlierLatencySamples)
 		}
 	}
 
@@ -604,3 +605,7 @@ const (
 
 // DefaultTicketRotate is the session ticket key epoch.
 const DefaultTicketRotate = 24 * time.Hour
+
+// DefaultOutlierLatencySamples is the number of responses before an
+// endpoint's latency can eject it.
+const DefaultOutlierLatencySamples = 20

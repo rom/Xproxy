@@ -180,6 +180,8 @@ upstreams:
             - 200
         max_concurrent: 32
         keep_alive: false
+        body_contains: ""
+        body_regex: ""
       timeouts:
         connect: 5s
         response_header: 30s
@@ -197,6 +199,9 @@ upstreams:
         consecutive_failures: 5
         base_ejection_time: 30s
         max_ejection_percent: 50
+        latency_threshold: 0s
+        latency_factor: 0
+        latency_min_samples: 20
       circuit_breaker: null
       max_concurrent: 0
       queue: null

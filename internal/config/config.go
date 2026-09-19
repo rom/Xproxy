@@ -859,6 +859,11 @@ type HealthCheck struct {
 	// path and holds no descriptor between probes; on saves the handshake
 	// at the cost of one idle connection per endpoint.
 	KeepAlive bool `yaml:"keep_alive"`
+	// BodyContains requires the first 64 KiB of the probe response to
+	// contain this text (type http); BodyRegex an RE2 pattern to match
+	// anywhere in it. Both may be set; both must hold.
+	BodyContains string `yaml:"body_contains"`
+	BodyRegex    string `yaml:"body_regex"`
 }
 
 // UpstreamTimeout bounds each phase of an upstream exchange.
@@ -879,11 +884,25 @@ type Affinity struct {
 	SecretFile string `yaml:"secret_file"`
 }
 
-// OutlierEjection configures passive health checking.
+// OutlierEjection configures passive health checking: consecutive
+// failures and, when latency_threshold or latency_factor is set, an
+// endpoint whose smoothed time to first byte is slow.
 type OutlierEjection struct {
 	ConsecutiveFailures int      `yaml:"consecutive_failures"`
 	BaseEjectionTime    Duration `yaml:"base_ejection_time"`
 	MaxEjectionPercent  int      `yaml:"max_ejection_percent"`
+	// LatencyThreshold ejects an endpoint whose smoothed latency
+	// (exponential moving average of the time to first byte, factor 0.2)
+	// exceeds it. 0 disables.
+	LatencyThreshold Duration `yaml:"latency_threshold"`
+	// LatencyFactor ejects an endpoint whose smoothed latency exceeds
+	// the pool's smoothed latency times this factor (at least 1.5),
+	// when the pool has two or more endpoints. 0 disables.
+	LatencyFactor float64 `yaml:"latency_factor"`
+	// LatencyMinSamples is how many responses an endpoint must have
+	// answered since it last became available before its latency is
+	// judged. Default 20.
+	LatencyMinSamples int `yaml:"latency_min_samples"`
 }
 
 // CircuitBreaker is a pool wide breaker: closed counts consecutive

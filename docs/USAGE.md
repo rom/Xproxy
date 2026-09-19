@@ -764,6 +764,34 @@ upstreams:
 Active checks mark endpoints unhealthy; passive ejection reacts to real
 traffic failures with growing back-off. At most half the pool is ejected.
 
+```yaml
+upstreams:
+  - name: api
+    endpoints: [...]
+    health_check:
+      path: /healthz
+      body_contains: '"status":"ok"'
+      body_regex: '"database":"(up|degraded)"'
+    outlier_ejection:
+      consecutive_failures: 5
+      base_ejection_time: 30s
+      latency_threshold: 800ms
+      latency_factor: 3
+      latency_min_samples: 20
+```
+
+An application that answers 200 while its database is down passes a
+status-only probe; `body_contains` and `body_regex` make the probe read
+the first 64 KiB and require the text and the pattern. The latency rules
+eject an endpoint that still answers but slowly: `latency_threshold` is
+absolute, `latency_factor` relative to the pool (an endpoint three times
+slower than the others), both on a smoothed time to first byte after
+`latency_min_samples` responses, with the same ejection time, back-off
+and 50 % bound as failures. `xproxyctl upstreams` shows `latency_ms` and
+`latency_ejections` per endpoint; `xproxyctl quotas` shows p50, p95 and
+p99 per route from the route histograms
+(`xproxy_route_request_duration_seconds` in the exposition).
+
 ### Web application firewall
 
 Enable the bundled OWASP Core Rule Set and roll it out in detect mode

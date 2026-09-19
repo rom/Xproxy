@@ -211,7 +211,7 @@ func (t *tcpServer) handle(client net.Conn) {
 		c, err := d.DialContext(context.Background(), "tcp", e.Address)
 		pool.Begin(e)
 		if err != nil {
-			pool.End(e, true)
+			pool.End(e, true, 0)
 			s.logs.Error.Warn("tcp upstream dial failed", "listener", t.cfg.Name, "endpoint", e.Address, "err", err.Error())
 			continue
 		}
@@ -225,20 +225,20 @@ func (t *tcpServer) handle(client net.Conn) {
 	}
 	if t.cfg.TCP.ProxyProtocol {
 		if _, err := up.Write(proxyV2Header(client.RemoteAddr(), client.LocalAddr())); err != nil {
-			pool.End(ep, true)
+			pool.End(ep, true, 0)
 			_ = up.Close()
 			t.finish(client, clientIP, start, sni, upName, ep.Address, "upstream_write", 0, 0)
 			return
 		}
 	}
 	if _, err := up.Write(buf); err != nil {
-		pool.End(ep, true)
+		pool.End(ep, true, 0)
 		_ = up.Close()
 		t.finish(client, clientIP, start, sni, upName, ep.Address, "upstream_write", 0, 0)
 		return
 	}
 	in, out := splice(client, up, t.cfg.TCP.IdleTimeout.D())
-	pool.End(ep, false)
+	pool.End(ep, false, 0)
 	s.stats.TCPBytesIn.Add(uint64(in + int64(len(buf)))) //nolint:gosec // non-negative
 	s.stats.TCPBytesOut.Add(uint64(out))                 //nolint:gosec // non-negative
 	t.finish(client, clientIP, start, sni, upName, ep.Address, "", in+int64(len(buf)), out)

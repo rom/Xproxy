@@ -84,7 +84,7 @@ func TestLeastConn(t *testing.T) {
 		t.Fatal("least_conn picked busy endpoint")
 	}
 	p.Begin(e2)
-	p.End(e1, false)
+	p.End(e1, false, 0)
 	e3, _ := p.Pick("", "", nil, CanaryAny)
 	if e3 != e1 {
 		t.Fatal("least_conn should prefer idle endpoint")
@@ -196,12 +196,12 @@ func TestOutlierEjection(t *testing.T) {
 	p, _ := NewPool(c, nolog)
 	a := p.endpoints()[0]
 	p.Begin(a)
-	p.End(a, true)
+	p.End(a, true, 0)
 	if !a.Available(time.Now()) {
 		t.Fatal("ejected too early")
 	}
 	p.Begin(a)
-	p.End(a, true)
+	p.End(a, true, 0)
 	if a.Available(time.Now()) {
 		t.Fatal("not ejected")
 	}
@@ -209,7 +209,7 @@ func TestOutlierEjection(t *testing.T) {
 	b := p.endpoints()[1]
 	for i := 0; i < 3; i++ {
 		p.Begin(b)
-		p.End(b, true)
+		p.End(b, true, 0)
 	}
 	if !b.Available(time.Now()) {
 		t.Fatal("max_ejection_percent violated")
