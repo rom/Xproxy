@@ -218,6 +218,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- WAF gradual enforcement: `routes[].waf.block_percent` splits clients
+  between block and detect mode by address, `block_cidrs` always
+  enforces the canaries, `waf_enforced` in the access log and the share
+  in `xproxyctl waf`.
 - `upload_guard` filter kind: file count and sizes, allowed and denied
   extensions with double extension rules, file name checks, content
   sniffing against the extension and the declared type, executable and

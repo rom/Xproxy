@@ -4676,7 +4676,7 @@ T}	T{
 T}	T{
 \fBwaf.\:default_\:mode\fR
 T}	T{
-
+\fBdetect\fR logs what \fBblock\fR would have done
 T}
 T{
 \fBprofile\fR
@@ -4687,7 +4687,27 @@ T}	T{
 T}	T{
 
 T}
+T{
+\fBblock_\:percent\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+With \fBmode:\: block\fR,\: the share of clients that get block mode;\: the rest get detect mode. The choice is a stable function of the client address,\: so one client always sees one behaviour. \fB0\fR with \fBblock_\:cidrs\fR is a test mode: only the canaries are enforced
+T}
+T{
+\fBblock_\:cidrs\fR
+T}	T{
+list of CIDRs
+T}	T{
+\fB[]\fR
+T}	T{
+Clients always in block mode whatever the share (internal testers,\: a pilot customer)
+T}
 .TE
+.PP
+Gradual roll\-out: detect everywhere, then \fBblock_percent: 0\fR with the testers in \fBblock_cidrs\fR, then raise the share in steps while the security log\(aqs \fBwaf_detected\fR entries (the requests detect mode would have blocked) stay explainable, then \fB100\fR. \fBxproxyctl waf\fR shows the share and the canary prefixes per route, and the access log carries \fBwaf_enforced: true\fR or \fBfalse\fR for every request of such a route.
 .SH "virtual_patches[]"
 .PP
 A virtual patch blocks a known vulnerability by the shape of the requests that exploit it, while the application is being fixed, and records how often it fired. Patches run right after route matching, before rate limits, filters and the WAF, so they cost nothing for other traffic and need no \fBwaf\fR section. Every listed condition must hold for a patch to apply; at least one of \fBpaths\fR, \fBpath_regex\fR, \fBquery\fR, \fBheaders\fR, \fBcookies\fR or \fBbody\fR is required. A match with \fBaction: block\fR answers \fBstatus\fR with reason \fBvirtual_patch\fR and the id as \fBdetail\fR (ban category \fBvirtual_patch\fR); with \fBaction: log\fR the request continues and the security event and the access log carry \fBvirtual_patch: <id>\fR. \fBxproxyctl patches\fR and \fBGET /v1/patches\fR list the patches with hits, last hit, expiry and state; \fBxproxy_virtual_patch_hits_total{patch}\fR counts per patch and hits survive reloads.

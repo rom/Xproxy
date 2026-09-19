@@ -2785,6 +2785,17 @@
       "description": "RouteWAF selects the WAF profile and mode for a route.",
       "type": "object",
       "properties": {
+        "block_cidrs": {
+          "description": "BlockCIDRs always get block mode whatever the share: the canary clients (internal testers, a pilot customer). Only with mode block.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "block_percent": {
+          "description": "BlockPercent rolls block mode out gradually: this share of the clients (a stable function of the client address) gets block mode, the rest detect mode. Default 100. Only with mode block.",
+          "type": "integer"
+        },
         "mode": {
           "description": "Mode is off, detect or block.",
           "type": "string"

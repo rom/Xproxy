@@ -160,6 +160,10 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Request headers and bodies inspected; bodies above the limit are
   rejected with 413 by default, or inspected partially when configured.
   Inspected bodies are replayed to the upstream unchanged.
+- Three operating modes per route (`off`, `detect`, `block`) and a
+  gradual roll-out of block mode: a stable share of clients by address,
+  plus canary prefixes always enforced, so a false positive surfaces
+  on a few clients before it reaches all of them.
 - Optional response inspection for data leakage rules, bounded by a size
   limit; larger bodies pass uninspected and that fact is visible in the
   configuration, never silent.

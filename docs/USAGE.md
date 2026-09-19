@@ -912,7 +912,20 @@ waf:
 
 Watch the security log for `waf_detected` entries and the access log for
 `waf_matched`. Add exclusions for legitimate traffic in a SecLang file,
-then switch to block:
+then move to block in steps rather than at once: first the testers, then
+a share of the clients, then everyone. The split is by client address,
+so a customer who reports a problem always sees the same behaviour and
+`waf_enforced` in the access log says which one:
+
+```yaml
+routes:
+  - name: shop
+    upstream: web
+    waf: {mode: block, block_percent: 0, block_cidrs: [10.0.0.0/8]}   # test mode: staff only
+  # later: block_percent: 10, 50, 100
+```
+
+Once the roll-out is through, the whole site runs in block:
 
 ```yaml
 waf:

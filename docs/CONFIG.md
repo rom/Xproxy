@@ -1206,8 +1206,17 @@ plaintext listener with `h2c: true`, and an `https` or `h2c` upstream.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `mode` | `off`, `detect`, `block` | `waf.default_mode` | |
+| `mode` | `off`, `detect`, `block` | `waf.default_mode` | `detect` logs what `block` would have done |
 | `profile` | name | `waf.default_profile` | |
+| `block_percent` | int | `100` | With `mode: block`, the share of clients that get block mode; the rest get detect mode. The choice is a stable function of the client address, so one client always sees one behaviour. `0` with `block_cidrs` is a test mode: only the canaries are enforced |
+| `block_cidrs` | list of CIDRs | `[]` | Clients always in block mode whatever the share (internal testers, a pilot customer) |
+
+Gradual roll-out: detect everywhere, then `block_percent: 0` with the
+testers in `block_cidrs`, then raise the share in steps while the
+security log's `waf_detected` entries (the requests detect mode would
+have blocked) stay explainable, then `100`. `xproxyctl waf` shows the
+share and the canary prefixes per route, and the access log carries
+`waf_enforced: true` or `false` for every request of such a route.
 
 ## virtual_patches[]
 

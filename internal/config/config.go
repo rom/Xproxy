@@ -1830,6 +1830,27 @@ type RouteWAF struct {
 	// Mode is off, detect or block.
 	Mode    string `yaml:"mode"`
 	Profile string `yaml:"profile"`
+	// BlockPercent rolls block mode out gradually: this share of the
+	// clients (a stable function of the client address) gets block mode,
+	// the rest detect mode. Default 100. Only with mode block.
+	BlockPercent *int `yaml:"block_percent"`
+	// BlockCIDRs always get block mode whatever the share: the canary
+	// clients (internal testers, a pilot customer). Only with mode block.
+	BlockCIDRs []string `yaml:"block_cidrs"`
+}
+
+// Percent returns the block share with its default.
+func (r *RouteWAF) Percent() int {
+	if r == nil || r.BlockPercent == nil {
+		return 100
+	}
+	return *r.BlockPercent
+}
+
+// Gradual reports whether the route splits clients between block and
+// detect mode.
+func (r *RouteWAF) Gradual() bool {
+	return r != nil && r.Mode == "block" && (r.Percent() < 100 || len(r.BlockCIDRs) > 0)
 }
 
 // Cluster configures peer to peer sharing over mutual TLS (AMR-009).

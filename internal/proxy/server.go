@@ -385,6 +385,11 @@ type WAFRoute struct {
 	Route   string `json:"route"`
 	Profile string `json:"profile"`
 	Mode    string `json:"mode"`
+	// BlockPercent is the share of clients in block mode (100 unless
+	// the route rolls block mode out gradually); BlockCIDRs are the
+	// canary prefixes always in block mode.
+	BlockPercent int      `json:"block_percent"`
+	BlockCIDRs   []string `json:"block_cidrs,omitempty"`
 }
 
 // WAF builds the WAF report with at most top rules.
@@ -398,7 +403,16 @@ func (s *Server) WAF(top int) WAFReport {
 	for _, cr := range rt.routes {
 		if cr.wafMode != "" && cr.wafMode != string(waf.ModeOff) {
 			p, _ := wafSelection(rt.cfg, cr.cfg)
-			rep.Routes = append(rep.Routes, WAFRoute{Route: cr.cfg.Name, Profile: p, Mode: cr.wafMode})
+			wr := WAFRoute{Route: cr.cfg.Name, Profile: p, Mode: cr.wafMode, BlockPercent: 100}
+			if cr.wafMode == string(waf.ModeBlock) {
+				wr.BlockPercent = cr.cfg.WAF.Percent()
+				if cr.cfg.WAF != nil {
+					wr.BlockCIDRs = cr.cfg.WAF.BlockCIDRs
+				}
+			} else {
+				wr.BlockPercent = 0
+			}
+			rep.Routes = append(rep.Routes, wr)
 		}
 	}
 	rep.Report = s.wafStats.Report(top, rt.routePaths())

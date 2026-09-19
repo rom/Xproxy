@@ -2283,6 +2283,17 @@ func (v *validator) routeWAF(i int, rw *RouteWAF, w *WAF, profiles map[string]bo
 	if rw.Mode != "off" && !profiles[rw.Profile] {
 		v.errf("%s.profile: unknown profile %q", p, rw.Profile)
 	}
+	if rw.BlockPercent != nil && (*rw.BlockPercent < 0 || *rw.BlockPercent > 100) {
+		v.errf("%s.block_percent: must be between 0 and 100", p)
+	}
+	for j, c := range rw.BlockCIDRs {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.block_cidrs[%d]: %q is not a CIDR", p, j, c)
+		}
+	}
+	if rw.Mode != "block" && (rw.BlockPercent != nil || len(rw.BlockCIDRs) > 0) {
+		v.errf("%s: block_percent and block_cidrs apply to mode block", p)
+	}
 }
 
 func (v *validator) headerOps(p string, h HeaderOps) {

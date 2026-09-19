@@ -1144,9 +1144,13 @@ func cmdWAF(c *mgmt.Client, args []string, asJSON bool, out, errOut io.Writer) i
 			_ = tw.Flush()
 		}
 		if len(rep.Routes) > 0 {
-			_, _ = fmt.Fprintln(tw, "ROUTE	PROFILE	MODE")
+			_, _ = fmt.Fprintln(tw, "ROUTE	PROFILE	MODE	ENFORCED")
 			for _, r := range rep.Routes {
-				_, _ = fmt.Fprintf(tw, "%s	%s	%s\n", r.Route, r.Profile, r.Mode)
+				enforced := fmt.Sprintf("%d%%", r.BlockPercent)
+				if len(r.BlockCIDRs) > 0 {
+					enforced += " + " + strings.Join(r.BlockCIDRs, ",")
+				}
+				_, _ = fmt.Fprintf(tw, "%s	%s	%s	%s\n", r.Route, r.Profile, r.Mode, enforced)
 			}
 			_ = tw.Flush()
 		}

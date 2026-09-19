@@ -286,6 +286,9 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 				need[p] = map[waf.Mode]bool{}
 			}
 			need[p][m] = true
+			if cfg.Routes[i].WAF.Gradual() {
+				need[p][waf.ModeDetect] = true
+			}
 		}
 		engine, err := waf.New(cfg.WAF, need, wafStats, log)
 		if err != nil {
@@ -419,6 +422,14 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 			if err != nil {
 				rt.stop()
 				return nil, fmt.Errorf("route %s: %w", r.Name, err)
+			}
+			if r.WAF.Gradual() {
+				detect, err := rt.waf.Filter(p, waf.ModeDetect)
+				if err != nil {
+					rt.stop()
+					return nil, fmt.Errorf("route %s: %w", r.Name, err)
+				}
+				f = newSplitWAF(f, detect, r.WAF)
 			}
 			cr.filters = append(cr.filters, f)
 			cr.wafMode = string(m)

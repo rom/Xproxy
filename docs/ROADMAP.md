@@ -249,6 +249,8 @@ procedure is in RELEASING.md.
 - WAF: CRS plugin loading, JSON body schema enforcement, behavioural
   anomaly detection beyond rule scoring (`crs.plugins_dir`,
   `json_schemas`, `waf.anomaly`): delivered
+- WAF operating modes with gradual enforcement (`block_percent`,
+  `block_cidrs`): delivered
 - Upload protection (`upload_guard` filter): delivered
 - Request normalisation before analysis (`server.normalization`):
   delivered

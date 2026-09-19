@@ -374,6 +374,8 @@ routes:
       waf:
         mode: block
         profile: api-strict
+        block_percent: null
+        block_cidrs: []
       priority_class: normal
       challenge: null
       jwt:
@@ -606,6 +608,8 @@ routes:
       waf:
         mode: detect
         profile: default
+        block_percent: null
+        block_cidrs: []
       priority_class: normal
       challenge: null
       jwt: null
