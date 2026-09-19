@@ -70,6 +70,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `accounts` | Account guard state: endpoints with tracked keys, active blocks (`-top N` per endpoint), campaign state and the action counters |
 | `maintenance` [`on`\|`off`] | Show or set maintenance mode; on holds every request but the allowlist behind a 503 |
 | `origin-check` [`upstream`] [`-host H`] [`-path P`] | Probe origins directly to verify origin-lock is enforced: sends an unsigned and a signed request to each endpoint of every upstream with an `origin_signature` (or the named one) and reports the verdict; exits non-zero if any origin is not `enforced` |
+| `botscore` [`-top N`] | Learning-mode `bot_score` baselines: per-route score percentiles and suggested `challenge_at`/`deny_at` from observed traffic (needs `learn: true` on the filter) |
 | `spki CERT.pem` | Print the `spki_pins` value of a certificate |
 | `acme` | Managed certificates with expiry, issuer, last error; `acme renew` forces renewal and waits |
 | `icap` | ICAP services with reachability, preview size, ISTag and counters |

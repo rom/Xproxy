@@ -1753,6 +1753,7 @@ logs, challenges or denies by threshold.
 | `device_addresses` | int | `5` | Distinct client addresses one device identifier must arrive from within the window before `device_shared` fires (2 to 10000) |
 | `weights` | mapping | see below | Override a signal's weight (0 to 100) |
 | `reason` | string | the filter name | Deny reason |
+| `learn` | bool | `false` | Learning mode: record the per-route score distribution without acting on it. `xproxyctl botscore` then reports each route's percentiles and suggested `challenge_at`/`deny_at`, so thresholds are tuned to real traffic. Combine with `deny_at`/`challenge_at` at `0` to observe first |
 
 Signals and default weights: `ua_bot` 40 (curl, wget, python, Go, Java,
 scanners, headless browsers and the like), `ua_missing` 30,

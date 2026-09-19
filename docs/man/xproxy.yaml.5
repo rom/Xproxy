@@ -6697,6 +6697,15 @@ the filter name
 T}	T{
 Deny reason
 T}
+T{
+\fBlearn\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Learning mode: record the per\-route score distribution without acting on it. \fBxproxyctl botscore\fR then reports each route\(aqs percentiles and suggested \fBchallenge_\:at\fR/\:\fBdeny_\:at\fR,\: so thresholds are tuned to real traffic. Combine with \fBdeny_\:at\fR/\:\fBchallenge_\:at\fR at \fB0\fR to observe first
+T}
 .TE
 .PP
 Signals and default weights: \fBua_bot\fR 40 (curl, wget, python, Go, Java, scanners, headless browsers and the like), \fBua_missing\fR 30, \fBbrowser_headers_missing\fR 25 (a browser user agent without \fBAccept\fR or \fBAccept\-Language\fR), \fBfingerprint_mismatch\fR 35 (a browser user agent on a hello without \fBh2\fR ALPN or with fewer than ten cipher suites), \fBerror_rate\fR 30 (more than half of at least ten recent requests were 4xx or denied), \fBpath_spread\fR 15 (fifty or more distinct paths in the window), \fBregular_interval\fR 20 (eight or more requests with machine\-like timing), \fBhigh_rate\fR 15, \fBhoneypot_marked\fR 40 (the client touched a honeypot route on this node or, with cluster sharing, on a peer), \fBautomation_markers\fR 45 (the challenge cookie says the script saw WebDriver, driver globals, chromedriver, a headless user agent, no languages, no plugins or a zero sized window when the client solved its challenge) and \fBdevice_shared\fR 25 (the cookie\(aqs device identifier came from \fBdevice_addresses\fR or more addresses in the window: one tool behind a proxy pool). The last two need a \fBchallenge\fR section with \fBdevice\fR on and only apply once the client holds a cookie. The score is the capped sum; a client that is already verified by the challenge is never challenged again. The JA4 of every TLS request is logged as \fBja4\fR.

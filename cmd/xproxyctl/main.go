@@ -754,6 +754,35 @@ func run(args []string, out, errOut io.Writer) int {
 			}
 		}
 		return 0
+	case "botscore":
+		bfs := flag.NewFlagSet("botscore", flag.ContinueOnError)
+		bfs.SetOutput(errOut)
+		top := bfs.Int("top", 20, "routes listed per filter")
+		if err := bfs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		rep, err := c.BotScore(*top)
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, rep)
+		}
+		if !rep.Enabled {
+			_, _ = fmt.Fprintln(out, "no bot_score filter is in learning mode (set learn: true)")
+			return 0
+		}
+		for _, f := range rep.Filters {
+			_, _ = fmt.Fprintf(out, "filter %s  challenge_at %d  deny_at %d\n", f.Filter, f.ChallengeAt, f.DenyAt)
+			tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+			_, _ = fmt.Fprintln(tw, "  ROUTE\tSAMPLES\tP50\tP95\tP99\tMAX\tSUGGEST CHAL/DENY\tWOULD CHAL/DENY %")
+			for _, e := range f.Endpoints {
+				_, _ = fmt.Fprintf(tw, "  %s\t%d\t%d\t%d\t%d\t%d\t%d/%d\t%.1f/%.1f\n", e.Route, e.Samples, e.P50, e.P95, e.P99, e.Max,
+					e.SuggestChallengeAt, e.SuggestDenyAt, e.WouldChallengePct, e.WouldDenyPct)
+			}
+			_ = tw.Flush()
+		}
+		return 0
 	case "api":
 		afs := flag.NewFlagSet("api", flag.ContinueOnError)
 		afs.SetOutput(errOut)

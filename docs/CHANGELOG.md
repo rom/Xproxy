@@ -222,6 +222,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Learning bot scoring (`bot_score` `learn: true`): the filter records the
+  per-route distribution of the scores it computes without acting on it, and
+  `xproxyctl botscore` reports each route's score percentiles, the share of
+  traffic the current thresholds would challenge or deny, and suggested
+  `challenge_at`/`deny_at` derived from the tail — so thresholds are tuned to
+  real traffic rather than guessed. Served at `GET /v1/botscore`.
 - Challenge cookie token binding (`challenge.bind_ja4`): the signed
   challenge/CAPTCHA cookie can be bound to the client's JA4 TLS fingerprint,
   so a stolen cookie replayed by a different TLS client is refused even from

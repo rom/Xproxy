@@ -56,6 +56,7 @@ locally; everything else goes through the socket.
 | `accounts` [`-top` *N*] | Account guard state: endpoints with tracked addresses, accounts and pairs, active blocks (*N* per endpoint), window totals, campaign state and the action counters |
 | `maintenance` [`on`\|`off`] | Show or set maintenance mode (holds every request but the allowlist behind a 503) |
 | `origin-check` [*upstream*] [`-host` *H*] [`-path` *P*] | Probe origins directly to verify origin-lock is enforced: an unsigned and a signed request per endpoint of every upstream with an `origin_signature` (or the named one), reporting the verdict and exiting non-zero if any origin is not `enforced` |
+| `botscore` [`-top` *N*] | Learning-mode `bot_score` baselines: per-route score percentiles and suggested `challenge_at`/`deny_at` from observed traffic (needs `learn: true`) |
 | `acme` [`renew`] | Managed certificates with expiry, issuer and last error; `renew` forces renewal and waits |
 | `icap` | ICAP services with reachability, preview size, ISTag and counters |
 | `filters` | Middleware API version, registered kinds, configured filters with routes and deny counts |
