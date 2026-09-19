@@ -509,6 +509,21 @@ to report a vulnerability. The threat analysis behind the controls is in
   a pinned CA and an optional client certificate, the same bounded
   asynchronous queue, and redaction applied before export.
 
+## Known limits
+
+- The bundled Core Rule Set at paranoia level 1 inspects arguments,
+  cookies and selected headers, not the request path itself, so an
+  injection payload placed only in a path segment is not caught by the
+  WAF alone. A positive route policy (`routes[].policy`), a virtual
+  patch, or paranoia level 2 closes it. The bypass harness
+  (`test/bypass`) asserts this as a documented behaviour so a change is
+  noticed.
+- HTTP/1 framing ambiguities the Go server resolves deterministically
+  (a Content-Length beside Transfer-Encoding is resolved to chunked, a
+  bare LF is canonicalised to CRLF) are forwarded as one unambiguous
+  request rather than rejected; `server.normalization.reject_ambiguous_framing`
+  rejects the cases the parser leaves ambiguous.
+
 ## Planned controls (see ROADMAP.md)
 
 Phase 2 (remaining): TUI.

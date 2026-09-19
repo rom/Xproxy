@@ -222,6 +222,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Adversarial bypass harness (`test/bypass`): tests that try to evade
+  every security control (WAF, normalisation, positive policy, virtual
+  patches, rate limits, aggregate and honeypot bans, upload guard,
+  sensitive data, account guard, ACLs, header guard, API keys, the
+  challenge and the OpenAPI model) and assert each holds before the
+  backend, with documented gaps asserted as such.
 - `sensitive_data` filter: compressed bodies (`gzip`, `deflate`, `br`,
   `zstd`) are decoded for scanning and bodies over `max_bytes` are
   streamed through the scanner (`encoded`, `oversize`,
