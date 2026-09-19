@@ -764,6 +764,18 @@ func (v *validator) logging(l *Logging) {
 		default:
 			v.errf("logging.%s.format: must be json, common, combined or custom", name)
 		}
+		if name != "access" {
+			if s.SamplePercent != nil || s.AlwaysLog != nil || len(s.Fields) > 0 {
+				v.errf("logging.%s: sample_percent, always_log and fields are for the access stream only", name)
+			}
+			continue
+		}
+		if p := s.SamplePercent; p != nil && (*p < 0 || *p > 100) {
+			v.errf("logging.access.sample_percent: must be between 0 and 100")
+		}
+		if len(s.Fields) > 64 {
+			v.errf("logging.access.fields: at most 64")
+		}
 	}
 	if s := l.Syslog; s != nil {
 		switch s.Network {

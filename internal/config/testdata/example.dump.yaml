@@ -87,6 +87,9 @@ logging:
             - file
         format: json
         template: ""
+        sample_percent: null
+        always_log: null
+        fields: []
     error:
         enabled: null
         file: error.log
@@ -97,6 +100,9 @@ logging:
             - journald
         format: json
         template: ""
+        sample_percent: null
+        always_log: null
+        fields: []
     security:
         enabled: null
         file: security.log
@@ -108,6 +114,9 @@ logging:
             - syslog
         format: json
         template: ""
+        sample_percent: null
+        always_log: null
+        fields: []
     audit:
         enabled: null
         file: audit.log
@@ -118,6 +127,9 @@ logging:
             - syslog
         format: json
         template: ""
+        sample_percent: null
+        always_log: null
+        fields: []
     level: info
     stdout: false
     journald:

@@ -47,6 +47,7 @@ type runtime struct {
 	signers     map[string]*originsig.Signer
 	jwt         map[string]*jwt.Provider
 	maintenance *compiledMaintenance
+	accessLog   accessLogPolicy
 	icap        map[string]*icap.Service
 	filters     map[string]*customFilter
 	geo         *geoip.DB
@@ -234,6 +235,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 	if cfg.Maintenance != nil {
 		rt.maintenance = newMaintenance(cfg.Maintenance)
 	}
+	rt.accessLog = newAccessLogPolicy(cfg.Logging.Access)
 	for i := range cfg.Upstreams {
 		u := &cfg.Upstreams[i]
 		p, err := upstream.NewPool(u, log)

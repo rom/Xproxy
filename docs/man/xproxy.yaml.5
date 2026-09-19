@@ -1661,6 +1661,33 @@ T}	T{
 Access stream only for the text formats: \fBcommon\fR is the Common Log Format (\fB%h %l %u %t "%r" %>s %b\fR),\: \fBcombined\fR adds the quoted referer and user agent,\: \fBcustom\fR uses \fBtemplate\fR. The error,\: security and audit streams stay JSON. Text lines go to every sink of the stream;\: redaction runs before formatting
 T}
 T{
+\fBsample_\:percent\fR
+T}	T{
+float
+T}	T{
+\fB100\fR
+T}	T{
+Access stream only: log this percentage of lines. Every request is still counted in the metrics;\: only the written line is sampled
+T}
+T{
+\fBalways_\:log\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Access stream only: log a line whatever the sampling when the response is 4xx/\:5xx or the request was denied
+T}
+T{
+\fBfields\fR
+T}	T{
+list
+T}	T{
+all
+T}	T{
+Access stream only: keep only these attributes on the line (\fBrequest_\:id\fR,\: \fBclient_\:ip\fR,\: \fBstatus\fR,\: \fBroute\fR,\: ...);\: empty keeps them all
+T}
+T{
 \fBtemplate\fR
 T}	T{
 string

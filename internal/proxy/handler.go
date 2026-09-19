@@ -1188,7 +1188,13 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 			}
 		}
 	}
-	s.logs.Access.Info("request", attrs...)
+	// Sampling and field selection affect only the written line; every
+	// request is already counted above.
+	pol := s.rt.Load().accessLog
+	if !pol.keep(status, st.denied) {
+		return
+	}
+	s.logs.Access.Info("request", pol.selectFields(attrs)...)
 }
 
 func isUpgrade(r *http.Request) bool {

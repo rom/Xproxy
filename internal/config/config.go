@@ -750,7 +750,30 @@ type LogStream struct {
 	// placeholders naming access log attributes plus time_clf, time_iso,
 	// time_unix, request, user and bytes_out_clf; a missing field prints "-".
 	Template string `yaml:"template"`
+	// SamplePercent logs this percentage of access lines (0 to 100,
+	// default 100). Metrics count every request regardless. Access stream
+	// only.
+	SamplePercent *float64 `yaml:"sample_percent"`
+	// AlwaysLog logs a line whatever the sampling when the response is a
+	// 4xx/5xx or the request was denied. Default true. Access stream only.
+	AlwaysLog *bool `yaml:"always_log"`
+	// Fields, when set, keeps only these attributes on the access line
+	// (request_id, client_ip, method, host, path, status, ...); empty
+	// keeps them all. Access stream only.
+	Fields []string `yaml:"fields"`
 }
+
+// AccessSamplePercent returns the effective sampling percentage.
+func (l *LogStream) AccessSamplePercent() float64 {
+	if l.SamplePercent == nil {
+		return 100
+	}
+	return *l.SamplePercent
+}
+
+// AlwaysLogsErrors reports whether denied and error responses are always
+// logged despite sampling.
+func (l *LogStream) AlwaysLogsErrors() bool { return l.AlwaysLog == nil || *l.AlwaysLog }
 
 // Journald is the native journald sink.
 type Journald struct {

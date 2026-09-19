@@ -222,6 +222,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Access-log sampling and field selection (`logging.access.sample_percent`,
+  `always_log`, `fields`): log a fraction of lines while always keeping
+  denied and error responses, and trim each line to a chosen set of
+  attributes; metrics still count every request.
 - Maintenance mode (`maintenance` section): holds every request behind a
   configurable 503 with Retry-After except an allowlist (CIDRs or a
   bypass header) and routes marked `maintenance: false`; toggled at

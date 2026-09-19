@@ -1758,8 +1758,19 @@
       "description": "LogStream configures one stream.",
       "type": "object",
       "properties": {
+        "always_log": {
+          "description": "AlwaysLog logs a line whatever the sampling when the response is a 4xx/5xx or the request was denied. Default true. Access stream only.",
+          "type": "boolean"
+        },
         "enabled": {
           "type": "boolean"
+        },
+        "fields": {
+          "description": "Fields, when set, keeps only these attributes on the access line (request_id, client_ip, method, host, path, status, ...); empty keeps them all. Access stream only.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "file": {
           "type": "string"
@@ -1774,6 +1785,10 @@
         "max_size_mb": {
           "description": "MaxSizeMB triggers rotation when the file exceeds this size. 0 disables internal rotation (use logrotate or journald instead).",
           "type": "integer"
+        },
+        "sample_percent": {
+          "description": "SamplePercent logs this percentage of access lines (0 to 100, default 100). Metrics count every request regardless. Access stream only.",
+          "type": "number"
         },
         "sinks": {
           "description": "Sinks lists where the stream goes: file, journald, syslog. Default [file].",
