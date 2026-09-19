@@ -775,6 +775,9 @@ func (s *Server) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 		}
 	}
 	cr.reqOps.apply(out.Header, &tvars{r: in, st: st})
+	if signer := rt.signers[cr.pool.Name]; signer != nil {
+		signer.Sign(out, time.Now(), st.clientIP.String(), st.id)
+	}
 }
 
 // outboundPath applies strip_prefix, rewrite_path or rewrite_regex and

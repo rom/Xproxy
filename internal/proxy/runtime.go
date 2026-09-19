@@ -19,7 +19,9 @@ import (
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/originsig"
 	"github.com/rom/xproxy/internal/router"
+	"github.com/rom/xproxy/internal/secret"
 	"github.com/rom/xproxy/internal/shed"
 	"github.com/rom/xproxy/internal/upstream"
 	"github.com/rom/xproxy/internal/waf"
@@ -39,10 +41,12 @@ type runtime struct {
 	trusted    []netip.Prefix
 	routes     []*compiledRoute
 	waf        *waf.Engine
-	jwt        map[string]*jwt.Provider
-	icap       map[string]*icap.Service
-	filters    map[string]*customFilter
-	geo        *geoip.DB
+	// signers sign forwarded requests per upstream (origin_signature).
+	signers map[string]*originsig.Signer
+	jwt     map[string]*jwt.Provider
+	icap    map[string]*icap.Service
+	filters map[string]*customFilter
+	geo     *geoip.DB
 	// geoNeeded is set when any route or rate limit consults the country.
 	geoNeeded bool
 	// events is the generation's event bus (nil in unit tests that build
@@ -192,6 +196,22 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 			return nil, err
 		}
 		rt.pools[u.Name] = p
+		if os := u.OriginSignature; os != nil {
+			ring, err := secret.LoadOrCreate(os.SecretFile)
+			if err != nil {
+				rt.stop()
+				return nil, fmt.Errorf("upstream %s: origin signature secret: %w", u.Name, err)
+			}
+			signer, err := originsig.New(os.Header, os.Include, ring.All())
+			if err != nil {
+				rt.stop()
+				return nil, fmt.Errorf("upstream %s: %w", u.Name, err)
+			}
+			if rt.signers == nil {
+				rt.signers = map[string]*originsig.Signer{}
+			}
+			rt.signers[u.Name] = signer
+		}
 	}
 	for i := range cfg.RateLimits {
 		rl := &cfg.RateLimits[i]

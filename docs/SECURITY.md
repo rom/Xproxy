@@ -313,6 +313,13 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Retries only for connection level failures of replayable requests.
 - Affinity cookies are HMAC signed indexes with expiry, `HttpOnly`,
   `SameSite=Lax`, `Secure` on TLS.
+- Bypass protection for origins: mutual TLS to the upstream with a
+  client certificate and SPKI pinning, and a per request HMAC signature
+  (`origin_signature`) over method, host, path, query, time, client
+  address, request id and chosen headers that the origin verifies, with
+  key rotation through a keyring; HARDENING.md pairs both with network
+  filtering so an origin accepts nothing that did not pass the proxy.
+
 
 ### Layer 4 and forward listeners
 

@@ -855,6 +855,10 @@ type Upstream struct {
 	// endpoints and discovered ones coexist; a pool needs at least one
 	// of the two.
 	Discovery *Discovery `yaml:"discovery"`
+	// OriginSignature signs every forwarded request with a key shared
+	// with the origin, so the origin can refuse traffic that did not pass
+	// through the proxy.
+	OriginSignature *OriginSignature `yaml:"origin_signature"`
 	// SlowStart ramps the share of an endpoint that (re)joins the pool,
 	// from 10 % to full weight over this duration, so a cold instance is
 	// not hit with its full share at once. Applies to endpoints added by
@@ -952,6 +956,22 @@ type Canary struct {
 	Values   []string `yaml:"values"`
 	Percent  float64  `yaml:"percent"`
 	Fallback *bool    `yaml:"fallback"`
+}
+
+// OriginSignature is the bypass protection an origin verifies: an HMAC
+// over method, host, path, query, time, client address, request id and
+// the listed extra headers, carried in one header.
+type OriginSignature struct {
+	// Header carries the signature. Default X-Xproxy-Signature.
+	Header string `yaml:"header"`
+	// SecretFile is the keyring shared with the origin (created when
+	// missing; rotate with xproxyctl rotate-secret, the previous key
+	// stays valid for verification).
+	SecretFile string `yaml:"secret_file"`
+	// TTL is how long the origin should accept a signature. Default 5m.
+	TTL Duration `yaml:"ttl"`
+	// Include lists extra request headers covered by the signature.
+	Include []string `yaml:"include"`
 }
 
 // UpstreamTLS configures TLS towards upstream endpoints.

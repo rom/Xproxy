@@ -297,6 +297,10 @@ func applyDefaults(c *Config) {
 
 	for i := range c.Upstreams {
 		u := &c.Upstreams[i]
+		if os := u.OriginSignature; os != nil {
+			setStr(&os.Header, "X-Xproxy-Signature")
+			setDur(&os.TTL, 5*time.Minute)
+		}
 		setStr(&u.Balancer, "round_robin")
 		setStr(&u.Scheme, "http")
 		setDur(&u.Timeouts.Connect, DefaultUpstreamConnect)

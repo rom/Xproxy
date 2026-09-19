@@ -2687,6 +2687,15 @@ T}	T{
 Mutual TLS to the upstream;\: set both. Re\-read by \fBxproxyctl reload\-\:certs\fR and by configuration reload;\: idle connections are dropped so new ones present the new certificate
 T}
 T{
+\fBorigin_\:signature\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Sign every forwarded request so the origin can refuse traffic that bypassed the proxy;\: see \fBupstreams[].\:origin_\:signature\fR
+T}
+T{
 \fBspki_\:pins\fR
 T}	T{
 list of base64 SHA\-256
@@ -3149,6 +3158,72 @@ T}	T{
 HMAC key or keyring,\: created \fB0600\fR on first use if absent;\: rotate with \fBxproxyctl rotate\-\:secret\fR (cookies signed with kept keys stay valid)
 T}
 .TE
+.SS "upstreams[].origin_signature"
+.PP
+Network filtering keeps most traffic off an origin, but not where the origin is reachable from the internet by design (a cloud service, a shared host) or where another tenant sits on the same network. A signed header lets the origin refuse anything that did not pass through the proxy. Every forwarded request carries
+.PP
+.RS 4
+.nf
+.ft CR
+X\-Xproxy\-Signature: v1;t=<unix seconds>;kid=<key id>;sig=<base64url HMAC\-SHA256>
+.ft
+.fi
+.RE
+.PP
+where the MAC covers, as newline separated lines: \fBv1\fR, the method, the \fBHost\fR sent upstream (lower case), the path, the raw query, the timestamp, the client address (the \fBX\-Real\-Ip\fR value), the request id (\fBX\-Request\-Id\fR) and the values of the \fBinclude\fR headers in order (repeated values joined with commas). The key id is the first eight hex digits of the SHA\-256 of the key. A signature header sent by a client is always replaced.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(1.0i) lbx
+lw(0.8i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBheader\fR
+T}	T{
+name
+T}	T{
+\fBX\-\:Xproxy\-\:Signature\fR
+T}	T{
+
+T}
+T{
+\fBsecret_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Keyring shared with the origin (mode \fB0600\fR,\: created on first start;\: \fBxproxyctl rotate\-\:secret\fR adds a new primary and keeps the previous key,\: so the origin verifies with either while it is updated)
+T}
+T{
+\fBttl\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+Age the origin should accept;\: a signature is also refused more than a minute in the future
+T}
+T{
+\fBinclude\fR
+T}	T{
+list of headers
+T}	T{
+\fB[]\fR
+T}	T{
+Extra request headers covered,\: for example a tenant header the proxy sets
+T}
+.TE
+.PP
+At the origin, recompute the MAC with the shared key selected by \fBkid\fR, compare in constant time, and refuse when it differs, the key id is unknown or \fBt\fR is older than the TTL. HARDENING.md has verifier snippets; \fBinternal/originsig\fR has \fBVerify\fR for origins written in Go. Combine with mutual TLS (\fBtls.client_cert_file\fR) and with network filtering: each closes what the others cannot.
 .SH "routes[]"
 .PP
 Matching: exact host, then wildcard host, then hostless routes; within a host the longest path (a \fBpath_regex\fR entry counts as the length of its literal prefix and, at equal length, beats a plain prefix); then the number of \fBheaders\fR and \fBcookies\fR conditions (more first, so a conditioned route is tried before the plain route on the same path); then \fBpriority\fR (higher wins); then configuration order. \fBmethods\fR and the conditions are filters: a route whose method set or conditions do not match is skipped and the next candidate is tried.

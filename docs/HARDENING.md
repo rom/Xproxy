@@ -172,6 +172,63 @@ and rotate it with `xproxyctl rotate-secret` on every node within one
 epoch (a node with another file falls back to full handshakes and shows
 under `mismatched_peers`).
 
+## 5c. Origins accept traffic only from the proxy
+
+A WAF in front of an application that is also reachable directly
+protects nothing. Close the direct path with three layers; each holds
+where the others cannot.
+
+**Network.** On every origin host allow the application port from the
+proxies' addresses only:
+
+```
+table inet origin {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    ct state established,related accept
+    iif lo accept
+    tcp dport 8080 ip saddr { 10.0.0.1, 10.0.0.2 } accept   # the xproxy nodes
+    tcp dport 22 ip saddr 10.0.0.0/8 accept
+  }
+}
+```
+
+In a cloud, put the same rule in the security group of the origin and
+give the proxies static addresses or a NAT gateway. A load balancer or
+CDN in front of the proxy must not also have a path to the origin.
+
+**Mutual TLS.** Give the proxy a client certificate
+(`upstreams[].tls.client_cert_file`, `client_key_file`) from a private
+CA and make the origin require it (`ssl_verify_client on` in nginx,
+`SSLVerifyClient require` in Apache, `ClientAuth: tls.RequireAndVerifyClientCert`
+in Go). This binds the connection, not the request, so a compromised
+host on the proxy network still cannot speak to the origin.
+
+**Request signature.** Where network rules do not reach (a shared
+platform, an origin the internet must reach for other reasons), sign
+every request (`upstreams[].origin_signature`) and verify at the origin.
+The rule is one function in any language: rebuild the signed string,
+compute HMAC-SHA256 with the key named by `kid`, compare in constant
+time, refuse when `t` is older than the TTL. In Go:
+
+```go
+keys := ring.All() // the keyring file the proxy uses, shared out of band
+if err := originsig.Verify(r, "X-Xproxy-Signature", nil, keys, 5*time.Minute, time.Now()); err != nil {
+    http.Error(w, "forbidden", http.StatusForbidden)
+    return
+}
+```
+
+In nginx with njs, the same steps: split the header on `;`, build
+`"v1\n" + method + "\n" + host + "\n" + path + "\n" + query + "\n" + t + "\n" + x_real_ip + "\n" + x_request_id`,
+`crypto.createHmac('sha256', key).update(msg).digest('base64url')`,
+compare, check the age. Rotate with `xproxyctl rotate-secret FILE` on
+the proxy, copy the new file to the origins within the grace period,
+then rotate again with `-keep 1` to drop the old key.
+
+Whatever the layer, the check is `xproxyctl upstreams` on the proxy and
+a request straight to the origin port from another host: it must fail.
+
 ## 6. Management access
 
 Only members of the `xproxy` group and root can reach the socket. Keep

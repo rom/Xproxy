@@ -900,6 +900,24 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		v.errf("%s.name: duplicate %q", p, u.Name)
 	}
 	seen[u.Name] = true
+	if os := u.OriginSignature; os != nil {
+		if os.Header != "" && !headerNameOK(os.Header) {
+			v.errf("%s.origin_signature.header: %q is not a header name", p, os.Header)
+		}
+		if os.SecretFile == "" {
+			v.errf("%s.origin_signature.secret_file: required", p)
+		} else if !strings.HasPrefix(os.SecretFile, "/") {
+			v.errf("%s.origin_signature.secret_file: must be an absolute path", p)
+		}
+		if os.TTL < Duration(10*time.Second) || os.TTL > Duration(24*time.Hour) {
+			v.errf("%s.origin_signature.ttl: must be between 10s and 24h", p)
+		}
+		for j, h := range os.Include {
+			if !headerNameOK(h) {
+				v.errf("%s.origin_signature.include[%d]: %q is not a header name", p, j, h)
+			}
+		}
+	}
 	switch u.Balancer {
 	case "round_robin", "weighted", "least_conn", "hash":
 	default:

@@ -1118,6 +1118,32 @@ feature, and move to `challenge` (browsers pass, scripts do not) or
 log scale, so a client is flagged for volume only when it sends
 several times what its peers do.
 
+### Locking origins to the proxy
+
+A control at the proxy holds only if the application accepts no other
+path. Besides firewalling the origin to the proxy addresses (HARDENING.md
+5c) and mutual TLS (`upstreams[].tls.client_cert_file`), the proxy can
+sign every request it forwards:
+
+```yaml
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.20:8080"}]
+    origin_signature:
+      secret_file: /var/lib/xproxy/origin-app.key
+      ttl: 5m
+      include: [X-Tenant]
+```
+
+The origin verifies `X-Xproxy-Signature` with the same key file (an
+HMAC over method, host, path, query, time, client address, request id
+and the listed headers; the exact recipe and verifier snippets are in
+CONFIG.md and HARDENING.md) and answers 403 to anything else, so a
+request that did not pass the proxy, or was altered after it, is
+refused whatever network it came from. `xproxyctl rotate-secret
+/var/lib/xproxy/origin-app.key` adds a new key while the old one keeps
+verifying until the origins have the new file.
+
 ### Positive security model
 
 Where an API is documented, refusing everything else is cheaper and

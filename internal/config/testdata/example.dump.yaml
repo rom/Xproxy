@@ -186,6 +186,7 @@ upstreams:
           weight: 1
           canary: false
       discovery: null
+      origin_signature: null
       slow_start: 0s
       scheme: http
       h2c: false
@@ -240,6 +241,7 @@ upstreams:
           weight: 1
           canary: false
       discovery: null
+      origin_signature: null
       slow_start: 0s
       scheme: https
       h2c: false

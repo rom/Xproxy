@@ -218,6 +218,10 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- Origin lock: `upstreams[].origin_signature` signs every forwarded
+  request with a keyring shared with the origin (`internal/originsig`
+  verifies), and HARDENING.md 5c documents network rules, mutual TLS
+  and signature verification so an origin accepts only proxied traffic.
 - WAF gradual enforcement: `routes[].waf.block_percent` splits clients
   between block and detect mode by address, `block_cidrs` always
   enforces the canaries, `waf_enforced` in the access log and the share

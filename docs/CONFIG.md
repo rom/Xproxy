@@ -656,6 +656,7 @@ Memory: at most 64 x 8192 buckets per policy.
 | `ca_file` | path | system pool | PEM bundle to verify against |
 | `min_version` | `"1.2"`, `"1.3"` | `"1.2"` | Minimum TLS version towards the upstream |
 | `client_cert_file`, `client_key_file` | path | | Mutual TLS to the upstream; set both. Re-read by `xproxyctl reload-certs` and by configuration reload; idle connections are dropped so new ones present the new certificate |
+| `origin_signature` | object | none | Sign every forwarded request so the origin can refuse traffic that bypassed the proxy; see `upstreams[].origin_signature` |
 | `spki_pins` | list of base64 SHA-256 | `[]` | Pins of the upstream leaf public key; the connection is refused unless the presented leaf matches one, in addition to chain verification. `xproxyctl spki CERT.pem` prints a pin. Cannot be combined with `insecure_skip_verify` |
 | `insecure_skip_verify` | bool | `false` | Requires `allow_insecure: true` as well |
 | `allow_insecure` | bool | `false` | Second opt-in |
@@ -756,6 +757,40 @@ the access log with `upstream_error: circuit_open`.
 | `cookie_name` | token | `XPSESS` | |
 | `ttl` | duration | `1h` | Cookie and signature lifetime |
 | `secret_file` | path | ephemeral | HMAC key or keyring, created `0600` on first use if absent; rotate with `xproxyctl rotate-secret` (cookies signed with kept keys stay valid) |
+
+### upstreams[].origin_signature
+
+Network filtering keeps most traffic off an origin, but not where the
+origin is reachable from the internet by design (a cloud service, a
+shared host) or where another tenant sits on the same network. A signed
+header lets the origin refuse anything that did not pass through the
+proxy. Every forwarded request carries
+
+```
+X-Xproxy-Signature: v1;t=<unix seconds>;kid=<key id>;sig=<base64url HMAC-SHA256>
+```
+
+where the MAC covers, as newline separated lines: `v1`, the method,
+the `Host` sent upstream (lower case), the path, the raw query, the
+timestamp, the client address (the `X-Real-Ip` value), the request id
+(`X-Request-Id`) and the values of the `include` headers in order
+(repeated values joined with commas). The key id is the first eight hex
+digits of the SHA-256 of the key. A signature header sent by a client
+is always replaced.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `header` | name | `X-Xproxy-Signature` | |
+| `secret_file` | path | required | Keyring shared with the origin (mode `0600`, created on first start; `xproxyctl rotate-secret` adds a new primary and keeps the previous key, so the origin verifies with either while it is updated) |
+| `ttl` | duration | `5m` | Age the origin should accept; a signature is also refused more than a minute in the future |
+| `include` | list of headers | `[]` | Extra request headers covered, for example a tenant header the proxy sets |
+
+At the origin, recompute the MAC with the shared key selected by `kid`,
+compare in constant time, and refuse when it differs, the key id is
+unknown or `t` is older than the TTL. HARDENING.md has verifier
+snippets; `internal/originsig` has `Verify` for origins written in Go.
+Combine with mutual TLS (`tls.client_cert_file`) and with network
+filtering: each closes what the others cannot.
 
 ## routes[]
 

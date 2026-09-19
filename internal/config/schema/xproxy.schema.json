@@ -1990,6 +1990,33 @@
       },
       "additionalProperties": false
     },
+    "OriginSignature": {
+      "description": "OriginSignature is the bypass protection an origin verifies: an HMAC over method, host, path, query, time, client address, request id and the listed extra headers, carried in one header.",
+      "type": "object",
+      "properties": {
+        "header": {
+          "description": "Header carries the signature. Default X-Xproxy-Signature.",
+          "type": "string"
+        },
+        "include": {
+          "description": "Include lists extra request headers covered by the signature.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "secret_file": {
+          "description": "SecretFile is the keyring shared with the origin (created when missing; rotate with xproxyctl rotate-secret, the previous key stays valid for verification).",
+          "type": "string"
+        },
+        "ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
     "OutlierEjection": {
       "description": "OutlierEjection configures passive health checking: consecutive failures and, when latency_threshold or latency_factor is set, an endpoint whose smoothed time to first byte is slow.",
       "type": "object",
@@ -3396,6 +3423,14 @@
         },
         "name": {
           "type": "string"
+        },
+        "origin_signature": {
+          "description": "OriginSignature signs every forwarded request with a key shared with the origin, so the origin can refuse traffic that did not pass through the proxy.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/OriginSignature"
+            }
+          ]
         },
         "outlier_ejection": {
           "description": "OutlierEjection removes endpoints that fail passively.",
