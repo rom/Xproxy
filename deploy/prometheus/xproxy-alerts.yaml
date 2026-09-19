@@ -153,3 +153,47 @@ groups:
         annotations:
           summary: "Rate limit policy {{ $labels.policy }} denies more than half of its decisions on {{ $labels.instance }}"
           description: "The limit is too tight for legitimate traffic or an abuser is being held off; xproxyctl quotas shows the top keys."
+  - name: xproxy.accounts
+    rules:
+      - alert: XproxyCredentialStuffing
+        expr: sum by (instance) (rate(xproxy_account_actions_total{class="login",action=~"captcha|block"}[10m])) > 0.5
+        for: 10m
+        labels: {severity: warn}
+        annotations:
+          summary: "Login endpoints on {{ $labels.instance }} are escalating to CAPTCHA or block more than 30 times a minute"
+          description: "Credential stuffing or brute force against the login form; xproxyctl accounts shows the endpoints, tracked keys and active blocks, and the security log carries the hashed accounts and addresses."
+      - alert: XproxyAccountCampaign
+        expr: sum by (instance) (increase(xproxy_account_campaigns_total[15m])) > 0
+        labels: {severity: warn}
+        annotations:
+          summary: "A distributed account attack campaign was declared on {{ $labels.instance }}"
+          description: "Failures spread over many addresses crossed the distributed thresholds; every unverified client of the endpoint is challenged while it lasts. Consider a net or ja4 aggregated ban trigger if it repeats."
+      - alert: XproxyRegistrationAbuse
+        expr: sum by (instance) (rate(xproxy_account_actions_total{class="register",action=~"challenge|captcha|block"}[15m])) > 0.2
+        for: 15m
+        labels: {severity: warn}
+        annotations:
+          summary: "Registration abuse on {{ $labels.instance }}"
+          description: "Repeated or bulk registrations, or disposable e-mail domains, are being challenged or blocked; xproxy_account_disposable_total separates the throwaway addresses."
+      - alert: XproxySensitiveDataLeak
+        expr: sum by (instance) (increase(xproxy_sensitive_messages_total{direction="response",outcome=~"masked|blocked"}[15m])) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "Responses carrying sensitive data were masked or blocked on {{ $labels.instance }}"
+          description: "The application returned card numbers, identity numbers, tokens or keys; the access log lists the routes with sensitive_types and sensitive_where. Fix the application; the filter is a safety net."
+      - alert: XproxySensitiveDataLogged
+        expr: sum by (instance) (rate(xproxy_sensitive_findings_total[1h])) > 1
+        for: 1h
+        labels: {severity: warn}
+        annotations:
+          summary: "Sensitive data findings above one per second on {{ $labels.instance }}"
+          description: "Either a leak in log mode or a detector that needs tuning; xproxy_sensitive_findings_total by kind shows which detector fires."
+      - alert: XproxyCaptchaFailures
+        expr: |
+          sum by (instance) (rate(xproxy_challenges_total{result="failed"}[15m]))
+            > 5 * clamp_min(sum by (instance) (rate(xproxy_challenges_total{result="passed"}[15m])), 0.01)
+        for: 15m
+        labels: {severity: warn}
+        annotations:
+          summary: "Challenge verifications on {{ $labels.instance }} fail five times more often than they pass"
+          description: "Automation hammering the challenge or a broken CAPTCHA provider configuration (site key, secret, verify_url); the security log names the failure class."
