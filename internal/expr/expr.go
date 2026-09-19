@@ -412,8 +412,8 @@ func (p *parser) accept(kind tokenKind, text string) bool {
 	return false
 }
 
-func (p *parser) expect(kind tokenKind, text string) error {
-	if p.accept(kind, text) {
+func (p *parser) expect(text string) error {
+	if p.accept(tokPunct, text) {
 		return nil
 	}
 	if t := p.peek(); t != nil {
@@ -523,7 +523,7 @@ func (p *parser) parseList() (node, error) {
 		var items []string
 		for !p.accept(tokPunct, "]") {
 			if len(items) > 0 {
-				if err := p.expect(tokPunct, ","); err != nil {
+				if err := p.expect(","); err != nil {
 					return nil, err
 				}
 			}
@@ -537,13 +537,13 @@ func (p *parser) parseList() (node, error) {
 		return literal{value{kind: kindList, list: items}}, nil
 	}
 	if p.accept(tokName, "cidr") {
-		if err := p.expect(tokPunct, "("); err != nil {
+		if err := p.expect("("); err != nil {
 			return nil, err
 		}
 		var nets []netip.Prefix
 		for !p.accept(tokPunct, ")") {
 			if len(nets) > 0 {
-				if err := p.expect(tokPunct, ","); err != nil {
+				if err := p.expect(","); err != nil {
 					return nil, err
 				}
 			}
@@ -585,7 +585,7 @@ func (p *parser) parseTerm() (node, error) {
 			if err != nil {
 				return nil, err
 			}
-			if err := p.expect(tokPunct, ")"); err != nil {
+			if err := p.expect(")"); err != nil {
 				return nil, err
 			}
 			return x, nil
@@ -613,7 +613,7 @@ func (p *parser) parseCall(name *token) (node, error) {
 	var args []node
 	for !p.accept(tokPunct, ")") {
 		if len(args) > 0 {
-			if err := p.expect(tokPunct, ","); err != nil {
+			if err := p.expect(","); err != nil {
 				return nil, err
 			}
 		}
