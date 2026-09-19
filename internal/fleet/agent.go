@@ -310,16 +310,21 @@ func (a *Agent) apply(b *Bundle) error {
 		return fmt.Errorf("bundle %s: reload refused, previous files restored: %w", short(b.Digest), err)
 	}
 	res := Result{Digest: b.Digest, OK: true, At: time.Now()}
-	a.setResult(res)
-	a.mu.Lock()
-	a.st.Applies++
-	a.mu.Unlock()
+	// The marker is written and the counters advanced before the result
+	// is published, so a reader that sees the applied digest also sees
+	// everything that belongs to it.
 	if data, err := json.Marshal(res); err == nil {
 		if root, err := os.OpenRoot(a.dir); err == nil {
 			_ = writeFile(root, markerFile, data, 0o600)
 			_ = root.Close()
 		}
 	}
+	a.mu.Lock()
+	a.st.Applied = res
+	a.st.PendingDigest = ""
+	a.st.LastError = ""
+	a.st.Applies++
+	a.mu.Unlock()
 	a.log.Info("fleet bundle applied", "digest", short(b.Digest), "files", len(b.Files))
 	return nil
 }
