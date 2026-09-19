@@ -37,7 +37,7 @@ func TestPagesCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pages) != 3 {
+	if len(pages) != 4 {
 		t.Fatalf("pages: %v", pages)
 	}
 	for name, want := range pages {

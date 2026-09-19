@@ -249,6 +249,10 @@ procedure is in RELEASING.md.
 - WAF: CRS plugin loading, JSON body schema enforcement, behavioural
   anomaly detection beyond rule scoring (`crs.plugins_dir`,
   `json_schemas`, `waf.anomaly`): delivered
+- Fleet operation: central configuration push and status collection
+  (`xproxy-fleet`, `fleet`), Grafana dashboards and alert rules shipped
+  with the product, SIEM export beyond syslog (`logging.siem`, CEF and
+  LEEF): delivered
 - In-process sandbox (Landlock, seccomp, capabilities, no_new_privs,
   non dumpable), systemd unit additions, macOS target with launchd,
   Seatbelt and pf: delivered (AMR-044, AMR-045)

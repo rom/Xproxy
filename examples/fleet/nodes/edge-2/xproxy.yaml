@@ -1,0 +1,35 @@
+# Configuration of fleet node edge-2, served by xproxy-fleet from
+# nodes/edge-2/ together with the files under common/. The fleet section
+# is what makes the node fetch this very file: the agent writes the
+# bundle into the directory of its configuration file and reloads.
+#
+# Validate the whole directory: xproxy-fleet validate -dir examples/fleet
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+fleet:
+  controller: https://fleet.example.internal:8447
+  node_id: edge-2
+  tls:
+    cert_file: /etc/xproxy/fleet/edge-2.pem
+    key_file: /etc/xproxy/fleet/edge-2-key.pem
+    ca_file: /etc/xproxy/fleet/ca.pem
+  interval: 30s
+  tags: [eu, edge]
+waf:
+  default_mode: block
+  default_profile: default
+  profiles:
+    - name: default
+      crs: {paranoia_level: 1}
+      directive_files: [/etc/xproxy/waf/custom.conf]
+upstreams:
+  - name: web
+    endpoints: [{address: "10.0.0.10:8080"}, {address: "10.0.0.11:8080"}]
+routes:
+  - {name: web, upstream: web}

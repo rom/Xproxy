@@ -76,6 +76,7 @@ internal/proxy/static.go  routes[].static: files through os.Root, index, listing
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits and bans over mutual TLS
+internal/fleet      fleet bundles, the node agent and the controller (xproxy-fleet)
 internal/shed       adaptive load shedding by priority class
 internal/challenge  browser proof-of-work challenge
 internal/h3         HTTP/3 over QUIC (the only package importing quic-go)
@@ -841,6 +842,7 @@ Endpoints:
 | GET | `/v1/waf` | WAF profiles (plugins, schemas), route assignments, per rule statistics (`?top=N`), learned exclusion proposals, schema violations and the anomaly baseline with flagged clients |
 | GET | `/v1/waf/exclusions` | the proposals as a SecLang file (text/plain) |
 | POST | `/v1/waf/reset` | clear WAF statistics and the learning table (audited) |
+| GET | `/v1/fleet` | fleet agent state: controller, applied bundle and result, pending digest, counters |
 | GET | `/v1/sandbox` | in-process hardening: mechanisms with state, Landlock rules and ABI |
 | GET | `/v1/config` | active configuration as YAML |
 | POST | `/v1/reload` | validate and apply the configuration file; `?dry_run=1` returns the changes without applying |
@@ -918,6 +920,30 @@ JWKS, then a role from the configured claim and an ordinary session
 (`via=oidc`) under the same idle and absolute limits. Failures redirect
 to the login page with a short reason code and are logged with the
 source address.
+
+### Fleet
+
+`internal/fleet` has three parts. A bundle is a sorted list of files
+(relative paths checked against traversal, hidden names, depth and
+size; the configuration must be `xproxy.yaml`) with a SHA-256 digest
+over paths, modes and contents; `Read` builds one from a common and a
+node directory through `os.Root`, `Validate` parses the configuration
+without file checks, and `Write` replaces files inside the node's
+configuration directory through `os.Root` (temporary file, fsync,
+rename; never following a link out of the directory) and returns a
+restore closure. The agent runs in the proxy: it long polls
+`GET /v1/fleet/nodes/{id}/config?digest=&wait=` with the node's client
+certificate, applies a differing bundle (`Write`, then the same reload
+closure the management API uses, then restore on refusal), records the
+applied digest in a marker file so a restart knows it, and posts the
+node's status after every poll; failures back off up to the interval.
+The controller (`xproxy-fleet serve`) scans its directory on an
+interval, keeps the last good bundle per node and the scan error,
+wakes waiting long polls through a channel it replaces on change,
+binds a node id to the certificate name, persists each report under
+`status/`, and serves operators over a local socket (`nodes`, `node`,
+`bundle`, `scan`). The sandbox derives a write rule for the bundle
+directory when the agent applies.
 
 ### Metrics and series
 

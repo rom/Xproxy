@@ -412,6 +412,19 @@ func applyDefaults(c *Config) {
 		}
 	}
 
+	if f := c.Fleet; f != nil {
+		setDur(&f.Interval, 30*time.Second)
+		setDur(&f.Timeout, 10*time.Second)
+		if f.NodeID == "" {
+			if c.Cluster != nil && c.Cluster.NodeID != "" {
+				f.NodeID = c.Cluster.NodeID
+			} else if h, err := os.Hostname(); err == nil {
+				f.NodeID = h
+			} else {
+				f.NodeID = "xproxy"
+			}
+		}
+	}
 	if cl := c.Cluster; cl != nil {
 		setDur(&cl.ExactTimeout, DefaultExactTimeout)
 		if cl.NodeID == "" {

@@ -52,6 +52,9 @@ type Config struct {
 	// Cluster enables sharing of rate limit consumption and bans between
 	// proxies when present.
 	Cluster *Cluster `yaml:"cluster"`
+	// Fleet makes this node fetch its configuration bundle from a fleet
+	// controller and report its status there (xproxy-fleet).
+	Fleet *Fleet `yaml:"fleet"`
 	// Shedding enables adaptive load shedding by priority class when
 	// present.
 	Shedding *Shedding `yaml:"shedding"`
@@ -1677,6 +1680,48 @@ type Cluster struct {
 	// distributed: exact; on expiry the request is decided locally.
 	// Default 50ms.
 	ExactTimeout Duration `yaml:"exact_timeout"`
+}
+
+// Fleet is the agent side of central configuration management: the node
+// long polls the controller for a bundle whose digest differs from the
+// applied one, writes the files under Dir, reloads and reports its
+// status. Changing the section requires a restart.
+type Fleet struct {
+	// Controller is the controller's base URL (https).
+	Controller string `yaml:"controller"`
+	// NodeID is the node's name at the controller; it must match the
+	// certificate name unless the controller runs with -any-name. Default
+	// cluster.node_id, else the host name.
+	NodeID string `yaml:"node_id"`
+	// TLS holds the node certificate, key and the fleet CA.
+	TLS FleetTLS `yaml:"tls"`
+	// Interval is the long poll length and the status report period.
+	// Default 30s.
+	Interval Duration `yaml:"interval"`
+	// Timeout bounds one request beyond the poll length. Default 10s.
+	Timeout Duration `yaml:"timeout"`
+	// Dir receives the bundle files; the configuration file must be
+	// Dir/xproxy.yaml (the -config path). Default: the directory of the
+	// configuration file.
+	Dir string `yaml:"dir"`
+	// Apply false reports status and pending bundles without writing or
+	// reloading anything. Default true.
+	Apply *bool `yaml:"apply"`
+	// Tags are reported to the controller for grouping.
+	Tags []string `yaml:"tags"`
+}
+
+// Applies reports the apply setting with its default.
+func (f *Fleet) Applies() bool { return f.Apply == nil || *f.Apply }
+
+// FleetTLS is the agent's client certificate and the controller CA.
+type FleetTLS struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	CAFile   string `yaml:"ca_file"`
+	// ServerName overrides the name verified in the controller's
+	// certificate. Default: the host of Controller.
+	ServerName string `yaml:"server_name"`
 }
 
 // ClusterTLS holds the node certificate and the cluster CA. Every peer

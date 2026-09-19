@@ -38,12 +38,13 @@ make rpm            # rpmbuild/RPMS/{x86_64,noarch}/xproxy-*.rpm, offline from a
 make rpmlint
 ```
 
-Three packages come out:
+Four packages come out:
 
 | Package | Content |
 |---------|---------|
-| `xproxy` | `xproxy`, `xproxyctl`, the four units, sysctl profile, logrotate, sysusers, example configuration, documentation |
+| `xproxy` | `xproxy`, `xproxyctl`, the four units, sysctl profile, logrotate, sysusers, example configuration, documentation, Grafana dashboards and alert rules |
 | `xproxy-admin` | `xproxy-admin`, its unit and the polkit rule |
+| `xproxy-fleet` | `xproxy-fleet`, its unit and state directory (for the management host of a fleet) |
 | `xproxy-selinux` | the policy module (loaded on install, relabels the paths) and the interface file for other policies |
 
 Install and start:
@@ -78,7 +79,8 @@ sysctl --system
 
 | Path | Content |
 |------|---------|
-| `/usr/local/bin/xproxy`, `/usr/local/bin/xproxyctl`, `/usr/local/bin/xproxy-admin` | binaries |
+| `/usr/local/bin/xproxy`, `/usr/local/bin/xproxyctl`, `/usr/local/bin/xproxy-admin`, `/usr/local/bin/xproxy-fleet` | binaries |
+| `/etc/systemd/system/xproxy-fleet.service` | fleet controller service (disabled until you enable it on a management host) |
 | `/etc/systemd/system/xproxy.service` | hardened service |
 | `/etc/systemd/system/xproxy-admin.service`, `/etc/polkit-1/rules.d/50-xproxy-admin.rules` | web GUI service (disabled until you enable it) and the polkit rule that lets it restart the data plane |
 | `/etc/systemd/system/xproxy.socket`, `xproxy-https.socket`, `xproxy-h3.socket` | listening sockets on TCP 80, TCP 443 and UDP 443 |

@@ -24,6 +24,7 @@ import (
 	"github.com/rom/xproxy/internal/filter"
 	_ "github.com/rom/xproxy/internal/filters" // built-in kinds
 	"github.com/rom/xproxy/internal/filters/apikey"
+	"github.com/rom/xproxy/internal/fleet"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/waf"
 )
@@ -272,6 +273,25 @@ func TestWAFPluginAndSchema(t *testing.T) {
 	}
 	if v := wafRequest(t, e, httptest.NewRequest("POST", "http://api.example.com/api/orders", nil)); !v.Deny || v.Status != 400 {
 		t.Fatalf("missing body: %+v", v)
+	}
+}
+
+// TestFleetExample validates the example controller directory the way
+// xproxy-fleet validate does.
+func TestFleetExample(t *testing.T) {
+	problems, ids, err := fleet.ValidateDir(filepath.Join(root(t), "fleet"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || len(problems) != 0 {
+		t.Fatalf("ids %v problems %v", ids, problems)
+	}
+	b, err := fleet.Read(filepath.Join(root(t), "fleet", "common"), filepath.Join(root(t), "fleet", "nodes", "edge-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Files) != 2 || b.Files[0].Path != "waf/custom.conf" || b.Files[1].Path != "xproxy.yaml" {
+		t.Fatalf("bundle %+v", b.Files)
 	}
 }
 

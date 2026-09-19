@@ -218,6 +218,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- Fleet operation: `xproxy-fleet`, a controller that serves each node
+  its configuration bundle over mutual TLS and collects the nodes'
+  status, and the `fleet` agent section in the proxy that long polls,
+  applies bundles through the reload path with rollback on refusal and
+  reports; `xproxy-fleet nodes|node|bundle|scan|validate`, `xproxyctl
+  fleet`, `GET /v1/fleet`, an RPM subpackage and a unit.
 - Grafana dashboards (overview, security) and Prometheus alert rules
   shipped with the product under `deploy/grafana` and
   `deploy/prometheus`, installed to `/usr/share/xproxy`, checked by a

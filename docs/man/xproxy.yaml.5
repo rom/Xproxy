@@ -4655,6 +4655,116 @@ T}
 Semantics: with sharing on, a rate limit policy\(aqs \fBrate\fR becomes an approximate cluster wide rate per key. Each node refills a key\(aqs bucket at \fBrate\fR minus the sum of fresh peer consumption for that key; \fBburst\fR stays per node. Accuracy is bounded by one gossip interval of delay and reports expire after \fBpeer_stale\fR, so losing a peer degrades to local limiting. A policy with \fBdistributed: exact\fR is instead decided by one owner per key: the members (this node and every peer whose hello was received on a live connection, \fBxproxyctl cluster\fR lists them) agree on the owner through rendezvous hashing, requests for a key owned elsewhere carry one round trip to the owner within \fBexact_timeout\fR, and the owner\(aqs limiter is the single count, so the limit holds exactly cluster wide while the members agree. Membership changes move only the departed member\(aqs keys; during a partition two owners may exist for a key, and a node without an answer in time decides locally, which over\-admits rather than refuses.
 .PP
 The cluster listener can be socket activated with \fBFileDescriptorName=cluster\fR.
+.SH "fleet"
+.PP
+Present means the node is managed by a fleet controller (\fBxproxy\-fleet\fR). The agent long polls the controller for a bundle whose digest differs from the applied one, writes the bundle\(aqs files into the directory of the configuration file, reloads through the ordinary path (validation, sandbox check) and restores the previous files when the reload is refused; after every poll it reports the node\(aqs status (version, generation, applied digest and result, request, error, deny, connection, upstream, endpoint, ban and certificate summary). The controller never connects to the node. Changing the section requires a restart. \fBxproxyctl fleet\fR and \fBGET /v1/fleet\fR show the agent state.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.4i) lbx
+lw(1.1i) lw(0.9i) lw(1.4i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBcontroller\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+The controller\(aqs base URL,\: \fBhttps\fR without a path
+T}
+T{
+\fBnode_\:id\fR
+T}	T{
+name
+T}	T{
+\fBcluster.\:node_\:id\fR,\: else the host name
+T}	T{
+The node\(aqs name at the controller;\: must equal the certificate\(aqs common name or DNS name unless the controller runs with \fB\-\:any\-\:name\fR
+T}
+T{
+\fBtls.\:cert_\:file\fR,\: \fBtls.\:key_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The node\(aqs client certificate
+T}
+T{
+\fBtls.\:ca_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+CA that issued the controller\(aqs certificate
+T}
+T{
+\fBtls.\:server_\:name\fR
+T}	T{
+string
+T}	T{
+host of \fBcontroller\fR
+T}	T{
+Name verified in the controller\(aqs certificate
+T}
+T{
+\fBinterval\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Long poll length and status report period;\: 5s to 1h
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+Request time allowed beyond the poll length;\: 1s to 1m
+T}
+T{
+\fBdir\fR
+T}	T{
+path
+T}	T{
+directory of the configuration file
+T}	T{
+Where bundle files are written;\: must be the configuration file\(aqs directory,\: and the file must be named \fBxproxy.\:yaml\fR
+T}
+T{
+\fBapply\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+\fBfalse\fR reports status and pending bundles without writing or reloading (a review mode)
+T}
+T{
+\fBtags\fR
+T}	T{
+list of names
+T}	T{
+\fB[]\fR
+T}	T{
+Reported to the controller for grouping
+T}
+.TE
+.PP
+The sandbox derives a write rule for \fBdir\fR when \fBapply\fR is on, so the agent can replace the files under Landlock; everything a bundle references must still lie within the sandbox\(aqs read rules, otherwise the reload is refused and the bundle rolled back.
 .SH "jwt"
 .PP
 Present means providers are available; routes opt in with a \fBjwt\fR block. Tokens are validated on the standard library: RSA (PKCS#1 v1.5 and PSS), ECDSA, Ed25519 and HMAC signatures, JSON Web Key Sets from a file or an HTTPS URL, and the standard time and audience claims. \fBnone\fR is never accepted.

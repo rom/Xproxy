@@ -57,6 +57,9 @@ type Actions struct {
 	// Sandbox reports the in-process hardening status, nil before it is
 	// applied or when the process runs without it (tests).
 	Sandbox func() *sandbox.Status
+	// Fleet reports the fleet agent status, or nil when the node is not
+	// managed by a controller.
+	Fleet func() any
 }
 
 // Server serves the management API.
@@ -200,6 +203,13 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 			return
 		}
 		writeJSON(w, 200, s.actions.Ingress())
+	})
+	mux.HandleFunc("GET /v1/fleet", func(w http.ResponseWriter, _ *http.Request) {
+		if s.actions.Fleet == nil {
+			writeJSON(w, 200, map[string]bool{"enabled": false})
+			return
+		}
+		writeJSON(w, 200, s.actions.Fleet())
 	})
 	mux.HandleFunc("GET /v1/dns", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.DNS()) })
 	mux.HandleFunc("DELETE /v1/dns", func(w http.ResponseWriter, _ *http.Request) {

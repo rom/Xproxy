@@ -63,6 +63,14 @@
         "$ref": "#/$defs/FilterConfig"
       }
     },
+    "fleet": {
+      "description": "Fleet makes this node fetch its configuration bundle from a fleet controller and report its status there (xproxy-fleet).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Fleet"
+        }
+      ]
+    },
     "geoip": {
       "description": "GeoIP names the country database used by routes[].geo and by rate limits keyed on country.",
       "allOf": [
@@ -887,6 +895,74 @@
         },
         "stage": {
           "description": "Stage places the filter relative to the built-in chain: before_auth (before JWT), after_auth (default; after JWT, before the WAF), after_waf (before ICAP) or after_scan (last).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Fleet": {
+      "description": "Fleet is the agent side of central configuration management: the node long polls the controller for a bundle whose digest differs from the applied one, writes the files under Dir, reloads and reports its status. Changing the section requires a restart.",
+      "type": "object",
+      "properties": {
+        "apply": {
+          "description": "Apply false reports status and pending bundles without writing or reloading anything. Default true.",
+          "type": "boolean"
+        },
+        "controller": {
+          "description": "Controller is the controller's base URL (https).",
+          "type": "string"
+        },
+        "dir": {
+          "description": "Dir receives the bundle files; the configuration file must be Dir/xproxy.yaml (the -config path). Default: the directory of the configuration file.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "node_id": {
+          "description": "NodeID is the node's name at the controller; it must match the certificate name unless the controller runs with -any-name. Default cluster.node_id, else the host name.",
+          "type": "string"
+        },
+        "tags": {
+          "description": "Tags are reported to the controller for grouping.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "tls": {
+          "description": "TLS holds the node certificate, key and the fleet CA.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/FleetTLS"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "FleetTLS": {
+      "description": "FleetTLS is the agent's client certificate and the controller CA.",
+      "type": "object",
+      "properties": {
+        "ca_file": {
+          "type": "string"
+        },
+        "cert_file": {
+          "type": "string"
+        },
+        "key_file": {
+          "type": "string"
+        },
+        "server_name": {
+          "description": "ServerName overrides the name verified in the controller's certificate. Default: the host of Controller.",
           "type": "string"
         }
       },

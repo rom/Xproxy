@@ -91,6 +91,9 @@ routes:
 	if got := s.Addrs()["web"]; got != addr || s.Addrs()["main"] != "" {
 		t.Fatalf("rename: %v", s.Addrs())
 	}
+	// The shared transport may still hold a keep-alive connection served
+	// by the redirecting generation, which drains asynchronously.
+	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 	if _, body := get(t, url+"/"); body != "a:/" {
 		t.Fatal(body)
 	}

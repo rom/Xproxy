@@ -687,6 +687,7 @@ cluster:
     share_events: null
     max_keys_per_report: 4096
     exact_timeout: 50ms
+fleet: null
 shedding:
     target_latency: 250ms
     window: 10s

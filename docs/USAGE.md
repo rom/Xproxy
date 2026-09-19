@@ -1128,6 +1128,68 @@ with `connected: false` and a `last_error` is being redialled with
 back-off. Firewall the cluster port to the peers' addresses
 (HARDENING.md).
 
+### Fleet management
+
+Many nodes are operated from one controller: `xproxy-fleet` serves each
+node the configuration bundle assigned to it and collects the nodes'
+status; every node runs the agent. On the management host:
+
+```sh
+mkdir -p /var/lib/xproxy-fleet/{common,nodes/edge-1,nodes/edge-2}
+cp shared-rules.conf /var/lib/xproxy-fleet/common/waf/custom.conf
+cp edge-1.yaml /var/lib/xproxy-fleet/nodes/edge-1/xproxy.yaml
+xproxy-fleet validate -dir /var/lib/xproxy-fleet
+systemctl enable --now xproxy-fleet        # serve -listen :8447 -cert ... -key ... -ca ...
+```
+
+Every node gets the files under `common/` plus its own directory (its
+files win), and `nodes/<id>/xproxy.yaml` is the node's configuration,
+which carries the `fleet` section that points back at the controller:
+
+```yaml
+fleet:
+  controller: https://fleet.example.internal:8447
+  node_id: edge-1
+  tls:
+    cert_file: /etc/xproxy/fleet/edge-1.pem
+    key_file: /etc/xproxy/fleet/edge-1-key.pem
+    ca_file: /etc/xproxy/fleet/ca.pem
+```
+
+Issue one certificate per node from a private fleet CA with the node id
+as its common name; the controller binds a node id to that name, so a
+node cannot fetch another node's bundle or report as it. Editing files
+under the directory is the push: the controller rescans every two
+seconds, computes a digest per node, and the agents, which long poll,
+receive the new bundle within seconds, write it next to their
+configuration file, reload and report. A bundle that does not parse is
+never served (the previous one stays, `xproxy-fleet nodes` shows the
+error); a bundle the node's own validation or sandbox refuses is rolled
+back on the node and the error appears in both `xproxyctl fleet` and the
+controller's view. `apply: false` on a node turns the agent into a
+reviewer: it reports the pending digest without touching anything.
+
+```
+$ xproxy-fleet nodes
+directory /var/lib/xproxy-fleet  scans 1842
+NODE    STATE     ASSIGNED      APPLIED       VERSION  LAST SEEN  REQUESTS  5XX  DENIED  UPSTREAMS  ERROR
+edge-1  in sync   7c1a9f0e2b44  7c1a9f0e2b44  1.3.0    12s ago    1848213   31   2201    2/2        -
+edge-2  failed    7c1a9f0e2b44  3e0d55a1c9f7  1.3.0    9s ago     1790022   28   2140    2/2        reload: sandbox: /srv/rules.conf (read) outside...
+$ xproxy-fleet node edge-2
+$ xproxy-fleet bundle edge-1
+```
+
+`nodes` states: `in sync` (applied digest equals the assigned one),
+`behind` (a newer bundle is assigned), `pending` (received, apply off),
+`failed` (the last apply was refused), `stale` (no report for five
+minutes), `unassigned` (reporting, no directory), `never seen`. The
+controller keeps the last report per node in `status/`, so the list
+survives its restart. The configuration history on each node records
+fleet applies like any reload, so `xproxyctl history` and `rollback`
+work as usual; a rollback is reported as a different applied digest
+and the controller shows the node `behind` until the directory is
+changed or the node reloads its bundle.
+
 ### Priority classes and load shedding
 
 ```yaml

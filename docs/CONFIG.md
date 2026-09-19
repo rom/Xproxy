@@ -1204,6 +1204,37 @@ answer in time decides locally, which over-admits rather than refuses.
 
 The cluster listener can be socket activated with `FileDescriptorName=cluster`.
 
+## fleet
+
+Present means the node is managed by a fleet controller (`xproxy-fleet`).
+The agent long polls the controller for a bundle whose digest differs
+from the applied one, writes the bundle's files into the directory of
+the configuration file, reloads through the ordinary path (validation,
+sandbox check) and restores the previous files when the reload is
+refused; after every poll it reports the node's status (version,
+generation, applied digest and result, request, error, deny, connection,
+upstream, endpoint, ban and certificate summary). The controller never
+connects to the node. Changing the section requires a restart.
+`xproxyctl fleet` and `GET /v1/fleet` show the agent state.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `controller` | URL | required | The controller's base URL, `https` without a path |
+| `node_id` | name | `cluster.node_id`, else the host name | The node's name at the controller; must equal the certificate's common name or DNS name unless the controller runs with `-any-name` |
+| `tls.cert_file`, `tls.key_file` | path | required | The node's client certificate |
+| `tls.ca_file` | path | required | CA that issued the controller's certificate |
+| `tls.server_name` | string | host of `controller` | Name verified in the controller's certificate |
+| `interval` | duration | `30s` | Long poll length and status report period; 5s to 1h |
+| `timeout` | duration | `10s` | Request time allowed beyond the poll length; 1s to 1m |
+| `dir` | path | directory of the configuration file | Where bundle files are written; must be the configuration file's directory, and the file must be named `xproxy.yaml` |
+| `apply` | bool | `true` | `false` reports status and pending bundles without writing or reloading (a review mode) |
+| `tags` | list of names | `[]` | Reported to the controller for grouping |
+
+The sandbox derives a write rule for `dir` when `apply` is on, so the
+agent can replace the files under Landlock; everything a bundle
+references must still lie within the sandbox's read rules, otherwise
+the reload is refused and the bundle rolled back.
+
 ## jwt
 
 Present means providers are available; routes opt in with a `jwt` block.

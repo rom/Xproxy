@@ -50,6 +50,7 @@ locally; everything else goes through the socket.
 | `ban` [`-duration` *D*] [`-reason` *TEXT*] *TARGET* | Ban an address or CIDR (default one hour) |
 | `unban` *TARGET* | Remove a ban |
 | `cluster` | Peers, inbound connections and gossip counters |
+| `fleet` | Fleet agent state: controller, node id, applied bundle digest and result, pending bundle, poll and report counters |
 | `acme` [`renew`] | Managed certificates with expiry, issuer and last error; `renew` forces renewal and waits |
 | `icap` | ICAP services with reachability, preview size, ISTag and counters |
 | `filters` | Middleware API version, registered kinds, configured filters with routes and deny counts |

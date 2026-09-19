@@ -40,6 +40,7 @@ var commandTable = []command{
 	{name: "ban", args: "[-duration D] [-reason TEXT] TARGET", summary: "Ban an address or CIDR", flags: []string{"-duration", "-reason"}},
 	{name: "unban", args: "TARGET", summary: "Remove a ban"},
 	{name: "cluster", summary: "Peers, connections and gossip counters"},
+	{name: "fleet", summary: "Fleet agent state (controller, applied bundle, poll and report counters)"},
 	{name: "acme", args: "[renew]", summary: "Managed certificates; renew forces renewal", words: []string{"renew"}},
 	{name: "icap", summary: "ICAP services with reachability and counters"},
 	{name: "filters", summary: "Registered filter kinds and configured filters"},

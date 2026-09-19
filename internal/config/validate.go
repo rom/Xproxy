@@ -111,6 +111,9 @@ func (v *validator) config(c *Config) {
 	if c.Cluster != nil {
 		v.cluster(c.Cluster)
 	}
+	if c.Fleet != nil {
+		v.fleet(c.Fleet)
+	}
 	v.sandbox(&c.Sandbox)
 	if cp := c.Compression; cp != nil {
 		seen := map[string]bool{}
@@ -2485,6 +2488,42 @@ func templateOK(t string) error {
 }
 
 // otlpExport validates a trace or log collector endpoint.
+func (v *validator) fleet(f *Fleet) {
+	u, err := url.Parse(f.Controller)
+	switch {
+	case f.Controller == "" || err != nil || u.Host == "":
+		v.errf("fleet.controller: must be a URL")
+	case u.Scheme != "https":
+		v.errf("fleet.controller: must be an https URL")
+	case u.Path != "" && u.Path != "/":
+		v.errf("fleet.controller: must not carry a path")
+	}
+	if !nameRE.MatchString(f.NodeID) {
+		v.errf("fleet.node_id: %q is not a valid name", f.NodeID)
+	}
+	if f.TLS.CertFile == "" || f.TLS.KeyFile == "" || f.TLS.CAFile == "" {
+		v.errf("fleet.tls: cert_file, key_file and ca_file are all required (mutual TLS is mandatory)")
+	} else {
+		v.file("fleet.tls.cert_file", f.TLS.CertFile)
+		v.file("fleet.tls.key_file", f.TLS.KeyFile)
+		v.file("fleet.tls.ca_file", f.TLS.CAFile)
+	}
+	if f.Interval < Duration(5*time.Second) || f.Interval > Duration(time.Hour) {
+		v.errf("fleet.interval: must be between 5s and 1h")
+	}
+	if f.Timeout < Duration(time.Second) || f.Timeout > Duration(time.Minute) {
+		v.errf("fleet.timeout: must be between 1s and 1m")
+	}
+	if f.Dir != "" {
+		v.dir("fleet.dir", f.Dir)
+	}
+	for i, t := range f.Tags {
+		if !nameRE.MatchString(t) {
+			v.errf("fleet.tags[%d]: %q is not a valid name", i, t)
+		}
+	}
+}
+
 func (v *validator) siem(s *SIEM) {
 	const p = "logging.siem"
 	u, err := url.Parse(s.Endpoint)

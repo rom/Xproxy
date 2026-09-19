@@ -260,6 +260,25 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Losing every peer degrades to local limiting; stale reports expire after
   `peer_stale`.
 
+### Fleet
+
+- Nodes pull; the controller never connects to a node and holds no
+  credential for one. Both directions use mutual TLS 1.3 from a private
+  fleet CA, and a node id is bound to the certificate's name, so a node
+  can fetch only its own bundle and report only as itself.
+- Bundle paths are validated against traversal, hidden names, depth and
+  size; files are written through a directory handle that never follows
+  a link out of the configuration directory, and the configuration
+  goes through the same validation and sandbox check as any reload,
+  with the previous files restored on refusal.
+- The controller serves only bundles that parse; an invalid edit keeps
+  the last good bundle in service and is visible, never silently
+  applied. `apply: false` gives a review posture per node.
+- Compromise of the controller host means control of every node's
+  configuration: treat it as a tier zero system (HARDENING.md), keep
+  its directory under version control with review, and restrict who
+  may write it and who may use its operator socket.
+
 ### Upstreams
 
 - Connect, response header, idle and total timeouts per pool.

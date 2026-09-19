@@ -770,6 +770,36 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_, _ = fmt.Fprintf(out, "%s  # %s, expires %s\n", tlsconf.SPKIPin(cert), cert.Subject.CommonName, cert.NotAfter.Format("2006-01-02"))
 		return 0
+	case "fleet":
+		st, err := c.FleetStatus()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, st)
+		}
+		if !st.Enabled {
+			_, _ = fmt.Fprintln(out, "fleet: not configured")
+			return 0
+		}
+		_, _ = fmt.Fprintf(out, "controller %s  node %s  dir %s  interval %s  apply %s  assigned %v\n", st.Controller, st.NodeID, st.Dir, st.Interval, onOff(st.Apply), st.Assigned)
+		_, _ = fmt.Fprintf(out, "polls %d  reports %d  applies %d  failures %d  last poll %s  last report %s\n", st.Polls, st.Reports, st.Applies, st.Failures, ago(st.LastPoll), ago(st.LastReport))
+		if st.Applied.Digest != "" {
+			_, _ = fmt.Fprintf(out, "applied %s ok=%v at %s", st.Applied.Digest, st.Applied.OK, st.Applied.At.Local().Format(time.RFC3339))
+			if st.Applied.Error != "" {
+				_, _ = fmt.Fprintf(out, "  error: %s", st.Applied.Error)
+			}
+			_, _ = fmt.Fprintln(out)
+		} else {
+			_, _ = fmt.Fprintln(out, "no bundle applied yet")
+		}
+		if st.PendingDigest != "" {
+			_, _ = fmt.Fprintf(out, "pending %s (apply is off)\n", st.PendingDigest)
+		}
+		if st.LastError != "" {
+			_, _ = fmt.Fprintf(out, "last error: %s\n", st.LastError)
+		}
+		return 0
 	case "cluster":
 		st, err := c.ClusterStatus()
 		if err != nil {
@@ -1161,6 +1191,14 @@ func sandboxSummary(sb *sandbox.Status) string {
 		s += "  " + strings.Join(other, " ")
 	}
 	return s
+}
+
+// ago renders a time as a relative age, "-" for the zero time.
+func ago(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return time.Since(t).Round(time.Second).String() + " ago"
 }
 
 func onOff(b bool) string {
