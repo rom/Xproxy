@@ -301,6 +301,24 @@ multiplied by the ejection count (capped at 10) subject to
 The consistent hash ring uses 128 virtual nodes per weight unit. Removing
 an endpoint moves only its keys (`TestHashRing` asserts this).
 
+### Dynamic endpoint sets
+
+A pool's endpoint list is an atomically replaced slice. Discovery
+resolves the configured name (A/AAAA with a fixed port, or SRV with
+target, port and weight from the records, lowest priority group only)
+once synchronously in `Start` and then on an interval, and merges the
+result by address: static endpoints and addresses that persist keep
+their `Endpoint` objects, so statistics, health state and in-flight
+counts continue; new addresses get a fresh object with a slow start
+ramp and, when active checks are on, their own probe loop under the
+pool's context; removed addresses lose their loop and drop out of the
+next pick. The hash ring is rebuilt on every change. Affinity cookies
+carry a pool-unique endpoint index rather than a position, so a cookie
+survives set changes. Slow start is a per endpoint ramp start time:
+weighted and least connection balancers scale the weight by the ramp,
+round robin and hash keep a ramping pick with the ramp's probability
+and otherwise pick again among the others.
+
 ## 7. Limits
 
 - `KeyedLimiter`: 64 shards, each a map of lazily refilled token buckets.
@@ -317,6 +335,21 @@ an endpoint moves only its keys (`TestHashRing` asserts this).
 - Timeouts come from `net/http` (`ReadHeaderTimeout`, `ReadTimeout`,
   `WriteTimeout`, `IdleTimeout`) and from contexts (route timeout, upstream
   total).
+
+### Bounded tables
+
+Every in-memory table grows with attacker controlled input (client
+addresses, rate limit keys, matched rule targets) and is therefore
+capped. What happens at the cap is a security decision: rate limit
+shards fall back to the shared key or the burst, ban triggers stop
+tracking new addresses, honeypot marks and challenge nonces refuse new
+entries, bot score histories and admin sessions evict the oldest, WAF
+statistics stop recording new rules and learning entries, and export
+queues drop. None of this is silent: each site holds a `bound.Notice`
+that counts every occurrence and warns at most once per minute with the
+count since the previous warning, and the count is exposed where the
+subsystem has a status view. Configured limits that cannot be satisfied
+(a file too large, a value out of range) fail validation instead.
 
 ## 8. TLS
 

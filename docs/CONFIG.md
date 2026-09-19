@@ -436,6 +436,8 @@ Memory: at most 64 x 8192 buckets per policy.
 | `timeouts.total` | duration | `5m` | Whole exchange |
 | `max_idle_conns_per_host` | int | `64` | Pooled connections per endpoint |
 | `retries` | int | `1` | 0 to 5; only replayable requests (GET, HEAD, OPTIONS, TRACE without a body), each attempt on a different endpoint; connection errors always, statuses per `retry_on` |
+| `discovery` | object | none | Endpoints resolved from DNS and re-resolved periodically; see below. Static `endpoints` and discovered ones coexist; a pool needs at least one of the two |
+| `slow_start` | duration | `0` (off) | An endpoint that joins the pool (discovered) or returns to service (healthy again, ejection over) gets a share ramping from 10 % to its full weight over this time; at most 1h |
 | `retry_on` | list | `[]` | Response statuses treated as a failed attempt: `5xx`, `500`, `502`, `503`, `504`, `429`. The response is discarded, the endpoint marked as failed for outlier ejection, and the next endpoint tried within the `retries` budget; the last attempt's response is returned as it is. Needs `retries` above 0 |
 
 ### upstreams[].tls
@@ -449,6 +451,19 @@ Memory: at most 64 x 8192 buckets per policy.
 | `spki_pins` | list of base64 SHA-256 | `[]` | Pins of the upstream leaf public key; the connection is refused unless the presented leaf matches one, in addition to chain verification. `xproxyctl spki CERT.pem` prints a pin. Cannot be combined with `insecure_skip_verify` |
 | `insecure_skip_verify` | bool | `false` | Requires `allow_insecure: true` as well |
 | `allow_insecure` | bool | `false` | Second opt-in |
+
+### upstreams[].discovery
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `type` | `dns`, `srv` | `dns` | `dns` resolves the A and AAAA records of `name`, one endpoint per address on `port`; `srv` resolves SRV records, uses the lowest priority group, and takes target, port and weight from each record |
+| `name` | DNS name | required | The name to resolve; for `srv` the full `_service._proto.domain` name |
+| `port` | int | required for `dns` | Endpoint port for `dns` |
+| `interval` | duration | `30s` | Time between resolutions; 1s to 1h. Endpoints that disappear are removed, new ones added with their statistics starting at zero, unchanged ones keep theirs |
+| `resolver` | host:port | system resolver | DNS server to ask instead of the system resolver |
+| `weight` | int | `1` | Weight of `dns` discovered endpoints |
+| `canary` | bool | `false` | Mark discovered endpoints as canaries (needs the pool's `canary` section) |
+| `timeout` | duration | `5s` | Bound on one resolution, including the synchronous first one at start and reload; a failed resolution keeps the previous endpoint set and is counted in `xproxyctl upstreams` |
 
 ### upstreams[].health_check
 

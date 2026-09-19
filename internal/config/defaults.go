@@ -55,6 +55,10 @@ const (
 	DefaultWAFResponseBodyLimit = 512 << 10
 	// DefaultWAFLearningMinHits is the matches before an exclusion is
 	// proposed; DefaultWAFLearningMaxEntries bounds the learning table.
+	// DefaultDiscoveryInterval is how often discovered endpoints are
+	// re-resolved; DefaultDiscoveryTimeout bounds one resolution.
+	DefaultDiscoveryInterval     = 30 * time.Second
+	DefaultDiscoveryTimeout      = 5 * time.Second
 	DefaultWAFLearningMinHits    = 5
 	DefaultWAFLearningMaxEntries = 10000
 	DefaultCRSParanoia           = 1
@@ -273,6 +277,12 @@ func applyDefaults(c *Config) {
 		setDur(&u.Timeouts.Idle, DefaultUpstreamIdle)
 		setDur(&u.Timeouts.Total, DefaultUpstreamTotal)
 		setInt(&u.MaxIdleConnsPerHost, DefaultMaxIdleConnsPerHost)
+		if d := u.Discovery; d != nil {
+			setStr(&d.Type, "dns")
+			setDur(&d.Interval, DefaultDiscoveryInterval)
+			setDur(&d.Timeout, DefaultDiscoveryTimeout)
+			setInt(&d.Weight, 1)
+		}
 		if u.Retries == nil {
 			r := DefaultRetries
 			u.Retries = &r

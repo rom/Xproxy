@@ -163,7 +163,7 @@ func run(args []string, out, errOut io.Writer) int {
 			_ = json.Unmarshal(pb, &pools)
 		}
 		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tCANARY\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS")
+		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tCANARY\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS\tRAMP\tSOURCE")
 		names := make([]string, 0, len(ups))
 		for n := range ups {
 			names = append(names, n)
@@ -171,10 +171,31 @@ func run(args []string, out, errOut io.Writer) int {
 		sort.Strings(names)
 		for _, n := range names {
 			for _, e := range ups[n] {
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%v\t%d\t%d\t%d\n", n, e.Address, e.Weight, e.Canary, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors)
+				src := "static"
+				if e.Discovered {
+					src = "dns"
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%v\t%d\t%d\t%d\t%.0f%%\t%s\n", n, e.Address, e.Weight, e.Canary, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors, e.Ramp*100, src)
 			}
 		}
 		_ = tw.Flush()
+		// Discovery and slow start per pool, when configured.
+		for _, n := range names {
+			ps, ok := pools[n]
+			if !ok {
+				continue
+			}
+			if d := ps.Discovery; d != nil {
+				line := fmt.Sprintf("%s: discovery %s %s every %s, %d endpoints, %d resolutions, %d changes, %d errors", n, d.Type, d.Name, d.Interval, d.Endpoints, d.Resolutions, d.Changes, d.Errors)
+				if d.LastError != "" {
+					line += ", last error: " + d.LastError
+				}
+				_, _ = fmt.Fprintln(out, line)
+			}
+			if ps.SlowStart != "" {
+				_, _ = fmt.Fprintf(out, "%s: slow start %s\n", n, ps.SlowStart)
+			}
+		}
 		// Pool level state: circuit breakers and queues, when configured.
 		shown := false
 		for _, n := range names {

@@ -40,7 +40,7 @@ func TestRoundRobin(t *testing.T) {
 	if s := strings.Join(got, ","); s != "a:1,b:1,c:1,a:1,b:1,c:1" {
 		t.Fatal(s)
 	}
-	p.endpoints[1].healthy.Store(false)
+	p.endpoints()[1].healthy.Store(false)
 	got = got[:0]
 	for i := 0; i < 4; i++ {
 		e, _ := p.Pick("", "", nil, CanaryAny)
@@ -49,8 +49,8 @@ func TestRoundRobin(t *testing.T) {
 	if s := strings.Join(got, ","); s != "a:1,c:1,a:1,c:1" {
 		t.Fatal(s)
 	}
-	p.endpoints[0].healthy.Store(false)
-	p.endpoints[2].healthy.Store(false)
+	p.endpoints()[0].healthy.Store(false)
+	p.endpoints()[2].healthy.Store(false)
 	if e, _ := p.Pick("", "", nil, CanaryAny); e != nil {
 		t.Fatal("all down should return nil")
 	}
@@ -106,7 +106,7 @@ func TestHashRing(t *testing.T) {
 		}
 	}
 	// Remove one endpoint: only its keys should move.
-	p.endpoints[0].healthy.Store(false)
+	p.endpoints()[0].healthy.Store(false)
 	moved := 0
 	for k, want := range first {
 		e, _ := p.Pick(k, "", nil, CanaryAny)
@@ -194,7 +194,7 @@ func TestOutlierEjection(t *testing.T) {
 	c := testCfg("round_robin", "a:1", "b:1")
 	c.OutlierEjection = &config.OutlierEjection{ConsecutiveFailures: 2, BaseEjectionTime: config.Duration(time.Minute), MaxEjectionPercent: 50}
 	p, _ := NewPool(c, nolog)
-	a := p.endpoints[0]
+	a := p.endpoints()[0]
 	p.Begin(a)
 	p.End(a, true)
 	if !a.Available(time.Now()) {
@@ -206,7 +206,7 @@ func TestOutlierEjection(t *testing.T) {
 		t.Fatal("not ejected")
 	}
 	// Max 50%: b may not be ejected too.
-	b := p.endpoints[1]
+	b := p.endpoints()[1]
 	for i := 0; i < 3; i++ {
 		p.Begin(b)
 		p.End(b, true)
@@ -234,7 +234,7 @@ func TestActiveHealthCheck(t *testing.T) {
 	p, _ := NewPool(c, nolog)
 	p.Start()
 	defer p.Stop()
-	e := p.endpoints[0]
+	e := p.endpoints()[0]
 	status.Store(500)
 	wait := func(want bool) {
 		deadline := time.Now().Add(5 * time.Second)

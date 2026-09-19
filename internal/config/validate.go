@@ -808,8 +808,43 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 	default:
 		v.errf("%s.scheme: must be http or https", p)
 	}
-	if len(u.Endpoints) == 0 {
-		v.errf("%s.endpoints: at least one endpoint is required", p)
+	if len(u.Endpoints) == 0 && u.Discovery == nil {
+		v.errf("%s.endpoints: at least one endpoint or a discovery section is required", p)
+	}
+	if d := u.Discovery; d != nil {
+		dp := p + ".discovery"
+		switch d.Type {
+		case "dns":
+			if d.Port < 1 || d.Port > 65535 {
+				v.errf("%s.port: required for type dns, 1 to 65535", dp)
+			}
+		case "srv":
+		default:
+			v.errf("%s.type: must be dns or srv", dp)
+		}
+		if !hostPatternOK(strings.TrimSuffix(d.Name, ".")) || strings.HasPrefix(d.Name, "*") {
+			v.errf("%s.name: %q is not a valid DNS name", dp, d.Name)
+		}
+		if d.Interval < Duration(time.Second) || d.Interval > Duration(time.Hour) {
+			v.errf("%s.interval: must be between 1s and 1h", dp)
+		}
+		if d.Timeout < Duration(100*time.Millisecond) || d.Timeout > Duration(time.Minute) {
+			v.errf("%s.timeout: must be between 100ms and 1m", dp)
+		}
+		if d.Resolver != "" {
+			if _, _, err := net.SplitHostPort(d.Resolver); err != nil {
+				v.errf("%s.resolver: %q must be host:port", dp, d.Resolver)
+			}
+		}
+		if d.Weight < 1 || d.Weight > 1000 {
+			v.errf("%s.weight: must be between 1 and 1000", dp)
+		}
+		if d.Canary && u.Canary == nil {
+			v.errf("%s.canary: set without a canary section", dp)
+		}
+	}
+	if u.SlowStart < 0 || u.SlowStart > Duration(time.Hour) {
+		v.errf("%s.slow_start: must be between 0 and 1h", p)
 	}
 	addrs := map[string]bool{}
 	for j, e := range u.Endpoints {

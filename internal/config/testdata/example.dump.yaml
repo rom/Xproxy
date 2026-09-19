@@ -161,6 +161,8 @@ upstreams:
         - address: 10.0.1.11:8080
           weight: 1
           canary: false
+      discovery: null
+      slow_start: 0s
       scheme: http
       h2c: false
       tls: null
@@ -206,6 +208,8 @@ upstreams:
         - address: 10.0.2.11:8443
           weight: 1
           canary: false
+      discovery: null
+      slow_start: 0s
       scheme: https
       h2c: false
       tls:

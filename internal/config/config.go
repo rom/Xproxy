@@ -710,6 +710,17 @@ type Upstream struct {
 	// Balancer is round_robin, weighted, least_conn or hash.
 	Balancer  string     `yaml:"balancer"`
 	Endpoints []Endpoint `yaml:"endpoints"`
+	// Discovery adds endpoints resolved from DNS (A/AAAA records of a
+	// name, or SRV records) and re-resolves them periodically. Static
+	// endpoints and discovered ones coexist; a pool needs at least one
+	// of the two.
+	Discovery *Discovery `yaml:"discovery"`
+	// SlowStart ramps the share of an endpoint that (re)joins the pool,
+	// from 10 % to full weight over this duration, so a cold instance is
+	// not hit with its full share at once. Applies to endpoints added by
+	// discovery and to endpoints returning from unhealthy or ejected.
+	// Default 0 (off).
+	SlowStart Duration `yaml:"slow_start"`
 	// Scheme is http or https. Default http.
 	Scheme string `yaml:"scheme"`
 	// H2C speaks HTTP/2 without TLS to http endpoints (gRPC backends).
@@ -754,6 +765,32 @@ type Endpoint struct {
 	// Canary marks the endpoint as the pool's canary: it receives the
 	// requests the pool's canary policy selects and no others.
 	Canary bool `yaml:"canary"`
+}
+
+// Discovery resolves a pool's endpoints from DNS.
+type Discovery struct {
+	// Type is dns (A and AAAA records of Name, each with Port) or srv
+	// (SRV records of Name; targets and ports come from the records, the
+	// lowest priority group is used and record weights become endpoint
+	// weights).
+	Type string `yaml:"type"`
+	// Name is the DNS name to resolve (for srv the full _service._proto
+	// name).
+	Name string `yaml:"name"`
+	// Port is the endpoint port for type dns. Ignored for srv.
+	Port int `yaml:"port"`
+	// Interval between resolutions. Default 30s; 1s to 1h.
+	Interval Duration `yaml:"interval"`
+	// Resolver is an optional host:port of the DNS server to ask instead
+	// of the system resolver.
+	Resolver string `yaml:"resolver"`
+	// Weight given to discovered endpoints of type dns. Default 1.
+	Weight int `yaml:"weight"`
+	// Canary marks discovered endpoints as canaries.
+	Canary bool `yaml:"canary"`
+	// Timeout of one resolution and of the initial synchronous one at
+	// start. Default 5s.
+	Timeout Duration `yaml:"timeout"`
 }
 
 // Canary routes selected requests to the pool's canary endpoints: those

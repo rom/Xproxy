@@ -16,7 +16,7 @@ func TestCanary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, b, cn := p.endpoints[0], p.endpoints[1], p.endpoints[2]
+	a, b, cn := p.endpoints()[0], p.endpoints()[1], p.endpoints()[2]
 	req := func(kv ...string) *http.Request {
 		r, _ := http.NewRequest(http.MethodGet, "/", nil)
 		for i := 0; i+1 < len(kv); i += 2 {
@@ -68,8 +68,8 @@ func TestCanary(t *testing.T) {
 	off := false
 	c.Canary.Fallback = &off
 	p, _ = NewPool(c, nolog)
-	p.endpoints[0].healthy.Store(false)
-	p.endpoints[1].healthy.Store(false)
+	p.endpoints()[0].healthy.Store(false)
+	p.endpoints()[1].healthy.Store(false)
 	if e, _ := p.Pick("", "", nil, CanaryAvoid); e != nil {
 		t.Fatalf("fallback off still fell back to %s", e.Address)
 	}

@@ -71,6 +71,7 @@ func (p *Pool) healthLoop(ctx context.Context, e *Endpoint) {
 			bad = 0
 			ok++
 			if ok >= hc.HealthyThreshold && !e.healthy.Load() {
+				e.startRamp(p.now())
 				e.healthy.Store(true)
 				p.log.Info("endpoint healthy", "endpoint", e.Address)
 			}

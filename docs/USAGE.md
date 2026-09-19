@@ -480,6 +480,40 @@ carry a `tenant` label with `xproxy_route_bytes_total` and
 Counters restart with each configuration generation; the metrics
 exporter keeps the long history.
 
+### Endpoints from DNS and slow start
+
+Instead of listing addresses, a pool can resolve them:
+
+```yaml
+upstreams:
+  - name: api
+    discovery: {type: dns, name: api.internal.example., port: 8080, interval: 15s}
+    slow_start: 30s
+  - name: workers
+    discovery: {type: srv, name: _http._tcp.workers.internal.example., resolver: 10.0.0.53:53}
+    health_check: {path: /healthz, interval: 5s}
+```
+
+`dns` turns every A and AAAA record into an endpoint on `port`; `srv`
+takes target, port and weight from the records and uses the lowest
+priority group. The name is resolved once at start (synchronously,
+bounded by `timeout`, so the pool serves from its first request) and
+then every `interval`: addresses that disappear are removed, new ones
+added, and an endpoint that stays keeps its counters and health state.
+A failed resolution keeps the previous set and shows up as `errors` and
+`last_error` under `discovery` in `xproxyctl upstreams` and the pool
+views. Static `endpoints` may be listed next to a discovery block; they
+are never removed.
+
+`slow_start` gives an endpoint that joins (discovered) or returns to
+service (healthy again, or its ejection over) a share ramping from
+10 % to its full weight over the duration, so a cold instance warms
+its caches before it carries a full share. Weighted and least
+connection balancers scale the weight; round robin and hash admit a
+ramping endpoint with the ramp's probability and pick another
+otherwise. Endpoints present at start do not ramp. The current share
+is the `ramp` column of `xproxyctl upstreams`.
+
 ### Retrying failed responses on another endpoint
 
 ```yaml
@@ -1710,6 +1744,7 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 | 502 to an https upstream after enabling pins or mTLS | `xproxyctl spki` on the upstream certificate; check the client certificate is issued by the CA the upstream trusts |
 | Scanner block page (status from the scanner, `reason: icap`) | The ICAP service replaced the request or response; `icap_verdict: replaced` in the access line |
 | 502 with `detail: reqmod_unavailable` | The ICAP service failed or timed out and `fail: closed`; `xproxyctl icap` |
+| `... table full` warning in the error log | A bounded table reached its cap: the message names the table (`rate_limit_keys`, `ban_windows`, `honeypot_marks`, `challenge_nonces`, `bot_score_clients`, `waf_rules`, `waf_learning`, `dns_workers`, a queue) and the occurrences since the previous warning; the status views carry the totals. Under attack this is expected; otherwise raise the bound where it is configurable or look for a key that never repeats |
 | 403 with `reason: waf` | A rule blocked the request; `waf_matched` names the rules. Add an exclusion or lower the paranoia level for that route |
 | 403 with `reason: banned` or connections closed immediately | `xproxyctl bans`; unban or add the range to `exempt_cidrs` |
 | Reload fails with a WAF compile error | The error names the file and line of the bad directive; the old rules stay active |

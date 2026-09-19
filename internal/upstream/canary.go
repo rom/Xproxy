@@ -69,11 +69,12 @@ func (p *Pool) canaryExclude(mode CanaryMode, exclude map[*Endpoint]bool) map[*E
 		return exclude
 	}
 	want := mode == CanaryOnly
-	out := make(map[*Endpoint]bool, len(exclude)+len(p.endpoints))
+	eps := p.endpoints()
+	out := make(map[*Endpoint]bool, len(exclude)+len(eps))
 	for e, v := range exclude {
 		out[e] = v
 	}
-	for _, e := range p.endpoints {
+	for _, e := range eps {
 		if e.Canary != want {
 			out[e] = true
 		}

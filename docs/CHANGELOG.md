@@ -186,7 +186,30 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   where executable memory is refused (`MemoryDenyWriteExecute`, the
   macOS hardened runtime).
 
+- Endpoint discovery: `upstreams[].discovery` resolves A/AAAA or SRV
+  records on an interval (custom resolver, weights from SRV, lowest
+  priority group), adds and removes endpoints without a reload while
+  surviving ones keep their statistics; failures keep the previous set
+  and are counted. `slow_start` ramps a joining or recovering endpoint
+  from 10 % to full weight.
+
+### Changed (1.3)
+- No bounded table is silent any more. Every cap that evicts, refuses
+  or drops (rate limit key shards, ban trigger windows, honeypot marks,
+  challenge nonces, bot score client histories, admin sessions, WAF
+  rule statistics and learning entries, dns worker slots, trace, log
+  and cluster queues) counts each occurrence and writes a warning at
+  most once a minute with the count since the previous one
+  (`internal/bound`); the counts appear in the status views (`overflow`
+  per rate limit policy, `marks_dropped`, `rules_dropped`, `dropped`,
+  `missing_paths` for the sandbox). Configured limits that cannot be
+  honoured remain hard errors at load. The error log is the process
+  default logger.
+
 ### Fixed (1.3)
+- WAF statistics took one mutex per request; the per rule counters are
+  atomics in a concurrent map and the learning table is sharded, so
+  concurrent requests no longer serialise on the statistics.
 - WAF learning proposals without a route path used
   `SecRuleUpdateTargetById`, which does not compile in a directive file
   loaded before the CRS rules; they are now an unconditional `SecAction`

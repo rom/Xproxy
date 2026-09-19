@@ -160,12 +160,14 @@ views.upstreams = { refresh: 5000, async render() {
       facts.push(['Balancer', p.balancer], ['Available', p.available + ' / ' + p.endpoints], ['Active', p.active]);
       if (p.circuit) facts.push(['Circuit', circuitState(p.circuit)], ['Circuit opens / rejected', fmtNum(p.circuit.opens) + ' / ' + fmtNum(p.circuit.rejected)]);
       if (p.queue) facts.push(['Concurrency', p.queue.in_flight + ' / ' + p.queue.max_concurrent + ' in flight, ' + p.queue.waiting + ' / ' + p.queue.queue_size + ' queued'], ['Queue timeouts / full', fmtNum(p.queue.timeouts) + ' / ' + fmtNum(p.queue.full)]);
+      if (p.discovery) facts.push(['Discovery', p.discovery.type + ' ' + p.discovery.name + ' (' + p.discovery.endpoints + ' endpoints, ' + p.discovery.changes + ' changes' + (p.discovery.errors ? ', ' + p.discovery.errors + ' errors' : '') + ')'], ['Last resolved', p.discovery.last_error ? h('span', { class: 'bad' }, p.discovery.last_error) : fmtTime(p.discovery.last_resolved)]);
+      if (p.slow_start) facts.push(['Slow start', p.slow_start]);
       if (p.canary) facts.push(['Canary', (p.canary.header ? 'header ' + p.canary.header + ' ' : '') + (p.canary.cookie ? 'cookie ' + p.canary.cookie + ' ' : '') + p.canary.percent + '% on ' + p.canary.endpoints + ' endpoint(s)'], ['Canary requests / fallbacks', fmtNum(p.canary.requests) + ' / ' + fmtNum(p.canary.fallbacks)]);
     }
     view.append(h('div', { class: 'card' }, h('h2', null, n),
       facts.length ? h('div', { class: 'grid' }, facts.map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))) : null,
       table(['Address', { label: 'Weight', num: true }, 'Health', { label: 'Active', num: true }, { label: 'Requests', num: true }, { label: 'Errors', num: true }, { label: 'Ejections', num: true }],
-        ups[n].map(e => [e.address, e.weight, e.ejected ? h('span', { class: 'bad' }, 'ejected') : e.healthy ? h('span', { class: 'ok' }, 'healthy') : h('span', { class: 'bad' }, 'unhealthy'), e.active, fmtNum(e.requests), fmtNum(e.errors), e.ejections]))));
+        ups[n].map(e => [e.address + (e.discovered ? ' (dns)' : ''), e.weight, e.ejected ? h('span', { class: 'bad' }, 'ejected') : e.healthy ? h('span', { class: 'ok' }, e.ramp < 1 ? 'warming ' + Math.round(e.ramp * 100) + '%' : 'healthy') : h('span', { class: 'bad' }, 'unhealthy'), e.active, fmtNum(e.requests), fmtNum(e.errors), e.ejections]))));
   }
 }};
 function circuitState(c) {
