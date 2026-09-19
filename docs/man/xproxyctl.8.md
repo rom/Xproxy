@@ -54,6 +54,7 @@ locally; everything else goes through the socket.
 | `patches` | Virtual patches with state (active, disabled, expired), action, hits, last hit and expiry |
 | `fleet` | Fleet agent state: controller, node id, applied bundle digest and result, pending bundle, poll and report counters |
 | `accounts` [`-top` *N*] | Account guard state: endpoints with tracked addresses, accounts and pairs, active blocks (*N* per endpoint), window totals, campaign state and the action counters |
+| `maintenance` [`on`\|`off`] | Show or set maintenance mode (holds every request but the allowlist behind a 503) |
 | `acme` [`renew`] | Managed certificates with expiry, issuer and last error; `renew` forces renewal and waits |
 | `icap` | ICAP services with reachability, preview size, ISTag and counters |
 | `filters` | Middleware API version, registered kinds, configured filters with routes and deny counts |

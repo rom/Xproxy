@@ -44,11 +44,12 @@ type runtime struct {
 	routes     []*compiledRoute
 	waf        *waf.Engine
 	// signers sign forwarded requests per upstream (origin_signature).
-	signers map[string]*originsig.Signer
-	jwt     map[string]*jwt.Provider
-	icap    map[string]*icap.Service
-	filters map[string]*customFilter
-	geo     *geoip.DB
+	signers     map[string]*originsig.Signer
+	jwt         map[string]*jwt.Provider
+	maintenance *compiledMaintenance
+	icap        map[string]*icap.Service
+	filters     map[string]*customFilter
+	geo         *geoip.DB
 	// geoNeeded is set when any route or rate limit consults the country.
 	geoNeeded bool
 	// events is the generation's event bus (nil in unit tests that build
@@ -229,6 +230,9 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		trusted:    netutil.ParsePrefixes(cfg.TrustedProxies),
 		routes:     make([]*compiledRoute, len(cfg.Routes)),
 		events:     events,
+	}
+	if cfg.Maintenance != nil {
+		rt.maintenance = newMaintenance(cfg.Maintenance)
 	}
 	for i := range cfg.Upstreams {
 		u := &cfg.Upstreams[i]

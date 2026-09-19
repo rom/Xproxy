@@ -217,6 +217,11 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		writeJSON(w, 200, map[string]int{"purged": s.proxy.PurgeDNS()})
 	})
 	mux.HandleFunc("GET /v1/patches", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.VirtualPatches()) })
+	mux.HandleFunc("GET /v1/maintenance", func(w http.ResponseWriter, _ *http.Request) {
+		on, configured := s.proxy.Maintenance(nil)
+		writeJSON(w, 200, MaintenanceStatus{Configured: configured, On: on})
+	})
+	mux.HandleFunc("POST /v1/maintenance", s.setMaintenance)
 	mux.HandleFunc("GET /v1/accounts", func(w http.ResponseWriter, r *http.Request) {
 		top := 50
 		if t := r.URL.Query().Get("top"); t != "" {
@@ -524,6 +529,33 @@ func (s *Server) listBans(w http.ResponseWriter, _ *http.Request) {
 		entries = []ban.Entry{}
 	}
 	writeJSON(w, 200, entries)
+}
+
+// MaintenanceStatus is the body of GET /v1/maintenance.
+type MaintenanceStatus struct {
+	Configured bool `json:"configured"`
+	On         bool `json:"on"`
+}
+
+// MaintenanceRequest is the body of POST /v1/maintenance.
+type MaintenanceRequest struct {
+	On bool `json:"on"`
+}
+
+func (s *Server) setMaintenance(w http.ResponseWriter, r *http.Request) {
+	var req MaintenanceRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 256)).Decode(&req); err != nil {
+		writeJSON(w, 400, result{Error: "bad request body"})
+		return
+	}
+	on, configured := s.proxy.Maintenance(&req.On)
+	if !configured {
+		writeJSON(w, 400, result{Error: "no maintenance section configured"})
+		return
+	}
+	peer := peerFromContext(r.Context())
+	s.logs.Audit.Info("management action", "action", "maintenance", "on", on, "peer_uid", peer.UID, "peer_gid", peer.GID, "peer_pid", peer.PID, "peer_known", peer.OK)
+	writeJSON(w, 200, MaintenanceStatus{Configured: true, On: on})
 }
 
 func (s *Server) addBan(w http.ResponseWriter, r *http.Request) {

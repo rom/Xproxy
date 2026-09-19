@@ -222,6 +222,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Maintenance mode (`maintenance` section): holds every request behind a
+  configurable 503 with Retry-After except an allowlist (CIDRs or a
+  bypass header) and routes marked `maintenance: false`; toggled at
+  runtime with `POST /v1/maintenance` and `xproxyctl maintenance
+  on|off`, surviving reloads, and counted as `denied_maintenance`.
 - Per-route timeouts (`routes[].timeouts`): a named `total` (the whole
   exchange) and an `idle` timeout that cancels a response stalled with
   no bytes, for streaming and long-poll routes; connect and

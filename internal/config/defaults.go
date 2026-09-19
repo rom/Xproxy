@@ -587,6 +587,11 @@ func applyDefaults(c *Config) {
 			o.Compress = &t
 		}
 	}
+	if m := c.Maintenance; m != nil {
+		setInt(&m.Status, 503)
+		setDur(&m.RetryAfter, 300*time.Second)
+		setStr(&m.Message, "The service is temporarily unavailable for maintenance.")
+	}
 	if ch := c.Challenge; ch != nil {
 		setInt(&ch.Difficulty, 16)
 		setDur(&ch.TTL, time.Hour)

@@ -264,6 +264,20 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		st.route = cr.cfg.Name
 		return
 	}
+	// Maintenance mode: hold everything but the allowlist and exempt
+	// routes while it is on.
+	if m := rt.maintenance; m != nil && s.maintenance.Load() {
+		on := true
+		if cr.cfg.Maintenance != nil {
+			on = *cr.cfg.Maintenance
+		}
+		if on && !m.exempt(st.clientIP, r) {
+			s.stats.DeniedMaintenance.Add(1)
+			st.denied = "maintenance"
+			m.serve(rw, r)
+			return
+		}
+	}
 
 	// Virtual patches: known vulnerabilities blocked by request shape,
 	// before anything else spends work on the request.

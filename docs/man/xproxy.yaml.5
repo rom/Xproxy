@@ -7847,6 +7847,80 @@ T}
 .SS "routes[].priority_class"
 .PP
 \fBlow\fR, \fBnormal\fR (default), \fBhigh\fR or \fBcritical\fR. Put health checks, login and payment on \fBcritical\fR or \fBhigh\fR; search, feeds and exports on \fBlow\fR.
+.SH "maintenance"
+.PP
+Present means the maintenance gate is available; \fBenabled\fR is the state at start and the runtime toggle (\fBPOST /v1/maintenance\fR, \fBxproxyctl maintenance on|off\fR) overrides it and survives reloads. While it is on, every request is answered with \fBstatus\fR and \fBRetry\-After\fR except an allowlisted client and a route with \fBmaintenance: false\fR (health and status endpoints). The gate runs right after routing, before authentication, rate limits and filters.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Maintenance on at start
+T}
+T{
+\fBstatus\fR
+T}	T{
+int
+T}	T{
+\fB503\fR
+T}	T{
+Status of held requests (4xx or 5xx)
+T}
+T{
+\fBretry_\:after\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+\fBRetry\-\:After\fR header;\: 0 omits it
+T}
+T{
+\fBmessage\fR
+T}	T{
+string
+T}	T{
+a short text
+T}	T{
+Response body
+T}
+T{
+\fBallow_\:cidrs\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Clients always served
+T}
+T{
+\fBallow_\:header\fR
+T}	T{
+\fBName:\: value\fR
+T}	T{
+none
+T}	T{
+A request carrying this exact header is served (a shared bypass token)
+T}
+.TE
+.PP
+A route sets \fBmaintenance: false\fR to stay up during maintenance or \fBmaintenance: true\fR to be held even when the gate is off.
 .SH "challenge"
 .PP
 Present means the challenge engine is available; routes opt in with a \fBchallenge\fR block. Unverified clients receive a 503 page with a signed nonce and a script that finds a SHA\-256 proof of work, posts it to \fB/.xproxy/challenge\fR, and receives a signed cookie. Both reserved paths (\fB/.xproxy/challenge\fR and \fB/.xproxy/challenge.js\fR) are served on every host before routing.

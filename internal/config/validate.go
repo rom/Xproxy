@@ -195,6 +195,9 @@ func (v *validator) config(c *Config) {
 	if c.Challenge != nil {
 		v.challenge(c.Challenge)
 	}
+	if c.Maintenance != nil {
+		v.maintenance(c.Maintenance)
+	}
 	jwtProviders := map[string]bool{}
 	if c.JWT != nil {
 		v.jwt(c.JWT, jwtProviders)
@@ -2181,6 +2184,26 @@ func (v *validator) jwt(j *JWT, seen map[string]bool) {
 			if c == "" || len(c) > 128 {
 				v.errf("%s: claim names must be 1 to 128 characters", pp)
 			}
+		}
+	}
+}
+
+func (v *validator) maintenance(m *Maintenance) {
+	if m.Status < 400 || m.Status > 599 {
+		v.errf("maintenance.status: must be a 4xx or 5xx status")
+	}
+	if m.RetryAfter < 0 {
+		v.errf("maintenance.retry_after: must not be negative")
+	}
+	for i, c := range m.AllowCIDRs {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("maintenance.allow_cidrs[%d]: %q is not a CIDR", i, c)
+		}
+	}
+	if h := m.AllowHeader; h != "" {
+		name, val, ok := strings.Cut(h, ":")
+		if !ok || !headerNameOK(strings.TrimSpace(name)) || strings.TrimSpace(val) == "" {
+			v.errf("maintenance.allow_header: must be \"Name: value\"")
 		}
 	}
 }

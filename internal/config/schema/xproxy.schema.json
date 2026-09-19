@@ -121,6 +121,14 @@
     "logging": {
       "$ref": "#/$defs/Logging"
     },
+    "maintenance": {
+      "description": "Maintenance serves a 503 to everyone but an allowlist while it is on. The section sets the policy and the boot state; the state is toggled at runtime (POST /v1/maintenance, xproxyctl maintenance).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Maintenance"
+        }
+      ]
+    },
     "management": {
       "$ref": "#/$defs/Management"
     },
@@ -1857,6 +1865,41 @@
       },
       "additionalProperties": false
     },
+    "Maintenance": {
+      "description": "Maintenance is the maintenance-mode policy.",
+      "type": "object",
+      "properties": {
+        "allow_cidrs": {
+          "description": "AllowCIDRs are always served (operators, health checkers).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_header": {
+          "description": "AllowHeader, \"Name: value\", exempts a request carrying it (a shared bypass token behind another gate).",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Enabled is the state at start; the runtime toggle overrides it.",
+          "type": "boolean"
+        },
+        "message": {
+          "description": "Message is the response body. Default a short text.",
+          "type": "string"
+        },
+        "retry_after": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "status": {
+          "description": "Status answers held requests. Default 503.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "Management": {
       "description": "Management configures the control plane listener used by xproxyctl.",
       "type": "object",
@@ -2519,6 +2562,10 @@
               "$ref": "#/$defs/RouteJWT"
             }
           ]
+        },
+        "maintenance": {
+          "description": "Maintenance overrides the global maintenance gate for this route: false always serves it (health, status), true always holds it.",
+          "type": "boolean"
         },
         "max_body_bytes": {
           "description": "MaxBodyBytes overrides the global body limit for this route (may only lower it unless allow_raise is set).",

@@ -2174,6 +2174,28 @@ never locks in.
 `low`, `normal` (default), `high` or `critical`. Put health checks, login
 and payment on `critical` or `high`; search, feeds and exports on `low`.
 
+## maintenance
+
+Present means the maintenance gate is available; `enabled` is the state
+at start and the runtime toggle (`POST /v1/maintenance`, `xproxyctl
+maintenance on|off`) overrides it and survives reloads. While it is on,
+every request is answered with `status` and `Retry-After` except an
+allowlisted client and a route with `maintenance: false` (health and
+status endpoints). The gate runs right after routing, before
+authentication, rate limits and filters.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Maintenance on at start |
+| `status` | int | `503` | Status of held requests (4xx or 5xx) |
+| `retry_after` | duration | `5m` | `Retry-After` header; 0 omits it |
+| `message` | string | a short text | Response body |
+| `allow_cidrs` | list | `[]` | Clients always served |
+| `allow_header` | `Name: value` | none | A request carrying this exact header is served (a shared bypass token) |
+
+A route sets `maintenance: false` to stay up during maintenance or
+`maintenance: true` to be held even when the gate is off.
+
 ## challenge
 
 Present means the challenge engine is available; routes opt in with a

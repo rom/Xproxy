@@ -64,6 +64,10 @@ type Config struct {
 	// Shedding enables adaptive load shedding by priority class when
 	// present.
 	Shedding *Shedding `yaml:"shedding"`
+	// Maintenance serves a 503 to everyone but an allowlist while it is
+	// on. The section sets the policy and the boot state; the state is
+	// toggled at runtime (POST /v1/maintenance, xproxyctl maintenance).
+	Maintenance *Maintenance `yaml:"maintenance"`
 	// Challenge configures the browser challenge used by routes with a
 	// challenge block.
 	Challenge *Challenge `yaml:"challenge"`
@@ -1191,6 +1195,9 @@ type Route struct {
 	// Compress overrides the compression section for this route: false
 	// turns it off, true requires the section.
 	Compress *bool `yaml:"compress"`
+	// Maintenance overrides the global maintenance gate for this route:
+	// false always serves it (health, status), true always holds it.
+	Maintenance *bool `yaml:"maintenance"`
 	// CORS answers cross-origin requests for this route: it short-circuits
 	// preflight OPTIONS and adds the response headers to actual requests.
 	CORS *RouteCORS `yaml:"cors"`
@@ -2095,6 +2102,23 @@ type Shedding struct {
 	// RetryAfter is the Retry-After value sent with shed responses. Default
 	// 2s.
 	RetryAfter Duration `yaml:"retry_after"`
+}
+
+// Maintenance is the maintenance-mode policy.
+type Maintenance struct {
+	// Enabled is the state at start; the runtime toggle overrides it.
+	Enabled bool `yaml:"enabled"`
+	// Status answers held requests. Default 503.
+	Status int `yaml:"status"`
+	// RetryAfter sets the Retry-After header in seconds. Default 300.
+	RetryAfter Duration `yaml:"retry_after"`
+	// Message is the response body. Default a short text.
+	Message string `yaml:"message"`
+	// AllowCIDRs are always served (operators, health checkers).
+	AllowCIDRs []string `yaml:"allow_cidrs"`
+	// AllowHeader, "Name: value", exempts a request carrying it (a shared
+	// bypass token behind another gate).
+	AllowHeader string `yaml:"allow_header"`
 }
 
 // Challenge configures the browser proof-of-work challenge (AMR-023).

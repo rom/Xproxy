@@ -332,6 +332,7 @@ routes:
       doh: null
       static: null
       compress: null
+      maintenance: null
       cors: null
     - name: api
       hosts:
@@ -397,6 +398,7 @@ routes:
       doh: null
       static: null
       compress: null
+      maintenance: null
       cors: null
     - name: admin
       hosts:
@@ -453,6 +455,7 @@ routes:
       doh: null
       static: null
       compress: null
+      maintenance: null
       cors: null
     - name: upload
       hosts:
@@ -514,6 +517,7 @@ routes:
       doh: null
       static: null
       compress: null
+      maintenance: null
       cors: null
     - name: web
       hosts:
@@ -576,6 +580,7 @@ routes:
       doh: null
       static: null
       compress: null
+      maintenance: null
       cors: null
     - name: default
       hosts: []
@@ -636,6 +641,7 @@ routes:
       doh: null
       static: null
       compress: null
+      maintenance: null
       cors: null
 bans:
     state_file: /var/lib/xproxy/bans.db
@@ -742,6 +748,7 @@ shedding:
     high: 0.95
     hysteresis: 0.1
     retry_after: 2s
+maintenance: null
 challenge:
     secret_file: /var/lib/xproxy/challenge.key
     difficulty: 16
