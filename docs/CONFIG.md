@@ -494,8 +494,12 @@ and syslog all receive the same redacted record.
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes |
 | `key` | `client_ip`, `route`, `country`, `header:<Name>` | `client_ip` | Bucket identity. A missing header or an unknown country falls back to the client address. |
-| `rate` | float | required, positive | Tokens per second |
+| `algorithm` | `token_bucket`, `sliding_window` | `token_bucket` | `token_bucket` admits bursts up to `burst` and refills at `rate`; `sliding_window` admits at most `limit` requests in any window of length `window`, estimated from the current and the previous fixed window weighted by their overlap (no burst above `limit` at a window edge, an error bounded by the unevenness of arrivals inside one window) |
+| `rate` | float | required for `token_bucket`, positive | Tokens per second |
 | `burst` | int | `rate` rounded, at least 1 | Bucket capacity |
+| `limit` | int | required for `sliding_window` | Requests per `window`, 1 to 1000000000 |
+| `window` | duration | `1s` | Sliding window length, 100ms to 24h |
+| `distributed` | `approximate`, `exact` | `approximate` | Cluster semantics. `approximate`: every node decides locally and refills at the rate minus its peers' gossiped consumption (one interval of delay). `exact`: one member owns each key (rendezvous hash of member and key over the connected members), the others ask it over the cluster connection and wait at most `cluster.exact_timeout`; the owner's bucket or window is the single count. A node that cannot reach the owner in time decides on its own limiter and counts an `exact_fallback`. Needs the `cluster` section |
 | `action` | `reject`, `tarpit` | `reject` | `reject` answers 429 at once |
 | `tarpit_delay` | duration | `10s` | Hold before answering 429 (released on client disconnect) |
 
@@ -1061,12 +1065,22 @@ and sharing flags reload.
 | `share_bans` | bool | `true` | Exchange bans and unbans, and send a snapshot to a newly connected peer |
 | `share_events` | bool | `true` | Exchange security events: honeypot marks and unmarks (applied to the peer's mark table with route `peer:<node>/<route>`) and OIDC session revocations (per filter name). Events are bounded (128 byte kind, 512 byte key, lifetime clamped to a year), queued without blocking and dropped when the queue is full. Nodes older than 1.3 close a connection that carries them: set `false` during a rolling upgrade from 1.2 |
 | `max_keys_per_report` | int | `4096` | Largest consumers kept per report |
+| `exact_timeout` | duration | `50ms` | Longest wait for a key owner's answer under `distributed: exact` (5ms to 2s); on expiry the request is decided locally |
 
 Semantics: with sharing on, a rate limit policy's `rate` becomes an
 approximate cluster wide rate per key. Each node refills a key's bucket at
 `rate` minus the sum of fresh peer consumption for that key; `burst` stays
 per node. Accuracy is bounded by one gossip interval of delay and reports
 expire after `peer_stale`, so losing a peer degrades to local limiting.
+A policy with `distributed: exact` is instead decided by one owner per
+key: the members (this node and every peer whose hello was received on
+a live connection, `xproxyctl cluster` lists them) agree on the owner
+through rendezvous hashing, requests for a key owned elsewhere carry one
+round trip to the owner within `exact_timeout`, and the owner's limiter
+is the single count, so the limit holds exactly cluster wide while the
+members agree. Membership changes move only the departed member's keys;
+during a partition two owners may exist for a key, and a node without an
+answer in time decides locally, which over-admits rather than refuses.
 
 The cluster listener can be socket activated with `FileDescriptorName=cluster`.
 

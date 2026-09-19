@@ -24,6 +24,13 @@ type bucket struct {
 	consumed float64 // tokens taken since the last Flush
 	total    float64 // tokens taken over the bucket's life (quota reporting)
 	peers    []peerRate
+	// Sliding window state (window limiters): the count of the current
+	// window, the count of the previous one and when the current window
+	// started. The estimate is prev weighted by the part of the previous
+	// window still inside the sliding one, plus cur.
+	winStart time.Time
+	cur      float64
+	prev     float64
 }
 
 type peerRate struct {
@@ -32,13 +39,19 @@ type peerRate struct {
 	at   time.Time
 }
 
-// KeyedLimiter is a sharded map of token buckets keyed by string.
+// KeyedLimiter is a sharded map of token buckets keyed by string, or of
+// sliding window counters when built with NewWindowLimiter.
 type KeyedLimiter struct {
 	rate    float64 // tokens per second
 	burst   float64
 	maxKeys int
-	shards  [64]shard
-	now     func() time.Time
+	// window and limit define a sliding window limiter (window > 0):
+	// at most limit requests in any window of that length, estimated
+	// from the current and the previous fixed window.
+	window time.Duration
+	limit  float64
+	shards [64]shard
+	now    func() time.Time
 	// peerStale is how long a peer report stays effective. Zero disables
 	// peer accounting.
 	peerStale time.Duration
@@ -77,6 +90,21 @@ func NewKeyedLimiter(rate float64, burst int, maxKeys int) *KeyedLimiter {
 	}
 	return l
 }
+
+// NewWindowLimiter creates a sliding window limiter allowing limit
+// requests per window for each key, with the same key bound as
+// NewKeyedLimiter. The estimate weights the previous window's count by
+// its overlap with the sliding window, so the error is bounded by the
+// unevenness of arrivals within one window and no burst above limit is
+// admitted at a window edge.
+func NewWindowLimiter(limit float64, window time.Duration, maxKeys int) *KeyedLimiter {
+	l := NewKeyedLimiter(limit/window.Seconds(), int(limit), maxKeys)
+	l.window, l.limit = window, limit
+	return l
+}
+
+// Window returns the sliding window length, 0 for a token bucket.
+func (l *KeyedLimiter) Window() time.Duration { return l.window }
 
 func fnv(s string) uint32 {
 	h := uint32(2166136261)
@@ -124,6 +152,9 @@ func (l *KeyedLimiter) AllowFallback(key, fallback string, n float64) bool {
 		sh.buckets[key] = b
 	}
 	defer sh.mu.Unlock()
+	if l.window > 0 {
+		return l.allowWindow(b, now, n)
+	}
 	l.refill(b, now)
 	if b.tokens >= n {
 		b.tokens -= n
@@ -132,6 +163,51 @@ func (l *KeyedLimiter) AllowFallback(key, fallback string, n float64) bool {
 		return true
 	}
 	return false
+}
+
+// allowWindow decides on a sliding window counter. Fresh peer reports
+// count as their rate over one window.
+func (l *KeyedLimiter) allowWindow(b *bucket, now time.Time, n float64) bool {
+	est := l.windowEstimate(b, now)
+	if est+n > l.limit {
+		return false
+	}
+	b.cur += n
+	b.consumed += n
+	b.total += n
+	return true
+}
+
+// windowEstimate rolls the fixed windows forward and returns the
+// estimated count in the sliding window ending now, peers included.
+func (l *KeyedLimiter) windowEstimate(b *bucket, now time.Time) float64 {
+	if b.winStart.IsZero() {
+		b.winStart = now
+	}
+	elapsed := now.Sub(b.winStart)
+	switch {
+	case elapsed >= 2*l.window || elapsed < 0:
+		b.prev, b.cur, b.winStart = 0, 0, now
+		elapsed = 0
+	case elapsed >= l.window:
+		b.prev, b.cur = b.cur, 0
+		b.winStart = b.winStart.Add(l.window)
+		elapsed -= l.window
+	}
+	b.last = now
+	weight := 1 - float64(elapsed)/float64(l.window)
+	est := b.prev*weight + b.cur
+	if len(b.peers) > 0 {
+		live := b.peers[:0]
+		for _, p := range b.peers {
+			if now.Sub(p.at) <= l.peerStale {
+				est += p.rate * l.window.Seconds()
+				live = append(live, p)
+			}
+		}
+		b.peers = live
+	}
+	return est
 }
 
 // refill credits tokens for the time since the last update, at the
@@ -192,7 +268,9 @@ func (l *KeyedLimiter) ReportPeer(peer string, reports []PeerReport) {
 			sh.buckets[r.Key] = b
 		}
 		// Settle the bucket at the old rate before changing peer input.
-		l.refill(b, now)
+		if l.window == 0 {
+			l.refill(b, now)
+		}
 		found := false
 		for i := range b.peers {
 			if b.peers[i].peer == peer {
@@ -242,9 +320,13 @@ func (l *KeyedLimiter) Flush(limit int) map[string]float64 {
 	return out
 }
 
-// evict removes buckets that have been idle long enough to be full again.
+// evict removes buckets that have been idle long enough to be full again
+// (two windows for a sliding window, whose counts are then zero).
 func (l *KeyedLimiter) evict(sh *shard, now time.Time) {
 	full := time.Duration(l.burst / l.rate * float64(time.Second))
+	if l.window > 0 {
+		full = 2 * l.window
+	}
 	for k, b := range sh.buckets {
 		if now.Sub(b.last) >= full {
 			delete(sh.buckets, k)
@@ -286,8 +368,14 @@ func (l *KeyedLimiter) Top(n int) []KeyUsage {
 			if b.total <= 0 {
 				continue
 			}
-			l.refill(b, now)
-			all = append(all, KeyUsage{Key: k, Total: b.total, Tokens: b.tokens})
+			left := 0.0
+			if l.window > 0 {
+				left = max(l.limit-l.windowEstimate(b, now), 0)
+			} else {
+				l.refill(b, now)
+				left = b.tokens
+			}
+			all = append(all, KeyUsage{Key: k, Total: b.total, Tokens: left})
 		}
 		sh.mu.Unlock()
 	}

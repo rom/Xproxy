@@ -259,7 +259,11 @@ func applyDefaults(c *Config) {
 		rl := &c.RateLimits[i]
 		setStr(&rl.Key, "client_ip")
 		setStr(&rl.Action, "reject")
-		if rl.Burst == 0 && rl.Rate > 0 {
+		setStr(&rl.Algorithm, "token_bucket")
+		setStr(&rl.Distributed, "approximate")
+		if rl.Algorithm == "sliding_window" {
+			setDur(&rl.Window, time.Second)
+		} else if rl.Burst == 0 && rl.Rate > 0 {
 			rl.Burst = int(rl.Rate)
 			if rl.Burst < 1 {
 				rl.Burst = 1
@@ -374,6 +378,7 @@ func applyDefaults(c *Config) {
 	}
 
 	if cl := c.Cluster; cl != nil {
+		setDur(&cl.ExactTimeout, DefaultExactTimeout)
 		if cl.NodeID == "" {
 			if h, err := os.Hostname(); err == nil {
 				cl.NodeID = h
@@ -609,3 +614,7 @@ const DefaultTicketRotate = 24 * time.Hour
 // DefaultOutlierLatencySamples is the number of responses before an
 // endpoint's latency can eject it.
 const DefaultOutlierLatencySamples = 20
+
+// DefaultExactTimeout bounds the wait for a key owner in exact
+// distributed rate limiting.
+const DefaultExactTimeout = 50 * time.Millisecond

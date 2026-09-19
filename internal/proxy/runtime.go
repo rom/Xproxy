@@ -194,7 +194,12 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		// Bound tracked keys so that a distributed source cannot grow memory
 		// without limit: 64 shards * 8192 keys * ~64 bytes ≈ 32 MiB worst case
 		// per policy.
-		lim := limits.NewKeyedLimiter(rl.Rate, rl.Burst, 8192)
+		var lim *limits.KeyedLimiter
+		if rl.Algorithm == "sliding_window" {
+			lim = limits.NewWindowLimiter(float64(rl.Limit), rl.Window.D(), 8192)
+		} else {
+			lim = limits.NewKeyedLimiter(rl.Rate, rl.Burst, 8192)
+		}
 		if cfg.Cluster != nil && cfg.Cluster.SharesRateLimits() {
 			lim.SetPeerStale(cfg.Cluster.PeerStale.D())
 		}

@@ -54,6 +54,12 @@ const (
 	typePing  = "ping"
 	// typeEvents carries security events (protocol version 2).
 	typeEvents = "events"
+	// typeTake asks the owner of a key for an exact rate limit decision;
+	// typeTook is the answer. Both travel within protocol version 2:
+	// a node that does not know them skips them (the asker then decides
+	// locally after its timeout).
+	typeTake = "take"
+	typeTook = "took"
 )
 
 // Event is one shared fact: a client marked by a honeypot, a provider
@@ -82,6 +88,13 @@ type message struct {
 	Removed []string    `json:"removed,omitempty"`
 	// Events shared between nodes.
 	Events []Event `json:"events,omitempty"`
+	// Exact rate limit decisions: the policy, key and amount asked for,
+	// the answer and the request id that pairs them.
+	Policy  string  `json:"policy,omitempty"`
+	Key     string  `json:"key,omitempty"`
+	N       float64 `json:"n,omitempty"`
+	Allowed *bool   `json:"allowed,omitempty"`
+	Req     uint64  `json:"req,omitempty"`
 }
 
 // PeerStatus describes one configured peer for the management API.
@@ -121,4 +134,12 @@ type Status struct {
 	Ignored       uint64          `json:"ignored_messages"`
 	Rejected      uint64          `json:"rejected_connections"`
 	Dropped       uint64          `json:"dropped_updates"`
+	// Exact rate limiting: members known for key ownership, decisions
+	// asked of owners, answered in time, served for others and made
+	// locally because no answer came.
+	Members        []string `json:"members"`
+	ExactAsked     uint64   `json:"exact_asked"`
+	ExactDecided   uint64   `json:"exact_decided"`
+	ExactServed    uint64   `json:"exact_served"`
+	ExactFallbacks uint64   `json:"exact_fallbacks"`
 }

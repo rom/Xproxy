@@ -699,15 +699,30 @@ type Redaction struct {
 // IsEnabled reports whether redaction is switched on.
 func (r *Redaction) IsEnabled() bool { return r != nil && (r.Enabled == nil || *r.Enabled) }
 
-// RateLimit is a named token bucket policy referenced by routes.
+// RateLimit is a named rate limit policy referenced by routes: a token
+// bucket (rate and burst) or a sliding window (limit per window).
 type RateLimit struct {
 	Name string `yaml:"name"`
 	// Key selects the bucket identity: client_ip, route, or header:<name>.
 	Key string `yaml:"key"`
-	// Rate is tokens per second.
+	// Algorithm is token_bucket (default; rate and burst) or
+	// sliding_window (limit and window).
+	Algorithm string `yaml:"algorithm"`
+	// Rate is tokens per second (token_bucket).
 	Rate float64 `yaml:"rate"`
-	// Burst is the bucket capacity.
+	// Burst is the bucket capacity (token_bucket).
 	Burst int `yaml:"burst"`
+	// Limit is the number of requests allowed per Window (sliding_window).
+	Limit int `yaml:"limit"`
+	// Window is the sliding window length (sliding_window). Default 1s.
+	Window Duration `yaml:"window"`
+	// Distributed selects the cluster semantics: approximate (default;
+	// each node refills at the rate minus its peers' reported
+	// consumption) or exact (one node owns each key, chosen by
+	// rendezvous hashing over the connected members, and decides for
+	// the others; a node that cannot reach the owner within
+	// cluster.exact_timeout decides locally). Needs the cluster section.
+	Distributed string `yaml:"distributed"`
 	// Action is reject (429) or tarpit. Default reject.
 	Action string `yaml:"action"`
 	// TarpitDelay is how long a tarpitted request is held before rejection.
@@ -1531,6 +1546,10 @@ type Cluster struct {
 	ShareEvents     *bool `yaml:"share_events"`
 	// MaxKeysPerReport bounds one report. Default 4096.
 	MaxKeysPerReport int `yaml:"max_keys_per_report"`
+	// ExactTimeout bounds the wait for a key owner's decision under
+	// distributed: exact; on expiry the request is decided locally.
+	// Default 50ms.
+	ExactTimeout Duration `yaml:"exact_timeout"`
 }
 
 // ClusterTLS holds the node certificate and the cluster CA. Every peer

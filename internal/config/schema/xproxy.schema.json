@@ -486,6 +486,11 @@
       "description": "Cluster configures peer to peer sharing over mutual TLS (AMR-009).",
       "type": "object",
       "properties": {
+        "exact_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
         "gossip_interval": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
@@ -1868,7 +1873,7 @@
       "additionalProperties": false
     },
     "RateLimit": {
-      "description": "RateLimit is a named token bucket policy referenced by routes.",
+      "description": "RateLimit is a named rate limit policy referenced by routes: a token bucket (rate and burst) or a sliding window (limit per window).",
       "type": "object",
       "required": [
         "name"
@@ -1878,22 +1883,39 @@
           "description": "Action is reject (429) or tarpit. Default reject.",
           "type": "string"
         },
+        "algorithm": {
+          "description": "Algorithm is token_bucket (default; rate and burst) or sliding_window (limit and window).",
+          "type": "string"
+        },
         "burst": {
-          "description": "Burst is the bucket capacity.",
+          "description": "Burst is the bucket capacity (token_bucket).",
           "type": "integer"
+        },
+        "distributed": {
+          "description": "Distributed selects the cluster semantics: approximate (default; each node refills at the rate minus its peers' reported consumption) or exact (one node owns each key, chosen by rendezvous hashing over the connected members, and decides for the others; a node that cannot reach the owner within cluster.exact_timeout decides locally). Needs the cluster section.",
+          "type": "string"
         },
         "key": {
           "description": "Key selects the bucket identity: client_ip, route, or header:\u003cname\u003e.",
           "type": "string"
         },
+        "limit": {
+          "description": "Limit is the number of requests allowed per Window (sliding_window).",
+          "type": "integer"
+        },
         "name": {
           "type": "string"
         },
         "rate": {
-          "description": "Rate is tokens per second.",
+          "description": "Rate is tokens per second (token_bucket).",
           "type": "number"
         },
         "tarpit_delay": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "window": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"

@@ -143,14 +143,22 @@ trusted_proxies: []
 rate_limits:
     - name: per-ip
       key: client_ip
+      algorithm: token_bucket
       rate: 50
       burst: 100
+      limit: 0
+      window: 0s
+      distributed: approximate
       action: reject
       tarpit_delay: 10s
     - name: login
       key: client_ip
+      algorithm: token_bucket
       rate: 0.2
       burst: 5
+      limit: 0
+      window: 0s
+      distributed: approximate
       action: tarpit
       tarpit_delay: 10s
 upstreams:
@@ -659,6 +667,7 @@ cluster:
     share_bans: null
     share_events: null
     max_keys_per_report: 4096
+    exact_timeout: 50ms
 shedding:
     target_latency: 250ms
     window: 10s

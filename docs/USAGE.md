@@ -406,6 +406,30 @@ rate_limits:
 Requests without the header are limited by client address instead, so the
 limit cannot be avoided by omitting the header.
 
+### Sliding windows and exact cluster limits
+
+```yaml
+rate_limits:
+  - {name: login, key: client_ip, algorithm: sliding_window, limit: 20, window: 1m}
+  - {name: partner, key: "header:X-Api-Key", algorithm: sliding_window, limit: 10000, window: 1h, distributed: exact}
+cluster:
+  exact_timeout: 30ms
+```
+
+A token bucket lets a client spend its whole `burst` at once and then
+trickle at `rate`; a sliding window says "at most 20 per minute" and
+holds it across the minute boundary, which is the shape of most
+contractual and abuse limits. `distributed: exact` makes the count one
+per key across the cluster: the key's owner (chosen by hashing over the
+connected members, so all nodes agree) decides and the others ask it,
+adding one round trip on the cluster link. Use it for per customer
+quotas where over-admission costs money; keep the default approximate
+mode for abuse limits, where a node that cannot reach the owner within
+`exact_timeout` deciding on its own is the right trade. `xproxyctl
+quotas` shows the algorithm, limit and mode per policy, `xproxyctl
+cluster` the members and how many decisions were asked, answered and
+decided locally.
+
 ### Restricting an admin path
 
 ```yaml

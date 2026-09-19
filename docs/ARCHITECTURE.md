@@ -398,6 +398,11 @@ and otherwise pick again among the others.
   With clustering, each bucket also holds up to 64 peer rate reports with
   timestamps; refill uses `rate - sum(fresh peer rates)`, clamped at zero,
   and `Flush` returns and resets per key consumption for gossip.
+  `NewWindowLimiter` builds the same structure as a sliding window
+  counter: each key keeps the count of the current and the previous
+  fixed window; the estimate weights the previous count by the part of
+  it still inside the sliding window, and peers count as their reported
+  rate over one window.
 - `ConnLimiter`: wraps the listener; counts per IP in a map guarded by one
   mutex (accept rate, not request rate) and globally with an atomic. Limits
   are adjustable on reload.
@@ -1034,6 +1039,21 @@ configured rate approximately cluster wide. Ban changes originating locally
 the same cycle; peers apply them with source `peer:<node>` and never
 re-announce them, so there are no loops. A newly connected peer receives a
 snapshot of all active bans. Idle cycles send a ping so deadlines hold.
+
+Exact rate limits ride the same connections. The accepting side now
+answers a `hello` with its own, so the dialler learns the peer's node
+id; the members are this node plus every peer whose id is known on a
+live outbound connection, and `Owner(key)` is the member with the
+highest rendezvous hash of member and key, which every node computes
+alike from the same membership. `Take` sends a `take` (policy, key,
+amount, request id) to the owner on the outbound connection and waits
+for the `took` the owner writes back on that connection (the only
+traffic in that direction) for at most `exact_timeout`; the owner's
+`RateSource.Decide` runs its local limiter. No answer in time, an
+unknown owner or a full pending table (65536) means a local decision
+and an `exact_fallbacks` count, so the failure mode is over-admission,
+never a refused request. Older nodes ignore `take` and never answer a
+hello, so they are simply not members.
 
 Protocol version 2 (1.3) adds an `events` message: bounded facts with a
 kind, a key, an optional route and an expiry. The server publishes

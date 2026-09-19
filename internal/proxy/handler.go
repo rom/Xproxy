@@ -287,7 +287,18 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Rate limits.
 	for _, rl := range cr.rateLimits {
 		key := rateKey(rl.cfg, r, st)
-		if rl.lim.AllowFallback(key, "ip:"+st.clientIP.String(), 1) {
+		allowed, decided := false, false
+		if rl.cfg.Distributed == "exact" {
+			if node := s.cluster.Load(); node != nil {
+				// The key's owner decides; without an answer in time the
+				// local limiter does.
+				allowed, decided = node.Take(rl.cfg.Name, key, 1)
+			}
+		}
+		if !decided {
+			allowed = rl.lim.AllowFallback(key, "ip:"+st.clientIP.String(), 1)
+		}
+		if allowed {
 			rl.allowed.Add(1)
 			continue
 		}

@@ -254,13 +254,17 @@ func run(args []string, out, errOut io.Writer) int {
 		_ = tw.Flush()
 		if len(q.RateLimits) > 0 {
 			_, _ = fmt.Fprintln(out)
-			_, _ = fmt.Fprintln(tw, "POLICY\tKEY\tRATE\tBURST\tKEYS\tALLOWED\tDENIED\tTOP CONSUMERS (key=total/tokens left)")
+			_, _ = fmt.Fprintln(tw, "POLICY\tKEY\tALGORITHM\tLIMIT\tMODE\tKEYS\tALLOWED\tDENIED\tTOP CONSUMERS (key=total/left)")
 			for _, p := range q.RateLimits {
 				tops := make([]string, 0, len(p.Top))
 				for _, u := range p.Top {
 					tops = append(tops, fmt.Sprintf("%s=%.0f/%.1f", u.Key, u.Total, u.Tokens))
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%g\t%d\t%d\t%d\t%d\t%s\n", p.Policy, p.Key, p.Rate, p.Burst, p.Keys, p.Allowed, p.Denied, dash(strings.Join(tops, " ")))
+				limit := fmt.Sprintf("%g/s burst %d", p.Rate, p.Burst)
+				if p.Algorithm == "sliding_window" {
+					limit = fmt.Sprintf("%d per %s", p.Limit, p.Window)
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\n", p.Policy, p.Key, p.Algorithm, limit, p.Distributed, p.Keys, p.Allowed, p.Denied, dash(strings.Join(tops, " ")))
 			}
 			_ = tw.Flush()
 		}
@@ -770,6 +774,8 @@ func run(args []string, out, errOut io.Writer) int {
 		_, _ = fmt.Fprintf(out, "node %s  listen %s\n", st.NodeID, st.Listen)
 		_, _ = fmt.Fprintf(out, "rates sent %d received %d (keys %d)  bans sent %d received %d  rejected %d dropped %d\n",
 			st.RatesSent, st.RatesReceived, st.KeysReceived, st.BansSent, st.BansReceived, st.Rejected, st.Dropped)
+		_, _ = fmt.Fprintf(out, "members %s  exact decisions asked %d answered %d served %d local fallbacks %d\n",
+			strings.Join(st.Members, ","), st.ExactAsked, st.ExactDecided, st.ExactServed, st.ExactFallbacks)
 		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(tw, "PEER\tCONNECTED\tSINCE\tMESSAGES\tRECONNECTS\tLAST ERROR")
 		for _, p := range st.Peers {

@@ -218,6 +218,15 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- Rate limits beyond token buckets: `algorithm: sliding_window` with
+  `limit` per `window` (weighted two-window estimate), and
+  `distributed: exact` under which one cluster member owns each key
+  (rendezvous hashing over the connected members) and decides for the
+  others within `cluster.exact_timeout`, falling back to a local
+  decision when it does not answer. The cluster now acknowledges hellos
+  so members know each other's ids; `xproxyctl cluster` lists members
+  and exact decision counters, `xproxyctl quotas` the algorithm and
+  mode per policy.
 - Latency based outlier ejection (`outlier_ejection.latency_threshold`,
   `latency_factor`, `latency_min_samples`): an endpoint whose smoothed
   time to first byte is slow in absolute terms or relative to its pool

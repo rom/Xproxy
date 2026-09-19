@@ -1898,8 +1898,8 @@ T}
 .PP
 .TS
 allbox;
-lbw(0.8i) lbw(0.9i) lbw(1.0i) lbx
-lw(0.8i) lw(0.9i) lw(1.0i) lx.
+lbw(1.2i) lbw(1.3i) lbw(1.2i) lbx
+lw(1.2i) lw(1.3i) lw(1.2i) lx.
 T{
 Key
 T}	T{
@@ -1928,11 +1928,20 @@ T}	T{
 Bucket identity. A missing header or an unknown country falls back to the client address.
 T}
 T{
+\fBalgorithm\fR
+T}	T{
+\fBtoken_\:bucket\fR,\: \fBsliding_\:window\fR
+T}	T{
+\fBtoken_\:bucket\fR
+T}	T{
+\fBtoken_\:bucket\fR admits bursts up to \fBburst\fR and refills at \fBrate\fR;\: \fBsliding_\:window\fR admits at most \fBlimit\fR requests in any window of length \fBwindow\fR,\: estimated from the current and the previous fixed window weighted by their overlap (no burst above \fBlimit\fR at a window edge,\: an error bounded by the unevenness of arrivals inside one window)
+T}
+T{
 \fBrate\fR
 T}	T{
 float
 T}	T{
-required,\: positive
+required for \fBtoken_\:bucket\fR,\: positive
 T}	T{
 Tokens per second
 T}
@@ -1944,6 +1953,33 @@ T}	T{
 \fBrate\fR rounded,\: at least 1
 T}	T{
 Bucket capacity
+T}
+T{
+\fBlimit\fR
+T}	T{
+int
+T}	T{
+required for \fBsliding_\:window\fR
+T}	T{
+Requests per \fBwindow\fR,\: 1 to 1000000000
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB1s\fR
+T}	T{
+Sliding window length,\: 100ms to 24h
+T}
+T{
+\fBdistributed\fR
+T}	T{
+\fBapproximate\fR,\: \fBexact\fR
+T}	T{
+\fBapproximate\fR
+T}	T{
+Cluster semantics. \fBapproximate\fR: every node decides locally and refills at the rate minus its peers\(aq gossiped consumption (one interval of delay). \fBexact\fR: one member owns each key (rendezvous hash of member and key over the connected members),\: the others ask it over the cluster connection and wait at most \fBcluster.\:exact_\:timeout\fR;\: the owner\(aqs bucket or window is the single count. A node that cannot reach the owner in time decides on its own limiter and counts an \fBexact_\:fallback\fR. Needs the \fBcluster\fR section
 T}
 T{
 \fBaction\fR
@@ -4196,9 +4232,18 @@ T}	T{
 T}	T{
 Largest consumers kept per report
 T}
+T{
+\fBexact_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB50ms\fR
+T}	T{
+Longest wait for a key owner\(aqs answer under \fBdistributed:\: exact\fR (5ms to 2s);\: on expiry the request is decided locally
+T}
 .TE
 .PP
-Semantics: with sharing on, a rate limit policy\(aqs \fBrate\fR becomes an approximate cluster wide rate per key. Each node refills a key\(aqs bucket at \fBrate\fR minus the sum of fresh peer consumption for that key; \fBburst\fR stays per node. Accuracy is bounded by one gossip interval of delay and reports expire after \fBpeer_stale\fR, so losing a peer degrades to local limiting.
+Semantics: with sharing on, a rate limit policy\(aqs \fBrate\fR becomes an approximate cluster wide rate per key. Each node refills a key\(aqs bucket at \fBrate\fR minus the sum of fresh peer consumption for that key; \fBburst\fR stays per node. Accuracy is bounded by one gossip interval of delay and reports expire after \fBpeer_stale\fR, so losing a peer degrades to local limiting. A policy with \fBdistributed: exact\fR is instead decided by one owner per key: the members (this node and every peer whose hello was received on a live connection, \fBxproxyctl cluster\fR lists them) agree on the owner through rendezvous hashing, requests for a key owned elsewhere carry one round trip to the owner within \fBexact_timeout\fR, and the owner\(aqs limiter is the single count, so the limit holds exactly cluster wide while the members agree. Membership changes move only the departed member\(aqs keys; during a partition two owners may exist for a key, and a node without an answer in time decides locally, which over\-admits rather than refuses.
 .PP
 The cluster listener can be socket activated with \fBFileDescriptorName=cluster\fR.
 .SH "jwt"

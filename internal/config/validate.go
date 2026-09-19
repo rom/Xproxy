@@ -230,6 +230,9 @@ func (v *validator) config(c *Config) {
 		if c.RateLimits[i].Key == "country" && c.GeoIP == nil {
 			v.errf("rate_limits[%d].key: country needs a geoip section", i)
 		}
+		if c.RateLimits[i].Distributed == "exact" && c.Cluster == nil {
+			v.errf("rate_limits[%d].distributed: exact needs a cluster section", i)
+		}
 	}
 	for i := range c.Server.Listeners {
 		if t := c.Server.Listeners[i].TCP; t != nil {
@@ -789,11 +792,34 @@ func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 	default:
 		v.errf("%s.key: must be client_ip, route, country or header:<name>", p)
 	}
-	if r.Rate <= 0 {
-		v.errf("%s.rate: must be positive", p)
+	switch r.Algorithm {
+	case "token_bucket":
+		if r.Rate <= 0 {
+			v.errf("%s.rate: must be positive", p)
+		}
+		if r.Burst < 1 {
+			v.errf("%s.burst: must be at least 1", p)
+		}
+		if r.Limit != 0 || r.Window != 0 {
+			v.errf("%s: limit and window belong to algorithm sliding_window", p)
+		}
+	case "sliding_window":
+		if r.Limit < 1 || r.Limit > 1_000_000_000 {
+			v.errf("%s.limit: must be between 1 and 1000000000", p)
+		}
+		if r.Window < Duration(100*time.Millisecond) || r.Window > Duration(24*time.Hour) {
+			v.errf("%s.window: must be between 100ms and 24h", p)
+		}
+		if r.Rate != 0 || r.Burst != 0 {
+			v.errf("%s: rate and burst belong to algorithm token_bucket; use limit and window", p)
+		}
+	default:
+		v.errf("%s.algorithm: must be token_bucket or sliding_window", p)
 	}
-	if r.Burst < 1 {
-		v.errf("%s.burst: must be at least 1", p)
+	switch r.Distributed {
+	case "approximate", "exact":
+	default:
+		v.errf("%s.distributed: must be approximate or exact", p)
 	}
 	switch r.Action {
 	case "reject", "tarpit":
@@ -1432,6 +1458,9 @@ func (v *validator) cluster(c *Cluster) {
 	}
 	if c.PeerStale < c.GossipInterval*2 {
 		v.errf("cluster.peer_stale: must be at least twice gossip_interval")
+	}
+	if c.ExactTimeout < Duration(5*time.Millisecond) || c.ExactTimeout > Duration(2*time.Second) {
+		v.errf("cluster.exact_timeout: must be between 5ms and 2s")
 	}
 	if c.MaxKeysPerReport < 1 || c.MaxKeysPerReport > 65536 {
 		v.errf("cluster.max_keys_per_report: must be 1..65536")

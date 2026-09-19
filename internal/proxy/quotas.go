@@ -54,13 +54,19 @@ type TenantQuota struct {
 
 // PolicyQuota is one rate limit policy's decisions and top consumers.
 type PolicyQuota struct {
-	Policy  string  `json:"policy"`
-	Key     string  `json:"key"`
-	Rate    float64 `json:"rate"`
-	Burst   int     `json:"burst"`
-	Keys    int     `json:"keys"`
-	Allowed uint64  `json:"allowed"`
-	Denied  uint64  `json:"denied"`
+	Policy string `json:"policy"`
+	Key    string `json:"key"`
+	// Algorithm is token_bucket (rate, burst) or sliding_window (limit,
+	// window); Distributed is approximate or exact.
+	Algorithm   string  `json:"algorithm"`
+	Distributed string  `json:"distributed"`
+	Rate        float64 `json:"rate,omitempty"`
+	Burst       int     `json:"burst,omitempty"`
+	Limit       int     `json:"limit,omitempty"`
+	Window      string  `json:"window,omitempty"`
+	Keys        int     `json:"keys"`
+	Allowed     uint64  `json:"allowed"`
+	Denied      uint64  `json:"denied"`
 	// Overflow counts decisions taken without a bucket because the key
 	// table was full of active keys (a warning is logged as well).
 	Overflow uint64            `json:"overflow,omitempty"`
@@ -113,8 +119,12 @@ func (s *Server) Quotas(top int) QuotaReport {
 	}
 	sort.Slice(rep.Tenants, func(i, j int) bool { return rep.Tenants[i].Tenant < rep.Tenants[j].Tenant })
 	for name, rl := range rt.rateLimits {
-		rep.RateLimits = append(rep.RateLimits, PolicyQuota{Policy: name, Key: rl.cfg.Key, Rate: rl.cfg.Rate, Burst: rl.cfg.Burst, Overflow: rl.lim.Overflow(),
-			Keys: rl.lim.Len(), Allowed: rl.allowed.Load(), Denied: rl.denied.Load(), Top: rl.lim.Top(top)})
+		pq := PolicyQuota{Policy: name, Key: rl.cfg.Key, Algorithm: rl.cfg.Algorithm, Distributed: rl.cfg.Distributed, Rate: rl.cfg.Rate, Burst: rl.cfg.Burst, Overflow: rl.lim.Overflow(),
+			Keys: rl.lim.Len(), Allowed: rl.allowed.Load(), Denied: rl.denied.Load(), Top: rl.lim.Top(top)}
+		if rl.cfg.Algorithm == "sliding_window" {
+			pq.Limit, pq.Window = rl.cfg.Limit, rl.cfg.Window.D().String()
+		}
+		rep.RateLimits = append(rep.RateLimits, pq)
 	}
 	sort.Slice(rep.RateLimits, func(i, j int) bool { return rep.RateLimits[i].Policy < rep.RateLimits[j].Policy })
 	for name, p := range rt.pools {

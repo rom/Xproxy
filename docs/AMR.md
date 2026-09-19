@@ -1458,6 +1458,42 @@ code, bullet lists, inline code, bold, emphasis, links).
 
 ---
 
+## AMR-047: Exact distributed rate limits by key ownership, not consensus
+
+**Context.** AMR-021 made cluster rate limits approximate by design:
+each node subtracts its peers' gossiped consumption from its own
+refill. Customers with contractual quotas asked for a limit that holds
+exactly across the cluster.
+
+**Decision.** A policy may declare `distributed: exact`. Each key has
+one owner among the connected members, chosen by rendezvous hashing so
+that all nodes agree without a coordinator and a member's departure
+moves only its keys; non-owners ask the owner over the existing mTLS
+connection (one request/answer pair per decision, bounded by
+`cluster.exact_timeout`) and the owner's local limiter is the single
+count. Without an answer in time the asking node decides on its own
+limiter and counts a fallback: the failure mode is over-admission,
+never a refused request. The accepting side answers a hello with its
+own so the dialler learns the peer's id; older nodes ignore the new
+messages and are not members.
+
+**Alternatives.** Consensus or a shared store (rejected, as in AMR-021:
+a dependency and a latency floor for every request); a central limiter
+process (rejected: a single point of failure the product has avoided
+everywhere else); staying approximate (kept as the default; exact is
+opt-in per policy).
+
+**Consequences.** One cluster round trip per decision for keys owned
+elsewhere, so exact mode suits quotas with limits per minute or hour
+rather than per second defences. During a partition two owners may
+exist for a key and the limit is exact per partition. Membership
+depends on hellos being answered, so a mixed cluster with pre-1.3 nodes
+has fewer members than nodes.
+
+**Status.** Accepted (1.3).
+
+---
+
 ## Open items
 
 | Item | Owner | Needed by |
