@@ -503,6 +503,16 @@
       "description": "Captcha configures a hosted CAPTCHA provider for the challenge.",
       "type": "object",
       "properties": {
+        "hostname_check": {
+          "type": "boolean"
+        },
+        "hostnames": {
+          "description": "Hostnames the provider may report the token was solved on. Empty checks the token against the host the challenge page was served on, so a token solved for another site is refused. HostnameCheck off disables the check for providers that do not return a hostname.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "min_score": {
           "description": "MinScore refuses tokens the provider scores below it (reCAPTCHA v3 and Enterprise return one). Default 0 (not checked).",
           "type": "number"

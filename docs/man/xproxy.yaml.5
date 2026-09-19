@@ -7934,8 +7934,8 @@ Adds a second tier to the challenge. A verdict that asks for it (an \fBaccount_g
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(1.2i) lbw(1.1i) lbx
-lw(0.9i) lw(1.2i) lw(1.1i) lx.
+lbw(1.0i) lbw(1.2i) lbw(1.1i) lbx
+lw(1.0i) lw(1.2i) lw(1.1i) lx.
 T{
 Key
 T}	T{
@@ -8007,6 +8007,24 @@ T}	T{
 \fBescalation\fR
 T}	T{
 \fBalways\fR shows the widget on every challenge page,\: including route gates,\: in place of the proof of work
+T}
+T{
+\fBhostnames\fR
+T}	T{
+list
+T}	T{
+the request host
+T}	T{
+Host names the provider may report the token was solved on;\: empty checks the token against the host the challenge page was served on,\: so a token solved for another site is refused
+T}
+T{
+\fBhostname_\:check\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Verify the hostname the provider reports;\: turn off for providers that do not return one
 T}
 .TE
 .SS "routes[].cors"

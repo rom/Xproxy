@@ -2217,6 +2217,8 @@ falls back to the proof of work.
 | `timeout` | duration | `5s` | Verification call (500ms to 30s); the call uses no environment proxy |
 | `min_score` | float | `0` | Refuse tokens scored below it (providers that return a score); 0 disables |
 | `mode` | `escalation`, `always` | `escalation` | `always` shows the widget on every challenge page, including route gates, in place of the proof of work |
+| `hostnames` | list | the request host | Host names the provider may report the token was solved on; empty checks the token against the host the challenge page was served on, so a token solved for another site is refused |
+| `hostname_check` | bool | `true` | Verify the hostname the provider reports; turn off for providers that do not return one |
 
 ### routes[].cors
 

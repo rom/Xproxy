@@ -2219,6 +2219,11 @@ func (v *validator) challenge(c *Challenge) {
 		if cp.Mode != "escalation" && cp.Mode != "always" {
 			v.errf("challenge.captcha.mode: must be escalation or always")
 		}
+		for i, h := range cp.Hostnames {
+			if h == "" || strings.ContainsAny(h, "/ :") || h != strings.ToLower(h) {
+				v.errf("challenge.captcha.hostnames[%d]: %q is not a lower case host name", i, h)
+			}
+		}
 	}
 }
 

@@ -222,6 +222,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- CAPTCHA hostname binding: the challenge verifies the hostname the
+  provider reports the token was solved on against the request host or a
+  configured `challenge.captcha.hostnames` allowlist, refusing a token
+  solved for another site; `hostname_check` turns it off. A missing
+  hostname fails closed.
 - Per-route CORS (`routes[].cors`): allowed origins (exact, wildcard
   host, or `*`), methods, headers, exposed headers, credentials and
   max-age; preflight `OPTIONS` answered before authentication and the

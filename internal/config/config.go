@@ -2119,7 +2119,16 @@ type Captcha struct {
 	// Mode is escalation (default: the widget only for verdicts that ask
 	// for a CAPTCHA) or always (every challenge page).
 	Mode string `yaml:"mode"`
+	// Hostnames the provider may report the token was solved on. Empty
+	// checks the token against the host the challenge page was served on,
+	// so a token solved for another site is refused. HostnameCheck off
+	// disables the check for providers that do not return a hostname.
+	Hostnames     []string `yaml:"hostnames"`
+	HostnameCheck *bool    `yaml:"hostname_check"`
 }
+
+// ChecksHostname reports whether the CAPTCHA hostname is verified.
+func (c *Captcha) ChecksHostname() bool { return c.HostnameCheck == nil || *c.HostnameCheck }
 
 // RouteChallenge selects when a route challenges unverified clients.
 type RouteChallenge struct {

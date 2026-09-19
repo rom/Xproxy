@@ -50,12 +50,14 @@ var providers = map[string]provider{
 // captcha is the configured provider with its secret.
 type captcha struct {
 	provider
-	siteKey  string
-	secret   string
-	verify   string
-	minScore float64
-	always   bool
-	client   *http.Client
+	siteKey       string
+	secret        string
+	verify        string
+	minScore      float64
+	always        bool
+	hostnames     map[string]bool // allowed provider hostnames; empty means check the request host
+	checkHostname bool
+	client        *http.Client
 }
 
 // loadCaptcha reads the provider secret; a missing or empty secret file
@@ -77,7 +79,10 @@ func loadCaptcha(cfg *config.Captcha) (*captcha, error) {
 	if verify == "" {
 		verify = p.verify
 	}
-	c := &captcha{provider: p, siteKey: cfg.SiteKey, secret: secret, verify: verify, minScore: cfg.MinScore, always: cfg.Mode == "always"}
+	c := &captcha{provider: p, siteKey: cfg.SiteKey, secret: secret, verify: verify, minScore: cfg.MinScore, always: cfg.Mode == "always", checkHostname: cfg.ChecksHostname(), hostnames: map[string]bool{}}
+	for _, h := range cfg.Hostnames {
+		c.hostnames[h] = true
+	}
 	// A dedicated client: no environment proxy, short dial, bounded
 	// response.
 	c.client = &http.Client{Timeout: cfg.Timeout.D(), Transport: &http.Transport{
@@ -97,7 +102,7 @@ type siteverifyResponse struct {
 
 // check verifies a widget token with the provider. The reason names the
 // failure class without the provider's detail.
-func (c *captcha) check(ctx context.Context, token string, ip netip.Addr) (bool, string) {
+func (c *captcha) check(ctx context.Context, token, host string, ip netip.Addr) (bool, string) {
 	if token == "" || len(token) > 8192 {
 		return false, "captcha token"
 	}
@@ -130,5 +135,26 @@ func (c *captcha) check(ctx context.Context, token string, ip netip.Addr) (bool,
 	if c.minScore > 0 && (sv.Score == nil || *sv.Score < c.minScore) {
 		return false, "captcha score"
 	}
+	if c.checkHostname && !c.hostnameOK(sv.Hostname, host) {
+		return false, "captcha hostname"
+	}
 	return true, ""
+}
+
+// hostnameOK checks the hostname the provider reports the token was
+// solved on: against the configured allowlist, or, when none is set,
+// against the host the request was made to. A provider that omits the
+// hostname fails closed.
+func (c *captcha) hostnameOK(reported, host string) bool {
+	reported = strings.ToLower(strings.TrimSpace(reported))
+	if reported == "" {
+		return false
+	}
+	if len(c.hostnames) > 0 {
+		return c.hostnames[reported]
+	}
+	if i := strings.IndexByte(host, ':'); i >= 0 {
+		host = host[:i]
+	}
+	return reported == strings.ToLower(host)
 }

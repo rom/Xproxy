@@ -440,6 +440,49 @@ func TestCaptcha(t *testing.T) {
 	if issued != 3 || passed != 2 || failed != 3 || captcha != 1 {
 		t.Fatalf("stats %d %d %d %d", issued, passed, failed, captcha)
 	}
+	// Hostname binding: a token the provider says was solved on another
+	// host is refused; the configured allowlist overrides the request
+	// host; the check can be turned off.
+	answer = `{"success":true,"score":0.9,"hostname":"evil.example"}`
+	rec = httptest.NewRecorder()
+	c.ServeTier(rec, httptest.NewRequest("GET", "http://example.com/x", nil), ip, true)
+	nHost := extractNonce(t, rec.Body.String())
+	postHost := func(fields url.Values, host string) (*httptest.ResponseRecorder, string) {
+		fields.Set("nonce", nHost)
+		fields.Set("r", "/x")
+		req := httptest.NewRequest("POST", "http://"+host+VerifyPath, strings.NewReader(fields.Encode()))
+		req.Host = host
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		_, reason := c.Verify(w, req, ip, false)
+		return w, reason
+	}
+	if w, reason := postHost(url.Values{"cf-turnstile-response": {"t"}}, "example.com"); w.Code != 403 || reason != "captcha hostname" {
+		t.Fatalf("wrong hostname accepted: %d %s", w.Code, reason)
+	}
+	// Reconfigure with an allowlist that includes the reported host.
+	conf.Captcha.Hostnames = []string{"evil.example"}
+	c.Reconfigure(conf)
+	rec = httptest.NewRecorder()
+	c.ServeTier(rec, httptest.NewRequest("GET", "http://example.com/x", nil), ip, true)
+	nHost = extractNonce(t, rec.Body.String())
+	if w, reason := postHost(url.Values{"cf-turnstile-response": {"t"}}, "whatever.example"); w.Code != 303 {
+		t.Fatalf("allowlisted hostname rejected: %d %s", w.Code, reason)
+	}
+	// Turn the check off: a missing hostname passes.
+	off := false
+	conf.Captcha.Hostnames = nil
+	conf.Captcha.HostnameCheck = &off
+	answer = `{"success":true,"score":0.9}`
+	c.Reconfigure(conf)
+	rec = httptest.NewRecorder()
+	c.ServeTier(rec, httptest.NewRequest("GET", "http://example.com/x", nil), ip, true)
+	nHost = extractNonce(t, rec.Body.String())
+	if w, _ := postHost(url.Values{"cf-turnstile-response": {"t"}}, "example.com"); w.Code != 303 {
+		t.Fatalf("hostname check off still rejected: %d", w.Code)
+	}
+	conf.Captcha.HostnameCheck = nil
+
 	// Mode always renders the widget on every page; the provider being
 	// down fails closed with its own reason.
 	conf.Captcha.Mode = "always"
