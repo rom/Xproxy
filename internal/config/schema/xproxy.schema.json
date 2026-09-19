@@ -180,6 +180,13 @@
       "description": "Version is the schema version. Must equal CurrentVersion.",
       "type": "integer"
     },
+    "virtual_patches": {
+      "description": "VirtualPatches block known vulnerabilities by request shape.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/VirtualPatch"
+      }
+    },
     "waf": {
       "description": "WAF enables the web application firewall when present.",
       "allOf": [
@@ -1979,6 +1986,79 @@
       },
       "additionalProperties": false
     },
+    "PatchBody": {
+      "description": "PatchBody matches the request body.",
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "description": "Pattern is an RE2 expression matched anywhere in the body.",
+          "type": "string"
+        },
+        "content_types": {
+          "description": "ContentTypes narrows the inspection to these media types (type/* allowed). Empty inspects every body.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_bytes": {
+          "description": "MaxBytes bounds the body inspected; a larger body does not match the patch. Default 64 KiB.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PatchMatch": {
+      "description": "PatchMatch is one condition on a named parameter, header or cookie.",
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "description": "Pattern is an RE2 expression matched anywhere in a value; empty means presence suffices.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "QueryParamPolicy": {
+      "description": "QueryParamPolicy describes one allowed query parameter.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Type is string (default), int, number, bool, uuid or enum (with Values).",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Pattern is an RE2 expression every value must match in full.",
+          "type": "string"
+        },
+        "required": {
+          "description": "Required refuses requests without the parameter.",
+          "type": "boolean"
+        },
+        "max_length": {
+          "description": "MaxLength bounds each value; 0 means no bound.",
+          "type": "integer"
+        },
+        "max_repeat": {
+          "description": "MaxRepeat bounds how many times the parameter may appear. Default 1.",
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "values": {
+          "description": "Values are the allowed values for type enum.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "RateLimit": {
       "description": "RateLimit is a named rate limit policy referenced by routes: a token bucket (rate and burst) or a sliding window (limit per window).",
       "type": "object",
@@ -2275,6 +2355,14 @@
             "type": "string"
           }
         },
+        "policy": {
+          "description": "Policy is the route's positive security model: what a request may look like; everything else is refused before any other processing.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RoutePolicy"
+            }
+          ]
+        },
         "priority": {
           "description": "Priority breaks ties between routes with identical specificity. Higher wins. Default 0.",
           "type": "integer"
@@ -2559,6 +2647,59 @@
         },
         "upstream": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RoutePolicy": {
+      "description": "RoutePolicy is a positive security model for a route: allowed methods, media types and query parameters, and bounds on the URI, headers and query. A request outside the policy is refused (405, 415, 400, 414 or 431) with reason policy before rate limits, filters and the WAF run, and the refusal feeds ban triggers under policy.",
+      "type": "object",
+      "properties": {
+        "content_types": {
+          "description": "ContentTypes allowed for requests with a body: media types or type/* patterns; others get 415. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_unknown_query": {
+          "type": "boolean"
+        },
+        "max_header_bytes": {
+          "type": "integer"
+        },
+        "max_headers": {
+          "description": "MaxHeaders bounds the number of header fields; MaxHeaderBytes the sum of their names and values. 0 means no bound (the server limit still applies).",
+          "type": "integer"
+        },
+        "max_query_bytes": {
+          "description": "MaxQueryBytes bounds the raw query string; MaxQueryParams the number of parameters (repeats counted). 0 means no bound.",
+          "type": "integer"
+        },
+        "max_query_params": {
+          "type": "integer"
+        },
+        "max_uri_length": {
+          "description": "MaxURILength lowers server.limits.max_uri_length for the route.",
+          "type": "integer"
+        },
+        "methods": {
+          "description": "Methods allowed; others get 405 with an Allow header. Unlike routes[].methods, which selects the route, this refuses. Empty allows any method.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "query": {
+          "description": "Query describes the parameters; with DenyUnknown, parameters not listed are refused.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueryParamPolicy"
+          }
+        },
+        "require_content_type": {
+          "description": "RequireContentType refuses a body without a Content-Type header.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -3317,6 +3458,96 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "VirtualPatch": {
+      "description": "VirtualPatch blocks a known vulnerability by its request shape while the application is being fixed: every listed condition must hold for the patch to apply. Patches run right after route matching, before rate limits, filters and the WAF, so they cost nothing for other traffic and work without a WAF section.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "action": {
+          "description": "Action is block (default) or log.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Body matches the request body (buffered up to max_bytes and replayed to the upstream).",
+          "allOf": [
+            {
+              "$ref": "#/$defs/PatchBody"
+            }
+          ]
+        },
+        "cookies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PatchMatch"
+          }
+        },
+        "enabled": {
+          "description": "Enabled false keeps the patch in the configuration without applying it. Default true.",
+          "type": "boolean"
+        },
+        "expires": {
+          "description": "Expires disables the patch after this date (RFC 3339 or YYYY-MM-DD) so a temporary measure does not outlive the fix unnoticed; the status shows expired patches.",
+          "type": "string"
+        },
+        "headers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PatchMatch"
+          }
+        },
+        "hosts": {
+          "description": "Hosts and Routes narrow the patch to host patterns (exact or \"*.example.com\") and route names. Empty means every host or route.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "description": "ID names the patch in logs, status and metrics (for example cve-2024-1234).",
+          "type": "string"
+        },
+        "methods": {
+          "description": "Methods narrows the patch to these methods.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "path_regex": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "paths": {
+          "description": "Paths are prefixes of the cleaned path; PathRegex patterns match the whole path. At least one condition among paths, path_regex, query, headers, cookies and body is required.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "query": {
+          "description": "Query, Headers and Cookies are conditions on parameters, header fields and cookies: the name must be present and, with a pattern, some value must match it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PatchMatch"
+          }
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "description": "Status is the response for block. Default 403.",
+          "type": "integer"
         }
       },
       "additionalProperties": false

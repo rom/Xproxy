@@ -310,6 +310,7 @@ routes:
       icap: null
       filters: []
       geo: null
+      policy: null
       cache: null
       mirror: null
       grpc: null
@@ -370,6 +371,7 @@ routes:
       filters:
         - scanners
       geo: null
+      policy: null
       cache: null
       mirror: null
       grpc: null
@@ -423,6 +425,7 @@ routes:
       icap: null
       filters: []
       geo: null
+      policy: null
       cache: null
       mirror: null
       grpc: null
@@ -481,6 +484,7 @@ routes:
         response: null
       filters: []
       geo: null
+      policy: null
       cache: null
       mirror: null
       grpc: null
@@ -540,6 +544,7 @@ routes:
       icap: null
       filters: []
       geo: null
+      policy: null
       cache: null
       mirror: null
       grpc: null
@@ -595,6 +600,7 @@ routes:
       icap: null
       filters: []
       geo: null
+      policy: null
       cache: null
       mirror: null
       grpc: null
@@ -687,6 +693,7 @@ cluster:
     share_events: null
     max_keys_per_report: 4096
     exact_timeout: 50ms
+virtual_patches: []
 fleet: null
 shedding:
     target_latency: 250ms

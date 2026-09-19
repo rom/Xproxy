@@ -640,6 +640,36 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_, _ = out.Write(b)
 		return 0
+	case "patches":
+		ps, err := c.Patches()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, ps)
+		}
+		if len(ps) == 0 {
+			_, _ = fmt.Fprintln(out, "no virtual patches configured")
+			return 0
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "PATCH\tSTATE\tACTION\tSTATUS\tHITS\tLAST HIT\tEXPIRES\tDESCRIPTION")
+		for _, p := range ps {
+			state := "active"
+			switch {
+			case !p.Enabled:
+				state = "disabled"
+			case p.Expired:
+				state = "expired"
+			}
+			expires := "-"
+			if !p.Expires.IsZero() {
+				expires = p.Expires.Local().Format("2006-01-02")
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n", p.ID, state, p.Action, p.Status, p.Hits, ago(p.LastHit), expires, p.Description)
+		}
+		_ = tw.Flush()
+		return 0
 	case "honeypot":
 		if fs.NArg() >= 3 && fs.Arg(1) == "forget" {
 			var res struct {

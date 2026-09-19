@@ -234,6 +234,45 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.relayWebTransport(rw, r, st, cr)
 		return
 	}
+
+	// Virtual patches: known vulnerabilities blocked by request shape,
+	// before anything else spends work on the request.
+	for _, vp := range rt.patches {
+		if !vp.active(st.start) || !vp.selects(r, st.host, st.path, cr.cfg.Name) {
+			continue
+		}
+		if vp.bodyRE != nil && !vp.bodyMatches(r) {
+			continue
+		}
+		vp.hits.Add(1)
+		vp.lastHit.Store(st.start.UnixNano())
+		if vp.cfg.Action == "log" {
+			st.extra = append(st.extra, "virtual_patch", vp.cfg.ID)
+			s.logs.SecurityEvent(r.Context(), "virtual_patch", vp.cfg.ID,
+				"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
+				"host", r.Host, "path", r.URL.Path, "route", st.route, "action", "log", "user_agent", r.UserAgent())
+			continue
+		}
+		s.stats.DeniedVirtualPatch.Add(1)
+		st.denied = "virtual_patch:" + vp.cfg.ID
+		st.extra = append(st.extra, "virtual_patch", vp.cfg.ID)
+		s.denyDetail(rw, r, st, vp.cfg.Status, "virtual_patch", vp.cfg.ID)
+		return
+	}
+
+	// Positive security model of the route.
+	if cr.policy != nil {
+		if res := cr.policy.check(r); res != nil {
+			s.stats.DeniedPolicy.Add(1)
+			cr.policyDenied.Add(1)
+			st.denied = "policy:" + res.detail
+			if res.status == http.StatusMethodNotAllowed {
+				rw.Header().Set("Allow", cr.policy.allow)
+			}
+			s.denyDetail(rw, r, st, res.status, "policy", res.detail)
+			return
+		}
+	}
 	if cr.compress != nil && r.Method != http.MethodHead && !isUpgrade(r) && !isGRPC(r) {
 		if enc := cr.compress.negotiate(r); enc != "" {
 			cw := newCompressWriter(rw.ResponseWriter, cr.compress, enc)
@@ -858,11 +897,19 @@ func (s *Server) queueRefused(rw *responseWriter, r *http.Request, st *reqState,
 
 // deny writes a minimal error response and a security log entry.
 func (s *Server) deny(rw *responseWriter, r *http.Request, st *reqState, status int, reason string) {
+	s.denyDetail(rw, r, st, status, reason, "")
+}
+
+// denyDetail is deny with a detail attribute in the security event.
+func (s *Server) denyDetail(rw *responseWriter, r *http.Request, st *reqState, status int, reason, detail string) {
 	st.reason = reason
-	s.logs.SecurityEvent(r.Context(), "deny", reason,
-		"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
+	attrs := []any{"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
 		"host", r.Host, "path", r.URL.Path, "route", st.route, "status", status,
-		"user_agent", r.UserAgent())
+		"user_agent", r.UserAgent()}
+	if detail != "" {
+		attrs = append(attrs, "detail", detail)
+	}
+	s.logs.SecurityEvent(r.Context(), "deny", reason, attrs...)
 	if bl := s.bans.Load(); bl != nil && reason != "banned" {
 		bl.Observe(st.clientIP, banCategory(reason))
 	}

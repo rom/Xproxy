@@ -47,6 +47,7 @@ var commandTable = []command{
 	{name: "geoip", summary: "Country database and lookup counters"},
 	{name: "cache", args: "[purge [HOST [PATH-PREFIX]]]", summary: "Response cache counters; purge removes entries", words: []string{"purge"}},
 	{name: "honeypot", args: "[forget IP]", summary: "Clients marked by honeypot routes", words: []string{"forget"}},
+	{name: "patches", summary: "Virtual patches with state, hits and expiry"},
 	{name: "dns", args: "[purge]", summary: "DNS listener counters; purge empties the caches", words: []string{"purge"}},
 	{name: "ingress", summary: "Kubernetes ingress controller status"},
 	{name: "otlp", summary: "OpenTelemetry metrics exporter status"},

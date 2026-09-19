@@ -1163,6 +1163,45 @@ plaintext listener with `h2c: true`, and an `https` or `h2c` upstream.
 | `mode` | `off`, `detect`, `block` | `waf.default_mode` | |
 | `profile` | name | `waf.default_profile` | |
 
+## virtual_patches[]
+
+A virtual patch blocks a known vulnerability by the shape of the
+requests that exploit it, while the application is being fixed, and
+records how often it fired. Patches run right after route matching,
+before rate limits, filters and the WAF, so they cost nothing for other
+traffic and need no `waf` section. Every listed condition must hold for
+a patch to apply; at least one of `paths`, `path_regex`, `query`,
+`headers`, `cookies` or `body` is required. A match with `action: block`
+answers `status` with reason `virtual_patch` and the id as `detail`
+(ban category `virtual_patch`); with `action: log` the request continues
+and the security event and the access log carry `virtual_patch: <id>`.
+`xproxyctl patches` and `GET /v1/patches` list the patches with hits,
+last hit, expiry and state; `xproxy_virtual_patch_hits_total{patch}`
+counts per patch and hits survive reloads.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `id` | identifier | required, unique | `a-z`, `0-9`, `.`, `_`, `-`, at most 63 characters (`cve-2024-1234`) |
+| `description` | string | | Shown in the status; at most 512 bytes |
+| `hosts` | list | any | Host patterns, exact or `*.example.com` |
+| `routes` | list of names | any | Only requests matched to these routes |
+| `paths` | list of prefixes | | Prefixes of the cleaned path |
+| `path_regex` | list of regex | | Patterns matching the whole cleaned path |
+| `methods` | list | any | Upper-case methods |
+| `query` | list of `{name, pattern}` | | The parameter must be present and, with `pattern`, some value must contain a match |
+| `headers` | list of `{name, pattern}` | | Same for header fields (names case insensitive) |
+| `cookies` | list of `{name, pattern}` | | Same for cookies |
+| `body` | object | none | `pattern` (required) matched anywhere in the body, buffered up to `max_bytes` (default 64 KiB, at most 16 MiB) and replayed to the upstream; `content_types` narrows the inspection; a larger body or another media type does not match |
+| `action` | `block`, `log` | `block` | |
+| `status` | int | `403` | Response for `block`; 4xx or 5xx (404 hides the patched path) |
+| `expires` | date | none | RFC 3339 or `YYYY-MM-DD` (end of that day, UTC); an expired patch no longer applies and shows as expired |
+| `enabled` | bool | `true` | `false` keeps the patch without applying it |
+
+Hand-written SecLang in `waf.profiles[].directive_files` remains the
+tool for patches that need the rule engine's transformations or
+scoring; `examples/security/positive-model.yaml` shows both kinds side
+by side with a route policy.
+
 ## cluster
 
 Present means enabled. Nodes exchange rate limit consumption and ban
@@ -1717,6 +1756,48 @@ filters in `Info.Country`.
 Denies answer 403 with reason `geo` and feed ban triggers under the `geo`
 category. A `rate_limits[].key` of `country` keeps one bucket per
 country; an unknown country falls back to the client address.
+
+### routes[].policy
+
+The route's positive security model: what a request may look like.
+Everything outside it is refused right after route matching, before
+virtual patches' successors (rate limits, filters, the WAF) spend work
+on the request, with a terse status, reason `policy` and a `detail`
+attribute in the security event naming the check (`method:DELETE`,
+`content_type:application/xml`, `query:id:not_int`, `header_count:41`
+and so on). Refusals count in `denied_policy` and feed ban triggers
+under `policy`. `routes[].methods` selects the route; `policy.methods`
+refuses, with 405 and an `Allow` header.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `methods` | list | any | Allowed methods (upper case); others get 405 with `Allow` |
+| `content_types` | list | any | Media types allowed for requests with a body, exact (`application/json`) or `type/*`; parameters such as `charset` are ignored; others get 415 |
+| `require_content_type` | bool | `false` | A body without `Content-Type` gets 415 |
+| `max_uri_length` | int | server limit | Lower bound on the request URI for this route (414) |
+| `max_query_bytes` | int | none | Bound on the raw query string (414) |
+| `max_query_params` | int | none | Bound on the number of parameters, repeats counted (400) |
+| `max_headers` | int | none | Bound on the number of header fields (431) |
+| `max_header_bytes` | int | none | Bound on the sum of header names and values (431) |
+| `query` | list | `[]` | Parameter descriptions; see below |
+| `deny_unknown_query` | bool | `false` | Parameters not in `query` get 400; requires `query` |
+
+Each `query` entry:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required, unique | |
+| `type` | `string`, `int`, `number`, `bool`, `uuid`, `enum` | `string` | `bool` accepts `true`, `false`, `1`, `0`; `uuid` the 8-4-4-4-12 hex form; `enum` needs `values` |
+| `required` | bool | `false` | The parameter must be present |
+| `max_length` | int | none | Bound on each value in bytes |
+| `pattern` | regex | none | Every value must match the whole expression |
+| `values` | list | | Allowed values for `enum` (1 to 1024) |
+| `max_repeat` | int | `1` | How many times the parameter may appear |
+
+A malformed query string (bad percent encoding) is refused when the
+route has a `query` list or `max_query_params`. Bodies are not part of
+the policy: `waf.profiles[].json_schemas` and the `openapi` filter
+validate them.
 
 ## acme
 

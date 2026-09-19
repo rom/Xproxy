@@ -1,0 +1,68 @@
+# Positive security model and virtual patching. The API route admits only
+# what it documents (methods, media types, query parameters with types
+# and bounds); everything else is refused before rate limits, filters and
+# the WAF run. Virtual patches block two known vulnerabilities by request
+# shape while the applications are being fixed, one of them with an
+# expiry so it cannot outlive the fix unnoticed.
+#
+# Validate: xproxy -config examples/security/positive-model.yaml -validate
+# Inspect:  xproxyctl patches
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+virtual_patches:
+  - id: cve-2024-1234
+    description: legacy export plugin command injection; remove after the plugin update
+    hosts: [www.example.com]
+    paths: [/plugins/legacy-export/]
+    query: [{name: cmd}]
+    status: 404
+    expires: "2026-12-31"
+  - id: prototype-pollution
+    description: JSON bodies carrying __proto__ or constructor keys
+    routes: [api]
+    methods: [POST, PUT, PATCH]
+    body: {pattern: '"(__proto__|constructor|prototype)"\s*:', content_types: [application/json], max_bytes: 262144}
+  - id: log4shell-probe
+    description: JNDI lookups in any header; log only while the SIEM rule is tuned
+    headers: [{name: User-Agent, pattern: '(?i)\$\{jndi:'}, {name: X-Api-Version, pattern: '(?i)\$\{jndi:'}]
+    action: log
+upstreams:
+  - name: api
+    endpoints: [{address: "10.0.0.20:8080"}]
+  - name: web
+    endpoints: [{address: "10.0.0.10:8080"}]
+routes:
+  - name: api
+    hosts: [api.example.com]
+    paths: [/v1/]
+    upstream: api
+    policy:
+      methods: [GET, POST, PUT, DELETE]
+      content_types: [application/json]
+      require_content_type: true
+      max_uri_length: 2048
+      max_query_bytes: 1024
+      max_query_params: 16
+      max_headers: 40
+      max_header_bytes: 16384
+      deny_unknown_query: true
+      query:
+        - {name: page, type: int}
+        - {name: per_page, type: int}
+        - {name: sort, type: enum, values: [created, updated, name]}
+        - {name: order, type: enum, values: [asc, desc]}
+        - {name: q, type: string, max_length: 128}
+        - {name: id, type: uuid, max_repeat: 50}
+        - {name: include_deleted, type: bool}
+  - name: web
+    hosts: [www.example.com]
+    upstream: web
+    policy:
+      methods: [GET, HEAD, POST]
+      max_headers: 60

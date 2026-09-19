@@ -22,7 +22,8 @@ var (
 func (s *Server) sample() metrics.Sample {
 	sn := s.Stats()
 	denied := sn.DeniedACL + sn.DeniedRateLimit + sn.Tarpitted + sn.DeniedConcurrency + sn.DeniedBodySize + sn.DeniedURILength +
-		sn.DeniedNoRoute + sn.DeniedWebSocket + sn.DeniedBadHost + sn.DeniedBan + sn.DeniedWAF + sn.DeniedJWT + sn.DeniedICAP + sn.DeniedFilter + sn.DeniedGeo
+		sn.DeniedNoRoute + sn.DeniedWebSocket + sn.DeniedBadHost + sn.DeniedBan + sn.DeniedWAF + sn.DeniedJWT + sn.DeniedICAP + sn.DeniedFilter + sn.DeniedGeo +
+		sn.DeniedPolicy + sn.DeniedVirtualPatch
 	return metrics.Sample{
 		Counters: []float64{float64(sn.Requests), float64(sn.Responses2xx), float64(sn.Responses4xx), float64(sn.Responses5xx),
 			float64(denied), float64(sn.Shed), float64(sn.BytesIn), float64(sn.BytesOut), float64(sn.UpstreamErrors)},
@@ -65,6 +66,7 @@ func (s *Server) Collect(e metrics.Collector) {
 		{"acl", sn.DeniedACL}, {"rate_limit", sn.DeniedRateLimit}, {"tarpit", sn.Tarpitted}, {"concurrency", sn.DeniedConcurrency},
 		{"body_size", sn.DeniedBodySize}, {"uri_length", sn.DeniedURILength}, {"no_route", sn.DeniedNoRoute}, {"websocket", sn.DeniedWebSocket},
 		{"bad_host", sn.DeniedBadHost}, {"ban", sn.DeniedBan}, {"waf", sn.DeniedWAF}, {"jwt", sn.DeniedJWT}, {"icap", sn.DeniedICAP}, {"filter", sn.DeniedFilter}, {"geo", sn.DeniedGeo}, {"shed", sn.Shed},
+		{"policy", sn.DeniedPolicy}, {"virtual_patch", sn.DeniedVirtualPatch},
 	}
 	for _, d := range denied {
 		e.Counter("xproxy_denied_total", "Requests refused by the proxy, by reason.", L{"reason": d.reason}, float64(d.v))
@@ -148,6 +150,9 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_quic_rejected_total", "QUIC flows without a route or over the listener bound.", nil, float64(sn.QUICRejected))
 	e.Gauge("xproxy_quic_flows_open", "Open QUIC flows.", nil, float64(sn.QUICFlowsOpen))
 	e.Counter("xproxy_honeypot_hits_total", "Requests answered by a honeypot route.", nil, float64(sn.HoneypotHits))
+	for _, vp := range rt.patches {
+		e.Counter("xproxy_virtual_patch_hits_total", "Requests matched by a virtual patch.", L{"patch": vp.cfg.ID}, float64(vp.hits.Load()))
+	}
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "served"}, float64(sn.StaticServed))
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "not_found"}, float64(sn.StaticNotFound))

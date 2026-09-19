@@ -387,6 +387,7 @@ func (v *validator) config(c *Config) {
 			}
 		}
 	}
+	v.virtualPatches(c.VirtualPatches, routes)
 	if len(c.Server.Listeners) == 0 {
 		v.errf("server.listeners: at least one listener is required")
 	}
@@ -1203,6 +1204,9 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	}
 	v.headerMatches(p+".headers", r.Headers, false)
 	v.headerMatches(p+".cookies", r.Cookies, true)
+	if r.Policy != nil {
+		v.routePolicy(p+".policy", r.Policy)
+	}
 
 	actions := 0
 	if r.Upstream != "" {
@@ -2488,6 +2492,193 @@ func templateOK(t string) error {
 }
 
 // otlpExport validates a trace or log collector endpoint.
+// methodList checks a list of upper-case method tokens.
+func (v *validator) methodList(p string, methods []string) {
+	seen := map[string]bool{}
+	for j, m := range methods {
+		if m != strings.ToUpper(m) || m == "" || len(m) > 32 || strings.ContainsAny(m, " \t,") {
+			v.errf("%s[%d]: %q must be an upper-case token", p, j, m)
+		} else if seen[m] {
+			v.errf("%s[%d]: duplicate %q", p, j, m)
+		}
+		seen[m] = true
+	}
+}
+
+// mediaTypes checks a list of media types or type/* patterns.
+func (v *validator) mediaTypes(p string, types []string) {
+	for j, t := range types {
+		main, sub, ok := strings.Cut(t, "/")
+		if !ok || main == "" || sub == "" || t != strings.ToLower(t) || strings.ContainsAny(t, " ;,") || (main == "*" && sub != "*") {
+			v.errf("%s[%d]: %q must be type/subtype or type/*", p, j, t)
+		}
+	}
+}
+
+func (v *validator) routePolicy(p string, pol *RoutePolicy) {
+	v.methodList(p+".methods", pol.Methods)
+	v.mediaTypes(p+".content_types", pol.ContentTypes)
+	if pol.MaxURILength < 0 || pol.MaxURILength > 1<<20 {
+		v.errf("%s.max_uri_length: must be between 0 and 1048576", p)
+	}
+	if pol.MaxQueryBytes < 0 || pol.MaxQueryBytes > 1<<20 {
+		v.errf("%s.max_query_bytes: must be between 0 and 1048576", p)
+	}
+	if pol.MaxQueryParams < 0 || pol.MaxQueryParams > 10000 {
+		v.errf("%s.max_query_params: must be between 0 and 10000", p)
+	}
+	if pol.MaxHeaders < 0 || pol.MaxHeaders > 10000 {
+		v.errf("%s.max_headers: must be between 0 and 10000", p)
+	}
+	if pol.MaxHeaderBytes < 0 || pol.MaxHeaderBytes > 1<<24 {
+		v.errf("%s.max_header_bytes: must be between 0 and 16777216", p)
+	}
+	if len(pol.Query) > 256 {
+		v.errf("%s.query: at most 256 parameters", p)
+	}
+	if pol.DenyUnknown && len(pol.Query) == 0 {
+		v.errf("%s.deny_unknown_query: requires a query list", p)
+	}
+	names := map[string]bool{}
+	for j, q := range pol.Query {
+		qp := fmt.Sprintf("%s.query[%d]", p, j)
+		if q.Name == "" || len(q.Name) > 128 {
+			v.errf("%s.name: required, at most 128 bytes", qp)
+		} else if names[q.Name] {
+			v.errf("%s.name: duplicate %q", qp, q.Name)
+		}
+		names[q.Name] = true
+		switch q.Type {
+		case "string", "int", "number", "bool", "uuid":
+			if len(q.Values) > 0 {
+				v.errf("%s.values: only for type enum", qp)
+			}
+		case "enum":
+			if len(q.Values) == 0 || len(q.Values) > 1024 {
+				v.errf("%s.values: type enum needs 1 to 1024 values", qp)
+			}
+		default:
+			v.errf("%s.type: must be string, int, number, bool, uuid or enum", qp)
+		}
+		if q.MaxLength < 0 || q.MaxLength > 1<<20 {
+			v.errf("%s.max_length: must be between 0 and 1048576", qp)
+		}
+		if q.MaxRepeat < 1 || q.MaxRepeat > 1000 {
+			v.errf("%s.max_repeat: must be between 1 and 1000", qp)
+		}
+		if q.Pattern != "" {
+			if len(q.Pattern) > 512 {
+				v.errf("%s.pattern: at most 512 bytes", qp)
+			} else if _, err := regexp.Compile("^(?:" + q.Pattern + ")$"); err != nil {
+				v.errf("%s.pattern: %v", qp, err)
+			}
+		}
+	}
+}
+
+func (v *validator) patchMatches(p string, list []PatchMatch) {
+	for j, m := range list {
+		if m.Name == "" || len(m.Name) > 256 {
+			v.errf("%s[%d].name: required, at most 256 bytes", p, j)
+		}
+		if m.Pattern != "" {
+			if len(m.Pattern) > 512 {
+				v.errf("%s[%d].pattern: at most 512 bytes", p, j)
+			} else if _, err := regexp.Compile(m.Pattern); err != nil {
+				v.errf("%s[%d].pattern: %v", p, j, err)
+			}
+		}
+	}
+}
+
+// patchIDRE allows dots in patch identifiers (cve-2024-1234, app.export.1).
+var patchIDRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]{0,62})$`)
+
+func (v *validator) virtualPatches(patches []VirtualPatch, routes map[string]bool) {
+	if len(patches) > 1024 {
+		v.errf("virtual_patches: at most 1024 patches")
+	}
+	ids := map[string]bool{}
+	for i := range patches {
+		vp := &patches[i]
+		p := fmt.Sprintf("virtual_patches[%d]", i)
+		if !patchIDRE.MatchString(vp.ID) {
+			v.errf("%s.id: %q is not a valid identifier (a-z, 0-9, . _ -)", p, vp.ID)
+		} else if ids[vp.ID] {
+			v.errf("%s.id: duplicate %q", p, vp.ID)
+		}
+		ids[vp.ID] = true
+		if len(vp.Description) > 512 {
+			v.errf("%s.description: at most 512 bytes", p)
+		}
+		for j, h := range vp.Hosts {
+			if !hostPatternOK(h) {
+				v.errf("%s.hosts[%d]: %q is not a valid host pattern", p, j, h)
+			}
+		}
+		for j, r := range vp.Routes {
+			if !routes[r] {
+				v.errf("%s.routes[%d]: unknown route %q", p, j, r)
+			}
+		}
+		for j, path := range vp.Paths {
+			if !strings.HasPrefix(path, "/") || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\ ") {
+				v.errf("%s.paths[%d]: %q must be an absolute, normalised prefix", p, j, path)
+			}
+		}
+		for j, re := range vp.PathRegex {
+			if re == "" || len(re) > 512 {
+				v.errf("%s.path_regex[%d]: must be 1 to 512 bytes", p, j)
+			} else if _, err := regexp.Compile("^(?:" + re + ")$"); err != nil {
+				v.errf("%s.path_regex[%d]: %v", p, j, err)
+			}
+		}
+		v.methodList(p+".methods", vp.Methods)
+		v.patchMatches(p+".query", vp.Query)
+		v.patchMatches(p+".headers", vp.Headers)
+		v.patchMatches(p+".cookies", vp.Cookies)
+		if b := vp.Body; b != nil {
+			if b.Pattern == "" || len(b.Pattern) > 512 {
+				v.errf("%s.body.pattern: required, at most 512 bytes", p)
+			} else if _, err := regexp.Compile(b.Pattern); err != nil {
+				v.errf("%s.body.pattern: %v", p, err)
+			}
+			if b.MaxBytes < 1 || b.MaxBytes > 16<<20 {
+				v.errf("%s.body.max_bytes: must be between 1 and 16 MiB", p)
+			}
+			v.mediaTypes(p+".body.content_types", b.ContentTypes)
+		}
+		if len(vp.Paths)+len(vp.PathRegex)+len(vp.Query)+len(vp.Headers)+len(vp.Cookies) == 0 && vp.Body == nil {
+			v.errf("%s: needs at least one of paths, path_regex, query, headers, cookies or body", p)
+		}
+		switch vp.Action {
+		case "block", "log":
+		default:
+			v.errf("%s.action: must be block or log", p)
+		}
+		if vp.Status < 400 || vp.Status > 599 {
+			v.errf("%s.status: must be a 4xx or 5xx status", p)
+		}
+		if vp.Expires != "" {
+			if _, err := ParsePatchExpiry(vp.Expires); err != nil {
+				v.errf("%s.expires: %v", p, err)
+			}
+		}
+	}
+}
+
+// ParsePatchExpiry parses an expiry as RFC 3339 or a date, which
+// expires at the end of that day in UTC.
+func ParsePatchExpiry(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t.Add(24*time.Hour - time.Nanosecond), nil
+	}
+	return time.Time{}, fmt.Errorf("%q is not RFC 3339 or YYYY-MM-DD", s)
+}
+
 func (v *validator) fleet(f *Fleet) {
 	u, err := url.Parse(f.Controller)
 	switch {

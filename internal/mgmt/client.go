@@ -17,6 +17,7 @@ import (
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/fleet"
 	"github.com/rom/xproxy/internal/icap"
+	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
@@ -114,6 +115,12 @@ func (c *Client) Post(path string) error {
 func (c *Client) ClusterStatus() (*cluster.Status, error) {
 	var st cluster.Status
 	return &st, c.do("GET", "/v1/cluster", &st)
+}
+
+// Patches fetches the virtual patches with their counters.
+func (c *Client) Patches() ([]proxy.PatchStatus, error) {
+	var out []proxy.PatchStatus
+	return out, c.do("GET", "/v1/patches", &out)
 }
 
 // FleetStatus fetches the fleet agent view.

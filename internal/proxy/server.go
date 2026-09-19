@@ -66,6 +66,8 @@ type Server struct {
 	acme        *acme.Manager
 	// wafStats keeps per rule counters and learning across reloads.
 	wafStats *waf.Stats
+	// patches keeps virtual patch hit counters across generations.
+	patches patchCounters
 	// tickets manages shared session ticket keys; nil without the section.
 	tickets        *tlsconf.Tickets
 	ticketMismatch bound.Notice
@@ -143,7 +145,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		bl := s.bans.Load()
 		return bl != nil && bl.DropsConnections() && bl.Banned(addr)
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s), s.wafStats)
+	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s), s.wafStats, &s.patches)
 	if err != nil {
 		if bl := s.bans.Load(); bl != nil {
 			bl.Close()
@@ -729,7 +731,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s), s.wafStats)
+	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s), s.wafStats, &s.patches)
 	if err != nil {
 		s.stats.ReloadFailures.Add(1)
 		return err

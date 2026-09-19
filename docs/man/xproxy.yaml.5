@@ -4516,6 +4516,161 @@ T}	T{
 
 T}
 .TE
+.SH "virtual_patches[]"
+.PP
+A virtual patch blocks a known vulnerability by the shape of the requests that exploit it, while the application is being fixed, and records how often it fired. Patches run right after route matching, before rate limits, filters and the WAF, so they cost nothing for other traffic and need no \fBwaf\fR section. Every listed condition must hold for a patch to apply; at least one of \fBpaths\fR, \fBpath_regex\fR, \fBquery\fR, \fBheaders\fR, \fBcookies\fR or \fBbody\fR is required. A match with \fBaction: block\fR answers \fBstatus\fR with reason \fBvirtual_patch\fR and the id as \fBdetail\fR (ban category \fBvirtual_patch\fR); with \fBaction: log\fR the request continues and the security event and the access log carry \fBvirtual_patch: <id>\fR. \fBxproxyctl patches\fR and \fBGET /v1/patches\fR list the patches with hits, last hit, expiry and state; \fBxproxy_virtual_patch_hits_total{patch}\fR counts per patch and hits survive reloads.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.1i) lbw(1.0i) lbx
+lw(1.2i) lw(1.1i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBid\fR
+T}	T{
+identifier
+T}	T{
+required,\: unique
+T}	T{
+\fBa\-\:z\fR,\: \fB0\-\:9\fR,\: \fB.\fR,\: \fB_\fR,\: \fB\-\fR,\: at most 63 characters (\fBcve\-\:2024\-\:1234\fR)
+T}
+T{
+\fBdescription\fR
+T}	T{
+string
+T}	T{
+
+T}	T{
+Shown in the status;\: at most 512 bytes
+T}
+T{
+\fBhosts\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Host patterns,\: exact or \fB*.\:example.\:com\fR
+T}
+T{
+\fBroutes\fR
+T}	T{
+list of names
+T}	T{
+any
+T}	T{
+Only requests matched to these routes
+T}
+T{
+\fBpaths\fR
+T}	T{
+list of prefixes
+T}	T{
+
+T}	T{
+Prefixes of the cleaned path
+T}
+T{
+\fBpath_\:regex\fR
+T}	T{
+list of regex
+T}	T{
+
+T}	T{
+Patterns matching the whole cleaned path
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Upper\-case methods
+T}
+T{
+\fBquery\fR
+T}	T{
+list of \fB{name,\: pattern}\fR
+T}	T{
+
+T}	T{
+The parameter must be present and,\: with \fBpattern\fR,\: some value must contain a match
+T}
+T{
+\fBheaders\fR
+T}	T{
+list of \fB{name,\: pattern}\fR
+T}	T{
+
+T}	T{
+Same for header fields (names case insensitive)
+T}
+T{
+\fBcookies\fR
+T}	T{
+list of \fB{name,\: pattern}\fR
+T}	T{
+
+T}	T{
+Same for cookies
+T}
+T{
+\fBbody\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+\fBpattern\fR (required) matched anywhere in the body,\: buffered up to \fBmax_\:bytes\fR (default 64 KiB,\: at most 16 MiB) and replayed to the upstream;\: \fBcontent_\:types\fR narrows the inspection;\: a larger body or another media type does not match
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBblock\fR,\: \fBlog\fR
+T}	T{
+\fBblock\fR
+T}	T{
+
+T}
+T{
+\fBstatus\fR
+T}	T{
+int
+T}	T{
+\fB403\fR
+T}	T{
+Response for \fBblock\fR;\: 4xx or 5xx (404 hides the patched path)
+T}
+T{
+\fBexpires\fR
+T}	T{
+date
+T}	T{
+none
+T}	T{
+RFC 3339 or \fBYYYY\-\:MM\-\:DD\fR (end of that day,\: UTC);\: an expired patch no longer applies and shows as expired
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+\fBfalse\fR keeps the patch without applying it
+T}
+.TE
+.PP
+Hand\-written SecLang in \fBwaf.profiles[].directive_files\fR remains the tool for patches that need the rule engine\(aqs transformations or scoring; \fBexamples/security/positive\-model.yaml\fR shows both kinds side by side with a route policy.
 .SH "cluster"
 .PP
 Present means enabled. Nodes exchange rate limit consumption and ban changes over mutual TLS (AMR\-009, AMR\-021). Every node listens and dials every peer; there is no leader. Enabling or disabling the section, and changing \fBlisten\fR, \fBnode_id\fR or \fBtls\fR, require a restart. Peers, intervals and sharing flags reload.
@@ -6406,6 +6561,196 @@ T}
 .TE
 .PP
 Denies answer 403 with reason \fBgeo\fR and feed ban triggers under the \fBgeo\fR category. A \fBrate_limits[].key\fR of \fBcountry\fR keeps one bucket per country; an unknown country falls back to the client address.
+.SS "routes[].policy"
+.PP
+The route\(aqs positive security model: what a request may look like. Everything outside it is refused right after route matching, before virtual patches\(aq successors (rate limits, filters, the WAF) spend work on the request, with a terse status, reason \fBpolicy\fR and a \fBdetail\fR attribute in the security event naming the check (\fBmethod:DELETE\fR, \fBcontent_type:application/xml\fR, \fBquery:id:not_int\fR, \fBheader_count:41\fR and so on). Refusals count in \fBdenied_policy\fR and feed ban triggers under \fBpolicy\fR. \fBroutes[].methods\fR selects the route; \fBpolicy.methods\fR refuses, with 405 and an \fBAllow\fR header.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.9i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Allowed methods (upper case);\: others get 405 with \fBAllow\fR
+T}
+T{
+\fBcontent_\:types\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Media types allowed for requests with a body,\: exact (\fBapplication/\:json\fR) or \fBtype/\:*\fR;\: parameters such as \fBcharset\fR are ignored;\: others get 415
+T}
+T{
+\fBrequire_\:content_\:type\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+A body without \fBContent\-\:Type\fR gets 415
+T}
+T{
+\fBmax_\:uri_\:length\fR
+T}	T{
+int
+T}	T{
+server limit
+T}	T{
+Lower bound on the request URI for this route (414)
+T}
+T{
+\fBmax_\:query_\:bytes\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+Bound on the raw query string (414)
+T}
+T{
+\fBmax_\:query_\:params\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+Bound on the number of parameters,\: repeats counted (400)
+T}
+T{
+\fBmax_\:headers\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+Bound on the number of header fields (431)
+T}
+T{
+\fBmax_\:header_\:bytes\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+Bound on the sum of header names and values (431)
+T}
+T{
+\fBquery\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Parameter descriptions;\: see below
+T}
+T{
+\fBdeny_\:unknown_\:query\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Parameters not in \fBquery\fR get 400;\: requires \fBquery\fR
+T}
+.TE
+.PP
+Each \fBquery\fR entry:
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.8i) lbw(1.0i) lbx
+lw(0.9i) lw(0.8i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required,\: unique
+T}	T{
+
+T}
+T{
+\fBtype\fR
+T}	T{
+\fBstring\fR,\: \fBint\fR,\: \fBnumber\fR,\: \fBbool\fR,\: \fBuuid\fR,\: \fBenum\fR
+T}	T{
+\fBstring\fR
+T}	T{
+\fBbool\fR accepts \fBtrue\fR,\: \fBfalse\fR,\: \fB1\fR,\: \fB0\fR;\: \fBuuid\fR the 8\-4\-4\-4\-12 hex form;\: \fBenum\fR needs \fBvalues\fR
+T}
+T{
+\fBrequired\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+The parameter must be present
+T}
+T{
+\fBmax_\:length\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+Bound on each value in bytes
+T}
+T{
+\fBpattern\fR
+T}	T{
+regex
+T}	T{
+none
+T}	T{
+Every value must match the whole expression
+T}
+T{
+\fBvalues\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Allowed values for \fBenum\fR (1 to 1024)
+T}
+T{
+\fBmax_\:repeat\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+How many times the parameter may appear
+T}
+.TE
+.PP
+A malformed query string (bad percent encoding) is refused when the route has a \fBquery\fR list or \fBmax_query_params\fR. Bodies are not part of the policy: \fBwaf.profiles[].json_schemas\fR and the \fBopenapi\fR filter validate them.
 .SH "acme"
 .PP
 Required when any listener has \fBtls.acme\fR groups. One account per proxy; the account key, account URL and issued certificates live under \fBstate_dir\fR (mode \fB0700\fR, files \fB0600\fR), so a restart serves the existing certificates immediately and only renews what is due.

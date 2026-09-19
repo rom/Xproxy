@@ -218,6 +218,12 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `shutdown_timeout`. The dry run reports the drains (`drains`) and
   only a listener with a UDP socket changed on the same address still
   needs a restart.
+- Positive security model per route (`routes[].policy`: methods,
+  media types, query parameter types and bounds, URI, query and header
+  limits) and structured virtual patches (`virtual_patches`: host,
+  route, path, method, parameter, header, cookie and body conditions,
+  block or log, expiry, per patch counters, `xproxyctl patches`,
+  `GET /v1/patches`, `xproxy_virtual_patch_hits_total`).
 - Fleet operation: `xproxy-fleet`, a controller that serves each node
   its configuration bundle over mutual TLS and collects the nodes'
   status, and the `fleet` agent section in the proxy that long polls,

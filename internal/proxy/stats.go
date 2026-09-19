@@ -41,6 +41,8 @@ type Stats struct {
 	DeniedICAP            atomic.Uint64
 	DeniedFilter          atomic.Uint64
 	DeniedGeo             atomic.Uint64
+	DeniedPolicy          atomic.Uint64
+	DeniedVirtualPatch    atomic.Uint64
 	HoneypotHits          atomic.Uint64
 	StaticServed          atomic.Uint64
 	StaticNotFound        atomic.Uint64
@@ -111,6 +113,8 @@ type Snapshot struct {
 	DeniedICAP            uint64     `json:"denied_icap"`
 	DeniedFilter          uint64     `json:"denied_filter"`
 	DeniedGeo             uint64     `json:"denied_geo"`
+	DeniedPolicy          uint64     `json:"denied_policy"`
+	DeniedVirtualPatch    uint64     `json:"denied_virtual_patch"`
 	HoneypotHits          uint64     `json:"honeypot_hits"`
 	StaticServed          uint64     `json:"static_served"`
 	StaticNotFound        uint64     `json:"static_not_found"`
@@ -210,6 +214,8 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedICAP:            s.DeniedICAP.Load(),
 		DeniedFilter:          s.DeniedFilter.Load(),
 		DeniedGeo:             s.DeniedGeo.Load(),
+		DeniedPolicy:          s.DeniedPolicy.Load(),
+		DeniedVirtualPatch:    s.DeniedVirtualPatch.Load(),
 		HoneypotHits:          s.HoneypotHits.Load(),
 		StaticServed:          s.StaticServed.Load(),
 		StaticNotFound:        s.StaticNotFound.Load(),

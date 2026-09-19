@@ -1078,6 +1078,79 @@ feature, and move to `challenge` (browsers pass, scripts do not) or
 log scale, so a client is flagged for volume only when it sends
 several times what its peers do.
 
+### Positive security model
+
+Where an API is documented, refusing everything else is cheaper and
+safer than recognising attacks in it. `routes[].policy` states what a
+request may look like and the proxy answers 405, 415, 400, 414 or 431
+to the rest, before rate limits, filters and the WAF run:
+
+```yaml
+routes:
+  - name: api
+    hosts: [api.example.com]
+    paths: [/v1/]
+    upstream: api
+    policy:
+      methods: [GET, POST, PUT, DELETE]
+      content_types: [application/json]
+      require_content_type: true
+      max_query_params: 16
+      max_headers: 40
+      deny_unknown_query: true
+      query:
+        - {name: page, type: int}
+        - {name: sort, type: enum, values: [created, updated]}
+        - {name: q, type: string, max_length: 128}
+        - {name: id, type: uuid, max_repeat: 50}
+```
+
+The security event names the failed check (`detail: query:page:not_int`)
+so a broken client is diagnosed from the log, `denied_policy` counts the
+refusals and a ban trigger on `policy` catches clients that keep probing.
+For bodies use `waf.profiles[].json_schemas` or the `openapi` filter,
+which derives the whole positive model, parameters included, from an
+OpenAPI description.
+
+### Virtual patching
+
+When a vulnerability is published and the fix is days away, a virtual
+patch blocks the exploit's request shape at the proxy:
+
+```yaml
+virtual_patches:
+  - id: cve-2024-1234
+    description: legacy export command injection
+    hosts: [www.example.com]
+    paths: [/plugins/legacy-export/]
+    query: [{name: cmd}]
+    status: 404
+    expires: "2026-12-31"
+  - id: prototype-pollution
+    routes: [api]
+    body: {pattern: '"__proto__"\s*:', content_types: [application/json]}
+```
+
+Conditions combine with AND, so a patch is as narrow as the exploit:
+path plus parameter, header pattern on a host, body pattern on a route.
+`action: log` runs a patch in shadow first; `expires` retires a
+temporary measure on a date so it cannot silently outlive the fix, and
+`xproxyctl patches` shows every patch with its hits, last hit and
+state:
+
+```
+$ xproxyctl patches
+PATCH                STATE    ACTION  STATUS  HITS  LAST HIT     EXPIRES     DESCRIPTION
+cve-2024-1234        active   block   404     37    2m14s ago    2026-12-31  legacy export command injection
+prototype-pollution  active   block   403     0     -            -
+log4shell-probe      active   log     403     1203  4s ago       -           JNDI lookups in any header
+```
+
+A patch needs no WAF section and runs before it; patches that need the
+rule engine's transformations (decoding, normalisation, scoring) are
+still written as SecLang in `directive_files`, as
+`examples/waf/custom-rules.conf` shows.
+
 ### Ban list
 
 ```yaml

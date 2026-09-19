@@ -412,6 +412,22 @@ func applyDefaults(c *Config) {
 		}
 	}
 
+	for i := range c.VirtualPatches {
+		p := &c.VirtualPatches[i]
+		setStr(&p.Action, "block")
+		setInt(&p.Status, 403)
+		if p.Body != nil && p.Body.MaxBytes == 0 {
+			p.Body.MaxBytes = 64 << 10
+		}
+	}
+	for i := range c.Routes {
+		if pol := c.Routes[i].Policy; pol != nil {
+			for j := range pol.Query {
+				setStr(&pol.Query[j].Type, "string")
+				setInt(&pol.Query[j].MaxRepeat, 1)
+			}
+		}
+	}
 	if f := c.Fleet; f != nil {
 		setDur(&f.Interval, 30*time.Second)
 		setDur(&f.Timeout, 10*time.Second)

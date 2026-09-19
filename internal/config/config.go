@@ -52,6 +52,8 @@ type Config struct {
 	// Cluster enables sharing of rate limit consumption and bans between
 	// proxies when present.
 	Cluster *Cluster `yaml:"cluster"`
+	// VirtualPatches block known vulnerabilities by request shape.
+	VirtualPatches []VirtualPatch `yaml:"virtual_patches"`
 	// Fleet makes this node fetch its configuration bundle from a fleet
 	// controller and report its status there (xproxy-fleet).
 	Fleet *Fleet `yaml:"fleet"`
@@ -1087,6 +1089,9 @@ type Route struct {
 	Filters []string `yaml:"filters"`
 	// Geo allows or denies by client country (needs the geoip section).
 	Geo *RouteGeo `yaml:"geo"`
+	// Policy is the route's positive security model: what a request may
+	// look like; everything else is refused before any other processing.
+	Policy *RoutePolicy `yaml:"policy"`
 	// Cache stores responses of this route (needs the cache section).
 	Cache *RouteCache `yaml:"cache"`
 	// Mirror copies requests of this route to a second upstream.
@@ -1101,6 +1106,122 @@ type Route struct {
 	// Compress overrides the compression section for this route: false
 	// turns it off, true requires the section.
 	Compress *bool `yaml:"compress"`
+}
+
+// RoutePolicy is a positive security model for a route: allowed
+// methods, media types and query parameters, and bounds on the URI,
+// headers and query. A request outside the policy is refused (405, 415,
+// 400, 414 or 431) with reason policy before rate limits, filters and
+// the WAF run, and the refusal feeds ban triggers under policy.
+type RoutePolicy struct {
+	// Methods allowed; others get 405 with an Allow header. Unlike
+	// routes[].methods, which selects the route, this refuses. Empty
+	// allows any method.
+	Methods []string `yaml:"methods"`
+	// ContentTypes allowed for requests with a body: media types or
+	// type/* patterns; others get 415. Empty allows any.
+	ContentTypes []string `yaml:"content_types"`
+	// RequireContentType refuses a body without a Content-Type header.
+	RequireContentType bool `yaml:"require_content_type"`
+	// MaxURILength lowers server.limits.max_uri_length for the route.
+	MaxURILength int `yaml:"max_uri_length"`
+	// MaxQueryBytes bounds the raw query string; MaxQueryParams the
+	// number of parameters (repeats counted). 0 means no bound.
+	MaxQueryBytes  int `yaml:"max_query_bytes"`
+	MaxQueryParams int `yaml:"max_query_params"`
+	// MaxHeaders bounds the number of header fields; MaxHeaderBytes the
+	// sum of their names and values. 0 means no bound (the server limit
+	// still applies).
+	MaxHeaders     int `yaml:"max_headers"`
+	MaxHeaderBytes int `yaml:"max_header_bytes"`
+	// Query describes the parameters; with DenyUnknown, parameters not
+	// listed are refused.
+	Query       []QueryParamPolicy `yaml:"query"`
+	DenyUnknown bool               `yaml:"deny_unknown_query"`
+}
+
+// QueryParamPolicy describes one allowed query parameter.
+type QueryParamPolicy struct {
+	Name string `yaml:"name"`
+	// Type is string (default), int, number, bool, uuid or enum (with
+	// Values).
+	Type string `yaml:"type"`
+	// Required refuses requests without the parameter.
+	Required bool `yaml:"required"`
+	// MaxLength bounds each value; 0 means no bound.
+	MaxLength int `yaml:"max_length"`
+	// Pattern is an RE2 expression every value must match in full.
+	Pattern string `yaml:"pattern"`
+	// Values are the allowed values for type enum.
+	Values []string `yaml:"values"`
+	// MaxRepeat bounds how many times the parameter may appear. Default 1.
+	MaxRepeat int `yaml:"max_repeat"`
+}
+
+// VirtualPatch blocks a known vulnerability by its request shape while
+// the application is being fixed: every listed condition must hold for
+// the patch to apply. Patches run right after route matching, before
+// rate limits, filters and the WAF, so they cost nothing for other
+// traffic and work without a WAF section.
+type VirtualPatch struct {
+	// ID names the patch in logs, status and metrics (for example
+	// cve-2024-1234).
+	ID          string `yaml:"id"`
+	Description string `yaml:"description"`
+	// Hosts and Routes narrow the patch to host patterns (exact or
+	// "*.example.com") and route names. Empty means every host or route.
+	Hosts  []string `yaml:"hosts"`
+	Routes []string `yaml:"routes"`
+	// Paths are prefixes of the cleaned path; PathRegex patterns match the
+	// whole path. At least one condition among paths, path_regex, query,
+	// headers, cookies and body is required.
+	Paths     []string `yaml:"paths"`
+	PathRegex []string `yaml:"path_regex"`
+	// Methods narrows the patch to these methods.
+	Methods []string `yaml:"methods"`
+	// Query, Headers and Cookies are conditions on parameters, header
+	// fields and cookies: the name must be present and, with a pattern,
+	// some value must match it.
+	Query   []PatchMatch `yaml:"query"`
+	Headers []PatchMatch `yaml:"headers"`
+	Cookies []PatchMatch `yaml:"cookies"`
+	// Body matches the request body (buffered up to max_bytes and
+	// replayed to the upstream).
+	Body *PatchBody `yaml:"body"`
+	// Action is block (default) or log.
+	Action string `yaml:"action"`
+	// Status is the response for block. Default 403.
+	Status int `yaml:"status"`
+	// Expires disables the patch after this date (RFC 3339 or
+	// YYYY-MM-DD) so a temporary measure does not outlive the fix
+	// unnoticed; the status shows expired patches.
+	Expires string `yaml:"expires"`
+	// Enabled false keeps the patch in the configuration without
+	// applying it. Default true.
+	Enabled *bool `yaml:"enabled"`
+}
+
+// IsEnabled reports whether the patch applies.
+func (p *VirtualPatch) IsEnabled() bool { return p.Enabled == nil || *p.Enabled }
+
+// PatchMatch is one condition on a named parameter, header or cookie.
+type PatchMatch struct {
+	Name string `yaml:"name"`
+	// Pattern is an RE2 expression matched anywhere in a value; empty
+	// means presence suffices.
+	Pattern string `yaml:"pattern"`
+}
+
+// PatchBody matches the request body.
+type PatchBody struct {
+	// Pattern is an RE2 expression matched anywhere in the body.
+	Pattern string `yaml:"pattern"`
+	// MaxBytes bounds the body inspected; a larger body does not match
+	// the patch. Default 64 KiB.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// ContentTypes narrows the inspection to these media types (type/*
+	// allowed). Empty inspects every body.
+	ContentTypes []string `yaml:"content_types"`
 }
 
 // HeaderMatch is one condition on a request header or cookie: exactly

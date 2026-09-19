@@ -94,6 +94,14 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Concurrency ceiling with immediate 503.
 - Keyed token bucket rate limits by client address, route or header, with
   reject or tarpit actions; bucket tables are bounded in memory.
+- Positive security model per route: allowed methods, media types and
+  query parameters with types, lengths, patterns and repeat counts, and
+  bounds on the URI, query and headers, refused before any other
+  processing with the failed check named in the log.
+- Virtual patches: known vulnerabilities blocked by request shape (host,
+  route, path, method, parameter, header, cookie and body conditions),
+  before rate limits, filters and the WAF, with per patch counters, a
+  shadow action and an expiry date.
 - Routing on a canonicalised path so dot segments cannot bypass a policy.
 - Host header normalisation and strict host matching.
 - CIDR deny and allow lists per route.

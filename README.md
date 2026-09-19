@@ -86,6 +86,9 @@ an identifier from the access log to the upstream.
 - Keyed rate limits (address, header, cookie, country) with reject or
   tarpit; CIDR allow and deny lists; trusted proxy handling for
   forwarded addresses
+- Positive security model per route (methods, media types, typed query
+  parameters, size bounds) and virtual patches that block a published
+  vulnerability by request shape, with counters and expiry
 - Web application firewall on the bundled OWASP Core Rule Set through
   Coraza: block or detect per route, custom rules and exclusions,
   bounded request and response inspection

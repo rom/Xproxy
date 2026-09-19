@@ -138,6 +138,7 @@ func TestCommands(t *testing.T) {
 		{[]string{"unban"}, 2, "usage: xproxyctl unban"},
 		{[]string{"cluster"}, 1, ""},
 		{[]string{"fleet"}, 0, "fleet: not configured"},
+		{[]string{"patches"}, 0, "no virtual patches configured"},
 		{[]string{"acme"}, 1, ""},
 		{[]string{"metrics"}, 0, "xproxy_"},
 		{[]string{"series", "-since", "1m", "-last", "5"}, 0, ""},

@@ -32,6 +32,7 @@ import (
 type runtime struct {
 	cfg        *config.Config
 	generation uint64
+	patches    []*compiledPatch
 	router     *router.Router
 	pools      map[string]*upstream.Pool
 	rateLimits map[string]*rateLimit
@@ -139,6 +140,8 @@ type compiledRoute struct {
 	geoAllow        map[string]bool
 	geoDeny         map[string]bool
 	geoUnknown      string
+	policy          *compiledPolicy
+	policyDenied    atomic.Uint64
 }
 
 // geoAllowed applies the route's country policy.
@@ -169,10 +172,11 @@ func wafSelection(cfg *config.Config, r *config.Route) (profile string, mode waf
 	return cfg.WAF.DefaultProfile, waf.Mode(cfg.WAF.DefaultMode)
 }
 
-func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events *eventBus, wafStats *waf.Stats) (*runtime, error) {
+func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events *eventBus, wafStats *waf.Stats, patches *patchCounters) (*runtime, error) {
 	rt := &runtime{
 		cfg:        cfg,
 		generation: generation,
+		patches:    compilePatches(cfg.VirtualPatches, patches),
 		router:     router.New(cfg.Routes),
 		pools:      make(map[string]*upstream.Pool, len(cfg.Upstreams)),
 		rateLimits: make(map[string]*rateLimit, len(cfg.RateLimits)),
@@ -309,6 +313,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 			deny:  netutil.ParsePrefixes(r.DenyCIDRs),
 			class: shed.ParseClass(r.PriorityClass),
 		}
+		cr.policy = compilePolicy(r.Policy)
 		if r.Challenge != nil && r.Challenge.Mode != "off" && cfg.Challenge != nil {
 			cr.challenge = r.Challenge
 		}

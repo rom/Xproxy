@@ -210,6 +210,8 @@ the `denied` reason.
 | 5 | Host normalisation (`netutil.Host`) | 400 | `denied_bad_host` |
 | 5b | Reserved paths `/.xproxy/challenge` (proof verification) and `/.xproxy/challenge.js` | 303 / 403 | `challenges_*` |
 | 6 | Path cleaning (`netutil.CleanPath`) and route match (host, path prefix or anchored pattern, method, header and cookie conditions) | 404 | `denied_no_route` |
+| 6b | Virtual patches: host, route, method, path, parameter, header, cookie and body conditions; block with the configured status, or log and continue | 4xx / 5xx | `denied_virtual_patch`, per patch hits |
+| 6c | Route policy: methods, media types, URI, query and header bounds, query parameter types | 405 / 415 / 400 / 414 / 431 | `denied_policy` |
 | 7 | CIDR deny then allow | 403 | `denied_acl` |
 | 7b | Challenge gate: unverified clients on routes with `challenge` (always, or in `load` mode above the level) receive the page | 503 page | `challenges_issued` |
 | 7c | Adaptive shedding: the route's priority class against the load level | 503 + `Retry-After` | `shed` |
