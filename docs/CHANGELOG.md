@@ -222,6 +222,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- `openapi` filter: `spec_url` fetches the description over HTTPS and
+  refreshes it in the background with ETags and a `cache_file` for
+  outages; `spec_file` is re-read when it changes without a reload;
+  `refresh`, `timeout` and `ca_file` options; a description that fails
+  to load keeps the previous one.
 - Device identifiers and automation markers in the filters: the
   challenge script reports WebDriver and headless markers, carried in
   the cookie as `Info.Automation` and the `automation` log attribute;

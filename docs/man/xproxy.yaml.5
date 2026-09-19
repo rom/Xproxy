@@ -6571,8 +6571,8 @@ Validates requests against an OpenAPI 3.0 or 3.1 description (JSON or YAML): the
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.6i) lbw(1.2i) lbx
-lw(1.0i) lw(0.6i) lw(1.2i) lx.
+lbw(1.0i) lbw(0.9i) lbw(1.2i) lbx
+lw(1.0i) lw(0.9i) lw(1.2i) lx.
 T{
 Option
 T}	T{
@@ -6587,9 +6587,54 @@ T{
 T}	T{
 path
 T}	T{
-required
+one of \fBspec_\:file\fR,\: \fBspec_\:url\fR
 T}	T{
-The description;\: loaded at configuration load,\: so a change needs a reload
+The description on disk,\: checked at configuration load;\: afterwards re\-read when its change time or size moves,\: checked at most every \fBrefresh\fR on the request path,\: so a spec update needs no reload;\: a file that no longer compiles keeps the last good description and is logged
+T}
+T{
+\fBspec_\:url\fR
+T}	T{
+URL
+T}	T{
+
+T}	T{
+Fetch the description over HTTPS (plain HTTP only to localhost) at start and every \fBrefresh\fR in the background with \fBIf\-\:None\-\:Match\fR;\: a fetch that fails or does not compile keeps the last good description and is logged. Both filters of the same route expose \fBReloads\fR and \fBFailures\fR in the filter log lines
+T}
+T{
+\fBrefresh\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR (file),\: \fB5m\fR (URL)
+T}	T{
+Check or fetch interval,\: 1s to 24h
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+One fetch,\: 1s to 1m;\: the fetch uses no environment proxy
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system roots
+T}	T{
+Private CA for \fBspec_\:url\fR
+T}
+T{
+\fBcache_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+With \fBspec_\:url\fR: the last good description is written here (mode \fB0600\fR) and used when the URL is unreachable at start,\: so a registry outage does not stop the proxy
 T}
 T{
 \fBbase_\:path\fR

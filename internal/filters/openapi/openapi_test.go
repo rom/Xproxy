@@ -3,10 +3,14 @@ package openapi
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/filter/filtertest"
@@ -199,5 +203,148 @@ func TestSpecErrors(t *testing.T) {
 	r, _ := http.NewRequest("GET", "http://x/api/ping", nil)
 	if v := filtertest.Run(f, r, nil).Request; v.Deny {
 		t.Fatalf("json spec: %+v", v)
+	}
+}
+
+func TestFileReload(t *testing.T) {
+	path := write(t, spec)
+	f, err := filtertest.Build("openapi", "o", filter.Options{"spec_file": path, "refresh": "1s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := f.(*guard)
+	now := time.Unix(1_700_000_000, 0)
+	g.now = func() time.Time { return now }
+	ping := func() bool {
+		r, _ := http.NewRequest("GET", "http://api.example.com/v1/ping", nil)
+		return !filtertest.Run(f, r, nil).Request.Deny
+	}
+	if ping() {
+		t.Fatal("ping documented before the change")
+	}
+	// A changed file is picked up once the refresh interval passed; the
+	// change time must move, so the rewrite is dated later.
+	newSpec := strings.Replace(spec, "paths:\n", "paths:\n  /ping: {get: {}}\n", 1)
+	if err := os.WriteFile(path, []byte(newSpec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(2 * time.Second)
+	_ = os.Chtimes(path, later, later)
+	if ping() {
+		t.Fatal("reloaded before the interval")
+	}
+	now = now.Add(2 * time.Second)
+	if !ping() || g.Reloads.Load() != 1 {
+		t.Fatalf("not reloaded: reloads %d", g.Reloads.Load())
+	}
+	// A broken rewrite keeps the last good description and counts.
+	_ = os.WriteFile(path, []byte("openapi: 3.1.0\npaths: {}\n"), 0o600)
+	_ = os.Chtimes(path, later.Add(2*time.Second), later.Add(2*time.Second))
+	now = now.Add(2 * time.Second)
+	if !ping() || g.Failures.Load() != 1 || g.Reloads.Load() != 1 {
+		t.Fatalf("broken file replaced the description: failures %d reloads %d", g.Failures.Load(), g.Reloads.Load())
+	}
+	// Rewriting the same bytes is not a reload.
+	_ = os.WriteFile(path, []byte(newSpec), 0o600)
+	_ = os.Chtimes(path, later.Add(4*time.Second), later.Add(4*time.Second))
+	now = now.Add(2 * time.Second)
+	if !ping() || g.Reloads.Load() != 1 {
+		t.Fatalf("identical content counted as a reload: %d", g.Reloads.Load())
+	}
+	_ = f.(interface{ Close() error }).Close()
+}
+
+func TestURLSpec(t *testing.T) {
+	var fetches, notModified atomic.Int64
+	var mu sync.Mutex
+	current := spec
+	etag := `"v1"`
+	set := func(body, tag string) {
+		mu.Lock()
+		current, etag = body, tag
+		mu.Unlock()
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		mu.Lock()
+		body, tag := current, etag
+		mu.Unlock()
+		if r.Header.Get("If-None-Match") == tag {
+			notModified.Add(1)
+			w.WriteHeader(304)
+			return
+		}
+		w.Header().Set("ETag", tag)
+		w.Header().Set("Content-Type", "application/yaml")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+	cache := filepath.Join(t.TempDir(), "orders.cache")
+	for i, o := range []filter.Options{
+		{"spec_url": "ftp://x/spec"}, {"spec_url": "http://example.com/spec"}, {"spec_url": srv.URL, "spec_file": "/x"},
+		{"spec_url": srv.URL, "refresh": "10ms"}, {"spec_url": srv.URL, "timeout": "5m"}, {"spec_url": srv.URL, "cache_file": "relative"},
+		{"spec_file": "/x", "cache_file": "/c"}, {"spec_url": srv.URL, "ca_file": "rel.pem"},
+	} {
+		if _, err := filtertest.Build("openapi", "o", o); err == nil {
+			t.Errorf("options %d accepted: %v", i, o)
+		}
+	}
+	f, err := filtertest.Build("openapi", "o", filter.Options{"spec_url": srv.URL, "refresh": "1s", "cache_file": cache})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := f.(*guard)
+	if fetches.Load() != 1 || g.etag != etag {
+		t.Fatalf("initial fetch %d etag %q", fetches.Load(), g.etag)
+	}
+	if data, err := os.ReadFile(cache); err != nil || string(data) != spec {
+		t.Fatalf("cache not written: %v", err)
+	}
+	r, _ := http.NewRequest("GET", "http://api.example.com/v1/orders", nil)
+	r.Header.Set("X-Tenant", "acme")
+	if v := filtertest.Run(f, r, nil).Request; v.Deny {
+		t.Fatalf("documented operation denied: %+v", v)
+	}
+	// An unchanged description answers 304 and is not reinstalled; a new
+	// one is picked up by the background refresh.
+	if err := g.fetch(); err != nil || notModified.Load() != 1 || g.Reloads.Load() != 0 {
+		t.Fatalf("304 handling: %v %d %d", err, notModified.Load(), g.Reloads.Load())
+	}
+	set(strings.Replace(spec, "paths:\n", "paths:\n  /ping: {get: {}}\n", 1), `"v2"`)
+	deadline := time.Now().Add(5 * time.Second)
+	for g.Reloads.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	r, _ = http.NewRequest("GET", "http://api.example.com/v1/ping", nil)
+	if v := filtertest.Run(f, r, nil).Request; v.Deny || g.Reloads.Load() != 1 {
+		t.Fatalf("background refresh: %+v reloads %d", v, g.Reloads.Load())
+	}
+	if data, _ := os.ReadFile(cache); !strings.Contains(string(data), "/ping") {
+		t.Fatal("cache not updated")
+	}
+	// A provider error keeps the description and counts a failure.
+	set("not: [valid", `"v3"`)
+	if err := g.fetch(); err == nil {
+		t.Fatal("broken description accepted")
+	}
+	if v := filtertest.Run(f, r, nil).Request; v.Deny {
+		t.Fatalf("broken fetch replaced the description: %+v", v)
+	}
+	_ = g.Close()
+	// With the server gone a new filter starts from the cache; without
+	// a cache it fails.
+	good := strings.Replace(spec, "paths:\n", "paths:\n  /ping: {get: {}}\n", 1)
+	_ = os.WriteFile(cache, []byte(good), 0o600)
+	srv.Close()
+	f2, err := filtertest.Build("openapi", "o", filter.Options{"spec_url": srv.URL, "cache_file": cache})
+	if err != nil {
+		t.Fatalf("cache start: %v", err)
+	}
+	if v := filtertest.Run(f2, r, nil).Request; v.Deny {
+		t.Fatalf("cached description: %+v", v)
+	}
+	_ = f2.(*guard).Close()
+	if _, err := filtertest.Build("openapi", "o", filter.Options{"spec_url": srv.URL}); err == nil {
+		t.Fatal("unreachable URL without cache accepted")
 	}
 }

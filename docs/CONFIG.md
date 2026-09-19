@@ -1775,7 +1775,12 @@ to twenty `details` naming the offending path.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `spec_file` | path | required | The description; loaded at configuration load, so a change needs a reload |
+| `spec_file` | path | one of `spec_file`, `spec_url` | The description on disk, checked at configuration load; afterwards re-read when its change time or size moves, checked at most every `refresh` on the request path, so a spec update needs no reload; a file that no longer compiles keeps the last good description and is logged |
+| `spec_url` | URL | | Fetch the description over HTTPS (plain HTTP only to localhost) at start and every `refresh` in the background with `If-None-Match`; a fetch that fails or does not compile keeps the last good description and is logged. Both filters of the same route expose `Reloads` and `Failures` in the filter log lines |
+| `refresh` | duration | `30s` (file), `5m` (URL) | Check or fetch interval, 1s to 24h |
+| `timeout` | duration | `10s` | One fetch, 1s to 1m; the fetch uses no environment proxy |
+| `ca_file` | path | system roots | Private CA for `spec_url` |
+| `cache_file` | path | none | With `spec_url`: the last good description is written here (mode `0600`) and used when the URL is unreachable at start, so a registry outage does not stop the proxy |
 | `base_path` | path | from `servers[0].url` | Prefix under which the paths are served |
 | `unknown_paths` | `deny`, `allow` | `deny` | `deny` answers 404 for a path the description lacks |
 | `strict_query` | bool | `false` | Refuse query parameters the operation does not declare |

@@ -2434,8 +2434,11 @@ routes:
   - {name: orders, hosts: [api.example.com], upstream: api, filters: [orders-spec]}
 ```
 
-`unknown_paths: allow` keeps the description advisory while the
-inventory fills; `deny` turns the same description into the positive
+The description can also come from a registry (`spec_url`, refreshed
+in the background with a `cache_file` for outages), and a `spec_file`
+is re-read when it changes, so publishing a new version of the
+description needs no proxy reload. `unknown_paths: allow` keeps the
+description advisory while the inventory fills; `deny` turns the same description into the positive
 model once the shadow list is empty.
 
 ```
