@@ -316,6 +316,9 @@ func applyDefaults(c *Config) {
 		setInt(&u.MaxIdleConnsPerHost, DefaultMaxIdleConnsPerHost)
 		if d := u.Discovery; d != nil {
 			setStr(&d.Type, "dns")
+			if d.Type == "http" {
+				setStr(&d.Format, "list")
+			}
 			setDur(&d.Interval, DefaultDiscoveryInterval)
 			setDur(&d.Timeout, DefaultDiscoveryTimeout)
 			setInt(&d.Weight, 1)

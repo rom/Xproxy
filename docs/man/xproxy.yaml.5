@@ -2662,7 +2662,7 @@ object
 T}	T{
 none
 T}	T{
-Endpoints resolved from DNS and re\-resolved periodically;\: see below. Static \fBendpoints\fR and discovered ones coexist;\: a pool needs at least one of the two
+Endpoints resolved from DNS or an HTTP registry (Consul,\: etcd gateways,\: custom) and re\-resolved periodically;\: see below. Static \fBendpoints\fR and discovered ones coexist;\: a pool needs at least one of the two
 T}
 T{
 \fBslow_\:start\fR
@@ -2879,20 +2879,20 @@ T}
 T{
 \fBtype\fR
 T}	T{
-\fBdns\fR,\: \fBsrv\fR
+\fBdns\fR,\: \fBsrv\fR,\: \fBhttp\fR
 T}	T{
 \fBdns\fR
 T}	T{
-\fBdns\fR resolves the A and AAAA records of \fBname\fR,\: one endpoint per address on \fBport\fR;\: \fBsrv\fR resolves SRV records,\: uses the lowest priority group,\: and takes target,\: port and weight from each record
+\fBdns\fR resolves the A and AAAA records of \fBname\fR,\: one endpoint per address on \fBport\fR;\: \fBsrv\fR resolves SRV records,\: uses the lowest priority group,\: and takes target,\: port and weight from each record;\: \fBhttp\fR polls the registry URL in \fBname\fR on the interval (see \fBformat\fR)
 T}
 T{
 \fBname\fR
 T}	T{
-DNS name
+DNS name or URL
 T}	T{
 required
 T}	T{
-The name to resolve;\: for \fBsrv\fR the full \fB_\:service.\:_\:proto.\:domain\fR name
+The name to resolve;\: for \fBsrv\fR the full \fB_\:service.\:_\:proto.\:domain\fR name;\: for \fBhttp\fR the registry URL to GET
 T}
 T{
 \fBport\fR
@@ -2901,7 +2901,25 @@ int
 T}	T{
 required for \fBdns\fR
 T}	T{
-Endpoint port for \fBdns\fR
+Endpoint port for \fBdns\fR,\: and the default port for \fBhttp\fR entries that omit one
+T}
+T{
+\fBformat\fR
+T}	T{
+\fBlist\fR,\: \fBconsul\fR
+T}	T{
+\fBlist\fR
+T}	T{
+Response shape for \fBhttp\fR: \fBlist\fR is a JSON array of \fB{address\[uFF5C]host,\:port,\: weight?,\: canary?}\fR;\: \fBconsul\fR is the Consul \fB/\:v1/\:health/\:service\fR response (only instances whose checks all pass are used,\: \fBWeights.\:Passing\fR becomes the weight,\: a blank service address falls back to the node address)
+T}
+T{
+\fBheaders\fR
+T}	T{
+map
+T}	T{
+none
+T}	T{
+Extra request headers for \fBhttp\fR,\: for example an authentication token (Consul: \fBX\-\:Consul\-\:Token\fR)
 T}
 T{
 \fBinterval\fR
@@ -2919,7 +2937,7 @@ host:port
 T}	T{
 system resolver
 T}	T{
-DNS server to ask instead of the system resolver
+DNS server to ask instead of the system resolver (\fBdns\fR and \fBsrv\fR only)
 T}
 T{
 \fBweight\fR
@@ -2928,7 +2946,7 @@ int
 T}	T{
 \fB1\fR
 T}	T{
-Weight of \fBdns\fR discovered endpoints
+Weight of discovered endpoints that do not carry their own (\fBdns\fR,\: and \fBhttp\fR \fBlist\fR entries without a \fBweight\fR)
 T}
 T{
 \fBcanary\fR

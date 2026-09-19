@@ -656,7 +656,7 @@ Memory: at most 64 x 8192 buckets per policy.
 | `rewrite_regex.pattern` | RE2 | none | Rewrite the outbound path by regular expression (see `rewrite_regex.replace`); applied to the cleaned path after `strip_prefix`, exclusive with `rewrite_path`; a path that does not match is sent unchanged |
 | `rewrite_regex.replace` | template | | New path, starting with `/`; `${1}` to `${9}` and `${name}` are the pattern's groups, and the request variables (below) may be used |
 | `error_pages` | object | inherits `server.error_pages` | Route override of the error pages, same keys as `server.error_pages` |
-| `discovery` | object | none | Endpoints resolved from DNS and re-resolved periodically; see below. Static `endpoints` and discovered ones coexist; a pool needs at least one of the two |
+| `discovery` | object | none | Endpoints resolved from DNS or an HTTP registry (Consul, etcd gateways, custom) and re-resolved periodically; see below. Static `endpoints` and discovered ones coexist; a pool needs at least one of the two |
 | `slow_start` | duration | `0` (off) | An endpoint that joins the pool (discovered) or returns to service (healthy again, ejection over) gets a share ramping from 10 % to its full weight over this time; at most 1h |
 | `retry_on` | list | `[]` | Response statuses treated as a failed attempt: `5xx`, `500`, `502`, `503`, `504`, `429`. The response is discarded, the endpoint marked as failed for outlier ejection, and the next endpoint tried within the `retries` budget; the last attempt's response is returned as it is. Needs `retries` above 0 |
 | `retry_budget` | object | none | Caps retries (and hedged copies) against live traffic so a struggling pool is not buried under a retry storm; see below. Without it, every retry `retries` allows is sent |
@@ -705,12 +705,14 @@ beyond the first is gated by `retry_budget` when one is set.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `type` | `dns`, `srv` | `dns` | `dns` resolves the A and AAAA records of `name`, one endpoint per address on `port`; `srv` resolves SRV records, uses the lowest priority group, and takes target, port and weight from each record |
-| `name` | DNS name | required | The name to resolve; for `srv` the full `_service._proto.domain` name |
-| `port` | int | required for `dns` | Endpoint port for `dns` |
+| `type` | `dns`, `srv`, `http` | `dns` | `dns` resolves the A and AAAA records of `name`, one endpoint per address on `port`; `srv` resolves SRV records, uses the lowest priority group, and takes target, port and weight from each record; `http` polls the registry URL in `name` on the interval (see `format`) |
+| `name` | DNS name or URL | required | The name to resolve; for `srv` the full `_service._proto.domain` name; for `http` the registry URL to GET |
+| `port` | int | required for `dns` | Endpoint port for `dns`, and the default port for `http` entries that omit one |
+| `format` | `list`, `consul` | `list` | Response shape for `http`: `list` is a JSON array of `{address｜host,port, weight?, canary?}`; `consul` is the Consul `/v1/health/service` response (only instances whose checks all pass are used, `Weights.Passing` becomes the weight, a blank service address falls back to the node address) |
+| `headers` | map | none | Extra request headers for `http`, for example an authentication token (Consul: `X-Consul-Token`) |
 | `interval` | duration | `30s` | Time between resolutions; 1s to 1h. Endpoints that disappear are removed, new ones added with their statistics starting at zero, unchanged ones keep theirs |
-| `resolver` | host:port | system resolver | DNS server to ask instead of the system resolver |
-| `weight` | int | `1` | Weight of `dns` discovered endpoints |
+| `resolver` | host:port | system resolver | DNS server to ask instead of the system resolver (`dns` and `srv` only) |
+| `weight` | int | `1` | Weight of discovered endpoints that do not carry their own (`dns`, and `http` `list` entries without a `weight`) |
 | `canary` | bool | `false` | Mark discovered endpoints as canaries (needs the pool's `canary` section) |
 | `timeout` | duration | `5s` | Bound on one resolution, including the synchronous first one at start and reload; a failed resolution keeps the previous endpoint set and is counted in `xproxyctl upstreams` |
 

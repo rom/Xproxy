@@ -222,6 +222,13 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- HTTP registry service discovery (`upstreams[].discovery.type: http`):
+  poll a registry URL on the interval and feed its endpoints into the pool.
+  `format: list` reads a JSON array of `{address｜host,port, weight?,
+  canary?}`; `format: consul` reads the Consul `/v1/health/service`
+  response (passing instances only, `Weights.Passing` as the weight);
+  `headers` carries an auth token. Joins DNS (`dns`) and SRV (`srv`)
+  discovery; a failed poll keeps the previous endpoint set.
 - Retry budgets (`upstreams[].retry_budget`): cap the retries in flight to
   a pool at `percent` of the requests in flight, with a `min_concurrency`
   floor, so retries cannot amplify an outage; without it every retry the

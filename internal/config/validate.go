@@ -1013,12 +1013,27 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			if d.Port < 1 || d.Port > 65535 {
 				v.errf("%s.port: required for type dns, 1 to 65535", dp)
 			}
+			v.discoveryDNSName(dp, d)
 		case "srv":
+			v.discoveryDNSName(dp, d)
+		case "http":
+			ru, err := url.Parse(d.Name)
+			if err != nil || (ru.Scheme != "http" && ru.Scheme != "https") || ru.Host == "" {
+				v.errf("%s.name: %q must be an http or https URL", dp, d.Name)
+			}
+			switch d.Format {
+			case "", "list", "consul":
+			default:
+				v.errf("%s.format: must be list or consul", dp)
+			}
+			if d.Port != 0 && (d.Port < 1 || d.Port > 65535) {
+				v.errf("%s.port: must be between 1 and 65535", dp)
+			}
+			if d.Resolver != "" {
+				v.errf("%s.resolver: only for dns and srv discovery", dp)
+			}
 		default:
-			v.errf("%s.type: must be dns or srv", dp)
-		}
-		if !hostPatternOK(strings.TrimSuffix(d.Name, ".")) || strings.HasPrefix(d.Name, "*") {
-			v.errf("%s.name: %q is not a valid DNS name", dp, d.Name)
+			v.errf("%s.type: must be dns, srv or http", dp)
 		}
 		if d.Interval < Duration(time.Second) || d.Interval > Duration(time.Hour) {
 			v.errf("%s.interval: must be between 1s and 1h", dp)
@@ -1026,7 +1041,7 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		if d.Timeout < Duration(100*time.Millisecond) || d.Timeout > Duration(time.Minute) {
 			v.errf("%s.timeout: must be between 100ms and 1m", dp)
 		}
-		if d.Resolver != "" {
+		if d.Resolver != "" && (d.Type == "dns" || d.Type == "srv") {
 			if _, _, err := net.SplitHostPort(d.Resolver); err != nil {
 				v.errf("%s.resolver: %q must be host:port", dp, d.Resolver)
 			}
@@ -1240,6 +1255,13 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		if o.LatencyMinSamples < 1 || o.LatencyMinSamples > 100000 {
 			v.errf("%s.outlier_ejection.latency_min_samples: must be between 1 and 100000", p)
 		}
+	}
+}
+
+// discoveryDNSName checks the Name of a dns or srv discovery is a DNS name.
+func (v *validator) discoveryDNSName(dp string, d *Discovery) {
+	if !hostPatternOK(strings.TrimSuffix(d.Name, ".")) || strings.HasPrefix(d.Name, "*") {
+		v.errf("%s.name: %q is not a valid DNS name", dp, d.Name)
 	}
 }
 

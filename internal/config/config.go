@@ -983,24 +983,34 @@ type Endpoint struct {
 	Canary bool `yaml:"canary"`
 }
 
-// Discovery resolves a pool's endpoints from DNS.
+// Discovery resolves a pool's endpoints from DNS or an HTTP registry.
 type Discovery struct {
-	// Type is dns (A and AAAA records of Name, each with Port) or srv
-	// (SRV records of Name; targets and ports come from the records, the
-	// lowest priority group is used and record weights become endpoint
-	// weights).
+	// Type is dns (A and AAAA records of Name, each with Port), srv (SRV
+	// records of Name; targets and ports come from the records, the lowest
+	// priority group is used and record weights become endpoint weights)
+	// or http (Name is a URL polled on the interval; see Format).
 	Type string `yaml:"type"`
 	// Name is the DNS name to resolve (for srv the full _service._proto
-	// name).
+	// name), or, for type http, the registry URL to poll.
 	Name string `yaml:"name"`
-	// Port is the endpoint port for type dns. Ignored for srv.
+	// Port is the endpoint port for type dns, and the default port for
+	// type http when the registry omits one. Ignored for srv.
 	Port int `yaml:"port"`
+	// Format is the response shape for type http: list (default, a JSON
+	// array of {address|host,port, weight?, canary?}) or consul (the
+	// Consul /v1/health/service response; only passing instances are
+	// used and their Weights.Passing becomes the endpoint weight).
+	Format string `yaml:"format"`
+	// Headers are extra request headers for type http, for example an
+	// authentication token (Consul: X-Consul-Token).
+	Headers map[string]string `yaml:"headers"`
 	// Interval between resolutions. Default 30s; 1s to 1h.
 	Interval Duration `yaml:"interval"`
 	// Resolver is an optional host:port of the DNS server to ask instead
-	// of the system resolver.
+	// of the system resolver. DNS types only.
 	Resolver string `yaml:"resolver"`
-	// Weight given to discovered endpoints of type dns. Default 1.
+	// Weight given to discovered endpoints (type dns and http list format
+	// entries without their own weight). Default 1.
 	Weight int `yaml:"weight"`
 	// Canary marks discovered endpoints as canaries.
 	Canary bool `yaml:"canary"`
