@@ -7676,7 +7676,7 @@ int
 T}	T{
 \fB1000\fR
 T}	T{
-Cap of one multiplier,\: and the value assumed for a variable
+Cap of one multiplier,\: and the value assumed for a variable. It bounds the cost model,\: not the page size: \fBfirst:\: 1000000\fR is scored as \fBmax_\:list\fR,\: because a client can move the number into a variable whose value this filter never sees. The page size itself belongs to the origin,\: or to an \fBopenapi\fR route policy
 T}
 .TE
 .SS "Kind \fBupload_guard\fR"

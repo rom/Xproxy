@@ -36,6 +36,10 @@ server.
 | `internal/config` | `TestConfigReferenceComplete` (every YAML key of the schema is mentioned in CONFIG.md), `TestMinimalDefaults`, `TestRejects` (25 rejection cases), `TestListenerKinds` (tcp and forward listener defaults and 26 rejections), `TestGRPCConfig`, `TestRouteActions`, `TestIngressConfig` (including `debounce`), `TestIncludes` (fragments appended in order with defaults, scalar sections, duplicates, unknown upstreams and multi document fragments refused, empty and relative globs, world writable fragments), `TestMultipleErrorsReported`, `TestZeroTimeoutMeansDefault`, `TestDuration`, `TestRateLimitDefaults`, `TestHostPattern`, `TestExampleConfig` | Defaults, every validation rule, error aggregation, the shipped example |
 | `internal/router` | `TestMatch`, `TestNoMatch`, `TestMatchGRPC`, `TestRegexAndConditions`, `BenchmarkMatch` | Exact versus wildcard host precedence, longest prefix, segment boundaries, methods, priority; anchored patterns ranked by literal prefix and beating a plain prefix of the same length, header exact, prefix, regex, presence and absence, cookie presence, conditioned routes before plain ones, configuration order at equal conditions |
 | `internal/netutil` | `TestClientIP`, `TestCleanPath`, `TestHost`, `TestProxyHeader` | Trusted proxy algorithm including malformed hops and IPv4 mapped addresses; traversal normalisation; host normalisation; PROXY protocol v1 and v2 headers (IPv4, IPv6, UNKNOWN and LOCAL, TLVs skipped, every truncation and malformed field refused, nothing consumed without a signature) |
+| `internal/ingress` | `TestTranslate`, `TestGatewayAPI`, `TestWatches`, `TestControllerAndProxy` | Translation of rules, annotations, default backends, class filtering, port resolution by number and name, ready endpoints only, placeholders for empty services, TLS secrets, every warning, long names; against a fake API server: sync and change detection, certificate files `0600`, merge into a base configuration served by the proxy, a cluster change requesting a reload, stale certificate removal, name collisions refused, an unauthorised token kept as an error with the last snapshot; Gateway API: class filtering, hostnames from the route and from listeners, prefix, exact, method, header and regular expression matches, header modifier, URL rewrite, redirect, weighted backends with a zero weight excluded, listener certificates, warnings, the merged result validating; watches: streams open per collection, a burst of events becomes one debounced sync and reload, counters |
+| `internal/dns` | `TestMessages`, `TestBlockList`, `TestCache`, `TestServer`, `TestResolverNoUpstream`, `TestEncryptedUpstreams` | Header and question parsing, TTL walk and adjustment, EDNS size, truncation, sinkhole answers, pointer loops and truncations refused; block list forms and hosts file loading; LRU bound, TTL ageing, expiry, resize, purge; DNS over TLS and HTTPS upstreams round robin with a pinned CA, connection reuse, close, the wrong CA refused, upstream string forms; a full server against a fake upstream: forwarding, cache hits, negative caching, block actions swapped by policy, TC retry over TCP and truncation for UDP clients, SERVFAIL on a silent upstream, FORMERR, dropped garbage and responses, NOTIMP, client ACL, rate limit drops, status and access lines; a dead upstream |
+| `internal/filters/wasm` | `TestGuest`, `TestBodies`, `TestLoadErrors` | A guest assembled by hand in the test (`module_test.go`): request headers set from the guest and from `config`, response header removed, access log attribute, deny from the request phase with status, reason and detail, deny from the response phase, an infinite loop hits the timeout and fails closed while the filter keeps serving with a fresh instance, `on_error: allow`, a module without the response export; load errors for a missing or relative module, ABI version 2, bad options, garbage bytes; bodies: read and echo within the limit with the state header, a body over the limit untouched and reported, request and response replacement with lengths fixed and `Content-Encoding` dropped, body access disabled, the limit bound |
+| `internal/filters/oidc` | `TestParse`, `TestSealOpen`, `TestRevocation` | Every option rule and default, no key file created by validation; seal and open with purpose binding, tampering and garbage refused, expired sessions refused, cookie stripping keeps other cookies, claim formatting |
 | `internal/limits` | `TestAllowFallback` (full shard decides on the fallback key, no fallback bounded by burst, fallback equal to key), `TestKeyedLimiter`, `TestKeyedLimiterBound`, `TestPeerRates`, `TestConcurrency`, `TestConnLimiter`, `TestConnLimiterBanned`, `TestTop` | Refill arithmetic with a fake clock, memory bound and eviction, peer reports reduce refill and expire, flush and its cap, release idempotency, real sockets dropped at accept, banned peers closed at accept; lifetime totals and top consumers surviving a flush |
 | `internal/upstream` (accessors and affinity) | `TestPoolAccessors` and `TestPoolAccessorsWithFeatures` (the one-line answers the request path and the management views depend on, with and without the features, so the two are known to differ), `TestActiveCountsInFlight` (the counter the least-connections balancer picks on: an endpoint whose count never came back down silently stops being chosen), `TestRefreshWithoutDiscovery`, `TestRoundTripperIsUsable` (one real request, so the accessors hand back something that works rather than something that merely is not nil), `TestAffinityCookieIsUnforgeable` (eleven values that must not pin a client, plus an expired one), `TestClampWeight` (an SRV record's weight comes from DNS, which is not this proxy's to trust) | A client that could choose its own backend could find the one still running the old build, or aim a load test at one machine |
 | `internal/tui` (source and hostile data) | `TestFetchAgainstALiveProxy`, `TestFetchWithNoProxy` (each view records its own error, because the one view that does answer is the one an operator needs), `TestFetchRespectsTheContext`, `TestTailLines` (a missing file, an empty one, a file larger than the window whose first partial line is dropped, one with no trailing newline, one of NUL bytes, a directory), `TestSourceWithoutConfig`, `TestEveryViewSurvivesHostileData` (nine views at nine sizes, with every cell carrying a screen clear, a title set, a carriage return, a NUL, a DEL, a C1 control and 500 padding characters), `TestRenderWithNothing`, `TestRenderAtAbsurdSizes` | The interface draws values that came from a client, a cluster peer, a certificate authority or a rule file onto an operator's terminal, which acts on some of those bytes |
@@ -312,44 +316,68 @@ Current numbers from `make cover-gate` (whole suite, race enabled):
 
 | Package | Coverage |
 |---------|----------|
-| `internal/limits` | 99 % |
-| `internal/shed` | 99 % |
-| `internal/router` | 97 % |
-| `internal/filter` | 96 % |
-| `internal/metrics` | 95 % |
-| `internal/netutil` | 95 % |
-| `internal/ingress` | `TestTranslate`, `TestGatewayAPI`, `TestWatches`, `TestControllerAndProxy` | Translation of rules, annotations, default backends, class filtering, port resolution by number and name, ready endpoints only, placeholders for empty services, TLS secrets, every warning, long names; against a fake API server: sync and change detection, certificate files `0600`, merge into a base configuration served by the proxy, a cluster change requesting a reload, stale certificate removal, name collisions refused, an unauthorised token kept as an error with the last snapshot; Gateway API: class filtering, hostnames from the route and from listeners, prefix, exact, method, header and regular expression matches, header modifier, URL rewrite, redirect, weighted backends with a zero weight excluded, listener certificates, warnings, the merged result validating; watches: streams open per collection, a burst of events becomes one debounced sync and reload, counters |
-| `internal/dns` | `TestMessages`, `TestBlockList`, `TestCache`, `TestServer`, `TestResolverNoUpstream`, `TestEncryptedUpstreams` | Header and question parsing, TTL walk and adjustment, EDNS size, truncation, sinkhole answers, pointer loops and truncations refused; block list forms and hosts file loading; LRU bound, TTL ageing, expiry, resize, purge; DNS over TLS and HTTPS upstreams round robin with a pinned CA, connection reuse, close, the wrong CA refused, upstream string forms; a full server against a fake upstream: forwarding, cache hits, negative caching, block actions swapped by policy, TC retry over TCP and truncation for UDP clients, SERVFAIL on a silent upstream, FORMERR, dropped garbage and responses, NOTIMP, client ACL, rate limit drops, status and access lines; a dead upstream |
-| `internal/filters/wasm` | `TestGuest`, `TestBodies`, `TestLoadErrors` | A guest assembled by hand in the test (`module_test.go`): request headers set from the guest and from `config`, response header removed, access log attribute, deny from the request phase with status, reason and detail, deny from the response phase, an infinite loop hits the timeout and fails closed while the filter keeps serving with a fresh instance, `on_error: allow`, a module without the response export; load errors for a missing or relative module, ABI version 2, bad options, garbage bytes; bodies: read and echo within the limit with the state header, a body over the limit untouched and reported, request and response replacement with lengths fixed and `Content-Encoding` dropped, body access disabled, the limit bound |
-| `internal/filters/oidc` | `TestParse`, `TestSealOpen`, `TestRevocation` | Every option rule and default, no key file created by validation; seal and open with purpose binding, tampering and garbage refused, expired sessions refused, cookie stripping keeps other cookies, claim formatting |
-| `internal/filters/headerguard` | 92 % |
-| `internal/challenge` | 90 % |
-| `internal/config` | 89 % |
-| `internal/cluster` | 88 % |
-| `internal/upstream` | 88 % |
-| `internal/filters/basicauth` | 88 % |
-| `internal/waf` | 85 % |
-| `internal/jwt` | 85 % |
-| `internal/tlsconf` | 82 % |
-| `internal/acme/jose` | 82 % |
-| `internal/logging` | 82 % |
-| `internal/acme` | 81 % |
-| `internal/ban` | 80 % |
-| `internal/admin` | 80 % |
-| `internal/h3` | 79 % |
-| `internal/mgmt` | 78 % |
-| `internal/proxy` | 77 % |
-| `internal/icap` | 77 % |
-| `internal/passwd` | 77 % |
-| `internal/tui` | 65 % (the terminal loop itself is covered by the pseudo terminal check) |
-| `internal/sandbox` | 41 % in the parent process; the mechanisms run in the confined child (excluded from the gate) |
-| `cmd/xproxyctl` | 59 % from its own tests (not part of the gate) |
-| **core packages together** | **82.5 % of 7704 statements** |
+| `internal/securitytxt` | 100 % |
+| `internal/safe` | 100 % |
+| `internal/bound` | 100 % |
+| `internal/filter` | 99 % |
+| `internal/router` | 99 % |
+| `internal/shed` | 98 % |
+| `internal/cache` | 96 % |
+| `internal/originsig` | 95 % |
+| `internal/jsonschema` | 94 % |
+| `internal/limits` | 94 % |
+| `internal/filters/oidc` | 93 % |
+| `internal/netutil` | 93 % |
+| `internal/geoip` | 92 % |
+| `internal/tracing` | 92 % |
+| `internal/filters/sensitive` | 92 % |
+| `internal/expr` | 91 % |
+| `internal/challenge` | 91 % |
+| `internal/filters/headerguard` | 91 % |
+| `internal/filters/graphql` | 91 % |
+| `internal/filters/bodyrewrite` | 90 % |
+| `internal/tmpl` | 90 % |
+| `internal/waf` | 90 % |
+| `internal/filters/basicauth` | 90 % |
+| `internal/filters/accountguard` | 90 % |
+| `internal/ban` | 89 % |
+| `internal/metrics` | 89 % |
+| `internal/filters/uploadguard` | 88 % |
+| `internal/jwt` | 88 % |
+| `internal/icap` | 88 % |
+| `internal/upstream` | 87 % |
+| `internal/filters/botscore` | 86 % |
+| `internal/cluster` | 86 % |
+| `internal/secret` | 86 % |
+| `internal/logging` | 86 % |
+| `internal/filters/apikey` | 84 % |
+| `internal/tui` | 84 % |
+| `internal/apiinv` | 83 % |
+| `internal/proxy` | 83 % |
+| `internal/fleet` | 83 % |
+| `internal/mgmt` | 82 % |
+| `internal/filters/ldapauth` | 81 % |
+| `internal/dns` | 81 % |
+| `internal/filters/openapi` | 81 % |
+| `internal/ingress` | 80 % |
+| `internal/admin` | 79 % |
+| `internal/ldap` | 79 % |
+| `internal/tlsconf` | 78 % |
+| `internal/acme` | 77 % |
+| `internal/filters/wasm` | 77 % |
+| `internal/config` | 76 % |
+| `internal/tui` (terminal loop) | the raw loop itself is covered by the pseudo terminal check rather than by statements |
+| `internal/sandbox` | 40 % in the parent process; the mechanisms run in the confined child, which cannot write a coverage file (excluded from the gate) |
+| `cmd/xproxy-fleet` | 92 % from its own tests (not part of the gate) |
+| `cmd/xproxyctl` | 70 % from its own tests (not part of the gate); what remains is the formatting of views whose subsystems need a live peer, certificate authority, resolver or scanner behind them, which `internal/proxy` and `internal/mgmt` exercise from the other side |
+| **core packages together** | **86 % of 9137 statements** |
 
 Not covered: the raw terminal loop of the TUI (pseudo terminal check),
-socket activation (needs systemd), the QUIC transport internals beyond the
-handshake and admission tests, and file system failures other than a full
-disk.
+socket activation (needs systemd), the QUIC transport internals beyond
+the handshake and admission tests, the error paths that need a failing
+`crypto/rand` or a failing `fsync`, and file system failures other than
+a full disk and the permission and path cases in
+`internal/secret/filesystem_test.go`.
 
 ## Mutation testing
 

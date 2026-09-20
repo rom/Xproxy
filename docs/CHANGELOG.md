@@ -290,6 +290,35 @@ Open findings of the earlier rounds:
   `examples/security/honeypots.yaml` wires all of them with a ban
   trigger on the sweep.
 
+### Tests (1.4)
+
+A round of adversarial and robustness tests over the parsers, the
+protocol clients and the views, written from the outside in: what a
+client, a peer, a scanner, a certificate authority or a file on disk
+can put in front of each of them. Sixteen packages gained a suite;
+`docs/TESTS.md` lists every case. The findings each have their own
+entry above.
+
+The categories, and where they landed: expansion and recursion bombs
+(the configuration's YAML anchors, JSON Schema `$ref` chains, GraphQL
+fragment spreads, MMDB pointer loops); truncation at every length and
+single-bit corruption (ClientHello, QUIC Initial, PROXY protocol, MMDB,
+the configuration); type confusion and the numbers a format disagrees
+about (leading zeros, octal, hex, underscores, int64 edges, NaN, Inf, a
+decimal comma); time (every instant around `exp` and `nbf`, the 2038
+rollover, the largest exact float64 integer); encodings and i18n
+(BOM, CRLF, lone CR, UTF-16, invalid UTF-8, lone surrogates, homoglyphs,
+combining marks, the Turkish dotted i, the Kelvin sign, bidi and
+zero-width controls); line breaks and separators (nineteen hostile
+values through every log format); the file system (permissions,
+symlinks, a truncated file, long and non-ASCII names, a failed write);
+algorithmic complexity (ReDoS, quadratic `uniqueItems`, alias floods);
+resource bounds (in-flight limits, queues that drop rather than block,
+tables an attacker fills); concurrency and determinism (shared
+validators, shared filters, shared ban lists, byte-identical error
+text); and the trust boundaries (a scanner that rewrites a request, a
+peer that names itself, an agent that reports its host name).
+
 ### Fixed (1.4)
 
 - The terminal interface filtered only its security log view. Every
