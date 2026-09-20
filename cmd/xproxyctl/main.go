@@ -81,7 +81,32 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
+// terminalSafe filters the control characters a terminal acts on out of
+// everything the tool prints. Most of what these tables carry came off
+// the network — a ban target and its reason, an endpoint discovered by
+// DNS, a path the API inventory learned from a request, a cluster
+// peer's node id and last error, a certificate's subject, a honeypot
+// hit — and an operator reading it should not be handing their terminal
+// to whoever supplied it. Newline and tab are kept, because the layout
+// is made of them; every other C0 byte and DEL becomes '?', one for
+// one, so columns still line up. Bytes above 0x7f are left alone, so
+// UTF-8 text arrives intact.
+type terminalSafe struct{ w io.Writer }
+
+func (t terminalSafe) Write(p []byte) (int, error) {
+	clean := make([]byte, len(p))
+	for i, b := range p {
+		if b < 0x20 && b != '\n' && b != '\t' || b == 0x7f {
+			clean[i] = '?'
+			continue
+		}
+		clean[i] = b
+	}
+	return t.w.Write(clean)
+}
+
 func run(args []string, out, errOut io.Writer) int {
+	out, errOut = terminalSafe{out}, terminalSafe{errOut}
 	fs := flag.NewFlagSet("xproxyctl", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	socket := fs.String("socket", paths.Socket, "management socket")

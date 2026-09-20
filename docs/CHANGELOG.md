@@ -295,7 +295,7 @@ Open findings of the earlier rounds:
 A round of adversarial and robustness tests over the parsers, the
 protocol clients and the views, written from the outside in: what a
 client, a peer, a scanner, a certificate authority or a file on disk
-can put in front of each of them. Twenty-four packages gained a suite;
+can put in front of each of them. Twenty-five packages gained a suite;
 `docs/TESTS.md` lists every case. The findings each have their own
 entry above.
 
@@ -322,6 +322,19 @@ WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
 
+- `xproxyctl` printed what the daemon told it, byte for byte, including
+  the control characters a terminal acts on. Most of what its tables
+  carry came off the network — a ban target and its reason, an endpoint
+  discovered by DNS, a path the API inventory learned from a request, a
+  cluster peer's node id and last error, a certificate subject, a
+  honeypot hit's path and user agent — so a client able to get a value
+  into one of those tables could clear the operator's screen, set the
+  terminal title, or overwrite the line above with a carriage return
+  while the operator read it. Everything the tool prints now goes
+  through a filter that replaces every C0 byte and DEL with `?`, one
+  for one, keeping newline and tab so the columns still line up and
+  leaving UTF-8 untouched. The terminal interface and the fleet tool
+  already did this; the control tool did not.
 - The LDAP filter parser had no depth bound. It is recursive, and the
   filter template is parsed once per login attempt, so a `user_filter`
   nested a few million levels deep — pasted in, generated, or copied
