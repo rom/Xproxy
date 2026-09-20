@@ -38,10 +38,18 @@ type introspector struct {
 	mu    sync.Mutex
 	cache map[[32]byte]cached
 	full  bound.Notice
+	// sem bounds the calls in flight so a flood of unique opaque tokens
+	// cannot be amplified into an unbounded load on the endpoint.
+	sem chan struct{}
 
 	// counters
 	Calls, Errors, Hits atomic.Uint64
 }
+
+// maxIntrospectionInflight bounds concurrent endpoint calls per provider;
+// a caller that cannot get a slot before its deadline sees
+// ErrIntrospection (503), never a pass.
+const maxIntrospectionInflight = 32
 
 type cached struct {
 	claims Claims
@@ -70,6 +78,7 @@ func newIntrospector(cfg config.TokenIntrospection) (*introspector, error) {
 		tc.RootCAs = pool
 	}
 	return &introspector{cfg: cfg, secret: strings.TrimSpace(string(b)), cache: map[[32]byte]cached{},
+		sem: make(chan struct{}, maxIntrospectionInflight),
 		client: &http.Client{
 			Timeout:       cfg.Timeout.D(),
 			Transport:     &http.Transport{TLSClientConfig: tc, Proxy: nil, MaxIdleConns: 8, IdleConnTimeout: 90 * time.Second, ResponseHeaderTimeout: cfg.Timeout.D(), DisableCompression: true},
@@ -97,7 +106,14 @@ func (in *introspector) verify(ctx context.Context, token string, now time.Time)
 		delete(in.cache, key)
 	}
 	in.mu.Unlock()
+	select {
+	case in.sem <- struct{}{}:
+	case <-ctx.Done():
+		in.Errors.Add(1)
+		return nil, fmt.Errorf("%w: %d calls in flight", ErrIntrospection, maxIntrospectionInflight)
+	}
 	claims, err := in.ask(ctx, token)
+	<-in.sem
 	if errors.Is(err, ErrIntrospection) {
 		return nil, err // an unavailable endpoint is not cached
 	}

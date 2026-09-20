@@ -36,6 +36,11 @@ type Gateway struct {
 			TLS      *struct {
 				CertificateRefs []objectRef `json:"certificateRefs"`
 			} `json:"tls"`
+			AllowedRoutes *struct {
+				Namespaces *struct {
+					From string `json:"from"`
+				} `json:"namespaces"`
+			} `json:"allowedRoutes"`
 		} `json:"listeners"`
 	} `json:"spec"`
 }
@@ -107,6 +112,36 @@ type HTTPRoute struct {
 func gatewayKey(ns, name string) string { return ns + "/" + name }
 
 // translateGateway adds the routes, upstreams and certificates of the
+// admitsNamespace reports whether any listener of g accepts routes from
+// ns. The Gateway API default is Same: a gateway belongs to the tenant
+// that created it, and only that namespace may attach unless the gateway
+// opts in with allowedRoutes.namespaces.from: All. A selector cannot be
+// evaluated here (namespace labels are not watched), so it denies.
+func admitsNamespace(g *Gateway, ns string, warn func(string, ...any)) bool {
+	if ns == g.Metadata.Namespace {
+		return true
+	}
+	selector := false
+	for _, l := range g.Spec.Listeners {
+		from := "Same"
+		if l.AllowedRoutes != nil && l.AllowedRoutes.Namespaces != nil && l.AllowedRoutes.Namespaces.From != "" {
+			from = l.AllowedRoutes.Namespaces.From
+		}
+		switch from {
+		case "All":
+			return true
+		case "Selector":
+			selector = true
+		}
+	}
+	if selector {
+		warn("gateway %s/%s admits routes by namespace selector, which is not supported; the route is not attached", g.Metadata.Namespace, g.Metadata.Name)
+		return false
+	}
+	warn("gateway %s/%s does not admit routes from namespace %s (set allowedRoutes.namespaces.from: All on a listener to share it)", g.Metadata.Namespace, g.Metadata.Name, ns)
+	return false
+}
+
 // Gateways of class and the HTTPRoutes attached to them. endpointsFor
 // resolves a service port to ready endpoints (shared with the Ingress
 // translation).
@@ -139,6 +174,16 @@ func translateGateway(in Input, class string, snap *Snapshot, endpointsFor func(
 					warn("gateway", g.Metadata.Namespace, g.Metadata.Name, "listener %s: certificate ref kind %s not supported", l.Name, ref.Kind)
 					continue
 				}
+				if ns != g.Metadata.Namespace {
+					// A certificate reference into another namespace needs a
+					// ReferenceGrant there (Gateway API); without that check
+					// anyone able to create a Gateway could mount any TLS
+					// private key in the cluster and have it served for a
+					// host name of their choosing. ReferenceGrant is not
+					// implemented, so such a reference is refused.
+					warn("gateway", g.Metadata.Namespace, g.Metadata.Name, "listener %s: certificate ref to namespace %s refused (cross-namespace references need a ReferenceGrant, which is not supported)", l.Name, ns)
+					continue
+				}
 				s, ok := in.Secrets[ns+"/"+ref.Name]
 				if !ok || s == nil {
 					warn("gateway", g.Metadata.Namespace, g.Metadata.Name, "listener %s: tls secret %s not found", l.Name, ref.Name)
@@ -163,9 +208,16 @@ func translateGateway(in Input, class string, snap *Snapshot, endpointsFor func(
 			if pns == "" {
 				pns = ns
 			}
-			if g, ok := gateways[gatewayKey(pns, p.Name)]; ok {
-				parents = append(parents, g)
+			g, ok := gateways[gatewayKey(pns, p.Name)]
+			if !ok {
+				continue // attached to another controller's gateway, or none
 			}
+			if !admitsNamespace(g, ns, func(f string, a ...any) {
+				warn("httproute", ns, name, f, a...)
+			}) {
+				continue
+			}
+			parents = append(parents, g)
 		}
 		if len(parents) == 0 {
 			continue // attached to another controller's gateway, or none

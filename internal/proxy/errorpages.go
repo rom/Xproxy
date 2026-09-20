@@ -121,13 +121,36 @@ func (e *errorPages) render(r *http.Request, st *reqState, status int, reason st
 		return nil, "", false
 	}
 	var v tmpl.Resolver = &tvars{r: r, st: st, status: status, reason: reason}
-	if strings.HasPrefix(strings.ToLower(e.ctype), "text/html") {
-		// Request-derived values (path, query, headers, cookies) land in a
-		// browser-rendered page: escape them so a crafted URL cannot inject
-		// markup into the error page (reflected XSS).
+	// Request-derived values (path, query, headers, cookies) land in the
+	// document: escape them for its syntax so a crafted URL cannot inject
+	// markup (reflected XSS) or break a JSON body.
+	switch escapingFor(e.ctype) {
+	case "html":
 		v = htmlEscaping{v}
+	case "json":
+		v = jsonEscaping{v}
 	}
 	return []byte(t.Expand(v)), e.ctype, true
+}
+
+// escapingFor picks the escaping for an error page content type: html
+// for anything a browser renders as markup (HTML, XHTML, SVG and other
+// XML types), json for JSON types, "" for plain text.
+func escapingFor(ctype string) string {
+	mt := strings.ToLower(strings.TrimSpace(ctype))
+	if i := strings.IndexByte(mt, ';'); i >= 0 {
+		mt = strings.TrimSpace(mt[:i])
+	}
+	switch {
+	case mt == "text/plain", mt == "text/csv":
+		return ""
+	case mt == "application/json", strings.HasSuffix(mt, "+json"):
+		return "json"
+	case mt == "text/html", mt == "text/xml", mt == "application/xml", strings.HasSuffix(mt, "+xml"), strings.HasPrefix(mt, "image/svg"):
+		return "html"
+	}
+	// Unknown types are escaped as markup: a browser may sniff them.
+	return "html"
 }
 
 // htmlEscaping wraps a resolver so every expanded value is HTML-escaped.
@@ -136,6 +159,19 @@ type htmlEscaping struct{ r tmpl.Resolver }
 func (h htmlEscaping) Resolve(name, arg string) (string, bool) {
 	v, ok := h.r.Resolve(name, arg)
 	return html.EscapeString(v), ok
+}
+
+// jsonEscaping wraps a resolver so every expanded value is a JSON string
+// body (quotes, backslashes and controls escaped, without the quotes).
+type jsonEscaping struct{ r tmpl.Resolver }
+
+func (j jsonEscaping) Resolve(name, arg string) (string, bool) {
+	v, ok := j.r.Resolve(name, arg)
+	b, _ := json.Marshal(v)
+	if len(b) >= 2 {
+		b = b[1 : len(b)-1]
+	}
+	return string(b), ok
 }
 
 // interceptBody replaces an upstream response body with the error page

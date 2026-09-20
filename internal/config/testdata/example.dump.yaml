@@ -65,6 +65,7 @@ server:
         reject_double_encoding: false
         reject_encoded_slashes: false
         reject_backslashes: false
+        reject_dot_segments: null
         reject_ambiguous_framing: null
         unicode: "off"
     server_header: ""

@@ -81,3 +81,53 @@ func TestKeyring(t *testing.T) {
 		t.Fatalf("empty path: %v", err)
 	}
 }
+
+// A keyring any local account can read is as good as published: it signs
+// challenge and affinity cookies and seals OIDC sessions.
+func TestWorldReadableKeyringIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ring")
+	if _, err := Rotate(path, 2); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		mode os.FileMode
+		want string
+	}{
+		{0o644, "readable or writable by other"},
+		{0o604, "readable or writable by other"},
+		{0o660, "writable by its group"},
+	} {
+		if err := os.Chmod(path, tc.mode); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("mode %04o: %v", tc.mode, err)
+		}
+	}
+	// Owner-only and owner plus group read are both fine.
+	for _, mode := range []os.FileMode{0o600, 0o640} {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err != nil {
+			t.Fatalf("mode %04o: %v", mode, err)
+		}
+	}
+}
+
+// A line the scanner cannot hold used to end the loop silently, dropping
+// every key after it: cookies sealed under those keys stopped opening
+// with nothing in the logs to say why.
+func TestKeyringLineTooLongIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ring")
+	long := Header + "\n2026-01-01T00:00:00Z " + strings.Repeat("A", 128<<10) + "\n"
+	if err := os.WriteFile(path, []byte(long), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("an over-long keyring line was accepted")
+	}
+}

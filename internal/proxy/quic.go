@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
@@ -25,10 +26,22 @@ type quicRelay struct {
 
 	mu    sync.Mutex
 	flows map[netip.AddrPort]*quicFlow
-	wg    sync.WaitGroup
-	done  chan struct{}
-	once  sync.Once
+	// incomplete counts flows still assembling a ClientHello. Anyone can
+	// forge an Initial from a spoofed source, so these are bounded apart
+	// from the connection limit and cannot fill it.
+	incomplete int
+	wg         sync.WaitGroup
+	done       chan struct{}
+	once       sync.Once
 }
+
+const (
+	// maxIncompleteQUICFlows bounds flows without a complete ClientHello.
+	maxIncompleteQUICFlows = 1024
+	// maxQUICPending bounds the bytes held for one flow while its
+	// ClientHello is incomplete (a hello spans at most a few Initials).
+	maxQUICPending = 16 << 10
+)
 
 type quicFlow struct {
 	client   netip.AddrPort
@@ -41,6 +54,8 @@ type quicFlow struct {
 	in, out  atomic.Int64
 	hello    *netutil.QUICHelloAssembler
 	pending  [][]byte // datagrams held while the ClientHello is incomplete
+	// pendingBytes is the size of pending, bounded by maxQUICPending.
+	pendingBytes int
 }
 
 func (f *quicFlow) touch() { f.last.Store(time.Now().UnixNano()) }
@@ -84,8 +99,14 @@ func (q *quicRelay) serve() {
 	}
 }
 
-// datagram routes one client datagram.
+// datagram routes one client datagram. It runs on the listener's own
+// read loop, so a panic here would end every flow on this listener and
+// the process with them; the ClientHello parsing it drives is the most
+// attacker-controlled code in the proxy. Guard contains that to the one
+// datagram. Every mutex region below is a map operation that cannot
+// panic, so nothing is left locked behind it.
 func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
+	defer safe.Guard("quic datagram")
 	s := q.t.s
 	now := time.Now()
 	q.mu.Lock()
@@ -117,7 +138,7 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 	}
 	if f == nil {
 		q.mu.Lock()
-		if len(q.flows) >= q.t.cfg.TCP.MaxConnections {
+		if len(q.flows) >= q.t.cfg.TCP.MaxConnections || q.incomplete >= min(maxIncompleteQUICFlows, q.t.cfg.TCP.MaxConnections) {
 			q.mu.Unlock()
 			s.stats.QUICRejected.Add(1)
 			return
@@ -125,13 +146,15 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 		f = &quicFlow{client: client, start: now, hello: &netutil.QUICHelloAssembler{}}
 		f.touch()
 		q.flows[client] = f
+		q.incomplete++
 		q.mu.Unlock()
 	}
 	f.touch()
 	f.pending = append(f.pending, append([]byte(nil), b...))
+	f.pendingBytes += len(b)
 	sni, err := f.hello.Add(frames)
 	if errors.Is(err, netutil.ErrQUICNeedMore) {
-		if len(f.pending) < 8 {
+		if len(f.pending) < 8 && f.pendingBytes <= maxQUICPending {
 			return
 		}
 		err = netutil.ErrNotTLS
@@ -180,6 +203,9 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 	}
 	q.mu.Lock()
 	f.up, f.endpoint, f.pool = uc, ep, pool
+	if q.flows[client] == f {
+		q.incomplete--
+	}
 	q.mu.Unlock()
 	s.stats.QUICFlows.Add(1)
 	for _, d := range f.pending {
@@ -230,6 +256,9 @@ func (q *quicRelay) finish(f *quicFlow, reason string) {
 		return
 	}
 	delete(q.flows, f.client)
+	if f.up == nil {
+		q.incomplete--
+	}
 	q.mu.Unlock()
 	s := q.t.s
 	in, out := f.in.Load(), f.out.Load()

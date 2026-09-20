@@ -98,6 +98,9 @@ func (s *Server) prepareMirror(r *http.Request, st *reqState, cr *compiledRoute)
 	pr.Out.Body = io.NopCloser(bytes.NewReader(body))
 	pr.Out.ContentLength = int64(len(body))
 	pr.Out.RequestURI = ""
+	// The live copy goes through ReverseProxy, which drops hop-by-hop
+	// headers; the mirror is sent directly, so drop them here.
+	stripHopByHop(pr.Out.Header)
 	s.rewrite(pr, st, cr)
 	pr.Out.URL.Scheme = m.pool.Scheme
 	pr.Out.Header.Set(mirrorHeader, "1")

@@ -37,6 +37,7 @@ import (
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
+	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/shed"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tracing"
@@ -117,6 +118,13 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		inventory:    apiinv.New(),
 	}
 	s.inventory.Configure(inventoryConfig(cfg), logs.Error)
+	// A contained panic is a bug in the proxy, not an event about the
+	// client, so it goes to the error log with its stack rather than to
+	// the security log. Set here because every deployment builds a
+	// Server before any listener accepts.
+	safe.Report = func(what string, value any, stack []byte) {
+		logs.Error.Error("panic contained", "where", what, "panic", fmt.Sprint(value), "stack", string(stack))
+	}
 	if st := cfg.Server.SessionTickets; st != nil {
 		tk, err := tlsconf.NewTickets(st, logs.Error.With("component", "tickets"))
 		if err != nil {
@@ -808,6 +816,19 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
+	// A challenge section that appears on this reload needs its key before
+	// the swap: routes in mode always would otherwise serve unchallenged
+	// until the next reload if the secret file were unreadable (fail open).
+	var newChallenger *challenge.Challenger
+	if cfg.Challenge != nil && s.challenger.Load() == nil {
+		nc, err := challenge.New(cfg.Challenge)
+		if err != nil {
+			rt.stop()
+			s.stats.ReloadFailures.Add(1)
+			return fmt.Errorf("challenge: %w", err)
+		}
+		newChallenger = nc
+	}
 	// Ban list: reconfigure in place so active bans survive; create or
 	// drop it when the section appears or disappears.
 	oldBans := s.bans.Load()
@@ -978,15 +999,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 	case cfg.Challenge != nil && ch != nil:
 		ch.Reconfigure(cfg.Challenge)
 	case cfg.Challenge != nil:
-		// Created above the swap would be cleaner, but a key generation
-		// failure here is the only error path and it only disables the
-		// challenge until the next reload; routes referencing it were
-		// validated against the section, so log and continue.
-		if nc, err := challenge.New(cfg.Challenge); err == nil {
-			s.challenger.Store(nc)
-		} else {
-			s.logs.Error.Error("challenge key unavailable", "err", err.Error())
-		}
+		s.challenger.Store(newChallenger) // built before the swap; nil never reaches here
 	case ch != nil:
 		s.challenger.Store(nil)
 	}

@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,12 +90,54 @@ func random() ([]byte, error) {
 }
 
 // Load reads a keyring or raw key file.
+//
+// The file's permissions are part of its contents being secret: these
+// keys sign challenge and affinity cookies, seal OIDC sessions and
+// pseudonymise logs, so anybody who can read the file can mint any of
+// them. A file other accounts can read, or the group can write, is
+// refused rather than loaded — the same rule the proxy already applies
+// to password and client-secret files. The stat is taken from the open
+// descriptor, so a file swapped between the check and the read cannot
+// slip past it.
 func Load(path string) (*Keyring, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // operator configured path
+	f, err := os.Open(path) //nolint:gosec // operator configured path
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if err := checkMode(path, fi.Mode().Perm()); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxFileBytes {
+		return nil, fmt.Errorf("secret %s is larger than %d bytes", path, maxFileBytes)
+	}
 	return parse(path, data)
+}
+
+// maxFileBytes bounds a secret file: a keyring of MaxKeys entries is a
+// few kilobytes, and a raw key is one key.
+const maxFileBytes = 1 << 20
+
+// checkMode refuses permissions that let another account read the keys.
+// Group read is allowed: a deployment that runs the proxy and its tools
+// under one group is ordinary. Group write is not, because it lets
+// somebody else choose the keys.
+func checkMode(path string, m os.FileMode) error {
+	if m&0o007 != 0 {
+		return fmt.Errorf("secret %s is readable or writable by other (mode %04o); run chmod 640 %s", path, m, path)
+	}
+	if m&0o020 != 0 {
+		return fmt.Errorf("secret %s is writable by its group (mode %04o); run chmod 640 %s", path, m, path)
+	}
+	return nil
 }
 
 // LoadOrCreate reads the file, or creates it with one fresh key when it
@@ -152,6 +195,12 @@ func parse(path string, data []byte) (*Keyring, error) {
 		if len(k.keys) > MaxKeys {
 			return nil, fmt.Errorf("secret %s: more than %d keys", path, MaxKeys)
 		}
+	}
+	if err := sc.Err(); err != nil {
+		// A line too long for the scanner, or a read that failed: the
+		// keys after it would be dropped silently, and a cookie sealed
+		// under one of them would stop opening for no visible reason.
+		return nil, fmt.Errorf("secret %s: %w", path, err)
 	}
 	if len(k.keys) == 0 {
 		return nil, fmt.Errorf("secret %s: keyring without keys", path)

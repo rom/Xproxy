@@ -72,7 +72,9 @@ func ClientIP(r *http.Request, trusted []netip.Prefix) netip.Addr {
 				// back to the peer rather than guessing.
 				return peer
 			}
-			a = a.Unmap()
+			// A zone ("fe80::1%eth0") would make the address miss every
+			// prefix match and key its own ban and rate-limit buckets.
+			a = a.Unmap().WithZone("")
 			if Contains(trusted, a) {
 				continue
 			}
@@ -108,10 +110,17 @@ func Host(h string) string {
 		return ""
 	}
 	if strings.HasPrefix(h, "[") {
-		// IPv6 literal.
+		// IPv6 literal: after the bracket only an optional ":port" may
+		// follow, so "[::1]junk" cannot route as "[::1]" while the upstream
+		// sees the whole value.
 		end := strings.IndexByte(h, ']')
 		if end < 0 {
 			return ""
+		}
+		if rest := h[end+1:]; rest != "" {
+			if len(rest) < 2 || rest[0] != ':' || strings.Trim(rest[1:], "0123456789") != "" {
+				return ""
+			}
 		}
 		h = h[:end+1]
 	} else if i := strings.LastIndexByte(h, ':'); i >= 0 {

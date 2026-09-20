@@ -39,8 +39,9 @@ func ClientHelloSNI(b []byte) (string, error) {
 		return "", ErrNeedMore
 	}
 	h = h[4 : 4+hsLen]
-	// version(2) random(32) session id
-	if len(h) < 34 {
+	// version(2) random(32) session id length(1): the length octet is read
+	// immediately below, so 34 bytes are not enough — 35 are.
+	if len(h) < 35 {
 		return "", ErrNotTLS
 	}
 	p := 34

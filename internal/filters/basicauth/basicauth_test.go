@@ -1,10 +1,12 @@
 package basicauth
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/filter/filtertest"
@@ -61,8 +63,73 @@ func TestBasicAuth(t *testing.T) {
 	// Cached: a second check does not re-hash (observable only as speed;
 	// assert the cache holds the entry).
 	a := f.(*auth)
-	if len(a.cache) != 2 { // alice right and wrong; unknown users are not cached
+	if len(a.cache) != 3 { // alice right and wrong, and the unknown name: a miss is cached like a wrong password
 		t.Fatalf("cache entries %d", len(a.cache))
+	}
+}
+
+// TestUnknownUserCachedLikeWrongPassword: repeating a wrong pair must cost
+// the same whether or not the name exists. A negative entry kept only for
+// known names let a client tell them apart by the second attempt's timing
+// (a full PBKDF2 for the unknown name against a cache hit for the known).
+func TestUnknownUserCachedLikeWrongPassword(t *testing.T) {
+	f, err := filtertest.Build("basic_auth", "staff", filter.Options{"users_file": usersFile(t), "cache_ttl": "5m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := f.(*auth)
+	req := func(user string) *http.Request {
+		r, _ := http.NewRequest("GET", "http://h.example.test/x", nil)
+		r.SetBasicAuth(user, "wrong-password-0")
+		return r
+	}
+	timed := func(user string) time.Duration {
+		start := time.Now()
+		filtertest.Run(f, req(user), nil)
+		return time.Since(start)
+	}
+	timed("alice")
+	timed("nobody")
+	if len(a.cache) != 2 {
+		t.Fatalf("both misses cached: %d entries", len(a.cache))
+	}
+	// Second attempts are cache hits for both: neither pays the hash.
+	known, unknown := timed("alice"), timed("nobody")
+	if known > 20*time.Millisecond || unknown > 20*time.Millisecond {
+		t.Fatalf("second attempt not served from the cache: known %v unknown %v", known, unknown)
+	}
+}
+
+// TestCheckGivesUpWithContext: a caller whose request ended while queued
+// on the verification semaphore is refused at once rather than holding
+// its slot for the whole wait.
+func TestCheckGivesUpWithContext(t *testing.T) {
+	f, err := filtertest.Build("basic_auth", "staff", filter.Options{"users_file": usersFile(t), "cache_ttl": "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := f.(*auth)
+	for i := 0; i < cap(a.sem); i++ {
+		a.sem <- struct{}{} // every slot busy
+	}
+	defer func() {
+		for i := 0; i < cap(a.sem); i++ {
+			<-a.sem
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if a.check(ctx, "alice", "correct-horse-battery") {
+		t.Fatal("accepted without verifying")
+	}
+	if time.Since(start) > 100*time.Millisecond {
+		t.Fatal("blocked on a full semaphore with a dead context")
+	}
+	// A queue deeper than the bound is refused even with a live context.
+	a.waiting.Store(int32(passwd.MaxQueuePerSlot*cap(a.sem) + 1))
+	if a.check(context.Background(), "alice", "correct-horse-battery") {
+		t.Fatal("accepted past the queue bound")
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"github.com/rom/xproxy/internal/filters/accountguard"
 	"github.com/rom/xproxy/internal/filters/sensitive"
 	"github.com/rom/xproxy/internal/metrics"
+	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/upstream"
 	"github.com/rom/xproxy/internal/version"
 )
@@ -54,6 +55,9 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Gauge("xproxy_build_info", "Build information; always 1.", L{"version": version.Version, "commit": version.Commit}, 1)
 	e.Gauge("xproxy_uptime_seconds", "Seconds since the process started.", nil, sn.UptimeSeconds)
 	e.Gauge("xproxy_config_generation", "Configuration generation counter.", nil, float64(rt.generation))
+	// Any non-zero value here is a bug that a client's bytes reached: the
+	// flow was dropped rather than the process, but it must be fixed.
+	e.Counter("xproxy_panics_total", "Panics contained on a connection or datagram goroutine. Always zero in a healthy process.", nil, float64(safe.Panics()))
 
 	e.Counter("xproxy_requests_total", "Requests received.", nil, float64(sn.Requests))
 	for class, v := range map[string]uint64{"2xx": sn.Responses2xx, "3xx": sn.Responses3xx, "4xx": sn.Responses4xx, "5xx": sn.Responses5xx} {

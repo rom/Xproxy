@@ -77,15 +77,22 @@ type Node struct {
 	ratesSent, ratesRecv, keysRecv, bansSent, bansRecv, rejected, dropped atomic.Uint64
 	eventsSent, eventsRecv, ignored                                       atomic.Uint64
 
-	// pending holds Take requests awaiting an owner's answer by request id.
+	// pending holds Take requests awaiting an owner's answer by request id,
+	// with the peer the request went to: only that peer's answer counts.
 	pendingMu sync.Mutex
-	pending   map[uint64]chan takeReply
+	pending   map[uint64]pendingTake
 
 	exactAsked, exactDecided, exactServed, exactFallbacks atomic.Uint64
 }
 
 // maxPending bounds Take requests in flight.
 const maxPending = 65536
+
+// pendingTake is one Take awaiting the owner's answer.
+type pendingTake struct {
+	ch   chan takeReply
+	from *peer
+}
 
 type banChange struct {
 	e       ban.Entry
@@ -104,7 +111,7 @@ func New(cfg *config.Cluster, rates RateSource, log *slog.Logger) (*Node, error)
 		interval: cfg.GossipInterval.D(),
 		banQueue: make(chan banChange, banQueueSize),
 		stop:     make(chan struct{}),
-		pending:  map[uint64]chan takeReply{},
+		pending:  map[uint64]pendingTake{},
 	}
 	n.eventQueue = make(chan Event, eventQueueSize)
 	srv, cli, err := buildTLS(&cfg.TLS)
@@ -402,7 +409,7 @@ func (p *peer) loop() {
 					p.mu.Unlock()
 				}
 			case typeTook:
-				p.node.deliver(&m)
+				p.node.deliver(&m, p)
 			}
 		}
 		p.mu.Lock()
@@ -936,7 +943,7 @@ func (n *Node) Take(policy, key string, amount float64) (allowed, decided bool) 
 		n.exactFallbacks.Add(1)
 		return false, false
 	}
-	n.pending[req] = ch
+	n.pending[req] = pendingTake{ch: ch, from: target}
 	n.pendingMu.Unlock()
 	forget := func() {
 		n.pendingMu.Lock()
@@ -969,22 +976,27 @@ func (n *Node) Take(policy, key string, amount float64) (allowed, decided bool) 
 	}
 }
 
-// deliver hands an owner's answer to the waiting Take.
-func (n *Node) deliver(m *message) {
+// deliver hands an owner's answer to the waiting Take. An answer from a
+// peer other than the one asked is ignored: request ids are sequential,
+// so any node could otherwise answer requests addressed to another owner.
+func (n *Node) deliver(m *message, from *peer) {
 	n.pendingMu.Lock()
-	ch, ok := n.pending[m.Req]
-	if ok {
+	p, ok := n.pending[m.Req]
+	if ok && p.from == from {
 		delete(n.pending, m.Req)
+	} else {
+		ok = false
 	}
 	n.pendingMu.Unlock()
 	if !ok {
+		n.ignored.Add(1)
 		return
 	}
 	r := takeReply{decided: m.Allowed != nil}
 	if m.Allowed != nil {
 		r.allowed = *m.Allowed
 	}
-	ch <- r
+	p.ch <- r
 }
 
 // Status returns the management view.

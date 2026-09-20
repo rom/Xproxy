@@ -198,9 +198,10 @@ func TestProxyBasics(t *testing.T) {
 		t.Fatalf("forged XFF passed through: %q", xff)
 	}
 
-	// Path traversal cannot escape the route; /v1/../v1/x routes to api.
+	// Path traversal never reaches a route: dot segments are refused by
+	// the normalization guard before routing.
 	resp, _ = get(t, url+"/v1/../nothing", "Host", "api.test")
-	if resp.StatusCode != 404 {
+	if resp.StatusCode != 400 {
 		t.Fatalf("traversal: %d", resp.StatusCode)
 	}
 

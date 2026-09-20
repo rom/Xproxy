@@ -42,6 +42,8 @@ type forwardServer struct {
 	authMu    sync.Mutex
 	authCache map[[32]byte]time.Time
 	authSem   chan struct{}
+	// authWaiting counts callers queued on authSem (bounded by Acquire).
+	authWaiting atomic.Int32
 }
 
 type forwardPolicy struct {
@@ -278,24 +280,30 @@ func (f *forwardServer) authenticate(p *forwardPolicy, r *http.Request) (string,
 		return "", false
 	}
 	hash, known := p.users[user]
-	if !known {
-		// Same cost as a wrong password for a known user: no timing oracle
-		// on which names exist.
-		f.authSem <- struct{}{}
-		passwd.VerifyDummy(pass)
-		<-f.authSem
-		return "", false
-	}
 	key := sha256.Sum256([]byte(user + "\x00" + pass))
 	now := time.Now()
-	f.authMu.Lock()
-	exp, hit := f.authCache[key]
-	f.authMu.Unlock()
-	if hit && now.Before(exp) {
-		return user, true
+	if known {
+		f.authMu.Lock()
+		exp, hit := f.authCache[key]
+		f.authMu.Unlock()
+		if hit && now.Before(exp) {
+			return user, true
+		}
 	}
-	f.authSem <- struct{}{}
-	ok = passwd.Verify(hash, pass)
+	// The hash runs behind a small semaphore; a client that leaves while
+	// queued, or a queue already deep, gets a refusal instead of a slot
+	// held for the whole wait.
+	if !passwd.Acquire(r.Context(), f.authSem, &f.authWaiting) {
+		return "", false
+	}
+	if known {
+		ok = passwd.Verify(hash, pass)
+	} else {
+		// Same cost as a wrong password for a known user: no timing oracle
+		// on which names exist.
+		passwd.VerifyDummy(pass)
+		ok = false
+	}
 	<-f.authSem
 	if !ok {
 		return "", false

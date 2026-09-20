@@ -24,7 +24,7 @@ on the first line of the file to enable it.
 | `server` | object | | Listeners and global limits |
 | `management` | object | | Control socket |
 | `logging` | object | | Log streams |
-| `trusted_proxies` | list of CIDR | `[]` | Peers whose `X-Forwarded-For` is believed, and whose PROXY protocol header is parsed on listeners with `proxy_protocol: true`. Empty means never. `0.0.0.0/0` and `::/0` are refused: trusting every address would let any client choose its own address and defeat bans, rate limits, ACLs and the audit trail; list the balancer networks |
+| `trusted_proxies` | list of CIDR | `[]` | Peers whose `X-Forwarded-For` is believed, and whose PROXY protocol header is parsed on listeners with `proxy_protocol: true`. Empty means never. `0.0.0.0/0`, `::/0` and any prefix shorter than `/8` are refused: trusting every address would let any client choose its own address and defeat bans, rate limits, ACLs and the audit trail; list the balancer networks |
 | `rate_limits` | list | `[]` | Named rate limit policies |
 | `upstreams` | list | `[]` | Named endpoint pools |
 | `routes` | list | `[]` | Request matching and actions |
@@ -46,7 +46,7 @@ on the first line of the file to enable it.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `secret_file` | absolute path | required | Master keyring, created with mode `0600` when missing. Deploy the same file to every node; rotate the master with `xproxyctl rotate-secret` (the kept keys still open tickets sealed under the old master for one more epoch) |
+| `secret_file` | absolute path | required | Master keyring, created with mode `0600` when missing; a keyring readable by other accounts, or writable by its group, is refused at load (`0600` and `0640` are accepted). Deploy the same file to every node; rotate the master with `xproxyctl rotate-secret` (the kept keys still open tickets sealed under the old master for one more epoch) |
 | `rotate` | duration | `24h` | Epoch length, `1h` to `168h`. Each epoch's key is derived from the master and the epoch number, so nodes with synchronised clocks switch keys together without exchanging messages; the previous epoch's key is kept for decryption, so a ticket lives at most two epochs |
 
 The key set's fingerprint is shown by `xproxyctl tls tickets` and `GET
@@ -333,6 +333,7 @@ rules see what the client sent.
 | `reject_double_encoding` | bool | `false` | A path that still holds a percent escape after one decoding (`%252e%252e`), the classic way past a filter that decodes once (`path_double_encoding`) |
 | `reject_encoded_slashes` | bool | `false` | `%2F` or `%5C` in the raw path: the routing decoder turns them into separators that the upstream may treat as data (`path_encoded_slash`) |
 | `reject_backslashes` | bool | `false` | A backslash in the decoded path, a separator to some servers (`path_backslash`) |
+| `reject_dot_segments` | bool | `true` | A `.` or `..` segment in the decoded path, including the `..;` form servlet containers resolve (`path_dot_segment`). Routing resolves dot segments while the upstream receives the path as sent, so `/static/../admin` would be routed as `/admin` but reach the origin unchanged; browsers never send such paths |
 | `reject_ambiguous_framing` | bool | `true` | HTTP/1 requests with several differing `Content-Length` values, a `Content-Length` next to a transfer coding, or a coding other than chunked (`framing_content_length`, `framing_te_cl`, `framing_transfer_encoding`). The Go parser already refuses most of these before the proxy sees them; the check closes the rest and makes them visible |
 | `unicode` | `off`, `nfc`, `nfkc` | `off` | Fold the decoded path to that form for routing: `nfc` makes composed and decomposed spellings (`café` either way) match one route, `nfkc` also compatibility forms such as fullwidth letters (`ｕsers`). The upstream receives the original path |
 
@@ -860,7 +861,7 @@ not match is skipped and the next candidate is tried.
 | `priority` | int | `0` | Tie breaker |
 | `tenant` | name | none | Free label grouping routes for quota reporting (`xproxyctl quotas`, `GET /v1/quotas`) and added as a `tenant` label to the per route metrics |
 | `upstream` | name | | Exactly one of `upstream`, `redirect`, `respond`, `honeypot`, `doh`, `static` |
-| `redirect` | `{to, status}` | status `308` | `to` is a URL or path and may use the request variables (below), for example `https://new.example.com${path}?${raw_query}`; status 301, 302, 303, 307 or 308 |
+| `redirect` | `{to, status}` | status `308` | `to` is a URL or path and may use the request variables (below), for example `https://new.example.com${path}?${raw_query}`; status 301, 302, 303, 307 or 308. The destination host must be fixed by the configuration: `to` starts with a literal path (`/x…`) or `scheme://host` (`${host}` and `${scheme}` allowed), so request data can fill the path or query but never pick the host (`/${query:next}` is refused) |
 | `respond` | `{status, body}` | status `200` | Static response, body up to 64 KiB |
 | `honeypot` | object | | Decoy action; see `routes[].honeypot` |
 | `mirror` | object | | Copy requests to a second upstream; see `routes[].mirror` |
@@ -1018,7 +1019,10 @@ Exposed families: `xproxy_requests_total`, `xproxy_responses_total{class}`,
 `xproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}`,
 `xproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}`,
 `xproxy_route_requests_total{route,outcome}`, `xproxy_build_info`,
-`xproxy_uptime_seconds`, `xproxy_config_generation`.
+`xproxy_uptime_seconds`, `xproxy_config_generation`,
+`xproxy_panics_total` (panics contained on a connection or datagram
+goroutine; zero in a healthy process, and anything else is a bug worth a
+report).
 
 Series (per-second rates for counters, current values for gauges):
 `requests`, `responses_2xx`, `responses_4xx`, `responses_5xx`, `denied`,
@@ -1644,8 +1648,9 @@ error is never cached and denies the request.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `url` | URL | required | `ldap://host:port` or `ldaps://host:port` |
+| `url` | URL | required | `ldap://host:port` or `ldaps://host:port`. Plain `ldap://` needs `start_tls` or `allow_plaintext`: every user password crosses this connection |
 | `start_tls` | bool | `false` | Upgrade an `ldap://` connection to TLS before binding |
+| `allow_plaintext` | bool | `false` | Accept `ldap://` without `start_tls` (a loopback or IPsec-protected directory only) |
 | `ca_file` | path | system roots | PEM roots for the server certificate |
 | `insecure_skip_verify` | bool | `false` | Skip certificate verification (test only; exclusive with `ca_file`) |
 | `bind_dn_template` | string | | Direct bind: `%s` is replaced by the escaped username, e.g. `uid=%s,ou=people,dc=example,dc=com`; exclusive with the search options |
@@ -1728,7 +1733,7 @@ module or a wrong ABI version is a load error.
 | `config` | string | `""` | Free text the module reads with `get(config)`, at most 64 KiB |
 | `timeout` | duration | `50ms` | Per call bound; 1ms to 10s |
 | `memory_limit_pages` | int | `256` | 64 KiB pages per instance (16 MiB); 1 to 16384 |
-| `instances` | int | `16` | Pooled instances; more are created on demand and dropped after use |
+| `instances` | int | `16` | Pooled instances and the bound on concurrent calls: a request beyond it waits for a free instance within `timeout`, then takes `on_error` |
 | `on_error` | `deny`, `allow` | `deny` | What a trap, timeout or bad result means: 500 with the filter name as reason, or continue with `wasm_error: allowed` in the access log |
 | `engine` | `auto`, `compiler`, `interpreter` | `auto` | The compiler emits machine code into executable memory, which the shipped systemd unit (`MemoryDenyWriteExecute=yes`) and the macOS hardened runtime refuse; `auto` probes once per process and falls back to the interpreter, which needs no executable pages and is several times slower per call |
 | `body_limit` | int | `65536` | Bytes of a request or response body a module may read or set; a larger body is not exposed and streams through; 0 disables body access; at most 16 MiB |
@@ -1971,7 +1976,12 @@ scanner as it flows, with 4 KiB held back between reads so a value
 split across two reads is still seen; an unlisted media type, an
 unknown encoding or a partial (ranged) body passes unscanned. A masked
 or streamed compressed body is forwarded decoded (the encoding header
-is removed); a streamed body loses its content length. Blocking a
+is removed); a streamed body loses its content length. Because the
+decoded bytes are what the other side receives, a streamed decode is
+also bounded by `max_decompression_ratio`: past 8 MiB decoded, a body
+that keeps expanding beyond that multiple of its compressed size has
+its transfer cut, so a compression bomb small enough to pass
+`max_body_bytes` cannot be amplified through the proxy. Blocking a
 streamed body cuts the transfer at the finding, since the head of the
 message has already been forwarded. Masking rewrites the value in place (`************1111`,
 `a***@example.com`, the first eight characters of a token) and updates
@@ -2003,6 +2013,7 @@ or `api_key` with a value; requests only).
 | `*.types` | list | text, JSON, XML, form, JavaScript types | Body media types scanned, without parameters |
 | `*.max_bytes` | int | `1048576` | Body buffered and scanned whole per direction (1 to 64 MiB); larger bodies are streamed |
 | `*.max_decoded_bytes` | int | 4 × `max_bytes` | A compressed body that decodes to more than this is streamed instead (up to 1 GiB) |
+| `*.max_decompression_ratio` | int | `100` | A streamed decode is cut (the transfer ends in an error) once more than 8 MiB has been decoded and the decoded size passes this multiple of the compressed bytes read. A decoded body is forwarded decoded, so without this bound a body that fits under `max_body_bytes` could become an unbounded plaintext stream toward the upstream or the client (2 to 100000) |
 | `*.encoded` | `scan`, `skip` | `scan` | Decode `gzip`, `deflate`, `br` and `zstd` bodies for scanning, or leave compressed bodies unscanned |
 | `*.oversize` | `stream`, `skip` | `stream` | Scan bodies larger than `max_bytes` as they flow, or leave them unscanned |
 | `*.ignore_headers` | list | request: `Authorization`, `Cookie`, `X-Api-Key`, `Proxy-Authorization`; response: `Set-Cookie` | Headers never scanned or masked |
@@ -2352,7 +2363,7 @@ gRPC-web preflights.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `allow_origins` | list | required | Permitted `Origin` values: exact (`https://app.example`), a single `*` (any origin, incompatible with `allow_credentials`), or a wildcard host (`https://*.example.com`, matching one or more whole labels). A wildcard must be a whole leading label: `https://*example.com` is refused because it would also admit `evilexample.com` |
+| `allow_origins` | list | required | Permitted `Origin` values: exact (`https://app.example`), a single `*` (any origin, incompatible with `allow_credentials`), or a wildcard host (`https://*.example.com`, matching one or more whole labels). A wildcard must be a whole leading label followed by at least two more: `https://*example.com` is refused because it would also admit `evilexample.com`, and `https://*.com` or `https://*.co.uk` (a public suffix) because every site under it would be allowed |
 | `allow_methods` | list | `GET, HEAD, POST, PUT, PATCH, DELETE` | `Access-Control-Allow-Methods` of a preflight |
 | `allow_headers` | list | reflect the request | `Access-Control-Allow-Headers`; `*` or empty reflects the preflight's `Access-Control-Request-Headers` |
 | `expose_headers` | list | `[]` | `Access-Control-Expose-Headers` on actual responses |

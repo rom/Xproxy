@@ -148,7 +148,7 @@ func TestVerifyInputs(t *testing.T) {
 	}
 	// Expired nonce.
 	c.now = func() time.Time { return time.Now().Add(-20 * time.Minute) }
-	old := c.newNonce(ip, c.now())
+	old := c.newNonce(ip, "example.test", c.now())
 	c.now = time.Now
 	if post(url.Values{"nonce": {old}, "counter": {Solve(old, 10)}}) != 403 {
 		t.Fatal("expired nonce accepted")
@@ -515,8 +515,22 @@ func TestCaptcha(t *testing.T) {
 	rec = httptest.NewRecorder()
 	c.ServeTier(rec, httptest.NewRequest("GET", "http://example.com/x", nil), ip, true)
 	nHost = extractNonce(t, rec.Body.String())
-	if w, reason := postHost(url.Values{"cf-turnstile-response": {"t"}}, "whatever.example"); w.Code != 303 {
+	if w, reason := postHost(url.Values{"cf-turnstile-response": {"t"}}, "example.com"); w.Code != 303 {
 		t.Fatalf("allowlisted hostname rejected: %d %s", w.Code, reason)
+	}
+	// The nonce binds the verify request to the host the page was served
+	// on: a token farmed on evil.example cannot be redeemed by posting with
+	// Host: evil.example, whatever the provider reports.
+	conf.Captcha.Hostnames = nil
+	c.Reconfigure(conf)
+	rec = httptest.NewRecorder()
+	c.ServeTier(rec, httptest.NewRequest("GET", "http://example.com/x", nil), ip, true)
+	nHost = extractNonce(t, rec.Body.String())
+	if w, reason := postHost(url.Values{"cf-turnstile-response": {"t"}}, "evil.example"); w.Code != 403 || reason != "bad nonce signature" {
+		t.Fatalf("nonce redeemed on another host: %d %s", w.Code, reason)
+	}
+	if w, reason := postHost(url.Values{"cf-turnstile-response": {"t"}}, "example.com"); w.Code != 403 || reason != "captcha hostname" {
+		t.Fatalf("token solved elsewhere accepted: %d %s", w.Code, reason)
 	}
 	// Turn the check off: a missing hostname passes.
 	off := false

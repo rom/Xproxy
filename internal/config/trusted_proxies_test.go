@@ -19,7 +19,7 @@ upstreams:
 routes:
   - {name: r, upstream: u}
 `
-	for _, bad := range []string{`"0.0.0.0/0"`, `"::/0"`, `"10.0.0.0/8", "::/0"`} {
+	for _, bad := range []string{`"0.0.0.0/0"`, `"::/0"`, `"10.0.0.0/8", "::/0"`, `"0.0.0.0/1", "128.0.0.0/1"`, `"::/1", "8000::/1"`, `"2000::/3"`} {
 		if _, err := parseNoFiles([]byte(strings.Replace(base, "%s", bad, 1))); err == nil || !strings.Contains(err.Error(), "every client") {
 			t.Errorf("%s accepted: %v", bad, err)
 		}

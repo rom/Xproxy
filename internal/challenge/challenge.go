@@ -360,19 +360,29 @@ func parseDevice(s string) []byte {
 	return raw[:deviceLen]
 }
 
-// newNonce returns a signed nonce: ts(8) || rand(8) || mac(16).
-func (c *Challenger) newNonce(ip netip.Addr, now time.Time) string {
+// newNonce returns a signed nonce: ts(8) || rand(8) || mac(16). The MAC
+// covers the client address and the host the page was served on, so a
+// nonce issued on one site cannot be redeemed on another.
+func (c *Challenger) newNonce(ip netip.Addr, host string, now time.Time) string {
 	buf := make([]byte, 16, 16+macLen)
 	binary.BigEndian.PutUint64(buf, uint64(now.Unix())) //nolint:gosec // positive time
 	_, _ = rand.Read(buf[8:16])
-	buf = append(buf, c.mac([]byte("nonce"), buf[:16], c.ipBytes(ip))...)
+	buf = append(buf, c.mac([]byte("nonce"), buf[:16], c.ipBytes(ip), []byte(hostKey(host)))...)
 	return base64.RawURLEncoding.EncodeToString(buf)
+}
+
+// hostKey is the host as bound into a nonce: lower case, without port.
+func hostKey(host string) string {
+	if i := strings.LastIndexByte(host, ':'); i >= 0 && !strings.HasSuffix(host, "]") {
+		host = host[:i]
+	}
+	return strings.ToLower(host)
 }
 
 // checkNonce validates the signature and age. The caller marks the nonce
 // used with markUsed after a correct proof, so a wrong guess does not burn
 // the nonce the browser is still working on.
-func (c *Challenger) checkNonce(nonce string, ip netip.Addr, now time.Time) ([macLen]byte, error) {
+func (c *Challenger) checkNonce(nonce string, ip netip.Addr, host string, now time.Time) ([macLen]byte, error) {
 	var key [macLen]byte
 	if len(nonce) > 64 {
 		return key, errors.New("nonce too long")
@@ -381,7 +391,7 @@ func (c *Challenger) checkNonce(nonce string, ip netip.Addr, now time.Time) ([ma
 	if err != nil || len(raw) != 16+macLen {
 		return key, errors.New("malformed nonce")
 	}
-	if !c.macOK(raw[16:], []byte("nonce"), raw[:16], c.ipBytes(ip)) {
+	if !c.macOK(raw[16:], []byte("nonce"), raw[:16], c.ipBytes(ip), []byte(hostKey(host))) {
 		return key, errors.New("bad nonce signature")
 	}
 	ts := binary.BigEndian.Uint64(raw[:8])
@@ -479,7 +489,7 @@ func (c *Challenger) ServeTier(w http.ResponseWriter, r *http.Request, ip netip.
 	now := c.now()
 	c.mu.Lock()
 	c.Issued++
-	d := pageData{Title: c.title, Nonce: c.newNonce(ip, now), Difficulty: c.difficulty, Return: safeReturn(r.URL.RequestURI()), Verify: VerifyPath, Script: ScriptPath, Device: c.device}
+	d := pageData{Title: c.title, Nonce: c.newNonce(ip, r.Host, now), Difficulty: c.difficulty, Return: safeReturn(r.URL.RequestURI()), Verify: VerifyPath, Script: ScriptPath, Device: c.device}
 	cp := c.captcha
 	c.mu.Unlock()
 	csp := "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'"
@@ -554,7 +564,7 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 		return false, "counter"
 	}
 	c.mu.Lock()
-	key, err := c.checkNonce(nonce, ip, now)
+	key, err := c.checkNonce(nonce, ip, r.Host, now)
 	c.mu.Unlock()
 	if err != nil {
 		c.fail(w, err.Error())
@@ -562,8 +572,10 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 	}
 	if token != "" {
 		ctx, cancel := context.WithTimeout(r.Context(), cp.client.Timeout)
-		// The provider reports the host the widget page was loaded on,
-		// which is the Host the browser sent to this challenge endpoint.
+		// The provider reports the host the widget page was loaded on. The
+		// nonce just verified binds this request to the host the challenge
+		// page was served on, so r.Host is that host and not a value the
+		// verifier chose freely.
 		ok, reason := cp.check(ctx, token, r.Host, ip)
 		cancel()
 		if !ok {
@@ -593,6 +605,20 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, ret, http.StatusSeeOther)
 	return true, ""
+}
+
+// ClientFault reports whether a Verify failure reason is the client's
+// doing. A refusal the proxy caused itself — the replay table being full
+// of other people's nonces, or a nonce submitted twice because a form
+// was retried — must not be counted against the client: feeding it to a
+// ban trigger turns a local resource limit into a ban of everyone who
+// solves a challenge correctly.
+func ClientFault(reason string) bool {
+	switch reason {
+	case "verification table full", "nonce already used":
+		return false
+	}
+	return true
 }
 
 func (c *Challenger) fail(w http.ResponseWriter, _ string) {

@@ -230,8 +230,13 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				st.denied = "challenge:" + reason
 				s.logs.SecurityEvent(r.Context(), "challenge_failed", reason,
-					"request_id", st.id, "client_ip", st.clientIP.String(), "user_agent", r.UserAgent())
-				if bl := s.bans.Load(); bl != nil {
+					"request_id", st.id, "client_ip", st.clientIP.String(), "user_agent", r.UserAgent(),
+					"client_fault", challenge.ClientFault(reason))
+				// Only the client's own mistakes feed the ban triggers; a
+				// refusal the proxy caused (a full replay table) would
+				// otherwise ban every client whose correct solve it just
+				// refused.
+				if bl := s.bans.Load(); bl != nil && challenge.ClientFault(reason) {
 					bl.ObserveClient(st.clientIP, st.ja4, "challenge")
 				}
 			}
@@ -262,13 +267,9 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if isWebTransport(r) {
-		if !cr.cfg.WebTransport {
-			st.denied = "webtransport"
-			s.deny(rw, r, st, http.StatusForbidden, "webtransport")
-			return
-		}
-		s.relayWebTransport(rw, r, st, cr)
+	if isWebTransport(r) && !cr.cfg.WebTransport {
+		st.denied = "webtransport"
+		s.deny(rw, r, st, http.StatusForbidden, "webtransport")
 		return
 	}
 	// A CORS preflight is answered before authentication, rate limits and
@@ -494,6 +495,14 @@ admitted:
 		}
 	}
 
+	// A WebTransport session is relayed only now: the CONNECT has passed
+	// maintenance, patches, policy, ACLs, geo, the challenge, shedding,
+	// the rate limits and the filter chain like any other request.
+	if isWebTransport(r) {
+		s.relayWebTransport(rw, r, st, cr)
+		return
+	}
+
 	// Per-route timeout, tightened by a gRPC client's own deadline.
 	ctx := r.Context()
 	deadline := cr.cfg.TotalTimeout().D()
@@ -542,7 +551,7 @@ admitted:
 			if c := s.cache.Load(); c != nil {
 				if key := cacheKey(rc, r, st.host, st.path); key != "" {
 					if e, ok := c.Get(key, r.Header); ok {
-						s.serveCached(rw, r, st, e)
+						s.serveCached(rw, r, st, cr, e)
 						return
 					}
 					st.cacheKey = key
@@ -729,6 +738,25 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			if v := instances.Response(resp); v.Deny {
 				return &filterDenied{v: v}
 			}
+			// The cache snapshot is taken before the route's response header
+			// operations run: their templates may expand request data of
+			// this client (a cookie, a header, the address), which must not
+			// be replayed to everyone else; a hit applies them afresh.
+			if st.cacheKey != "" && r.Method == http.MethodGet {
+				if c := s.cache.Load(); c != nil {
+					if ttl, ok := storable(cr.cfg.Cache, r, resp, c.MaxObject()); ok {
+						hdr := cache.StorableHeader(resp.Header)
+						vary, _ := cache.VaryNames(resp.Header.Values("Vary"))
+						status, key, host, path, reqHdr := resp.StatusCode, st.cacheKey, st.host, st.path, r.Header.Clone()
+						resp.Body = &cachingBody{ReadCloser: resp.Body, limit: c.MaxObject(), store: func(body []byte) {
+							now := time.Now()
+							e := &cache.Entry{Status: status, Header: hdr, Body: append([]byte(nil), body...), Stored: now, Expires: now.Add(ttl), Host: host, Path: path}
+							e.SetVary(vary)
+							c.Put(key, reqHdr, e)
+						}}
+					}
+				}
+			}
 			cr.respOps.apply(resp.Header, &tvars{r: r, st: st})
 			if cr.idleTimeout > 0 && st.cancel != nil && resp.Body != nil && resp.Body != http.NoBody {
 				resp.Body = newIdleReader(resp.Body, cr.idleTimeout, st.cancel)
@@ -758,21 +786,6 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			}
 			if st.cache != "" {
 				resp.Header.Set("X-Cache", strings.ToUpper(st.cache))
-			}
-			if st.cacheKey != "" && r.Method == http.MethodGet {
-				if c := s.cache.Load(); c != nil {
-					if ttl, ok := storable(cr.cfg.Cache, r, resp, c.MaxObject()); ok {
-						hdr := cache.StorableHeader(resp.Header)
-						vary, _ := cache.VaryNames(resp.Header.Values("Vary"))
-						status, key, host, path, reqHdr := resp.StatusCode, st.cacheKey, st.host, st.path, r.Header.Clone()
-						resp.Body = &cachingBody{ReadCloser: resp.Body, limit: c.MaxObject(), store: func(body []byte) {
-							now := time.Now()
-							e := &cache.Entry{Status: status, Header: hdr, Body: append([]byte(nil), body...), Stored: now, Expires: now.Add(ttl), Host: host, Path: path}
-							e.SetVary(vary)
-							c.Put(key, reqHdr, e)
-						}}
-					}
-				}
 			}
 			if s.cfg().Server.ServerHeader == "" {
 				resp.Header.Del("Server")

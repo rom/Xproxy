@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/rom/xproxy/internal/sandbox"
 )
@@ -409,7 +410,8 @@ func renderTLS(d Data, sty Style) []string {
 			}
 			ct := "-"
 			if c.CT.Required > 0 {
-				ct = fmt.Sprintf("%d/%d", c.CT.Verified, c.CT.Required)
+				// Logs, not SCTs: the requirement counts independent logs.
+				ct = fmt.Sprintf("%d/%d", c.CT.Logs, c.CT.Required)
 				if !c.CT.OK {
 					ct = sty.Yellow + ct + " failed" + sty.Reset
 				}
@@ -524,15 +526,15 @@ func compactLogLine(l string) string {
 		if strings.HasPrefix(rest, `"`) {
 			rest = rest[1:]
 			if j := strings.IndexByte(rest, '"'); j >= 0 {
-				return rest[:j]
+				return printable(rest[:j])
 			}
-			return rest
+			return printable(rest)
 		}
 		j := strings.IndexAny(rest, ",}")
 		if j < 0 {
-			return rest
+			return printable(rest)
 		}
-		return rest[:j]
+		return printable(rest[:j])
 	}
 	ts := pick("time")
 	if len(ts) >= 19 {
@@ -553,6 +555,19 @@ func compactLogLine(l string) string {
 		b.WriteString(p)
 	}
 	return b.String()
+}
+
+// printable drops the runes a terminal could act on: the JSON encoder
+// escapes C0 controls but passes DEL and the C1 range (U+0080–U+009F, an
+// 8-bit CSI among them) through, and request fields in security lines are
+// attacker chosen.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == ' ' || unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, s)
 }
 
 // seriesValues returns the values of one named series.

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
@@ -17,6 +18,62 @@ import (
 // filter blocks it: the transfer is cut, since the head of the message
 // has already been forwarded.
 var ErrBlocked = errors.New("sensitive_data: body blocked")
+
+// ErrBomb ends a streamed body whose decoded size outgrew its compressed
+// size by more than the configured ratio.
+var ErrBomb = errors.New("sensitive_data: decompression ratio exceeded")
+
+// ratioFloor is the decoded size below which the ratio is not judged, so
+// a small body with a high ratio (a page of repeated whitespace) is never
+// cut. Above it the ratio decides.
+// It is a variable so the tests can lower it and exercise the same code
+// path on bodies small enough to stay quick under the race detector.
+var ratioFloor int64 = 8 << 20
+
+// countingReader records how many compressed bytes a decoder consumed.
+//
+// The count is atomic because the decoders are not all synchronous: the
+// zstd decoder pulls from this reader on its own goroutines while the
+// consumer reads the decoded side, so the write and the read below
+// genuinely race.
+type countingReader struct {
+	r io.Reader
+	n atomic.Int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// ratioReader cuts a decoded stream that expands further than ratio
+// times the compressed bytes it came from. Without it a client (or a
+// compromised upstream) turns a body that fits under max_body_bytes into
+// an unbounded plaintext stream toward the other side: the filter
+// forwards what it decodes, so the compression bomb is amplified rather
+// than absorbed.
+type ratioReader struct {
+	r     io.Reader
+	src   *countingReader
+	ratio int64
+	out   int64
+}
+
+func (rr *ratioReader) Read(p []byte) (int, error) {
+	n, err := rr.r.Read(p)
+	rr.out += int64(n)
+	if rr.out > ratioFloor {
+		in := rr.src.n.Load()
+		if in < 1 {
+			in = 1
+		}
+		if rr.out/in > rr.ratio {
+			return n, ErrBomb
+		}
+	}
+	return n, err
+}
 
 // hold is how many bytes a streaming scan keeps back between chunks so a
 // value split across two reads is still seen whole; values longer than

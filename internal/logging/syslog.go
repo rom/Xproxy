@@ -30,6 +30,7 @@ type syslogSink struct {
 	drop     dropCounter
 	sent     dropCounter
 	stop     chan struct{}
+	stopOnce sync.Once
 	wg       sync.WaitGroup
 	tlsCfg   *tls.Config
 	meta     siemMeta
@@ -190,6 +191,6 @@ func (s *syslogSink) loop() {
 }
 
 func (s *syslogSink) close() {
-	close(s.stop)
+	s.stopOnce.Do(func() { close(s.stop) })
 	s.wg.Wait()
 }

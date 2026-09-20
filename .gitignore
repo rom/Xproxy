@@ -8,3 +8,7 @@ rpmbuild/
 deploy/selinux/*.pp*
 deploy/selinux/tmp/
 dist/
+/xproxy-fleet
+/xproxy
+/xproxyctl
+/xproxy-admin

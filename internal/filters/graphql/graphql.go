@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -120,8 +121,12 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		}
 		queries = []string{q}
 	case http.MethodPost:
-		ct := r.Header.Get("Content-Type")
-		if !strings.HasPrefix(ct, "application/json") && !strings.HasPrefix(ct, "application/graphql") {
+		// Media types are case-insensitive to every GraphQL server;
+		// matching the raw header would let "Application/JSON" skip the
+		// limits.
+		mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		isJSON := mt == "application/json" || strings.HasSuffix(mt, "+json")
+		if !isJSON && mt != "application/graphql" {
 			return filter.Continue
 		}
 		if r.ContentLength > g.cfg.MaxQueryBytes {
@@ -135,7 +140,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 			return in.deny("query too large", "size")
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		if strings.HasPrefix(ct, "application/graphql") {
+		if !isJSON {
 			queries = []string{string(body)}
 			break
 		}

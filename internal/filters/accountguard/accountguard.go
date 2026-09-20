@@ -199,29 +199,35 @@ var classes = map[string]bool{"login": true, "register": true, "reset": true, "c
 // defaultSteps is the ladder of each class over a ten minute window.
 func defaultSteps(class string) []Step {
 	switch class {
+	// A count keyed on the account (account, account_ips) belongs to the
+	// person being attacked, not to the attacker: anyone can type someone
+	// else's name. Those counts raise the ladder as far as a challenge, so
+	// the real owner can still prove themselves and get in, but they never
+	// reach a block by default. Blocks key on what the attacker owns: the
+	// address, the address/account pair and the device.
 	case "login":
 		return []Step{
 			{Action: "delay", Delay: "2s", IP: 5, Account: 3, Pair: 3},
 			{Action: "challenge", IP: 15, Account: 5, Pair: 5, IPAccounts: 10, AccountIPs: 5, DeviceAccounts: 10},
-			{Action: "block", Duration: "15m", IP: 50, Account: 20, Pair: 10, IPAccounts: 30, AccountIPs: 20, Device: 50, DeviceAccounts: 30},
+			{Action: "block", Duration: "15m", IP: 50, Pair: 10, IPAccounts: 30, Device: 50, DeviceAccounts: 30},
 		}
 	case "register":
 		return []Step{
 			{Action: "delay", Delay: "2s", IP: 2},
 			{Action: "challenge", IP: 3, Account: 2, Device: 3},
-			{Action: "block", Duration: "1h", IP: 10, Account: 5, Device: 10},
+			{Action: "block", Duration: "1h", IP: 10, Device: 10},
 		}
 	case "reset":
 		return []Step{
 			{Action: "delay", Delay: "2s", IP: 3, Account: 2},
 			{Action: "challenge", IP: 5, Account: 3, Device: 5},
-			{Action: "block", Duration: "1h", IP: 20, Account: 10, Device: 20},
+			{Action: "block", Duration: "1h", IP: 20, Device: 20},
 		}
 	case "cart":
 		return []Step{
 			{Action: "delay", Delay: "1s", IP: 30, Account: 30, Device: 30},
 			{Action: "challenge", IP: 60, Account: 60, Device: 60},
-			{Action: "block", Duration: "30m", IP: 150, Account: 150, Device: 150},
+			{Action: "block", Duration: "30m", IP: 150, Device: 150},
 		}
 	case "scrape":
 		return []Step{

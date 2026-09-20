@@ -39,6 +39,7 @@ import (
 	"github.com/rom/xproxy/internal/apiinv"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/jsonschema"
+	"github.com/rom/xproxy/internal/netutil"
 )
 
 // Config is the options schema.
@@ -459,7 +460,10 @@ type instance struct {
 
 func (in *instance) Request(r *http.Request) filter.Verdict {
 	g := in.g
-	pi, pathVals, ok := in.api.match(r.Method, r.URL.Path)
+	// The cleaned path, as routing sees it: "/api/users/../admin" or
+	// "/api//users" must not slip past the description as an unknown path
+	// while the upstream router serves the documented operation.
+	pi, pathVals, ok := in.api.match(r.Method, netutil.CleanPath(r.URL.Path))
 	if !ok {
 		if g.cfg.UnknownPaths == "allow" {
 			return filter.Continue

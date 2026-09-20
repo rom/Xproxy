@@ -60,6 +60,7 @@ type Provider struct {
 	mu           sync.Mutex
 	lastOnDemand time.Time
 	stop         chan struct{}
+	stopOnce     sync.Once
 	wg           sync.WaitGroup
 	now          func() time.Time
 
@@ -117,6 +118,11 @@ func NewProvider(cfg config.JWTProvider, log *slog.Logger) (*Provider, error) {
 	if p.keys.Load() == nil && p.secret == nil && p.fetch == nil && p.intro == nil {
 		return nil, fmt.Errorf("jwt provider %s: no keys", cfg.Name)
 	}
+	if len(cfg.Audiences) == 0 {
+		// RFC 8725 §3.8: without an audience check any token the issuer
+		// minted for another relying party is accepted here.
+		p.log.Warn("jwt provider accepts tokens of any audience; set audiences to the values this proxy is issued for")
+	}
 	return p, nil
 }
 
@@ -162,13 +168,10 @@ func (p *Provider) Start() {
 	}()
 }
 
-// Stop ends background refresh.
+// Stop ends background refresh. It is safe to call more than once and
+// from several goroutines (a discovery swap and a filter close can race).
 func (p *Provider) Stop() {
-	select {
-	case <-p.stop:
-	default:
-		close(p.stop)
-	}
+	p.stopOnce.Do(func() { close(p.stop) })
 	p.wg.Wait()
 }
 
@@ -490,6 +493,20 @@ func (p *Provider) checkClaims(c Claims, now time.Time) error {
 		if _, ok := c[name]; !ok {
 			return fmt.Errorf("%w: %s", ErrClaim, name)
 		}
+	}
+	return nil
+}
+
+// CheckAuthorizedParty applies OpenID Connect Core 3.1.3.7 steps 4 and 5
+// to an ID token verified for clientID: an aud with more than one entry
+// must carry azp, and an azp present must equal clientID.
+func CheckAuthorizedParty(c Claims, clientID string) error {
+	azp, hasAzp := c["azp"].(string)
+	if aud, ok := c["aud"].([]any); ok && len(aud) > 1 && !hasAzp {
+		return fmt.Errorf("%w: azp missing for multi-audience token", ErrAudience)
+	}
+	if hasAzp && azp != clientID {
+		return fmt.Errorf("%w: azp %q", ErrAudience, azp)
 	}
 	return nil
 }

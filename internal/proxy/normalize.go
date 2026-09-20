@@ -49,7 +49,27 @@ func checkNormalization(n *config.Normalization, r *http.Request) string {
 	if n.RejectBackslashes && strings.IndexByte(path, '\\') >= 0 {
 		return "path_backslash"
 	}
+	if n.DotSegments() && hasDotSegments(path) {
+		return "path_dot_segment"
+	}
 	return ""
+}
+
+// hasDotSegments reports a "." or ".." segment in the decoded path, or a
+// segment starting with ".." or "." followed by ";" (a path parameter
+// some servlet containers strip before resolving the dots). Routing
+// resolves dot segments but the upstream receives the path as sent, so
+// the two would otherwise disagree about which resource is meant.
+func hasDotSegments(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+		if strings.HasPrefix(seg, "..;") || strings.HasPrefix(seg, ".;") {
+			return true
+		}
+	}
+	return false
 }
 
 // framingProblem reports ambiguous HTTP/1 message framing that the

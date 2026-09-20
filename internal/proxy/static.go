@@ -69,7 +69,9 @@ func (s *Server) static(rw *responseWriter, r *http.Request, st *reqState, cr *c
 		// then a listing.
 		if !strings.HasSuffix(r.URL.Path, "/") && rel != "/" {
 			_ = f.Close()
-			rw.Header().Set("Location", r.URL.Path+"/")
+			// The cleaned routing path, not the raw one: "//evil.example"
+			// would otherwise become a protocol-relative Location.
+			rw.Header().Set("Location", st.path+"/")
 			s.plainStatus(rw, r, http.StatusMovedPermanently)
 			return
 		}

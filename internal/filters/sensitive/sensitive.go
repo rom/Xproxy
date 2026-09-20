@@ -68,9 +68,13 @@ type Phase struct {
 	// MaxDecodedBytes bounds a decoded body buffered whole; a larger one
 	// is streamed. Default four times max_bytes.
 	MaxDecodedBytes int64 `json:"max_decoded_bytes"`
-	scan            map[string]bool
-	types           map[string]bool
-	ignore          map[string]bool
+	// MaxDecompressionRatio bounds a streamed decode: once more than
+	// 8 MiB has been decoded and the decoded size passes this multiple of
+	// the compressed bytes read, the transfer is cut. Default 100.
+	MaxDecompressionRatio int `json:"max_decompression_ratio"`
+	scan                  map[string]bool
+	types                 map[string]bool
+	ignore                map[string]bool
 }
 
 // Custom is an operator detector.
@@ -147,6 +151,12 @@ func parsePhase(name string, p *Phase, request bool) error {
 	}
 	if p.MaxDecodedBytes < p.MaxBytes || p.MaxDecodedBytes > 1<<30 {
 		errs = append(errs, fmt.Errorf("%s.max_decoded_bytes: must be between max_bytes and 1073741824", name))
+	}
+	if p.MaxDecompressionRatio == 0 {
+		p.MaxDecompressionRatio = 100
+	}
+	if p.MaxDecompressionRatio < 2 || p.MaxDecompressionRatio > 100_000 {
+		errs = append(errs, fmt.Errorf("%s.max_decompression_ratio: must be between 2 and 100000", name))
 	}
 	switch p.Encoded {
 	case "":
@@ -369,14 +379,19 @@ func (in *instance) body(direction string, p *Phase, h http.Header, rc io.ReadCl
 			io.Closer
 		}{src, rc}
 		if enc != "" {
-			d, err := decoder(enc, src)
+			// The decoded stream is forwarded, so its size is bounded by
+			// the ratio rather than by the body limit the compressed form
+			// passed: otherwise a few kilobytes become gigabytes on the
+			// other side.
+			counted := &countingReader{r: src}
+			d, err := decoder(enc, counted)
 			if err != nil {
 				return nil, 0, false, false
 			}
 			r = struct {
 				io.Reader
 				io.Closer
-			}{d, rc}
+			}{&ratioReader{r: d, src: counted, ratio: int64(p.MaxDecompressionRatio)}, rc}
 		}
 		return &streamScanner{src: r, in: in, direction: direction, where: where, mask: mask, block: p.Action == "block"}, -1, enc != "", mask
 	}

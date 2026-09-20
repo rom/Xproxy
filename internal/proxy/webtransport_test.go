@@ -101,6 +101,7 @@ upstreams:
     tls: {server_name: backend.test, ca_file: %s}
 routes:
   - {name: closed, paths: ["/closed"], upstream: plain}
+  - {name: denied, paths: ["/denied"], upstream: wt, webtransport: true, deny_cidrs: ["0.0.0.0/0", "::/0"]}
   - {name: wt, paths: ["/"], upstream: wt, webtransport: true, request_headers: {set: {X-Tenant: acme}}}
 `
 	s, _ := startServer(t, fmt.Sprintf(yaml, lcert, lkey, backendAddr, ca.Path, backendAddr, ca.Path))
@@ -168,5 +169,18 @@ routes:
 	defer d2.Close()
 	if _, _, err := d2.Dial(ctx, "https://"+udp+"/closed", nil); err == nil {
 		t.Fatal("session on a route without webtransport accepted")
+	}
+	// The CONNECT passes the route's controls like any request: a route
+	// that denies every client refuses the session (it used to be relayed
+	// right after route matching, before ACLs, limits and filters).
+	d3 := &webtransport.Transport{TLSClientConfig: d.TLSClientConfig, QUICConfig: d.QUICConfig}
+	defer d3.Close()
+	if resp, _, err := d3.Dial(ctx, "https://"+udp+"/denied", nil); err == nil {
+		t.Fatal("session on a route that denies every client accepted")
+	} else if resp != nil && resp.StatusCode != 403 {
+		t.Fatalf("denied route answered %d", resp.StatusCode)
+	}
+	if s.Stats().WebTransportSessions != 1 {
+		t.Fatalf("sessions after refused dials: %d", s.Stats().WebTransportSessions)
 	}
 }

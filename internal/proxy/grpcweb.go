@@ -328,11 +328,9 @@ func (s *Server) grpcWebPreflight(rw *responseWriter, r *http.Request, st *reqSt
 	h.Set("Access-Control-Allow-Origin", origin)
 	h.Add("Vary", "Origin")
 	h.Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	if req := r.Header.Get("Access-Control-Request-Headers"); req != "" {
-		h.Set("Access-Control-Allow-Headers", req)
-	} else {
-		h.Set("Access-Control-Allow-Headers", "content-type, x-grpc-web, x-user-agent, grpc-timeout")
-	}
+	// A fixed list, not a reflection of Access-Control-Request-Headers:
+	// the browser may send cross-origin only what gRPC-Web needs.
+	h.Set("Access-Control-Allow-Headers", "content-type, x-grpc-web, x-user-agent, grpc-timeout, authorization")
 	h.Set("Access-Control-Max-Age", "600")
 	rw.WriteHeader(http.StatusNoContent)
 }

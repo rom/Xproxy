@@ -133,8 +133,18 @@ func decompressRData(b []byte, off, rdlen int, typ uint16) ([]byte, error) {
 		if n2+20 != end {
 			return nil, errMalformed
 		}
-		p1, _ := packNameCase(mname)
-		p2, _ := packNameCase(rname)
+		// A name that decompresses to more than a wire name can hold does
+		// not pack again; keeping the error would leave rdata whose name
+		// lengths disagree with its contents, which later panics the
+		// canonical form.
+		p1, err := packNameCase(mname)
+		if err != nil {
+			return nil, errMalformed
+		}
+		p2, err := packNameCase(rname)
+		if err != nil {
+			return nil, errMalformed
+		}
 		out := append(append(p1, p2...), b[n2:end]...)
 		return out, nil
 	case TypeRRSIG:
@@ -146,7 +156,16 @@ func decompressRData(b []byte, off, rdlen int, typ uint16) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		p, _ := packNameCase(signer)
+		// readNameCase is bounded by the message, not by this record, so a
+		// name may legitimately parse past the declared rdata length: that
+		// record is malformed, not a reason to slice backwards.
+		if n > end {
+			return nil, errMalformed
+		}
+		p, err := packNameCase(signer)
+		if err != nil {
+			return nil, errMalformed
+		}
 		out := append(append(append([]byte{}, b[off:off+18]...), p...), b[n:end]...)
 		return out, nil
 	case TypeNSEC:
@@ -154,7 +173,13 @@ func decompressRData(b []byte, off, rdlen int, typ uint16) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		p, _ := packNameCase(nextName)
+		if n > end {
+			return nil, errMalformed
+		}
+		p, err := packNameCase(nextName)
+		if err != nil {
+			return nil, errMalformed
+		}
 		return append(p, b[n:end]...), nil
 	default:
 		return append([]byte(nil), b[off:end]...), nil
@@ -173,7 +198,10 @@ func nameAt(b []byte, off, end, prefix int, keepCase bool) ([]byte, error) {
 	if n != end {
 		return nil, errMalformed
 	}
-	p, _ := packNameCase(name)
+	p, err := packNameCase(name)
+	if err != nil {
+		return nil, errMalformed
+	}
 	return append(append([]byte{}, b[off:off+prefix]...), p...), nil
 }
 

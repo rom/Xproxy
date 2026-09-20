@@ -8,7 +8,173 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ### Security (1.3)
 
-Findings of a source code security audit, all with regression tests:
+Findings of a third audit round, taken from disciplines the first two did
+not use (supply chain and build reproducibility, cryptographic
+engineering, panic reachability, abuse of the security features
+themselves, and the operator and tenant privilege boundaries), all with
+regression tests:
+
+- A malformed DNS record can no longer end the process. `ParseMessage`
+  runs on the listener's own goroutine, where a panic is fatal to every
+  connection the proxy holds: a 31-byte UDP datagram whose NSEC rdata is
+  shorter than the name it contains sliced backwards and panicked
+  (CWE-248, denial of service from one packet). RRSIG, NSEC and SOA
+  records whose contents run past their own rdata are errors now, names
+  that cannot be repacked are errors instead of silently truncated
+  rdata, and an NSEC3 set with no records is no longer indexed. A
+  ClientHello body of exactly 34 bytes read one byte past its end on the
+  QUIC and layer 4 listeners. As defence in depth, the DNS, layer 4 and
+  QUIC per-flow goroutines now contain a panic to that one flow, count it
+  in `xproxy_panics_total` and log it with its stack: the counter is zero
+  in a healthy process, and anything else is a bug to fix.
+- The `sensitive_data` filter bounded a compressed body by its compressed
+  size, so a 256 KiB gzip body expanded to 8 GiB in the proxy: about
+  32,000 to 1, enough for one request to exhaust a node (CWE-409). The
+  new per-phase `max_decompression_ratio` (default 100) stops the decode
+  as soon as the expansion passes it. `docs/THREAT_MODEL.md` and
+  `docs/SECURITY.md` said the proxy never decompresses response bodies,
+  which stopped being true when streamed decoding arrived; both now
+  describe what the code does.
+- Gateway API: an HTTPRoute in any namespace attached itself to any
+  Gateway it named, and a listener's `certificateRef` was fetched from
+  any namespace it named. In a shared cluster that is one tenant taking
+  over another's hostname, or reading another namespace's TLS private key
+  through the controller's own credentials (CWE-862). Attachment now
+  honours `allowedRoutes.namespaces` (`Same` by default, as the
+  specification says), a cross-namespace `certificateRef` is refused
+  rather than silently resolved, and the controller no longer prefetches
+  secrets outside the Gateway's namespace.
+- Certificate Transparency: a requirement of N signed certificate
+  timestamps counted timestamps, not logs, so one compromised or
+  colluding log signing N times satisfied the whole policy. Distinct logs
+  are counted now, and the status carries `logs` beside `verified`.
+- The keyring that signs challenge, affinity and OIDC cookies is refused
+  when other accounts can read it or its group can write it, the same
+  rule the proxy already applied to password and client-secret files; a
+  keyring line too long for the scanner is an error instead of silently
+  dropping every key after it, which would have broken cookies sealed
+  under those keys with nothing in the logs.
+- The admin GUI reads its users file again when it changes and checks the
+  account behind a session cookie on every request. Removing a user or
+  lowering their role took effect only after a restart, and a live
+  session kept the role it was created with for its whole life, so a
+  revoked operator kept full access (CWE-613). Sessions from the identity
+  provider are unaffected: the provider owns those accounts.
+- The proxy's own defences can no longer be turned against a client.
+  Failing a challenge because the proxy's verification table was full, or
+  because a nonce was already spent (a double-submitted form, a reloaded
+  page), counted towards a ban; only faults that are actually the
+  client's do now. A honeypot hit a browser made because another site
+  told it to (a prefetch, a cross-site sub-resource, a planted link) no
+  longer marks or bans the person behind the browser, and decoys carry
+  `X-Robots-Tag: noindex, nofollow`. The No default `account_guard`
+  block is keyed on the account any more. A count keyed on the account
+  belongs to the person being attacked, not to the attacker, because
+  anyone can type someone else's name, so a handful of failures against a
+  chosen name used to block its owner. Account-keyed counts still raise
+  the ladder as far as a challenge, which the real owner can pass;
+  blocks key on the address, the address and account pair, and the
+  device.
+- Build and packaging: release builds derive their date from
+  `SOURCE_DATE_EPOCH` or the commit, build with `-mod=readonly`, and
+  disable the coraza operators that shell out (`inspectFile`) or pull the
+  unmaintained schema and i18n chain (`validateSchema`); `make check`
+  refuses a tracked binary, and a 15 MB `xproxy-fleet` executable that
+  had been committed is gone. The logrotate fragment declares
+  `su xproxy xproxy`, without which logrotate refuses to rotate a
+  directory it does not own, and the logs stop being rotated silently.
+
+Findings of a second audit round (data flow, protocol differentials,
+authentication and cryptography, concurrency and resource bounds, and an
+adversarial re-check of the first round), all with regression tests:
+
+- DNSSEC validation: an NSEC3 NODATA answer for a DS query at an ordinary
+  host name no longer counts as an insecure delegation, so an upstream
+  could not turn validation off for any name in an NSEC3 zone; denial
+  proofs must come from the question's own zone (a signed SOA and NSEC
+  records of an unrelated zone proved any name absent), parent-side NSEC
+  and NSEC3 records of a delegation cannot deny names below the cut, and
+  a positive answer must hold data for the question name itself
+  (CWE-345).
+- WebTransport CONNECT requests now pass maintenance, virtual patches,
+  policy, ACLs, geo, the challenge, shedding, rate limits and the filter
+  chain like any other request; they were relayed right after route
+  matching (CWE-863).
+- Cache poisoning through the request path: only requests whose wire
+  path equals the routing path are cached, so `//x`, `/./x`, `/a/../x`,
+  percent-encoded or Unicode-folded spellings cannot fill the entry
+  every visitor of `/x` reads (CWE-444). Templated `response_headers`
+  are applied per request on a hit instead of being cached with the
+  first visitor's values.
+- `normalization.reject_dot_segments` (default true) refuses `.` and
+  `..` segments, including the `..;` servlet form: routing resolved them
+  while the upstream received the path as sent, so `/static/..;/admin`
+  reached a Tomcat origin as `/admin` under the `/` route's policy
+  (CWE-436). Static directory redirects use the cleaned path, so
+  `//evil.example` no longer yields a protocol-relative `Location`.
+- The challenge nonce binds the host the page was served on, so a
+  CAPTCHA token harvested on another site cannot be redeemed by posting
+  the verify form with a chosen `Host` (CWE-807).
+- The OIDC session cookie is bound to the filter's issuer and client id:
+  two `oidc` filters sharing a `cookie_secret_file` could open each
+  other's sessions, bypassing the stricter one's `require_claims`
+  (CWE-287; existing sessions log in again after the upgrade). ID tokens
+  carrying several audiences must name this client in `azp`. Genuine
+  front-channel logouts (for session ids this node issued) are recorded
+  even when unauthenticated revocations have filled their own, separate
+  table; a flood of made-up ids can neither evict nor block a real logout
+  and is counted rather than logged per call. Provider discovery runs
+  detached from the requesting client's context, so a client cannot
+  cancel the shared attempt for everyone.
+- `basic_auth` caches a miss for an unknown name like a wrong password,
+  so repeating a pair no longer reveals whether the name exists; the
+  admin GUI verifies unknown names under the same semaphore. Password
+  checks behind the `basic_auth`, `ldap_auth` and forward proxy
+  semaphores give up when the client leaves or the queue is deep, so a
+  stream of distinct wrong passwords cannot pin every request slot
+  (CWE-400).
+- Token introspection is bounded to 32 calls in flight per provider;
+  the JWT provider warns at load when `audiences` is empty (RFC 8725).
+- Header operations whose templates carry `${cert:…}` fields remove a
+  client-supplied copy first, whatever `when` decides and whether the
+  operation is `set` or `add`; a request without a certificate could
+  otherwise present its own identity value (CWE-290).
+- `upload_guard` refuses a multipart `Content-Type` Go cannot parse (a
+  duplicate `boundary`, a stray parameter) instead of skipping every
+  check (CWE-636); `graphql` matches media types case-insensitively and
+  bounds `application/graphql-response+json` bodies (CWE-178); `openapi`
+  matches the cleaned path.
+- WAF `request_body_limit_action: partial` passes the body beyond the
+  inspected prefix to the upstream instead of cutting it off, and ICAP
+  `body_limit_action: bypass` forwards the whole body rather than the
+  stream from the limit onwards.
+- Resource bounds: the TLS fingerprint table no longer grows by one entry
+  per handshake for the life of the process (CWE-401); network bans are
+  capped at 4096 and looked up by prefix length instead of scanned per
+  request; the QUIC relay bounds flows without a complete ClientHello
+  apart from the connection limit and caps their buffered bytes; the wasm
+  `instances` setting bounds concurrent calls rather than only the pool.
+- A reload that adds a `challenge` section whose secret cannot be read
+  fails as a whole instead of serving routes in mode `always`
+  unchallenged (CWE-636).
+- Client addresses from `X-Forwarded-For` drop an IPv6 zone, which made
+  them miss every CIDR and key their own ban and rate-limit buckets; the
+  Host normaliser allows only `:port` after a bracketed literal.
+- Error page escaping covers every browser-rendered type (XHTML, SVG,
+  XML) and JSON-escapes values in JSON pages; `redirect.to` must fix the
+  destination host in the configuration; `trusted_proxies` refuses
+  prefixes shorter than `/8`; CORS wildcards need two labels after `*.`
+  and are refused under common public suffixes; the wildcard matcher
+  stops at `?#@\:`; the gRPC-web preflight answers a fixed header list.
+- `ldap_auth` requires `start_tls` or `ldaps://` unless
+  `allow_plaintext`; mirror copies drop hop-by-hop headers; a cluster
+  node accepts an exact rate-limit answer only from the peer it asked;
+  the admin GUI's OIDC role claim matches a string value whole; the TUI
+  strips non-printable runes from log lines; an overflowing
+  `grpc-timeout` counts as absent.
+
+Findings of the first source code security audit, all with regression
+tests:
 
 - Custom HTML error pages HTML-escape request-derived template values
   (`${path}`, `${query:…}`, `${header:…}`, `${cookie:…}`), closing a

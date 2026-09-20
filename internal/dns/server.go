@@ -14,6 +14,7 @@ import (
 
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/safe"
 )
 
 // Policy is the reloadable part of a listener: block list, client
@@ -223,6 +224,9 @@ func (s *Server) serveUDP() {
 		go func() {
 			defer s.wg.Done()
 			defer func() { <-s.sem }()
+			// One malformed datagram must not end the process: parsing
+			// runs on attacker-controlled bytes (see safe.Guard).
+			defer safe.Guard("dns udp query")
 			if resp := s.Handle(query, client, false); resp != nil {
 				_, _ = s.udp.WriteTo(resp, addr)
 			}
@@ -255,6 +259,7 @@ func (s *Server) serveTCP() {
 		go func() {
 			defer s.wg.Done()
 			defer s.track(c, false)
+			defer safe.Guard("dns tcp connection")
 			s.serveConn(c)
 		}()
 	}
