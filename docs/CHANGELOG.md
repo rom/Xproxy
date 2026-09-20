@@ -292,6 +292,12 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4)
 
+- A bearer token with a trailing newline verified as the token itself.
+  Go's base64 decoder skips carriage returns and newlines, so
+  `<token>\n` and `<token>` were one credential with two spellings —
+  which the introspection cache, a revocation list and every log line
+  key on separately. A compact JWS is base64url and dots and nothing
+  else, and anything else is now refused before the token is parsed.
 - A `Host` header could carry two spellings of one name. Unicode's
   simple lower-case mapping sends U+0130 (Turkish dotted capital I) to
   ASCII `i` and U+212A (Kelvin sign) to ASCII `k`, and the ASCII check

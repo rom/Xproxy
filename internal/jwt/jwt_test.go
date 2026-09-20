@@ -384,3 +384,25 @@ func TestClaimString(t *testing.T) {
 		t.Fatal("cap")
 	}
 }
+
+// signRaw signs an arbitrary payload document, so a test can spell a
+// claim JSON's own encoder would not produce.
+func (s signer) signRaw(t *testing.T, payload string) string {
+	t.Helper()
+	h := map[string]any{"alg": s.alg, "typ": "JWT"}
+	if s.kid != "" {
+		h["kid"] = s.kid
+	}
+	hb, _ := json.Marshal(h)
+	signed := b64u(hb) + "." + b64u([]byte(payload))
+	digest := sha256.Sum256([]byte(signed))
+	k, ok := s.key.(*rsa.PrivateKey)
+	if !ok {
+		t.Fatalf("signRaw wants an RSA signer, got %T", s.key)
+	}
+	sig, err := rsa.SignPKCS1v15(rand.Reader, k, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed + "." + b64u(sig)
+}

@@ -293,6 +293,19 @@ func (p *Provider) verify(token string, now time.Time) (Claims, error) {
 	if len(token) == 0 || len(token) > MaxTokenBytes {
 		return nil, ErrMalformed
 	}
+	// A JWS compact serialisation is base64url and dots, nothing else.
+	// Go's base64 decoder skips carriage returns and newlines, so
+	// "<token>\n" would otherwise verify as the token itself: one
+	// credential with many spellings, which the introspection cache,
+	// a revocation list and every log line key on separately.
+	for i := 0; i < len(token); i++ {
+		c := token[i]
+		ok := c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+			c == '-' || c == '_' || c == '.'
+		if !ok {
+			return nil, ErrMalformed
+		}
+	}
 	i1 := strings.IndexByte(token, '.')
 	i2 := strings.LastIndexByte(token, '.')
 	if i1 <= 0 || i2 <= i1+1 || i2 == len(token)-1 || strings.Count(token, ".") != 2 {
