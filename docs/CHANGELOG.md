@@ -6,6 +6,155 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Security (1.4)
+
+A fifth audit round over every parser the data plane runs — binary and
+wire formats, HTTP and text protocols, structured data — and the open
+findings of rounds one to four. All with regression tests.
+
+Parsers:
+
+- The JSON Schema validator resolved `$ref` by writing a map on the
+  request path. A validator is built once per route and shared by every
+  request on it, so two concurrent bodies through one reference were a
+  `concurrent map read and map write`: a fatal error, which no `recover`
+  and no request guard can contain, from two unauthenticated requests
+  (CWE-362). Every reference a document spells is resolved while the
+  validator is still private to the goroutine that builds it, and
+  `Resolve` is now a pure lookup. The same window also published a
+  placeholder with no keywords, so a body could be validated against
+  nothing.
+- A query parameter spelled `NaN` satisfied every bound: `strconv`
+  accepts it, and NaN compares false against each minimum and maximum,
+  so a value outside a documented range passed validation and reached
+  the origin (CWE-1289). Coercion now takes only numbers as JSON spells
+  them — no `NaN`, `Inf`, hexadecimal floats or Go underscore separators
+  — and a non-finite number is refused wherever one turns up.
+- `upload_guard` treated a part whose `Content-Disposition` Go refuses
+  (`filename="a.jpg"; filename="shell.php"`, a trailing bare parameter)
+  as a plain form field, skipping the extension list, the
+  double-extension rule, magic bytes, `deny_executables` and the size
+  and count bounds for a body already replayed to the origin — where
+  PHP, Commons FileUpload, busboy and werkzeug all take one of the names
+  (CWE-436 into CWE-434). A disposition that names a file and does not
+  parse is now a 400.
+- Three more consumers threw away a media type Go refuses and carried on
+  as if the header were absent: `graphql` (every bound — depth,
+  complexity, aliases, batch, introspection — skipped),
+  `account_guard` (the login identity, so the ladder and campaign
+  detection went blind) and the WAF's body schemas. One
+  `Content-Type: application/json; charset=utf-8; charset=ascii` was
+  enough, and every lenient server-side parser reads the body anyway.
+  All four sites, `sensitive_data` included, now share one rule.
+- A path parameter and a backslash gave one resource a second routing
+  key: `/admin;x` missed the `/admin` route and was answered by the
+  catch-all while Tomcat, Jetty, JBoss and Spring serve `/admin`, and
+  `/static\..\admin` is `/admin` to IIS, Apache on Windows and .NET
+  (CWE-436, CWE-22). `reject_backslashes` now defaults to on and the new
+  `reject_path_params` with it; the dot-segment check also splits on the
+  backslash and cuts a path parameter, so it still sees through both
+  when an operator turns the refusals off.
+- `openapi` validated only the first value of a repeated query
+  parameter, so `?limit=10&limit=999` passed a 1..50 schema and the
+  whole query was forwarded untouched, while PHP and Rails take the
+  last value, ASP.NET joins them and Spring binds an array (CWE-235).
+  Every value of every parameter is judged now, as the proxy's own
+  `routes[].policy` already did, and repeated headers and cookies with
+  it.
+- `sensitive_data` skipped the body scan entirely for one unrecognised
+  `Content-Encoding`, a coding whose stream the decompressor refuses, a
+  body that does not decode, several `Content-Encoding` header lines or
+  a `Content-Range`. An origin hands the raw bytes to the application
+  whatever the header claimed, so the header cost a client nothing and
+  turned off data-loss prevention, `action: block` included (CWE-693).
+  The new `unscannable` setting decides, and a request defaults to
+  refusing with 415.
+- A GraphQL fragment that spreads the next one twice doubles the work
+  per level. The active set stops a fragment referring to itself, not
+  one referred to twice, so a query of a couple of kilobytes expanded to
+  a billion visits with every configured bound respected (CWE-405). The
+  expansion has a visit budget and running out refuses the query.
+- The response cache's `Vary` index grew for every distinct primary key
+  ever stored and only a whole-cache purge cleared it: eviction held the
+  byte bound while unauthenticated traffic — one request per query
+  string, against any origin that sends `Vary: Accept-Encoding` — kept a
+  couple of hundred bytes for good (CWE-401). The index is
+  reference-counted and the last entry takes it.
+- DNS: a query with the CD bit set installed its unvalidated answer in
+  the cache for every other client of the listener. CD means "give me
+  the data, I will check it myself"; the cache keys on name, type and
+  class alone and the hit path never re-validates, so one query and one
+  bit undid DNSSEC for everyone until the TTL expired (CWE-345). Only an
+  answer this node stands behind is cached now.
+- DNS: a message of compression pointers weighs fourteen wire bytes per
+  record and expands to a 255-byte name plus a decompressed rdata name,
+  so a 4 KB datagram became megabytes and a 64 KB one tens of megabytes,
+  both on the client's own query when validation is on (CWE-409). The
+  decompressed size is bounded as a multiple of the wire size, and
+  `Pack` has a ceiling — no transport here could have sent the result
+  anyway.
+- DNS: an upstream UDP answer larger than the read buffer was chopped by
+  the kernel with no error at all, accepted (the id and the question
+  survive), and cached, denying those names to every client for the TTL
+  (CWE-130). A full buffer is now treated as truncation and the query is
+  asked again over TCP, and the forwarded query's advertised EDNS
+  payload size is clamped to what the buffer holds — until now the
+  client, not the proxy, chose it.
+- DNS: a FORMERR reply claimed one question and carried none, a message
+  this package's own parser refuses.
+- QUIC: every coalesced Initial packet in a datagram derived its own key
+  schedule — an HKDF extract, four expands and two AES key schedules —
+  on the listener's own read goroutine, which also forwards every
+  established flow. One 64 KiB datagram is over two thousand of those,
+  so about a hundred spoofed packets per second stalled the whole
+  listener (CWE-405). The schedule is derived once per connection id and
+  at most four coalesced packets are read.
+- The layer 4 SNI peek bounded the ClientHello by the first TLS record,
+  while every TLS stack behind the proxy reassembles a handshake message
+  across records: a client that fragments presented a name to the origin
+  and nothing readable here, so its flow stalled until the peek timeout
+  or, padded, took the default route with no name at all (CWE-436).
+  Consecutive handshake records are joined now.
+- The MMDB decoder had no work budget: an array of two pointers into the
+  next array costs 2^k decodes for a chain of k arrays, six bytes per
+  level, so 192 bytes reach 2^32 values and about a terabyte of
+  allocation — and the metadata goes through the same decoder, so the
+  whole file can be that small. `geoip.Open` runs at start-up and again
+  on every reload, with a database most deployments fetch from a third
+  party (CWE-409, CWE-1284). The decoder has a budget proportional to
+  the file, and a container whose declared size the remaining bytes
+  cannot hold is refused.
+- The WAF's body schemas matched on the wire path, so `/v1/./orders`
+  missed a schema the origin serves.
+
+Open findings of the earlier rounds:
+
+- `cluster.tls.bind_node_id` now defaults to on: an announced node id
+  must be a name the peer's certificate carries, and a second hello on
+  one connection is refused. Validation says out loud when
+  `cluster.tls.allowed_names` is empty (any certificate the CA ever
+  issued is then a cluster peer) or when `bind_node_id` is off. A
+  cluster certificate is documented for what it is: full trust inside
+  the cluster.
+- A peer event no longer outlives what this node would have chosen for
+  itself. A peer honeypot mark's lifetime is clamped to the longest
+  `honeypot.mark` this node's own routes configure and a peer account
+  block to the longest step of the local ladder; peer-sourced marks have
+  their own quarter share of the table, so a peer cannot evict local
+  ones; and an unmark only concerns a mark from the same peer.
+- The sticky-session cookie's endpoint index was two bytes. It is four
+  now, versioned by length as verification already was, so both cookie
+  layouts stay valid across an upgrade.
+- The challenge cookie can be bound to the host that issued it
+  (`challenge.cookie_scope: host`), so a pass earned on the cheapest
+  host cannot be spent on the host that asks for the most work.
+- DNS: an `ANY` query over UDP is answered with TC=1 (RFC 8482), which
+  is what an amplifier's favourite question deserves, and validation
+  warns when a `kind: dns` listener on a non-loopback address has
+  neither `allow_clients` nor `rate_limit`.
+- The daemon refuses to start as uid 0 unless `-allow-root` is given;
+  the shipped unit already runs as `User=xproxy` with socket activation.
+
 ### Security (1.3)
 
 Findings of a fourth audit round, in disciplines the first three did not

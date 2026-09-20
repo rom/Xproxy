@@ -412,6 +412,15 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	if h.Opcode() != 0 {
 		return s.finish(query, qEnd, h, q, client, proto, start, "notimp", Reply(query, qEnd, h, RcodeNotImp))
 	}
+	// An ANY query over UDP is an amplifier's favourite: one small
+	// question, every record the name has. RFC 8482 lets a resolver
+	// refuse to expand it; answering with TC set costs the client a TCP
+	// round trip, which a spoofed source cannot complete, and costs a
+	// real client almost nothing.
+	if q.Type == TypeANY && !tcp {
+		s.Truncated.Add(1)
+		return s.finish(query, qEnd, h, q, client, proto, start, "any_truncated", Truncate(Reply(query, qEnd, h, RcodeNoError), qEnd))
+	}
 	if p.Block != nil && p.Block.Match(q.Name) {
 		s.Blocked.Add(1)
 		if s.hooks.Event != nil {
@@ -468,10 +477,19 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		return s.finish(query, qEnd, h, q, client, proto, start, "servfail", Reply(query, qEnd, h, RcodeServFail))
 	}
 	source := "upstream"
+	cacheable := true
 	if p.DNSSEC != nil {
 		var res Result
 		res, resp = p.DNSSEC.Validate(ctx, query, qEnd, h, resp)
 		source = "upstream:" + res.String()
+		// The cache is shared by every client of the listener and its
+		// key records nothing about CD, DO or the validation result, so
+		// only an answer this node stands behind may enter it. A client
+		// that sets CD is asking to see an answer the proxy would refuse
+		// ("I will check it myself"); it must not also get to install
+		// that answer for everybody else, which is the whole of DNSSEC
+		// undone by one bit from any client that can reach the port.
+		cacheable = res == Secure || res == Insecure
 		if res == Bogus && h.Flags&flagCD == 0 {
 			s.ServFail.Add(1)
 			if s.hooks.Event != nil {
@@ -494,7 +512,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		case RcodeNXDomain:
 			ttl = p.NegativeTTL
 		}
-		if ttl > 0 {
+		if ttl > 0 && cacheable {
 			s.cache.Put(q, resp, rEnd, rh, ttl, now)
 		}
 	}

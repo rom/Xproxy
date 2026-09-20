@@ -250,7 +250,10 @@ func (in *instance) multipart(r *http.Request, boundary string) filter.Verdict {
 		if err != nil {
 			return in.deny(&refusal{status: http.StatusBadRequest, check: "multipart_syntax"})
 		}
-		name := rawFileName(part)
+		name, unreadable := rawFileName(part)
+		if unreadable {
+			return in.deny(&refusal{status: http.StatusBadRequest, check: "multipart_disposition"})
+		}
 		if name == "" {
 			// A plain form field; drain it (bounded by the buffer).
 			_, _ = io.Copy(io.Discard, part)
@@ -270,8 +273,14 @@ func (in *instance) raw(r *http.Request, mt string) filter.Verdict {
 	}
 	name := ""
 	if cd := r.Header.Get("Content-Disposition"); cd != "" {
-		if _, params, err := mime.ParseMediaType(cd); err == nil {
+		_, params, err := mime.ParseMediaType(cd)
+		switch {
+		case err == nil:
 			name = params["filename"]
+		case strings.Contains(strings.ToLower(cd), "filename"):
+			// The header names a file in a spelling this proxy cannot
+			// read but the origin can; see rawFileName.
+			return in.deny(&refusal{status: http.StatusBadRequest, check: "content_disposition"})
 		}
 	}
 	if name == "" {
@@ -286,15 +295,33 @@ func (in *instance) raw(r *http.Request, mt string) filter.Verdict {
 	return filter.Continue
 }
 
-// rawFileName returns the file name as the client sent it. The library's
-// FileName strips directories, which would hide a traversal attempt.
-func rawFileName(part *multipart.Part) string {
-	if _, params, err := mime.ParseMediaType(part.Header.Get("Content-Disposition")); err == nil {
+// rawFileName returns the file name as the client sent it, and whether
+// the part's disposition names a file in a spelling this proxy cannot
+// read. The library's FileName strips directories, which would hide a
+// traversal attempt.
+//
+// mime.ParseMediaType refuses a duplicate parameter name
+// (`filename="a.jpg"; filename="shell.php"`) and a trailing bare one,
+// and part.FileName falls back to the same failed parse, so both used to
+// return "" and the part was taken for a plain form field: the extension
+// list, the double-extension rule, the magic bytes, deny_executables and
+// the size and count bounds were all skipped for a body buffer already
+// replayed to the origin. PHP, Commons FileUpload, busboy, formidable
+// and werkzeug accept those spellings and take one of the names, so a
+// disposition that mentions a file and does not parse is refused rather
+// than ignored.
+func rawFileName(part *multipart.Part) (string, bool) {
+	cd := part.Header.Get("Content-Disposition")
+	if _, params, err := mime.ParseMediaType(cd); err == nil {
 		if name, ok := params["filename"]; ok {
-			return name
+			return name, false
 		}
+		return part.FileName(), false
 	}
-	return part.FileName()
+	if strings.Contains(strings.ToLower(cd), "filename") {
+		return "", true
+	}
+	return part.FileName(), false
 }
 
 // checkFile runs every check on one file; rd yields its content.

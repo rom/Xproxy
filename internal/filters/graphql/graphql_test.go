@@ -1,10 +1,12 @@
 package graphql
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/filter/filtertest"
@@ -118,5 +120,34 @@ func TestValidate(t *testing.T) {
 	}
 	if _, err := filtertest.Build("graphql", "g", nil); err != nil {
 		t.Fatalf("defaults rejected: %v", err)
+	}
+}
+
+// The active set stops a fragment that refers to itself, not one that is
+// referred to twice: fragment f0 spreading f1 twice, f1 spreading f2
+// twice and so on doubles the work per level, so a query of a couple of
+// kilobytes expands to a billion visits with no cycle in it and every
+// configured bound respected.
+func TestFragmentExpansionIsBounded(t *testing.T) {
+	var b strings.Builder
+	const levels = 40
+	b.WriteString("query { ...f0 }\n")
+	for i := 0; i < levels; i++ {
+		fmt.Fprintf(&b, "fragment f%d on T { ...f%d ...f%d }\n", i, i+1, i+1)
+	}
+	fmt.Fprintf(&b, "fragment f%d on T { id }\n", levels)
+	f, err := filtertest.Build("graphql", "gql", filter.Options{"max_depth": 10, "max_query_bytes": 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan filter.Verdict, 1)
+	go func() { done <- filtertest.Run(f, post(b.String()), nil).Request }()
+	select {
+	case v := <-done:
+		if !v.Deny {
+			t.Fatalf("a %d-byte fragment bomb was allowed: %+v", b.Len(), v)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the %d-byte query did not come back: the expansion is unbounded", b.Len())
 	}
 }

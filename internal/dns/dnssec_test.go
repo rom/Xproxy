@@ -191,7 +191,8 @@ func (u *signedUpstream) respond(query []byte) []byte {
 	if do {
 		out.Additional = append(out.Additional, RR{Type: TypeOPT, Class: 4096, TTL: ednsDO})
 	}
-	return out.Pack()
+	packed, _ := out.Pack()
+	return packed
 }
 
 func buildHierarchy(t *testing.T) (*signedUpstream, *Validator, []TrustAnchor) {
@@ -391,7 +392,8 @@ func TestDNSSECHelpers(t *testing.T) {
 	resp := &Message{Header: Header{ID: 1, Flags: flagQR | flagAD}, Question: qm.Question,
 		Answer:     []RR{aRR("www.test", 1), {Name: "www.test", Type: TypeRRSIG, Class: ClassIN, Data: make([]byte, 30)}},
 		Additional: []RR{{Type: TypeOPT, Class: 4096, TTL: ednsDO}}}
-	stripped, err := ParseMessage(StripDNSSEC(resp.Pack(), qm))
+	packed, _ := resp.Pack()
+	stripped, err := ParseMessage(StripDNSSEC(packed, qm))
 	if err != nil || len(stripped.Answer) != 1 || len(stripped.Additional) != 0 {
 		t.Fatalf("strip: %v %+v", err, stripped)
 	}
@@ -399,7 +401,7 @@ func TestDNSSECHelpers(t *testing.T) {
 	if do, opt := clientDO(dq); !do || !opt {
 		t.Fatal("withDO")
 	}
-	if same := StripDNSSEC(resp.Pack(), dq); len(same) != len(resp.Pack()) {
+	if same := StripDNSSEC(packed, dq); len(same) != len(packed) {
 		t.Fatal("strip with DO changed the response")
 	}
 	// A validator without anchors for a zone and no upstream is bogus.

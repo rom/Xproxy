@@ -45,7 +45,7 @@ func ParseMMDB(b []byte) (*MMDB, error) {
 		return nil, errors.New("mmdb: metadata marker not found")
 	}
 	metaBytes := b[i+len(metadataMarker):]
-	d := &decoder{data: metaBytes}
+	d := newDecoder(metaBytes)
 	metaAny, _, err := d.decode(0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("mmdb: metadata: %w", err)
@@ -149,7 +149,7 @@ func (m *MMDB) Lookup(addr netip.Addr) (map[string]any, error) {
 	if uint64(off) >= uint64(len(m.dataSection)) {
 		return nil, errors.New("mmdb: data pointer out of range")
 	}
-	d := &decoder{data: m.dataSection}
+	d := newDecoder(m.dataSection)
 	v, _, err := d.decode(int(off), 0)
 	if err != nil {
 		return nil, err
@@ -200,6 +200,21 @@ func toUint(v any) uint64 {
 // decoder reads the MMDB data format.
 type decoder struct {
 	data []byte
+	// budget is how many values this decoder may still produce. Depth
+	// alone does not bound the work: an array of two pointers into the
+	// next array costs 2^k decodes for a chain of k arrays, six bytes
+	// per level, so 192 bytes reach 2^32 values and about a terabyte of
+	// allocation. The metadata goes through the same decoder, so a
+	// 222-byte file was enough to hang the process — at start-up and
+	// again on every reload, with a database most deployments fetch
+	// from a third party.
+	budget int
+}
+
+// newDecoder returns a decoder for b with a work budget proportional to
+// its size.
+func newDecoder(b []byte) *decoder {
+	return &decoder{data: b, budget: 4*len(b) + 64}
 }
 
 const maxDepth = 64
@@ -207,6 +222,10 @@ const maxDepth = 64
 func (d *decoder) decode(off int, depth int) (any, int, error) {
 	if depth > maxDepth {
 		return nil, 0, errors.New("mmdb: nesting too deep")
+	}
+	d.budget--
+	if d.budget < 0 {
+		return nil, 0, errors.New("mmdb: too many values")
 	}
 	if off < 0 || off >= len(d.data) {
 		return nil, 0, errors.New("mmdb: offset out of range")
@@ -306,7 +325,10 @@ func (d *decoder) decode(off int, depth int) (any, int, error) {
 		}
 		return int32(v), off + size, nil //nolint:gosec // two's complement by format definition
 	case 7: // map
-		if size > 1<<16 {
+		// Each entry needs a key and a value of at least one byte each,
+		// so a size the remaining bytes cannot hold is a lie and
+		// allocating for it turns a few bytes into megabytes.
+		if size > 1<<16 || 2*size > len(d.data)-off {
 			return nil, 0, errors.New("mmdb: map too large")
 		}
 		m := make(map[string]any, size)
@@ -328,7 +350,7 @@ func (d *decoder) decode(off int, depth int) (any, int, error) {
 		}
 		return m, off, nil
 	case 11: // array
-		if size > 1<<16 {
+		if size > 1<<16 || size > len(d.data)-off {
 			return nil, 0, errors.New("mmdb: array too large")
 		}
 		arr := make([]any, 0, size)

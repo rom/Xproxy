@@ -1204,9 +1204,18 @@ T{
 T}	T{
 bool
 T}	T{
-\fBfalse\fR
+\fBtrue\fR
 T}	T{
-A backslash in the decoded path,\: a separator to some servers (\fBpath_\:backslash\fR)
+A backslash anywhere in the decoded path (\fBpath_\:backslash\fR). IIS,\: Apache on Windows and .NET read it as a separator while this proxy reads it as an ordinary character,\: so \fB/\:static\e.\:.\:\eadmin\fR is one opaque segment under \fB/\:static\fR here and \fB/\:admin\fR there,\: skipping that route\(aqs access lists,\: filters,\: WAF profile and rate limits
+T}
+T{
+\fBreject_\:path_\:params\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A \fB;\fR anywhere in the decoded path (\fBpath_\:parameter\fR). Tomcat,\: Jetty,\: JBoss and Spring strip a path parameter from every segment before mapping,\: so \fB/\:admin;x\fR or \fB/\:admin;jsessionid=\:\[u2026]\fR misses this proxy\(aqs \fB/\:admin\fR route and its policy while the origin serves \fB/\:admin\fR. Turn it off for an API that genuinely uses matrix parameters
 T}
 T{
 \fBreject_\:dot_\:segments\fR
@@ -5379,16 +5388,16 @@ list
 T}	T{
 \fB[]\fR (any name from the CA)
 T}	T{
-Restrict peers to these certificate common names or DNS SANs
+Restrict peers to these certificate common names or DNS SANs. Leaving it empty means any certificate the CA ever issued is a cluster peer,\: and a cluster certificate is full trust inside the cluster: validation says so out loud. Use a CA that issues nothing else,\: and list the names
 T}
 T{
 \fBtls.\:bind_\:node_\:id\fR
 T}	T{
 bool
 T}	T{
-\fBfalse\fR
+\fBtrue\fR
 T}	T{
-Require a peer\(aqs announced \fBnode_\:id\fR to be a name its certificate carries. The id is not only a label: key ownership for \fBdistributed:\: exact\fR rate limits is a rendezvous hash over node ids,\: so a peer free to choose its id chooses which keys it decides for every node. Turn it on once the certificate names and the node ids agree. A peer\(aqs bans,\: marks and rate reports are attributed to its certificate common name either way,\: so the audit trail is not affected by this setting
+Require a peer\(aqs announced \fBnode_\:id\fR to be a name its certificate carries. The id is not only a label: key ownership for \fBdistributed:\: exact\fR rate limits is a rendezvous hash over node ids,\: so a peer free to choose its id chooses which keys it decides for every node. Set it false only for an existing cluster whose certificate names and node ids differ,\: and fix the certificates: a cluster certificate is full trust inside the cluster. A peer\(aqs bans,\: marks and rate reports are attributed to its certificate common name either way,\: so the audit trail is not affected by this setting
 T}
 T{
 \fBgossip_\:interval\fR
@@ -7462,6 +7471,15 @@ T}	T{
 Scan bodies larger than \fBmax_\:bytes\fR as they flow,\: or leave them unscanned
 T}
 T{
+\fB*.\:unscannable\fR
+T}	T{
+\fBrefuse\fR,\: \fBskip\fR
+T}	T{
+\fBrefuse\fR (request),\: \fBskip\fR (response)
+T}	T{
+What happens to a body the filter cannot read at all: a content coding it does not implement,\: a stream the decompressor refuses,\: or a partial body (\fBContent\-\:Range\fR). An origin does not decompress a request body \[u2014] it hands the raw bytes to the application \[u2014] so \fBContent\-\:Encoding:\: xyzzy\fR costs a client nothing and would otherwise turn the whole filter off for that message,\: \fBaction:\: block\fR included. A refusal is \fB415\fR with detail \fB<direction>:\:unscannable\fR
+T}
+T{
 \fB*.\:ignore_\:headers\fR
 T}	T{
 list
@@ -8382,6 +8400,15 @@ T}	T{
 \fBfalse\fR
 T}	T{
 Bind the cookie to the client\(aqs JA4 TLS fingerprint (token binding): a cookie earned by one TLS client is refused when replayed by another,\: even from the same address. TLS only;\: a request without a fingerprint is treated as a distinct binding
+T}
+T{
+\fBcookie_\:scope\fR
+T}	T{
+\fBshared\fR,\: \fBhost\fR
+T}	T{
+\fBshared\fR
+T}	T{
+\fBhost\fR binds the pass to the host that served the challenge. The nonce is host\-bound already,\: so with \fBshared\fR a client can solve the cheapest host\(aqs challenge and spend the cookie on the host that asks for the most work. Use \fBhost\fR when hosts behind one proxy differ in difficulty or tier;\: leave it \fBshared\fR when a pass is meant to cover a site\(aqs several names. Changing it invalidates every outstanding cookie once
 T}
 T{
 \fBcookie_\:name\fR

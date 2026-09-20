@@ -168,6 +168,16 @@ func (r *Resolver) Exchange(ctx context.Context, query []byte, qEnd int, q Quest
 	out := make([]byte, len(query))
 	copy(out, query)
 	SetID(out, id)
+	if !tcp {
+		// The forwarded query carries the client's own OPT record, so
+		// without this the client picks how large an answer the upstream
+		// may send while exchangeUDP can only read one buffer.
+		if qh, err := ParseHeader(out); err == nil {
+			if _, qEnd, qerr := ParseQuestion(out); qerr == nil {
+				ClampEDNSSize(out, qEnd, qh, udpReadBuffer-1)
+			}
+		}
+	}
 	start := int(r.next.Add(1) - 1)
 	lastErr := errNoUpstream
 	for i := 0; i < len(r.servers); i++ {
@@ -191,7 +201,10 @@ func (r *Resolver) Exchange(ctx context.Context, query []byte, qEnd int, q Quest
 				resp, err = r.exchangeTCP(actx, server.addr, out)
 			} else {
 				resp, err = r.exchangeUDP(actx, server.addr, out)
-				if err == nil {
+				switch {
+				case errors.Is(err, errUDPOverflow):
+					resp, err = r.exchangeTCP(actx, server.addr, out)
+				case err == nil:
 					if h, herr := ParseHeader(resp); herr == nil && h.Truncated() {
 						resp, err = r.exchangeTCP(actx, server.addr, out)
 					}
@@ -227,6 +240,14 @@ func (r *Resolver) matches(resp []byte, id uint16, q Question) bool {
 	return err == nil && rq == q
 }
 
+// udpReadBuffer is what exchangeUDP takes from one datagram; the
+// forwarded query's OPT record is clamped just below it.
+const udpReadBuffer = 4096
+
+// errUDPOverflow says the answer filled the read buffer, so bytes may
+// have been chopped off: the query is asked again over TCP.
+var errUDPOverflow = errors.New("dns: udp answer larger than the read buffer")
+
 func (r *Resolver) exchangeUDP(ctx context.Context, server string, query []byte) ([]byte, error) {
 	c, err := r.dialer.DialContext(ctx, "udp", server)
 	if err != nil {
@@ -239,13 +260,22 @@ func (r *Resolver) exchangeUDP(ctx context.Context, server string, query []byte)
 	if _, err := c.Write(query); err != nil {
 		return nil, err
 	}
-	buf := make([]byte, 4096)
+	buf := make([]byte, udpReadBuffer)
 	for {
 		n, err := c.Read(buf)
 		if err != nil {
 			return nil, err
 		}
 		if n >= headerLen && binary.BigEndian.Uint16(buf) == binary.BigEndian.Uint16(query) {
+			if n == len(buf) {
+				// The kernel chops a datagram larger than the buffer and
+				// reports no error at all, and the header, the id and the
+				// question all survive in the first bytes, so the checks
+				// above accept the stump. It would then be cached and
+				// served to every later client for the TTL. Ask again
+				// over TCP instead.
+				return nil, errUDPOverflow
+			}
 			return append([]byte(nil), buf[:n]...), nil
 		}
 		// A stray datagram for another id: keep waiting for ours.

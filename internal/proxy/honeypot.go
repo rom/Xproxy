@@ -116,30 +116,56 @@ type Mark struct {
 	First   time.Time `json:"first"`
 	Last    time.Time `json:"last"`
 	Expires time.Time `json:"expires"`
+	// peer is the cluster peer that sent this mark, or "" when this node
+	// made it. Only that peer may withdraw it.
+	peer string
 }
 
 const maxMarks = 65536
+
+// maxPeerMarks reserves most of the table for what this node saw
+// itself. A peer's marks are useful, but a peer that sends 65,000 of
+// them must not leave this node unable to record its own honeypot hits,
+// which is the detection the table exists for.
+const maxPeerMarks = maxMarks / 4
 
 // marks remembers clients that touched a honeypot so that their later
 // requests on other routes are labelled. It is bounded and sweeps expired
 // entries lazily.
 type marks struct {
-	mu   sync.Mutex
-	m    map[netip.Addr]*Mark
-	full bound.Notice
+	mu sync.Mutex
+	m  map[netip.Addr]*Mark
+	// peers counts live entries per peer so that one peer cannot take
+	// the whole table; peerFull reports when one hits its share.
+	peers    map[string]int
+	full     bound.Notice
+	peerFull bound.Notice
 }
 
 // Dropped counts marks refused because the table was full of live ones.
 func (m *marks) Dropped() uint64 { return m.full.Total() }
 
-func newMarks() *marks { return &marks{m: map[netip.Addr]*Mark{}} }
+func newMarks() *marks { return &marks{m: map[netip.Addr]*Mark{}, peers: map[string]int{}} }
 
+// add records a mark this node made. peer is "" for a local hit and the
+// peer's name for one that arrived over the cluster.
 func (m *marks) add(ip netip.Addr, route string, ttl time.Duration, now time.Time) {
+	m.addFrom(ip, route, ttl, now, "")
+}
+
+func (m *marks) addFrom(ip netip.Addr, route string, ttl time.Duration, now time.Time, peer string) {
 	if !ip.IsValid() {
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if peer != "" && m.peers[peer] >= maxPeerMarks {
+		if _, known := m.m[ip]; !known {
+			m.peerFull.Hit(nil, "a peer's share of the honeypot mark table is full; its new marks are dropped",
+				"table", "honeypot_marks", "peer", peer, "max_per_peer", maxPeerMarks)
+			return
+		}
+	}
 	if e, ok := m.m[ip]; ok {
 		e.Hits++
 		e.Last = now
@@ -154,13 +180,25 @@ func (m *marks) add(ip netip.Addr, route string, ttl time.Duration, now time.Tim
 			return // full of live marks: keep what we have rather than grow
 		}
 	}
-	m.m[ip] = &Mark{Address: ip.String(), Route: route, Hits: 1, First: now, Last: now, Expires: now.Add(ttl)}
+	m.m[ip] = &Mark{Address: ip.String(), Route: route, Hits: 1, First: now, Last: now, Expires: now.Add(ttl), peer: peer}
+	if peer != "" {
+		m.peers[peer]++
+	}
 }
 
 func (m *marks) sweep(now time.Time) {
 	for ip, e := range m.m {
 		if now.After(e.Expires) {
-			delete(m.m, ip)
+			m.dropLocked(ip, e)
+		}
+	}
+}
+
+func (m *marks) dropLocked(ip netip.Addr, e *Mark) {
+	delete(m.m, ip)
+	if e.peer != "" {
+		if m.peers[e.peer]--; m.peers[e.peer] <= 0 {
+			delete(m.peers, e.peer)
 		}
 	}
 }
@@ -176,7 +214,7 @@ func (m *marks) marked(ip netip.Addr, now time.Time) bool {
 		return false
 	}
 	if now.After(e.Expires) {
-		delete(m.m, ip)
+		m.dropLocked(ip, e)
 		return false
 	}
 	return true
@@ -194,12 +232,24 @@ func (m *marks) list(now time.Time) []Mark {
 	return out
 }
 
-func (m *marks) remove(ip netip.Addr) bool {
+// remove withdraws a mark. peer is "" for an operator or a local
+// decision, which may withdraw anything; a cluster peer may withdraw
+// only a mark it sent itself, or a rogue node could clear the marks
+// every other node made for its own clients.
+func (m *marks) remove(ip netip.Addr) bool { return m.removeFrom(ip, "") }
+
+func (m *marks) removeFrom(ip netip.Addr, peer string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, ok := m.m[ip]
-	delete(m.m, ip)
-	return ok
+	e, ok := m.m[ip]
+	if !ok {
+		return false
+	}
+	if peer != "" && e.peer != peer {
+		return false
+	}
+	m.dropLocked(ip, e)
+	return true
 }
 
 // HoneypotMarks lists clients currently marked by a honeypot, most recent

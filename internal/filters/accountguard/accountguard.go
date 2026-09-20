@@ -40,7 +40,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -53,6 +52,7 @@ import (
 
 	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/netutil"
 )
 
 // Reason is the deny reason of every block, the ban trigger category
@@ -591,7 +591,7 @@ func (in *instance) identity(r *http.Request) string {
 	if (id.Form == "" && id.JSON == "") || r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
 		return ""
 	}
-	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	mt := netutil.MediaType(r.Header.Get("Content-Type"))
 	if (mt == "application/x-www-form-urlencoded" && id.Form == "") || (strings.HasSuffix(mt, "json") && id.JSON == "") || (mt != "application/x-www-form-urlencoded" && !strings.HasSuffix(mt, "json")) {
 		return ""
 	}
@@ -1107,10 +1107,40 @@ func (g *guard) receive(e filter.Event) {
 	default:
 		return
 	}
-	en := t.get(m, key, now, ep.window)
-	if e.Until.After(en.blockedUntil) {
-		en.blockedUntil, en.blockedBy = e.Until, parts[2]
+	// The peer chose the deadline; this endpoint decides how long it is
+	// willing to block for. Without the clamp a peer blocks an account
+	// for a year where the local ladder tops out at minutes.
+	until := e.Until
+	if longest := ep.longestStep(); longest > 0 {
+		if maxUntil := now.Add(longest); until.After(maxUntil) {
+			until = maxUntil
+		}
 	}
+	if !until.After(now) {
+		return
+	}
+	en := t.get(m, key, now, ep.window)
+	if until.After(en.blockedUntil) {
+		en.blockedUntil, en.blockedBy = until, parts[2]
+	}
+}
+
+// longestStep is the longest block this endpoint's own ladder can place,
+// which bounds what it will accept from a peer.
+func (e *Endpoint) longestStep() time.Duration {
+	longest := time.Duration(0)
+	for _, s := range e.Steps {
+		if s.Action != "block" || s.Duration == "" {
+			continue
+		}
+		if d, err := time.ParseDuration(s.Duration); err == nil && d > longest {
+			longest = d
+		}
+	}
+	if longest == 0 {
+		longest = e.window
+	}
+	return longest
 }
 
 // disposableAddress reports an e-mail identity on a disposable domain.

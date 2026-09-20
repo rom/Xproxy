@@ -64,7 +64,8 @@ server:
         reject_invalid_utf8: null
         reject_double_encoding: false
         reject_encoded_slashes: false
-        reject_backslashes: false
+        reject_backslashes: null
+        reject_path_params: null
         reject_dot_segments: null
         reject_ambiguous_framing: null
         unicode: "off"
@@ -769,6 +770,7 @@ shedding:
 maintenance: null
 challenge:
     secret_file: /var/lib/xproxy/challenge.key
+    cookie_scope: ""
     difficulty: 16
     ttl: 1h0m0s
     bind_ip: null

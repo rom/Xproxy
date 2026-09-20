@@ -588,3 +588,44 @@ func TestCaptcha(t *testing.T) {
 		t.Fatal("empty secret accepted")
 	}
 }
+
+// With cookie_scope: host a pass covers only the host that issued it.
+// The nonce is host-bound already, so without this a client solves the
+// cheapest host's challenge and spends the cookie on the host that asks
+// for the most work — the two hosts behind one proxy that differ in
+// difficulty are exactly why the setting exists.
+func TestHostScopedCookieDoesNotTravel(t *testing.T) {
+	ip := netip.MustParseAddr("198.51.100.7")
+	now := time.Now()
+	req := func(host, value string) *http.Request {
+		r := httptest.NewRequest("GET", "http://"+host+"/", nil)
+		r.Host = host
+		if value != "" {
+			r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: value})
+		}
+		return r
+	}
+	for _, scope := range []string{"shared", "host"} {
+		conf := cfg()
+		conf.CookieScope = scope
+		c, err := New(conf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := c.issueCookie(req("cheap.test", ""), ip, now, TierProof, nil, 0)
+		if tier, _ := c.Check(req("cheap.test", value), ip); tier != TierProof {
+			t.Fatalf("%s: the pass was refused on its own host", scope)
+		}
+		tier, _ := c.Check(req("dear.test", value), ip)
+		switch scope {
+		case "host":
+			if tier != TierNone {
+				t.Fatal("a pass earned on the cheap host was accepted on the dear one")
+			}
+		default:
+			if tier != TierProof {
+				t.Fatal("a shared pass was refused on a second host")
+			}
+		}
+	}
+}

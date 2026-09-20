@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
 	"strings"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/jsonschema"
+	"github.com/rom/xproxy/internal/netutil"
 )
 
 // bodySchema is one compiled json_schemas entry of a profile.
@@ -84,7 +84,7 @@ func (s *bodySchema) check(r *http.Request, limit int64) (*schemaResult, error) 
 		}
 		return nil, nil
 	}
-	ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	ct := netutil.MediaType(r.Header.Get("Content-Type"))
 	if !strings.HasSuffix(ct, "/json") && !strings.HasSuffix(ct, "+json") {
 		if s.required {
 			return &schemaResult{issue: "body must be JSON", status: http.StatusUnsupportedMediaType}, nil

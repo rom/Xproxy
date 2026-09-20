@@ -30,6 +30,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/netutil"
 )
 
 // Mode is a WAF evaluation mode.
@@ -454,7 +455,11 @@ func (in *instance) anomalyAttrs() []any {
 // request, if any. In detect mode a violation is recorded and the
 // request continues.
 func (in *instance) schemaCheck(r *http.Request) (filter.Verdict, bool) {
-	sc := matchSchema(in.f.schemas, r.Method, r.URL.Path)
+	// The cleaned path is what routing and the origin agree on; the
+	// wire path may still spell "/v1/./orders" or "/v1/x/../orders",
+	// which this prefix match would miss while the origin serves the
+	// resource the schema is written for.
+	sc := matchSchema(in.f.schemas, r.Method, netutil.CleanPath(r.URL.Path))
 	if sc == nil {
 		return filter.Continue, false
 	}

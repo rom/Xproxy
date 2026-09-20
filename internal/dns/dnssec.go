@@ -1399,7 +1399,11 @@ func withDO(query []byte) []byte {
 	}
 	add = append(add, RR{Name: "", Type: TypeOPT, Class: 4096, TTL: ednsDO})
 	m.Additional = add
-	return m.Pack()
+	packed, ok := m.Pack()
+	if !ok {
+		return query
+	}
+	return packed
 }
 
 // clientDO reports whether a query carries an OPT with DO and whether it
@@ -1456,7 +1460,11 @@ func StripDNSSEC(resp []byte, query *Message) []byte {
 	if !c1 && !c2 && !c3 {
 		return resp
 	}
-	return m.Pack()
+	packed, ok := m.Pack()
+	if !ok {
+		return resp
+	}
+	return packed
 }
 
 func minTime(a, b time.Time) time.Time {

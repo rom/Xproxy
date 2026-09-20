@@ -116,6 +116,9 @@ type Challenger struct {
 	ttl        time.Duration
 	bindIP     bool
 	bindJA4    bool
+	// hostScoped binds a pass cookie to the host that issued it
+	// (challenge.cookie_scope: host).
+	hostScoped bool
 	cookie     string
 	exempt     []netip.Prefix
 	title      string
@@ -187,6 +190,7 @@ func (c *Challenger) Reconfigure(cfg *config.Challenge) {
 	c.ttl = cfg.TTL.D()
 	c.bindIP = cfg.BindsIP()
 	c.bindJA4 = cfg.BindsJA4()
+	c.hostScoped = cfg.BindsHost()
 	c.cookie = cfg.CookieName
 	c.exempt = netutil.ParsePrefixes(cfg.ExemptCIDRs)
 	c.title = cfg.Title
@@ -258,6 +262,13 @@ func (c *Challenger) bind(r *http.Request, ip netip.Addr) []byte {
 	b := c.ipBytes(ip)
 	if j := c.ja4Bytes(r); j != nil {
 		b = append(append([]byte{}, b...), j...)
+	}
+	// With cookie_scope: host the pass covers the host that issued it.
+	// The nonce is already host-bound, so without this a client can
+	// solve the cheapest host's challenge and present the cookie to the
+	// host that asked for the most work.
+	if c.hostScoped {
+		b = append(append([]byte{}, b...), hostKey(r.Host)...)
 	}
 	return b
 }

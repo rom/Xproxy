@@ -2,6 +2,7 @@ package cache
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -112,5 +113,36 @@ func TestHelpers(t *testing.T) {
 	h := StorableHeader(http.Header{"Set-Cookie": {"a=b"}, "Connection": {"close"}, "Content-Type": {"text/html"}, "X-Request-Id": {"1"}})
 	if len(h) != 1 || h.Get("Content-Type") != "text/html" {
 		t.Fatalf("storable %v", h)
+	}
+}
+
+// The Vary index used to grow for every distinct primary key ever
+// stored: eviction held the byte bound but nothing dropped the index,
+// and only a whole-cache purge cleared it. Any origin that sends
+// "Vary: Accept-Encoding" — which is nearly all of them — turned each
+// unauthenticated request for a fresh query string into a permanent
+// couple of hundred bytes.
+func TestVaryIndexIsBoundedByTheEntries(t *testing.T) {
+	c := New(8<<10, 4<<10)
+	req := http.Header{"Accept-Encoding": {"gzip"}}
+	for i := 0; i < 2000; i++ {
+		e := &Entry{Status: 200, Header: http.Header{"Vary": {"Accept-Encoding"}}, Body: []byte("hello"),
+			Stored: time.Now(), Expires: time.Now().Add(time.Minute), Host: "a", Path: "/x"}
+		e.SetVary([]string{"Accept-Encoding"})
+		c.Put("p"+strconv.Itoa(i), req, e)
+	}
+	c.mu.Lock()
+	entries, vary, refs := len(c.entries), len(c.vary), len(c.varyRefs)
+	c.mu.Unlock()
+	if vary != entries || refs != entries {
+		t.Fatalf("index %d and refs %d against %d entries", vary, refs, entries)
+	}
+	// Purging the survivors empties it too.
+	c.Purge("a", "/")
+	c.mu.Lock()
+	vary, refs = len(c.vary), len(c.varyRefs)
+	c.mu.Unlock()
+	if vary != 0 || refs != 0 {
+		t.Fatalf("index %d and refs %d after a purge", vary, refs)
 	}
 }

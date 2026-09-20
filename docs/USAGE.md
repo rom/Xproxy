@@ -21,6 +21,20 @@ xproxy -config file.yaml -validate         # validate and exit 0/1
 xproxy -version
 ```
 
+The daemon refuses to start as uid 0. Privileged ports come from
+systemd socket activation (or a capability), and the shipped unit
+already runs as `User=xproxy`, so root buys nothing and costs every
+mitigation that a separate user provides. `-allow-root` starts anyway
+and says so in the security log on every start, for the rare
+environment that has no other way to bind.
+
+Validation has two channels. An error stops the start; *advice* is a
+configuration that loads but is a bad idea — an empty
+`cluster.tls.allowed_names`, `bind_node_id` off, a `kind: dns` listener
+on a public address with neither `allow_clients` nor `rate_limit`. It
+is printed by `-validate` and logged as `configuration advice` at every
+start and reload.
+
 Signals:
 
 | Signal | Effect |

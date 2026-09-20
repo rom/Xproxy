@@ -155,17 +155,19 @@ func TestSensitiveFilter(t *testing.T) {
 		t.Fatalf("block response %+v %+v", res.Request, res.Response)
 	}
 
-	// Unlisted media types and bodies that claim an encoding they do not
-	// have pass unscanned; an oversize body is not judged at request
-	// time but its stream is cut at the finding in block mode.
+	// An unlisted media type passes unscanned; a body that claims an
+	// encoding it does not have is refused, because the origin hands the
+	// bytes to the application whatever the header claimed. An oversize
+	// body is not judged at request time but its stream is cut at the
+	// finding in block mode.
 	f = build(t, filter.Options{"request": map[string]any{"action": "block", "max_bytes": 64}})
 	if res := filtertest.Run(f, post(`4111111111111111`, "application/octet-stream"), nil); res.Request.Deny {
 		t.Fatal("octet-stream scanned")
 	}
 	enc := post(`4111111111111111`, "text/plain")
 	enc.Header.Set("Content-Encoding", "gzip")
-	if res := filtertest.Run(f, enc, nil); res.Request.Deny {
-		t.Fatal("undecodable body scanned")
+	if res := filtertest.Run(f, enc, nil); !res.Request.Deny || res.Request.Detail != "request:unscannable" {
+		t.Fatalf("a body that does not decode was forwarded: %+v", res.Request)
 	}
 	big := post(strings.Repeat("x", 100)+" 4111111111111111", "text/plain")
 	res = filtertest.Run(f, big, nil)
@@ -233,7 +235,7 @@ func TestCounters(t *testing.T) {
 	if act(after, "request", "logged")-act(before, "request", "logged") != 1 || act(after, "response", "blocked")-act(before, "response", "blocked") != 1 {
 		t.Fatalf("actions %+v", after.Actions)
 	}
-	if len(after.Actions) != 6 {
+	if len(after.Actions) != 8 {
 		t.Fatalf("action combinations %d", len(after.Actions))
 	}
 }
@@ -311,22 +313,45 @@ func TestEncodedBodies(t *testing.T) {
 	if res := filtertest.Run(f, r, nil); res.Request.Deny {
 		t.Fatalf("encoded skip scanned: %+v", res.Request)
 	}
+	// A coding this build does not implement, and a partial body, are
+	// refused rather than forwarded: an origin does not decompress a
+	// request body, so "Content-Encoding: xyzzy" would otherwise turn the
+	// whole filter off for that message at no cost to the client.
 	f = build("block", "block", nil)
-	for _, h := range []http.Header{{"Content-Encoding": {"compress"}}, {"Content-Range": {"bytes 0-9/100"}}} {
+	for _, h := range []http.Header{{"Content-Encoding": {"compress"}}, {"Content-Encoding": {"gzip, gzip"}}, {"Content-Range": {"bytes 0-9/100"}}} {
 		r := httptest.NewRequest("POST", "http://a/x", strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
 		for k, v := range h {
 			r.Header[k] = v
 		}
-		if res := filtertest.Run(f, r, nil); res.Request.Deny {
-			t.Fatalf("%v scanned: %+v", h, res.Request)
+		res := filtertest.Run(f, r, nil)
+		if !res.Request.Deny || res.Request.Status != http.StatusUnsupportedMediaType {
+			t.Fatalf("%v forwarded unscanned: %+v", h, res.Request)
 		}
 	}
-	// Corrupt compressed data passes untouched.
+	// unscannable: skip is the old behaviour, for an operator who needs
+	// it, and is the default for responses.
+	f = build("block", "block", map[string]any{"unscannable": "skip"})
+	r = httptest.NewRequest("POST", "http://a/x", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Content-Encoding", "compress")
+	if res := filtertest.Run(f, r, nil); res.Request.Deny {
+		t.Fatalf("unscannable: skip refused: %+v", res.Request)
+	}
+	// Corrupt compressed data is refused too.
+	f = build("block", "block", nil)
 	r = httptest.NewRequest("POST", "http://a/x", strings.NewReader("not gzip at all"))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Content-Encoding", "gzip")
 	res := filtertest.Run(f, r, nil)
+	if !res.Request.Deny {
+		t.Fatalf("corrupt compressed body forwarded: %+v", res.Request)
+	}
+	f = build("block", "block", map[string]any{"unscannable": "skip"})
+	r = httptest.NewRequest("POST", "http://a/x", strings.NewReader("not gzip at all"))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Content-Encoding", "gzip")
+	res = filtertest.Run(f, r, nil)
 	if out, _ := io.ReadAll(r.Body); res.Request.Deny || string(out) != "not gzip at all" {
 		t.Fatalf("corrupt gzip: %+v %q", res.Request, out)
 	}

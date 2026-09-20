@@ -797,6 +797,12 @@ func (n *Node) handle(in *inbound, m *message) error {
 		if n.bindNodeID && !certNameMatches(in.certNames, m.Node) {
 			return fmt.Errorf("node id %q is not a name of the peer certificate %q", m.Node, in.certName)
 		}
+		// One hello per connection. A second one would rename a peer
+		// mid-session, which is the same forgery the binding above
+		// closes, reached a different way.
+		if prev := deref(in.nodeID.Load()); prev != "" {
+			return fmt.Errorf("second hello on one connection (was %q, now %q)", prev, m.Node)
+		}
 		id := m.Node
 		in.nodeID.Store(&id)
 		n.log.Info("cluster peer joined", "remote", in.remote, "node", id, "cert", in.certName)

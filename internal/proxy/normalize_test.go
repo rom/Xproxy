@@ -157,7 +157,7 @@ routes:
 
 func TestCheckNormalizationUnit(t *testing.T) {
 	off := false
-	n := &config.Normalization{RejectDoubleEncoding: true, RejectEncodedSlashes: true, RejectBackslashes: true}
+	n := &config.Normalization{RejectDoubleEncoding: true, RejectEncodedSlashes: true}
 	req := func(target string, hdr ...string) *http.Request {
 		u, err := url.ParseRequestURI(target)
 		if err != nil {
@@ -194,7 +194,33 @@ func TestCheckNormalizationUnit(t *testing.T) {
 	if got := checkNormalization(relaxed, req("/a%00%ff", "Content-Length", "1", "Content-Length", "2")); got != "" {
 		t.Fatalf("relaxed: %q", got)
 	}
-	if got := checkNormalization(&config.Normalization{}, req("/a%5cb%252e")); got != "" {
+	if got := checkNormalization(&config.Normalization{}, req("/a%252e")); got != "" {
 		t.Fatalf("defaults refuse strict cases: %q", got)
+	}
+	// A backslash and a path parameter are refused by default: the
+	// servers behind the proxy read "/static\\..\\admin" and "/admin;x"
+	// as /admin, while routing here reads one opaque segment and misses
+	// the /admin route with its access lists, filters and WAF profile.
+	defaults := &config.Normalization{}
+	for _, tc := range []struct{ target, want string }{
+		{"/static%5c..%5cadmin", "path_backslash"},
+		{"/static/..%5cadmin", "path_backslash"},
+		{"/admin;x", "path_parameter"},
+		{"/admin;jsessionid=abc", "path_parameter"},
+		{"/admin%3bx", "path_parameter"},
+		{"/static/..;/admin", "path_parameter"},
+		{"/static/../admin", "path_dot_segment"},
+	} {
+		if got := checkNormalization(defaults, req(tc.target)); got != tc.want {
+			t.Errorf("%s: got %q want %q", tc.target, got, tc.want)
+		}
+	}
+	// With both refusals off, the dot-segment check still sees through a
+	// backslash separator and a path parameter.
+	loose := &config.Normalization{RejectBackslashes: &off, RejectPathParams: &off}
+	for _, target := range []string{"/static%5c..%5cadmin", "/static/..%5cadmin", "/static/..;/admin", "/static/.;/admin"} {
+		if got := checkNormalization(loose, req(target)); got != "path_dot_segment" {
+			t.Errorf("%s with the refusals off: got %q", target, got)
+		}
 	}
 }

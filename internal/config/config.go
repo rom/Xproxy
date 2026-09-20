@@ -33,6 +33,10 @@ type Config struct {
 	Includes []string `yaml:"includes"`
 	// IncludedFiles lists the fragments the last load read.
 	IncludedFiles []string `yaml:"-"`
+	// advice holds what the last validation thought was a bad idea; see
+	// Advice. It is not part of the document, so it never round-trips
+	// through a dump, a diff or the history.
+	advice []string `yaml:"-"`
 
 	Server     Server     `yaml:"server"`
 	Management Management `yaml:"management"`
@@ -538,9 +542,19 @@ type Normalization struct {
 	// routing decoder turns them into separators that the upstream may
 	// treat as data. Default false.
 	RejectEncodedSlashes bool `yaml:"reject_encoded_slashes"`
-	// RejectBackslashes refuses a backslash anywhere in the decoded path,
-	// which some servers read as a separator. Default false.
-	RejectBackslashes bool `yaml:"reject_backslashes"`
+	// RejectBackslashes refuses a backslash anywhere in the decoded path.
+	// IIS, Apache on Windows and .NET read it as a separator while this
+	// proxy reads it as an ordinary character, so "/static\\..\\admin" is
+	// one opaque segment under /static here and "/admin" there: the
+	// route's access lists, filters, WAF profile and rate limits are all
+	// skipped for a resource the origin serves. Default true.
+	RejectBackslashes *bool `yaml:"reject_backslashes"`
+	// RejectPathParams refuses a ";" in the decoded path. Tomcat, Jetty,
+	// JBoss and Spring strip a path parameter from every segment before
+	// mapping, so "/admin;x" or "/admin;jsessionid=..." misses this
+	// proxy's /admin route and its policy while the origin serves
+	// /admin. Default true.
+	RejectPathParams *bool `yaml:"reject_path_params"`
 	// RejectDotSegments refuses a "." or ".." segment in the decoded path
 	// (including the "..;" form servlet containers resolve). Routing
 	// resolves dot segments while the upstream receives the path as sent,
@@ -576,6 +590,16 @@ func (n *Normalization) AmbiguousFraming() bool {
 // DotSegments reports the setting with its default.
 func (n *Normalization) DotSegments() bool {
 	return n.RejectDotSegments == nil || *n.RejectDotSegments
+}
+
+// Backslashes reports the setting with its default.
+func (n *Normalization) Backslashes() bool {
+	return n.RejectBackslashes == nil || *n.RejectBackslashes
+}
+
+// PathParams reports the setting with its default.
+func (n *Normalization) PathParams() bool {
+	return n.RejectPathParams == nil || *n.RejectPathParams
 }
 
 // Limits are the global resource protections of the data plane. Every limit
@@ -2167,9 +2191,15 @@ type ClusterTLS struct {
 	// names or DNS SANs.
 	AllowedNames []string `yaml:"allowed_names"`
 	// BindNodeID requires a peer's announced node_id to be a name its
-	// certificate carries. Default false, because a certificate common
-	// name and a node id legitimately differ in existing clusters;
-	// turning it on is recommended once they agree. The id is not a label: key
+	// certificate carries. Default true.
+	//
+	// The id is not a label: key ownership for exact rate limits is a
+	// rendezvous hash over node ids, so a peer free to choose its id
+	// chooses which keys it decides for every node. Set it false only
+	// for an existing cluster whose certificate names and node ids
+	// differ, and fix the certificates: a cluster certificate is full
+	// trust within the cluster, and the id is the only thing that
+	// distinguishes one holder of one from another. The id is not a label: key
 	// ownership for exact rate limits is a rendezvous hash over node
 	// ids, and bans and marks are attributed to them, so a peer that
 	// chooses its own id chooses which keys it decides and whose name
@@ -2180,7 +2210,7 @@ type ClusterTLS struct {
 }
 
 // BindsNodeID reports the setting with its default applied.
-func (t ClusterTLS) BindsNodeID() bool { return t.BindNodeID != nil && *t.BindNodeID }
+func (t ClusterTLS) BindsNodeID() bool { return t.BindNodeID == nil || *t.BindNodeID }
 
 // Sharing helpers with defaults applied.
 func (c *Cluster) SharesRateLimits() bool { return c.ShareRateLimits == nil || *c.ShareRateLimits }
@@ -2237,6 +2267,15 @@ type Maintenance struct {
 type Challenge struct {
 	// SecretFile persists the HMAC key so cookies survive restarts.
 	SecretFile string `yaml:"secret_file"`
+	// CookieScope is "shared" (default) or "host". A pass cookie is
+	// bound to the client address and its TLS fingerprint; with "host"
+	// it is bound to the host that served the challenge as well, so a
+	// client cannot earn a cheap pass on one host and spend it on
+	// another that asks for more work. Use "host" when hosts behind one
+	// proxy differ in difficulty or tier; leave it "shared" when a pass
+	// is meant to cover a site's several names, since "host" makes every
+	// outstanding cookie stop working once.
+	CookieScope string `yaml:"cookie_scope"`
 	// Difficulty is the number of leading zero bits required. Default 16
 	// (about 65 000 hashes, well under a second in a browser).
 	Difficulty int `yaml:"difficulty"`
@@ -2270,6 +2309,10 @@ func (c *Challenge) BindsIP() bool { return c.BindIP == nil || *c.BindIP }
 
 // BindsJA4 reports whether cookies are bound to the client's JA4 fingerprint.
 func (c *Challenge) BindsJA4() bool { return c.BindJA4 }
+
+// BindsHost reports whether a pass cookie is bound to the host that
+// issued it (cookie_scope: host).
+func (c *Challenge) BindsHost() bool { return c.CookieScope == "host" }
 
 // DevicesOn reports whether device identifiers are collected.
 func (c *Challenge) DevicesOn() bool { return c.Device == nil || *c.Device }

@@ -44,6 +44,11 @@ func (e *ValidationError) Error() string {
 
 type validator struct {
 	problems []string
+	// advice holds configurations that load but are a bad idea: an open
+	// resolver, a cluster with no certificate name restriction. They are
+	// not errors, because refusing them would break deployments that
+	// mean it, but an operator should see them every time.
+	advice []string
 	// hasChallenge is set while validating a configuration with a
 	// challenge section (the device rate limit key needs one).
 	hasChallenge bool
@@ -54,6 +59,11 @@ type validator struct {
 
 func (v *validator) errf(format string, args ...interface{}) {
 	v.problems = append(v.problems, fmt.Sprintf(format, args...))
+}
+
+// warnf records a configuration that loads but should be reconsidered.
+func (v *validator) warnf(format string, args ...interface{}) {
+	v.advice = append(v.advice, fmt.Sprintf(format, args...))
 }
 
 var nameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
@@ -72,11 +82,17 @@ func ValidateNoFiles(c *Config) error {
 func validate(c *Config, files bool) error {
 	v := &validator{fileCheck: files}
 	v.config(c)
+	c.advice = v.advice
 	if len(v.problems) == 0 {
 		return nil
 	}
 	return &ValidationError{Problems: v.problems}
 }
+
+// Advice returns the warnings the last validation produced: settings
+// that load but weaken the deployment. The caller logs them; they never
+// stop a start or a reload.
+func (c *Config) Advice() []string { return c.advice }
 
 func (v *validator) config(c *Config) {
 	if c.Version != CurrentVersion {
@@ -512,6 +528,15 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.dns: required for kind dns", p)
 			} else {
 				v.dnsListener(p+".dns", ln.DNS)
+				// An open resolver is somebody else's amplifier. The
+				// 1232-byte cap bounds the gain but not the fact that
+				// the answers are sent to whoever the source claims to
+				// be, so a public listener needs at least one of the
+				// two controls.
+				if !loopbackListen(ln.Address) && len(ln.DNS.AllowClients) == 0 && ln.DNS.RateLimit == nil {
+					v.warnf("%s: a dns listener on a non-loopback address with neither dns.allow_clients nor dns.rate_limit "+
+						"answers anyone who can reach it, which makes this node an amplifier", p)
+				}
 			}
 		case "forward":
 			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || ln.H2C {
@@ -1674,6 +1699,19 @@ func (v *validator) bans(b *Bans) {
 	}
 }
 
+// loopbackListen reports an address bound to the loopback interface.
+func loopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	return err == nil && ip.IsLoopback()
+}
+
 func (v *validator) cluster(c *Cluster) {
 	if !nameRE.MatchString(c.NodeID) {
 		v.errf("cluster.node_id: %q is not a valid name", c.NodeID)
@@ -1695,6 +1733,14 @@ func (v *validator) cluster(c *Cluster) {
 			v.errf("cluster.peers[%d]: duplicate %q", i, p)
 		}
 		seen[p] = true
+	}
+	if len(c.TLS.AllowedNames) == 0 {
+		v.warnf("cluster.tls.allowed_names is empty, so any certificate the cluster CA issued may join: " +
+			"a cluster certificate is full trust inside the cluster, and the node id is all that distinguishes one holder from another")
+	}
+	if !c.TLS.BindsNodeID() {
+		v.warnf("cluster.tls.bind_node_id is off: a peer's announced node_id is not checked against its certificate, " +
+			"so it can choose which rate-limit keys it decides for every node")
 	}
 	if c.TLS.CertFile == "" || c.TLS.KeyFile == "" || c.TLS.CAFile == "" {
 		v.errf("cluster.tls: cert_file, key_file and ca_file are all required (mutual TLS is mandatory)")
@@ -2296,6 +2342,11 @@ func (v *validator) challenge(c *Challenge) {
 	}
 	if !cookieNameOK(c.CookieName) {
 		v.errf("challenge.cookie_name: %q is not a valid cookie name", c.CookieName)
+	}
+	switch c.CookieScope {
+	case "", "shared", "host":
+	default:
+		v.errf("challenge.cookie_scope: must be shared or host")
 	}
 	for i, cidr := range c.ExemptCIDRs {
 		if _, err := netip.ParsePrefix(cidr); err != nil {

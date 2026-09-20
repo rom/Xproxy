@@ -51,20 +51,82 @@ const (
 )
 
 // New returns a validator whose local references ($ref "#/...") resolve
-// inside doc.
+// inside doc. Every reference the document spells is resolved here, while
+// the validator is still private to this goroutine: a validator is shared
+// by every request on its route, and a map written on the request path is
+// a process-fatal "concurrent map read and map write" that no recover can
+// catch, reachable from two concurrent unauthenticated bodies.
 func New(doc map[string]any) *Validator {
-	return &Validator{spec: doc, res: map[string]*regexp.Regexp{}, cache: map[string]*Schema{}}
+	v := &Validator{spec: doc, res: map[string]*regexp.Regexp{}, cache: map[string]*Schema{}}
+	budget := maxRefNodes
+	for _, ref := range refsIn(doc, 0, &budget) {
+		v.cacheRef(ref)
+	}
+	return v
 }
 
-// Resolve follows local references (#/components/schemas/Name).
+// maxRefNodes bounds the walk New makes over the document. A document
+// comes from configuration, so this is a guard against a pathological
+// file rather than against a client.
+const maxRefNodes = 1 << 20
+
+// refsIn collects every "$ref" string value in the document, so that the
+// cache is complete before the validator is published.
+func refsIn(node any, depth int, budget *int) []string {
+	if depth > maxDepth || *budget <= 0 {
+		return nil
+	}
+	*budget--
+	var out []string
+	switch n := node.(type) {
+	case map[string]any:
+		for k, val := range n {
+			if k == "$ref" {
+				if s, ok := val.(string); ok && s != "" {
+					out = append(out, s)
+				}
+				continue
+			}
+			out = append(out, refsIn(val, depth+1, budget)...)
+		}
+	case []any:
+		for _, val := range n {
+			out = append(out, refsIn(val, depth+1, budget)...)
+		}
+	}
+	return out
+}
+
+// cacheRef resolves one reference into the cache. It is called from New
+// only: it writes the map, so it must not run once the validator is
+// shared.
+func (v *Validator) cacheRef(ref string) *Schema {
+	if s, ok := v.cache[ref]; ok {
+		return s
+	}
+	s := &Schema{Raw: map[string]any{}}
+	v.cache[ref] = s // guards cycles
+	switch target := v.lookup(ref).(type) {
+	case map[string]any:
+		if next, _ := target["$ref"].(string); next != "" {
+			resolved := v.cacheRef(next)
+			s.Raw, s.ref = resolved.Raw, resolved.ref
+			break
+		}
+		s.Raw = target
+	case bool:
+		s.Raw = boolSchema(target)
+	}
+	return s
+}
+
+// Resolve follows local references (#/components/schemas/Name). It never
+// writes the cache: see New.
 func (v *Validator) Resolve(node any) *Schema {
 	m, ok := node.(map[string]any)
 	if !ok {
 		if b, ok := node.(bool); ok {
-			if b {
-				return &Schema{Raw: map[string]any{}}
-			}
-			return &Schema{Raw: map[string]any{"not": map[string]any{}}}
+			return &Schema{Raw: boolSchema(b)}
 		}
 		return &Schema{Raw: map[string]any{}}
 	}
@@ -75,14 +137,41 @@ func (v *Validator) Resolve(node any) *Schema {
 	if s, ok := v.cache[ref]; ok {
 		return s
 	}
-	s := &Schema{Raw: map[string]any{}}
-	v.cache[ref] = s // guards cycles
-	target := v.lookup(ref)
-	if target != nil {
-		resolved := v.Resolve(target)
-		s.Raw, s.ref = resolved.Raw, resolved.ref
+	// A reference New did not see: the node was not part of the document
+	// the validator was built from. Chase it without caching, and let the
+	// hop count end a cycle.
+	return v.chase(ref)
+}
+
+// chase follows a reference chain that is not in the cache, bounded by
+// the depth limit so that a cycle ends.
+func (v *Validator) chase(ref string) *Schema {
+	for hop := 0; hop < maxDepth; hop++ {
+		if s, ok := v.cache[ref]; ok {
+			return s
+		}
+		switch target := v.lookup(ref).(type) {
+		case map[string]any:
+			next, _ := target["$ref"].(string)
+			if next == "" {
+				return &Schema{Raw: target}
+			}
+			ref = next
+		case bool:
+			return &Schema{Raw: boolSchema(target)}
+		default:
+			return &Schema{Raw: map[string]any{}}
+		}
 	}
-	return s
+	return &Schema{Raw: map[string]any{}}
+}
+
+// boolSchema is the keyword set a boolean schema stands for.
+func boolSchema(b bool) map[string]any {
+	if b {
+		return map[string]any{}
+	}
+	return map[string]any{"not": map[string]any{}}
 }
 
 // lookup returns the node a local JSON pointer names.
@@ -199,6 +288,12 @@ func (v *Validator) Validate(node any, value any, path string, rep *Report, dept
 		ok = v.validateString(raw, x, path, rep) && ok
 	case json.Number:
 		f, _ := x.Float64()
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			// Not reachable from Decode, which is strict, but a caller
+			// that builds a json.Number by hand must not slip past every
+			// bound: NaN compares false against each of them.
+			return rep.Add(path, "is not a finite number")
+		}
 		isInt := !strings.ContainsAny(x.String(), ".eE") || f == math.Trunc(f)
 		numberOK := TypeAllows(raw["type"], "number") || TypeAllows(raw["type"], "integer") && isInt
 		if raw["type"] != nil && !numberOK {
@@ -476,8 +571,10 @@ func jsonEqual(a, b any) bool {
 func Coerce(raw map[string]any, s string) any {
 	switch {
 	case TypeAllows(raw["type"], "integer") || TypeAllows(raw["type"], "number"):
-		if _, err := strconv.ParseFloat(s, 64); err == nil {
-			return json.Number(s)
+		if jsonNumber(s) {
+			if _, err := strconv.ParseFloat(s, 64); err == nil {
+				return json.Number(s)
+			}
 		}
 	case TypeAllows(raw["type"], "boolean"):
 		if s == "true" {
@@ -500,6 +597,48 @@ func Coerce(raw map[string]any, s string) any {
 		return out
 	}
 	return s
+}
+
+// jsonNumber reports whether s spells a number the way JSON does.
+// strconv.ParseFloat is wider than that: it also takes "NaN", "Inf",
+// hexadecimal floats ("0x1p8") and Go's underscore separators ("1_0").
+// A NaN admitted here compares false against every minimum and maximum,
+// so an out-of-range value would satisfy the schema, and the other
+// spellings reach the origin as a number this proxy and the application
+// read differently.
+func jsonNumber(s string) bool {
+	i := 0
+	if i < len(s) && s[i] == '-' {
+		i++
+	}
+	digits := func() int {
+		n := 0
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+			n++
+		}
+		return n
+	}
+	n := digits()
+	if n == 0 || n > 1 && s[i-n] == '0' {
+		return false // no integer part, or a leading zero
+	}
+	if i < len(s) && s[i] == '.' {
+		i++
+		if digits() == 0 {
+			return false
+		}
+	}
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		if digits() == 0 {
+			return false
+		}
+	}
+	return i == len(s)
 }
 
 // Decode parses one JSON document with numbers kept as json.Number; it
