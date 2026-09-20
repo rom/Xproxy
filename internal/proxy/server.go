@@ -37,6 +37,7 @@ import (
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
+	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/shed"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tracing"
@@ -117,6 +118,13 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		inventory:    apiinv.New(),
 	}
 	s.inventory.Configure(inventoryConfig(cfg), logs.Error)
+	// A contained panic is a bug in the proxy, not an event about the
+	// client, so it goes to the error log with its stack rather than to
+	// the security log. Set here because every deployment builds a
+	// Server before any listener accepts.
+	safe.Report = func(what string, value any, stack []byte) {
+		logs.Error.Error("panic contained", "where", what, "panic", fmt.Sprint(value), "stack", string(stack))
+	}
 	if st := cfg.Server.SessionTickets; st != nil {
 		tk, err := tlsconf.NewTickets(st, logs.Error.With("component", "tickets"))
 		if err != nil {

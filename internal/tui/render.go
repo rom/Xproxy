@@ -410,7 +410,8 @@ func renderTLS(d Data, sty Style) []string {
 			}
 			ct := "-"
 			if c.CT.Required > 0 {
-				ct = fmt.Sprintf("%d/%d", c.CT.Verified, c.CT.Required)
+				// Logs, not SCTs: the requirement counts independent logs.
+				ct = fmt.Sprintf("%d/%d", c.CT.Logs, c.CT.Required)
 				if !c.CT.OK {
 					ct = sty.Yellow + ct + " failed" + sty.Reset
 				}

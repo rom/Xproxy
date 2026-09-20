@@ -607,6 +607,20 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 	return true, ""
 }
 
+// ClientFault reports whether a Verify failure reason is the client's
+// doing. A refusal the proxy caused itself — the replay table being full
+// of other people's nonces, or a nonce submitted twice because a form
+// was retried — must not be counted against the client: feeding it to a
+// ban trigger turns a local resource limit into a ban of everyone who
+// solves a challenge correctly.
+func ClientFault(reason string) bool {
+	switch reason {
+	case "verification table full", "nonce already used":
+		return false
+	}
+	return true
+}
+
 func (c *Challenger) fail(w http.ResponseWriter, _ string) {
 	c.mu.Lock()
 	c.Failed++

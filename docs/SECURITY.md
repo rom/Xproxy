@@ -138,7 +138,12 @@ to report a vulnerability. The threat analysis behind the controls is in
 - Request identifier generated per request, returned to the client, sent to
   the upstream and present in every log line.
 - Environment proxy variables ignored for upstream connections.
-- No response decompression, so no decompression bombs in the proxy.
+- Encodings are forwarded untouched, so a compressed body is never
+  expanded on the way through. The one exception is a filter that has to
+  read the plaintext: `sensitive_data` with `encoded: scan` decodes what
+  it buffers up to `max_decoded_bytes`, and a streamed decode is cut once
+  it passes 8 MiB and `max_decompression_ratio` times the compressed
+  bytes, so a decompression bomb cannot be amplified through the proxy.
 
 ### Token validation
 
@@ -424,7 +429,10 @@ to report a vulnerability. The threat analysis behind the controls is in
   redaction hash) is a keyring: `xproxyctl rotate-secret` adds a fresh
   primary key and keeps a bounded number of old ones for verification,
   so keys rotate on a schedule without logging users out or dropping
-  sessions; files are written `0600` through a rename.
+  sessions; files are written `0600` through a rename and refused at load
+  when another account can read them or their group can write them
+  (`0600` and `0640` are accepted), because anyone who can read a keyring
+  can mint the cookies it signs.
 - Return URLs are same-origin paths only; the client secret and cookie
   key files must not be world readable.
 - Front channel logout revokes provider session ids into a bounded

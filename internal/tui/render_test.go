@@ -49,7 +49,7 @@ func sample() Data {
 				Rules:    []waf.RuleStat{{ID: 942100, Matches: 4, Blocks: 4, Severity: "critical", Message: "SQL Injection Attack Detected via libinjection", LastSeen: now}},
 				Learning: &waf.LearningReport{Enabled: true, MinHits: 5, Entries: 3, MaxEntries: 10000, Proposals: []waf.Proposal{{Rule: 941100, Target: "ARGS:body", Route: "posts", Hits: 12, Clients: 4, Message: "XSS", Directive: "SecRule ..."}}}}},
 		TLS: map[string][]tlsconf.CertInfo{"main": {{Names: []string{"a.test", "www.a.test"}, Issuer: "Example CA", NotAfter: time.Now().Add(20 * 24 * time.Hour), Managed: true,
-			OCSP: tlsconf.OCSPStatus{Status: "good"}, CT: tlsconf.CTStatus{Required: 2, Verified: 2, OK: true}}}},
+			OCSP: tlsconf.OCSPStatus{Status: "good"}, CT: tlsconf.CTStatus{Required: 2, Verified: 2, Logs: 2, OK: true}}}},
 		Telemetry: &mgmt.TelemetryView{Traces: &tracing.Status{Enabled: true, Sampled: 10, Sent: 9, Failed: 1}},
 		DNS:       []dns.Status{{Listener: "dns", Queries: 100, QueriesUDP: 80, QueriesTCP: 20, CacheHits: 60, Blocked: 5, DNSSEC: &dns.DNSSECStatus{Enabled: true, Secure: 40, Bogus: 1}}},
 		Errors:    map[string]string{},

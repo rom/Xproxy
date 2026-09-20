@@ -1145,7 +1145,7 @@ func wildcardProven(authority []*RRset, name, zone string) bool {
 	if len(nsec3s) > 0 {
 		// The next closer name must be covered.
 		for _, set := range nsec3s {
-			p, err := parseNSEC3(set.RRs[0])
+			p, err := nsec3Set(set)
 			if err != nil {
 				continue
 			}
@@ -1211,7 +1211,7 @@ var base32hex = base32.HexEncoding.WithPadding(base32.NoPadding)
 // nsec3Hash hashes a name with the record's parameters (SHA-1 only,
 // iterations bounded as RFC 9276 recommends).
 func nsec3Hash(name string, p *nsec3) []byte {
-	if p.hashAlg != 1 || p.iterations > 150 {
+	if p == nil || p.hashAlg != 1 || p.iterations > 150 {
 		return nil
 	}
 	wire, err := packName(strings.ToLower(name))
@@ -1243,7 +1243,7 @@ func nsec3Covers(set *RRset, hash []byte, zone string) bool {
 		return false
 	}
 	owner := nsec3Owner(set, zone)
-	p, err := parseNSEC3(set.RRs[0])
+	p, err := nsec3Set(set)
 	if err != nil || owner == nil {
 		return false
 	}
@@ -1257,11 +1257,21 @@ func nsec3Matches(set *RRset, hash []byte, zone string) *nsec3 {
 	if hash == nil || string(nsec3Owner(set, zone)) != string(hash) {
 		return nil
 	}
-	p, err := parseNSEC3(set.RRs[0])
+	p, err := nsec3Set(set)
 	if err != nil {
 		return nil
 	}
 	return p
+}
+
+// nsec3Set returns the NSEC3 parameters of an RRset's first record. A
+// lone RRSIG covering NSEC3 groups into an RRset with signatures and no
+// records, so the record must never be indexed unchecked.
+func nsec3Set(set *RRset) (*nsec3, error) {
+	if set == nil || len(set.RRs) == 0 {
+		return nil, errMalformed
+	}
+	return parseNSEC3(set.RRs[0])
 }
 
 // nsec3Denial checks NSEC3 proofs (RFC 5155 section 8): NODATA needs a
@@ -1272,8 +1282,11 @@ func nsec3Denial(sets []*RRset, name string, typ uint16, zone string, nxdomain b
 	if len(sets) == 0 {
 		return Bogus
 	}
-	params, err := parseNSEC3(sets[0].RRs[0])
-	if err != nil || nsec3Hash(name, params) == nil {
+	params, err := nsec3Set(sets[0])
+	if err != nil {
+		return Bogus // a malformed or empty NSEC3 set proves nothing
+	}
+	if nsec3Hash(name, params) == nil {
 		return Insecure // unsupported parameters: treat as insecure (RFC 5155 8.1)
 	}
 	if !isSubdomain(name, zone) {
@@ -1299,7 +1312,7 @@ func nsec3Denial(sets []*RRset, name string, typ uint16, zone string, nxdomain b
 		if typ == TypeDS {
 			for _, set := range sets {
 				if nsec3Covers(set, h, zone) {
-					if p, err := parseNSEC3(set.RRs[0]); err == nil && p.flags&1 == 1 {
+					if p, err := nsec3Set(set); err == nil && p.flags&1 == 1 {
 						return Insecure // opt-out
 					}
 				}
@@ -1334,7 +1347,7 @@ func nsec3Denial(sets []*RRset, name string, typ uint16, zone string, nxdomain b
 		for _, set := range sets {
 			if nsec3Covers(set, nch, zone) {
 				coveredNext = true
-				if p, err := parseNSEC3(set.RRs[0]); err == nil && p.flags&1 == 1 {
+				if p, err := nsec3Set(set); err == nil && p.flags&1 == 1 {
 					optOut = true
 				}
 			}

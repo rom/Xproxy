@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
@@ -98,8 +99,14 @@ func (q *quicRelay) serve() {
 	}
 }
 
-// datagram routes one client datagram.
+// datagram routes one client datagram. It runs on the listener's own
+// read loop, so a panic here would end every flow on this listener and
+// the process with them; the ClientHello parsing it drives is the most
+// attacker-controlled code in the proxy. Guard contains that to the one
+// datagram. Every mutex region below is a map operation that cannot
+// panic, so nothing is left locked behind it.
 func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
+	defer safe.Guard("quic datagram")
 	s := q.t.s
 	now := time.Now()
 	q.mu.Lock()

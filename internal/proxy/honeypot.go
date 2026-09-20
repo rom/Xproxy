@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -217,6 +218,22 @@ func (s *Server) UnmarkHoneypot(ip netip.Addr) bool {
 	return ok
 }
 
+// thirdPartyInduced reports a request a browser made because another
+// origin asked it to: a sub-resource, a prefetch or a navigation from a
+// link on another site. Browsers send Sec-Fetch-Site on every request;
+// a client that sends none (a scanner, a script) is never treated as
+// induced, and neither is a typed URL (none) or a same-origin fetch.
+func thirdPartyInduced(r *http.Request) bool {
+	if r.Header.Get("Sec-Purpose") != "" || strings.EqualFold(r.Header.Get("Purpose"), "prefetch") {
+		return true
+	}
+	switch strings.ToLower(r.Header.Get("Sec-Fetch-Site")) {
+	case "cross-site", "same-site":
+		return true
+	}
+	return false
+}
+
 // honeypot serves a decoy. The client is recorded as a security event,
 // marked for the configured time and counted towards the honeypot ban
 // reason; the response itself looks like the real thing. An optional
@@ -231,11 +248,21 @@ func (s *Server) honeypot(rw *responseWriter, r *http.Request, st *reqState, cr 
 		"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,
 		"host", r.Host, "path", r.URL.Path, "query_len", len(r.URL.RawQuery), "route", st.route,
 		"user_agent", r.UserAgent(), "referer", r.Referer(), "decoy", hp.Decoy)
-	s.marks.add(st.clientIP, cr.cfg.Name, hp.Mark.D(), now)
-	s.publishEvent(cluster.Event{Kind: eventHoneypotMark, Key: st.clientIP.String(), Route: cr.cfg.Name, Until: now.Add(hp.Mark.D())})
-	if bl := s.bans.Load(); bl != nil {
-		bl.Observe(st.clientIP, "honeypot")
+	// A browser that fetched the decoy because another site told it to (an
+	// <img> in a forum post, a prefetch, a planted link) says nothing about
+	// the person behind it, so the decoy is served but nobody is marked or
+	// banned for it. A scanner sends no Sec-Fetch-Site at all and is still
+	// counted.
+	if induced := thirdPartyInduced(r); induced {
+		st.extra = append(st.extra, "honeypot_induced", true)
+	} else {
+		s.marks.add(st.clientIP, cr.cfg.Name, hp.Mark.D(), now)
+		s.publishEvent(cluster.Event{Kind: eventHoneypotMark, Key: st.clientIP.String(), Route: cr.cfg.Name, Until: now.Add(hp.Mark.D())})
+		if bl := s.bans.Load(); bl != nil {
+			bl.Observe(st.clientIP, "honeypot")
+		}
 	}
+	rw.Header().Set("X-Robots-Tag", "noindex, nofollow")
 	if hp.Delay > 0 {
 		release() // a held decoy must not occupy a request slot (see max_tarpits)
 		if tpRelease, ok := s.tarpits.Acquire(); ok {

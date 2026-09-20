@@ -83,6 +83,18 @@ func (s *sessions) get(tok string) (Session, bool) {
 	return *v, true
 }
 
+// setRole records a role change for a live session and returns the role
+// now in force. A session whose token has gone keeps the role passed in,
+// which the caller then uses for this one request only.
+func (s *sessions) setRole(tok string, role Role) Role {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, ok := s.by[tok]; ok {
+		v.Role = role
+	}
+	return role
+}
+
 func (s *sessions) drop(tok string) {
 	s.mu.Lock()
 	delete(s.by, tok)

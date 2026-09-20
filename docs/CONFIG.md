@@ -46,7 +46,7 @@ on the first line of the file to enable it.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `secret_file` | absolute path | required | Master keyring, created with mode `0600` when missing. Deploy the same file to every node; rotate the master with `xproxyctl rotate-secret` (the kept keys still open tickets sealed under the old master for one more epoch) |
+| `secret_file` | absolute path | required | Master keyring, created with mode `0600` when missing; a keyring readable by other accounts, or writable by its group, is refused at load (`0600` and `0640` are accepted). Deploy the same file to every node; rotate the master with `xproxyctl rotate-secret` (the kept keys still open tickets sealed under the old master for one more epoch) |
 | `rotate` | duration | `24h` | Epoch length, `1h` to `168h`. Each epoch's key is derived from the master and the epoch number, so nodes with synchronised clocks switch keys together without exchanging messages; the previous epoch's key is kept for decryption, so a ticket lives at most two epochs |
 
 The key set's fingerprint is shown by `xproxyctl tls tickets` and `GET
@@ -1019,7 +1019,10 @@ Exposed families: `xproxy_requests_total`, `xproxy_responses_total{class}`,
 `xproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}`,
 `xproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}`,
 `xproxy_route_requests_total{route,outcome}`, `xproxy_build_info`,
-`xproxy_uptime_seconds`, `xproxy_config_generation`.
+`xproxy_uptime_seconds`, `xproxy_config_generation`,
+`xproxy_panics_total` (panics contained on a connection or datagram
+goroutine; zero in a healthy process, and anything else is a bug worth a
+report).
 
 Series (per-second rates for counters, current values for gauges):
 `requests`, `responses_2xx`, `responses_4xx`, `responses_5xx`, `denied`,
@@ -1973,7 +1976,12 @@ scanner as it flows, with 4 KiB held back between reads so a value
 split across two reads is still seen; an unlisted media type, an
 unknown encoding or a partial (ranged) body passes unscanned. A masked
 or streamed compressed body is forwarded decoded (the encoding header
-is removed); a streamed body loses its content length. Blocking a
+is removed); a streamed body loses its content length. Because the
+decoded bytes are what the other side receives, a streamed decode is
+also bounded by `max_decompression_ratio`: past 8 MiB decoded, a body
+that keeps expanding beyond that multiple of its compressed size has
+its transfer cut, so a compression bomb small enough to pass
+`max_body_bytes` cannot be amplified through the proxy. Blocking a
 streamed body cuts the transfer at the finding, since the head of the
 message has already been forwarded. Masking rewrites the value in place (`************1111`,
 `a***@example.com`, the first eight characters of a token) and updates
@@ -2005,6 +2013,7 @@ or `api_key` with a value; requests only).
 | `*.types` | list | text, JSON, XML, form, JavaScript types | Body media types scanned, without parameters |
 | `*.max_bytes` | int | `1048576` | Body buffered and scanned whole per direction (1 to 64 MiB); larger bodies are streamed |
 | `*.max_decoded_bytes` | int | 4 × `max_bytes` | A compressed body that decodes to more than this is streamed instead (up to 1 GiB) |
+| `*.max_decompression_ratio` | int | `100` | A streamed decode is cut (the transfer ends in an error) once more than 8 MiB has been decoded and the decoded size passes this multiple of the compressed bytes read. A decoded body is forwarded decoded, so without this bound a body that fits under `max_body_bytes` could become an unbounded plaintext stream toward the upstream or the client (2 to 100000) |
 | `*.encoded` | `scan`, `skip` | `scan` | Decode `gzip`, `deflate`, `br` and `zstd` bodies for scanning, or leave compressed bodies unscanned |
 | `*.oversize` | `stream`, `skip` | `stream` | Scan bodies larger than `max_bytes` as they flow, or leave them unscanned |
 | `*.ignore_headers` | list | request: `Authorization`, `Cookie`, `X-Api-Key`, `Proxy-Authorization`; response: `Set-Cookie` | Headers never scanned or masked |

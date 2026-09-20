@@ -131,6 +131,41 @@ func TestCertificateTransparency(t *testing.T) {
 	if st := ctCheck(ca.Cert, nil, nil, 1); st.OK || !strings.Contains(st.Error, "0 embedded") {
 		t.Fatalf("no scts: %+v", st)
 	}
+	// Two timestamps from the same log are one witness. A requirement of
+	// two logs must not be satisfied by one log signing twice, or a
+	// single compromised or colluding log could hide a mis-issued
+	// certificate on its own.
+	ext.Value = sctList(real, real)
+	dup := reissue(t, ca, first, ext)
+	st = ctCheck(dup, ca.Cert, logs, 2)
+	if st.Verified != 2 || st.Logs != 1 {
+		t.Fatalf("duplicate log counting: %+v", st)
+	}
+	if st.OK || !strings.Contains(st.Error, "1 distinct") {
+		t.Fatalf("one log satisfied a requirement of two: %+v", st)
+	}
+	// The same certificate with a timestamp from a second, independent
+	// log does satisfy it.
+	logKey2, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	pub2, _ := x509.MarshalPKIXPublicKey(&logKey2.PublicKey)
+	logID2 := sha256.Sum256(pub2)
+	listJSON2, _ := json.Marshal(map[string]any{"operators": []any{map[string]any{"name": "test", "logs": []any{
+		map[string]any{"log_id": base64.StdEncoding.EncodeToString(logID[:]), "key": base64.StdEncoding.EncodeToString(pub)},
+		map[string]any{"log_id": base64.StdEncoding.EncodeToString(logID2[:]), "key": base64.StdEncoding.EncodeToString(pub2)}}}}})
+	logs2, err := ParseLogList(listJSON2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := buildSCT(t, logKey2, logID2, first, ca.Cert, ts)
+	ext.Value = sctList(real, second)
+	two := reissue(t, ca, first, ext)
+	if st := ctCheck(two, ca.Cert, logs2, 2); !st.OK || st.Logs != 2 {
+		t.Fatalf("two independent logs: %+v", st)
+	}
+	// Presence-only counting (no log list) is distinct by log too.
+	if st := ctCheck(dup, ca.Cert, nil, 2); st.OK || !strings.Contains(st.Error, "1 distinct") {
+		t.Fatalf("presence policy counted one log twice: %+v", st)
+	}
 	rl := &Reloadable{cfgs: []config.Certificate{{CertFile: certPath, KeyFile: keyPath}}, ct: &config.CT{Require: 2, Enforce: true}}
 	if err := rl.Load(); err == nil || !strings.Contains(err.Error(), "certificate transparency") {
 		t.Fatalf("enforce: %v", err)

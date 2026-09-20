@@ -13,6 +13,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
@@ -76,6 +77,9 @@ func (t *tcpServer) serve() {
 			defer t.wg.Done()
 			defer t.open.Add(-1)
 			defer t.untrack(c)
+			// Registered last, so it unwinds first: a panic parsing a
+			// client's first bytes ends this connection, not the process.
+			defer safe.Guard("layer 4 connection")
 			t.handle(c)
 		}()
 	}

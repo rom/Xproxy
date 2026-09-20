@@ -413,8 +413,11 @@ func TestGatewayAPI(t *testing.T) {
 	raw := map[string]any{"items": []any{
 		map[string]any{"metadata": map[string]any{"name": "edge", "namespace": "infra"},
 			"spec": map[string]any{"gatewayClassName": "xproxy", "listeners": []any{
+				// A shared gateway must say so: without allowedRoutes only
+				// its own namespace may attach (Gateway API default Same).
 				map[string]any{"name": "https", "hostname": "*.example.com", "port": 443, "protocol": "HTTPS",
-					"tls": map[string]any{"certificateRefs": []any{map[string]any{"name": "wild-tls"}}}},
+					"allowedRoutes": map[string]any{"namespaces": map[string]any{"from": "All"}},
+					"tls":           map[string]any{"certificateRefs": []any{map[string]any{"name": "wild-tls"}}}},
 			}}},
 		map[string]any{"metadata": map[string]any{"name": "other", "namespace": "infra"}, "spec": map[string]any{"gatewayClassName": "nginx"}},
 	}}

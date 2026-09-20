@@ -222,7 +222,7 @@ absolute path
 T}	T{
 required
 T}	T{
-Master keyring,\: created with mode \fB0600\fR when missing. Deploy the same file to every node;\: rotate the master with \fBxproxyctl rotate\-\:secret\fR (the kept keys still open tickets sealed under the old master for one more epoch)
+Master keyring,\: created with mode \fB0600\fR when missing;\: a keyring readable by other accounts,\: or writable by its group,\: is refused at load (\fB0600\fR and \fB0640\fR are accepted). Deploy the same file to every node;\: rotate the master with \fBxproxyctl rotate\-\:secret\fR (the kept keys still open tickets sealed under the old master for one more epoch)
 T}
 T{
 \fBrotate\fR
@@ -4053,7 +4053,7 @@ T}
 .PP
 The OTLP exporter sends the same families as OTLP/HTTP with JSON encoding: counters as cumulative monotonic sums since process start, gauges as gauges, histograms as cumulative explicit bucket histograms; labels become data point attributes. \fBGET /v1/otlp\fR and \fBxproxyctl otlp\fR show pushes, failures, the last error and the size of the last request.
 .PP
-Exposed families: \fBxproxy_requests_total\fR, \fBxproxy_responses_total{class}\fR, \fBxproxy_denied_total{reason}\fR, \fBxproxy_bytes_in_total\fR, \fBxproxy_bytes_out_total\fR, \fBxproxy_waf_detected_total\fR, \fBxproxy_upstream_errors_total\fR, \fBxproxy_upstream_timeouts_total\fR, \fBxproxy_upstream_no_healthy_total\fR, \fBxproxy_client_aborts_total\fR, \fBxproxy_connections_rejected_total\fR, \fBxproxy_reloads_total{result}\fR, \fBxproxy_bans_total\fR, \fBxproxy_challenges_total{result}\fR (\fBissued\fR, \fBpassed\fR, \fBfailed\fR, \fBcaptcha_passed\fR), \fBxproxy_sensitive_findings_total{kind}\fR, \fBxproxy_sensitive_messages_total{direction,outcome}\fR, \fBxproxy_account_actions_total{class,action}\fR, \fBxproxy_account_events_total\fR, \fBxproxy_account_blocks_total\fR, \fBxproxy_account_campaigns_total\fR, \fBxproxy_account_disposable_total\fR, \fBxproxy_account_blocks_active\fR, \fBxproxy_log_sent_total{sink}\fR, \fBxproxy_log_dropped_total{sink}\fR, \fBxproxy_connections_open\fR, \fBxproxy_requests_in_flight\fR, \fBxproxy_bans_active\fR, \fBxproxy_load_level\fR, \fBxproxy_upstream_latency_seconds\fR, \fBxproxy_shedding{class}\fR, \fBxproxy_cluster_peers\fR, \fBxproxy_cluster_peers_connected\fR, \fBxproxy_cluster_messages_total{direction,type}\fR, \fBxproxy_cluster_rejected_total\fR, \fBxproxy_request_duration_seconds\fR (histogram), \fBxproxy_upstream_ttfb_seconds\fR (histogram), \fBxproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}\fR, \fBxproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}\fR, \fBxproxy_route_requests_total{route,outcome}\fR, \fBxproxy_build_info\fR, \fBxproxy_uptime_seconds\fR, \fBxproxy_config_generation\fR.
+Exposed families: \fBxproxy_requests_total\fR, \fBxproxy_responses_total{class}\fR, \fBxproxy_denied_total{reason}\fR, \fBxproxy_bytes_in_total\fR, \fBxproxy_bytes_out_total\fR, \fBxproxy_waf_detected_total\fR, \fBxproxy_upstream_errors_total\fR, \fBxproxy_upstream_timeouts_total\fR, \fBxproxy_upstream_no_healthy_total\fR, \fBxproxy_client_aborts_total\fR, \fBxproxy_connections_rejected_total\fR, \fBxproxy_reloads_total{result}\fR, \fBxproxy_bans_total\fR, \fBxproxy_challenges_total{result}\fR (\fBissued\fR, \fBpassed\fR, \fBfailed\fR, \fBcaptcha_passed\fR), \fBxproxy_sensitive_findings_total{kind}\fR, \fBxproxy_sensitive_messages_total{direction,outcome}\fR, \fBxproxy_account_actions_total{class,action}\fR, \fBxproxy_account_events_total\fR, \fBxproxy_account_blocks_total\fR, \fBxproxy_account_campaigns_total\fR, \fBxproxy_account_disposable_total\fR, \fBxproxy_account_blocks_active\fR, \fBxproxy_log_sent_total{sink}\fR, \fBxproxy_log_dropped_total{sink}\fR, \fBxproxy_connections_open\fR, \fBxproxy_requests_in_flight\fR, \fBxproxy_bans_active\fR, \fBxproxy_load_level\fR, \fBxproxy_upstream_latency_seconds\fR, \fBxproxy_shedding{class}\fR, \fBxproxy_cluster_peers\fR, \fBxproxy_cluster_peers_connected\fR, \fBxproxy_cluster_messages_total{direction,type}\fR, \fBxproxy_cluster_rejected_total\fR, \fBxproxy_request_duration_seconds\fR (histogram), \fBxproxy_upstream_ttfb_seconds\fR (histogram), \fBxproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}\fR, \fBxproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}\fR, \fBxproxy_route_requests_total{route,outcome}\fR, \fBxproxy_build_info\fR, \fBxproxy_uptime_seconds\fR, \fBxproxy_config_generation\fR, \fBxproxy_panics_total\fR (panics contained on a connection or datagram goroutine; zero in a healthy process, and anything else is a bug worth a report).
 .PP
 Series (per\-second rates for counters, current values for gauges): \fBrequests\fR, \fBresponses_2xx\fR, \fBresponses_4xx\fR, \fBresponses_5xx\fR, \fBdenied\fR, \fBshed\fR, \fBbytes_in\fR, \fBbytes_out\fR, \fBupstream_errors\fR, \fBopen_connections\fR, \fBin_flight\fR, \fBload_level\fR, \fBupstream_latency_ms\fR, \fBbans_active\fR, \fBcluster_connected\fR.
 .SH "api_inventory"
@@ -7318,14 +7318,14 @@ T}
 .TE
 .SS "Kind \fBsensitive_data\fR"
 .PP
-Detects personal and secret data in requests and responses and, per direction, logs the findings, masks them or blocks the message. The request phase scans the query string (raw and decoded, plus parameter names that carry credentials), header values and the body; the response phase scans header values and the body. Bodies of a listed media type are buffered up to \fBmax_bytes\fR and scanned whole; \fBgzip\fR, \fBdeflate\fR, \fBbr\fR and \fBzstd\fR bodies are decoded first (up to \fBmax_decoded_bytes\fR); a body larger than that is streamed through the scanner as it flows, with 4 KiB held back between reads so a value split across two reads is still seen; an unlisted media type, an unknown encoding or a partial (ranged) body passes unscanned. A masked or streamed compressed body is forwarded decoded (the encoding header is removed); a streamed body loses its content length. Blocking a streamed body cuts the transfer at the finding, since the head of the message has already been forwarded. Masking rewrites the value in place (\fB************1111\fR, \fBa***@example.com\fR, the first eight characters of a token) and updates \fBContent\-Length\fR; blocking answers \fBblock_status\fR with reason \fBsensitive_data\fR, a detail \fBresponse:card,email\fR and a JSON problem naming the kinds found, never the values. The access log carries \fBsensitive_types\fR, \fBsensitive_count\fR and \fBsensitive_where\fR for every message with a finding, in every mode; blocks count in \fBdenied_sensitive_data\fR, findings and message outcomes in the \fBxproxy_sensitive_*\fR metric families.
+Detects personal and secret data in requests and responses and, per direction, logs the findings, masks them or blocks the message. The request phase scans the query string (raw and decoded, plus parameter names that carry credentials), header values and the body; the response phase scans header values and the body. Bodies of a listed media type are buffered up to \fBmax_bytes\fR and scanned whole; \fBgzip\fR, \fBdeflate\fR, \fBbr\fR and \fBzstd\fR bodies are decoded first (up to \fBmax_decoded_bytes\fR); a body larger than that is streamed through the scanner as it flows, with 4 KiB held back between reads so a value split across two reads is still seen; an unlisted media type, an unknown encoding or a partial (ranged) body passes unscanned. A masked or streamed compressed body is forwarded decoded (the encoding header is removed); a streamed body loses its content length. Because the decoded bytes are what the other side receives, a streamed decode is also bounded by \fBmax_decompression_ratio\fR: past 8 MiB decoded, a body that keeps expanding beyond that multiple of its compressed size has its transfer cut, so a compression bomb small enough to pass \fBmax_body_bytes\fR cannot be amplified through the proxy. Blocking a streamed body cuts the transfer at the finding, since the head of the message has already been forwarded. Masking rewrites the value in place (\fB************1111\fR, \fBa***@example.com\fR, the first eight characters of a token) and updates \fBContent\-Length\fR; blocking answers \fBblock_status\fR with reason \fBsensitive_data\fR, a detail \fBresponse:card,email\fR and a JSON problem naming the kinds found, never the values. The access log carries \fBsensitive_types\fR, \fBsensitive_count\fR and \fBsensitive_where\fR for every message with a finding, in every mode; blocks count in \fBdenied_sensitive_data\fR, findings and message outcomes in the \fBxproxy_sensitive_*\fR metric families.
 .PP
 Built\-in detectors: \fBcard\fR (Luhn checked payment cards), \fBpersonnummer\fR (Swedish personal and coordination numbers with a valid date and checksum), \fBiban\fR (mod 97), \fBssn_us\fR, \fBemail\fR, \fBjwt\fR (three base64url parts with a JSON header), \fBprivate_key\fR (PEM headers), \fBapi_keys\fR (AWS, Google, GitHub, Slack, Stripe and GitLab formats) and \fBpassword_query\fR (query parameter names such as \fBpassword\fR, \fBtoken\fR or \fBapi_key\fR with a value; requests only).
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.8i) lbw(1.5i) lbx
-lw(1.0i) lw(0.8i) lw(1.5i) lx.
+lbw(1.5i) lbw(0.8i) lbw(1.5i) lbx
+lw(1.5i) lw(0.8i) lw(1.5i) lx.
 T{
 Option
 T}	T{
@@ -7424,6 +7424,15 @@ T}	T{
 4 \[u00D7] \fBmax_\:bytes\fR
 T}	T{
 A compressed body that decodes to more than this is streamed instead (up to 1 GiB)
+T}
+T{
+\fB*.\:max_\:decompression_\:ratio\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+A streamed decode is cut (the transfer ends in an error) once more than 8 MiB has been decoded and the decoded size passes this multiple of the compressed bytes read. A decoded body is forwarded decoded,\: so without this bound a body that fits under \fBmax_\:body_\:bytes\fR could become an unbounded plaintext stream toward the upstream or the client (2 to 100000)
 T}
 T{
 \fB*.\:encoded\fR

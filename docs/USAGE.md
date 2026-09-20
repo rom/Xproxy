@@ -2586,6 +2586,17 @@ Roles:
 | `viewer` | See every screen: overview, upstreams, routes, WAF, bans, graphs, cluster, certificates, subsystems, history, the configuration file and the logs |
 | `operator` | Everything a viewer may, plus ban and unban, reload, reload certificates, reopen logs, renew certificates, reset the WAF statistics, roll back to a recorded configuration, edit and save the configuration file, restart the data plane |
 
+Revocation takes effect while the GUI runs. The users file is the
+authority, not a copy read at start-up: it is re-read whenever it changes
+on disk, whoever changed it, and the account behind a session cookie is
+resolved again on every request. Deleting a user with `xproxy-admin user
+del` (or removing the line by hand, or from configuration management)
+ends their live sessions at their next request, and lowering a role takes
+their write access away at once. A users file that cannot be parsed keeps
+the previous set in force and is reported in the log, so a half-written
+file does not lock everyone out. Accounts from the identity provider are
+not in the users file, and the provider's claims decide their role.
+
 Screens:
 
 - **Overview**: version, uptime, generation, request and response counters,

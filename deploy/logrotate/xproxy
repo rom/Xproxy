@@ -5,6 +5,12 @@
     notifempty
     compress
     delaycompress
+    # The log directory belongs to the xproxy user, which is also the user
+    # the internet-facing data plane runs as. Without su, logrotate would
+    # rename, create and compress inside it as root, and a compromised data
+    # plane could have root follow a symlink it planted there. su drops to
+    # the owning user for the whole stanza, the postrotate script included.
+    su xproxy xproxy
     create 0640 xproxy xproxy
     sharedscripts
     postrotate

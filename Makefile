@@ -6,11 +6,22 @@
 GO        ?= go
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-DATE      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+# The build date comes from the commit, not the wall clock, so two builds
+# of the same revision with the same toolchain produce the same bytes and
+# the checksums over a release can be reproduced independently.
+DATE      ?= $(shell date -u -d "@$${SOURCE_DATE_EPOCH:-$$(git log -1 --format=%ct 2>/dev/null || echo 0)}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 1970-01-01T00:00:00Z)
 PKG        = github.com/rom/xproxy/internal/version
 LDFLAGS    = -s -w -buildid= -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).BuildDate=$(DATE)
-GOMODFLAG ?= -mod=mod
-GOFLAGS    = -trimpath $(GOMODFLAG)
+# readonly: a build never rewrites go.mod or go.sum, so a tampered import
+# fails the build instead of silently fetching and recording a new module.
+GOMODFLAG ?= -mod=readonly
+# coraza ships an @inspectFile operator that runs an external program
+# (os/exec) on a request variable, and a @validateSchema operator that
+# pulls in an unmaintained i18n dependency chain. Neither is used by the
+# CRS or by any xproxy profile; both are compiled out so a rule file can
+# never reach them.
+CORAZATAGS = coraza.disabled_operators.inspectFile,coraza.disabled_operators.validateSchema
+GOFLAGS    = -trimpath $(GOMODFLAG) -tags $(CORAZATAGS)
 
 # Package version: VERSION file plus a git suffix unless HEAD is tagged.
 BASE_VERSION := $(shell cat VERSION)
@@ -20,7 +31,7 @@ RPMDIR       ?= $(CURDIR)/rpmbuild
 
 BIN = bin
 
-.PHONY: all build test test-race cover cover-gate mutate fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint scale bench load release build-darwin dist-darwin install-macos vet-all docs
+.PHONY: all no-binaries build test test-race cover cover-gate mutate fuzz lint vet fmt check clean install selinux sbom vuln dist srpm rpm rpmlint scale bench load release build-darwin dist-darwin install-macos vet-all docs
 
 all: build
 
@@ -35,10 +46,10 @@ build:
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-fleet ./cmd/xproxy-fleet
 
 test:
-	$(GO) test -count=1 ./...
+	$(GO) test -count=1 -tags $(CORAZATAGS) ./...
 
 test-race:
-	$(GO) test -count=1 -race ./...
+	$(GO) test -count=1 -race -tags $(CORAZATAGS) ./...
 
 # Coverage of every internal package by the whole suite (integration tests
 # count towards the packages they exercise), under the race detector.
@@ -94,14 +105,22 @@ load: build
 	@$(BIN)/xproxyctl -socket /tmp/xproxy-load/mgmt.sock stats | head -20 || true
 	@kill $$(cat /tmp/xproxy-load/xproxy.pid) $$(cat /tmp/xproxy-load/backend.pid) 2>/dev/null || true
 
+# Refuse a compiled artefact tracked in git: a binary blob passes review
+# unread, ships in the source tarball through `git archive`, and cannot be
+# reproduced from the tree.
+no-binaries:
+	@bad=$$(git ls-files -z | xargs -0 -r file --mime-type -- 2>/dev/null | \
+	  grep -E ':[[:space:]]+application/(x-(executable|sharedlib|pie-executable|mach-binary|archive)|vnd\.microsoft\.portable-executable)' || true); \
+	if [ -n "$$bad" ]; then echo "tracked binaries:"; echo "$$bad"; exit 1; fi
+
 vet:
-	$(GO) vet ./...
+	$(GO) vet -tags $(CORAZATAGS) ./...
 
 fmt:
 	@test -z "$$(gofmt -l . | tee /dev/stderr)" || (echo "gofmt: files need formatting" && exit 1)
 
 lint:
-	golangci-lint run ./...
+	golangci-lint run --build-tags $(CORAZATAGS) ./...
 
 vuln:
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
@@ -146,13 +165,13 @@ install-macos:
 
 # Type check every supported target.
 vet-all: vet
-	GOOS=linux GOARCH=arm64 $(GO) vet ./...
-	GOOS=darwin GOARCH=arm64 $(GO) vet ./...
-	GOOS=darwin GOARCH=amd64 $(GO) vet ./...
+	GOOS=linux GOARCH=arm64 $(GO) vet -tags $(CORAZATAGS) ./...
+	GOOS=darwin GOARCH=arm64 $(GO) vet -tags $(CORAZATAGS) ./...
+	GOOS=darwin GOARCH=amd64 $(GO) vet -tags $(CORAZATAGS) ./...
 
 release: build dist
 	rm -rf $(DIST) && mkdir -p $(DIST)/$(RELNAME)
-	cp $(BIN)/xproxy $(BIN)/xproxyctl $(BIN)/xproxy-admin LICENSE README.md VERSION $(DIST)/$(RELNAME)/
+	cp $(BIN)/xproxy $(BIN)/xproxyctl $(BIN)/xproxy-admin $(BIN)/xproxy-fleet LICENSE README.md VERSION $(DIST)/$(RELNAME)/
 	cp -r deploy docs $(DIST)/$(RELNAME)/
 	tar -C $(DIST) -czf $(DIST)/$(RELNAME).tar.gz $(RELNAME) && rm -rf $(DIST)/$(RELNAME)
 	$(MAKE) dist-darwin
@@ -165,7 +184,7 @@ release: build dist
 	@if [ -n "$(SIGN_KEY)" ]; then ssh-keygen -Y sign -f $(SIGN_KEY) -n xproxy-release $(DIST)/SHA256SUMS && echo "signed $(DIST)/SHA256SUMS.sig"; fi
 	@ls -l $(DIST)
 
-check: fmt vet-all test-race lint
+check: fmt no-binaries vet-all test-race lint
 
 # Generated documentation: the configuration JSON schema from the Go
 # types and the manual pages from docs/man/*.md and docs/CONFIG.md. Tests

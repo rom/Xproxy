@@ -317,11 +317,13 @@ func (c *Controller) fetch(ctx context.Context) (Input, error) {
 				continue
 			}
 			for _, ref := range l.TLS.CertificateRefs {
-				ns := ref.Namespace
-				if ns == "" {
-					ns = g.Metadata.Namespace
+				if ref.Namespace != "" && ref.Namespace != g.Metadata.Namespace {
+					// Refused in translation; never read it either, so the
+					// controller's credentials are not used to pull another
+					// namespace's secret into this process.
+					continue
 				}
-				want(ns, ref.Name)
+				want(g.Metadata.Namespace, ref.Name)
 			}
 		}
 	}

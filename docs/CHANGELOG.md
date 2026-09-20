@@ -8,6 +8,82 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ### Security (1.3)
 
+Findings of a third audit round, taken from disciplines the first two did
+not use (supply chain and build reproducibility, cryptographic
+engineering, panic reachability, abuse of the security features
+themselves, and the operator and tenant privilege boundaries), all with
+regression tests:
+
+- A malformed DNS record can no longer end the process. `ParseMessage`
+  runs on the listener's own goroutine, where a panic is fatal to every
+  connection the proxy holds: a 31-byte UDP datagram whose NSEC rdata is
+  shorter than the name it contains sliced backwards and panicked
+  (CWE-248, denial of service from one packet). RRSIG, NSEC and SOA
+  records whose contents run past their own rdata are errors now, names
+  that cannot be repacked are errors instead of silently truncated
+  rdata, and an NSEC3 set with no records is no longer indexed. A
+  ClientHello body of exactly 34 bytes read one byte past its end on the
+  QUIC and layer 4 listeners. As defence in depth, the DNS, layer 4 and
+  QUIC per-flow goroutines now contain a panic to that one flow, count it
+  in `xproxy_panics_total` and log it with its stack: the counter is zero
+  in a healthy process, and anything else is a bug to fix.
+- The `sensitive_data` filter bounded a compressed body by its compressed
+  size, so a 256 KiB gzip body expanded to 8 GiB in the proxy: about
+  32,000 to 1, enough for one request to exhaust a node (CWE-409). The
+  new per-phase `max_decompression_ratio` (default 100) stops the decode
+  as soon as the expansion passes it. `docs/THREAT_MODEL.md` and
+  `docs/SECURITY.md` said the proxy never decompresses response bodies,
+  which stopped being true when streamed decoding arrived; both now
+  describe what the code does.
+- Gateway API: an HTTPRoute in any namespace attached itself to any
+  Gateway it named, and a listener's `certificateRef` was fetched from
+  any namespace it named. In a shared cluster that is one tenant taking
+  over another's hostname, or reading another namespace's TLS private key
+  through the controller's own credentials (CWE-862). Attachment now
+  honours `allowedRoutes.namespaces` (`Same` by default, as the
+  specification says), a cross-namespace `certificateRef` is refused
+  rather than silently resolved, and the controller no longer prefetches
+  secrets outside the Gateway's namespace.
+- Certificate Transparency: a requirement of N signed certificate
+  timestamps counted timestamps, not logs, so one compromised or
+  colluding log signing N times satisfied the whole policy. Distinct logs
+  are counted now, and the status carries `logs` beside `verified`.
+- The keyring that signs challenge, affinity and OIDC cookies is refused
+  when other accounts can read it or its group can write it, the same
+  rule the proxy already applied to password and client-secret files; a
+  keyring line too long for the scanner is an error instead of silently
+  dropping every key after it, which would have broken cookies sealed
+  under those keys with nothing in the logs.
+- The admin GUI reads its users file again when it changes and checks the
+  account behind a session cookie on every request. Removing a user or
+  lowering their role took effect only after a restart, and a live
+  session kept the role it was created with for its whole life, so a
+  revoked operator kept full access (CWE-613). Sessions from the identity
+  provider are unaffected: the provider owns those accounts.
+- The proxy's own defences can no longer be turned against a client.
+  Failing a challenge because the proxy's verification table was full, or
+  because a nonce was already spent (a double-submitted form, a reloaded
+  page), counted towards a ban; only faults that are actually the
+  client's do now. A honeypot hit a browser made because another site
+  told it to (a prefetch, a cross-site sub-resource, a planted link) no
+  longer marks or bans the person behind the browser, and decoys carry
+  `X-Robots-Tag: noindex, nofollow`. The No default `account_guard`
+  block is keyed on the account any more. A count keyed on the account
+  belongs to the person being attacked, not to the attacker, because
+  anyone can type someone else's name, so a handful of failures against a
+  chosen name used to block its owner. Account-keyed counts still raise
+  the ladder as far as a challenge, which the real owner can pass;
+  blocks key on the address, the address and account pair, and the
+  device.
+- Build and packaging: release builds derive their date from
+  `SOURCE_DATE_EPOCH` or the commit, build with `-mod=readonly`, and
+  disable the coraza operators that shell out (`inspectFile`) or pull the
+  unmaintained schema and i18n chain (`validateSchema`); `make check`
+  refuses a tracked binary, and a 15 MB `xproxy-fleet` executable that
+  had been committed is gone. The logrotate fragment declares
+  `su xproxy xproxy`, without which logrotate refuses to rotate a
+  directory it does not own, and the logs stop being rotated silently.
+
 Findings of a second audit round (data flow, protocol differentials,
 authentication and cryptography, concurrency and resource bounds, and an
 adversarial re-check of the first round), all with regression tests:

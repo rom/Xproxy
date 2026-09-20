@@ -122,6 +122,9 @@ func New(o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	users.Warn = func(err error) {
+		o.Log.Error("users file could not be re-read; the previous set stays in force", "error", err.Error())
+	}
 	s := &Server{
 		o:        o,
 		users:    users,
@@ -406,9 +409,31 @@ func (s *Server) setCookie(w http.ResponseWriter, tok string, maxAge int) {
 }
 
 // authenticate resolves the session cookie, or logs a client certificate in.
+//
+// A cookie is not a standing grant: the account behind it is looked up
+// again on every request, so deleting a user or lowering their role ends
+// what they can do now rather than when their session happens to expire.
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (Session, bool) {
 	if c, err := r.Cookie(s.cookieName()); err == nil {
 		if sess, ok := s.sessions.get(c.Value); ok {
+			if sess.Via == "oidc" {
+				// The identity provider owns these accounts and their
+				// roles; the users file says nothing about them.
+				return sess, true
+			}
+			u, live := s.users.Lookup(sess.User)
+			if !live {
+				s.sessions.drop(c.Value)
+				s.setCookie(w, "", -1)
+				s.audit(r, sess, "session_revoked", "reason", "user removed")
+				return Session{}, false
+			}
+			if u.Role != sess.Role {
+				// The role travels with the account, never with the
+				// session: a demoted operator loses write access at once.
+				sess.Role = s.sessions.setRole(c.Value, u.Role)
+				s.audit(r, sess, "session_role_changed", "role", string(u.Role))
+			}
 			return sess, true
 		}
 	}

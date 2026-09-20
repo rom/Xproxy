@@ -230,8 +230,13 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				st.denied = "challenge:" + reason
 				s.logs.SecurityEvent(r.Context(), "challenge_failed", reason,
-					"request_id", st.id, "client_ip", st.clientIP.String(), "user_agent", r.UserAgent())
-				if bl := s.bans.Load(); bl != nil {
+					"request_id", st.id, "client_ip", st.clientIP.String(), "user_agent", r.UserAgent(),
+					"client_fault", challenge.ClientFault(reason))
+				// Only the client's own mistakes feed the ban triggers; a
+				// refusal the proxy caused (a full replay table) would
+				// otherwise ban every client whose correct solve it just
+				// refused.
+				if bl := s.bans.Load(); bl != nil && challenge.ClientFault(reason) {
 					bl.ObserveClient(st.clientIP, st.ja4, "challenge")
 				}
 			}

@@ -48,9 +48,18 @@ type sctRaw struct {
 }
 
 // CTStatus summarises a certificate's SCTs for the management API.
+//
+// Logs, not Verified, is what the policy is measured against. A
+// requirement of N signed certificate timestamps means N independent
+// logs: that is what makes a mis-issued certificate visible to somebody
+// who is not the issuer. Several timestamps from one log are one
+// witness, so counting them separately would let a single compromised or
+// colluding log satisfy the whole requirement on its own.
 type CTStatus struct {
-	Embedded int    `json:"embedded"`
-	Verified int    `json:"verified"`
+	Embedded int `json:"embedded"`
+	Verified int `json:"verified"`
+	// Logs is the number of distinct logs among the verified timestamps.
+	Logs     int    `json:"logs"`
 	Required int    `json:"required"`
 	OK       bool   `json:"ok"`
 	Error    string `json:"error,omitempty"`
@@ -334,20 +343,27 @@ func precertTBS(leaf *x509.Certificate) ([]byte, error) {
 func ctCheck(leaf, issuer *x509.Certificate, logs *LogList, required int) CTStatus {
 	scts, err := VerifySCTs(leaf, issuer, logs)
 	st := CTStatus{Embedded: len(scts), Required: required, SCTs: scts}
+	verifiedLogs := map[[32]byte]bool{}
+	embeddedLogs := map[[32]byte]bool{}
 	for _, s := range scts {
+		embeddedLogs[s.raw.logID] = true
 		if s.Verified {
 			st.Verified++
+			verifiedLogs[s.raw.logID] = true
 		}
 	}
+	st.Logs = len(verifiedLogs)
 	switch {
 	case err != nil:
 		st.Error = err.Error()
 	case required == 0:
 		st.OK = true
-	case logs != nil && issuer != nil && st.Verified < required:
-		st.Error = fmt.Sprintf("%d of %d embedded scts verify against the log list, %d required", st.Verified, st.Embedded, required)
-	case (logs == nil || issuer == nil) && st.Embedded < required:
-		st.Error = fmt.Sprintf("%d embedded scts, %d required", st.Embedded, required)
+	case logs != nil && issuer != nil && st.Logs < required:
+		st.Error = fmt.Sprintf("%d of %d embedded scts verify against the log list, from %d distinct logs, %d required", st.Verified, st.Embedded, st.Logs, required)
+	case (logs == nil || issuer == nil) && len(embeddedLogs) < required:
+		// Without the log list or the issuer nothing can be verified, so
+		// only presence counts — but still one witness per log.
+		st.Error = fmt.Sprintf("%d embedded scts from %d distinct logs, %d required", st.Embedded, len(embeddedLogs), required)
 	default:
 		st.OK = true
 	}
