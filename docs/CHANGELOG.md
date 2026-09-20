@@ -292,6 +292,16 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4)
 
+- A `Host` header could carry two spellings of one name. Unicode's
+  simple lower-case mapping sends U+0130 (Turkish dotted capital I) to
+  ASCII `i` and U+212A (Kelvin sign) to ASCII `k`, and the ASCII check
+  ran after the fold, so `İnternal.test` folded into
+  `internal.test` and became its routing key while the upstream read
+  the name the client sent. The same held for anything after the last
+  colon: `example.com:https` and `example.com:` were stripped to
+  `example.com`. Both are now refused — non-ASCII is rejected before
+  folding, and only a numeric port may follow the name — which is the
+  rule the bracketed IPv6 form already enforced.
 - A JSON Schema `enum` that lists `null` refused `null`. The null check
   ran before the enum and had no way to consult it, so a schema that
   explicitly admits a null field rejected one. The null branch now asks

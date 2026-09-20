@@ -110,6 +110,19 @@ func Host(h string) string {
 	if h == "" {
 		return ""
 	}
+	// Reject non-ASCII before folding, not after. Unicode's simple
+	// lower-case mapping sends U+0130 (Turkish dotted capital I) to
+	// "i" and U+212A (Kelvin sign) to "k", so "\u0130nternal.test"
+	// and "\u212aeys.example.com" would fold into names made only of
+	// ASCII and pass the byte check below — a second spelling for a
+	// host, routed by the folded name while the upstream reads the
+	// one the client sent. An internationalised name travels as
+	// punycode, which is ASCII already.
+	for i := 0; i < len(h); i++ {
+		if h[i] >= 0x80 {
+			return ""
+		}
+	}
 	if strings.HasPrefix(h, "[") {
 		// IPv6 literal: after the bracket only an optional ":port" may
 		// follow, so "[::1]junk" cannot route as "[::1]" while the upstream
@@ -125,6 +138,14 @@ func Host(h string) string {
 		}
 		h = h[:end+1]
 	} else if i := strings.LastIndexByte(h, ':'); i >= 0 {
+		// Only a numeric port may follow the name. Stripping whatever
+		// came after the last colon would give "example.com:https" and
+		// "example.com:" the routing key of "example.com", which is
+		// the same second-spelling problem the bracketed branch above
+		// refuses.
+		if port := h[i+1:]; port == "" || strings.Trim(port, "0123456789") != "" {
+			return ""
+		}
 		h = h[:i]
 	}
 	h = strings.ToLower(strings.TrimSuffix(h, "."))
