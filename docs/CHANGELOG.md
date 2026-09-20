@@ -292,6 +292,14 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4)
 
+- The GeoIP metadata reader turned a NaN into a number. NaN compares
+  false against both ends of a range check, so the guard let it through
+  and the conversion produced an implementation-defined value that then
+  became a node count, a record size or an index. The range check now
+  asks whether the number is a number first. No database in the wild
+  carries one, and the counts are re-validated afterwards, so this was
+  latent rather than reachable — but it is the same defect the JSON
+  Schema coercion was fixed for.
 - A bearer token with a trailing newline verified as the token itself.
   Go's base64 decoder skips carriage returns and newlines, so
   `<token>\n` and `<token>` were one credential with two spellings —
