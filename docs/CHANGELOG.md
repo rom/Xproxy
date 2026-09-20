@@ -295,7 +295,7 @@ Open findings of the earlier rounds:
 A round of adversarial and robustness tests over the parsers, the
 protocol clients and the views, written from the outside in: what a
 client, a peer, a scanner, a certificate authority or a file on disk
-can put in front of each of them. Thirty-four packages gained a suite;
+can put in front of each of them. Thirty-six packages gained a suite;
 `docs/TESTS.md` lists every case. The findings each have their own
 entry above.
 
@@ -322,6 +322,11 @@ WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
 
+- `Keyring.All` and `Keyring.Keys` handed out the ring's own key
+  material rather than a copy, so a caller working in place would have
+  changed what the proxy signs with, and `Primary` panicked on a ring
+  with no keys. Both now copy, and the accessors answer for an empty or
+  nil ring.
 - A password verification whose caller had already gone away still took
   a slot and spent a full hash on an answer nobody would read. The
   select between the semaphore and the context picks either when both
