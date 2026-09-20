@@ -295,7 +295,7 @@ Open findings of the earlier rounds:
 A round of adversarial and robustness tests over the parsers, the
 protocol clients and the views, written from the outside in: what a
 client, a peer, a scanner, a certificate authority or a file on disk
-can put in front of each of them. Twenty-five packages gained a suite;
+can put in front of each of them. Twenty-six packages gained a suite;
 `docs/TESTS.md` lists every case. The findings each have their own
 entry above.
 
@@ -322,6 +322,24 @@ WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
 
+- The canonical form of a SOA record lowercased only its first name.
+  RFC 4034 section 6.2 requires both the MNAME and the RNAME to be
+  lowered before a signature is checked, and the helper stops at the
+  root label of the name it starts on, so a zone whose RNAME carries
+  any upper case letter had its SOA signature computed over the wrong
+  bytes. SOA records appear in every negative answer, so the effect was
+  a denial proof that could not be verified and a name that reads as
+  bogus.
+- `lowerName` sliced its input at an offset it had not checked. The
+  record types that reach it carry a fixed part before the name (a
+  preference, a priority and a port), and rdata shorter than that
+  fixed part — which is what a malformed or hostile answer holds —
+  panicked the goroutine reading the upstream's reply. It now returns
+  nothing to lower.
+- An RSA DNSKEY with an exponent of 0 or 1, or an even one, was
+  accepted by the key parser. Verification refused it afterwards, so
+  nothing was ever verified with it, but a key that cannot be a key is
+  refused where it is read.
 - `xproxyctl` printed what the daemon told it, byte for byte, including
   the control characters a terminal acts on. Most of what its tables
   carry came off the network — a ban target and its reason, an endpoint

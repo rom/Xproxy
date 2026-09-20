@@ -906,12 +906,17 @@ func parseRSAKey(b []byte) (*rsa.PublicKey, error) {
 		elen = int(binary.BigEndian.Uint16(b[1:]))
 		off = 3
 	}
-	if off+elen >= len(b) || elen > 4 {
+	if elen == 0 || off+elen >= len(b) || elen > 4 {
 		return nil, errors.New("rsa exponent")
 	}
 	e := new(big.Int).SetBytes(b[off : off+elen])
 	n := new(big.Int).SetBytes(b[off+elen:])
-	if n.BitLen() < 1024 || n.BitLen() > 4096 || !e.IsInt64() {
+	// A public exponent is odd and at least 3; 0 and 1 are not keys,
+	// and an even one cannot be a valid RSA exponent at all.
+	if !e.IsInt64() || e.Int64() < 3 || e.Bit(0) == 0 {
+		return nil, errors.New("rsa exponent")
+	}
+	if n.BitLen() < 1024 || n.BitLen() > 4096 {
 		return nil, errors.New("rsa modulus size")
 	}
 	return &rsa.PublicKey{N: n, E: int(e.Int64())}, nil

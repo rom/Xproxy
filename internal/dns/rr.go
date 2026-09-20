@@ -305,18 +305,31 @@ func canonicalRDataExact(typ uint16, data []byte) []byte {
 	case TypeSRV:
 		return append(append([]byte{}, data[:min(6, len(data))]...), lowerName(data, 6)...)
 	case TypeSOA:
-		// two names then 20 bytes of counters
+		// Two names then 20 bytes of counters. Both names are lowered:
+		// lowerName stops at the root label of the name it starts on, so
+		// the second one needs its own call — lowering only the first
+		// leaves a signature over a mixed case RNAME unverifiable.
 		n1 := nameLen(data, 0)
 		n2 := nameLen(data, n1)
+		if n1 == 0 || n1+n2 > len(data) {
+			return data
+		}
 		out := append([]byte{}, data...)
-		copy(out, lowerName(data[:n1+n2], 0))
+		copy(out, lowerName(data[:n1], 0))
+		copy(out[n1:], lowerName(data[:n1+n2], n1))
 		return out
 	}
 	return data
 }
 
 // lowerName lowercases the wire name starting at off (labels only).
+// An offset past the data is nothing to lower: rdata shorter than the
+// fixed part of its type is malformed, and slicing it would panic on
+// the goroutine reading an upstream's answer.
 func lowerName(data []byte, off int) []byte {
+	if off >= len(data) {
+		return nil
+	}
 	out := append([]byte{}, data[off:]...)
 	i := 0
 	for i < len(out) {
