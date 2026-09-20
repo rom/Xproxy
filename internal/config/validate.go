@@ -485,6 +485,7 @@ func (v *validator) server(s *Server) {
 		names[ln.Name] = true
 		if ln.Address == "" {
 			v.errf("%s.address: required", p)
+		} else if !v.hostPortOK(p+".address", ln.Address) { //nolint:revive // the helper reports
 		} else if _, port, err := net.SplitHostPort(ln.Address); err != nil {
 			v.errf("%s.address: %q: %v", p, ln.Address, err)
 		} else if addrs[ln.Address] && port != "0" {
@@ -1112,11 +1113,14 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 	for j, e := range u.Endpoints {
 		ep := fmt.Sprintf("%s.endpoints[%d]", p, j)
 		host, port, err := net.SplitHostPort(e.Address)
-		if err != nil || host == "" || port == "" {
+		pn, perr := strconv.Atoi(port)
+		switch {
+		case !v.hostPortOK(ep+".address", e.Address):
+		case err != nil || host == "" || port == "":
 			v.errf("%s.address: %q must be host:port", ep, e.Address)
-		} else if addrs[e.Address] {
+		case addrs[e.Address]:
 			v.errf("%s.address: duplicate %q", ep, e.Address)
-		} else if pn, err := strconv.Atoi(port); err != nil || pn < 1 || pn > 65535 {
+		case perr != nil || pn < 1 || pn > 65535:
 			v.errf("%s.address: bad port in %q", ep, e.Address)
 		}
 		addrs[e.Address] = true
@@ -1756,6 +1760,25 @@ func (v *validator) securityTxt(c *Config) {
 			v.errf("%s.comment: carriage returns are not allowed", p)
 		}
 	}
+}
+
+// hostPortOK reports whether addr is a plausible host:port and, when
+// it is not, records why. Whitespace is checked before the split
+// because net.SplitHostPort is happy with " 127.0.0.1:8080 ": it
+// separates on the last colon and never looks at the rest. A padded
+// address passes validation and then fails to bind at start, which is
+// the one place an operator cannot see it coming — on a reload the
+// listener is built after the configuration is accepted.
+func (v *validator) hostPortOK(path, addr string) bool {
+	if strings.TrimSpace(addr) != addr {
+		v.errf("%s: %q has leading or trailing whitespace", path, addr)
+		return false
+	}
+	if strings.ContainsAny(addr, " \t") {
+		v.errf("%s: %q contains a space", path, addr)
+		return false
+	}
+	return true
 }
 
 // hasControlByte reports a C0 control or DEL anywhere in s.

@@ -290,6 +290,15 @@ Open findings of the earlier rounds:
   `examples/security/honeypots.yaml` wires all of them with a ban
   trigger on the sweep.
 
+### Fixed (1.4)
+
+- A listener or endpoint address padded with whitespace
+  (`" 127.0.0.1:8080 "`) passed validation. `net.SplitHostPort`
+  separates on the last colon and never looks at the rest, so
+  `xproxy -validate` said OK for a configuration that then failed to
+  bind at start. Addresses with leading, trailing or embedded
+  whitespace are now a validation error, where the operator sees them.
+
 ### Changed (1.4)
 
 - Troubleshooting moved out of `docs/USAGE.md` into a document of its
