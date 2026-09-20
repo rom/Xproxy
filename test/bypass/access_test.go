@@ -97,3 +97,39 @@ func TestPositiveModelAndPatches(t *testing.T) {
 	status, _ := h.do(h.req("GET", "/api/items?id=7&q=shoes", "198.51.100.99", ""))
 	h.served("policy clean request", before, status)
 }
+
+// TestHostSpellings sends the same host written several ways. A route
+// is selected by an exact match on the normalised host, so every
+// spelling that survives normalisation as a distinct string is a second
+// key for one host: it misses that host's routes and falls through to
+// whatever the deployment left as its catch-all, skipping the route's
+// access lists, authentication filters, WAF profile and limits.
+func TestHostSpellings(t *testing.T) {
+	h := start(t, "127.0.0.0/8")
+
+	// The admin route denies every address. Reaching it under the
+	// ordinary spelling and under the absolute form must be the same
+	// refusal, not two different outcomes.
+	for _, host := range []string{"app.test", "app.test.", "APP.TEST"} {
+		before := h.backend.hits.Load()
+		r := h.req("GET", "/admin", "203.0.113.9", "")
+		r.Host = host
+		status, _ := h.do(r)
+		h.denied("admin under Host "+host, before, status, 403)
+	}
+
+	// Text that is not a host name at all is refused outright. Before
+	// this, an extra dot produced its own routing key, so the request
+	// missed every route of app.test and was answered by the catch-all
+	// instead of by the route whose policy it was meant to pass.
+	for _, host := range []string{"app.test..", ".app.test", "app..test", "app.test..."} {
+		before := h.backend.hits.Load()
+		status := h.raw("GET /admin HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n")
+		if status != 400 {
+			t.Errorf("Host %q: status %d, want 400", host, status)
+		}
+		if h.backend.hits.Load() != before {
+			t.Errorf("Host %q: the backend saw the request", host)
+		}
+	}
+}

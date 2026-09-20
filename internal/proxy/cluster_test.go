@@ -113,7 +113,7 @@ func TestClusterSharesLimitsAndBans(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	marksB := b.HoneypotMarks()
-	if len(marksB) != 1 || marksB[0].Address != "203.0.113.50" || marksB[0].Route != "peer:a/wp" || time.Until(marksB[0].Expires) < 50*time.Minute {
+	if len(marksB) != 1 || marksB[0].Address != "203.0.113.50" || marksB[0].Route != "peer:node-a/wp" || time.Until(marksB[0].Expires) < 50*time.Minute {
 		t.Fatalf("mark did not reach B: %+v", marksB)
 	}
 	if !a.UnmarkHoneypot(mustAddr("203.0.113.50")) {

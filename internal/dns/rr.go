@@ -64,7 +64,13 @@ func ParseMessage(b []byte) (*Message, error) {
 	m.Question, m.QEnd = q, qEnd
 	off := qEnd
 	read := func(n uint16) ([]RR, error) {
-		out := make([]RR, 0, n)
+		// The counts come off the wire. The smallest record that can
+		// follow is twelve bytes (a two-byte compression pointer and a
+		// ten-byte fixed header), so a count larger than the remaining
+		// bytes can hold is a lie: allocating for it turns a 17-byte
+		// datagram into megabytes of zeroed memory, which is a hundred
+		// thousand to one amplification from one spoofable packet.
+		out := make([]RR, 0, min(int(n), (len(b)-off)/12+1))
 		for i := 0; i < int(n); i++ {
 			rr, next, err := parseRR(b, off)
 			if err != nil {
@@ -249,14 +255,18 @@ func readNameCase(b []byte, off int, keepCase bool) (string, int, error) {
 			if total += l + 1; total > maxNameLen {
 				return "", 0, ErrName
 			}
-			labels = append(labels, string(b[off:off+l]))
+			lab := string(b[off : off+l])
+			if !labelOK(lab) {
+				return "", 0, ErrName
+			}
+			labels = append(labels, lab)
 			off += l
 		}
 	}
 }
 
-// packNameCase packs a name as is (labels may contain dots only when
-// they came from the wire, which never happens for hostnames).
+// packNameCase packs a name as is. No label can contain a dot: the
+// decoder refuses one (see labelOK), so the join is reversible.
 func packNameCase(name string) ([]byte, error) { return packName(name) }
 
 // canonicalName lowercases a name (owner names are already lower case;

@@ -70,7 +70,13 @@ func cacheKey(rc *config.RouteCache, r *http.Request, host, path string) string 
 func (s *Server) serveCached(rw *responseWriter, r *http.Request, st *reqState, cr *compiledRoute, e *cache.Entry) {
 	h := rw.Header()
 	for k, vs := range e.Header {
-		h[k] = vs
+		// Clip the capacity. The entry is shared by every hit, and the
+		// response operations below end in Header.Add, which appends:
+		// with spare capacity that append writes into the entry's own
+		// backing array, so one client's expanded template value (a
+		// cookie, a certificate field, an address) lands in another
+		// client's response.
+		h[k] = vs[:len(vs):len(vs)]
 	}
 	cr.respOps.apply(h, &tvars{r: r, st: st})
 	now := time.Now()
@@ -157,8 +163,21 @@ func storable(rc *config.RouteCache, r *http.Request, resp *http.Response, maxOb
 	if ttl <= 0 {
 		return 0, false
 	}
+	// The lifetime comes from the upstream, so it needs the ceiling the
+	// configuration already has: validation refuses a route cache.ttl
+	// above a year, and an Expires header in the year 9999 or a
+	// max-age of 1e12 would otherwise make an entry permanent for the
+	// life of the process, so one bad answer never heals.
+	if ttl > maxCacheTTL {
+		ttl = maxCacheTTL
+	}
 	return ttl, true
 }
+
+// maxCacheTTL is the longest a cached response may live, whatever the
+// upstream asked for. It matches the bound the configuration validator
+// puts on routes[].cache.ttl.
+const maxCacheTTL = 366 * 24 * time.Hour
 
 // cachingBody buffers an upstream body as it streams to the client and
 // stores the entry when the body ends cleanly within the object bound.

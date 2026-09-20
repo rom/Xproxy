@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"net"
 	"strconv"
@@ -63,7 +64,7 @@ var leefStandard = map[string]string{
 
 // userKeys are the attributes that identify a user, first match wins
 // (the same order the access log text formats use).
-var userKeys = []string{"oidc_sub", "basic_user", "jwt_sub", "jwt_preferred_username", "api_key_id"}
+var userKeys = []string{"oidc_user", "oidc_sub", "auth_user", "jwt_sub", "jwt_preferred_username", "api_key"}
 
 // event is the record flattened for the formatters.
 type event struct {
@@ -185,7 +186,37 @@ func cefHeader(s string) string {
 func cefValue(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "=", "\\=")
-	return strings.NewReplacer("\r\n", "\\n", "\r", "\\n", "\n", "\\n").Replace(s)
+	s = strings.NewReplacer("\r\n", "\\n", "\r", "\\n", "\n", "\\n").Replace(s)
+	return escapeControls(s)
+}
+
+// escapeControls replaces the bytes that have no business in a log
+// record with a printable form. A newline is already handled by the
+// callers (it would forge a whole extra event); what is left is the
+// rest of C0 and DEL, which carry an escape sequence into an operator's
+// terminal or a collector's console, and NUL, which truncates the
+// record in collectors that treat it as a string terminator.
+func escapeControls(s string) string {
+	need := false
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c == 0x7f {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c == 0x7f {
+			fmt.Fprintf(&b, "\\x%02x", c)
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // cefLine renders the record as CEF:0.
@@ -257,8 +288,16 @@ func cefLine(m siemMeta, stream string, level slog.Level, rec slog.Record) []byt
 	return bytes.TrimRight(b.Bytes(), " ")
 }
 
+// reservedLEEF are the keys the LEEF renderer writes itself, which an
+// attribute of the same name must not overwrite.
+var reservedLEEF = map[string]bool{
+	"devTime": true, "devTimeFormat": true, "sev": true, "cat": true,
+	"name": true, "src": true, "dst": true, "dstPort": true, "srcPort": true,
+	"usrName": true, "identHostName": true, "proto": true,
+}
+
 func leefValue(s string) string {
-	return strings.NewReplacer("\t", " ", "\r", " ", "\n", " ").Replace(s)
+	return escapeControls(strings.NewReplacer("\t", " ", "\r", " ", "\n", " ").Replace(s))
 }
 
 // leefLine renders the record as LEEF:2.0 with a tab delimiter.
@@ -312,6 +351,15 @@ func leefLine(m siemMeta, stream string, level slog.Level, rec slog.Record) []by
 		}
 		if std, ok := leefStandard[k]; ok {
 			kv(std, e.vals[k])
+			continue
+		}
+		// An attribute named like a field the renderer already wrote
+		// would appear twice, and a parser building a key to value map
+		// keeps the last one: a DNS query name arrives in an attribute
+		// called "name", so a client could choose the event name its
+		// own block is filed under and hide it behind a benign label.
+		if reservedLEEF[k] {
+			kv("xproxy_"+k, e.vals[k])
 			continue
 		}
 		kv(k, e.vals[k])

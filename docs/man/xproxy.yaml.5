@@ -2118,7 +2118,7 @@ T}
 .TE
 .SS "logging.redaction"
 .PP
-Presence enables the rules; \fBenabled: false\fR switches them off while keeping the configuration. Rules run before every sink, so files, journald and syslog all receive the same redacted record.
+Presence enables the rules; \fBenabled: false\fR switches them off while keeping the configuration. Rules run before every log sink, so files, journald, syslog and the SIEM export all receive the same redacted record. They do \fBnot\fR cover OpenTelemetry traces: a span carries the client address, the host and the path as the request had them, and the access log records the trace and span ids, so anyone holding both the logs and the trace store can join a pseudonym back to the address it stands for. Treat the trace collector as holding unredacted data, or leave \fBtracing.otlp\fR unset where that matters.
 .PP
 .TS
 allbox;
@@ -5380,6 +5380,15 @@ T}	T{
 \fB[]\fR (any name from the CA)
 T}	T{
 Restrict peers to these certificate common names or DNS SANs
+T}
+T{
+\fBtls.\:bind_\:node_\:id\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Require a peer\(aqs announced \fBnode_\:id\fR to be a name its certificate carries. The id is not only a label: key ownership for \fBdistributed:\: exact\fR rate limits is a rendezvous hash over node ids,\: so a peer free to choose its id chooses which keys it decides for every node. Turn it on once the certificate names and the node ids agree. A peer\(aqs bans,\: marks and rate reports are attributed to its certificate common name either way,\: so the audit trail is not affected by this setting
 T}
 T{
 \fBgossip_\:interval\fR

@@ -88,6 +88,12 @@ type List struct {
 // cluster peer. Such bans are not re-announced.
 const PeerSource = "peer:"
 
+// ManualSource marks a ban an operator placed by hand.
+const ManualSource = "manual"
+
+// MaxDuration is the longest a ban may last, whoever placed it.
+const MaxDuration = 366 * 24 * time.Hour
+
 type history struct {
 	count int
 	last  time.Time
@@ -175,13 +181,30 @@ func (l *List) Apply(e Entry, removed bool, peer string) error {
 	now := l.now()
 	if removed {
 		l.mu.Lock()
+		// An operator's own ban is not a peer's to lift. Removal is the
+		// one message that takes protection away, and a node that lifts
+		// an operator decision everywhere, silently and durably, is the
+		// one thing the shared ban list must not allow.
+		if cur := l.findLocked(parsed); cur != nil && cur.Source == ManualSource {
+			l.mu.Unlock()
+			l.log.Warn("peer removal of an operator ban refused", "peer", peer, "target", cur.Target, "reason", cur.Reason)
+			return nil
+		}
 		l.removeLocked(parsed)
 		l.mu.Unlock()
 		l.persist(parsed, true)
+		l.log.Info("ban removed by peer", "peer", peer, "target", parsed.Target)
 		return nil
 	}
 	if !e.Until.After(now) {
 		return nil
+	}
+	// A peer sets the deadline, so it needs the same ceiling the local
+	// paths have. Without it one node with a clock a year fast turns
+	// every ten-minute ban it shares into a year-long one everywhere,
+	// and a compromised node simply names a date next century.
+	if maxUntil := now.Add(MaxDuration); e.Until.After(maxUntil) {
+		e.Until = maxUntil
 	}
 	e.addr, e.prefix, e.isNet, e.fp, e.isFP = parsed.addr, parsed.prefix, parsed.isNet, parsed.fp, parsed.isFP
 	e.Source = PeerSource + peer
@@ -484,13 +507,13 @@ func (l *List) Ban(target string, d time.Duration, reason string) (*Entry, error
 	if err != nil {
 		return nil, err
 	}
-	if d <= 0 || d > 366*24*time.Hour {
+	if d <= 0 || d > MaxDuration {
 		return nil, errors.New("duration must be positive and at most one year")
 	}
 	now := l.now()
 	e.Until = now.Add(d)
 	e.Reason = reason
-	e.Source = "manual"
+	e.Source = ManualSource
 	e.CreatedAt = now
 	e.Count = 1
 	l.mu.Lock()
@@ -528,6 +551,23 @@ func (l *List) Unban(target string) error {
 
 // removeLocked drops the entry matching e's target; caller holds the
 // write lock.
+// findLocked returns the live entry for a target, or nil.
+func (l *List) findLocked(e *Entry) *Entry {
+	switch {
+	case e.isNet:
+		for _, p := range l.prefixes {
+			if p.prefix == e.prefix {
+				return p
+			}
+		}
+	case e.isFP:
+		return l.fps[e.fp]
+	default:
+		return l.addrs[e.addr]
+	}
+	return nil
+}
+
 func (l *List) removeLocked(e *Entry) bool {
 	switch {
 	case e.isNet:

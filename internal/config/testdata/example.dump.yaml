@@ -747,6 +747,7 @@ cluster:
             - edge-1
             - edge-2
             - edge-3
+        bind_node_id: null
     gossip_interval: 1s
     peer_stale: 3s
     share_rate_limits: null

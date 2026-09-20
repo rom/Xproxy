@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/netutil"
@@ -82,6 +83,8 @@ type MetricsListener struct {
 	ln    net.Listener
 	allow []netip.Prefix
 	logs  *logging.Logs
+	// aclDenied aggregates refusals: the listener has no other bound.
+	aclDenied bound.Notice
 }
 
 // NewMetricsListener prepares the listener; Start binds it.
@@ -90,7 +93,12 @@ func NewMetricsListener(cfg config.Metrics, p *proxy.Server, logs *logging.Logs)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		if len(m.allow) > 0 && !netutil.Contains(m.allow, netutil.RemoteAddr(r)) {
-			logs.SecurityEvent(r.Context(), "deny", "metrics_acl", "client_ip", netutil.RemoteAddr(r).String())
+			// Aggregated: this listener has no rate limit, no connection
+			// cap and no ban ladder, so one record per refused request
+			// would let anybody who can route to the port drive the log
+			// volume and drown other records out of the export queues.
+			m.aclDenied.Hit(logs.Error, "requests refused by the metrics access list are aggregated",
+				"client_ip", netutil.RemoteAddr(r).String())
 			http.Error(w, "403 Forbidden", http.StatusForbidden)
 			return
 		}

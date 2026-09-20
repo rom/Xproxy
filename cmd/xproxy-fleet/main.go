@@ -38,6 +38,7 @@ import (
 	"syscall"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds, for validation
 	"github.com/rom/xproxy/internal/fleet"
@@ -286,7 +287,7 @@ func node(what string, args []string, out, errOut io.Writer, fail func(error) in
 	st := n.Status
 	_, _ = fmt.Fprintf(out, "node %s  assigned %s (%d files)  applied %s ok=%v", n.NodeID, dash(short(n.Digest)), n.Files, dash(short(st.Applied.Digest)), st.Applied.OK)
 	if st.Applied.Error != "" {
-		_, _ = fmt.Fprintf(out, "  error: %s", st.Applied.Error)
+		_, _ = fmt.Fprintf(out, "  error: %s", dash(st.Applied.Error))
 	}
 	_, _ = fmt.Fprintln(out)
 	if n.ScanErr != "" {
@@ -352,11 +353,34 @@ func validate(args []string, out, errOut io.Writer, fail func(error) int) int {
 	return 0
 }
 
+// dash renders a value for the table, or "-" when it is empty.
+//
+// Everything it prints came from an agent, which is a machine the
+// controller does not trust in this direction: a compromised node that
+// puts an escape sequence in its host name, version or error would
+// otherwise clear the operator's screen, repaint other nodes' rows or
+// set the terminal title, and a hundred kilobyte value would push the
+// rest of the fleet off the display. The terminal interface was
+// hardened for exactly this; the fleet command was not.
 func dash(s string) string {
+	s = printable(s)
 	if s == "" {
 		return "-"
 	}
+	if len(s) > 200 {
+		return s[:197] + "..."
+	}
 	return s
+}
+
+// printable drops every rune a terminal would act on rather than show.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == ' ' || unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, s)
 }
 
 func short(d string) string {

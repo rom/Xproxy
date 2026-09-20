@@ -361,8 +361,17 @@ func (in *instance) body(direction string, p *Phase, h http.Header, rc io.ReadCl
 	if !ok || (enc != "" && p.Encoded == "skip") {
 		return nil, 0, false, false
 	}
+	// Use the media type even when a parameter is malformed. Go rejects
+	// "application/json;q" and returns an empty type, while the
+	// frameworks behind the proxy read the body as JSON regardless, so
+	// throwing the type away turned one stray character into a way past
+	// the whole policy. Falling back to the token before the first
+	// semicolon is what the graphql filter already does.
 	mt, _, err := mime.ParseMediaType(h.Get("Content-Type"))
-	if err != nil || !p.types[mt] {
+	if err != nil || mt == "" {
+		mt = strings.ToLower(strings.TrimSpace(strings.SplitN(h.Get("Content-Type"), ";", 2)[0]))
+	}
+	if !p.types[mt] {
 		return nil, 0, false, false
 	}
 	request := direction == "request"

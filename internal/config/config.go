@@ -2166,7 +2166,21 @@ type ClusterTLS struct {
 	// AllowedNames optionally restricts peers to these certificate common
 	// names or DNS SANs.
 	AllowedNames []string `yaml:"allowed_names"`
+	// BindNodeID requires a peer's announced node_id to be a name its
+	// certificate carries. Default false, because a certificate common
+	// name and a node id legitimately differ in existing clusters;
+	// turning it on is recommended once they agree. The id is not a label: key
+	// ownership for exact rate limits is a rendezvous hash over node
+	// ids, and bans and marks are attributed to them, so a peer that
+	// chooses its own id chooses which keys it decides and whose name
+	// appears in the audit trail. Set it false only for an existing
+	// cluster whose certificate names differ from its node ids, and fix
+	// the certificates.
+	BindNodeID *bool `yaml:"bind_node_id"`
 }
+
+// BindsNodeID reports the setting with its default applied.
+func (t ClusterTLS) BindsNodeID() bool { return t.BindNodeID != nil && *t.BindNodeID }
 
 // Sharing helpers with defaults applied.
 func (c *Cluster) SharesRateLimits() bool { return c.ShareRateLimits == nil || *c.ShareRateLimits }

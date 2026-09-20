@@ -135,7 +135,10 @@ func (h *textHandler) Handle(_ context.Context, rec slog.Record) error {
 	}
 	if _, ok := fields["user"]; !ok {
 		fields["user"] = "-"
-		for _, k := range []string{"oidc_sub", "basic_user", "jwt_sub", "jwt_preferred_username"} {
+		// The keys the authentication filters actually emit. The old
+		// list named three that nothing produces, so %u was "-" for
+		// every authenticated request outside the jwt filter.
+		for _, k := range []string{"oidc_user", "oidc_sub", "auth_user", "basic_user", "jwt_sub", "jwt_preferred_username", "api_key"} {
 			if v, ok := fields[k]; ok && v != "" {
 				fields["user"] = v
 				break

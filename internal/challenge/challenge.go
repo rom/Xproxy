@@ -614,11 +614,19 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 // ban trigger turns a local resource limit into a ban of everyone who
 // solves a challenge correctly.
 func ClientFault(reason string) bool {
+	// An allow list, not a deny list. Everything the proxy or the
+	// CAPTCHA provider can fail at must stay off it: a provider outage
+	// would otherwise count every visitor who solved the widget as a
+	// failure and, with a challenge ban trigger configured, ban them
+	// all. Only reasons that describe something the client actually did
+	// wrong belong here, so a reason added later is harmless by default.
 	switch reason {
-	case "verification table full", "nonce already used":
-		return false
+	case "method", "form", "counter", "proof",
+		"malformed nonce", "bad nonce signature", "nonce expired", "nonce too long",
+		"captcha token", "captcha rejected", "captcha score", "captcha hostname":
+		return true
 	}
-	return true
+	return false
 }
 
 func (c *Challenger) fail(w http.ResponseWriter, _ string) {

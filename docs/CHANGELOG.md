@@ -8,6 +8,113 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ### Security (1.3)
 
+Findings of a fourth audit round, in disciplines the first three did not
+use (time and lifetime semantics; observability as an attack surface;
+Go integer, aliasing and buffer-reuse hazards; a hostile peer already
+inside the cluster's trust boundary; and a systematic sweep of what
+every error path does), plus fuzzing of five parsers that had no fuzz
+target. All with regression tests:
+
+- One host name no longer has several routing keys. A route is selected
+  by an exact match on the normalised host, so `Host: api.example.test..`
+  missed every route of that host and was answered by the catch-all,
+  skipping its access lists, authentication filters, WAF profile, rate
+  limits and policy (CWE-436). Text with an empty label anywhere is
+  refused with `bad_host`; a single trailing root dot, a port and any
+  case still normalise to the one key. The same rule now applies to the
+  server name peeked from a TLS ClientHello, which selects the layer 4
+  and QUIC upstream.
+- A DNS label may no longer carry a dot, a backslash or a control byte.
+  Labels are joined with `.` to make the string used as the block list
+  key, the cache key, the name DNSSEC compares and the value written to
+  the security log, and that join is only reversible while no label
+  contains a separator: the wire names `[www.bank][test]` and
+  `[www][bank][test]` produced the same string, so one would have been
+  answered from the other's cache entry and would have satisfied the
+  other's DNSSEC binding. A control byte in a label reached the security
+  log, where a newline ends the record.
+- `ParseMessage` sized its record slices from the section counts the
+  sender declared, so a 17-byte datagram allocated megabytes: about
+  185,000 to one, from a spoofable packet, on any listener with DNSSEC
+  validation (CWE-789). The allocation is now bounded by the bytes the
+  datagram actually holds.
+- Token introspection treated a missing issuer or audience as a pass.
+  RFC 7662 lets an authorization server answer with nothing but
+  `{"active": true}`, so every live token of that server was accepted,
+  including one minted for another client or tenant (CWE-863). Absence
+  now fails, as it always did on the JWT path.
+- A layer 4 or forward-proxy tunnel whose peer stopped reading was never
+  reclaimed: the copy had a read deadline but no write deadline, so
+  `idle_timeout` could not close it and the flow held its goroutines,
+  its sockets, its connection-limiter slot and its endpoint's active
+  count for the life of the process (CWE-1088).
+- A cached response's headers were handed to the per-request response
+  by reference. The response-header operations end in an append, which
+  with spare capacity writes into the shared entry, so one client's
+  expanded template value — a cookie, a certificate field, an address —
+  could appear in another client's response (CWE-488).
+- Cluster: everything a peer's actions are recorded under is now the
+  common name of its certificate, which mutual TLS authenticates,
+  instead of the node id it announced in a message it wrote itself; a
+  peer can no longer place bans or honeypot marks under another node's
+  name. A peer cannot answer a rate-limit decision for a key it does not
+  own, the amount one message may consume is bounded, a rate report is
+  clamped to the policy's own rate (one message used to deny a key on
+  every node for the whole stale window), a peer ban's lifetime is
+  clamped to the same one-year ceiling the local paths use, peer adds
+  and removals are logged, and a peer cannot remove a ban an operator
+  placed by hand. New `cluster.tls.bind_node_id` requires an announced
+  id to be a name the certificate carries; it is off by default because
+  existing certificate names and node ids may differ.
+- Observability: a banned client looping connections wrote one
+  synchronous security record per connection on the accept loop, and a
+  blocked DNS query wrote one per datagram and fed the ban ladder with
+  an address nothing had verified, so anybody could have a third party
+  banned by spoofing them (CWE-779, CWE-290). Both are aggregated now,
+  and an event from an unverified source is attributed to nobody. The
+  metrics listener's access-list refusals are aggregated too. CEF and
+  LEEF records neutralise control bytes, an attribute can no longer
+  overwrite a field the renderer writes itself (a DNS query name arrives
+  in one called `name`, which is the LEEF event name), the standard user
+  field names the keys the authentication filters actually emit, and
+  `redaction.claims` covers the OIDC subject, the basic and LDAP user
+  name and the API key id rather than only JWT claims. An incoming
+  `Tracestate` is bounded to what the W3C recommendation allows.
+- Lifetimes: a cached response's lifetime is clamped to the one-year
+  ceiling the configuration validator enforces, instead of taking an
+  `Expires` header in the year 9999 at its word. A still-valid OCSP
+  staple survives a responder outage rather than being dropped on the
+  second consecutive fetch failure. The `bot_score` behaviour window is
+  measured from its start rather than the last request, so a client that
+  sends one request per window no longer accumulates forever and drift
+  into a challenge or a denial.
+- The `sensitive_data` filter uses the media type even when a parameter
+  is malformed. Go rejects `application/json;q` while the frameworks
+  behind the proxy read the body as JSON, so one stray character skipped
+  the whole policy (CWE-436).
+- A reload installs the ban list and the challenger before the new
+  routes, closing the window in which a route the operator had just
+  given `challenge: {mode: always}` was served unchallenged.
+- A failed challenge counts against the client only for reasons that are
+  actually the client's. The third round enumerated two proxy-side
+  reasons and missed the CAPTCHA provider ones, so a provider outage
+  would have banned every legitimate user who solved the widget; the
+  test is an allow list now, so a reason added later is harmless.
+- The fleet command strips terminal escapes and bounds the length of
+  every string an agent supplies, so one compromised node can no longer
+  clear the operator's screen or repaint other nodes' rows.
+- New fuzz targets for the ClientHello peeker, the routing expression
+  parser, the LDAP BER reader and filter parser, and the cluster
+  framing reader. The ClientHello one found the host-spelling defect
+  above within twelve seconds; the other four survived ninety seconds
+  each. Running the existing targets found one more thing worth
+  recording: the PROXY protocol target's own assertion that a header's
+  two addresses share a family was wrong, because a dual-stack balancer
+  reports an IPv4 client as an IPv4-mapped address beside an IPv6
+  destination. The parser was correct; the assertion now checks what
+  matters, which is that no mapped or zoned spelling of an address
+  escapes to become a second key for access lists and bans.
+
 Findings of a third audit round, taken from disciplines the first two did
 not use (supply chain and build reproducibility, cryptographic
 engineering, panic reachability, abuse of the security features

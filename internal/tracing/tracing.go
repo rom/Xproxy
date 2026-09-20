@@ -152,7 +152,7 @@ func (t *Tracer) StartServer(r *http.Request, name string) *Span {
 	if tp := r.Header.Get("Traceparent"); tp != "" {
 		if tid, pid, flags, ok := parseTraceparent(tp); ok {
 			s.TraceID, s.ParentID = tid, pid
-			s.TraceState = r.Header.Get("Tracestate")
+			s.TraceState = boundedTraceState(r.Header.Get("Tracestate"))
 			_, _ = rand.Read(s.SpanID[:])
 			if t.cfg.TrustIncoming {
 				s.Sampled = flags&1 == 1
@@ -233,6 +233,27 @@ func (s *Span) Finish(err bool) {
 
 // Propagate reports whether outgoing requests get a traceparent.
 func (t *Tracer) Propagate() bool { return t != nil && t.cfg.Propagate }
+
+// boundedTraceState keeps an incoming tracestate only within the bounds
+// the W3C recommendation sets: at most 512 bytes and 32 list members,
+// with anything longer discarded rather than truncated. The header is
+// client-supplied and is retained on the server span and on the
+// upstream span until the exporter flushes, so without a bound a client
+// decides how many bytes each sampled request holds in the queue.
+func boundedTraceState(v string) string {
+	if v == "" {
+		return ""
+	}
+	if len(v) > 512 || strings.Count(v, ",") >= 32 {
+		return ""
+	}
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c < 0x20 || c > 0x7e {
+			return ""
+		}
+	}
+	return v
+}
 
 func parseTraceparent(v string) (tid [16]byte, pid [8]byte, flags byte, ok bool) {
 	parts := strings.Split(strings.TrimSpace(v), "-")

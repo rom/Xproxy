@@ -571,8 +571,14 @@ Formats:
 ### logging.redaction
 
 Presence enables the rules; `enabled: false` switches them off while
-keeping the configuration. Rules run before every sink, so files, journald
-and syslog all receive the same redacted record.
+keeping the configuration. Rules run before every log sink, so files,
+journald, syslog and the SIEM export all receive the same redacted
+record. They do **not** cover OpenTelemetry traces: a span carries the
+client address, the host and the path as the request had them, and the
+access log records the trace and span ids, so anyone holding both the
+logs and the trace store can join a pseudonym back to the address it
+stands for. Treat the trace collector as holding unredacted data, or
+leave `tracing.otlp` unset where that matters.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -1443,6 +1449,7 @@ and sharing flags reload.
 | `tls.cert_file`, `tls.key_file` | path | required | This node's certificate, used for both directions |
 | `tls.ca_file` | path | required | Cluster CA; every peer must present a certificate from it |
 | `tls.allowed_names` | list | `[]` (any name from the CA) | Restrict peers to these certificate common names or DNS SANs |
+| `tls.bind_node_id` | bool | `false` | Require a peer's announced `node_id` to be a name its certificate carries. The id is not only a label: key ownership for `distributed: exact` rate limits is a rendezvous hash over node ids, so a peer free to choose its id chooses which keys it decides for every node. Turn it on once the certificate names and the node ids agree. A peer's bans, marks and rate reports are attributed to its certificate common name either way, so the audit trail is not affected by this setting |
 | `gossip_interval` | duration | `1s` | How often consumption and ban batches are sent; 100ms to 60s |
 | `peer_stale` | duration | 3 x `gossip_interval` | How long a peer report keeps reducing local refill after its last update; at least 2 x the interval |
 | `share_rate_limits` | bool | `true` | Exchange consumption reports |

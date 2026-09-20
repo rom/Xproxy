@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -83,6 +84,12 @@ type Node struct {
 	pending   map[uint64]pendingTake
 
 	exactAsked, exactDecided, exactServed, exactFallbacks atomic.Uint64
+	// exactRefused counts takes refused because this node does not own
+	// the key: a peer asking for one is either confused or probing.
+	exactRefused atomic.Uint64
+	// bindNodeID requires a peer's announced id to be a name its
+	// certificate carries (cluster.tls.bind_node_id, default true).
+	bindNodeID bool
 }
 
 // maxPending bounds Take requests in flight.
@@ -113,6 +120,7 @@ func New(cfg *config.Cluster, rates RateSource, log *slog.Logger) (*Node, error)
 		stop:     make(chan struct{}),
 		pending:  map[uint64]pendingTake{},
 	}
+	n.bindNodeID = cfg.TLS.BindsNodeID()
 	n.eventQueue = make(chan Event, eventQueueSize)
 	srv, cli, err := buildTLS(&cfg.TLS)
 	if err != nil {
@@ -610,10 +618,13 @@ type inbound struct {
 	conn     net.Conn
 	remote   string
 	certName string
-	nodeID   atomic.Pointer[string]
-	since    time.Time
-	lastSeen atomic.Int64
-	in       atomic.Uint64
+	// certNames is every name the peer certificate carries (common name
+	// and DNS names); the node id it announces must be one of them.
+	certNames []string
+	nodeID    atomic.Pointer[string]
+	since     time.Time
+	lastSeen  atomic.Int64
+	in        atomic.Uint64
 	// wmu serialises the answers written back on this connection (the
 	// hello acknowledgement and exact decisions).
 	wmu sync.Mutex
@@ -669,7 +680,9 @@ func (n *Node) serve(raw net.Conn) {
 	cs := tc.ConnectionState()
 	in := &inbound{conn: tc, remote: raw.RemoteAddr().String(), since: time.Now()}
 	if len(cs.PeerCertificates) > 0 {
-		in.certName = cs.PeerCertificates[0].Subject.CommonName
+		leaf := cs.PeerCertificates[0]
+		in.certName = leaf.Subject.CommonName
+		in.certNames = append(append([]string{}, leaf.DNSNames...), leaf.Subject.CommonName)
 	}
 	in.lastSeen.Store(time.Now().UnixNano())
 	n.mu.Lock()
@@ -734,6 +747,37 @@ func readLine(r *bufio.Reader, limit int) ([]byte, error) {
 	}
 }
 
+// identity is the name a peer's actions are recorded under. The
+// certificate is authenticated, the announced node id is not: a peer
+// free to choose its id could otherwise place bans and marks under
+// another node's name, so the audit trail would say whatever the
+// attacker wanted. The announced id stays for display, in the join log
+// and the status view, next to the certificate name.
+func (in *inbound) identity() string {
+	if in.certName != "" {
+		return in.certName
+	}
+	return deref(in.nodeID.Load())
+}
+
+// maxTakeAmount bounds what one peer may ask to consume in a single
+// message.
+const maxTakeAmount = 1e4
+
+// certNameMatches reports whether id is one of the names the peer
+// certificate carries, comparing the way the fleet controller does.
+func certNameMatches(names []string, id string) bool {
+	if len(names) == 0 {
+		return false // no certificate: nothing to bind the id to
+	}
+	for _, n := range names {
+		if strings.EqualFold(n, id) {
+			return true
+		}
+	}
+	return false
+}
+
 func (n *Node) handle(in *inbound, m *message) error {
 	switch m.T {
 	case typeHello:
@@ -742,6 +786,16 @@ func (n *Node) handle(in *inbound, m *message) error {
 		}
 		if m.Node == "" || len(m.Node) > 64 {
 			return errors.New("bad node id")
+		}
+		// The id must be the one the certificate carries. It is not a
+		// label: key ownership for exact rate limits is a rendezvous hash
+		// over these ids, so a peer that picks its own id picks which
+		// keys it decides for, and its answer is taken instead of the
+		// local limiter. It is also what a ban's source and a mark's
+		// origin are attributed to, so a free choice of id lets one node
+		// act as another in the audit trail.
+		if n.bindNodeID && !certNameMatches(in.certNames, m.Node) {
+			return fmt.Errorf("node id %q is not a name of the peer certificate %q", m.Node, in.certName)
 		}
 		id := m.Node
 		in.nodeID.Store(&id)
@@ -753,10 +807,10 @@ func (n *Node) handle(in *inbound, m *message) error {
 	case typePing:
 		return nil
 	case typeRates:
-		peerID := deref(in.nodeID.Load())
-		if peerID == "" {
+		if deref(in.nodeID.Load()) == "" {
 			return errors.New("rates before hello")
 		}
+		peerID := in.identity()
 		n.mu.Lock()
 		share := n.cfg.SharesRateLimits()
 		n.mu.Unlock()
@@ -786,10 +840,10 @@ func (n *Node) handle(in *inbound, m *message) error {
 		n.keysRecv.Add(uint64(total)) //nolint:gosec // bounded above
 		return nil
 	case typeBans:
-		peerID := deref(in.nodeID.Load())
-		if peerID == "" {
+		if deref(in.nodeID.Load()) == "" {
 			return errors.New("bans before hello")
 		}
+		peerID := in.identity()
 		if len(m.Bans)+len(m.Removed) > MaxBansPerMessage {
 			return errors.New("too many bans")
 		}
@@ -812,10 +866,10 @@ func (n *Node) handle(in *inbound, m *message) error {
 		n.bansRecv.Add(uint64(len(m.Bans) + len(m.Removed))) //nolint:gosec // bounded above
 		return nil
 	case typeEvents:
-		peerID := deref(in.nodeID.Load())
-		if peerID == "" {
+		if deref(in.nodeID.Load()) == "" {
 			return errors.New("events before hello")
 		}
+		peerID := in.identity()
 		if len(m.Events) > MaxEventsPerMessage {
 			return errors.New("too many events")
 		}
@@ -838,8 +892,15 @@ func (n *Node) handle(in *inbound, m *message) error {
 		if deref(in.nodeID.Load()) == "" {
 			return errors.New("take before hello")
 		}
-		if m.Policy == "" || len(m.Policy) > 64 || m.Key == "" || len(m.Key) > 300 || m.N <= 0 || m.N > 1e6 {
+		if m.Policy == "" || len(m.Policy) > 64 || m.Key == "" || len(m.Key) > 300 || m.N <= 0 || m.N > maxTakeAmount {
 			return errors.New("bad take")
+		}
+		// Only the key's owner answers for it. Without this a peer drains
+		// any key's bucket on the node that owns it, denying that client
+		// everywhere, and it does so for keys it has no part in.
+		if owner := n.Owner(m.Key); owner != n.id {
+			n.exactRefused.Add(1)
+			return in.reply(&message{T: typeTook, Node: n.id, Req: m.Req})
 		}
 		reply := &message{T: typeTook, Node: n.id, Req: m.Req}
 		if allowed, ok := n.rates.Decide(m.Policy, m.Key, m.N); ok {

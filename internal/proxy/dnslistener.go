@@ -87,7 +87,18 @@ func (s *Server) newDNSServer(lc config.Listener, udp net.PacketConn, tcp net.Li
 	}
 	hooks := dns.Hooks{
 		Access: func(attrs ...any) { s.logs.Access.Info("dns", attrs...) },
-		Event: func(client netip.Addr, reason string, attrs ...any) {
+		Event: func(client netip.Addr, reason string, verified bool, attrs ...any) {
+			if !verified {
+				// An unverified datagram: record the fact in aggregate
+				// and attribute it to nobody. One record and one ban
+				// observation per packet would let a flood fill the
+				// disk, drown other clients' records out of the bounded
+				// export queues, and drive whatever address it names
+				// into the ban list.
+				s.dnsUnverified.Hit(s.logs.Error, "dns security events from unverified sources are aggregated",
+					append([]any{"reason", reason}, attrs...)...)
+				return
+			}
 			s.logs.SecurityEvent(context.Background(), "deny", reason, append([]any{"client_ip", client.String()}, attrs...)...)
 			if bl := s.bans.Load(); bl != nil {
 				bl.Observe(client, reason)
