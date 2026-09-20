@@ -156,11 +156,15 @@ func TestDaemonThatHangsUp(t *testing.T) {
 // clean failure, and the usage text must name the command.
 func TestBadArgumentsForEverySubcommand(t *testing.T) {
 	sock, cfgPath := harness(t)
+	// A file argument goes into a temporary directory: some of these
+	// subcommands write the file they are given, and a test must not
+	// leave one in the working tree.
+	scratch := filepath.Join(t.TempDir(), "arg")
 	for _, c := range commandTable {
 		for _, extra := range [][]string{
 			{"-no-such-flag"},
 			{"-top", "not-a-number"},
-			{"--", "-"},
+			{"--", scratch},
 		} {
 			args := append([]string{c.name}, extra...)
 			code, out, errOut := runCmd(t, sock, cfgPath, args...)
