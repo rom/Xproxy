@@ -66,3 +66,37 @@ func TestClientHelloSNI(t *testing.T) {
 		t.Fatal("bad record length accepted")
 	}
 }
+
+// A ClientHello split across two records is the same message to every
+// TLS stack behind the proxy. Bounding it by the first record meant the
+// name was lost here while the origin read it fine: the flow stalled
+// until the peek timeout, or, padded past the caller's buffer, took the
+// default route with no name at all.
+func TestClientHelloSNIAcrossRecords(t *testing.T) {
+	one := clientHello(t, "secret.internal.test")
+	name, err := ClientHelloSNI(one)
+	if err != nil || name != "secret.internal.test" {
+		t.Fatalf("one record: %q %v", name, err)
+	}
+	body := one[5:]
+	for _, split := range []int{1, 4, 7, 20, len(body) - 1} {
+		if split <= 0 || split >= len(body) {
+			continue
+		}
+		var frag []byte
+		for _, part := range [][]byte{body[:split], body[split:]} {
+			frag = append(frag, 0x16, 0x03, 0x01, byte(len(part)>>8), byte(len(part)))
+			frag = append(frag, part...)
+		}
+		name, err := ClientHelloSNI(frag)
+		if err != nil || name != "secret.internal.test" {
+			t.Fatalf("split at %d: %q %v", split, name, err)
+		}
+		// Every prefix of it asks for more rather than guessing.
+		for n := 1; n < len(frag); n++ {
+			if _, err := ClientHelloSNI(frag[:n]); err != nil && !errors.Is(err, ErrNeedMore) {
+				t.Fatalf("prefix %d of the split hello: %v", n, err)
+			}
+		}
+	}
+}

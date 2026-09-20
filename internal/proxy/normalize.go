@@ -46,8 +46,11 @@ func checkNormalization(n *config.Normalization, r *http.Request) string {
 	if n.RejectEncodedSlashes && hasEncodedSlash(raw) {
 		return "path_encoded_slash"
 	}
-	if n.RejectBackslashes && strings.IndexByte(path, '\\') >= 0 {
+	if n.Backslashes() && strings.IndexByte(path, '\\') >= 0 {
 		return "path_backslash"
+	}
+	if n.PathParams() && strings.IndexByte(path, ';') >= 0 {
+		return "path_parameter"
 	}
 	if n.DotSegments() && hasDotSegments(path) {
 		return "path_dot_segment"
@@ -55,17 +58,21 @@ func checkNormalization(n *config.Normalization, r *http.Request) string {
 	return ""
 }
 
-// hasDotSegments reports a "." or ".." segment in the decoded path, or a
-// segment starting with ".." or "." followed by ";" (a path parameter
-// some servlet containers strip before resolving the dots). Routing
-// resolves dot segments but the upstream receives the path as sent, so
-// the two would otherwise disagree about which resource is meant.
+// hasDotSegments reports a "." or ".." segment in the decoded path.
+// Routing resolves dot segments but the upstream receives the path as
+// sent, so the two would otherwise disagree about which resource is
+// meant. Segments are split on the backslash as well as the slash, and a
+// path parameter is cut before the comparison, because the servers this
+// check exists for resolve "/static\\..\\admin" and "/static/..;/admin"
+// to /admin. Both spellings are refused outright by the two checks
+// above unless an operator turned them off; this stays honest in that
+// case.
 func hasDotSegments(p string) bool {
-	for _, seg := range strings.Split(p, "/") {
-		if seg == "." || seg == ".." {
-			return true
+	for _, seg := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if i := strings.IndexByte(seg, ';'); i >= 0 {
+			seg = seg[:i]
 		}
-		if strings.HasPrefix(seg, "..;") || strings.HasPrefix(seg, ".;") {
+		if seg == "." || seg == ".." {
 			return true
 		}
 	}

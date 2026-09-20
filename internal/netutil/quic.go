@@ -31,8 +31,18 @@ const quicV1 = 0x00000001
 func QUICCryptoData(datagram []byte) ([]QUICCrypto, error) {
 	var out []QUICCrypto
 	rest := datagram
-	for len(rest) > 0 {
-		frames, next, err := quicInitialPacket(rest)
+	// Each Initial packet derives its own key schedule — an HKDF extract,
+	// four expands and two AES key schedules — from its own connection
+	// id, and coalescing is unbounded in the protocol. A single 64 KiB
+	// datagram of minimum-size Initials is over two thousand of those, on
+	// the listener's own read goroutine, which also forwards every
+	// established flow: about a hundred spoofed packets per second stall
+	// the whole listener. A real client coalesces two or three packets,
+	// and they share a connection id, so the schedule is derived once per
+	// id and at most a handful of packets are read.
+	keys := quicKeyCache{}
+	for n := 0; len(rest) > 0 && n < maxCoalescedInitials; n++ {
+		frames, next, err := quicInitialPacket(rest, keys)
 		if err != nil {
 			if len(out) > 0 {
 				return out, nil // trailing padding or another packet type after a good Initial
@@ -54,9 +64,52 @@ type QUICCrypto struct {
 	Data   []byte
 }
 
+// maxCoalescedInitials bounds the Initial packets read from one
+// datagram; see QUICCryptoData.
+const maxCoalescedInitials = 4
+
+// quicKeyCache memoises one datagram's Initial key schedule by
+// connection id. It lives for one datagram on one goroutine, so it needs
+// no locking and cannot grow past maxCoalescedInitials entries.
+type quicKeyCache map[string]quicInitialKeys
+
+// quicInitialKeys is the client's Initial key material for one
+// connection id.
+type quicInitialKeys struct {
+	key, iv, hp []byte
+}
+
+// derive returns the Initial keys for dcid, computing them at most once
+// per datagram.
+func (c quicKeyCache) derive(dcid []byte) (quicInitialKeys, error) {
+	if k, ok := c[string(dcid)]; ok {
+		return k, nil
+	}
+	initial, err := hkdf.Extract(sha256.New, dcid, quicV1Salt)
+	if err != nil {
+		return quicInitialKeys{}, err
+	}
+	clientSecret, err := hkdfExpandLabel(initial, "client in", 32)
+	if err != nil {
+		return quicInitialKeys{}, err
+	}
+	var k quicInitialKeys
+	if k.key, err = hkdfExpandLabel(clientSecret, "quic key", 16); err != nil {
+		return quicInitialKeys{}, err
+	}
+	if k.iv, err = hkdfExpandLabel(clientSecret, "quic iv", 12); err != nil {
+		return quicInitialKeys{}, err
+	}
+	if k.hp, err = hkdfExpandLabel(clientSecret, "quic hp", 16); err != nil {
+		return quicInitialKeys{}, err
+	}
+	c[string(dcid)] = k
+	return k, nil
+}
+
 // quicInitialPacket parses one Initial packet at the head of b and
 // returns its CRYPTO frames and the bytes after the packet.
-func quicInitialPacket(b []byte) ([]QUICCrypto, []byte, error) {
+func quicInitialPacket(b []byte, keys quicKeyCache) ([]QUICCrypto, []byte, error) {
 	if len(b) < 7 || b[0]&0xc0 != 0xc0 {
 		return nil, nil, ErrNotQUIC // not a long header
 	}
@@ -95,27 +148,12 @@ func quicInitialPacket(b []byte) ([]QUICCrypto, []byte, error) {
 		return nil, nil, ErrNotQUIC
 	}
 	end := pnOff + int(length) //nolint:gosec // bounded above
-	// Keys.
-	initial, err := hkdf.Extract(sha256.New, dcid, quicV1Salt)
+	// Keys, derived once per connection id in this datagram.
+	ks, err := keys.derive(dcid)
 	if err != nil {
 		return nil, nil, err
 	}
-	clientSecret, err := hkdfExpandLabel(initial, "client in", 32)
-	if err != nil {
-		return nil, nil, err
-	}
-	key, err := hkdfExpandLabel(clientSecret, "quic key", 16)
-	if err != nil {
-		return nil, nil, err
-	}
-	iv, err := hkdfExpandLabel(clientSecret, "quic iv", 12)
-	if err != nil {
-		return nil, nil, err
-	}
-	hp, err := hkdfExpandLabel(clientSecret, "quic hp", 16)
-	if err != nil {
-		return nil, nil, err
-	}
+	key, iv, hp := ks.key, ks.iv, ks.hp
 	// Header protection: the sample starts 4 bytes after the packet number
 	// field's start.
 	if pnOff+4+16 > end {

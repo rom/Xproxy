@@ -80,6 +80,25 @@ func TruncateIP(s string) string {
 	return p.Masked().Addr().String() + "/" + fmt.Sprint(bits)
 }
 
+// ClientAddress applies the client_ip rule to an address outside a log
+// attribute. The trace exporter uses it: a span's client.address is not
+// a log line, so nothing took it through the redactor, and a deployment
+// that turned redaction on to pseudonymise addresses still shipped the
+// full address to its trace collector — next to a trace id the access
+// log also carries, which reverses the pseudonymisation by design.
+func (r *Redactor) ClientAddress(s string) string {
+	if r == nil {
+		return s
+	}
+	switch r.clientIP {
+	case "truncate":
+		return TruncateIP(s)
+	case "hash":
+		return r.hash(s)
+	}
+	return s
+}
+
 // Attr applies the rules to one attribute. It returns the attribute to log
 // and false when the attribute must be dropped.
 func (r *Redactor) Attr(a slog.Attr) (slog.Attr, bool) {

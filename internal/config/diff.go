@@ -38,12 +38,58 @@ const maxDiffCells = 25_000_000
 
 // Dump renders a configuration as one self-contained YAML document:
 // included fragments are already expanded, so `includes` is cleared and
-// the result loads as a main file.
+// the result loads as a main file. It keeps every value, so it is what
+// the history stores: a rollback has to write the real configuration
+// back.
 func Dump(c *Config) ([]byte, error) {
 	cp := *c
 	cp.Includes = nil
 	cp.IncludedFiles = nil
 	return yaml.Marshal(&cp)
+}
+
+// RedactedValue stands in for a header value in a dump or a diff.
+const RedactedValue = "***"
+
+// DumpRedacted is Dump with the values of the header operation maps
+// replaced by RedactedValue. A route's request_headers.set is where the
+// credential the origin expects lives — an API key, a signed origin
+// header, a basic authorisation — and a management response travels
+// much further than the file on disk: xproxyctl over the socket, the
+// GUI, a dry run pasted into a ticket. The header names stay, so a
+// reviewer still sees which headers a change touches; only the values
+// go. The history keeps Dump.
+func DumpRedacted(c *Config) ([]byte, error) { return Dump(redactHeaders(c)) }
+
+// redactHeaders copies c with the header operation values replaced. Only
+// the routes slice is copied, which is the only place HeaderOps live.
+func redactHeaders(c *Config) *Config {
+	cp := *c
+	if len(c.Routes) == 0 {
+		return &cp
+	}
+	cp.Routes = append([]Route(nil), c.Routes...)
+	for i := range cp.Routes {
+		cp.Routes[i].RequestHeaders = redactOps(cp.Routes[i].RequestHeaders)
+		cp.Routes[i].ResponseHeaders = redactOps(cp.Routes[i].ResponseHeaders)
+	}
+	return &cp
+}
+
+func redactOps(h HeaderOps) HeaderOps {
+	h.Set, h.Add = redactMap(h.Set), redactMap(h.Add)
+	return h
+}
+
+func redactMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return m
+	}
+	out := make(map[string]string, len(m))
+	for k := range m {
+		out[k] = RedactedValue
+	}
+	return out
 }
 
 // Diff compares two configurations. Named lists (listeners, upstreams,
@@ -133,8 +179,12 @@ func Diff(from, to *Config, fromLabel, toLabel string) *Changes {
 	}
 	ch.Same = len(ch.Changes) == 0
 	if !ch.Same {
-		a, _ := Dump(from)
-		b, _ := Dump(to)
+		// The text is read by whoever reviews the change, so it carries
+		// the redacted document; the change list above is computed from
+		// the real one, so a header value that changed is still
+		// reported as a change.
+		a, _ := DumpRedacted(from)
+		b, _ := DumpRedacted(to)
 		ch.Text, ch.Truncated = unifiedDiff(string(a), string(b), fromLabel, toLabel)
 	}
 	if !reflect.DeepEqual(from.Server.SessionTickets, to.Server.SessionTickets) {

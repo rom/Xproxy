@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/netutil"
 )
 
 // Positive security model per route (routes[].policy) and virtual
@@ -441,27 +442,29 @@ func matchValues(m patchMatcher, vals []string) bool {
 }
 
 // bodyMatches buffers the body up to the limit and matches it; the
-// body is replayed for the upstream. A body over the limit or of
-// another media type does not match.
+// body is replayed for the upstream. A body of another media type does
+// not match; a body the patch could not read decides by over_limit,
+// which treats it as matching by default.
 func (cp *compiledPatch) bodyMatches(r *http.Request) bool {
 	b := cp.cfg.Body
 	if r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
 		return false
 	}
 	if len(b.ContentTypes) > 0 {
-		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if err != nil || !mediaAllowed(b.ContentTypes, mt) {
+		// A media type Go refuses is still read as its type by the
+		// origin; see netutil.MediaType.
+		if !mediaAllowed(b.ContentTypes, netutil.MediaType(r.Header.Get("Content-Type"))) {
 			return false
 		}
 	}
 	if r.ContentLength > b.MaxBytes {
-		return false
+		return b.MatchesOverLimit()
 	}
 	data, err := io.ReadAll(io.LimitReader(r.Body, b.MaxBytes+1))
 	rest := r.Body
 	r.Body = &joinedBody{Reader: io.MultiReader(bytes.NewReader(data), rest), closer: rest}
 	if err != nil || int64(len(data)) > b.MaxBytes {
-		return false
+		return b.MatchesOverLimit()
 	}
 	return cp.bodyRE.Match(data)
 }

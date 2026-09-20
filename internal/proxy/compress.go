@@ -154,6 +154,20 @@ func wantsGzip(r *http.Request) bool {
 	return q["*"] > 0
 }
 
+// carriesCredentials reports a request that came with the victim's
+// authority attached: an Authorization header or a cookie.
+//
+// Compressing the response to such a request is the BREACH condition —
+// a secret and attacker-chosen text in one compressed body leak the
+// secret through its length, a character at a time — and a request a
+// browser sends with the victim's cookies is precisely what an attacker
+// can make it send. compression.compress_authenticated, or the route's
+// own override, turns compression back on where the response holds
+// nothing worth stealing.
+func carriesCredentials(r *http.Request) bool {
+	return r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != ""
+}
+
 // compressWriter compresses eligible responses with gzip. The decision is
 // made when the header is committed: the status must carry a body, no
 // encoding or range may be present, `no-transform` is honoured, the media

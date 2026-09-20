@@ -87,6 +87,12 @@ func encodingOf(h http.Header) (string, bool) {
 	if h.Get("Content-Range") != "" {
 		return "", false
 	}
+	ce := h.Values("Content-Encoding")
+	if len(ce) > 1 {
+		// Several header lines are one comma separated list to the
+		// origin, so the first of them is not the whole coding.
+		return "", false
+	}
 	enc := strings.ToLower(strings.TrimSpace(h.Get("Content-Encoding")))
 	switch enc {
 	case "", "identity":

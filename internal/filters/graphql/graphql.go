@@ -25,12 +25,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/netutil"
 )
 
 // Config is the options schema.
@@ -124,7 +124,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		// Media types are case-insensitive to every GraphQL server;
 		// matching the raw header would let "Application/JSON" skip the
 		// limits.
-		mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		mt := netutil.MediaType(r.Header.Get("Content-Type"))
 		isJSON := mt == "application/json" || strings.HasSuffix(mt, "+json")
 		if !isJSON && mt != "application/graphql" {
 			return filter.Continue
@@ -179,6 +179,8 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		}
 		m := measure(doc, g.cfg)
 		switch {
+		case m.overflow:
+			return in.deny("the query expands too far", "expansion")
 		case m.depth > g.cfg.MaxDepth:
 			return in.deny(fmt.Sprintf("depth %d exceeds %d", m.depth, g.cfg.MaxDepth), "depth")
 		case m.complexity > g.cfg.MaxComplexity:
@@ -210,7 +212,19 @@ func (in *instance) End() []any { return nil }
 type metrics struct {
 	depth, complexity, aliases int
 	introspection              bool
+	// visits is spent by walk and bounds the expansion. A fragment that
+	// spreads the next one twice doubles the work per level, so a query
+	// of a couple of kilobytes expands to a billion visits with no cycle
+	// in it and every configured bound respected: the active set stops a
+	// fragment referring to itself, not a fragment referred to twice.
+	visits int
+	// overflow records that the expansion ran out of visits, so the
+	// refusal can say so.
+	overflow bool
 }
+
+// maxVisits bounds the selections one document's expansion may visit.
+const maxVisits = 1 << 16
 
 // measure walks every operation with fragments expanded (a fragment
 // cycle counts as the depth bound, which fails the request).
@@ -231,6 +245,14 @@ func measure(doc *document, cfg *Config) metrics {
 // walk returns the depth below sel and its complexity, given the product
 // of the list multipliers of its ancestors.
 func walk(sel *selection, frags map[string]*selection, cfg *Config, level, mult int, active map[string]bool, m *metrics) (depth, complexity int) {
+	m.visits++
+	if m.visits > maxVisits {
+		// Past the bound the answer is the same whatever the rest of the
+		// document says: refuse it. Reporting the depth bound keeps the
+		// verdict one the client can act on.
+		m.overflow = true
+		return cfg.MaxDepth + 1, 1 << 40
+	}
 	depth = level
 	for _, f := range sel.fields {
 		if f.alias != "" {
@@ -695,6 +717,7 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "graphql",
 		Description: "GraphQL request bounds: depth, complexity, aliases, batch size, query size, introspection",
+		BuffersBody: true,
 		Validate: func(opts filter.Options) error {
 			_, err := parse(opts)
 			return err

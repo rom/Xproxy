@@ -7,7 +7,7 @@
 xproxy\-fleet \- fleet controller: configuration bundles and status for many xproxy nodes
 .SH "SYNOPSIS"
 .PP
-\fBxproxy\-fleet serve\fR \fB\-dir\fR \fIDIR\fR \fB\-listen\fR \fIADDR\fR \fB\-cert\fR \fIPEM\fR \fB\-key\fR \fIPEM\fR \fB\-ca\fR \fIPEM\fR [\fB\-any\-name\fR] [\fB\-scan\fR \fID\fR] [\fB\-admin\-socket\fR \fIPATH\fR]
+\fBxproxy\-fleet serve\fR \fB\-dir\fR \fIDIR\fR \fB\-listen\fR \fIADDR\fR \fB\-cert\fR \fIPEM\fR \fB\-key\fR \fIPEM\fR \fB\-ca\fR \fIPEM\fR [\fB\-any\-name\fR] [\fB\-name\-map\fR \fIFILE\fR] [\fB\-scan\fR \fID\fR] [\fB\-admin\-socket\fR \fIPATH\fR]
 .PP
 \fBxproxy\-fleet nodes\fR [\fB\-admin\-socket\fR \fIPATH\fR] [\fB\-json\fR]
 .PP
@@ -57,7 +57,7 @@ T}
 .PP
 Editing the files is the push: the controller rescans every \fB\-scan\fR interval, a bundle whose files no longer parse is not served (the last good one stays and the error shows in \fBnodes\fR), and the agents apply a changed bundle within seconds through the ordinary reload path, rolling back the files when the proxy refuses the configuration.
 .PP
-Agents authenticate with a client certificate from \fB\-ca\fR; the certificate\(aqs common name or DNS name must equal the node id unless \fB\-any\-name\fR is given.
+Agents authenticate with a client certificate from \fB\-ca\fR; the certificate\(aqs common name or DNS name must equal the node id, unless \fB\-name\-map\fR names that exception for that one node, or \fB\-any\-name\fR turns the binding off for every node at once.
 .SH "COMMANDS"
 .PP
 .TS
@@ -134,7 +134,12 @@ T}
 T{
 \fB\-\:any\-\:name\fR
 T}	T{
-Accept any certificate from the CA for any node id.
+Accept any certificate from the CA for any node id. Every authorisation is then warned about,\: because one stolen node certificate can fetch every node\(aqs bundle and report as any node;\: prefer \fB\-\:name\-\:map\fR.
+T}
+T{
+\fB\-\:name\-\:map\fR \fIFILE\fR
+T}	T{
+File of \fBnode_\:id certificate_\:name\fR lines (\fB#\fR comments): the named certificate may act for that node id. One exception at a time instead of turning the binding off for every node. Each use is counted and warned about.
 T}
 T{
 \fB\-\:scan\fR \fID\fR

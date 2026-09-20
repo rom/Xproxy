@@ -318,3 +318,56 @@ routes:
 		}
 	}
 }
+
+// Compressing the response to a request that carried the victim's
+// authority is the BREACH condition: a secret and attacker-chosen text
+// in one compressed body leak the secret through its length, a
+// character at a time, and a request a browser sends with the victim's
+// cookies is exactly what an attacker can arrange.
+func TestCompressionSkipsCredentialedRequests(t *testing.T) {
+	body := strings.Repeat("hello world ", 200)
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+logging: {access: {enabled: false}}
+compression: {level: 6, min_bytes: 512}
+routes:
+  - name: opted
+    paths: [/opted]
+    compress_authenticated: true
+    respond: {status: 200, body: %q}
+  - name: text
+    paths: [/]
+    respond: {status: 200, body: %q}
+`, body, body)
+	_, url := startServer(t, yaml)
+	get := func(path string, hdr ...string) string {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, url+path, nil)
+		req.Header.Set("Accept-Encoding", "gzip")
+		for i := 0; i+1 < len(hdr); i += 2 {
+			req.Header.Set(hdr[i], hdr[i+1])
+		}
+		tr := &http.Transport{DisableCompression: true}
+		resp, err := tr.RoundTrip(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.Header.Get("Content-Encoding")
+	}
+	if enc := get("/text"); enc != "gzip" {
+		t.Fatalf("an anonymous request was not compressed: %q", enc)
+	}
+	for _, h := range [][]string{{"Cookie", "session=abc"}, {"Authorization", "Bearer x"}} {
+		if enc := get("/text", h...); enc != "" {
+			t.Fatalf("%s: compressed anyway (%q)", h[0], enc)
+		}
+		// The route that opts in is compressed as before.
+		if enc := get("/opted", h...); enc != "gzip" {
+			t.Fatalf("%s: the opted-in route was not compressed: %q", h[0], enc)
+		}
+	}
+}

@@ -68,6 +68,26 @@ func (s *Server) publishEvent(e cluster.Event) {
 
 // onClusterEvent applies an event received from a peer: the server's own
 // kinds directly, every other kind through the live generation's bus.
+// peerMarkTTL is the longest this node will hold a mark a peer sent: the
+// largest honeypot mark duration its own routes use, or an hour when no
+// route has a honeypot at all.
+func (s *Server) peerMarkTTL() time.Duration {
+	longest := time.Duration(0)
+	if rt := s.rt.Load(); rt != nil {
+		for _, cr := range rt.routes {
+			if cr.cfg.Honeypot != nil {
+				if d := cr.cfg.Honeypot.Mark.D(); d > longest {
+					longest = d
+				}
+			}
+		}
+	}
+	if longest <= 0 {
+		longest = time.Hour
+	}
+	return longest
+}
+
 func (s *Server) onClusterEvent(e cluster.Event, peer string) {
 	now := time.Now()
 	switch e.Kind {
@@ -80,13 +100,25 @@ func (s *Server) onClusterEvent(e cluster.Event, peer string) {
 		if err != nil {
 			return
 		}
-		s.marks.add(ip.Unmap(), "peer:"+peer+"/"+e.Route, e.Until.Sub(now), now)
+		// The peer chose the deadline; this node decides how long it is
+		// willing to hold one. Without the clamp a peer marks an address
+		// for a year where the local honeypot would have marked it for
+		// minutes.
+		ttl := e.Until.Sub(now)
+		if local := s.peerMarkTTL(); ttl > local {
+			ttl = local
+		}
+		if ttl <= 0 {
+			return
+		}
+		s.marks.addFrom(ip.Unmap(), "peer:"+peer+"/"+e.Route, ttl, now, peer)
 	case eventHoneypotUnmark:
 		ip, err := netip.ParseAddr(e.Key)
 		if err != nil {
 			return
 		}
-		s.marks.remove(ip.Unmap())
+		// Only the peer that placed a mark may withdraw it.
+		s.marks.removeFrom(ip.Unmap(), peer)
 	default:
 		if rt := s.rt.Load(); rt != nil && rt.events != nil {
 			rt.events.dispatch(e)

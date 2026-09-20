@@ -44,6 +44,14 @@ func (e *ValidationError) Error() string {
 
 type validator struct {
 	problems []string
+	// anyRouteHosts records whether any route names a host, which the
+	// CAPTCHA hostname check uses as its allowlist.
+	anyRouteHosts bool
+	// advice holds configurations that load but are a bad idea: an open
+	// resolver, a cluster with no certificate name restriction. They are
+	// not errors, because refusing them would break deployments that
+	// mean it, but an operator should see them every time.
+	advice []string
 	// hasChallenge is set while validating a configuration with a
 	// challenge section (the device rate limit key needs one).
 	hasChallenge bool
@@ -54,6 +62,11 @@ type validator struct {
 
 func (v *validator) errf(format string, args ...interface{}) {
 	v.problems = append(v.problems, fmt.Sprintf(format, args...))
+}
+
+// warnf records a configuration that loads but should be reconsidered.
+func (v *validator) warnf(format string, args ...interface{}) {
+	v.advice = append(v.advice, fmt.Sprintf(format, args...))
 }
 
 var nameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
@@ -72,11 +85,17 @@ func ValidateNoFiles(c *Config) error {
 func validate(c *Config, files bool) error {
 	v := &validator{fileCheck: files}
 	v.config(c)
+	c.advice = v.advice
 	if len(v.problems) == 0 {
 		return nil
 	}
 	return &ValidationError{Problems: v.problems}
 }
+
+// Advice returns the warnings the last validation produced: settings
+// that load but weaken the deployment. The caller logs them; they never
+// stop a start or a reload.
+func (c *Config) Advice() []string { return c.advice }
 
 func (v *validator) config(c *Config) {
 	if c.Version != CurrentVersion {
@@ -204,6 +223,12 @@ func (v *validator) config(c *Config) {
 		v.ingress(c.Ingress, byName)
 	}
 	if c.Challenge != nil {
+		for _, r := range c.Routes {
+			if len(r.Hosts) > 0 {
+				v.anyRouteHosts = true
+				break
+			}
+		}
 		v.challenge(c.Challenge)
 	}
 	if c.Maintenance != nil {
@@ -512,6 +537,15 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.dns: required for kind dns", p)
 			} else {
 				v.dnsListener(p+".dns", ln.DNS)
+				// An open resolver is somebody else's amplifier. The
+				// 1232-byte cap bounds the gain but not the fact that
+				// the answers are sent to whoever the source claims to
+				// be, so a public listener needs at least one of the
+				// two controls.
+				if !loopbackListen(ln.Address) && len(ln.DNS.AllowClients) == 0 && ln.DNS.RateLimit == nil {
+					v.warnf("%s: a dns listener on a non-loopback address with neither dns.allow_clients nor dns.rate_limit "+
+						"answers anyone who can reach it, which makes this node an amplifier", p)
+				}
 			}
 		case "forward":
 			if ln.TCP != nil || ln.RedirectToHTTPS || h3 || ln.H2C {
@@ -595,6 +629,12 @@ func (v *validator) server(s *Server) {
 	}
 	if l.MaxConnectionsPerIP > l.MaxConnections {
 		v.errf("server.limits.max_connections_per_ip: exceeds max_connections")
+	}
+	if b := l.MaxBufferedBodyBytes; b != 0 && (b < 1<<20 || b > 64<<30) {
+		v.errf("server.limits.max_buffered_body_bytes: must be 0 (unbounded) or between 1 MiB and 64 GiB")
+	}
+	if b := l.MaxBufferedBodyBytes; b > 0 && b < l.MaxBodyBytes {
+		v.warnf("server.limits.max_buffered_body_bytes (%d) is below max_body_bytes (%d): a single request on a route that inspects bodies cannot fit the budget and is refused", b, l.MaxBodyBytes)
 	}
 }
 
@@ -1674,6 +1714,19 @@ func (v *validator) bans(b *Bans) {
 	}
 }
 
+// loopbackListen reports an address bound to the loopback interface.
+func loopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	return err == nil && ip.IsLoopback()
+}
+
 func (v *validator) cluster(c *Cluster) {
 	if !nameRE.MatchString(c.NodeID) {
 		v.errf("cluster.node_id: %q is not a valid name", c.NodeID)
@@ -1695,6 +1748,14 @@ func (v *validator) cluster(c *Cluster) {
 			v.errf("cluster.peers[%d]: duplicate %q", i, p)
 		}
 		seen[p] = true
+	}
+	if len(c.TLS.AllowedNames) == 0 {
+		v.warnf("cluster.tls.allowed_names is empty, so any certificate the cluster CA issued may join: " +
+			"a cluster certificate is full trust inside the cluster, and the node id is all that distinguishes one holder from another")
+	}
+	if !c.TLS.BindsNodeID() {
+		v.warnf("cluster.tls.bind_node_id is off: a peer's announced node_id is not checked against its certificate, " +
+			"so it can choose which rate-limit keys it decides for every node")
 	}
 	if c.TLS.CertFile == "" || c.TLS.KeyFile == "" || c.TLS.CAFile == "" {
 		v.errf("cluster.tls: cert_file, key_file and ca_file are all required (mutual TLS is mandatory)")
@@ -2297,6 +2358,11 @@ func (v *validator) challenge(c *Challenge) {
 	if !cookieNameOK(c.CookieName) {
 		v.errf("challenge.cookie_name: %q is not a valid cookie name", c.CookieName)
 	}
+	switch c.CookieScope {
+	case "", "shared", "host":
+	default:
+		v.errf("challenge.cookie_scope: must be shared or host")
+	}
 	for i, cidr := range c.ExemptCIDRs {
 		if _, err := netip.ParsePrefix(cidr); err != nil {
 			v.errf("challenge.exempt_cidrs[%d]: %q is not a CIDR", i, cidr)
@@ -2304,6 +2370,10 @@ func (v *validator) challenge(c *Challenge) {
 	}
 	if len(c.Title) > 200 || strings.ContainsAny(c.Title, "<>&\"'") {
 		v.errf("challenge.title: at most 200 characters, no HTML special characters")
+	}
+	if cp := c.Captcha; cp != nil && cp.ChecksHostname() && len(cp.Hostnames) == 0 && !v.anyRouteHosts {
+		v.errf("challenge.captcha.hostnames: required when hostname_check is on and no route sets hosts: " +
+			"the hostname the provider reports is otherwise compared against the request host, which the client chooses")
 	}
 	if cp := c.Captcha; cp != nil {
 		switch cp.Provider {
@@ -3002,6 +3072,11 @@ func (v *validator) virtualPatches(patches []VirtualPatch, routes map[string]boo
 				v.errf("%s.body.max_bytes: must be between 1 and 16 MiB", p)
 			}
 			v.mediaTypes(p+".body.content_types", b.ContentTypes)
+			switch b.OverLimit {
+			case "", "match", "skip":
+			default:
+				v.errf("%s.body.over_limit: must be match or skip", p)
+			}
 		}
 		if len(vp.Paths)+len(vp.PathRegex)+len(vp.Query)+len(vp.Headers)+len(vp.Cookies) == 0 && vp.Body == nil {
 			v.errf("%s: needs at least one of paths, path_regex, query, headers, cookies or body", p)

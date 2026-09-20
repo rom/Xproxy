@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rom/xproxy/internal/bound"
 )
 
 // Controller serves bundles and collects status. Its directory holds
@@ -33,6 +35,16 @@ type Controller struct {
 	// requireName demands that the client certificate name equals the
 	// node id in the path.
 	requireName bool
+	// nameMap is the explicit exception list: node id to the certificate
+	// name that may act for it. It exists so a deployment whose
+	// certificate names and node ids differ does not have to reach for
+	// -any-name, which turns the binding off for every node at once.
+	nameMap map[string]string
+	// mapped and anyName make the exceptions audible: an authorisation
+	// that only succeeded through the map, and one that only succeeded
+	// because the binding is off, are counted and warned about.
+	mapped  bound.Notice
+	anyName bound.Notice
 
 	mu      sync.Mutex
 	bundles map[string]*assignment
@@ -59,7 +71,7 @@ type nodeRecord struct {
 var nodeIDRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]{0,62})$`)
 
 // New creates a controller over dir.
-func New(dir string, scan time.Duration, requireName bool, log *slog.Logger) (*Controller, error) {
+func New(dir string, scan time.Duration, requireName bool, nameMap map[string]string, log *slog.Logger) (*Controller, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
@@ -72,7 +84,11 @@ func New(dir string, scan time.Duration, requireName bool, log *slog.Logger) (*C
 	if scan <= 0 {
 		scan = 2 * time.Second
 	}
-	c := &Controller{dir: abs, scan: scan, log: log, requireName: requireName, bundles: map[string]*assignment{}, nodes: map[string]*nodeRecord{}, changed: make(chan struct{})}
+	c := &Controller{dir: abs, scan: scan, log: log, requireName: requireName, nameMap: nameMap,
+		bundles: map[string]*assignment{}, nodes: map[string]*nodeRecord{}, changed: make(chan struct{})}
+	if !requireName {
+		log.Warn("fleet: certificate names are not bound to node ids (-any-name): any certificate this CA issued can fetch any node's bundle and report as any node; use -name-map instead")
+	}
 	c.loadStatus()
 	c.Scan()
 	return c, nil
@@ -340,17 +356,24 @@ func (c *Controller) authorise(w http.ResponseWriter, r *http.Request) (string, 
 		http.Error(w, "bad node id", http.StatusBadRequest)
 		return "", false
 	}
-	if c.requireName {
-		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-			http.Error(w, "client certificate required", http.StatusUnauthorized)
-			return "", false
-		}
-		if !certMatches(r.TLS.PeerCertificates[0], id) {
-			http.Error(w, "certificate name does not match the node id", http.StatusForbidden)
-			return "", false
-		}
+	if !c.requireName {
+		c.anyName.Hit(c.log, "fleet: node authorised without a certificate name binding (-any-name)", "node", id)
+		return id, true
 	}
-	return id, true
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		http.Error(w, "client certificate required", http.StatusUnauthorized)
+		return "", false
+	}
+	leaf := r.TLS.PeerCertificates[0]
+	if certMatches(leaf, id) {
+		return id, true
+	}
+	if want, ok := c.nameMap[id]; ok && certMatches(leaf, want) {
+		c.mapped.Hit(c.log, "fleet: node authorised through the name map", "node", id, "certificate", want)
+		return id, true
+	}
+	http.Error(w, "certificate name does not match the node id", http.StatusForbidden)
+	return "", false
 }
 
 func certMatches(leaf *x509.Certificate, id string) bool {

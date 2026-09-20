@@ -102,7 +102,7 @@ type siteverifyResponse struct {
 
 // check verifies a widget token with the provider. The reason names the
 // failure class without the provider's detail.
-func (c *captcha) check(ctx context.Context, token, host string, ip netip.Addr) (bool, string) {
+func (c *captcha) check(ctx context.Context, token string, routeHosts map[string]bool, ip netip.Addr) (bool, string) {
 	if token == "" || len(token) > 8192 {
 		return false, "captcha token"
 	}
@@ -135,17 +135,25 @@ func (c *captcha) check(ctx context.Context, token, host string, ip netip.Addr) 
 	if c.minScore > 0 && (sv.Score == nil || *sv.Score < c.minScore) {
 		return false, "captcha score"
 	}
-	if c.checkHostname && !c.hostnameOK(sv.Hostname, host) {
+	if c.checkHostname && !c.hostnameOK(sv.Hostname, routeHosts) {
 		return false, "captcha hostname"
 	}
 	return true, ""
 }
 
 // hostnameOK checks the hostname the provider reports the token was
-// solved on: against the configured allowlist, or, when none is set,
-// against the host the request was made to. A provider that omits the
-// hostname fails closed.
-func (c *captcha) hostnameOK(reported, host string) bool {
+// solved on against the configured allowlist: challenge.captcha
+// hostnames, or the host names this proxy's routes are configured for.
+// A provider that omits the hostname, and a hostname in neither list,
+// fail closed.
+//
+// The request host is not an allowlist. It is chosen by the client, so
+// comparing the two only asked the attacker to be consistent: point a
+// name you control at this proxy, solve the CAPTCHA on your own page
+// under that name with the same site key, and present the token with a
+// matching Host header. Validation refuses a configuration where
+// neither list exists.
+func (c *captcha) hostnameOK(reported string, routeHosts map[string]bool) bool {
 	reported = strings.ToLower(strings.TrimSpace(reported))
 	if reported == "" {
 		return false
@@ -153,8 +161,5 @@ func (c *captcha) hostnameOK(reported, host string) bool {
 	if len(c.hostnames) > 0 {
 		return c.hostnames[reported]
 	}
-	if i := strings.IndexByte(host, ':'); i >= 0 {
-		host = host[:i]
-	}
-	return reported == strings.ToLower(host)
+	return routeHosts[reported]
 }

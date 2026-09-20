@@ -46,6 +46,15 @@ type Message struct {
 
 var errMalformed = errors.New("dns: malformed message")
 
+// errExpansion says a message decompresses to far more than it weighs on
+// the wire; see maxExpansion.
+var errExpansion = errors.New("dns: message expands too far")
+
+// maxExpansion bounds the decompressed size of a message as a multiple
+// of its wire size. Legitimate messages stay well under two: compression
+// only pays for repeated suffixes.
+const maxExpansion = 8
+
 // ParseMessage parses every section. Names inside rdata are decompressed
 // so records can be compared and signed as in RFC 4034.
 func ParseMessage(b []byte) (*Message, error) {
@@ -63,6 +72,13 @@ func ParseMessage(b []byte) (*Message, error) {
 	}
 	m.Question, m.QEnd = q, qEnd
 	off := qEnd
+	// A record costs at most twelve wire bytes and expands to a 255-byte
+	// name plus a decompressed rdata name of the same size, so a message
+	// of compression pointers expands by several hundred times. The
+	// counts are already bounded by the bytes present (below); this
+	// bounds what those bytes may become, because both ParseMessage and
+	// Pack run on a client's own query when validation is on.
+	budget := maxExpansion * len(b)
 	read := func(n uint16) ([]RR, error) {
 		// The counts come off the wire. The smallest record that can
 		// follow is twelve bytes (a two-byte compression pointer and a
@@ -75,6 +91,10 @@ func ParseMessage(b []byte) (*Message, error) {
 			rr, next, err := parseRR(b, off)
 			if err != nil {
 				return nil, err
+			}
+			budget -= len(rr.Name) + len(rr.Data) + 12
+			if budget < 0 {
+				return nil, errExpansion
 			}
 			out = append(out, rr)
 			off = next
@@ -398,8 +418,12 @@ func sortedCanonical(rrs []RR) [][]byte {
 	return dedup
 }
 
-// Pack serialises a message without compression.
-func (m *Message) Pack() []byte {
+// Pack serialises a message without compression. It returns ok=false
+// when the result would pass MaxMessage, which no transport here would
+// send anyway: WriteTCP refuses it and a UDP write fails with EMSGSIZE,
+// so a caller falls back to the bytes it already had rather than
+// building megabytes to throw away.
+func (m *Message) Pack() ([]byte, bool) {
 	out := make([]byte, headerLen, 512)
 	binary.BigEndian.PutUint16(out, m.Header.ID)
 	binary.BigEndian.PutUint16(out[2:], m.Header.Flags)
@@ -413,10 +437,16 @@ func (m *Message) Pack() []byte {
 	out = binary.BigEndian.AppendUint16(out, m.Question.Class)
 	for _, sec := range [][]RR{m.Answer, m.Authority, m.Additional} {
 		for _, rr := range sec {
+			if len(out) > MaxMessage {
+				return nil, false
+			}
 			out = appendRR(out, rr)
 		}
 	}
-	return out
+	if len(out) > MaxMessage {
+		return nil, false
+	}
+	return out, true
 }
 
 func appendRR(out []byte, rr RR) []byte {

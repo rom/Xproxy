@@ -92,7 +92,8 @@ func serve(args []string, errOut io.Writer, fail func(error) int) int {
 	certFile := fs.String("cert", "", "controller certificate (PEM)")
 	keyFile := fs.String("key", "", "controller key (PEM)")
 	caFile := fs.String("ca", "", "CA that issues the node certificates (PEM)")
-	anyName := fs.Bool("any-name", false, "accept any certificate from the CA for any node id (default: the name must equal the id)")
+	anyName := fs.Bool("any-name", false, "accept any certificate from the CA for any node id; prefer -name-map, and expect a warning on every authorisation while this is on")
+	nameMapFile := fs.String("name-map", "", "file of \"node_id certificate_name\" lines: the named certificate may act for that node id, one exception at a time instead of -any-name")
 	scan := fs.Duration("scan", 2*time.Second, "how often the directory is rescanned")
 	adminSock := fs.String("admin-socket", "", "operator socket for nodes, node, bundle and scan (default DIR/fleet.sock)")
 	if err := fs.Parse(args); err != nil {
@@ -102,7 +103,11 @@ func serve(args []string, errOut io.Writer, fail func(error) int) int {
 		return fail(errors.New("-cert, -key and -ca are required"))
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	c, err := fleet.New(*dir, *scan, !*anyName, log)
+	nameMap, err := readNameMap(*nameMapFile)
+	if err != nil {
+		return fail(err)
+	}
+	c, err := fleet.New(*dir, *scan, !*anyName, nameMap, log)
 	if err != nil {
 		return fail(err)
 	}
@@ -388,4 +393,32 @@ func short(d string) string {
 		return d[:12]
 	}
 	return d
+}
+
+// readNameMap reads the explicit node id to certificate name exceptions:
+// one "node_id certificate_name" pair per line, "#" comments and blank
+// lines ignored. It exists so a deployment whose certificate names and
+// node ids differ can name the exceptions instead of turning the
+// binding off for every node with -any-name.
+func readNameMap(path string) (map[string]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // an operator supplied path
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for n, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			return nil, fmt.Errorf("%s:%d: want \"node_id certificate_name\"", path, n+1)
+		}
+		out[f[0]] = f[1]
+	}
+	return out, nil
 }

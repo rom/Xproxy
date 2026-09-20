@@ -598,6 +598,10 @@
           "description": "CookieName defaults to XPCHAL.",
           "type": "string"
         },
+        "cookie_scope": {
+          "description": "CookieScope is \"shared\" (default) or \"host\". A pass cookie is bound to the client address and its TLS fingerprint; with \"host\" it is bound to the host that served the challenge as well, so a client cannot earn a cheap pass on one host and spend it on another that asks for more work. Use \"host\" when hosts behind one proxy differ in difficulty or tier; leave it \"shared\" when a pass is meant to cover a site's several names, since \"host\" makes every outstanding cookie stop working once.",
+          "type": "string"
+        },
         "device": {
           "description": "Device includes a device identifier, computed by the challenge script from stable browser properties, in the cookie; it becomes the device attribute, Info.DeviceID for filters and the device rate limit key. Default true.",
           "type": "boolean"
@@ -709,7 +713,7 @@
           }
         },
         "bind_node_id": {
-          "description": "BindNodeID requires a peer's announced node_id to be a name its certificate carries. Default false, because a certificate common name and a node id legitimately differ in existing clusters; turning it on is recommended once they agree. The id is not a label: key ownership for exact rate limits is a rendezvous hash over node ids, and bans and marks are attributed to them, so a peer that chooses its own id chooses which keys it decides and whose name appears in the audit trail. Set it false only for an existing cluster whose certificate names differ from its node ids, and fix the certificates.",
+          "description": "BindNodeID requires a peer's announced node_id to be a name its certificate carries. Default true. The id is not a label: key ownership for exact rate limits is a rendezvous hash over node ids, so a peer free to choose its id chooses which keys it decides for every node. Set it false only for an existing cluster whose certificate names and node ids differ, and fix the certificates: a cluster certificate is full trust within the cluster, and the id is the only thing that distinguishes one holder of one from another. The id is not a label: key ownership for exact rate limits is a rendezvous hash over node ids, and bans and marks are attributed to them, so a peer that chooses its own id chooses which keys it decides and whose name appears in the audit trail. Set it false only for an existing cluster whose certificate names differ from its node ids, and fix the certificates.",
           "type": "boolean"
         },
         "ca_file": {
@@ -731,6 +735,10 @@
         "brotli_level": {
           "description": "BrotliLevel is 0 (fastest) to 11 (smallest). Default 4.",
           "type": "integer"
+        },
+        "compress_authenticated": {
+          "description": "CompressAuthenticated compresses a response to a request that carried Authorization or Cookie. Default false. Compressing a response that mixes a secret with attacker-chosen text leaks the secret through the compressed length, one character at a time (BREACH). The condition is a request the attacker can make the browser send with the victim's credentials, which is exactly a request carrying a cookie. Turn it on per route where the response holds no secret, or where the application already masks its tokens.",
+          "type": "boolean"
         },
         "enabled": {
           "description": "Enabled defaults to true when the section is present.",
@@ -1666,6 +1674,10 @@
         "max_body_bytes": {
           "type": "integer"
         },
+        "max_buffered_body_bytes": {
+          "description": "MaxBufferedBodyBytes is the process-wide ceiling on request bodies held in memory at once by the features that materialise one (upload_guard, sensitive_data, account_guard, openapi, graphql, body_rewrite, wasm, the WAF's body inspection, a virtual patch's body pattern, a mirrored request). Default 512 MiB; 0 is unbounded. Each of those is bounded per request, and the product was the real ceiling: max_connections_per_ip times max_body_bytes is about 2.5 GiB of heap from one address at the defaults, sent slowly enough to stay inside read_timeout. A request that does not fit the budget is refused with 503 rather than buffered.",
+          "type": "integer"
+        },
         "max_concurrent_requests": {
           "type": "integer"
         },
@@ -2072,7 +2084,7 @@
           "type": "boolean"
         },
         "reject_backslashes": {
-          "description": "RejectBackslashes refuses a backslash anywhere in the decoded path, which some servers read as a separator. Default false.",
+          "description": "RejectBackslashes refuses a backslash anywhere in the decoded path. IIS, Apache on Windows and .NET read it as a separator while this proxy reads it as an ordinary character, so \"/static\\\\..\\\\admin\" is one opaque segment under /static here and \"/admin\" there: the route's access lists, filters, WAF profile and rate limits are all skipped for a resource the origin serves. Default true.",
           "type": "boolean"
         },
         "reject_control_chars": {
@@ -2093,6 +2105,10 @@
         },
         "reject_invalid_utf8": {
           "description": "RejectInvalidUTF8 refuses a decoded path that is not valid UTF-8 (overlong and truncated sequences). Default true.",
+          "type": "boolean"
+        },
+        "reject_path_params": {
+          "description": "RejectPathParams refuses a \";\" in the decoded path. Tomcat, Jetty, JBoss and Spring strip a path parameter from every segment before mapping, so \"/admin;x\" or \"/admin;jsessionid=...\" misses this proxy's /admin route and its policy while the origin serves /admin. Default true.",
           "type": "boolean"
         },
         "unicode": {
@@ -2236,6 +2252,10 @@
       "description": "OriginSignature is the bypass protection an origin verifies: an HMAC over method, host, path, query, time, client address, request id and the listed extra headers, carried in one header.",
       "type": "object",
       "properties": {
+        "body_digest": {
+          "description": "BodyDigest makes the signature cover the request body of methods that carry one, as a SHA-256 the proxy also sends in Content-Digest. Default false. Without it a signature proves that a request passed through the proxy, not what it carried: anything that can reach the origin can replay a captured header set with a body of its own while the timestamp is inside the TTL. It costs buffering the body, and a bodied request larger than 8 MiB is refused rather than forwarded with a signature that stops at the headers.",
+          "type": "boolean"
+        },
         "header": {
           "description": "Header carries the signature. Default X-Xproxy-Signature.",
           "type": "string"
@@ -2306,8 +2326,12 @@
           }
         },
         "max_bytes": {
-          "description": "MaxBytes bounds the body inspected; a larger body does not match the patch. Default 64 KiB.",
+          "description": "MaxBytes bounds the body inspected. Default 64 KiB.",
           "type": "integer"
+        },
+        "over_limit": {
+          "description": "OverLimit decides a body larger than MaxBytes, or one the filter could not read: \"match\" (default) treats it as matching the patch, \"skip\" lets it through unmatched. A virtual patch is the emergency control that holds a known vulnerability while the application is fixed, and every sibling control here refuses an oversize body rather than passing it. With \"skip\", 64 KiB of padding carries the same payload straight to the origin.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -2551,6 +2575,10 @@
         },
         "compress": {
           "description": "Compress overrides the compression section for this route: false turns it off, true requires the section.",
+          "type": "boolean"
+        },
+        "compress_authenticated": {
+          "description": "CompressAuthenticated overrides compression.compress_authenticated for this route.",
           "type": "boolean"
         },
         "cookies": {
@@ -3667,6 +3695,10 @@
         },
         "propagate": {
           "description": "Propagate sends traceparent and tracestate to the upstream. Default true.",
+          "type": "boolean"
+        },
+        "redact_client_address": {
+          "description": "RedactClientAddress runs a span's client.address through logging.redaction's client_ip rule. Default true. A span is not a log line, so nothing took it through the redactor: a deployment that turned redaction on to pseudonymise addresses still exported the full address to its trace collector, and the access log carries the trace id, so holding both stores reversed the pseudonymisation by design.",
           "type": "boolean"
         },
         "sample_percent": {

@@ -745,6 +745,7 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "wasm",
 		Description: "WebAssembly module (ABI v1) run per request in a wazero sandbox.",
+		BuffersBody: true,
 		Validate: func(opts filter.Options) error {
 			c, err := parse(opts)
 			if err != nil {

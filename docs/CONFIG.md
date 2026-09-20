@@ -313,6 +313,18 @@ public CA).
 | `max_connections_per_ip` | int | `256` | positive, at most `max_connections` | Per source address |
 | `max_concurrent_requests` | int | `16384` | positive | In-flight requests; 503 above |
 | `max_tarpits` | int | `1024` | 1 to 1000000 | Requests held in a tarpit at once. A tarpitted request releases its concurrency slot; above this bound it is rejected with 429 immediately (`tarpit_overflow` counts those) |
+| `max_buffered_body_bytes` | bytes | `536870912` | 0 (unbounded) or 1 MiB to 64 GiB | Ceiling on request bodies held in memory at once across the process; a request on a route that inspects bodies and does not fit is refused with `503` and reason `body_budget` |
+
+`max_buffered_body_bytes` covers every feature that materialises a
+whole request body: `upload_guard`, `sensitive_data`, `account_guard`,
+`openapi`, `graphql`, `body_rewrite`, `wasm`, the WAF's body
+inspection, ICAP, a virtual patch's body pattern and a mirrored
+request. Each of those is bounded per request, and the product was the
+real ceiling: `max_connections_per_ip` (256) times `max_body_bytes`
+(10 MiB) is about 2.5 GiB of heap from one address, sent slowly enough
+to stay inside `read_timeout`. A request whose body cannot be charged
+is refused before it is read; `xproxyctl stats` shows what is held, the
+high-water mark and the refusals.
 
 ### server.normalization
 
@@ -332,7 +344,8 @@ rules see what the client sent.
 | `reject_invalid_utf8` | bool | `true` | A decoded path that is not valid UTF-8: overlong (`%c0%af`) and truncated sequences (`path_invalid_utf8`) |
 | `reject_double_encoding` | bool | `false` | A path that still holds a percent escape after one decoding (`%252e%252e`), the classic way past a filter that decodes once (`path_double_encoding`) |
 | `reject_encoded_slashes` | bool | `false` | `%2F` or `%5C` in the raw path: the routing decoder turns them into separators that the upstream may treat as data (`path_encoded_slash`) |
-| `reject_backslashes` | bool | `false` | A backslash in the decoded path, a separator to some servers (`path_backslash`) |
+| `reject_backslashes` | bool | `true` | A backslash anywhere in the decoded path (`path_backslash`). IIS, Apache on Windows and .NET read it as a separator while this proxy reads it as an ordinary character, so `/static\..\admin` is one opaque segment under `/static` here and `/admin` there, skipping that route's access lists, filters, WAF profile and rate limits |
+| `reject_path_params` | bool | `true` | A `;` anywhere in the decoded path (`path_parameter`). Tomcat, Jetty, JBoss and Spring strip a path parameter from every segment before mapping, so `/admin;x` or `/admin;jsessionid=…` misses this proxy's `/admin` route and its policy while the origin serves `/admin`. Turn it off for an API that genuinely uses matrix parameters |
 | `reject_dot_segments` | bool | `true` | A `.` or `..` segment in the decoded path, including the `..;` form servlet containers resolve (`path_dot_segment`). Routing resolves dot segments while the upstream receives the path as sent, so `/static/../admin` would be routed as `/admin` but reach the origin unchanged; browsers never send such paths |
 | `reject_ambiguous_framing` | bool | `true` | HTTP/1 requests with several differing `Content-Length` values, a `Content-Length` next to a transfer coding, or a coding other than chunked (`framing_content_length`, `framing_te_cl`, `framing_transfer_encoding`). The Go parser already refuses most of these before the proxy sees them; the check closes the rest and makes them visible |
 | `unicode` | `off`, `nfc`, `nfkc` | `off` | Fold the decoded path to that form for routing: `nfc` makes composed and decomposed spellings (`café` either way) match one route, `nfkc` also compatibility forms such as fullwidth letters (`ｕsers`). The upstream receives the original path |
@@ -835,10 +848,22 @@ is always replaced.
 | `secret_file` | path | required | Keyring shared with the origin (mode `0600`, created on first start; `xproxyctl rotate-secret` adds a new primary and keeps the previous key, so the origin verifies with either while it is updated) |
 | `ttl` | duration | `5m` | Age the origin should accept; a signature is also refused more than a minute in the future |
 | `include` | list of headers | `[]` | Extra request headers covered, for example a tenant header the proxy sets |
+| `body_digest` | bool | `false` | Cover the request body as well: the proxy buffers it, appends `sha-256=:<base64>:` as a final signed line, sends it as `Content-Digest` and adds `;bd=1` to the signature header. Without it a signature proves that a request passed through the proxy, not what it carried — anything that can reach the origin can replay a captured header set with a body of its own while the timestamp is inside the TTL. A bodied request larger than 8 MiB is refused with `413` rather than forwarded with a signature that stops at the headers |
 
 At the origin, recompute the MAC with the shared key selected by `kid`,
 compare in constant time, and refuse when it differs, the key id is
-unknown or `t` is older than the TTL. HARDENING.md has verifier
+unknown or `t` is older than the TTL. When the header carries `bd=1`,
+the last signed line is the body digest: hash the body and compare.
+Dropping `bd=1` does not turn that off, because the digest is part of
+what was signed.
+
+Within the TTL a signature is replayable by anything that captured it
+(a log, a proxy in front of the origin, a browser extension). Where
+that matters, have the origin remember the `X-Request-Id` values it has
+already answered for the TTL and refuse a repeat: the proxy sets a
+fresh one per request and the id is covered by the signature, so a
+replay carries the same id. `body_digest` bounds what a replay can
+change; the id dedupe stops the replay itself. HARDENING.md has verifier
 snippets; `internal/originsig` has `Verify` for origins written in Go.
 Combine with mutual TLS (`tls.client_cert_file`) and with network
 filtering: each closes what the others cannot.
@@ -875,6 +900,7 @@ not match is skipped and the next candidate is tried.
 | `doh` | `{listener}` | | DNS over HTTPS action; see `routes[].doh` |
 | `static` | object | | Serve files from a directory; see `routes[].static` |
 | `compress` | bool | follows `compression` | `false` leaves this route's responses as they are; `true` needs an enabled `compression` section |
+| `compress_authenticated` | bool | follows `compression.compress_authenticated` | Compress this route's responses to requests carrying `Authorization` or a `Cookie` (see BREACH under `compression`) |
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
@@ -1422,7 +1448,7 @@ counts per patch and hits survive reloads.
 | `query` | list of `{name, pattern}` | | The parameter must be present and, with `pattern`, some value must contain a match |
 | `headers` | list of `{name, pattern}` | | Same for header fields (names case insensitive) |
 | `cookies` | list of `{name, pattern}` | | Same for cookies |
-| `body` | object | none | `pattern` (required) matched anywhere in the body, buffered up to `max_bytes` (default 64 KiB, at most 16 MiB) and replayed to the upstream; `content_types` narrows the inspection; a larger body or another media type does not match |
+| `body` | object | none | `pattern` (required) matched anywhere in the body, buffered up to `max_bytes` (default 64 KiB, at most 16 MiB) and replayed to the upstream; `content_types` narrows the inspection, and a body of another media type does not match. `over_limit` decides a body past `max_bytes` or one that could not be read: `match` (default) treats it as matching, `skip` lets it through. A virtual patch is the emergency control that holds a known vulnerability while the application is fixed, and the WAF and ICAP both refuse an oversize body, so `skip` means 64 KiB of padding carries the same payload to the origin |
 | `action` | `block`, `log` | `block` | |
 | `status` | int | `403` | Response for `block`; 4xx or 5xx (404 hides the patched path) |
 | `expires` | date | none | RFC 3339 or `YYYY-MM-DD` (end of that day, UTC); an expired patch no longer applies and shows as expired |
@@ -1448,8 +1474,8 @@ and sharing flags reload.
 | `peers` | list of host:port | `[]` | Cluster addresses of the other nodes |
 | `tls.cert_file`, `tls.key_file` | path | required | This node's certificate, used for both directions |
 | `tls.ca_file` | path | required | Cluster CA; every peer must present a certificate from it |
-| `tls.allowed_names` | list | `[]` (any name from the CA) | Restrict peers to these certificate common names or DNS SANs |
-| `tls.bind_node_id` | bool | `false` | Require a peer's announced `node_id` to be a name its certificate carries. The id is not only a label: key ownership for `distributed: exact` rate limits is a rendezvous hash over node ids, so a peer free to choose its id chooses which keys it decides for every node. Turn it on once the certificate names and the node ids agree. A peer's bans, marks and rate reports are attributed to its certificate common name either way, so the audit trail is not affected by this setting |
+| `tls.allowed_names` | list | `[]` (any name from the CA) | Restrict peers to these certificate common names or DNS SANs. Leaving it empty means any certificate the CA ever issued is a cluster peer, and a cluster certificate is full trust inside the cluster: validation says so out loud. Use a CA that issues nothing else, and list the names |
+| `tls.bind_node_id` | bool | `true` | Require a peer's announced `node_id` to be a name its certificate carries. The id is not only a label: key ownership for `distributed: exact` rate limits is a rendezvous hash over node ids, so a peer free to choose its id chooses which keys it decides for every node. Set it false only for an existing cluster whose certificate names and node ids differ, and fix the certificates: a cluster certificate is full trust inside the cluster. A peer's bans, marks and rate reports are attributed to its certificate common name either way, so the audit trail is not affected by this setting |
 | `gossip_interval` | duration | `1s` | How often consumption and ban batches are sent; 100ms to 60s |
 | `peer_stale` | duration | 3 x `gossip_interval` | How long a peer report keeps reducing local refill after its last update; at least 2 x the interval |
 | `share_rate_limits` | bool | `true` | Exchange consumption reports |
@@ -1491,7 +1517,7 @@ connects to the node. Changing the section requires a restart.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `controller` | URL | required | The controller's base URL, `https` without a path |
-| `node_id` | name | `cluster.node_id`, else the host name | The node's name at the controller; must equal the certificate's common name or DNS name unless the controller runs with `-any-name` |
+| `node_id` | name | `cluster.node_id`, else the host name | The node's name at the controller; must equal the certificate's common name or DNS name, unless the controller's `-name-map` names the exception (or it runs with `-any-name`, which turns the binding off for every node and warns on every authorisation) |
 | `tls.cert_file`, `tls.key_file` | path | required | The node's client certificate |
 | `tls.ca_file` | path | required | CA that issued the controller's certificate |
 | `tls.server_name` | string | host of `controller` | Name verified in the controller's certificate |
@@ -1707,7 +1733,7 @@ redirects are not security events; failed callbacks are, with reason
 | `logout_redirect` | path | `/` | |
 | `frontchannel_logout_path` | path | `/oauth2/frontchannel-logout` | OpenID Connect Front-Channel Logout endpoint: register `external_url` + path as the `frontchannel_logout_uri` at the provider; a `GET` with `sid` (and `iss`, checked against `issuer`) revokes that provider session so every session carrying it stops working, and clears the cookie when present |
 | `revoked_max` | int | `65536` | Bound of the revoked session id index; entries expire with the sessions they end, and over the bound the soonest to expire is dropped |
-| `external_url` | URL | derived | `scheme://host` the browser reaches the proxy on; derived from the request (`Host`, TLS or `X-Forwarded-Proto`) when unset |
+| `external_url` | URL | derived | `scheme://host` the browser reaches the proxy on. Set it. Unset, it is derived from the request: `Host`, the listener's own TLS, and `X-Forwarded-Proto` only from a peer inside `trusted_proxies` — any client can send that header, and the URL derived from it is the redirect URI the provider sends the authorization code to |
 | `cookie_name` | token | `XPOIDC` | The state cookie is `<cookie_name>_state`, ten minutes |
 | `cookie_domain` | string | host only | |
 | `session_ttl` | duration | `8h` | 1m to 720h; the cookie and its payload expire together |
@@ -1836,6 +1862,7 @@ unverified request of the endpoint is challenged (or blocked).
 | `max_body_bytes` | int | `65536` | Request body buffered to read an identity (up to 8 MiB); a larger body yields no identity |
 | `max_delayed` | int | `256` | Requests held in delay steps at once; beyond it the delay is skipped and a throttled warning written |
 | `disposable_domains` | list | `[]` | Lower case domains added to the built-in list |
+| `secret_file` | path | a key made at start | Keyring whose primary key keys the account hash. The hash stands in for the account in the tables, the access and security logs and every cluster event, and a plain digest of an address or a user name is not an anonymisation — the input space is small enough to enumerate — so anyone who sees one could confirm whether an account exists. Every node of a cluster must read the same file, or a peer event names a hash the other nodes cannot match; without a file the key is node-local and the filter says so at start |
 
 Default ladders (thresholds reached within the window): `login` delays
 2s at 5 address, 3 account or 3 pair failures, challenges at 15
@@ -2023,6 +2050,7 @@ or `api_key` with a value; requests only).
 | `*.max_decompression_ratio` | int | `100` | A streamed decode is cut (the transfer ends in an error) once more than 8 MiB has been decoded and the decoded size passes this multiple of the compressed bytes read. A decoded body is forwarded decoded, so without this bound a body that fits under `max_body_bytes` could become an unbounded plaintext stream toward the upstream or the client (2 to 100000) |
 | `*.encoded` | `scan`, `skip` | `scan` | Decode `gzip`, `deflate`, `br` and `zstd` bodies for scanning, or leave compressed bodies unscanned |
 | `*.oversize` | `stream`, `skip` | `stream` | Scan bodies larger than `max_bytes` as they flow, or leave them unscanned |
+| `*.unscannable` | `refuse`, `skip` | `refuse` (request), `skip` (response) | What happens to a body the filter cannot read at all: a content coding it does not implement, a stream the decompressor refuses, or a partial body (`Content-Range`). An origin does not decompress a request body — it hands the raw bytes to the application — so `Content-Encoding: xyzzy` costs a client nothing and would otherwise turn the whole filter off for that message, `action: block` included. A refusal is `415` with detail `<direction>:unscannable` |
 | `*.ignore_headers` | list | request: `Authorization`, `Cookie`, `X-Api-Key`, `Proxy-Authorization`; response: `Set-Cookie` | Headers never scanned or masked |
 | `block_status` | int | `403` | Status for `block` (4xx or 5xx) |
 | `min_findings` | int | `1` | Findings a message needs before mask or block act; fewer are logged only (1 to 64) |
@@ -2082,6 +2110,7 @@ telemetry` and `GET /v1/telemetry` show the counters.
 | `sample_percent` | 0 to 100 | `100` | Share of traces recorded and exported; propagation happens regardless |
 | `propagate` | bool | `true` | Send `traceparent` and `tracestate` to the upstream; off, an incoming header is stripped |
 | `trust_incoming` | bool | `false` | Honour the sampled flag of an incoming `traceparent` (behind a trusted balancer that samples) |
+| `redact_client_address` | bool | `true` | Run a span's `client.address` through `logging.redaction`'s `client_ip` rule. A span is not a log line, so nothing else takes it through the redactor: without this a deployment that turned redaction on to pseudonymise addresses still exported the full address to its trace collector, beside a trace id the access log also carries. The host and the path on a span are still outside redaction |
 | `otlp` | object | none | Span exporter with the same keys as `logging.otlp` (`endpoint` is the traces URL, `/v1/traces`) |
 
 A reload that changes the section rebuilds the tracer; spans in flight
@@ -2117,6 +2146,7 @@ Brotli still receives gzip when it accepts it. The access log has
 | `zstd_level` | int | `2` | zstd level 1 (fastest), 2 (default), 3 (better) or 4 (best) |
 | `min_bytes` | int | `1024` | Bodies below this length are not compressed; 0 to 1 MiB |
 | `types` | list | text, script, style, JSON, XML, SVG, wasm and font types | Media types compressed, without parameters |
+| `compress_authenticated` | bool | `false` | Compress the response to a request that carried `Authorization` or a `Cookie`. Compressing a body that mixes a secret with attacker-chosen text leaks the secret through its length, one character at a time (BREACH), and a request a browser sends with the victim's cookies is exactly what an attacker can arrange. Turn it on per route (`routes[].compress_authenticated`) where the response holds no secret, or where the application already masks its tokens |
 
 The default `types` are `text/html`, `text/plain`, `text/css`,
 `text/csv`, `text/xml`, `text/javascript`, `application/javascript`,
@@ -2325,6 +2355,7 @@ host before routing.
 | `ttl` | duration | `1h` | Validity of a passed challenge; at least 1m |
 | `bind_ip` | bool | `true` | Cookie and nonce are bound to the client address |
 | `bind_ja4` | bool | `false` | Bind the cookie to the client's JA4 TLS fingerprint (token binding): a cookie earned by one TLS client is refused when replayed by another, even from the same address. TLS only; a request without a fingerprint is treated as a distinct binding |
+| `cookie_scope` | `shared`, `host` | `shared` | `host` binds the pass to the host that served the challenge. The nonce is host-bound already, so with `shared` a client can solve the cheapest host's challenge and spend the cookie on the host that asks for the most work. Use `host` when hosts behind one proxy differ in difficulty or tier; leave it `shared` when a pass is meant to cover a site's several names. Changing it invalidates every outstanding cookie once |
 | `cookie_name` | token | `XPCHAL` | |
 | `exempt_cidrs` | list | `[]` | Never challenged (monitoring, partners) |
 | `title` | string | `Checking your browser` | Heading on the page; no HTML characters |
@@ -2355,7 +2386,7 @@ falls back to the proof of work.
 | `timeout` | duration | `5s` | Verification call (500ms to 30s); the call uses no environment proxy |
 | `min_score` | float | `0` | Refuse tokens scored below it (providers that return a score); 0 disables |
 | `mode` | `escalation`, `always` | `escalation` | `always` shows the widget on every challenge page, including route gates, in place of the proof of work |
-| `hostnames` | list | the request host | Host names the provider may report the token was solved on; empty checks the token against the host the challenge page was served on, so a token solved for another site is refused |
+| `hostnames` | list | the hosts the routes name | Host names the provider may report the token was solved on. Empty falls back to the host names `routes[].hosts` configure; a hostname in neither list, and a provider that omits it, are refused. The request host is not an allowlist — the client chooses it, so an attacker who points a name of their own at this proxy would only have to be consistent — so validation refuses a configuration where neither list exists |
 | `hostname_check` | bool | `true` | Verify the hostname the provider reports; turn off for providers that do not return one |
 
 ### routes[].cors

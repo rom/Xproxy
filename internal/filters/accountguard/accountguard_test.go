@@ -2,10 +2,13 @@ package accountguard
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -145,7 +148,7 @@ func TestLoginLadder(t *testing.T) {
 		}
 		return s
 	}(), " "))
-	if strings.Contains(joined, "anna") || !strings.Contains(joined, "account_hash") || !strings.Contains(joined, hashIdentity("anna@example.com")) {
+	if strings.Contains(joined, "anna") || !strings.Contains(joined, "account_hash") || !strings.Contains(joined, g.hashIdentity("anna@example.com")) {
 		t.Fatalf("attrs %v", attrs)
 	}
 	// A body failure (2xx with the error marker) counts; a success
@@ -306,7 +309,7 @@ func TestRegisterResetScrape(t *testing.T) {
 	info := filter.Info{ClientIP: netip.MustParseAddr("203.0.113.20"), Path: "/reset", Method: "POST"}
 	in := g.Begin(context.Background(), &info).(*instance)
 	in.Request(r)
-	if in.hash != hashIdentity("who@example.com") || in.counts.account != 1 {
+	if in.hash != g.hashIdentity("who@example.com") || in.counts.account != 1 {
 		t.Fatalf("reset identity: %q %s", in.hash, in.counts)
 	}
 	// Scraping: distinct paths per address on a prefix endpoint.
@@ -391,10 +394,10 @@ func TestIdentityAndBodies(t *testing.T) {
 		got, _ := io.ReadAll(r.Body)
 		return in, string(got)
 	}
-	if in, body := run(`{"email":" Anna@Example.com "}`, "application/json"); in.hash != hashIdentity("anna@example.com") || body != `{"email":" Anna@Example.com "}` {
+	if in, body := run(`{"email":" Anna@Example.com "}`, "application/json"); in.hash != g.hashIdentity("anna@example.com") || body != `{"email":" Anna@Example.com "}` {
 		t.Fatalf("json: %q %q", in.hash, body)
 	}
-	if in, body := run("email=b%40example.com&pw=1", "application/x-www-form-urlencoded; charset=utf-8"); in.hash != hashIdentity("b@example.com") || body != "email=b%40example.com&pw=1" {
+	if in, body := run("email=b%40example.com&pw=1", "application/x-www-form-urlencoded; charset=utf-8"); in.hash != g.hashIdentity("b@example.com") || body != "email=b%40example.com&pw=1" {
 		t.Fatalf("form: %q %q", in.hash, body)
 	}
 	big := `{"email":"c@example.com","pad":"` + strings.Repeat("x", 100) + `"}`
@@ -404,7 +407,7 @@ func TestIdentityAndBodies(t *testing.T) {
 	if in, body := run("<x/>", "text/xml"); in.hash != "" || body != "<x/>" {
 		t.Fatalf("other type: %q %q", in.hash, body)
 	}
-	if in, _ := run(`{"email":42}`, "application/json"); in.hash != hashIdentity("42") {
+	if in, _ := run(`{"email":42}`, "application/json"); in.hash != g.hashIdentity("42") {
 		t.Fatalf("number identity: %q", in.hash)
 	}
 	if in, _ := run(`not json`, "application/json"); in.hash != "" {
@@ -659,5 +662,42 @@ func TestDeviceAndAutomation(t *testing.T) {
 	}
 	if _, err := filtertest.Build("account_guard", "a", filter.Options{"endpoints": []any{map[string]any{"name": "x", "class": "scrape", "paths": []any{"/x"}, "automation": "maybe"}}}); err == nil {
 		t.Fatal("automation maybe accepted")
+	}
+}
+
+// The account hash stands in for the account in the tables, the logs
+// and every cluster event. A plain digest of an address or a user name
+// is not an anonymisation — the input space is small enough to
+// enumerate — so it is an HMAC, and two deployments with different keys
+// produce different hashes for the same account.
+func TestAccountHashIsKeyed(t *testing.T) {
+	dir := t.TempDir()
+	one := filepath.Join(dir, "one.key")
+	two := filepath.Join(dir, "two.key")
+	build := func(path string) *guard {
+		t.Helper()
+		g, err := newGuard("ag", filter.Options{"endpoints": []any{map[string]any{"name": "login", "class": "login", "paths": []any{"/login"}, "identity": map[string]any{"form": "email"}}}, "secret_file": path}, filter.Env{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	a, b := build(one), build(two)
+	if a.hashIdentity("anna@example.com") == b.hashIdentity("anna@example.com") {
+		t.Fatal("two keyrings produced the same account hash")
+	}
+	// The same file gives the same hash, which is what a cluster needs.
+	if build(one).hashIdentity("anna@example.com") != a.hashIdentity("anna@example.com") {
+		t.Fatal("the same keyring produced a different hash")
+	}
+	// It is not the unkeyed digest anybody can compute.
+	sum := sha256.Sum256([]byte("anna@example.com"))
+	if a.hashIdentity("anna@example.com") == hex.EncodeToString(sum[:])[:hashLen] {
+		t.Fatal("the account hash is still a plain digest")
+	}
+	// Without a file the key is node-local but stable in the process.
+	c, d := build(""), build("")
+	if c.hashIdentity("anna@example.com") != d.hashIdentity("anna@example.com") {
+		t.Fatal("the process key changed between filters")
 	}
 }

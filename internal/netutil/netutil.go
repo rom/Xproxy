@@ -3,6 +3,7 @@
 package netutil
 
 import (
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -175,4 +176,24 @@ func labelsNonEmpty(name string) bool {
 		return false
 	}
 	return !strings.Contains(name, "..")
+}
+
+// MediaType returns the lower-cased media type of a Content-Type or
+// Content-Disposition style header value, without its parameters.
+//
+// mime.ParseMediaType is stricter than the servers behind the proxy: a
+// duplicate parameter name with two values ("application/json;
+// charset=utf-8; charset=ascii"), junk after the subtype
+// ("application/json/x") or a bare parameter ("application/json;q") make
+// it return an empty type and an error, while the npm content-type
+// parser, Jakarta, werkzeug and PHP all take the type and read the body.
+// A consumer that threw the type away on the error therefore skipped its
+// whole policy for the price of one stray character, so every one of
+// them asks here instead and falls back to the token before the first
+// semicolon.
+func MediaType(value string) string {
+	if mt, _, err := mime.ParseMediaType(value); err == nil && mt != "" {
+		return mt
+	}
+	return strings.ToLower(strings.TrimSpace(strings.SplitN(value, ";", 2)[0]))
 }

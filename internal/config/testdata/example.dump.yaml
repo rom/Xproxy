@@ -59,12 +59,14 @@ server:
         max_connections_per_ip: 256
         max_concurrent_requests: 16384
         max_tarpits: 1024
+        max_buffered_body_bytes: 536870912
     normalization:
         reject_control_chars: null
         reject_invalid_utf8: null
         reject_double_encoding: false
         reject_encoded_slashes: false
-        reject_backslashes: false
+        reject_backslashes: null
+        reject_path_params: null
         reject_dot_segments: null
         reject_ambiguous_framing: null
         unicode: "off"
@@ -349,6 +351,7 @@ routes:
       doh: null
       static: null
       compress: null
+      compress_authenticated: null
       maintenance: null
       cors: null
     - name: api
@@ -415,6 +418,7 @@ routes:
       doh: null
       static: null
       compress: null
+      compress_authenticated: null
       maintenance: null
       cors: null
     - name: admin
@@ -472,6 +476,7 @@ routes:
       doh: null
       static: null
       compress: null
+      compress_authenticated: null
       maintenance: null
       cors: null
     - name: upload
@@ -534,6 +539,7 @@ routes:
       doh: null
       static: null
       compress: null
+      compress_authenticated: null
       maintenance: null
       cors: null
     - name: web
@@ -597,6 +603,7 @@ routes:
       doh: null
       static: null
       compress: null
+      compress_authenticated: null
       maintenance: null
       cors: null
     - name: default
@@ -658,6 +665,7 @@ routes:
       doh: null
       static: null
       compress: null
+      compress_authenticated: null
       maintenance: null
       cors: null
 bans:
@@ -769,6 +777,7 @@ shedding:
 maintenance: null
 challenge:
     secret_file: /var/lib/xproxy/challenge.key
+    cookie_scope: ""
     difficulty: 16
     ttl: 1h0m0s
     bind_ip: null

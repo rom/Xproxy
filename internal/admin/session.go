@@ -103,36 +103,61 @@ func (s *sessions) drop(tok string) {
 
 // loginLimiter counts failed logins per source and locks the source out
 // after `limit` failures inside `window`.
+// loginLimiter counts failed logins per source and account.
+//
+// Keying on the source alone locked every operator out for the window
+// after five bad logins from one place, and a client over the Unix
+// socket or an SSH tunnel is one place: "local" for everybody. Keying
+// on the account alone would trade that for unlimited password spraying
+// across names. The key is therefore both, with a global ceiling so a
+// spray across many names is still stopped — at which point the GUI is
+// closed to everyone for the window, which is the right answer when
+// that many logins are failing at once.
 type loginLimiter struct {
 	mu     sync.Mutex
-	fails  map[string][]time.Time
+	fails  map[string][]time.Time // source \x00 account
+	all    []time.Time            // every failure, for the global ceiling
 	limit  int
 	window time.Duration
 	now    func() time.Time
 }
 
+// globalFactor sets the global ceiling as a multiple of the per-key
+// limit: enough that a handful of operators mistyping passwords never
+// reach it, few enough that a spray across names does.
+const globalFactor = 20
+
 func newLoginLimiter(limit int, window time.Duration) *loginLimiter {
 	return &loginLimiter{fails: map[string][]time.Time{}, limit: limit, window: window, now: time.Now}
 }
 
-// blocked reports whether the source is locked out and for how long.
-func (l *loginLimiter) blocked(src string) (bool, time.Duration) {
+func limiterKey(src, user string) string { return src + "\x00" + user }
+
+// blocked reports whether this source and account are locked out, or
+// the whole GUI is, and for how long.
+func (l *loginLimiter) blocked(src, user string) (bool, time.Duration) {
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	f := l.prune(src, now)
+	l.all = pruneTimes(l.all, now, l.window)
+	if len(l.all) >= l.limit*globalFactor {
+		return true, l.all[0].Add(l.window).Sub(now)
+	}
+	f := l.prune(limiterKey(src, user), now)
 	if len(f) >= l.limit {
 		return true, f[0].Add(l.window).Sub(now)
 	}
 	return false, 0
 }
 
-func (l *loginLimiter) fail(src string) {
+func (l *loginLimiter) fail(src, user string) {
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	f := l.prune(src, now)
-	l.fails[src] = append(f, now)
+	key := limiterKey(src, user)
+	f := l.prune(key, now)
+	l.fails[key] = append(f, now)
+	l.all = append(pruneTimes(l.all, now, l.window), now)
 	if len(l.fails) > 10000 { // bound the map under a distributed attack
 		for k := range l.fails {
 			delete(l.fails, k)
@@ -141,24 +166,27 @@ func (l *loginLimiter) fail(src string) {
 	}
 }
 
-func (l *loginLimiter) reset(src string) {
+func (l *loginLimiter) reset(src, user string) {
 	l.mu.Lock()
-	delete(l.fails, src)
+	delete(l.fails, limiterKey(src, user))
 	l.mu.Unlock()
 }
 
 // prune drops entries outside the window; caller holds the lock.
-func (l *loginLimiter) prune(src string, now time.Time) []time.Time {
-	f := l.fails[src]
-	i := 0
-	for i < len(f) && now.Sub(f[i]) > l.window {
-		i++
-	}
-	f = f[i:]
+func (l *loginLimiter) prune(key string, now time.Time) []time.Time {
+	f := pruneTimes(l.fails[key], now, l.window)
 	if len(f) == 0 {
-		delete(l.fails, src)
+		delete(l.fails, key)
 	} else {
-		l.fails[src] = f
+		l.fails[key] = f
 	}
 	return f
+}
+
+func pruneTimes(f []time.Time, now time.Time, window time.Duration) []time.Time {
+	i := 0
+	for i < len(f) && now.Sub(f[i]) > window {
+		i++
+	}
+	return f[i:]
 }

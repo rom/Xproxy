@@ -24,6 +24,7 @@ type Entry struct {
 	Host      string
 	Path      string
 	key       string
+	primary   string // the key without the Vary suffix, for the vary index
 	size      int64
 	elem      *list.Element
 	varyNames []string // response Vary header names, kept on the primary entry
@@ -40,9 +41,16 @@ func (e *Entry) Fresh(now time.Time) bool { return now.Before(e.Expires) }
 
 // Cache is the store.
 type Cache struct {
-	mu       sync.Mutex
-	entries  map[string]*Entry // full key (primary + vary) to entry
-	vary     map[string][]string
+	mu      sync.Mutex
+	entries map[string]*Entry // full key (primary + vary) to entry
+	vary    map[string][]string
+	// varyRefs counts the stored entries behind each vary index record.
+	// Without it the index grew for every distinct primary key ever
+	// stored and only a full purge cleared it, so eviction held the byte
+	// bound while unauthenticated traffic — one request per query string,
+	// against any origin that sends "Vary: Accept-Encoding" — retained
+	// the index for good.
+	varyRefs map[string]int
 	lru      *list.List
 	bytes    int64
 	maxBytes int64
@@ -55,7 +63,7 @@ type Cache struct {
 // New creates a cache bounded to maxBytes in total and maxObject per
 // entry.
 func New(maxBytes, maxObject int64) *Cache {
-	return &Cache{entries: map[string]*Entry{}, vary: map[string][]string{}, lru: list.New(), maxBytes: maxBytes, maxObj: maxObject, now: time.Now}
+	return &Cache{entries: map[string]*Entry{}, vary: map[string][]string{}, varyRefs: map[string]int{}, lru: list.New(), maxBytes: maxBytes, maxObj: maxObject, now: time.Now}
 }
 
 // Resize changes the bounds (reload) and evicts to fit.
@@ -67,7 +75,11 @@ func (c *Cache) Resize(maxBytes, maxObject int64) {
 }
 
 // MaxObject returns the per entry bound.
-func (c *Cache) MaxObject() int64 { return c.maxObj }
+func (c *Cache) MaxObject() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.maxObj
+}
 
 // Key derives the primary key of a request: method, host, path and the
 // selected query and header values.
@@ -128,24 +140,31 @@ func (c *Cache) Put(primary string, req http.Header, e *Entry) bool {
 			e.size += int64(len(v))
 		}
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// The bounds are read here rather than before the lock: Resize
+	// writes them on a reload, and a request storing an entry while a
+	// reload changes the size was a genuine data race.
 	if e.size > c.maxObj || e.size > c.maxBytes {
 		return false
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if len(e.varyNames) > 0 {
 		c.vary[primary] = e.varyNames
 	} else {
 		delete(c.vary, primary)
+		delete(c.varyRefs, primary)
 	}
 	key := varyKey(primary, e.varyNames, req)
 	if old, ok := c.entries[key]; ok {
 		c.removeLocked(old)
 	}
-	e.key = key
+	e.key, e.primary = key, primary
 	c.evictLocked(e.size)
 	e.elem = c.lru.PushFront(e)
 	c.entries[key] = e
+	if len(e.varyNames) > 0 {
+		c.varyRefs[primary]++
+	}
 	c.bytes += e.size
 	c.Stores.Add(1)
 	return true
@@ -155,6 +174,14 @@ func (c *Cache) removeLocked(e *Entry) {
 	delete(c.entries, e.key)
 	c.lru.Remove(e.elem)
 	c.bytes -= e.size
+	// The vary index outlives no entry: the last one to go takes it.
+	if len(e.varyNames) > 0 {
+		c.varyRefs[e.primary]--
+		if c.varyRefs[e.primary] <= 0 {
+			delete(c.varyRefs, e.primary)
+			delete(c.vary, e.primary)
+		}
+	}
 }
 
 // evictLocked frees room for need bytes.
@@ -180,6 +207,7 @@ func (c *Cache) Purge(host, prefix string) int {
 	}
 	if host == "" && prefix == "" {
 		c.vary = map[string][]string{}
+		c.varyRefs = map[string]int{}
 	}
 	c.Purges.Add(uint64(n)) //nolint:gosec // non-negative
 	return n
@@ -200,10 +228,15 @@ type Stats struct {
 
 // Stats returns counters and sizes.
 func (c *Cache) Stats() Stats {
+	// maxBytes and maxObj are written by Resize on a reload, so they are
+	// read under the lock like everything else here: a word-sized read
+	// racing a word-sized write is benign in practice and undefined
+	// under the Go memory model, and there was no test that reloaded
+	// under load to catch it.
 	c.mu.Lock()
-	n, b := len(c.entries), c.bytes
+	n, b, maxBytes, maxObj := len(c.entries), c.bytes, c.maxBytes, c.maxObj
 	c.mu.Unlock()
-	return Stats{Entries: n, Bytes: b, MaxBytes: c.maxBytes, MaxObject: c.maxObj, Hits: c.Hits.Load(), Misses: c.Misses.Load(),
+	return Stats{Entries: n, Bytes: b, MaxBytes: maxBytes, MaxObject: maxObj, Hits: c.Hits.Load(), Misses: c.Misses.Load(),
 		Stores: c.Stores.Load(), Evictions: c.Evictions.Load(), Purged: c.Purges.Load()}
 }
 

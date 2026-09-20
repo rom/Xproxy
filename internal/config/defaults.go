@@ -21,6 +21,7 @@ const (
 	DefaultMaxConnectionsPerIP   = 256
 	DefaultMaxConcurrentRequests = 16384
 	DefaultMaxTarpits            = 1024
+	DefaultMaxBufferedBody       = 512 << 20
 	DefaultShutdownTimeout       = 30 * time.Second
 
 	DefaultUpstreamConnect        = 5 * time.Second
@@ -112,6 +113,7 @@ func applyDefaults(c *Config) {
 	setInt(&l.MaxConnectionsPerIP, DefaultMaxConnectionsPerIP)
 	setInt(&l.MaxConcurrentRequests, DefaultMaxConcurrentRequests)
 	setInt(&l.MaxTarpits, DefaultMaxTarpits)
+	setInt64(&l.MaxBufferedBodyBytes, DefaultMaxBufferedBody)
 	setStr(&c.Server.Normalization.Unicode, "off")
 
 	for i := range s.Listeners {
@@ -694,6 +696,12 @@ func ingressDefaults(c *Config) {
 }
 
 func setInt(p *int, v int) {
+	if *p == 0 {
+		*p = v
+	}
+}
+
+func setInt64(p *int64, v int64) {
 	if *p == 0 {
 		*p = v
 	}

@@ -17,7 +17,7 @@ var (
 // Directions and Outcomes name the action counters in a fixed order.
 var (
 	Directions = []string{"request", "response"}
-	Outcomes   = []string{"logged", "masked", "blocked"}
+	Outcomes   = []string{"logged", "masked", "blocked", "unscannable"}
 )
 
 func init() {

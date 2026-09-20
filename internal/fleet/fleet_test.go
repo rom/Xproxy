@@ -155,7 +155,7 @@ func newHarness(t *testing.T, requireName bool) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctrl, err := New(filepath.Join(dir, "fleet"), 50*time.Millisecond, requireName, nolog)
+	ctrl, err := New(filepath.Join(dir, "fleet"), 50*time.Millisecond, requireName, nil, nolog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +402,35 @@ func TestControllerAuthorisation(t *testing.T) {
 	if _, err := anon.Get(h.srv.URL + "/v1/fleet/nodes/edge1/config"); err == nil {
 		t.Fatal("anonymous client accepted")
 	}
-	// -any-name lets a differently named certificate act for a node.
+	// The name map is the explicit exception: the certificate named
+	// "agent" may act for edge1, and nothing else changes.
+	h3 := newHarness(t, true)
+	h3.ctrl.nameMap = map[string]string{"edge1": "agent"}
+	write(t, filepath.Join(h3.ctrl.Dir(), "nodes", "edge1", "xproxy.yaml"), nodeConfig)
+	write(t, filepath.Join(h3.ctrl.Dir(), "nodes", "edge2", "xproxy.yaml"), nodeConfig)
+	h3.ctrl.Scan()
+	resp, err = h3.client(t, "agent").Get(h3.srv.URL + "/v1/fleet/nodes/edge1/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("name map status %d", resp.StatusCode)
+	}
+	if h3.ctrl.mapped.Total() != 1 {
+		t.Fatalf("the exception was not counted: %d", h3.ctrl.mapped.Total())
+	}
+	// A node the map does not name is still refused for that certificate.
+	resp, err = h3.client(t, "agent").Get(h3.srv.URL + "/v1/fleet/nodes/edge2/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatalf("a node outside the map: %d", resp.StatusCode)
+	}
+	// -any-name lets a differently named certificate act for a node,
+	// loudly.
 	h2 := newHarness(t, false)
 	write(t, filepath.Join(h2.ctrl.Dir(), "nodes", "edge1", "xproxy.yaml"), nodeConfig)
 	h2.ctrl.Scan()
@@ -413,6 +441,9 @@ func TestControllerAuthorisation(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("any-name status %d", resp.StatusCode)
+	}
+	if h2.ctrl.anyName.Total() == 0 {
+		t.Fatal("an authorisation without a name binding was silent")
 	}
 }
 
@@ -456,7 +487,7 @@ func TestAdminHandlerAndValidateDir(t *testing.T) {
 	}
 	// A restarted controller remembers the reports.
 	h.ctrl.record("edge1", NodeStatus{NodeID: "edge1", Version: "1"}, "10.0.0.1:1", "edge1")
-	c2, err := New(h.ctrl.Dir(), time.Second, true, nolog)
+	c2, err := New(h.ctrl.Dir(), time.Second, true, nil, nolog)
 	if err != nil {
 		t.Fatal(err)
 	}

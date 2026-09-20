@@ -40,6 +40,7 @@ import (
 	"sync"
 
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/netutil"
 )
 
 // Phase configures one direction.
@@ -65,6 +66,17 @@ type Phase struct {
 	// scanned as it flows, holding back 4 KiB between chunks; a block
 	// cuts the transfer) or skip.
 	Oversize string `json:"oversize"`
+	// Unscannable decides what happens to a body the filter cannot read
+	// at all: a content coding it does not implement, a stream the
+	// decompressor refuses, or a partial body (Content-Range). refuse
+	// (the request default) answers block_status; skip (the response
+	// default) forwards it unscanned.
+	//
+	// An origin does not decompress a request body — it hands the raw
+	// bytes to the application — so "Content-Encoding: xyzzy" costs a
+	// client nothing and used to turn the whole filter off for that
+	// message, action: block included.
+	Unscannable string `json:"unscannable"`
 	// MaxDecodedBytes bounds a decoded body buffered whole; a larger one
 	// is streamed. Default four times max_bytes.
 	MaxDecodedBytes int64 `json:"max_decoded_bytes"`
@@ -171,6 +183,21 @@ func parsePhase(name string, p *Phase, request bool) error {
 	case "stream", "skip":
 	default:
 		errs = append(errs, fmt.Errorf("%s.oversize: must be stream or skip", name))
+	}
+	switch p.Unscannable {
+	case "":
+		// A request the filter cannot read is refused; a response is
+		// forwarded, because an origin that answers in a coding this
+		// build does not implement is an operations problem, not an
+		// exfiltration attempt the client chose.
+		if request {
+			p.Unscannable = "refuse"
+		} else {
+			p.Unscannable = "skip"
+		}
+	case "refuse", "skip":
+	default:
+		errs = append(errs, fmt.Errorf("%s.unscannable: must be refuse or skip", name))
 	}
 	if len(p.Types) == 0 {
 		p.Types = append([]string(nil), DefaultTypes...)
@@ -349,39 +376,46 @@ func (in *instance) blockedStream(direction string) {
 	countAction(direction, "blocked")
 }
 
-// body decides how a body is scanned and returns the body to forward
-// (nil when the message must not be touched): a small body is buffered
-// and scanned whole (decoded when compressed), a larger or larger-when-
-// decoded one is streamed through the scanner. newLen is the new
-// content length (-1 for a stream), plain whether the encoding header
-// must go (the body is forwarded decoded) and masked whether bytes
-// changed.
-func (in *instance) body(direction string, p *Phase, h http.Header, rc io.ReadCloser, length int64, mask bool) (out io.ReadCloser, newLen int64, plain, masked bool) {
+// bodyResult is what body decided about one message body.
+type bodyResult struct {
+	out    io.ReadCloser // the body to forward, nil to leave the message alone
+	newLen int64         // the new content length, -1 for a stream
+	plain  bool          // the encoding header must go: the body is forwarded decoded
+	masked bool          // bytes changed
+	// blind is set when the filter could not read the body at all: an
+	// unimplemented content coding, a decompressor that refused the
+	// stream, or a partial body. The phase's unscannable setting decides
+	// what happens then.
+	blind bool
+}
+
+// body decides how a body is scanned: a small body is buffered and
+// scanned whole (decoded when compressed), a larger or larger-when-
+// decoded one is streamed through the scanner.
+func (in *instance) body(direction string, p *Phase, h http.Header, rc io.ReadCloser, length int64, mask bool) bodyResult {
 	enc, ok := encodingOf(h)
-	if !ok || (enc != "" && p.Encoded == "skip") {
-		return nil, 0, false, false
+	if !ok {
+		// Not "identity and nothing to do" but "this filter cannot see
+		// the bytes": say so rather than passing the message.
+		return bodyResult{blind: p.Unscannable == "refuse"}
 	}
-	// Use the media type even when a parameter is malformed. Go rejects
-	// "application/json;q" and returns an empty type, while the
-	// frameworks behind the proxy read the body as JSON regardless, so
-	// throwing the type away turned one stray character into a way past
-	// the whole policy. Falling back to the token before the first
-	// semicolon is what the graphql filter already does.
-	mt, _, err := mime.ParseMediaType(h.Get("Content-Type"))
-	if err != nil || mt == "" {
-		mt = strings.ToLower(strings.TrimSpace(strings.SplitN(h.Get("Content-Type"), ";", 2)[0]))
+	if enc != "" && p.Encoded == "skip" {
+		return bodyResult{}
 	}
+	// Use the media type even when a parameter is malformed: see
+	// netutil.MediaType.
+	mt := netutil.MediaType(h.Get("Content-Type"))
 	if !p.types[mt] {
-		return nil, 0, false, false
+		return bodyResult{}
 	}
 	request := direction == "request"
 	where := "body"
 	if !request {
 		where = "response_body"
 	}
-	stream := func(src io.Reader) (io.ReadCloser, int64, bool, bool) {
+	stream := func(src io.Reader) bodyResult {
 		if p.Oversize == "skip" {
-			return nil, 0, false, false
+			return bodyResult{}
 		}
 		var r io.ReadCloser = struct {
 			io.Reader
@@ -395,21 +429,23 @@ func (in *instance) body(direction string, p *Phase, h http.Header, rc io.ReadCl
 			counted := &countingReader{r: src}
 			d, err := decoder(enc, counted)
 			if err != nil {
-				return nil, 0, false, false
+				// The header claimed a coding whose stream the
+				// decompressor will not open: the bytes are unreadable.
+				return bodyResult{blind: p.Unscannable == "refuse"}
 			}
 			r = struct {
 				io.Reader
 				io.Closer
 			}{&ratioReader{r: d, src: counted, ratio: int64(p.MaxDecompressionRatio)}, rc}
 		}
-		return &streamScanner{src: r, in: in, direction: direction, where: where, mask: mask, block: p.Action == "block"}, -1, enc != "", mask
+		return bodyResult{out: &streamScanner{src: r, in: in, direction: direction, where: where, mask: mask, block: p.Action == "block"}, newLen: -1, plain: enc != "", masked: mask}
 	}
 	if length > p.MaxBytes {
 		return stream(rc)
 	}
 	raw, whole, rest, err := buffer(rc, p.MaxBytes)
 	if err != nil {
-		return io.NopCloser(bytes.NewReader(raw)), int64(len(raw)), false, false
+		return bodyResult{out: io.NopCloser(bytes.NewReader(raw)), newLen: int64(len(raw))}
 	}
 	if !whole {
 		return stream(rest)
@@ -419,7 +455,10 @@ func (in *instance) body(direction string, p *Phase, h http.Header, rc io.ReadCl
 		decoded, fits, derr := decode(enc, raw, p.MaxDecodedBytes)
 		switch {
 		case derr != nil:
-			return io.NopCloser(bytes.NewReader(raw)), int64(len(raw)), false, false
+			// A body that does not decode in the coding it declares: an
+			// origin never decompresses a request body, so the
+			// application still reads these bytes.
+			return bodyResult{out: io.NopCloser(bytes.NewReader(raw)), newLen: int64(len(raw)), blind: p.Unscannable == "refuse"}
 		case !fits:
 			return stream(bytes.NewReader(raw))
 		}
@@ -428,9 +467,9 @@ func (in *instance) body(direction string, p *Phase, h http.Header, rc io.ReadCl
 	scanned, f := in.g.scanText(string(text), request, mask)
 	in.record(where, f)
 	if mask && f.n > 0 {
-		return io.NopCloser(strings.NewReader(scanned)), int64(len(scanned)), enc != "", true
+		return bodyResult{out: io.NopCloser(strings.NewReader(scanned)), newLen: int64(len(scanned)), plain: enc != "", masked: true}
 	}
-	return io.NopCloser(bytes.NewReader(raw)), int64(len(raw)), false, false
+	return bodyResult{out: io.NopCloser(bytes.NewReader(raw)), newLen: int64(len(raw))}
 }
 
 // outcome counts what happened to a message with findings.
@@ -477,19 +516,23 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	}
 	streamed := false
 	if p.scan["body"] && r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0 {
-		out, n, plain, masked := in.body("request", p, r.Header, r.Body, r.ContentLength, mask)
-		if out != nil {
-			r.Body = out
-			streamed = n < 0
-			if masked || plain || streamed {
-				r.ContentLength = n
-				if n < 0 {
+		res := in.body("request", p, r.Header, r.Body, r.ContentLength, mask)
+		if res.blind {
+			countAction("request", "unscannable")
+			return in.denyUnscannable("request")
+		}
+		if res.out != nil {
+			r.Body = res.out
+			streamed = res.newLen < 0
+			if res.masked || res.plain || streamed {
+				r.ContentLength = res.newLen
+				if res.newLen < 0 {
 					r.Header.Del("Content-Length")
 				} else {
-					r.Header.Set("Content-Length", strconv.FormatInt(n, 10))
+					r.Header.Set("Content-Length", strconv.FormatInt(res.newLen, 10))
 				}
 			}
-			if plain {
+			if res.plain {
 				r.Header.Del("Content-Encoding")
 			}
 		}
@@ -521,21 +564,25 @@ func (in *instance) Response(resp *http.Response) filter.Verdict {
 	}
 	streamed := false
 	if p.scan["body"] && resp.Body != nil && resp.Body != http.NoBody {
-		out, n, plain, masked := in.body("response", p, resp.Header, resp.Body, resp.ContentLength, mask)
-		if out != nil {
-			resp.Body = out
-			streamed = n < 0
-			if masked || plain || streamed {
-				resp.ContentLength = n
-				if n < 0 {
+		res := in.body("response", p, resp.Header, resp.Body, resp.ContentLength, mask)
+		if res.blind {
+			countAction("response", "unscannable")
+			return in.denyUnscannable("response")
+		}
+		if res.out != nil {
+			resp.Body = res.out
+			streamed = res.newLen < 0
+			if res.masked || res.plain || streamed {
+				resp.ContentLength = res.newLen
+				if res.newLen < 0 {
 					resp.Header.Del("Content-Length")
 				} else {
-					resp.Header.Set("Content-Length", strconv.FormatInt(n, 10))
+					resp.Header.Set("Content-Length", strconv.FormatInt(res.newLen, 10))
 				}
 				resp.Header.Del("ETag")
 				resp.Header.Del("Content-MD5")
 			}
-			if plain {
+			if res.plain {
 				resp.Header.Del("Content-Encoding")
 			}
 		}
@@ -581,6 +628,18 @@ func (in *instance) scanHeaders(h http.Header, p *Phase, request, mask bool) {
 		where = "response_headers"
 	}
 	in.record(where, total)
+}
+
+// denyUnscannable refuses a message whose body this filter could not
+// read; see Phase.Unscannable.
+func (in *instance) denyUnscannable(phase string) filter.Verdict {
+	msg := map[string]any{"error": "body cannot be inspected", "phase": phase}
+	body, _ := json.Marshal(msg)
+	status := http.StatusUnsupportedMediaType
+	resp := &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}},
+		Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body))} //nolint:bodyclose // sent by the data plane
+	return filter.Verdict{Deny: true, Status: status, Reason: "sensitive_data", Detail: phase + ":unscannable", Response: resp,
+		Attrs: []any{"sensitive_where", []string{phase + "_body"}}}
 }
 
 func (in *instance) deny(status int, phase string) filter.Verdict {
@@ -639,6 +698,7 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "sensitive_data",
 		Description: "detection of payment cards, identity numbers, IBANs, e-mail addresses, tokens, keys and secrets in requests and responses, with log, mask or block per direction",
+		BuffersBody: true,
 		Validate: func(opts filter.Options) error {
 			_, err := parse(opts)
 			return err

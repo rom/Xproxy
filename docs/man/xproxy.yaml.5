@@ -1011,8 +1011,8 @@ SCTs delivered through the TLS extension or the OCSP response rather than embedd
 .PP
 .TS
 allbox;
-lbw(1.3i) lbw(0.9i) lbw(0.9i) lbw(1.2i) lbx
-lw(1.3i) lw(0.9i) lw(0.9i) lw(1.2i) lx.
+lbw(1.3i) lbw(0.9i) lbw(1.0i) lbw(1.2i) lbx
+lw(1.3i) lw(0.9i) lw(1.0i) lw(1.2i) lx.
 T{
 Key
 T}	T{
@@ -1145,7 +1145,20 @@ T}	T{
 T}	T{
 Requests held in a tarpit at once. A tarpitted request releases its concurrency slot;\: above this bound it is rejected with 429 immediately (\fBtarpit_\:overflow\fR counts those)
 T}
+T{
+\fBmax_\:buffered_\:body_\:bytes\fR
+T}	T{
+bytes
+T}	T{
+\fB536870912\fR
+T}	T{
+0 (unbounded) or 1 MiB to 64 GiB
+T}	T{
+Ceiling on request bodies held in memory at once across the process;\: a request on a route that inspects bodies and does not fit is refused with \fB503\fR and reason \fBbody_\:budget\fR
+T}
 .TE
+.PP
+\fBmax_buffered_body_bytes\fR covers every feature that materialises a whole request body: \fBupload_guard\fR, \fBsensitive_data\fR, \fBaccount_guard\fR, \fBopenapi\fR, \fBgraphql\fR, \fBbody_rewrite\fR, \fBwasm\fR, the WAF\(aqs body inspection, ICAP, a virtual patch\(aqs body pattern and a mirrored request. Each of those is bounded per request, and the product was the real ceiling: \fBmax_connections_per_ip\fR (256) times \fBmax_body_bytes\fR (10 MiB) is about 2.5 GiB of heap from one address, sent slowly enough to stay inside \fBread_timeout\fR. A request whose body cannot be charged is refused before it is read; \fBxproxyctl stats\fR shows what is held, the high\-water mark and the refusals.
 .SS "server.normalization"
 .PP
 What the proxy does with encoding tricks in the request target before routing, rate limits, filters and the WAF look at it. Routing already decodes the path once and resolves dot segments and duplicate slashes; these checks refuse the forms that make two components read a request differently, and optionally fold Unicode spellings for routing. A refusal answers 400 with reason \fBnormalization\fR and the check as \fBdetail\fR, counts in \fBdenied_normalization\fR and feeds ban triggers under \fBnormalization\fR. The WAF still inspects the raw request line, so its rules see what the client sent.
@@ -1204,9 +1217,18 @@ T{
 T}	T{
 bool
 T}	T{
-\fBfalse\fR
+\fBtrue\fR
 T}	T{
-A backslash in the decoded path,\: a separator to some servers (\fBpath_\:backslash\fR)
+A backslash anywhere in the decoded path (\fBpath_\:backslash\fR). IIS,\: Apache on Windows and .NET read it as a separator while this proxy reads it as an ordinary character,\: so \fB/\:static\e.\:.\:\eadmin\fR is one opaque segment under \fB/\:static\fR here and \fB/\:admin\fR there,\: skipping that route\(aqs access lists,\: filters,\: WAF profile and rate limits
+T}
+T{
+\fBreject_\:path_\:params\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A \fB;\fR anywhere in the decoded path (\fBpath_\:parameter\fR). Tomcat,\: Jetty,\: JBoss and Spring strip a path parameter from every segment before mapping,\: so \fB/\:admin;x\fR or \fB/\:admin;jsessionid=\:\[u2026]\fR misses this proxy\(aqs \fB/\:admin\fR route and its policy while the origin serves \fB/\:admin\fR. Turn it off for an API that genuinely uses matrix parameters
 T}
 T{
 \fBreject_\:dot_\:segments\fR
@@ -3386,17 +3408,28 @@ T}	T{
 T}	T{
 Extra request headers covered,\: for example a tenant header the proxy sets
 T}
+T{
+\fBbody_\:digest\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Cover the request body as well: the proxy buffers it,\: appends \fBsha\-\:256=\::\:<base64>:\fR as a final signed line,\: sends it as \fBContent\-\:Digest\fR and adds \fB;bd=\:1\fR to the signature header. Without it a signature proves that a request passed through the proxy,\: not what it carried \[u2014] anything that can reach the origin can replay a captured header set with a body of its own while the timestamp is inside the TTL. A bodied request larger than 8 MiB is refused with \fB413\fR rather than forwarded with a signature that stops at the headers
+T}
 .TE
 .PP
-At the origin, recompute the MAC with the shared key selected by \fBkid\fR, compare in constant time, and refuse when it differs, the key id is unknown or \fBt\fR is older than the TTL. HARDENING.md has verifier snippets; \fBinternal/originsig\fR has \fBVerify\fR for origins written in Go. Combine with mutual TLS (\fBtls.client_cert_file\fR) and with network filtering: each closes what the others cannot.
+At the origin, recompute the MAC with the shared key selected by \fBkid\fR, compare in constant time, and refuse when it differs, the key id is unknown or \fBt\fR is older than the TTL. When the header carries \fBbd=1\fR, the last signed line is the body digest: hash the body and compare. Dropping \fBbd=1\fR does not turn that off, because the digest is part of what was signed.
+.PP
+Within the TTL a signature is replayable by anything that captured it (a log, a proxy in front of the origin, a browser extension). Where that matters, have the origin remember the \fBX\-Request\-Id\fR values it has already answered for the TTL and refuse a repeat: the proxy sets a fresh one per request and the id is covered by the signature, so a replay carries the same id. \fBbody_digest\fR bounds what a replay can change; the id dedupe stops the replay itself. HARDENING.md has verifier snippets; \fBinternal/originsig\fR has \fBVerify\fR for origins written in Go. Combine with mutual TLS (\fBtls.client_cert_file\fR) and with network filtering: each closes what the others cannot.
 .SH "routes[]"
 .PP
 Matching: exact host, then wildcard host, then hostless routes; within a host the longest path (a \fBpath_regex\fR entry counts as the length of its literal prefix and, at equal length, beats a plain prefix); then the number of \fBheaders\fR and \fBcookies\fR conditions (more first, so a conditioned route is tried before the plain route on the same path); then \fBpriority\fR (higher wins); then configuration order. \fBmethods\fR and the conditions are filters: a route whose method set or conditions do not match is skipped and the next candidate is tried.
 .PP
 .TS
 allbox;
-lbw(1.3i) lbw(1.1i) lbw(1.2i) lbx
-lw(1.3i) lw(1.1i) lw(1.2i) lx.
+lbw(1.4i) lbw(1.1i) lbw(1.4i) lbx
+lw(1.4i) lw(1.1i) lw(1.4i) lx.
 T{
 Key
 T}	T{
@@ -3576,6 +3609,15 @@ T}	T{
 follows \fBcompression\fR
 T}	T{
 \fBfalse\fR leaves this route\(aqs responses as they are;\: \fBtrue\fR needs an enabled \fBcompression\fR section
+T}
+T{
+\fBcompress_\:authenticated\fR
+T}	T{
+bool
+T}	T{
+follows \fBcompression.\:compress_\:authenticated\fR
+T}	T{
+Compress this route\(aqs responses to requests carrying \fBAuthorization\fR or a \fBCookie\fR (see BREACH under \fBcompression\fR)
 T}
 T{
 \fBstrip_\:prefix\fR
@@ -5269,7 +5311,7 @@ object
 T}	T{
 none
 T}	T{
-\fBpattern\fR (required) matched anywhere in the body,\: buffered up to \fBmax_\:bytes\fR (default 64 KiB,\: at most 16 MiB) and replayed to the upstream;\: \fBcontent_\:types\fR narrows the inspection;\: a larger body or another media type does not match
+\fBpattern\fR (required) matched anywhere in the body,\: buffered up to \fBmax_\:bytes\fR (default 64 KiB,\: at most 16 MiB) and replayed to the upstream;\: \fBcontent_\:types\fR narrows the inspection,\: and a body of another media type does not match. \fBover_\:limit\fR decides a body past \fBmax_\:bytes\fR or one that could not be read: \fBmatch\fR (default) treats it as matching,\: \fBskip\fR lets it through. A virtual patch is the emergency control that holds a known vulnerability while the application is fixed,\: and the WAF and ICAP both refuse an oversize body,\: so \fBskip\fR means 64 KiB of padding carries the same payload to the origin
 T}
 T{
 \fBaction\fR
@@ -5379,16 +5421,16 @@ list
 T}	T{
 \fB[]\fR (any name from the CA)
 T}	T{
-Restrict peers to these certificate common names or DNS SANs
+Restrict peers to these certificate common names or DNS SANs. Leaving it empty means any certificate the CA ever issued is a cluster peer,\: and a cluster certificate is full trust inside the cluster: validation says so out loud. Use a CA that issues nothing else,\: and list the names
 T}
 T{
 \fBtls.\:bind_\:node_\:id\fR
 T}	T{
 bool
 T}	T{
-\fBfalse\fR
+\fBtrue\fR
 T}	T{
-Require a peer\(aqs announced \fBnode_\:id\fR to be a name its certificate carries. The id is not only a label: key ownership for \fBdistributed:\: exact\fR rate limits is a rendezvous hash over node ids,\: so a peer free to choose its id chooses which keys it decides for every node. Turn it on once the certificate names and the node ids agree. A peer\(aqs bans,\: marks and rate reports are attributed to its certificate common name either way,\: so the audit trail is not affected by this setting
+Require a peer\(aqs announced \fBnode_\:id\fR to be a name its certificate carries. The id is not only a label: key ownership for \fBdistributed:\: exact\fR rate limits is a rendezvous hash over node ids,\: so a peer free to choose its id chooses which keys it decides for every node. Set it false only for an existing cluster whose certificate names and node ids differ,\: and fix the certificates: a cluster certificate is full trust inside the cluster. A peer\(aqs bans,\: marks and rate reports are attributed to its certificate common name either way,\: so the audit trail is not affected by this setting
 T}
 T{
 \fBgossip_\:interval\fR
@@ -5491,7 +5533,7 @@ name
 T}	T{
 \fBcluster.\:node_\:id\fR,\: else the host name
 T}	T{
-The node\(aqs name at the controller;\: must equal the certificate\(aqs common name or DNS name unless the controller runs with \fB\-\:any\-\:name\fR
+The node\(aqs name at the controller;\: must equal the certificate\(aqs common name or DNS name,\: unless the controller\(aqs \fB\-\:name\-\:map\fR names the exception (or it runs with \fB\-\:any\-\:name\fR,\: which turns the binding off for every node and warns on every authorisation)
 T}
 T{
 \fBtls.\:cert_\:file\fR,\: \fBtls.\:key_\:file\fR
@@ -6439,7 +6481,7 @@ URL
 T}	T{
 derived
 T}	T{
-\fBscheme:\:/\:/\:host\fR the browser reaches the proxy on;\: derived from the request (\fBHost\fR,\: TLS or \fBX\-\:Forwarded\-\:Proto\fR) when unset
+\fBscheme:\:/\:/\:host\fR the browser reaches the proxy on. Set it. Unset,\: it is derived from the request: \fBHost\fR,\: the listener\(aqs own TLS,\: and \fBX\-\:Forwarded\-\:Proto\fR only from a peer inside \fBtrusted_\:proxies\fR \[u2014] any client can send that header,\: and the URL derived from it is the redirect URI the provider sends the authorization code to
 T}
 T{
 \fBcookie_\:name\fR
@@ -6896,6 +6938,15 @@ T}	T{
 \fB[]\fR
 T}	T{
 Lower case domains added to the built\-in list
+T}
+T{
+\fBsecret_\:file\fR
+T}	T{
+path
+T}	T{
+a key made at start
+T}	T{
+Keyring whose primary key keys the account hash. The hash stands in for the account in the tables,\: the access and security logs and every cluster event,\: and a plain digest of an address or a user name is not an anonymisation \[u2014] the input space is small enough to enumerate \[u2014] so anyone who sees one could confirm whether an account exists. Every node of a cluster must read the same file,\: or a peer event names a hash the other nodes cannot match;\: without a file the key is node\-local and the filter says so at start
 T}
 .TE
 .PP
@@ -7462,6 +7513,15 @@ T}	T{
 Scan bodies larger than \fBmax_\:bytes\fR as they flow,\: or leave them unscanned
 T}
 T{
+\fB*.\:unscannable\fR
+T}	T{
+\fBrefuse\fR,\: \fBskip\fR
+T}	T{
+\fBrefuse\fR (request),\: \fBskip\fR (response)
+T}	T{
+What happens to a body the filter cannot read at all: a content coding it does not implement,\: a stream the decompressor refuses,\: or a partial body (\fBContent\-\:Range\fR). An origin does not decompress a request body \[u2014] it hands the raw bytes to the application \[u2014] so \fBContent\-\:Encoding:\: xyzzy\fR costs a client nothing and would otherwise turn the whole filter off for that message,\: \fBaction:\: block\fR included. A refusal is \fB415\fR with detail \fB<direction>:\:unscannable\fR
+T}
+T{
 \fB*.\:ignore_\:headers\fR
 T}	T{
 list
@@ -7602,6 +7662,15 @@ T}	T{
 Honour the sampled flag of an incoming \fBtraceparent\fR (behind a trusted balancer that samples)
 T}
 T{
+\fBredact_\:client_\:address\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Run a span\(aqs \fBclient.\:address\fR through \fBlogging.\:redaction\fR\(aqs \fBclient_\:ip\fR rule. A span is not a log line,\: so nothing else takes it through the redactor: without this a deployment that turned redaction on to pseudonymise addresses still exported the full address to its trace collector,\: beside a trace id the access log also carries. The host and the path on a span are still outside redaction
+T}
+T{
 \fBotlp\fR
 T}	T{
 object
@@ -7619,8 +7688,8 @@ gzip for the responses the proxy writes: proxied, cached, static and \fBrespond\
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.6i) lbw(0.8i) lbx
-lw(1.0i) lw(0.6i) lw(0.8i) lx.
+lbw(1.4i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.4i) lw(0.6i) lw(0.8i) lx.
 T{
 Key
 T}	T{
@@ -7692,6 +7761,15 @@ T}	T{
 text,\: script,\: style,\: JSON,\: XML,\: SVG,\: wasm and font types
 T}	T{
 Media types compressed,\: without parameters
+T}
+T{
+\fBcompress_\:authenticated\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Compress the response to a request that carried \fBAuthorization\fR or a \fBCookie\fR. Compressing a body that mixes a secret with attacker\-chosen text leaks the secret through its length,\: one character at a time (BREACH),\: and a request a browser sends with the victim\(aqs cookies is exactly what an attacker can arrange. Turn it on per route (\fBroutes[].\:compress_\:authenticated\fR) where the response holds no secret,\: or where the application already masks its tokens
 T}
 .TE
 .PP
@@ -8384,6 +8462,15 @@ T}	T{
 Bind the cookie to the client\(aqs JA4 TLS fingerprint (token binding): a cookie earned by one TLS client is refused when replayed by another,\: even from the same address. TLS only;\: a request without a fingerprint is treated as a distinct binding
 T}
 T{
+\fBcookie_\:scope\fR
+T}	T{
+\fBshared\fR,\: \fBhost\fR
+T}	T{
+\fBshared\fR
+T}	T{
+\fBhost\fR binds the pass to the host that served the challenge. The nonce is host\-bound already,\: so with \fBshared\fR a client can solve the cheapest host\(aqs challenge and spend the cookie on the host that asks for the most work. Use \fBhost\fR when hosts behind one proxy differ in difficulty or tier;\: leave it \fBshared\fR when a pass is meant to cover a site\(aqs several names. Changing it invalidates every outstanding cookie once
+T}
+T{
 \fBcookie_\:name\fR
 T}	T{
 token
@@ -8514,9 +8601,9 @@ T{
 T}	T{
 list
 T}	T{
-the request host
+the hosts the routes name
 T}	T{
-Host names the provider may report the token was solved on;\: empty checks the token against the host the challenge page was served on,\: so a token solved for another site is refused
+Host names the provider may report the token was solved on. Empty falls back to the host names \fBroutes[].\:hosts\fR configure;\: a hostname in neither list,\: and a provider that omits it,\: are refused. The request host is not an allowlist \[u2014] the client chooses it,\: so an attacker who points a name of their own at this proxy would only have to be consistent \[u2014] so validation refuses a configuration where neither list exists
 T}
 T{
 \fBhostname_\:check\fR

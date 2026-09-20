@@ -417,6 +417,12 @@ func TestCaptcha(t *testing.T) {
 	conf := cfg()
 	conf.Captcha = &config.Captcha{Provider: "turnstile", SiteKey: "0x4AAAAAAA_site", SecretFile: secretFile, VerifyURL: provider.URL, Timeout: config.Duration(2 * time.Second), Mode: "escalation", MinScore: 0.5}
 	c, err := New(conf)
+	// The routes of this deployment. The request host is not an
+	// allowlist: the client chooses it, so comparing the provider's
+	// hostname against it only asked the attacker to be consistent.
+	if c != nil {
+		c.SetRouteHosts([]string{"example.com", "www.example.com:8443"})
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,6 +515,14 @@ func TestCaptcha(t *testing.T) {
 	if w, reason := postHost(url.Values{"cf-turnstile-response": {"t"}}, "example.com"); w.Code != 403 || reason != "captcha hostname" {
 		t.Fatalf("wrong hostname accepted: %d %s", w.Code, reason)
 	}
+	// With no allowlist at all — neither the CAPTCHA's own hostnames nor
+	// a route host — the check fails closed rather than trusting the
+	// request host.
+	c.SetRouteHosts(nil)
+	if w, reason := postHost(url.Values{"cf-turnstile-response": {"t"}}, "evil.example"); w.Code != 403 {
+		t.Fatalf("no allowlist accepted a token: %d %s", w.Code, reason)
+	}
+	c.SetRouteHosts([]string{"example.com"})
 	// Reconfigure with an allowlist that includes the reported host.
 	conf.Captcha.Hostnames = []string{"evil.example"}
 	c.Reconfigure(conf)
@@ -586,5 +600,46 @@ func TestCaptcha(t *testing.T) {
 	conf.Captcha.SecretFile = empty
 	if _, err := New(conf); err == nil {
 		t.Fatal("empty secret accepted")
+	}
+}
+
+// With cookie_scope: host a pass covers only the host that issued it.
+// The nonce is host-bound already, so without this a client solves the
+// cheapest host's challenge and spends the cookie on the host that asks
+// for the most work — the two hosts behind one proxy that differ in
+// difficulty are exactly why the setting exists.
+func TestHostScopedCookieDoesNotTravel(t *testing.T) {
+	ip := netip.MustParseAddr("198.51.100.7")
+	now := time.Now()
+	req := func(host, value string) *http.Request {
+		r := httptest.NewRequest("GET", "http://"+host+"/", nil)
+		r.Host = host
+		if value != "" {
+			r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: value})
+		}
+		return r
+	}
+	for _, scope := range []string{"shared", "host"} {
+		conf := cfg()
+		conf.CookieScope = scope
+		c, err := New(conf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := c.issueCookie(req("cheap.test", ""), ip, now, TierProof, nil, 0)
+		if tier, _ := c.Check(req("cheap.test", value), ip); tier != TierProof {
+			t.Fatalf("%s: the pass was refused on its own host", scope)
+		}
+		tier, _ := c.Check(req("dear.test", value), ip)
+		switch scope {
+		case "host":
+			if tier != TierNone {
+				t.Fatal("a pass earned on the cheap host was accepted on the dear one")
+			}
+		default:
+			if tier != TierProof {
+				t.Fatal("a shared pass was refused on a second host")
+			}
+		}
 	}
 }

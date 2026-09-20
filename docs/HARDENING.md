@@ -222,9 +222,19 @@ if err := originsig.Verify(r, "X-Xproxy-Signature", nil, keys, 5*time.Minute, ti
 In nginx with njs, the same steps: split the header on `;`, build
 `"v1\n" + method + "\n" + host + "\n" + path + "\n" + query + "\n" + t + "\n" + x_real_ip + "\n" + x_request_id`,
 `crypto.createHmac('sha256', key).update(msg).digest('base64url')`,
-compare, check the age. Rotate with `xproxyctl rotate-secret FILE` on
-the proxy, copy the new file to the origins within the grace period,
-then rotate again with `-keep 1` to drop the old key.
+compare, check the age. When the signature ends in `;bd=1`
+(`body_digest: true`), append one more line: the body digest, which is
+also in `Content-Digest`, as `sha-256=:` + base64(sha256(body)) + `:`.
+Rotate with `xproxyctl rotate-secret FILE` on the proxy, copy the new
+file to the origins within the grace period, then rotate again with
+`-keep 1` to drop the old key.
+
+A signature stays valid for its TTL, so anything that captured one can
+replay it. `body_digest` bounds what a replay may change; to stop the
+replay itself, have the origin remember the `X-Request-Id` values it
+has answered for the TTL and refuse a repeat. The proxy sets a fresh
+id per request and the id is signed, so a replay arrives with the id it
+was captured with.
 
 Whatever the layer, the check is `xproxyctl upstreams` on the proxy and
 a request straight to the origin port from another host: it must fail.

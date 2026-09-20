@@ -297,6 +297,22 @@ func AdjustTTL(b []byte, qEnd int, h Header, elapsed uint32) {
 // into an amplifier.
 const maxEDNSUDP = 1232
 
+// ClampEDNSSize lowers the UDP payload size an OPT record advertises to
+// at most maximum, in place. The query this proxy forwards carries the
+// client's own OPT record, so without this the client, not the proxy,
+// decides how large an answer the upstream may send while the proxy can
+// only read one datagram of a fixed size.
+func ClampEDNSSize(b []byte, qEnd int, h Header, maximum int) {
+	_ = rrWalk(b, qEnd, h, func(ttlOff int, typ uint16, _ uint32) {
+		if typ != TypeOPT {
+			return
+		}
+		if int(binary.BigEndian.Uint16(b[ttlOff-2:])) > maximum {
+			binary.BigEndian.PutUint16(b[ttlOff-2:], uint16(maximum)) //nolint:gosec // callers pass a small bound
+		}
+	})
+}
+
 // EDNSSize returns the UDP payload size the query advertises in an OPT
 // record, capped at maxEDNSUDP, or 512 when it has none.
 func EDNSSize(b []byte, qEnd int, h Header) int {
@@ -315,13 +331,21 @@ func EDNSSize(b []byte, qEnd int, h Header) int {
 }
 
 // Reply builds a response to query with the given rcode and no records:
-// the header (QR, RA, RD copied, AA clear) and the question.
+// the header (QR, RA, RD copied, AA clear) and the question. A caller
+// with no question to echo — the FORMERR paths pass query[:headerLen] —
+// gets a question count of zero rather than a message that claims one
+// question and carries none, which this package's own parser refuses
+// and a downstream stub may drop or retry instead of reading the rcode.
 func Reply(query []byte, qEnd int, h Header, rcode int) []byte {
 	out := make([]byte, qEnd)
 	copy(out, query[:qEnd])
+	qd := uint16(0)
+	if qEnd > headerLen {
+		qd = 1
+	}
 	flags := flagQR | flagRA | (h.Flags & flagRD) | uint16(h.Opcode()<<11) | uint16(rcode&0xf) //nolint:gosec // bounded
 	binary.BigEndian.PutUint16(out[2:], flags)
-	binary.BigEndian.PutUint16(out[4:], 1)
+	binary.BigEndian.PutUint16(out[4:], qd)
 	binary.BigEndian.PutUint16(out[6:], 0)
 	binary.BigEndian.PutUint16(out[8:], 0)
 	binary.BigEndian.PutUint16(out[10:], 0)

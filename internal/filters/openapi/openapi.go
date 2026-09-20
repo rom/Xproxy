@@ -490,39 +490,56 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	rep := &jsonschema.Report{}
 	query := r.URL.Query()
 	for _, p := range op.params {
-		var raw string
-		var present bool
+		// Every value a parameter carries is judged, not only the first.
+		// A repeated query parameter is read differently by everything
+		// behind the proxy — PHP and Rails take the last value, ASP.NET
+		// joins them with commas, Spring binds an array — so
+		// "?limit=10&limit=999" used to reach the application with a
+		// value nothing had type-checked, range-checked or
+		// pattern-checked, while the whole query was forwarded
+		// untouched. The proxy's own routes[].policy already judges
+		// every value; these two parsers disagreed about what the value
+		// of a parameter is.
+		var raws []string
 		switch p.in {
 		case "path":
-			raw, present = pathVals[p.name]
+			if v, has := pathVals[p.name]; has {
+				raws = []string{v}
+			}
 		case "query":
-			vals, has := query[p.name]
-			present = has
-			if has {
-				raw = vals[0]
+			if vals, has := query[p.name]; has {
 				if p.schema != nil && jsonschema.TypeAllows(p.schema["type"], "array") && len(vals) > 1 {
-					raw = strings.Join(vals, ",")
+					raws = []string{strings.Join(vals, ",")}
+				} else {
+					raws = vals
 				}
 			}
 		case "header":
-			raw = r.Header.Get(p.name)
-			present = raw != ""
+			for _, v := range r.Header.Values(p.name) {
+				if v != "" {
+					raws = append(raws, v)
+				}
+			}
 		case "cookie":
-			if c, err := r.Cookie(p.name); err == nil {
-				raw, present = c.Value, true
+			for _, c := range r.Cookies() {
+				if c.Name == p.name {
+					raws = append(raws, c.Value)
+				}
 			}
 		default:
 			continue
 		}
 		where := p.in + "." + p.name
-		if !present {
+		if len(raws) == 0 {
 			if p.required {
 				rep.Add(where, "is required")
 			}
 			continue
 		}
 		if p.schema != nil {
-			in.api.v.Validate(p.schema, jsonschema.Coerce(p.schema, raw), where, rep, 0)
+			for _, raw := range raws {
+				in.api.v.Validate(p.schema, jsonschema.Coerce(p.schema, raw), where, rep, 0)
+			}
 		}
 	}
 	if g.cfg.StrictQuery {
@@ -621,6 +638,7 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "openapi",
 		Description: "request validation against an OpenAPI 3 description: paths, methods, parameters, media types and JSON bodies",
+		BuffersBody: true,
 		Validate:    validate,
 		New: func(name string, opts filter.Options, env filter.Env) (filter.Filter, error) {
 			cfg, err := parse(opts)

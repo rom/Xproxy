@@ -48,12 +48,15 @@ type quicFlow struct {
 	up       *net.UDPConn // set under the relay lock once, read afterwards
 	pool     *upstream.Pool
 	endpoint *upstream.Endpoint
-	sni      string
-	start    time.Time
-	last     atomic.Int64 // unix nanoseconds of the last datagram either way
-	in, out  atomic.Int64
-	hello    *netutil.QUICHelloAssembler
-	pending  [][]byte // datagrams held while the ClientHello is incomplete
+	// sni is written by the read loop when the ClientHello completes and
+	// read by the sweeper when it closes an idle flow, so it is an
+	// atomic rather than a plain field.
+	sni     atomic.Pointer[string]
+	start   time.Time
+	last    atomic.Int64 // unix nanoseconds of the last datagram either way
+	in, out atomic.Int64
+	hello   *netutil.QUICHelloAssembler
+	pending [][]byte // datagrams held while the ClientHello is incomplete
 	// pendingBytes is the size of pending, bounded by maxQUICPending.
 	pendingBytes int
 }
@@ -162,7 +165,7 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 	if err != nil {
 		sni = ""
 	}
-	f.sni = sni
+	f.sni.Store(&sni)
 	upName, ok := q.t.resolve(sni)
 	if !ok {
 		s.stats.QUICRejected.Add(1)
@@ -272,7 +275,7 @@ func (q *quicRelay) finish(f *quicFlow, reason string) {
 	if f.endpoint != nil {
 		ep = f.endpoint.Address
 	}
-	attrs := []any{"listener", q.t.cfg.Name, "proto", "quic", "client_ip", f.client.Addr().String(), "sni", f.sni, "endpoint", ep,
+	attrs := []any{"listener", q.t.cfg.Name, "proto", "quic", "client_ip", f.client.Addr().String(), "sni", f.serverName(), "endpoint", ep,
 		"bytes_in", in, "bytes_out", out, "duration_ms", float64(time.Since(f.start).Microseconds()) / 1000}
 	if reason != "" {
 		attrs = append(attrs, "closed", reason)
@@ -352,4 +355,13 @@ func (q *quicRelay) shutdown() {
 		}
 	}
 	q.wg.Wait()
+}
+
+// serverName is the flow's peeked server name, or "" before the
+// ClientHello completed.
+func (f *quicFlow) serverName() string {
+	if p := f.sni.Load(); p != nil {
+		return *p
+	}
+	return ""
 }

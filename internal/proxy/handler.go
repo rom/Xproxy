@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -24,6 +25,7 @@ import (
 	"github.com/rom/xproxy/internal/filters/accountguard"
 	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/originsig"
 	"github.com/rom/xproxy/internal/otlp"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tracing"
@@ -68,6 +70,7 @@ type reqState struct {
 	cacheKey   string
 	marked     bool         // client previously hit a honeypot
 	mirror     string       // sent, dropped or body_too_large on a mirrored route
+	bodyDigest string       // set when the origin signature covers the body
 	shadow     *shadowState // live response capture for mirror diffing, nil otherwise
 	grpc       bool         // request is gRPC: errors are answered as gRPC statuses
 	grpcWeb    bool         // request is gRPC-web: translated to gRPC for the upstream
@@ -331,7 +334,8 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if cr.compress != nil && r.Method != http.MethodHead && !isUpgrade(r) && !isGRPC(r) {
+	if cr.compress != nil && r.Method != http.MethodHead && !isUpgrade(r) && !isGRPC(r) &&
+		(cr.compressAuth || !carriesCredentials(r)) {
 		if enc := cr.compress.negotiate(r); enc != "" {
 			cw := newCompressWriter(rw.ResponseWriter, cr.compress, enc)
 			rw.ResponseWriter = cw
@@ -434,6 +438,29 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Anything on this route that materialises the body charges the
+	// process-wide budget for the life of the request. Each such feature
+	// is bounded per request; the product was the real ceiling, and
+	// max_connections_per_ip times max_body_bytes is gigabytes of heap
+	// from one address at the defaults.
+	if cr.buffersBody || rt.patchBuffersBody {
+		want := r.ContentLength
+		if want < 0 {
+			want = limit // chunked: the worst case this route admits
+		}
+		if r.Body == nil || r.Body == http.NoBody {
+			want = 0
+		}
+		rel, ok := s.bodyBudget.Reserve(want)
+		if !ok {
+			s.stats.DeniedBodyBudget.Add(1)
+			st.denied = "body_budget"
+			s.deny(rw, r, st, http.StatusServiceUnavailable, "body_budget")
+			return
+		}
+		defer rel()
+	}
+
 	// Per-route filters. Instances live for the whole exchange.
 	var instances filter.Instances
 	if len(cr.filters) > 0 {
@@ -441,6 +468,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			RequestID: st.id, ClientIP: st.clientIP, Route: cr.cfg.Name,
 			Host: st.host, Path: st.path, Method: r.Method, TLS: r.TLS != nil, Country: st.country,
 			HoneypotMarked: st.marked,
+			TrustedPeer:    netutil.Contains(rt.trusted, netutil.RemoteAddr(r)),
 		}
 		if fp, ok := s.fingerprints.Get(r.RemoteAddr); ok && r.TLS != nil {
 			info.JA3, info.JA4, info.ALPN = fp.JA3, fp.JA4, fp.ALPN
@@ -673,6 +701,15 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		}
 		defer release()
 	}
+	// A signature that covers the body needs the body, so it is read
+	// here, before the reverse proxy runs: the same buffer serves the
+	// retry path, and a bodied request too large to digest is refused
+	// rather than forwarded with a signature that stops at the headers.
+	if signer := s.rt.Load().signers[pool.Name]; signer != nil && signer.Digest {
+		if !s.digestBody(rw, r, st) {
+			return
+		}
+	}
 	var mirrored *http.Request
 	if cr.mirror != nil {
 		mirrored = s.prepareMirror(r, st, cr)
@@ -861,7 +898,7 @@ func (s *Server) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 	}
 	cr.reqOps.apply(out.Header, &tvars{r: in, st: st})
 	if signer := rt.signers[cr.pool.Name]; signer != nil {
-		signer.Sign(out, time.Now(), st.clientIP.String(), st.id)
+		signer.Sign(out, time.Now(), st.clientIP.String(), st.id, st.bodyDigest)
 	}
 }
 
@@ -1181,8 +1218,17 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 		if st.span.Sampled {
 			attrs = append(attrs, "trace_sampled", true)
 		}
+		// A span is not a log line, so the redactor never saw it: the
+		// client address goes through the same client_ip rule here, or
+		// a deployment that turned redaction on still shipped the full
+		// address to its trace collector beside a trace id the access
+		// log also carries.
+		clientAddr := st.clientIP.String()
+		if s.traceRedactIP.Load() {
+			clientAddr = s.logs.Redactor().ClientAddress(clientAddr)
+		}
 		st.span.Set(otlp.String("http.request.method", r.Method), otlp.String("url.path", r.URL.Path), otlp.String("server.address", r.Host),
-			otlp.String("network.protocol.version", r.Proto), otlp.Int("http.response.status_code", int64(status)), otlp.String("client.address", st.clientIP.String()),
+			otlp.String("network.protocol.version", r.Proto), otlp.Int("http.response.status_code", int64(status)), otlp.String("client.address", clientAddr),
 			otlp.String("xproxy.request_id", st.id), otlp.String("xproxy.route", st.route))
 		if st.upstream != "" {
 			st.span.Set(otlp.String("xproxy.upstream", st.upstream))
@@ -1264,7 +1310,10 @@ func (s *Server) applyRateLimits(rw *responseWriter, r *http.Request, st *reqSta
 			}
 		}
 		if !decided {
-			allowed = rl.lim.AllowFallback(key, "ip:"+st.clientIP.String(), 1)
+			// When the key table is full the decision falls back to
+			// the client address and then to its network, rather than
+			// admitting an untracked request.
+			allowed = rl.lim.AllowFallback(key, []string{"ip:" + st.clientIP.String(), coarseKey(st.clientIP)}, 1)
 		}
 		if allowed {
 			rl.allowed.Add(1)
@@ -1427,4 +1476,42 @@ func retryAfter(rl *config.RateLimit) float64 {
 		return 1
 	}
 	return s
+}
+
+// digestBody buffers the request body, records its digest on st and
+// makes the buffer replayable for retries. It answers 413 and returns
+// false when the body is larger than a digest may cover.
+func (s *Server) digestBody(rw *responseWriter, r *http.Request, st *reqState) bool {
+	if r.Body == nil || r.Body == http.NoBody {
+		return true
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, originsig.MaxDigestBody+1))
+	if err != nil {
+		s.denyDetail(rw, r, st, http.StatusBadRequest, "body_size", "body unreadable")
+		return false
+	}
+	if int64(len(body)) > originsig.MaxDigestBody {
+		s.denyDetail(rw, r, st, http.StatusRequestEntityTooLarge, "body_size", "larger than a signed body digest covers")
+		return false
+	}
+	st.bodyDigest = originsig.BodyDigest(body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	return true
+}
+
+// coarseKey is the last resort of a full rate-limit key table: the
+// client's /24 or /48, which one client cannot rotate out of the way
+// the address itself can be rotated.
+func coarseKey(ip netip.Addr) string {
+	bits := 24
+	if ip.Is6() && !ip.Is4In6() {
+		bits = 48
+	}
+	p, err := ip.Unmap().Prefix(bits)
+	if err != nil {
+		return ""
+	}
+	return "net:" + p.String()
 }

@@ -42,6 +42,7 @@ func run(args []string) int {
 	fs := flag.NewFlagSet("xproxy", flag.ContinueOnError)
 	cfgPath := fs.String("config", paths.ConfigFile, "configuration file")
 	validate := fs.Bool("validate", false, "validate the configuration and exit")
+	allowRoot := fs.Bool("allow-root", false, "start even when the effective user is root (the shipped unit does not need this)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -58,6 +59,9 @@ func run(args []string) int {
 	}
 	if *validate {
 		fmt.Printf("%s: OK (%d listeners, %d upstreams, %d routes)\n", *cfgPath, len(cfg.Server.Listeners), len(cfg.Upstreams), len(cfg.Routes))
+		for _, a := range cfg.Advice() {
+			fmt.Printf("  warning: %s\n", a)
+		}
 		return 0
 	}
 
@@ -70,8 +74,22 @@ func run(args []string) int {
 	defer logs.Close()
 	slog.SetDefault(logs.Error)
 	logs.Error.Info("starting", "version", version.String(), "config", *cfgPath, "pid", os.Getpid(), "uid", os.Getuid())
+	// A warning nobody reads is not a control. The shipped unit runs as
+	// User=xproxy with socket activation for the privileged ports, so
+	// root is a mistake rather than a requirement; an operator who means
+	// it says so on the command line.
+	if os.Getuid() == 0 && !*allowRoot {
+		logs.Security.Error("refusing to run as root: use systemd socket activation and a dedicated user, or pass -allow-root")
+		fmt.Fprintln(os.Stderr, "xproxy: refusing to run as root; use socket activation and User=xproxy, or pass -allow-root")
+		return 1
+	}
 	if os.Getuid() == 0 {
-		logs.Security.Warn("running as root; use systemd socket activation and a dedicated user instead")
+		logs.Security.Warn("running as root because -allow-root was given; the shipped unit does not need it")
+	}
+	// Configurations that load but weaken the deployment are said out
+	// loud at every start, not only by the validate command.
+	for _, a := range cfg.Advice() {
+		logs.Security.Warn("configuration advice", "advice", a)
 	}
 
 	// Ingress controller mode: the running configuration is the file plus

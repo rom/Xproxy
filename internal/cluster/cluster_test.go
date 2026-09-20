@@ -131,9 +131,9 @@ func TestTwoNodes(t *testing.T) {
 	ac, ak := ca.Issue(t, dir, "node-a")
 	bc, bk := ca.Issue(t, dir, "node-b")
 
-	a := startNode(t, clusterCfg("a", ac, ak, ca.Path, nil))
-	b := startNode(t, clusterCfg("b", bc, bk, ca.Path, []string{a.addr}))
-	a.node.Reconfigure(clusterCfg("a", ac, ak, ca.Path, []string{b.addr}))
+	a := startNode(t, clusterCfg("node-a", ac, ak, ca.Path, nil))
+	b := startNode(t, clusterCfg("node-b", bc, bk, ca.Path, []string{a.addr}))
+	a.node.Reconfigure(clusterCfg("node-a", ac, ak, ca.Path, []string{b.addr}))
 
 	waitFor(t, "connections", func() bool { return a.node.ConnectedPeers() == 1 && b.node.ConnectedPeers() == 1 })
 
@@ -169,17 +169,17 @@ func TestTwoNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	cc, ck := ca.Issue(t, dir, "node-c")
-	c := startNode(t, clusterCfg("c", cc, ck, ca.Path, nil))
-	b.node.Reconfigure(clusterCfg("b", bc, bk, ca.Path, []string{a.addr, c.addr}))
+	c := startNode(t, clusterCfg("node-c", cc, ck, ca.Path, nil))
+	b.node.Reconfigure(clusterCfg("node-b", bc, bk, ca.Path, []string{a.addr, c.addr}))
 	waitFor(t, "snapshot b->c", func() bool { return c.bans.Banned(netip.MustParseAddr("203.0.113.11")) })
 
 	st := a.node.Status()
-	if st.NodeID != "a" || len(st.Peers) != 1 || !st.Peers[0].Connected || len(st.Inbound) != 1 || st.Inbound[0].NodeID != "b" || st.BansSent < 2 || st.RatesSent < 1 {
+	if st.NodeID != "node-a" || len(st.Peers) != 1 || !st.Peers[0].Connected || len(st.Inbound) != 1 || st.Inbound[0].NodeID != "node-b" || st.BansSent < 2 || st.RatesSent < 1 {
 		t.Fatalf("status %+v", st)
 	}
 
 	// Dropping a peer from the configuration closes it.
-	b.node.Reconfigure(clusterCfg("b", bc, bk, ca.Path, []string{c.addr}))
+	b.node.Reconfigure(clusterCfg("node-b", bc, bk, ca.Path, []string{c.addr}))
 	waitFor(t, "peer removed", func() bool { return len(a.node.Status().Inbound) == 0 })
 }
 
@@ -189,8 +189,8 @@ func TestEvents(t *testing.T) {
 	ac, ak := ca.Issue(t, dir, "node-a")
 	bc, bk := ca.Issue(t, dir, "node-b")
 
-	a := startNode(t, clusterCfg("a", ac, ak, ca.Path, nil))
-	b := startNode(t, clusterCfg("b", bc, bk, ca.Path, nil))
+	a := startNode(t, clusterCfg("node-a", ac, ak, ca.Path, nil))
+	b := startNode(t, clusterCfg("node-b", bc, bk, ca.Path, nil))
 	var mu sync.Mutex
 	var got []Event
 	var peers []string
@@ -200,7 +200,7 @@ func TestEvents(t *testing.T) {
 		peers = append(peers, peer)
 		mu.Unlock()
 	})
-	a.node.Reconfigure(clusterCfg("a", ac, ak, ca.Path, []string{b.addr}))
+	a.node.Reconfigure(clusterCfg("node-a", ac, ak, ca.Path, []string{b.addr}))
 	waitFor(t, "connection", func() bool { return a.node.ConnectedPeers() == 1 })
 
 	until := time.Now().Add(time.Hour).Truncate(time.Second)
@@ -225,7 +225,7 @@ func TestEvents(t *testing.T) {
 
 	// share_events: false silences both directions.
 	off := false
-	cfg := clusterCfg("a", ac, ak, ca.Path, []string{b.addr})
+	cfg := clusterCfg("node-a", ac, ak, ca.Path, []string{b.addr})
 	cfg.ShareEvents = &off
 	a.node.Reconfigure(cfg)
 	a.node.PublishEvent(Event{Kind: "k", Key: "z", Until: until})
@@ -239,7 +239,7 @@ func TestRejectsUnauthenticated(t *testing.T) {
 	dir := t.TempDir()
 	ca := testutil.WriteCA(t, dir)
 	ac, ak := ca.Issue(t, dir, "node-a")
-	a := startNode(t, clusterCfg("a", ac, ak, ca.Path, nil, "node-a", "node-b"))
+	a := startNode(t, clusterCfg("node-a", ac, ak, ca.Path, nil, "node-a", "node-b"))
 
 	// No client certificate.
 	conn, err := tls.Dial("tcp", a.addr, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}) //nolint:gosec // test
@@ -272,7 +272,7 @@ func TestRejectsUnauthenticated(t *testing.T) {
 	}
 	// Right CA, wrong name.
 	xc, xk := ca.Issue(t, dir, "node-x")
-	x := startNode(t, clusterCfg("x", xc, xk, ca.Path, []string{a.addr}))
+	x := startNode(t, clusterCfg("node-x", xc, xk, ca.Path, []string{a.addr}))
 	time.Sleep(500 * time.Millisecond)
 	if x.node.ConnectedPeers() != 0 && len(a.node.Status().Inbound) != 0 {
 		t.Fatal("peer outside allowed_names accepted")
@@ -285,7 +285,7 @@ func TestProtocolErrors(t *testing.T) {
 	ca := testutil.WriteCA(t, dir)
 	ac, ak := ca.Issue(t, dir, "node-a")
 	bc, bk := ca.Issue(t, dir, "node-b")
-	a := startNode(t, clusterCfg("a", ac, ak, ca.Path, nil))
+	a := startNode(t, clusterCfg("node-a", ac, ak, ca.Path, nil))
 	cert, _ := tls.LoadX509KeyPair(bc, bk)
 	dial := func() *tls.Conn {
 		c, err := tls.Dial("tcp", a.addr, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}}) //nolint:gosec // test
@@ -306,13 +306,29 @@ func TestProtocolErrors(t *testing.T) {
 		c.Close()
 	}
 	expectClosed(dial(), "not json\n")
-	expectClosed(dial(), `{"t":"rates","rates":{}}`+"\n")                     // before hello
-	expectClosed(dial(), `{"t":"hello","node":"b","ver":99}`+"\n")            // wrong version
-	expectClosed(dial(), `{"t":"hello","node":"b","ver":1}{"t":"nope"}`+"\n") // unknown type after hello on one line is bad json
+	expectClosed(dial(), `{"t":"rates","rates":{}}`+"\n")                          // before hello
+	expectClosed(dial(), `{"t":"hello","node":"node-b","ver":99}`+"\n")            // wrong version
+	expectClosed(dial(), `{"t":"hello","node":"node-b","ver":1}{"t":"nope"}`+"\n") // unknown type after hello on one line is bad json
+	// The announced id must be a name the peer certificate carries, and
+	// one hello is all a connection gets: both are what stop a peer
+	// acting under another node's name.
+	expectClosed(dial(), `{"t":"hello","node":"node-a","ver":1}`+"\n")
+	// A second hello renames the peer mid-session, so the connection
+	// ends. The node answers the first hello with its own, so the check
+	// has to drain that before the close.
+	second := dial()
+	if _, err := second.Write([]byte(`{"t":"hello","node":"node-b","ver":1}` + "\n" + `{"t":"hello","node":"node-b","ver":1}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, second); err == nil {
+		// io.Copy returns nil at a clean EOF, which is the close we want.
+		t.Log("connection closed after the second hello")
+	}
+	second.Close()
 	// An unknown type after hello is skipped and counted so that a newer
 	// peer's messages do not tear the channel down.
 	c := dial()
-	if _, err := c.Write([]byte(`{"t":"hello","node":"b","ver":1}` + "\n" + `{"t":"bogus"}` + "\n" + `{"t":"ping"}` + "\n")); err != nil {
+	if _, err := c.Write([]byte(`{"t":"hello","node":"node-b","ver":1}` + "\n" + `{"t":"bogus"}` + "\n" + `{"t":"ping"}` + "\n")); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "ignored message counted", func() bool { return a.node.Status().Ignored == 1 })
@@ -329,7 +345,7 @@ func TestProtocolErrors(t *testing.T) {
 	expectClosed(c, string(big)+"\n")
 	// Valid session with rates and bans is accepted and applied.
 	c = dial()
-	msgs := `{"t":"hello","node":"b","ver":1}` + "\n" +
+	msgs := `{"t":"hello","node":"node-b","ver":1}` + "\n" +
 		`{"t":"rates","interval_ms":1000,"rates":{"p":{"k":5}}}` + "\n" +
 		`{"t":"bans","bans":[{"target":"203.0.113.77","until":"2999-01-01T00:00:00Z","reason":"x"}],"removed":["203.0.113.78"]}` + "\n"
 	if _, err := c.Write([]byte(msgs)); err != nil {

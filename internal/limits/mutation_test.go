@@ -82,10 +82,11 @@ func TestShardBoundExact(t *testing.T) {
 	if !l.Allow(keys[0]) || l.Allow(keys[0]) {
 		t.Fatal("first key")
 	}
-	// Shard full and nothing stale: the second key is allowed untracked
-	// (bounded by burst) and does not evict the active first key.
-	if !l.AllowN(keys[1], 1) || l.AllowN(keys[1], 1.5) {
-		t.Fatal("untracked key should be bounded by burst only")
+	// Shard full and nothing stale: the second key does not evict the
+	// active first one, and with nothing coarser to fall back to it is
+	// refused rather than admitted untracked.
+	if l.AllowN(keys[1], 1) {
+		t.Fatal("an untracked key was admitted from a full shard")
 	}
 	if l.Len() != 1 {
 		t.Fatalf("tracked %d", l.Len())
@@ -259,19 +260,23 @@ func TestAllowFallback(t *testing.T) {
 	ip := "ip:198.51.100.7"
 	allowed := 0
 	for _, k := range keys[1:] {
-		if l.AllowFallback(k, ip, 1) {
+		if l.AllowFallback(k, []string{ip}, 1) {
 			allowed++
 		}
 	}
 	if allowed != 2 {
 		t.Fatalf("rotating keys got %d requests through, want the fallback burst of 2", allowed)
 	}
-	// Without a fallback the untracked key is only bounded by burst.
-	if !l.AllowFallback(keys[1], "", 2) || l.AllowFallback(keys[1], "", 3) {
-		t.Fatal("no fallback: allow up to burst untracked")
+	// With nothing coarser to fall back to, a key the full table cannot
+	// track is refused rather than admitted: admitting made the bound
+	// itself the bypass, since rotating keys until the table filled
+	// turned every new key into a free one.
+	if l.AllowFallback(keys[1], nil, 1) {
+		t.Fatal("an untracked key was admitted with no fallback")
 	}
-	// A fallback equal to the key does not recurse.
-	if !l.AllowFallback(keys[2], keys[2], 1) {
-		t.Fatal("fallback equal to key")
+	// A fallback equal to the key is skipped, not looped on.
+	if l.AllowFallback(keys[2], []string{keys[2]}, 1) {
+		t.Fatal("a fallback equal to the key admitted the request")
 	}
+
 }

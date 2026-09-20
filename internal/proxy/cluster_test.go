@@ -43,16 +43,16 @@ func TestClusterSharesLimitsAndBans(t *testing.T) {
 	ac, ak := ca.Issue(t, dir, "node-a")
 	bc, bk := ca.Issue(t, dir, "node-b")
 
-	a, urlA := startServer(t, fmt.Sprintf(clusterYAML, "a", "", ac, ak, ca.Path, backend.addr()))
-	b, urlB := startServer(t, fmt.Sprintf(clusterYAML, "b", "", bc, bk, ca.Path, backend.addr()))
+	a, urlA := startServer(t, fmt.Sprintf(clusterYAML, "node-a", "", ac, ak, ca.Path, backend.addr()))
+	b, urlB := startServer(t, fmt.Sprintf(clusterYAML, "node-b", "", bc, bk, ca.Path, backend.addr()))
 	if a.Cluster() == nil || b.Cluster() == nil {
 		t.Fatal("cluster not created")
 	}
 	// Peers learn each other's addresses through a reload.
-	if err := a.Reload(mustParse(t, fmt.Sprintf(clusterYAML, "a", `"`+b.Cluster().Addr()+`"`, ac, ak, ca.Path, backend.addr()))); err != nil {
+	if err := a.Reload(mustParse(t, fmt.Sprintf(clusterYAML, "node-a", `"`+b.Cluster().Addr()+`"`, ac, ak, ca.Path, backend.addr()))); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Reload(mustParse(t, fmt.Sprintf(clusterYAML, "b", `"`+a.Cluster().Addr()+`"`, bc, bk, ca.Path, backend.addr()))); err != nil {
+	if err := b.Reload(mustParse(t, fmt.Sprintf(clusterYAML, "node-b", `"`+a.Cluster().Addr()+`"`, bc, bk, ca.Path, backend.addr()))); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -128,7 +128,7 @@ func TestClusterSharesLimitsAndBans(t *testing.T) {
 	}
 
 	// Cluster listen changes are refused on reload.
-	bad := mustParse(t, fmt.Sprintf(clusterYAML, "a", "", ac, ak, ca.Path, backend.addr()))
+	bad := mustParse(t, fmt.Sprintf(clusterYAML, "node-a", "", ac, ak, ca.Path, backend.addr()))
 	bad.Cluster.Listen = "127.0.0.1:1"
 	if err := a.Reload(bad); err == nil {
 		t.Fatal("cluster listen change accepted on reload")

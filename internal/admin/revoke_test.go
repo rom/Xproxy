@@ -3,6 +3,7 @@ package admin
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -129,5 +130,47 @@ func TestSessionLosesOperatorRightsWhenTheRoleIsLowered(t *testing.T) {
 	st, _ := c.do("POST", "/api/reload", nil, true)
 	if st != 403 {
 		t.Fatalf("a demoted operator still had write access: %d", st)
+	}
+}
+
+// Keying the login limiter on the source alone locked every operator
+// out for the window after five bad logins from one place — and a
+// client over the Unix socket or an SSH tunnel is one place, "local",
+// for everybody. Keying on the account alone would allow unlimited
+// spraying across names, so the key is both, with a global ceiling that
+// still stops a spray.
+func TestLoginLimiterKeysSourceAndUser(t *testing.T) {
+	dir := t.TempDir()
+	fm := startFakeMgmt(t)
+	p := writeUsers(t, dir)
+	_, c := newTestServer(t, Options{Listen: "127.0.0.1:0", Socket: fm.path, UsersFile: p})
+	for i := 0; i < 5; i++ {
+		if st := c.login("op", "wrong"); st != 401 {
+			t.Fatalf("failure %d: %d", i, st)
+		}
+	}
+	if st := c.login("op", "operator-password-1"); st != 429 {
+		t.Fatalf("the account was not locked after five failures: %d", st)
+	}
+	// Another operator from the same tunnel still gets in.
+	if st := c.login("view", "viewer-password-01"); st != 200 {
+		t.Fatalf("one account's failures locked out another operator: %d", st)
+	}
+}
+
+// A spray across many names from one place does reach the global
+// ceiling, at which point the GUI is closed for the window.
+func TestLoginLimiterGlobalCeiling(t *testing.T) {
+	l := newLoginLimiter(5, time.Minute)
+	for i := 0; i < 5*globalFactor; i++ {
+		l.fail("local", "user"+strconv.Itoa(i))
+	}
+	if blocked, wait := l.blocked("local", "someone-else"); !blocked || wait <= 0 {
+		t.Fatalf("a spray across names was not stopped: %v %v", blocked, wait)
+	}
+	// It lifts with the window.
+	l.now = func() time.Time { return time.Now().Add(2 * time.Minute) }
+	if blocked, _ := l.blocked("local", "someone-else"); blocked {
+		t.Fatal("the ceiling did not lift with the window")
 	}
 }

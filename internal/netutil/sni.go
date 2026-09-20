@@ -12,33 +12,97 @@ var ErrNotTLS = errors.New("not a TLS client hello")
 // ErrNeedMore reports that the record is longer than the bytes given.
 var ErrNeedMore = errors.New("incomplete TLS record")
 
-// ClientHelloSNI extracts the server name from the first TLS record of a
-// connection without terminating TLS. It parses defensively: every
-// length is checked against the bytes available and nothing is copied.
-// An empty name with a nil error means a ClientHello without SNI.
-func ClientHelloSNI(b []byte) (string, error) {
+const (
+	// maxClientHello bounds the handshake message this parser will
+	// assemble. A ClientHello is a few kilobytes; the record layer
+	// allows far more.
+	maxClientHello = 1 << 16
+	// maxHelloRecords bounds the records one ClientHello may be split
+	// across.
+	maxHelloRecords = 64
+)
+
+// handshakeBytes returns the body of the first handshake message at the
+// head of b, joining consecutive handshake records when the message is
+// split across them.
+//
+// Every TLS stack behind this proxy reassembles a handshake message
+// across records, so bounding the ClientHello by the first record alone
+// meant proxy and backend read different things: a client that
+// fragments (OpenSSL with a small max_send_fragment, the fragmenting
+// clients used against censorship) presented a name to the origin and
+// nothing readable here, so its flow either stalled until the peek
+// timeout or, padded past the caller's buffer, took the default route
+// with no name at all.
+func handshakeBytes(b []byte) ([]byte, error) {
 	if len(b) < 5 {
-		return "", ErrNeedMore
+		return nil, ErrNeedMore
 	}
 	if b[0] != 0x16 || b[1] != 0x03 { // handshake record, SSL 3.0 / TLS major version
-		return "", ErrNotTLS
+		return nil, ErrNotTLS
 	}
 	recLen := int(binary.BigEndian.Uint16(b[3:5]))
-	if recLen < 4 || recLen > 1<<14+256 {
-		return "", ErrNotTLS
+	if recLen < 1 || recLen > 1<<14+256 {
+		return nil, ErrNotTLS
 	}
 	if len(b) < 5+recLen {
-		return "", ErrNeedMore
+		return nil, ErrNeedMore
 	}
-	h := b[5 : 5+recLen]
-	if h[0] != 0x01 { // ClientHello
-		return "", ErrNotTLS
+	first := b[5 : 5+recLen]
+	if first[0] != 0x01 { // ClientHello
+		return nil, ErrNotTLS
 	}
-	hsLen := int(h[1])<<16 | int(h[2])<<8 | int(h[3])
-	if hsLen+4 > len(h) {
-		return "", ErrNeedMore
+	done := func(buf []byte) ([]byte, bool, error) {
+		if len(buf) < 4 {
+			return nil, false, nil
+		}
+		hsLen := int(buf[1])<<16 | int(buf[2])<<8 | int(buf[3])
+		if hsLen > maxClientHello {
+			return nil, false, ErrNotTLS
+		}
+		if 4+hsLen > len(buf) {
+			return nil, false, nil
+		}
+		return buf[4 : 4+hsLen], true, nil
 	}
-	h = h[4 : 4+hsLen]
+	if h, ok, err := done(first); err != nil || ok {
+		return h, err // the common case: one record carries the whole hello
+	}
+	buf := append([]byte(nil), first...)
+	off := 5 + recLen
+	for n := 0; n < maxHelloRecords; n++ {
+		if len(b)-off < 5 {
+			return nil, ErrNeedMore
+		}
+		if b[off] != 0x16 || b[off+1] != 0x03 {
+			return nil, ErrNotTLS
+		}
+		rl := int(binary.BigEndian.Uint16(b[off+3 : off+5]))
+		if rl < 1 || rl > 1<<14+256 {
+			return nil, ErrNotTLS
+		}
+		if len(b)-off-5 < rl {
+			return nil, ErrNeedMore
+		}
+		buf = append(buf, b[off+5:off+5+rl]...)
+		off += 5 + rl
+		if h, ok, err := done(buf); err != nil || ok {
+			return h, err
+		}
+	}
+	return nil, ErrNotTLS
+}
+
+// ClientHelloSNI extracts the server name from the TLS ClientHello at
+// the head of b, without terminating TLS. It parses defensively: every
+// length is checked against the bytes available and nothing but a
+// fragmented handshake message is copied. An empty name with a nil error
+// means a ClientHello without SNI.
+func ClientHelloSNI(b []byte) (string, error) {
+	h, err := handshakeBytes(b)
+	if err != nil {
+		return "", err
+	}
 	// version(2) random(32) session id length(1): the length octet is read
 	// immediately below, so 34 bytes are not enough — 35 are.
 	if len(h) < 35 {

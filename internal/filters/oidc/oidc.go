@@ -795,11 +795,19 @@ func (f *oidcFilter) redirectURI(r *http.Request, info *filter.Info) string {
 	return f.base(r, info) + f.cfg.RedirectPath
 }
 
+// secure decides the scheme of the URLs this filter builds. The
+// forwarding header counts only from a trusted peer: any client can
+// send X-Forwarded-Proto, and the redirect URI derived from it is what
+// the identity provider sends the authorization code to. Set
+// external_url and none of this is guessed.
 func (f *oidcFilter) secure(r *http.Request, info *filter.Info) bool {
 	if f.cfg.ExternalURL != "" {
 		return strings.HasPrefix(f.cfg.ExternalURL, "https://")
 	}
-	return info.TLS || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	if info.TLS {
+		return true
+	}
+	return info.TrustedPeer && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func (f *oidcFilter) cookie(name, value string, maxAge int, secure bool) *http.Cookie {

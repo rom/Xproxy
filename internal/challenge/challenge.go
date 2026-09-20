@@ -116,14 +116,20 @@ type Challenger struct {
 	ttl        time.Duration
 	bindIP     bool
 	bindJA4    bool
-	cookie     string
-	exempt     []netip.Prefix
-	title      string
-	captcha    *captcha
-	device     bool
-	seen       map[[macLen]byte]int64 // nonce mac -> expiry unix
-	now        func() time.Time
-	full       bound.Notice
+	// hostScoped binds a pass cookie to the host that issued it
+	// (challenge.cookie_scope: host).
+	hostScoped bool
+	// hosts are the route host names, the allowlist the CAPTCHA
+	// hostname check uses when challenge.captcha.hostnames is empty.
+	hosts   map[string]bool
+	cookie  string
+	exempt  []netip.Prefix
+	title   string
+	captcha *captcha
+	device  bool
+	seen    map[[macLen]byte]int64 // nonce mac -> expiry unix
+	now     func() time.Time
+	full    bound.Notice
 
 	Issued, Passed, Failed uint64
 	CaptchaPassed          uint64
@@ -158,6 +164,32 @@ func (c *Challenger) HasCaptcha() bool {
 // configured, so a rotation (xproxyctl rotate-secret) takes effect on the
 // next reload while cookies signed with the previous key stay valid. An
 // unreadable file keeps the keys in memory.
+// SetRouteHosts records the host names this proxy's routes are
+// configured for. The CAPTCHA hostname check compares the hostname the
+// provider reports against them (see captcha.hostnameOK); the request
+// host is not an allowlist, because the client chooses it.
+func (c *Challenger) SetRouteHosts(hosts []string) {
+	set := make(map[string]bool, len(hosts))
+	for _, h := range hosts {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if i := strings.IndexByte(h, ':'); i >= 0 && !strings.HasSuffix(h, "]") {
+			h = h[:i]
+		}
+		if h != "" && !strings.ContainsRune(h, '*') {
+			set[h] = true
+		}
+	}
+	c.mu.Lock()
+	c.hosts = set
+	c.mu.Unlock()
+}
+
+func (c *Challenger) routeHosts() map[string]bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.hosts
+}
+
 func (c *Challenger) Reconfigure(cfg *config.Challenge) {
 	var keys [][]byte
 	if cfg.SecretFile != "" {
@@ -187,6 +219,7 @@ func (c *Challenger) Reconfigure(cfg *config.Challenge) {
 	c.ttl = cfg.TTL.D()
 	c.bindIP = cfg.BindsIP()
 	c.bindJA4 = cfg.BindsJA4()
+	c.hostScoped = cfg.BindsHost()
 	c.cookie = cfg.CookieName
 	c.exempt = netutil.ParsePrefixes(cfg.ExemptCIDRs)
 	c.title = cfg.Title
@@ -258,6 +291,13 @@ func (c *Challenger) bind(r *http.Request, ip netip.Addr) []byte {
 	b := c.ipBytes(ip)
 	if j := c.ja4Bytes(r); j != nil {
 		b = append(append([]byte{}, b...), j...)
+	}
+	// With cookie_scope: host the pass covers the host that issued it.
+	// The nonce is already host-bound, so without this a client can
+	// solve the cheapest host's challenge and present the cookie to the
+	// host that asked for the most work.
+	if c.hostScoped {
+		b = append(append([]byte{}, b...), hostKey(r.Host)...)
 	}
 	return b
 }
@@ -576,7 +616,7 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 		// nonce just verified binds this request to the host the challenge
 		// page was served on, so r.Host is that host and not a value the
 		// verifier chose freely.
-		ok, reason := cp.check(ctx, token, r.Host, ip)
+		ok, reason := cp.check(ctx, token, c.routeHosts(), ip)
 		cancel()
 		if !ok {
 			c.fail(w, reason)

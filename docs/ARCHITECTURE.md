@@ -421,8 +421,13 @@ and otherwise pick again among the others.
 
 Every in-memory table grows with attacker controlled input (client
 addresses, rate limit keys, matched rule targets) and is therefore
-capped. What happens at the cap is a security decision: rate limit
-shards fall back to the shared key or the burst, ban triggers stop
+capped. What happens at the cap is a security decision: a rate limit
+shard whose keys are all live falls back to a coarser key — the client
+address, then its /24 or /48 — and refuses when there is nothing
+coarser left, because admitting an untracked request made the bound
+itself the way past the limit; a shard is swept for expired buckets a
+bounded number at a time rather than scanned whole on every miss, and
+a live bucket is never evicted to make room for a new key. Ban triggers stop
 tracking new addresses, honeypot marks and challenge nonces refuse new
 entries, bot score histories and admin sessions evict the oldest, WAF
 statistics stop recording new rules and learning entries, and export
@@ -834,7 +839,7 @@ Endpoints:
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/v1/health` | liveness |
+| GET | `/v1/health` | liveness; also `degraded` with `degraded_reasons` when a sandbox mechanism is unavailable or failed and `sandbox.strict` is off |
 | GET | `/v1/status` | version, pid, generation, listeners, counters |
 | GET | `/v1/stats` | counters |
 | GET | `/v1/upstreams` | endpoint health and load |
