@@ -295,7 +295,7 @@ Open findings of the earlier rounds:
 A round of adversarial and robustness tests over the parsers, the
 protocol clients and the views, written from the outside in: what a
 client, a peer, a scanner, a certificate authority or a file on disk
-can put in front of each of them. Twenty-eight packages gained a suite;
+can put in front of each of them. Thirty packages gained a suite;
 `docs/TESTS.md` lists every case. The findings each have their own
 entry above.
 
@@ -322,6 +322,27 @@ WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
 
+- The ingress controller built file names under `cert_dir` out of the
+  namespace and secret name an API server sent it, and put the same two
+  values into the request path it fetched a Secret with. A name
+  carrying a separator or a dot segment — which a real API server never
+  sends, but a compromised or impersonated one does — would have left
+  the directory and overwritten a file the proxy user can write. Both
+  are now checked against what the API server itself would have
+  accepted, and a name that is not one is refused before the request.
+- An Ingress rule's host and path went into the proxy's own
+  configuration unchecked. A tenant who can create an Ingress could put
+  a space, a carriage return or a NUL into a route host or path, where
+  it became a routing key, a metric label and a log field for every
+  other tenant on the proxy. A host must now be a DNS name (a leading
+  wildcard label allowed) and a path must be a plain prefix with no
+  space or control character; anything else is dropped with a warning,
+  the way an unresolvable service already was.
+- A TLS secret referenced by an Ingress or a Gateway was read whatever
+  its type, so a reference to an Opaque secret that happened to carry
+  `tls.crt` and `tls.key` published it. The Ingress API requires a
+  `kubernetes.io/tls` secret; anything else is now refused with a
+  warning.
 - The canonical form of a SOA record lowercased only its first name.
   RFC 4034 section 6.2 requires both the MNAME and the RNAME to be
   lowered before a signature is checked, and the helper stops at the

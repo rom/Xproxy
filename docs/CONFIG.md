@@ -969,6 +969,15 @@ separated names from this file), `timeout`, `max-body-bytes`,
 `strip-prefix` (`"true"` strips the matched path), `host-header`.
 Names over 64 bytes are shortened with a digest.
 
+What a tenant writes is checked before it becomes configuration: a
+rule's host must be a DNS name (a leading `*.` label allowed) and its
+path a plain prefix with no space or control character, a namespace and
+an Ingress name must be DNS labels, and a TLS secret must be of type
+`kubernetes.io/tls` and carry `tls.crt` and `tls.key`. Anything else is
+skipped with a warning in `GET /v1/ingress` and the log, so one
+namespace cannot put a value into the shared configuration that the
+other namespaces' routes are matched, logged or counted against.
+
 Gateway API: Gateways whose `gatewayClassName` is `class` and the
 HTTPRoutes whose `parentRefs` name them translate as well. Route
 hostnames come from the HTTPRoute or, when it has none, from the

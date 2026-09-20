@@ -336,6 +336,12 @@ func (c *Controller) writeCerts(certs []CertPEM) ([]config.Certificate, error) {
 	keep := map[string]bool{}
 	out := make([]config.Certificate, 0, len(certs))
 	for _, ce := range certs {
+		if !objectNameOK(ce.Namespace) || !objectNameOK(ce.Name) {
+			// The name becomes a file name under cert_dir; a value that
+			// could leave that directory is dropped rather than written.
+			c.log.Warn("ingress tls secret: refusing an unusable name", "namespace", ce.Namespace, "secret", ce.Name)
+			continue
+		}
 		base := filepath.Join(c.cfg.CertDir, ce.Namespace+"--"+ce.Name)
 		crt, key := base+".crt", base+".key"
 		if err := writeIfChanged(crt, ce.Cert); err != nil {
