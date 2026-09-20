@@ -292,6 +292,15 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4)
 
+- The terminal interface filtered only its security log view. Every
+  other cell — a ban reason, a peer's node id and last error, a
+  certificate's subject, a WAF rule's message, an upstream address, the
+  error text of a subsystem that failed — was drawn as it arrived, so a
+  compromised cluster node or a hostile certificate could clear the
+  operator's screen, set the terminal title, repaint another row with a
+  carriage return or move the cursor. Every rendered line is now
+  filtered, keeping only the eight colour codes the renderer itself
+  emits; the worst a value can still do is colour a cell.
 - `bans.exempt_cidrs` did not release the bans it covers. The
   exemption was consulted when a ban was placed and never afterwards,
   so an operator who added the range for a monitoring probe, a partner
