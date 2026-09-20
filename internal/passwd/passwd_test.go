@@ -292,14 +292,18 @@ func TestAcquire(t *testing.T) {
 	if waiting.Load() != 0 {
 		t.Errorf("%d callers are still counted as waiting", waiting.Load())
 	}
-	// A context that is already done never takes a slot.
+	// A context that is already done never takes a slot, even when one
+	// is free: a caller that has gone away must not cost a hash.
 	done, cancelDone := context.WithCancel(t.Context())
 	cancelDone()
 	empty := make(chan struct{}, 1)
-	if Acquire(done, empty, &waiting) {
-		// The select may still pick the free slot; that is allowed, but
-		// it must then be a real slot.
-		<-empty
+	for i := 0; i < 100; i++ {
+		if Acquire(done, empty, &waiting) {
+			t.Fatal("a caller whose context was done took a slot")
+		}
+	}
+	if len(empty) != 0 {
+		t.Errorf("%d slots were taken", len(empty))
 	}
 	if waiting.Load() != 0 {
 		t.Errorf("%d callers left counted as waiting", waiting.Load())

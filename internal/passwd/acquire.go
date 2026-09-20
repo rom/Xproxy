@@ -18,6 +18,11 @@ const MaxQueuePerSlot = 4
 // callers. The caller releases the slot with <-sem when Acquire returns
 // true.
 func Acquire(ctx context.Context, sem chan struct{}, waiting *atomic.Int32) bool {
+	if ctx.Err() != nil {
+		// The caller is already gone. A select would pick the free slot
+		// half the time and spend a hash on an answer nobody reads.
+		return false
+	}
 	if int(waiting.Add(1)) > MaxQueuePerSlot*cap(sem) {
 		waiting.Add(-1)
 		return false

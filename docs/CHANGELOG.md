@@ -295,7 +295,7 @@ Open findings of the earlier rounds:
 A round of adversarial and robustness tests over the parsers, the
 protocol clients and the views, written from the outside in: what a
 client, a peer, a scanner, a certificate authority or a file on disk
-can put in front of each of them. Thirty packages gained a suite;
+can put in front of each of them. Thirty-three packages gained a suite;
 `docs/TESTS.md` lists every case. The findings each have their own
 entry above.
 
@@ -322,6 +322,12 @@ WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
 
+- A password verification whose caller had already gone away still took
+  a slot and spent a full hash on an answer nobody would read. The
+  select between the semaphore and the context picks either when both
+  are ready, so a client that disconnects during a burst of logins
+  still cost the proxy the work. `passwd.Acquire` now returns at once
+  for a context that is already done.
 - The ingress controller built file names under `cert_dir` out of the
   namespace and secret name an API server sent it, and put the same two
   values into the request path it fetched a Secret with. A name

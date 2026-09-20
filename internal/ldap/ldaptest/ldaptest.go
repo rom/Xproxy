@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -22,9 +23,10 @@ type User struct {
 
 // Server is a running fake LDAP server.
 type Server struct {
-	Addr  string
-	ln    net.Listener
-	users []User
+	Addr      string
+	ln        net.Listener
+	users     []User
+	closeOnce sync.Once
 }
 
 // Start launches a fake server on a loopback port and stops it on cleanup.
@@ -37,12 +39,17 @@ func Start(t *testing.T, users []User) *Server {
 	}
 	s := &Server{Addr: ln.Addr().String(), ln: ln, users: users}
 	go s.serve()
-	t.Cleanup(func() { _ = ln.Close() })
+	t.Cleanup(s.Close)
 	return s
 }
 
 // URL returns the ldap:// URL of the server.
 func (s *Server) URL() string { return "ldap://" + s.Addr }
+
+// Close stops the server early, for a test that needs the directory to
+// go away while the code under test is still running. It is safe to
+// call more than once and before the cleanup that always runs.
+func (s *Server) Close() { s.closeOnce.Do(func() { _ = s.ln.Close() }) }
 
 func (s *Server) serve() {
 	for {
