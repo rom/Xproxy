@@ -162,15 +162,38 @@ func anyRule(rules []destRule, host string, ips []netip.Addr) bool {
 	return false
 }
 
-var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+// notPublic lists the address blocks beyond the stdlib predicates that a
+// forward proxy must not reach unless allow_private is set: CGNAT, "this
+// network", IETF protocol assignments, benchmarking, reserved, and the
+// IPv6 transition prefixes that embed an internal IPv4 address (NAT64,
+// 6to4, Teredo).
+var notPublic = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("2001::/32"),
+}
 
 // privateAddr reports addresses a forward proxy must not reach unless
-// allow_private is set: loopback, link local, RFC 1918, CGNAT, unique
-// local, multicast and unspecified.
+// allow_private is set: loopback, link local, RFC 1918, unique local,
+// multicast, unspecified and the notPublic blocks.
 func privateAddr(ip netip.Addr) bool {
 	ip = ip.Unmap()
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() || cgnat.Contains(ip)
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	for _, p := range notPublic {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // check applies the destination policy and returns the addresses to
@@ -256,6 +279,11 @@ func (f *forwardServer) authenticate(p *forwardPolicy, r *http.Request) (string,
 	}
 	hash, known := p.users[user]
 	if !known {
+		// Same cost as a wrong password for a known user: no timing oracle
+		// on which names exist.
+		f.authSem <- struct{}{}
+		passwd.VerifyDummy(pass)
+		<-f.authSem
 		return "", false
 	}
 	key := sha256.Sum256([]byte(user + "\x00" + pass))

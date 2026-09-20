@@ -24,7 +24,7 @@ on the first line of the file to enable it.
 | `server` | object | | Listeners and global limits |
 | `management` | object | | Control socket |
 | `logging` | object | | Log streams |
-| `trusted_proxies` | list of CIDR | `[]` | Peers whose `X-Forwarded-For` is believed, and whose PROXY protocol header is parsed on listeners with `proxy_protocol: true`. Empty means never. |
+| `trusted_proxies` | list of CIDR | `[]` | Peers whose `X-Forwarded-For` is believed, and whose PROXY protocol header is parsed on listeners with `proxy_protocol: true`. Empty means never. `0.0.0.0/0` and `::/0` are refused: trusting every address would let any client choose its own address and defeat bans, rate limits, ACLs and the audit trail; list the balancer networks |
 | `rate_limits` | list | `[]` | Named rate limit policies |
 | `upstreams` | list | `[]` | Named endpoint pools |
 | `routes` | list | `[]` | Request matching and actions |
@@ -156,7 +156,9 @@ upstream resolvers with a fresh transaction id on a fresh socket
 (random source port) per query; the answer must echo the id and the
 question. A truncated UDP answer is retried over TCP to the upstream,
 and an answer larger than the client's UDP size (512 bytes or its EDNS
-advertisement) is truncated so the client retries over TCP. Only one
+advertisement, honoured up to 1232 bytes per RFC 9715 so a spoofed
+source cannot draw a large reply) is truncated so the client retries
+over TCP. Only one
 question per query and the QUERY opcode are handled (FORMERR and
 NOTIMP otherwise); responses arriving as queries and packets from
 banned clients are dropped. A dns listener takes `address`, `dns` and
@@ -1278,7 +1280,7 @@ does not finish within the mirror `timeout`, the comparison is skipped.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `sample_percent` | int | `100` | Share of differing exchanges whose detail is logged; the metric counts every comparison |
-| `headers` | list | `[]` | Response header names compared between the two responses (pick stable ones; `Date`, `ETag` and the like differ legitimately) |
+| `headers` | list | `[]` | Response header names compared between the two responses (pick stable ones; `Date`, `ETag` and the like differ legitimately). Values of cookie, authorization and token headers are never written to the log, only that they differ |
 | `max_body_bytes` | int | `65536` | Bytes of each body digested for the comparison; at most 64 MiB |
 
 Outcomes are counted in `xproxy_mirror_diff_total{result}` with `result` one
@@ -1604,8 +1606,8 @@ Requires or denies requests by header patterns (RE2 syntax).
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `require` | list of `{header, pattern}` | | Every rule must match the header's value (a missing header is the empty string) |
-| `deny` | list of `{header, pattern}` | | Any match denies; evaluated before `require` |
+| `require` | list of `{header, pattern}` | | Every rule must match every instance of the header (a missing header is the empty string) |
+| `deny` | list of `{header, pattern}` | | A match on any instance of the header denies; evaluated before `require`. Every instance is judged, so a payload behind a benign first copy is still caught |
 | `status` | int | `403` | 4xx status on deny |
 | `reason` | string | the filter name | Deny reason in logs, counters and ban triggers |
 
@@ -1648,7 +1650,7 @@ error is never cached and denies the request.
 | `insecure_skip_verify` | bool | `false` | Skip certificate verification (test only; exclusive with `ca_file`) |
 | `bind_dn_template` | string | | Direct bind: `%s` is replaced by the escaped username, e.g. `uid=%s,ou=people,dc=example,dc=com`; exclusive with the search options |
 | `bind_dn` | DN | | Search bind: service account DN to bind before searching (anonymous search when empty) |
-| `bind_password_file` | path | required with `bind_dn` | Service account password; trailing newline trimmed |
+| `bind_password_file` | path | required with `bind_dn` | Service account password; trailing newline trimmed; must exist and not be world readable |
 | `base_dn` | DN | required for search | Search base |
 | `user_filter` | filter | required for search | RFC 4515 filter with `%s` for the escaped username, e.g. `(sAMAccountName=%s)`; supports `&`, `|`, `!`, equality and presence |
 | `require_group` | DN | none | Require this DN among the user's `group_attr` values (search mode only) |
@@ -2350,7 +2352,7 @@ gRPC-web preflights.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `allow_origins` | list | required | Permitted `Origin` values: exact (`https://app.example`), a single `*` (any origin, incompatible with `allow_credentials`), or a wildcard host (`https://*.example.com`, matching one or more labels) |
+| `allow_origins` | list | required | Permitted `Origin` values: exact (`https://app.example`), a single `*` (any origin, incompatible with `allow_credentials`), or a wildcard host (`https://*.example.com`, matching one or more whole labels). A wildcard must be a whole leading label: `https://*example.com` is refused because it would also admit `evilexample.com` |
 | `allow_methods` | list | `GET, HEAD, POST, PUT, PATCH, DELETE` | `Access-Control-Allow-Methods` of a preflight |
 | `allow_headers` | list | reflect the request | `Access-Control-Allow-Headers`; `*` or empty reflects the preflight's `Access-Control-Request-Headers` |
 | `expose_headers` | list | `[]` | `Access-Control-Expose-Headers` on actual responses |

@@ -261,8 +261,14 @@ func AdjustTTL(b []byte, qEnd int, h Header, elapsed uint32) {
 	})
 }
 
+// maxEDNSUDP caps the UDP payload size honoured from a client's OPT record
+// (RFC 9715's recommended 1232): larger advertised sizes fragment on the
+// path and, on a listener reachable by spoofed sources, turn the resolver
+// into an amplifier.
+const maxEDNSUDP = 1232
+
 // EDNSSize returns the UDP payload size the query advertises in an OPT
-// record, or 512 when it has none.
+// record, capped at maxEDNSUDP, or 512 when it has none.
 func EDNSSize(b []byte, qEnd int, h Header) int {
 	size := maxUDP
 	_ = rrWalk(b, qEnd, h, func(ttlOff int, typ uint16, _ uint32) {
@@ -272,6 +278,9 @@ func EDNSSize(b []byte, qEnd int, h Header) int {
 			}
 		}
 	})
+	if size > maxEDNSUDP {
+		size = maxEDNSUDP
+	}
 	return size
 }
 

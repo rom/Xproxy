@@ -91,8 +91,16 @@ func (v *validator) config(c *Config) {
 	v.management(&c.Management)
 	v.logging(&c.Logging)
 	for i, cidr := range c.TrustedProxies {
-		if _, err := netip.ParsePrefix(cidr); err != nil {
+		p, err := netip.ParsePrefix(cidr)
+		if err != nil {
 			v.errf("trusted_proxies[%d]: %q is not a CIDR", i, cidr)
+			continue
+		}
+		// Trusting every address lets any client pick its own client IP
+		// through X-Forwarded-For or a PROXY header, defeating bans, rate
+		// limits, ACLs and the audit trail: name the balancers instead.
+		if p.Bits() == 0 {
+			v.errf("trusted_proxies[%d]: %q would trust every client; list the load balancer networks", i, cidr)
 		}
 	}
 
@@ -2770,6 +2778,14 @@ func (v *validator) routeCORS(p string, c *RouteCORS) {
 		}
 		if !strings.HasPrefix(o, "http://") && !strings.HasPrefix(o, "https://") {
 			v.errf("%s.allow_origins[%d]: %q must be a scheme://host origin or \"*\"", p, i, o)
+		}
+		// A wildcard stands for whole leading labels only: "https://*.example.com".
+		// "https://*example.com" would also admit evilexample.com.
+		if strings.Contains(o, "*") {
+			host := o[strings.Index(o, "://")+3:]
+			if strings.Count(host, "*") != 1 || !strings.HasPrefix(host, "*.") || len(host) < len("*.a.b") || strings.ContainsAny(host, "/?#@") {
+				v.errf("%s.allow_origins[%d]: %q wildcard must be scheme://*.domain", p, i, o)
+			}
 		}
 	}
 	if star && c.AllowCredentials {

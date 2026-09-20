@@ -605,8 +605,16 @@ func (c *Challenger) fail(w http.ResponseWriter, _ string) {
 
 // safeReturn keeps only same-origin absolute paths.
 func safeReturn(p string) string {
-	if p == "" || len(p) > 2048 || p[0] != '/' || strings.HasPrefix(p, "//") || strings.HasPrefix(p, "/\\") || strings.HasPrefix(p, VerifyPath) || strings.HasPrefix(p, ScriptPath) || strings.ContainsAny(p, "\r\n") {
+	if p == "" || len(p) > 2048 || p[0] != '/' || strings.HasPrefix(p, "//") || strings.HasPrefix(p, "/\\") || strings.HasPrefix(p, VerifyPath) || strings.HasPrefix(p, ScriptPath) {
 		return "/"
+	}
+	// No control bytes at all: browsers strip tab and newline before
+	// parsing a Location, so "/\t/evil" would become "//evil" — an open
+	// redirect that url.Parse (which rejects controls) would not clean.
+	for i := 0; i < len(p); i++ {
+		if p[i] < 0x20 || p[i] == 0x7f {
+			return "/"
+		}
 	}
 	return p
 }

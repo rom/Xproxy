@@ -109,7 +109,9 @@ func TestSealOpen(t *testing.T) {
 	if got := r.Header.Get("Cookie"); got != "app=3" {
 		t.Fatalf("strip: %q", got)
 	}
-	if claimString(3.0) != "3" || claimString(true) != "true" || claimString([]any{"a"}) != `["a"]` || claimString("s") != "s" {
+	// claimString shares the jwt filter's rendering: arrays of strings are
+	// comma joined, control characters dropped, the value bounded.
+	if claimString(3.0) != "3" || claimString(true) != "true" || claimString([]any{"a", "b"}) != "a,b" || claimString("s") != "s" || claimString("a\r\nb") != "ab" {
 		t.Fatal("claimString")
 	}
 	if sanitize("ok\x01"+strings.Repeat("x", 100)) != "ok?"+strings.Repeat("x", 61) {
@@ -163,7 +165,7 @@ func TestRevocationShared(t *testing.T) {
 	f := &oidcFilter{name: "login", cfg: &Config{RevokedMax: 10, ttl: time.Hour}, revoked: map[string]time.Time{}}
 	f.attach(bus)
 	exp := time.Now().Add(time.Hour)
-	f.revokeAndShare("local-sid", exp)
+	f.revokeAndShare("local-sid", exp, true)
 	if !f.isRevoked("local-sid") || len(bus.published) != 1 || bus.published[0].Kind != "oidc_revoke/login" || bus.published[0].Key != "local-sid" || !bus.published[0].Until.Equal(exp) {
 		t.Fatalf("published %+v", bus.published)
 	}
@@ -182,7 +184,7 @@ func TestRevocationShared(t *testing.T) {
 	// Without a bus nothing breaks.
 	g := &oidcFilter{name: "solo", cfg: &Config{RevokedMax: 10, ttl: time.Hour}, revoked: map[string]time.Time{}}
 	g.attach(nil)
-	g.revokeAndShare("x", exp)
+	g.revokeAndShare("x", exp, true)
 	if !g.isRevoked("x") {
 		t.Fatal("solo revoke")
 	}
@@ -191,14 +193,14 @@ func TestRevocationShared(t *testing.T) {
 func TestRevocation(t *testing.T) {
 	f := &oidcFilter{cfg: &Config{RevokedMax: 3, ttl: time.Hour}, revoked: map[string]time.Time{}}
 	now := time.Now()
-	f.revoke("a", now.Add(time.Hour))
-	f.revoke("b", now.Add(-time.Second)) // already expired
+	f.revoke("a", now.Add(time.Hour), true)
+	f.revoke("b", now.Add(-time.Second), true) // already expired
 	if !f.isRevoked("a") || f.isRevoked("b") || f.isRevoked("") || f.isRevoked("zzz") {
 		t.Fatal("membership")
 	}
-	f.revoke("c", now.Add(2*time.Hour))
-	f.revoke("d", now.Add(3*time.Hour))
-	f.revoke("e", now.Add(4*time.Hour)) // over the bound: the soonest to expire (a) goes
+	f.revoke("c", now.Add(2*time.Hour), true)
+	f.revoke("d", now.Add(3*time.Hour), true)
+	f.revoke("e", now.Add(4*time.Hour), true) // over the bound: the soonest to expire (a) goes
 	if f.revokedCount() != 3 || f.isRevoked("a") || !f.isRevoked("e") {
 		t.Fatalf("bound: %d", f.revokedCount())
 	}

@@ -6,6 +6,57 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Security (1.3)
+
+Findings of a source code security audit, all with regression tests:
+
+- Custom HTML error pages HTML-escape request-derived template values
+  (`${path}`, `${query:…}`, `${header:…}`, `${cookie:…}`), closing a
+  reflected cross-site scripting hole in `text/html` pages (CWE-79).
+- With `normalization.unicode` a path whose folded form gains `.`, `/`,
+  `\`, `%`, `;`, `?` or `#` (for example U+2025 folding to `..`) is
+  refused with `normalization:unicode_fold` instead of being routed by
+  the folded path and forwarded raw (CWE-176).
+- The challenge return path refuses control bytes; a tab could turn
+  `/\t/host` into `//host` in a browser (open redirect, CWE-601).
+- The OIDC revocation index no longer lets unauthenticated front-channel
+  or peer revocations evict live entries when full, so a flood of made-up
+  session ids cannot undo real logouts (CWE-770). OIDC discovery
+  endpoints must be `https` unless `allow_http`; forwarded claim headers
+  are sanitised like the jwt filter's.
+- Cache keys include the raw `Host` (port and case), so a request with
+  `Host: example.com:1337` cannot fill the entry served to
+  `example.com` (cache poisoning, CWE-444).
+- `X-Xproxy-Mirror` is stripped from client requests: only the proxy's
+  shadow copies carry it.
+- `header_guard` judges every instance of a header, not only the first.
+- `basic_auth` and the forward proxy spend the same hash cost on an
+  unknown user as on a wrong password (no user enumeration by timing,
+  CWE-208).
+- The Host normaliser refuses residual `:` or bracket syntax outside a
+  bracketed IPv6 literal, so `host:443:x` cannot dodge the exact-host
+  route table.
+- Forward proxy private ranges now include 0/8, 192.0.0.0/24,
+  198.18.0.0/15, 240/4, NAT64, 6to4 and Teredo.
+- gRPC-web text mode bounds one buffered frame at 4 MiB.
+- DNS listener: the honoured EDNS UDP size is capped at 1232 (RFC 9715)
+  to limit amplification.
+- `trusted_proxies` refuses `0.0.0.0/0` and `::/0`.
+- CORS `allow_origins` wildcards must be whole leading labels
+  (`https://*.example.com`); the runtime never reflects an arbitrary
+  origin with credentials.
+- `ldap_auth` refuses a world-readable `bind_password_file`; the LDAP
+  decoder bounds nesting depth (a hostile server could otherwise exhaust
+  the stack); a search aborted on its size limit closes the connection.
+- `xproxyctl origin-check` builds the probe URL structurally, so a path
+  cannot retarget the probe via `@` or `?`.
+- Shadow-diff logging redacts values of cookie, authorization and token
+  headers.
+- The secret keyring writes through an exclusive temp file; fleet bundle
+  files may not be group- or world-writable; rollback runs the same
+  sandbox check as reload; `DELETE /v1/dns` and `DELETE /v1/honeypot`
+  are audited; the maintenance bypass header compares in constant time.
+
 ### Added (1.3)
 - Configuration includes: `includes` globs of fragment files whose
   `upstreams`, `routes`, `rate_limits` and `filters` are appended in

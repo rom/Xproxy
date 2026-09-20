@@ -55,8 +55,11 @@ func (cc *compiledCORS) allowedOrigin(origin string) (string, bool) {
 		return "", false
 	}
 	if cc.any {
+		// Validation refuses "*" with credentials; if that ever slipped
+		// through, fail closed rather than reflect an arbitrary origin with
+		// credentials, which would hand every site a credentialed read.
 		if cc.credentials {
-			return origin, true
+			return "", false
 		}
 		return "*", true
 	}

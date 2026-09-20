@@ -213,8 +213,10 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		writeJSON(w, 200, s.actions.Fleet())
 	})
 	mux.HandleFunc("GET /v1/dns", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.DNS()) })
-	mux.HandleFunc("DELETE /v1/dns", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, 200, map[string]int{"purged": s.proxy.PurgeDNS()})
+	mux.HandleFunc("DELETE /v1/dns", func(w http.ResponseWriter, r *http.Request) {
+		n := s.proxy.PurgeDNS()
+		s.audit(r, "dns_purge", "purged", n)
+		writeJSON(w, 200, map[string]int{"purged": n})
 	})
 	mux.HandleFunc("GET /v1/patches", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.VirtualPatches()) })
 	mux.HandleFunc("GET /v1/maintenance", func(w http.ResponseWriter, _ *http.Request) {
@@ -297,7 +299,9 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 			writeJSON(w, 400, map[string]string{"error": "ip: not an address"})
 			return
 		}
-		writeJSON(w, 200, map[string]bool{"removed": s.proxy.UnmarkHoneypot(ip)})
+		removed := s.proxy.UnmarkHoneypot(ip)
+		s.audit(r, "honeypot_unmark", "ip", ip.String(), "removed", removed)
+		writeJSON(w, 200, map[string]bool{"removed": removed})
 	})
 	mux.HandleFunc("GET /v1/icap", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.ICAP()) })
 	mux.HandleFunc("GET /v1/cache", func(w http.ResponseWriter, _ *http.Request) {
@@ -487,6 +491,14 @@ func (s *Server) config(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(w, "# includes expanded from: %s\n", strings.Join(files, ", "))
 	}
 	_, _ = w.Write(b)
+}
+
+// audit records a completed management action with the caller's identity,
+// for handlers whose response carries data (audited covers the plain ones).
+func (s *Server) audit(r *http.Request, name string, extra ...any) {
+	peer := peerFromContext(r.Context())
+	attrs := append([]any{"action", name, "peer_uid", peer.UID, "peer_gid", peer.GID, "peer_pid", peer.PID, "peer_known", peer.OK}, extra...)
+	s.logs.Audit.Info("management action", attrs...)
 }
 
 func (s *Server) audited(name string, fn func() error) http.HandlerFunc {

@@ -206,7 +206,14 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.deny(rw, r, st, http.StatusBadRequest, "bad_host")
 		return
 	}
-	st.path = netutil.CleanPath(routingPath(norm, r.URL.Path))
+	folded := routingPath(norm, r.URL.Path)
+	if foldIntroducesSyntax(r.URL.Path, folded) {
+		s.stats.DeniedNormalization.Add(1)
+		st.denied = "normalization:unicode_fold"
+		s.denyDetail(rw, r, st, http.StatusBadRequest, "normalization", "unicode_fold")
+		return
+	}
+	st.path = netutil.CleanPath(folded)
 	st.grpcWeb = isGRPCWeb(r)
 	st.grpc = isGRPC(r) || st.grpcWeb || isGRPCWebPreflight(r)
 
@@ -819,6 +826,9 @@ func (s *Server) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 	out.Header.Set("X-Real-Ip", st.clientIP.String())
 	out.Header.Set("X-Request-Id", st.id)
 	out.Header.Del("Forwarded")
+	// The mirror marker is the proxy's own statement; a client must not be
+	// able to make live traffic look like a shadow copy.
+	out.Header.Del(mirrorHeader)
 	// Trace context: the upstream's spans hang under our client span; an
 	// incoming header from an untrusted client is replaced, never forwarded
 	// as is, when propagation is off.

@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -169,13 +170,25 @@ func (s *Server) reportDiff(d *shadowDiff, st *reqState, shadow respSummary) {
 }
 
 // headerDiff returns a description of the first differing header, or "".
+// Values of credential-bearing headers are never written to the log.
 func headerDiff(live, shadow map[string]string) string {
 	for name, lv := range live {
 		if sv := shadow[name]; sv != lv {
+			if sensitiveHeader(name) {
+				return name + ": values differ (redacted)"
+			}
 			return fmt.Sprintf("%s: live=%q shadow=%q", name, lv, sv)
 		}
 	}
 	return ""
+}
+
+// sensitiveHeader reports whether a header's value may carry a credential
+// or session material.
+func sensitiveHeader(name string) bool {
+	n := strings.ToLower(name)
+	return strings.Contains(n, "cookie") || strings.Contains(n, "authorization") ||
+		strings.Contains(n, "token") || strings.Contains(n, "secret") || strings.Contains(n, "api-key")
 }
 
 // sampledPct reports whether an event falls in a percentage sample.
