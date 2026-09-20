@@ -312,65 +312,74 @@ whose Landlock, seccomp and capability code runs in a confined child
 process that the parent's profile cannot observe (the child's probes
 assert the effects instead). CI fails on either rule (ASR-Q2).
 
-Current numbers from `make cover-gate` (whole suite, race enabled):
+Current numbers from `make cover-gate` (whole suite, race enabled,
+`-coverpkg=./internal/...` so a package's figure includes what other
+packages' tests reach in it):
 
-| Package | Coverage |
-|---------|----------|
-| `internal/securitytxt` | 100 % |
-| `internal/safe` | 100 % |
-| `internal/bound` | 100 % |
-| `internal/filter` | 99 % |
-| `internal/router` | 99 % |
-| `internal/shed` | 98 % |
-| `internal/cache` | 96 % |
-| `internal/originsig` | 95 % |
-| `internal/jsonschema` | 94 % |
-| `internal/limits` | 94 % |
-| `internal/filters/oidc` | 93 % |
-| `internal/netutil` | 93 % |
-| `internal/geoip` | 92 % |
-| `internal/tracing` | 92 % |
-| `internal/filters/sensitive` | 92 % |
-| `internal/expr` | 91 % |
-| `internal/challenge` | 91 % |
-| `internal/filters/headerguard` | 91 % |
-| `internal/filters/graphql` | 91 % |
-| `internal/filters/bodyrewrite` | 90 % |
-| `internal/tmpl` | 90 % |
-| `internal/waf` | 90 % |
-| `internal/filters/basicauth` | 90 % |
-| `internal/filters/accountguard` | 90 % |
-| `internal/ban` | 89 % |
-| `internal/metrics` | 89 % |
-| `internal/filters/uploadguard` | 88 % |
-| `internal/jwt` | 88 % |
-| `internal/icap` | 88 % |
-| `internal/upstream` | 87 % |
-| `internal/filters/botscore` | 86 % |
-| `internal/cluster` | 86 % |
-| `internal/secret` | 86 % |
-| `internal/logging` | 86 % |
-| `internal/filters/apikey` | 84 % |
-| `internal/tui` | 84 % |
-| `internal/apiinv` | 83 % |
-| `internal/proxy` | 83 % |
-| `internal/fleet` | 83 % |
-| `internal/mgmt` | 82 % |
-| `internal/filters/ldapauth` | 81 % |
-| `internal/dns` | 81 % |
-| `internal/filters/openapi` | 81 % |
-| `internal/ingress` | 80 % |
-| `internal/admin` | 79 % |
-| `internal/ldap` | 79 % |
-| `internal/tlsconf` | 78 % |
-| `internal/acme` | 77 % |
-| `internal/filters/wasm` | 77 % |
-| `internal/config` | 76 % |
-| `internal/tui` (terminal loop) | the raw loop itself is covered by the pseudo terminal check rather than by statements |
-| `internal/sandbox` | 40 % in the parent process; the mechanisms run in the confined child, which cannot write a coverage file (excluded from the gate) |
-| `cmd/xproxy-fleet` | 92 % from its own tests (not part of the gate) |
-| `cmd/xproxyctl` | 70 % from its own tests (not part of the gate); what remains is the formatting of views whose subsystems need a live peer, certificate authority, resolver or scanner behind them, which `internal/proxy` and `internal/mgmt` exercise from the other side |
-| **core packages together** | **86 % of 9137 statements** |
+| Package | Coverage | Statements |
+|---------|----------|------------|
+| `internal/bodybudget` | 100 % | 23 |
+| `internal/securitytxt` | 100 % | 122 |
+| `internal/safe` | 100 % | 10 |
+| `internal/bound` | 100 % | 20 |
+| `internal/filter` | 99 % | 96 |
+| `internal/router` | 99 % | 151 |
+| `internal/shed` | 98 % | 92 |
+| `internal/limits` | 98 % | 266 |
+| `internal/tmpl` | 98 % | 82 |
+| `internal/cache` | 96 % | 132 |
+| `internal/originsig` | 95 % | 84 |
+| `internal/jsonschema` | 95 % | 362 |
+| `internal/geoip` | 94 % | 296 |
+| `internal/metrics` | 94 % | 295 |
+| `internal/manpage` | 93 % | 242 |
+| `internal/netutil` | 93 % | 488 |
+| `internal/filters/oidc` | 93 % | 449 |
+| `internal/challenge` | 93 % | 371 |
+| `internal/filters/headerguard` | 93 % | 54 |
+| `internal/upstream` | 92 % | 878 |
+| `internal/expr` | 92 % | 296 |
+| `internal/filters/sensitive` | 92 % | 541 |
+| `internal/tracing` | 92 % | 164 |
+| `internal/waf` | 91 % | 814 |
+| `internal/filters/graphql` | 91 % | 387 |
+| `internal/filters/bodyrewrite` | 90 % | 125 |
+| `internal/icap` | 90 % | 397 |
+| `internal/filters/accountguard` | 90 % | 604 |
+| `internal/apiinv` | 90 % | 367 |
+| `internal/filters/basicauth` | 90 % | 79 |
+| `internal/filters/uploadguard` | 90 % | 265 |
+| `internal/ban` | 90 % | 535 |
+| `internal/jwt` | 90 % | 523 |
+| `internal/secret` | 87 % | 124 |
+| `internal/cluster` | 87 % | 575 |
+| `internal/config/schema/schemagen` | 87 % | 159 |
+| `internal/filters/botscore` | 86 % | 280 |
+| `internal/logging` | 86 % | 946 |
+| `internal/config` | 86 % | 2883 |
+| `internal/filters/openapi` | 86 % | 449 |
+| `internal/mgmt` | 86 % | 557 |
+| `internal/tlsconf` | 85 % | 731 |
+| `internal/filters/apikey` | 85 % | 313 |
+| `internal/fleet` | 84 % | 575 |
+| `internal/tui` | 84 % | 671 |
+| `internal/passwd` | 84 % | 67 |
+| `internal/proxy` | 83 % | 5232 |
+| `internal/h3` | 82 % | 164 |
+| `internal/acme/jose` | 82 % | 55 |
+| `internal/dns` | 81 % | 1861 |
+| `internal/filters/ldapauth` | 81 % | 165 |
+| `internal/acme` | 80 % | 430 |
+| `internal/ingress` | 80 % | 771 |
+| `internal/ldap` | 79 % | 350 |
+| `internal/admin` | 78 % | 1028 |
+| `internal/filters/wasm` | 77 % | 370 |
+| `internal/ldap/ldaptest` | 75 % | 169 |
+| `internal/otlp` | 71 % | 59 |
+| `internal/sandbox` | the mechanisms run in a confined child that cannot write a coverage file; the child's probes assert the effects instead (excluded from the gate) | |
+| `cmd/xproxy-fleet` | 92 % from its own tests (not part of the gate) | |
+| `cmd/xproxyctl` | 70 % from its own tests (not part of the gate); what remains is the formatting of views whose subsystems need a live peer, certificate authority, resolver or scanner behind them, which `internal/proxy` and `internal/mgmt` exercise from the other side | |
+| **core packages together** | **86.4 % of 28594 statements** | |
 
 Not covered: the raw terminal loop of the TUI (pseudo terminal check),
 socket activation (needs systemd), the QUIC transport internals beyond
