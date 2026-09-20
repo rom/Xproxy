@@ -185,6 +185,16 @@ T}	T{
 Show or set maintenance mode (holds every request but the allowlist behind a 503)
 T}
 T{
+\fBorigin\-\:check\fR [*upstream*] [\fB\-\:host\fR \fIH\fR] [\fB\-\:path\fR \fIP\fR]
+T}	T{
+Probe origins directly to verify origin\-lock is enforced: an unsigned and a signed request per endpoint of every upstream with an \fBorigin_\:signature\fR (or the named one),\: reporting the verdict and exiting non\-zero if any origin is not \fBenforced\fR
+T}
+T{
+\fBbotscore\fR [\fB\-\:top\fR \fIN\fR]
+T}	T{
+Learning\-mode \fBbot_\:score\fR baselines: per\-route score percentiles and suggested \fBchallenge_\:at\fR/\:\fBdeny_\:at\fR from observed traffic (needs \fBlearn:\: true\fR)
+T}
+T{
 \fBacme\fR [\fBrenew\fR]
 T}	T{
 Managed certificates with expiry,\: issuer and last error;\: \fBrenew\fR forces renewal and waits

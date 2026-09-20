@@ -3,6 +3,7 @@ package ldap_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/rom/xproxy/internal/ldap"
 	"github.com/rom/xproxy/internal/ldap/ldaptest"
@@ -71,6 +72,43 @@ func TestSearch(t *testing.T) {
 	entries, _ = conn.Search("ou=people,dc=example,dc=com", ldap.ScopeSub, f, nil, 2)
 	if len(entries) != 0 {
 		t.Fatalf("unexpected match %+v", entries)
+	}
+}
+
+func TestDialErrors(t *testing.T) {
+	for _, url := range []string{"://bad", "ftp://x", "ldap://127.0.0.1:1"} {
+		if _, err := ldap.Dial(ldap.Options{URL: url, Timeout: time.Second}); err == nil {
+			t.Errorf("dial %q succeeded", url)
+		}
+	}
+}
+
+func TestSearchSizeLimit(t *testing.T) {
+	// Two users share a uid; a size limit of 1 is exceeded by the second.
+	users := []ldaptest.User{
+		{DN: "uid=dup,ou=a,dc=example,dc=com", Password: "p", Attrs: map[string][]string{"uid": {"dup"}}},
+		{DN: "uid=dup,ou=b,dc=example,dc=com", Password: "p", Attrs: map[string][]string{"uid": {"dup"}}},
+	}
+	s := ldaptest.Start(t, users)
+	conn, err := ldap.Dial(ldap.Options{URL: s.URL()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	f, _ := ldap.ParseFilter("(uid=dup)")
+	if _, err := conn.Search("dc=example,dc=com", ldap.ScopeSub, f, nil, 1); err == nil {
+		t.Fatal("size limit not enforced client side")
+	}
+	// A fresh connection (aborting a search mid-stream desyncs the old one,
+	// which is fine in practice: the filter dials one connection per auth).
+	conn2, err := ldap.Dial(ldap.Options{URL: s.URL()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn2.Close()
+	entries, err := conn2.Search("dc=example,dc=com", ldap.ScopeSub, f, nil, 5)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("search: %v %d", err, len(entries))
 	}
 }
 

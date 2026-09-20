@@ -20,6 +20,15 @@ type mirror struct {
 	pool    *upstream.Pool
 	methods map[string]bool
 	sem     chan struct{}
+	// diff is the compiled shadow-diff policy, nil when not configured.
+	diff *shadowDiff
+}
+
+// shadowDiff is the compiled routes[].mirror.diff policy.
+type shadowDiff struct {
+	sample  int
+	maxBody int64
+	headers []string // canonicalised header names to compare
 }
 
 func newMirror(mc *config.RouteMirror, pool *upstream.Pool) *mirror {
@@ -29,6 +38,13 @@ func newMirror(mc *config.RouteMirror, pool *upstream.Pool) *mirror {
 		for _, x := range mc.Methods {
 			m.methods[x] = true
 		}
+	}
+	if d := mc.Diff; d != nil {
+		sd := &shadowDiff{sample: d.SamplePercent, maxBody: d.MaxBodyBytes}
+		for _, h := range d.Headers {
+			sd.headers = append(sd.headers, http.CanonicalHeaderKey(h))
+		}
+		m.diff = sd
 	}
 	return m
 }
@@ -114,6 +130,22 @@ func (s *Server) sendMirror(out *http.Request, st *reqState, cr *compiledRoute) 
 		if err != nil {
 			s.stats.MirrorFailed.Add(1)
 			s.logs.Error.Debug("mirror failed", "request_id", id, "route", route, "upstream", m.pool.Name, "err", err.Error())
+			return
+		}
+		if m.diff != nil && st.shadow != nil {
+			// Traffic shadowing: summarise the shadow response and compare
+			// it with the live one once the client has finished reading.
+			sum := summarise(resp.Body, m.diff.maxBody)
+			sum.status = resp.StatusCode
+			sum.headers = selectHeaders(resp.Header, m.diff.headers)
+			select {
+			case <-st.shadow.done:
+				s.reportDiff(m.diff, st, sum)
+			case <-time.After(m.cfg.Timeout.D()):
+				// The live response did not finish within the budget; the
+				// comparison is skipped rather than reported against a
+				// partial capture.
+			}
 			return
 		}
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))

@@ -1,0 +1,33 @@
+# Traffic shadowing example: validate a new backend against the current one.
+#
+# Every request is served by the live pool and a copy is sent to the shadow
+# pool in the background. mirror.diff compares the two responses (status, the
+# listed headers and a body digest) and reports the differences without ever
+# affecting the client. Watch xproxy_mirror_diff_total{result} and the error
+# log for the sampled details.
+# Validate: xproxy -config examples/routing/shadow.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: api-current
+    endpoints: [{address: "10.0.1.10:8080"}]
+  - name: api-next
+    endpoints: [{address: "10.0.2.10:8080"}]
+routes:
+  - name: api
+    hosts: [api.example.com]
+    upstream: api-current
+    mirror:
+      upstream: api-next
+      percent: 20          # shadow a fifth of the traffic
+      methods: [GET, HEAD] # only idempotent requests
+      diff:
+        headers: [Content-Type, Cache-Control]
+        sample_percent: 100
+        max_body_bytes: 65536

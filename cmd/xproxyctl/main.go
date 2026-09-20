@@ -667,6 +667,42 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_, _ = fmt.Fprintf(out, "maintenance: %s\n", onOff(st.On))
 		return 0
+	case "origin-check":
+		ofs := flag.NewFlagSet("origin-check", flag.ContinueOnError)
+		ofs.SetOutput(errOut)
+		host := ofs.String("host", "", "Host header to send (default: the endpoint host)")
+		path := ofs.String("path", "/", "request path to probe")
+		if err := ofs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		res, err := c.OriginCheck(ofs.Arg(0), *host, *path)
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, res)
+		}
+		if len(res) == 0 {
+			_, _ = fmt.Fprintln(out, "no upstream has an origin_signature")
+			return 0
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tUNSIGNED\tSIGNED\tVERDICT")
+		bad := false
+		for _, r := range res {
+			if r.Verdict != "enforced" {
+				bad = true
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.Upstream, r.Endpoint,
+				originProbeCell(r.UnsignedStatus, r.UnsignedError), originProbeCell(r.SignedStatus, r.SignedError), r.Verdict)
+		}
+		_ = tw.Flush()
+		if bad {
+			// A non-enforced or inconclusive origin means the lock is not
+			// protecting it: exit non-zero so scripts and CI notice.
+			return 1
+		}
+		return 0
 	case "accounts":
 		acfs := flag.NewFlagSet("accounts", flag.ContinueOnError)
 		acfs.SetOutput(errOut)
@@ -716,6 +752,35 @@ func run(args []string, out, errOut io.Writer) int {
 					_, _ = fmt.Fprintf(out, "    block %s %s=%s by %s until %s\n", ep.Name, b.Kind, b.Key, b.By, b.Until.Local().Format(time.RFC3339))
 				}
 			}
+		}
+		return 0
+	case "botscore":
+		bfs := flag.NewFlagSet("botscore", flag.ContinueOnError)
+		bfs.SetOutput(errOut)
+		top := bfs.Int("top", 20, "routes listed per filter")
+		if err := bfs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		rep, err := c.BotScore(*top)
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, rep)
+		}
+		if !rep.Enabled {
+			_, _ = fmt.Fprintln(out, "no bot_score filter is in learning mode (set learn: true)")
+			return 0
+		}
+		for _, f := range rep.Filters {
+			_, _ = fmt.Fprintf(out, "filter %s  challenge_at %d  deny_at %d\n", f.Filter, f.ChallengeAt, f.DenyAt)
+			tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+			_, _ = fmt.Fprintln(tw, "  ROUTE\tSAMPLES\tP50\tP95\tP99\tMAX\tSUGGEST CHAL/DENY\tWOULD CHAL/DENY %")
+			for _, e := range f.Endpoints {
+				_, _ = fmt.Fprintf(tw, "  %s\t%d\t%d\t%d\t%d\t%d\t%d/%d\t%.1f/%.1f\n", e.Route, e.Samples, e.P50, e.P95, e.P99, e.Max,
+					e.SuggestChallengeAt, e.SuggestDenyAt, e.WouldChallengePct, e.WouldDenyPct)
+			}
+			_ = tw.Flush()
 		}
 		return 0
 	case "api":
@@ -1392,6 +1457,14 @@ func onOff(b bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// originProbeCell renders a probe outcome as a status code or an error.
+func originProbeCell(status int, errMsg string) string {
+	if errMsg != "" {
+		return "err:" + errMsg
+	}
+	return strconv.Itoa(status)
 }
 
 func dash(v string) string {

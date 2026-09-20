@@ -17,6 +17,7 @@ import (
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/filters/accountguard"
+	"github.com/rom/xproxy/internal/filters/botscore"
 	"github.com/rom/xproxy/internal/fleet"
 	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/proxy"
@@ -132,6 +133,29 @@ func (c *Client) Maintenance(on *bool) (*MaintenanceStatus, error) {
 		return &st, c.do("GET", "/v1/maintenance", &st)
 	}
 	return &st, c.doBody("POST", "/v1/maintenance", MaintenanceRequest{On: *on}, &st)
+}
+
+// BotScore fetches the learning-mode bot_score baselines.
+func (c *Client) BotScore(top int) (*botscore.Report, error) {
+	var rep botscore.Report
+	return &rep, c.do("GET", fmt.Sprintf("/v1/botscore?top=%d", top), &rep)
+}
+
+// OriginCheck probes the configured origins directly to verify origin-lock
+// enforcement. upstream, host and path are optional filters and overrides.
+func (c *Client) OriginCheck(upstream, host, path string) ([]proxy.OriginCheckResult, error) {
+	q := url.Values{}
+	if upstream != "" {
+		q.Set("upstream", upstream)
+	}
+	if host != "" {
+		q.Set("host", host)
+	}
+	if path != "" {
+		q.Set("path", path)
+	}
+	var res []proxy.OriginCheckResult
+	return res, c.do("GET", "/v1/origin-check?"+q.Encode(), &res)
 }
 
 // Accounts fetches the account guard view with up to top blocks per

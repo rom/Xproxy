@@ -1513,6 +1513,19 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 		if m.MaxInFlight < 1 || m.MaxInFlight > 10000 {
 			v.errf("%s.mirror.max_in_flight: must be between 1 and 10000", p)
 		}
+		if d := m.Diff; d != nil {
+			if d.SamplePercent < 0 || d.SamplePercent > 100 {
+				v.errf("%s.mirror.diff.sample_percent: must be between 0 and 100", p)
+			}
+			for j, h := range d.Headers {
+				if !headerNameOK(h) {
+					v.errf("%s.mirror.diff.headers[%d]: %q is not a header name", p, j, h)
+				}
+			}
+			if d.MaxBodyBytes < 0 || d.MaxBodyBytes > 64<<20 {
+				v.errf("%s.mirror.diff.max_body_bytes: must be between 0 and 64 MiB", p)
+			}
+		}
 	}
 	if r.StripPrefix != "" && !strings.HasPrefix(r.StripPrefix, "/") {
 		v.errf("%s.strip_prefix: must start with /", p)

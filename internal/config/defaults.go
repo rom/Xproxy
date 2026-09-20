@@ -660,6 +660,12 @@ func applyDefaults(c *Config) {
 			}
 			setDur(&m.Timeout, 5*time.Second)
 			setInt(&m.MaxInFlight, 64)
+			if d := m.Diff; d != nil {
+				setInt(&d.SamplePercent, 100)
+				if d.MaxBodyBytes == 0 {
+					d.MaxBodyBytes = 64 << 10
+				}
+			}
 		}
 		if hp := r.Honeypot; hp != nil {
 			setInt(&hp.Status, 200)

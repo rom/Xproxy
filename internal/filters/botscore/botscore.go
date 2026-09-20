@@ -64,8 +64,11 @@ type Config struct {
 	// identifier must appear from within the window before device_shared
 	// fires. Default 5.
 	DeviceAddresses int `json:"device_addresses"`
-	window          time.Duration
-	weights         map[string]int
+	// Learn records the per-route score distribution without acting on it,
+	// so `xproxyctl botscore` can suggest thresholds from real traffic.
+	Learn   bool `json:"learn"`
+	window  time.Duration
+	weights map[string]int
 }
 
 var defaultWeights = map[string]int{
@@ -159,6 +162,11 @@ type scorer struct {
 	devices map[string]*deviceHistory // device identifier -> addresses seen
 	full    bound.Notice
 	devFull bound.Notice
+
+	// learn and routes hold the learning-mode per-route baselines.
+	learn  bool
+	lmu    sync.Mutex
+	routes map[string]*baseline
 }
 
 // deviceHistory is the set of addresses one device identifier came from
@@ -245,6 +253,9 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	}
 	if in.score > 100 {
 		in.score = 100
+	}
+	if s.learn {
+		s.recordBaseline(in.info.Route, in.score)
 	}
 	if cfg.Header != "" {
 		r.Header.Set(cfg.Header, strconv.Itoa(in.score))
@@ -443,6 +454,11 @@ func init() {
 			}
 			for _, f := range c.JA4Allow {
 				s.ja4Allow[f] = true
+			}
+			if c.Learn {
+				s.learn = true
+				s.routes = map[string]*baseline{}
+				registerLearn(s)
 			}
 			return s, nil
 		},

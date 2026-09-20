@@ -23,6 +23,10 @@ func cfg() *config.Challenge {
 	return &config.Challenge{Difficulty: 10, TTL: config.Duration(time.Hour), CookieName: "XPCHAL", Title: "Checking your browser", ExemptCIDRs: []string{"10.0.0.0/8"}}
 }
 
+// nr is a bare request for cookie issuance in tests that do not exercise
+// JA4 binding.
+func nr() *http.Request { return httptest.NewRequest("GET", "/", nil) }
+
 func extractNonce(t *testing.T, body string) string {
 	t.Helper()
 	i := strings.Index(body, `data-nonce="`)
@@ -172,7 +176,7 @@ func TestPersistentKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	ip := netip.MustParseAddr("203.0.113.1")
-	val := a.issueCookie(ip, time.Now(), TierProof, nil, 0)
+	val := a.issueCookie(nr(), ip, time.Now(), TierProof, nil, 0)
 	r := httptest.NewRequest("GET", "/", nil)
 	r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: val})
 	if !b.Verified(r, ip) {
@@ -188,7 +192,7 @@ func TestKeyRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	ip := netip.MustParseAddr("203.0.113.1")
-	old := a.issueCookie(ip, time.Now(), TierProof, nil, 0)
+	old := a.issueCookie(nr(), ip, time.Now(), TierProof, nil, 0)
 	if _, err := secret.Rotate(c.SecretFile, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +202,7 @@ func TestKeyRotation(t *testing.T) {
 	if !a.Verified(r, ip) {
 		t.Fatal("cookie from before the rotation rejected")
 	}
-	fresh := a.issueCookie(ip, time.Now(), TierProof, nil, 0)
+	fresh := a.issueCookie(nr(), ip, time.Now(), TierProof, nil, 0)
 	if fresh == old {
 		t.Fatal("primary key did not change")
 	}
@@ -260,9 +264,9 @@ func TestTiersAndDevice(t *testing.T) {
 		tier   int
 		device string
 	}{
-		{c.issueCookie(ip, now, TierProof, dev, 0), TierProof, "0123456789abcdef"},
-		{c.issueCookie(ip, now, TierCaptcha, dev, 0), TierCaptcha, "0123456789abcdef"},
-		{c.issueCookie(ip, now, TierProof, nil, 0), TierProof, ""},
+		{c.issueCookie(nr(), ip, now, TierProof, dev, 0), TierProof, "0123456789abcdef"},
+		{c.issueCookie(nr(), ip, now, TierCaptcha, dev, 0), TierCaptcha, "0123456789abcdef"},
+		{c.issueCookie(nr(), ip, now, TierProof, nil, 0), TierProof, ""},
 		{legacyCookie(c, ip, now), TierProof, ""},
 		{tieredCookie(c, ip, now, TierCaptcha, dev), TierCaptcha, "0123456789abcdef"},
 	}
@@ -278,7 +282,7 @@ func TestTiersAndDevice(t *testing.T) {
 		}
 	}
 	// A tier byte outside the range is refused even with a valid MAC.
-	forged := c.issueCookie(ip, now, 7, dev, 0)
+	forged := c.issueCookie(nr(), ip, now, 7, dev, 0)
 	r := httptest.NewRequest("GET", "/", nil)
 	r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: forged})
 	if tier, _ := c.Check(r, ip); tier != TierNone {
@@ -329,6 +333,51 @@ func TestTiersAndDevice(t *testing.T) {
 	c.Serve(rec, httptest.NewRequest("GET", "http://example.com/x", nil), ip)
 	if strings.Contains(rec.Body.String(), `data-device`) {
 		t.Fatal("page asks for a device id with devices off")
+	}
+}
+
+func TestJA4Binding(t *testing.T) {
+	conf := cfg()
+	conf.BindJA4 = true
+	c, err := New(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip := netip.MustParseAddr("203.0.113.7")
+	now := time.Now()
+	// Issue a cookie for a client fingerprinted "t13d1516h2_abc".
+	issue := httptest.NewRequest("GET", "/", nil)
+	issue = issue.WithContext(WithJA4(issue.Context(), "t13d1516h2_abc"))
+	value := c.issueCookie(issue, ip, now, TierProof, nil, 0)
+
+	withJA4 := func(ja4 string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: value})
+		if ja4 != "" {
+			r = r.WithContext(WithJA4(r.Context(), ja4))
+		}
+		return r
+	}
+	// Same fingerprint: accepted.
+	if tier, _ := c.Check(withJA4("t13d1516h2_abc"), ip); tier != TierProof {
+		t.Fatal("cookie refused for the same fingerprint")
+	}
+	// A different TLS client (stolen cookie replay): refused, same address.
+	if tier, _ := c.Check(withJA4("t13d1516h2_xyz"), ip); tier != TierNone {
+		t.Fatal("cookie accepted from a different fingerprint")
+	}
+	// No fingerprint at all is also a mismatch.
+	if tier, _ := c.Check(withJA4(""), ip); tier != TierNone {
+		t.Fatal("cookie accepted without a fingerprint")
+	}
+	// With binding off the fingerprint is irrelevant.
+	off, _ := New(cfg())
+	v2 := off.issueCookie(issue, ip, now, TierProof, nil, 0)
+	r := httptest.NewRequest("GET", "/", nil)
+	r.AddCookie(&http.Cookie{Name: "XPCHAL", Value: v2})
+	r = r.WithContext(WithJA4(r.Context(), "anything"))
+	if tier, _ := off.Check(r, ip); tier != TierProof {
+		t.Fatal("binding off but fingerprint mattered")
 	}
 }
 

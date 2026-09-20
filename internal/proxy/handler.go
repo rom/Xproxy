@@ -66,13 +66,14 @@ type reqState struct {
 	encoding   string // gzip when the proxy compressed the response
 	canary     bool   // the response came from a canary endpoint
 	cacheKey   string
-	marked     bool       // client previously hit a honeypot
-	mirror     string     // sent, dropped or body_too_large on a mirrored route
-	grpc       bool       // request is gRPC: errors are answered as gRPC statuses
-	grpcWeb    bool       // request is gRPC-web: translated to gRPC for the upstream
-	h3srv      *h3.Server // the HTTP/3 endpoint the request arrived on, for WebTransport
-	grpcCode   string     // grpc-status of the upstream response
-	release    func()     // concurrency slot; idempotent
+	marked     bool         // client previously hit a honeypot
+	mirror     string       // sent, dropped or body_too_large on a mirrored route
+	shadow     *shadowState // live response capture for mirror diffing, nil otherwise
+	grpc       bool         // request is gRPC: errors are answered as gRPC statuses
+	grpcWeb    bool         // request is gRPC-web: translated to gRPC for the upstream
+	h3srv      *h3.Server   // the HTTP/3 endpoint the request arrived on, for WebTransport
+	grpcCode   string       // grpc-status of the upstream response
+	release    func()       // concurrency slot; idempotent
 	// cr is the matched route; captures and captureNames hold the
 	// route's regular expression match for templates.
 	cr           *compiledRoute
@@ -144,6 +145,11 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if fp, ok := s.fingerprints.Get(r.RemoteAddr); ok {
 			st.ja4 = fp.JA4
 		}
+	}
+	// Carry the fingerprint so a bind_ja4 challenge cookie's signature can
+	// cover it (token binding).
+	if st.ja4 != "" {
+		r = r.WithContext(challenge.WithJA4(r.Context(), st.ja4))
 	}
 	if bl := s.bans.Load(); bl != nil && bl.BannedClient(st.clientIP, st.ja4) {
 		s.stats.DeniedBan.Add(1)
@@ -654,6 +660,9 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 	var mirrored *http.Request
 	if cr.mirror != nil {
 		mirrored = s.prepareMirror(r, st, cr)
+		if mirrored != nil && cr.mirror.diff != nil {
+			st.shadow = newShadowState(cr.mirror.diff)
+		}
 	}
 	pi := &pickInfo{hashKey: hashKey(pool.Cfg, r, st), canary: pool.CanaryMode(r)}
 	if name := pool.AffinityCookie(); name != "" {
@@ -762,6 +771,11 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 				resp.Header.Del("Server")
 			} else {
 				resp.Header.Set("Server", s.cfg().Server.ServerHeader)
+			}
+			if st.shadow != nil {
+				// Outermost body wrap: summarise exactly what the client
+				// receives, after every other transformation above.
+				st.shadow.captureLive(resp)
 			}
 			return nil
 		},

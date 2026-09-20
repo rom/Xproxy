@@ -222,6 +222,28 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   with counts, credentials, media types and versions; shadow, zombie
   and superseded views against `openapi` filters; `xproxyctl api`,
   `GET /v1/api`, an optional state file.
+- Learning bot scoring (`bot_score` `learn: true`): the filter records the
+  per-route distribution of the scores it computes without acting on it, and
+  `xproxyctl botscore` reports each route's score percentiles, the share of
+  traffic the current thresholds would challenge or deny, and suggested
+  `challenge_at`/`deny_at` derived from the tail — so thresholds are tuned to
+  real traffic rather than guessed. Served at `GET /v1/botscore`.
+- Challenge cookie token binding (`challenge.bind_ja4`): the signed
+  challenge/CAPTCHA cookie can be bound to the client's JA4 TLS fingerprint,
+  so a stolen cookie replayed by a different TLS client is refused even from
+  the same address. Off by default; complements `bind_ip`.
+- Origin-lock verification command (`xproxyctl origin-check [upstream]`):
+  probes the configured origins directly, sending an unsigned and a signed
+  request to each endpoint of every upstream with an `origin_signature`, and
+  reports whether the origin refuses unsigned traffic (`enforced`) or serves
+  it (`not_enforced`). Exits non-zero when any origin is not enforced, so it
+  fits a deployment check. Served at `GET /v1/origin-check`.
+- Traffic shadowing with response diffing (`routes[].mirror.diff`): compare
+  the shadow upstream's response with the live one — status, chosen headers
+  and a body digest — to validate a new backend under real traffic. The
+  live response is summarised as it streams (no buffering, no client
+  impact); outcomes are counted in `xproxy_mirror_diff_total{result}` and
+  sampled differences are logged.
 - LDAP and Active Directory authentication (`ldap_auth` filter): HTTP Basic
   credentials are verified against an LDAP server, by a direct bind
   (`bind_dn_template`) or a service-account search then bind (`bind_dn`,

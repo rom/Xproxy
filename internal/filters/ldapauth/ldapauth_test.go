@@ -95,6 +95,68 @@ func TestSearchBindWithGroup(t *testing.T) {
 	}
 }
 
+func TestAnonymousSearchBind(t *testing.T) {
+	s := ldaptest.Start(t, directory())
+	// No bind_dn: the search runs unauthenticated, then binds as the user.
+	f, err := filtertest.Build("ldap_auth", "anon", filter.Options{
+		"url":         s.URL(),
+		"base_dn":     "ou=people,dc=example,dc=com",
+		"user_filter": "(uid=%s)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := filtertest.Run(f, req("bob", "hunter2"), nil).Request; v.Deny {
+		t.Fatalf("valid anonymous-search login denied: %+v", v)
+	}
+	if v := filtertest.Run(f, req("bob", "wrong"), nil).Request; !v.Deny {
+		t.Fatal("bad password accepted")
+	}
+	// A user the filter cannot find is denied without a bind.
+	if v := filtertest.Run(f, req("ghost", "x"), nil).Request; !v.Deny {
+		t.Fatal("unknown user accepted")
+	}
+}
+
+func TestServiceBindFailureAndUnreachable(t *testing.T) {
+	s := ldaptest.Start(t, directory())
+	dir := t.TempDir()
+	pwFile := filepath.Join(dir, "svc.secret")
+	if err := os.WriteFile(pwFile, []byte("wrongpw"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The service account password is wrong: every login is denied because
+	// the search bind fails (an error, not a credential decision).
+	f, err := filtertest.Build("ldap_auth", "svc", filter.Options{
+		"url":                s.URL(),
+		"bind_dn":            "cn=svc,dc=example,dc=com",
+		"bind_password_file": pwFile,
+		"base_dn":            "ou=people,dc=example,dc=com",
+		"user_filter":        "(uid=%s)",
+		"cache_ttl":          "0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := filtertest.Run(f, req("alice", "s3cret"), nil).Request; !v.Deny {
+		t.Fatal("login accepted despite a failed service bind")
+	}
+
+	// An unreachable directory denies (and the failure is not a credential
+	// decision, so it is never cached as a success).
+	down, err := filtertest.Build("ldap_auth", "down", filter.Options{
+		"url":              "ldap://127.0.0.1:1",
+		"bind_dn_template": "uid=%s,dc=example,dc=com",
+		"timeout":          "1s",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := filtertest.Run(down, req("alice", "s3cret"), nil).Request; !v.Deny {
+		t.Fatal("login accepted against an unreachable directory")
+	}
+}
+
 func TestValidate(t *testing.T) {
 	bad := []filter.Options{
 		{},                  // no url

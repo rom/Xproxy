@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/rom/xproxy/internal/apiinv"
 	"github.com/rom/xproxy/internal/filters/accountguard"
+	"github.com/rom/xproxy/internal/filters/botscore"
 	"github.com/rom/xproxy/internal/filters/sensitive"
 	"log/slog"
 	"net"
@@ -454,6 +455,10 @@ func inventoryConfig(cfg *config.Config) apiinv.Config {
 // Accounts returns the live state of the account_guard filters with up to
 // top active blocks per endpoint.
 func (s *Server) Accounts(top int) accountguard.Report { return accountguard.Status(top) }
+
+// BotScore returns the learning-mode baselines and threshold suggestions of
+// every bot_score filter running with learn: true, up to top routes each.
+func (s *Server) BotScore(top int) botscore.Report { return botscore.Status(top) }
 
 func (s *Server) APIInventory(view string, top int) apiinv.Report {
 	rt := s.rt.Load()

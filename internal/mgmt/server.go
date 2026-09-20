@@ -222,6 +222,14 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		writeJSON(w, 200, MaintenanceStatus{Configured: configured, On: on})
 	})
 	mux.HandleFunc("POST /v1/maintenance", s.setMaintenance)
+	mux.HandleFunc("GET /v1/origin-check", func(w http.ResponseWriter, r *http.Request) {
+		res, err := s.proxy.OriginCheck(r.URL.Query().Get("upstream"), r.URL.Query().Get("host"), r.URL.Query().Get("path"))
+		if err != nil {
+			writeJSON(w, 400, result{Error: err.Error()})
+			return
+		}
+		writeJSON(w, 200, res)
+	})
 	mux.HandleFunc("GET /v1/accounts", func(w http.ResponseWriter, r *http.Request) {
 		top := 50
 		if t := r.URL.Query().Get("top"); t != "" {
@@ -233,6 +241,18 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 			top = n
 		}
 		writeJSON(w, 200, s.proxy.Accounts(top))
+	})
+	mux.HandleFunc("GET /v1/botscore", func(w http.ResponseWriter, r *http.Request) {
+		top := 50
+		if t := r.URL.Query().Get("top"); t != "" {
+			n, err := strconv.Atoi(t)
+			if err != nil || n < 0 || n > 100000 {
+				writeJSON(w, 400, result{Error: "top must be between 0 and 100000"})
+				return
+			}
+			top = n
+		}
+		writeJSON(w, 200, s.proxy.BotScore(top))
 	})
 	mux.HandleFunc("GET /v1/api", func(w http.ResponseWriter, r *http.Request) {
 		top := 100
