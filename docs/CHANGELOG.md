@@ -295,7 +295,7 @@ Open findings of the earlier rounds:
 A round of adversarial and robustness tests over the parsers, the
 protocol clients and the views, written from the outside in: what a
 client, a peer, a scanner, a certificate authority or a file on disk
-can put in front of each of them. Twenty-three packages gained a suite;
+can put in front of each of them. Twenty-four packages gained a suite;
 `docs/TESTS.md` lists every case. The findings each have their own
 entry above.
 
@@ -317,7 +317,8 @@ resource bounds (in-flight limits, queues that drop rather than block,
 tables an attacker fills); concurrency and determinism (shared
 validators, shared filters, shared ban lists, byte-identical error
 text); and the trust boundaries (a scanner that rewrites a request, a
-peer that names itself, an agent that reports its host name).
+peer that names itself, an agent that reports its host name, a
+WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
 
