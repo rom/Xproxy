@@ -2070,7 +2070,7 @@ introspection. Nothing is executed or forwarded to a schema. Denials are
 | `max_query_bytes` | int | `65536` | Query text and body size (256 to 16 MiB) |
 | `introspection` | bool | `true` | `false` refuses `__schema` and `__type` |
 | `list_args` | list | `[first, last, limit]` | Arguments whose integer value multiplies the cost of the fields below |
-| `max_list` | int | `1000` | Cap of one multiplier, and the value assumed for a variable |
+| `max_list` | int | `1000` | Cap of one multiplier, and the value assumed for a variable. It bounds the cost model, not the page size: `first: 1000000` is scored as `max_list`, because a client can move the number into a variable whose value this filter never sees. The page size itself belongs to the origin, or to an `openapi` route policy |
 
 ### Kind `upload_guard`
 
