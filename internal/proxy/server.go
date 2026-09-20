@@ -1025,6 +1025,10 @@ func (s *Server) Reload(cfg *config.Config) error {
 	// the collector or the sampling share.
 	s.traceRedactIP.Store(cfg.Tracing.RedactsClientAddress())
 	s.bodyBudget.SetLimit(cfg.Server.Limits.MaxBufferedBodyBytes)
+	// The concurrency and tarpit gates were sized at start only, so a
+	// reload that changed either setting was ignored until a restart.
+	s.concurrency.Resize(cfg.Server.Limits.MaxConcurrentRequests)
+	s.tarpits.Resize(cfg.Server.Limits.MaxTarpits)
 	if !sameTracing(old.cfg.Tracing, cfg.Tracing) {
 		var next *tracing.Tracer
 		if cfg.Tracing.IsEnabled() {
@@ -1052,7 +1056,22 @@ func (s *Server) Reload(cfg *config.Config) error {
 	// finish before its pools are torn down.
 	go func(old *runtime) {
 		old.stopChecks()
-		time.Sleep(cfg.Server.ShutdownTimeout.D())
+		// The old generation is torn down when its last request ends,
+		// not after a fixed wait: an exchange older than
+		// shutdown_timeout — a long upload, a gRPC or SSE stream —
+		// used to be cut or answered 500 although it was still making
+		// progress. The hard cap bounds one that never ends.
+		drain := cfg.Server.ShutdownTimeout.D()
+		time.Sleep(drain)
+		hard := max(10*drain, 5*time.Minute)
+		deadline := time.Now().Add(hard - drain)
+		for old.inFlight.Load() > 0 && time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if n := old.inFlight.Load(); n > 0 {
+			s.logs.Error.Warn("previous configuration generation torn down with requests still in flight",
+				"generation", old.generation, "in_flight", n, "after", hard.String())
+		}
 		old.stop()
 	}(old)
 	s.logs.Error.Info("configuration reloaded", "generation", rt.generation, "routes", len(cfg.Routes), "upstreams", len(cfg.Upstreams))

@@ -2,6 +2,7 @@ package ban
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/netip"
@@ -387,5 +388,47 @@ func TestFingerprintPersistence(t *testing.T) {
 	defer l2.Close()
 	if !l2.BannedFingerprint(fp) {
 		t.Fatal("fingerprint ban not persisted")
+	}
+}
+
+// A ban used to cost one synchronous db.Update — one fsync — on the
+// request goroutine, and a full history table was scanned on every
+// trigger. Both are work a flood of distinct clients drives.
+func TestTriggerBansAreBatchedAndHistoryIsBounded(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Bans{
+		Action:     "reject",
+		StateFile:  filepath.Join(dir, "bans.db"),
+		MaxEntries: 4096,
+		Triggers: []config.BanTrigger{{
+			Name: "deny", Reasons: []string{"acl"}, Threshold: 1,
+			Window: config.Duration(time.Minute), Duration: config.Duration(time.Minute),
+			MaxDuration: config.Duration(time.Hour), Escalation: 2,
+		}},
+	}
+	l, err := New(cfg, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.max = 64 // a small history table, so the bound is reached
+	const clients = 500
+	for i := 0; i < clients; i++ {
+		l.Observe(netip.MustParseAddr(fmt.Sprintf("198.51.%d.%d", i/250, i%250+1)), "acl")
+	}
+	l.mu.Lock()
+	hist, lru := len(l.history), l.histLRU.Len()
+	l.mu.Unlock()
+	if hist > l.max || hist != lru {
+		t.Fatalf("history %d, lru %d, bound %d", hist, lru, l.max)
+	}
+	// Close drains the write queue, so every ban is on disk afterwards.
+	l.Close()
+	l2, err := New(cfg, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	if n := len(l2.Entries()); n != clients {
+		t.Fatalf("%d bans survived the restart, want %d", n, clients)
 	}
 }

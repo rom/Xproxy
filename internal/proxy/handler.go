@@ -101,6 +101,10 @@ func newRequestID() string {
 func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s := h.srv
 	rt := s.rt.Load()
+	// The generation serving this request is torn down when its last
+	// request ends, so it must know this one is running.
+	rt.inFlight.Add(1)
+	defer rt.inFlight.Add(-1)
 	rw := &responseWriter{ResponseWriter: w}
 	st := &reqState{id: newRequestID(), start: time.Now()}
 	rw.st = st

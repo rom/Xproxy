@@ -6,7 +6,10 @@ import "sync/atomic"
 // Requests above the bound are rejected immediately with 503 rather than
 // queued, because a queue is exactly what a flood attacker wants to fill.
 type Concurrency struct {
-	max     int64
+	// max is an atomic so a reload can change it; it used to be fixed
+	// at start, so max_concurrent_requests and max_tarpits were the two
+	// settings a reload silently ignored.
+	max     atomic.Int64
 	current atomic.Int64
 	// Rejected counts admissions refused.
 	Rejected atomic.Uint64
@@ -14,13 +17,22 @@ type Concurrency struct {
 
 // NewConcurrency creates a limiter admitting at most max requests at once.
 func NewConcurrency(max int) *Concurrency {
-	return &Concurrency{max: int64(max)}
+	c := &Concurrency{}
+	c.max.Store(int64(max))
+	return c
 }
+
+// Resize changes the ceiling. Requests already admitted are not
+// disturbed: a lowered ceiling takes effect as they finish.
+func (c *Concurrency) Resize(max int) { c.max.Store(int64(max)) }
+
+// Max returns the current ceiling.
+func (c *Concurrency) Max() int64 { return c.max.Load() }
 
 // Acquire tries to admit one request. The returned release function must be
 // called exactly once when ok is true.
 func (c *Concurrency) Acquire() (release func(), ok bool) {
-	if c.current.Add(1) > c.max {
+	if c.current.Add(1) > c.max.Load() {
 		c.current.Add(-1)
 		c.Rejected.Add(1)
 		return nil, false

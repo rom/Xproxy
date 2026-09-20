@@ -42,6 +42,7 @@ import (
 
 	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/secret"
 )
@@ -127,9 +128,22 @@ type Challenger struct {
 	title   string
 	captcha *captcha
 	device  bool
-	seen    map[[macLen]byte]int64 // nonce mac -> expiry unix
-	now     func() time.Time
-	full    bound.Notice
+	// seen records solved nonces until they expire, so a proof cannot be
+	// replayed. It is partitioned by client address: without that, one
+	// client could fill the whole table with its own solved nonces and
+	// every other client's verification was then refused. Entries
+	// expire at the nonce's own time plus its TTL, not at the time it
+	// was solved, so a solved nonce never outlives the nonce itself.
+	seen    map[[macLen]byte]seenEntry
+	seenPer map[netip.Addr]int // solved nonces held per client address
+	// verifyRate bounds verification attempts per client address. Each
+	// attempt costs a MAC, a proof check and, with a CAPTCHA
+	// configured, a request to the provider, all before anything about
+	// the client is known; the nonce table's per-client quota bounds
+	// what a client can hold, and this bounds what it can spend.
+	verifyRate *limits.KeyedLimiter
+	now        func() time.Time
+	full       bound.Notice
 
 	Issued, Passed, Failed uint64
 	CaptchaPassed          uint64
@@ -141,7 +155,8 @@ func New(cfg *config.Challenge) (*Challenger, error) {
 	if err != nil {
 		return nil, fmt.Errorf("challenge secret: %w", err)
 	}
-	c := &Challenger{keys: ring.All(), keyPath: cfg.SecretFile, seen: make(map[[macLen]byte]int64), now: time.Now}
+	c := &Challenger{keys: ring.All(), keyPath: cfg.SecretFile, seen: make(map[[macLen]byte]seenEntry),
+		seenPer: map[netip.Addr]int{}, verifyRate: limits.NewKeyedLimiter(verifyRate, verifyBurst, 4096), now: time.Now}
 	if cfg.Captcha != nil {
 		cp, err := loadCaptcha(cfg.Captcha)
 		if err != nil {
@@ -419,52 +434,97 @@ func hostKey(host string) string {
 	return strings.ToLower(host)
 }
 
-// checkNonce validates the signature and age. The caller marks the nonce
-// used with markUsed after a correct proof, so a wrong guess does not burn
-// the nonce the browser is still working on.
-func (c *Challenger) checkNonce(nonce string, ip netip.Addr, host string, now time.Time) ([macLen]byte, error) {
+// seenEntry is one solved nonce: when it stops mattering and which
+// client's quota it counts against.
+type seenEntry struct {
+	exp   int64
+	owner netip.Addr
+}
+
+const (
+	// verifyRate and verifyBurst bound verification attempts per client
+	// address: a browser posts one per challenge page, a script posts
+	// as many as it likes.
+	verifyRate  = 2
+	verifyBurst = 20
+)
+
+// maxSeenPerIP is how many solved nonces one client address may hold.
+// A browser solves one challenge at a time; this is generous for a
+// shared address and far below the table as a whole, so filling it
+// takes hundreds of distinct addresses rather than one.
+const maxSeenPerIP = 256
+
+// checkNonce validates the signature and age and returns the nonce's own
+// expiry. The caller marks the nonce used with markUsed after a correct
+// proof, so a wrong guess does not burn the nonce the browser is still
+// working on.
+func (c *Challenger) checkNonce(nonce string, ip netip.Addr, host string, now time.Time) ([macLen]byte, int64, error) {
 	var key [macLen]byte
 	if len(nonce) > 64 {
-		return key, errors.New("nonce too long")
+		return key, 0, errors.New("nonce too long")
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(nonce)
 	if err != nil || len(raw) != 16+macLen {
-		return key, errors.New("malformed nonce")
+		return key, 0, errors.New("malformed nonce")
 	}
 	if !c.macOK(raw[16:], []byte("nonce"), raw[:16], c.ipBytes(ip), []byte(hostKey(host))) {
-		return key, errors.New("bad nonce signature")
+		return key, 0, errors.New("bad nonce signature")
 	}
 	ts := binary.BigEndian.Uint64(raw[:8])
 	if ts > 1<<62 || now.Unix()-int64(ts) > int64(nonceTTL.Seconds()) || int64(ts) > now.Unix()+60 { //nolint:gosec // range checked
-		return key, errors.New("nonce expired")
+		return key, 0, errors.New("nonce expired")
 	}
 	copy(key[:], raw[16:])
 	if _, used := c.seen[key]; used {
-		return key, errors.New("nonce already used")
+		return key, 0, errors.New("nonce already used")
 	}
-	return key, nil
+	return key, int64(ts) + int64(nonceTTL.Seconds()), nil //nolint:gosec // range checked above
 }
 
-// markUsed records a solved nonce; it returns false if it was used
-// concurrently or the table is full of live nonces.
-func (c *Challenger) markUsed(key [macLen]byte, now time.Time) error {
+// markUsed records a solved nonce until exp; it returns an error if the
+// nonce was used concurrently, the client holds its share of the table
+// already, or the table is full of live nonces.
+func (c *Challenger) markUsed(key [macLen]byte, ip netip.Addr, exp int64, now time.Time) error {
 	if _, used := c.seen[key]; used {
 		return errors.New("nonce already used")
 	}
-	if len(c.seen) >= maxSeen {
-		for k, exp := range c.seen {
-			if exp < now.Unix() {
-				delete(c.seen, k)
-			}
+	if c.seenPer[ip] >= maxSeenPerIP {
+		c.sweepSeen(now)
+		if c.seenPer[ip] >= maxSeenPerIP {
+			// This client's own share is spent. Refusing it leaves
+			// everybody else's verifications working, which is the
+			// point of the partition.
+			c.full.Hit(nil, "challenge verification quota spent for one client", "table", "challenge_nonces", "max_per_client", maxSeenPerIP)
+			return errors.New("verification quota spent")
 		}
+	}
+	if len(c.seen) >= maxSeen {
+		c.sweepSeen(now)
 		if len(c.seen) >= maxSeen {
 			// Table full of live nonces: refuse rather than allow replay.
 			c.full.Hit(nil, "challenge verification table full; solved challenges are refused until nonces expire", "table", "challenge_nonces", "max", maxSeen)
 			return errors.New("verification table full")
 		}
 	}
-	c.seen[key] = now.Add(nonceTTL).Unix()
+	c.seen[key] = seenEntry{exp: exp, owner: ip}
+	c.seenPer[ip]++
 	return nil
+}
+
+// sweepSeen drops expired entries and the per-client counts with them;
+// the caller holds the lock.
+func (c *Challenger) sweepSeen(now time.Time) {
+	for k, e := range c.seen {
+		if e.exp < now.Unix() {
+			delete(c.seen, k)
+			if n := c.seenPer[e.owner] - 1; n > 0 {
+				c.seenPer[e.owner] = n
+			} else {
+				delete(c.seenPer, e.owner)
+			}
+		}
+	}
 }
 
 // Solves reports whether counter is a valid proof for nonce at the given
@@ -574,6 +634,11 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 		http.Error(w, "405 Method Not Allowed", http.StatusMethodNotAllowed)
 		return false, "method"
 	}
+	if !c.verifyRate.Allow(ip.String()) {
+		w.Header().Set("Retry-After", "10")
+		http.Error(w, "429 Too Many Requests", http.StatusTooManyRequests)
+		return false, "verify_rate"
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "400 Bad Request", http.StatusBadRequest)
@@ -604,7 +669,7 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 		return false, "counter"
 	}
 	c.mu.Lock()
-	key, err := c.checkNonce(nonce, ip, r.Host, now)
+	key, nonceExp, err := c.checkNonce(nonce, ip, r.Host, now)
 	c.mu.Unlock()
 	if err != nil {
 		c.fail(w, err.Error())
@@ -628,7 +693,7 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 		return false, "proof"
 	}
 	c.mu.Lock()
-	if err := c.markUsed(key, now); err != nil {
+	if err := c.markUsed(key, ip, nonceExp, now); err != nil {
 		c.mu.Unlock()
 		c.fail(w, err.Error())
 		return false, err.Error()

@@ -40,12 +40,16 @@ type runtime struct {
 	// patchBuffersBody is set when any virtual patch matches on a body,
 	// which every request on every route then pays for.
 	patchBuffersBody bool
-	router           *router.Router
-	pools            map[string]*upstream.Pool
-	rateLimits       map[string]*rateLimit
-	trusted          []netip.Prefix
-	routes           []*compiledRoute
-	waf              *waf.Engine
+	// inFlight counts requests being served by this generation, so a
+	// reload can tear it down when the last one ends rather than after
+	// a fixed wait.
+	inFlight   atomic.Int64
+	router     *router.Router
+	pools      map[string]*upstream.Pool
+	rateLimits map[string]*rateLimit
+	trusted    []netip.Prefix
+	routes     []*compiledRoute
+	waf        *waf.Engine
 	// signers sign forwarded requests per upstream (origin_signature).
 	signers     map[string]*originsig.Signer
 	jwt         map[string]*jwt.Provider
@@ -652,9 +656,11 @@ func (rt *runtime) stopChecks() {
 	}
 }
 
+// stop releases the generation once its requests have drained (or the
+// hard cap passed).
 func (rt *runtime) stop() {
 	for _, p := range rt.pools {
-		p.Stop()
+		p.Close()
 	}
 	for _, p := range rt.jwt {
 		p.Stop()

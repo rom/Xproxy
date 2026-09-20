@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -170,5 +171,78 @@ routes:
 	}
 	if used := s.Stats().BufferedBody.Used; used != 0 {
 		t.Fatalf("%d bytes still reserved after the requests ended", used)
+	}
+}
+
+// The old generation used to be torn down after a fixed
+// shutdown_timeout, so an exchange older than that — a long upload, a
+// gRPC or SSE stream — was cut or answered 500 although it was still
+// making progress. It is torn down when its last request ends now,
+// with a hard cap for one that never does. The concurrency and tarpit
+// gates were also sized once at start, so a reload that changed either
+// was ignored.
+func TestReloadWaitsForInFlightRequestsAndResizesGates(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		_, _ = io.WriteString(w, "done")
+	}))
+	defer slow.Close()
+	yaml := func(concurrent int) string {
+		return fmt.Sprintf(`
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+  shutdown_timeout: 100ms
+  limits: {max_concurrent_requests: %d, max_tarpits: %d}
+logging: {access: {enabled: false}}
+upstreams:
+  - name: u
+    endpoints: [{address: %q}]
+routes:
+  - name: r
+    paths: [/]
+    timeouts: {total: 60s}
+    upstream: u
+`, concurrent, concurrent, strings.TrimPrefix(slow.URL, "http://"))
+	}
+	s, url := startServer(t, yaml(100))
+	if got := s.concurrency.Max(); got != 100 {
+		t.Fatalf("concurrency ceiling %d", got)
+	}
+	body := make(chan string, 1)
+	go func() {
+		resp, err := http.Get(url + "/slow")
+		if err != nil {
+			body <- "error: " + err.Error()
+			return
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		body <- string(b)
+	}()
+	<-started
+	if err := s.Reload(mustParse(t, yaml(7))); err != nil {
+		t.Fatal(err)
+	}
+	// A reload now changes both gates.
+	if got := s.concurrency.Max(); got != 7 {
+		t.Fatalf("the concurrency ceiling was not resized: %d", got)
+	}
+	if got := s.tarpits.Max(); got != 7 {
+		t.Fatalf("the tarpit ceiling was not resized: %d", got)
+	}
+	// The in-flight request outlives shutdown_timeout and still finishes.
+	time.Sleep(400 * time.Millisecond)
+	close(release)
+	select {
+	case got := <-body:
+		if got != "done" {
+			t.Fatalf("the request in flight across the reload got %q", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request never came back")
 	}
 }

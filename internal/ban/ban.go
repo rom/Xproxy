@@ -14,6 +14,7 @@
 package ban
 
 import (
+	container "container/list"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,15 +64,26 @@ type List struct {
 	prefixIdx  map[netip.Prefix]*Entry
 	prefixLens map[prefixLen]int
 	fps        map[string]*Entry
-	hasFP      atomic.Bool        // any fingerprint ban present (hot path hint)
-	history    map[string]history // repeat counts per target for escalation
-	triggers   []*trigger
-	exempt     []netip.Prefix
-	max        int
-	drop       bool
+	hasFP      atomic.Bool // any fingerprint ban present (hot path hint)
+	// history holds the repeat count per target for escalation, bounded
+	// least-recently-used: a full table used to be scanned on every
+	// trigger, which is work an attacker drives with every new address.
+	history  map[string]history
+	histLRU  *container.List
+	triggers []*trigger
+	exempt   []netip.Prefix
+	max      int
+	drop     bool
 
 	db        *bbolt.DB
 	stateFile string
+	// writes carries state-file updates to one writer goroutine, which
+	// applies them in batches. A ban used to cost one synchronous
+	// db.Update — one fsync — on the request goroutine, so a flood of
+	// distinct clients tripping triggers paid for a disk write each and
+	// starved every concurrent Banned() of the lock.
+	writes    chan persistOp
+	writeFull bound.Notice
 	log       *slog.Logger
 	now       func() time.Time
 	stop      chan struct{}
@@ -97,6 +109,7 @@ const MaxDuration = 366 * 24 * time.Hour
 type history struct {
 	count int
 	last  time.Time
+	elem  *container.Element // position in histLRU
 }
 
 type trigger struct {
@@ -130,6 +143,7 @@ func New(cfg *config.Bans, log *slog.Logger) (*List, error) {
 		addrs:   make(map[netip.Addr]*Entry),
 		fps:     make(map[string]*Entry),
 		history: make(map[string]history),
+		histLRU: container.New(),
 		log:     log.With("component", "bans"),
 		now:     time.Now,
 		stop:    make(chan struct{}),
@@ -149,7 +163,85 @@ func New(cfg *config.Bans, log *slog.Logger) (*List, error) {
 	}
 	l.wg.Add(1)
 	go l.purgeLoop()
+	if l.db != nil {
+		l.writes = make(chan persistOp, persistQueue)
+		l.wg.Add(1)
+		go l.writeLoop()
+	}
 	return l, nil
+}
+
+// persistQueue is how many state-file updates may wait for the writer.
+// Beyond it the caller writes synchronously rather than losing the
+// update: durability is the point of the file.
+const persistQueue = 4096
+
+// persistOp is one state-file update.
+type persistOp struct {
+	entry  *Entry
+	remove bool
+}
+
+// writeLoop applies queued updates, coalescing everything already
+// waiting into one transaction.
+func (l *List) writeLoop() {
+	defer l.wg.Done()
+	for {
+		select {
+		case <-l.stop:
+			// Drain what is queued before the file is closed.
+			for {
+				select {
+				case op := <-l.writes:
+					l.writeBatch([]persistOp{op})
+				default:
+					return
+				}
+			}
+		case op := <-l.writes:
+			batch := []persistOp{op}
+			for len(batch) < 256 {
+				select {
+				case next := <-l.writes:
+					batch = append(batch, next)
+				default:
+				}
+				if len(batch) == 1 || len(l.writes) == 0 {
+					break
+				}
+			}
+			l.writeBatch(batch)
+		}
+	}
+}
+
+// writeBatch applies a batch of updates in one transaction.
+func (l *List) writeBatch(batch []persistOp) {
+	err := l.db.Update(func(tx *bbolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(bucket)
+		if err != nil {
+			return err
+		}
+		for _, op := range batch {
+			if op.remove {
+				if err := b.Delete([]byte(op.entry.Target)); err != nil {
+					return err
+				}
+				continue
+			}
+			v, err := json.Marshal(op.entry)
+			if err != nil {
+				return err
+			}
+			if err := b.Put([]byte(op.entry.Target), v); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		l.log.Error("ban state write failed", "err", err.Error(), "entries", len(batch))
+	}
 }
 
 // OnChange registers a callback invoked after every locally originated ban
@@ -468,22 +560,30 @@ func (l *List) applyTrigger(t *trigger, target *Entry, reason string, now time.T
 		l.mu.Unlock()
 		return nil
 	}
-	h := l.history[target.Target]
-	if now.Sub(h.last) > t.cfg.MaxDuration.D()*2 {
-		h = history{}
-	}
-	h.count++
-	h.last = now
-	if len(l.history) >= l.max {
-		for k, hh := range l.history {
-			if now.Sub(hh.last) > t.cfg.MaxDuration.D()*2 {
+	h, had := l.history[target.Target]
+	switch {
+	case had:
+		l.histLRU.MoveToFront(h.elem)
+	default:
+		if len(l.history) >= l.max {
+			// The least recently seen target's count goes. Expired
+			// entries are swept by the purge loop, not here: a scan of
+			// the whole table on every trigger is work any client can
+			// drive with every new address.
+			if back := l.histLRU.Back(); back != nil {
+				k := back.Value.(string)
+				l.histLRU.Remove(back)
 				delete(l.history, k)
 			}
 		}
+		h.elem = l.histLRU.PushFront(target.Target)
 	}
-	if len(l.history) < l.max {
-		l.history[target.Target] = h
+	if now.Sub(h.last) > t.cfg.MaxDuration.D()*2 {
+		h.count = 0
 	}
+	h.count++
+	h.last = now
+	l.history[target.Target] = h
 	dur := t.cfg.Duration.D()
 	for i := 1; i < h.count && dur < t.cfg.MaxDuration.D(); i++ {
 		dur = time.Duration(float64(dur) * t.cfg.Escalation)
@@ -537,7 +637,7 @@ func (l *List) Unban(target string) error {
 	}
 	l.mu.Lock()
 	found := l.removeLocked(e)
-	delete(l.history, e.Target)
+	l.forgetHistory(e.Target)
 	l.mu.Unlock()
 	if !found {
 		return ErrNotFound
@@ -793,6 +893,7 @@ func (l *List) Purge() {
 	now := l.now()
 	var expired []string
 	l.mu.Lock()
+	l.sweepHistory(now)
 	for k, e := range l.addrs {
 		if !e.Until.After(now) {
 			delete(l.addrs, k)
@@ -844,33 +945,32 @@ func (l *List) Purge() {
 func (l *List) Close() {
 	l.closeMu.Do(func() {
 		close(l.stop)
-		l.wg.Wait()
+		l.wg.Wait() // the writer drains the queue before it returns
 		if l.db != nil {
 			_ = l.db.Close()
 		}
 	})
 }
 
+// persist queues a state-file update. The entry is copied, because the
+// caller's may be mutated after this returns.
 func (l *List) persist(e *Entry, remove bool) {
 	if l.db == nil {
 		return
 	}
-	err := l.db.Update(func(tx *bbolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists(bucket)
-		if err != nil {
-			return err
-		}
-		if remove {
-			return b.Delete([]byte(e.Target))
-		}
-		v, err := json.Marshal(e)
-		if err != nil {
-			return err
-		}
-		return b.Put([]byte(e.Target), v)
-	})
-	if err != nil {
-		l.log.Error("ban state write failed", "err", err.Error())
+	cp := *e
+	op := persistOp{entry: &cp, remove: remove}
+	if l.writes == nil {
+		l.writeBatch([]persistOp{op})
+		return
+	}
+	select {
+	case l.writes <- op:
+	default:
+		// The queue is full: write it here rather than lose it. This is
+		// the old behaviour, now the exception instead of the rule.
+		l.writeFull.Hit(l.log, "ban state write queue full; the update is written synchronously", "queue", persistQueue)
+		l.writeBatch([]persistOp{op})
 	}
 }
 
@@ -899,4 +999,41 @@ func (l *List) load() error {
 			return nil
 		})
 	})
+}
+
+// forgetHistory drops one target's escalation count; the caller holds
+// the lock.
+func (l *List) forgetHistory(target string) {
+	if h, ok := l.history[target]; ok {
+		if h.elem != nil {
+			l.histLRU.Remove(h.elem)
+		}
+		delete(l.history, target)
+	}
+}
+
+// sweepHistory drops escalation counts older than the longest window any
+// trigger escalates over. It runs from the purge loop, so the trigger
+// path itself does no scanning; the caller holds the lock.
+func (l *List) sweepHistory(now time.Time) {
+	ttl := time.Duration(0)
+	for _, t := range l.triggers {
+		if d := t.cfg.MaxDuration.D() * 2; d > ttl {
+			ttl = d
+		}
+	}
+	if ttl <= 0 {
+		return
+	}
+	for e := l.histLRU.Back(); e != nil; {
+		prev := e.Prev()
+		k := e.Value.(string)
+		h, ok := l.history[k]
+		if ok && now.Sub(h.last) <= ttl {
+			break // the list is in recency order: everything ahead is newer
+		}
+		l.histLRU.Remove(e)
+		delete(l.history, k)
+		e = prev
+	}
 }

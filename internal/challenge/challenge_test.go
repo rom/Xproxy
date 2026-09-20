@@ -643,3 +643,81 @@ func TestHostScopedCookieDoesNotTravel(t *testing.T) {
 		}
 	}
 }
+
+// The replay table used to be global: one client solving challenges
+// could fill all 65,536 slots with its own nonces, and every other
+// client's verification was refused from then on. It is partitioned per
+// client address now, entries expire at the nonce's own time plus its
+// TTL rather than at the moment it was solved, and verification itself
+// is rate limited per address.
+func TestNonceTableIsPartitionedPerClient(t *testing.T) {
+	c, err := New(cfg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	greedy := netip.MustParseAddr("198.51.100.1")
+	other := netip.MustParseAddr("198.51.100.2")
+	key := func(n int) [macLen]byte {
+		var k [macLen]byte
+		k[0], k[1], k[2] = byte(n), byte(n>>8), byte(n>>16)
+		return k
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	exp := now.Add(nonceTTL).Unix()
+	filled := 0
+	for i := 0; i < maxSeenPerIP+10; i++ {
+		if err := c.markUsed(key(i), greedy, exp, now); err == nil {
+			filled++
+		}
+	}
+	if filled != maxSeenPerIP {
+		t.Fatalf("one client held %d of the table, want its quota of %d", filled, maxSeenPerIP)
+	}
+	// Everybody else still verifies.
+	if err := c.markUsed(key(1_000_000), other, exp, now); err != nil {
+		t.Fatalf("another client was refused: %v", err)
+	}
+	// The quota comes back with the nonces, at the nonce's own expiry.
+	later := now.Add(nonceTTL + time.Second)
+	if err := c.markUsed(key(2_000_000), greedy, later.Add(nonceTTL).Unix(), later); err != nil {
+		t.Fatalf("the quota did not come back after the nonces expired: %v", err)
+	}
+}
+
+// Each verification costs a MAC, a proof check and, with a CAPTCHA
+// configured, a request to the provider — all before anything about the
+// client is known.
+func TestVerifyIsRateLimitedPerClient(t *testing.T) {
+	c, err := New(cfg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip := netip.MustParseAddr("198.51.100.9")
+	post := func() int {
+		r := httptest.NewRequest("POST", "http://example.com"+VerifyPath, strings.NewReader("nonce=x&counter=1"))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		c.Verify(w, r, ip, false)
+		return w.Code
+	}
+	limited := false
+	for i := 0; i < verifyBurst+5; i++ {
+		if post() == 429 {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("verification was not rate limited")
+	}
+	// Another client is unaffected.
+	r := httptest.NewRequest("POST", "http://example.com"+VerifyPath, strings.NewReader("nonce=x&counter=1"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	c.Verify(w, r, netip.MustParseAddr("198.51.100.10"), false)
+	if w.Code == 429 {
+		t.Fatal("one client's rate limit reached another")
+	}
+}
