@@ -234,6 +234,10 @@ func (c *Conn) Search(baseDN string, scope int, filter *packet, attrs []string, 
 			}
 			entries = append(entries, e)
 			if sizeLimit > 0 && len(entries) > sizeLimit {
+				// Abandoning a search mid-stream leaves the server's remaining
+				// messages unread; close the connection so it cannot be
+				// reused out of step.
+				_ = c.c.Close()
 				return nil, errors.New("ldap: server exceeded size limit")
 			}
 		case body.class == classApplication && body.tag == appSearchResultDone:

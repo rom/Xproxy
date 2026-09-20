@@ -73,6 +73,7 @@ func TestYAMLDocuments(t *testing.T) {
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/tools-users", usersFile(t)))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/filters/policy.wasm", filepath.Join(dir, "filters", "wasm", "policy.wasm")))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/api-keys", keysFile(t)))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/ldap.secret", secretFile(t)))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/openapi/orders.yaml", filepath.Join(dir, "filters", "orders-openapi.yaml")))
 			if strings.Contains(string(data), "\nversion: 1\n") || strings.HasPrefix(string(data), "version: 1\n") {
 				if _, err := config.ParseWith(data, false); err != nil {
@@ -105,6 +106,17 @@ func keysFile(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "api-keys")
 	if _, err := apikey.Add(p, "acme", []string{"orders:read"}, time.Time{}, "example"); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// secretFile writes a non world-readable one line secret, for kinds that
+// check the permissions of a password file at validation.
+func secretFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(p, []byte("s3cret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return p

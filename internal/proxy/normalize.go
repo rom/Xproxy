@@ -126,6 +126,28 @@ func isHexByte(c byte) bool {
 	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
+// foldIntroducesSyntax reports whether Unicode folding changed the number
+// of path-significant bytes. Compatibility mappings turn characters such as
+// U+2025 (‥) into "..", U+FF0F into "/" and U+FF05 into "%": a request whose
+// folded path gained such bytes would be routed by one path (folded) and
+// served by another (raw), so it is refused rather than let through under
+// a policy it did not match.
+func foldIntroducesSyntax(raw, folded string) bool {
+	if raw == folded {
+		return false
+	}
+	count := func(s string) (n int) {
+		for i := 0; i < len(s); i++ {
+			switch s[i] {
+			case '.', '/', '\\', '%', ';', '?', '#':
+				n++
+			}
+		}
+		return n
+	}
+	return count(raw) != count(folded)
+}
+
 // routingPath is the decoded path folded to the configured Unicode form
 // for routing; the upstream still receives the original.
 func routingPath(n *config.Normalization, path string) string {

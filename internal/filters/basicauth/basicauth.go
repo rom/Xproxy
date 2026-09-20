@@ -132,6 +132,11 @@ func (in *instance) End() []any {
 func (a *auth) check(user, pass string) bool {
 	hash, known := a.users[user]
 	if !known {
+		// Pay the same hash cost as a wrong password for a known user, so
+		// response time does not reveal which names are in the file.
+		a.sem <- struct{}{}
+		passwd.VerifyDummy(pass)
+		<-a.sem
 		return false
 	}
 	key := sha256.Sum256([]byte(user + "\x00" + pass))

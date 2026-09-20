@@ -157,9 +157,18 @@ type grpcWebBody struct {
 	pending []byte       // raw input not yet forming a whole frame (text mode)
 	eof     bool
 	done    bool
+	failed  bool // an upstream frame exceeded maxGRPCWebFrame
 }
 
+// maxGRPCWebFrame bounds one gRPC message buffered in text mode; the
+// length prefix is a raw uint32 from the upstream and must not size a
+// buffer on its own.
+const maxGRPCWebFrame = 4 << 20
+
 func (b *grpcWebBody) Read(p []byte) (int, error) {
+	if b.failed && b.buf.Len() == 0 {
+		return 0, io.ErrUnexpectedEOF
+	}
 	for b.buf.Len() == 0 && !b.done {
 		if b.eof {
 			b.finish()
@@ -196,6 +205,10 @@ func (b *grpcWebBody) ingest(data []byte) {
 	b.pending = append(b.pending, data...)
 	for len(b.pending) >= 5 {
 		size := int(binary.BigEndian.Uint32(b.pending[1:5]))
+		if size > maxGRPCWebFrame {
+			b.failed, b.done, b.pending = true, true, nil
+			return
+		}
 		if len(b.pending) < 5+size {
 			break
 		}

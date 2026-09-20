@@ -233,12 +233,20 @@ func TestMessages(t *testing.T) {
 	if EDNSSize(q, qEnd, h) != 512 {
 		t.Fatal("edns default")
 	}
-	// An OPT record advertising 4096.
+	// An OPT record advertising 4096 is honoured only up to the 1232 cap
+	// (RFC 9715), so a spoofed-source query cannot draw a large UDP reply.
 	withOPT := append(append([]byte{}, q...), 0, 0, TypeOPT, 0x10, 0, 0, 0, 0, 0, 0, 0)
 	binary.BigEndian.PutUint16(withOPT[10:], 1)
 	oh, _ := ParseHeader(withOPT)
-	if EDNSSize(withOPT, qEnd, oh) != 4096 {
+	if EDNSSize(withOPT, qEnd, oh) != maxEDNSUDP {
 		t.Fatalf("edns size: %d", EDNSSize(withOPT, qEnd, oh))
+	}
+	// A size under the cap is used as advertised.
+	small := append(append([]byte{}, q...), 0, 0, TypeOPT, 0x04, 0, 0, 0, 0, 0, 0, 0)
+	binary.BigEndian.PutUint16(small[10:], 1)
+	sh, _ := ParseHeader(small)
+	if EDNSSize(small, qEnd, sh) != 1024 {
+		t.Fatalf("edns size under cap: %d", EDNSSize(small, qEnd, sh))
 	}
 	if ttl, ok := MinTTL(withOPT, qEnd, oh); ok || ttl != 0 {
 		t.Fatal("OPT counted as a record with TTL")

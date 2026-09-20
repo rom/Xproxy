@@ -118,7 +118,11 @@ func (t *poolTransport) hedged(req *http.Request, pi *pickInfo) (*http.Response,
 			if attempts <= t.hedge.max {
 				launch(true)
 			}
-			timer.Reset(t.hedge.delay)
+			// Once every permitted copy is out there is nothing left for
+			// the timer to do; let the results drive the loop from here.
+			if attempts <= t.hedge.max {
+				timer.Reset(t.hedge.delay)
+			}
 
 		case r := <-results:
 			inFlight--

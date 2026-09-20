@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"os"
@@ -119,8 +120,22 @@ func (e *errorPages) render(r *http.Request, st *reqState, status int, reason st
 	if t == nil {
 		return nil, "", false
 	}
-	v := &tvars{r: r, st: st, status: status, reason: reason}
+	var v tmpl.Resolver = &tvars{r: r, st: st, status: status, reason: reason}
+	if strings.HasPrefix(strings.ToLower(e.ctype), "text/html") {
+		// Request-derived values (path, query, headers, cookies) land in a
+		// browser-rendered page: escape them so a crafted URL cannot inject
+		// markup into the error page (reflected XSS).
+		v = htmlEscaping{v}
+	}
 	return []byte(t.Expand(v)), e.ctype, true
+}
+
+// htmlEscaping wraps a resolver so every expanded value is HTML-escaped.
+type htmlEscaping struct{ r tmpl.Resolver }
+
+func (h htmlEscaping) Resolve(name, arg string) (string, bool) {
+	v, ok := h.r.Resolve(name, arg)
+	return html.EscapeString(v), ok
 }
 
 // interceptBody replaces an upstream response body with the error page

@@ -88,19 +88,35 @@ func (g *guard) Name() string { return g.name }
 func (g *guard) Begin(context.Context, *filter.Info) filter.Instance { return g }
 
 func (g *guard) Request(r *http.Request) filter.Verdict {
+	// Every instance of a header is judged, not just the first: upstreams
+	// commonly read the last or the joined value, so a payload hidden
+	// behind a benign first instance must still be caught.
 	for i := range g.cfg.Deny {
 		rule := &g.cfg.Deny[i]
-		if rule.re.MatchString(r.Header.Get(rule.Header)) {
-			return g.deny("denied by " + rule.Header)
+		for _, v := range headerValues(r.Header, rule.Header) {
+			if rule.re.MatchString(v) {
+				return g.deny("denied by " + rule.Header)
+			}
 		}
 	}
 	for i := range g.cfg.Require {
 		rule := &g.cfg.Require[i]
-		if !rule.re.MatchString(r.Header.Get(rule.Header)) {
-			return g.deny("required " + rule.Header)
+		for _, v := range headerValues(r.Header, rule.Header) {
+			if !rule.re.MatchString(v) {
+				return g.deny("required " + rule.Header)
+			}
 		}
 	}
 	return filter.Continue
+}
+
+// headerValues returns every value of a header, or one empty string when
+// it is absent (a missing header is matched as "").
+func headerValues(h http.Header, name string) []string {
+	if vs := h.Values(name); len(vs) > 0 {
+		return vs
+	}
+	return []string{""}
 }
 
 func (g *guard) deny(detail string) filter.Verdict {

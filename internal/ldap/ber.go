@@ -115,8 +115,19 @@ func boolean(b bool) *packet {
 	return leaf(classUniversal, tagBoolean, []byte{v})
 }
 
+// maxDepth bounds BER nesting. LDAP messages this package reads nest a
+// handful of levels; a hostile or broken server must not be able to drive
+// the recursive parser into stack exhaustion with millions of nested
+// constructed values.
+const maxDepth = 32
+
 // parse reads one TLV from b and returns it with the number of bytes consumed.
-func parse(b []byte) (*packet, int, error) {
+func parse(b []byte) (*packet, int, error) { return parseDepth(b, 0) }
+
+func parseDepth(b []byte, depth int) (*packet, int, error) {
+	if depth > maxDepth {
+		return nil, 0, errors.New("ber: nesting too deep")
+	}
 	if len(b) < 2 {
 		return nil, 0, errors.New("ber: short packet")
 	}
@@ -137,7 +148,7 @@ func parse(b []byte) (*packet, int, error) {
 	body := b[start:end]
 	if p.cons {
 		for len(body) > 0 {
-			kid, used, err := parse(body)
+			kid, used, err := parseDepth(body, depth+1)
 			if err != nil {
 				return nil, 0, err
 			}

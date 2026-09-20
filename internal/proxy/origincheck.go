@@ -6,7 +6,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/rom/xproxy/internal/originsig"
@@ -89,8 +91,13 @@ func (s *Server) originProbe(pool *upstream.Pool, signer *originsig.Signer, endp
 func (s *Server) originRequest(pool *upstream.Pool, signer *originsig.Signer, endpoint, host, path string) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	url := pool.Scheme + "://" + endpoint + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	// Build the target structurally: an operator-supplied path is never
+	// spliced into a URL string, where "@" or "?" could retarget the probe.
+	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") {
+		return 0, fmt.Errorf("path %q must start with / and carry no query or fragment", path)
+	}
+	target := &url.URL{Scheme: pool.Scheme, Host: endpoint, Path: path}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		return 0, err
 	}

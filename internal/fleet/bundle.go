@@ -106,8 +106,12 @@ func (b *Bundle) Validate() error {
 			return fmt.Errorf("bundle path %q repeated", f.Path)
 		}
 		seen[f.Path] = true
-		if f.Mode&^0o777 != 0 || f.Mode&0o600 != 0o600 {
-			return fmt.Errorf("bundle path %q: mode %o must be a permission set readable by the owner", f.Path, f.Mode)
+		// Owner read/write required and no write bit for group or other, so
+		// a staged file can never land group- or world-writable on every
+		// node. (Secret files are additionally refused when world-readable
+		// by the loaders that read them.)
+		if f.Mode&^0o777 != 0 || f.Mode&0o600 != 0o600 || f.Mode&0o022 != 0 {
+			return fmt.Errorf("bundle path %q: mode %o must be owner read/write and not writable by group or other", f.Path, f.Mode)
 		}
 		total += len(f.Content)
 		if f.Path == ConfigFile {

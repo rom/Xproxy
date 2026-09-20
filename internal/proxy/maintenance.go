@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -42,7 +43,8 @@ func (cm *compiledMaintenance) exempt(ip netip.Addr, r *http.Request) bool {
 	if netutil.Contains(cm.allow, ip) {
 		return true
 	}
-	if cm.allowHeader != "" && r.Header.Get(cm.allowHeader) == cm.allowValue {
+	// The bypass value is a shared secret: compare in constant time.
+	if cm.allowHeader != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get(cm.allowHeader)), []byte(cm.allowValue)) == 1 {
 		return true
 	}
 	return false

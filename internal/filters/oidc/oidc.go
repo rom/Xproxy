@@ -305,6 +305,13 @@ func (f *oidcFilter) discover(ctx context.Context) (*discovery, error) {
 	if d.AuthorizationEndpoint == "" || d.TokenEndpoint == "" || d.JWKSURI == "" {
 		return nil, errors.New("discovery: metadata lacks authorization_endpoint, token_endpoint or jwks_uri")
 	}
+	// The endpoints carry the client secret, the code and the signing keys:
+	// they must be reached over TLS unless plain http is explicitly allowed.
+	for _, ep := range []string{d.AuthorizationEndpoint, d.TokenEndpoint, d.JWKSURI} {
+		if u, err := url.Parse(ep); err != nil || u.Host == "" || !schemeOK(u.Scheme, f.cfg.AllowHTTP) {
+			return nil, fmt.Errorf("discovery: endpoint %q is not an https URL", ep)
+		}
+	}
 	if strings.TrimSuffix(d.Issuer, "/") != strings.TrimSuffix(f.cfg.Issuer, "/") {
 		return nil, fmt.Errorf("discovery: issuer %q does not match %q", d.Issuer, f.cfg.Issuer)
 	}
@@ -364,21 +371,28 @@ func (f *oidcFilter) eventKind() string { return "oidc_revoke/" + f.name }
 func (f *oidcFilter) attach(events filter.Events) {
 	f.events = events
 	if events != nil {
-		events.Subscribe(f.eventKind(), func(e filter.Event) { f.revoke(e.Key, e.Until) })
+		// Peer-originated revocations are as unauthenticated as a front
+		// channel call: they never evict live entries.
+		events.Subscribe(f.eventKind(), func(e filter.Event) { f.revoke(e.Key, e.Until, false) })
 	}
 }
 
-// revokeAndShare revokes locally and tells the other nodes.
-func (f *oidcFilter) revokeAndShare(sid string, exp time.Time) {
-	f.revoke(sid, exp)
+// revokeAndShare revokes locally and tells the other nodes. evict says
+// whether a full index may drop a live entry to make room (only for a
+// revocation made by the authenticated session owner).
+func (f *oidcFilter) revokeAndShare(sid string, exp time.Time, evict bool) {
+	f.revoke(sid, exp, evict)
 	if f.events != nil {
 		f.events.Publish(filter.Event{Kind: f.eventKind(), Key: sid, Until: exp})
 	}
 }
 
 // revoke records a provider session id until exp; the index is bounded
-// and swept on insert.
-func (f *oidcFilter) revoke(sid string, exp time.Time) {
+// and swept on insert. When the index is full of live entries, an
+// unauthenticated revocation (front channel, peer event) is dropped
+// rather than allowed to evict a real one: otherwise a flood of made-up
+// sids would undo every genuine logout.
+func (f *oidcFilter) revoke(sid string, exp time.Time, evict bool) {
 	f.revokedMu.Lock()
 	defer f.revokedMu.Unlock()
 	now := time.Now()
@@ -389,8 +403,14 @@ func (f *oidcFilter) revoke(sid string, exp time.Time) {
 			}
 		}
 		if len(f.revoked) >= f.cfg.RevokedMax {
+			if !evict {
+				if f.log != nil {
+					f.log.Warn("oidc revocation index full; unauthenticated revocation dropped", "max", f.cfg.RevokedMax)
+				}
+				return
+			}
 			// Full of live entries: drop the soonest to expire rather
-			// than refuse a logout.
+			// than refuse the owner's logout.
 			var oldest string
 			var oldestExp time.Time
 			for k, e := range f.revoked {
@@ -473,19 +493,10 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	return f.login(r, in)
 }
 
-func claimString(v any) string {
-	switch x := v.(type) {
-	case string:
-		return x
-	case float64:
-		return fmt.Sprintf("%.0f", x)
-	case bool:
-		return fmt.Sprint(x)
-	default:
-		b, _ := json.Marshal(x)
-		return string(b)
-	}
-}
+// claimString renders a claim for a forwarded header the same way the jwt
+// filter does: control characters stripped and the length bounded, so a
+// claim can never split or bloat a header.
+func claimString(v any) string { return jwt.ClaimString(v) }
 
 // session decodes and checks the session cookie.
 func (f *oidcFilter) session(r *http.Request) (*session, bool) {
@@ -527,7 +538,7 @@ func (f *oidcFilter) frontChannelLogout(r *http.Request, in *instance) filter.Ve
 	if iss != "" && strings.TrimSuffix(iss, "/") != strings.TrimSuffix(f.cfg.Issuer, "/") {
 		return fail("frontchannel_issuer")
 	}
-	f.revokeAndShare(sid, time.Now().Add(f.cfg.ttl))
+	f.revokeAndShare(sid, time.Now().Add(f.cfg.ttl), false)
 	f.Logouts.Add(1)
 	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}}
 	resp.Header.Set("Content-Type", "text/html; charset=utf-8")
@@ -663,7 +674,7 @@ func (f *oidcFilter) callback(r *http.Request, in *instance) filter.Verdict {
 func (f *oidcFilter) logout(r *http.Request, in *instance) filter.Verdict {
 	f.Logouts.Add(1)
 	if s, ok := f.session(r); ok && s.Sid != "" {
-		f.revokeAndShare(s.Sid, time.Unix(s.Exp, 0)) // other browsers sharing the provider session end too
+		f.revokeAndShare(s.Sid, time.Unix(s.Exp, 0), true) // other browsers sharing the provider session end too
 	}
 	loc := f.cfg.LogoutRedirect
 	if d := f.disc.Load(); d != nil && d.EndSessionEndpoint != "" {

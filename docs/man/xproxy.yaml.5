@@ -82,7 +82,7 @@ list of CIDR
 T}	T{
 \fB[]\fR
 T}	T{
-Peers whose \fBX\-\:Forwarded\-\:For\fR is believed,\: and whose PROXY protocol header is parsed on listeners with \fBproxy_\:protocol:\: true\fR. Empty means never.
+Peers whose \fBX\-\:Forwarded\-\:For\fR is believed,\: and whose PROXY protocol header is parsed on listeners with \fBproxy_\:protocol:\: true\fR. Empty means never. \fB0.\:0.\:0.\:0/\:0\fR and \fB:\::\:/\:0\fR are refused: trusting every address would let any client choose its own address and defeat bans,\: rate limits,\: ACLs and the audit trail;\: list the balancer networks
 T}
 T{
 \fBrate_\:limits\fR
@@ -537,7 +537,7 @@ T}
 Each request writes one \fBforward\fR line to the access log with the client address, user, method, destination, status, bytes and duration. Counters: \fBforward_requests\fR, \fBforward_tunnels\fR, \fBforward_tunnels_open\fR, \fBforward_denied\fR, \fBforward_auth_failed\fR, \fBforward_rejected\fR, \fBforward_errors\fR, \fBforward_bytes_in\fR, \fBforward_bytes_out\fR; \fBxproxy_forward_*\fR metrics. The policy and the users file reload; the address and TLS settings need a restart like every listener.
 .SS "server.listeners[].dns (kind: dns)"
 .PP
-A \fBkind: dns\fR listener is a forwarding DNS proxy on the listener address over UDP and TCP. Queries are answered from a bounded cache when they can be, refused or blocked by policy, and otherwise forwarded to the upstream resolvers with a fresh transaction id on a fresh socket (random source port) per query; the answer must echo the id and the question. A truncated UDP answer is retried over TCP to the upstream, and an answer larger than the client\(aqs UDP size (512 bytes or its EDNS advertisement) is truncated so the client retries over TCP. Only one question per query and the QUERY opcode are handled (FORMERR and NOTIMP otherwise); responses arriving as queries and packets from banned clients are dropped. A dns listener takes \fBaddress\fR, \fBdns\fR and optionally \fBtls\fR; bans and the global connection limits apply to TCP clients as on every listener. The policy, upstreams and cache bounds reload (the cache is kept); the address needs a restart.
+A \fBkind: dns\fR listener is a forwarding DNS proxy on the listener address over UDP and TCP. Queries are answered from a bounded cache when they can be, refused or blocked by policy, and otherwise forwarded to the upstream resolvers with a fresh transaction id on a fresh socket (random source port) per query; the answer must echo the id and the question. A truncated UDP answer is retried over TCP to the upstream, and an answer larger than the client\(aqs UDP size (512 bytes or its EDNS advertisement, honoured up to 1232 bytes per RFC 9715 so a spoofed source cannot draw a large reply) is truncated so the client retries over TCP. Only one question per query and the QUERY opcode are handled (FORMERR and NOTIMP otherwise); responses arriving as queries and packets from banned clients are dropped. A dns listener takes \fBaddress\fR, \fBdns\fR and optionally \fBtls\fR; bans and the global connection limits apply to TCP clients as on every listener. The policy, upstreams and cache bounds reload (the cache is kept); the address needs a restart.
 .PP
 With \fBtls\fR (certificates only, no ACME) the listener is encrypted: no plain UDP is bound, the TCP port serves DNS over TLS (RFC 7858, ALPN \fBdot\fR or none) and DNS over HTTPS (RFC 8484, ALPN \fBh2\fR or \fBhttp/1.1\fR) at \fBdoh_path\fR, chosen per connection by the negotiated protocol. The same policy, cache and counters serve both; \fBqueries_dot\fR and \fBqueries_doh\fR count them, and \fBxproxyctl tls\fR shows the certificate. Run a plain listener on 53 and an encrypted one on 853 (and 443 when browsers should use it) side by side.
 .PP
@@ -4928,7 +4928,7 @@ list
 T}	T{
 \fB[]\fR
 T}	T{
-Response header names compared between the two responses (pick stable ones;\: \fBDate\fR,\: \fBETag\fR and the like differ legitimately)
+Response header names compared between the two responses (pick stable ones;\: \fBDate\fR,\: \fBETag\fR and the like differ legitimately). Values of cookie,\: authorization and token headers are never written to the log,\: only that they differ
 T}
 T{
 \fBmax_\:body_\:bytes\fR
@@ -6039,7 +6039,7 @@ list of \fB{header,\: pattern}\fR
 T}	T{
 
 T}	T{
-Every rule must match the header\(aqs value (a missing header is the empty string)
+Every rule must match every instance of the header (a missing header is the empty string)
 T}
 T{
 \fBdeny\fR
@@ -6048,7 +6048,7 @@ list of \fB{header,\: pattern}\fR
 T}	T{
 
 T}	T{
-Any match denies;\: evaluated before \fBrequire\fR
+A match on any instance of the header denies;\: evaluated before \fBrequire\fR. Every instance is judged,\: so a payload behind a benign first copy is still caught
 T}
 T{
 \fBstatus\fR
@@ -6212,7 +6212,7 @@ path
 T}	T{
 required with \fBbind_\:dn\fR
 T}	T{
-Service account password;\: trailing newline trimmed
+Service account password;\: trailing newline trimmed;\: must exist and not be world readable
 T}
 T{
 \fBbase_\:dn\fR
@@ -8516,7 +8516,7 @@ list
 T}	T{
 required
 T}	T{
-Permitted \fBOrigin\fR values: exact (\fBhttps:\:/\:/\:app.\:example\fR),\: a single \fB*\fR (any origin,\: incompatible with \fBallow_\:credentials\fR),\: or a wildcard host (\fBhttps:\:/\:/\:*.\:example.\:com\fR,\: matching one or more labels)
+Permitted \fBOrigin\fR values: exact (\fBhttps:\:/\:/\:app.\:example\fR),\: a single \fB*\fR (any origin,\: incompatible with \fBallow_\:credentials\fR),\: or a wildcard host (\fBhttps:\:/\:/\:*.\:example.\:com\fR,\: matching one or more whole labels). A wildcard must be a whole leading label: \fBhttps:\:/\:/\:*example.\:com\fR is refused because it would also admit \fBevilexample.\:com\fR
 T}
 T{
 \fBallow_\:methods\fR

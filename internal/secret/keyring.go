@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -169,8 +170,29 @@ func (k *Keyring) write() error {
 		}
 		sb.WriteString(since.UTC().Format(time.RFC3339) + " " + base64.RawURLEncoding.EncodeToString(e.Bytes) + "\n")
 	}
-	tmp := k.path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(sb.String()), 0o600); err != nil {
+	// A fresh O_EXCL temp file in the same directory: a pre-planted name or
+	// symlink can neither receive the key nor choose its permissions.
+	f, err := os.CreateTemp(filepath.Dir(k.path), filepath.Base(k.path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("write secret: %w", err)
+	}
+	tmp := f.Name()
+	fail := func(err error) error {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write secret: %w", err)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		return fail(err)
+	}
+	if _, err := f.WriteString(sb.String()); err != nil {
+		return fail(err)
+	}
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("write secret: %w", err)
 	}
 	if err := os.Rename(tmp, k.path); err != nil {

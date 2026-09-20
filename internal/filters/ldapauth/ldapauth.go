@@ -96,6 +96,15 @@ func parse(opts filter.Options) (*Config, error) {
 			errs = append(errs, errors.New("bind_password_file is required with bind_dn"))
 		}
 	}
+	if c.BindPasswordFile != "" {
+		// The service account password must exist and not be readable by
+		// everyone on the host (same rule as basic_auth users files).
+		if st, err := os.Stat(c.BindPasswordFile); err != nil {
+			errs = append(errs, fmt.Errorf("bind_password_file: %w", err))
+		} else if st.Mode().Perm()&0o004 != 0 {
+			errs = append(errs, fmt.Errorf("bind_password_file: %s must not be world readable", c.BindPasswordFile))
+		}
+	}
 	if c.RequireGroup != "" && c.searchBind() && c.GroupAttr == "" {
 		c.GroupAttr = "memberOf"
 	}

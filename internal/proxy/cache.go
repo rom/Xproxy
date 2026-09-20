@@ -49,8 +49,11 @@ func cacheKey(rc *config.RouteCache, r *http.Request, host, path string) string 
 	for _, h := range rc.Headers {
 		vals = append(vals, strings.Join(r.Header.Values(h), ","))
 	}
-	// HEAD shares GET's entry.
-	return cache.Key("GET", host, path, query, vals)
+	// HEAD shares GET's entry. The raw Host (port and case included) is
+	// part of the key: the upstream sees it verbatim and may bake it into
+	// links or redirects, so "example.com:1337" must not fill the entry
+	// every normal visitor of "example.com" reads (cache poisoning).
+	return cache.Key("GET", host+"\x00"+strings.ToLower(r.Host), path, query, vals)
 }
 
 // serveCached writes a hit. Conditional requests get 304.

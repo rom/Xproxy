@@ -121,9 +121,21 @@ func Host(h string) string {
 	if len(h) > 253 {
 		return ""
 	}
+	if strings.HasPrefix(h, "[") {
+		// A bracketed literal must be exactly one IPv6 address: nothing
+		// else may carry ':' or brackets, so "host:443:x" cannot slip past
+		// the exact-host table by stripping only its last port.
+		if !strings.HasSuffix(h, "]") {
+			return ""
+		}
+		if ip, err := netip.ParseAddr(h[1 : len(h)-1]); err != nil || !ip.Is6() {
+			return ""
+		}
+		return h
+	}
 	for i := 0; i < len(h); i++ {
 		c := h[i]
-		ok := c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_' || c == '[' || c == ']' || c == ':'
+		ok := c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_'
 		if !ok {
 			return ""
 		}

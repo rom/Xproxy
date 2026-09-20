@@ -228,6 +228,13 @@ func run(args []string) int {
 				logs.Error.Error("rollback rejected", "id", id, "err", err.Error())
 				return err
 			}
+			// The same sandbox check a reload gets: an old configuration
+			// naming files outside the Landlock rules is refused cleanly
+			// rather than failing half way through the apply.
+			if err := sb.Check(c, *cfgPath); err != nil {
+				logs.Error.Error("rollback rejected", "id", id, "err", err.Error())
+				return err
+			}
 			return apply(c, "rollback "+id)
 		},
 	}
