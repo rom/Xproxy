@@ -260,7 +260,22 @@ func (v *Validator) Validate(node any, value any, path string, rep *Report, dept
 		}
 	}
 	if value == nil {
-		if nullable, _ := raw["nullable"].(bool); nullable || TypeAllows(raw["type"], "null") || raw["type"] == nil && raw["enum"] == nil {
+		nullable, _ := raw["nullable"].(bool)
+		enum, hasEnum := raw["enum"]
+		switch {
+		case nullable, TypeAllows(raw["type"], "null"):
+			return ok
+		case hasEnum:
+			// An enum decides on its own: `["a", null]` admits null,
+			// and one without it refuses null with the enum's message
+			// rather than a second, different one.
+			for _, x := range toList(enum) {
+				if x == nil {
+					return ok
+				}
+			}
+			return rep.Add(path, "is not one of the allowed values")
+		case raw["type"] == nil:
 			return ok
 		}
 		return rep.Add(path, "must not be null")
@@ -316,6 +331,13 @@ func (v *Validator) Validate(node any, value any, path string, rep *Report, dept
 		ok = v.validateObject(raw, x, path, rep, depth) && ok
 	}
 	return ok
+}
+
+// toList returns a keyword's value as a list, or nil when it is not
+// one. A schema is data: a keyword can hold anything.
+func toList(v any) []any {
+	l, _ := v.([]any)
+	return l
 }
 
 // TypeAllows reports whether a type keyword (a string or a list) admits

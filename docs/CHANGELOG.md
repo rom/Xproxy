@@ -292,6 +292,11 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4)
 
+- A JSON Schema `enum` that lists `null` refused `null`. The null check
+  ran before the enum and had no way to consult it, so a schema that
+  explicitly admits a null field rejected one. The null branch now asks
+  the enum, and refuses with the enum's own message instead of a second,
+  different one.
 - A listener or endpoint address padded with whitespace
   (`" 127.0.0.1:8080 "`) passed validation. `net.SplitHostPort`
   separates on the last colon and never looks at the rest, so
