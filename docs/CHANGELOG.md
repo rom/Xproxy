@@ -295,7 +295,7 @@ Open findings of the earlier rounds:
 A round of adversarial and robustness tests over the parsers, the
 protocol clients and the views, written from the outside in: what a
 client, a peer, a scanner, a certificate authority or a file on disk
-can put in front of each of them. Twenty-two packages gained a suite;
+can put in front of each of them. Twenty-three packages gained a suite;
 `docs/TESTS.md` lists every case. The findings each have their own
 entry above.
 
@@ -321,6 +321,14 @@ peer that names itself, an agent that reports its host name).
 
 ### Fixed (1.4)
 
+- The LDAP filter parser had no depth bound. It is recursive, and the
+  filter template is parsed once per login attempt, so a `user_filter`
+  nested a few million levels deep — pasted in, generated, or copied
+  from somewhere — met the goroutine stack limit and took the whole
+  proxy down at the next login, rather than failing validation. Filters
+  now nest at most 32 levels, the same bound the BER decoder applies, so
+  a filter that would not survive its own encoding is refused where it
+  is written.
 - The web interface answered 500 for a log stream whose file did not
   exist yet. That is the ordinary state right after an install, or for a
   stream nothing has written to since the last rotation, and an operator

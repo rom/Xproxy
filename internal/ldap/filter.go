@@ -31,12 +31,27 @@ func ParseFilter(s string) (*packet, error) {
 	return f, nil
 }
 
+// maxFilterDepth bounds how deeply a filter string may nest. The parser
+// is recursive, and the BER decoder refuses anything deeper than maxDepth
+// anyway, so a filter nested further could never be encoded and read back.
+// Without the bound the recursion meets the goroutine stack limit instead
+// of an error, and the filter is parsed once per login attempt: a template
+// somebody pasted in would take the proxy down at the next login rather
+// than fail validation.
+const maxFilterDepth = maxDepth
+
 type filterParser struct {
-	s   string
-	pos int
+	s     string
+	pos   int
+	depth int
 }
 
 func (p *filterParser) parseFilter() (*packet, error) {
+	if p.depth >= maxFilterDepth {
+		return nil, fmt.Errorf("ldap: filter nested deeper than %d", maxFilterDepth)
+	}
+	p.depth++
+	defer func() { p.depth-- }()
 	if p.pos >= len(p.s) || p.s[p.pos] != '(' {
 		return nil, errors.New("ldap: filter must start with (")
 	}

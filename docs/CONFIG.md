@@ -1800,7 +1800,7 @@ error is never cached and denies the request.
 | `bind_dn` | DN | | Search bind: service account DN to bind before searching (anonymous search when empty) |
 | `bind_password_file` | path | required with `bind_dn` | Service account password; trailing newline trimmed; must exist and not be world readable |
 | `base_dn` | DN | required for search | Search base |
-| `user_filter` | filter | required for search | RFC 4515 filter with `%s` for the escaped username, e.g. `(sAMAccountName=%s)`; supports `&`, `|`, `!`, equality and presence |
+| `user_filter` | filter | required for search | RFC 4515 filter with `%s` for the escaped username, e.g. `(sAMAccountName=%s)`; supports `&`, `|`, `!`, equality and presence, nested at most 32 levels deep |
 | `require_group` | DN | none | Require this DN among the user's `group_attr` values (search mode only) |
 | `group_attr` | attribute | `memberOf` | Attribute read from the user entry for `require_group` |
 | `realm` | string | `restricted` | `WWW-Authenticate` realm |
