@@ -292,6 +292,12 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4)
 
+- `tracing.Tracer.StartServer`, `Span.Traceparent`, `Span.TraceIDString`
+  and `Span.SpanIDString` panicked on the nil value the rest of the
+  package uses to mean "tracing is off", and `Encode` dereferenced an
+  exporter a propagate-only tracer never builds. Every caller in the
+  proxy checks first, so none of this was reachable; they are nil-safe
+  now, like the other methods, so a future call site cannot make it so.
 - The GeoIP metadata reader turned a NaN into a number. NaN compares
   false against both ends of a range check, so the guard let it through
   and the conversion produced an implementation-defined value that then
