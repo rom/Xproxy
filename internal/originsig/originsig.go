@@ -19,6 +19,7 @@
 package originsig
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -26,6 +27,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -38,6 +40,24 @@ const DefaultHeader = "X-Xproxy-Signature"
 // Version is the current signature format.
 const Version = "v1"
 
+// MaxDigestBody bounds the request body a body digest covers. A larger
+// bodied request is refused rather than signed without one, because a
+// signature that stops at the headers lets anything past the origin
+// check replace the body.
+const MaxDigestBody = 8 << 20
+
+// BodyDigest is the digest a signature covers, in the RFC 9530
+// spelling. The proxy also sends it as Content-Digest, so an origin
+// that verifies by hand can compare the header it already parses.
+func BodyDigest(body []byte) string {
+	sum := sha256.Sum256(body)
+	return "sha-256=:" + base64.StdEncoding.EncodeToString(sum[:]) + ":"
+}
+
+// ErrBodyDigest is returned by Verify when the body does not match the
+// digest the signature covers.
+var ErrBodyDigest = errors.New("origin signature body digest mismatch")
+
 // KeyID returns the identifier of a key: the first eight hex digits of
 // its SHA-256, enough to pick the right key from a ring.
 func KeyID(key []byte) string {
@@ -49,8 +69,14 @@ func KeyID(key []byte) string {
 type Signer struct {
 	Header  string
 	Include []string
-	keys    [][]byte
-	kid     string
+	// Digest makes the signature cover the request body as well, for
+	// the methods that carry one. Without it a signature proves a
+	// request passed through the proxy, not what it carried: anything
+	// that can reach the origin can replay a captured header set with
+	// a body of its own for as long as the timestamp is inside the TTL.
+	Digest bool
+	keys   [][]byte
+	kid    string
 }
 
 // New builds a signer; keys are primary first (verification accepts all).
@@ -73,7 +99,7 @@ func (s *Signer) Keys() [][]byte { return s.keys }
 
 // canonical builds the signed string for a request with the given time,
 // client address and request id.
-func canonical(method, host, path, query string, ts int64, client, requestID string, include []string, hdr http.Header) string {
+func canonical(method, host, path, query string, ts int64, client, requestID string, include []string, hdr http.Header, digest string) string {
 	var b strings.Builder
 	b.WriteString(Version)
 	b.WriteByte('\n')
@@ -94,6 +120,10 @@ func canonical(method, host, path, query string, ts int64, client, requestID str
 		b.WriteByte('\n')
 		b.WriteString(strings.Join(hdr.Values(h), ","))
 	}
+	if digest != "" {
+		b.WriteByte('\n')
+		b.WriteString(digest)
+	}
 	return b.String()
 }
 
@@ -105,11 +135,20 @@ func mac(key []byte, msg string) string {
 
 // Sign sets the signature header on an outbound request. host is the
 // Host the upstream will see, client the address forwarded in
-// X-Real-Ip, requestID the X-Request-Id value.
-func (s *Signer) Sign(out *http.Request, now time.Time, client, requestID string) {
+// X-Real-Ip, requestID the X-Request-Id value. digest is the body
+// digest from BodyDigest, or "" for a request with no body or a signer
+// that does not cover one; when it is set the header carries bd=1 so
+// the origin knows to check the body, and stripping that marker breaks
+// the signature rather than the check.
+func (s *Signer) Sign(out *http.Request, now time.Time, client, requestID, digest string) {
 	ts := now.Unix()
-	msg := canonical(out.Method, out.Host, out.URL.Path, out.URL.RawQuery, ts, client, requestID, s.Include, out.Header)
-	out.Header.Set(s.Header, fmt.Sprintf("%s;t=%d;kid=%s;sig=%s", Version, ts, s.kid, mac(s.keys[0], msg)))
+	msg := canonical(out.Method, out.Host, out.URL.Path, out.URL.RawQuery, ts, client, requestID, s.Include, out.Header, digest)
+	sig := fmt.Sprintf("%s;t=%d;kid=%s;sig=%s", Version, ts, s.kid, mac(s.keys[0], msg))
+	if digest != "" {
+		out.Header.Set("Content-Digest", digest)
+		sig += ";bd=1"
+	}
+	out.Header.Set(s.Header, sig)
 }
 
 // Errors of Verify.
@@ -135,7 +174,7 @@ func Verify(r *http.Request, header string, include []string, keys [][]byte, ttl
 		return ErrMissing
 	}
 	parts := strings.Split(v, ";")
-	if len(parts) != 4 || parts[0] != Version {
+	if (len(parts) != 4 && len(parts) != 5) || parts[0] != Version {
 		return ErrMalformed
 	}
 	fields := map[string]string{}
@@ -158,7 +197,17 @@ func Verify(r *http.Request, header string, include []string, keys [][]byte, ttl
 	for i, h := range include {
 		canon[i] = http.CanonicalHeaderKey(h)
 	}
-	msg := canonical(r.Method, r.Host, r.URL.Path, r.URL.RawQuery, ts, r.Header.Get("X-Real-Ip"), r.Header.Get("X-Request-Id"), canon, r.Header)
+	digest := ""
+	if fields["bd"] == "1" {
+		body, err := io.ReadAll(io.LimitReader(r.Body, MaxDigestBody+1))
+		if err != nil || int64(len(body)) > MaxDigestBody {
+			return ErrBodyDigest
+		}
+		// The handler still needs the body.
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		digest = BodyDigest(body)
+	}
+	msg := canonical(r.Method, r.Host, r.URL.Path, r.URL.RawQuery, ts, r.Header.Get("X-Real-Ip"), r.Header.Get("X-Request-Id"), canon, r.Header, digest)
 	for _, key := range keys {
 		if KeyID(key) != fields["kid"] {
 			continue

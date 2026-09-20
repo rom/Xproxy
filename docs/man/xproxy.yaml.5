@@ -3395,17 +3395,28 @@ T}	T{
 T}	T{
 Extra request headers covered,\: for example a tenant header the proxy sets
 T}
+T{
+\fBbody_\:digest\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Cover the request body as well: the proxy buffers it,\: appends \fBsha\-\:256=\::\:<base64>:\fR as a final signed line,\: sends it as \fBContent\-\:Digest\fR and adds \fB;bd=\:1\fR to the signature header. Without it a signature proves that a request passed through the proxy,\: not what it carried \[u2014] anything that can reach the origin can replay a captured header set with a body of its own while the timestamp is inside the TTL. A bodied request larger than 8 MiB is refused with \fB413\fR rather than forwarded with a signature that stops at the headers
+T}
 .TE
 .PP
-At the origin, recompute the MAC with the shared key selected by \fBkid\fR, compare in constant time, and refuse when it differs, the key id is unknown or \fBt\fR is older than the TTL. HARDENING.md has verifier snippets; \fBinternal/originsig\fR has \fBVerify\fR for origins written in Go. Combine with mutual TLS (\fBtls.client_cert_file\fR) and with network filtering: each closes what the others cannot.
+At the origin, recompute the MAC with the shared key selected by \fBkid\fR, compare in constant time, and refuse when it differs, the key id is unknown or \fBt\fR is older than the TTL. When the header carries \fBbd=1\fR, the last signed line is the body digest: hash the body and compare. Dropping \fBbd=1\fR does not turn that off, because the digest is part of what was signed.
+.PP
+Within the TTL a signature is replayable by anything that captured it (a log, a proxy in front of the origin, a browser extension). Where that matters, have the origin remember the \fBX\-Request\-Id\fR values it has already answered for the TTL and refuse a repeat: the proxy sets a fresh one per request and the id is covered by the signature, so a replay carries the same id. \fBbody_digest\fR bounds what a replay can change; the id dedupe stops the replay itself. HARDENING.md has verifier snippets; \fBinternal/originsig\fR has \fBVerify\fR for origins written in Go. Combine with mutual TLS (\fBtls.client_cert_file\fR) and with network filtering: each closes what the others cannot.
 .SH "routes[]"
 .PP
 Matching: exact host, then wildcard host, then hostless routes; within a host the longest path (a \fBpath_regex\fR entry counts as the length of its literal prefix and, at equal length, beats a plain prefix); then the number of \fBheaders\fR and \fBcookies\fR conditions (more first, so a conditioned route is tried before the plain route on the same path); then \fBpriority\fR (higher wins); then configuration order. \fBmethods\fR and the conditions are filters: a route whose method set or conditions do not match is skipped and the next candidate is tried.
 .PP
 .TS
 allbox;
-lbw(1.3i) lbw(1.1i) lbw(1.2i) lbx
-lw(1.3i) lw(1.1i) lw(1.2i) lx.
+lbw(1.4i) lbw(1.1i) lbw(1.4i) lbx
+lw(1.4i) lw(1.1i) lw(1.4i) lx.
 T{
 Key
 T}	T{
@@ -3585,6 +3596,15 @@ T}	T{
 follows \fBcompression\fR
 T}	T{
 \fBfalse\fR leaves this route\(aqs responses as they are;\: \fBtrue\fR needs an enabled \fBcompression\fR section
+T}
+T{
+\fBcompress_\:authenticated\fR
+T}	T{
+bool
+T}	T{
+follows \fBcompression.\:compress_\:authenticated\fR
+T}	T{
+Compress this route\(aqs responses to requests carrying \fBAuthorization\fR or a \fBCookie\fR (see BREACH under \fBcompression\fR)
 T}
 T{
 \fBstrip_\:prefix\fR
@@ -5500,7 +5520,7 @@ name
 T}	T{
 \fBcluster.\:node_\:id\fR,\: else the host name
 T}	T{
-The node\(aqs name at the controller;\: must equal the certificate\(aqs common name or DNS name unless the controller runs with \fB\-\:any\-\:name\fR
+The node\(aqs name at the controller;\: must equal the certificate\(aqs common name or DNS name,\: unless the controller\(aqs \fB\-\:name\-\:map\fR names the exception (or it runs with \fB\-\:any\-\:name\fR,\: which turns the binding off for every node and warns on every authorisation)
 T}
 T{
 \fBtls.\:cert_\:file\fR,\: \fBtls.\:key_\:file\fR
@@ -6448,7 +6468,7 @@ URL
 T}	T{
 derived
 T}	T{
-\fBscheme:\:/\:/\:host\fR the browser reaches the proxy on;\: derived from the request (\fBHost\fR,\: TLS or \fBX\-\:Forwarded\-\:Proto\fR) when unset
+\fBscheme:\:/\:/\:host\fR the browser reaches the proxy on. Set it. Unset,\: it is derived from the request: \fBHost\fR,\: the listener\(aqs own TLS,\: and \fBX\-\:Forwarded\-\:Proto\fR only from a peer inside \fBtrusted_\:proxies\fR \[u2014] any client can send that header,\: and the URL derived from it is the redirect URI the provider sends the authorization code to
 T}
 T{
 \fBcookie_\:name\fR
@@ -7637,8 +7657,8 @@ gzip for the responses the proxy writes: proxied, cached, static and \fBrespond\
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.6i) lbw(0.8i) lbx
-lw(1.0i) lw(0.6i) lw(0.8i) lx.
+lbw(1.4i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.4i) lw(0.6i) lw(0.8i) lx.
 T{
 Key
 T}	T{
@@ -7710,6 +7730,15 @@ T}	T{
 text,\: script,\: style,\: JSON,\: XML,\: SVG,\: wasm and font types
 T}	T{
 Media types compressed,\: without parameters
+T}
+T{
+\fBcompress_\:authenticated\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Compress the response to a request that carried \fBAuthorization\fR or a \fBCookie\fR. Compressing a body that mixes a secret with attacker\-chosen text leaks the secret through its length,\: one character at a time (BREACH),\: and a request a browser sends with the victim\(aqs cookies is exactly what an attacker can arrange. Turn it on per route (\fBroutes[].\:compress_\:authenticated\fR) where the response holds no secret,\: or where the application already masks its tokens
 T}
 .TE
 .PP
@@ -8541,9 +8570,9 @@ T{
 T}	T{
 list
 T}	T{
-the request host
+the hosts the routes name
 T}	T{
-Host names the provider may report the token was solved on;\: empty checks the token against the host the challenge page was served on,\: so a token solved for another site is refused
+Host names the provider may report the token was solved on. Empty falls back to the host names \fBroutes[].\:hosts\fR configure;\: a hostname in neither list,\: and a provider that omits it,\: are refused. The request host is not an allowlist \[u2014] the client chooses it,\: so an attacker who points a name of their own at this proxy would only have to be consistent \[u2014] so validation refuses a configuration where neither list exists
 T}
 T{
 \fBhostname_\:check\fR

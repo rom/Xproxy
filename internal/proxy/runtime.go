@@ -124,6 +124,10 @@ type compiledRoute struct {
 	honeypotType string
 	static       *staticSite
 	compress     *compressPolicy
+	// compressAuth allows compressing a response to a request that
+	// carried Authorization or Cookie; see BREACH in the configuration
+	// reference.
+	compressAuth bool
 	cors         *compiledCORS
 	idleTimeout  time.Duration
 	mirror       *mirror
@@ -255,6 +259,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 				rt.stop()
 				return nil, fmt.Errorf("upstream %s: %w", u.Name, err)
 			}
+			signer.Digest = os.BodyDigest
 			if rt.signers == nil {
 				rt.signers = map[string]*originsig.Signer{}
 			}
@@ -422,6 +427,10 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		}
 		if on := cfg.Compression.Enable(); on && (r.Compress == nil || *r.Compress) {
 			cr.compress = compressPol
+			cr.compressAuth = cfg.Compression.CompressesAuthenticated()
+			if r.CompressAuthenticated != nil {
+				cr.compressAuth = *r.CompressAuthenticated
+			}
 		}
 		if r.CORS != nil {
 			cr.cors = newCORS(r.CORS)

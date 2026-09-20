@@ -350,6 +350,7 @@ routes:
       doh: null
       static: null
       compress: null
+      compress_authenticated: null
       maintenance: null
       cors: null
     - name: api
@@ -416,6 +417,7 @@ routes:
       doh: null
       static: null
       compress: null
+      compress_authenticated: null
       maintenance: null
       cors: null
     - name: admin
@@ -473,6 +475,7 @@ routes:
       doh: null
       static: null
       compress: null
+      compress_authenticated: null
       maintenance: null
       cors: null
     - name: upload
@@ -535,6 +538,7 @@ routes:
       doh: null
       static: null
       compress: null
+      compress_authenticated: null
       maintenance: null
       cors: null
     - name: web
@@ -598,6 +602,7 @@ routes:
       doh: null
       static: null
       compress: null
+      compress_authenticated: null
       maintenance: null
       cors: null
     - name: default
@@ -659,6 +664,7 @@ routes:
       doh: null
       static: null
       compress: null
+      compress_authenticated: null
       maintenance: null
       cors: null
 bans:

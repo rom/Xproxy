@@ -169,6 +169,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 			}
 			return nil, err
 		}
+		ch.SetRouteHosts(routeHosts(cfg))
 		s.challenger.Store(ch)
 	}
 	s.connLimiter.Banned = func(addr netip.Addr) bool {
@@ -958,7 +959,9 @@ func (s *Server) Reload(cfg *config.Config) error {
 	switch ch := s.challenger.Load(); {
 	case cfg.Challenge != nil && ch != nil:
 		ch.Reconfigure(cfg.Challenge)
+		ch.SetRouteHosts(routeHosts(cfg))
 	case cfg.Challenge != nil:
+		newChallenger.SetRouteHosts(routeHosts(cfg))
 		s.challenger.Store(newChallenger) // built before the swap; nil never reaches here
 	case ch != nil:
 		s.challenger.Store(nil)
@@ -1284,4 +1287,15 @@ func (s *Server) closeListenersLocked() {
 		bl.acc.close()
 	}
 	s.listeners = nil
+}
+
+// routeHosts collects the host names the configuration's routes are
+// written for. The CAPTCHA hostname check uses them as its allowlist
+// when challenge.captcha.hostnames is not set.
+func routeHosts(cfg *config.Config) []string {
+	var out []string
+	for _, r := range cfg.Routes {
+		out = append(out, r.Hosts...)
+	}
+	return out
 }

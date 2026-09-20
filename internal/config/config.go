@@ -1081,6 +1081,17 @@ type OriginSignature struct {
 	TTL Duration `yaml:"ttl"`
 	// Include lists extra request headers covered by the signature.
 	Include []string `yaml:"include"`
+	// BodyDigest makes the signature cover the request body of methods
+	// that carry one, as a SHA-256 the proxy also sends in
+	// Content-Digest. Default false.
+	//
+	// Without it a signature proves that a request passed through the
+	// proxy, not what it carried: anything that can reach the origin
+	// can replay a captured header set with a body of its own while the
+	// timestamp is inside the TTL. It costs buffering the body, and a
+	// bodied request larger than 8 MiB is refused rather than forwarded
+	// with a signature that stops at the headers.
+	BodyDigest bool `yaml:"body_digest"`
 }
 
 // UpstreamTLS configures TLS towards upstream endpoints.
@@ -1296,6 +1307,9 @@ type Route struct {
 	// Compress overrides the compression section for this route: false
 	// turns it off, true requires the section.
 	Compress *bool `yaml:"compress"`
+	// CompressAuthenticated overrides compression.compress_authenticated
+	// for this route.
+	CompressAuthenticated *bool `yaml:"compress_authenticated"`
 	// Maintenance overrides the global maintenance gate for this route:
 	// false always serves it (health, status), true always holds it.
 	Maintenance *bool `yaml:"maintenance"`
@@ -1617,6 +1631,22 @@ type Compression struct {
 	// Default: the common text, script, style, JSON, XML, SVG and wasm
 	// types.
 	Types []string `yaml:"types"`
+	// CompressAuthenticated compresses a response to a request that
+	// carried Authorization or Cookie. Default false.
+	//
+	// Compressing a response that mixes a secret with attacker-chosen
+	// text leaks the secret through the compressed length, one character
+	// at a time (BREACH). The condition is a request the attacker can
+	// make the browser send with the victim's credentials, which is
+	// exactly a request carrying a cookie. Turn it on per route where
+	// the response holds no secret, or where the application already
+	// masks its tokens.
+	CompressAuthenticated *bool `yaml:"compress_authenticated"`
+}
+
+// CompressesAuthenticated reports the setting with its default.
+func (c *Compression) CompressesAuthenticated() bool {
+	return c != nil && c.CompressAuthenticated != nil && *c.CompressAuthenticated
 }
 
 // DefaultCompressionTypes are the media types compressed unless

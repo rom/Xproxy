@@ -736,6 +736,10 @@
           "description": "BrotliLevel is 0 (fastest) to 11 (smallest). Default 4.",
           "type": "integer"
         },
+        "compress_authenticated": {
+          "description": "CompressAuthenticated compresses a response to a request that carried Authorization or Cookie. Default false. Compressing a response that mixes a secret with attacker-chosen text leaks the secret through the compressed length, one character at a time (BREACH). The condition is a request the attacker can make the browser send with the victim's credentials, which is exactly a request carrying a cookie. Turn it on per route where the response holds no secret, or where the application already masks its tokens.",
+          "type": "boolean"
+        },
         "enabled": {
           "description": "Enabled defaults to true when the section is present.",
           "type": "boolean"
@@ -2244,6 +2248,10 @@
       "description": "OriginSignature is the bypass protection an origin verifies: an HMAC over method, host, path, query, time, client address, request id and the listed extra headers, carried in one header.",
       "type": "object",
       "properties": {
+        "body_digest": {
+          "description": "BodyDigest makes the signature cover the request body of methods that carry one, as a SHA-256 the proxy also sends in Content-Digest. Default false. Without it a signature proves that a request passed through the proxy, not what it carried: anything that can reach the origin can replay a captured header set with a body of its own while the timestamp is inside the TTL. It costs buffering the body, and a bodied request larger than 8 MiB is refused rather than forwarded with a signature that stops at the headers.",
+          "type": "boolean"
+        },
         "header": {
           "description": "Header carries the signature. Default X-Xproxy-Signature.",
           "type": "string"
@@ -2559,6 +2567,10 @@
         },
         "compress": {
           "description": "Compress overrides the compression section for this route: false turns it off, true requires the section.",
+          "type": "boolean"
+        },
+        "compress_authenticated": {
+          "description": "CompressAuthenticated overrides compression.compress_authenticated for this route.",
           "type": "boolean"
         },
         "cookies": {

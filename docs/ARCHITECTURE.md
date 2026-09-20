@@ -834,7 +834,7 @@ Endpoints:
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/v1/health` | liveness |
+| GET | `/v1/health` | liveness; also `degraded` with `degraded_reasons` when a sandbox mechanism is unavailable or failed and `sandbox.strict` is off |
 | GET | `/v1/status` | version, pid, generation, listeners, counters |
 | GET | `/v1/stats` | counters |
 | GET | `/v1/upstreams` | endpoint health and load |

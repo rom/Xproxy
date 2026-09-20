@@ -119,14 +119,17 @@ type Challenger struct {
 	// hostScoped binds a pass cookie to the host that issued it
 	// (challenge.cookie_scope: host).
 	hostScoped bool
-	cookie     string
-	exempt     []netip.Prefix
-	title      string
-	captcha    *captcha
-	device     bool
-	seen       map[[macLen]byte]int64 // nonce mac -> expiry unix
-	now        func() time.Time
-	full       bound.Notice
+	// hosts are the route host names, the allowlist the CAPTCHA
+	// hostname check uses when challenge.captcha.hostnames is empty.
+	hosts   map[string]bool
+	cookie  string
+	exempt  []netip.Prefix
+	title   string
+	captcha *captcha
+	device  bool
+	seen    map[[macLen]byte]int64 // nonce mac -> expiry unix
+	now     func() time.Time
+	full    bound.Notice
 
 	Issued, Passed, Failed uint64
 	CaptchaPassed          uint64
@@ -161,6 +164,32 @@ func (c *Challenger) HasCaptcha() bool {
 // configured, so a rotation (xproxyctl rotate-secret) takes effect on the
 // next reload while cookies signed with the previous key stay valid. An
 // unreadable file keeps the keys in memory.
+// SetRouteHosts records the host names this proxy's routes are
+// configured for. The CAPTCHA hostname check compares the hostname the
+// provider reports against them (see captcha.hostnameOK); the request
+// host is not an allowlist, because the client chooses it.
+func (c *Challenger) SetRouteHosts(hosts []string) {
+	set := make(map[string]bool, len(hosts))
+	for _, h := range hosts {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if i := strings.IndexByte(h, ':'); i >= 0 && !strings.HasSuffix(h, "]") {
+			h = h[:i]
+		}
+		if h != "" && !strings.ContainsRune(h, '*') {
+			set[h] = true
+		}
+	}
+	c.mu.Lock()
+	c.hosts = set
+	c.mu.Unlock()
+}
+
+func (c *Challenger) routeHosts() map[string]bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.hosts
+}
+
 func (c *Challenger) Reconfigure(cfg *config.Challenge) {
 	var keys [][]byte
 	if cfg.SecretFile != "" {
@@ -587,7 +616,7 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 		// nonce just verified binds this request to the host the challenge
 		// page was served on, so r.Host is that host and not a value the
 		// verifier chose freely.
-		ok, reason := cp.check(ctx, token, r.Host, ip)
+		ok, reason := cp.check(ctx, token, c.routeHosts(), ip)
 		cancel()
 		if !ok {
 			c.fail(w, reason)

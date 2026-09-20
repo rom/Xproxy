@@ -154,6 +154,45 @@ Open findings of the earlier rounds:
   neither `allow_clients` nor `rate_limit`.
 - The daemon refuses to start as uid 0 unless `-allow-root` is given;
   the shipped unit already runs as `User=xproxy` with socket activation.
+- Compression no longer touches the response to a request that carried
+  `Authorization` or a `Cookie`. Compressing a body that mixes a secret
+  with attacker-chosen text leaks the secret through its length, a
+  character at a time (BREACH), and a request the browser sends with the
+  victim's cookies is exactly what an attacker can arrange. New
+  `compression.compress_authenticated`, and a per-route override, turn
+  it back on where the response holds nothing worth stealing.
+- The CAPTCHA hostname check compares the hostname the provider reports
+  against `challenge.captcha.hostnames` or the host names the routes
+  configure. The request host was never an allowlist — the client
+  chooses it, so an attacker who points a name of their own at the proxy
+  only had to be consistent — and a configuration with neither list now
+  fails validation.
+- `/v1/health` reports `degraded` with the mechanisms that did not take
+  effect when `sandbox.strict` is off; a missing one used to be a line
+  in the start-up log and nothing else.
+- Header operation values are redacted in `/v1/config` and in a
+  configuration diff's text. A route's `request_headers.set` is where
+  the credential the origin expects lives, and those responses travel
+  much further than the file on disk. The names stay, the change list
+  is still computed from the real documents, and the history keeps
+  them, because a rollback writes them back.
+- The fleet controller's `-any-name` has an alternative: `-name-map`
+  names one node id to certificate name exception at a time. Both are
+  counted and warned about on every authorisation that needs them, and
+  `-any-name` warns at start too.
+- `filter.Info` carries `TrustedPeer`, and the OIDC filter honours
+  `X-Forwarded-Proto` only from one. Any client can send that header,
+  and the URL derived from it is the redirect URI the identity provider
+  sends the authorization code to; `external_url` depends on nothing the
+  request carries.
+- `upstreams[].origin_signature.body_digest` makes the signature cover
+  the request body. Without it a signature proves that a request passed
+  through the proxy, not what it carried, so anything that can reach the
+  origin could replay a captured header set with a body of its own
+  inside the TTL. The documentation adds the `X-Request-Id` dedupe that
+  stops the replay itself.
+- Token introspection already fails a missing issuer or audience
+  (round four), so `audiences` needs no per-provider switch.
 
 ### Security (1.3)
 

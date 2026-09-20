@@ -52,6 +52,16 @@ type Info struct {
 	// HoneypotMarked is true when the client hit a honeypot route within
 	// its mark window.
 	HoneypotMarked bool
+	// TrustedPeer is true when the immediate peer's address is inside
+	// trusted_proxies, so the forwarding headers it sent (X-Forwarded-
+	// Proto, X-Forwarded-Host) are the load balancer's and not a
+	// client's. A filter that builds an absolute URL — a redirect back
+	// to an identity provider, a logout URL — must read them only then:
+	// any client can send those headers, and a redirect URI built from
+	// one is an open redirect with the session at the other end.
+	// external_url is better still, because it depends on nothing the
+	// request carries.
+	TrustedPeer bool
 }
 
 // Verdict is a filter decision.

@@ -17,6 +17,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/sandbox"
 	"github.com/rom/xproxy/internal/testutil"
 )
 
@@ -332,5 +333,59 @@ routes:
 	ml3, _ := NewMetricsListener(config.Metrics{}, p, logging.Discard())
 	if err := ml3.Start(); err != nil || ml3.Addr() != "" {
 		t.Fatal("disabled listener")
+	}
+}
+
+// Without sandbox.strict a hardening mechanism that never took effect
+// was a line in the start-up log and nothing else, and nothing watches
+// a start-up log. The process is still serving, so health stays ok, but
+// it says what is missing.
+func TestHealthReportsDegradedHardening(t *testing.T) {
+	cfg, err := config.Parse([]byte(`
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+upstreams:
+  - name: u
+    endpoints: [{address: "127.0.0.1:1"}]
+routes:
+  - name: r
+    upstream: u
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := proxy.New(cfg, logging.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := &sandbox.Status{Enabled: true, Mechanism: []sandbox.Mechanism{
+		{Name: "seccomp", State: sandbox.StateApplied},
+		{Name: "landlock", State: sandbox.StateUnavailable, Detail: "kernel too old"},
+	}}
+	sock := filepath.Join(t.TempDir(), "m.sock")
+	m := New(config.Management{Socket: sock, SocketMode: "0600"}, p, logging.Discard(), Actions{
+		Sandbox: func() *sandbox.Status { return status },
+	})
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Shutdown(context.Background())
+	get := func() healthResult {
+		t.Helper()
+		var res healthResult
+		if err := NewClient(sock).Do("GET", "/v1/health", nil, &res); err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	res := get()
+	if !res.OK || !res.Degraded || len(res.Reasons) != 1 || !strings.Contains(res.Reasons[0], "landlock") {
+		t.Fatalf("health: %+v", res)
+	}
+	// Everything applied: plain ok, no noise.
+	status.Mechanism[1].State = sandbox.StateApplied
+	if res := get(); !res.OK || res.Degraded || len(res.Reasons) != 0 {
+		t.Fatalf("health with the sandbox intact: %+v", res)
 	}
 }

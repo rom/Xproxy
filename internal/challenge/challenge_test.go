@@ -417,6 +417,12 @@ func TestCaptcha(t *testing.T) {
 	conf := cfg()
 	conf.Captcha = &config.Captcha{Provider: "turnstile", SiteKey: "0x4AAAAAAA_site", SecretFile: secretFile, VerifyURL: provider.URL, Timeout: config.Duration(2 * time.Second), Mode: "escalation", MinScore: 0.5}
 	c, err := New(conf)
+	// The routes of this deployment. The request host is not an
+	// allowlist: the client chooses it, so comparing the provider's
+	// hostname against it only asked the attacker to be consistent.
+	if c != nil {
+		c.SetRouteHosts([]string{"example.com", "www.example.com:8443"})
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,6 +515,14 @@ func TestCaptcha(t *testing.T) {
 	if w, reason := postHost(url.Values{"cf-turnstile-response": {"t"}}, "example.com"); w.Code != 403 || reason != "captcha hostname" {
 		t.Fatalf("wrong hostname accepted: %d %s", w.Code, reason)
 	}
+	// With no allowlist at all — neither the CAPTCHA's own hostnames nor
+	// a route host — the check fails closed rather than trusting the
+	// request host.
+	c.SetRouteHosts(nil)
+	if w, reason := postHost(url.Values{"cf-turnstile-response": {"t"}}, "evil.example"); w.Code != 403 {
+		t.Fatalf("no allowlist accepted a token: %d %s", w.Code, reason)
+	}
+	c.SetRouteHosts([]string{"example.com"})
 	// Reconfigure with an allowlist that includes the reported host.
 	conf.Captcha.Hostnames = []string{"evil.example"}
 	c.Reconfigure(conf)

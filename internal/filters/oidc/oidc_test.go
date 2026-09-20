@@ -221,3 +221,26 @@ func TestRevocation(t *testing.T) {
 		t.Fatalf("bound: %d", f.revokedCount())
 	}
 }
+
+// X-Forwarded-Proto decides the scheme of the redirect URI the identity
+// provider sends the authorization code to, so it counts only from a
+// peer inside trusted_proxies. Any client can send it.
+func TestForwardedProtoOnlyFromATrustedPeer(t *testing.T) {
+	f := &oidcFilter{cfg: &Config{}}
+	r := httptest.NewRequest("GET", "http://app.test/x", nil)
+	r.Header.Set("X-Forwarded-Proto", "https")
+	if f.secure(r, &filter.Info{}) {
+		t.Fatal("a client's own X-Forwarded-Proto set the scheme")
+	}
+	if !f.secure(r, &filter.Info{TrustedPeer: true}) {
+		t.Fatal("the load balancer's X-Forwarded-Proto was ignored")
+	}
+	if !f.secure(r, &filter.Info{TLS: true}) {
+		t.Fatal("the listener's own TLS was ignored")
+	}
+	// external_url depends on nothing the request carries.
+	f = &oidcFilter{cfg: &Config{ExternalURL: "https://app.test"}}
+	if !f.secure(r, &filter.Info{}) || f.base(r, &filter.Info{}) != "https://app.test" {
+		t.Fatal("external_url was not used")
+	}
+}

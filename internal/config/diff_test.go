@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -177,5 +178,63 @@ func TestHistory(t *testing.T) {
 	}
 	if _, err := NewHistory("", 5); !errors.Is(err, ErrNoHistory) {
 		t.Fatalf("empty dir: %v", err)
+	}
+}
+
+// A route's request_headers.set is where the credential the origin
+// expects lives. A management response travels much further than the
+// file on disk — xproxyctl over the socket, the GUI, a dry run pasted
+// into a ticket — so the values go and the names stay. The history
+// keeps the real document, because a rollback writes it back.
+func TestHeaderValuesAreRedactedInDumpsAndDiffs(t *testing.T) {
+	base := `
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+upstreams:
+  - name: u
+    endpoints: [{address: "127.0.0.1:1"}]
+routes:
+  - name: r
+    upstream: u
+    request_headers:
+      set: {X-Origin-Key: %q}
+    response_headers:
+      add: {X-Trace: %q}
+`
+	from, err := Parse([]byte(fmt.Sprintf(base, "s3cret-one", "t-one")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	to, err := Parse([]byte(fmt.Sprintf(base, "s3cret-two", "t-two")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	red, err := DumpRedacted(from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(red); strings.Contains(s, "s3cret-one") || strings.Contains(s, "t-one") {
+		t.Fatalf("a header value survived the redaction:\n%s", s)
+	}
+	if !strings.Contains(string(red), "X-Origin-Key") || !strings.Contains(string(red), RedactedValue) {
+		t.Fatalf("the header names or the placeholder are missing:\n%s", red)
+	}
+	// The history's document keeps them: a rollback writes it back.
+	plain, err := Dump(from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plain), "s3cret-one") {
+		t.Fatal("Dump lost a value the history needs")
+	}
+	// The change is still reported, computed from the real documents,
+	// and the text carries neither value.
+	ch := Diff(from, to, "active", "file")
+	if ch.Same || len(ch.Changes) == 0 {
+		t.Fatalf("a changed header value was not reported: %+v", ch)
+	}
+	if strings.Contains(ch.Text, "s3cret-one") || strings.Contains(ch.Text, "s3cret-two") {
+		t.Fatalf("the diff text leaked a header value:\n%s", ch.Text)
 	}
 }

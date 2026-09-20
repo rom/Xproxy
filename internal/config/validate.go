@@ -44,6 +44,9 @@ func (e *ValidationError) Error() string {
 
 type validator struct {
 	problems []string
+	// anyRouteHosts records whether any route names a host, which the
+	// CAPTCHA hostname check uses as its allowlist.
+	anyRouteHosts bool
 	// advice holds configurations that load but are a bad idea: an open
 	// resolver, a cluster with no certificate name restriction. They are
 	// not errors, because refusing them would break deployments that
@@ -220,6 +223,12 @@ func (v *validator) config(c *Config) {
 		v.ingress(c.Ingress, byName)
 	}
 	if c.Challenge != nil {
+		for _, r := range c.Routes {
+			if len(r.Hosts) > 0 {
+				v.anyRouteHosts = true
+				break
+			}
+		}
 		v.challenge(c.Challenge)
 	}
 	if c.Maintenance != nil {
@@ -2355,6 +2364,10 @@ func (v *validator) challenge(c *Challenge) {
 	}
 	if len(c.Title) > 200 || strings.ContainsAny(c.Title, "<>&\"'") {
 		v.errf("challenge.title: at most 200 characters, no HTML special characters")
+	}
+	if cp := c.Captcha; cp != nil && cp.ChecksHostname() && len(cp.Hostnames) == 0 && !v.anyRouteHosts {
+		v.errf("challenge.captcha.hostnames: required when hostname_check is on and no route sets hosts: " +
+			"the hostname the provider reports is otherwise compared against the request host, which the client chooses")
 	}
 	if cp := c.Captcha; cp != nil {
 		switch cp.Provider {

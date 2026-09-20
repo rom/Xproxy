@@ -836,10 +836,22 @@ is always replaced.
 | `secret_file` | path | required | Keyring shared with the origin (mode `0600`, created on first start; `xproxyctl rotate-secret` adds a new primary and keeps the previous key, so the origin verifies with either while it is updated) |
 | `ttl` | duration | `5m` | Age the origin should accept; a signature is also refused more than a minute in the future |
 | `include` | list of headers | `[]` | Extra request headers covered, for example a tenant header the proxy sets |
+| `body_digest` | bool | `false` | Cover the request body as well: the proxy buffers it, appends `sha-256=:<base64>:` as a final signed line, sends it as `Content-Digest` and adds `;bd=1` to the signature header. Without it a signature proves that a request passed through the proxy, not what it carried — anything that can reach the origin can replay a captured header set with a body of its own while the timestamp is inside the TTL. A bodied request larger than 8 MiB is refused with `413` rather than forwarded with a signature that stops at the headers |
 
 At the origin, recompute the MAC with the shared key selected by `kid`,
 compare in constant time, and refuse when it differs, the key id is
-unknown or `t` is older than the TTL. HARDENING.md has verifier
+unknown or `t` is older than the TTL. When the header carries `bd=1`,
+the last signed line is the body digest: hash the body and compare.
+Dropping `bd=1` does not turn that off, because the digest is part of
+what was signed.
+
+Within the TTL a signature is replayable by anything that captured it
+(a log, a proxy in front of the origin, a browser extension). Where
+that matters, have the origin remember the `X-Request-Id` values it has
+already answered for the TTL and refuse a repeat: the proxy sets a
+fresh one per request and the id is covered by the signature, so a
+replay carries the same id. `body_digest` bounds what a replay can
+change; the id dedupe stops the replay itself. HARDENING.md has verifier
 snippets; `internal/originsig` has `Verify` for origins written in Go.
 Combine with mutual TLS (`tls.client_cert_file`) and with network
 filtering: each closes what the others cannot.
@@ -876,6 +888,7 @@ not match is skipped and the next candidate is tried.
 | `doh` | `{listener}` | | DNS over HTTPS action; see `routes[].doh` |
 | `static` | object | | Serve files from a directory; see `routes[].static` |
 | `compress` | bool | follows `compression` | `false` leaves this route's responses as they are; `true` needs an enabled `compression` section |
+| `compress_authenticated` | bool | follows `compression.compress_authenticated` | Compress this route's responses to requests carrying `Authorization` or a `Cookie` (see BREACH under `compression`) |
 | `strip_prefix` | path | | Remove this prefix before forwarding |
 | `rewrite_path` | path | | Replace the path entirely; exclusive with `strip_prefix` |
 | `host_header` | string | client `Host` | Host sent upstream |
@@ -1492,7 +1505,7 @@ connects to the node. Changing the section requires a restart.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `controller` | URL | required | The controller's base URL, `https` without a path |
-| `node_id` | name | `cluster.node_id`, else the host name | The node's name at the controller; must equal the certificate's common name or DNS name unless the controller runs with `-any-name` |
+| `node_id` | name | `cluster.node_id`, else the host name | The node's name at the controller; must equal the certificate's common name or DNS name, unless the controller's `-name-map` names the exception (or it runs with `-any-name`, which turns the binding off for every node and warns on every authorisation) |
 | `tls.cert_file`, `tls.key_file` | path | required | The node's client certificate |
 | `tls.ca_file` | path | required | CA that issued the controller's certificate |
 | `tls.server_name` | string | host of `controller` | Name verified in the controller's certificate |
@@ -1708,7 +1721,7 @@ redirects are not security events; failed callbacks are, with reason
 | `logout_redirect` | path | `/` | |
 | `frontchannel_logout_path` | path | `/oauth2/frontchannel-logout` | OpenID Connect Front-Channel Logout endpoint: register `external_url` + path as the `frontchannel_logout_uri` at the provider; a `GET` with `sid` (and `iss`, checked against `issuer`) revokes that provider session so every session carrying it stops working, and clears the cookie when present |
 | `revoked_max` | int | `65536` | Bound of the revoked session id index; entries expire with the sessions they end, and over the bound the soonest to expire is dropped |
-| `external_url` | URL | derived | `scheme://host` the browser reaches the proxy on; derived from the request (`Host`, TLS or `X-Forwarded-Proto`) when unset |
+| `external_url` | URL | derived | `scheme://host` the browser reaches the proxy on. Set it. Unset, it is derived from the request: `Host`, the listener's own TLS, and `X-Forwarded-Proto` only from a peer inside `trusted_proxies` — any client can send that header, and the URL derived from it is the redirect URI the provider sends the authorization code to |
 | `cookie_name` | token | `XPOIDC` | The state cookie is `<cookie_name>_state`, ten minutes |
 | `cookie_domain` | string | host only | |
 | `session_ttl` | duration | `8h` | 1m to 720h; the cookie and its payload expire together |
@@ -2119,6 +2132,7 @@ Brotli still receives gzip when it accepts it. The access log has
 | `zstd_level` | int | `2` | zstd level 1 (fastest), 2 (default), 3 (better) or 4 (best) |
 | `min_bytes` | int | `1024` | Bodies below this length are not compressed; 0 to 1 MiB |
 | `types` | list | text, script, style, JSON, XML, SVG, wasm and font types | Media types compressed, without parameters |
+| `compress_authenticated` | bool | `false` | Compress the response to a request that carried `Authorization` or a `Cookie`. Compressing a body that mixes a secret with attacker-chosen text leaks the secret through its length, one character at a time (BREACH), and a request a browser sends with the victim's cookies is exactly what an attacker can arrange. Turn it on per route (`routes[].compress_authenticated`) where the response holds no secret, or where the application already masks its tokens |
 
 The default `types` are `text/html`, `text/plain`, `text/css`,
 `text/csv`, `text/xml`, `text/javascript`, `application/javascript`,
@@ -2358,7 +2372,7 @@ falls back to the proof of work.
 | `timeout` | duration | `5s` | Verification call (500ms to 30s); the call uses no environment proxy |
 | `min_score` | float | `0` | Refuse tokens scored below it (providers that return a score); 0 disables |
 | `mode` | `escalation`, `always` | `escalation` | `always` shows the widget on every challenge page, including route gates, in place of the proof of work |
-| `hostnames` | list | the request host | Host names the provider may report the token was solved on; empty checks the token against the host the challenge page was served on, so a token solved for another site is refused |
+| `hostnames` | list | the hosts the routes name | Host names the provider may report the token was solved on. Empty falls back to the host names `routes[].hosts` configure; a hostname in neither list, and a provider that omits it, are refused. The request host is not an allowlist — the client chooses it, so an attacker who points a name of their own at this proxy would only have to be consistent — so validation refuses a configuration where neither list exists |
 | `hostname_check` | bool | `true` | Verify the hostname the provider reports; turn off for providers that do not return one |
 
 ### routes[].cors

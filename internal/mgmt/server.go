@@ -449,8 +449,28 @@ type result struct {
 	Error string `json:"error,omitempty"`
 }
 
+// healthResult is what /v1/health answers. The process is serving, so
+// ok stays true, but a hardening mechanism that did not take effect is
+// named here as well: without sandbox.strict a missing one was a line
+// in the start-up log and nothing else, and nothing watches a start-up
+// log. An operator who wants it to be fatal sets strict.
+type healthResult struct {
+	OK       bool     `json:"ok"`
+	Degraded bool     `json:"degraded,omitempty"`
+	Reasons  []string `json:"degraded_reasons,omitempty"`
+}
+
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, 200, result{OK: true})
+	res := healthResult{OK: true}
+	if st := s.sandbox(); st != nil && st.Enabled {
+		for _, m := range st.Mechanism {
+			if m.State == sandbox.StateUnavailable || m.State == sandbox.StateFailed {
+				res.Degraded = true
+				res.Reasons = append(res.Reasons, "sandbox "+m.Name+": "+m.State)
+			}
+		}
+	}
+	writeJSON(w, 200, res)
 }
 
 func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
@@ -479,8 +499,13 @@ func (s *Server) upstreams(w http.ResponseWriter, _ *http.Request) {
 // included fragments are already expanded into it, so `includes` is
 // cleared (a copy fed back would otherwise append them a second time) and
 // the files that were read are listed in a leading comment.
+//
+// Header operation values are redacted, so this is a document to read,
+// not one to feed back: the credential a route sends to its origin
+// lives in request_headers.set, and this response travels further than
+// the file on disk. The history keeps the real values for rollback.
 func (s *Server) config(w http.ResponseWriter, _ *http.Request) {
-	b, err := config.Dump(s.proxy.Config())
+	b, err := config.DumpRedacted(s.proxy.Config())
 	if err != nil {
 		writeJSON(w, 500, result{Error: err.Error()})
 		return

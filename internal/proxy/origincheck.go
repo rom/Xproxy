@@ -107,7 +107,7 @@ func (s *Server) originRequest(pool *upstream.Pool, signer *originsig.Signer, en
 	req.Header.Set("X-Real-Ip", "127.0.0.1")
 	req.Header.Set("User-Agent", "xproxy-origin-check")
 	if signer != nil {
-		signer.Sign(req, time.Now(), "127.0.0.1", reqID)
+		signer.Sign(req, time.Now(), "127.0.0.1", reqID, "")
 	}
 	resp, err := pool.RoundTripper().RoundTrip(req)
 	if err != nil {

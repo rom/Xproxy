@@ -6,7 +6,7 @@ xproxy-fleet - fleet controller: configuration bundles and status for many xprox
 
 ## SYNOPSIS
 
-`xproxy-fleet serve` `-dir` *DIR* `-listen` *ADDR* `-cert` *PEM* `-key` *PEM* `-ca` *PEM* [`-any-name`] [`-scan` *D*] [`-admin-socket` *PATH*]
+`xproxy-fleet serve` `-dir` *DIR* `-listen` *ADDR* `-cert` *PEM* `-key` *PEM* `-ca` *PEM* [`-any-name`] [`-name-map` *FILE*] [`-scan` *D*] [`-admin-socket` *PATH*]
 
 `xproxy-fleet nodes` [`-admin-socket` *PATH*] [`-json`]
 
@@ -41,8 +41,9 @@ changed bundle within seconds through the ordinary reload path, rolling
 back the files when the proxy refuses the configuration.
 
 Agents authenticate with a client certificate from `-ca`; the
-certificate's common name or DNS name must equal the node id unless
-`-any-name` is given.
+certificate's common name or DNS name must equal the node id, unless
+`-name-map` names that exception for that one node, or `-any-name`
+turns the binding off for every node at once.
 
 ## COMMANDS
 
@@ -63,7 +64,8 @@ certificate's common name or DNS name must equal the node id unless
 | `-dir` *DIR* | Controller directory. Default `/var/lib/xproxy-fleet`. |
 | `-listen` *ADDR* | Node listener. Default `:8447`. |
 | `-cert`, `-key`, `-ca` *PEM* | Controller certificate, key and the CA that issues node certificates. Required for `serve`. |
-| `-any-name` | Accept any certificate from the CA for any node id. |
+| `-any-name` | Accept any certificate from the CA for any node id. Every authorisation is then warned about, because one stolen node certificate can fetch every node's bundle and report as any node; prefer `-name-map`. |
+| `-name-map` *FILE* | File of `node_id certificate_name` lines (`#` comments): the named certificate may act for that node id. One exception at a time instead of turning the binding off for every node. Each use is counted and warned about. |
 | `-scan` *D* | Directory rescan interval. Default `2s`. |
 | `-admin-socket` *PATH* | Operator socket. Default *DIR*`/fleet.sock`. |
 | `-json` | Machine readable output. |
