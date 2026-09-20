@@ -438,6 +438,29 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Anything on this route that materialises the body charges the
+	// process-wide budget for the life of the request. Each such feature
+	// is bounded per request; the product was the real ceiling, and
+	// max_connections_per_ip times max_body_bytes is gigabytes of heap
+	// from one address at the defaults.
+	if cr.buffersBody || rt.patchBuffersBody {
+		want := r.ContentLength
+		if want < 0 {
+			want = limit // chunked: the worst case this route admits
+		}
+		if r.Body == nil || r.Body == http.NoBody {
+			want = 0
+		}
+		rel, ok := s.bodyBudget.Reserve(want)
+		if !ok {
+			s.stats.DeniedBodyBudget.Add(1)
+			st.denied = "body_budget"
+			s.deny(rw, r, st, http.StatusServiceUnavailable, "body_budget")
+			return
+		}
+		defer rel()
+	}
+
 	// Per-route filters. Instances live for the whole exchange.
 	var instances filter.Instances
 	if len(cr.filters) > 0 {
@@ -1287,7 +1310,10 @@ func (s *Server) applyRateLimits(rw *responseWriter, r *http.Request, st *reqSta
 			}
 		}
 		if !decided {
-			allowed = rl.lim.AllowFallback(key, "ip:"+st.clientIP.String(), 1)
+			// When the key table is full the decision falls back to
+			// the client address and then to its network, rather than
+			// admitting an untracked request.
+			allowed = rl.lim.AllowFallback(key, []string{"ip:" + st.clientIP.String(), coarseKey(st.clientIP)}, 1)
 		}
 		if allowed {
 			rl.allowed.Add(1)
@@ -1473,4 +1499,19 @@ func (s *Server) digestBody(rw *responseWriter, r *http.Request, st *reqState) b
 	r.ContentLength = int64(len(body))
 	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	return true
+}
+
+// coarseKey is the last resort of a full rate-limit key table: the
+// client's /24 or /48, which one client cannot rotate out of the way
+// the address itself can be rotated.
+func coarseKey(ip netip.Addr) string {
+	bits := 24
+	if ip.Is6() && !ip.Is4In6() {
+		bits = 48
+	}
+	p, err := ip.Unmap().Prefix(bits)
+	if err != nil {
+		return ""
+	}
+	return "net:" + p.String()
 }

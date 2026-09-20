@@ -31,6 +31,20 @@ type Kind struct {
 	// instance name (also used as the deny reason unless the verdict sets
 	// one). Filters holding resources implement Closer.
 	New func(name string, opts Options, env Env) (Filter, error)
+	// BuffersBody says the filter may hold a whole request body in
+	// memory. A route with one of these charges the process-wide
+	// buffered-body budget for the life of the request, because the
+	// per-address connection limit multiplied by the body limit is
+	// otherwise the only ceiling: 256 connections at 10 MiB is 2.5 GiB
+	// of heap from one address, sent slowly inside read_timeout.
+	BuffersBody bool
+}
+
+// BuffersBody reports whether a registered filter kind may hold a whole
+// request body in memory.
+func BuffersBody(name string) bool {
+	k, ok := Lookup(name)
+	return ok && k.BuffersBody
 }
 
 // Env is what the data plane hands a filter at construction.

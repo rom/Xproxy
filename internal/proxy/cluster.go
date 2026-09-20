@@ -32,7 +32,7 @@ func (r rateSource) Decide(policy, key string, n float64) (allowed, ok bool) {
 	if !ok || rl.cfg.Distributed != "exact" {
 		return false, false
 	}
-	allowed = rl.lim.AllowFallback(key, "", n)
+	allowed = rl.lim.AllowFallback(key, nil, n)
 	if allowed {
 		rl.allowed.Add(1)
 	} else {

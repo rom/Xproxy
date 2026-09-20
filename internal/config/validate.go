@@ -630,6 +630,12 @@ func (v *validator) server(s *Server) {
 	if l.MaxConnectionsPerIP > l.MaxConnections {
 		v.errf("server.limits.max_connections_per_ip: exceeds max_connections")
 	}
+	if b := l.MaxBufferedBodyBytes; b != 0 && (b < 1<<20 || b > 64<<30) {
+		v.errf("server.limits.max_buffered_body_bytes: must be 0 (unbounded) or between 1 MiB and 64 GiB")
+	}
+	if b := l.MaxBufferedBodyBytes; b > 0 && b < l.MaxBodyBytes {
+		v.warnf("server.limits.max_buffered_body_bytes (%d) is below max_body_bytes (%d): a single request on a route that inspects bodies cannot fit the budget and is refused", b, l.MaxBodyBytes)
+	}
 }
 
 func (v *validator) tls(p string, t *TLS) {

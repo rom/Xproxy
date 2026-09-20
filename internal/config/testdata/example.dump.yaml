@@ -59,6 +59,7 @@ server:
         max_connections_per_ip: 256
         max_concurrent_requests: 16384
         max_tarpits: 1024
+        max_buffered_body_bytes: 536870912
     normalization:
         reject_control_chars: null
         reject_invalid_utf8: null

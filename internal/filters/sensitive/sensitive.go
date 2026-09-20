@@ -698,6 +698,7 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "sensitive_data",
 		Description: "detection of payment cards, identity numbers, IBANs, e-mail addresses, tokens, keys and secrets in requests and responses, with log, mask or block per direction",
+		BuffersBody: true,
 		Validate: func(opts filter.Options) error {
 			_, err := parse(opts)
 			return err

@@ -717,6 +717,7 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "graphql",
 		Description: "GraphQL request bounds: depth, complexity, aliases, batch size, query size, introspection",
+		BuffersBody: true,
 		Validate: func(opts filter.Options) error {
 			_, err := parse(opts)
 			return err

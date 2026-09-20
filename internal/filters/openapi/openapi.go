@@ -638,6 +638,7 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "openapi",
 		Description: "request validation against an OpenAPI 3 description: paths, methods, parameters, media types and JSON bodies",
+		BuffersBody: true,
 		Validate:    validate,
 		New: func(name string, opts filter.Options, env filter.Env) (filter.Filter, error) {
 			cfg, err := parse(opts)

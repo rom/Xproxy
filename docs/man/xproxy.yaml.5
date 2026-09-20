@@ -1011,8 +1011,8 @@ SCTs delivered through the TLS extension or the OCSP response rather than embedd
 .PP
 .TS
 allbox;
-lbw(1.3i) lbw(0.9i) lbw(0.9i) lbw(1.2i) lbx
-lw(1.3i) lw(0.9i) lw(0.9i) lw(1.2i) lx.
+lbw(1.3i) lbw(0.9i) lbw(1.0i) lbw(1.2i) lbx
+lw(1.3i) lw(0.9i) lw(1.0i) lw(1.2i) lx.
 T{
 Key
 T}	T{
@@ -1145,7 +1145,20 @@ T}	T{
 T}	T{
 Requests held in a tarpit at once. A tarpitted request releases its concurrency slot;\: above this bound it is rejected with 429 immediately (\fBtarpit_\:overflow\fR counts those)
 T}
+T{
+\fBmax_\:buffered_\:body_\:bytes\fR
+T}	T{
+bytes
+T}	T{
+\fB536870912\fR
+T}	T{
+0 (unbounded) or 1 MiB to 64 GiB
+T}	T{
+Ceiling on request bodies held in memory at once across the process;\: a request on a route that inspects bodies and does not fit is refused with \fB503\fR and reason \fBbody_\:budget\fR
+T}
 .TE
+.PP
+\fBmax_buffered_body_bytes\fR covers every feature that materialises a whole request body: \fBupload_guard\fR, \fBsensitive_data\fR, \fBaccount_guard\fR, \fBopenapi\fR, \fBgraphql\fR, \fBbody_rewrite\fR, \fBwasm\fR, the WAF\(aqs body inspection, ICAP, a virtual patch\(aqs body pattern and a mirrored request. Each of those is bounded per request, and the product was the real ceiling: \fBmax_connections_per_ip\fR (256) times \fBmax_body_bytes\fR (10 MiB) is about 2.5 GiB of heap from one address, sent slowly enough to stay inside \fBread_timeout\fR. A request whose body cannot be charged is refused before it is read; \fBxproxyctl stats\fR shows what is held, the high\-water mark and the refusals.
 .SS "server.normalization"
 .PP
 What the proxy does with encoding tricks in the request target before routing, rate limits, filters and the WAF look at it. Routing already decodes the path once and resolves dot segments and duplicate slashes; these checks refuse the forms that make two components read a request differently, and optionally fold Unicode spellings for routing. A refusal answers 400 with reason \fBnormalization\fR and the check as \fBdetail\fR, counts in \fBdenied_normalization\fR and feeds ban triggers under \fBnormalization\fR. The WAF still inspects the raw request line, so its rules see what the client sent.

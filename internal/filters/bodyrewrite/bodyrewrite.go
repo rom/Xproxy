@@ -283,6 +283,7 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "body_rewrite",
 		Description: "Rewrite request and response bodies with literal or regular expression rules.",
+		BuffersBody: true,
 		Validate: func(opts filter.Options) error {
 			_, err := parse(opts)
 			return err

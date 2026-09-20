@@ -313,6 +313,18 @@ public CA).
 | `max_connections_per_ip` | int | `256` | positive, at most `max_connections` | Per source address |
 | `max_concurrent_requests` | int | `16384` | positive | In-flight requests; 503 above |
 | `max_tarpits` | int | `1024` | 1 to 1000000 | Requests held in a tarpit at once. A tarpitted request releases its concurrency slot; above this bound it is rejected with 429 immediately (`tarpit_overflow` counts those) |
+| `max_buffered_body_bytes` | bytes | `536870912` | 0 (unbounded) or 1 MiB to 64 GiB | Ceiling on request bodies held in memory at once across the process; a request on a route that inspects bodies and does not fit is refused with `503` and reason `body_budget` |
+
+`max_buffered_body_bytes` covers every feature that materialises a
+whole request body: `upload_guard`, `sensitive_data`, `account_guard`,
+`openapi`, `graphql`, `body_rewrite`, `wasm`, the WAF's body
+inspection, ICAP, a virtual patch's body pattern and a mirrored
+request. Each of those is bounded per request, and the product was the
+real ceiling: `max_connections_per_ip` (256) times `max_body_bytes`
+(10 MiB) is about 2.5 GiB of heap from one address, sent slowly enough
+to stay inside `read_timeout`. A request whose body cannot be charged
+is refused before it is read; `xproxyctl stats` shows what is held, the
+high-water mark and the refusals.
 
 ### server.normalization
 

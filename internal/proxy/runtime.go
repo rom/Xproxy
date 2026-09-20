@@ -37,12 +37,15 @@ type runtime struct {
 	cfg        *config.Config
 	generation uint64
 	patches    []*compiledPatch
-	router     *router.Router
-	pools      map[string]*upstream.Pool
-	rateLimits map[string]*rateLimit
-	trusted    []netip.Prefix
-	routes     []*compiledRoute
-	waf        *waf.Engine
+	// patchBuffersBody is set when any virtual patch matches on a body,
+	// which every request on every route then pays for.
+	patchBuffersBody bool
+	router           *router.Router
+	pools            map[string]*upstream.Pool
+	rateLimits       map[string]*rateLimit
+	trusted          []netip.Prefix
+	routes           []*compiledRoute
+	waf              *waf.Engine
 	// signers sign forwarded requests per upstream (origin_signature).
 	signers     map[string]*originsig.Signer
 	jwt         map[string]*jwt.Provider
@@ -63,9 +66,12 @@ type runtime struct {
 // customFilter wraps a configured middleware instance with its deny
 // counter and defaults the deny reason to the instance name.
 type customFilter struct {
-	cfg    *config.FilterConfig
-	f      filter.Filter
-	denied atomic.Uint64
+	cfg *config.FilterConfig
+	f   filter.Filter
+	// buffersBody is the kind's declaration that it may hold a whole
+	// request body; see bodybudget.
+	buffersBody bool
+	denied      atomic.Uint64
 }
 
 func (c *customFilter) Name() string { return c.cfg.Name }
@@ -128,10 +134,16 @@ type compiledRoute struct {
 	// carried Authorization or Cookie; see BREACH in the configuration
 	// reference.
 	compressAuth bool
-	cors         *compiledCORS
-	idleTimeout  time.Duration
-	mirror       *mirror
-	rateLimits   []*rateLimit
+	// buffersBody is set when anything on this route may hold the whole
+	// request body in memory: a filter that declares it, the WAF's body
+	// inspection, ICAP, a virtual patch or policy body pattern, or a
+	// mirror. Such a request charges the process-wide body budget for
+	// its life.
+	buffersBody bool
+	cors        *compiledCORS
+	idleTimeout time.Duration
+	mirror      *mirror
+	rateLimits  []*rateLimit
 	// identityLimits key on the verified identity and so run after the
 	// filter chain; the others run before it.
 	identityLimits []*rateLimit
@@ -235,6 +247,13 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 		trusted:    netutil.ParsePrefixes(cfg.TrustedProxies),
 		routes:     make([]*compiledRoute, len(cfg.Routes)),
 		events:     events,
+	}
+
+	for _, vp := range rt.patches {
+		if vp.bodyRE != nil {
+			rt.patchBuffersBody = true
+			break
+		}
 	}
 	if cfg.Maintenance != nil {
 		rt.maintenance = newMaintenance(cfg.Maintenance)
@@ -345,7 +364,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 				rt.stop()
 				return nil, fmt.Errorf("filter %s: %w", fc.Name, err)
 			}
-			rt.filters[fc.Name] = &customFilter{cfg: fc, f: f}
+			rt.filters[fc.Name] = &customFilter{cfg: fc, f: f, buffersBody: k.BuffersBody}
 		}
 	}
 	if cfg.WAF != nil {
@@ -390,6 +409,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 			class: shed.ParseClass(r.PriorityClass),
 		}
 		cr.policy = compilePolicy(r.Policy)
+
 		if r.Challenge != nil && r.Challenge.Mode != "off" && cfg.Challenge != nil {
 			cr.challenge = r.Challenge
 		}
@@ -458,6 +478,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 					return nil, fmt.Errorf("route %s: unknown mirror upstream %s", r.Name, mc.Upstream)
 				}
 				cr.mirror = newMirror(mc, mp)
+				cr.buffersBody = true
 			}
 		}
 		for _, name := range r.RateLimits {
@@ -482,6 +503,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 				}
 				if cf.cfg.Stage == name {
 					cr.filters = append(cr.filters, cf)
+					cr.buffersBody = cr.buffersBody || cf.buffersBody
 				}
 			}
 			return nil
@@ -517,6 +539,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 				f = newSplitWAF(f, detect, r.WAF)
 			}
 			cr.filters = append(cr.filters, f)
+			cr.buffersBody = true
 			cr.wafMode = string(m)
 		}
 		if err := stage(config.StageAfterWAF); err != nil {
@@ -530,6 +553,7 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 				return nil, fmt.Errorf("route %s: unknown icap service %s", r.Name, r.ICAP.Service)
 			}
 			cr.filters = append(cr.filters, svc.Filter(r.ICAP))
+			cr.buffersBody = true
 		}
 		if err := stage(config.StageAfterScan); err != nil {
 			rt.stop()

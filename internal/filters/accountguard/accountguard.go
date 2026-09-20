@@ -1244,6 +1244,7 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "account_guard",
 		Description: "credential stuffing, brute force, registration, reset, hoarding and scraping protection with progressive delay, challenge and block actions per address, account and pair, and detection of campaigns spread over many addresses",
+		BuffersBody: true,
 		Validate: func(opts filter.Options) error {
 			_, err := parse(opts)
 			return err

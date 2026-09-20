@@ -222,6 +222,21 @@ Open findings of the earlier rounds:
 - The GUI's `viewer` role is documented for what it is: a trusted
   operator without write access, which reads the whole configuration
   file, the logs and the bans.
+- A rate-limit shard whose keys are all live falls back to a coarser
+  key — the client address, then its /24 or /48 — and refuses when
+  there is nothing coarser left. Admitting an untracked request made
+  the bound itself the way past the limit: rotate addresses until the
+  table is full and every new key was free, which is cheap over IPv6.
+  A full shard is also swept a bounded number of entries at a time
+  rather than scanned whole on every miss, and a live bucket is never
+  evicted to make room.
+- New `server.limits.max_buffered_body_bytes` (512 MiB by default) is
+  the process-wide ceiling on request bodies held in memory at once.
+  Every feature that materialises one was bounded per request, and the
+  product was the real ceiling: `max_connections_per_ip` times
+  `max_body_bytes` is about 2.5 GiB of heap from one address at the
+  defaults. A request that does not fit is refused with 503 before it
+  is read.
 
 ### Security (1.3)
 

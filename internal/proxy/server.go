@@ -25,6 +25,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/ban"
+	"github.com/rom/xproxy/internal/bodybudget"
 	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/cache"
 	"github.com/rom/xproxy/internal/challenge"
@@ -56,7 +57,10 @@ type Server struct {
 
 	concurrency *limits.Concurrency
 	tarpits     *limits.Concurrency // bound on requests held in a tarpit
-	marks       *marks              // clients that hit a honeypot
+	// bodyBudget is the process-wide ceiling on request bodies held in
+	// memory at once; see server.limits.max_buffered_body_bytes.
+	bodyBudget bodybudget.Budget
+	marks      *marks // clients that hit a honeypot
 	// fingerprints holds the TLS fingerprint of every open TLS connection.
 	fingerprints *tlsconf.FingerprintTable
 	// cache is the response cache, kept across reloads; nil when the
@@ -217,6 +221,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		s.cache.Store(cache.New(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes))
 	}
 	s.traceRedactIP.Store(cfg.Tracing.RedactsClientAddress())
+	s.bodyBudget.SetLimit(cfg.Server.Limits.MaxBufferedBodyBytes)
 	if cfg.Tracing.IsEnabled() {
 		tr, err := newTracer(cfg.Tracing, logs.Error)
 		if err != nil {
@@ -265,6 +270,7 @@ func (s *Server) Stats() Snapshot {
 	snap.RejectedConns = s.connLimiter.Rejected.Load()
 	snap.InFlight = s.concurrency.InFlight()
 	snap.HoneypotMarked = len(s.marks.list(time.Now()))
+	snap.BufferedBody = s.bodyBudget.Stats()
 	s.mu.Lock()
 	for _, bl := range s.listeners {
 		if bl.tcp != nil && bl.tcp.quic != nil {
@@ -1018,6 +1024,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 	// Tracing: rebuilt when its section changed, so a reload can move
 	// the collector or the sampling share.
 	s.traceRedactIP.Store(cfg.Tracing.RedactsClientAddress())
+	s.bodyBudget.SetLimit(cfg.Server.Limits.MaxBufferedBodyBytes)
 	if !sameTracing(old.cfg.Tracing, cfg.Tracing) {
 		var next *tracing.Tracer
 		if cfg.Tracing.IsEnabled() {

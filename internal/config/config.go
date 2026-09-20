@@ -619,6 +619,19 @@ type Limits struct {
 	// request releases its concurrency slot first; above this bound the
 	// request is rejected at once instead of held. Default 1024.
 	MaxTarpits int `yaml:"max_tarpits"`
+	// MaxBufferedBodyBytes is the process-wide ceiling on request bodies
+	// held in memory at once by the features that materialise one
+	// (upload_guard, sensitive_data, account_guard, openapi, graphql,
+	// body_rewrite, wasm, the WAF's body inspection, a virtual patch's
+	// body pattern, a mirrored request). Default 512 MiB; 0 is
+	// unbounded.
+	//
+	// Each of those is bounded per request, and the product was the real
+	// ceiling: max_connections_per_ip times max_body_bytes is about
+	// 2.5 GiB of heap from one address at the defaults, sent slowly
+	// enough to stay inside read_timeout. A request that does not fit
+	// the budget is refused with 503 rather than buffered.
+	MaxBufferedBodyBytes int64 `yaml:"max_buffered_body_bytes"`
 }
 
 // Management configures the control plane listener used by xproxyctl.

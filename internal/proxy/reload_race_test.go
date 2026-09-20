@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -77,4 +78,97 @@ routes:
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// Every feature that materialises a request body was bounded per
+// request, and the product was the real ceiling:
+// max_connections_per_ip times max_body_bytes is gigabytes of heap
+// from one address, sent slowly enough to stay inside read_timeout.
+// The process-wide budget turns that product into one number.
+func TestBufferedBodyBudget(t *testing.T) {
+	backend := newBackend(t, "a")
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+  limits: {max_body_bytes: 1048576, max_buffered_body_bytes: 2097152}
+logging: {access: {enabled: false}}
+filters:
+  - name: guard
+    kind: upload_guard
+    options: {max_files: 4}
+upstreams:
+  - name: u
+    endpoints: [{address: %q}]
+routes:
+  - name: buffered
+    paths: [/buffered]
+    filters: [guard]
+    upstream: u
+  - name: plain
+    paths: [/]
+    upstream: u
+`, backend.addr())
+	s, url := startServer(t, yaml)
+
+	// Hold the whole budget with two requests that never finish sending.
+	held := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		pr, pw := io.Pipe()
+		req, _ := http.NewRequest("POST", url+"/buffered", pr)
+		req.ContentLength = 1 << 20
+		req.Header.Set("Content-Type", "application/octet-stream")
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := http.DefaultClient.Do(req)
+			if err == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}
+		}()
+		go func() {
+			<-held
+			_ = pw.Close()
+		}()
+	}
+	// Wait until both reservations are held.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && s.Stats().BufferedBody.Used < 2<<20 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if used := s.Stats().BufferedBody.Used; used < 2<<20 {
+		close(held)
+		wg.Wait()
+		t.Fatalf("the budget was not charged: %d bytes held", used)
+	}
+	// A third buffered request does not fit and is refused, rather than
+	// adding another megabyte of heap.
+	resp, err := http.Post(url+"/buffered", "application/octet-stream", strings.NewReader(strings.Repeat("x", 1024)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("a request past the budget: %d", resp.StatusCode)
+	}
+	// A route that buffers nothing is unaffected.
+	if r2, err := http.Get(url + "/x"); err != nil || r2.StatusCode != 200 {
+		t.Fatalf("a route without a buffering filter was refused: %v", err)
+	} else {
+		_, _ = io.Copy(io.Discard, r2.Body)
+		_ = r2.Body.Close()
+	}
+	close(held)
+	wg.Wait()
+	// The budget is released when the requests end.
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && s.Stats().BufferedBody.Used != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if used := s.Stats().BufferedBody.Used; used != 0 {
+		t.Fatalf("%d bytes still reserved after the requests ended", used)
+	}
 }

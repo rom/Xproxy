@@ -122,7 +122,7 @@ func (l *KeyedLimiter) Allow(key string) bool {
 
 // AllowN consumes n tokens for key.
 func (l *KeyedLimiter) AllowN(key string, n float64) bool {
-	return l.AllowFallback(key, "", n)
+	return l.AllowFallback(key, nil, n)
 }
 
 // AllowFallback consumes n tokens for key. When key is not tracked and its
@@ -131,25 +131,41 @@ func (l *KeyedLimiter) AllowN(key string, n float64) bool {
 // key values cannot obtain a fresh burst per value once the table is full.
 // With no fallback the request is allowed untracked, bounded by burst; the
 // per-connection and concurrency limits still hold.
-func (l *KeyedLimiter) AllowFallback(key, fallback string, n float64) bool {
+func (l *KeyedLimiter) AllowFallback(key string, fallbacks []string, n float64) bool {
 	now := l.now()
-	sh := &l.shards[fnv(key)%uint32(len(l.shards))]
-	sh.mu.Lock()
-	b, ok := sh.buckets[key]
-	if !ok {
+	var b *bucket
+	var sh *shard
+	for {
+		sh = &l.shards[fnv(key)%uint32(len(l.shards))]
+		sh.mu.Lock()
+		var ok bool
+		if b, ok = sh.buckets[key]; ok {
+			break
+		}
 		if len(sh.buckets) >= l.maxKeys {
 			l.evict(sh, now)
 		}
-		if len(sh.buckets) >= l.maxKeys {
-			sh.mu.Unlock()
-			l.overflow.Hit(nil, "rate limit key table full; decisions for new keys fall back to the shared key or the burst", "table", "rate_limit_keys", "max_per_shard", l.maxKeys)
-			if fallback != "" && fallback != key {
-				return l.AllowFallback(fallback, "", n)
-			}
-			return n <= l.burst
+		if len(sh.buckets) < l.maxKeys {
+			b = &bucket{tokens: l.burst, last: now}
+			sh.buckets[key] = b
+			break
 		}
-		b = &bucket{tokens: l.burst, last: now}
-		sh.buckets[key] = b
+		sh.mu.Unlock()
+		l.overflow.Hit(nil, "rate limit key table full; decisions for new keys fall back to a coarser key", "table", "rate_limit_keys", "max_per_shard", l.maxKeys)
+		// Fall back to something coarser — the client address, then its
+		// network — rather than admit. Admitting made the bound itself
+		// the bypass: rotate source addresses until the table is full
+		// and every new key was then free, which is cheap over IPv6.
+		for len(fallbacks) > 0 && (fallbacks[0] == "" || fallbacks[0] == key) {
+			fallbacks = fallbacks[1:]
+		}
+		if len(fallbacks) == 0 {
+			// Nothing coarser is left and the table is genuinely full:
+			// refuse. This is the one direction that cannot be turned
+			// into a way past the limit.
+			return false
+		}
+		key, fallbacks = fallbacks[0], fallbacks[1:]
 	}
 	defer sh.mu.Unlock()
 	if l.window > 0 {
@@ -334,14 +350,29 @@ func (l *KeyedLimiter) Flush(limit int) map[string]float64 {
 
 // evict removes buckets that have been idle long enough to be full again
 // (two windows for a sliding window, whose counts are then zero).
+// evictScan bounds one eviction pass. A full scan per miss was O(n)
+// work any client could trigger with every new key, which is the
+// amplification a bounded table is supposed to prevent.
+const evictScan = 256
+
+// evict frees room in a full shard without scanning it whole: at most
+// evictScan entries are examined and the expired ones among them are
+// dropped. A live bucket is never evicted to make room, because that
+// is the bypass itself — a client rotating keys would evict somebody
+// else's bucket and receive a fresh burst every time. A shard of live
+// buckets stays full, and AllowFallback then decides on a coarser key.
 func (l *KeyedLimiter) evict(sh *shard, now time.Time) {
 	full := time.Duration(l.burst / l.rate * float64(time.Second))
 	if l.window > 0 {
 		full = 2 * l.window
 	}
+	seen := 0
 	for k, b := range sh.buckets {
 		if now.Sub(b.last) >= full {
 			delete(sh.buckets, k)
+		}
+		if seen++; seen >= evictScan {
+			break
 		}
 	}
 }

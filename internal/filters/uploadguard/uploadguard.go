@@ -487,6 +487,7 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "upload_guard",
 		Description: "file upload protection: count, size, extension and double extension rules, content type sniffing, executable and script detection",
+		BuffersBody: true,
 		Validate: func(opts filter.Options) error {
 			_, err := parse(opts)
 			return err
