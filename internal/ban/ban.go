@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/rom/xproxy/internal/bound"
 	"log/slog"
 	"net/netip"
 	"sort"
@@ -28,6 +27,7 @@ import (
 
 	"go.etcd.io/bbolt"
 
+	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 )
@@ -58,13 +58,17 @@ type List struct {
 	mu       sync.RWMutex
 	addrs    map[netip.Addr]*Entry
 	prefixes []*Entry
-	fps      map[string]*Entry
-	hasFP    atomic.Bool        // any fingerprint ban present (hot path hint)
-	history  map[string]history // repeat counts per target for escalation
-	triggers []*trigger
-	exempt   []netip.Prefix
-	max      int
-	drop     bool
+	// prefixIdx and prefixLens index prefixes for Banned: by masked prefix,
+	// and the prefix lengths in use so a lookup tries only those.
+	prefixIdx  map[netip.Prefix]*Entry
+	prefixLens map[prefixLen]int
+	fps        map[string]*Entry
+	hasFP      atomic.Bool        // any fingerprint ban present (hot path hint)
+	history    map[string]history // repeat counts per target for escalation
+	triggers   []*trigger
+	exempt     []netip.Prefix
+	max        int
+	drop       bool
 
 	db        *bbolt.DB
 	stateFile string
@@ -243,12 +247,52 @@ func (l *List) Banned(addr netip.Addr) bool {
 	if e, ok := l.addrs[addr]; ok && e.Until.After(now) {
 		return true
 	}
-	for _, e := range l.prefixes {
-		if e.Until.After(now) && e.prefix.Contains(addr) {
+	// One map lookup per prefix length in use (a handful), not a scan of
+	// every banned network.
+	for pl := range l.prefixLens {
+		if pl.v6 != addr.Is6() {
+			continue
+		}
+		p, err := addr.Prefix(pl.bits)
+		if err != nil {
+			continue
+		}
+		if e, ok := l.prefixIdx[p]; ok && e.Until.After(now) {
 			return true
 		}
 	}
 	return false
+}
+
+// prefixLen keys the set of prefix lengths present in prefixIdx.
+type prefixLen struct {
+	v6   bool
+	bits int
+}
+
+// maxPrefixBans bounds banned networks; beyond it the soonest to expire
+// makes room.
+const maxPrefixBans = 4096
+
+// indexPrefix adds e to the lookup index; caller holds the write lock.
+func (l *List) indexPrefix(e *Entry) {
+	if l.prefixIdx == nil {
+		l.prefixIdx = map[netip.Prefix]*Entry{}
+		l.prefixLens = map[prefixLen]int{}
+	}
+	p := e.prefix.Masked()
+	l.prefixIdx[p] = e
+	l.prefixLens[prefixLen{v6: p.Addr().Is6(), bits: p.Bits()}]++
+}
+
+// reindexPrefixes rebuilds the lookup index from l.prefixes after a bulk
+// change; caller holds the write lock.
+func (l *List) reindexPrefixes() {
+	l.prefixIdx = make(map[netip.Prefix]*Entry, len(l.prefixes))
+	l.prefixLens = map[prefixLen]int{}
+	for _, e := range l.prefixes {
+		l.indexPrefix(e)
+	}
 }
 
 // BannedFingerprint reports whether the JA4 fingerprint is banned. It is
@@ -490,6 +534,7 @@ func (l *List) removeLocked(e *Entry) bool {
 		for i, p := range l.prefixes {
 			if p.prefix == e.prefix {
 				l.prefixes = append(l.prefixes[:i], l.prefixes[i+1:]...)
+				l.reindexPrefixes()
 				return true
 			}
 		}
@@ -567,17 +612,35 @@ func (l *List) insertLocked(e *Entry, now time.Time) {
 		return
 	}
 	if e.isNet {
-		for i, p := range l.prefixes {
-			if p.prefix == e.prefix {
-				e.Count = p.Count + 1
-				l.prefixes[i] = e
-				return
+		if old, ok := l.prefixIdx[e.prefix]; ok {
+			e.Count = old.Count + 1
+			for i, p := range l.prefixes {
+				if p == old {
+					l.prefixes[i] = e
+					break
+				}
+			}
+			l.prefixIdx[e.prefix] = e
+			return
+		}
+		if len(l.prefixes) >= maxPrefixBans {
+			l.evictLocked(now)
+			if len(l.prefixes) >= maxPrefixBans {
+				// Still full of live networks: drop the soonest to expire so
+				// an attacker rotating source networks cannot grow the list
+				// (and the per-request scan) without bound.
+				soonest := 0
+				for i, p := range l.prefixes {
+					if p.Until.Before(l.prefixes[soonest].Until) {
+						soonest = i
+					}
+				}
+				l.prefixes = append(l.prefixes[:soonest], l.prefixes[soonest+1:]...)
+				l.reindexPrefixes()
 			}
 		}
-		if len(l.prefixes) >= 1024 {
-			l.evictLocked(now)
-		}
 		l.prefixes = append(l.prefixes, e)
+		l.indexPrefix(e)
 		l.total++
 		return
 	}
@@ -607,6 +670,7 @@ func (l *List) evictLocked(now time.Time) {
 		}
 	}
 	l.prefixes = live
+	l.reindexPrefixes()
 	if len(l.addrs) < l.max {
 		return
 	}
@@ -704,6 +768,7 @@ func (l *List) Purge() {
 		}
 	}
 	l.prefixes = live
+	l.reindexPrefixes()
 	for k, e := range l.fps {
 		if !e.Until.After(now) {
 			delete(l.fps, k)

@@ -30,16 +30,19 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/ldap"
+	"github.com/rom/xproxy/internal/passwd"
 )
 
 // Config is the options schema.
 type Config struct {
 	URL                string `json:"url"`
 	StartTLS           bool   `json:"start_tls"`
+	AllowPlaintext     bool   `json:"allow_plaintext"`
 	CAFile             string `json:"ca_file"`
 	InsecureSkipVerify bool   `json:"insecure_skip_verify"`
 	BindDNTemplate     string `json:"bind_dn_template"`
@@ -69,10 +72,15 @@ func parse(opts filter.Options) (*Config, error) {
 		return nil, err
 	}
 	var errs []error
-	if c.URL == "" {
+	switch {
+	case c.URL == "":
 		errs = append(errs, errors.New("url is required"))
-	} else if !strings.HasPrefix(c.URL, "ldap://") && !strings.HasPrefix(c.URL, "ldaps://") {
+	case !strings.HasPrefix(c.URL, "ldap://") && !strings.HasPrefix(c.URL, "ldaps://"):
 		errs = append(errs, errors.New("url: must be ldap:// or ldaps://"))
+	case strings.HasPrefix(c.URL, "ldap://") && !c.StartTLS && !c.AllowPlaintext:
+		// Every user password and the service account password cross this
+		// connection; plain ldap:// sends them in clear.
+		errs = append(errs, errors.New("url: ldap:// without start_tls sends passwords in clear; set start_tls, use ldaps://, or set allow_plaintext for a loopback or IPsec-protected directory"))
 	}
 	switch {
 	case c.BindDNTemplate != "" && (c.BindDN != "" || c.BaseDN != "" || c.UserFilter != ""):
@@ -151,9 +159,10 @@ type auth struct {
 	bindPassword string
 	log          *slog.Logger
 
-	mu    sync.Mutex
-	cache map[[32]byte]cacheEntry
-	sem   chan struct{}
+	mu      sync.Mutex
+	cache   map[[32]byte]cacheEntry
+	sem     chan struct{}
+	waiting atomic.Int32 // callers queued on sem
 }
 
 type cacheEntry struct {
@@ -172,7 +181,7 @@ type instance struct {
 
 func (in *instance) Request(r *http.Request) filter.Verdict {
 	user, pass, ok := r.BasicAuth()
-	if !ok || user == "" || pass == "" || !in.a.check(user, pass) {
+	if !ok || user == "" || pass == "" || !in.a.check(r.Context(), user, pass) {
 		return filter.Verdict{Deny: true, Status: http.StatusUnauthorized, Reason: in.a.name, Detail: "credentials",
 			Headers: map[string]string{"WWW-Authenticate": `Basic realm="` + in.a.cfg.Realm + `", charset="UTF-8"`}}
 	}
@@ -197,7 +206,7 @@ func (in *instance) End() []any {
 }
 
 // check verifies credentials against the directory, through the cache.
-func (a *auth) check(user, pass string) bool {
+func (a *auth) check(ctx context.Context, user, pass string) bool {
 	key := sha256.Sum256([]byte(a.cfg.URL + "\x00" + user + "\x00" + pass))
 	now := time.Now()
 	if a.cfg.ttl > 0 {
@@ -208,7 +217,9 @@ func (a *auth) check(user, pass string) bool {
 			return e.ok
 		}
 	}
-	a.sem <- struct{}{}
+	if !passwd.Acquire(ctx, a.sem, &a.waiting) {
+		return false // the client left, or the queue is full: refused, not cached
+	}
 	ok, err := a.authenticate(user, pass)
 	<-a.sem
 	if err != nil {

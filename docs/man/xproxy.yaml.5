@@ -82,7 +82,7 @@ list of CIDR
 T}	T{
 \fB[]\fR
 T}	T{
-Peers whose \fBX\-\:Forwarded\-\:For\fR is believed,\: and whose PROXY protocol header is parsed on listeners with \fBproxy_\:protocol:\: true\fR. Empty means never. \fB0.\:0.\:0.\:0/\:0\fR and \fB:\::\:/\:0\fR are refused: trusting every address would let any client choose its own address and defeat bans,\: rate limits,\: ACLs and the audit trail;\: list the balancer networks
+Peers whose \fBX\-\:Forwarded\-\:For\fR is believed,\: and whose PROXY protocol header is parsed on listeners with \fBproxy_\:protocol:\: true\fR. Empty means never. \fB0.\:0.\:0.\:0/\:0\fR,\: \fB:\::\:/\:0\fR and any prefix shorter than \fB/\:8\fR are refused: trusting every address would let any client choose its own address and defeat bans,\: rate limits,\: ACLs and the audit trail;\: list the balancer networks
 T}
 T{
 \fBrate_\:limits\fR
@@ -1207,6 +1207,15 @@ T}	T{
 \fBfalse\fR
 T}	T{
 A backslash in the decoded path,\: a separator to some servers (\fBpath_\:backslash\fR)
+T}
+T{
+\fBreject_\:dot_\:segments\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A \fB.\fR or \fB.\:.\fR segment in the decoded path,\: including the \fB.\:.\:;\fR form servlet containers resolve (\fBpath_\:dot_\:segment\fR). Routing resolves dot segments while the upstream receives the path as sent,\: so \fB/\:static/\:.\:.\:/\:admin\fR would be routed as \fB/\:admin\fR but reach the origin unchanged;\: browsers never send such paths
 T}
 T{
 \fBreject_\:ambiguous_\:framing\fR
@@ -3503,7 +3512,7 @@ T}	T{
 T}	T{
 status \fB308\fR
 T}	T{
-\fBto\fR is a URL or path and may use the request variables (below),\: for example \fBhttps:\:/\:/\:new.\:example.\:com${path}?${raw_\:query}\fR;\: status 301,\: 302,\: 303,\: 307 or 308
+\fBto\fR is a URL or path and may use the request variables (below),\: for example \fBhttps:\:/\:/\:new.\:example.\:com${path}?${raw_\:query}\fR;\: status 301,\: 302,\: 303,\: 307 or 308. The destination host must be fixed by the configuration: \fBto\fR starts with a literal path (\fB/\:x\[u2026]\fR) or \fBscheme:\:/\:/\:host\fR (\fB${host}\fR and \fB${scheme}\fR allowed),\: so request data can fill the path or query but never pick the host (\fB/\:${query:\:next}\fR is refused)
 T}
 T{
 \fBrespond\fR
@@ -6158,7 +6167,7 @@ URL
 T}	T{
 required
 T}	T{
-\fBldap:\:/\:/\:host:\:port\fR or \fBldaps:\:/\:/\:host:\:port\fR
+\fBldap:\:/\:/\:host:\:port\fR or \fBldaps:\:/\:/\:host:\:port\fR. Plain \fBldap:\:/\:/\fR needs \fBstart_\:tls\fR or \fBallow_\:plaintext\fR: every user password crosses this connection
 T}
 T{
 \fBstart_\:tls\fR
@@ -6168,6 +6177,15 @@ T}	T{
 \fBfalse\fR
 T}	T{
 Upgrade an \fBldap:\:/\:/\fR connection to TLS before binding
+T}
+T{
+\fBallow_\:plaintext\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept \fBldap:\:/\:/\fR without \fBstart_\:tls\fR (a loopback or IPsec\-protected directory only)
 T}
 T{
 \fBca_\:file\fR
@@ -6558,7 +6576,7 @@ int
 T}	T{
 \fB16\fR
 T}	T{
-Pooled instances;\: more are created on demand and dropped after use
+Pooled instances and the bound on concurrent calls: a request beyond it waits for a free instance within \fBtimeout\fR,\: then takes \fBon_\:error\fR
 T}
 T{
 \fBon_\:error\fR
@@ -8516,7 +8534,7 @@ list
 T}	T{
 required
 T}	T{
-Permitted \fBOrigin\fR values: exact (\fBhttps:\:/\:/\:app.\:example\fR),\: a single \fB*\fR (any origin,\: incompatible with \fBallow_\:credentials\fR),\: or a wildcard host (\fBhttps:\:/\:/\:*.\:example.\:com\fR,\: matching one or more whole labels). A wildcard must be a whole leading label: \fBhttps:\:/\:/\:*example.\:com\fR is refused because it would also admit \fBevilexample.\:com\fR
+Permitted \fBOrigin\fR values: exact (\fBhttps:\:/\:/\:app.\:example\fR),\: a single \fB*\fR (any origin,\: incompatible with \fBallow_\:credentials\fR),\: or a wildcard host (\fBhttps:\:/\:/\:*.\:example.\:com\fR,\: matching one or more whole labels). A wildcard must be a whole leading label followed by at least two more: \fBhttps:\:/\:/\:*example.\:com\fR is refused because it would also admit \fBevilexample.\:com\fR,\: and \fBhttps:\:/\:/\:*.\:com\fR or \fBhttps:\:/\:/\:*.\:co.\:uk\fR (a public suffix) because every site under it would be allowed
 T}
 T{
 \fBallow_\:methods\fR

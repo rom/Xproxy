@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -99,7 +100,9 @@ func (v *validator) config(c *Config) {
 		// Trusting every address lets any client pick its own client IP
 		// through X-Forwarded-For or a PROXY header, defeating bans, rate
 		// limits, ACLs and the audit trail: name the balancers instead.
-		if p.Bits() == 0 {
+		// Shorter than /8 is refused too: "0.0.0.0/1" plus "128.0.0.0/1"
+		// (or "::/1" plus "8000::/1") is the /0 in two lines.
+		if p.Bits() < 8 {
 			v.errf("trusted_proxies[%d]: %q would trust every client; list the load balancer networks", i, cidr)
 		}
 	}
@@ -1380,6 +1383,8 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 			v.errf("%s.redirect.to: required", p)
 		} else if u, err := url.Parse(placeholderRE.ReplaceAllString(r.Redirect.To, "x")); err != nil || (u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https") {
 			v.errf("%s.redirect.to: %q is not a valid http(s) URL or path", p, r.Redirect.To)
+		} else if !redirectTargetFixed(r.Redirect.To) {
+			v.errf("%s.redirect.to: %q lets request data choose the destination host (open redirect); start with a literal path or scheme://host", p, r.Redirect.To)
 		}
 		switch r.Redirect.Status {
 		case 301, 302, 303, 307, 308:
@@ -2553,6 +2558,51 @@ func (v *validator) file(p, path string) {
 // before shape checks that templates would otherwise fail.
 var placeholderRE = regexp.MustCompile(`\$\{[^}]*\}`)
 
+// publicSuffixes lists the common two-label registry suffixes under which
+// anyone can register a name, so "https://*.co.uk" is refused like
+// "https://*.com". It is a safety net, not the public suffix list:
+// operators remain responsible for wildcards under rarer suffixes.
+var publicSuffixes = map[string]bool{
+	"co.uk": true, "org.uk": true, "ac.uk": true, "gov.uk": true, "me.uk": true, "ltd.uk": true, "plc.uk": true, "net.uk": true,
+	"com.au": true, "net.au": true, "org.au": true, "edu.au": true, "gov.au": true, "id.au": true,
+	"co.nz": true, "net.nz": true, "org.nz": true, "co.za": true, "org.za": true, "web.za": true,
+	"co.jp": true, "ne.jp": true, "or.jp": true, "ac.jp": true, "go.jp": true, "co.kr": true, "or.kr": true,
+	"com.cn": true, "net.cn": true, "org.cn": true, "com.hk": true, "com.tw": true, "com.sg": true, "com.my": true,
+	"co.in": true, "net.in": true, "org.in": true, "co.id": true, "com.ph": true, "com.vn": true, "co.th": true,
+	"com.br": true, "net.br": true, "org.br": true, "com.mx": true, "com.ar": true, "com.co": true, "com.pe": true,
+	"com.tr": true, "com.ua": true, "com.pl": true, "com.ru": true, "co.il": true, "com.eg": true, "com.sa": true,
+	"com.ng": true, "co.ke": true, "com.gh": true, "co.tz": true, "com.pk": true, "com.bd": true,
+	"github.io": true, "gitlab.io": true, "herokuapp.com": true, "azurewebsites.net": true, "cloudfront.net": true,
+	"appspot.com": true, "web.app": true, "firebaseapp.com": true, "vercel.app": true, "netlify.app": true, "pages.dev": true,
+	"workers.dev": true, "amazonaws.com": true, "blogspot.com": true, "wordpress.com": true,
+}
+
+// redirectAuthorityRE matches the literal start a redirect target needs
+// before any placeholder: a scheme (or ${scheme}) and a literal host (or
+// ${host}, which routing has validated), followed by "/", "${path}" or
+// the end.
+var redirectAuthorityRE = regexp.MustCompile(`^(?:https?|\$\{scheme\})://(?:\$\{host\}|[A-Za-z0-9.\-]+(?::[0-9]+)?|\[[0-9A-Fa-f:.]+\](?::[0-9]+)?)(?:/|\$\{path\}|$)`)
+
+// redirectTargetFixed reports whether the destination of a redirect is
+// fixed by the configuration: request data may fill in the path or the
+// query, never the host. "${query:next}" or "//${header:X-Host}" would
+// be an open redirect; "/x${path}" and "https://a.example${path}" are
+// fine, as is "https://${host}/new" since ${host} is the validated
+// request host.
+func redirectTargetFixed(to string) bool {
+	if strings.HasPrefix(to, "/") {
+		// A relative target: the literal part must reach past a first
+		// character that is not another separator, so "/${x}" (which
+		// could expand to "//evil") is refused while "/x${path}" passes.
+		lit := to
+		if i := strings.Index(to, "${"); i >= 0 {
+			lit = to[:i]
+		}
+		return len(lit) >= 2 && lit[1] != '/' && lit[1] != '\\' || !strings.Contains(to, "${")
+	}
+	return redirectAuthorityRE.MatchString(to)
+}
+
 // CaptureNames lists the named groups of a route's regular expressions,
 // which header templates may reference.
 func CaptureNames(r *Route) []string {
@@ -2783,8 +2833,14 @@ func (v *validator) routeCORS(p string, c *RouteCORS) {
 		// "https://*example.com" would also admit evilexample.com.
 		if strings.Contains(o, "*") {
 			host := o[strings.Index(o, "://")+3:]
-			if strings.Count(host, "*") != 1 || !strings.HasPrefix(host, "*.") || len(host) < len("*.a.b") || strings.ContainsAny(host, "/?#@") {
-				v.errf("%s.allow_origins[%d]: %q wildcard must be scheme://*.domain", p, i, o)
+			// At least two labels after the wildcard: "https://*.com" or
+			// "https://*.co.uk" would admit every site under a public suffix.
+			suffix := strings.TrimPrefix(host, "*.")
+			labels := strings.Split(suffix, ".")
+			if strings.Count(host, "*") != 1 || !strings.HasPrefix(host, "*.") || len(labels) < 2 || slices.Contains(labels, "") || strings.ContainsAny(host, "/?#@:\\") {
+				v.errf("%s.allow_origins[%d]: %q wildcard must be scheme://*.domain.tld", p, i, o)
+			} else if publicSuffixes[strings.ToLower(suffix)] {
+				v.errf("%s.allow_origins[%d]: %q is a public suffix: every site under it would be allowed", p, i, o)
 			}
 		}
 	}

@@ -196,8 +196,15 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	if r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
 		return filter.Continue
 	}
-	mt, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	ct := r.Header.Get("Content-Type")
+	mt, params, err := mime.ParseMediaType(ct)
 	if err != nil {
+		// A multipart type Go refuses (a duplicate boundary parameter, a
+		// stray token) is one most upload parsers still accept, so letting
+		// it through would skip every check: refuse it instead.
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "multipart/") {
+			return in.deny(&refusal{status: http.StatusBadRequest, check: "multipart_content_type"})
+		}
 		return filter.Continue
 	}
 	switch {

@@ -115,7 +115,9 @@ routes:
 		_ = resp.Body.Close()
 		return resp
 	}
-	if r := pre("https://app.test"); r.StatusCode != 204 || r.Header.Get("Access-Control-Allow-Origin") != "https://app.test" || r.Header.Get("Access-Control-Allow-Headers") != "content-type,x-grpc-web,x-user-agent" || r.Header.Get("Access-Control-Allow-Methods") != "POST, OPTIONS" {
+	// The allowed header list is fixed, never a reflection of what the
+	// browser asked for.
+	if r := pre("https://app.test"); r.StatusCode != 204 || r.Header.Get("Access-Control-Allow-Origin") != "https://app.test" || r.Header.Get("Access-Control-Allow-Headers") != "content-type, x-grpc-web, x-user-agent, grpc-timeout, authorization" || r.Header.Get("Access-Control-Allow-Methods") != "POST, OPTIONS" {
 		t.Fatalf("preflight: %d %v", r.StatusCode, r.Header)
 	}
 	if r := pre("https://evil.test"); r.StatusCode != 403 {

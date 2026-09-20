@@ -94,9 +94,10 @@ func matchOriginPattern(pattern, origin string) bool {
 	if !strings.HasPrefix(oh, prefix) || !strings.HasSuffix(oh, suffix) {
 		return false
 	}
-	// The wildcard stands for one or more labels, not empty and not a dot.
+	// The wildcard stands for one or more host labels: not empty, and none
+	// of the characters that would end the host part of an origin.
 	mid := oh[len(prefix) : len(oh)-len(suffix)]
-	return mid != "" && !strings.Contains(mid, "/")
+	return mid != "" && !strings.ContainsAny(mid, "/?#@\\:")
 }
 
 func splitOrigin(o string) (scheme, host string, ok bool) {

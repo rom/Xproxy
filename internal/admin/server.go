@@ -478,18 +478,20 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, ok := s.users.Lookup(req.User)
-	valid := false
+	// Unknown and certificate-only users verify against a dummy hash on the
+	// same path, under the same semaphore, so neither timing nor queueing
+	// under load reveals which names exist.
+	hash, real := dummyHash, false
 	if ok && !u.CertOnly() {
-		select {
-		case s.verify <- struct{}{}:
-			valid = VerifyPassword(u.Hash, req.Password)
-			<-s.verify
-		case <-r.Context().Done():
-			return
-		}
-	} else {
-		// Same cost for unknown users so timing does not reveal names.
-		VerifyPassword(dummyHash, req.Password)
+		hash, real = u.Hash, true
+	}
+	valid := false
+	select {
+	case s.verify <- struct{}{}:
+		valid = VerifyPassword(hash, req.Password) && real
+		<-s.verify
+	case <-r.Context().Done():
+		return
 	}
 	if !valid {
 		s.limiter.fail(src)
@@ -639,8 +641,9 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 }
 
 // dryRun asks the daemon what applying the configuration file would
-// change, without applying it. It changes nothing, so any role may call
-// it, but it is a POST on the management side.
+// change, without applying it. It changes nothing, but like every other
+// POST it is limited to operators by the secure middleware: the diff it
+// returns reveals the pending configuration.
 func (s *Server) dryRun(w http.ResponseWriter, _ *http.Request) {
 	var body []byte
 	if err := s.client.Do(http.MethodPost, "/v1/reload?dry_run=1", nil, &body); err != nil {

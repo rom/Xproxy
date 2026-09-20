@@ -26,6 +26,14 @@ func cacheKey(rc *config.RouteCache, r *http.Request, host, path string) string 
 	if !ok || r.Header.Get("Authorization") != "" || r.Header.Get("Range") != "" {
 		return ""
 	}
+	// Only a request whose wire path is the routing path is cached: the
+	// upstream receives the path as sent, so "//x", "/./x", "/a/../x", a
+	// percent-encoded or a Unicode-folded spelling may draw a different
+	// answer (a 404, a redirect) that must not fill the entry every
+	// visitor of the canonical "/x" reads.
+	if r.URL.RawPath != "" || r.URL.Path != path {
+		return ""
+	}
 	if !rc.Cookies && r.Header.Get("Cookie") != "" {
 		return ""
 	}
@@ -56,12 +64,15 @@ func cacheKey(rc *config.RouteCache, r *http.Request, host, path string) string 
 	return cache.Key("GET", host+"\x00"+strings.ToLower(r.Host), path, query, vals)
 }
 
-// serveCached writes a hit. Conditional requests get 304.
-func (s *Server) serveCached(rw *responseWriter, r *http.Request, st *reqState, e *cache.Entry) {
+// serveCached writes a hit. Conditional requests get 304. The route's
+// response header operations run on the hit as they do on a miss, with
+// this request's values.
+func (s *Server) serveCached(rw *responseWriter, r *http.Request, st *reqState, cr *compiledRoute, e *cache.Entry) {
 	h := rw.Header()
 	for k, vs := range e.Header {
 		h[k] = vs
 	}
+	cr.respOps.apply(h, &tvars{r: r, st: st})
 	now := time.Now()
 	h.Set("Age", strconv.Itoa(e.Age(now)))
 	h.Set("X-Cache", "HIT")

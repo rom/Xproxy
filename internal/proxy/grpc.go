@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -82,6 +83,9 @@ func parseGRPCTimeout(v string) time.Duration {
 		unit = time.Nanosecond
 	default:
 		return 0
+	}
+	if int64(n) > int64(math.MaxInt64)/int64(unit) {
+		return 0 // would overflow: treated as absent, never as a negative deadline
 	}
 	return time.Duration(n) * unit
 }

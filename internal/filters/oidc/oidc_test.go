@@ -141,28 +141,44 @@ func TestSealAcrossRotation(t *testing.T) {
 		return a
 	}
 	oldKey, newKey := newAEAD(1), newAEAD(2)
-	before := &oidcFilter{aead: oldKey}
+	cfg := &Config{Issuer: "https://idp.test", ClientID: "app"}
+	before := &oidcFilter{aead: oldKey, cfg: cfg}
 	sealed, err := before.seal(map[string]string{"sub": "x"}, "session")
 	if err != nil {
 		t.Fatal(err)
 	}
-	after := &oidcFilter{aead: newKey, olderAEADs: []cipher.AEAD{oldKey}}
+	after := &oidcFilter{aead: newKey, olderAEADs: []cipher.AEAD{oldKey}, cfg: cfg}
 	var got map[string]string
 	if err := after.open(sealed, "session", &got); err != nil || got["sub"] != "x" {
 		t.Fatalf("old cookie after rotation: %v %v", err, got)
 	}
-	dropped := &oidcFilter{aead: newKey}
+	dropped := &oidcFilter{aead: newKey, cfg: cfg}
 	if err := dropped.open(sealed, "session", &got); err == nil {
 		t.Fatal("cookie under a dropped key opened")
 	}
 	if err := after.open(sealed, "state", &got); err == nil {
 		t.Fatal("purpose not bound")
 	}
+	// Same key, different provider or client: a session from a lenient
+	// filter must not satisfy a stricter one that shares the secret file.
+	otherIssuer := &oidcFilter{aead: oldKey, cfg: &Config{Issuer: "https://other.test", ClientID: "app"}}
+	if err := otherIssuer.open(sealed, "session", &got); err == nil {
+		t.Fatal("issuer not bound")
+	}
+	otherClient := &oidcFilter{aead: oldKey, cfg: &Config{Issuer: "https://idp.test", ClientID: "app2"}}
+	if err := otherClient.open(sealed, "session", &got); err == nil {
+		t.Fatal("client_id not bound")
+	}
+	// A trailing slash on the issuer is not a different provider.
+	slash := &oidcFilter{aead: oldKey, cfg: &Config{Issuer: "https://idp.test/", ClientID: "app"}}
+	if err := slash.open(sealed, "session", &got); err != nil {
+		t.Fatalf("issuer with trailing slash: %v", err)
+	}
 }
 
 func TestRevocationShared(t *testing.T) {
 	bus := &fakeBus{}
-	f := &oidcFilter{name: "login", cfg: &Config{RevokedMax: 10, ttl: time.Hour}, revoked: map[string]time.Time{}}
+	f := &oidcFilter{name: "login", cfg: &Config{RevokedMax: 10, ttl: time.Hour}, revoked: map[string]time.Time{}, revokedFC: map[string]time.Time{}, issued: map[string]time.Time{}}
 	f.attach(bus)
 	exp := time.Now().Add(time.Hour)
 	f.revokeAndShare("local-sid", exp, true)
@@ -182,7 +198,7 @@ func TestRevocationShared(t *testing.T) {
 		t.Fatal("peer revocation republished")
 	}
 	// Without a bus nothing breaks.
-	g := &oidcFilter{name: "solo", cfg: &Config{RevokedMax: 10, ttl: time.Hour}, revoked: map[string]time.Time{}}
+	g := &oidcFilter{name: "solo", cfg: &Config{RevokedMax: 10, ttl: time.Hour}, revoked: map[string]time.Time{}, revokedFC: map[string]time.Time{}, issued: map[string]time.Time{}}
 	g.attach(nil)
 	g.revokeAndShare("x", exp, true)
 	if !g.isRevoked("x") {
@@ -191,7 +207,7 @@ func TestRevocationShared(t *testing.T) {
 }
 
 func TestRevocation(t *testing.T) {
-	f := &oidcFilter{cfg: &Config{RevokedMax: 3, ttl: time.Hour}, revoked: map[string]time.Time{}}
+	f := &oidcFilter{cfg: &Config{RevokedMax: 3, ttl: time.Hour}, revoked: map[string]time.Time{}, revokedFC: map[string]time.Time{}, issued: map[string]time.Time{}}
 	now := time.Now()
 	f.revoke("a", now.Add(time.Hour), true)
 	f.revoke("b", now.Add(-time.Second), true) // already expired

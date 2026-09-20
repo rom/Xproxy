@@ -84,8 +84,10 @@ routes:
 		t.Fatalf("dir without index: %d", resp.StatusCode)
 	}
 	// Nothing leaves the root or exposes dot files.
+	// Dot-segment forms are refused by the normalization guard (400)
+	// before the static handler; the rest are 404.
 	for _, p := range []string{"/site/.env", "/site/sub/.git/config", "/site/link", "/site/dir-link/secret", "/site/../../etc/passwd", "/site/%2e%2e/%2e%2e/etc/passwd", "/site/missing", "/site/sub/../.env"} {
-		if resp, body := get(t, url+p); resp.StatusCode != 404 || strings.Contains(body, "SECRET") || strings.Contains(body, "outside") {
+		if resp, body := get(t, url+p); (resp.StatusCode != 404 && resp.StatusCode != 400) || strings.Contains(body, "SECRET") || strings.Contains(body, "outside") {
 			t.Fatalf("%s: %d %q", p, resp.StatusCode, body)
 		}
 	}
@@ -124,7 +126,9 @@ routes:
 		t.Fatalf("small file under bound: %d %q", resp.StatusCode, body)
 	}
 	st := s.Stats()
-	if st.StaticServed < 8 || st.StaticNotFound < 8 {
+	// Three of the probes above carried dot segments and were refused by
+	// the normalization guard before the static handler counted them.
+	if st.StaticServed < 8 || st.StaticNotFound < 5 || st.DeniedNormalization < 3 {
 		t.Fatalf("counters %+v", st)
 	}
 	// A vanished root fails the reload, the old generation keeps serving.

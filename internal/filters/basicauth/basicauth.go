@@ -24,6 +24,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rom/xproxy/internal/filter"
@@ -80,9 +81,10 @@ type auth struct {
 	users map[string]string
 	log   *slog.Logger
 
-	mu    sync.Mutex
-	cache map[[32]byte]cacheEntry
-	sem   chan struct{}
+	mu      sync.Mutex
+	cache   map[[32]byte]cacheEntry
+	sem     chan struct{}
+	waiting atomic.Int32 // callers queued on sem
 }
 
 type cacheEntry struct {
@@ -102,7 +104,7 @@ type instance struct {
 
 func (in *instance) Request(r *http.Request) filter.Verdict {
 	user, pass, ok := r.BasicAuth()
-	if !ok || !in.a.check(user, pass) {
+	if !ok || !in.a.check(r.Context(), user, pass) {
 		return filter.Verdict{Deny: true, Status: http.StatusUnauthorized, Reason: in.a.name, Detail: "credentials",
 			Headers: map[string]string{"WWW-Authenticate": `Basic realm="` + in.a.cfg.Realm + `", charset="UTF-8"`}}
 	}
@@ -129,16 +131,10 @@ func (in *instance) End() []any {
 // check verifies credentials, through the cache when enabled. Wrong
 // credentials are cached too so a guessing client pays the hash once per
 // distinct attempt but cannot make the proxy hash on every request.
-func (a *auth) check(user, pass string) bool {
-	hash, known := a.users[user]
-	if !known {
-		// Pay the same hash cost as a wrong password for a known user, so
-		// response time does not reveal which names are in the file.
-		a.sem <- struct{}{}
-		passwd.VerifyDummy(pass)
-		<-a.sem
-		return false
-	}
+func (a *auth) check(ctx context.Context, user, pass string) bool {
+	// The cache is consulted before the user lookup and filled for unknown
+	// names too: a negative entry that existed only for known names would
+	// let a client tell the two apart by repeating a wrong password once.
 	key := sha256.Sum256([]byte(user + "\x00" + pass))
 	now := time.Now()
 	if a.cfg.ttl > 0 {
@@ -149,8 +145,18 @@ func (a *auth) check(user, pass string) bool {
 			return e.ok
 		}
 	}
-	a.sem <- struct{}{}
-	ok := passwd.Verify(hash, pass)
+	hash, known := a.users[user]
+	var ok bool
+	if !passwd.Acquire(ctx, a.sem, &a.waiting) {
+		return false // the client left, or the queue is full: refused, not cached
+	}
+	if known {
+		ok = passwd.Verify(hash, pass)
+	} else {
+		// Pay the same hash cost as a wrong password for a known user, so
+		// response time does not reveal which names are in the file.
+		passwd.VerifyDummy(pass)
+	}
 	<-a.sem
 	if a.cfg.ttl > 0 {
 		a.mu.Lock()

@@ -390,6 +390,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		return v
 	}
 	if tx.IsRequestBodyAccessible() && r.Body != nil && r.Body != http.NoBody {
+		rest := r.Body
 		it, _, err := tx.ReadRequestBodyFrom(r.Body)
 		if err != nil {
 			var mbe *http.MaxBytesError
@@ -405,7 +406,12 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		if err != nil {
 			return filter.Verdict{Deny: true, Status: http.StatusInternalServerError, Reason: "waf", Detail: err.Error()}
 		}
-		r.Body = io.NopCloser(body)
+		// The inspected prefix followed by whatever the engine left unread:
+		// with request_body_limit_action partial the body beyond the limit
+		// is passed through as documented instead of being cut off (which
+		// broke every request over the limit with a 502 or a truncated
+		// upload).
+		r.Body = io.NopCloser(io.MultiReader(body, rest))
 	}
 	if it, err := tx.ProcessRequestBody(); err != nil {
 		return filter.Verdict{Deny: true, Status: http.StatusInternalServerError, Reason: "waf", Detail: err.Error()}

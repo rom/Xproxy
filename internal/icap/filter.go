@@ -37,7 +37,9 @@ type instance struct {
 }
 
 // readBody buffers a body up to the service limit. The second result is
-// true when the body exceeded the limit.
+// true when the body exceeded the limit; the bytes already read are
+// returned with it so a bypass can put them back in front of the rest of
+// the stream instead of forwarding a body that starts in the middle.
 func (in *instance) readBody(rc io.ReadCloser, declared int64) ([]byte, bool, error) {
 	limit := in.f.s.cfg.MaxBody
 	if rc == nil || rc == http.NoBody {
@@ -51,9 +53,21 @@ func (in *instance) readBody(rc io.ReadCloser, declared int64) ([]byte, bool, er
 		return nil, false, err
 	}
 	if int64(len(b)) > limit {
-		return nil, true, nil
+		return b, true, nil
 	}
 	return b, false, nil
+}
+
+// restore puts the bytes readBody consumed back in front of the rest of
+// the stream.
+func restore(consumed []byte, rest io.ReadCloser) io.ReadCloser {
+	if len(consumed) == 0 {
+		return rest
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(consumed), rest), rest}
 }
 
 func (in *instance) failure(err error, phase string) filter.Verdict {
@@ -91,6 +105,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 			return filter.Verdict{Deny: true, Status: http.StatusBadRequest, Reason: "icap", Detail: "reading request body"}
 		}
 		if over {
+			r.Body = restore(b, r.Body)
 			return in.overLimit("request")
 		}
 		body = b
@@ -143,8 +158,9 @@ func (in *instance) Response(resp *http.Response) filter.Verdict {
 		return filter.Verdict{Deny: true, Status: http.StatusBadGateway, Reason: "icap", Detail: "reading response body"}
 	}
 	if over {
-		// The bytes were not consumed when the declared length was over the
-		// limit; otherwise the body is gone and the choice was made above.
+		// A declared length over the limit consumed nothing; a chunked body
+		// was read up to the limit and is put back for the client.
+		resp.Body = restore(body, resp.Body)
 		return in.overLimit("response")
 	}
 	v, err := in.f.s.Respmod(in.ctx, in.req, resp, body)

@@ -33,6 +33,9 @@ routes:
 		`"https://*.*.example.com"`: "",
 		`"https://*."`:              "",
 		`"https://*.example.com/x"`: "",
+		`"https://*.com"`:           ", allow_credentials: true", // a public suffix: every .com site
+		`"https://*.co.uk"`:         "",
+		`"https://*.example..com"`:  "",
 		`"*"`:                       ", allow_credentials: true",
 	}
 	for o, extra := range bad {

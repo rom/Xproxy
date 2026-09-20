@@ -184,6 +184,11 @@ type compiledOps struct {
 	remove []string
 	set    []headerOp
 	add    []headerOp
+	// strip names the headers whose templates carry client certificate
+	// fields; a client supplied copy is removed before the operations run,
+	// whether or not `when` admits them, so a request without a
+	// certificate cannot present its own identity value.
+	strip  []string
 	static bool
 	when   *expr.Expr // nil applies always
 }
@@ -206,6 +211,9 @@ func compileOps(h config.HeaderOps, captures []string) (compiledOps, error) {
 		}
 		out.set = append(out.set, headerOp{name: k, t: t})
 		out.static = out.static && t.Static()
+		if usesCert(t) {
+			out.strip = append(out.strip, k)
+		}
 	}
 	for k, v := range h.Add {
 		t, err := tmpl.Parse(v, captures...)
@@ -214,13 +222,29 @@ func compileOps(h config.HeaderOps, captures []string) (compiledOps, error) {
 		}
 		out.add = append(out.add, headerOp{name: k, t: t})
 		out.static = out.static && t.Static()
+		if usesCert(t) {
+			out.strip = append(out.strip, k)
+		}
 	}
 	return out, nil
+}
+
+// usesCert reports whether t references a ${cert:...} field.
+func usesCert(t *tmpl.Template) bool {
+	for _, n := range t.Names() {
+		if n == "cert" {
+			return true
+		}
+	}
+	return false
 }
 
 // apply performs the operations on h with v for the templates (nil v
 // renders variables empty).
 func (o *compiledOps) apply(h http.Header, v *tvars) {
+	for _, k := range o.strip {
+		h.Del(k)
+	}
 	if o.when != nil {
 		if v == nil || !o.when.Eval(v) {
 			return

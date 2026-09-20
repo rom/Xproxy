@@ -112,7 +112,11 @@ type Validator struct {
 type zoneState struct {
 	keys     []dnskey // trusted zone keys (empty when insecure)
 	insecure bool
-	expires  time.Time
+	// inside marks a name the parent proved is not a zone cut: it lives
+	// inside the parent zone (keys are the parent's) and can never be an
+	// RRSIG signer.
+	inside  bool
+	expires time.Time
 }
 
 type dnskey struct {
@@ -202,8 +206,14 @@ func (v *Validator) validate(ctx context.Context, m *Message) Result {
 	q := m.Question
 	answer := groupRRsets(m.Answer)
 	authority := groupRRsets(m.Authority)
-	// Positive answer: every RRset must verify.
+	// Positive answer: every RRset must verify, and the answer must hold
+	// data for the question itself (the name and type asked, or a CNAME
+	// or DNAME chain leading from it): signed records of some other name
+	// prove nothing about this one.
 	if len(answer) > 0 && rcode == RcodeNoError {
+		if !answersQuestion(answer, q) {
+			return Bogus
+		}
 		worst := Secure
 		for _, set := range answer {
 			if set.Type == TypeRRSIG || len(set.RRs) == 0 {
@@ -241,6 +251,12 @@ func (v *Validator) validate(ctx context.Context, m *Message) Result {
 		return v.zoneSecurityOf(w, q.Name)
 	}
 	zone := soa.Name
+	// The denial must come from the zone the name lives in: a signed SOA
+	// and NSEC records of some unrelated zone would otherwise "prove" any
+	// name absent.
+	if !isSubdomain(q.Name, zone) {
+		return Bogus
+	}
 	if r := v.verifyRRset(w, soa, nil); r != Secure {
 		return r
 	}
@@ -260,7 +276,7 @@ func (v *Validator) validate(ctx context.Context, m *Message) Result {
 			if nsecNameError(nsecs, q.Name, zone) {
 				return Secure
 			}
-		} else if nsecNoData(nsecs, q.Name, q.Type) {
+		} else if nsecNoData(nsecs, q.Name, q.Type, zone) {
 			return Secure
 		}
 	case len(nsec3s) > 0:
@@ -297,8 +313,8 @@ func (v *Validator) verifyRRset(w *work, set *RRset, authority []*RRset) Result 
 			continue
 		}
 		st := v.zoneKeys(w, s.signer)
-		if st == nil {
-			return Bogus
+		if st == nil || st.inside {
+			return Bogus // no chain to the signer, or the signer is not a zone apex
 		}
 		if st.insecure {
 			return Insecure
@@ -434,6 +450,10 @@ func (v *Validator) buildZone(w *work, zone string, depth int) *zoneState {
 		switch v.verifyNegativeDS(negative, zone, parent, pst) {
 		case Insecure:
 			return &zoneState{insecure: true, expires: exp}
+		case Secure:
+			// Proven not to be a zone cut: the name is inside the parent
+			// and inherits its state, so a walk down through it continues.
+			return &zoneState{keys: pst.keys, inside: true, expires: exp}
 		default:
 			return nil
 		}
@@ -592,11 +612,12 @@ func (v *Validator) verifyNegativeDS(m *Message, zone, parent string, pst *zoneS
 		return Bogus
 	}
 	if len(nsecs) > 0 {
-		// The NSEC matching the delegation must have NS but not DS, or
-		// the NSEC must prove the name does not exist as a cut.
+		// The NSEC matching the delegation must have NS but not DS
+		// (Insecure); an NSEC matching a name without NS proves the name
+		// is not a zone cut at all (Secure: still inside the parent).
 		for _, set := range nsecs {
 			for _, rr := range set.RRs {
-				if set.Name == zone {
+				if set.Name == zone && isSubdomain(zone, parent) {
 					has := nsecTypes(rr.Data)
 					if has[TypeDS] {
 						return Bogus
@@ -604,7 +625,7 @@ func (v *Validator) verifyNegativeDS(m *Message, zone, parent string, pst *zoneS
 					if has[TypeNS] && !has[TypeSOA] {
 						return Insecure
 					}
-					return Bogus // not a delegation point: name is inside the parent
+					return Secure
 				}
 			}
 		}
@@ -613,11 +634,53 @@ func (v *Validator) verifyNegativeDS(m *Message, zone, parent string, pst *zoneS
 		}
 		return Bogus
 	}
+	// NSEC3: only an explicit Insecure (a delegation without DS, or an
+	// opt-out span) makes the cut insecure. A plain NODATA match means the
+	// name is not a delegation, so no DS can be asked for and nothing
+	// below it is insecure; mapping that to Insecure let an upstream turn
+	// validation off for any host name in an NSEC3 zone.
 	switch nsec3Denial(nsec3s, zone, TypeDS, parent, false) {
-	case Secure, Insecure:
+	case Insecure:
 		return Insecure
+	case Secure:
+		return Secure
 	}
 	return Bogus
+}
+
+// answersQuestion reports whether the answer section holds data for the
+// question: an RRset at the query name of the query type or a CNAME, a
+// DNAME at an ancestor, or records reached through the CNAME chain that
+// starts at the query name.
+func answersQuestion(answer []*RRset, q Question) bool {
+	found := false
+	reach := map[string]bool{q.Name: true}
+	// CNAME chains are short; a few passes resolve any order.
+	for pass := 0; pass < 4; pass++ {
+		for _, set := range answer {
+			if set.Type == TypeRRSIG || len(set.RRs) == 0 {
+				continue
+			}
+			if set.Type == TypeDNAME && isSubdomain(q.Name, set.Name) && set.Name != q.Name {
+				found = true
+				continue
+			}
+			if !reach[set.Name] {
+				continue
+			}
+			if set.Type == q.Type || set.Type == TypeCNAME {
+				found = true
+			}
+			if set.Type == TypeCNAME {
+				for _, rr := range set.RRs {
+					if target, _, err := readNameCase(rr.Data, 0, false); err == nil {
+						reach[target] = true
+					}
+				}
+			}
+		}
+	}
+	return found
 }
 
 // lookup asks the upstream for name/type with DO set.
@@ -975,14 +1038,32 @@ func nsecCovers(owner, next, name string) bool {
 	return canonicalCompare(name, owner) > 0 && canonicalCompare(name, next) < 0
 }
 
+// nsecUsable reports whether an NSEC at owner may prove anything about
+// name in zone (RFC 4035 5.4, RFC 6840 4.1): the record and its next name
+// must belong to the zone, and an NSEC of a delegation (NS without SOA)
+// at an ancestor of name is the parent side of a cut and says nothing
+// about names below it.
+func nsecUsable(owner, next string, types map[uint16]bool, name, zone string) bool {
+	if !isSubdomain(owner, zone) || !isSubdomain(next, zone) {
+		return false
+	}
+	if types[TypeNS] && !types[TypeSOA] && owner != name && isSubdomain(name, owner) {
+		return false
+	}
+	return true
+}
+
 // nsecNameError checks an NXDOMAIN proof: an NSEC covering the name and
-// one covering the wildcard at the closest encloser.
+// one covering the wildcard at the closest encloser, both from zone.
 func nsecNameError(sets []*RRset, name, zone string) bool {
 	covered, wildcard := false, false
 	var encloser string
 	for _, set := range sets {
 		for _, rr := range set.RRs {
 			next := nsecNext(rr.Data)
+			if !nsecUsable(set.Name, next, nsecTypes(rr.Data), name, zone) {
+				continue
+			}
 			if nsecCovers(set.Name, next, name) {
 				covered = true
 				// Closest encloser: the longest common ancestor of the
@@ -1001,24 +1082,38 @@ func nsecNameError(sets []*RRset, name, zone string) bool {
 	if encloser == "" {
 		wc = "*"
 	}
+	if !isSubdomain(encloser, zone) {
+		return false
+	}
 	for _, set := range sets {
 		for _, rr := range set.RRs {
-			if nsecCovers(set.Name, nsecNext(rr.Data), wc) || set.Name == wc {
+			next := nsecNext(rr.Data)
+			if !nsecUsable(set.Name, next, nsecTypes(rr.Data), wc, zone) {
+				continue
+			}
+			if nsecCovers(set.Name, next, wc) || set.Name == wc {
 				wildcard = true
 			}
 		}
 	}
-	_ = zone
 	return wildcard
 }
 
 // nsecNoData checks a NODATA proof: an NSEC at the name without the type
-// (and not a CNAME); or a wildcard NSEC matching without the type.
-func nsecNoData(sets []*RRset, name string, typ uint16) bool {
+// (and not a CNAME); or a wildcard NSEC matching without the type. Both
+// must belong to zone, and an NSEC of a delegation proves NODATA only for
+// DS (any other type lives in the child zone).
+func nsecNoData(sets []*RRset, name string, typ uint16, zone string) bool {
 	for _, set := range sets {
 		for _, rr := range set.RRs {
 			if set.Name == name || (strings.HasPrefix(set.Name, "*.") && isSubdomain(name, set.Name[2:])) {
 				types := nsecTypes(rr.Data)
+				if !nsecUsable(set.Name, nsecNext(rr.Data), types, name, zone) {
+					continue
+				}
+				if types[TypeNS] && !types[TypeSOA] && typ != TypeDS {
+					continue
+				}
 				if !types[typ] && !types[TypeCNAME] {
 					return true
 				}
@@ -1181,13 +1276,19 @@ func nsec3Denial(sets []*RRset, name string, typ uint16, zone string, nxdomain b
 	if err != nil || nsec3Hash(name, params) == nil {
 		return Insecure // unsupported parameters: treat as insecure (RFC 5155 8.1)
 	}
+	if !isSubdomain(name, zone) {
+		return Bogus
+	}
 	if !nxdomain {
 		h := nsec3Hash(name, params)
 		for _, set := range sets {
 			if p := nsec3Matches(set, h, zone); p != nil {
 				if !p.types[typ] && !p.types[TypeCNAME] {
-					if typ == TypeDS && p.types[TypeNS] && !p.types[TypeSOA] {
-						return Insecure // a delegation without DS
+					if p.types[TypeNS] && !p.types[TypeSOA] {
+						if typ == TypeDS {
+							return Insecure // a delegation without DS
+						}
+						return Bogus // the parent side of a cut answers only for DS
 					}
 					return Secure
 				}
@@ -1221,6 +1322,11 @@ func nsec3Denial(sets []*RRset, name string, typ uint16, zone string, nxdomain b
 		}
 		if match == nil {
 			continue
+		}
+		if match.types[TypeNS] && !match.types[TypeSOA] {
+			// The closest encloser is a delegation: the name lives in the
+			// child zone and this zone cannot deny it (RFC 5155 8.3).
+			return Bogus
 		}
 		nextCloser := strings.Join(labels[i-1:], ".")
 		nch := nsec3Hash(nextCloser, params)

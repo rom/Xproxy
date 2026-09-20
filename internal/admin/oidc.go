@@ -325,6 +325,10 @@ func (s *Server) oidcFinish(w http.ResponseWriter, r *http.Request) {
 		fail("nonce")
 		return
 	}
+	if err := jwt.CheckAuthorizedParty(claims, l.o.ClientID); err != nil {
+		fail("azp", "err", err.Error())
+		return
+	}
 	user := ""
 	for _, c := range []string{l.o.UserClaim, "preferred_username", "sub"} {
 		if v, ok := claims[c].(string); ok && v != "" {
@@ -358,7 +362,9 @@ func (l *oidcLogin) role(claims jwt.Claims) (Role, bool) {
 	var values []string
 	switch v := claims[l.o.RoleClaim].(type) {
 	case string:
-		values = strings.Fields(strings.ReplaceAll(v, ",", " "))
+		// A string claim is one value; splitting it on separators would let
+		// "foo admins" satisfy an entry "admins".
+		values = []string{v}
 	case []any:
 		for _, x := range v {
 			if s, ok := x.(string); ok {

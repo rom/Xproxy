@@ -541,6 +541,12 @@ type Normalization struct {
 	// RejectBackslashes refuses a backslash anywhere in the decoded path,
 	// which some servers read as a separator. Default false.
 	RejectBackslashes bool `yaml:"reject_backslashes"`
+	// RejectDotSegments refuses a "." or ".." segment in the decoded path
+	// (including the "..;" form servlet containers resolve). Routing
+	// resolves dot segments while the upstream receives the path as sent,
+	// so "/static/../admin" would be routed as "/admin" but reach the
+	// origin unchanged; browsers never send such paths. Default true.
+	RejectDotSegments *bool `yaml:"reject_dot_segments"`
 	// RejectAmbiguousFraming refuses HTTP/1 requests whose framing is
 	// ambiguous: both Transfer-Encoding and Content-Length, several
 	// differing Content-Length values, or a transfer coding other than
@@ -565,6 +571,11 @@ func (n *Normalization) InvalidUTF8() bool { return n.RejectInvalidUTF8 == nil |
 // AmbiguousFraming reports the setting with its default.
 func (n *Normalization) AmbiguousFraming() bool {
 	return n.RejectAmbiguousFraming == nil || *n.RejectAmbiguousFraming
+}
+
+// DotSegments reports the setting with its default.
+func (n *Normalization) DotSegments() bool {
+	return n.RejectDotSegments == nil || *n.RejectDotSegments
 }
 
 // Limits are the global resource protections of the data plane. Every limit

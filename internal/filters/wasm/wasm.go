@@ -142,6 +142,7 @@ type wasmFilter struct {
 	compiled wazero.CompiledModule
 	hasResp  bool
 	pool     chan api.Module
+	slots    chan struct{} // one per allowed concurrent call (cfg.Instances)
 	closed   atomic.Bool
 
 	Calls, Denies, Errors, Timeouts atomic.Uint64
@@ -237,7 +238,7 @@ func newFilter(ctx context.Context, name string, c *Config, log *slog.Logger) (*
 	rc = rc.WithMemoryLimitPages(uint32(c.MemoryLimitPages)).WithCloseOnContextDone(true) //nolint:gosec // validated range
 	rt := wazero.NewRuntimeWithConfig(ctx, rc)
 	log.Info("wasm engine", "engine", engine, "module", c.Module)
-	f := &wasmFilter{name: name, cfg: c, log: log, rt: rt, pool: make(chan api.Module, c.Instances)}
+	f := &wasmFilter{name: name, cfg: c, log: log, rt: rt, pool: make(chan api.Module, c.Instances), slots: make(chan struct{}, c.Instances)}
 	if err := f.hostModule(ctx); err != nil {
 		_ = rt.Close(ctx)
 		return nil, err
@@ -646,6 +647,16 @@ func (f *wasmFilter) run(c *call, export string, args ...uint64) (int32, error) 
 	f.Calls.Add(1)
 	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), callKey{}, c), f.cfg.timeout)
 	defer cancel()
+	// instances is a concurrency bound, not only a pool size: a request
+	// beyond it waits for a slot within the call timeout instead of
+	// instantiating one more module (each with its own linear memory).
+	select {
+	case f.slots <- struct{}{}:
+		defer func() { <-f.slots }()
+	case <-ctx.Done():
+		f.Timeouts.Add(1)
+		return 0, fmt.Errorf("no instance free within %s", f.cfg.timeout)
+	}
 	m, err := f.acquire(ctx)
 	if err != nil {
 		f.Errors.Add(1)

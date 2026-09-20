@@ -2075,6 +2075,10 @@
           "description": "RejectControlChars refuses a decoded path or query containing a control character (below 0x20, or 0x7f), NUL included. Default true.",
           "type": "boolean"
         },
+        "reject_dot_segments": {
+          "description": "RejectDotSegments refuses a \".\" or \"..\" segment in the decoded path (including the \"..;\" form servlet containers resolve). Routing resolves dot segments while the upstream receives the path as sent, so \"/static/../admin\" would be routed as \"/admin\" but reach the origin unchanged; browsers never send such paths. Default true.",
+          "type": "boolean"
+        },
         "reject_double_encoding": {
           "description": "RejectDoubleEncoding refuses a path that still contains a percent escape after one decoding (%252e%252e). Default false.",
           "type": "boolean"

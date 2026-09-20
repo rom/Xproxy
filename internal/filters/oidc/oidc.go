@@ -40,6 +40,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/jwt"
@@ -212,10 +213,18 @@ type oidcFilter struct {
 	discTried time.Time
 	verifier  atomic.Pointer[jwt.Provider]
 
-	// revoked holds provider session ids ended by front channel logout
-	// until the sessions that carry them would have expired anyway.
+	// revoked holds provider session ids ended by logout until the
+	// sessions that carry them would have expired anyway. Entries an
+	// authenticated owner made (or a front channel call for a sid this
+	// node issued a session for) live in revoked; unauthenticated ones
+	// (front channel calls for unknown sids, peer events) live in
+	// revokedFC, so a flood of made-up sids can neither evict nor block a
+	// real logout. issued remembers the sids of sessions this node created.
 	revokedMu sync.Mutex
 	revoked   map[string]time.Time
+	revokedFC map[string]time.Time
+	issued    map[string]time.Time
+	fcFull    bound.Notice
 	// events shares revocations with cluster peers; nil when absent.
 	events filter.Events
 
@@ -258,7 +267,7 @@ func newFilter(name string, c *Config, log *slog.Logger) (*oidcFilter, error) {
 		}
 		tc.RootCAs = pool
 	}
-	f := &oidcFilter{name: name, cfg: c, log: log, secret: []byte(strings.TrimSpace(string(clientSecret))), aead: aead, olderAEADs: aeads[1:], revoked: map[string]time.Time{},
+	f := &oidcFilter{name: name, cfg: c, log: log, secret: []byte(strings.TrimSpace(string(clientSecret))), aead: aead, olderAEADs: aeads[1:], revoked: map[string]time.Time{}, revokedFC: map[string]time.Time{}, issued: map[string]time.Time{},
 		client: &http.Client{
 			Timeout:       10 * time.Second,
 			Transport:     &http.Transport{TLSClientConfig: tc, Proxy: nil, MaxIdleConns: 4, ResponseHeaderTimeout: 5 * time.Second, DisableCompression: true},
@@ -285,6 +294,11 @@ func (f *oidcFilter) discover(ctx context.Context) (*discovery, error) {
 		return nil, errors.New("provider metadata unavailable")
 	}
 	f.discTried = time.Now()
+	// Detached from the request: the fetch is shared by every caller of
+	// the next ten seconds, so the client that happened to trigger it must
+	// not be able to cancel it for all of them by hanging up.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(f.cfg.Issuer, "/")+"/.well-known/openid-configuration", http.NoBody)
 	if err != nil {
 		return nil, err
@@ -387,41 +401,69 @@ func (f *oidcFilter) revokeAndShare(sid string, exp time.Time, evict bool) {
 	}
 }
 
-// revoke records a provider session id until exp; the index is bounded
-// and swept on insert. When the index is full of live entries, an
-// unauthenticated revocation (front channel, peer event) is dropped
-// rather than allowed to evict a real one: otherwise a flood of made-up
-// sids would undo every genuine logout.
+// revoke records a provider session id until exp. evict marks a
+// revocation the authenticated owner made; a front channel call or a peer
+// event for a sid this node issued a session for counts the same, since
+// the provider (or a peer) can only name that sid because the login
+// happened. Those go to the owner index, which drops its soonest-expiring
+// entry when full. Anything else goes to the unauthenticated index, whose
+// overflow is dropped: a flood of made-up sids fills only that table and
+// can neither evict nor block a genuine logout.
 func (f *oidcFilter) revoke(sid string, exp time.Time, evict bool) {
 	f.revokedMu.Lock()
 	defer f.revokedMu.Unlock()
 	now := time.Now()
-	if len(f.revoked) >= f.cfg.RevokedMax {
-		for k, e := range f.revoked {
+	if !evict {
+		if iss, ok := f.issued[sid]; ok && now.Before(iss) {
+			evict = true
+		}
+	}
+	if evict {
+		insertBounded(f.revoked, sid, exp, f.cfg.RevokedMax, now, true)
+		return
+	}
+	if !insertBounded(f.revokedFC, sid, exp, f.cfg.RevokedMax, now, false) {
+		f.fcFull.Hit(f.log, "oidc revocation index full; unauthenticated revocation dropped", "table", "oidc_revoked_fc", "max", f.cfg.RevokedMax)
+	}
+}
+
+// insertBounded puts sid into m, sweeping expired entries when full and,
+// with evict, dropping the soonest to expire; it reports whether the
+// entry was stored.
+func insertBounded(m map[string]time.Time, sid string, exp time.Time, limit int, now time.Time, evict bool) bool {
+	if len(m) >= limit {
+		for k, e := range m {
 			if now.After(e) {
-				delete(f.revoked, k)
+				delete(m, k)
 			}
 		}
-		if len(f.revoked) >= f.cfg.RevokedMax {
+		if len(m) >= limit {
 			if !evict {
-				if f.log != nil {
-					f.log.Warn("oidc revocation index full; unauthenticated revocation dropped", "max", f.cfg.RevokedMax)
-				}
-				return
+				return false
 			}
-			// Full of live entries: drop the soonest to expire rather
-			// than refuse the owner's logout.
 			var oldest string
 			var oldestExp time.Time
-			for k, e := range f.revoked {
+			for k, e := range m {
 				if oldest == "" || e.Before(oldestExp) {
 					oldest, oldestExp = k, e
 				}
 			}
-			delete(f.revoked, oldest)
+			delete(m, oldest)
 		}
 	}
-	f.revoked[sid] = exp
+	m[sid] = exp
+	return true
+}
+
+// noteIssued remembers that this node created a session carrying sid, so
+// a later front channel logout for it is trusted like the owner's own.
+func (f *oidcFilter) noteIssued(sid string, exp time.Time) {
+	if sid == "" {
+		return
+	}
+	f.revokedMu.Lock()
+	insertBounded(f.issued, sid, exp, f.cfg.RevokedMax, time.Now(), true)
+	f.revokedMu.Unlock()
 }
 
 func (f *oidcFilter) isRevoked(sid string) bool {
@@ -430,21 +472,23 @@ func (f *oidcFilter) isRevoked(sid string) bool {
 	}
 	f.revokedMu.Lock()
 	defer f.revokedMu.Unlock()
-	exp, ok := f.revoked[sid]
-	if !ok {
-		return false
+	now := time.Now()
+	for _, m := range []map[string]time.Time{f.revoked, f.revokedFC} {
+		if exp, ok := m[sid]; ok {
+			if now.After(exp) {
+				delete(m, sid)
+				continue
+			}
+			return true
+		}
 	}
-	if time.Now().After(exp) {
-		delete(f.revoked, sid)
-		return false
-	}
-	return true
+	return false
 }
 
 func (f *oidcFilter) revokedCount() int {
 	f.revokedMu.Lock()
 	defer f.revokedMu.Unlock()
-	return len(f.revoked)
+	return len(f.revoked) + len(f.revokedFC)
 }
 
 // loginState is the short lived state cookie of a login in progress.
@@ -635,6 +679,10 @@ func (f *oidcFilter) callback(r *http.Request, in *instance) filter.Verdict {
 	if n, _ := claims["nonce"].(string); n != ls.Nonce {
 		return fail(http.StatusUnauthorized, "nonce")
 	}
+	if err := jwt.CheckAuthorizedParty(claims, f.cfg.ClientID); err != nil {
+		f.log.Warn("oidc id token rejected", "err", err.Error())
+		return fail(http.StatusUnauthorized, "azp")
+	}
 	for claim, want := range f.cfg.RequireClaims {
 		if got, ok := claims[claim]; !ok || claimString(got) != want {
 			f.log.Warn("oidc claim requirement not met", "claim", claim, "sub", claims["sub"])
@@ -659,6 +707,7 @@ func (f *oidcFilter) callback(r *http.Request, in *instance) filter.Verdict {
 	if err != nil || len(sealed) > maxCookie {
 		return fail(http.StatusInternalServerError, "session_size")
 	}
+	f.noteIssued(sid, time.Unix(s.Exp, 0))
 	in.user = sub
 	secure := f.secure(r, in.info)
 	resp := &http.Response{StatusCode: http.StatusFound, Header: http.Header{}}
@@ -770,8 +819,16 @@ func (f *oidcFilter) stripCookies(r *http.Request) {
 	}
 }
 
-// seal encrypts v with the cookie key; purpose binds the ciphertext to
-// its use so a state cookie can never be replayed as a session.
+// aad is the additional data every cookie is sealed under: the purpose
+// (a state cookie can never be replayed as a session) and the issuer and
+// client id, so two oidc filters that share a cookie_secret_file cannot
+// open each other's sessions and a login through a lenient provider does
+// not satisfy a stricter one.
+func (f *oidcFilter) aad(purpose string) []byte {
+	return []byte(purpose + "\x00" + strings.TrimSuffix(f.cfg.Issuer, "/") + "\x00" + f.cfg.ClientID)
+}
+
+// seal encrypts v with the cookie key under aad(purpose).
 func (f *oidcFilter) seal(v any, purpose string) (string, error) {
 	plain, err := json.Marshal(v)
 	if err != nil {
@@ -781,7 +838,7 @@ func (f *oidcFilter) seal(v any, purpose string) (string, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
-	out := f.aead.Seal(nonce, nonce, plain, []byte(purpose))
+	out := f.aead.Seal(nonce, nonce, plain, f.aad(purpose))
 	return base64.RawURLEncoding.EncodeToString(out), nil
 }
 
@@ -791,14 +848,15 @@ func (f *oidcFilter) open(s, purpose string, v any) error {
 		return errors.New("bad cookie")
 	}
 	ns := f.aead.NonceSize()
-	plain, err := f.aead.Open(nil, raw[:ns], raw[ns:], []byte(purpose))
+	aad := f.aad(purpose)
+	plain, err := f.aead.Open(nil, raw[:ns], raw[ns:], aad)
 	for _, a := range f.olderAEADs {
 		if err == nil {
 			break
 		}
 		// Sealed under a key that was since rotated out of the primary
 		// slot: still valid until the operator drops it from the ring.
-		plain, err = a.Open(nil, raw[:ns], raw[ns:], []byte(purpose))
+		plain, err = a.Open(nil, raw[:ns], raw[ns:], aad)
 	}
 	if err != nil {
 		return err

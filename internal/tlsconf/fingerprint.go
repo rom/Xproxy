@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // Fingerprint is what the ClientHello says about the client software,
@@ -148,56 +147,4 @@ func Compute(h *tls.ClientHelloInfo, quic bool) Fingerprint {
 	}
 	fp.JA4 = fmt.Sprintf("%s%s%s%02d%02d%s_%s_%s", proto, ver, sni, min(len(ciphers), 99), min(len(exts), 99), alpn, hash12(sortedHex(ciphers)), hash12(extPart))
 	return fp
-}
-
-// FingerprintTable remembers the fingerprint of open connections by
-// remote address so the request handler can look it up. It is bounded;
-// entries are removed when the connection closes and evicted in FIFO
-// order under pressure.
-type FingerprintTable struct {
-	mu    sync.Mutex
-	by    map[string]Fingerprint
-	order []string
-	max   int
-}
-
-// NewFingerprintTable creates a table bounded to max entries.
-func NewFingerprintTable(max int) *FingerprintTable {
-	return &FingerprintTable{by: make(map[string]Fingerprint, 1024), max: max}
-}
-
-// Put records the fingerprint of a connection.
-func (t *FingerprintTable) Put(remote string, fp Fingerprint) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if _, ok := t.by[remote]; !ok {
-		if len(t.by) >= t.max && len(t.order) > 0 {
-			delete(t.by, t.order[0])
-			t.order = t.order[1:]
-		}
-		t.order = append(t.order, remote)
-	}
-	t.by[remote] = fp
-}
-
-// Get returns the fingerprint of a connection.
-func (t *FingerprintTable) Get(remote string) (Fingerprint, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	fp, ok := t.by[remote]
-	return fp, ok
-}
-
-// Delete forgets a closed connection.
-func (t *FingerprintTable) Delete(remote string) {
-	t.mu.Lock()
-	delete(t.by, remote)
-	t.mu.Unlock()
-}
-
-// Len returns the number of tracked connections.
-func (t *FingerprintTable) Len() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return len(t.by)
 }
