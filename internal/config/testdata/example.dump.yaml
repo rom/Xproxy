@@ -764,6 +764,7 @@ cluster:
     max_keys_per_report: 4096
     exact_timeout: 50ms
 virtual_patches: []
+security_txt: []
 fleet: null
 api_inventory: null
 shedding:

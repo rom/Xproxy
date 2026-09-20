@@ -31,6 +31,7 @@ type Stats struct {
 	DeniedConcurrency   atomic.Uint64
 	DeniedBodySize      atomic.Uint64
 	DeniedBodyBudget    atomic.Uint64
+	SecurityTxt         atomic.Uint64
 	DeniedURILength     atomic.Uint64
 	DeniedNoRoute       atomic.Uint64
 	DeniedWebSocket     atomic.Uint64
@@ -115,6 +116,8 @@ type Snapshot struct {
 	DeniedConcurrency uint64    `json:"denied_concurrency"`
 	DeniedBodySize    uint64    `json:"denied_body_size"`
 	DeniedBodyBudget  uint64    `json:"denied_body_budget"`
+	// SecurityTxt counts requests answered with a virtual security.txt.
+	SecurityTxt uint64 `json:"security_txt"`
 	// BufferedBody is the process-wide buffered-body budget.
 	BufferedBody          bodybudget.Stats `json:"buffered_body"`
 	DeniedURILength       uint64           `json:"denied_uri_length"`
@@ -231,6 +234,7 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedConcurrency:     s.DeniedConcurrency.Load(),
 		DeniedBodySize:        s.DeniedBodySize.Load(),
 		DeniedBodyBudget:      s.DeniedBodyBudget.Load(),
+		SecurityTxt:           s.SecurityTxt.Load(),
 		DeniedURILength:       s.DeniedURILength.Load(),
 		DeniedNoRoute:         s.DeniedNoRoute.Load(),
 		DeniedWebSocket:       s.DeniedWebSocket.Load(),

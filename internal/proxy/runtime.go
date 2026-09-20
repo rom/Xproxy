@@ -24,6 +24,7 @@ import (
 	"github.com/rom/xproxy/internal/originsig"
 	"github.com/rom/xproxy/internal/router"
 	"github.com/rom/xproxy/internal/secret"
+	"github.com/rom/xproxy/internal/securitytxt"
 	"github.com/rom/xproxy/internal/shed"
 	"github.com/rom/xproxy/internal/upstream"
 	"github.com/rom/xproxy/internal/waf"
@@ -40,12 +41,19 @@ type runtime struct {
 	// patchBuffersBody is set when any virtual patch matches on a body,
 	// which every request on every route then pays for.
 	patchBuffersBody bool
-	router           *router.Router
-	pools            map[string]*upstream.Pool
-	rateLimits       map[string]*rateLimit
-	trusted          []netip.Prefix
-	routes           []*compiledRoute
-	waf              *waf.Engine
+	// inFlight counts requests being served by this generation, so a
+	// reload can tear it down when the last one ends rather than after
+	// a fixed wait.
+	inFlight atomic.Int64
+	// securityTxt answers /.well-known/security.txt before routing, or
+	// is nil when the configuration has no entry.
+	securityTxt *securitytxt.Set
+	router      *router.Router
+	pools       map[string]*upstream.Pool
+	rateLimits  map[string]*rateLimit
+	trusted     []netip.Prefix
+	routes      []*compiledRoute
+	waf         *waf.Engine
 	// signers sign forwarded requests per upstream (origin_signature).
 	signers     map[string]*originsig.Signer
 	jwt         map[string]*jwt.Provider
@@ -254,6 +262,14 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 			rt.patchBuffersBody = true
 			break
 		}
+	}
+	if len(cfg.SecurityTxt) > 0 {
+		set, err := securityTxtSet(cfg)
+		if err != nil {
+			rt.stop()
+			return nil, err
+		}
+		rt.securityTxt = set
 	}
 	if cfg.Maintenance != nil {
 		rt.maintenance = newMaintenance(cfg.Maintenance)
@@ -652,9 +668,11 @@ func (rt *runtime) stopChecks() {
 	}
 }
 
+// stop releases the generation once its requests have drained (or the
+// hard cap passed).
 func (rt *runtime) stop() {
 	for _, p := range rt.pools {
-		p.Stop()
+		p.Close()
 	}
 	for _, p := range rt.jwt {
 		p.Stop()
@@ -690,4 +708,22 @@ func (rt *runtime) filterStatus() []FilterStatus {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// securityTxtSet compiles the virtual security.txt entries, reading a
+// body_file so a reload picks up an edited or re-signed document.
+func securityTxtSet(cfg *config.Config) (*securitytxt.Set, error) {
+	entries := make([]config.SecurityTxt, len(cfg.SecurityTxt))
+	copy(entries, cfg.SecurityTxt)
+	for i := range entries {
+		if entries[i].BodyFile == "" {
+			continue
+		}
+		b, err := readBounded(entries[i].BodyFile, 64<<10)
+		if err != nil {
+			return nil, fmt.Errorf("security_txt[%d] body_file: %w", i, err)
+		}
+		entries[i].Body, entries[i].BodyFile = string(b), ""
+	}
+	return securitytxt.New(entries, time.Now())
 }

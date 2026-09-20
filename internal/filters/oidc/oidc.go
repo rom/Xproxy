@@ -44,6 +44,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/jwt"
+	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/secret"
 )
 
@@ -208,6 +209,13 @@ type oidcFilter struct {
 	olderAEADs []cipher.AEAD
 	client     *http.Client
 
+	// logoutRate bounds front-channel logout requests per client
+	// address. The endpoint is cross site and unauthenticated by
+	// design — it carries a provider session id and nothing else — so
+	// anything on the internet can drive it, and each call writes the
+	// revocation index every session lookup reads.
+	logoutRate *limits.KeyedLimiter
+
 	discMu    sync.Mutex
 	disc      atomic.Pointer[discovery]
 	discTried time.Time
@@ -268,6 +276,7 @@ func newFilter(name string, c *Config, log *slog.Logger) (*oidcFilter, error) {
 		tc.RootCAs = pool
 	}
 	f := &oidcFilter{name: name, cfg: c, log: log, secret: []byte(strings.TrimSpace(string(clientSecret))), aead: aead, olderAEADs: aeads[1:], revoked: map[string]time.Time{}, revokedFC: map[string]time.Time{}, issued: map[string]time.Time{},
+		logoutRate: limits.NewKeyedLimiter(2, 20, 4096),
 		client: &http.Client{
 			Timeout:       10 * time.Second,
 			Transport:     &http.Transport{TLSClientConfig: tc, Proxy: nil, MaxIdleConns: 4, ResponseHeaderTimeout: 5 * time.Second, DisableCompression: true},
@@ -573,6 +582,10 @@ func (f *oidcFilter) frontChannelLogout(r *http.Request, in *instance) filter.Ve
 	}
 	if r.Method != http.MethodGet {
 		return fail("frontchannel_method")
+	}
+	if !f.logoutRate.Allow(in.info.ClientIP.String()) {
+		return filter.Verdict{Deny: true, Status: http.StatusTooManyRequests, Reason: f.name,
+			Detail: "frontchannel_rate", Headers: map[string]string{"Retry-After": "10"}}
 	}
 	q := r.URL.Query()
 	sid, iss := q.Get("sid"), q.Get("iss")

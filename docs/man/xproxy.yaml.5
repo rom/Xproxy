@@ -4804,7 +4804,7 @@ name
 T}	T{
 \fBadmin\-\:login\fR when nothing else is set
 T}	T{
-Built\-in body: \fBwp\-\:login\fR,\: \fBenv\fR,\: \fBgit\-\:config\fR,\: \fBphpinfo\fR,\: \fBadmin\-\:login\fR,\: \fBrobots\fR;\: sets the content type
+Built\-in body,\: below;\: it sets the content type too
 T}
 T{
 \fBbody\fR
@@ -4861,6 +4861,205 @@ T}	T{
 How long the client stays marked;\: at most 720h
 T}
 .TE
+.PP
+The built\-in decoys, each a plausible page for the thing a scanner is looking for and each containing nothing an operator would mind being read \[u2014] every credential, key and host name in them is visibly fake:
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(1.5i) lbx
+lw(1.4i) lw(1.5i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBwp\-\:login\fR
+T}	T{
+A WordPress login page
+T}	T{
+\fB/\:wp\-\:login.\:php\fR
+T}
+T{
+\fBwp\-\:config\fR
+T}	T{
+\fBwp\-\:config.\:php\fR served as text
+T}	T{
+\fB/\:wp\-\:config.\:php\fR,\: \fB/\:wp\-\:config.\:php.\:bak\fR
+T}
+T{
+\fBphpmyadmin\fR
+T}	T{
+A phpMyAdmin login
+T}	T{
+\fB/\:phpmyadmin\fR,\: \fB/\:pma\fR
+T}
+T{
+\fBphpinfo\fR
+T}	T{
+\fBphpinfo()\fR output
+T}	T{
+\fB/\:phpinfo.\:php\fR,\: \fB/\:info.\:php\fR
+T}
+T{
+\fBadmin\-\:login\fR
+T}	T{
+A generic administration login
+T}	T{
+\fB/\:admin\fR,\: \fB/\:administrator\fR
+T}
+T{
+\fBtomcat\-\:manager\fR
+T}	T{
+The Tomcat manager application listing
+T}	T{
+\fB/\:manager/\:html\fR
+T}
+T{
+\fBjenkins\fR
+T}	T{
+A Jenkins sign\-in page
+T}	T{
+\fB/\:jenkins\fR,\: \fB/\:login?from=\:%2F\fR
+T}
+T{
+\fBgrafana\fR
+T}	T{
+A Grafana bootstrap page
+T}	T{
+\fB/\:grafana\fR
+T}
+T{
+\fBactuator\fR
+T}	T{
+A Spring Boot actuator index,\: \fBheapdump\fR and all
+T}	T{
+\fB/\:actuator\fR
+T}
+T{
+\fBelasticsearch\fR
+T}	T{
+An Elasticsearch root document
+T}	T{
+\fB/\:_\:cluster/\:health\fR,\: \fB/\fR on port 9200
+T}
+T{
+\fBswagger\fR
+T}	T{
+An OpenAPI document naming tempting operations
+T}	T{
+\fB/\:swagger.\:json\fR,\: \fB/\:v2/\:api\-\:docs\fR
+T}
+T{
+\fBdebug\-\:vars\fR
+T}	T{
+Go \fBexpvar\fR output
+T}	T{
+\fB/\:debug/\:vars\fR
+T}
+T{
+\fBserver\-\:status\fR
+T}	T{
+Apache \fBmod_\:status\fR
+T}	T{
+\fB/\:server\-\:status\fR
+T}
+T{
+\fBenv\fR
+T}	T{
+A Laravel \fB.\:env\fR
+T}	T{
+\fB/\:.\:env\fR,\: \fB/\:.\:env.\:production\fR
+T}
+T{
+\fBgit\-\:config\fR
+T}	T{
+A \fB.\:git/\:config\fR with an internal remote
+T}	T{
+\fB/\:.\:git/\:config\fR
+T}
+T{
+\fBaws\-\:credentials\fR
+T}	T{
+An \fB~/\:.\:aws/\:credentials\fR
+T}	T{
+\fB/\:.\:aws/\:credentials\fR
+T}
+T{
+\fBssh\-\:key\fR
+T}	T{
+An OpenSSH private key block
+T}	T{
+\fB/\:.\:ssh/\:id_\:rsa\fR
+T}
+T{
+\fBkubeconfig\fR
+T}	T{
+A kubeconfig with a token
+T}	T{
+\fB/\:.\:kube/\:config\fR
+T}
+T{
+\fBdocker\-\:compose\fR
+T}	T{
+A compose file with database credentials
+T}	T{
+\fB/\:docker\-\:compose.\:yml\fR
+T}
+T{
+\fBhtpasswd\fR
+T}	T{
+An \fB.\:htpasswd\fR
+T}	T{
+\fB/\:.\:htpasswd\fR
+T}
+T{
+\fBbackup\-\:sql\fR
+T}	T{
+A MySQL dump with a users table
+T}	T{
+\fB/\:backup.\:sql\fR,\: \fB/\:dump.\:sql\fR
+T}
+T{
+\fBs3\-\:listing\fR
+T}	T{
+An S3 bucket listing of nightly backups
+T}	T{
+\fB/\:backups/\fR
+T}
+T{
+\fBidrac\fR
+T}	T{
+A server lights\-out controller login
+T}	T{
+\fB/\:login.\:html\fR on a management name
+T}
+T{
+\fBwebmail\fR
+T}	T{
+A webmail login
+T}	T{
+\fB/\:webmail\fR,\: \fB/\:roundcube\fR
+T}
+T{
+\fBwebshell\fR
+T}	T{
+A web shell someone else supposedly left
+T}	T{
+\fB/\:shell.\:php\fR,\: \fB/\:up.\:php\fR,\: \fB/\:cmd.\:php\fR
+T}
+T{
+\fBrobots\fR
+T}	T{
+A \fBrobots.\:txt\fR pointing at the paths above
+T}	T{
+\fB/\:robots.\:txt\fR
+T}
+.TE
+.PP
+\fBrobots\fR is the one to serve honestly: it names the decoy paths, so a crawler that reads it and then requests them has told you what it is. \fBexamples/security/honeypots.yaml\fR wires the whole table up.
 .PP
 \fBresponse_headers\fR apply, so a decoy can carry a \fBServer\fR header of its own. \fBGET /v1/honeypot\fR lists marked clients (address, route, hits, first, last, expires) and the decoy names; \fBDELETE /v1/honeypot?ip=\fR and \fBxproxyctl honeypot forget IP\fR remove a mark. The mark table holds at most 65536 addresses. Counters: \fBhoneypot_hits\fR, \fBhoneypot_marked\fR; metrics \fBxproxy_honeypot_hits_total\fR, \fBxproxy_honeypot_marked\fR.
 .SS "routes[].mirror"
@@ -5197,6 +5396,236 @@ T}
 .TE
 .PP
 Gradual roll\-out: detect everywhere, then \fBblock_percent: 0\fR with the testers in \fBblock_cidrs\fR, then raise the share in steps while the security log\(aqs \fBwaf_detected\fR entries (the requests detect mode would have blocked) stay explainable, then \fB100\fR. \fBxproxyctl waf\fR shows the share and the canary prefixes per route, and the access log carries \fBwaf_enforced: true\fR or \fBfalse\fR for every request of such a route.
+.SH "security_txt[]"
+.PP
+A virtual \fBsecurity.txt\fR (RFC 9116): the document that tells a finder where to report a vulnerability. The proxy answers \fB/.well\-known/security.txt\fR, and the legacy \fB/security.txt\fR, \fBbefore routing\fR, so a host with no route of its own still has one \[u2014] which is the parked name a finder tries first, and the one that otherwise answers 404.
+.PP
+Entries are tried in order and the first whose selectors all match answers, so an entry with no selectors placed last is the fallback for every other host. A request that matches no entry falls through to routing, so an origin already serving its own file keeps doing so.
+.PP
+.RS 4
+.nf
+.ft CR
+security_txt:
+  # Internal clients get the internal contact.
+  \- name: internal
+    client_cidrs: ["10.0.0.0/8", "fd00::/8"]
+    contact: ["mailto:appsec@corp.internal", "https://wiki.corp.internal/appsec"]
+    preferred_languages: [en, sv]
+    valid_for: 720h
+  # One brand.
+  \- name: shop
+    hosts: ["shop.example.com", "*.shop.example.com"]
+    contact: ["https://example.com/vdp", "mailto:security@example.com"]
+    encryption: ["https://example.com/pgp\-key.txt"]
+    policy: ["https://example.com/vdp"]
+    acknowledgments: ["https://example.com/hall\-of\-fame"]
+    canonical: ["https://shop.example.com/.well\-known/security.txt"]
+  # Everything else, including parked names.
+  \- name: default
+    contact: ["mailto:security@example.com"]
+    expires: "2027\-01\-31T00:00:00Z"
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.6i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.6i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+\fBsecurity_\:txt[i]\fR
+T}	T{
+Names the entry in \fBxproxyctl stats\fR,\: the access log and the security log
+T}
+T{
+\fBhosts\fR
+T}	T{
+list
+T}	T{
+any host
+T}	T{
+Exact names or wildcard patterns (\fB*.\:example.\:com\fR,\: which matches a label or more and not the bare name)
+T}
+T{
+\fBhost_\:regex\fR
+T}	T{
+RE2
+T}	T{
+none
+T}	T{
+Matches the host as well,\: for a naming scheme a wildcard cannot express;\: at most 512 bytes
+T}
+T{
+\fBclient_\:cidrs\fR
+T}	T{
+list
+T}	T{
+any client
+T}	T{
+Only clients inside these networks see this entry,\: so an internal document can differ from the public one
+T}
+T{
+\fBlisteners\fR
+T}	T{
+list
+T}	T{
+any listener
+T}	T{
+Only these listener names serve this entry
+T}
+T{
+\fBcontact\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+How to report,\: most preferred first: \fBmailto:\fR,\: \fBtel:\fR or \fBhttps:\fR. RFC 9116 requires at least one,\: and a \fBsecurity.\:txt\fR with no way to report is worse than none
+T}
+T{
+\fBexpires\fR
+T}	T{
+RFC 3339
+T}	T{
+from \fBvalid_\:for\fR
+T}	T{
+When the document stops being valid. Exclusive with \fBvalid_\:for\fR;\: a value in the past is refused,\: because a finder is told to ignore an expired document
+T}
+T{
+\fBvalid_\:for\fR
+T}	T{
+duration
+T}	T{
+\fB8760h\fR (a year)
+T}	T{
+Sets \fBExpires\fR this far ahead of the load and \fBrefreshes it on every reload\fR,\: so the document cannot quietly go stale. 1h to three years
+T}
+T{
+\fBencryption\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+A key a finder should encrypt to
+T}
+T{
+\fBacknowledgments\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+A page thanking finders
+T}
+T{
+\fBpreferred_\:languages\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+BCP 47 tags,\: rendered as one comma\-separated field
+T}
+T{
+\fBcanonical\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Where this document is expected to live;\: it is what makes a copy found elsewhere recognisable as a copy
+T}
+T{
+\fBpolicy\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+The disclosure policy
+T}
+T{
+\fBhiring\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Security job openings
+T}
+T{
+\fBcsaf\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+A \fBprovider\-\:metadata.\:json\fR
+T}
+T{
+\fBextra\fR
+T}	T{
+mapping
+T}	T{
+
+T}	T{
+Fields this build does not know by name (\fB{Foo:\: [bar]}\fR),\: rendered after the known ones in name order
+T}
+T{
+\fBcomment\fR
+T}	T{
+string
+T}	T{
+
+T}	T{
+Placed at the top,\: each line prefixed with \fB# \fR
+T}
+T{
+\fBbody\fR
+T}	T{
+string
+T}	T{
+
+T}	T{
+The document verbatim;\: exclusive with every field above and with \fBbody_\:file\fR
+T}
+T{
+\fBbody_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+Read at load and on \fBevery reload\fR,\: at most 64 KiB. Use it for a clear\-signed document,\: which cannot be assembled from fields without breaking the signature
+T}
+T{
+\fBcache_\:for\fR
+T}	T{
+duration
+T}	T{
+\fB1h\fR
+T}	T{
+\fBCache\-\:Control:\: public,\: max\-\:age=\fR;\: \fB0\fR sends no \fBCache\-\:Control\fR
+T}
+.TE
+.PP
+Field values may not contain a line break or a control character: a newline would end the field and begin another, so a value carrying one could add a \fBContact\fR of somebody else\(aqs choosing to the document this proxy serves. The response is \fBtext/plain; charset=utf\-8\fR with \fBX\-Content\-Type\-Options: nosniff\fR, and only \fBGET\fR and \fBHEAD\fR are answered \[u2014] a \fBsecurity.txt\fR is a file and nothing else.
+.PP
+The signed form is worth the trouble on a public document: sign it once, put it in \fBbody_file\fR, and a reload picks up a re\-signed file without a restart. \fBvalid_for\fR cannot refresh a signed document, so give a signed one an explicit \fBExpires\fR inside the signature and re\-sign before it lapses; \fBxproxyctl stats\fR reports how many requests each entry answered, which is how you notice a document nobody reads.
 .SH "virtual_patches[]"
 .PP
 A virtual patch blocks a known vulnerability by the shape of the requests that exploit it, while the application is being fixed, and records how often it fired. Patches run right after route matching, before rate limits, filters and the WAF, so they cost nothing for other traffic and need no \fBwaf\fR section. Every listed condition must hold for a patch to apply; at least one of \fBpaths\fR, \fBpath_regex\fR, \fBquery\fR, \fBheaders\fR, \fBcookies\fR or \fBbody\fR is required. A match with \fBaction: block\fR answers \fBstatus\fR with reason \fBvirtual_patch\fR and the id as \fBdetail\fR (ban category \fBvirtual_patch\fR); with \fBaction: log\fR the request continues and the security event and the access log carry \fBvirtual_patch: <id>\fR. \fBxproxyctl patches\fR and \fBGET /v1/patches\fR list the patches with hits, last hit, expiry and state; \fBxproxy_virtual_patch_hits_total{patch}\fR counts per patch and hits survive reloads.

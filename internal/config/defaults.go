@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"github.com/rom/xproxy/internal/paths"
 	"os"
 	"strings"
@@ -455,6 +456,16 @@ func applyDefaults(c *Config) {
 		setInt(&p.Status, 403)
 		if p.Body != nil && p.Body.MaxBytes == 0 {
 			p.Body.MaxBytes = 64 << 10
+		}
+	}
+	for i := range c.SecurityTxt {
+		st := &c.SecurityTxt[i]
+		setStr(&st.Name, fmt.Sprintf("security_txt[%d]", i))
+		setDur(&st.CacheFor, time.Hour)
+		if st.Expires == "" {
+			// A year is the longest RFC 9116 recommends, and a reload
+			// pushes it forward, so the document cannot quietly expire.
+			setDur(&st.ValidFor, 365*24*time.Hour)
 		}
 	}
 	for i := range c.Routes {

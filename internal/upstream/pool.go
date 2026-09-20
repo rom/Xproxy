@@ -360,13 +360,27 @@ func (p *Pool) StopChecks() {
 	p.wg.Wait()
 }
 
-// Stop ends health checks and closes idle connections.
+// Stop ends health checks and closes idle connections. Only idle ones:
+// the HTTP/3 transport used to be closed outright, which cut every
+// exchange still running on it — a long gRPC or SSE stream over h3 —
+// when a reload retired the generation that built the pool, while the
+// TCP transports beside it dropped only what was unused.
 func (p *Pool) Stop() {
 	p.StopChecks()
 	p.Transport.CloseIdleConnections()
 	if p.h2c != nil {
 		p.h2c.CloseIdleConnections()
 	}
+	if p.h3 != nil {
+		p.h3.CloseIdleConnections()
+	}
+}
+
+// Close releases everything the pool holds, in-flight exchanges
+// included. It is for process shutdown, where the exchanges have
+// already been drained.
+func (p *Pool) Close() {
+	p.Stop()
 	if p.h3 != nil {
 		_ = p.h3.Close()
 	}

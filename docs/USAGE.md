@@ -3,7 +3,8 @@
 Day to day operation of xproxy: running the daemon, the control tool,
 configuration patterns and reading the logs. Installation is covered in
 [SETUP.md](SETUP.md), the full configuration reference in
-[CONFIG.md](CONFIG.md).
+[CONFIG.md](CONFIG.md) and diagnosing a misbehaving proxy in
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## Binaries
 
@@ -2918,26 +2919,8 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 
 ## Troubleshooting
 
-| Symptom | Check |
-|---------|-------|
-| `config: ... no such file or directory` | Certificate or CA paths; `xproxy -validate` lists all problems at once |
-| 404 for a host you configured | Host matching is exact or single label wildcard; check the `host` field in the access log |
-| 403 with `reason: acl_allow` | The client address is not in `allow_cidrs`; if behind a proxy, set `trusted_proxies` |
-| 401 with `WWW-Authenticate: Bearer` | JWT missing or invalid; the security log names the category (expired, signature, issuer, audience, algorithm, unknown_key) |
-| 503 on a JWT route with `detail: keys_unavailable` | The provider's key set never loaded; check `jwks_url` and `jwks_ca_file` in the error log |
-| 502 to an https upstream after enabling pins or mTLS | `xproxyctl spki` on the upstream certificate; check the client certificate is issued by the CA the upstream trusts |
-| Scanner block page (status from the scanner, `reason: icap`) | The ICAP service replaced the request or response; `icap_verdict: replaced` in the access line |
-| 502 with `detail: reqmod_unavailable` | The ICAP service failed or timed out and `fail: closed`; `xproxyctl icap` |
-| `... table full` warning in the error log | A bounded table reached its cap: the message names the table (`rate_limit_keys`, `ban_windows`, `honeypot_marks`, `challenge_nonces`, `bot_score_clients`, `waf_rules`, `waf_learning`, `dns_workers`, a queue) and the occurrences since the previous warning; the status views carry the totals. Under attack this is expected; otherwise raise the bound where it is configurable or look for a key that never repeats |
-| 403 with `reason: waf` | A rule blocked the request; `waf_matched` names the rules. Add an exclusion or lower the paranoia level for that route |
-| 403 with `reason: banned` or connections closed immediately | `xproxyctl bans`; unban or add the range to `exempt_cidrs` |
-| Reload fails with a WAF compile error | The error names the file and line of the bad directive; the old rules stay active |
-| 413 immediately | `Content-Length` above `max_body_bytes` |
-| 429 with `Retry-After` | Rate limit; `denied` names the policy |
-| 502 | Upstream connection failed; see `upstream_error` in access and the error log |
-| 503 with `Retry-After: 5` | No healthy endpoint; `xproxyctl upstreams` |
-| 503 with `Retry-After: 1` | Concurrency ceiling reached |
-| 503 with `Retry-After: 2` and `denied: shed:<class>` in the access log | Load shedding; check `load_level` and upstream latency |
-| 503 HTML page titled "Checking your browser" | Challenge gate; a browser solves it, an API client cannot |
-| Reload says a listener needs a restart | Only a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`) changed on the same address; every other listener change applies on reload with a drain |
-| `management socket ... already in use` | Another xproxy is running |
+Every symptom, the log line that proves it and the fix live in
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md): a sixty-second triage, a field
+guide to the access log, a symptom index, a section per subsystem, the
+deny reasons with the component that raises each, and what to collect for
+a bug report.

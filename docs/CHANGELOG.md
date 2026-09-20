@@ -230,6 +230,26 @@ Open findings of the earlier rounds:
   A full shard is also swept a bounded number of entries at a time
   rather than scanned whole on every miss, and a live bucket is never
   evicted to make room.
+- The challenge's replay table is partitioned per client address, so
+  one client solving challenges can no longer fill all 65,536 slots and
+  have everybody else's verification refused; an entry expires at the
+  nonce's own time plus its TTL rather than at the moment it was
+  solved; and verification (`/.xproxy/challenge`) and the OIDC
+  front-channel logout endpoint are rate limited per client address.
+- A ban no longer costs a synchronous `fsync` on the request goroutine:
+  state-file updates are batched through a queue, as the cluster's are,
+  and a full queue falls back to the old synchronous write rather than
+  losing the update. The escalation history is bounded
+  least-recently-used instead of scanning the whole table on every
+  trigger, and expired counts are swept by the purge loop.
+- A reload tears the previous generation down when its last request
+  ends, not after a fixed `shutdown_timeout`: a long upload or a gRPC
+  or SSE stream older than that was cut or answered 500 although it was
+  still making progress. A hard cap bounds one that never ends, and an
+  HTTP/3 transport now drops only its idle connections while the
+  generation is retired, as the TCP transports beside it always did.
+  `max_concurrent_requests` and `max_tarpits` are applied on reload;
+  both gates used to be sized once at start.
 - New `server.limits.max_buffered_body_bytes` (512 MiB by default) is
   the process-wide ceiling on request bodies held in memory at once.
   Every feature that materialises one was bounded per request, and the
@@ -237,6 +257,55 @@ Open findings of the earlier rounds:
   `max_body_bytes` is about 2.5 GiB of heap from one address at the
   defaults. A request that does not fit is refused with 503 before it
   is read.
+
+### Added (1.4)
+
+- **Virtual `security.txt`.** A new `security_txt[]` section serves an
+  RFC 9116 document from the proxy at `/.well-known/security.txt` and
+  the legacy `/security.txt`, before routing, so a host with no
+  application behind it (a parked domain, a redirect, a maintenance
+  page) still answers the question a finder asks. Each entry selects the
+  hosts it answers for by exact name, `*.suffix` wildcard, regular
+  expression, client CIDR or listener name, and the first entry that
+  matches wins — one document for the brand, another for an internal
+  range, a catch-all for everything else. The body is either rendered
+  from the fields (`contact`, `expires` or `valid_for`, `encryption`,
+  `acknowledgments`, `preferred_languages`, `canonical`, `policy`,
+  `hiring`, `csaf`, `extra` and a leading `comment`) or taken verbatim
+  from `body`/`body_file`, which is how a clear-signed document is
+  served; `body_file` is re-read on reload, so a re-signed document
+  needs no restart. Field values are rejected at validation if they
+  carry a newline or a control byte, because a newline in a value would
+  let it append a `Contact` line of somebody else's choosing. Responses
+  are `GET`/`HEAD` only (405 otherwise), cached for `cache_for` and
+  counted in `security_txt`.
+- **Twenty more honeypot decoys.** `honeypot.decoy` now takes 26 names
+  covering the paths scanners actually probe — `phpmyadmin`,
+  `tomcat-manager`, `jenkins`, `grafana`, `actuator`,
+  `elasticsearch`, `aws-credentials`, `ssh-key`, `kubeconfig`,
+  `docker-compose`, `wp-config`, `htpasswd`, `backup-sql`,
+  `s3-listing`, `swagger`, `debug-vars`, `server-status`, `webshell`,
+  `idrac` and `webmail` beside the original six. Every credential, key
+  and host name in them is visibly fake.
+  `examples/security/honeypots.yaml` wires all of them with a ban
+  trigger on the sweep.
+
+### Fixed (1.4)
+
+- A listener or endpoint address padded with whitespace
+  (`" 127.0.0.1:8080 "`) passed validation. `net.SplitHostPort`
+  separates on the last colon and never looks at the rest, so
+  `xproxy -validate` said OK for a configuration that then failed to
+  bind at start. Addresses with leading, trailing or embedded
+  whitespace are now a validation error, where the operator sees them.
+
+### Changed (1.4)
+
+- Troubleshooting moved out of `docs/USAGE.md` into a document of its
+  own, [`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md): a sixty-second
+  triage, a field guide to the access log line, a symptom index, a
+  section per subsystem, every deny reason with the component that
+  raises it, and what to collect for a bug report.
 
 ### Security (1.3)
 
