@@ -292,6 +292,13 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4)
 
+- `bans.exempt_cidrs` did not release the bans it covers. The
+  exemption was consulted when a ban was placed and never afterwards,
+  so an operator who added the range for a monitoring probe, a partner
+  or their own office found the reload changed nothing — and neither
+  did a restart, because the state file restored the ban. Bans covered
+  by the exemptions are now dropped when the configuration is applied
+  and again after the state file is read, with a log line naming each.
 - `tracing.Tracer.StartServer`, `Span.Traceparent`, `Span.TraceIDString`
   and `Span.SpanIDString` panicked on the nil value the rest of the
   package uses to mean "tracing is off", and `Encode` dereferenced an

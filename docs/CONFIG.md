@@ -1119,7 +1119,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 |-----|------|---------|-------------|
 | `state_file` | path | `""` (memory only) | bbolt file that persists bans across restarts |
 | `max_entries` | int | `100000` | Bound on banned addresses; the soonest expiring are evicted when full |
-| `exempt_cidrs` | list | `[]` | Never banned, by trigger or by operator |
+| `exempt_cidrs` | list | `[]` | Never banned, by trigger or by operator. Adding a range also releases the bans it covers, on the reload that adds it and on a restart that restores them from the state file |
 | `action` | `drop`, `reject` | `drop` | Close at accept, or answer 403 only |
 | `triggers` | list | `[]` | Automatic bans; see below |
 
