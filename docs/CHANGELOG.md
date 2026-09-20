@@ -321,6 +321,15 @@ peer that names itself, an agent that reports its host name).
 
 ### Fixed (1.4)
 
+- The terminal interface raced with itself. Each view is fetched by two
+  goroutines — one waiting, one calling — so that a slow view does not
+  hold the others; the waiting one gives up at the refresh deadline and
+  the calling one is left running. It then stored its answer into the
+  `Data` the fetch had already returned and the renderer was already
+  drawing, which is a write to a live map from a goroutine nobody is
+  waiting for. A management call slower than the refresh interval was
+  enough. The result is now marked as no longer ours once the fetch
+  returns, and a late answer is dropped.
 - The terminal interface filtered only its security log view. Every
   other cell — a ban reason, a peer's node id and last error, a
   certificate's subject, a WAF rule's message, an upstream address, the

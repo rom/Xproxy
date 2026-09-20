@@ -69,10 +69,26 @@ func (s *clientSource) Fetch(ctx context.Context) Data {
 	d := Data{At: time.Now(), Errors: map[string]string{}}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	fail := func(what string, err error) {
+	// live says the result is still ours to write. Each view runs in
+	// its own goroutine with a second one doing the call, so that a
+	// view slower than the refresh interval does not hold the others:
+	// the waiting goroutine gives up at ctx.Done() and the calling one
+	// is left running. That goroutine still finishes its call and used
+	// to store the answer afterwards — into a Data this function had
+	// already returned and the renderer was already drawing. With a
+	// refresh interval shorter than a slow management call, that is a
+	// write to a live map from a goroutine nobody is waiting for.
+	live := true
+	set := func(f func()) {
 		mu.Lock()
-		d.Errors[what] = err.Error()
-		mu.Unlock()
+		defer mu.Unlock()
+		if !live {
+			return // the fetch this belonged to has already been drawn
+		}
+		f()
+	}
+	fail := func(what string, err error) {
+		set(func() { d.Errors[what] = err.Error() })
 	}
 	run := func(what string, f func() error) {
 		wg.Add(1)
@@ -93,45 +109,35 @@ func (s *clientSource) Fetch(ctx context.Context) Data {
 	run("status", func() error {
 		st, err := s.c.Status()
 		if err == nil {
-			mu.Lock()
-			d.Status = st
-			mu.Unlock()
+			set(func() { d.Status = st })
 		}
 		return err
 	})
 	run("upstreams", func() error {
 		ups, err := s.c.Upstreams()
 		if err == nil {
-			mu.Lock()
-			d.Upstreams = ups
-			mu.Unlock()
+			set(func() { d.Upstreams = ups })
 		}
 		return err
 	})
 	run("bans", func() error {
 		bs, err := s.c.Bans()
 		if err == nil {
-			mu.Lock()
-			d.Bans = bs
-			mu.Unlock()
+			set(func() { d.Bans = bs })
 		}
 		return err
 	})
 	run("cluster", func() error {
 		cs, err := s.c.ClusterStatus()
 		if err == nil {
-			mu.Lock()
-			d.Cluster = cs
-			mu.Unlock()
+			set(func() { d.Cluster = cs })
 		}
 		return err
 	})
 	run("series", func() error {
 		sr, err := s.c.Series(time.Hour, 0)
 		if err == nil {
-			mu.Lock()
-			d.Series = sr
-			mu.Unlock()
+			set(func() { d.Series = sr })
 		}
 		return err
 	})
@@ -141,22 +147,22 @@ func (s *clientSource) Fetch(ctx context.Context) Data {
 			if err := s.c.Do("GET", path, nil, v); err != nil {
 				return err
 			}
-			mu.Lock()
-			switch t := v.(type) {
-			case *map[string]upstream.PoolStatus:
-				d.Pools = *t
-			case *proxy.QuotaReport:
-				d.Quotas = t
-			case *proxy.WAFReport:
-				d.WAF = t
-			case *map[string][]tlsconf.CertInfo:
-				d.TLS = *t
-			case *mgmt.TelemetryView:
-				d.Telemetry = t
-			case *[]dns.Status:
-				d.DNS = *t
-			}
-			mu.Unlock()
+			set(func() {
+				switch t := v.(type) {
+				case *map[string]upstream.PoolStatus:
+					d.Pools = *t
+				case *proxy.QuotaReport:
+					d.Quotas = t
+				case *proxy.WAFReport:
+					d.WAF = t
+				case *map[string][]tlsconf.CertInfo:
+					d.TLS = *t
+				case *mgmt.TelemetryView:
+					d.Telemetry = t
+				case *[]dns.Status:
+					d.DNS = *t
+				}
+			})
 			return nil
 		})
 	}
@@ -170,14 +176,17 @@ func (s *clientSource) Fetch(ctx context.Context) Data {
 		run("log", func() error {
 			lines, err := tailLines(s.logPath, 200)
 			if err == nil {
-				mu.Lock()
-				d.LogLines = lines
-				mu.Unlock()
+				set(func() { d.LogLines = lines })
 			}
 			return err
 		})
 	}
 	wg.Wait()
+	// Whatever is still in flight has missed this refresh: it may take
+	// the lock, but it will not write.
+	mu.Lock()
+	live = false
+	mu.Unlock()
 	return d
 }
 

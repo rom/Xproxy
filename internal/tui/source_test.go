@@ -98,19 +98,49 @@ func TestFetchWithNoProxy(t *testing.T) {
 }
 
 // TestFetchRespectsTheContext covers a management API that does not
-// answer: the interface has a refresh interval, and a fetch that
-// outlived it would queue up behind itself.
+// answer within the refresh interval: the fetch must come back, and
+// what it hands the renderer must then stop changing.
+//
+// Each view runs in two goroutines — one waiting, one calling — so that
+// a slow view does not hold the others. The waiting one gives up at
+// ctx.Done(); the calling one is left running and finishes its call
+// afterwards. It used to store the answer then, into a Data the caller
+// had already been given and the renderer was already drawing: a write
+// to a live map from a goroutine nobody was waiting for. Run this one
+// under -race.
 func TestFetchRespectsTheContext(t *testing.T) {
+	src, _ := liveSource(t)
+	for i := 0; i < 20; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		d := src.Fetch(ctx)
+		cancel()
+		// Read everything the renderer would read, while whatever the
+		// fetch abandoned is still finishing its call.
+		for range d.Errors {
+		}
+		for range d.Upstreams {
+		}
+		for range d.Pools {
+		}
+		for range d.TLS {
+		}
+		_ = d.Status
+		_ = d.Bans
+		_ = d.LogLines
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestFetchIsBoundedByTheContext requires the fetch itself to return
+// near the deadline rather than at the pace of the slowest view.
+func TestFetchIsBoundedByTheContext(t *testing.T) {
 	src, _ := liveSource(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	done := make(chan Data, 1)
 	go func() { done <- src.Fetch(ctx) }()
 	select {
-	case d := <-done:
-		if len(d.Errors) == 0 {
-			t.Log("the fetch finished before the cancellation was noticed")
-		}
+	case <-done:
 	case <-time.After(30 * time.Second):
 		t.Fatal("a cancelled fetch did not return")
 	}
