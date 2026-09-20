@@ -1258,13 +1258,50 @@ Nothing is proxied. Put honeypots on paths no legitimate client uses.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `decoy` | name | `admin-login` when nothing else is set | Built-in body: `wp-login`, `env`, `git-config`, `phpinfo`, `admin-login`, `robots`; sets the content type |
+| `decoy` | name | `admin-login` when nothing else is set | Built-in body, below; it sets the content type too |
 | `body` | string | | Inline decoy, at most 64 KiB; exclusive with `decoy` and `body_file` |
 | `body_file` | path | | Decoy read at load and on reload (a missing file fails the reload), at most 1 MiB |
 | `status` | int | `200` | Response status |
 | `content_type` | string | `text/html; charset=utf-8` | For `body` and `body_file` |
 | `delay` | duration | `0` | Hold the connection before answering, in a tarpit slot (`max_tarpits`), never in a request slot; at most 60s |
 | `mark` | duration | `1h` | How long the client stays marked; at most 720h |
+
+The built-in decoys, each a plausible page for the thing a scanner is
+looking for and each containing nothing an operator would mind being
+read — every credential, key and host name in them is visibly fake:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `wp-login` | A WordPress login page | `/wp-login.php` |
+| `wp-config` | `wp-config.php` served as text | `/wp-config.php`, `/wp-config.php.bak` |
+| `phpmyadmin` | A phpMyAdmin login | `/phpmyadmin`, `/pma` |
+| `phpinfo` | `phpinfo()` output | `/phpinfo.php`, `/info.php` |
+| `admin-login` | A generic administration login | `/admin`, `/administrator` |
+| `tomcat-manager` | The Tomcat manager application listing | `/manager/html` |
+| `jenkins` | A Jenkins sign-in page | `/jenkins`, `/login?from=%2F` |
+| `grafana` | A Grafana bootstrap page | `/grafana` |
+| `actuator` | A Spring Boot actuator index, `heapdump` and all | `/actuator` |
+| `elasticsearch` | An Elasticsearch root document | `/_cluster/health`, `/` on port 9200 |
+| `swagger` | An OpenAPI document naming tempting operations | `/swagger.json`, `/v2/api-docs` |
+| `debug-vars` | Go `expvar` output | `/debug/vars` |
+| `server-status` | Apache `mod_status` | `/server-status` |
+| `env` | A Laravel `.env` | `/.env`, `/.env.production` |
+| `git-config` | A `.git/config` with an internal remote | `/.git/config` |
+| `aws-credentials` | An `~/.aws/credentials` | `/.aws/credentials` |
+| `ssh-key` | An OpenSSH private key block | `/.ssh/id_rsa` |
+| `kubeconfig` | A kubeconfig with a token | `/.kube/config` |
+| `docker-compose` | A compose file with database credentials | `/docker-compose.yml` |
+| `htpasswd` | An `.htpasswd` | `/.htpasswd` |
+| `backup-sql` | A MySQL dump with a users table | `/backup.sql`, `/dump.sql` |
+| `s3-listing` | An S3 bucket listing of nightly backups | `/backups/` |
+| `idrac` | A server lights-out controller login | `/login.html` on a management name |
+| `webmail` | A webmail login | `/webmail`, `/roundcube` |
+| `webshell` | A web shell someone else supposedly left | `/shell.php`, `/up.php`, `/cmd.php` |
+| `robots` | A `robots.txt` pointing at the paths above | `/robots.txt` |
+
+`robots` is the one to serve honestly: it names the decoy paths, so a
+crawler that reads it and then requests them has told you what it is.
+`examples/security/honeypots.yaml` wires the whole table up.
 
 `response_headers` apply, so a decoy can carry a `Server` header of its
 own. `GET /v1/honeypot` lists marked clients (address, route, hits,
@@ -1419,6 +1456,79 @@ security log's `waf_detected` entries (the requests detect mode would
 have blocked) stay explainable, then `100`. `xproxyctl waf` shows the
 share and the canary prefixes per route, and the access log carries
 `waf_enforced: true` or `false` for every request of such a route.
+
+## security_txt[]
+
+A virtual `security.txt` (RFC 9116): the document that tells a finder
+where to report a vulnerability. The proxy answers
+`/.well-known/security.txt`, and the legacy `/security.txt`, **before
+routing**, so a host with no route of its own still has one — which is
+the parked name a finder tries first, and the one that otherwise
+answers 404.
+
+Entries are tried in order and the first whose selectors all match
+answers, so an entry with no selectors placed last is the fallback for
+every other host. A request that matches no entry falls through to
+routing, so an origin already serving its own file keeps doing so.
+
+```yaml
+security_txt:
+  # Internal clients get the internal contact.
+  - name: internal
+    client_cidrs: ["10.0.0.0/8", "fd00::/8"]
+    contact: ["mailto:appsec@corp.internal", "https://wiki.corp.internal/appsec"]
+    preferred_languages: [en, sv]
+    valid_for: 720h
+  # One brand.
+  - name: shop
+    hosts: ["shop.example.com", "*.shop.example.com"]
+    contact: ["https://example.com/vdp", "mailto:security@example.com"]
+    encryption: ["https://example.com/pgp-key.txt"]
+    policy: ["https://example.com/vdp"]
+    acknowledgments: ["https://example.com/hall-of-fame"]
+    canonical: ["https://shop.example.com/.well-known/security.txt"]
+  # Everything else, including parked names.
+  - name: default
+    contact: ["mailto:security@example.com"]
+    expires: "2027-01-31T00:00:00Z"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | `security_txt[i]` | Names the entry in `xproxyctl stats`, the access log and the security log |
+| `hosts` | list | any host | Exact names or wildcard patterns (`*.example.com`, which matches a label or more and not the bare name) |
+| `host_regex` | RE2 | none | Matches the host as well, for a naming scheme a wildcard cannot express; at most 512 bytes |
+| `client_cidrs` | list | any client | Only clients inside these networks see this entry, so an internal document can differ from the public one |
+| `listeners` | list | any listener | Only these listener names serve this entry |
+| `contact` | list | required | How to report, most preferred first: `mailto:`, `tel:` or `https:`. RFC 9116 requires at least one, and a `security.txt` with no way to report is worse than none |
+| `expires` | RFC 3339 | from `valid_for` | When the document stops being valid. Exclusive with `valid_for`; a value in the past is refused, because a finder is told to ignore an expired document |
+| `valid_for` | duration | `8760h` (a year) | Sets `Expires` this far ahead of the load and **refreshes it on every reload**, so the document cannot quietly go stale. 1h to three years |
+| `encryption` | list | | A key a finder should encrypt to |
+| `acknowledgments` | list | | A page thanking finders |
+| `preferred_languages` | list | | BCP 47 tags, rendered as one comma-separated field |
+| `canonical` | list | | Where this document is expected to live; it is what makes a copy found elsewhere recognisable as a copy |
+| `policy` | list | | The disclosure policy |
+| `hiring` | list | | Security job openings |
+| `csaf` | list | | A `provider-metadata.json` |
+| `extra` | mapping | | Fields this build does not know by name (`{Foo: [bar]}`), rendered after the known ones in name order |
+| `comment` | string | | Placed at the top, each line prefixed with `# ` |
+| `body` | string | | The document verbatim; exclusive with every field above and with `body_file` |
+| `body_file` | path | | Read at load and on **every reload**, at most 64 KiB. Use it for a clear-signed document, which cannot be assembled from fields without breaking the signature |
+| `cache_for` | duration | `1h` | `Cache-Control: public, max-age=`; `0` sends no `Cache-Control` |
+
+Field values may not contain a line break or a control character: a
+newline would end the field and begin another, so a value carrying one
+could add a `Contact` of somebody else's choosing to the document this
+proxy serves. The response is `text/plain; charset=utf-8` with
+`X-Content-Type-Options: nosniff`, and only `GET` and `HEAD` are
+answered — a `security.txt` is a file and nothing else.
+
+The signed form is worth the trouble on a public document: sign it
+once, put it in `body_file`, and a reload picks up a re-signed file
+without a restart. `valid_for` cannot refresh a signed document, so
+give a signed one an explicit `Expires` inside the signature and
+re-sign before it lapses; `xproxyctl stats` reports how many requests
+each entry answered, which is how you notice a document nobody reads.
 
 ## virtual_patches[]
 

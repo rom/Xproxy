@@ -79,6 +79,201 @@ Disallow: /private/
 Disallow: /wp-admin/
 Disallow: /.git/
 `},
+	"phpmyadmin": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>phpMyAdmin</title>
+<link rel="stylesheet" href="/themes/pmahomme/css/theme.css"></head>
+<body class="loginform"><div class="container"><a href="https://www.phpmyadmin.net/" class="logo">phpMyAdmin</a>
+<form method="post" action="index.php" name="login_form" class="login hide js-show">
+<fieldset><legend>Log in</legend>
+<div class="item"><label for="input_username">Username:</label><input type="text" name="pma_username" id="input_username" value=""></div>
+<div class="item"><label for="input_password">Password:</label><input type="password" name="pma_password" id="input_password"></div>
+<div class="item"><label for="select_server">Server Choice:</label>
+<select name="server" id="select_server"><option value="1">localhost</option></select></div>
+</fieldset><fieldset class="tblFooters"><input type="submit" value="Go" id="input_go"></fieldset></form>
+<div class="group"><p>phpMyAdmin 4.9.7</p></div></div></body></html>
+`},
+	"tomcat-manager": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><title>/manager</title>
+<style type="text/css">body{font-family:sans-serif;}</style></head>
+<body><h1>Tomcat Web Application Manager</h1>
+<table><tr><th>Message:</th><td>OK</td></tr></table>
+<table><tr><th>Applications</th></tr>
+<tr><td>/ &mdash; Welcome to Tomcat &mdash; running &mdash; 0 sessions</td></tr>
+<tr><td>/manager &mdash; Tomcat Manager Application &mdash; running &mdash; 0 sessions</td></tr>
+<tr><td>/examples &mdash; Servlet and JSP Examples &mdash; running &mdash; 0 sessions</td></tr></table>
+<p>Apache Tomcat/9.0.71</p></body></html>
+`},
+	"jenkins": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign in [Jenkins]</title>
+<link rel="stylesheet" href="/static/8a3c1b2f/css/layout.css"></head>
+<body class="yui-skin-sam"><div id="main-panel"><h1>Sign in to Jenkins</h1>
+<form method="post" name="login" action="j_spring_security_check">
+<label for="j_username">Username</label><input name="j_username" id="j_username" type="text" autocomplete="username">
+<label for="j_password">Password</label><input name="j_password" id="j_password" type="password" autocomplete="current-password">
+<input name="Submit" type="submit" value="Sign in"></form></div>
+<footer>Jenkins 2.387.3</footer></body></html>
+`},
+	"grafana": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Grafana</title>
+<base href="/"><link rel="stylesheet" href="public/build/grafana.dark.css"></head>
+<body class="theme-dark"><div id="reactRoot"></div>
+<script>window.grafanaBootData={user:{isSignedIn:false,orgName:"Main Org."},settings:{appUrl:"/",buildInfo:{version:"9.3.6",edition:"OSS"},loginError:""}};</script>
+</body></html>
+`},
+	"actuator": {"application/vnd.spring-boot.actuator.v3+json", `{"_links":{"self":{"href":"http://localhost:8080/actuator","templated":false},
+"health":{"href":"http://localhost:8080/actuator/health","templated":false},
+"env":{"href":"http://localhost:8080/actuator/env","templated":false},
+"beans":{"href":"http://localhost:8080/actuator/beans","templated":false},
+"mappings":{"href":"http://localhost:8080/actuator/mappings","templated":false},
+"heapdump":{"href":"http://localhost:8080/actuator/heapdump","templated":false}}}
+`},
+	"elasticsearch": {"application/json; charset=utf-8", `{
+  "name" : "node-1",
+  "cluster_name" : "elasticsearch",
+  "cluster_uuid" : "DECOY0000000000000000A",
+  "version" : {
+    "number" : "7.17.9",
+    "build_flavor" : "default",
+    "build_type" : "deb",
+    "lucene_version" : "8.11.1"
+  },
+  "tagline" : "You Know, for Search"
+}
+`},
+	"aws-credentials": {"text/plain; charset=utf-8", `[default]
+aws_access_key_id = AKIADECOY000000EXAMPLE
+aws_secret_access_key = decoy/secret/not/real/0000000000000000
+region = eu-north-1
+
+[deploy]
+aws_access_key_id = AKIADECOY111111EXAMPLE
+aws_secret_access_key = decoy/secret/not/real/1111111111111111
+region = eu-west-1
+`},
+	"ssh-key": {"text/plain; charset=utf-8", `-----BEGIN OPENSSH PRIVATE KEY-----
+ZGVjb3kga2V5IC0gbm90IGEga2V5IC0gdGhpcyBpcyBhIGhvbmV5cG90IHJlc3BvbnNlIGFu
+ZCBjb250YWlucyBubyBrZXkgbWF0ZXJpYWwgd2hhdHNvZXZlci4gSWYgeW91IGFyZSByZWFk
+aW5nIHRoaXMgaW4gYSBzY2FuIHJlcG9ydCwgdGhlIHNjYW4gd2FzIG5vdGljZWQuIDAwMDAw
+MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+-----END OPENSSH PRIVATE KEY-----
+`},
+	"kubeconfig": {"text/plain; charset=utf-8", `apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://kubernetes.internal:6443
+    certificate-authority-data: ZGVjb3ktY2EtMDAwMA==
+  name: production
+contexts:
+- context:
+    cluster: production
+    user: deploy
+  name: production
+current-context: production
+users:
+- name: deploy
+  user:
+    token: decoy.token.not.real.0000000000000000
+`},
+	"docker-compose": {"text/plain; charset=utf-8", `version: "3.8"
+services:
+  web:
+    image: registry.example.internal/platform/web:1.14.2
+    environment:
+      DATABASE_URL: postgres://app:decoy-Passw0rd@db:5432/app
+      SECRET_KEY_BASE: decoy0000000000000000000000000000000000
+    ports: ["8080:8080"]
+  db:
+    image: postgres:14
+    environment:
+      POSTGRES_PASSWORD: decoy-Passw0rd
+    volumes: ["dbdata:/var/lib/postgresql/data"]
+volumes:
+  dbdata:
+`},
+	"wp-config": {"text/plain; charset=utf-8", `<?php
+define( 'DB_NAME', 'wordpress' );
+define( 'DB_USER', 'wp' );
+define( 'DB_PASSWORD', 'decoy-Passw0rd' );
+define( 'DB_HOST', 'localhost' );
+define( 'AUTH_KEY',        'decoy 0000000000000000000000000000' );
+define( 'SECURE_AUTH_KEY', 'decoy 1111111111111111111111111111' );
+$table_prefix = 'wp_';
+define( 'WP_DEBUG', false );
+require_once ABSPATH . 'wp-settings.php';
+`},
+	"htpasswd": {"text/plain; charset=utf-8", `admin:$apr1$decoy000$0000000000000000000000
+deploy:$apr1$decoy111$1111111111111111111111
+monitor:$apr1$decoy222$2222222222222222222222
+`},
+	"backup-sql": {"application/sql", `-- MySQL dump 10.13  Distrib 8.0.32, for Linux (x86_64)
+-- Host: localhost    Database: app
+-- ------------------------------------------------------
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+DROP TABLE IF EXISTS ` + "`users`" + `;
+CREATE TABLE ` + "`users`" + ` (
+  ` + "`id`" + ` int NOT NULL AUTO_INCREMENT,
+  ` + "`email`" + ` varchar(255) NOT NULL,
+  ` + "`password_hash`" + ` varchar(255) NOT NULL,
+  PRIMARY KEY (` + "`id`" + `)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+INSERT INTO ` + "`users`" + ` VALUES (1,'decoy@example.invalid','$2y$10$decoy00000000000000000000000000000000000000000000000');
+-- Dump completed
+`},
+	"s3-listing": {"application/xml", `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>example-backups</Name><Prefix></Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+  <Contents><Key>db/2026-09-01.sql.gz</Key><LastModified>2026-09-01T02:14:11.000Z</LastModified><Size>418340119</Size><StorageClass>STANDARD</StorageClass></Contents>
+  <Contents><Key>db/2026-09-02.sql.gz</Key><LastModified>2026-09-02T02:14:09.000Z</LastModified><Size>418902771</Size><StorageClass>STANDARD</StorageClass></Contents>
+</ListBucketResult>
+`},
+	"swagger": {"application/json; charset=utf-8", `{"openapi":"3.0.3","info":{"title":"Internal Platform API","version":"2.4.1"},
+"servers":[{"url":"https://api.example.internal/v2"}],
+"paths":{"/users":{"get":{"summary":"List users","responses":{"200":{"description":"ok"}}}},
+"/users/{id}/token":{"post":{"summary":"Mint a service token","responses":{"201":{"description":"created"}}}},
+"/admin/export":{"get":{"summary":"Export everything","responses":{"200":{"description":"ok"}}}}},
+"components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}}}}
+`},
+	"debug-vars": {"application/json; charset=utf-8", `{
+"cmdline": ["/usr/local/bin/app","-config","/etc/app/config.yaml"],
+"memstats": {"Alloc":18446744,"TotalAlloc":98765432,"Sys":73400320,"NumGC":412},
+"requests": 1048576,
+"build": "2026-08-14T09:11:02Z"
+}
+`},
+	"server-status": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><title>Apache Status</title></head><body>
+<h1>Apache Server Status for web01 (via 10.0.3.14)</h1>
+<dl><dt>Server Version: Apache/2.4.52 (Ubuntu)</dt>
+<dt>Server MPM: event</dt><dt>Current Time: Monday, 20-Sep-2026 11:14:02 UTC</dt>
+<dt>Parent Server Config. Generation: 3</dt>
+<dt>1 requests currently being processed, 49 idle workers</dt></dl>
+<table><tr><th>Srv</th><th>PID</th><th>Acc</th><th>M</th><th>CPU</th><th>Client</th><th>VHost</th><th>Request</th></tr>
+<tr><td>0-0</td><td>2841</td><td>0/12/4011</td><td>_</td><td>0.31</td><td>10.0.3.9</td><td>app.example.internal</td><td>GET /healthz HTTP/1.1</td></tr>
+</table></body></html>
+`},
+	"webshell": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><title>uploader</title></head><body bgcolor="#000000" text="#00ff00">
+<pre>
+ uname -a : Linux web01 5.4.0-150-generic #167-Ubuntu SMP x86_64
+ user     : www-data (33)
+ pwd      : /var/www/html
+</pre>
+<form method="post"><input type="text" name="cmd" size="60" style="background:#000;color:#0f0"><input type="submit" value="run"></form>
+<form method="post" enctype="multipart/form-data"><input type="file" name="f"><input type="submit" value="upload"></form>
+</body></html>
+`},
+	"idrac": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Integrated Remote Access Controller</title></head>
+<body><div class="login"><h1>Integrated Remote Access Controller 9</h1>
+<form method="post" action="/data/login">
+<label>Username <input name="user" autocomplete="username"></label>
+<label>Password <input type="password" name="password" autocomplete="current-password"></label>
+<label>Domain <select name="domain"><option>This iDRAC</option></select></label>
+<button type="submit">Log In</button></form>
+<p>Firmware 5.10.30.00 &mdash; Service Tag DECOY01</p></div></body></html>
+`},
+	"webmail": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Webmail :: Welcome to Webmail</title>
+<link rel="stylesheet" href="/skins/elastic/styles/styles.min.css"></head>
+<body class="task-login"><div id="layout"><form name="form" method="post" action="/?_task=login">
+<input type="hidden" name="_token" value="decoy0000000000000000000000000000">
+<label for="rcmloginuser">Username</label><input name="_user" id="rcmloginuser" autocomplete="username">
+<label for="rcmloginpwd">Password</label><input type="password" name="_pass" id="rcmloginpwd" autocomplete="current-password">
+<button type="submit">Login</button></form></div></body></html>
+`},
 }
 
 // readBounded reads a file of at most limit bytes.

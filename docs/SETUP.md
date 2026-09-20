@@ -3,7 +3,8 @@
 Installing xproxy on Fedora with the hardened systemd units, socket
 activation and SELinux. Other systemd based distributions work the same way
 apart from package names. See [HARDENING.md](HARDENING.md) for the host
-level checklist and [USAGE.md](USAGE.md) for operation.
+level checklist, [USAGE.md](USAGE.md) for operation and
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md) when something does not work.
 
 ## Requirements
 

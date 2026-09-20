@@ -27,6 +27,7 @@ import (
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/originsig"
 	"github.com/rom/xproxy/internal/otlp"
+	"github.com/rom/xproxy/internal/securitytxt"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/upstream"
@@ -247,6 +248,20 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					bl.ObserveClient(st.clientIP, st.ja4, "challenge")
 				}
 			}
+			return
+		}
+	}
+
+	// A virtual security.txt, answered before routing so that a host
+	// with no route of its own still has one. A request that matches no
+	// entry falls through and is routed as usual, so an origin that
+	// serves its own file keeps doing so.
+	if st.path == securitytxt.Path || st.path == securitytxt.LegacyPath {
+		if doc := rt.securityTxt.Match(st.host, st.clientIP, h.ln.Name); doc != nil {
+			st.route = "_security_txt"
+			st.extra = append(st.extra, "security_txt", doc.Name())
+			s.stats.SecurityTxt.Add(1)
+			doc.Serve(rw, r)
 			return
 		}
 	}

@@ -1,0 +1,85 @@
+# A virtual security.txt (RFC 9116), served by the proxy for every host
+# it fronts — including the parked names that have no route at all, and
+# which are exactly the names a finder tries first.
+#
+# The document belongs to the organisation, not to the application. Put
+# it on every origin and every team that owns an origin has to remember
+# it; the one host that forgot is the one that answers 404 while
+# somebody is trying to tell you about a vulnerability.
+#
+# Entries are tried in order: the first whose selectors match answers,
+# so the entry with no selectors goes last and covers everything else.
+# A request matching no entry is routed as usual, so an origin already
+# serving its own file keeps doing so.
+#
+# Validate: xproxy -config examples/security/security-txt.yaml -validate
+# Check:    curl -s http://localhost:8080/.well-known/security.txt
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+logging:
+  access: {enabled: true}
+
+security_txt:
+  # Staff and the internal network get the internal contact, which is
+  # the one that reaches somebody during working hours.
+  - name: internal
+    client_cidrs: ["10.0.0.0/8", "192.168.0.0/16", "fd00::/8"]
+    comment: |
+      Internal report path. From outside the corporate network this
+      host serves the public document instead.
+    contact:
+      - "mailto:appsec@corp.internal"
+      - "https://wiki.corp.internal/appsec/report"
+    preferred_languages: [en, sv]
+    acknowledgments: ["https://wiki.corp.internal/appsec/thanks"]
+    valid_for: 720h          # 30 days; every reload pushes it forward
+
+  # One brand, with its own policy page and PGP key.
+  - name: shop
+    hosts: ["shop.example.com", "*.shop.example.com"]
+    contact:
+      - "https://example.com/vdp"
+      - "mailto:security@example.com"
+    encryption: ["https://example.com/.well-known/pgp-key.txt"]
+    policy: ["https://example.com/vdp"]
+    acknowledgments: ["https://example.com/hall-of-fame"]
+    canonical:
+      - "https://shop.example.com/.well-known/security.txt"
+      - "https://example.com/.well-known/security.txt"
+    preferred_languages: [en]
+    valid_for: 8760h
+
+  # A naming scheme a wildcard cannot express.
+  - name: numbered-api
+    host_regex: '^api[0-9]{1,3}\.example\.com$'
+    contact: ["mailto:api-security@example.com"]
+    policy: ["https://example.com/vdp"]
+    valid_for: 8760h
+
+  # A clear-signed document, kept as a file so the signature survives.
+  # A reload re-reads it, so re-signing needs no restart. Give a signed
+  # document an explicit Expires inside the signature: valid_for cannot
+  # refresh what is signed.
+  # - name: signed
+  #   hosts: ["www.example.com"]
+  #   body_file: /etc/xproxy/security.txt.asc
+
+  # Everything else, parked names included. No selectors, so it goes
+  # last and answers whatever the entries above did not.
+  - name: default
+    contact: ["mailto:security@example.com"]
+    policy: ["https://example.com/vdp"]
+    canonical: ["https://example.com/.well-known/security.txt"]
+    valid_for: 8760h
+    cache_for: 6h
+
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.10:8080"}]
+
+routes:
+  - name: app
+    paths: [/]
+    upstream: app

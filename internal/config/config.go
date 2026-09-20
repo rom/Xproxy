@@ -59,6 +59,9 @@ type Config struct {
 	Cluster *Cluster `yaml:"cluster"`
 	// VirtualPatches block known vulnerabilities by request shape.
 	VirtualPatches []VirtualPatch `yaml:"virtual_patches"`
+	// SecurityTxt serves a virtual security.txt (RFC 9116) for the hosts
+	// each entry names, before routing.
+	SecurityTxt []SecurityTxt `yaml:"security_txt"`
 	// Fleet makes this node fetch its configuration bundle from a fleet
 	// controller and report its status there (xproxy-fleet).
 	Fleet *Fleet `yaml:"fleet"`
@@ -1829,8 +1832,8 @@ type Respond struct {
 // `mark` so later requests on any route carry the label, and counted
 // towards the `honeypot` ban reason.
 type Honeypot struct {
-	// Decoy names a built-in body: wp-login, env, git-config, phpinfo,
-	// admin-login or robots. Exclusive with body and body_file.
+	// Decoy names a built-in body; xproxyctl honeypot lists them, and
+	// docs/CONFIG.md has the table. Exclusive with body and body_file.
 	Decoy string `yaml:"decoy"`
 	// Status of the decoy response. Default 200.
 	Status int `yaml:"status"`
@@ -1845,6 +1848,79 @@ type Honeypot struct {
 	Delay Duration `yaml:"delay"`
 	// Mark is how long the client stays marked. Default 1h.
 	Mark Duration `yaml:"mark"`
+}
+
+// SecurityTxt is one virtual security.txt document (RFC 9116) and the
+// requests it answers. The proxy serves it at /.well-known/security.txt
+// and at the legacy /security.txt, before routing, so a host with no
+// route of its own still has one — which is the parked name a finder
+// tries first.
+//
+// Entries are tried in order and the first whose selectors all match
+// answers, so an entry with no selectors placed last is the fallback for
+// every other host. A request that matches no entry is routed as usual,
+// so an origin serving its own file keeps doing so.
+type SecurityTxt struct {
+	// Name identifies the entry in the status view and the access log.
+	Name string `yaml:"name"`
+
+	// Hosts are exact names or wildcard patterns ("*.example.com",
+	// which matches a label or more and not the bare name). Empty
+	// matches every host.
+	Hosts []string `yaml:"hosts"`
+	// HostRegex additionally matches the host against an RE2 expression,
+	// for a naming scheme a wildcard cannot express.
+	HostRegex string `yaml:"host_regex"`
+	// ClientCIDRs restrict the entry to clients inside these networks, so
+	// an internal document can differ from the public one.
+	ClientCIDRs []string `yaml:"client_cidrs"`
+	// Listeners restrict the entry to these listener names.
+	Listeners []string `yaml:"listeners"`
+
+	// Contact is one or more ways to report, most preferred first
+	// (mailto:, tel: or https:). Required unless body or body_file is
+	// set.
+	Contact []string `yaml:"contact"`
+	// Expires is an RFC 3339 instant after which the document should not
+	// be used. Exclusive with valid_for.
+	Expires string `yaml:"expires"`
+	// ValidFor sets Expires to this far ahead of the load, refreshed on
+	// every reload, so the document cannot quietly go stale. Default
+	// 8760h (a year), which is the longest RFC 9116 recommends.
+	ValidFor Duration `yaml:"valid_for"`
+	// Encryption points at a key a finder should encrypt to.
+	Encryption []string `yaml:"encryption"`
+	// Acknowledgments points at a page thanking finders.
+	Acknowledgments []string `yaml:"acknowledgments"`
+	// PreferredLanguages are BCP 47 tags, rendered as one field.
+	PreferredLanguages []string `yaml:"preferred_languages"`
+	// Canonical is where this document is expected to be found; it is
+	// what makes a copy found elsewhere recognisable as a copy.
+	Canonical []string `yaml:"canonical"`
+	// Policy points at the disclosure policy.
+	Policy []string `yaml:"policy"`
+	// Hiring points at security job openings.
+	Hiring []string `yaml:"hiring"`
+	// CSAF points at a provider-metadata.json (RFC 9116 section 2.5.4).
+	CSAF []string `yaml:"csaf"`
+	// Extra carries fields this build does not know by name, rendered
+	// after the known ones in name order.
+	Extra map[string][]string `yaml:"extra"`
+	// Comment is placed at the top of the document, each line prefixed
+	// with "# ".
+	Comment string `yaml:"comment"`
+
+	// Body is the document verbatim, for a signed file kept elsewhere.
+	// Exclusive with the fields above.
+	Body string `yaml:"body"`
+	// BodyFile is read at load and on every reload, at most 64 KiB. Use
+	// it for a clear-signed document, which cannot be assembled from
+	// fields without breaking the signature.
+	BodyFile string `yaml:"body_file"`
+
+	// CacheFor sets the Cache-Control max-age of the response. Default
+	// 1h; 0 sends no Cache-Control.
+	CacheFor Duration `yaml:"cache_for"`
 }
 
 // HeaderOps describes header mutations.

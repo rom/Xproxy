@@ -222,6 +222,7 @@ func (v *validator) config(c *Config) {
 		}
 		v.ingress(c.Ingress, byName)
 	}
+	v.securityTxt(c)
 	if c.Challenge != nil {
 		for _, r := range c.Routes {
 			if len(r.Hosts) > 0 {
@@ -1645,8 +1646,149 @@ var denyReasons = map[string]bool{
 	"account_abuse": true,
 }
 
+// securityTxtFieldRE bounds an extra field name to the token RFC 9116
+// inherits from RFC 5322: letters, digits and hyphens.
+var securityTxtFieldRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{0,63}$`)
+
+// securityTxtLangRE is a BCP 47 tag, loosely: a primary subtag and any
+// number of hyphenated subtags.
+var securityTxtLangRE = regexp.MustCompile(`^[A-Za-z]{1,8}(-[A-Za-z0-9]{1,8})*$`)
+
+// securityTxt validates the virtual security.txt entries. RFC 9116 is
+// strict about two things and this follows it: there must be a way to
+// report, and the document must say when it stops being valid.
+func (v *validator) securityTxt(c *Config) {
+	listeners := map[string]bool{}
+	for _, l := range c.Server.Listeners {
+		listeners[l.Name] = true
+	}
+	names := map[string]bool{}
+	for i := range c.SecurityTxt {
+		st := &c.SecurityTxt[i]
+		p := fmt.Sprintf("security_txt[%d]", i)
+		if st.Name != "" {
+			if names[st.Name] {
+				v.errf("%s.name: duplicate %q", p, st.Name)
+			}
+			names[st.Name] = true
+		}
+		for j, h := range st.Hosts {
+			if !hostPatternOK(h) {
+				v.errf("%s.hosts[%d]: %q is not a valid host pattern", p, j, h)
+			}
+		}
+		if st.HostRegex != "" {
+			if len(st.HostRegex) > 512 {
+				v.errf("%s.host_regex: at most 512 bytes", p)
+			} else if _, err := regexp.Compile(st.HostRegex); err != nil {
+				v.errf("%s.host_regex: %v", p, err)
+			}
+		}
+		for j, cidr := range st.ClientCIDRs {
+			if _, err := netip.ParsePrefix(cidr); err != nil {
+				v.errf("%s.client_cidrs[%d]: %q is not a CIDR", p, j, cidr)
+			}
+		}
+		for j, l := range st.Listeners {
+			if !listeners[l] {
+				v.errf("%s.listeners[%d]: unknown listener %q", p, j, l)
+			}
+		}
+		verbatim := st.Body != "" || st.BodyFile != ""
+		if st.Body != "" && st.BodyFile != "" {
+			v.errf("%s: body and body_file are exclusive", p)
+		}
+		if verbatim && (len(st.Contact) > 0 || st.Expires != "" || len(st.Encryption) > 0 ||
+			len(st.Acknowledgments) > 0 || len(st.PreferredLanguages) > 0 || len(st.Canonical) > 0 ||
+			len(st.Policy) > 0 || len(st.Hiring) > 0 || len(st.CSAF) > 0 || len(st.Extra) > 0 || st.Comment != "") {
+			v.errf("%s: body and body_file replace the whole document, so the fields cannot be set with them", p)
+		}
+		switch {
+		case verbatim:
+		case len(st.Contact) == 0:
+			v.errf("%s.contact: required (RFC 9116); a security.txt with no way to report is worse than none", p)
+		}
+		if st.BodyFile != "" {
+			v.file(p+".body_file", st.BodyFile)
+		}
+		if len(st.Body) > 64<<10 {
+			v.errf("%s.body: exceeds 64 KiB", p)
+		}
+		if st.Expires != "" {
+			if st.ValidFor != 0 {
+				v.errf("%s: expires and valid_for are exclusive", p)
+			}
+			t, err := time.Parse(time.RFC3339, st.Expires)
+			switch {
+			case err != nil:
+				v.errf("%s.expires: %q is not an RFC 3339 instant (for example 2027-01-31T00:00:00Z)", p, st.Expires)
+			case !t.After(time.Now()):
+				v.errf("%s.expires: %s is in the past; a finder is told to ignore an expired document", p, st.Expires)
+			case t.After(time.Now().Add(3 * 365 * 24 * time.Hour)):
+				v.warnf("%s.expires: %s is more than three years out; RFC 9116 asks for less than a year", p, st.Expires)
+			}
+		}
+		if st.ValidFor != 0 && (st.ValidFor < Duration(time.Hour) || st.ValidFor > Duration(3*365*24*time.Hour)) {
+			v.errf("%s.valid_for: must be between 1h and three years", p)
+		}
+		if st.CacheFor < 0 || st.CacheFor > Duration(7*24*time.Hour) {
+			v.errf("%s.cache_for: must be between 0 and 168h", p)
+		}
+		v.securityTxtValues(p+".contact", st.Contact)
+		v.securityTxtValues(p+".encryption", st.Encryption)
+		v.securityTxtValues(p+".acknowledgments", st.Acknowledgments)
+		v.securityTxtValues(p+".canonical", st.Canonical)
+		v.securityTxtValues(p+".policy", st.Policy)
+		v.securityTxtValues(p+".hiring", st.Hiring)
+		v.securityTxtValues(p+".csaf", st.CSAF)
+		for j, l := range st.PreferredLanguages {
+			if !securityTxtLangRE.MatchString(l) {
+				v.errf("%s.preferred_languages[%d]: %q is not a language tag", p, j, l)
+			}
+		}
+		for name, values := range st.Extra {
+			if !securityTxtFieldRE.MatchString(name) {
+				v.errf("%s.extra: %q is not a field name (letters, digits and hyphens)", p, name)
+			}
+			v.securityTxtValues(p+".extra."+name, values)
+		}
+		if strings.ContainsAny(st.Comment, "\r") {
+			v.errf("%s.comment: carriage returns are not allowed", p)
+		}
+	}
+}
+
+// hasControlByte reports a C0 control or DEL anywhere in s.
+func hasControlByte(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// securityTxtValues checks the values of one field. A newline would end
+// the field and start another, so a value carrying one could add a
+// Contact of somebody else's choosing to the document this proxy
+// serves.
+func (v *validator) securityTxtValues(path string, values []string) {
+	for i, val := range values {
+		switch {
+		case strings.TrimSpace(val) == "":
+			v.errf("%s[%d]: empty", path, i)
+		case len(val) > 2048:
+			v.errf("%s[%d]: at most 2048 bytes", path, i)
+		case strings.ContainsAny(val, "\r\n"):
+			v.errf("%s[%d]: line breaks are not allowed in a field value", path, i)
+		case hasControlByte(val):
+			v.errf("%s[%d]: control characters are not allowed", path, i)
+		}
+	}
+}
+
 // HoneypotDecoys are the built-in decoy names (bodies live in the proxy).
-var HoneypotDecoys = map[string]bool{"wp-login": true, "env": true, "git-config": true, "phpinfo": true, "admin-login": true, "robots": true}
+var HoneypotDecoys = map[string]bool{"actuator": true, "admin-login": true, "aws-credentials": true, "backup-sql": true, "debug-vars": true, "docker-compose": true, "elasticsearch": true, "env": true, "git-config": true, "grafana": true, "htpasswd": true, "idrac": true, "jenkins": true, "kubeconfig": true, "phpinfo": true, "phpmyadmin": true, "robots": true, "s3-listing": true, "server-status": true, "ssh-key": true, "swagger": true, "tomcat-manager": true, "webmail": true, "webshell": true, "wp-config": true, "wp-login": true}
 
 func (v *validator) bans(b *Bans) {
 	if b.StateFile != "" && !strings.HasPrefix(b.StateFile, "/") {

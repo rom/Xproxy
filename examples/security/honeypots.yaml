@@ -1,0 +1,152 @@
+# Honeypot routes: the paths nobody legitimate asks for.
+#
+# A request for /.env or /wp-login.php on an API host is not a mistake.
+# Each route below answers with a decoy that looks like the thing the
+# scanner wanted, marks the client for an hour, and lets the ban ladder
+# turn a sweep into a ban. The decoys contain nothing an operator would
+# mind being read: every credential, key and host name in them is
+# visibly fake.
+#
+# Three things make this worth running rather than just interesting:
+#
+#   * `mark` labels the client's later requests on every other route
+#     (`honeypot_marked` in the access log, `Info.HoneypotMarked` for
+#     filters, a `bot_score` signal), so one touch here follows the
+#     client across the site.
+#   * `delay` holds the connection in a tarpit slot, which costs the
+#     scanner more than it costs this proxy: a tarpitted request gives
+#     up its concurrency slot first.
+#   * `bans.triggers` below turns a sweep of several decoys into a ban,
+#     while one stray request from a search engine does nothing.
+#
+# Serve this on a host that has no business being scanned. Do not put a
+# honeypot path in front of a real application's namespace: if the
+# origin serves /admin, do not shadow it here.
+#
+# Validate: xproxy -config examples/security/honeypots.yaml -validate
+# Inspect:  xproxyctl honeypot
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+logging:
+  access: {enabled: true}
+  security: {enabled: true}
+
+bans:
+  action: reject
+  state_file: /var/lib/xproxy/bans.db
+  triggers:
+    # Two decoys inside a minute is a sweep, not a typo. The ladder
+    # doubles to a day: a scanner that comes back finds a longer wall.
+    - name: honeypot-sweep
+      reasons: [honeypot]
+      threshold: 2
+      window: 1m
+      duration: 1h
+      escalation: 2
+      max_duration: 24h
+
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.10:8080"}]
+
+routes:
+  # ---- PHP and WordPress -------------------------------------------
+  - name: hp-wp-login
+    paths: [/wp-login.php, /wp-admin, /xmlrpc.php]
+    honeypot: {decoy: wp-login, mark: 1h, delay: 2s}
+  - name: hp-wp-config
+    paths: [/wp-config.php, /wp-config.php.bak, /wp-config.php.save, /wp-config.txt]
+    honeypot: {decoy: wp-config, mark: 1h, delay: 2s}
+  - name: hp-phpmyadmin
+    paths: [/phpmyadmin, /pma, /PMA, /mysql, /dbadmin]
+    honeypot: {decoy: phpmyadmin, mark: 1h, delay: 2s}
+  - name: hp-phpinfo
+    paths: [/phpinfo.php, /info.php, /test.php, /i.php]
+    honeypot: {decoy: phpinfo, mark: 1h}
+
+  # ---- Leaked files -------------------------------------------------
+  - name: hp-dotenv
+    paths: [/.env, /.env.local, /.env.production, /.env.bak, /api/.env]
+    honeypot: {decoy: env, mark: 1h, delay: 2s}
+  - name: hp-git
+    paths: [/.git/config, /.git/HEAD, /.gitconfig]
+    honeypot: {decoy: git-config, mark: 1h}
+  - name: hp-aws
+    paths: [/.aws/credentials, /.aws/config]
+    honeypot: {decoy: aws-credentials, mark: 6h, delay: 2s}
+  - name: hp-ssh
+    paths: [/.ssh/id_rsa, /.ssh/id_ed25519, /id_rsa]
+    honeypot: {decoy: ssh-key, mark: 6h, delay: 2s}
+  - name: hp-kube
+    paths: [/.kube/config]
+    honeypot: {decoy: kubeconfig, mark: 6h, delay: 2s}
+  - name: hp-compose
+    paths: [/docker-compose.yml, /docker-compose.yaml, /Dockerfile]
+    honeypot: {decoy: docker-compose, mark: 1h}
+  - name: hp-htpasswd
+    paths: [/.htpasswd, /.htaccess]
+    honeypot: {decoy: htpasswd, mark: 1h}
+  - name: hp-backup
+    paths: [/backup.sql, /dump.sql, /database.sql, /db.sql, /backup.sql.gz]
+    honeypot: {decoy: backup-sql, mark: 6h, delay: 3s}
+  - name: hp-buckets
+    paths: [/backups/, /backup/, /uploads/backup/]
+    honeypot: {decoy: s3-listing, mark: 1h}
+
+  # ---- Management interfaces ---------------------------------------
+  - name: hp-admin
+    paths: [/admin, /administrator, /admin.php, /adminer.php]
+    honeypot: {decoy: admin-login, mark: 1h, delay: 2s}
+  - name: hp-tomcat
+    paths: [/manager/html, /manager/status, /host-manager/html]
+    honeypot: {decoy: tomcat-manager, mark: 1h, delay: 2s}
+  - name: hp-jenkins
+    paths: [/jenkins, /jenkins/login, /script]
+    honeypot: {decoy: jenkins, mark: 1h}
+  - name: hp-grafana
+    paths: [/grafana, /grafana/login]
+    honeypot: {decoy: grafana, mark: 1h}
+  - name: hp-idrac
+    paths: [/idrac, /ipmi, /redfish/v1]
+    honeypot: {decoy: idrac, mark: 6h, delay: 3s}
+  - name: hp-webmail
+    paths: [/webmail, /roundcube, /owa, /mail]
+    honeypot: {decoy: webmail, mark: 1h}
+
+  # ---- Application internals ---------------------------------------
+  - name: hp-actuator
+    paths: [/actuator, /actuator/env, /actuator/heapdump]
+    honeypot: {decoy: actuator, mark: 6h, delay: 2s}
+  - name: hp-elastic
+    paths: [/_cluster/health, /_cat/indices, /_search]
+    honeypot: {decoy: elasticsearch, mark: 1h}
+  - name: hp-swagger
+    paths: [/swagger.json, /swagger-ui.html, /v2/api-docs, /openapi.json]
+    honeypot: {decoy: swagger, mark: 1h}
+  - name: hp-debug
+    paths: [/debug/vars, /debug/pprof]
+    honeypot: {decoy: debug-vars, mark: 1h}
+  - name: hp-status
+    paths: [/server-status, /server-info, /nginx_status, /status]
+    honeypot: {decoy: server-status, mark: 1h}
+
+  # ---- Shells somebody else supposedly left -------------------------
+  # A request for one of these is a scanner looking for another
+  # attacker's work. Six hours and a long tarpit.
+  - name: hp-webshell
+    paths: [/shell.php, /cmd.php, /up.php, /alfa.php, /wso.php, /c99.php, /upload.php]
+    honeypot: {decoy: webshell, mark: 6h, delay: 5s}
+
+  # ---- The map ------------------------------------------------------
+  # Served honestly: it names the paths above, so a crawler that reads
+  # it and then asks for them has told you what it is.
+  - name: hp-robots
+    paths: [/robots.txt]
+    honeypot: {decoy: robots, mark: 0s}
+
+  # The real application, last: every path above is more specific.
+  - name: app
+    paths: [/]
+    upstream: app
