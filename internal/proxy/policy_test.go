@@ -266,3 +266,57 @@ func TestPolicyHelpers(t *testing.T) {
 		t.Fatal("isUUID")
 	}
 }
+
+// A virtual patch is the emergency control that holds a known
+// vulnerability while the application is fixed, so a body it could not
+// read counts as a match by default: padding past max_bytes used to
+// carry the same payload straight to the origin, while the WAF and
+// ICAP both refuse an oversize body.
+func TestVirtualPatchOverLimit(t *testing.T) {
+	a := newBackend(t, "a")
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+logging: {access: {enabled: false}}
+upstreams:
+  - name: u
+    endpoints: [{address: %q}]
+virtual_patches:
+  - id: strict
+    paths: [/strict]
+    body: {pattern: "__proto__", max_bytes: 1024}
+  - id: lenient
+    paths: [/lenient]
+    body: {pattern: "__proto__", max_bytes: 1024, over_limit: skip}
+routes:
+  - name: r
+    paths: [/]
+    upstream: u
+`, a.addr())
+	_, url := startServer(t, yaml)
+	post := func(path, body string) int {
+		t.Helper()
+		resp, err := http.Post(url+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	payload := `{"__proto__":{"admin":true}}`
+	padded := `{"pad":"` + strings.Repeat("x", 2048) + `","__proto__":{"admin":true}}`
+	if got := post("/strict", payload); got != 403 {
+		t.Fatalf("the payload was not caught: %d", got)
+	}
+	if got := post("/strict", padded); got != 403 {
+		t.Fatalf("padding past max_bytes carried the payload through: %d", got)
+	}
+	if got := post("/lenient", payload); got != 403 {
+		t.Fatalf("over_limit: skip changed a body it could read: %d", got)
+	}
+	if got := post("/lenient", padded); got != 200 {
+		t.Fatalf("over_limit: skip refused an oversize body: %d", got)
+	}
+}

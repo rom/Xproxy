@@ -104,12 +104,42 @@ type ringPoint struct {
 	ep   *Endpoint
 }
 
-const virtualNodes = 128
+const (
+	virtualNodes = 128
+	// maxRingPoints bounds the whole ring. Points cost twelve bytes and
+	// a sort each time the pool is rebuilt, which discovery does on
+	// every poll, so an upstream of a hundred endpoints at weight 1000
+	// would have built and sorted twelve million of them.
+	maxRingPoints = 1 << 16
+)
 
 func newRing(eps []*Endpoint) *ring {
 	r := &ring{}
+	if len(eps) == 0 {
+		return r
+	}
+	// Weights only matter in proportion, so they are divided by their
+	// common divisor first: "100, 200" places the same requests as
+	// "1, 2" and costs three hundredth of the ring. A discovery source
+	// that hands out coprime weights defeats that, so the whole ring is
+	// scaled to fit the bound as well.
+	div := 0
+	total := 0
 	for _, e := range eps {
-		for v := 0; v < virtualNodes*e.Weight; v++ {
+		div = gcd(div, endpointWeight(e))
+	}
+	if div < 1 {
+		div = 1
+	}
+	for _, e := range eps {
+		total += endpointWeight(e) / div
+	}
+	nodes := virtualNodes
+	if total*nodes > maxRingPoints {
+		nodes = max(maxRingPoints/total, 1)
+	}
+	for _, e := range eps {
+		for v := 0; v < nodes*(endpointWeight(e)/div); v++ {
 			h := fnv.New32a()
 			h.Write([]byte(e.Address))
 			h.Write([]byte{'#', byte(v), byte(v >> 8), byte(v >> 16)})
@@ -118,6 +148,16 @@ func newRing(eps []*Endpoint) *ring {
 	}
 	sort.Slice(r.points, func(i, j int) bool { return r.points[i].hash < r.points[j].hash })
 	return r
+}
+
+// endpointWeight is the configured weight, at least one.
+func endpointWeight(e *Endpoint) int { return max(e.Weight, 1) }
+
+func gcd(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
 
 func (r *ring) pick(eps []*Endpoint, key string, exclude map[*Endpoint]bool, now time.Time) *Endpoint {

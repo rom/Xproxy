@@ -193,6 +193,35 @@ Open findings of the earlier rounds:
   stops the replay itself.
 - Token introspection already fails a missing issuer or audience
   (round four), so `audiences` needs no per-provider switch.
+- `virtual_patches[].body.over_limit` decides a body the patch could not
+  read, and treats it as matching by default. A virtual patch is the
+  emergency control that holds a known vulnerability while the
+  application is fixed, and 64 KiB of padding used to carry the same
+  payload straight to the origin while the WAF and ICAP both refuse an
+  oversize body.
+- A span's `client.address` goes through the log redactor's `client_ip`
+  rule (`tracing.redact_client_address`, on by default). A span is not a
+  log line, so nothing took it through the redactor: a deployment that
+  turned redaction on still exported the full address to its trace
+  collector, beside a trace id the access log also carries.
+- `account_guard`'s account hash is an HMAC under a key from a keyring
+  (`secret_file`), not a truncated SHA-256 anybody could recompute. The
+  cluster needs every node to read the same file.
+- The hash ring normalises endpoint weights by their common divisor and
+  has a ceiling: a hundred endpoints at weight 1000 built and sorted
+  twelve million ring points on every discovery poll.
+- The GUI's login limiter keys on the source *and* the account, with a
+  global ceiling. Everyone arriving over the Unix socket or an SSH
+  tunnel shares one address, so five bad guesses used to lock every
+  operator out for five minutes.
+- The scalars a reload writes and a request reads are atomics or taken
+  under the lock they belong to — the cache's bounds, the shedder's
+  bucket span and concurrency ceiling, the inventory's start time and
+  logger, a QUIC flow's peeked server name. The new reload-under-load
+  test found a real one in the cache's store path on its first run.
+- The GUI's `viewer` role is documented for what it is: a trusted
+  operator without write access, which reads the whole configuration
+  file, the logs and the bans.
 
 ### Security (1.3)
 

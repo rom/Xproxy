@@ -331,3 +331,9 @@ func argsToAttrs(args []any) []slog.Attr {
 // Version is the service.version resource attribute of the OTLP log
 // sink; the daemon sets it at start.
 var Version string
+
+// Redactor returns the configured redactor, or nil when redaction is
+// off. It is for the paths that are not log attributes — the trace
+// exporter's client address — and must not be used to bypass the log
+// handler, which applies the rules itself.
+func (l *Logs) Redactor() *Redactor { return l.redactor }

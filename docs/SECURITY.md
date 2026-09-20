@@ -516,10 +516,13 @@ to report a vulnerability. The threat analysis behind the controls is in
   with the credential read from a file rather than the configuration,
   a pinned CA and an optional client certificate, the same bounded
   asynchronous queue, and redaction applied before export. Redaction
-  covers the log streams and the SIEM export; OpenTelemetry traces are
-  outside it, and the access log's trace id links the two, so a
-  deployment that redacts for privacy should treat the trace collector
-  as holding the unredacted values (see docs/CONFIG.md).
+  covers the log streams and the SIEM export, and a span's
+  `client.address` goes through the same `client_ip` rule
+  (`tracing.redact_client_address`, on by default). The rest of a span
+  — the host and the path — is still outside redaction, and the access
+  log's trace id links the two, so a deployment that redacts for
+  privacy should treat the trace collector as holding those values in
+  the clear (see docs/CONFIG.md).
 
 ## Known limits
 

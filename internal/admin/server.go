@@ -492,14 +492,16 @@ type loginRequest struct {
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	src := sourceOf(r)
-	if blocked, wait := s.limiter.blocked(src); blocked {
-		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-		writeJSON(w, 429, map[string]any{"error": "too many failed logins; try again later"})
-		return
-	}
+	// The account is part of the limiter key, so the request is read
+	// first; the body is bounded by readJSON.
 	var req loginRequest
 	if err := readJSON(r, &req); err != nil {
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
+		return
+	}
+	if blocked, wait := s.limiter.blocked(src, req.User); blocked {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeJSON(w, 429, map[string]any{"error": "too many failed logins; try again later"})
 		return
 	}
 	u, ok := s.users.Lookup(req.User)
@@ -519,12 +521,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !valid {
-		s.limiter.fail(src)
+		s.limiter.fail(src, req.User)
 		s.log.Warn("admin login failed", "user", req.User, "source", src)
 		writeJSON(w, 401, map[string]any{"error": "invalid user or password"})
 		return
 	}
-	s.limiter.reset(src)
+	s.limiter.reset(src, req.User)
 	tok, err := s.sessions.create(u.Name, u.Role, "password")
 	if err != nil {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})

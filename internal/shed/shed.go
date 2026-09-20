@@ -62,10 +62,14 @@ const buckets = 20
 
 // Shedder computes the load level and admits requests by class.
 type Shedder struct {
-	mu         sync.Mutex
-	target     float64 // seconds
-	window     time.Duration
-	bucketSpan time.Duration
+	mu     sync.Mutex
+	target float64 // seconds
+	window time.Duration
+	// bucketSpan and maxInflight are written by Reconfigure on a reload
+	// and read outside the lock on the request path, so they are
+	// atomics: a word-sized read racing a word-sized write is benign in
+	// practice and undefined under the Go memory model.
+	bucketSpan atomic.Int64 // nanoseconds
 	sum        [buckets]float64
 	count      [buckets]int64
 	stamp      [buckets]int64 // bucket index in absolute terms
@@ -74,7 +78,7 @@ type Shedder struct {
 	retryAfter time.Duration
 
 	inflight    func() int64
-	maxInflight int64
+	maxInflight atomic.Int64
 	shedding    [3]atomic.Bool
 	shed        [4]atomic.Uint64
 	admitted    atomic.Uint64
@@ -84,7 +88,8 @@ type Shedder struct {
 // New creates a shedder. inflight reports admitted requests; maxInflight is
 // the concurrency ceiling.
 func New(cfg *config.Shedding, inflight func() int64, maxInflight int) *Shedder {
-	s := &Shedder{inflight: inflight, maxInflight: int64(maxInflight), now: time.Now}
+	s := &Shedder{inflight: inflight, now: time.Now}
+	s.maxInflight.Store(int64(maxInflight))
 	s.Reconfigure(cfg, maxInflight)
 	return s
 }
@@ -96,7 +101,7 @@ func (s *Shedder) Reconfigure(cfg *config.Shedding, maxInflight int) {
 	s.target = cfg.TargetLatency.D().Seconds()
 	if cfg.Window.D() != s.window {
 		s.window = cfg.Window.D()
-		s.bucketSpan = s.window / buckets
+		s.bucketSpan.Store(int64(s.window / buckets))
 		s.sum = [buckets]float64{}
 		s.count = [buckets]int64{}
 		s.stamp = [buckets]int64{}
@@ -104,13 +109,17 @@ func (s *Shedder) Reconfigure(cfg *config.Shedding, maxInflight int) {
 	s.thresholds = [3]float64{cfg.Low, cfg.Normal, cfg.High}
 	s.hysteresis = cfg.Hysteresis
 	s.retryAfter = cfg.RetryAfter.D()
-	s.maxInflight = int64(maxInflight)
+	s.maxInflight.Store(int64(maxInflight))
 }
 
 // Observe records one upstream time to first byte.
 func (s *Shedder) Observe(d time.Duration) {
 	now := s.now()
-	idx := now.UnixNano() / int64(s.bucketSpan)
+	span := s.bucketSpan.Load()
+	if span <= 0 {
+		return
+	}
+	idx := now.UnixNano() / span
 	i := int(idx % buckets)
 	s.mu.Lock()
 	if s.stamp[i] != idx {
@@ -126,7 +135,11 @@ func (s *Shedder) Observe(d time.Duration) {
 // Latency returns the average observed latency inside the window.
 func (s *Shedder) Latency() time.Duration {
 	now := s.now()
-	idx := now.UnixNano() / int64(s.bucketSpan)
+	span := s.bucketSpan.Load()
+	if span <= 0 {
+		return 0
+	}
+	idx := now.UnixNano() / span
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var sum float64
@@ -146,8 +159,8 @@ func (s *Shedder) Latency() time.Duration {
 // Level returns the current load level in [0, 1].
 func (s *Shedder) Level() float64 {
 	var inflightLevel float64
-	if s.maxInflight > 0 {
-		inflightLevel = float64(s.inflight()) / float64(s.maxInflight)
+	if m := s.maxInflight.Load(); m > 0 {
+		inflightLevel = float64(s.inflight()) / float64(m)
 	}
 	lat := s.Latency().Seconds()
 	s.mu.Lock()

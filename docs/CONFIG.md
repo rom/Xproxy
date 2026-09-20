@@ -1436,7 +1436,7 @@ counts per patch and hits survive reloads.
 | `query` | list of `{name, pattern}` | | The parameter must be present and, with `pattern`, some value must contain a match |
 | `headers` | list of `{name, pattern}` | | Same for header fields (names case insensitive) |
 | `cookies` | list of `{name, pattern}` | | Same for cookies |
-| `body` | object | none | `pattern` (required) matched anywhere in the body, buffered up to `max_bytes` (default 64 KiB, at most 16 MiB) and replayed to the upstream; `content_types` narrows the inspection; a larger body or another media type does not match |
+| `body` | object | none | `pattern` (required) matched anywhere in the body, buffered up to `max_bytes` (default 64 KiB, at most 16 MiB) and replayed to the upstream; `content_types` narrows the inspection, and a body of another media type does not match. `over_limit` decides a body past `max_bytes` or one that could not be read: `match` (default) treats it as matching, `skip` lets it through. A virtual patch is the emergency control that holds a known vulnerability while the application is fixed, and the WAF and ICAP both refuse an oversize body, so `skip` means 64 KiB of padding carries the same payload to the origin |
 | `action` | `block`, `log` | `block` | |
 | `status` | int | `403` | Response for `block`; 4xx or 5xx (404 hides the patched path) |
 | `expires` | date | none | RFC 3339 or `YYYY-MM-DD` (end of that day, UTC); an expired patch no longer applies and shows as expired |
@@ -1850,6 +1850,7 @@ unverified request of the endpoint is challenged (or blocked).
 | `max_body_bytes` | int | `65536` | Request body buffered to read an identity (up to 8 MiB); a larger body yields no identity |
 | `max_delayed` | int | `256` | Requests held in delay steps at once; beyond it the delay is skipped and a throttled warning written |
 | `disposable_domains` | list | `[]` | Lower case domains added to the built-in list |
+| `secret_file` | path | a key made at start | Keyring whose primary key keys the account hash. The hash stands in for the account in the tables, the access and security logs and every cluster event, and a plain digest of an address or a user name is not an anonymisation — the input space is small enough to enumerate — so anyone who sees one could confirm whether an account exists. Every node of a cluster must read the same file, or a peer event names a hash the other nodes cannot match; without a file the key is node-local and the filter says so at start |
 
 Default ladders (thresholds reached within the window): `login` delays
 2s at 5 address, 3 account or 3 pair failures, challenges at 15
@@ -2097,6 +2098,7 @@ telemetry` and `GET /v1/telemetry` show the counters.
 | `sample_percent` | 0 to 100 | `100` | Share of traces recorded and exported; propagation happens regardless |
 | `propagate` | bool | `true` | Send `traceparent` and `tracestate` to the upstream; off, an incoming header is stripped |
 | `trust_incoming` | bool | `false` | Honour the sampled flag of an incoming `traceparent` (behind a trusted balancer that samples) |
+| `redact_client_address` | bool | `true` | Run a span's `client.address` through `logging.redaction`'s `client_ip` rule. A span is not a log line, so nothing else takes it through the redactor: without this a deployment that turned redaction on to pseudonymise addresses still exported the full address to its trace collector, beside a trace id the access log also carries. The host and the path on a span are still outside redaction |
 | `otlp` | object | none | Span exporter with the same keys as `logging.otlp` (`endpoint` is the traces URL, `/v1/traces`) |
 
 A reload that changes the section rebuilds the tracer; spans in flight

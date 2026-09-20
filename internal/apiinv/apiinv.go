@@ -102,14 +102,22 @@ type shard struct {
 	entries map[string]*entry
 }
 
+// warnLogger is what the table needs from a logger.
+type warnLogger interface{ Warn(string, ...any) }
+
 // Table is the inventory; one lives for the process.
 type Table struct {
 	cfg     atomic.Pointer[Config]
 	shards  [shards]shard
 	count   atomic.Int64
 	dropped bound.Notice
-	started time.Time
-	log     interface{ Warn(string, ...any) }
+	// started and log are written by Configure and Reset — a reload and
+	// a management call — and read on the report and save paths, so
+	// they are atomics rather than plain fields: a word-sized read
+	// racing a word-sized write is benign in practice and undefined
+	// under the Go memory model.
+	started atomic.Int64 // Unix nanoseconds
+	log     atomic.Pointer[warnLogger]
 
 	stop chan struct{}
 	once sync.Once
@@ -118,7 +126,8 @@ type Table struct {
 
 // New creates an empty table.
 func New() *Table {
-	t := &Table{started: time.Now(), stop: make(chan struct{})}
+	t := &Table{stop: make(chan struct{})}
+	t.started.Store(time.Now().UnixNano())
 	for i := range t.shards {
 		t.shards[i].entries = map[string]*entry{}
 	}
@@ -133,7 +142,10 @@ func (t *Table) Configure(c Config, log interface{ Warn(string, ...any) }) {
 	}
 	prev := t.cfg.Load()
 	t.cfg.Store(&c)
-	t.log = log
+	if log != nil {
+		wl := warnLogger(log)
+		t.log.Store(&wl)
+	}
 	if c.Enabled && c.StateFile != "" && (prev == nil || prev.StateFile != c.StateFile) {
 		if err := t.load(c.StateFile); err != nil && !errors.Is(err, os.ErrNotExist) && log != nil {
 			log.Warn("api inventory state not loaded", "file", c.StateFile, "err", err.Error())
@@ -174,8 +186,10 @@ func (t *Table) saveNow() {
 	if c.StateFile == "" {
 		return
 	}
-	if err := t.Save(c.StateFile); err != nil && t.log != nil {
-		t.log.Warn("api inventory state not saved", "file", c.StateFile, "err", err.Error())
+	if err := t.Save(c.StateFile); err != nil {
+		if wl := t.log.Load(); wl != nil {
+			(*wl).Warn("api inventory state not saved", "file", c.StateFile, "err", err.Error())
+		}
 	}
 }
 
@@ -311,7 +325,7 @@ type Report struct {
 // operations, for zombie detection.
 func (t *Table) Report(view string, top int, docs map[string][]Operation, now time.Time) Report {
 	c := t.config()
-	rep := Report{Enabled: c.Enabled, Since: t.started, MaxEndpoints: c.MaxEndpoints, Dropped: t.dropped.Total(), ZombieAfter: c.ZombieAfter.String(), View: view, Items: []Endpoint{}}
+	rep := Report{Enabled: c.Enabled, Since: time.Unix(0, t.started.Load()), MaxEndpoints: c.MaxEndpoints, Dropped: t.dropped.Total(), ZombieAfter: c.ZombieAfter.String(), View: view, Items: []Endpoint{}}
 	var all []Endpoint
 	seen := map[string]bool{} // route|method|path of observed documented endpoints
 	for i := range t.shards {
@@ -435,7 +449,7 @@ func (t *Table) Reset() {
 		sh.mu.Unlock()
 	}
 	t.count.Store(0)
-	t.started = time.Now()
+	t.started.Store(time.Now().UnixNano())
 }
 
 type state struct {
@@ -445,7 +459,7 @@ type state struct {
 
 // Save writes the table to path atomically (mode 0600).
 func (t *Table) Save(path string) error {
-	st := state{Started: t.started}
+	st := state{Started: time.Unix(0, t.started.Load())}
 	for i := range t.shards {
 		sh := &t.shards[i]
 		sh.mu.Lock()
@@ -491,8 +505,8 @@ func (t *Table) load(path string) error {
 	if err := json.Unmarshal(data, &st); err != nil {
 		return err
 	}
-	if !st.Started.IsZero() && st.Started.Before(t.started) {
-		t.started = st.Started
+	if !st.Started.IsZero() && st.Started.UnixNano() < t.started.Load() {
+		t.started.Store(st.Started.UnixNano())
 	}
 	limit := int64(t.config().MaxEndpoints)
 	for _, e := range st.Entries {

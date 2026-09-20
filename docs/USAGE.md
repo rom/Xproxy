@@ -2600,6 +2600,16 @@ Roles:
 | `viewer` | See every screen: overview, upstreams, routes, WAF, bans, graphs, cluster, certificates, subsystems, history, the configuration file and the logs |
 | `operator` | Everything a viewer may, plus ban and unban, reload, reload certificates, reopen logs, renew certificates, reset the WAF statistics, roll back to a recorded configuration, edit and save the configuration file, restart the data plane |
 
+`viewer` is a trusted operator without write access, not a
+low-privilege or public role. It reads the whole configuration file —
+including the paths of every key and secret, the upstream addresses,
+the access lists and the WAF profile — the logs, and the bans and
+fingerprints of real clients. Give it to the people you would give
+read access to the host, an on-call engineer or a second pair of eyes
+during a change; do not give it to anyone who may not see the
+configuration. What it cannot do is change anything, which is the
+whole of the distinction.
+
 Revocation takes effect while the GUI runs. The users file is the
 authority, not a copy read at start-up: it is re-read whenever it changes
 on disk, whoever changed it, and the account behind a session cookie is
@@ -2656,9 +2666,14 @@ through an SSH tunnel (`ssh -L 8443:127.0.0.1:8443 edge`). Binding to any
 other address requires `-tls-cert`, `-tls-key` and `-client-ca`: the
 browser must present a client certificate from that CA, and a certificate
 whose common name matches a user logs that user in without a password
-(`-cert-only` users have no password at all). Five failed logins from one
-address lock it out for five minutes. Sessions end after thirty minutes
-idle or twelve hours in total.
+(`-cert-only` users have no password at all). Five failed logins lock
+that address and account pair out for five minutes; a hundred failures
+from anywhere in the same window close the login page for everyone,
+which is the right answer when that many logins fail at once. The pair
+is the key because everyone arriving over the Unix socket or an SSH
+tunnel shares one address, so keying on the address alone let one
+client lock every operator out with five bad guesses. Sessions end
+after thirty minutes idle or twelve hours in total.
 
 Single sign-on: with `-oidc-issuer`, `-oidc-client-id` and
 `-oidc-client-secret-file` the login page offers "Sign in with

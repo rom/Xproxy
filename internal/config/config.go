@@ -750,6 +750,20 @@ type Tracing struct {
 	// OTLP exports spans; without it the context is only propagated and
 	// logged.
 	OTLP *OTLPExport `yaml:"otlp"`
+	// RedactClientAddress runs a span's client.address through
+	// logging.redaction's client_ip rule. Default true.
+	//
+	// A span is not a log line, so nothing took it through the
+	// redactor: a deployment that turned redaction on to pseudonymise
+	// addresses still exported the full address to its trace collector,
+	// and the access log carries the trace id, so holding both stores
+	// reversed the pseudonymisation by design.
+	RedactClientAddress *bool `yaml:"redact_client_address"`
+}
+
+// RedactsClientAddress reports the setting with its default.
+func (t *Tracing) RedactsClientAddress() bool {
+	return t == nil || t.RedactClientAddress == nil || *t.RedactClientAddress
 }
 
 // IsEnabled reports whether tracing is on.
@@ -1476,13 +1490,25 @@ type PatchMatch struct {
 type PatchBody struct {
 	// Pattern is an RE2 expression matched anywhere in the body.
 	Pattern string `yaml:"pattern"`
-	// MaxBytes bounds the body inspected; a larger body does not match
-	// the patch. Default 64 KiB.
+	// MaxBytes bounds the body inspected. Default 64 KiB.
 	MaxBytes int64 `yaml:"max_bytes"`
 	// ContentTypes narrows the inspection to these media types (type/*
 	// allowed). Empty inspects every body.
 	ContentTypes []string `yaml:"content_types"`
+	// OverLimit decides a body larger than MaxBytes, or one the filter
+	// could not read: "match" (default) treats it as matching the
+	// patch, "skip" lets it through unmatched.
+	//
+	// A virtual patch is the emergency control that holds a known
+	// vulnerability while the application is fixed, and every sibling
+	// control here refuses an oversize body rather than passing it. With
+	// "skip", 64 KiB of padding carries the same payload straight to the
+	// origin.
+	OverLimit string `yaml:"over_limit"`
 }
+
+// MatchesOverLimit reports the setting with its default.
+func (b *PatchBody) MatchesOverLimit() bool { return b == nil || b.OverLimit != "skip" }
 
 // HeaderMatch is one condition on a request header or cookie: exactly
 // one of Exact, Prefix, Regex or Present. Header names are matched case

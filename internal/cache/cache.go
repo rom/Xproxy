@@ -75,7 +75,11 @@ func (c *Cache) Resize(maxBytes, maxObject int64) {
 }
 
 // MaxObject returns the per entry bound.
-func (c *Cache) MaxObject() int64 { return c.maxObj }
+func (c *Cache) MaxObject() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.maxObj
+}
 
 // Key derives the primary key of a request: method, host, path and the
 // selected query and header values.
@@ -136,11 +140,14 @@ func (c *Cache) Put(primary string, req http.Header, e *Entry) bool {
 			e.size += int64(len(v))
 		}
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// The bounds are read here rather than before the lock: Resize
+	// writes them on a reload, and a request storing an entry while a
+	// reload changes the size was a genuine data race.
 	if e.size > c.maxObj || e.size > c.maxBytes {
 		return false
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if len(e.varyNames) > 0 {
 		c.vary[primary] = e.varyNames
 	} else {
@@ -221,10 +228,15 @@ type Stats struct {
 
 // Stats returns counters and sizes.
 func (c *Cache) Stats() Stats {
+	// maxBytes and maxObj are written by Resize on a reload, so they are
+	// read under the lock like everything else here: a word-sized read
+	// racing a word-sized write is benign in practice and undefined
+	// under the Go memory model, and there was no test that reloaded
+	// under load to catch it.
 	c.mu.Lock()
-	n, b := len(c.entries), c.bytes
+	n, b, maxBytes, maxObj := len(c.entries), c.bytes, c.maxBytes, c.maxObj
 	c.mu.Unlock()
-	return Stats{Entries: n, Bytes: b, MaxBytes: c.maxBytes, MaxObject: c.maxObj, Hits: c.Hits.Load(), Misses: c.Misses.Load(),
+	return Stats{Entries: n, Bytes: b, MaxBytes: maxBytes, MaxObject: maxObj, Hits: c.Hits.Load(), Misses: c.Misses.Load(),
 		Stores: c.Stores.Load(), Evictions: c.Evictions.Load(), Purged: c.Purges.Load()}
 }
 

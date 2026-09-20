@@ -2322,8 +2322,12 @@
           }
         },
         "max_bytes": {
-          "description": "MaxBytes bounds the body inspected; a larger body does not match the patch. Default 64 KiB.",
+          "description": "MaxBytes bounds the body inspected. Default 64 KiB.",
           "type": "integer"
+        },
+        "over_limit": {
+          "description": "OverLimit decides a body larger than MaxBytes, or one the filter could not read: \"match\" (default) treats it as matching the patch, \"skip\" lets it through unmatched. A virtual patch is the emergency control that holds a known vulnerability while the application is fixed, and every sibling control here refuses an oversize body rather than passing it. With \"skip\", 64 KiB of padding carries the same payload straight to the origin.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -3687,6 +3691,10 @@
         },
         "propagate": {
           "description": "Propagate sends traceparent and tracestate to the upstream. Default true.",
+          "type": "boolean"
+        },
+        "redact_client_address": {
+          "description": "RedactClientAddress runs a span's client.address through logging.redaction's client_ip rule. Default true. A span is not a log line, so nothing took it through the redactor: a deployment that turned redaction on to pseudonymise addresses still exported the full address to its trace collector, and the access log carries the trace id, so holding both stores reversed the pseudonymisation by design.",
           "type": "boolean"
         },
         "sample_percent": {

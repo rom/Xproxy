@@ -1195,8 +1195,17 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 		if st.span.Sampled {
 			attrs = append(attrs, "trace_sampled", true)
 		}
+		// A span is not a log line, so the redactor never saw it: the
+		// client address goes through the same client_ip rule here, or
+		// a deployment that turned redaction on still shipped the full
+		// address to its trace collector beside a trace id the access
+		// log also carries.
+		clientAddr := st.clientIP.String()
+		if s.traceRedactIP.Load() {
+			clientAddr = s.logs.Redactor().ClientAddress(clientAddr)
+		}
 		st.span.Set(otlp.String("http.request.method", r.Method), otlp.String("url.path", r.URL.Path), otlp.String("server.address", r.Host),
-			otlp.String("network.protocol.version", r.Proto), otlp.Int("http.response.status_code", int64(status)), otlp.String("client.address", st.clientIP.String()),
+			otlp.String("network.protocol.version", r.Proto), otlp.Int("http.response.status_code", int64(status)), otlp.String("client.address", clientAddr),
 			otlp.String("xproxy.request_id", st.id), otlp.String("xproxy.route", st.route))
 		if st.upstream != "" {
 			st.span.Set(otlp.String("xproxy.upstream", st.upstream))

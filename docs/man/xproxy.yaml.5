@@ -5298,7 +5298,7 @@ object
 T}	T{
 none
 T}	T{
-\fBpattern\fR (required) matched anywhere in the body,\: buffered up to \fBmax_\:bytes\fR (default 64 KiB,\: at most 16 MiB) and replayed to the upstream;\: \fBcontent_\:types\fR narrows the inspection;\: a larger body or another media type does not match
+\fBpattern\fR (required) matched anywhere in the body,\: buffered up to \fBmax_\:bytes\fR (default 64 KiB,\: at most 16 MiB) and replayed to the upstream;\: \fBcontent_\:types\fR narrows the inspection,\: and a body of another media type does not match. \fBover_\:limit\fR decides a body past \fBmax_\:bytes\fR or one that could not be read: \fBmatch\fR (default) treats it as matching,\: \fBskip\fR lets it through. A virtual patch is the emergency control that holds a known vulnerability while the application is fixed,\: and the WAF and ICAP both refuse an oversize body,\: so \fBskip\fR means 64 KiB of padding carries the same payload to the origin
 T}
 T{
 \fBaction\fR
@@ -6926,6 +6926,15 @@ T}	T{
 T}	T{
 Lower case domains added to the built\-in list
 T}
+T{
+\fBsecret_\:file\fR
+T}	T{
+path
+T}	T{
+a key made at start
+T}	T{
+Keyring whose primary key keys the account hash. The hash stands in for the account in the tables,\: the access and security logs and every cluster event,\: and a plain digest of an address or a user name is not an anonymisation \[u2014] the input space is small enough to enumerate \[u2014] so anyone who sees one could confirm whether an account exists. Every node of a cluster must read the same file,\: or a peer event names a hash the other nodes cannot match;\: without a file the key is node\-local and the filter says so at start
+T}
 .TE
 .PP
 Default ladders (thresholds reached within the window): \fBlogin\fR delays 2s at 5 address, 3 account or 3 pair failures, challenges at 15 address, 5 account, 5 pair, 10 accounts per address, 5 addresses per account or 10 accounts per device, blocks 15m at 50 address, 20 account, 10 pair, 30 accounts per address, 20 addresses per account, 50 events or 30 accounts per device; \fBregister\fR delays 2s at 2 requests per address, challenges at 3 per address or device or 2 per identity, blocks 1h at 10 per address or device or 5 per identity; \fBreset\fR delays 2s at 3 per address or 2 per account, challenges at 5 per address or device or 3 per account, blocks 1h at 20 or 10; \fBcart\fR delays 1s at 30, challenges at 60 and blocks 30m at 150 requests per address, identity or device; \fBscrape\fR delays 1s at 200 requests or 100 distinct paths per address, challenges at 400 or 200 and blocks 1h at 1000. Tables are bounded per endpoint (65536 keys each, oldest evicted with a throttled warning). A delay holds a request slot, so keep \fBmax_delayed\fR under the route\(aqs concurrency.
@@ -7638,6 +7647,15 @@ T}	T{
 \fBfalse\fR
 T}	T{
 Honour the sampled flag of an incoming \fBtraceparent\fR (behind a trusted balancer that samples)
+T}
+T{
+\fBredact_\:client_\:address\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Run a span\(aqs \fBclient.\:address\fR through \fBlogging.\:redaction\fR\(aqs \fBclient_\:ip\fR rule. A span is not a log line,\: so nothing else takes it through the redactor: without this a deployment that turned redaction on to pseudonymise addresses still exported the full address to its trace collector,\: beside a trace id the access log also carries. The host and the path on a span are still outside redaction
 T}
 T{
 \fBotlp\fR

@@ -68,8 +68,11 @@ type Server struct {
 	shedder     atomic.Pointer[shed.Shedder]
 	challenger  atomic.Pointer[challenge.Challenger]
 	tracer      atomic.Pointer[tracing.Tracer]
-	sampler     *metrics.Sampler
-	acme        *acme.Manager
+	// traceRedactIP runs a span's client.address through the log
+	// redactor; see config.Tracing.RedactClientAddress.
+	traceRedactIP atomic.Bool
+	sampler       *metrics.Sampler
+	acme          *acme.Manager
 	// wafStats keeps per rule counters and learning across reloads.
 	wafStats *waf.Stats
 	// patches keeps virtual patch hit counters across generations.
@@ -213,6 +216,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	if cfg.Cache != nil {
 		s.cache.Store(cache.New(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes))
 	}
+	s.traceRedactIP.Store(cfg.Tracing.RedactsClientAddress())
 	if cfg.Tracing.IsEnabled() {
 		tr, err := newTracer(cfg.Tracing, logs.Error)
 		if err != nil {
@@ -1013,6 +1017,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 	}
 	// Tracing: rebuilt when its section changed, so a reload can move
 	// the collector or the sampling share.
+	s.traceRedactIP.Store(cfg.Tracing.RedactsClientAddress())
 	if !sameTracing(old.cfg.Tracing, cfg.Tracing) {
 		var next *tracing.Tracer
 		if cfg.Tracing.IsEnabled() {

@@ -33,6 +33,8 @@ package accountguard
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -53,6 +55,7 @@ import (
 	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/secret"
 )
 
 // Reason is the deny reason of every block, the ban trigger category
@@ -182,6 +185,21 @@ type Config struct {
 	MaxDelayed int `json:"max_delayed"`
 	// DisposableDomains extend the built-in list.
 	DisposableDomains []string `json:"disposable_domains"`
+	// SecretFile is the keyring whose primary key keys the account
+	// hash. Every cluster node must read the same file, because the
+	// hash is what a peer event names.
+	//
+	// The hash stands in for the account everywhere this filter speaks:
+	// its tables, the access log, the security log, a cluster event. A
+	// plain digest of an address or a user name is not an anonymisation
+	// — the input space is small enough to enumerate — so anyone who
+	// sees one confirms whether an account exists by computing it. With
+	// a key they cannot.
+	//
+	// Without a file the process makes one key at start. That is safe
+	// but node-local: peer events then name hashes the other nodes
+	// cannot match, so set it for a cluster.
+	SecretFile string `json:"secret_file"`
 }
 
 const (
@@ -484,8 +502,10 @@ func newTable() *table {
 }
 
 type guard struct {
-	name       string
-	cfg        *Config
+	name string
+	cfg  *Config
+	// key keys the account hash; see Config.SecretFile.
+	key        []byte
 	disposable map[string]bool
 	events     filter.Events
 	log        *slog.Logger
@@ -569,10 +589,23 @@ func (g *guard) match(path, method string) *Endpoint {
 	return nil
 }
 
-func hashIdentity(id string) string {
-	sum := sha256.Sum256([]byte(id))
-	return hex.EncodeToString(sum[:])[:hashLen]
+func (g *guard) hashIdentity(id string) string {
+	m := hmac.New(sha256.New, g.key)
+	m.Write([]byte(id))
+	return hex.EncodeToString(m.Sum(nil))[:hashLen]
 }
+
+// processKey is the key used when no secret_file is configured: one per
+// process, so a reload does not invalidate the tables it built.
+var processKey = sync.OnceValue(func() []byte {
+	k := make([]byte, 32)
+	if _, err := rand.Read(k); err != nil {
+		// A failing system random source is not something this filter
+		// can paper over; an all-zero key would silently be no key.
+		panic("account_guard: no system randomness for the account hash key: " + err.Error())
+	}
+	return k
+})
 
 // identity extracts and normalises the account identifier, buffering
 // and replaying the body when it lives there.
@@ -661,7 +694,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	in.device = in.info.DeviceID
 	id := in.identity(r)
 	if id != "" {
-		in.hash = hashIdentity(id)
+		in.hash = in.g.hashIdentity(id)
 	}
 	now := g.now()
 	t := ep.table
@@ -1181,6 +1214,16 @@ func newGuard(name string, opts filter.Options, env filter.Env) (*guard, error) 
 	}
 	g := &guard{name: name, cfg: cfg, events: env.Events, now: time.Now, disposable: map[string]bool{}}
 	g.log = env.Log
+	g.key = processKey()
+	if cfg.SecretFile != "" {
+		ring, err := secret.LoadOrCreate(cfg.SecretFile)
+		if err != nil {
+			return nil, fmt.Errorf("account_guard secret: %w", err)
+		}
+		g.key = ring.Primary()
+	} else if env.Log != nil {
+		env.Log.Warn("account_guard: no secret_file, so the account hash key is node-local; set one so a cluster's peer events name the same accounts", "filter", name)
+	}
 	for _, d := range DisposableDomains {
 		g.disposable[d] = true
 	}

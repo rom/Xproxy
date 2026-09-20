@@ -3066,6 +3066,11 @@ func (v *validator) virtualPatches(patches []VirtualPatch, routes map[string]boo
 				v.errf("%s.body.max_bytes: must be between 1 and 16 MiB", p)
 			}
 			v.mediaTypes(p+".body.content_types", b.ContentTypes)
+			switch b.OverLimit {
+			case "", "match", "skip":
+			default:
+				v.errf("%s.body.over_limit: must be match or skip", p)
+			}
 		}
 		if len(vp.Paths)+len(vp.PathRegex)+len(vp.Query)+len(vp.Headers)+len(vp.Cookies) == 0 && vp.Body == nil {
 			v.errf("%s: needs at least one of paths, path_regex, query, headers, cookies or body", p)
