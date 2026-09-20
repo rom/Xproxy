@@ -515,7 +515,11 @@ to report a vulnerability. The threat analysis behind the controls is in
   Event Collector envelope, CEF or LEEF (the last two also over syslog),
   with the credential read from a file rather than the configuration,
   a pinned CA and an optional client certificate, the same bounded
-  asynchronous queue, and redaction applied before export.
+  asynchronous queue, and redaction applied before export. Redaction
+  covers the log streams and the SIEM export; OpenTelemetry traces are
+  outside it, and the access log's trace id links the two, so a
+  deployment that redacts for privacy should treat the trace collector
+  as holding the unredacted values (see docs/CONFIG.md).
 
 ## Known limits
 

@@ -384,7 +384,16 @@ func TestServer(t *testing.T) {
 	var lines int
 	hooks := Hooks{
 		Access: func(...any) { mu.Lock(); lines++; mu.Unlock() },
-		Event:  func(c netip.Addr, reason string, _ ...any) { mu.Lock(); events = append(events, reason); mu.Unlock() },
+		Event: func(c netip.Addr, reason string, verified bool, _ ...any) {
+			mu.Lock()
+			// A UDP source completed no round trip, so the listener must
+			// say so and the caller must not attribute the event to it.
+			if verified {
+				reason += " (verified)"
+			}
+			events = append(events, reason)
+			mu.Unlock()
+		},
 		Banned: func(c netip.Addr) bool { return false },
 	}
 	policy := &Policy{

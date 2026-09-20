@@ -142,8 +142,12 @@ func TestTwoNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "ban a->b", func() bool { return b.bans.Banned(netip.MustParseAddr("203.0.113.10")) })
+	// The source is the peer's certificate name ("node-a"), not the node
+	// id it announced ("a"): the certificate is authenticated and the
+	// announced id is not, so only the certificate name makes the audit
+	// trail something a rogue peer cannot write in another node's name.
 	for _, e := range b.bans.Entries() {
-		if e.Target == "203.0.113.10" && e.Source != "peer:a" {
+		if e.Target == "203.0.113.10" && e.Source != "peer:node-a" {
 			t.Fatalf("source %q", e.Source)
 		}
 	}
@@ -156,7 +160,7 @@ func TestTwoNodes(t *testing.T) {
 	a.rates.queue("per-ip", "198.51.100.1", 20)
 	waitFor(t, "rates a->b", func() bool { return len(b.rates.got()) > 0 })
 	r := b.rates.got()[0]
-	if r.peer != "a" || r.policy != "per-ip" || len(r.reports) != 1 || r.reports[0].Key != "198.51.100.1" || r.reports[0].Rate < 50 {
+	if r.peer != "node-a" || r.policy != "per-ip" || len(r.reports) != 1 || r.reports[0].Key != "198.51.100.1" || r.reports[0].Rate < 50 {
 		t.Fatalf("report %+v", r)
 	}
 
@@ -208,7 +212,8 @@ func TestEvents(t *testing.T) {
 	waitFor(t, "events a->b", func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 2 })
 	mu.Lock()
 	defer mu.Unlock()
-	if got[0].Kind != "honeypot_mark" || got[0].Key != "203.0.113.5" || got[0].Route != "wp" || !got[0].Until.Equal(until) || peers[0] != "a" {
+	// peers[0] is the certificate name, as for bans above.
+	if got[0].Kind != "honeypot_mark" || got[0].Key != "203.0.113.5" || got[0].Route != "wp" || !got[0].Until.Equal(until) || peers[0] != "node-a" {
 		t.Fatalf("event %+v from %q", got[0], peers[0])
 	}
 	if got[1].Until.After(time.Now().Add(maxEventTTL)) {

@@ -79,6 +79,12 @@ type Server struct {
 	// tickets manages shared session ticket keys; nil without the section.
 	tickets        *tlsconf.Tickets
 	ticketMismatch bound.Notice
+	// dnsUnverified aggregates DNS security events whose source address
+	// completed no round trip, and connRejected does the same for
+	// connections refused at accept: both are driven by a client at
+	// packet rate, so one record each would be a log-flood primitive.
+	dnsUnverified bound.Notice
+	connRejected  bound.Notice
 
 	mu        sync.Mutex
 	listeners []*boundListener
@@ -136,7 +142,14 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		s.tickets = tk
 	}
 	s.connLimiter.OnReject = func(addr netip.Addr, reason string) {
-		s.logs.SecurityEvent(context.Background(), "drop_connection", reason, "client_ip", addr.String())
+		// This runs on the listener's accept loop and the file sink is a
+		// locked write, so a banned client looping connections would pay
+		// one SYN for one synchronous security record: a banned address
+		// must not be more expensive to refuse than an ordinary one.
+		// The exact rate stays available as
+		// xproxy_connections_rejected_total.
+		s.connRejected.Hit(logs.Error, "connections refused at accept are aggregated",
+			"reason", reason, "client_ip", addr.String())
 	}
 	if cfg.Bans != nil {
 		bl, err := ban.New(cfg.Bans, logs.Security)
@@ -929,6 +942,27 @@ func (s *Server) Reload(cfg *config.Config) error {
 	s.mu.Unlock()
 	rt.start()
 	s.connLimiter.SetLimits(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP)
+	// Enforcement first, then the routes. Both gates are skipped when
+	// their pointer is nil, so installing the new routes before the ban
+	// list and the challenger leaves a window in which a route the
+	// operator just gave challenge: {mode: always} is served
+	// unchallenged. Installing them early is safe the other way round:
+	// the old generation's routes carry no challenge, so nothing is
+	// challenged before its time.
+	if newBans != oldBans {
+		s.bans.Store(newBans)
+		if oldBans != nil {
+			defer oldBans.Close()
+		}
+	}
+	switch ch := s.challenger.Load(); {
+	case cfg.Challenge != nil && ch != nil:
+		ch.Reconfigure(cfg.Challenge)
+	case cfg.Challenge != nil:
+		s.challenger.Store(newChallenger) // built before the swap; nil never reaches here
+	case ch != nil:
+		s.challenger.Store(nil)
+	}
 	s.rt.Store(rt)
 	// Switch the listener set: the new listeners start serving on the new
 	// generation, the replaced and removed ones stop accepting now and
@@ -960,12 +994,6 @@ func (s *Server) Reload(cfg *config.Config) error {
 	for _, bl := range plan.remove {
 		go s.retire(bl, drain, true, "removed")
 	}
-	if newBans != oldBans {
-		s.bans.Store(newBans)
-		if oldBans != nil {
-			oldBans.Close()
-		}
-	}
 	if node := s.cluster.Load(); node != nil {
 		node.Reconfigure(cfg.Cluster)
 		if newBans != oldBans {
@@ -994,14 +1022,6 @@ func (s *Server) Reload(cfg *config.Config) error {
 		if prev := s.tracer.Swap(next); prev != nil {
 			go prev.Stop()
 		}
-	}
-	switch ch := s.challenger.Load(); {
-	case cfg.Challenge != nil && ch != nil:
-		ch.Reconfigure(cfg.Challenge)
-	case cfg.Challenge != nil:
-		s.challenger.Store(newChallenger) // built before the swap; nil never reaches here
-	case ch != nil:
-		s.challenger.Store(nil)
 	}
 	switch c := s.cache.Load(); {
 	case cfg.Cache != nil && c != nil:

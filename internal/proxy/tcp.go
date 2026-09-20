@@ -276,6 +276,13 @@ func splice(client, up net.Conn, idle time.Duration) (in, out int64) {
 			_ = src.SetReadDeadline(time.Now().Add(idle))
 			r, err := src.Read(buf)
 			if r > 0 {
+				// The write needs its own deadline. A peer that stops
+				// reading (a zero receive window) blocks this write for
+				// as long as it likes, and the idle timeout above only
+				// covers the read: the flow would hold its goroutines,
+				// its sockets, its connection-limiter slot and its
+				// endpoint's active count until the process ended.
+				_ = dst.SetWriteDeadline(time.Now().Add(idle))
 				w, werr := dst.Write(buf[:r])
 				*n += int64(w)
 				if werr != nil {

@@ -41,7 +41,13 @@ type Hooks struct {
 	// Access receives one "dns" line per query when LogQueries is set.
 	Access func(attrs ...any)
 	// Event records a security event for a client (blocked names).
-	Event func(client netip.Addr, reason string, attrs ...any)
+	//
+	// verified says whether the client address completed a round trip.
+	// A UDP datagram proves nothing about its source, so an event from
+	// one must not be attributed to the address it claims: counting it
+	// towards a ban lets anybody have a third party banned by spoofing
+	// them, and logging one per datagram is a log flood at packet rate.
+	Event func(client netip.Addr, reason string, verified bool, attrs ...any)
 	// Banned reports clients whose datagrams are dropped.
 	Banned func(client netip.Addr) bool
 }
@@ -409,7 +415,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	if p.Block != nil && p.Block.Match(q.Name) {
 		s.Blocked.Add(1)
 		if s.hooks.Event != nil {
-			s.hooks.Event(client, "dns_blocked", "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
+			s.hooks.Event(client, "dns_blocked", proto != "udp", "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
 		}
 		var resp []byte
 		switch p.BlockAction {
@@ -469,7 +475,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		if res == Bogus && h.Flags&flagCD == 0 {
 			s.ServFail.Add(1)
 			if s.hooks.Event != nil {
-				s.hooks.Event(client, "dns_bogus", "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
+				s.hooks.Event(client, "dns_bogus", proto != "udp", "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
 			}
 			return s.finish(query, qEnd, h, q, client, proto, start, source, resp)
 		}

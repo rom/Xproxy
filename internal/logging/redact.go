@@ -113,7 +113,14 @@ func (r *Redactor) Attr(a slog.Attr) (slog.Attr, bool) {
 			}
 			return slog.String(key, "?"), true
 		}
-	case strings.HasPrefix(key, "jwt_") && key != "jwt_provider", key == "client_cn":
+	// Every attribute that names a person, not just the JWT ones. The
+	// setting exists so a deployment can pseudonymise identities; the
+	// basic and LDAP user name, the OIDC subject and the API key id are
+	// identities too, and they sat in the clear next to a hashed or
+	// truncated address on the same line.
+	case strings.HasPrefix(key, "jwt_") && key != "jwt_provider",
+		strings.HasPrefix(key, "oidc_") && key != "oidc_provider" && key != "oidc_filter",
+		key == "client_cn", key == "auth_user", key == "api_key", key == "basic_user":
 		switch r.claims {
 		case "drop":
 			return a, false

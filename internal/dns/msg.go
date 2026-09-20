@@ -110,6 +110,32 @@ func ParseQuestion(b []byte) (Question, int, error) {
 // readName decodes a possibly compressed name at off and returns it in
 // lower case with the offset after the name as it appears at off (not
 // after any pointer target).
+// labelOK reports a label the proxy can carry as text without changing
+// what it means.
+//
+// A name becomes a string the moment it is parsed, and that string is
+// the block list key, the cache key, the name DNSSEC compares and the
+// value written to the security log. Joining labels with "." is only
+// reversible while no label contains a dot: the wire names
+// [www.bank][test] and [www][bank][test] are different names that join
+// to the same string, so one would be answered from the other's cache
+// entry and would satisfy the other's DNSSEC binding. A byte below
+// space has the same problem in a log record, where a newline ends the
+// line and lets a client write the next one.
+//
+// RFC 1035 section 5.1 escapes these in the presentation form instead.
+// Refusing them is the smaller change and costs nothing that is used:
+// no deployed name needs a dot, a backslash or a control byte inside a
+// label, and a query carrying one is answered FORMERR.
+func labelOK(l string) bool {
+	for i := 0; i < len(l); i++ {
+		if c := l[i]; c <= ' ' || c > '~' || c == '.' || c == '\\' {
+			return false
+		}
+	}
+	return true
+}
+
 func readName(b []byte, off int) (string, int, error) {
 	var labels []string
 	total := 0
@@ -154,7 +180,11 @@ func readName(b []byte, off int) (string, int, error) {
 			if total > maxNameLen {
 				return "", 0, ErrName
 			}
-			labels = append(labels, string(b[off:off+l]))
+			lab := string(b[off : off+l])
+			if !labelOK(lab) {
+				return "", 0, ErrName
+			}
+			labels = append(labels, lab)
 			off += l
 		}
 	}

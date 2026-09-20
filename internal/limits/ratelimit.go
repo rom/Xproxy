@@ -253,6 +253,18 @@ func (l *KeyedLimiter) ReportPeer(peer string, reports []PeerReport) {
 	}
 	now := l.now()
 	for _, r := range reports {
+		// A peer reports what it has served, so it can legitimately
+		// claim the whole policy rate and leave nothing for this node:
+		// that is distributed limiting working. What it cannot do is
+		// claim more. Without the clamp a single message carrying an
+		// absurd rate denies the key on every other node for the whole
+		// peer_stale window, and repeating it makes that permanent.
+		if r.Rate > l.rate {
+			r.Rate = l.rate
+		}
+		if r.Rate < 0 {
+			r.Rate = 0
+		}
 		sh := &l.shards[fnv(r.Key)%uint32(len(l.shards))]
 		sh.mu.Lock()
 		b, ok := sh.buckets[r.Key]

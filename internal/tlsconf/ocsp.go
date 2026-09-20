@@ -136,8 +136,13 @@ func (s *stapler) refreshAll() {
 		res := s.fetch(ctx, &c)
 		cancel()
 		s.mu.Lock()
-		if st := s.staples[key]; res.err != "" && st != nil && st.err == "" && now.Before(st.nextUpdate) {
+		if st := s.staples[key]; res.err != "" && st != nil && len(st.der) > 0 && now.Before(st.nextUpdate) {
 			// Keep serving the still valid staple; remember the failure.
+			// The condition is "we still hold a response that has not
+			// expired", not "this is the first failure": with the retry
+			// backoff a minute long, the old test dropped the staple two
+			// minutes into a responder outage, which is exactly when a
+			// must-staple certificate needs it.
 			st.err = res.err
 			st.fetched = now
 		} else {

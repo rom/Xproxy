@@ -109,11 +109,15 @@ func ClientHelloSNI(b []byte) (string, error) {
 				return "", ErrNotTLS
 			}
 			if nameType == 0 {
-				name := strings.ToLower(string(body[:nl]))
-				if name == "" || len(name) > 253 || strings.ContainsAny(name, " \x00/\\") {
+				name := strings.TrimSuffix(strings.ToLower(string(body[:nl])), ".")
+				// The name becomes a layer 4 routing key, so it must have
+				// one spelling: an empty label would miss its own route's
+				// table and fall through to tcp.default (see
+				// labelsNonEmpty).
+				if name == "" || len(name) > 253 || !labelsNonEmpty(name) || strings.ContainsAny(name, " \x00/\\") {
 					return "", ErrNotTLS
 				}
-				return strings.TrimSuffix(name, "."), nil
+				return name, nil
 			}
 			body = body[nl:]
 		}

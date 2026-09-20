@@ -142,6 +142,9 @@ func Host(h string) string {
 		}
 		return h
 	}
+	if !labelsNonEmpty(h) {
+		return ""
+	}
 	for i := 0; i < len(h); i++ {
 		c := h[i]
 		ok := c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_'
@@ -150,4 +153,26 @@ func Host(h string) string {
 		}
 	}
 	return h
+}
+
+// labelsNonEmpty reports a name whose every label carries at least one
+// byte.
+//
+// One host must have one spelling. A single trailing root dot is the
+// conventional absolute form and is stripped before this is called;
+// every other empty label ("a..b", ".a.b", "a.b..") is not a host name.
+// Admitting one would hand the same host a second routing key: it
+// misses the exact table of its own route and falls through to the
+// catch-all, where a deployment puts its permissive default, so the
+// route's access lists, authentication filters, WAF profile, rate
+// limits and policy would all be skipped by a client that merely typed
+// an extra dot.
+func labelsNonEmpty(name string) bool {
+	if name == "" {
+		return true // the caller decides what an empty name means
+	}
+	if name[0] == '.' || name[len(name)-1] == '.' {
+		return false
+	}
+	return !strings.Contains(name, "..")
 }

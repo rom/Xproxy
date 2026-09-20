@@ -269,13 +269,17 @@ func (p *Provider) introspect(token string, now time.Time) (Claims, error) {
 	if nbf, ok := numeric(claims["nbf"]); ok && nowS+skew < nbf {
 		return nil, ErrNotYetValid
 	}
-	if iss, ok := claims["iss"].(string); ok && iss != p.cfg.Issuer {
+	// Absence is not acceptance. RFC 7662 lets an authorization server
+	// answer with nothing but {"active": true}, so treating a missing
+	// issuer or audience as a pass accepts every live token of that
+	// server, including one minted for another client or tenant. The
+	// JWT path already fails closed on both; this one now matches it.
+	iss, _ := claims["iss"].(string)
+	if p.cfg.Issuer != "" && iss != p.cfg.Issuer {
 		return nil, ErrIssuer
 	}
-	if len(p.cfg.Audiences) > 0 {
-		if _, has := claims["aud"]; has && !audienceMatches(claims["aud"], p.cfg.Audiences) {
-			return nil, ErrAudience
-		}
+	if len(p.cfg.Audiences) > 0 && !audienceMatches(claims["aud"], p.cfg.Audiences) {
+		return nil, ErrAudience
 	}
 	for _, name := range p.cfg.RequiredClaims {
 		if _, ok := claims[name]; !ok {

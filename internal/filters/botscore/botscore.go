@@ -137,10 +137,17 @@ func parse(opts filter.Options) (*Config, error) {
 
 // history is the recent behaviour of one client address.
 type history struct {
-	times   []time.Time
-	errors  int
-	total   int
-	paths   map[string]struct{}
+	times  []time.Time
+	errors int
+	total  int
+	paths  map[string]struct{}
+	// start is when the current window opened and updated is the last
+	// request. The window is measured from start: measuring it from
+	// updated turns it into an idle timer, so a client that sends one
+	// request per window never resets and accumulates forever, which
+	// eventually scores an open dashboard or a poller as a bot. evict
+	// wants updated, which is genuinely an idle measure.
+	start   time.Time
 	updated time.Time
 }
 
@@ -172,7 +179,9 @@ type scorer struct {
 // deviceHistory is the set of addresses one device identifier came from
 // within the window.
 type deviceHistory struct {
-	addrs   map[netip.Addr]struct{}
+	addrs map[netip.Addr]struct{}
+	// start opens the window, updated is the last request; see history.
+	start   time.Time
 	updated time.Time
 }
 
@@ -305,7 +314,7 @@ func (in *instance) End() []any {
 func (s *scorer) observe(ip netip.Addr, path string) *history {
 	now := s.now()
 	h := s.clients[ip]
-	if h == nil || now.Sub(h.updated) > s.cfg.window {
+	if h == nil || now.Sub(h.start) > s.cfg.window {
 		if h == nil {
 			if len(s.clients) >= maxClients {
 				s.full.Hit(nil, "bot score client table full; the oldest histories are evicted", "table", "bot_score_clients", "filter", s.name, "max", maxClients)
@@ -316,6 +325,7 @@ func (s *scorer) observe(ip netip.Addr, path string) *history {
 		}
 		h.times, h.errors, h.total = h.times[:0], 0, 0
 		h.paths = make(map[string]struct{}, 8)
+		h.start = now
 	}
 	h.updated = now
 	h.total++
@@ -339,7 +349,7 @@ func (s *scorer) observeDevice(device string, ip netip.Addr) bool {
 	}
 	now := s.now()
 	d := s.devices[device]
-	if d == nil || now.Sub(d.updated) > s.cfg.window {
+	if d == nil || now.Sub(d.start) > s.cfg.window {
 		if d == nil {
 			if len(s.devices) >= maxDevices {
 				s.devFull.Hit(nil, "bot score device table full; stale devices are evicted", "table", "bot_score_devices", "filter", s.name, "max", maxDevices)
@@ -356,6 +366,7 @@ func (s *scorer) observeDevice(device string, ip netip.Addr) bool {
 			s.devices[device] = d
 		}
 		d.addrs = make(map[netip.Addr]struct{}, 2)
+		d.start = now
 	}
 	d.updated = now
 	if len(d.addrs) < 4096 {
