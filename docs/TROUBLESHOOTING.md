@@ -669,6 +669,31 @@ the file is re-read when it changes and the account behind a session is
 resolved on every request. If it looks otherwise, the file the GUI reads
 is not the file you edited — `xproxy-admin` names it at start.
 
+**`xproxy-admin` will not start: a user has an empty hash.** A line of
+the users file is `name:role:` with nothing after the last colon, which is a truncated line or an edit that lost the hash. Such a
+user would appear in the list and never be able to log in, so it is
+refused at the file rather than at the login page. Set a password with
+`xproxy-admin user add`, or write the literal `x509` as the hash for a
+user who only logs in with a client certificate.
+
+**The log view is empty.** A stream that is configured but whose file
+does not exist yet reads as an empty view, which is the state right
+after an install and after a rotation nothing has written into. Check
+`logging.directory` and the stream's `file`, and that the GUI's
+`-config` is the data plane's own configuration file: the log view
+resolves the file through it, not through its own options. A stream
+that is not configured at all is refused with 400, not shown empty.
+
+**Saving the configuration from the GUI answers 413.** The editor
+accepts 8 MiB of text. A document larger than that belongs in a
+configuration directory with includes (`-config` pointing at a
+directory), not in one file.
+
+**Saving the configuration answers 409.** Somebody else (or another tab)
+saved since this one was opened; the entity tag no longer matches.
+Reload the editor, which re-reads the file, and reapply the change. The
+file is never overwritten on a stale tag.
+
 **A viewer can see too much.** `viewer` is a trusted operator without
 write access: it reads the whole configuration file, the logs and the
 bans. It is not a low-privilege role. Do not give it to anyone who may

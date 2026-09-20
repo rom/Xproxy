@@ -475,13 +475,27 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func readJSON(r *http.Request, v any) error {
-	dec := json.NewDecoder(io.LimitReader(r.Body, 4<<20))
+	return readJSONLimit(r, v, 4<<20)
+}
+
+// readJSONLimit is readJSON with the body ceiling the caller needs. The
+// configuration editor carries a whole document as a JSON string, which
+// is larger than the document itself once escaped: with the ordinary
+// ceiling, a file between it and the configuration limit was cut off
+// mid-string and reported as a malformed body — while the same file
+// loads with `xproxy -validate`.
+func readJSONLimit(r *http.Request, v any, limit int64) error {
+	dec := json.NewDecoder(io.LimitReader(r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("bad request body: %w", err)
 	}
 	return nil
 }
+
+// maxConfigBody is the request ceiling of the configuration endpoints:
+// the document limit, with room for JSON escaping and the envelope.
+const maxConfigBody = 2*maxConfigBytes + 64<<10
 
 // ---- authentication handlers ----
 
@@ -815,7 +829,7 @@ func splitProblems(err error) []string {
 
 func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {
 	var req configFileRequest
-	if err := readJSON(r, &req); err != nil {
+	if err := readJSONLimit(r, &req, maxConfigBody); err != nil {
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
 	}
@@ -836,7 +850,7 @@ func (s *Server) putConfigFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req configFileRequest
-	if err := readJSON(r, &req); err != nil {
+	if err := readJSONLimit(r, &req, maxConfigBody); err != nil {
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
 	}
@@ -967,6 +981,13 @@ func (s *Server) logTail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	lines, err := tailLines(path, n)
+	if errors.Is(err, os.ErrNotExist) {
+		// The stream is configured but nothing has been written yet,
+		// which is the ordinary state right after an install. That is
+		// an empty view, not a failure of the proxy.
+		writeJSON(w, 200, map[string]any{"path": path, "lines": []string{}})
+		return
+	}
 	if err != nil {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return

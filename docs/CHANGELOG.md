@@ -295,7 +295,7 @@ Open findings of the earlier rounds:
 A round of adversarial and robustness tests over the parsers, the
 protocol clients and the views, written from the outside in: what a
 client, a peer, a scanner, a certificate authority or a file on disk
-can put in front of each of them. Sixteen packages gained a suite;
+can put in front of each of them. Twenty-two packages gained a suite;
 `docs/TESTS.md` lists every case. The findings each have their own
 entry above.
 
@@ -321,6 +321,24 @@ peer that names itself, an agent that reports its host name).
 
 ### Fixed (1.4)
 
+- The web interface answered 500 for a log stream whose file did not
+  exist yet. That is the ordinary state right after an install, or for a
+  stream nothing has written to since the last rotation, and an operator
+  opening the log view saw a failure of the proxy where there was none.
+  A configured stream with no file is now an empty view; a stream that
+  is not configured is still refused.
+- The web interface could not answer 413 for an oversize configuration.
+  The documented ceiling is 8 MiB of text, but every request body went
+  through a 4 MiB reader first, so a document between the two limits was
+  refused as a malformed body rather than as an oversize one. The
+  configuration endpoints now read up to twice their own text ceiling,
+  so the size check is the one that answers.
+- A line in the users file with an empty hash was accepted. The user
+  existed, appeared in the list and could never log in, because an empty
+  hash verifies against nothing; a truncated line or a botched edit read
+  as a deliberate account. Such a line is now an error naming the file
+  and the line, with the `x509` spelling for a certificate-only user in
+  the message. `xproxy-admin user add` already refused it.
 - The terminal interface raced with itself. Each view is fetched by two
   goroutines — one waiting, one calling — so that a slow view does not
   hold the others; the waiting one gives up at the refresh deadline and

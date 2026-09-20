@@ -50,10 +50,6 @@ func (u User) CertOnly() bool { return u.Hash == "x509" }
 // HashPassword derives a stored hash for a password (see passwd).
 func HashPassword(password string) (string, error) { return passwd.Hash(password) }
 
-func hashPassword(password string, iterations int) (string, error) {
-	return passwd.HashWithIterations(password, iterations)
-}
-
 // VerifyPassword checks a password against a stored hash.
 func VerifyPassword(hash, password string) bool { return passwd.Verify(hash, password) }
 
@@ -151,6 +147,13 @@ func readUsers(path string) (map[string]User, fileStamp, error) {
 		role, err := ParseRole(parts[1])
 		if err != nil {
 			return nil, stamp, fmt.Errorf("%s:%d: %w", path, line, err)
+		}
+		if strings.TrimSpace(parts[2]) == "" {
+			// An empty hash can never verify, so the user would be there
+			// and unable to log in. That is a truncated line or a botched
+			// edit, not a deliberate account: say so instead of leaving
+			// the operator to find out at the login page.
+			return nil, stamp, fmt.Errorf("%s:%d: user %q has an empty hash (use \"x509\" for a certificate-only user)", path, line, parts[0])
 		}
 		if _, dup := byN[parts[0]]; dup {
 			return nil, stamp, fmt.Errorf("%s:%d: duplicate user %q", path, line, parts[0])

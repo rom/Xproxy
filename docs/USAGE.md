@@ -2619,7 +2619,11 @@ del` (or removing the line by hand, or from configuration management)
 ends their live sessions at their next request, and lowering a role takes
 their write access away at once. A users file that cannot be parsed keeps
 the previous set in force and is reported in the log, so a half-written
-file does not lock everyone out. Accounts from the identity provider are
+file does not lock everyone out. Each line is `name:role:hash`; the hash
+is either a `pbkdf2-sha256` string or the literal `x509` for a user who
+only logs in with a client certificate. An empty hash is a parse error
+rather than an account nobody can use, because it can only come from a
+truncated line or a botched edit. Accounts from the identity provider are
 not in the users file, and the provider's claims decide their role.
 
 Screens:

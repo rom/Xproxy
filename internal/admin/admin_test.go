@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rom/xproxy/internal/passwd"
 )
 
 // fakeMgmt is a minimal management API on a Unix socket.
@@ -101,11 +103,11 @@ func startFakeMgmt(t *testing.T) *fakeMgmt {
 
 func writeUsers(t *testing.T, dir string) string {
 	t.Helper()
-	op, err := hashPassword("operator-password-1", 1000)
+	op, err := passwd.HashWithIterations("operator-password-1", 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	vw, err := hashPassword("viewer-password-01", 1000)
+	vw, err := passwd.HashWithIterations("viewer-password-01", 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +146,10 @@ func (c *client) do(method, path string, body any, csrf bool) (int, []byte) {
 		b, _ := json.Marshal(body)
 		rd = strings.NewReader(string(b))
 	}
-	req, _ := http.NewRequestWithContext(context.Background(), method, c.base+path, rd)
+	req, err := http.NewRequestWithContext(context.Background(), method, c.base+path, rd)
+	if err != nil {
+		c.t.Fatalf("building %s %s: %v", method, path, err)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -578,4 +583,23 @@ func TestSplitProblems(t *testing.T) {
 	if len(got) != 2 || got[0] != "a: bad" || got[1] != "b: worse" {
 		t.Fatalf("%q", got)
 	}
+}
+
+// doRaw posts a body verbatim, so a test can send something that is
+// not JSON at all.
+func (c *client) doRaw(method, path, body string) (int, []byte) {
+	c.t.Helper()
+	req, _ := http.NewRequestWithContext(context.Background(), method, c.base+path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Xproxy-Admin", "1")
+	if c.cookie != nil {
+		req.AddCookie(c.cookie)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, b
 }
