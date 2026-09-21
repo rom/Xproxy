@@ -502,7 +502,39 @@ type TLS struct {
 	// CT checks the signed certificate timestamps embedded in the file
 	// certificates at load.
 	CT *CT `yaml:"ct"`
+	// ECH accepts Encrypted Client Hello on this listener.
+	ECH *ECH `yaml:"ech"`
 }
+
+// ECH configures Encrypted Client Hello: the client encrypts the real
+// ClientHello (SNI included) to a key published in DNS, and sends it
+// inside an outer hello that names a shared public name.
+type ECH struct {
+	// Keys are the configurations this listener can decrypt. Several
+	// are live at once during a rotation.
+	Keys []ECHKey `yaml:"keys"`
+	// Require refuses a handshake that did not use ECH. It cuts off
+	// every client that has not got the key — including one whose DNS
+	// answer was stripped — so it is for a listener that exists only
+	// for ECH clients.
+	Require bool `yaml:"require"`
+}
+
+// ECHKey is one ECH configuration and its private key.
+type ECHKey struct {
+	// ConfigFile holds the ECHConfig, raw or base64, as written by
+	// `xproxyctl ech keygen`.
+	ConfigFile string `yaml:"config_file"`
+	// KeyFile holds the X25519 private key, raw, base64 or hex. It
+	// must not be world readable.
+	KeyFile string `yaml:"key_file"`
+	// Retry offers this config to a client whose key was stale, which
+	// is how a rotation heals itself. Default true.
+	Retry *bool `yaml:"retry"`
+}
+
+// RetryOffered reports whether this key is sent as a retry config.
+func (k *ECHKey) RetryOffered() bool { return k == nil || k.Retry == nil || *k.Retry }
 
 // OCSPStapling configures the background OCSP fetcher of a listener.
 type OCSPStapling struct {

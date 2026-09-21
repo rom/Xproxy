@@ -725,6 +725,97 @@ func (v *validator) tls(p string, t *TLS) {
 		}
 	}
 	v.keyExchange(p, t.KeyExchange)
+	v.ech(p, t)
+}
+
+// ech checks the Encrypted Client Hello section. The files are parsed
+// here rather than only at listener build, so a broken key is a
+// configuration error and not a listener that starts and quietly
+// serves no ECH at all.
+func (v *validator) ech(p string, t *TLS) {
+	e := t.ECH
+	if e == nil {
+		return
+	}
+	if len(e.Keys) == 0 {
+		v.errf("%s.ech.keys: at least one key is required", p)
+		return
+	}
+	if len(e.Keys) > 8 {
+		v.errf("%s.ech.keys: at most 8 keys (a rotation needs two, not eight)", p)
+	}
+	ids := map[uint8]bool{}
+	names := map[string]bool{}
+	retry := false
+	for i := range e.Keys {
+		k := &e.Keys[i]
+		kp := fmt.Sprintf("%s.ech.keys[%d]", p, i)
+		if k.ConfigFile == "" || k.KeyFile == "" {
+			v.errf("%s: config_file and key_file are required", kp)
+			continue
+		}
+		v.file(kp+".config_file", k.ConfigFile)
+		v.file(kp+".key_file", k.KeyFile)
+		if k.RetryOffered() {
+			retry = true
+		}
+		if !v.fileCheck {
+			continue
+		}
+		if st, err := os.Stat(k.KeyFile); err == nil && st.Mode().Perm()&0o004 != 0 {
+			v.errf("%s.key_file: %s must not be world readable", kp, k.KeyFile)
+		}
+		cfg, _, err := LoadECHKey(k.ConfigFile, k.KeyFile)
+		if err != nil {
+			v.errf("%s: %v", kp, err)
+			continue
+		}
+		if ids[cfg.ID] {
+			v.errf("%s: config id %d is used by another key on this listener; a client echoes the id, so two keys sharing one means half the handshakes try the wrong key", kp, cfg.ID)
+		}
+		ids[cfg.ID] = true
+		names[cfg.PublicName] = true
+	}
+	if len(names) > 1 {
+		v.warnf("%s.ech: the keys carry %d different public names; a client falls back to the name in the config it used, so each of them needs a certificate on this listener", p, len(names))
+	}
+	// The fallback name has to be servable here, or a client whose key
+	// is stale meets a certificate error instead of a working page.
+	for name := range names {
+		if !v.tlsServes(t, name) {
+			v.warnf("%s.ech: no certificate on this listener covers the public name %q; a client whose key is stale falls back to it and will see a certificate error", p, name)
+		}
+	}
+	if !retry && len(e.Keys) > 0 {
+		v.warnf("%s.ech: no key has retry set, so a client with a stale config is never told the new one and keeps falling back", p)
+	}
+	if e.Require {
+		v.warnf("%s.ech.require: every client that did not get the ECH key is refused, including one whose DNS answer was filtered; use it only on a listener that exists for ECH clients", p)
+	}
+}
+
+// tlsServes reports whether a listener has a certificate for a name.
+// It is a best-effort check on the configuration: ACME groups name
+// their hosts, and file certificates are read for their SANs.
+func (v *validator) tlsServes(t *TLS, name string) bool {
+	for _, g := range t.ACME {
+		for _, h := range g.Hosts {
+			if strings.EqualFold(h, name) {
+				return true
+			}
+		}
+	}
+	if !v.fileCheck {
+		// Without file access the SANs cannot be read, so nothing is
+		// claimed either way.
+		return true
+	}
+	for _, c := range t.Certificates {
+		if certCovers(c.CertFile, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // keyExchange checks the named groups. An empty list is the default,

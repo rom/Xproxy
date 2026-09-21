@@ -423,6 +423,24 @@ func (s *Server) KeyExchange() KeyExchangeStatus {
 	return st
 }
 
+// ECH reports the Encrypted Client Hello state per listener. A listener
+// without the section is left out rather than reported as disabled, so
+// an empty map means no listener accepts ECH.
+func (s *Server) ECH() map[string]*tlsconf.ECHStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]*tlsconf.ECHStatus{}
+	for _, bl := range s.listeners {
+		if bl.tlsReload == nil {
+			continue
+		}
+		if st := bl.tlsReload.ECH(); st != nil {
+			out[bl.cfg.Name] = st
+		}
+	}
+	return out
+}
+
 // Tickets returns the session ticket key status, nil without the section.
 func (s *Server) Tickets() *tlsconf.TicketStatus { return s.tickets.Status() }
 

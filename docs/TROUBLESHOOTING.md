@@ -602,6 +602,35 @@ client's own error:
 | `bad certificate` | Client certificate present but not issued by `client_ca_file`, or expired |
 | `unrecognized name` | SNI names a host with no certificate and there is no default |
 
+**ECH is configured and `accepted` stays at zero.** In order: is the
+record published for the name clients actually connect to (not just for
+the public name); does the published `ech=` value match the
+`publish:` line in `xproxyctl tls`; and is the client's resolver
+returning the HTTPS record at all — a resolver that strips unknown
+parameters, or a client not using DoH/DoT, is the usual answer. ECH is
+a DNS feature as much as a TLS one.
+
+**Clients see a certificate error since ECH was enabled.** They are
+falling back to the public name and this listener cannot serve it. Add
+the public name to the certificate. Validation warns about exactly this
+at load, so check `xproxyctl reload --dry-run` too.
+
+**ECH accepted counts are healthy but one client fails every time.**
+That client holds a stale config. It is handed the current one during
+the failed handshake when the key has `retry: true` — if no key does,
+nothing tells it, and it keeps failing. `xproxyctl tls` shows the retry
+flag per key.
+
+**A site stopped being reachable after `require: true`.** That is what
+it does: every client without the key is refused, including one whose
+DNS answer was filtered en route. Turn it off unless the listener
+exists only for ECH clients.
+
+**The layer 4 listener in front stopped routing correctly.** ECH hides
+the inner name, and SNI routing sees only the public one, so every ECH
+client lands wherever the public name points. Terminate TLS at the ECH
+listener instead of passing it through.
+
 **Which key exchange is in use, and is it post-quantum.** `xproxyctl
 tls` prints the accepted groups per listener and the negotiated
 counts with the post-quantum share; `tls_group` in the access log says

@@ -1277,6 +1277,43 @@
       },
       "additionalProperties": false
     },
+    "ECH": {
+      "description": "ECH configures Encrypted Client Hello: the client encrypts the real ClientHello (SNI included) to a key published in DNS, and sends it inside an outer hello that names a shared public name.",
+      "type": "object",
+      "properties": {
+        "keys": {
+          "description": "Keys are the configurations this listener can decrypt. Several are live at once during a rotation.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ECHKey"
+          }
+        },
+        "require": {
+          "description": "Require refuses a handshake that did not use ECH. It cuts off every client that has not got the key — including one whose DNS answer was stripped — so it is for a listener that exists only for ECH clients.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ECHKey": {
+      "description": "ECHKey is one ECH configuration and its private key.",
+      "type": "object",
+      "properties": {
+        "config_file": {
+          "description": "ConfigFile holds the ECHConfig, raw or base64, as written by `xproxyctl ech keygen`.",
+          "type": "string"
+        },
+        "key_file": {
+          "description": "KeyFile holds the X25519 private key, raw, base64 or hex. It must not be world readable.",
+          "type": "string"
+        },
+        "retry": {
+          "description": "Retry offers this config to a client whose key was stale, which is how a rotation heals itself. Default true.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "Endpoint": {
       "description": "Endpoint is a single upstream address.",
       "type": "object",
@@ -4135,6 +4172,14 @@
           "allOf": [
             {
               "$ref": "#/$defs/CT"
+            }
+          ]
+        },
+        "ech": {
+          "description": "ECH accepts Encrypted Client Hello on this listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ECH"
             }
           ]
         },

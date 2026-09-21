@@ -915,6 +915,15 @@ T}	T{
 Key agreement groups this listener accepts;\: see below
 T}
 T{
+\fBech\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Accept Encrypted Client Hello;\: see below
+T}
+T{
 \fBocsp_\:stapling\fR
 T}	T{
 object
@@ -946,6 +955,81 @@ Note what the list is: the set the server \fIaccepts\fR. In TLS 1.3 the client s
 A list that names groups but no post\-quantum one loads with an advice line rather than an error: a client fleet that cannot negotiate the hybrid exists, and that is an operator\(aqs decision, not the proxy\(aqs.
 .PP
 The negotiated group is in the access log as \fBtls_group\fR, counted by \fBxproxy_tls_key_exchange_total{group}\fR, and summarised by \fBxproxyctl tls\fR with the post\-quantum share \[u2014] which is the number a rollout is actually measured by, because it moves as client fleets upgrade and not as this file changes.
+.SS "server.listeners[].tls.ech"
+.PP
+Encrypted Client Hello. A TLS 1.3 handshake still names its destination in the clear \[u2014] the SNI is the last plaintext identifier in a modern connection, and the one that monitoring and blocking actually use. ECH encrypts the real ClientHello (SNI, ALPN, everything) to a public key the client fetched from DNS, and wraps it in an outer hello naming a \fIpublic name\fR shared by everything behind that key. An observer sees a connection to the public name and cannot tell which site it was for.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.6i) lbw(0.9i) lbx
+lw(0.8i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBkeys\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+The configurations this listener can decrypt;\: 1 to 8. Several are live during a rotation
+T}
+T{
+\fBkeys[].\:config_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The ECHConfig: raw bytes,\: base64,\: or the \fBech=\fR value pasted from a record
+T}
+T{
+\fBkeys[].\:key_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The X25519 private key: raw 32 bytes,\: base64,\: hex or PKCS#8 PEM. Must not be world readable
+T}
+T{
+\fBkeys[].\:retry\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Offer this config to a client whose key was stale,\: which is how a rotation heals itself
+T}
+T{
+\fBrequire\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a handshake that did not use ECH
+T}
+.TE
+.PP
+Generate a key and the record to publish with \fBxproxyctl ech keygen\fR; the configuration and key files it writes are what \fBconfig_file\fR and \fBkey_file\fR point at. Enabling ECH raises the listener to TLS 1.3, since a 1.2 handshake has no encrypted hello to carry it.
+.PP
+\fBThe public name needs a certificate here.\fR A client whose key is stale \[u2014] a cached DNS answer, a record that has not propagated \[u2014] falls back to an ordinary handshake with the public name, and meets a certificate error unless this listener can serve it. Validation warns when no configured certificate covers it. That fallback is not a failure mode to be avoided; it is what makes rotation safe.
+.PP
+\fBRotating.\fR Generate the new key, add it to \fBkeys\fR with \fBretry: true\fR, publish an \fBech=\fR list containing both, wait out the old record\(aqs TTL everywhere, then drop the old key. \fBxproxyctl tls\fR prints the list the listener is actually serving, so the published value and the served value cannot drift apart unnoticed. \fBxproxyctl reload\-certs\fR re\-reads ECH keys along with certificates.
+.PP
+\fB\fBrequire\fR is a blunt instrument.\fR It refuses every client that did not use ECH, including one whose DNS answer was stripped by a resolver that does not know the record, and one whose platform does not implement ECH at all. It is for a listener that exists only for ECH clients; validation prints an advice line saying so.
+.PP
+\fBECH and layer 4 routing.\fR A \fBkind: tcp\fR listener routes on the SNI it can see, which with ECH is the \fIouter\fR name: every ECH client looks like a connection to the public name, so a passthrough listener in front of an ECH listener cannot split them. Terminate TLS where ECH is accepted, or give the public name its own backend.
+.PP
+\fBFingerprints.\fR The outer hello is what JA3 and JA4 are computed from, so fingerprinting keeps working; what changes is that the SNI in \fBsni\fR is the public name for every ECH client. The access log carries \fBech: true\fR when ECH was accepted, which is how to tell the two apart.
 .SS "server.listeners[].tls.ocsp_stapling"
 .PP
 A stapled OCSP response spares clients the responder round trip and keeps working when the responder is down or firewalled from them. The proxy fetches a response for every served certificate (file and ACME alike) from the responder named in the certificate, using the issuer that follows the leaf in the chain file, and refreshes it at half its validity, at \fBrefresh\fR at the latest, and one minute after a failure. A handshake never waits: it carries the current response when there is one and none otherwise, and a still valid response is kept through fetch failures. A \fBrevoked\fR answer is stapled as well, since clients must see it, and logged as an error. \fBxproxyctl tls\fR and \fBGET /v1/tls\fR show the state per certificate.

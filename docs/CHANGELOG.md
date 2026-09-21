@@ -260,6 +260,38 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Encrypted Client Hello (`tls.ech`), with the tooling to run it.**
+  TLS 1.3 encrypts everything about a connection except the one field
+  that says where it is going: the SNI, which is what network-level
+  monitoring and blocking key on. ECH encrypts the real ClientHello to
+  a key published in a DNS HTTPS record and wraps it in an outer hello
+  naming a public name shared by everything behind that key. The
+  listener accepts several keys at once, hands a client with a stale
+  config the current one during the handshake it fails (so a rotation
+  heals itself), and reloads keys with `xproxyctl reload-certs`.
+
+  The parts that make it operable are the point. `xproxyctl ech keygen`
+  writes the config and key files and prints both the YAML and the
+  HTTPS record; `ech record` rebuilds a record from several configs for
+  a rotation; `ech show` reads one back; and `xproxyctl tls` prints the
+  config list the listener is *actually* serving, so a published record
+  that has drifted from the deployment is visible rather than inferred.
+  Validation refuses a config and key that do not belong together —
+  the fault that otherwise hides perfectly, since every ECH attempt
+  then falls back and the site looks healthy while encrypting nothing —
+  refuses two keys sharing a config id, and warns when no certificate
+  on the listener covers the public name a stale client falls back to.
+  `require` refuses handshakes without ECH and says in an advice line
+  what that costs. The access log carries `ech: true`, and
+  `xproxy_tls_ech_total{listener,outcome}` counts accepted, not_used
+  and refused. Enabling ECH raises the listener to TLS 1.3.
+
+  What it changes elsewhere is documented rather than discovered: `sni`
+  is the public name for every ECH client, JA3 and JA4 are computed
+  from the outer hello and keep working, and a `kind: tcp` listener can
+  no longer split ECH clients apart because the outer name is all it
+  sees.
+
 - **Post-quantum key exchange, as an explicit setting
   (`tls.key_exchange`, `upstreams[].tls.key_exchange`).** The proxy set
   `CurvePreferences` to `[X25519, P-256, P-384]`, which in Go replaces

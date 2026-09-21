@@ -301,6 +301,89 @@ server:
 
 Add more certificates to the list; SNI selects the matching one.
 
+### Encrypted Client Hello
+
+The SNI is the last plaintext identifier in a modern connection. TLS
+1.3 encrypts the certificate, ALPN and everything after it, but the
+name being visited still travels in the clear at the front of the
+ClientHello, which is what network-level monitoring and blocking
+actually key on. ECH encrypts the real hello to a key published in DNS
+and wraps it in an outer hello naming a *public name* shared by
+everything behind that key.
+
+```sh
+# One key, its files, and the record to publish.
+xproxyctl ech keygen -public-name ech.example.com -id 1 -dir /etc/xproxy/ech
+```
+
+```yaml
+server:
+  listeners:
+    - name: public
+      address: ":443"
+      tls:
+        certificates:
+          # This certificate must cover ech.example.com as well as the
+          # sites served here.
+          - {cert_file: /etc/xproxy/certs/site.pem, key_file: /etc/xproxy/certs/site-key.pem}
+        ech:
+          keys:
+            - {config_file: /etc/xproxy/ech/1.echconfig, key_file: /etc/xproxy/ech/1.key}
+```
+
+Publish the record `keygen` printed for every name served behind the
+key:
+
+```
+www.example.com. 300 IN HTTPS 1 . ech="AEr+DQBG..."
+```
+
+**The public name is a real site, not a label.** A client whose key is
+stale — a cached DNS answer, a record that has not propagated, a
+resolver that strips the parameter — falls back to an ordinary
+handshake with the public name, and gets a certificate error unless
+this listener can serve it. Give it a certificate and something
+ordinary to answer with. That fallback is not a failure to design
+around: it is what makes key rotation safe.
+
+**Rotating a key.** Generate the second key, add it to `keys`, publish
+a record containing both configs, wait out the old record's TTL
+everywhere, then remove the old key and republish. Clients holding a
+stale config are handed the current one *during the handshake they
+fail*, so a rotation heals itself:
+
+```sh
+xproxyctl ech keygen -public-name ech.example.com -id 2 -dir /etc/xproxy/ech
+xproxyctl ech record -name www.example.com /etc/xproxy/ech/1.echconfig /etc/xproxy/ech/2.echconfig
+xproxyctl reload-certs      # re-reads ECH keys with the certificates
+```
+
+**Check what is actually served, not what you meant to publish.**
+
+```
+$ xproxyctl tls
+ech public: 2 key(s), require=false, accepted 41203, without ech 6112, refused 0 (87.1% of handshakes)
+  config id 1  public name ech.example.com  retry=true  /etc/xproxy/ech/1.echconfig
+  config id 2  public name ech.example.com  retry=true  /etc/xproxy/ech/2.echconfig
+  publish: ech="AEr+DQBG..."
+```
+
+The `publish:` line is generated from the keys the listener holds, so a
+record that has drifted from the deployment shows up as a difference
+between that string and the one in DNS.
+
+**What it changes elsewhere.** `sni` in the access log is the public
+name for every ECH client, so `ech: true` is the field that separates
+them from clients that genuinely asked for that name. JA3 and JA4 are
+computed from the outer hello and keep working. A `kind: tcp` listener
+routes on the outer name, so it cannot split ECH clients apart —
+terminate TLS where ECH is accepted.
+
+**`require`** refuses every handshake that did not use ECH. That
+includes clients whose DNS answer was filtered and platforms with no
+ECH support at all, so it belongs on a listener that exists for ECH
+clients and nothing else. Validation says so when you set it.
+
 ### Post-quantum key exchange
 
 ```yaml

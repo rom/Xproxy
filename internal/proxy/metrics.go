@@ -186,6 +186,11 @@ func (s *Server) Collect(e metrics.Collector) {
 	for g, n := range sn.KeyExchange {
 		e.Counter("xproxy_tls_key_exchange_total", "Completed handshakes by key agreement group.", L{"group": g}, float64(n))
 	}
+	for name, st := range s.ECH() {
+		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "accepted"}, float64(st.Accepted))
+		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "not_used"}, float64(st.Rejected))
+		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "refused"}, float64(st.Refused))
+	}
 	for _, d := range s.Deceptions() {
 		e.Counter("xproxy_deceived_total", "Requests answered with a deceptive response instead of the origin's.", L{"route": d.Route}, float64(d.Served))
 	}

@@ -442,7 +442,33 @@ func run(args []string, out, errOut io.Writer) int {
 			}
 			_, _ = fmt.Fprintln(out, line)
 		}
-		if hs.Enabled || len(kx.Groups) > 0 {
+		var echs map[string]*tlsconf.ECHStatus
+		if eb, err := c.Raw("/v1/tls/ech"); err == nil {
+			_ = json.Unmarshal(eb, &echs)
+		}
+		for _, name := range sortedKeys(echs) {
+			st := echs[name]
+			if st == nil {
+				// The management socket is trusted, but a malformed
+				// answer must print nothing rather than crash the tool
+				// an operator reaches for when things are already bad.
+				continue
+			}
+			total := st.Accepted + st.Rejected
+			share := ""
+			if total > 0 {
+				share = fmt.Sprintf(" (%.1f%% of handshakes)", 100*float64(st.Accepted)/float64(total))
+			}
+			_, _ = fmt.Fprintf(out, "ech %s: %d key(s), require=%v, accepted %d, without ech %d, refused %d%s\n",
+				name, len(st.Keys), st.Require, st.Accepted, st.Rejected, st.Refused, share)
+			for _, k := range st.Keys {
+				_, _ = fmt.Fprintf(out, "  config id %d  public name %s  retry=%v  %s\n", k.ConfigID, k.PublicName, k.Retry, k.ConfigFile)
+			}
+			if st.ConfigList != "" {
+				_, _ = fmt.Fprintf(out, "  publish: ech=\"%s\"\n", st.ConfigList)
+			}
+		}
+		if hs.Enabled || len(kx.Groups) > 0 || len(echs) > 0 {
 			_, _ = fmt.Fprintln(out)
 		}
 		var certs map[string][]tlsconf.CertInfo
@@ -1145,6 +1171,8 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_, _ = fmt.Fprintf(out, "%s  # %s, expires %s\n", tlsconf.SPKIPin(cert), cert.Subject.CommonName, cert.NotAfter.Format("2006-01-02"))
 		return 0
+	case "ech":
+		return echCommand(fs, out, errOut)
 	case "fleet":
 		st, err := c.FleetStatus()
 		if err != nil {

@@ -1259,6 +1259,12 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 			attrs = append(attrs, "tls_group", g)
 			s.stats.KeyExchange(g, config.IsPostQuantum(r.TLS.CurveID))
 		}
+		// With ECH the `sni` above is the public name every ECH client
+		// shows; this field is how to tell those apart from clients
+		// that really asked for that name.
+		if r.TLS.ECHAccepted {
+			attrs = append(attrs, "ech", true)
+		}
 		if len(r.TLS.PeerCertificates) > 0 {
 			attrs = append(attrs, "client_cn", r.TLS.PeerCertificates[0].Subject.CommonName)
 		}

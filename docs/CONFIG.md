@@ -255,6 +255,7 @@ upstream `total` for those. 0-RTT is never enabled.
 | `client_ca_file` | path | | Required for `request` and `require` |
 | `cipher_suites` | list of names | ECDHE AEAD suites | TLS 1.2 suites, crypto/tls names. Insecure suites are rejected. TLS 1.3 suites are not configurable. |
 | `key_exchange` | list of group names | `X25519MLKEM768`, `X25519`, `P-256`, `P-384` | Key agreement groups this listener accepts; see below |
+| `ech` | object | none | Accept Encrypted Client Hello; see below |
 | `ocsp_stapling` | object | none | Fetch OCSP responses for the served certificates in the background and staple them into handshakes; see below |
 | `ct` | object | none | Check the Certificate Transparency SCTs embedded in file certificates at load; see below |
 
@@ -299,6 +300,60 @@ The negotiated group is in the access log as `tls_group`, counted by
 tls` with the post-quantum share — which is the number a rollout is
 actually measured by, because it moves as client fleets upgrade and not
 as this file changes.
+
+#### server.listeners[].tls.ech
+
+Encrypted Client Hello. A TLS 1.3 handshake still names its destination
+in the clear — the SNI is the last plaintext identifier in a modern
+connection, and the one that monitoring and blocking actually use. ECH
+encrypts the real ClientHello (SNI, ALPN, everything) to a public key
+the client fetched from DNS, and wraps it in an outer hello naming a
+*public name* shared by everything behind that key. An observer sees a
+connection to the public name and cannot tell which site it was for.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `keys` | list | required | The configurations this listener can decrypt; 1 to 8. Several are live during a rotation |
+| `keys[].config_file` | path | required | The ECHConfig: raw bytes, base64, or the `ech=` value pasted from a record |
+| `keys[].key_file` | path | required | The X25519 private key: raw 32 bytes, base64, hex or PKCS#8 PEM. Must not be world readable |
+| `keys[].retry` | bool | `true` | Offer this config to a client whose key was stale, which is how a rotation heals itself |
+| `require` | bool | `false` | Refuse a handshake that did not use ECH |
+
+Generate a key and the record to publish with `xproxyctl ech keygen`;
+the configuration and key files it writes are what `config_file` and
+`key_file` point at. Enabling ECH raises the listener to TLS 1.3, since
+a 1.2 handshake has no encrypted hello to carry it.
+
+**The public name needs a certificate here.** A client whose key is
+stale — a cached DNS answer, a record that has not propagated — falls
+back to an ordinary handshake with the public name, and meets a
+certificate error unless this listener can serve it. Validation warns
+when no configured certificate covers it. That fallback is not a
+failure mode to be avoided; it is what makes rotation safe.
+
+**Rotating.** Generate the new key, add it to `keys` with `retry: true`,
+publish an `ech=` list containing both, wait out the old record's TTL
+everywhere, then drop the old key. `xproxyctl tls` prints the list the
+listener is actually serving, so the published value and the served
+value cannot drift apart unnoticed. `xproxyctl reload-certs` re-reads
+ECH keys along with certificates.
+
+**`require` is a blunt instrument.** It refuses every client that did
+not use ECH, including one whose DNS answer was stripped by a resolver
+that does not know the record, and one whose platform does not
+implement ECH at all. It is for a listener that exists only for ECH
+clients; validation prints an advice line saying so.
+
+**ECH and layer 4 routing.** A `kind: tcp` listener routes on the SNI
+it can see, which with ECH is the *outer* name: every ECH client looks
+like a connection to the public name, so a passthrough listener in
+front of an ECH listener cannot split them. Terminate TLS where ECH is
+accepted, or give the public name its own backend.
+
+**Fingerprints.** The outer hello is what JA3 and JA4 are computed
+from, so fingerprinting keeps working; what changes is that the SNI in
+`sni` is the public name for every ECH client. The access log carries
+`ech: true` when ECH was accepted, which is how to tell the two apart.
 
 #### server.listeners[].tls.ocsp_stapling
 
