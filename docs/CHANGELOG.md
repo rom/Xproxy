@@ -298,6 +298,64 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **DNS tunnelling and exfiltration detection
+  (`dns.tunnel_detection`).** A network can block every outbound port
+  and still leak, because the resolver is the one thing every host may
+  talk to. iodine, dnscat2 and DNSExfiltrator put the payload in the
+  query name and take the answer back in a TXT record, and the domain
+  is delegated to the other end, so the query reaches them whatever
+  `upstreams` says: blocking the upstream does nothing, and a block
+  list only helps if somebody already knew the name.
+
+  What gives it away is the shape of one client's traffic under one
+  registered domain: names carrying more information per character than
+  words do, hundreds of distinct subdomains where a service has a
+  handful, answers that are mostly TXT, a high rate of NXDOMAIN, and
+  the bytes those names carry. All five are measured per client per
+  domain over a window, and `min_signals` (default 2) says how many
+  have to agree.
+
+  That setting is the whole design. Each signal alone has honest
+  traffic behind it — a content delivery network's hostnames really are
+  random, a reputation service really does encode a hash into a name
+  and answer TXT, a laptop waking up really does produce a burst of
+  NXDOMAIN — so a detector that fires on one is a false positive
+  generator. `min_signals: 1` is allowed and warns. The detection
+  records which signals fired rather than a score, because a number
+  nobody can decompose is a number nobody can argue with.
+
+  Two things keep the signals from being one signal counted twice. The
+  payload total counts each name once per window: asking for the same
+  long name again carries no second copy of anything, and counting it
+  would turn any client polling a long name into an exfiltration of
+  megabytes. And entropy is measured per label with the longest
+  deciding, because a tunnel hides its payload behind an ordinary
+  looking prefix as often as not and an average over the whole name
+  would let the prefix hide it.
+
+  Queries are grouped by the name somebody registered, so a thousand
+  subdomains of one tunnel domain count together. Every answered query
+  is measured whatever answered it — cache, refusal, upstream failure
+  — because a detector that only saw what reached an upstream is one a
+  client could hide from by being noisy. `allow_domains` names the
+  services that legitimately look exactly like this. The table is
+  keyed on a client and a domain, both chosen by whoever sends the
+  queries, so `max_tracked` is not a tuning knob but the thing that
+  stops the detector being the denial of service it exists to catch;
+  past it, queries go unmeasured and are counted as such rather than
+  evicting a detection in progress.
+
+  The five signals that can be switched off take a pointer, so a `0` an
+  operator wrote means off rather than being mistaken for an absent key
+  and given its default back — and a policy that switches signals off
+  while asking for more agreement than it has left is refused at load
+  instead of silently never firing. `action` is `log` by default;
+  `block` answers NXDOMAIN for the whole registered domain for that
+  client until the cooldown ends, and warns. `dns_tunnel` is a ban
+  reason, which is usually the better enforcement: a detection is a
+  strong enough signal to act on the client rather than the name.
+  `examples/blocklists/dns-tunnel.yaml`.
+
 - **TLS interception on the forward proxy
   (`forward.intercept`).** A CONNECT tunnel is opaque by design: the
   proxy knew a name, a port and a byte count, so the destination policy

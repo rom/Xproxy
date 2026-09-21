@@ -1135,7 +1135,188 @@ none
 T}	T{
 Validate answers;\: see below
 T}
+T{
+\fBtunnel_\:detection\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Watch for data leaving inside the query names;\: see below
+T}
 .TE
+.SS "server.listeners[].dns.tunnel_detection"
+.PP
+DNS tunnelling is the oldest way out of a network that filters everything else, and it still works, because a resolver is usually the one thing every host may talk to. The payload goes up in the query name \[u2014] a few dozen encoded characters per label \[u2014] and comes back down in the answer, most often TXT. The tunnel\(aqs domain is delegated to the other end, so every query reaches them whatever this resolver forwards to: blocking the upstream does nothing, and a block list only helps if somebody already knew the name.
+.PP
+What gives it away is not any one query but the shape of a client\(aqs traffic under one registered domain: names carrying more information per character than words do, hundreds of distinct subdomains where a service has a handful, answers that are mostly TXT, and a high rate of NXDOMAIN from the probing and the encoding that produce names nothing resolves.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.1i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+The period the signals are measured over;\: 10s to 1h
+T}
+T{
+\fBmin_\:queries\fR
+T}	T{
+int
+T}	T{
+\fB50\fR
+T}	T{
+Queries a client must send under one domain before any judgement;\: below it there is not enough to be wrong about
+T}
+T{
+\fBmin_\:signals\fR
+T}	T{
+int
+T}	T{
+\fB2\fR
+T}	T{
+How many signals must fire together;\: \fB1\fR warns
+T}
+T{
+\fBentropy\fR
+T}	T{
+float
+T}	T{
+\fB3.\:6\fR
+T}	T{
+Bits per character at which a label counts as encoded rather than named;\: words sit below it,\: base32 and base64 run near 5 and 6
+T}
+T{
+\fBentropy_\:share\fR
+T}	T{
+float
+T}	T{
+\fB0.\:5\fR
+T}	T{
+Share of a domain\(aqs queries that must reach it;\: an explicit \fB0\fR switches the signal off
+T}
+T{
+\fBmin_\:label_\:length\fR
+T}	T{
+int
+T}	T{
+\fB12\fR
+T}	T{
+Shortest label measured;\: a short string\(aqs entropy is mostly noise
+T}
+T{
+\fBdistinct_\:subdomains\fR
+T}	T{
+int
+T}	T{
+\fB50\fR
+T}	T{
+Cardinality under one domain that belongs to a tunnel rather than a service;\: \fB0\fR switches the signal off
+T}
+T{
+\fBtxt_\:share\fR
+T}	T{
+float
+T}	T{
+\fB0.\:5\fR
+T}	T{
+Share asking for the types a tunnel returns data in (TXT,\: NULL,\: CNAME,\: MX,\: SRV);\: \fB0\fR switches the signal off
+T}
+T{
+\fBnxdomain_\:share\fR
+T}	T{
+float
+T}	T{
+\fB0.\:5\fR
+T}	T{
+Share answering NXDOMAIN;\: \fB0\fR switches the signal off
+T}
+T{
+\fBpayload_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+Encoded bytes below the domain in a window,\: counting each name once;\: \fB0\fR switches the signal off
+T}
+T{
+\fBallow_\:domains\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Never judged,\: in the same forms as \fBblock\fR
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBlog\fR|\:\fBblock\fR
+T}	T{
+\fBlog\fR
+T}	T{
+\fBblock\fR answers NXDOMAIN for the detected domain,\: for the client it was detected for,\: until the cooldown ends
+T}
+T{
+\fBcooldown\fR
+T}	T{
+duration
+T}	T{
+\fB10m\fR
+T}	T{
+How long that lasts,\: and how long before the same domain is reported again
+T}
+T{
+\fBmax_\:tracked\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Windows held;\: 64 to 10000000
+T}
+.TE
+.PP
+\fBNo single signal decides\fR, and that is the point of \fBmin_signals\fR. Each one alone has honest traffic behind it: a content delivery network\(aqs hostnames really are random, a reputation service really does encode a hash into a name and answer TXT, and a laptop waking up really does produce a burst of NXDOMAIN. What does not happen by accident is several of them at once, under one registered domain, from one client. Setting \fBmin_signals: 1\fR is allowed and warns, because it turns each of those into a false positive.
+.PP
+Any of the five can be switched off by writing \fB0\fR against it, and a \fB0\fR written there means off: the keys that take one are read through a pointer so that an explicit zero is not mistaken for an absent key and quietly given its default back. A policy that switches signals off and still asks for more agreement than it has left is refused at load rather than silently never firing.
+.PP
+Queries are grouped by the name somebody registered \[u2014] the last two labels, or three under a known registry suffix like \fBco.uk\fR \[u2014] so a thousand subdomains of one tunnel domain count together rather than as a thousand unrelated names. A query for the registered name itself is not measured: there is nothing below it to carry a payload.
+.PP
+\fBpayload_bytes\fR counts each name once per window. Asking for the same long name twice carries no second copy of anything \[u2014] it is a cache miss, not an export \[u2014] and counting it would turn any client that polls a long name into an exfiltration of megabytes. That is what keeps this signal independent of the entropy one rather than a second reading of it.
+.PP
+Every answered query is measured, whatever answered it: from the cache, refused, or failed upstream. A detector that only saw the queries reaching an upstream would be one a client could hide from by being noisy.
+.PP
+\fBmax_tracked\fR is not a tuning knob. The table is keyed on a client and a domain and both are chosen by whoever sends the queries, so the bound is what stops the detector being the denial of service it exists to catch. Windows that have gone quiet are dropped first; when every window is live, further queries go unmeasured and are counted as such (\fBdns_tunnel_tracked\fR, and the evictions in \fBxproxyctl dns\fR).
+.PP
+A detection is a \fBdns_tunnel\fR security event naming the domain, the signals that fired, the queries and the bytes \[u2014] and \fBdns_tunnel\fR is a ban reason, so a trigger can act on it. Counters: \fBdns_tunnels\fR, \fBdns_tunnel_blocked\fR, \fBdns_tunnel_tracked\fR; \fBxproxy_dns_tunnel*\fR metrics.
+.PP
+.RS 4
+.nf
+.ft CR
+dns:
+  upstreams: ["9.9.9.9:53"]
+  tunnel_detection:
+    action: log
+    allow_domains: ["*.avts.mcafee.com", "*.spamhaus.org", "*.sophosxl.net"]
+.ft
+.fi
+.RE
 .SS "server.listeners[].dns.doq"
 .PP
 DNS over QUIC. DoT and DoH both carry DNS over TCP, so they inherit its head\-of\-line blocking: one slow answer holds up every query behind it on the same connection, which is precisely the shape of a resolver\(aqs traffic. DoQ puts each query on its own QUIC stream, so the answers are independent, while keeping DoT\(aqs privacy properties \[u2014] the same certificate, the same server name, no HTTP layer.

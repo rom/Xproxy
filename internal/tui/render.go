@@ -264,6 +264,9 @@ func renderOverview(d Data, sty Style, w int) []string {
 		if l.DNSSEC != nil {
 			out = append(out, fmt.Sprintf("  %-12s dnssec secure %d insecure %d bogus %d indeterminate %d", "", l.DNSSEC.Secure, l.DNSSEC.Insecure, l.DNSSEC.Bogus, l.DNSSEC.Indeterminate))
 		}
+		if t := l.Tunnel; t != nil {
+			out = append(out, fmt.Sprintf("  %-12s tunnel %s detections %d blocked %d tracked %d evicted %d", "", t.Action, t.Detections, t.Blocked, t.Tracked, t.Evicted))
+		}
 	}
 	if d.Series != nil && len(d.Series.Points) > 1 {
 		out = append(out, "", "  "+sparkRow("req/s", seriesValues(d.Series, "requests"), w-12, sty))

@@ -441,6 +441,94 @@ browsers should use it) side by side.
 | `discovery` | list | `[]` | Advertise this resolver's encrypted endpoints at `_dns.resolver.arpa` (RFC 9462); see below |
 | `records` | list | `[]` | SVCB and HTTPS records this resolver answers itself; see below |
 | `dnssec` | object | none | Validate answers; see below |
+| `tunnel_detection` | object | none | Watch for data leaving inside the query names; see below |
+
+#### server.listeners[].dns.tunnel_detection
+
+DNS tunnelling is the oldest way out of a network that filters
+everything else, and it still works, because a resolver is usually the
+one thing every host may talk to. The payload goes up in the query name
+— a few dozen encoded characters per label — and comes back down in the
+answer, most often TXT. The tunnel's domain is delegated to the other
+end, so every query reaches them whatever this resolver forwards to:
+blocking the upstream does nothing, and a block list only helps if
+somebody already knew the name.
+
+What gives it away is not any one query but the shape of a client's
+traffic under one registered domain: names carrying more information per
+character than words do, hundreds of distinct subdomains where a service
+has a handful, answers that are mostly TXT, and a high rate of NXDOMAIN
+from the probing and the encoding that produce names nothing resolves.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `window` | duration | `5m` | The period the signals are measured over; 10s to 1h |
+| `min_queries` | int | `50` | Queries a client must send under one domain before any judgement; below it there is not enough to be wrong about |
+| `min_signals` | int | `2` | How many signals must fire together; `1` warns |
+| `entropy` | float | `3.6` | Bits per character at which a label counts as encoded rather than named; words sit below it, base32 and base64 run near 5 and 6 |
+| `entropy_share` | float | `0.5` | Share of a domain's queries that must reach it; an explicit `0` switches the signal off |
+| `min_label_length` | int | `12` | Shortest label measured; a short string's entropy is mostly noise |
+| `distinct_subdomains` | int | `50` | Cardinality under one domain that belongs to a tunnel rather than a service; `0` switches the signal off |
+| `txt_share` | float | `0.5` | Share asking for the types a tunnel returns data in (TXT, NULL, CNAME, MX, SRV); `0` switches the signal off |
+| `nxdomain_share` | float | `0.5` | Share answering NXDOMAIN; `0` switches the signal off |
+| `payload_bytes` | int | `4096` | Encoded bytes below the domain in a window, counting each name once; `0` switches the signal off |
+| `allow_domains` | list | `[]` | Never judged, in the same forms as `block` |
+| `action` | `log`\|`block` | `log` | `block` answers NXDOMAIN for the detected domain, for the client it was detected for, until the cooldown ends |
+| `cooldown` | duration | `10m` | How long that lasts, and how long before the same domain is reported again |
+| `max_tracked` | int | `65536` | Windows held; 64 to 10000000 |
+
+**No single signal decides**, and that is the point of `min_signals`.
+Each one alone has honest traffic behind it: a content delivery
+network's hostnames really are random, a reputation service really does
+encode a hash into a name and answer TXT, and a laptop waking up really
+does produce a burst of NXDOMAIN. What does not happen by accident is
+several of them at once, under one registered domain, from one client.
+Setting `min_signals: 1` is allowed and warns, because it turns each of
+those into a false positive.
+
+Any of the five can be switched off by writing `0` against it, and a
+`0` written there means off: the keys that take one are read through a
+pointer so that an explicit zero is not mistaken for an absent key and
+quietly given its default back. A policy that switches signals off and
+still asks for more agreement than it has left is refused at load rather
+than silently never firing.
+
+Queries are grouped by the name somebody registered — the last two
+labels, or three under a known registry suffix like `co.uk` — so a
+thousand subdomains of one tunnel domain count together rather than as a
+thousand unrelated names. A query for the registered name itself is not
+measured: there is nothing below it to carry a payload.
+
+`payload_bytes` counts each name once per window. Asking for the same
+long name twice carries no second copy of anything — it is a cache miss,
+not an export — and counting it would turn any client that polls a long
+name into an exfiltration of megabytes. That is what keeps this signal
+independent of the entropy one rather than a second reading of it.
+
+Every answered query is measured, whatever answered it: from the cache,
+refused, or failed upstream. A detector that only saw the queries
+reaching an upstream would be one a client could hide from by being
+noisy.
+
+`max_tracked` is not a tuning knob. The table is keyed on a client and a
+domain and both are chosen by whoever sends the queries, so the bound is
+what stops the detector being the denial of service it exists to catch.
+Windows that have gone quiet are dropped first; when every window is
+live, further queries go unmeasured and are counted as such
+(`dns_tunnel_tracked`, and the evictions in `xproxyctl dns`).
+
+A detection is a `dns_tunnel` security event naming the domain, the
+signals that fired, the queries and the bytes — and `dns_tunnel` is a
+ban reason, so a trigger can act on it. Counters: `dns_tunnels`,
+`dns_tunnel_blocked`, `dns_tunnel_tracked`; `xproxy_dns_tunnel*` metrics.
+
+```yaml
+dns:
+  upstreams: ["9.9.9.9:53"]
+  tunnel_detection:
+    action: log
+    allow_domains: ["*.avts.mcafee.com", "*.spamhaus.org", "*.sophosxl.net"]
+```
 
 #### server.listeners[].dns.doq
 

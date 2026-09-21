@@ -1713,6 +1713,52 @@ serves; compare it with the `ech` value here. A mismatch means clients
 fall back to the public name on every attempt, which looks healthy and
 encrypts nothing.
 
+## DNS tunnel detection
+
+**Nothing is ever detected.** Check `tracked` in `xproxyctl status`: if
+it is zero the detector is seeing nothing, which usually means the
+clients resolve somewhere else. If it is climbing but `detections` stays
+at zero, the traffic is not agreeing on enough signals — lower
+`min_signals` to 1 *temporarily* to see which one fires on its own, then
+put it back. A real tunnel trips three or four.
+
+**Everything is detected.** Almost always `min_signals: 1`, or a
+threshold pulled down far enough that ordinary traffic clears it. The
+detection names the signals that fired; if the same one name keeps
+appearing and it is a reputation service, an antivirus lookup or a
+telemetry endpoint, that is what `allow_domains` is for. Those services
+genuinely do encode a hash into a name and answer TXT — they are DNS
+tunnels by design, just consensual ones.
+
+**A whole domain stopped resolving for one machine.** That is
+`action: block` doing what it says: a detection refuses every name under
+the registered domain, for the client it was detected for, until
+`cooldown` ends. Look for the `dns_tunnel` security event with that
+client and domain. If it was wrong, add the domain to `allow_domains`
+and go back to `action: log` while the thresholds are retuned.
+
+**`tracked` sits at `max_tracked` and `evicted` climbs fast.** The table
+is keyed on a client and a domain, both chosen by whoever sends the
+queries, so a client walking through random domains fills it on purpose.
+The bound is holding, which is the intended behaviour, but queries past
+it go unmeasured: raise `max_tracked` if the resolver has the memory, and
+look at which client is generating the cardinality — it is the one worth
+investigating.
+
+**Detections name a domain that is not the tunnel.** Queries are grouped
+by the registered name: the last two labels, or three under a known
+registry suffix. The suffix list is a safety net rather than the full
+public suffix list, so under an unusual registry the grouping can be one
+label too coarse. The client and the signals are still right even when
+the name is grouped high.
+
+**A tunnel over DoT, DoH or DoQ is not caught.** It is — every answered
+query on the listener is measured whatever transport carried it. But a
+client that resolves through a *different* encrypted resolver is not
+using this listener at all, which is a network policy question rather
+than a detector one: block outbound 853 and the known DoH endpoints, or
+serve the discovery records so clients upgrade to this resolver instead.
+
 ## Forward proxy, layer 4 and QUIC
 
 **`CONNECT` refused with `forward_denied`.** The destination is not in
@@ -3020,6 +3066,7 @@ innocent.
 | `forward_upstream_tls` | TLS interception: the destination's own certificate did not verify, so nothing was forged for it | no (it is the destination's fault, not the client's) |
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
+| `dns_tunnel` | A client's queries under one domain agreed on enough tunnelling signals, or a query was refused during the cooldown after that | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
 | `yara` | A YARA rule fired on a layer 4 stream with `action: close` | yes |
 | `syslog_denied` | The syslog relay: a refused sender, a message it could not parse, one over the bound, or a stream whose framing could not be read | yes |

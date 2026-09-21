@@ -224,8 +224,11 @@ an identifier from the access log to the upstream.
   key is refused if anybody but its owner can read it, and
   `bypass_hosts` names what is never decrypted at all
 - `kind: dns`: a DNS proxy over UDP, TCP, TLS, HTTPS and **QUIC** with
-  DNSSEC validation, a cache, block lists, sinkholes, client allow lists
-  and per client rate limits; it advertises its own encrypted endpoints
+  DNSSEC validation, a cache, block lists, sinkholes, client allow lists,
+  per client rate limits and **tunnelling detection** — query entropy,
+  subdomain cardinality, TXT share, NXDOMAIN rate and encoded bytes,
+  measured per client per registered domain, with several required to
+  agree before anything is called exfiltration; it advertises its own encrypted endpoints
   through RFC 9462 discovery so clients upgrade themselves, and answers
   the SVCB and HTTPS records for the names it fronts, which is the other
   half of Encrypted Client Hello

@@ -122,6 +122,23 @@ func dnsPolicy(cfg *config.DNSListener) (*dns.Policy, error) {
 	if rl := cfg.RateLimit; rl != nil {
 		p.RateLimit = limits.NewKeyedLimiter(rl.QPS, rl.Burst, 65536)
 	}
+	if td := cfg.TunnelDetection; td != nil {
+		tp := dns.TunnelPolicy{
+			Window: td.Window.D(), MinQueries: td.MinQueries, MinSignals: td.MinSignals,
+			Entropy: td.Entropy, EntropyShare: derefF(td.EntropyShare), MinLabelLength: td.MinLabelLength,
+			Distinct: derefI(td.DistinctSubdomains), TXTShare: derefF(td.TXTShare), NXShare: derefF(td.NXDOMAINShare),
+			PayloadBytes: derefI64(td.PayloadBytes), Action: td.Action,
+			Cooldown: td.Cooldown.D(), MaxTracked: td.MaxTracked,
+		}
+		if len(td.AllowDomains) > 0 {
+			allow, err := dns.NewBlockList(td.AllowDomains)
+			if err != nil {
+				return nil, fmt.Errorf("tunnel_detection.allow_domains: %w", err)
+			}
+			tp.Allow = allow
+		}
+		p.Tunnel = dns.NewDetector(tp)
+	}
 	if d := cfg.DNSSEC; d.IsEnabled() {
 		var anchors []dns.TrustAnchor
 		lines := append([]string(nil), d.TrustAnchors...)
@@ -227,5 +244,35 @@ func (s *Server) dnsTotals(snap *Snapshot) {
 		snap.DNSDropped += st.Dropped
 		snap.DNSServFail += st.ServFail
 		snap.DNSCacheEntries += st.CacheEntries
+		if t := st.Tunnel; t != nil {
+			snap.DNSTunnels += t.Detections
+			snap.DNSTunnelBlocked += t.Blocked
+			snap.DNSTunnelTracked += t.Tracked
+		}
 	}
+}
+
+// derefF, derefI and derefI64 read a setting whose zero value an
+// operator may mean: nil is the absent key, which defaults have already
+// filled in, so nil here can only mean a configuration assembled
+// without them and reads as the signal being off.
+func derefF(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func derefI(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func derefI64(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }

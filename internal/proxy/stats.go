@@ -266,6 +266,9 @@ type Snapshot struct {
 	DNSRefused             uint64            `json:"dns_refused"`
 	DNSDropped             uint64            `json:"dns_dropped"`
 	DNSServFail            uint64            `json:"dns_servfail"`
+	DNSTunnels             uint64            `json:"dns_tunnels"`
+	DNSTunnelBlocked       uint64            `json:"dns_tunnel_blocked"`
+	DNSTunnelTracked       int               `json:"dns_tunnel_tracked"`
 	MirrorDropped          uint64            `json:"mirror_dropped"`
 	MirrorSkipped          uint64            `json:"mirror_skipped"`
 	MirrorFailed           uint64            `json:"mirror_failed"`

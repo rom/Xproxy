@@ -21,10 +21,13 @@ const (
 	TypePTR   = 12
 	TypeMX    = 15
 	TypeTXT   = 16
-	TypeAAAA  = 28
-	TypeOPT   = 41
-	TypeANY   = 255
-	ClassIN   = 1
+	// TypeNULL (RFC 1035) exists to carry anything at all and is used
+	// by nothing but tunnels, which is why it is named here.
+	TypeNULL = 10
+	TypeAAAA = 28
+	TypeOPT  = 41
+	TypeANY  = 255
+	ClassIN  = 1
 
 	RcodeNoError  = 0
 	RcodeFormErr  = 1

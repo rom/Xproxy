@@ -1108,6 +1108,14 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "tunnel_detection": {
+          "description": "TunnelDetection watches for data leaving inside the query names.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/DNSTunnel"
+            }
+          ]
+        },
         "upstream_ca_file": {
           "description": "UpstreamCAFile pins the CA of tls:// and https:// upstreams. Default: system pool.",
           "type": "string"
@@ -1191,6 +1199,74 @@
         "trust_anchors_file": {
           "description": "TrustAnchorsFile adds DS lines from a file (comments with #).",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DNSTunnel": {
+      "description": "DNSTunnel configures detection of data leaving inside DNS queries. A tunnel puts its payload in the name — a few dozen encoded characters per label — and takes the answer back in a TXT record. The domain is delegated to the other end, so every query reaches them whatever this resolver forwards to: blocking the upstream does nothing, and a block list only helps if somebody already knew the name. No single signal decides here, because each one has honest traffic behind it. A content delivery network's names really are random. A reputation service really does encode a hash into a name and answer TXT. A laptop waking up really does produce a burst of NXDOMAIN. What does not happen by accident is several of them at once, under one registered domain, from one client — which is what min_signals says out loud instead of burying it in a weighting nobody can read.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is log (default) or block. block answers NXDOMAIN for the detected domain, for the client it was detected for, until the cooldown runs out.",
+          "type": "string"
+        },
+        "allow_domains": {
+          "description": "AllowDomains are never judged, in the forms the block list takes. Reputation services, antivirus lookups and telemetry that legitimately look exactly like this belong here.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cooldown": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "distinct_subdomains": {
+          "description": "DistinctSubdomains is the cardinality under one domain that belongs to a tunnel rather than a service. Default 50; an explicit 0 switches the signal off.",
+          "type": "integer"
+        },
+        "entropy": {
+          "description": "Entropy is the bits per character at which a label is counted as encoded rather than named. Default 3.6: words sit below it, and base32 and base64 payloads run near 5 and 6.",
+          "type": "number"
+        },
+        "entropy_share": {
+          "description": "EntropyShare is the share of a domain's queries that must reach it. Default 0.5; an explicit 0 switches the signal off.",
+          "type": "number"
+        },
+        "max_tracked": {
+          "description": "MaxTracked bounds the windows held. Default 65536. The key is a client and a domain and both are chosen by whoever sends the queries, so this is not a tuning knob but the thing that stops the detector being the attack.",
+          "type": "integer"
+        },
+        "min_label_length": {
+          "description": "MinLabelLength is the shortest label measured. Default 12: a short string cannot carry much and its entropy is mostly noise.",
+          "type": "integer"
+        },
+        "min_queries": {
+          "description": "MinQueries is how many queries a client must send under one domain before any judgement is made. Default 50: below it there is not enough to be wrong about.",
+          "type": "integer"
+        },
+        "min_signals": {
+          "description": "MinSignals is how many signals must fire together. Default 2. One is a false positive generator; this is the setting that decides whether this feature helps or cries wolf.",
+          "type": "integer"
+        },
+        "nxdomain_share": {
+          "description": "NXDOMAINShare is the share answering NXDOMAIN. Default 0.5; an explicit 0 switches the signal off.",
+          "type": "number"
+        },
+        "payload_bytes": {
+          "description": "PayloadBytes is the encoded bytes below the domain in a window, counting each name once: the exfiltration itself rather than a proxy for it. Default 4096; an explicit 0 switches the signal off. These five are pointers so that a 0 an operator wrote means what it says. A plain zero value cannot be told apart from a key that was never set, and a signal silently switched back on is a detector doing something other than what its configuration reads.",
+          "type": "integer"
+        },
+        "txt_share": {
+          "description": "TXTShare is the share of queries asking for the record types a tunnel returns data in (TXT, NULL, CNAME, MX, SRV). Default 0.5; an explicit 0 switches the signal off.",
+          "type": "number"
+        },
+        "window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         }
       },
       "additionalProperties": false
