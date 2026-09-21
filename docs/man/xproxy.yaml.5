@@ -840,8 +840,8 @@ QUIC connections share the listener\(aqs \fBmax_connections\fR, \fBmax_connectio
 .PP
 .TS
 allbox;
-lbw(1.3i) lbw(0.9i) lbw(1.3i) lbx
-lw(1.3i) lw(0.9i) lw(1.3i) lx.
+lbw(1.3i) lbw(0.9i) lbw(1.6i) lbx
+lw(1.3i) lw(0.9i) lw(1.6i) lx.
 T{
 Key
 T}	T{
@@ -906,6 +906,15 @@ T}	T{
 TLS 1.2 suites,\: crypto/\:tls names. Insecure suites are rejected. TLS 1.3 suites are not configurable.
 T}
 T{
+\fBkey_\:exchange\fR
+T}	T{
+list of group names
+T}	T{
+\fBX25519MLKEM768\fR,\: \fBX25519\fR,\: \fBP\-\:256\fR,\: \fBP\-\:384\fR
+T}	T{
+Key agreement groups this listener accepts;\: see below
+T}
+T{
 \fBocsp_\:stapling\fR
 T}	T{
 object
@@ -924,6 +933,19 @@ T}	T{
 Check the Certificate Transparency SCTs embedded in file certificates at load;\: see below
 T}
 .TE
+.SS "server.listeners[].tls.key_exchange"
+.PP
+The accepted key agreement groups, in preference order: \fBX25519MLKEM768\fR, \fBX25519\fR, \fBP\-256\fR, \fBP\-384\fR, \fBP\-521\fR. The default leads with \fBX25519MLKEM768\fR, the hybrid that combines X25519 with the ML\-KEM lattice KEM (RFC 9370\(aqs hybrid design, as deployed by Chrome, Firefox and every major CDN).
+.PP
+Why it is a setting at all: Go chooses a good set by itself, but \fIonly\fR while the list is left unset, and naming any group replaces the whole list. A configuration written to prefer X25519 therefore drops the post\-quantum hybrid silently, and nothing in a handshake says so. Making the list explicit means the choice is validated, documented and visible in \fBxproxyctl tls\fR, rather than a side effect of a line nobody re\-read after a toolchain upgrade.
+.PP
+Why the hybrid leads: traffic recorded today is decrypted by whoever holds a quantum computer in ten years \[u2014] the data does not have to be interesting now, only later. A hybrid exchange costs about a kilobyte in the ClientHello and removes that trade entirely, and its classical half keeps the exchange at least as strong as X25519 alone if the lattice half is ever broken.
+.PP
+Note what the list is: the set the server \fIaccepts\fR. In TLS 1.3 the client sends a key share, and the server takes the first offered share it accepts rather than forcing its own favourite with a retry \[u2014] so a server that accepts several groups usually ends up on the client\(aqs first choice, and a client that offers nothing acceptable is sent a HelloRetryRequest naming one it can use. Restricting the list to one group is how you force it, at the cost of a round trip for clients that guessed differently.
+.PP
+A list that names groups but no post\-quantum one loads with an advice line rather than an error: a client fleet that cannot negotiate the hybrid exists, and that is an operator\(aqs decision, not the proxy\(aqs.
+.PP
+The negotiated group is in the access log as \fBtls_group\fR, counted by \fBxproxy_tls_key_exchange_total{group}\fR, and summarised by \fBxproxyctl tls\fR with the post\-quantum share \[u2014] which is the number a rollout is actually measured by, because it moves as client fleets upgrade and not as this file changes.
 .SS "server.listeners[].tls.ocsp_stapling"
 .PP
 A stapled OCSP response spares clients the responder round trip and keeps working when the responder is down or firewalled from them. The proxy fetches a response for every served certificate (file and ACME alike) from the responder named in the certificate, using the issuer that follows the leaf in the chain file, and refreshes it at half its validity, at \fBrefresh\fR at the latest, and one minute after a failure. A handshake never waits: it carries the current response when there is one and none otherwise, and a still valid response is kept through fetch failures. A \fBrevoked\fR answer is stapled as well, since clients must see it, and logged as an error. \fBxproxyctl tls\fR and \fBGET /v1/tls\fR show the state per certificate.
@@ -2817,8 +2839,8 @@ T}
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.8i) lbw(0.9i) lbx
-lw(1.0i) lw(0.8i) lw(0.9i) lx.
+lbw(1.0i) lbw(0.8i) lbw(1.6i) lbx
+lw(1.0i) lw(0.8i) lw(1.6i) lx.
 T{
 Key
 T}	T{
@@ -2854,6 +2876,15 @@ T}	T{
 \fB"1.\:2"\fR
 T}	T{
 Minimum TLS version towards the upstream
+T}
+T{
+\fBkey_\:exchange\fR
+T}	T{
+list of group names
+T}	T{
+\fBX25519MLKEM768\fR,\: \fBX25519\fR,\: \fBP\-\:256\fR,\: \fBP\-\:384\fR
+T}	T{
+As on a listener,\: for the connection to the origin: the same adversary records both halves of the path
 T}
 T{
 \fBclient_\:cert_\:file\fR,\: \fBclient_\:key_\:file\fR

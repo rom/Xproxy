@@ -4138,6 +4138,13 @@
             }
           ]
         },
+        "key_exchange": {
+          "description": "KeyExchange is the offered key agreement groups in preference order: X25519MLKEM768 (post-quantum hybrid), X25519, P-256, P-384, P-521. Empty means the default, which leads with the hybrid.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "min_version": {
           "description": "MinVersion is \"1.2\" or \"1.3\". Default \"1.2\".",
           "type": "string",
@@ -4418,6 +4425,13 @@
         "insecure_skip_verify": {
           "description": "InsecureSkipVerify disables verification. Refused unless allow_insecure is also true; logged as a security warning at start.",
           "type": "boolean"
+        },
+        "key_exchange": {
+          "description": "KeyExchange is the offered key agreement groups in preference order, as in the listener section. Empty means the default.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "min_version": {
           "description": "MinVersion is \"1.2\" or \"1.3\". Default \"1.2\".",

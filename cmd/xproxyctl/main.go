@@ -416,8 +416,34 @@ func run(args []string, out, errOut io.Writer) int {
 			_ = json.Unmarshal(hb, &hs)
 		}
 		if hs.Enabled {
-			_, _ = fmt.Fprintf(out, "handshake: refuse_banned=%v fingerprints=%d refused=%d\n\n",
+			_, _ = fmt.Fprintf(out, "handshake: refuse_banned=%v fingerprints=%d refused=%d\n",
 				hs.RefuseBanned, hs.Fingerprints, hs.Refused)
+		}
+		// The key agreement policy, and what clients actually agreed to:
+		// the post-quantum share is the number a rollout is judged by,
+		// and it moves with client fleets, not with this configuration.
+		var kx proxy.KeyExchangeStatus
+		if kb, err := c.Raw("/v1/tls/key-exchange"); err == nil {
+			_ = json.Unmarshal(kb, &kx)
+		}
+		for _, name := range sortedKeys(kx.Groups) {
+			_, _ = fmt.Fprintf(out, "key exchange %s: %s\n", name, strings.Join(kx.Groups[name], ", "))
+		}
+		if len(kx.Negotiated) > 0 {
+			var total uint64
+			parts := make([]string, 0, len(kx.Negotiated))
+			for _, g := range sortedCounts(kx.Negotiated) {
+				total += kx.Negotiated[g]
+				parts = append(parts, fmt.Sprintf("%s %d", g, kx.Negotiated[g]))
+			}
+			line := "negotiated: " + strings.Join(parts, "  ")
+			if total > 0 {
+				line += fmt.Sprintf("  (post-quantum %.1f%%)", 100*float64(kx.PostQuantum)/float64(total))
+			}
+			_, _ = fmt.Fprintln(out, line)
+		}
+		if hs.Enabled || len(kx.Groups) > 0 {
+			_, _ = fmt.Fprintln(out)
 		}
 		var certs map[string][]tlsconf.CertInfo
 		if err := json.Unmarshal(b, &certs); err != nil {
@@ -1730,4 +1756,22 @@ func timeOrNever(t time.Time) string {
 		return "-"
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+// sortedKeys returns a map's keys in order, for stable output.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sortedCounts orders names by count, highest first, then by name so
+// two groups with the same count do not swap between runs.
+func sortedCounts(m map[string]uint64) []string {
+	out := sortedKeys(m)
+	sort.SliceStable(out, func(i, j int) bool { return m[out[i]] > m[out[j]] })
+	return out
 }

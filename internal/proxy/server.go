@@ -390,6 +390,39 @@ func (s *Server) Certificates() map[string][]tlsconf.CertInfo {
 	return out
 }
 
+// KeyExchangeStatus is the management view of the key agreement policy
+// and what clients actually negotiated.
+type KeyExchangeStatus struct {
+	// Groups is the offered list per TLS listener, in preference order.
+	Groups map[string][]string `json:"groups"`
+	// Negotiated counts completed handshakes by group.
+	Negotiated map[string]uint64 `json:"negotiated"`
+	// PostQuantum is how many of those used a hybrid group, which is
+	// the number a rollout is measured by.
+	PostQuantum uint64 `json:"post_quantum"`
+}
+
+// KeyExchange reports the configured groups and the negotiated ones.
+func (s *Server) KeyExchange() KeyExchangeStatus {
+	st := KeyExchangeStatus{Groups: map[string][]string{},
+		Negotiated: s.stats.KeyExchangeCounts(), PostQuantum: s.stats.KeyExchangePQ.Load()}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, bl := range s.listeners {
+		if bl.cfg.TLS == nil {
+			continue
+		}
+		names := bl.cfg.TLS.KeyExchange
+		if len(names) == 0 {
+			for _, id := range config.DefaultKeyExchange() {
+				names = append(names, config.GroupName(id))
+			}
+		}
+		st.Groups[bl.cfg.Name] = names
+	}
+	return st
+}
+
 // Tickets returns the session ticket key status, nil without the section.
 func (s *Server) Tickets() *tlsconf.TicketStatus { return s.tickets.Status() }
 

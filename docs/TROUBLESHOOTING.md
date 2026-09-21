@@ -602,6 +602,25 @@ client's own error:
 | `bad certificate` | Client certificate present but not issued by `client_ca_file`, or expired |
 | `unrecognized name` | SNI names a host with no certificate and there is no default |
 
+**Which key exchange is in use, and is it post-quantum.** `xproxyctl
+tls` prints the accepted groups per listener and the negotiated
+counts with the post-quantum share; `tls_group` in the access log says
+what one request agreed. A share lower than expected is a client fleet
+that cannot do the hybrid, not a proxy fault — look at which groups are
+being negotiated instead, and by which user agents.
+
+**The post-quantum share dropped to zero after a change.** Almost
+always `key_exchange` naming groups and leaving `X25519MLKEM768` out:
+the list replaces the default rather than adding to it. Validation
+prints an advice line about exactly this at load
+(`xproxyctl reload --dry-run` shows it).
+
+**A client cannot connect after narrowing `key_exchange`.** A single
+configured group means every client that guessed differently pays a
+HelloRetryRequest, and a client that supports none of the listed groups
+fails outright with a handshake failure. Widen the list; the cost of an
+extra accepted group is nothing until it is negotiated.
+
 **Which certificate is being served.** `xproxyctl tls` lists every
 loaded certificate with its names, issuer, expiry and whether it is
 stapled. A certificate is selected by SNI; a client that sends none gets

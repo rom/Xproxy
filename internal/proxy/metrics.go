@@ -179,6 +179,13 @@ func (s *Server) Collect(e metrics.Collector) {
 	}
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
 	e.Counter("xproxy_tls_handshakes_refused_total", "TLS handshakes refused in the ClientHello.", nil, float64(sn.HandshakesRefused))
+	// Per group, so a post-quantum rollout is measured on real traffic:
+	// the share of handshakes that agreed a hybrid key is the number,
+	// and it moves as client fleets upgrade, not as the configuration
+	// changes.
+	for g, n := range sn.KeyExchange {
+		e.Counter("xproxy_tls_key_exchange_total", "Completed handshakes by key agreement group.", L{"group": g}, float64(n))
+	}
 	for _, d := range s.Deceptions() {
 		e.Counter("xproxy_deceived_total", "Requests answered with a deceptive response instead of the origin's.", L{"route": d.Route}, float64(d.Served))
 	}

@@ -301,6 +301,61 @@ server:
 
 Add more certificates to the list; SNI selects the matching one.
 
+### Post-quantum key exchange
+
+```yaml
+server:
+  listeners:
+    - name: public
+      address: ":443"
+      tls:
+        certificates: [{cert_file: /etc/xproxy/certs/site.pem, key_file: /etc/xproxy/certs/site-key.pem}]
+        # The default. Written out here because it is worth knowing it
+        # is on, and because naming any group replaces the whole list.
+        key_exchange: [X25519MLKEM768, X25519, P-256, P-384]
+upstreams:
+  - name: app
+    scheme: https
+    endpoints: [{address: "10.0.1.10:443"}]
+    tls: {key_exchange: [X25519MLKEM768, X25519]}
+```
+
+The threat is not a quantum computer today; it is a recorder today and
+a quantum computer later. Traffic captured now — a session, a token, a
+year of an API — is decrypted whenever the key exchange falls, and
+nothing about the recording has to be noticed at the time. A hybrid
+group closes that: X25519MLKEM768 agrees a secret that needs *both*
+X25519 and ML-KEM broken, costs about a kilobyte in the ClientHello,
+and is what Chrome, Firefox and the large CDNs already negotiate.
+
+The reason it is a setting rather than a default buried in the runtime
+is a trap worth naming: Go picks a good set on its own, but only while
+the list is unset, and naming a single group replaces the lot. A
+listener written years ago to "prefer X25519" therefore stops offering
+the hybrid the day the toolchain adds it, silently, with a handshake
+that looks perfectly healthy. Making the list explicit turns that into
+something validated, documented and visible.
+
+Measure it on traffic, not on configuration:
+
+```
+$ xproxyctl tls
+key exchange public: X25519MLKEM768, X25519, P-256, P-384
+negotiated: X25519MLKEM768 184203  X25519 26611  P-256 44  (post-quantum 87.4%)
+```
+
+`tls_group` in the access log says which group each request's
+connection agreed, and `xproxy_tls_key_exchange_total{group}` charts
+the share over time. That share moves as client fleets upgrade; it is
+the only honest measure of a rollout, and it is the one to watch before
+deciding whether the classical groups can ever be removed.
+
+A list that names groups but leaves the hybrid out still loads — some
+fleets genuinely cannot negotiate it — but it loads with an advice line
+saying what has been traded away. Restricting the list to one group
+forces it at the cost of a HelloRetryRequest for clients that guessed
+differently, which is a round trip, not a failure.
+
 ### Session tickets shared across a cluster
 
 ```yaml

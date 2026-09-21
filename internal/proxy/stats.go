@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"github.com/rom/xproxy/internal/bodybudget"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -99,6 +100,45 @@ type Stats struct {
 
 	Reloads        atomic.Uint64
 	ReloadFailures atomic.Uint64
+
+	// kx counts handshakes by negotiated key agreement group. A map
+	// under a mutex rather than an atomic per group: the set is small
+	// and fixed by the configuration, and a handshake is already the
+	// expensive part of the request.
+	kxMu sync.Mutex
+	kx   map[string]uint64
+	// KeyExchangePQ counts the share that used a post-quantum group,
+	// which is the number a rollout is actually measured by.
+	KeyExchangePQ atomic.Uint64
+}
+
+// KeyExchange records one completed handshake's group.
+func (s *Stats) KeyExchange(group string, pq bool) {
+	if group == "" {
+		return
+	}
+	if pq {
+		s.KeyExchangePQ.Add(1)
+	}
+	s.kxMu.Lock()
+	defer s.kxMu.Unlock()
+	if s.kx == nil {
+		s.kx = make(map[string]uint64, 8)
+	}
+	// The name comes from a closed set plus "group-N" for a group a
+	// future Go negotiates, so the map cannot be grown by a client.
+	s.kx[group]++
+}
+
+// KeyExchangeCounts copies the per group counters.
+func (s *Stats) KeyExchangeCounts() map[string]uint64 {
+	s.kxMu.Lock()
+	defer s.kxMu.Unlock()
+	out := make(map[string]uint64, len(s.kx))
+	for k, v := range s.kx {
+		out[k] = v
+	}
+	return out
 }
 
 // Snapshot is the JSON form of Stats.
@@ -123,105 +163,107 @@ type Snapshot struct {
 	// SecurityTxt counts requests answered with a virtual security.txt.
 	SecurityTxt uint64 `json:"security_txt"`
 	// BufferedBody is the process-wide buffered-body budget.
-	BufferedBody          bodybudget.Stats `json:"buffered_body"`
-	DeniedURILength       uint64           `json:"denied_uri_length"`
-	DeniedNoRoute         uint64           `json:"denied_no_route"`
-	DeniedWebSocket       uint64           `json:"denied_websocket"`
-	DeniedBadHost         uint64           `json:"denied_bad_host"`
-	DeniedBan             uint64           `json:"denied_ban"`
-	DeniedWAF             uint64           `json:"denied_waf"`
-	DeniedJWT             uint64           `json:"denied_jwt"`
-	DeniedICAP            uint64           `json:"denied_icap"`
-	DeniedFilter          uint64           `json:"denied_filter"`
-	DeniedGeo             uint64           `json:"denied_geo"`
-	DeniedPolicy          uint64           `json:"denied_policy"`
-	DeniedVirtualPatch    uint64           `json:"denied_virtual_patch"`
-	DeniedNormalization   uint64           `json:"denied_normalization"`
-	DeniedMaintenance     uint64           `json:"denied_maintenance"`
-	DeniedSensitive       uint64           `json:"denied_sensitive_data"`
-	DeniedAccount         uint64           `json:"denied_account_abuse"`
-	SensitiveFindings     uint64           `json:"sensitive_findings"`
-	AccountBlocks         uint64           `json:"account_blocks"`
-	AccountCampaigns      uint64           `json:"account_campaigns"`
-	AccountBlocksActive   int              `json:"account_blocks_active"`
-	HoneypotHits          uint64           `json:"honeypot_hits"`
-	HoneytokenHits        uint64           `json:"honeytoken_hits"`
-	HandshakesRefused     uint64           `json:"handshakes_refused"`
-	Degraded              uint64           `json:"degraded"`
-	Deceived              uint64           `json:"deceived"`
-	StaticServed          uint64           `json:"static_served"`
-	StaticNotFound        uint64           `json:"static_not_found"`
-	Compressed            uint64           `json:"compressed"`
-	CompressedRawBytes    uint64           `json:"compressed_raw_bytes"`
-	MirrorSent            uint64           `json:"mirror_sent"`
-	GRPCStatus            [17]uint64       `json:"grpc_status"`
-	DNSQueries            uint64           `json:"dns_queries"`
-	DNSCacheHits          uint64           `json:"dns_cache_hits"`
-	DNSCacheEntries       int              `json:"dns_cache_entries"`
-	DNSBlocked            uint64           `json:"dns_blocked"`
-	DNSRefused            uint64           `json:"dns_refused"`
-	DNSDropped            uint64           `json:"dns_dropped"`
-	DNSServFail           uint64           `json:"dns_servfail"`
-	MirrorDropped         uint64           `json:"mirror_dropped"`
-	MirrorSkipped         uint64           `json:"mirror_skipped"`
-	MirrorFailed          uint64           `json:"mirror_failed"`
-	MirrorDiffMatch       uint64           `json:"mirror_diff_match"`
-	MirrorDiffStatus      uint64           `json:"mirror_diff_status"`
-	MirrorDiffHeader      uint64           `json:"mirror_diff_header"`
-	MirrorDiffBody        uint64           `json:"mirror_diff_body"`
-	HoneypotMarked        int              `json:"honeypot_marked"`
-	TCPConnections        uint64           `json:"tcp_connections"`
-	TCPRejected           uint64           `json:"tcp_rejected"`
-	TCPErrors             uint64           `json:"tcp_errors"`
-	TCPBytesIn            uint64           `json:"tcp_bytes_in"`
-	TCPBytesOut           uint64           `json:"tcp_bytes_out"`
-	QUICFlows             uint64           `json:"quic_flows"`
-	QUICRejected          uint64           `json:"quic_rejected"`
-	QUICFlowsOpen         int              `json:"quic_flows_open"`
-	ForwardRequests       uint64           `json:"forward_requests"`
-	ForwardTunnels        uint64           `json:"forward_tunnels"`
-	ForwardTunnelsOpen    int64            `json:"forward_tunnels_open"`
-	ForwardDenied         uint64           `json:"forward_denied"`
-	ForwardAuthFailed     uint64           `json:"forward_auth_failed"`
-	ForwardRejected       uint64           `json:"forward_rejected"`
-	ForwardErrors         uint64           `json:"forward_errors"`
-	ForwardBytesIn        uint64           `json:"forward_bytes_in"`
-	ForwardBytesOut       uint64           `json:"forward_bytes_out"`
-	WAFDetected           uint64           `json:"waf_detected"`
-	BansActive            int              `json:"bans_active"`
-	BansTotal             uint64           `json:"bans_total"`
-	ClusterPeers          int              `json:"cluster_peers"`
-	ClusterConnected      int              `json:"cluster_connected"`
-	Shed                  uint64           `json:"shed"`
-	LoadLevel             float64          `json:"load_level"`
-	UpstreamLatencyMS     float64          `json:"upstream_latency_ms"`
-	SheddingClasses       []string         `json:"shedding_classes"`
-	ChallengesIssued      uint64           `json:"challenges_issued"`
-	ChallengesPassed      uint64           `json:"challenges_passed"`
-	ChallengesFailed      uint64           `json:"challenges_failed"`
-	CaptchasPassed        uint64           `json:"captchas_passed"`
-	LogSyslogSent         uint64           `json:"log_syslog_sent"`
-	LogSyslogDropped      uint64           `json:"log_syslog_dropped"`
-	LogJournalDropped     uint64           `json:"log_journald_dropped"`
-	LogSIEMSent           uint64           `json:"log_siem_sent"`
-	LogSIEMDropped        uint64           `json:"log_siem_dropped"`
-	LogRedaction          bool             `json:"log_redaction"`
-	LogWriteErrors        uint64           `json:"log_write_errors"`
-	UpstreamErrors        uint64           `json:"upstream_errors"`
-	WebTransportSessions  uint64           `json:"webtransport_sessions"`
-	UpstreamRetries       uint64           `json:"upstream_retries"`
-	UpstreamStatusRetries uint64           `json:"upstream_status_retries"`
-	UpstreamCircuitOpen   uint64           `json:"upstream_circuit_open"`
-	UpstreamQueueFull     uint64           `json:"upstream_queue_full"`
-	UpstreamQueueTimeouts uint64           `json:"upstream_queue_timeouts"`
-	UpstreamTimeouts      uint64           `json:"upstream_timeouts"`
-	UpstreamNoHealthy     uint64           `json:"upstream_no_healthy"`
-	ClientAborts          uint64           `json:"client_aborts"`
-	Reloads               uint64           `json:"reloads"`
-	ReloadFailures        uint64           `json:"reload_failures"`
-	OpenConnections       int64            `json:"open_connections"`
-	RejectedConns         uint64           `json:"rejected_connections"`
-	InFlight              int64            `json:"in_flight"`
+	BufferedBody          bodybudget.Stats  `json:"buffered_body"`
+	DeniedURILength       uint64            `json:"denied_uri_length"`
+	DeniedNoRoute         uint64            `json:"denied_no_route"`
+	DeniedWebSocket       uint64            `json:"denied_websocket"`
+	DeniedBadHost         uint64            `json:"denied_bad_host"`
+	DeniedBan             uint64            `json:"denied_ban"`
+	DeniedWAF             uint64            `json:"denied_waf"`
+	DeniedJWT             uint64            `json:"denied_jwt"`
+	DeniedICAP            uint64            `json:"denied_icap"`
+	DeniedFilter          uint64            `json:"denied_filter"`
+	DeniedGeo             uint64            `json:"denied_geo"`
+	DeniedPolicy          uint64            `json:"denied_policy"`
+	DeniedVirtualPatch    uint64            `json:"denied_virtual_patch"`
+	DeniedNormalization   uint64            `json:"denied_normalization"`
+	DeniedMaintenance     uint64            `json:"denied_maintenance"`
+	DeniedSensitive       uint64            `json:"denied_sensitive_data"`
+	DeniedAccount         uint64            `json:"denied_account_abuse"`
+	SensitiveFindings     uint64            `json:"sensitive_findings"`
+	AccountBlocks         uint64            `json:"account_blocks"`
+	AccountCampaigns      uint64            `json:"account_campaigns"`
+	AccountBlocksActive   int               `json:"account_blocks_active"`
+	HoneypotHits          uint64            `json:"honeypot_hits"`
+	HoneytokenHits        uint64            `json:"honeytoken_hits"`
+	HandshakesRefused     uint64            `json:"handshakes_refused"`
+	KeyExchange           map[string]uint64 `json:"key_exchange"`
+	KeyExchangePQ         uint64            `json:"key_exchange_post_quantum"`
+	Degraded              uint64            `json:"degraded"`
+	Deceived              uint64            `json:"deceived"`
+	StaticServed          uint64            `json:"static_served"`
+	StaticNotFound        uint64            `json:"static_not_found"`
+	Compressed            uint64            `json:"compressed"`
+	CompressedRawBytes    uint64            `json:"compressed_raw_bytes"`
+	MirrorSent            uint64            `json:"mirror_sent"`
+	GRPCStatus            [17]uint64        `json:"grpc_status"`
+	DNSQueries            uint64            `json:"dns_queries"`
+	DNSCacheHits          uint64            `json:"dns_cache_hits"`
+	DNSCacheEntries       int               `json:"dns_cache_entries"`
+	DNSBlocked            uint64            `json:"dns_blocked"`
+	DNSRefused            uint64            `json:"dns_refused"`
+	DNSDropped            uint64            `json:"dns_dropped"`
+	DNSServFail           uint64            `json:"dns_servfail"`
+	MirrorDropped         uint64            `json:"mirror_dropped"`
+	MirrorSkipped         uint64            `json:"mirror_skipped"`
+	MirrorFailed          uint64            `json:"mirror_failed"`
+	MirrorDiffMatch       uint64            `json:"mirror_diff_match"`
+	MirrorDiffStatus      uint64            `json:"mirror_diff_status"`
+	MirrorDiffHeader      uint64            `json:"mirror_diff_header"`
+	MirrorDiffBody        uint64            `json:"mirror_diff_body"`
+	HoneypotMarked        int               `json:"honeypot_marked"`
+	TCPConnections        uint64            `json:"tcp_connections"`
+	TCPRejected           uint64            `json:"tcp_rejected"`
+	TCPErrors             uint64            `json:"tcp_errors"`
+	TCPBytesIn            uint64            `json:"tcp_bytes_in"`
+	TCPBytesOut           uint64            `json:"tcp_bytes_out"`
+	QUICFlows             uint64            `json:"quic_flows"`
+	QUICRejected          uint64            `json:"quic_rejected"`
+	QUICFlowsOpen         int               `json:"quic_flows_open"`
+	ForwardRequests       uint64            `json:"forward_requests"`
+	ForwardTunnels        uint64            `json:"forward_tunnels"`
+	ForwardTunnelsOpen    int64             `json:"forward_tunnels_open"`
+	ForwardDenied         uint64            `json:"forward_denied"`
+	ForwardAuthFailed     uint64            `json:"forward_auth_failed"`
+	ForwardRejected       uint64            `json:"forward_rejected"`
+	ForwardErrors         uint64            `json:"forward_errors"`
+	ForwardBytesIn        uint64            `json:"forward_bytes_in"`
+	ForwardBytesOut       uint64            `json:"forward_bytes_out"`
+	WAFDetected           uint64            `json:"waf_detected"`
+	BansActive            int               `json:"bans_active"`
+	BansTotal             uint64            `json:"bans_total"`
+	ClusterPeers          int               `json:"cluster_peers"`
+	ClusterConnected      int               `json:"cluster_connected"`
+	Shed                  uint64            `json:"shed"`
+	LoadLevel             float64           `json:"load_level"`
+	UpstreamLatencyMS     float64           `json:"upstream_latency_ms"`
+	SheddingClasses       []string          `json:"shedding_classes"`
+	ChallengesIssued      uint64            `json:"challenges_issued"`
+	ChallengesPassed      uint64            `json:"challenges_passed"`
+	ChallengesFailed      uint64            `json:"challenges_failed"`
+	CaptchasPassed        uint64            `json:"captchas_passed"`
+	LogSyslogSent         uint64            `json:"log_syslog_sent"`
+	LogSyslogDropped      uint64            `json:"log_syslog_dropped"`
+	LogJournalDropped     uint64            `json:"log_journald_dropped"`
+	LogSIEMSent           uint64            `json:"log_siem_sent"`
+	LogSIEMDropped        uint64            `json:"log_siem_dropped"`
+	LogRedaction          bool              `json:"log_redaction"`
+	LogWriteErrors        uint64            `json:"log_write_errors"`
+	UpstreamErrors        uint64            `json:"upstream_errors"`
+	WebTransportSessions  uint64            `json:"webtransport_sessions"`
+	UpstreamRetries       uint64            `json:"upstream_retries"`
+	UpstreamStatusRetries uint64            `json:"upstream_status_retries"`
+	UpstreamCircuitOpen   uint64            `json:"upstream_circuit_open"`
+	UpstreamQueueFull     uint64            `json:"upstream_queue_full"`
+	UpstreamQueueTimeouts uint64            `json:"upstream_queue_timeouts"`
+	UpstreamTimeouts      uint64            `json:"upstream_timeouts"`
+	UpstreamNoHealthy     uint64            `json:"upstream_no_healthy"`
+	ClientAborts          uint64            `json:"client_aborts"`
+	Reloads               uint64            `json:"reloads"`
+	ReloadFailures        uint64            `json:"reload_failures"`
+	OpenConnections       int64             `json:"open_connections"`
+	RejectedConns         uint64            `json:"rejected_connections"`
+	InFlight              int64             `json:"in_flight"`
 }
 
 func (s *Stats) snapshot() Snapshot {
@@ -263,6 +305,8 @@ func (s *Stats) snapshot() Snapshot {
 		HoneypotHits:          s.HoneypotHits.Load(),
 		HoneytokenHits:        s.HoneytokenHits.Load(),
 		HandshakesRefused:     s.HandshakesRefused.Load(),
+		KeyExchange:           s.KeyExchangeCounts(),
+		KeyExchangePQ:         s.KeyExchangePQ.Load(),
 		Degraded:              s.Degraded.Load(),
 		Deceived:              s.Deceived.Load(),
 		StaticServed:          s.StaticServed.Load(),

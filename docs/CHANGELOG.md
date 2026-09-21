@@ -260,6 +260,26 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Post-quantum key exchange, as an explicit setting
+  (`tls.key_exchange`, `upstreams[].tls.key_exchange`).** The proxy set
+  `CurvePreferences` to `[X25519, P-256, P-384]`, which in Go replaces
+  the default list rather than reordering it — so the X25519MLKEM768
+  hybrid the toolchain gained was never offered, on any listener or to
+  any origin, and no handshake said so. The list is now configuration,
+  validated against the known groups, and its default leads with the
+  hybrid. The threat it answers is not a quantum computer today but a
+  recorder today: traffic captured now is decrypted whenever the key
+  exchange falls, and a hybrid exchange costs about a kilobyte to
+  remove that trade. A list that names groups but no post-quantum one
+  loads with an advice line rather than an error, because a client
+  fleet that cannot negotiate the hybrid exists and that is an
+  operator's call. The negotiated group is in the access log as
+  `tls_group`, counted by `xproxy_tls_key_exchange_total{group}`, and
+  summarised with its post-quantum share by `xproxyctl tls` and `GET
+  /v1/tls/key-exchange` — a rollout is measured on traffic, since the
+  share moves as client fleets upgrade and not as the configuration
+  changes.
+
 - **[docs/DECEPTION.md](DECEPTION.md), the chapter behind the whole
   family.** Honeypot routes and decoys, honeytokens, form honeypots,
   the WAF files, the slow lane, deceptive answers and refusal at the

@@ -254,8 +254,51 @@ upstream `total` for those. 0-RTT is never enabled.
 | `client_auth` | `none`, `request`, `require` | `none` | Client certificates; `request` verifies if presented |
 | `client_ca_file` | path | | Required for `request` and `require` |
 | `cipher_suites` | list of names | ECDHE AEAD suites | TLS 1.2 suites, crypto/tls names. Insecure suites are rejected. TLS 1.3 suites are not configurable. |
+| `key_exchange` | list of group names | `X25519MLKEM768`, `X25519`, `P-256`, `P-384` | Key agreement groups this listener accepts; see below |
 | `ocsp_stapling` | object | none | Fetch OCSP responses for the served certificates in the background and staple them into handshakes; see below |
 | `ct` | object | none | Check the Certificate Transparency SCTs embedded in file certificates at load; see below |
+
+#### server.listeners[].tls.key_exchange
+
+The accepted key agreement groups, in preference order:
+`X25519MLKEM768`, `X25519`, `P-256`, `P-384`, `P-521`. The default
+leads with `X25519MLKEM768`, the hybrid that combines X25519 with the
+ML-KEM lattice KEM (RFC 9370's hybrid design, as deployed by Chrome,
+Firefox and every major CDN).
+
+Why it is a setting at all: Go chooses a good set by itself, but *only*
+while the list is left unset, and naming any group replaces the whole
+list. A configuration written to prefer X25519 therefore drops the
+post-quantum hybrid silently, and nothing in a handshake says so. Making
+the list explicit means the choice is validated, documented and visible
+in `xproxyctl tls`, rather than a side effect of a line nobody re-read
+after a toolchain upgrade.
+
+Why the hybrid leads: traffic recorded today is decrypted by whoever
+holds a quantum computer in ten years — the data does not have to be
+interesting now, only later. A hybrid exchange costs about a kilobyte
+in the ClientHello and removes that trade entirely, and its classical
+half keeps the exchange at least as strong as X25519 alone if the
+lattice half is ever broken.
+
+Note what the list is: the set the server *accepts*. In TLS 1.3 the
+client sends a key share, and the server takes the first offered share
+it accepts rather than forcing its own favourite with a retry — so a
+server that accepts several groups usually ends up on the client's
+first choice, and a client that offers nothing acceptable is sent a
+HelloRetryRequest naming one it can use. Restricting the list to one
+group is how you force it, at the cost of a round trip for clients that
+guessed differently.
+
+A list that names groups but no post-quantum one loads with an advice
+line rather than an error: a client fleet that cannot negotiate the
+hybrid exists, and that is an operator's decision, not the proxy's.
+
+The negotiated group is in the access log as `tls_group`, counted by
+`xproxy_tls_key_exchange_total{group}`, and summarised by `xproxyctl
+tls` with the post-quantum share — which is the number a rollout is
+actually measured by, because it moves as client fleets upgrade and not
+as this file changes.
 
 #### server.listeners[].tls.ocsp_stapling
 
@@ -718,6 +761,7 @@ beyond the first is gated by `retry_budget` when one is set.
 | `server_name` | string | endpoint host | SNI and verification name |
 | `ca_file` | path | system pool | PEM bundle to verify against |
 | `min_version` | `"1.2"`, `"1.3"` | `"1.2"` | Minimum TLS version towards the upstream |
+| `key_exchange` | list of group names | `X25519MLKEM768`, `X25519`, `P-256`, `P-384` | As on a listener, for the connection to the origin: the same adversary records both halves of the path |
 | `client_cert_file`, `client_key_file` | path | | Mutual TLS to the upstream; set both. Re-read by `xproxyctl reload-certs` and by configuration reload; idle connections are dropped so new ones present the new certificate |
 | `origin_signature` | object | none | Sign every forwarded request so the origin can refuse traffic that bypassed the proxy; see `upstreams[].origin_signature` |
 | `spki_pins` | list of base64 SHA-256 | `[]` | Pins of the upstream leaf public key; the connection is refused unless the presented leaf matches one, in addition to chain verification. `xproxyctl spki CERT.pem` prints a pin. Cannot be combined with `insecure_skip_verify` |

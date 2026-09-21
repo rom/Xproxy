@@ -1253,6 +1253,12 @@ func (s *Server) logAccess(rw *responseWriter, r *http.Request, st *reqState) {
 	}
 	if r.TLS != nil {
 		attrs = append(attrs, "tls", tlsconf.VersionName(r.TLS.Version), "sni", r.TLS.ServerName)
+		// The negotiated group, so a post-quantum rollout can be read
+		// off real traffic rather than assumed from the configuration.
+		if g := config.GroupName(r.TLS.CurveID); g != "" {
+			attrs = append(attrs, "tls_group", g)
+			s.stats.KeyExchange(g, config.IsPostQuantum(r.TLS.CurveID))
+		}
 		if len(r.TLS.PeerCertificates) > 0 {
 			attrs = append(attrs, "client_cn", r.TLS.PeerCertificates[0].Subject.CommonName)
 		}

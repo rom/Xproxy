@@ -314,11 +314,15 @@ func Server(cfg *config.TLS, protocols []config.Protocol) (*tls.Config, *Reloada
 	if err := r.Load(); err != nil {
 		return nil, nil, err
 	}
+	groups, err := config.CurveIDs(cfg.KeyExchange)
+	if err != nil {
+		return nil, nil, err
+	}
 	tc := &tls.Config{
 		MinVersion:               tls.VersionTLS12,
 		GetCertificate:           r.getCertificate,
 		GetConfigForClient:       r.recordFingerprint,
-		CurvePreferences:         []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384},
+		CurvePreferences:         groups,
 		Renegotiation:            tls.RenegotiateNever,
 		SessionTicketsDisabled:   false,
 		PreferServerCipherSuites: true,
@@ -432,12 +436,17 @@ func (r *ClientReloadable) Load() error {
 func Client(cfg *config.UpstreamTLS) (*tls.Config, *ClientReloadable, error) {
 	tc := &tls.Config{
 		MinVersion:       tls.VersionTLS12,
-		CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384},
+		CurvePreferences: config.DefaultKeyExchange(),
 		Renegotiation:    tls.RenegotiateNever,
 	}
 	if cfg == nil {
 		return tc, nil, nil
 	}
+	groups, err := config.CurveIDs(cfg.KeyExchange)
+	if err != nil {
+		return nil, nil, err
+	}
+	tc.CurvePreferences = groups
 	if cfg.MinVersion == "1.3" {
 		tc.MinVersion = tls.VersionTLS13
 	}

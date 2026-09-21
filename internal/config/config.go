@@ -488,6 +488,10 @@ type TLS struct {
 	// not configurable in Go). Names as in crypto/tls, e.g.
 	// TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256.
 	CipherSuites []string `yaml:"cipher_suites"`
+	// KeyExchange is the offered key agreement groups in preference
+	// order: X25519MLKEM768 (post-quantum hybrid), X25519, P-256, P-384,
+	// P-521. Empty means the default, which leads with the hybrid.
+	KeyExchange []string `yaml:"key_exchange"`
 	// ACME lists host groups that get an automatically issued certificate
 	// each (one certificate per group, hosts as SANs). Requires the
 	// top-level acme section.
@@ -1150,6 +1154,9 @@ type UpstreamTLS struct {
 	// unless the presented leaf matches one pin, in addition to chain
 	// verification.
 	SPKIPins []string `yaml:"spki_pins"`
+	// KeyExchange is the offered key agreement groups in preference
+	// order, as in the listener section. Empty means the default.
+	KeyExchange []string `yaml:"key_exchange"`
 	// InsecureSkipVerify disables verification. Refused unless
 	// allow_insecure is also true; logged as a security warning at start.
 	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`

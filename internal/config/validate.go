@@ -724,6 +724,29 @@ func (v *validator) tls(p string, t *TLS) {
 			v.errf("%s.cipher_suites[%d]: unknown cipher suite %q", p, i, name)
 		}
 	}
+	v.keyExchange(p, t.KeyExchange)
+}
+
+// keyExchange checks the named groups. An empty list is the default,
+// which leads with the post-quantum hybrid; a list that names groups
+// and leaves the hybrid out is allowed — a client fleet that cannot do
+// it exists — but it is worth saying so, because the traffic it
+// protects is recorded today and attacked later.
+func (v *validator) keyExchange(p string, names []string) {
+	seen := map[string]bool{}
+	for i, n := range names {
+		if _, ok := KeyExchangeID(n); !ok {
+			v.errf("%s.key_exchange[%d]: unknown group %q (known: %s)", p, i, n, strings.Join(KeyExchangeNames(), ", "))
+			continue
+		}
+		if seen[n] {
+			v.errf("%s.key_exchange[%d]: duplicate %q", p, i, n)
+		}
+		seen[n] = true
+	}
+	if len(names) > 0 && !HasPostQuantum(names) {
+		v.warnf("%s.key_exchange: no post-quantum group is offered, so a recording adversary can decrypt this traffic once it has a quantum computer; add X25519MLKEM768 unless a client cannot negotiate it", p)
+	}
 }
 
 func (v *validator) management(m *Management) {
@@ -1354,6 +1377,7 @@ func (v *validator) upstreamTLS(p string, t *UpstreamTLS) {
 	if t.InsecureSkipVerify && !t.AllowInsecure {
 		v.errf("%s.insecure_skip_verify: refused unless allow_insecure is also true", p)
 	}
+	v.keyExchange(p, t.KeyExchange)
 }
 
 func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[string]bool) {
