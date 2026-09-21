@@ -1355,6 +1355,46 @@ a forgotten fetch is "no record", which is allowed — but it means the
 timing check quietly covers less. Raise `max_clients`, or rely on
 `fields`, which needs no table.
 
+## WebSockets
+
+**Upgrades answer 403 with `reason: websocket`.** The route does not
+have `websocket: true`. That is the default: an upgrade is a tunnel,
+and a route says so explicitly.
+
+**Upgrades answer 502.** The origin did not answer 101, or answered it
+without `Upgrade: websocket` and `Connection: Upgrade` — a 101 that
+does not say what it switched to is not an upgrade, and the transport
+will not hand back a connection for it.
+
+**Connections close with code 1002 (protocol error).** The guard found
+something the RFC forbids, and the security log says which: an unmasked
+client frame, a reserved bit (usually a client that negotiated
+`permessage-deflate` — see below), a reserved opcode, a fragmented
+control frame, a continuation with nothing to continue, a close code
+that must not be sent, or text that is not UTF-8.
+
+**Connections close with 1009 (too big).** `max_frame_bytes` or
+`max_message_bytes`. Read `xproxy_websocket_messages_total` and the
+application's own limits before raising them; a bound that is higher
+than anything legitimate sends is still worth having.
+
+**Connections close with 1008 (policy).** A denied pattern, an opcode
+the route does not allow, or the message rate. The security event names
+which.
+
+**A compression extension stopped working.** It is refused on purpose.
+A `permessage-deflate` frame cannot be inspected, so accepting the
+negotiation would turn every check off without saying so. Either drop
+the extension at the application or accept that the route cannot be
+inspected and remove the guard.
+
+**The violation count is double what you expect.** Both directions are
+inspected, so a denied message and the origin's echo of it are two.
+
+**Nothing is ever counted.** `xproxyctl` and `GET /v1/websocket` list
+only routes that have a guard; a route with `websocket: true` and no
+`websocket_guard` is an uninspected tunnel by design.
+
 ## Bot score
 
 **A real browser is scored as automation.** `xproxyctl botscore -top N`

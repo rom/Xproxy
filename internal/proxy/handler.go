@@ -10,6 +10,7 @@ import (
 	"errors"
 	"github.com/rom/xproxy/internal/apiinv"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
@@ -751,6 +752,16 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		s.deny(rw, r, st, http.StatusForbidden, "websocket")
 		return
 	}
+	if isUpgrade(r) && cr.wsGuard != nil {
+		// The reverse proxy hijacks the connection when the origin
+		// answers 101; the guard is installed now so that it is in
+		// place by then.
+		g := cr.wsGuard
+		rw.guard = func(c net.Conn) net.Conn {
+			s.stats.WSConnections.Add(1)
+			return s.newWSConn(c, g, st)
+		}
+	}
 
 	if g := pool.Gate(); g != nil {
 		release, err := g.Acquire(r.Context())
@@ -801,6 +812,21 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			s.rewrite(pr, st, cr)
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			// A 101 is the last moment the upgrade is still a response
+			// the proxy can refuse. The subprotocol the origin picked
+			// is checked here, before any frame exists.
+			if resp.StatusCode == http.StatusSwitchingProtocols && cr.wsGuard != nil {
+				if sp, ok := cr.wsGuard.subprotocolAllowed(resp.Header.Get("Sec-WebSocket-Protocol")); !ok {
+					cr.wsGuard.violations.Add(1)
+					s.stats.WSViolations.Add(1)
+					st.denied = "websocket:subprotocol"
+					s.logs.SecurityEvent(r.Context(), "websocket", "websocket",
+						"route", st.route, "client_ip", st.clientIP.String(),
+						"reason", "subprotocol", "detail", sp)
+					return &filterDenied{v: filter.Verdict{Deny: true, Status: http.StatusForbidden,
+						Reason: "websocket", Detail: "subprotocol " + sp}}
+				}
+			}
 			ttfb := time.Since(start)
 			s.stats.UpstreamTTFB.Observe(ttfb.Seconds())
 			if sh := s.shedder.Load(); sh != nil {
@@ -857,10 +883,15 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			// The capture's copy is taken here, after the route's own
 			// header operations, so the file holds what the client got
 			// rather than what the upstream sent.
-			if cs := st.pcap; cs != nil && cs.respBody != nil && resp.Body != nil && resp.Body != http.NoBody {
+			// An upgraded connection is not a response body: it is the
+			// connection, and the reverse proxy needs to write to it.
+			// Every wrapper below would hide that, and the WebSocket
+			// guard is the thing that inspects it instead.
+			upgraded := resp.StatusCode == http.StatusSwitchingProtocols
+			if cs := st.pcap; !upgraded && cs != nil && cs.respBody != nil && resp.Body != nil && resp.Body != http.NoBody {
 				resp.Body = &captureBody{ReadCloser: resp.Body, tee: cs.respBody}
 			}
-			if cr.idleTimeout > 0 && st.cancel != nil && resp.Body != nil && resp.Body != http.NoBody {
+			if !upgraded && cr.idleTimeout > 0 && st.cancel != nil && resp.Body != nil && resp.Body != http.NoBody {
 				resp.Body = newIdleReader(resp.Body, cr.idleTimeout, st.cancel)
 			}
 			if cr.cors != nil {

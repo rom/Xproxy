@@ -142,7 +142,10 @@ type compiledRoute struct {
 	honeypotType string
 	// deceive answers clients this route no longer trusts with
 	// something plausible instead of the origin's answer.
-	deceive  *deceivePolicy
+	deceive *deceivePolicy
+	// wsGuard inspects the frames of an upgraded connection on this
+	// route; nil leaves the upgrade an opaque tunnel.
+	wsGuard  *wsGuard
 	static   *staticSite
 	compress *compressPolicy
 	// compressAuth allows compressing a response to a request that
@@ -467,6 +470,14 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 				return nil, fmt.Errorf("route %s: deceive: %w", r.Name, err)
 			}
 			cr.deceive = pol
+		}
+		if wg := r.WebSocketGuard; wg != nil {
+			g, err := newWSGuard(wg)
+			if err != nil {
+				rt.stop()
+				return nil, fmt.Errorf("route %s: websocket_guard: %w", r.Name, err)
+			}
+			cr.wsGuard = g
 		}
 		if hp := r.Honeypot; hp != nil {
 			cr.honeypotType = hp.ContentType

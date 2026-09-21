@@ -258,7 +258,46 @@ Open findings of the earlier rounds:
   defaults. A request that does not fit is refused with 503 before it
   is read.
 
+### Fixed (1.4)
+
+- **Every WebSocket upgrade through the proxy answered 502.** The
+  transport wrapped each response body in a `ReadCloser` to account for
+  the endpoint when the body closed. For a 101 the body *is* the
+  connection, handed back as an `io.ReadWriteCloser` so the caller can
+  splice both directions — and the wrapper hid the write half, so
+  `httputil.ReverseProxy` refused it with "101 switching protocols
+  response with non-writable body" and the client got a bad gateway.
+  The idle reader and the capture tee hid it the same way. Upgrades now
+  keep a writable body (with `CloseWrite`, which is how one direction
+  is half-closed), and the wrappers that only make sense for a response
+  body are skipped for a 101. This was found by writing the first end
+  to end WebSocket test; `websocket: true` had never been exercised
+  against a real origin.
+
 ### Added (1.4)
+
+- **WebSocket message inspection (`routes[].websocket_guard`).** An
+  upgraded connection was the one place this proxy stopped looking:
+  everything before the 101 went through routing, the WAF, the filters
+  and the logs, and everything after it was an opaque stream. That is
+  where applications put their real API. The guard parses RFC 6455
+  frames in both directions and applies three kinds of check with three
+  different false-positive profiles — structure (the protocol's own
+  rules: reserved bits, reserved opcodes, masking, control frame size
+  and fragmentation, continuation state, close codes and UTF-8), bounds
+  (frame size, reassembled message size, client message rate), and
+  patterns (an RE2 list over inspected messages). It never rewrites a
+  frame: a violation closes with a close code that says why, or is
+  recorded and forwarded under `action: log`.
+
+  Both directions are inspected because the origin is the side holding
+  the data. The negotiated subprotocol is checked on the 101, before a
+  frame exists. Messages over `max_inspect_bytes` are checked to that
+  bound and forwarded rather than buffered, so a client cannot choose
+  the proxy's memory use. `permessage-deflate` is refused rather than
+  ignored: a compressed frame cannot be inspected, so accepting the
+  extension would turn every check off silently.
+  `examples/routes/websocket.yaml`.
 
 - **SOCKS5 and UDP associations on a forward listener
   (`forward.socks5`, `forward.socks_udp`).** An HTTP forward proxy only

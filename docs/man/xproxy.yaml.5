@@ -3908,6 +3908,15 @@ T}	T{
 Allow \fBUpgrade\fR requests
 T}
 T{
+\fBwebsocket_\:guard\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Inspect the frames of an upgraded connection;\: see below
+T}
+T{
 \fBwebtransport\fR
 T}	T{
 bool
@@ -6043,6 +6052,142 @@ T}
 \fBrobots\fR and \fBsitemap\fR are the two to serve honestly: they name the decoy paths, so a crawler that reads either and then requests them has told you what it is. Give those two \fBmark: 0s\fR, so that reading the file marks nobody and only asking for what it names does. \fBexamples/security/honeypots.yaml\fR wires the whole table up, one route per decoy with the paths each is worth serving on; a test fails if a decoy in the table has no route there. \fBxproxyctl honeypot\fR and \fBGET /v1/honeypot\fR both list the names this build carries, which is the authority when a configuration is refused for an unknown decoy.
 .PP
 \fBresponse_headers\fR apply, so a decoy can carry a \fBServer\fR header of its own. \fBGET /v1/honeypot\fR lists marked clients (address, route, hits, first, last, expires) and the decoy names; \fBDELETE /v1/honeypot?ip=\fR and \fBxproxyctl honeypot forget IP\fR remove a mark. The mark table holds at most 65536 addresses. Counters: \fBhoneypot_hits\fR, \fBhoneypot_marked\fR; metrics \fBxproxy_honeypot_hits_total\fR, \fBxproxy_honeypot_marked\fR.
+.SS "routes[].websocket_guard"
+.PP
+An upgraded connection is the one place a request\-oriented proxy stops looking. Everything before the 101 goes through routing, the WAF, the filters and the logs; everything after it is an opaque byte stream that happens to be travelling over a connection the proxy opened. Applications put their real API in there \[u2014] chat, trading, terminals, GraphQL subscriptions \[u2014] so a proxy that stops at the handshake is guarding the doorway of a building with no walls.
+.PP
+\fBwebsocket_guard\fR parses RFC 6455 frames in \fBboth\fR directions and applies structure, bounds and patterns. It never rewrites a frame: a violation closes the connection with a close code that says why, or is only recorded, depending on \fBaction\fR.
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.7i) lbw(1.1i) lbx
+lw(1.3i) lw(0.7i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmax_\:frame_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+Largest single frame,\: either direction;\: 128 to 64 MiB
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB8388608\fR
+T}	T{
+Largest reassembled message;\: at least \fBmax_\:frame_\:bytes\fR,\: at most 256 MiB
+T}
+T{
+\fBmessages_\:per_\:second\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (no bound)
+T}	T{
+Client message rate;\: the origin is the estate\(aqs own application and is not rate limited
+T}
+T{
+\fBallow_\:opcodes\fR
+T}	T{
+list
+T}	T{
+text,\: binary,\: close,\: ping,\: pong
+T}	T{
+Opcodes a peer may use;\: continuation is always allowed
+T}
+T{
+\fBallow_\:subprotocols\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The \fBSec\-\:WebSocket\-\:Protocol\fR the origin may negotiate,\: checked on the 101 before any frame exists
+T}
+T{
+\fBrequire_\:masked\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Enforce RFC 6455 masking: set on client frames,\: clear on server frames
+T}
+T{
+\fBvalidate_\:utf8\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a text message that is not UTF\-8
+T}
+T{
+\fBinspect\fR
+T}	T{
+\fBnone\fR,\: \fBtext\fR,\: \fBall\fR
+T}	T{
+\fBtext\fR
+T}	T{
+Which messages are kept for pattern matching
+T}
+T{
+\fBmax_\:inspect_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Prefix of a message kept for matching;\: the rest passes uninspected
+T}
+T{
+\fBdeny_\:patterns\fR
+T}	T{
+list of RE2
+T}	T{
+\fB[]\fR
+T}	T{
+Patterns matched against inspected messages
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBclose\fR,\: \fBlog\fR
+T}	T{
+\fBclose\fR
+T}	T{
+Close the connection,\: or record and forward
+T}
+T{
+\fBclose_\:code\fR
+T}	T{
+int
+T}	T{
+protocol\(aqs own
+T}	T{
+Override the close code;\: 3000\-4999 only
+T}
+.TE
+.PP
+The structural checks are the half with no false positives, because they are the protocol\(aqs own rules: a reserved bit set without a negotiated extension, a reserved opcode, an unmasked client frame or a masked server one, a fragmented or oversize control frame, a continuation with nothing to continue, a new message before the previous one finished, a close frame with one byte of status, a close code that must never appear on the wire, a close reason or text message that is not UTF\-8. A client that does any of these is not a browser.
+.PP
+The bounds are the half worth thinking about: \fBmax_frame_bytes\fR and \fBmax_message_bytes\fR are what stop one connection deciding how much memory the proxy uses, and \fBmessages_per_second\fR is what stops it deciding how much CPU the origin uses. The pattern list is the part with a real false\-positive rate \[u2014] start with \fBaction: log\fR and read \fBxproxy_websocket_violations_total{route}\fR for a week.
+.PP
+Messages larger than \fBmax_inspect_bytes\fR are checked up to that bound and forwarded: the alternative is buffering whatever a client chooses to send. Compressed frames (\fBpermessage\-deflate\fR) cannot be inspected at all, which is why a reserved bit is refused rather than ignored \[u2014] a negotiated compression extension would silently turn every check off.
+.PP
+Violations are security events with reason \fBwebsocket\fR, counted per route by \fBxproxyctl\fR and \fBGET /v1/websocket\fR, and exported as \fBxproxy_websocket_violations_total\fR and \fBxproxy_websocket_closed_total\fR.
 .SS "routes[].deceive"
 .PP
 A refusal is information. A scanner that gets 403 has learned that the request it sent was the interesting one, and it will vary that request until something is not refused \[u2014] the refusal is the oracle that tells it when it has found the way through. \fBdeceive\fR answers a client the route no longer trusts with something ordinary instead: the crawl completes, the data is wrong, and the request that would have worked looks exactly like the one that did not.

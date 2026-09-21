@@ -338,6 +338,7 @@ routes:
       timeout: 0s
       timeouts: null
       websocket: false
+      websocket_guard: null
       webtransport: false
       waf: null
       priority_class: high
@@ -401,6 +402,7 @@ routes:
       timeout: 0s
       timeouts: null
       websocket: false
+      websocket_guard: null
       webtransport: false
       waf:
         mode: block
@@ -467,6 +469,7 @@ routes:
       timeout: 0s
       timeouts: null
       websocket: false
+      websocket_guard: null
       webtransport: false
       waf: null
       priority_class: critical
@@ -528,6 +531,7 @@ routes:
       timeout: 0s
       timeouts: null
       websocket: false
+      websocket_guard: null
       webtransport: false
       waf: null
       priority_class: normal
@@ -594,6 +598,7 @@ routes:
       timeout: 0s
       timeouts: null
       websocket: true
+      websocket_guard: null
       webtransport: false
       waf: null
       priority_class: normal
@@ -655,6 +660,7 @@ routes:
       timeout: 0s
       timeouts: null
       websocket: false
+      websocket_guard: null
       webtransport: false
       waf:
         mode: detect

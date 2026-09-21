@@ -3240,6 +3240,14 @@
           "description": "WebSocket allows Upgrade: websocket to be forwarded. Default false.",
           "type": "boolean"
         },
+        "websocket_guard": {
+          "description": "WebSocketGuard inspects the frames of an upgraded connection. Without it an upgrade is an opaque tunnel.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/WebSocketGuard"
+            }
+          ]
+        },
         "webtransport": {
           "description": "WebTransport relays WebTransport sessions (extended CONNECT over HTTP/3 on a listener with h3) to the upstream, which must speak HTTP/3 (h3: true): bidirectional and unidirectional streams and datagrams in both directions. Default false.",
           "type": "boolean"
@@ -4793,6 +4801,70 @@
         },
         "name": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WebSocketGuard": {
+      "description": "WebSocketGuard is the frame policy of an upgraded connection. Every bound applies to both directions; the rate applies to the client, whose traffic the estate does not control.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is close or log. Default close.",
+          "type": "string"
+        },
+        "allow_opcodes": {
+          "description": "AllowOpcodes names the opcodes a peer may use. Default text, binary, close, ping and pong.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_subprotocols": {
+          "description": "AllowSubprotocols restricts the negotiated Sec-WebSocket-Protocol.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "close_code": {
+          "description": "CloseCode overrides the close code sent on a violation.",
+          "type": "integer"
+        },
+        "deny_patterns": {
+          "description": "DenyPatterns are RE2 patterns matched against inspected messages.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "inspect": {
+          "description": "Inspect is none, text or all: which messages are kept for pattern matching. Default text.",
+          "type": "string"
+        },
+        "max_frame_bytes": {
+          "description": "MaxFrameBytes is the largest single frame. Default 1 MiB.",
+          "type": "integer"
+        },
+        "max_inspect_bytes": {
+          "description": "MaxInspectBytes bounds the prefix of a message kept for matching. Default 64 KiB.",
+          "type": "integer"
+        },
+        "max_message_bytes": {
+          "description": "MaxMessageBytes is the largest reassembled message. Default 8 MiB.",
+          "type": "integer"
+        },
+        "messages_per_second": {
+          "description": "MessagesPerSecond bounds the client's message rate. 0 is no bound.",
+          "type": "integer"
+        },
+        "require_masked": {
+          "description": "RequireMasked enforces RFC 6455 masking: set on client frames, clear on server frames. Default true.",
+          "type": "boolean"
+        },
+        "validate_utf8": {
+          "description": "ValidateUTF8 refuses a text message that is not UTF-8. Default true.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false

@@ -433,6 +433,47 @@ type ForwardAuth struct {
 	Realm string `yaml:"realm"`
 }
 
+// WebSocketGuard is the frame policy of an upgraded connection. Every
+// bound applies to both directions; the rate applies to the client,
+// whose traffic the estate does not control.
+type WebSocketGuard struct {
+	// MaxFrameBytes is the largest single frame. Default 1 MiB.
+	MaxFrameBytes int64 `yaml:"max_frame_bytes"`
+	// MaxMessageBytes is the largest reassembled message. Default 8 MiB.
+	MaxMessageBytes int64 `yaml:"max_message_bytes"`
+	// MessagesPerSecond bounds the client's message rate. 0 is no bound.
+	MessagesPerSecond int `yaml:"messages_per_second"`
+	// AllowOpcodes names the opcodes a peer may use. Default text,
+	// binary, close, ping and pong.
+	AllowOpcodes []string `yaml:"allow_opcodes"`
+	// AllowSubprotocols restricts the negotiated Sec-WebSocket-Protocol.
+	AllowSubprotocols []string `yaml:"allow_subprotocols"`
+	// RequireMasked enforces RFC 6455 masking: set on client frames,
+	// clear on server frames. Default true.
+	RequireMasked *bool `yaml:"require_masked"`
+	// ValidateUTF8 refuses a text message that is not UTF-8. Default
+	// true.
+	ValidateUTF8 *bool `yaml:"validate_utf8"`
+	// Inspect is none, text or all: which messages are kept for
+	// pattern matching. Default text.
+	Inspect string `yaml:"inspect"`
+	// MaxInspectBytes bounds the prefix of a message kept for matching.
+	// Default 64 KiB.
+	MaxInspectBytes int64 `yaml:"max_inspect_bytes"`
+	// DenyPatterns are RE2 patterns matched against inspected messages.
+	DenyPatterns []string `yaml:"deny_patterns"`
+	// Action is close or log. Default close.
+	Action string `yaml:"action"`
+	// CloseCode overrides the close code sent on a violation.
+	CloseCode int `yaml:"close_code"`
+}
+
+// Masked reports the effective require_masked.
+func (w *WebSocketGuard) Masked() bool { return w == nil || w.RequireMasked == nil || *w.RequireMasked }
+
+// UTF8 reports the effective validate_utf8.
+func (w *WebSocketGuard) UTF8() bool { return w == nil || w.ValidateUTF8 == nil || *w.ValidateUTF8 }
+
 // TCPListener routes raw connections to upstream pools. TLS connections
 // are routed by the server name of the ClientHello (peeked, never
 // terminated); other connections and unmatched names go to the default
@@ -1361,6 +1402,9 @@ type Route struct {
 	Timeouts *RouteTimeouts `yaml:"timeouts"`
 	// WebSocket allows Upgrade: websocket to be forwarded. Default false.
 	WebSocket bool `yaml:"websocket"`
+	// WebSocketGuard inspects the frames of an upgraded connection.
+	// Without it an upgrade is an opaque tunnel.
+	WebSocketGuard *WebSocketGuard `yaml:"websocket_guard"`
 	// WebTransport relays WebTransport sessions (extended CONNECT over
 	// HTTP/3 on a listener with h3) to the upstream, which must speak
 	// HTTP/3 (h3: true): bidirectional and unidirectional streams and

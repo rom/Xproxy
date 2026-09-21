@@ -2434,6 +2434,76 @@ tightening anything: `field:` hits are the ones to ban on,
 pairs a sign-up, a contact form and a password reset, each with the
 amount of checking its page can carry.
 
+### WebSocket message inspection
+
+```yaml
+routes:
+  - name: chat
+    paths: [/ws/chat]
+    websocket: true
+    websocket_guard:
+      max_frame_bytes: 65536
+      max_message_bytes: 262144
+      messages_per_second: 30
+      allow_subprotocols: [chat.v2]
+      allow_opcodes: [text, close, ping, pong]
+      deny_patterns: ["(?i)<script[^>]*>"]
+      action: close
+    upstream: chat
+```
+
+`websocket: true` allows the upgrade. `websocket_guard` is what happens
+after it. Without the guard, everything before the 101 is inspected —
+routing, the WAF, the filters, the logs — and everything after it is a
+byte stream nobody looks at. Applications put their real API in there.
+
+Three kinds of check, with three different false-positive profiles:
+
+**Structure** has none, because it is the protocol's own rules. A
+reserved bit set without a negotiated extension, a reserved opcode, an
+unmasked client frame, a masked server frame, a fragmented or oversize
+control frame, a continuation with nothing to continue, a close frame
+with one byte of status, a close code that must never appear on the
+wire, text that is not UTF-8. A browser does none of these.
+
+**Bounds** are a capacity decision. `max_frame_bytes` and
+`max_message_bytes` stop one connection deciding how much memory the
+proxy uses; `messages_per_second` stops it deciding how much CPU the
+origin uses. Set them from what the application actually sends —
+`xproxy_websocket_messages_total{route}` tells you.
+
+**Patterns** are the part with a real rate, so start there in log mode:
+
+```yaml
+    websocket_guard: {deny_patterns: ["(?i)\\bDROP\\s+TABLE\\b"], action: log}
+```
+
+```
+$ xproxyctl metrics | grep websocket
+xproxy_websocket_connections_total{route="chat"} 4120
+xproxy_websocket_messages_total{route="chat"} 1840223
+xproxy_websocket_violations_total{route="chat"} 3
+xproxy_websocket_closed_total{route="chat"} 0
+```
+
+Both directions are inspected. That is deliberate: the origin is the
+side that holds the data, and a compromised or simply buggy
+application pushing something it should not is the case worth catching.
+It is also why a violation count can be double what you expect — a
+denied message and its echo are two.
+
+A few things worth knowing. The subprotocol is checked on the 101,
+before any frame exists, so an application that answers with an
+unlisted one never gets a connection. Messages over
+`max_inspect_bytes` are checked up to that bound and forwarded, because
+the alternative is buffering whatever a client sends. And
+`permessage-deflate` is refused rather than ignored: a compressed frame
+cannot be inspected, so a negotiated compression extension would turn
+every check above off silently.
+
+`examples/routes/websocket.yaml` pairs a chat route with tight bounds
+and a market-data feed with wide ones and no inspection.
+
 ### gRPC services
 
 ```yaml

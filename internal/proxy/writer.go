@@ -17,6 +17,10 @@ type responseWriter struct {
 	hijacked bool
 	// st is the request state once created (error pages need the route).
 	st *reqState
+	// guard wraps the connection when the route inspects WebSocket
+	// frames. It is set before the reverse proxy runs, because the
+	// hijack happens inside it.
+	guard func(net.Conn) net.Conn
 }
 
 func (w *responseWriter) WriteHeader(code int) {
@@ -57,6 +61,14 @@ func (w *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		if !w.wrote {
 			w.status = http.StatusSwitchingProtocols
 			w.wrote = true
+		}
+		// This is the seam where an upgraded connection stops being a
+		// request and becomes a byte stream. A route with a WebSocket
+		// guard gets a connection that parses the frames going past in
+		// both directions; without one the connection is handed over
+		// as it always was.
+		if w.guard != nil {
+			c = w.guard(c)
 		}
 	}
 	return c, rw, err

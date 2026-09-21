@@ -818,6 +818,83 @@ func (v *validator) tlsServes(t *TLS, name string) bool {
 	return false
 }
 
+// websocketGuard checks the frame policy of a route.
+func (v *validator) websocketGuard(p string, r *Route) {
+	g := r.WebSocketGuard
+	if g == nil {
+		return
+	}
+	if !r.WebSocket {
+		v.errf("%s.websocket_guard: needs websocket: true, or nothing upgrades on this route", p)
+	}
+	if g.MaxFrameBytes == 0 {
+		g.MaxFrameBytes = 1 << 20
+	}
+	if g.MaxFrameBytes < 128 || g.MaxFrameBytes > 64<<20 {
+		v.errf("%s.websocket_guard.max_frame_bytes: must be between 128 and 64 MiB", p)
+	}
+	if g.MaxMessageBytes == 0 {
+		g.MaxMessageBytes = 8 << 20
+	}
+	if g.MaxMessageBytes < g.MaxFrameBytes {
+		v.errf("%s.websocket_guard.max_message_bytes: must be at least max_frame_bytes", p)
+	}
+	if g.MaxMessageBytes > 256<<20 {
+		v.errf("%s.websocket_guard.max_message_bytes: must be at most 256 MiB", p)
+	}
+	if g.MessagesPerSecond < 0 || g.MessagesPerSecond > 1_000_000 {
+		v.errf("%s.websocket_guard.messages_per_second: must be between 0 and 1000000", p)
+	}
+	for i, op := range g.AllowOpcodes {
+		switch strings.ToLower(op) {
+		case "text", "binary", "close", "ping", "pong", "continuation":
+		default:
+			v.errf("%s.websocket_guard.allow_opcodes[%d]: %q is not a websocket opcode", p, i, op)
+		}
+	}
+	for i, sp := range g.AllowSubprotocols {
+		if sp == "" || strings.ContainsAny(sp, " \t\r\n,;") {
+			v.errf("%s.websocket_guard.allow_subprotocols[%d]: %q is not a subprotocol token", p, i, sp)
+		}
+	}
+	switch g.Inspect {
+	case "", "text":
+		g.Inspect = "text"
+	case "none", "all":
+	default:
+		v.errf("%s.websocket_guard.inspect: must be none, text or all", p)
+	}
+	if g.MaxInspectBytes == 0 {
+		g.MaxInspectBytes = 64 << 10
+	}
+	if g.MaxInspectBytes < 0 || g.MaxInspectBytes > 8<<20 {
+		v.errf("%s.websocket_guard.max_inspect_bytes: must be between 0 and 8 MiB", p)
+	}
+	for i, pat := range g.DenyPatterns {
+		if _, err := regexp.Compile(pat); err != nil {
+			v.errf("%s.websocket_guard.deny_patterns[%d]: %v", p, i, err)
+		}
+	}
+	if len(g.DenyPatterns) > 0 && g.Inspect == "none" {
+		v.errf("%s.websocket_guard: deny_patterns with inspect: none matches nothing", p)
+	}
+	switch g.Action {
+	case "", "close":
+		g.Action = "close"
+	case "log":
+	default:
+		v.errf("%s.websocket_guard.action: must be close or log", p)
+	}
+	if g.CloseCode != 0 && (g.CloseCode < 3000 || g.CloseCode > 4999) {
+		// A code outside the private and registered ranges would be the
+		// proxy claiming a protocol condition it did not observe.
+		v.errf("%s.websocket_guard.close_code: must be between 3000 and 4999 (the ranges an application may use), or unset to use the protocol's own code", p)
+	}
+	if g.Masked() == false { //nolint:gosimple // reads better against the RFC
+		v.warnf("%s.websocket_guard.require_masked: false accepts unmasked client frames, which RFC 6455 forbids and which is how a request is smuggled past an intermediary", p)
+	}
+}
+
 // keyExchange checks the named groups. An empty list is the default,
 // which leads with the post-quantum hybrid; a list that names groups
 // and leaves the hybrid out is allowed — a client fleet that cannot do
@@ -1479,6 +1556,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 		v.errf("%s.name: duplicate %q", p, r.Name)
 	}
 	seen[r.Name] = true
+	v.websocketGuard(p, r)
 
 	for j, h := range r.Hosts {
 		if !hostPatternOK(h) {

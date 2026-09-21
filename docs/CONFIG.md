@@ -1061,6 +1061,7 @@ not match is skipped and the next candidate is tried.
 | `timeouts.total` | duration | none | Same as `timeout` |
 | `timeouts.idle` | duration | none | Cancels a response that produces no bytes for this long, for streaming or long-poll routes where `total` is too coarse. Connect and response-header timeouts are configured per upstream (`upstreams[].timeouts`), since the connection pool is shared |
 | `websocket` | bool | `false` | Allow `Upgrade` requests |
+| `websocket_guard` | object | none | Inspect the frames of an upgraded connection; see below |
 | `webtransport` | bool | `false` | Relay WebTransport sessions (extended CONNECT over HTTP/3) to the upstream: bidirectional and unidirectional streams and datagrams in both directions, with the request header operations applied to the CONNECT. Needs a listener with `h3.webtransport: true` and an upstream with `h3: true`; on any other listener or protocol the session is refused |
 | `grpc.web` | bool | `false` | Accept gRPC-web requests (`application/grpc-web`, `grpc-web+proto`, `grpc-web-text`, `grpc-web-text+proto`, over HTTP/1.1 or HTTP/2) on this gRPC route and translate them: the upstream sees plain gRPC, the response trailers come back as a trailer frame in the body and the text variants are base64. Without it a gRPC-web request is refused with gRPC status 2 |
 | `grpc.web_origins` | list | `[]` | Browser origins (`https://app.example.com`, or `*`) whose CORS preflights are answered (`POST`, the requested headers, ten minutes) and whose responses get `Access-Control-Allow-Origin` and the exposed `grpc-status` and `grpc-message`; needs `web: true`. Empty leaves CORS to the upstream or to header operations |
@@ -1644,6 +1645,62 @@ first, last, expires) and the decoy names; `DELETE /v1/honeypot?ip=` and
 `xproxyctl honeypot forget IP` remove a mark. The mark table holds at
 most 65536 addresses. Counters: `honeypot_hits`, `honeypot_marked`;
 metrics `xproxy_honeypot_hits_total`, `xproxy_honeypot_marked`.
+
+### routes[].websocket_guard
+
+An upgraded connection is the one place a request-oriented proxy stops
+looking. Everything before the 101 goes through routing, the WAF, the
+filters and the logs; everything after it is an opaque byte stream that
+happens to be travelling over a connection the proxy opened.
+Applications put their real API in there — chat, trading, terminals,
+GraphQL subscriptions — so a proxy that stops at the handshake is
+guarding the doorway of a building with no walls.
+
+`websocket_guard` parses RFC 6455 frames in **both** directions and
+applies structure, bounds and patterns. It never rewrites a frame: a
+violation closes the connection with a close code that says why, or is
+only recorded, depending on `action`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `max_frame_bytes` | int | `1048576` | Largest single frame, either direction; 128 to 64 MiB |
+| `max_message_bytes` | int | `8388608` | Largest reassembled message; at least `max_frame_bytes`, at most 256 MiB |
+| `messages_per_second` | int | `0` (no bound) | Client message rate; the origin is the estate's own application and is not rate limited |
+| `allow_opcodes` | list | text, binary, close, ping, pong | Opcodes a peer may use; continuation is always allowed |
+| `allow_subprotocols` | list | any | The `Sec-WebSocket-Protocol` the origin may negotiate, checked on the 101 before any frame exists |
+| `require_masked` | bool | `true` | Enforce RFC 6455 masking: set on client frames, clear on server frames |
+| `validate_utf8` | bool | `true` | Refuse a text message that is not UTF-8 |
+| `inspect` | `none`, `text`, `all` | `text` | Which messages are kept for pattern matching |
+| `max_inspect_bytes` | int | `65536` | Prefix of a message kept for matching; the rest passes uninspected |
+| `deny_patterns` | list of RE2 | `[]` | Patterns matched against inspected messages |
+| `action` | `close`, `log` | `close` | Close the connection, or record and forward |
+| `close_code` | int | protocol's own | Override the close code; 3000-4999 only |
+
+The structural checks are the half with no false positives, because
+they are the protocol's own rules: a reserved bit set without a
+negotiated extension, a reserved opcode, an unmasked client frame or a
+masked server one, a fragmented or oversize control frame, a
+continuation with nothing to continue, a new message before the
+previous one finished, a close frame with one byte of status, a close
+code that must never appear on the wire, a close reason or text message
+that is not UTF-8. A client that does any of these is not a browser.
+
+The bounds are the half worth thinking about: `max_frame_bytes` and
+`max_message_bytes` are what stop one connection deciding how much
+memory the proxy uses, and `messages_per_second` is what stops it
+deciding how much CPU the origin uses. The pattern list is the part
+with a real false-positive rate — start with `action: log` and read
+`xproxy_websocket_violations_total{route}` for a week.
+
+Messages larger than `max_inspect_bytes` are checked up to that bound
+and forwarded: the alternative is buffering whatever a client chooses
+to send. Compressed frames (`permessage-deflate`) cannot be inspected
+at all, which is why a reserved bit is refused rather than ignored — a
+negotiated compression extension would silently turn every check off.
+
+Violations are security events with reason `websocket`, counted per
+route by `xproxyctl` and `GET /v1/websocket`, and exported as
+`xproxy_websocket_violations_total` and `xproxy_websocket_closed_total`.
 
 ### routes[].deceive
 
