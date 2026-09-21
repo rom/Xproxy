@@ -5862,6 +5862,168 @@ T}
 .TE
 .PP
 Gradual roll\-out: detect everywhere, then \fBblock_percent: 0\fR with the testers in \fBblock_cidrs\fR, then raise the share in steps while the security log\(aqs \fBwaf_detected\fR entries (the requests detect mode would have blocked) stay explainable, then \fB100\fR. \fBxproxyctl waf\fR shows the share and the canary prefixes per route, and the access log carries \fBwaf_enforced: true\fR or \fBfalse\fR for every request of such a route.
+.SH "honeytokens[]"
+.PP
+A decoy hands out a password, an API key, a connection string. Until something watches for their \fIuse\fR, the bait has no hook: the scanner reads the file and the proxy learns only that the file was read. A honeytoken closes that. Each entry registers values that were planted somewhere an attacker will find them \[u2014] in a decoy this proxy serves, in a repository, in a paste, in a backup, in a document \[u2014] and any request presenting one is refused, counted, logged and (by default) marked.
+.PP
+Nothing legitimate ever sends one. That is what makes this different from every other control in this file: there is no score to tune and no false\-positive rate to trade against a detection rate. A hit is an attacker replaying what they read, and the only decision is what to do about it.
+.PP
+Tokens are checked before routing \[u2014] a stolen credential can be sent to any path \[u2014] and before the challenge, so a scanner replaying one is not offered a browser challenge. A hit raises reason \fBhoneytoken\fR with the token name as \fBdetail\fR, which the ban triggers accept like any other reason, and marks the client for \fBmark\fR so its later requests carry \fBhoneypot_marked\fR exactly as a decoy hit does.
+.PP
+.RS 4
+.nf
+.ft CR
+honeytokens:
+  # The AWS key the `env` decoy serves. Anyone sending it read the
+  # decoy and tried the credential.
+  \- name: env\-aws\-key
+    description: planted in the env decoy
+    values: ["AKIADECOY000000EXAMPLE"]
+
+  # A session cookie seeded into a database backup that should never
+  # have left the estate. Its use says the backup did.
+  \- name: backup\-session
+    description: seeded in the 2026\-01 database export
+    values: ["s%3Adecoy.0000000000000000000000000000"]
+    in: [cookies]
+
+  # A document identifier planted in a report, matched anywhere in a
+  # value because the client echoes the whole document back.
+  \- name: leaked\-report\-id
+    description: embedded in the quarterly report PDF
+    values: ["decoy\-report\-id\-0123456789abcdef"]
+    match: contains
+    in: [headers, query]
+
+  # Values generated elsewhere, one per line.
+  \- name: paste\-keys
+    values_file: /etc/xproxy/honeytokens/paste\-keys
+    action: log
+.ft
+.fi
+.RE
+.PP
+Where it looks: \fBheaders\fR (every header value, and again with a \fBBearer \fR, \fBBasic \fR, \fBToken \fR or \fBApiKey \fR scheme stripped, and a Basic credential decoded into its user and password), \fBcookies\fR (each cookie value), \fBquery\fR (each parameter value, decoded) and \fBpath\fR (the cleaned path, and each of its segments). Bodies are not searched: every request would have to be buffered to do it, and a stolen credential is presented in the head.
+.PP
+The work per request is bounded, because a client chooses how many headers it sends: at most 256 candidate strings are examined and a value over 8 KiB is not scanned for a \fBcontains\fR token.
+.PP
+\fBThe value is not a secret.\fR Its purpose is to be read, so it is compared as an ordinary string and no constant\-time comparison is pretended. What the proxy does protect is the log: a hit names the token, never the value, so finding a plant does not write the credential into a second place. Plant real credentials here and the guarantee is gone.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.1i) lbw(1.0i) lbx
+lw(1.2i) lw(1.1i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+identifier
+T}	T{
+required,\: unique
+T}	T{
+\fBa\-\:z\fR,\: \fB0\-\:9\fR,\: \fB.\fR,\: \fB_\fR,\: \fB\-\fR,\: at most 63 characters. It is what the logs,\: the metric label and \fBxproxyctl honeypot\fR show instead of the value
+T}
+T{
+\fBdescription\fR
+T}	T{
+string
+T}	T{
+
+T}	T{
+Where this one was planted,\: so the alert names the leak and not only the token;\: at most 512 characters
+T}
+T{
+\fBvalues\fR
+T}	T{
+list
+T}	T{
+required unless \fBvalues_\:file\fR
+T}	T{
+The planted strings. At least 8 characters (16 for \fBmatch:\: contains\fR),\: at most 512,\: no whitespace,\: and no value planted twice across the section
+T}
+T{
+\fBvalues_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+One value per line;\: \fB#\fR comments and blank lines ignored,\: at most 4096 values. Read at load and on reload
+T}
+T{
+\fBin\fR
+T}	T{
+list
+T}	T{
+\fB[headers,\: cookies,\: query,\: path]\fR
+T}	T{
+Where to look
+T}
+T{
+\fBheaders\fR
+T}	T{
+list of names
+T}	T{
+any
+T}	T{
+Narrow the header search to these names;\: requires \fBheaders\fR in \fBin\fR
+T}
+T{
+\fBmatch\fR
+T}	T{
+\fBexact\fR,\: \fBcontains\fR
+T}	T{
+\fBexact\fR
+T}	T{
+\fBexact\fR compares the whole field value once a credential scheme is stripped;\: \fBcontains\fR finds the token anywhere in the value,\: for a token planted inside a document a client echoes back
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBblock\fR,\: \fBlog\fR
+T}	T{
+\fBblock\fR
+T}	T{
+\fBlog\fR records the hit and serves the request \[u2014] for a token whose plant might also be reached legitimately,\: until it is proven quiet. Validation advises against leaving it there
+T}
+T{
+\fBstatus\fR
+T}	T{
+int
+T}	T{
+\fB403\fR
+T}	T{
+Response for \fBblock\fR;\: 4xx or 5xx
+T}
+T{
+\fBmark\fR
+T}	T{
+duration
+T}	T{
+\fB24h\fR
+T}	T{
+How long the client stays marked,\: as a honeypot route marks one. Longer than a decoy\(aqs default hour: a stolen credential says more about the client than one probe for a decoy path does. At most 720h
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+\fBfalse\fR keeps the token configured without watching for it
+T}
+.TE
+.PP
+\fBGET /v1/honeypot\fR and \fBxproxyctl honeypot\fR list the tokens with their hits, last hit and where each was planted; \fBxproxy_honeytoken_hits_total{token}\fR counts them and \fBhoneytoken_hits\fR is in the stats. Hits survive a reload. A hit is worth an alert on its own \[u2014] unlike almost everything else the proxy counts, one is enough.
 .SH "security_txt[]"
 .PP
 A virtual \fBsecurity.txt\fR (RFC 9116): the document that tells a finder where to report a vulnerability. The proxy answers \fB/.well\-known/security.txt\fR, and the legacy \fB/security.txt\fR, \fBbefore routing\fR, so a host with no route of its own still has one \[u2014] which is the parked name a finder tries first, and the one that otherwise answers 404.

@@ -82,6 +82,9 @@ type Server struct {
 	wafStats *waf.Stats
 	// patches keeps virtual patch hit counters across generations.
 	patches patchCounters
+	// honeytokenHits keeps honeytoken counters across generations: a
+	// plant that has been found stays found across a reload.
+	honeytokenHits honeytokenCounters
 	// capture writes exchanges as pcapng, kept across generations so a
 	// recording survives a reload.
 	capture atomic.Pointer[capture.Capturer]
@@ -196,7 +199,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		bl := s.bans.Load()
 		return bl != nil && bl.DropsConnections() && bl.Banned(addr)
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s), s.wafStats, &s.patches)
+	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s), s.wafStats, &s.patches, &s.honeytokenHits)
 	if err != nil {
 		if bl := s.bans.Load(); bl != nil {
 			bl.Close()
@@ -845,7 +848,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s), s.wafStats, &s.patches)
+	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s), s.wafStats, &s.patches, &s.honeytokenHits)
 	if err == nil {
 		s.inventory.Configure(inventoryConfig(cfg), s.logs.Error)
 	}

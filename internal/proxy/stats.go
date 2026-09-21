@@ -51,6 +51,7 @@ type Stats struct {
 	DeniedSensitive     atomic.Uint64
 	DeniedAccount       atomic.Uint64
 	HoneypotHits        atomic.Uint64
+	HoneytokenHits      atomic.Uint64
 	StaticServed        atomic.Uint64
 	StaticNotFound      atomic.Uint64
 	Compressed          atomic.Uint64
@@ -141,6 +142,7 @@ type Snapshot struct {
 	AccountCampaigns      uint64           `json:"account_campaigns"`
 	AccountBlocksActive   int              `json:"account_blocks_active"`
 	HoneypotHits          uint64           `json:"honeypot_hits"`
+	HoneytokenHits        uint64           `json:"honeytoken_hits"`
 	StaticServed          uint64           `json:"static_served"`
 	StaticNotFound        uint64           `json:"static_not_found"`
 	Compressed            uint64           `json:"compressed"`
@@ -253,6 +255,7 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedSensitive:       s.DeniedSensitive.Load(),
 		DeniedAccount:         s.DeniedAccount.Load(),
 		HoneypotHits:          s.HoneypotHits.Load(),
+		HoneytokenHits:        s.HoneytokenHits.Load(),
 		StaticServed:          s.StaticServed.Load(),
 		StaticNotFound:        s.StaticNotFound.Load(),
 		Compressed:            s.Compressed.Load(),

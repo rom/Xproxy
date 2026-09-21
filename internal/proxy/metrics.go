@@ -178,6 +178,12 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_virtual_patch_hits_total", "Requests matched by a virtual patch.", L{"patch": vp.cfg.ID}, float64(vp.hits.Load()))
 	}
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
+	// Per token only: one series with a token label and one without
+	// would not sum, and the name of the plant that was found is the
+	// whole point of the counter.
+	for _, ht := range s.Honeytokens() {
+		e.Counter("xproxy_honeytoken_hits_total", "Requests presenting a planted credential.", L{"token": ht.Name}, float64(ht.Hits))
+	}
 	if cp := s.capture.Load(); cp != nil {
 		cs := cp.Stats()
 		e.Gauge("xproxy_capture_active", "1 while the proxy is recording exchanges to a pcapng file.", nil, b2f(cs.Active))

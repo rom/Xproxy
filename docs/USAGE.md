@@ -1948,22 +1948,27 @@ default: their later requests on every route carry
 weigh the mark. `xproxyctl honeypot` lists the marks and the decoy names
 this build carries.
 
-Fifty-six decoys ship built in, grouped in docs/CONFIG.md by what a
+Seventy-seven decoys ship built in, grouped in docs/CONFIG.md by what a
 scanner is after: PHP and WordPress, leaked files, the secrets a laptop
 or a build agent leaves behind (`.npmrc`, `.pypirc`, `.gitlab-ci.yml`,
 `terraform.tfstate`, `.vscode/sftp.json`, `appsettings.json`,
-`config/database.yml`), the cloud and orchestration APIs a server side
-request forgery probe asks for (`imds`, `consul`, `vault`, `docker-api`,
-`kubelet`), data stores and dashboards (`couchdb`, `solr`, `rabbitmq`,
-`kibana`, `prometheus-config`, `traefik`), and the enterprise front
+`config/database.yml`, `web.config`), the cloud and orchestration APIs a
+server side request forgery probe asks for (`imds`, `gcp-metadata`,
+`azure-imds`, `consul`, `vault`, `docker-api`, `kubelet`), data stores,
+dashboards and the newer scan targets (`couchdb`, `solr`, `rabbitmq`,
+`kibana`, `prometheus-config`, `traefik`, `clickhouse`, `minio`,
+`jupyter`, `ollama`), the application servers with their own exploit
+history (`weblogic`, `jboss`, `coldfusion`, `aspnet-trace`,
+`registry-catalog`, `argocd`, `keycloak`), and the enterprise front
 doors a mass scanner fingerprints before it picks an exploit
 (`confluence`, `gitlab-login`, `citrix`, `fortinet`, `esxi`,
-`exchange-autodiscover`, `cgi-bin`). Every credential, key and host name
-in them is visibly fake, and a test refuses a decoy that hands one out
-without a marker saying so.
+`exchange-autodiscover`, `ivanti`, `nextcloud`, `cpanel`, `cgi-bin`,
+`printer`, `camera`). Every credential, key and host name in them is
+visibly fake, and a test refuses a decoy that hands one out without a
+marker saying so.
 
-`examples/security/honeypots.yaml` wires up all of them — fifty-six
-routes and the ban ladder that turns a sweep into a ban — with the mark
+`examples/security/honeypots.yaml` wires up all of them — one route per
+decoy and the ban ladder that turns a sweep into a ban — with the mark
 scaled to what the request means: an hour for a path a confused crawler
 might reach, six hours for a file that only a credential hunt asks for,
 a day for a metadata or orchestration probe.
@@ -1989,6 +1994,52 @@ one in front of a namespace a real application serves — if the origin
 answers `/admin`, do not shadow it here — and keep the catch-all route
 last, so every decoy path is the more specific match. The shipped
 example is checked for both.
+
+### Honeytokens: the hook on the bait
+
+A decoy hands out an AWS key, a database password, a connection string.
+Until something watches for their use, none of that is a detection: the
+scanner reads the file, and the proxy knows only that the file was
+read. Registering the planted values turns each one into a tripwire.
+
+```yaml
+honeytokens:
+  - name: env-aws-key
+    description: planted in the env and aws-credentials decoys
+    values: ["AKIADECOY000000EXAMPLE", "decoy/secret/not/real/0000000000000000"]
+  - name: backup-session
+    description: seeded in the 2026-01 customer database export
+    values: ["s%3Adecoy.0000000000000000000000000000"]
+    in: [cookies]
+  - name: unlinked-export-url
+    description: printed in the internal runbook only
+    values: ["export-7f3a9c2b1d8e4056"]
+    in: [path]
+bans:
+  triggers:
+    - {name: honeytoken-use, reasons: [honeytoken], threshold: 1, window: 1m, duration: 24h}
+```
+
+Nothing legitimate ever sends one, which is what makes this different
+from every other control here: there is no score to tune and no
+false-positive rate to trade against a detection rate. A threshold of
+one is the right threshold. The request is refused before routing, the
+security log names the token and where it was planted (never the
+value), the client is marked for a day, and
+`xproxy_honeytoken_hits_total{token}` is the metric to alert on — a
+single hit is worth waking someone.
+
+Plant them beyond the decoys, and the token tells you which copy
+leaked: a key committed to a public repository, a session seeded into a
+database export, an identifier embedded in a document, a URL that
+appears only in the runbook. `examples/security/honeytokens.yaml` shows
+each of those with the decoy routes they pair with; `xproxyctl
+honeypot` lists the plants with their hits and last hit.
+
+Two rules. Start a new plant with `action: log` until it is proven
+quiet — a token that fires on real traffic was planted somewhere real
+traffic reaches — and never register a real credential: the value is
+compared as an ordinary string and the whole design assumes it is fake.
 
 ### gRPC services
 
@@ -3128,6 +3179,7 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 `bans_total`, `cluster_peers`, `cluster_connected`, `shed`, `load_level`,
 `upstream_latency_ms`, `shedding_classes`, `challenges_issued`,
 `challenges_passed`, `challenges_failed`, `captchas_passed`,
+`honeytoken_hits`,
 `denied_sensitive_data`, `denied_account_abuse`, `sensitive_findings`,
 `account_blocks`, `account_campaigns`, `account_blocks_active`, `reloads`,
 `reload_failures`,

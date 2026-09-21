@@ -260,6 +260,45 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Honeytokens: the hook on the bait (`honeytokens`).** The decoys
+  hand out an AWS key, a database password, a connection string, a
+  private key block. Nothing watched for their use, so a scanner read
+  the file and the proxy learned only that the file was read. A new
+  top-level section registers the planted values — in a decoy, a
+  repository, a paste, a backup, a document, a staging database — and
+  any request presenting one is refused before routing, counted,
+  logged and marked.
+
+  It is unlike every other control in the configuration in one
+  respect: nothing legitimate ever sends one, so there is no score to
+  tune and no false-positive rate to trade against a detection rate. A
+  ban trigger on reason `honeytoken` with `threshold: 1` is the right
+  threshold, and a single hit is worth an alert.
+
+  Each token names where it was planted, so the alert identifies the
+  leak and not only the token. `in` chooses where to look — headers
+  (each value, again with a `Bearer `, `Basic `, `Token ` or `ApiKey `
+  scheme stripped, and a Basic credential decoded into user and
+  password), cookies, query parameters, and the path with each of its
+  segments — and `headers` narrows that to named headers. `match:
+  contains` finds a token planted inside a document a client echoes
+  back; the default compares whole values. Bodies are not searched,
+  because every request would have to be buffered to do it and a
+  stolen credential is presented in the head. Values come from the
+  configuration or from a `values_file`, and the work per request is
+  bounded (256 candidate strings, 8 KiB scanned per value) because a
+  client chooses how many headers it sends.
+
+  The value is never written to a log: a hit names the token, the
+  field and the description, so finding a plant does not copy the
+  credential into a second place. Validation refuses a value short
+  enough to collide with real traffic (8 characters, 16 for
+  `contains`), refuses the same value planted twice, and advises
+  against leaving a token in `log` mode. Hits survive a reload;
+  `GET /v1/honeypot` and `xproxyctl honeypot` list the plants with
+  their hits and last hit, and `xproxy_honeytoken_hits_total{token}`
+  counts them. `examples/security/honeytokens.yaml`.
+
 - **Twenty more decoys, and the routes to serve them.** The honeypot
   table goes from 57 bodies to 77, and every one of them is wired up in
   `examples/security/honeypots.yaml`. New: `gcp-metadata` and

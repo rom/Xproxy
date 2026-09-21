@@ -451,6 +451,7 @@ func (v *validator) config(c *Config) {
 		}
 	}
 	v.virtualPatches(c.VirtualPatches, routes)
+	v.honeytokens(c.Honeytokens)
 	if c.Capture != nil {
 		v.capture(c.Capture, routes)
 	}
@@ -1650,7 +1651,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
-	"account_abuse": true,
+	"account_abuse": true, "honeytoken": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -1928,6 +1929,7 @@ var allDenyReasons = map[string]bool{
 	"body_size": true, "uri_length": true, "bad_host": true, "concurrency": true,
 	"websocket": true, "account_abuse": true, "tcp_no_route": true,
 	"forward_denied": true, "forward_auth": true, "dns_blocked": true, "dns_bogus": true,
+	"honeytoken": true,
 }
 
 // HoneypotDecoys are the built-in decoy names (bodies live in the proxy,
@@ -3337,6 +3339,104 @@ func (v *validator) patchMatches(p string, list []PatchMatch) {
 			} else if _, err := regexp.Compile(m.Pattern); err != nil {
 				v.errf("%s[%d].pattern: %v", p, j, err)
 			}
+		}
+	}
+}
+
+// honeytokenFields are the places a planted credential can be looked
+// for. Bodies are deliberately absent: searching them means buffering
+// every request, and a stolen credential is presented in the head.
+var honeytokenFields = map[string]bool{"headers": true, "cookies": true, "query": true, "path": true}
+
+// maxHoneytokenValues bounds the whole table. Every value is compared
+// against a handful of fields of every request, so the table is a cost
+// paid on the request path and not a list to grow without thinking.
+const maxHoneytokenValues = 1024
+
+// honeytokens validates the planted credentials. The rules exist to
+// stop a token that would match ordinary traffic: a value short enough
+// or common enough to appear in a real request turns a control with no
+// false positives into one with nothing but.
+func (v *validator) honeytokens(tokens []Honeytoken) {
+	names := map[string]bool{}
+	seen := map[string]string{}
+	total := 0
+	for i := range tokens {
+		h := &tokens[i]
+		p := fmt.Sprintf("honeytokens[%d]", i)
+		if !patchIDRE.MatchString(h.Name) {
+			v.errf("%s.name: %q must be 1 to 63 characters of a-z, 0-9, dot, underscore or hyphen", p, h.Name)
+		} else if names[h.Name] {
+			v.errf("%s.name: duplicate %q", p, h.Name)
+		}
+		names[h.Name] = true
+		if len(h.Description) > 512 {
+			v.errf("%s.description: at most 512 characters", p)
+		}
+		if len(h.Values) == 0 && h.ValuesFile == "" {
+			v.errf("%s: values or values_file is required", p)
+		}
+		if h.ValuesFile != "" {
+			v.file(p+".values_file", h.ValuesFile)
+		}
+		min := 8
+		if h.Match == "contains" {
+			// A short value found anywhere in a header is a false
+			// positive waiting to happen; a token matched that way has
+			// to be long enough to be nobody else's.
+			min = 16
+		}
+		for j, val := range h.Values {
+			q := fmt.Sprintf("%s.values[%d]", p, j)
+			switch {
+			case len(val) < min:
+				v.errf("%s: a planted value must be at least %d characters, or it will match real traffic", q, min)
+			case len(val) > 512:
+				v.errf("%s: at most 512 characters", q)
+			case strings.ContainsAny(val, " \t\r\n\x00"):
+				v.errf("%s: must not contain whitespace or a NUL", q)
+			}
+			if other, dup := seen[val]; dup {
+				v.errf("%s: the same value is planted as %q", q, other)
+			}
+			seen[val] = h.Name
+			total++
+		}
+		if total > maxHoneytokenValues {
+			v.errf("%s: more than %d planted values in total", p, maxHoneytokenValues)
+		}
+		for j, f := range h.In {
+			if !honeytokenFields[f] {
+				v.errf("%s.in[%d]: %q is not headers, cookies, query or path", p, j, f)
+			}
+		}
+		for j, n := range h.Headers {
+			if !headerNameOK(n) {
+				v.errf("%s.headers[%d]: %q is not a header name", p, j, n)
+			}
+		}
+		if len(h.Headers) > 0 && !slices.Contains(h.In, "headers") {
+			v.errf("%s.headers: listed without \"headers\" in in", p)
+		}
+		switch h.Match {
+		case "exact", "contains":
+		default:
+			v.errf("%s.match: must be exact or contains", p)
+		}
+		switch h.Action {
+		case "block", "log":
+		default:
+			v.errf("%s.action: must be block or log", p)
+		}
+		if h.Status < 400 || h.Status > 599 {
+			v.errf("%s.status: must be a 4xx or 5xx status", p)
+		}
+		if h.Mark < 0 || h.Mark > Duration(720*time.Hour) {
+			v.errf("%s.mark: must be between 0 and 720h", p)
+		}
+		if h.Action == "log" && h.IsEnabled() {
+			v.warnf("%s is in log mode: a request presenting a planted credential is recorded and served. "+
+				"Nothing legitimate sends one, so this is a setting to leave once the token is proven quiet", p)
 		}
 	}
 }

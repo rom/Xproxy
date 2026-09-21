@@ -230,6 +230,18 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	st.grpcWeb = isGRPCWeb(r)
 	st.grpc = isGRPC(r) || st.grpcWeb || isGRPCWebPreflight(r)
 
+	// A planted credential, presented back to us. Checked before
+	// routing, because a token read from a decoy can be sent anywhere,
+	// and before the challenge and security.txt paths, because a
+	// scanner replaying one is not a browser to be challenged.
+	if rt.honeytokens != nil {
+		if h, where := rt.honeytokens.check(r, st.path); h != nil {
+			if s.honeytokenHit(rw, r, st, h, where) {
+				return
+			}
+		}
+	}
+
 	// Reserved challenge paths, served on every host.
 	if ch := s.challenger.Load(); ch != nil && strings.HasPrefix(st.path, "/.xproxy/") {
 		switch st.path {

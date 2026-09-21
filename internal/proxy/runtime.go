@@ -48,6 +48,10 @@ type runtime struct {
 	// securityTxt answers /.well-known/security.txt before routing, or
 	// is nil when the configuration has no entry.
 	securityTxt *securitytxt.Set
+	// honeytokens are the planted credentials, checked before routing
+	// because a stolen one can be presented anywhere; nil when none are
+	// configured.
+	honeytokens *honeytokens
 	router      *router.Router
 	pools       map[string]*upstream.Pool
 	rateLimits  map[string]*rateLimit
@@ -244,7 +248,8 @@ func wafSelection(cfg *config.Config, r *config.Route) (profile string, mode waf
 	return cfg.WAF.DefaultProfile, waf.Mode(cfg.WAF.DefaultMode)
 }
 
-func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events *eventBus, wafStats *waf.Stats, patches *patchCounters) (*runtime, error) {
+func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events *eventBus, wafStats *waf.Stats,
+	patches *patchCounters, tokens *honeytokenCounters) (*runtime, error) {
 	rt := &runtime{
 		cfg:        cfg,
 		generation: generation,
@@ -270,6 +275,14 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 			return nil, err
 		}
 		rt.securityTxt = set
+	}
+	if len(cfg.Honeytokens) > 0 {
+		ht, err := newHoneytokens(cfg.Honeytokens, tokens)
+		if err != nil {
+			rt.stop()
+			return nil, err
+		}
+		rt.honeytokens = ht
 	}
 	if cfg.Maintenance != nil {
 		rt.maintenance = newMaintenance(cfg.Maintenance)

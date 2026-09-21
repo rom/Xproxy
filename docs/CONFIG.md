@@ -1568,6 +1568,97 @@ have blocked) stay explainable, then `100`. `xproxyctl waf` shows the
 share and the canary prefixes per route, and the access log carries
 `waf_enforced: true` or `false` for every request of such a route.
 
+## honeytokens[]
+
+A decoy hands out a password, an API key, a connection string. Until
+something watches for their *use*, the bait has no hook: the scanner
+reads the file and the proxy learns only that the file was read. A
+honeytoken closes that. Each entry registers values that were planted
+somewhere an attacker will find them — in a decoy this proxy serves, in
+a repository, in a paste, in a backup, in a document — and any request
+presenting one is refused, counted, logged and (by default) marked.
+
+Nothing legitimate ever sends one. That is what makes this different
+from every other control in this file: there is no score to tune and no
+false-positive rate to trade against a detection rate. A hit is an
+attacker replaying what they read, and the only decision is what to do
+about it.
+
+Tokens are checked before routing — a stolen credential can be sent to
+any path — and before the challenge, so a scanner replaying one is not
+offered a browser challenge. A hit raises reason `honeytoken` with the
+token name as `detail`, which the ban triggers accept like any other
+reason, and marks the client for `mark` so its later requests carry
+`honeypot_marked` exactly as a decoy hit does.
+
+```yaml
+honeytokens:
+  # The AWS key the `env` decoy serves. Anyone sending it read the
+  # decoy and tried the credential.
+  - name: env-aws-key
+    description: planted in the env decoy
+    values: ["AKIADECOY000000EXAMPLE"]
+
+  # A session cookie seeded into a database backup that should never
+  # have left the estate. Its use says the backup did.
+  - name: backup-session
+    description: seeded in the 2026-01 database export
+    values: ["s%3Adecoy.0000000000000000000000000000"]
+    in: [cookies]
+
+  # A document identifier planted in a report, matched anywhere in a
+  # value because the client echoes the whole document back.
+  - name: leaked-report-id
+    description: embedded in the quarterly report PDF
+    values: ["decoy-report-id-0123456789abcdef"]
+    match: contains
+    in: [headers, query]
+
+  # Values generated elsewhere, one per line.
+  - name: paste-keys
+    values_file: /etc/xproxy/honeytokens/paste-keys
+    action: log
+```
+
+Where it looks: `headers` (every header value, and again with a
+`Bearer `, `Basic `, `Token ` or `ApiKey ` scheme stripped, and a Basic
+credential decoded into its user and password), `cookies` (each cookie
+value), `query` (each parameter value, decoded) and `path` (the cleaned
+path, and each of its segments). Bodies are not searched: every request
+would have to be buffered to do it, and a stolen credential is
+presented in the head.
+
+The work per request is bounded, because a client chooses how many
+headers it sends: at most 256 candidate strings are examined and a
+value over 8 KiB is not scanned for a `contains` token.
+
+**The value is not a secret.** Its purpose is to be read, so it is
+compared as an ordinary string and no constant-time comparison is
+pretended. What the proxy does protect is the log: a hit names the
+token, never the value, so finding a plant does not write the
+credential into a second place. Plant real credentials here and the
+guarantee is gone.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | identifier | required, unique | `a-z`, `0-9`, `.`, `_`, `-`, at most 63 characters. It is what the logs, the metric label and `xproxyctl honeypot` show instead of the value |
+| `description` | string | | Where this one was planted, so the alert names the leak and not only the token; at most 512 characters |
+| `values` | list | required unless `values_file` | The planted strings. At least 8 characters (16 for `match: contains`), at most 512, no whitespace, and no value planted twice across the section |
+| `values_file` | path | | One value per line; `#` comments and blank lines ignored, at most 4096 values. Read at load and on reload |
+| `in` | list | `[headers, cookies, query, path]` | Where to look |
+| `headers` | list of names | any | Narrow the header search to these names; requires `headers` in `in` |
+| `match` | `exact`, `contains` | `exact` | `exact` compares the whole field value once a credential scheme is stripped; `contains` finds the token anywhere in the value, for a token planted inside a document a client echoes back |
+| `action` | `block`, `log` | `block` | `log` records the hit and serves the request — for a token whose plant might also be reached legitimately, until it is proven quiet. Validation advises against leaving it there |
+| `status` | int | `403` | Response for `block`; 4xx or 5xx |
+| `mark` | duration | `24h` | How long the client stays marked, as a honeypot route marks one. Longer than a decoy's default hour: a stolen credential says more about the client than one probe for a decoy path does. At most 720h |
+| `enabled` | bool | `true` | `false` keeps the token configured without watching for it |
+
+`GET /v1/honeypot` and `xproxyctl honeypot` list the tokens with their
+hits, last hit and where each was planted; `xproxy_honeytoken_hits_total{token}`
+counts them and `honeytoken_hits` is in the stats. Hits survive a
+reload. A hit is worth an alert on its own — unlike almost everything
+else the proxy counts, one is enough.
+
 ## security_txt[]
 
 A virtual `security.txt` (RFC 9116): the document that tells a finder

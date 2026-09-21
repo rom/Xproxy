@@ -481,6 +481,21 @@ func applyDefaults(c *Config) {
 		setDur(&a.ZombieAfter, 720*time.Hour)
 		setDur(&a.SaveInterval, 5*time.Minute)
 	}
+	for i := range c.Honeytokens {
+		h := &c.Honeytokens[i]
+		if h.Name == "" {
+			h.Name = fmt.Sprintf("honeytokens[%d]", i)
+		}
+		setStr(&h.Match, "exact")
+		setStr(&h.Action, "block")
+		setInt(&h.Status, 403)
+		if h.Mark == 0 {
+			h.Mark = Duration(24 * time.Hour)
+		}
+		if len(h.In) == 0 {
+			h.In = []string{"headers", "cookies", "query", "path"}
+		}
+	}
 	if cp := c.Capture; cp != nil {
 		setStr(&cp.FilePrefix, "xproxy")
 		setDur(&cp.MaxDuration, time.Hour)

@@ -295,7 +295,8 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		writeJSON(w, 200, rep)
 	})
 	mux.HandleFunc("GET /v1/honeypot", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "marks_dropped": s.proxy.HoneypotMarksDropped(), "decoys": proxy.DecoyNames()})
+		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "marks_dropped": s.proxy.HoneypotMarksDropped(),
+			"decoys": proxy.DecoyNames(), "honeytokens": s.proxy.Honeytokens()})
 	})
 	mux.HandleFunc("DELETE /v1/honeypot", func(w http.ResponseWriter, r *http.Request) {
 		ip, err := netip.ParseAddr(r.URL.Query().Get("ip"))

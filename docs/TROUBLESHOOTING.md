@@ -160,6 +160,7 @@ compute it.
 | 403 with `reason: banned` | `xproxyctl bans`. Unban, or add the range to `bans.exempt_cidrs` |
 | 403 with `reason: waf` | A rule matched. `waf_matched` names it; see [WAF](#waf) |
 | 403 with `reason: honeypot` | The client asked for a honeypot path. That is the honeypot working |
+| 403 with `reason: honeytoken` | The client presented a planted credential. `detail` names the plant; see [Honeytokens](#honeytokens) |
 | 403 with `reason: cors` | The `Origin` is not allowed by the route's `cors` block |
 | 401 with `WWW-Authenticate: Bearer` | JWT missing or invalid. The security log names the category |
 | 405 on `/.well-known/security.txt` | Only `GET` and `HEAD` are answered there |
@@ -1270,6 +1271,46 @@ are permanently zero.
 worth 40 on its own and the mark lasts as long as the honeypot route's
 `mark`. `xproxyctl honeypot forget IP` clears it.
 
+## Honeytokens
+
+**A token never fires, although the decoy holding it was read.** Three
+things in order. The value must be the one actually served — compare it
+against the decoy body, character for character, since a trailing
+newline or a shortened key is a different string. The field must be one
+the token looks in: `in` defaults to all four, but a token narrowed to
+`cookies` will not see the same value in a header. And the match mode
+has to suit the plant: `exact` compares the whole field value once a
+`Bearer `/`Basic `/`Token `/`ApiKey ` scheme is stripped, so a token
+sent as `key=<token>&x=1` inside one parameter value matches, while one
+embedded in a longer string needs `match: contains`.
+
+**A token fires on traffic that never saw the plant.** It was planted
+somewhere real traffic reaches, or the value is not distinctive enough
+— validation refuses values under 8 characters (16 for `contains`), but
+a longer value that happens to be a common identifier will still
+collide. Switch it to `action: log`, watch what arrives, and re-plant.
+
+**The value appears in a log.** It should not: a hit logs the token
+name, the field and the description. If the *value* is in an access log
+line, it arrived somewhere the access log records — the path. Move that
+plant to a header, a cookie or a query parameter, none of which the
+access log writes (`query_len` is a length, not the query).
+
+**Where did the hit come from?** The security event carries
+`client_ip`, `field` and `token`; the access line for the same
+`request_id` carries the rest. The client is also marked, so its later
+requests are labelled `honeypot_marked` and `xproxyctl honeypot` shows
+the address with the token name as its route.
+
+**Nothing is banned after a hit.** The ban needs a trigger on reason
+`honeytoken`; threshold 1 is the right value, because nobody sends one
+by accident. Without `bans`, a hit is refused and recorded but the next
+request is treated on its own merits.
+
+**A plant has to be retired.** Set `enabled: false` to keep the entry
+and stop watching, or remove it. The counters survive a reload but not
+a restart, so record the hit count before a restart if it matters.
+
 ## Origin lock
 
 **The origin refuses everything.** Run `xproxyctl origin-check`: it
@@ -2009,6 +2050,7 @@ innocent.
 | `jwt` | JWT verification | yes |
 | `icap` | An ICAP service | yes |
 | `honeypot` | A honeypot route | yes |
+| `honeytoken` | A request presenting a planted credential; `detail` is the token name | yes |
 | `challenge` | The challenge gate | yes (only the client's own mistakes) |
 | `sensitive_data` | The DLP filter | no |
 | `account_abuse` | `account_guard` | yes |

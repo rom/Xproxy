@@ -765,6 +765,7 @@ cluster:
     exact_timeout: 50ms
 virtual_patches: []
 security_txt: []
+honeytokens: []
 capture: null
 fleet: null
 api_inventory: null
