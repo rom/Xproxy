@@ -268,6 +268,36 @@ routes:
 	}
 }
 
+// The refusals that happen before routing — a ban, the maintenance
+// gate, a malformed Host — are the ones an operator most wants in the
+// file, and the only ones the capture hook cannot see, because it runs
+// once the route is known. They are offered to the rules at the end of
+// the exchange instead.
+func TestCaptureRecordsRefusalsFromBeforeRouting(t *testing.T) {
+	a := newBackend(t, "a")
+	dir, yaml := captureYAML(t, a.addr(), "  rules:\n    - {name: denials, denied: true}\n")
+	yaml = strings.Replace(yaml, "upstreams:\n",
+		"maintenance: {enabled: true, status: 503, message: down}\nupstreams:\n", 1)
+	s, url := startServer(t, yaml)
+	if _, err := s.SetCapture(true, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if resp, _ := get(t, url+"/api/held"); resp.StatusCode != 503 {
+		t.Fatalf("the maintenance gate did not hold the request: %d", resp.StatusCode)
+	}
+	waitCapture(t, s, 1)
+	got := captureBytes(t, dir)
+	if !strings.Contains(got, "GET /api/held") {
+		t.Errorf("a refusal from before routing was not captured:\n%s", got)
+	}
+	if !strings.Contains(got, "503") {
+		t.Errorf("the captured response does not carry the status the client got:\n%s", got)
+	}
+	if st := s.CaptureStatus(); st.Captured != 1 {
+		t.Errorf("captured %d, want the one refusal: %+v", st.Captured, st)
+	}
+}
+
 // A reload during a reproduction must not stop the recording.
 func TestCaptureSurvivesAReload(t *testing.T) {
 	a := newBackend(t, "a")

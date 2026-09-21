@@ -9825,7 +9825,7 @@ The proxy terminates TLS, so there is no point on the wire where the exchange is
 .PP
 Recording has two independent switches, and both have to be on for a byte to be written. The configuration decides \fIwhat may be\fR captured \[u2014] \fBenabled\fR, and the \fBrules\fR that select flows \[u2014] and it reloads. The runtime switch decides \fIwhether it is\fR being captured now, and it is off unless \fBstart_active\fR is set: \fBxproxyctl capture start\fR turns it on, \fBxproxyctl capture stop\fR turns it off, and it turns itself off after \fBmax_duration\fR so a capture started during an incident cannot be left running for a month (a capture that began at start\-up because \fBstart_active\fR is set runs until something turns it off: the bound is on the window an operator opens). That shape is deliberate: the usual deployment carries a capture section that is ready and idle, and an operator throws the switch for one reproduction. A reload keeps the switch exactly as it was, deadline included.
 .PP
-\fBrules\fR is where "only a certain flow, or all flows" is decided. A rule matches when every selector it names holds; a rule that names no selector matches everything, and a section with rules omitted behaves as one such rule. The first rule that matches decides, so the broad catch\-all goes last. Selectors that are only known once the exchange is over \[u2014] \fBstatuses\fR, \fBreasons\fR, \fBdenied\fR \[u2014] hold the request and response until then and write the whole flow retrospectively, so a rule for "the 403s only" still produces a complete conversation.
+\fBrules\fR is where "only a certain flow, or all flows" is decided. A rule matches when every selector it names holds; a rule that names no selector matches everything, and a section with rules omitted behaves as one such rule. The first rule that matches decides, so the broad catch\-all goes last. Selectors that are only known once the exchange is over \[u2014] \fBstatuses\fR, \fBreasons\fR, \fBdenied\fR \[u2014] hold the request and response until then and write the whole flow retrospectively, so a rule for "the 403s only" still produces a complete conversation. That includes a refusal decided before routing (a ban, the maintenance gate, a malformed \fBHost\fR): there is no route to match on, so only the answer\-side selectors can want it, and it is written without bodies because nothing read them.
 .PP
 .RS 4
 .nf
@@ -10028,7 +10028,7 @@ list of names
 T}	T{
 any
 T}	T{
-Only requests matched to these routes. A request refused before routing has no route and never matches this selector
+Only requests matched to these routes. A request refused before routing (a ban,\: the maintenance gate) has no route,\: so it never matches this selector;\: an answer\-side selector is how those are captured
 T}
 T{
 \fBmethods\fR

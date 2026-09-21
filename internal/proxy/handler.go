@@ -70,6 +70,7 @@ type reqState struct {
 	canary     bool   // the response came from a canary endpoint
 	cacheKey   string
 	marked     bool         // client previously hit a honeypot
+	pcapAsked  bool         // the capture hook ran for this request
 	mirror     string       // sent, dropped or body_too_large on a mirrored route
 	bodyDigest string       // set when the origin signature covers the body
 	shadow     *shadowState // live response capture for mirror diffing, nil otherwise

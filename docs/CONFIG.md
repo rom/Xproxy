@@ -2757,7 +2757,11 @@ one such rule. The first rule that matches decides, so the broad
 catch-all goes last. Selectors that are only known once the exchange is
 over — `statuses`, `reasons`, `denied` — hold the request and response
 until then and write the whole flow retrospectively, so a rule for "the
-403s only" still produces a complete conversation.
+403s only" still produces a complete conversation. That includes a
+refusal decided before routing (a ban, the maintenance gate, a
+malformed `Host`): there is no route to match on, so only the
+answer-side selectors can want it, and it is written without bodies
+because nothing read them.
 
 ```yaml
 capture:
@@ -2821,7 +2825,7 @@ counts `captured`, `skipped`, `dropped` and `failed` and
 |-----|------|---------|-------------|
 | `name` | string | `rules[i]` | Identifies the rule in `GET /v1/capture` |
 | `hosts` | list | any | Host patterns, exact or `*.example.com`, matched against the request authority |
-| `routes` | list of names | any | Only requests matched to these routes. A request refused before routing has no route and never matches this selector |
+| `routes` | list of names | any | Only requests matched to these routes. A request refused before routing (a ban, the maintenance gate) has no route, so it never matches this selector; an answer-side selector is how those are captured |
 | `methods` | list | any | Upper-case methods |
 | `paths` | list of prefixes | any | Prefixes of the cleaned path |
 | `client_cidrs` | list of CIDR | any | Client networks, the derived client address being the one compared |

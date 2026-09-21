@@ -1461,7 +1461,7 @@ start -duration 10m`. A capture that *was* on and stopped by itself hit
 |------------------|---------------|
 | `skipped` only | No rule matched the traffic, a rule that waits for the answer did not want it, sampling dropped it, or a rule is at its `max_flows`. The per-rule lines below the counters say which rule is taking anything at all |
 | `failed` | The file could not be written: the directory is gone, full, or not writable by the proxy user. The sandbox allows the configured `directory` because the rules are derived from the configuration, but a reload that moves it somewhere Landlock was not given is refused with a message to restart |
-| nothing at all | No exchange reached the capture. The hook runs after routing, so a request refused before a route is matched (a ban, a listener bound, TLS) never reaches it |
+| nothing at all | No exchange reached the capture. Connections refused below HTTP — a TLS handshake that failed, a listener bound that closed the connection, a layer 4 listener — are not exchanges and are not recorded; a request refused above it, including one refused before routing, is |
 
 **A rule matches nothing.** Every selector a rule names has to hold, and
 the first matching rule decides, so a broad rule above a narrow one
@@ -1474,7 +1474,12 @@ in `trusted_proxies`.
 
 **A rule on `statuses`, `reasons` or `denied` seems not to fire.** It
 fires at the end: none of them can be decided when the request arrives,
-so the exchange is held and written once the proxy has answered. What it
+so the exchange is held and written once the proxy has answered. That
+includes the refusals that happen before routing — a ban, the
+maintenance gate, a malformed `Host`, the concurrency ceiling — which
+the request-side selectors cannot describe (there is no route yet) but
+which a `denied` or `reasons` rule still captures, without bodies,
+because nothing read them. What it
 cannot do is match a request that never got a status — a client that
 disappeared mid-request is written as `HTTP/1.1 000 No Response`.
 `reasons` matches the reason and the reason with its detail, so `waf`

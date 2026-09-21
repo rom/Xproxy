@@ -164,10 +164,11 @@ func TestCaptureKeepsWhatItIsToldTo(t *testing.T) {
 func TestCaptureCannotBeInjectedInto(t *testing.T) {
 	h := startCapture(t)
 
-	// The channels that could carry a raw line break into the file are
-	// refused before they get there, and a request refused at parsing
-	// is not captured at all: the file holds exchanges the proxy
-	// handled, not everything that arrived on the socket.
+	// Every channel that could carry a raw line break is refused, and
+	// the refusals the proxy itself decides are captured — which is the
+	// point: the file has to hold the attempt as it arrived, with the
+	// payload still inside the request line rather than promoted to a
+	// header of its own.
 	for _, c := range []struct {
 		name string
 		text string
@@ -180,11 +181,15 @@ func TestCaptureCannotBeInjectedInto(t *testing.T) {
 			t.Errorf("%s: status %d, want a refusal", c.name, status)
 		}
 	}
-	if st := h.s.CaptureStatus(); st.Captured != 0 {
-		t.Errorf("a request refused at parsing was captured: %+v", st)
+	got := h.file()
+	if strings.Contains(got, "\r\nX-Injected: yes") {
+		t.Errorf("an encoded line break produced a header line in the capture:\n%q", got)
 	}
-	if got := h.file(); strings.Contains(got, "X-Injected") {
-		t.Errorf("a refused request reached the capture:\n%q", got)
+	if !strings.Contains(got, "%0d%0aX-Injected:%20yes") {
+		t.Errorf("the attempt was not captured as it arrived:\n%q", got)
+	}
+	if !strings.Contains(got, "400 Bad Request") {
+		t.Errorf("the capture does not carry the refusal:\n%q", got)
 	}
 
 	// A bare LF is a line terminator to Go's reader rather than a byte
@@ -195,8 +200,8 @@ func TestCaptureCannotBeInjectedInto(t *testing.T) {
 	if status := h.raw("GET /a HTTP/1.1\r\nHost: app.test\r\nX-Note: a\nX-Injected: yes\r\nConnection: close\r\n\r\n"); status != 200 {
 		t.Fatalf("bare LF: status %d", status)
 	}
-	h.wait(1)
-	got := h.file()
+	h.wait(3)
+	got = h.file()
 	if upstream := h.backend.last.Load(); upstream.Header.Get("X-Injected") == "yes" {
 		if !strings.Contains(got, "X-Injected: yes\r\n") {
 			t.Errorf("the origin saw X-Injected but the capture does not:\n%q", got)
@@ -214,7 +219,7 @@ func TestCaptureCannotBeInjectedInto(t *testing.T) {
 	if status, _ := h.do(r); status != 200 {
 		t.Fatalf("the body was not served: %d", status)
 	}
-	h.wait(2)
+	h.wait(4)
 	got = h.file()
 	if !strings.Contains(got, fake) {
 		t.Errorf("the body was not captured verbatim:\n%q", got)

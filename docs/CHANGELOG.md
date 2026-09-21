@@ -497,6 +497,13 @@ WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
 
+- A `denied: true` capture rule missed the refusals decided before
+  routing — a ban, the maintenance gate, a malformed `Host`, the
+  concurrency ceiling — because the capture hook runs once the route is
+  known and those requests never reach it. They are the refusals an
+  operator most wants in the file. An exchange that never reached the
+  hook is now offered to the rules at the end instead, without bodies,
+  since nothing read them.
 - The sandbox gave the capture directory a read rule rather than a
   write one, because the Landlock rules are derived from the
   configuration by key name and nothing knew about `capture.directory`.

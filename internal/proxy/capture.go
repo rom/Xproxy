@@ -58,7 +58,14 @@ func (b *boundedTee) add(p []byte) {
 // which is the earliest point a rule on routes can be answered.
 func (s *Server) beginCapture(r *http.Request, st *reqState) {
 	c := s.capture.Load()
-	if c == nil || !c.Wants(st.host, st.route, r.Method, st.path, st.clientIP) {
+	if c == nil || !c.Active() {
+		return
+	}
+	// The hook ran, so whatever it decided is the decision: a request
+	// that gets here and is not wanted must not be offered again at the
+	// end (see finishCapture).
+	st.pcapAsked = true
+	if !c.Wants(st.host, st.route, r.Method, st.path, st.clientIP) {
 		return
 	}
 	cs := &captureState{}
@@ -91,13 +98,21 @@ func (b *captureBody) Read(p []byte) (int, error) {
 // finishCapture writes the exchange. It runs from the access-log defer,
 // so it sees the status the client actually got and the deny reason.
 func (s *Server) finishCapture(rw *responseWriter, r *http.Request, st *reqState) {
-	cs := st.pcap
-	if cs == nil {
-		return
-	}
 	c := s.capture.Load()
 	if c == nil {
 		return
+	}
+	cs := st.pcap
+	if cs == nil {
+		// A request refused before the hook — a ban, the maintenance
+		// gate, a bad host, the concurrency ceiling — never reached it,
+		// and those are exactly the refusals a `denied` rule is written
+		// for. Offer the exchange to the rules here instead. There are
+		// no bodies: nothing read the request, and the refusal is its
+		// own answer.
+		if st.pcapAsked || !c.Active() {
+			return
+		}
 	}
 	redact := c.Redact()
 	e := &capture.Exchange{
@@ -113,12 +128,12 @@ func (s *Server) finishCapture(rw *responseWriter, r *http.Request, st *reqState
 		Denied:    st.denied,
 	}
 	e.Request = serialiseRequest(r, redact)
-	if cs.reqBody != nil && cs.reqBody.buf.Len() > 0 {
+	if cs != nil && cs.reqBody != nil && cs.reqBody.buf.Len() > 0 {
 		e.Request = append(e.Request, cs.reqBody.buf.Bytes()...)
 		e.RequestTruncated = cs.reqBody.truncated
 	}
 	e.Response = serialiseResponse(rw, r, redact)
-	if cs.respBody != nil && cs.respBody.buf.Len() > 0 {
+	if cs != nil && cs.respBody != nil && cs.respBody.buf.Len() > 0 {
 		e.Response = append(e.Response, cs.respBody.buf.Bytes()...)
 		e.ResponseTruncated = cs.respBody.truncated
 	}
