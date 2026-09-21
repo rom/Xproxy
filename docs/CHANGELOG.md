@@ -497,6 +497,15 @@ WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
 
+- `xproxy_capture_bytes_total` reported the size of the current capture
+  file rather than the bytes written in total, so a rotation looked
+  like a counter restart to anything reading it as the counter it is
+  declared to be. It now accumulates across files. `capture.directory`
+  and `capture.start_active` are also documented as they behave: the
+  directory must exist and is the proxy's alone, and a capture that
+  begins at start-up runs until something turns it off — `max_duration`
+  bounds the window an operator opens, not that one.
+
 - `Keyring.All` and `Keyring.Keys` handed out the ring's own key
   material rather than a copy, so a caller working in place would have
   changed what the proxy signs with, and `Primary` panicked on a ring

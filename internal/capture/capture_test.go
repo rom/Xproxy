@@ -325,6 +325,33 @@ func TestFileIsPrivateAndParsable(t *testing.T) {
 	}
 }
 
+// The byte counter is exported as a Prometheus counter, so it has to
+// keep climbing across a rotation rather than fall back to the size of
+// the current file.
+func TestBytesAreCumulativeAcrossFiles(t *testing.T) {
+	c := testConfig(t)
+	c.MaxFileBytes = 1 << 20
+	c.MaxFiles = 4
+	cp := newTestCapturer(t, c)
+	e := exchange("h", "r", "POST", "/upload", 200, "")
+	e.Request = append(e.Request, make([]byte, 400<<10)...)
+	var last uint64
+	for i := range 8 {
+		cp.Write(e)
+		now := cp.Stats().Bytes
+		if now <= last {
+			t.Fatalf("after %d exchanges the byte counter went from %d to %d", i+1, last, now)
+		}
+		last = now
+	}
+	if files := cp.Stats().Files; files < 2 {
+		t.Fatalf("%d files; the capture never rotated, so nothing was proven", files)
+	}
+	if last < 8*400<<10 {
+		t.Errorf("counter reports %d bytes for more than %d written", last, 8*400<<10)
+	}
+}
+
 func TestRotationAndPruning(t *testing.T) {
 	c := testConfig(t)
 	c.MaxFileBytes = 1 << 20 // the smallest the validator allows

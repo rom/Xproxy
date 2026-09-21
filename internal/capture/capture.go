@@ -418,8 +418,11 @@ func (c *Capturer) writeFlow(e *Exchange) error {
 	if err := f.close(c.w, t); err != nil {
 		return err
 	}
+	// The counter is cumulative across files: it is exported as a
+	// Prometheus counter, and one that fell back to zero on every
+	// rotation would read as a restart.
+	c.bytes.Add(uint64(max(c.w.written-c.written, 0))) //nolint:gosec // non-negative
 	c.written = c.w.written
-	c.bytes.Store(uint64(max(c.written, 0))) //nolint:gosec // non-negative
 	if c.cfg.MaxFileBytes > 0 && c.written >= c.cfg.MaxFileBytes {
 		c.rotateLocked()
 	}

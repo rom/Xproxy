@@ -2743,7 +2743,9 @@ runtime switch decides *whether it is* being captured now, and it is
 off unless `start_active` is set: `xproxyctl capture start` turns it on,
 `xproxyctl capture stop` turns it off, and it turns itself off after
 `max_duration` so a capture started during an incident cannot be left
-running for a month. That shape is deliberate: the usual deployment
+running for a month (a capture that began at start-up because
+`start_active` is set runs until something turns it off: the bound is
+on the window an operator opens). That shape is deliberate: the usual deployment
 carries a capture section that is ready and idle, and an operator throws
 the switch for one reproduction. A reload keeps the switch exactly as it
 was, deadline included.
@@ -2801,7 +2803,7 @@ counts `captured`, `skipped`, `dropped` and `failed` and
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Build the subsystem. Without it nothing is recorded and the runtime switch has nothing to turn on |
-| `start_active` | bool | `false` | Begin recording at start-up instead of waiting for the switch. Records from the first request, including start-up traffic no operator is there for; the usual shape is a section that is ready and idle |
+| `start_active` | bool | `false` | Begin recording at start-up instead of waiting for the switch. Records from the first request, including start-up traffic no operator is there for, and keeps recording until something turns it off: `max_duration` bounds a window an operator opens, not this. The usual shape is a section that is ready and idle. Validation says so as advice |
 | `directory` | path | required | Absolute path of an existing directory the proxy owns and nothing else writes to. The proxy chooses the file names inside it and removes its own oldest files |
 | `file_prefix` | string | `xproxy` | Begins each file name, the rest being the time the file was opened. No path separators, no leading dot |
 | `max_file_bytes` | int | `67108864` | Rotate to a new file past this size (1 MiB to 8 GiB) |
