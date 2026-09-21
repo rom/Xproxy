@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -67,8 +68,17 @@ func TestFlow(t *testing.T) {
 		c.Verify(w, r, from, false)
 		return w
 	}
-	// Wrong proof, wrong IP, then success.
-	if w := post(nonce, "1", "/shop?item=1", ip); w.Code != 403 {
+	// Wrong proof, wrong IP, then success. The wrong counter is looked
+	// up rather than assumed: at difficulty 10 one counter in a
+	// thousand solves the nonce by chance, and a test that fails once a
+	// thousand runs is a test nobody believes.
+	wrong := ""
+	for i := 0; wrong == ""; i++ {
+		if s := strconv.Itoa(i); !Solves(nonce, s, 10) {
+			wrong = s
+		}
+	}
+	if w := post(nonce, wrong, "/shop?item=1", ip); w.Code != 403 {
 		t.Fatalf("wrong proof: %d", w.Code)
 	}
 	if w := post(nonce, counter, "/shop?item=1", netip.MustParseAddr("203.0.113.2")); w.Code != 403 {

@@ -497,6 +497,10 @@ WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
 
+- `internal/challenge` `TestFlow` asserted that the counter `1` fails a
+  difficulty-10 proof. One nonce in a thousand is solved by it, so the
+  test failed about that often for no reason. It now looks up a counter
+  that provably does not solve the nonce it was given.
 - `xproxy_capture_bytes_total` reported the size of the current capture
   file rather than the bytes written in total, so a rotation looked
   like a counter restart to anything reading it as the counter it is
