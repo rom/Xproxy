@@ -2390,8 +2390,37 @@ on; on a counted stream it ends the connection, because refusing to
 read the octets a frame declared leaves the reader at an offset nobody
 knows.
 
-`examples/logs/syslog.yaml` has a general relay and a separate audit
-path with client certificates.
+**The secure upgrade.** A switch, a printer, an appliance or a
+twenty-year-old application sends syslog the only way it knows: in
+clear, usually over UDP. It cannot be taught TLS and the vendor is not
+going to teach it. Put this relay next to it:
+
+```yaml
+    - name: legacy
+      address: "10.20.0.1:514"
+      kind: syslog
+      syslog:
+        upstream: collectors
+        udp: true
+        tls_mode: none              # the senders could not use one
+        upstream_tls_mode: implicit # this is the upgrade
+        upstream_tls: {server_name: siem.internal, ca_file: /etc/xproxy/certs/internal-ca.pem}
+        allow_senders: ["10.20.0.0/24"]
+        hostname: observed
+```
+
+Clear UDP or plain TCP in, RFC 5425 TLS out, and the records arrive at
+the collector as RFC 5424 whatever dialect the device speaks. The
+sender never changes; the part of the path that crosses anything does.
+
+What it does not do is make the sender trustworthy. Between the device
+and this port the records are still in clear and still forgeable, so
+put the port where only those devices can reach it, keep
+`allow_senders` tight, and let `hostname: observed` record where each
+record actually came from rather than what it claimed to be.
+
+`examples/logs/syslog.yaml` has a general relay, a legacy upgrade
+listener and a separate audit path with client certificates.
 
 ### FTP with the data connection mediated
 

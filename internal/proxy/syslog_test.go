@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rom/xproxy/internal/testutil"
 )
 
 // collector is a stand-in for a syslog collector: it reads
@@ -319,5 +322,141 @@ func TestSyslogRateLimit(t *testing.T) {
 	}
 	if sn := s.stats.snapshot(); sn.SyslogRateLimited == 0 {
 		t.Error("nothing was rate limited")
+	}
+}
+
+// startTLSCollector is a collector that will only take TLS.
+func startTLSCollector(t *testing.T, cert, key string) *collector {
+	t.Helper()
+	pair, err := tls.LoadX509KeyPair(cert, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &collector{ln: tls.NewListener(raw, &tls.Config{
+		Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12})}
+	t.Cleanup(func() { _ = c.ln.Close() })
+	go func() {
+		for {
+			conn, err := c.ln.Accept()
+			if err != nil {
+				return
+			}
+			go c.read(conn)
+		}
+	}()
+	return c
+}
+
+// The secure upgrade: a legacy sender writes syslog in clear, over UDP
+// or plain TCP, and it leaves the relay as RFC 5425 TLS. The sender
+// never changes; the wire does.
+func TestSyslogSecureUpgrade(t *testing.T) {
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	ccert, ckey := ca.Issue(t, dir, "collector.test")
+	col := startTLSCollector(t, ccert, ckey)
+
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: upgrade
+      address: "127.0.0.1:0"
+      kind: syslog
+      syslog:
+        upstream: collectors
+        # In the clear, both transports, because that is what the
+        # legacy senders can do.
+        udp: true
+        tls_mode: none
+        # Out over TLS, which is what they cannot.
+        upstream_tls_mode: implicit
+        upstream_tls: {server_name: collector.test, ca_file: %s}
+        allow_senders: ["127.0.0.0/8"]
+        hostname: annotate
+logging: {access: {enabled: false}}
+upstreams:
+  - name: collectors
+    endpoints: [{address: %s}]
+`, ca.Path, col.addr())
+	s, _ := startServer(t, yaml)
+	addr := s.Addrs()["upgrade"]
+
+	// A plain TCP sender, RFC 3164, the oldest thing in the estate.
+	sendSyslog(t, addr, "<34>Oct 11 22:14:15 oldbox su[1234]: 'su root' failed")
+
+	// And a UDP sender, which is what most of them actually are.
+	uc, err := net.Dial("udp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = uc.Close() }()
+	if _, err := uc.Write([]byte("<13>Oct 11 22:14:16 oldbox app: over a datagram")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := col.waitFor(t, 2)
+	var sawTCP, sawUDP bool
+	for _, m := range got {
+		if !strings.HasPrefix(m, "<34>1 ") && !strings.HasPrefix(m, "<13>1 ") {
+			t.Errorf("not re-emitted as 5424: %q", m)
+		}
+		if strings.Contains(m, "'su root' failed") {
+			sawTCP = true
+		}
+		if strings.Contains(m, "over a datagram") {
+			sawUDP = true
+		}
+	}
+	if !sawTCP {
+		t.Error("the plain TCP sender's record did not arrive")
+	}
+	if !sawUDP {
+		t.Error("the UDP sender's record did not arrive")
+	}
+	if sn := s.stats.snapshot(); sn.SyslogForwarded < 2 {
+		t.Errorf("forwarded: %d", sn.SyslogForwarded)
+	}
+}
+
+// On UDP the sender's address is the only authentication there is, so
+// allow_senders has to hold there too.
+func TestSyslogUDPSenderPolicy(t *testing.T) {
+	col := startCollector(t)
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: logs
+      address: "127.0.0.1:0"
+      kind: syslog
+      syslog:
+        upstream: collectors
+        udp: true
+        allow_senders: ["192.0.2.0/24"]
+logging: {access: {enabled: false}}
+upstreams:
+  - name: collectors
+    endpoints: [{address: %s}]
+`, col.addr())
+	s, _ := startServer(t, yaml)
+	uc, err := net.Dial("udp", s.Addrs()["logs"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = uc.Close() }()
+	if _, err := uc.Write([]byte("<13>1 - h a - - - from a stranger")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := col.seen(); len(got) != 0 {
+		t.Fatalf("a refused sender's datagram arrived: %v", got)
+	}
+	if sn := s.stats.snapshot(); sn.SyslogRefused == 0 {
+		t.Error("the refusal was not counted")
 	}
 }

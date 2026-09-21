@@ -336,6 +336,16 @@ Open findings of the earlier rounds:
   octet counting towards the collector by default because it is the one
   framing a message's own text cannot be mistaken for.
 
+  The two ends are configured separately, which makes this a **secure
+  upgrade** for everything that cannot be taught TLS: `tls_mode: none`
+  with `upstream_tls_mode: implicit` takes clear syslog over UDP from a
+  switch, a printer or a twenty-year-old application and puts it on the
+  wire as RFC 5425. The sender never changes. It does not make the
+  sender trustworthy — between the device and the port the records are
+  still in clear and still forgeable — which is what `allow_senders`
+  and `hostname: observed` are for, and what the documentation says
+  beside it.
+
   `internal/syslog` parses both formats onto one shape — a relay with
   two internal shapes is a relay with two sets of rules — and refuses
   what it cannot re-emit honestly. A message over the bound on a

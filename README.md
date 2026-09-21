@@ -241,7 +241,9 @@ an identifier from the access log to the upstream.
   records in anything that frames on newlines. Every message is parsed
   and re-emitted as RFC 5424 in one framing; facility, severity, sender
   and pattern filters, redaction, per-sender rate limits; UDP, TCP and
-  TLS on one address
+  TLS on one address. The two ends are configured separately, so it is
+  also a **secure upgrade**: clear UDP in from something that cannot be
+  taught TLS, RFC 5425 TLS out
 - `kind: ftp`: an FTP proxy that is actually in the middle. FTP puts
   every transfer on a second connection whose address one side
   announces to the other, so a proxy that forwards that reply has told

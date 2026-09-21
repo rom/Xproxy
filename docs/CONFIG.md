@@ -644,6 +644,14 @@ one datagram per message), on the same address. TLS is RFC 5425.
 | `idle_timeout` | duration | `5m` | No traffic on a stream connection |
 | `queue` | int | `4096` | Parsed messages waiting for the collector. When it is full the relay drops and counts, rather than holding every sender behind one slow collector |
 
+**The secure upgrade** is `tls_mode: none` with
+`upstream_tls_mode: implicit`: a device that can only send clear syslog
+over UDP writes to this listener, and the records leave it as RFC 5425
+TLS. It does not make the sender trustworthy — between the device and
+this port the records are still in clear and still forgeable — so put
+the port where only those devices can reach it, keep `allow_senders`
+tight, and use `hostname: observed`.
+
 A message the relay cannot parse is refused, not forwarded: its
 facility, severity and host are exactly the fields every rule here
 decides on, and a record nobody could read is a record nobody can

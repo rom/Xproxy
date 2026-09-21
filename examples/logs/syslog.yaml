@@ -104,6 +104,42 @@ server:
         allow_facilities: [auth, authpriv, audit]
         queue: 65536
 
+    # The secure upgrade. A switch, a printer, an appliance or a
+    # twenty-year-old application sends syslog the only way it knows:
+    # in clear, usually over UDP. It cannot be taught TLS, and the
+    # vendor is not going to teach it. This listener takes it as it is
+    # and puts it on the wire as RFC 5425 TLS, so the part of the path
+    # that crosses anything is encrypted and authenticated even though
+    # the sender is not.
+    #
+    # What it does not do is make the sender trustworthy. Between the
+    # device and this port the records are still in clear and still
+    # forgeable, so put the port where only those devices can reach it,
+    # keep allow_senders tight, and let hostname: observed record where
+    # each record actually came from rather than what it claimed.
+    - name: legacy
+      address: "10.20.0.1:514"
+      kind: syslog
+      syslog:
+        upstream: collectors
+        udp: true
+        # No tls section and no tls_mode: the senders could not use one.
+        tls_mode: none
+        # This is the upgrade.
+        upstream_tls_mode: implicit
+        upstream_tls:
+          server_name: siem.internal
+          ca_file: /etc/xproxy/certs/internal-ca.pem
+        # The only authentication a clear UDP sender has.
+        allow_senders:
+          - "10.20.0.0/24"
+        # These senders name themselves however they were configured in
+        # 2009. The address they came from is the fact.
+        hostname: observed
+        rate_limit: 100
+        rate_burst: 500
+        max_message_bytes: 2048
+
 upstreams:
   - name: collectors
     endpoints:
