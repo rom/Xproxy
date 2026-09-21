@@ -5,6 +5,7 @@ import (
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/tmpl"
+	"github.com/rom/xproxy/internal/yara"
 	"mime"
 	"path/filepath"
 	"time"
@@ -1944,7 +1945,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
-	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true,
+	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "yara": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -2593,6 +2594,12 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	if t.QUICIdleTimeout <= 0 || t.QUICIdleTimeout > Duration(time.Hour) {
 		v.errf("%s.quic_idle_timeout: must be positive and at most 1h", p)
 	}
+	if t.YARA != nil {
+		v.yaraPolicy(p+".yara", t.YARA)
+		if t.QUIC {
+			v.warnf("%s.yara: QUIC flows are not scanned; they are encrypted, and a rule over ciphertext matches nothing", p)
+		}
+	}
 	if t.QUIC && t.ProxyProtocol {
 		v.errf("%s.quic: the PROXY protocol header cannot be sent on a datagram flow; disable proxy_protocol or quic", p)
 	}
@@ -3081,6 +3088,55 @@ func (v *validator) mfaPolicy(p string, m *MFAPolicy) {
 	}
 	if m.RequireEnrolment != nil && !*m.RequireEnrolment {
 		v.warnf("%s.require_enrolment: false lets a user who never enrolled past the second factor, which is the account an attacker will use", p)
+	}
+}
+
+// yaraPolicy validates a YARA policy wherever it is configured.
+func (v *validator) yaraPolicy(p string, y *YARAPolicy) {
+	switch {
+	case y.RulesFile != "" && y.RulesDir != "":
+		v.errf("%s: set rules_file or rules_dir, not both", p)
+	case y.RulesFile != "":
+		v.file(p+".rules_file", y.RulesFile)
+		if _, err := yara.LoadFile(y.RulesFile); err != nil {
+			v.errf("%s.rules_file: %v", p, err)
+		}
+	case y.RulesDir != "":
+		v.dir(p+".rules_dir", y.RulesDir)
+		if _, err := yara.LoadDir(y.RulesDir); err != nil {
+			v.errf("%s.rules_dir: %v", p, err)
+		}
+	default:
+		v.errf("%s: rules_file or rules_dir is required", p)
+	}
+	switch y.Action {
+	case "close", "log":
+	default:
+		v.errf("%s.action: must be close or log", p)
+	}
+	seen := map[string]bool{}
+	for i, d := range y.Directions {
+		switch d {
+		case "client", "upstream":
+		default:
+			v.errf("%s.directions[%d]: must be client or upstream", p, i)
+		}
+		if seen[d] {
+			v.errf("%s.directions[%d]: %q listed twice", p, i, d)
+		}
+		seen[d] = true
+	}
+	if len(y.Directions) == 0 {
+		v.errf("%s.directions: at least one direction is required", p)
+	}
+	if y.MaxWindow < 4096 || y.MaxWindow > 1<<24 {
+		v.errf("%s.max_window: must be 4096..16777216", p)
+	}
+	if y.MaxBytes < 0 {
+		v.errf("%s.max_bytes: must not be negative", p)
+	}
+	if y.MaxBytes == 0 {
+		v.warnf("%s.max_bytes: 0 scans every byte of every connection, which makes a long transfer arbitrarily expensive", p)
 	}
 }
 

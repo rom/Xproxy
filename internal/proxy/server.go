@@ -692,7 +692,12 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		}
 	}
 	if lc.Kind == "tcp" {
-		bl.tcp = newTCPServer(s, lc, bl.ln)
+		tcp, err := newTCPServer(s, lc, bl.ln)
+		if err != nil {
+			_ = fr.Close()
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		bl.tcp = tcp
 		if lc.TCP.QUIC {
 			udpAddr := lc.Address
 			if strings.HasSuffix(lc.Address, ":0") {

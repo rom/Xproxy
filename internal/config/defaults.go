@@ -123,6 +123,9 @@ func applyDefaults(c *Config) {
 			setDur(&t.IdleTimeout, 10*time.Minute)
 			setInt(&t.MaxConnections, 10000)
 			setDur(&t.QUICIdleTimeout, 30*time.Second)
+			if t.YARA != nil {
+				yaraDefaults(t.YARA)
+			}
 		}
 		if f := s.Listeners[i].Forward; f != nil {
 			if len(f.Ports) == 0 {
@@ -932,4 +935,16 @@ func mfaDefaults(m *MFAPolicy) {
 	setDur(&m.Window, 5*time.Minute)
 	setDur(&m.Duration, 15*time.Minute)
 	setInt(&m.MaxUsers, 10000)
+}
+
+// yaraDefaults fills a YARA policy wherever it is used.
+func yaraDefaults(y *YARAPolicy) {
+	setStr(&y.Action, "close")
+	setInt(&y.MaxWindow, 256<<10)
+	if y.MaxBytes == 0 {
+		y.MaxBytes = 32 << 20
+	}
+	if len(y.Directions) == 0 {
+		y.Directions = []string{"client", "upstream"}
+	}
 }

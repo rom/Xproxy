@@ -1,0 +1,91 @@
+# YARA rules over streams and bodies.
+#
+# The engine is a subset of the YARA language implemented in Go: this
+# proxy links no C library into the data plane. What is supported is
+# listed in docs/CONFIG.md, and anything outside it is refused at load
+# with the line number — a rule that silently matched nothing would be
+# worse than one that will not start.
+#
+# Validate: xproxy -config examples/yara/scanning.yaml -validate
+version: 1
+server:
+  listeners:
+    # A layer 4 listener in front of a file transfer service. The bytes
+    # scanned are the bytes forwarded: a stream cannot be paused
+    # without the peer noticing, so what a match decides is whether the
+    # connection continues.
+    - name: transfer
+      address: "0.0.0.0:2121"
+      kind: tcp
+      tcp:
+        default: files
+        idle_timeout: 15m
+        yara:
+          rules_file: /etc/xproxy/rules/stream.yar
+          action: close
+          # Both sides: what leaves is as much a stream as what arrives,
+          # and exfiltration only shows up in one of them.
+          directions: [client, upstream]
+          max_window: 262144
+          # The first 32 MiB of a transfer. Past it the connection
+          # carries on unscanned, which is a bound on work rather than
+          # a bound on what the rules can see.
+          max_bytes: 33554432
+
+    - name: web
+      address: "0.0.0.0:443"
+      kind: http
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/app.pem, key_file: /etc/xproxy/certs/app-key.pem}
+
+filters:
+  # Uploads are buffered to max_bytes before they are forwarded, so a
+  # match can refuse the request rather than only record it.
+  - name: upload-scan
+    kind: yara
+    options:
+      rules_file: /etc/xproxy/rules/stream.yar
+      scan: [request]
+      action: block
+      max_bytes: 8388608
+      content_types: ["application/octet-stream", "application/zip", "multipart/form-data"]
+
+  # Responses are scanned in report-only mode first. A rule set decides
+  # nothing until it has been watched for a while.
+  - name: download-watch
+    kind: yara
+    options:
+      rules_file: /etc/xproxy/rules/stream.yar
+      scan: [response]
+      action: log
+      max_bytes: 4194304
+
+routes:
+  - name: uploads
+    paths: [/upload]
+    upstream: app
+    filters: [upload-scan]
+
+  - name: downloads
+    paths: [/files/]
+    upstream: app
+    filters: [download-watch]
+
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.40:8080"}]
+  - name: files
+    endpoints: [{address: "10.0.0.50:2121"}]
+
+bans:
+  triggers:
+    # A stream that trips a rule is not a mistake anyone makes twice.
+    - name: yara-hits
+      reasons: [yara]
+      threshold: 2
+      window: 1h
+      duration: 24h
+
+logging:
+  access: {enabled: true}

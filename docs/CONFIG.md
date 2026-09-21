@@ -89,6 +89,7 @@ accept as on every listener.
 | `max_connections` | int | `10000` | Open connections on this listener; also bounds QUIC flows |
 | `quic` | bool | `false` | Also relay QUIC: UDP on the same address, the ClientHello read from the version 1 Initial packet (decrypted with the Initial keys every observer can derive), the flow routed by server name to the same upstreams and every later datagram of that client address forwarded unread; not with `proxy_protocol` |
 | `quic_idle_timeout` | duration | `30s` | End a QUIC flow with no datagrams either way; at most 1h |
+| `yara` | object | none | Apply YARA rules to the bytes of each connection; see below |
 
 Endpoints are picked with the upstream's balancer (hash on the client
 address for `hash`), dial failures try the next endpoint and feed outlier
@@ -102,6 +103,53 @@ flows are keyed by client address, so a client that migrates to a new
 address starts a new flow (its first packet is not an Initial and is
 dropped; the client falls back or retries); QUIC versions other than 1
 are dropped. Changing a tcp listener needs a restart.
+
+#### server.listeners[].tcp.yara
+
+YARA rules over the bytes a layer 4 listener relays. The engine is a
+subset of the language implemented in Go — this proxy links no C library
+into the data plane, and `CGO_ENABLED=0` is a property worth more here
+than the last few features of the grammar. What is supported:
+
+- **strings**: text with `nocase`, `wide`, `ascii`, `fullword` and
+  `private`; hex with `??` and `4?` wildcards and `[n]` or `[n-m]`
+  jumps; regular expressions (RE2, with the `i` and `s` flags).
+- **conditions**: `$a`, `not`, `and`, `or`, parentheses, `N of them`,
+  `any of them`, `all of them`, `N of ($a*)`, `#a` and `filesize`
+  compared with a number, `true`, `false`.
+- **not supported**: modules and `import`, `at`, `in`, `for` loops,
+  `entrypoint`, unbounded jumps (`[2-]`), alternation inside a hex
+  string, string offsets and lengths (`@a`, `!a`), and the `xor` and
+  `base64` modifiers.
+
+Anything outside that is **refused at load**, with the line number. A
+rule that silently matched nothing would be worse than one that will not
+start.
+
+Two things differ from scanning a file, and both are deliberate. A rule
+is reported the first time its condition becomes true, not at the end:
+a decision that arrives after the last byte is a decision about a
+transfer that already happened. And `filesize` means the bytes seen so
+far, which is the only honest reading when there is no end yet.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `rules_file` | path | one of these | One rule file, compiled at load |
+| `rules_dir` | path | one of these | Every `.yar` and `.yara` file in the directory, in name order, as one set. A file that does not compile fails the load |
+| `action` | `close`, `log` | `close` | `close` ends the connection and observes a `yara` ban reason; `log` records the match and lets the bytes through, which is how a rule set is tried out before it decides anything |
+| `directions` | list | `[client, upstream]` | Which sides are scanned: what the client sends, what comes back |
+| `max_window` | int | `262144` | The buffer one direction scans in, and the bound on the overlap carried between windows. The overlap is what lets a match straddling two reads still be found; a pattern wider than a quarter of the window cannot be matched reliably across reads |
+| `max_bytes` | int | `33554432` | Stop scanning a direction after this many bytes; the connection carries on unscanned. `0` scans everything and warns, because a long transfer then costs arbitrarily much |
+
+Nothing is held back waiting for a verdict: the bytes scanned are the
+bytes forwarded, because a stream cannot be paused without the peer
+noticing. What a match decides is whether the connection continues.
+QUIC flows on the same listener are not scanned and validation says so:
+they are encrypted, and a rule over ciphertext matches nothing.
+
+Counters: `yara_matches`, `yara_scanned`; `xproxy_yara_matches_total`
+and `xproxy_yara_bytes_total`. A match is a `yara_match` security event
+with the rules, their tags and the offset.
 
 ### server.listeners[].forward (kind: forward)
 
@@ -1684,7 +1732,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied`, `mqtt_denied`, `ssh_denied` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -2921,6 +2969,28 @@ secret does not sign everyone out.
 Every failure gets the same page: a wrong code, a replayed one, a locked
 account and a name that never enrolled are one answer. Counters:
 `mfa_verified`, `mfa_failed`; `xproxy_mfa_total` by outcome.
+
+### Kind `yara`
+
+The same engine as a tcp listener's `yara` section, over request and
+response bodies. The supported subset and the reasons for it are
+described under `server.listeners[].tcp.yara`.
+
+The difference is that a body is buffered to `max_bytes` before it is
+forwarded, so a match can refuse the request rather than only record it.
+A body larger than the bound is scanned to the bound and then streamed
+on — holding an arbitrary upload in memory is a worse failure than an
+unscanned tail — and the access log marks those with `yara_partial`.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `rules_file` | path | one of these | One rule file |
+| `rules_dir` | path | one of these | Every `.yar` and `.yara` file in the directory |
+| `scan` | list | `[request, response]` | Which bodies are scanned |
+| `action` | `block`, `log` | `block` | `block` refuses (403 on a request, 502 on a response, since a client did not ask for what the origin sent); `log` records and forwards |
+| `max_bytes` | int | `4194304` | Scanned and buffered per body; 4096..268435456 |
+| `max_window` | int | `262144` | The scanner's window |
+| `content_types` | list | `[]` (all) | Media types to scan, `type/*` allowed. Empty scans everything, which is the honest default: the type is what the sender claims, not what the bytes are |
 
 ### Kind `ldap_auth`
 

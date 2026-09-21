@@ -371,6 +371,40 @@ Open findings of the earlier rounds:
   enrolled. The enrolment file is refused if it is world readable.
   `examples/mfa/second-factor.yaml`.
 
+- **YARA rules over streams and bodies (`tcp.yara`, the `yara`
+  filter).** A subset of the YARA language, implemented in Go. Linking
+  libyara would mean `CGO_ENABLED=1` and a C parser in the data plane,
+  and this proxy's build property is worth more than the last few
+  features of the grammar. Supported: text strings with `nocase`,
+  `wide`, `ascii`, `fullword` and `private`; hex with `??` and `4?`
+  wildcards and bounded jumps; RE2 regular expressions; and conditions
+  up to `N of ($a*)`, `#a` and `filesize`. Everything else — modules,
+  `at`, `for`, unbounded jumps, hex alternation, `@a`, `xor`, `base64`
+  — is refused at load with the line number, because a rule that
+  silently matched nothing would be worse than one that will not start.
+
+  Scanning a stream is not scanning a file, and two things follow. A
+  rule is reported the first time its condition becomes true, not at the
+  end: a decision that arrives after the last byte is a decision about a
+  transfer that already happened. And `filesize` means the bytes seen so
+  far, which is the only honest reading when there is no end yet. Both
+  are documented where rules get written.
+
+  On a `kind: tcp` listener the bytes scanned are the bytes forwarded —
+  a stream cannot be paused without the peer noticing — so what a match
+  decides is whether the connection continues; QUIC flows on the same
+  listener are not scanned and validation says why. In the filter a body
+  is buffered to `max_bytes` first, so a match can refuse the request
+  rather than only record it, and a body past the bound is forwarded
+  with `yara_partial` in the log instead of being held in memory. The
+  overlap carried between windows is what makes a match straddling two
+  reads still a match; it is capped, so a peer sending one byte at a
+  time cannot turn each byte into a full rescan, and a pattern wider
+  than the cap is reported rather than half-checked.
+
+  `examples/yara/rules.yar` is a starting set with a test that each rule
+  matches what it claims and ordinary traffic matches none of them.
+
 - **SSH bastion with SFTP inspection (`kind: ssh`).** A jump host
   forwards the stream, so it cannot tell a shell from a port forward and
   the only policy it can hold is "may connect". This listener is an SSH

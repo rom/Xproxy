@@ -907,6 +907,45 @@ type TCPListener struct {
 	// QUICIdleTimeout ends a QUIC flow with no datagrams either way.
 	// Default 30s.
 	QUICIdleTimeout Duration `yaml:"quic_idle_timeout"`
+	// YARA applies rules to the bytes of each connection. It does not
+	// apply to QUIC flows: those are encrypted, and a rule over
+	// ciphertext matches nothing.
+	YARA *YARAPolicy `yaml:"yara"`
+}
+
+// YARAPolicy applies YARA rules to a stream. The engine is a subset of
+// the language implemented in Go — this proxy links no C library into
+// the data plane — and what it supports is listed in the reference;
+// anything outside it is refused at load rather than quietly matching
+// nothing.
+//
+// On a stream, two things differ from scanning a file. A rule is
+// reported the first time its condition becomes true, because a
+// decision that arrives after the last byte is a decision about a
+// transfer that already happened. And filesize means the bytes seen so
+// far, which is the only honest reading when there is no end yet.
+type YARAPolicy struct {
+	// RulesFile or RulesDir is where the rules are. Exactly one is
+	// required. A directory takes every .yar and .yara file in it, in
+	// name order, as one set.
+	RulesFile string `yaml:"rules_file"`
+	RulesDir  string `yaml:"rules_dir"`
+	// Action on a match: close (the default) ends the connection, log
+	// records it and lets the bytes through.
+	Action string `yaml:"action"`
+	// Directions are the sides scanned: client (what the client sends)
+	// and upstream (what comes back). Default both. Scanning one side
+	// halves the work where only one carries what the rules are about.
+	Directions []string `yaml:"directions"`
+	// MaxWindow is the buffer one direction scans in. It also bounds
+	// the overlap carried between windows, which is what lets a match
+	// straddling two reads still be found. Default 262144.
+	MaxWindow int `yaml:"max_window"`
+	// MaxBytes stops scanning a direction after this many bytes; the
+	// connection carries on unscanned. 0 scans everything. Default
+	// 33554432, which covers the start of a transfer without turning a
+	// long download into unbounded work.
+	MaxBytes int64 `yaml:"max_bytes"`
 }
 
 // TCPRoute maps server names (exact or *.suffix) to an upstream.
