@@ -1851,6 +1851,59 @@ not rewritten. What changes is framing: lines are re-emitted with CRLF,
 and a message that used bare newlines is either refused or repaired
 depending on `bare_newlines`.
 
+## MQTT listener
+
+**A device connects and is immediately dropped with no CONNACK.** Three
+causes, in this order: it is outside `allow_clients`, the listener is
+over `max_connections`, or its first packet was not a CONNECT. MQTT has
+no reply before CONNACK, so a close is the only answer the protocol
+allows; the access log line says which (`client_not_allowed`,
+`not_connect`), and `mqtt_rejected` counts the first two.
+
+**CONNACK carries a refusal code.** The code says which check: `0x01`
+or `0x84` is the protocol version, `0x02` or `0x85` the client id
+(empty, too long, or not matching `client_id_pattern`), `0x05` or
+`0x87` the policy — no username with `require_auth`, a keep alive
+outside `keep_alive_max`, or a will topic the publish policy refuses.
+3.1.1 and 5.0 spell the same refusal differently, which is why there
+are two codes for each.
+
+**A subscription that looks allowed is refused.** A filter is not a
+topic. `subscribe_allow: ["devices/+/commands"]` allows
+`devices/1/commands` and `devices/+/commands`, and refuses
+`devices/#` and `#`, because those could deliver topics the entry never
+covered. Widen the allow list to the shape you actually want to permit
+rather than relying on the device asking narrowly.
+
+**A subscription to a name that is not denied is still refused.**
+`subscribe_deny` is checked by overlap: `secret/+/key` refuses
+`secret/#` and `+/1/key` too, since either could reach a denied topic.
+
+**Publications vanish with `action: drop`.** They are refused, not
+lost: `mqtt_refused` counts them, the security log says which topic, and
+a QoS 1 or 2 publisher is answered with not-authorized rather than left
+retrying. At QoS 0 there is nothing to answer with, so the drop is
+silent to the client by design.
+
+**The session ends on a packet the device thinks is fine.** Check
+`mqtt_protocol_errors`. The parser refuses what the specification
+forbids and some brokers tolerate: a remaining length with a
+non-shortest encoding, QoS 3, DUP on a QoS 0 publication, a packet id of
+zero, a string that is not UTF-8 or carries NUL or a surrogate, reserved
+flag bits. Nothing is forwarded after one, because the length field is
+what the next read depends on.
+
+**`max_packet_size` ends sessions on a firmware update topic.** The
+bound covers the whole packet and applies in both directions; raise it,
+or move bulk transfers off MQTT. 5.0 clients are not told the proxy's
+maximum in CONNACK — the broker's own value is passed through — so a
+client may believe a larger packet is acceptable and be disconnected by
+this bound.
+
+**A broker packet ends the session with `upstream_protocol`.** The
+broker sent something this proxy would not parse. It is not passed
+through: its framing is what the client's next read depends on.
+
 ## Mirroring and shadowing
 
 **The mirror receives nothing.** The access line says which: `sent`,
@@ -2453,6 +2506,7 @@ innocent.
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
+| `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
 
 A trigger naming a reason that is not in the Ban column fails
 validation with the list of the ones that are, so this is not something

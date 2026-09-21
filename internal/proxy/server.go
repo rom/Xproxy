@@ -128,6 +128,7 @@ type boundListener struct {
 	dns       *dns.Server    // kind: dns listeners
 	doq       *dns.DoQServer // DNS over QUIC on a dns listener
 	smtp      *smtpServer    // kind: smtp listeners
+	mqtt      *mqttServer    // kind: mqtt listeners
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -705,6 +706,35 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		}
 		return bl, nil
 	}
+	if lc.Kind == "mqtt" {
+		// MQTT has no in-band upgrade, so implicit TLS is the only
+		// mode; the session still owns the handshake, which keeps its
+		// deadline and its logging with the rest of the session.
+		var tc *tls.Config
+		if lc.TLS != nil {
+			c, rl, err := tlsconf.Server(lc.TLS, nil)
+			if err != nil {
+				_ = fr.Close()
+				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+			}
+			s.tickets.Attach(c)
+			rl.Fingerprints = s.fingerprints
+			rl.Refuse = s.refuseHandshake
+			rl.StartStapling(s.logs.Error)
+			bl.tlsReload = rl
+			tc = c
+		}
+		q, err := newMQTTServer(s, lc, bl.ln, tc)
+		if err != nil {
+			_ = fr.Close()
+			if bl.tlsReload != nil {
+				bl.tlsReload.Close()
+			}
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		bl.mqtt = q
+		return bl, nil
+	}
 	if lc.Kind == "smtp" {
 		// The listener is not wrapped in a TLS listener even for
 		// implicit mode: STARTTLS has to read cleartext first, so the
@@ -926,6 +956,10 @@ func (s *Server) serve(bl *boundListener) {
 	}
 	if bl.smtp != nil {
 		bl.smtp.serve()
+		return
+	}
+	if bl.mqtt != nil {
+		bl.mqtt.serve()
 		return
 	}
 	if bl.cfg.TLS != nil {
@@ -1387,6 +1421,11 @@ func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocke
 		}
 	case bl.smtp != nil:
 		bl.smtp.shutdown(ctx)
+		if bl.tlsReload != nil {
+			bl.tlsReload.Close()
+		}
+	case bl.mqtt != nil:
+		bl.mqtt.shutdown(ctx)
 		if bl.tlsReload != nil {
 			bl.tlsReload.Close()
 		}

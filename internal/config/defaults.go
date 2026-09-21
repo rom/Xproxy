@@ -195,11 +195,43 @@ func applyDefaults(c *Config) {
 				m.Commands = append([]string(nil), DefaultSMTPCommands...)
 			}
 		}
+		if q := s.Listeners[i].MQTT; q != nil {
+			if q.TLSMode == "" {
+				if s.Listeners[i].TLS != nil {
+					q.TLSMode = "implicit"
+				} else {
+					q.TLSMode = "none"
+				}
+			}
+			setStr(&q.UpstreamTLSMode, "none")
+			if q.UpstreamTLS != nil {
+				setStr(&q.UpstreamTLS.MinVersion, "1.2")
+			}
+			setStr(&q.Action, "disconnect")
+			for _, b := range []**bool{&q.AllowEmptyClientID, &q.AllowRetain, &q.AllowWildcardSubscribe} {
+				if *b == nil {
+					t := true
+					*b = &t
+				}
+			}
+			if len(q.Versions) == 0 {
+				q.Versions = append([]string(nil), DefaultMQTTVersions...)
+			}
+			setInt(&q.MaxClientID, 128)
+			setInt(&q.MaxPacketSize, 1<<20)
+			setInt(&q.MaxTopicLength, 512)
+			setInt(&q.MaxTopicLevels, 16)
+			setInt(&q.MaxSubscriptions, 64)
+			setInt(&q.MaxConnections, 10000)
+			setDur(&q.ConnectTimeout, 30*time.Second)
+			setDur(&q.IdleTimeout, 10*time.Minute)
+		}
 		ln := &s.Listeners[i]
-		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" {
-			// No HTTP protocol defaults on a non-HTTP listener; a dns
-			// or smtp listener with TLS still gets the TLS defaults.
-			if (ln.Kind == "dns" || ln.Kind == "smtp") && ln.TLS != nil {
+		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" {
+			// No HTTP protocol defaults on a non-HTTP listener; a dns,
+			// smtp or mqtt listener with TLS still gets the TLS
+			// defaults.
+			if (ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt") && ln.TLS != nil {
 				setStr(&ln.TLS.MinVersion, "1.2")
 				setStr(&ln.TLS.ClientAuth, "none")
 			}

@@ -326,11 +326,11 @@ T}
 T{
 \fBkind\fR
 T}	T{
-\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR
+\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR
 T}	T{
 \fBhttp\fR
 T}	T{
-\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy and \fBsmtp\fR a protocol\-aware SMTP and submission proxy;\: see below
+\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy and \fBmqtt\fR an MQTT proxy;\: see below
 T}
 T{
 \fBredirect_\:to_\:https\fR
@@ -1336,6 +1336,291 @@ T}
 .TE
 .PP
 Every session writes one \fBsmtp\fR line to the access log with the client address, whether it was encrypted, messages, octets, refusals, the endpoint and why it closed. AUTH arguments, challenges and responses are never logged: they carry the password. Counters: \fBsmtp_sessions\fR, \fBsmtp_sessions_open\fR, \fBsmtp_messages\fR, \fBsmtp_refused\fR, \fBsmtp_rejected\fR, \fBsmtp_tls_upgrades\fR, \fBsmtp_protocol_errors\fR, \fBsmtp_bytes_in\fR; the matching \fBxproxy_smtp_*\fR metrics. Protocol violations are \fBsmtp_denied\fR deny events, so a \fBbans.triggers\fR entry on that reason turns a prober into a ban.
+.SS "server.listeners[].mqtt (kind: mqtt)"
+.PP
+A \fBkind: mqtt\fR listener is a protocol\-aware MQTT proxy for 3.1.1 (OASIS, also ISO/IEC 20922) and 5.0. Every control packet is read; the ones that carry a policy question \[u2014] who is connecting, what they publish, what they subscribe to \[u2014] are decided before they reach the broker, and the rest are forwarded untouched.
+.PP
+The reason it is not a layer 4 listener: an MQTT broker\(aqs authorisation is per topic, and a topic is a string inside a packet. Without reading the packets there is nowhere to say that a device may publish its own telemetry and nothing else, and a device holding a broker credential holds the whole tree.
+.PP
+What that gets you beyond a splice:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBA subscription is a filter, not a topic.\fR \fBsensors/#\fR is allowed only when an entry of \fBsubscribe_allow\fR covers everything that filter could deliver, and refused when it could reach anything in \fBsubscribe_deny\fR. Matching a filter as though it were a topic is how \fB#\fR slips through an allow list of \fBsensors/+\fR.
+.PP
+.ti -3n
+\(bu
+\fBThe will goes through the publish policy.\fR A will is a message the broker publishes for the client after it is gone; checking it at CONNECT is the only moment there is.
+.PP
+.ti -3n
+\(bu
+\fBA malformed packet ends the session, forwarding nothing.\fR Its remaining length is what the next read depends on, so a packet the proxy could not parse is a stream it can no longer frame \[u2014] in either direction.
+.PP
+.ti -3n
+\(bu
+\fBA session begins with CONNECT and has exactly one.\fR A first packet of another type never reaches the broker, and a second CONNECT would take a new identity on a session already authorised as another.
+.PP
+.ti -3n
+\(bu
+\fBOnly the versions the proxy parses are accepted.\fR A version it cannot parse is a packet it cannot check, so there is no "accept anything" setting.
+.RE
+.PP
+.PP
+MQTT has no in\-band upgrade, so \fBtls_mode\fR is \fBimplicit\fR or nothing; a plaintext listener stays plaintext for the life of the session. The listener takes \fBaddress\fR, \fBmqtt\fR and \fBtls\fR; \fBproxy_protocol\fR works as on an HTTP listener, and bans and the global connection limits apply at accept. Changing the \fBmqtt\fR section rebinds the listener on reload.
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(1.2i) lbw(1.1i) lbx
+lw(1.4i) lw(1.2i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required
+T}	T{
+The broker pool. Endpoints are picked with the upstream\(aqs balancer,\: dial failures try the next and feed outlier ejection
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+\fBimplicit\fR,\: \fBnone\fR
+T}	T{
+\fBimplicit\fR with \fBtls\fR,\: else \fBnone\fR
+T}	T{
+TLS from the first octet (8883),\: or never. \fBimplicit\fR needs the listener\(aqs \fBtls\fR;\: \fBnone\fR warns,\: because there is no upgrade to fall back on
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+\fBnone\fR,\: \fBimplicit\fR
+T}	T{
+\fBnone\fR
+T}	T{
+How the proxy reaches the broker
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Verification for the broker leg: same keys as \fBupstreams[].\:tls\fR. Without \fBserver_\:name\fR the endpoint\(aqs host is verified
+T}
+T{
+\fBversions\fR
+T}	T{
+list
+T}	T{
+\fB["3.\:1.\:1",\: "5.\:0"]\fR
+T}	T{
+Protocol versions accepted. Anything else is refused at CONNECT with the code that version spells it with (\fB0x01\fR in 3.1.1,\: \fB0x84\fR in 5.0)
+T}
+T{
+\fBrequire_\:auth\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a CONNECT without a username. The broker still verifies the password;\: this stops an anonymous session reaching it
+T}
+T{
+\fBallow_\:empty_\:client_\:id\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+The empty client id,\: which 3.1.1 allows with a clean session and 5.0 answers with an assigned one. Turning it off is what makes every session identifiable in the logs
+T}
+T{
+\fBmax_\:client_\:id\fR
+T}	T{
+int
+T}	T{
+\fB128\fR
+T}	T{
+Client id length;\: 1..65535
+T}
+T{
+\fBclient_\:id_\:pattern\fR
+T}	T{
+RE2
+T}	T{
+none
+T}	T{
+The client id must match,\: anchored as written
+T}
+T{
+\fBmax_\:packet_\:size\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+One control packet including its header,\: in either direction;\: 1024..268435460. Refused \fBbefore\fR the body is read,\: so the bound is on what the proxy allocates
+T}
+T{
+\fBmax_\:topic_\:length\fR
+T}	T{
+int
+T}	T{
+\fB512\fR
+T}	T{
+A topic name or filter
+T}
+T{
+\fBmax_\:topic_\:levels\fR
+T}	T{
+int
+T}	T{
+\fB16\fR
+T}	T{
+Levels in a topic or filter
+T}
+T{
+\fBpublish_\:allow\fR
+T}	T{
+list of filters
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Checked against the topic of every client PUBLISH and against the will topic
+T}
+T{
+\fBpublish_\:deny\fR
+T}	T{
+list of filters
+T}	T{
+\fB[]\fR
+T}	T{
+Checked the same way;\: deny wins
+T}
+T{
+\fBsubscribe_\:allow\fR
+T}	T{
+list of filters
+T}	T{
+\fB[]\fR (any)
+T}	T{
+A subscription is allowed only when one entry subsumes it
+T}
+T{
+\fBsubscribe_\:deny\fR
+T}	T{
+list of filters
+T}	T{
+\fB[]\fR
+T}	T{
+A subscription is refused when it overlaps one entry
+T}
+T{
+\fBmax_\:subscriptions\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+Live subscriptions per session
+T}
+T{
+\fBallow_\:retain\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+PUBLISH with the retain flag,\: and a retained will. A retained message outlives the session that set it
+T}
+T{
+\fBallow_\:wildcard_\:subscribe\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+\fB+\fR and \fB#\fR in a subscription at all. With an allow list this rarely needs turning off
+T}
+T{
+\fBkeep_\:alive_\:max\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (any)
+T}	T{
+The largest keep alive a client may ask for;\: \fB0\fR from the client is also refused,\: since it asks the broker never to time the session out. At most 18h12m15s,\: the range of the uint16 the protocol carries it in
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB10000\fR
+T}	T{
+Sessions on this listener;\: over it the connection is closed (MQTT has no reply before CONNECT)
+T}
+T{
+\fBconnect_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Waiting for the CONNECT packet,\: as 3.1.1 section 3.1 asks
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10m\fR
+T}	T{
+No packet in either direction
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBdisconnect\fR,\: \fBdrop\fR
+T}	T{
+\fBdisconnect\fR
+T}	T{
+On a refused PUBLISH or SUBSCRIBE. \fBdrop\fR refuses the one packet and acknowledges it \[u2014] PUBACK or PUBREC with \fB0x87\fR at QoS 1 and 2,\: a SUBACK of \fB0x80\fR for every filter \[u2014] so a fleet does not fall off the network over one misconfigured device. A PUBREL for a refused QoS 2 publication is answered by the proxy,\: since the broker never saw the PUBLISH
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header with the client address to the broker
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Others are closed before the CONNECT is read
+T}
+.TE
+.PP
+Every session writes one \fBmqtt\fR line to the access log with the client address, client id, username, version, subscriptions, publications and why it closed. Counters: \fBmqtt_sessions\fR, \fBmqtt_sessions_open\fR, \fBmqtt_published\fR, \fBmqtt_subscribed\fR, \fBmqtt_refused\fR, \fBmqtt_rejected\fR, \fBmqtt_protocol_errors\fR; the matching \fBxproxy_mqtt_*\fR metrics. Refusals are \fBmqtt_denied\fR deny events, so a \fBbans.triggers\fR entry on that reason turns a device walking the topic tree into a ban.
+.PP
+A note on \fB$\fR: a wildcard at the first level of a filter never matches a topic beginning with \fB$\fR (MQTT 3.1.1 section 4.7), so \fB#\fR does not hand a client the broker\(aqs own \fB$SYS\fR tree. \fBsubscribe_deny: ["$SYS/#"]\fR is still worth writing, because it refuses the client that asks for it by name.
 .SS "server.listeners[].h3"
 .PP
 .TS
@@ -4987,7 +5272,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR
 T}
 T{
 \fBthreshold\fR

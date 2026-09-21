@@ -66,7 +66,7 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; not on `kind: tcp` (which forwards a header instead) or `dns`. |
-| `kind` | `http`, `tcp`, `forward`, `dns`, `smtp` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients, `dns` a DNS proxy and `smtp` a protocol-aware SMTP and submission proxy; see below |
+| `kind` | `http`, `tcp`, `forward`, `dns`, `smtp`, `mqtt` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy and `mqtt` an MQTT proxy; see below |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 
 ### server.listeners[].tcp (kind: tcp)
@@ -465,6 +465,90 @@ never logged: they carry the password. Counters: `smtp_sessions`,
 matching `xproxy_smtp_*` metrics. Protocol violations are `smtp_denied`
 deny events, so a `bans.triggers` entry on that reason turns a prober
 into a ban.
+
+### server.listeners[].mqtt (kind: mqtt)
+
+A `kind: mqtt` listener is a protocol-aware MQTT proxy for 3.1.1 (OASIS,
+also ISO/IEC 20922) and 5.0. Every control packet is read; the ones that
+carry a policy question — who is connecting, what they publish, what
+they subscribe to — are decided before they reach the broker, and the
+rest are forwarded untouched.
+
+The reason it is not a layer 4 listener: an MQTT broker's authorisation
+is per topic, and a topic is a string inside a packet. Without reading
+the packets there is nowhere to say that a device may publish its own
+telemetry and nothing else, and a device holding a broker credential
+holds the whole tree.
+
+What that gets you beyond a splice:
+
+- **A subscription is a filter, not a topic.** `sensors/#` is allowed
+  only when an entry of `subscribe_allow` covers everything that filter
+  could deliver, and refused when it could reach anything in
+  `subscribe_deny`. Matching a filter as though it were a topic is how
+  `#` slips through an allow list of `sensors/+`.
+- **The will goes through the publish policy.** A will is a message the
+  broker publishes for the client after it is gone; checking it at
+  CONNECT is the only moment there is.
+- **A malformed packet ends the session, forwarding nothing.** Its
+  remaining length is what the next read depends on, so a packet the
+  proxy could not parse is a stream it can no longer frame — in either
+  direction.
+- **A session begins with CONNECT and has exactly one.** A first packet
+  of another type never reaches the broker, and a second CONNECT would
+  take a new identity on a session already authorised as another.
+- **Only the versions the proxy parses are accepted.** A version it
+  cannot parse is a packet it cannot check, so there is no "accept
+  anything" setting.
+
+MQTT has no in-band upgrade, so `tls_mode` is `implicit` or nothing; a
+plaintext listener stays plaintext for the life of the session. The
+listener takes `address`, `mqtt` and `tls`; `proxy_protocol` works as on
+an HTTP listener, and bans and the global connection limits apply at
+accept. Changing the `mqtt` section rebinds the listener on reload.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | upstream | required | The broker pool. Endpoints are picked with the upstream's balancer, dial failures try the next and feed outlier ejection |
+| `tls_mode` | `implicit`, `none` | `implicit` with `tls`, else `none` | TLS from the first octet (8883), or never. `implicit` needs the listener's `tls`; `none` warns, because there is no upgrade to fall back on |
+| `upstream_tls_mode` | `none`, `implicit` | `none` | How the proxy reaches the broker |
+| `upstream_tls` | object | none | Verification for the broker leg: same keys as `upstreams[].tls`. Without `server_name` the endpoint's host is verified |
+| `versions` | list | `["3.1.1", "5.0"]` | Protocol versions accepted. Anything else is refused at CONNECT with the code that version spells it with (`0x01` in 3.1.1, `0x84` in 5.0) |
+| `require_auth` | bool | `false` | Refuse a CONNECT without a username. The broker still verifies the password; this stops an anonymous session reaching it |
+| `allow_empty_client_id` | bool | `true` | The empty client id, which 3.1.1 allows with a clean session and 5.0 answers with an assigned one. Turning it off is what makes every session identifiable in the logs |
+| `max_client_id` | int | `128` | Client id length; 1..65535 |
+| `client_id_pattern` | RE2 | none | The client id must match, anchored as written |
+| `max_packet_size` | int | `1048576` | One control packet including its header, in either direction; 1024..268435460. Refused **before** the body is read, so the bound is on what the proxy allocates |
+| `max_topic_length` | int | `512` | A topic name or filter |
+| `max_topic_levels` | int | `16` | Levels in a topic or filter |
+| `publish_allow` | list of filters | `[]` (any) | Checked against the topic of every client PUBLISH and against the will topic |
+| `publish_deny` | list of filters | `[]` | Checked the same way; deny wins |
+| `subscribe_allow` | list of filters | `[]` (any) | A subscription is allowed only when one entry subsumes it |
+| `subscribe_deny` | list of filters | `[]` | A subscription is refused when it overlaps one entry |
+| `max_subscriptions` | int | `64` | Live subscriptions per session |
+| `allow_retain` | bool | `true` | PUBLISH with the retain flag, and a retained will. A retained message outlives the session that set it |
+| `allow_wildcard_subscribe` | bool | `true` | `+` and `#` in a subscription at all. With an allow list this rarely needs turning off |
+| `keep_alive_max` | duration | `0` (any) | The largest keep alive a client may ask for; `0` from the client is also refused, since it asks the broker never to time the session out. At most 18h12m15s, the range of the uint16 the protocol carries it in |
+| `max_connections` | int | `10000` | Sessions on this listener; over it the connection is closed (MQTT has no reply before CONNECT) |
+| `connect_timeout` | duration | `30s` | Waiting for the CONNECT packet, as 3.1.1 section 3.1 asks |
+| `idle_timeout` | duration | `10m` | No packet in either direction |
+| `action` | `disconnect`, `drop` | `disconnect` | On a refused PUBLISH or SUBSCRIBE. `drop` refuses the one packet and acknowledges it — PUBACK or PUBREC with `0x87` at QoS 1 and 2, a SUBACK of `0x80` for every filter — so a fleet does not fall off the network over one misconfigured device. A PUBREL for a refused QoS 2 publication is answered by the proxy, since the broker never saw the PUBLISH |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the broker |
+| `allow_clients` | list of CIDR | `[]` (any) | Others are closed before the CONNECT is read |
+
+Every session writes one `mqtt` line to the access log with the client
+address, client id, username, version, subscriptions, publications and
+why it closed. Counters: `mqtt_sessions`, `mqtt_sessions_open`,
+`mqtt_published`, `mqtt_subscribed`, `mqtt_refused`, `mqtt_rejected`,
+`mqtt_protocol_errors`; the matching `xproxy_mqtt_*` metrics. Refusals
+are `mqtt_denied` deny events, so a `bans.triggers` entry on that reason
+turns a device walking the topic tree into a ban.
+
+A note on `$`: a wildcard at the first level of a filter never matches a
+topic beginning with `$` (MQTT 3.1.1 section 4.7), so `#` does not hand a
+client the broker's own `$SYS` tree. `subscribe_deny: ["$SYS/#"]` is
+still worth writing, because it refuses the client that asks for it by
+name.
 
 ### server.listeners[].h3
 
@@ -1475,7 +1559,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied`, `mqtt_denied` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

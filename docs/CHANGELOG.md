@@ -337,6 +337,50 @@ Open findings of the earlier rounds:
   once each) and the parser refuses records that do not.
   `examples/blocklists/dns-encrypted.yaml`.
 
+- **MQTT proxy for 3.1.1 and 5.0 (`kind: mqtt`).** An MQTT broker's
+  authorisation is per topic, and a topic is a string inside a packet.
+  A layer 4 listener carries those packets without looking, so there is
+  nowhere to say that a device may publish its own telemetry and
+  nothing else — and a device that holds a broker credential holds the
+  whole tree, including what every other device publishes. This
+  listener reads every control packet and decides the ones that carry a
+  policy question before they reach the broker.
+
+  The part worth stating plainly is that a subscription is a filter,
+  not a topic. A device asking for `#` is asking for all of them, so
+  `subscribe_allow` is checked by subsumption — an entry must cover
+  everything the requested filter could deliver — and `subscribe_deny`
+  by overlap, refusing a filter that could reach anything denied rather
+  than only one that names it. Matching a filter as though it were a
+  topic is exactly how `#` slips past an allow list of `sensors/+`.
+  `publish_allow` and `publish_deny` apply to concrete topics, and to
+  the will, which is checked at CONNECT because that is the only moment
+  there is.
+
+  The framing is held to the specification rather than to what brokers
+  tolerate: a non-shortest remaining length (two spellings of one
+  length are two readings of one packet), QoS 3, DUP on a QoS 0
+  publication, a packet id of zero, a string that is not UTF-8 or
+  carries NUL or a surrogate, reserved flag bits. A packet that does
+  not parse ends the session with nothing forwarded, in either
+  direction, because its length is what the next read depends on. A
+  session begins with CONNECT and has exactly one; a second would take
+  a new identity on a session already authorised as another. Only the
+  two versions the proxy parses are accepted, since a version it cannot
+  parse is a packet it cannot check.
+
+  `action: drop` refuses one packet instead of the session and answers
+  it properly — PUBACK or PUBREC with not-authorized, a SUBACK of
+  failures, and the PUBREL of a refused QoS 2 publication answered by
+  the proxy, since the broker never saw the PUBLISH — so one
+  misconfigured device does not take a fleet off the network. Bounds on
+  packet size, topic length and depth, subscriptions per session, keep
+  alive and client id shape, with `allow_retain` for the messages that
+  outlive the session that set them. MQTT has no STARTTLS, so
+  `tls_mode: implicit` on 8883 is the only encrypted shape and
+  validation says so rather than leaving it implied. Refusals are
+  `mqtt_denied` deny events. `examples/iot/mqtt.yaml`.
+
 - **SMTP and submission proxy (`kind: smtp`).** Mail was the traffic
   this proxy could only splice. A `kind: tcp` listener carries the same
   octets to the same mail server, but then the client and the server

@@ -228,6 +228,104 @@ type Listener struct {
 	DNS *DNSListener `yaml:"dns"`
 	// SMTP configures a kind: smtp listener.
 	SMTP *SMTPListener `yaml:"smtp"`
+	// MQTT configures a kind: mqtt listener.
+	MQTT *MQTTListener `yaml:"mqtt"`
+}
+
+// MQTTListener is a protocol-aware MQTT proxy for 3.1.1 and 5.0. It
+// reads every control packet, decides on the ones that carry a policy
+// question — who is connecting, what they publish, what they subscribe
+// to — and forwards the rest untouched.
+//
+// The reason it is not a layer 4 listener: an MQTT broker's
+// authorisation is per topic, and a topic is a string inside a packet.
+// Without reading the packets there is no place to say that a device
+// may publish its own telemetry and nothing else, and every device that
+// holds a broker credential holds the whole tree.
+type MQTTListener struct {
+	// Upstream is the broker pool. Required.
+	Upstream string `yaml:"upstream"`
+	// TLSMode is implicit (TLS from the first octet, as on 8883, and
+	// needs the listener's tls section) or none. Default implicit when
+	// tls is set.
+	TLSMode string `yaml:"tls_mode"`
+	// UpstreamTLSMode is none or implicit. Default none.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the broker when upstream_tls_mode is not
+	// none.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// Versions are the protocol versions accepted: "3.1.1", "5.0".
+	// Default both. A version the proxy does not parse cannot be
+	// checked, so anything else is refused at CONNECT.
+	Versions []string `yaml:"versions"`
+	// RequireAuth refuses a CONNECT without a username. The broker
+	// still verifies the password; this only stops an anonymous session
+	// reaching it. Default false.
+	RequireAuth bool `yaml:"require_auth"`
+	// AllowEmptyClientID accepts the empty client id, which 3.1.1 allows
+	// with a clean session and 5.0 answers with an assigned one. Default
+	// true; turning it off is what makes every session identifiable in
+	// the logs.
+	AllowEmptyClientID *bool `yaml:"allow_empty_client_id"`
+	// MaxClientID bounds the client id. Default 128.
+	MaxClientID int `yaml:"max_client_id"`
+	// ClientIDPattern is an RE2 the client id must match, anchored as
+	// written. Empty accepts any.
+	ClientIDPattern string `yaml:"client_id_pattern"`
+	// MaxPacketSize bounds one control packet including its header, and
+	// is what a 5.0 client is told in CONNACK. Default 1048576.
+	MaxPacketSize int `yaml:"max_packet_size"`
+	// MaxTopicLength and MaxTopicLevels bound a topic or filter.
+	// Defaults 512 and 16.
+	MaxTopicLength int `yaml:"max_topic_length"`
+	MaxTopicLevels int `yaml:"max_topic_levels"`
+	// PublishAllow and PublishDeny are topic filters checked against
+	// the topic of every PUBLISH from the client, and against the will
+	// topic of its CONNECT. Deny wins. An empty allow list allows
+	// everything the deny list does not refuse.
+	PublishAllow []string `yaml:"publish_allow"`
+	PublishDeny  []string `yaml:"publish_deny"`
+	// SubscribeAllow and SubscribeDeny are topic filters checked
+	// against every filter a client subscribes to. A subscription is
+	// allowed only when an entry of the allow list covers everything it
+	// could deliver, and refused when it could reach anything denied —
+	// a filter is not a topic, and matching it as one would let "#"
+	// through an allow list of "sensors/+".
+	SubscribeAllow []string `yaml:"subscribe_allow"`
+	SubscribeDeny  []string `yaml:"subscribe_deny"`
+	// MaxSubscriptions bounds live subscriptions per session. Default
+	// 64.
+	MaxSubscriptions int `yaml:"max_subscriptions"`
+	// AllowRetain accepts PUBLISH with the retain flag. A retained
+	// message outlives the session that set it, so a device that can
+	// retain can leave something behind. Default true.
+	AllowRetain *bool `yaml:"allow_retain"`
+	// AllowWildcardSubscribe accepts "+" and "#" in a subscription at
+	// all. Default true; with an allow list it rarely needs turning
+	// off, and without one it is the difference between a client
+	// reading its own topics and reading the estate's.
+	AllowWildcardSubscribe *bool `yaml:"allow_wildcard_subscribe"`
+	// KeepAliveMax bounds the keep alive a client asks for, so a
+	// session cannot sit idle indefinitely on the broker's side.
+	// 0 accepts any. Default 0.
+	KeepAliveMax Duration `yaml:"keep_alive_max"`
+	// MaxConnections bounds sessions on this listener. Default 10000.
+	MaxConnections int `yaml:"max_connections"`
+	// ConnectTimeout bounds the wait for the CONNECT packet. Default
+	// 30s, which is what 3.1.1 section 3.1 asks a server to do.
+	ConnectTimeout Duration `yaml:"connect_timeout"`
+	// IdleTimeout closes a session with no packet in either direction.
+	// Default 10m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// Action on a refused PUBLISH or SUBSCRIBE: disconnect (the
+	// default) ends the session, drop refuses the one packet and
+	// acknowledges it so the session continues.
+	Action string `yaml:"action"`
+	// ProxyProtocol sends a PROXY protocol v2 header with the client
+	// address to the broker.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs.
+	AllowClients []string `yaml:"allow_clients"`
 }
 
 // SMTPListener is a protocol-aware SMTP proxy: it speaks the session to
@@ -3268,3 +3366,9 @@ var DefaultSMTPCommands = []string{"EHLO", "HELO", "MAIL", "RCPT", "DATA", "RSET
 // parsers deciding where a message ends, which is the one thing this
 // listener exists to prevent.
 var SMTPAlwaysHidden = []string{"STARTTLS", "CHUNKING", "BDAT"}
+
+// DefaultMQTTVersions is the protocol set an mqtt listener accepts when
+// the configuration names none: both versions this proxy can parse. A
+// version it cannot parse is a packet it cannot check, so there is no
+// "accept anything" setting.
+var DefaultMQTTVersions = []string{"3.1.1", "5.0"}

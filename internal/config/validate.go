@@ -338,6 +338,9 @@ func (v *validator) config(c *Config) {
 		if m := c.Server.Listeners[i].SMTP; m != nil && m.Upstream != "" && !upstreams[m.Upstream] {
 			v.errf("server.listeners[%d].smtp.upstream: unknown upstream %q", i, m.Upstream)
 		}
+		if q := c.Server.Listeners[i].MQTT; q != nil && q.Upstream != "" && !upstreams[q.Upstream] {
+			v.errf("server.listeners[%d].mqtt.upstream: unknown upstream %q", i, q.Upstream)
+		}
 	}
 	dnsListeners := map[string]bool{}
 	for _, ln := range c.Server.Listeners {
@@ -576,11 +579,23 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.smtpListener(p+".smtp", ln.SMTP, ln.TLS != nil)
 			}
+		case "mqtt":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an mqtt listener takes only address, mqtt and tls", p)
+			}
+			if ln.MQTT == nil {
+				v.errf("%s.mqtt: required for kind mqtt", p)
+			} else {
+				v.mqttListener(p+".mqtt", ln.MQTT, ln.TLS != nil)
+			}
 		default:
-			v.errf("%s.kind: must be http, tcp, forward, dns or smtp", p)
+			v.errf("%s.kind: must be http, tcp, forward, dns, smtp or mqtt", p)
 		}
 		if ln.SMTP != nil && ln.Kind != "smtp" {
 			v.errf("%s.smtp: set on a %s listener (kind: smtp)", p, ln.Kind)
+		}
+		if ln.MQTT != nil && ln.Kind != "mqtt" {
+			v.errf("%s.mqtt: set on a %s listener (kind: mqtt)", p, ln.Kind)
 		}
 		if ln.TLS == nil {
 			for _, proto := range ln.Protocols {
@@ -1914,7 +1929,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
-	"account_abuse": true, "honeytoken": true, "smtp_denied": true,
+	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -2683,6 +2698,149 @@ var smtpVerbs = map[string]bool{
 	"EHLO": true, "HELO": true, "MAIL": true, "RCPT": true, "DATA": true,
 	"RSET": true, "NOOP": true, "QUIT": true, "AUTH": true, "STARTTLS": true,
 	"VRFY": true, "EXPN": true, "HELP": true,
+}
+
+// mqttListener validates an MQTT proxy listener.
+func (v *validator) mqttListener(p string, m *MQTTListener, hasTLS bool) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	switch m.TLSMode {
+	case "implicit":
+		if !hasTLS {
+			v.errf("%s.tls_mode: implicit needs the listener's tls section (a certificate to answer with)", p)
+		}
+	case "none":
+		v.warnf("%s.tls_mode: none carries every credential and every message in clear; MQTT has no in-band upgrade, so use implicit on 8883", p)
+	default:
+		v.errf("%s.tls_mode: must be implicit or none", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "none", "implicit":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none or implicit", p)
+	}
+	if m.UpstreamTLSMode == "none" && m.UpstreamTLS != nil {
+		v.errf("%s.upstream_tls: set with upstream_tls_mode: none, which never uses it", p)
+	}
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+	}
+	seen := map[string]bool{}
+	for i, ver := range m.Versions {
+		switch ver {
+		case "3.1.1", "5.0":
+		default:
+			v.errf("%s.versions[%d]: must be 3.1.1 or 5.0 (the versions this proxy parses; one it cannot parse it cannot check)", p, i)
+		}
+		if seen[ver] {
+			v.errf("%s.versions[%d]: %q listed twice", p, i, ver)
+		}
+		seen[ver] = true
+	}
+	if len(m.Versions) == 0 {
+		v.errf("%s.versions: at least one version is required", p)
+	}
+	switch m.Action {
+	case "disconnect", "drop":
+	default:
+		v.errf("%s.action: must be disconnect or drop", p)
+	}
+	if m.MaxClientID < 1 || m.MaxClientID > 65535 {
+		v.errf("%s.max_client_id: must be 1..65535", p)
+	}
+	if m.ClientIDPattern != "" {
+		if _, err := regexp.Compile(m.ClientIDPattern); err != nil {
+			v.errf("%s.client_id_pattern: %v", p, err)
+		}
+	}
+	// The floor is the largest packet a session cannot do without: a
+	// CONNECT carrying a client id, a username and a will.
+	if m.MaxPacketSize < 1024 || m.MaxPacketSize > 268435460 {
+		v.errf("%s.max_packet_size: must be 1024..268435460", p)
+	}
+	if m.MaxTopicLength < 1 || m.MaxTopicLength > 65535 {
+		v.errf("%s.max_topic_length: must be 1..65535", p)
+	}
+	if m.MaxTopicLevels < 1 || m.MaxTopicLevels > 1000 {
+		v.errf("%s.max_topic_levels: must be 1..1000", p)
+	}
+	if m.MaxSubscriptions < 1 {
+		v.errf("%s.max_subscriptions: must be positive", p)
+	}
+	if m.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be positive", p)
+	}
+	if m.ConnectTimeout <= 0 || m.ConnectTimeout > Duration(10*time.Minute) {
+		v.errf("%s.connect_timeout: must be positive and at most 10m", p)
+	}
+	if m.IdleTimeout <= 0 || m.IdleTimeout > Duration(24*time.Hour) {
+		v.errf("%s.idle_timeout: must be positive and at most 24h", p)
+	}
+	// Keep alive is carried as seconds in a uint16.
+	if m.KeepAliveMax < 0 || m.KeepAliveMax > Duration(65535*time.Second) {
+		v.errf("%s.keep_alive_max: must be 0 (any) or at most 18h12m15s", p)
+	}
+	for _, l := range []struct {
+		key  string
+		list []string
+		kind string
+	}{
+		{"publish_allow", m.PublishAllow, "filter"},
+		{"publish_deny", m.PublishDeny, "filter"},
+		{"subscribe_allow", m.SubscribeAllow, "filter"},
+		{"subscribe_deny", m.SubscribeDeny, "filter"},
+	} {
+		for i, f := range l.list {
+			if err := validTopicFilter(f); err != nil {
+				v.errf("%s.%s[%d]: %q is not a topic filter: %v", p, l.key, i, f, err)
+			}
+		}
+	}
+	if m.AllowWildcardSubscribe != nil && !*m.AllowWildcardSubscribe {
+		for i, f := range m.SubscribeAllow {
+			if strings.ContainsAny(f, "+#") {
+				v.errf("%s.subscribe_allow[%d]: %q has a wildcard, which allow_wildcard_subscribe: false refuses outright", p, i, f)
+			}
+		}
+	}
+	for i, c := range m.AllowClients {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+	if len(m.PublishAllow) == 0 && len(m.PublishDeny) == 0 &&
+		len(m.SubscribeAllow) == 0 && len(m.SubscribeDeny) == 0 {
+		v.warnf("%s: no topic policy, so every client may publish and subscribe to everything the broker allows; "+
+			"an mqtt listener without one is a layer 4 listener with extra parsing", p)
+	}
+}
+
+// validTopicFilter is the MQTT 3.1.1 section 4.7 rule, repeated here
+// because config must not import the mqtt package.
+func validTopicFilter(f string) error {
+	if f == "" {
+		return errors.New("empty")
+	}
+	if len(f) > 65535 {
+		return errors.New("longer than a topic can be")
+	}
+	if strings.ContainsRune(f, 0) {
+		return errors.New("contains NUL")
+	}
+	levels := strings.Split(f, "/")
+	for i, l := range levels {
+		switch {
+		case l == "#":
+			if i != len(levels)-1 {
+				return errors.New("# is only allowed as the last level")
+			}
+		case l == "+":
+		case strings.ContainsAny(l, "+#"):
+			return errors.New("a wildcard takes a whole level or none of it")
+		}
+	}
+	return nil
 }
 
 // grpcNameOK accepts protobuf identifiers with dots (package.Service).

@@ -1,0 +1,107 @@
+# An MQTT broker behind a proxy that reads the packets: MQTT 3.1.1
+# (OASIS, ISO/IEC 20922) and 5.0.
+#
+# A layer 4 listener would carry the same bytes. The reason this one
+# parses them is that an MQTT broker's authorisation is per topic, and a
+# topic is a string inside a packet. Without reading the packets there
+# is nowhere to say that a device may publish its own telemetry and
+# nothing else — and a device that holds a broker credential otherwise
+# holds the whole tree, including whatever the estate's other devices
+# publish.
+#
+# Validate: xproxy -config examples/iot/mqtt.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: iot
+      # 8883 is MQTT over TLS. MQTT has no in-band upgrade — no
+      # STARTTLS equivalent — so a plaintext listener stays plaintext
+      # for the life of the session, credentials and all.
+      address: "0.0.0.0:8883"
+      kind: mqtt
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/iot.pem, key_file: /etc/xproxy/certs/iot-key.pem}
+        min_version: "1.2"
+        # Devices that carry a certificate should present it; the
+        # broker still decides what the identity may do.
+        client_auth: request
+        client_ca_file: /etc/xproxy/certs/device-ca.pem
+      mqtt:
+        upstream: broker
+        tls_mode: implicit
+
+        versions: ["3.1.1", "5.0"]
+
+        # A device without a username is a device the broker cannot
+        # attribute anything to.
+        require_auth: true
+        allow_empty_client_id: false
+        max_client_id: 64
+        client_id_pattern: "^device-[0-9a-f]{12}$"
+
+        # The topic policy. Deny wins, and an empty allow list allows
+        # whatever the deny list does not refuse.
+        publish_allow:
+          - "devices/+/telemetry"
+          - "devices/+/status"
+        publish_deny:
+          - "$SYS/#"
+          - "devices/+/commands"        # commands come from the estate
+
+        # A subscription is a filter, not a topic: it is allowed only
+        # when an entry here covers everything it could deliver. That
+        # is what stops a device asking for "#".
+        subscribe_allow:
+          - "devices/+/commands"
+          - "estate/announcements"
+        subscribe_deny:
+          - "$SYS/#"
+
+        max_subscriptions: 32
+        max_packet_size: 262144
+        max_topic_length: 256
+        max_topic_levels: 8
+
+        # A retained message outlives the session that set it, so a
+        # device that can retain can leave something behind.
+        allow_retain: false
+
+        keep_alive_max: 5m
+        connect_timeout: 15s
+        idle_timeout: 10m
+        max_connections: 50000
+
+        # disconnect ends the session on a refusal; drop refuses the one
+        # packet and lets the session continue, which suits a fleet
+        # where a misconfigured device should not fall off the network.
+        action: disconnect
+
+        upstream_tls_mode: implicit
+        upstream_tls:
+          server_name: broker.internal
+          ca_file: /etc/xproxy/certs/internal-ca.pem
+          min_version: "1.3"
+
+        proxy_protocol: true
+
+upstreams:
+  - name: broker
+    endpoints:
+      - {address: "10.0.0.30:8883"}
+      - {address: "10.0.0.31:8883"}
+    balancer: least_conn
+    timeouts: {connect: 5s}
+
+bans:
+  triggers:
+    # A device does not probe topics. Something walking the tree is
+    # either broken or not a device.
+    - name: mqtt-abuse
+      reasons: [mqtt_denied]
+      threshold: 5
+      window: 10m
+      duration: 1h
+
+logging:
+  access: {enabled: true}

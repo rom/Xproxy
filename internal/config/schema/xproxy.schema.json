@@ -2282,6 +2282,14 @@
             "dns"
           ]
         },
+        "mqtt": {
+          "description": "MQTT configures a kind: mqtt listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MQTTListener"
+            }
+          ]
+        },
         "name": {
           "type": "string"
         },
@@ -2449,6 +2457,139 @@
               "$ref": "#/$defs/Syslog"
             }
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "MQTTListener": {
+      "description": "MQTTListener is a protocol-aware MQTT proxy for 3.1.1 and 5.0. It reads every control packet, decides on the ones that carry a policy question — who is connecting, what they publish, what they subscribe to — and forwards the rest untouched. The reason it is not a layer 4 listener: an MQTT broker's authorisation is per topic, and a topic is a string inside a packet. Without reading the packets there is no place to say that a device may publish its own telemetry and nothing else, and every device that holds a broker credential holds the whole tree.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action on a refused PUBLISH or SUBSCRIBE: disconnect (the default) ends the session, drop refuses the one packet and acknowledges it so the session continues.",
+          "type": "string"
+        },
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_empty_client_id": {
+          "description": "AllowEmptyClientID accepts the empty client id, which 3.1.1 allows with a clean session and 5.0 answers with an assigned one. Default true; turning it off is what makes every session identifiable in the logs.",
+          "type": "boolean"
+        },
+        "allow_retain": {
+          "description": "AllowRetain accepts PUBLISH with the retain flag. A retained message outlives the session that set it, so a device that can retain can leave something behind. Default true.",
+          "type": "boolean"
+        },
+        "allow_wildcard_subscribe": {
+          "description": "AllowWildcardSubscribe accepts \"+\" and \"#\" in a subscription at all. Default true; with an allow list it rarely needs turning off, and without one it is the difference between a client reading its own topics and reading the estate's.",
+          "type": "boolean"
+        },
+        "client_id_pattern": {
+          "description": "ClientIDPattern is an RE2 the client id must match, anchored as written. Empty accepts any.",
+          "type": "string"
+        },
+        "connect_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "keep_alive_max": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_client_id": {
+          "description": "MaxClientID bounds the client id. Default 128.",
+          "type": "integer"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds sessions on this listener. Default 10000.",
+          "type": "integer"
+        },
+        "max_packet_size": {
+          "description": "MaxPacketSize bounds one control packet including its header, and is what a 5.0 client is told in CONNACK. Default 1048576.",
+          "type": "integer"
+        },
+        "max_subscriptions": {
+          "description": "MaxSubscriptions bounds live subscriptions per session. Default 64.",
+          "type": "integer"
+        },
+        "max_topic_length": {
+          "description": "MaxTopicLength and MaxTopicLevels bound a topic or filter. Defaults 512 and 16.",
+          "type": "integer"
+        },
+        "max_topic_levels": {
+          "type": "integer"
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the broker.",
+          "type": "boolean"
+        },
+        "publish_allow": {
+          "description": "PublishAllow and PublishDeny are topic filters checked against the topic of every PUBLISH from the client, and against the will topic of its CONNECT. Deny wins. An empty allow list allows everything the deny list does not refuse.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "publish_deny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "require_auth": {
+          "description": "RequireAuth refuses a CONNECT without a username. The broker still verifies the password; this only stops an anonymous session reaching it. Default false.",
+          "type": "boolean"
+        },
+        "subscribe_allow": {
+          "description": "SubscribeAllow and SubscribeDeny are topic filters checked against every filter a client subscribes to. A subscription is allowed only when an entry of the allow list covers everything it could deliver, and refused when it could reach anything denied — a filter is not a topic, and matching it as one would let \"#\" through an allow list of \"sensors/+\".",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "subscribe_deny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tls_mode": {
+          "description": "TLSMode is implicit (TLS from the first octet, as on 8883, and needs the listener's tls section) or none. Default implicit when tls is set.",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream is the broker pool. Required.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS verifies the broker when upstream_tls_mode is not none.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_tls_mode": {
+          "description": "UpstreamTLSMode is none or implicit. Default none.",
+          "type": "string"
+        },
+        "versions": {
+          "description": "Versions are the protocol versions accepted: \"3.1.1\", \"5.0\". Default both. A version the proxy does not parse cannot be checked, so anything else is refused at CONNECT.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

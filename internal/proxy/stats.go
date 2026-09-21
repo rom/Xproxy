@@ -99,6 +99,13 @@ type Stats struct {
 	SMTPTLSUpgrades        atomic.Uint64
 	SMTPProtocolErrors     atomic.Uint64
 	SMTPBytesIn            atomic.Uint64
+	MQTTSessions           atomic.Uint64
+	MQTTSessionsOpen       atomic.Int64
+	MQTTPublished          atomic.Uint64
+	MQTTSubscribed         atomic.Uint64
+	MQTTRefused            atomic.Uint64
+	MQTTRejected           atomic.Uint64
+	MQTTProtocolErrors     atomic.Uint64
 	WSConnections          atomic.Uint64
 	WSMessages             atomic.Uint64
 	WSViolations           atomic.Uint64
@@ -260,6 +267,13 @@ type Snapshot struct {
 	SMTPTLSUpgrades        uint64            `json:"smtp_tls_upgrades"`
 	SMTPProtocolErrors     uint64            `json:"smtp_protocol_errors"`
 	SMTPBytesIn            uint64            `json:"smtp_bytes_in"`
+	MQTTSessions           uint64            `json:"mqtt_sessions"`
+	MQTTSessionsOpen       int64             `json:"mqtt_sessions_open"`
+	MQTTPublished          uint64            `json:"mqtt_published"`
+	MQTTSubscribed         uint64            `json:"mqtt_subscribed"`
+	MQTTRefused            uint64            `json:"mqtt_refused"`
+	MQTTRejected           uint64            `json:"mqtt_rejected"`
+	MQTTProtocolErrors     uint64            `json:"mqtt_protocol_errors"`
 	WSConnections          uint64            `json:"websocket_connections"`
 	WSMessages             uint64            `json:"websocket_messages"`
 	WSViolations           uint64            `json:"websocket_violations"`
@@ -389,6 +403,13 @@ func (s *Stats) snapshot() Snapshot {
 		SMTPTLSUpgrades:        s.SMTPTLSUpgrades.Load(),
 		SMTPProtocolErrors:     s.SMTPProtocolErrors.Load(),
 		SMTPBytesIn:            s.SMTPBytesIn.Load(),
+		MQTTSessions:           s.MQTTSessions.Load(),
+		MQTTSessionsOpen:       s.MQTTSessionsOpen.Load(),
+		MQTTPublished:          s.MQTTPublished.Load(),
+		MQTTSubscribed:         s.MQTTSubscribed.Load(),
+		MQTTRefused:            s.MQTTRefused.Load(),
+		MQTTRejected:           s.MQTTRejected.Load(),
+		MQTTProtocolErrors:     s.MQTTProtocolErrors.Load(),
 		WSConnections:          s.WSConnections.Load(),
 		WSMessages:             s.WSMessages.Load(),
 		WSViolations:           s.WSViolations.Load(),

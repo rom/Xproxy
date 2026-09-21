@@ -16,6 +16,7 @@ server:
           forward: null
           dns: null
           smtp: null
+          mqtt: null
         - name: public
           address: :443
           protocols:
@@ -51,6 +52,7 @@ server:
           forward: null
           dns: null
           smtp: null
+          mqtt: null
     limits:
         max_header_bytes: 65536
         max_body_bytes: 10485760

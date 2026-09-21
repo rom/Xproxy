@@ -2279,6 +2279,63 @@ the default command set because they answer whether an address exists.
 `examples/mail/submission.yaml` has both listeners, the ban trigger and
 the upstream TLS.
 
+### MQTT for a device fleet
+
+```yaml
+server:
+  listeners:
+    - name: iot
+      address: "0.0.0.0:8883"
+      kind: mqtt
+      tls: {certificates: [{cert_file: /etc/xproxy/certs/iot.pem, key_file: /etc/xproxy/certs/iot-key.pem}]}
+      mqtt:
+        upstream: broker
+        require_auth: true
+        client_id_pattern: "^device-[0-9a-f]{12}$"
+        publish_allow: ["devices/+/telemetry", "devices/+/status"]
+        publish_deny:  ["$SYS/#", "devices/+/commands"]
+        subscribe_allow: ["devices/+/commands", "estate/announcements"]
+        subscribe_deny:  ["$SYS/#"]
+        allow_retain: false
+        upstream_tls_mode: implicit
+        upstream_tls: {server_name: broker.internal, ca_file: /etc/xproxy/certs/internal-ca.pem}
+```
+
+An MQTT broker's authorisation is per topic, and a topic is a string
+inside a packet. A `kind: tcp` listener carries those packets without
+looking, so there is nowhere to say that a device may publish its own
+telemetry and nothing else — and a device that holds a broker
+credential holds the whole tree, including what every other device
+publishes. That is what this listener is for.
+
+The subtlety worth knowing is that **a subscription is a filter, not a
+topic**. A device asking for `#` is not asking for one topic; it is
+asking for all of them. So `subscribe_allow` is checked by subsumption:
+an entry must cover everything the requested filter could deliver.
+`devices/+/commands` allows `devices/1/commands` and allows
+`devices/+/commands`, and refuses `devices/#` and `#`. `subscribe_deny`
+is checked the other way, by overlap: a filter is refused when it could
+reach anything denied, not only when it names it.
+
+`publish_allow` and `publish_deny` are simpler, because a publication
+names one concrete topic. They also cover the will — the message the
+broker publishes on the device's behalf once it is gone — which is
+checked at CONNECT, the only moment there is.
+
+Refusals end the session by default. `action: drop` refuses the one
+packet instead and answers it properly (PUBACK or PUBREC with
+not-authorized, a SUBACK of failures), which is what a fleet wants: one
+misconfigured device should not fall off the network, and a QoS 1
+publisher that is never acknowledged retries for ever.
+
+MQTT has no STARTTLS. `tls_mode: implicit` on 8883 is the only
+encrypted shape, and a plaintext listener stays plaintext for the life
+of the session — validation says so rather than leaving it implied.
+
+`examples/iot/mqtt.yaml` has the whole thing, with a ban trigger on
+`mqtt_denied`: a device does not probe topics, so something walking the
+tree is either broken or not a device.
+
 ### Virtual security.txt
 
 A `security.txt` (RFC 9116) tells a finder where to report a
