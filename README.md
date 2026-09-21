@@ -119,9 +119,13 @@ an identifier from the access log to the upstream.
 - Bot classification from JA3 and JA4 fingerprints, headers and
   behaviour, with log, challenge and deny thresholds; country policy
   from a local MaxMind or CSV database
-- Honeypot routes with seventy-seven built-in decoys — from a WordPress
-  login to a cloud metadata document, a container registry catalogue
-  and an IP camera — that mark probing clients and feed the ban list;
+- Honeypot routes with a hundred and fifteen built-in decoys — from a
+  WordPress login to a cloud metadata document, a container registry
+  catalogue, a Werkzeug debugger and an IP camera — that mark probing
+  clients and feed the ban list; honeytokens that trip when a planted
+  credential is used; hidden-field and timing honeypots on forms;
+  graduated degradation and deceptive answers instead of a refusal a
+  scanner can tune against ([docs/DECEPTION.md](docs/DECEPTION.md));
   ICAP scanning of uploads and downloads with preview, block pages and
   fail policies
 
@@ -230,6 +234,7 @@ every feature above.
 |----------|---------|
 | [docs/USAGE.md](docs/USAGE.md) | Operating the proxy: an example per feature, the control tool, logging |
 | [docs/CONFIG.md](docs/CONFIG.md) | Configuration reference, every key with its default |
+| [docs/DECEPTION.md](docs/DECEPTION.md) | Honeypot routes, decoys, honeytokens, form honeypots, WAF shape rules, the slow lane, deceptive answers and handshake refusal as one family: what each costs an attacker, how the signals chain, and the order to build them in |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Triage, a symptom index, the stages a request can die at, the timeout ladder, a section per subsystem, emergency procedures, every deny reason and what to collect for a bug report |
 | [docs/SETUP.md](docs/SETUP.md) | Installation on Fedora |
 | [docs/SETUP_MACOS.md](docs/SETUP_MACOS.md) | Installation on macOS |

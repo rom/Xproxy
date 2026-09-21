@@ -76,7 +76,7 @@ func (s *Server) peerMarkTTL() time.Duration {
 	if rt := s.rt.Load(); rt != nil {
 		for _, cr := range rt.routes {
 			if cr.cfg.Honeypot != nil {
-				if d := cr.cfg.Honeypot.Mark.D(); d > longest {
+				if d := cr.cfg.Honeypot.MarkFor(); d > longest {
 					longest = d
 				}
 			}

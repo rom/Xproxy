@@ -84,6 +84,9 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("GET /v1/upstreams", s.upstreams)
 	mux.HandleFunc("GET /v1/pools", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Pools()) })
 	mux.HandleFunc("GET /v1/tls", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Certificates()) })
+	mux.HandleFunc("GET /v1/handshake", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Handshake()) })
+	mux.HandleFunc("GET /v1/degradation", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Degradation()) })
+	mux.HandleFunc("GET /v1/deceive", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Deceptions()) })
 	mux.HandleFunc("GET /v1/tls/tickets", func(w http.ResponseWriter, _ *http.Request) {
 		if st := s.proxy.Tickets(); st != nil {
 			writeJSON(w, 200, st)
@@ -295,7 +298,8 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		writeJSON(w, 200, rep)
 	})
 	mux.HandleFunc("GET /v1/honeypot", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "marks_dropped": s.proxy.HoneypotMarksDropped(), "decoys": proxy.DecoyNames()})
+		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "marks_dropped": s.proxy.HoneypotMarksDropped(),
+			"decoys": proxy.DecoyNames(), "honeytokens": s.proxy.Honeytokens()})
 	})
 	mux.HandleFunc("DELETE /v1/honeypot", func(w http.ResponseWriter, r *http.Request) {
 		ip, err := netip.ParseAddr(r.URL.Query().Get("ip"))

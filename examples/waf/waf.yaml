@@ -32,11 +32,17 @@ waf:
         - /etc/xproxy/waf/exclusions.conf
         - /etc/xproxy/waf/custom-rules.conf
         - /etc/xproxy/waf/hardening-rules.conf
+        # The third file refuses shapes rather than payloads, so it is
+        # loaded into this detect-mode profile first. Read its header
+        # before promoting it: an application that fetches `file://`
+        # URLs or takes SVG uploads is refused by it.
+        - /etc/xproxy/waf/attack-surface-rules.conf
     - name: api
       crs: {paranoia_level: 2, inbound_threshold: 5}
       directive_files:
         - /etc/xproxy/waf/custom-rules.conf
         - /etc/xproxy/waf/hardening-rules.conf
+        - /etc/xproxy/waf/attack-surface-rules.conf
       # Order writes must match the schema before the rules see them.
       json_schemas:
         - name: order

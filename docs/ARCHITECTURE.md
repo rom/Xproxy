@@ -58,7 +58,7 @@ internal/proxy      server, listeners, handler pipeline, transport, stats
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
 internal/filter     middleware interface, kind registry, options decoding; filtertest harness
-internal/filters    built-in kinds (header_guard, basic_auth, api_key, openapi, graphql, upload_guard, sensitive_data, account_guard, body_rewrite, bot_score, oidc, wasm) and the registration list
+internal/filters    built-in kinds (header_guard, basic_auth, api_key, openapi, graphql, upload_guard, sensitive_data, account_guard, body_rewrite, bot_score, form_guard, oidc, wasm) and the registration list
 internal/jsonschema JSON Schema evaluator shared by the openapi filter and the WAF body schemas
 internal/apiinv     API inventory: endpoints discovered from traffic, shadow, zombie and superseded detection
 internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)
@@ -864,6 +864,9 @@ Endpoints:
 | POST | `/v1/logs/reopen` | reopen log files |
 | GET | `/v1/bans`, POST `/v1/bans`, DELETE `/v1/bans?target=` | ban list |
 | GET | `/v1/cluster` | cluster peers and counters |
+| GET | `/v1/deceive` | the routes that answer distrusted clients with a plausible response, and how often |
+| GET | `/v1/degradation` | the slow-lane levels and how often each applied |
+| GET | `/v1/handshake` | the pre-handshake refusal policy and how many ClientHellos it turned down |
 | GET | `/v1/capture`, POST `/v1/capture` | packet capture state (recording, window, current file, per rule counters); `{"active":true,"duration":"10m"}` opens a bounded window and `{"active":false}` closes it (audited; 404 without a `capture` section) |
 | GET | `/v1/acme`, POST `/v1/acme/renew` | managed certificate status; forced renewal (audited) |
 | GET | `/metrics` | Prometheus exposition |

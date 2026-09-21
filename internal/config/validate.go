@@ -451,6 +451,9 @@ func (v *validator) config(c *Config) {
 		}
 	}
 	v.virtualPatches(c.VirtualPatches, routes)
+	v.honeytokens(c.Honeytokens)
+	v.handshake(c)
+	v.degradation(c, routes)
 	if c.Capture != nil {
 		v.capture(c.Capture, routes)
 	}
@@ -1478,9 +1481,62 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 		if hp.Delay < 0 || hp.Delay > Duration(60*time.Second) {
 			v.errf("%s.honeypot.delay: must be between 0 and 60s", p)
 		}
-		if hp.Mark <= 0 || hp.Mark > Duration(30*24*time.Hour) {
+		if hp.MarkFor() < 0 || hp.MarkFor() > 30*24*time.Hour {
 			v.errf("%s.honeypot.mark: must be positive and at most 720h", p)
 		}
+	}
+	if d := r.Deceive; d != nil {
+		// Not an action: the route keeps whatever it does for everyone
+		// else, and deceive only changes the answer for the clients it
+		// admits.
+		if r.Honeypot != nil {
+			v.errf("%s.deceive: a honeypot route already answers with a decoy", p)
+		}
+		if !d.Marked && d.BotScoreAt == 0 && len(d.ClientCIDRs) == 0 {
+			v.errf("%s.deceive: names no condition, so every client would be answered with a lie", p)
+		}
+		if d.BotScoreAt < 0 || d.BotScoreAt > 1000 {
+			v.errf("%s.deceive.bot_score_at: must be between 0 and 1000", p)
+		}
+		for i, c := range d.ClientCIDRs {
+			if _, err := netip.ParsePrefix(c); err != nil {
+				v.errf("%s.deceive.client_cidrs[%d]: %q is not a CIDR", p, i, c)
+			}
+		}
+		v.methodList(p+".deceive.methods", d.Methods)
+		n := 0
+		for _, set := range []bool{d.Decoy != "", d.Body != "", d.BodyFile != ""} {
+			if set {
+				n++
+			}
+		}
+		if n != 1 {
+			v.errf("%s.deceive: exactly one of decoy, body or body_file is required", p)
+		}
+		if d.Decoy != "" && !HoneypotDecoys[d.Decoy] {
+			v.errf("%s.deceive.decoy: unknown decoy %q", p, d.Decoy)
+		}
+		if len(d.Body) > 64<<10 {
+			v.errf("%s.deceive.body: exceeds 64 KiB", p)
+		}
+		if d.BodyFile != "" && !strings.HasPrefix(d.BodyFile, "/") {
+			v.errf("%s.deceive.body_file: must be an absolute path", p)
+		}
+		if strings.ContainsAny(d.ContentType, "\r\n") {
+			v.errf("%s.deceive.content_type: invalid", p)
+		}
+		if d.Status < 100 || d.Status > 599 {
+			v.errf("%s.deceive.status: must be a valid status", p)
+		}
+		if d.Status >= 400 {
+			v.warnf("%s.deceive.status is %d: an answer that looks like a refusal tells the client what a refusal tells it, "+
+				"which is what deceiving was meant to avoid", p, d.Status)
+		}
+		if d.Mark < 0 || d.Mark > Duration(30*24*time.Hour) {
+			v.errf("%s.deceive.mark: must be between 0 and 720h", p)
+		}
+		v.warnf("%s deceives: the clients it admits get a plausible answer instead of the origin's, and their writes "+
+			"never reach it. Check the conditions against the access log before trusting it", p)
 	}
 	if r.DoH != nil {
 		actions++
@@ -1650,7 +1706,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
-	"account_abuse": true,
+	"account_abuse": true, "honeytoken": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -1928,6 +1984,7 @@ var allDenyReasons = map[string]bool{
 	"body_size": true, "uri_length": true, "bad_host": true, "concurrency": true,
 	"websocket": true, "account_abuse": true, "tcp_no_route": true,
 	"forward_denied": true, "forward_auth": true, "dns_blocked": true, "dns_bogus": true,
+	"honeytoken": true,
 }
 
 // HoneypotDecoys are the built-in decoy names (bodies live in the proxy,
@@ -1971,6 +2028,26 @@ var HoneypotDecoys = map[string]bool{
 	"jupyter": true, "ollama": true, "clickhouse": true,
 	// Devices
 	"printer": true,
+	// Source control, build and artefact servers
+	"gitea": true, "teamcity": true, "nexus": true, "svn-entries": true,
+	"idea-workspace": true,
+	// Container and cluster management
+	"portainer": true, "rancher": true, "etcd": true, "nomad": true,
+	"spark": true, "hadoop-yarn": true, "airflow": true,
+	// Database consoles and analytics front ends
+	"pgadmin": true, "mongo-express": true, "metabase": true, "superset": true,
+	"zabbix": true,
+	// Content management systems
+	"joomla": true, "drupal": true, "magento": true, "moodle": true, "zimbra": true,
+	// Firewalls and remote access gateways
+	"pfsense": true, "sonicwall": true, "paloalto": true, "cisco-asa": true,
+	"mikrotik": true,
+	// Framework debug consoles and the probes that hunt them
+	"werkzeug-console": true, "symfony-profiler": true, "laravel-telescope": true,
+	"thinkphp": true, "phpunit-eval": true, "spring-gateway": true,
+	// Files a traversal or a misconfigured server hands over
+	"etc-passwd": true, "firebase-config": true, "wp-json-users": true,
+	"dockerfile": true, "rails-secrets": true,
 }
 
 func (v *validator) bans(b *Bans) {
@@ -3337,6 +3414,230 @@ func (v *validator) patchMatches(p string, list []PatchMatch) {
 			} else if _, err := regexp.Compile(m.Pattern); err != nil {
 				v.errf("%s[%d].pattern: %v", p, j, err)
 			}
+		}
+	}
+}
+
+// degradation validates the slow-lane levels.
+func (v *validator) degradation(c *Config, routes map[string]bool) {
+	d := c.Degradation
+	if d == nil {
+		return
+	}
+	const p = "degradation"
+	if len(d.Levels) == 0 {
+		v.errf("%s.levels: at least one level is required", p)
+	}
+	if len(d.Levels) > 64 {
+		v.errf("%s.levels: at most 64 levels", p)
+	}
+	names := map[string]bool{}
+	for i := range d.Levels {
+		l := &d.Levels[i]
+		q := fmt.Sprintf("%s.levels[%d]", p, i)
+		if names[l.Name] {
+			v.errf("%s.name: duplicate %q", q, l.Name)
+		}
+		names[l.Name] = true
+		if l.BotScoreAt < 0 || l.BotScoreAt > 1000 {
+			v.errf("%s.bot_score_at: must be between 0 and 1000", q)
+		}
+		for j, cidr := range l.ClientCIDRs {
+			if _, err := netip.ParsePrefix(cidr); err != nil {
+				v.errf("%s.client_cidrs[%d]: %q is not a CIDR", q, j, cidr)
+			}
+		}
+		for j, r := range l.Routes {
+			if !routes[r] {
+				v.errf("%s.routes[%d]: unknown route %q", q, j, r)
+			}
+		}
+		v.methodList(q+".methods", l.Methods)
+		if l.BytesPerSecond < 0 || (l.BytesPerSecond > 0 && l.BytesPerSecond < 256) {
+			v.errf("%s.bytes_per_second: 0 to leave the body alone, or at least 256", q)
+		}
+		if l.BytesPerSecond > 1<<30 {
+			v.errf("%s.bytes_per_second: at most 1 GiB/s", q)
+		}
+		if l.Delay < 0 || l.Delay > Duration(60*time.Second) {
+			v.errf("%s.delay: must be between 0 and 60s", q)
+		}
+		if l.BytesPerSecond == 0 && l.Delay == 0 && !l.Close {
+			v.errf("%s: a level that shapes nothing, delays nothing and closes nothing does nothing", q)
+		}
+		// A level with no condition at all applies to everything its
+		// selectors admit, which is a choice; one with no selectors
+		// either is almost certainly a mistake.
+		if !l.Marked && l.BotScoreAt == 0 && len(l.ClientCIDRs) == 0 && len(l.Routes) == 0 && len(l.Methods) == 0 {
+			v.errf("%s: names no condition and no selector, so it would degrade every request", q)
+		}
+		if l.BotScoreAt > 0 && !hasBotScoreFilter(c) {
+			v.warnf("%s.bot_score_at is set and no bot_score filter is configured, so no request carries a score", q)
+		}
+	}
+}
+
+// hasBotScoreFilter reports whether any filter can produce a score.
+func hasBotScoreFilter(c *Config) bool {
+	for _, f := range c.Filters {
+		if f.Kind == "bot_score" {
+			return true
+		}
+	}
+	return false
+}
+
+// fingerprintRE bounds a JA3 or JA4 entry: the character set both
+// fingerprints use, and a trailing star for a JA4 prefix.
+var fingerprintRE = regexp.MustCompile(`^[a-z0-9_]{4,128}\*?$`)
+
+// handshake validates the pre-handshake refusal policy.
+func (v *validator) handshake(c *Config) {
+	h := c.Handshake
+	if h == nil {
+		return
+	}
+	const p = "handshake"
+	if h.RefuseBanned && c.Bans == nil {
+		v.errf("%s.refuse_banned: there is no bans section to refuse from", p)
+	}
+	seen := map[string]bool{}
+	for i, f := range h.DenyFingerprints {
+		q := fmt.Sprintf("%s.deny_fingerprints[%d]", p, i)
+		value := f
+		switch {
+		case strings.HasPrefix(f, "ja4:"):
+			value = strings.TrimPrefix(f, "ja4:")
+		case strings.HasPrefix(f, "ja3:"):
+			value = strings.TrimPrefix(f, "ja3:")
+			if strings.HasSuffix(value, "*") {
+				v.errf("%s: a JA3 fingerprint is a hash; only a JA4 entry may end in *", q)
+			}
+		}
+		if !fingerprintRE.MatchString(value) {
+			v.errf("%s: %q is not a JA3 or JA4 fingerprint", q, f)
+		}
+		if seen[f] {
+			v.errf("%s: duplicate %q", q, f)
+		}
+		seen[f] = true
+		if value == "*" || len(strings.TrimSuffix(value, "*")) < 4 {
+			v.errf("%s: %q is too short to name a client", q, f)
+		}
+	}
+	if len(h.DenyFingerprints) > 4096 {
+		v.errf("%s.deny_fingerprints: at most 4096 entries", p)
+	}
+	tls := false
+	for _, l := range c.Server.Listeners {
+		if l.TLS != nil {
+			tls = true
+		}
+	}
+	if !tls && (h.RefuseBanned || len(h.DenyFingerprints) > 0) {
+		v.warnf("handshake refuses clients before a TLS handshake, and no listener has a tls section: " +
+			"what arrives on a plain listener is refused the ordinary way")
+	}
+	if h.RefuseBanned {
+		v.warnf("handshake.refuse_banned makes a banned client's refusal invisible in the access log: " +
+			"the connection never becomes a request. The security log records it as reason handshake when log is on")
+	}
+}
+
+// honeytokenFields are the places a planted credential can be looked
+// for. Bodies are deliberately absent: searching them means buffering
+// every request, and a stolen credential is presented in the head.
+var honeytokenFields = map[string]bool{"headers": true, "cookies": true, "query": true, "path": true}
+
+// maxHoneytokenValues bounds the whole table. Every value is compared
+// against a handful of fields of every request, so the table is a cost
+// paid on the request path and not a list to grow without thinking.
+const maxHoneytokenValues = 1024
+
+// honeytokens validates the planted credentials. The rules exist to
+// stop a token that would match ordinary traffic: a value short enough
+// or common enough to appear in a real request turns a control with no
+// false positives into one with nothing but.
+func (v *validator) honeytokens(tokens []Honeytoken) {
+	names := map[string]bool{}
+	seen := map[string]string{}
+	total := 0
+	for i := range tokens {
+		h := &tokens[i]
+		p := fmt.Sprintf("honeytokens[%d]", i)
+		if !patchIDRE.MatchString(h.Name) {
+			v.errf("%s.name: %q must be 1 to 63 characters of a-z, 0-9, dot, underscore or hyphen", p, h.Name)
+		} else if names[h.Name] {
+			v.errf("%s.name: duplicate %q", p, h.Name)
+		}
+		names[h.Name] = true
+		if len(h.Description) > 512 {
+			v.errf("%s.description: at most 512 characters", p)
+		}
+		if len(h.Values) == 0 && h.ValuesFile == "" {
+			v.errf("%s: values or values_file is required", p)
+		}
+		if h.ValuesFile != "" {
+			v.file(p+".values_file", h.ValuesFile)
+		}
+		min := 8
+		if h.Match == "contains" {
+			// A short value found anywhere in a header is a false
+			// positive waiting to happen; a token matched that way has
+			// to be long enough to be nobody else's.
+			min = 16
+		}
+		for j, val := range h.Values {
+			q := fmt.Sprintf("%s.values[%d]", p, j)
+			switch {
+			case len(val) < min:
+				v.errf("%s: a planted value must be at least %d characters, or it will match real traffic", q, min)
+			case len(val) > 512:
+				v.errf("%s: at most 512 characters", q)
+			case strings.ContainsAny(val, " \t\r\n\x00"):
+				v.errf("%s: must not contain whitespace or a NUL", q)
+			}
+			if other, dup := seen[val]; dup {
+				v.errf("%s: the same value is planted as %q", q, other)
+			}
+			seen[val] = h.Name
+			total++
+		}
+		if total > maxHoneytokenValues {
+			v.errf("%s: more than %d planted values in total", p, maxHoneytokenValues)
+		}
+		for j, f := range h.In {
+			if !honeytokenFields[f] {
+				v.errf("%s.in[%d]: %q is not headers, cookies, query or path", p, j, f)
+			}
+		}
+		for j, n := range h.Headers {
+			if !headerNameOK(n) {
+				v.errf("%s.headers[%d]: %q is not a header name", p, j, n)
+			}
+		}
+		if len(h.Headers) > 0 && !slices.Contains(h.In, "headers") {
+			v.errf("%s.headers: listed without \"headers\" in in", p)
+		}
+		switch h.Match {
+		case "exact", "contains":
+		default:
+			v.errf("%s.match: must be exact or contains", p)
+		}
+		switch h.Action {
+		case "block", "log":
+		default:
+			v.errf("%s.action: must be block or log", p)
+		}
+		if h.Status < 400 || h.Status > 599 {
+			v.errf("%s.status: must be a 4xx or 5xx status", p)
+		}
+		if h.MarkFor() < 0 || h.MarkFor() > 720*time.Hour {
+			v.errf("%s.mark: must be between 0 and 720h", p)
+		}
+		if h.Action == "log" && h.IsEnabled() {
+			v.warnf("%s is in log mode: a request presenting a planted credential is recorded and served. "+
+				"Nothing legitimate sends one, so this is a setting to leave once the token is proven quiet", p)
 		}
 	}
 }

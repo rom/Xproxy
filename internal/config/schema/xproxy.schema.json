@@ -72,6 +72,14 @@
         }
       ]
     },
+    "degradation": {
+      "description": "Degradation serves a suspect client slowly rather than refusing it outright.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Degradation"
+        }
+      ]
+    },
     "filters": {
       "description": "Filters are middleware instances of registered kinds (see docs/EXTENDING.md) that routes attach by name.",
       "type": "array",
@@ -94,6 +102,21 @@
           "$ref": "#/$defs/GeoIP"
         }
       ]
+    },
+    "handshake": {
+      "description": "Handshake refuses clients before the TLS handshake completes.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Handshake"
+        }
+      ]
+    },
+    "honeytokens": {
+      "description": "Honeytokens are planted credentials. A request presenting one has read something it should not have.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Honeytoken"
+      }
     },
     "icap": {
       "description": "ICAP configures external scanning services referenced by routes.",
@@ -1080,6 +1103,124 @@
       },
       "additionalProperties": false
     },
+    "Deceive": {
+      "description": "Deceive answers a client the proxy no longer trusts with something plausible instead of with the origin's answer — or with a refusal. A refusal is information. A scanner that gets 403 knows the request it sent was the interesting one, and varies it until something is not refused; the refusal is the oracle that tells it when it has found the way through. An answer that looks ordinary gives it nothing to steer by: the crawl completes, the data is wrong, and the request that would have worked looks exactly like the one that did not. It is a deliberately sharp tool, and the rules follow from that: - It applies only to clients the proxy already has a reason to distrust — a honeypot or honeytoken mark, a bot score, a named network. A route with no condition is refused at validation, because a deceive that admits everyone is an outage that looks like a feature. - The write never reaches the origin. That is the point for a POST, and it means a false positive loses a client's data, so the conditions are worth being sure of. - It is loud on the inside. The access log line carries deceived: \u003croute\u003e, a security event records it, and the counter and metric are separate from every other refusal, so nobody debugs a \"working\" endpoint for a week.",
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "body_file": {
+          "type": "string"
+        },
+        "bot_score_at": {
+          "description": "BotScoreAt admits a request a bot_score filter scored at or above this. 0 does not look at the score.",
+          "type": "integer"
+        },
+        "client_cidrs": {
+          "description": "ClientCIDRs admits these client networks.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "content_type": {
+          "description": "ContentType of Body and BodyFile. Default text/html; a decoy brings its own.",
+          "type": "string"
+        },
+        "decoy": {
+          "description": "Decoy names a built-in decoy body (see routes[].honeypot), Body is a literal one and BodyFile is read from disk at load and reload. Exactly one is required.",
+          "type": "string"
+        },
+        "mark": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "marked": {
+          "description": "Marked admits a client a honeypot route or a honeytoken marked.",
+          "type": "boolean"
+        },
+        "methods": {
+          "description": "Methods narrows the deception to these methods; empty is all of them.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "description": "Status answers the deceived request. Default 200: the whole point is an answer that does not look like a refusal.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Degradation": {
+      "description": "Degradation serves a suspect client slowly instead of refusing it. The proxy's other answers are binary: served, or refused. For a client that has done something wrong but not enough to ban — touched a decoy, scored badly, arrived from a range with a history — both are wrong. Serving it in full funds the next request. Refusing it tells it exactly which request to change, and hands a scanner a clean signal to tune against. A degraded client is served, correctly, slowly. There is nothing to tune against and nothing to report as broken, and a crawl that cost the scanner nothing now costs it the thing it has least of. Levels are tried in order and the first that admits the request decides, so the narrowest goes first.",
+      "type": "object",
+      "properties": {
+        "levels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DegradeLevel"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "DegradeLevel": {
+      "description": "DegradeLevel is one rule: who is degraded, and by how much.",
+      "type": "object",
+      "properties": {
+        "bot_score_at": {
+          "description": "BotScoreAt admits a request whose bot_score filter scored it at or above this. 0 does not look at the score.",
+          "type": "integer"
+        },
+        "bytes_per_second": {
+          "description": "BytesPerSecond shapes the response body. 0 does not shape.",
+          "type": "integer"
+        },
+        "client_cidrs": {
+          "description": "ClientCIDRs narrows the level to these client networks.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "close": {
+          "description": "Close ends the connection after the response, so the client pays for a new one every time.",
+          "type": "boolean"
+        },
+        "delay": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "marked": {
+          "description": "Marked admits a client a honeypot route or a honeytoken marked.",
+          "type": "boolean"
+        },
+        "methods": {
+          "description": "Methods narrows it to these methods.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name identifies the level in the access log, the metrics and the management view.",
+          "type": "string"
+        },
+        "routes": {
+          "description": "Routes narrows it to these route names.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "Discovery": {
       "description": "Discovery resolves a pool's endpoints from DNS or an HTTP registry.",
       "type": "object",
@@ -1392,6 +1533,28 @@
       },
       "additionalProperties": false
     },
+    "Handshake": {
+      "description": "Handshake decides who is refused before a TLS handshake completes. Every other control in this file answers a request: the handshake runs, a certificate is chosen, keys are agreed, the request is parsed, and then the proxy says no. For a client already known to be unwelcome that is a lot of asymmetric cryptography spent on saying no, and an answer — a status, a page, a header set — that tells a scanner something about what is in front of it. Refusing in the ClientHello is the cheapest possible no and the quietest: the connection fails to negotiate and there is nothing to fingerprint. It applies to every TLS listener, including HTTP/3, and to nothing else: a plain HTTP listener has no handshake to refuse in, and what arrives there is still refused the ordinary way.",
+      "type": "object",
+      "properties": {
+        "deny_fingerprints": {
+          "description": "DenyFingerprints refuses these TLS fingerprints outright, whatever the ban list says. An entry is a JA4 or JA3 string, or one prefixed \"ja4:\" or \"ja3:\" to name which it is; a JA4 entry ending in \"*\" matches by prefix, which is how a family of clients is named without pinning every extension order.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "log": {
+          "description": "Log records each refusal in the security log (reason \"handshake\"). Default true.",
+          "type": "boolean"
+        },
+        "refuse_banned": {
+          "description": "RefuseBanned refuses a client whose address or TLS fingerprint is on the ban list. Default false: a ban that answers 403 is visible to the operator in the access log, and this makes the refusal invisible there, which is a deliberate trade.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "HeaderMatch": {
       "description": "HeaderMatch is one condition on a request header or cookie: exactly one of Exact, Prefix, Regex or Present. Header names are matched case insensitively and the first value is used; cookie names are exact.",
       "type": "object",
@@ -1551,6 +1714,67 @@
         "status": {
           "description": "Status of the decoy response. Default 200.",
           "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Honeytoken": {
+      "description": "Honeytoken is a credential that exists only to be stolen. It is planted where an attacker will find it — in a decoy this proxy serves, in a repository, in a paste, in a backup — and registered here. Nothing legitimate ever sends one, so a request that presents one is not a signal to weigh against others: it is an attacker replaying what they read, and the only question is what to do about it. The value is not a secret in the usual sense. Its whole purpose is to be read, so it is compared as an ordinary string and it is never written to a log; the logs name the token instead, which is what tells an operator which plant was found. Bodies are not searched. Every request would have to be buffered to do it, and the places a stolen credential is actually presented — the authorization header, an API key header, a cookie, a query parameter — are all in the head.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "description": "Description says where this one was planted, so the alert names the leak rather than only the token.",
+          "type": "string"
+        },
+        "action": {
+          "description": "Action is \"block\" (default) or \"log\". Log records the hit and lets the request continue, which is what a token planted in a place legitimate traffic might also reach needs until it is proven quiet.",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Enabled is false to keep a token configured without acting on it.",
+          "type": "boolean"
+        },
+        "headers": {
+          "description": "Headers narrows the header search to these names. Empty searches every header value, which is the point for a token that might be presented anywhere.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "in": {
+          "description": "In narrows where to look: \"headers\", \"cookies\", \"query\", \"path\". Default: all of them.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mark": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "match": {
+          "description": "Match is \"exact\" (default) or \"contains\". Exact compares the whole field value once the common credential prefixes (\"Bearer \", \"Basic \", \"token \") are stripped; contains finds the token anywhere in the value, for a token planted inside a larger document a client echoes back.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name identifies the token in the logs, the metrics and the management view. It is what an operator sees instead of the value.",
+          "type": "string"
+        },
+        "status": {
+          "description": "Status answers a blocked request. Default 403.",
+          "type": "integer"
+        },
+        "values": {
+          "description": "Values are the planted strings. At least one of Values and ValuesFile is required.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "values_file": {
+          "description": "ValuesFile holds one value per line (blank lines and # comments ignored), for tokens generated by something else. Re-read on reload; must not be world readable.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -2741,6 +2965,14 @@
           "allOf": [
             {
               "$ref": "#/$defs/RouteCORS"
+            }
+          ]
+        },
+        "deceive": {
+          "description": "Deceive answers a client this route no longer trusts with a plausible response instead of the origin's.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Deceive"
             }
           ]
         },

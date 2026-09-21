@@ -481,6 +481,29 @@ func applyDefaults(c *Config) {
 		setDur(&a.ZombieAfter, 720*time.Hour)
 		setDur(&a.SaveInterval, 5*time.Minute)
 	}
+	if d := c.Degradation; d != nil {
+		for i := range d.Levels {
+			if d.Levels[i].Name == "" {
+				d.Levels[i].Name = fmt.Sprintf("levels[%d]", i)
+			}
+		}
+	}
+	for i := range c.Honeytokens {
+		h := &c.Honeytokens[i]
+		if h.Name == "" {
+			h.Name = fmt.Sprintf("honeytokens[%d]", i)
+		}
+		setStr(&h.Match, "exact")
+		setStr(&h.Action, "block")
+		setInt(&h.Status, 403)
+		if h.Mark == nil {
+			d := Duration(24 * time.Hour)
+			h.Mark = &d
+		}
+		if len(h.In) == 0 {
+			h.In = []string{"headers", "cookies", "query", "path"}
+		}
+	}
 	if cp := c.Capture; cp != nil {
 		setStr(&cp.FilePrefix, "xproxy")
 		setDur(&cp.MaxDuration, time.Hour)
@@ -702,10 +725,23 @@ func applyDefaults(c *Config) {
 				}
 			}
 		}
+		if d := r.Deceive; d != nil {
+			setInt(&d.Status, 200)
+			if d.Decoy == "" && d.Body == "" && d.BodyFile == "" {
+				d.Body = "{}"
+				setStr(&d.ContentType, "application/json")
+			}
+			setStr(&d.ContentType, "text/html; charset=utf-8")
+		}
 		if hp := r.Honeypot; hp != nil {
 			setInt(&hp.Status, 200)
 			setStr(&hp.ContentType, "text/html; charset=utf-8")
-			setDur(&hp.Mark, time.Hour)
+			if hp.Mark == nil {
+				// Absent means the usual hour; an explicit 0 means this
+				// honeypot marks nobody.
+				d := Duration(time.Hour)
+				hp.Mark = &d
+			}
 			if hp.Decoy == "" && hp.Body == "" && hp.BodyFile == "" {
 				hp.Decoy = "admin-login"
 			}

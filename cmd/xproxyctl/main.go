@@ -409,6 +409,16 @@ func run(args []string, out, errOut io.Writer) int {
 			_, _ = out.Write(b)
 			return 0
 		}
+		// The pre-handshake policy belongs with the certificates: both
+		// are what a client meets before it has sent a request.
+		var hs proxy.HandshakeStatus
+		if hb, err := c.Raw("/v1/handshake"); err == nil {
+			_ = json.Unmarshal(hb, &hs)
+		}
+		if hs.Enabled {
+			_, _ = fmt.Fprintf(out, "handshake: refuse_banned=%v fingerprints=%d refused=%d\n\n",
+				hs.RefuseBanned, hs.Fingerprints, hs.Refused)
+		}
 		var certs map[string][]tlsconf.CertInfo
 		if err := json.Unmarshal(b, &certs); err != nil {
 			return fail(err)
@@ -976,8 +986,9 @@ func run(args []string, out, errOut io.Writer) int {
 			return 0
 		}
 		var hv struct {
-			Marks  []proxy.Mark `json:"marks"`
-			Decoys []string     `json:"decoys"`
+			Marks       []proxy.Mark             `json:"marks"`
+			Decoys      []string                 `json:"decoys"`
+			Honeytokens []proxy.HoneytokenStatus `json:"honeytokens"`
 		}
 		if err := c.Do("GET", "/v1/honeypot", nil, &hv); err != nil {
 			return fail(err)
@@ -986,6 +997,20 @@ func run(args []string, out, errOut io.Writer) int {
 			return printJSON(out, hv)
 		}
 		_, _ = fmt.Fprintf(out, "decoys: %s\n\n", strings.Join(hv.Decoys, ", "))
+		if len(hv.Honeytokens) > 0 {
+			tt := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+			_, _ = fmt.Fprintln(tt, "TOKEN\tACTION\tMATCH\tVALUES\tFIELDS\tHITS\tLAST HIT\tPLANTED")
+			for _, t := range hv.Honeytokens {
+				last := "-"
+				if !t.LastHit.IsZero() {
+					last = t.LastHit.Format(time.RFC3339)
+				}
+				_, _ = fmt.Fprintf(tt, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
+					t.Name, t.Action, t.Match, t.Values, strings.Join(t.Fields, ","), t.Hits, last, t.Description)
+			}
+			_ = tt.Flush()
+			_, _ = fmt.Fprintln(out)
+		}
 		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(tw, "ADDRESS\tROUTE\tHITS\tFIRST\tLAST\tEXPIRES")
 		for _, m := range hv.Marks {

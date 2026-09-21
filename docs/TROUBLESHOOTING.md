@@ -160,6 +160,11 @@ compute it.
 | 403 with `reason: banned` | `xproxyctl bans`. Unban, or add the range to `bans.exempt_cidrs` |
 | 403 with `reason: waf` | A rule matched. `waf_matched` names it; see [WAF](#waf) |
 | 403 with `reason: honeypot` | The client asked for a honeypot path. That is the honeypot working |
+| 403 with `reason: honeytoken` | The client presented a planted credential. `detail` names the plant; see [Honeytokens](#honeytokens) |
+| 403 on a form submission with `form_guard` in the line | `form_guard` fired. `detail` says which half: `field:<name>` is the hidden field, `too_fast`/`too_old`/`no_form_fetch` is the clock; see [Form honeypots](#form-honeypots) |
+| An endpoint returns empty or wrong data for one client only | A `deceive` block on that route admitted it; see [Deceptive answers](#deceptive-answers) |
+| A client reports the site is slow and is not banned | A `degradation` level admitted it; the access line says `degraded: <level>`. See [The slow lane](#the-slow-lane-degradation) |
+| A TLS error at the client and no access log line | `handshake` refused the connection before it became a request; see [Refusal at the TLS handshake](#refusal-at-the-tls-handshake) |
 | 403 with `reason: cors` | The `Origin` is not allowed by the route's `cors` block |
 | 401 with `WWW-Authenticate: Bearer` | JWT missing or invalid. The security log names the category |
 | 405 on `/.well-known/security.txt` | Only `GET` and `HEAD` are answered there |
@@ -1246,6 +1251,62 @@ the route means either the filter admits everything, or the requests die
 before the filter chain — see [Where a request can
 die](#where-a-request-can-die).
 
+## Form honeypots
+
+[DECEPTION.md](DECEPTION.md) is the chapter behind this section and the
+five that follow it: what each deception control is for, how its
+signals chain into the others, and the order to deploy them in.
+
+
+**Real people are refused with `field:<name>`.** Something is filling
+the hidden field for them, which means it is not hidden enough. A
+password manager will fill an input it can see in the DOM: give it
+`tabindex="-1"` and `autocomplete="off"`. An accessibility tool will
+read a field that is only visually hidden: `aria-hidden="true"` and a
+label that says to leave it empty. And a field positioned off screen
+survives a stylesheet that failed to load, where `display:none` set in
+CSS does not — a person on a page with no styles sees the field and
+fills it in.
+
+**Real people are refused with `too_fast`.** `min_seconds` is set to
+what an average fill takes rather than the shortest honest one. A
+password manager submits a login form in well under a second, a
+one-field newsletter box almost as fast, and a returning user with a
+browser-autofilled address form faster than you would guess. Read
+`form_seconds` in the access log for the denied requests: the
+distribution tells you where the floor belongs. Fields are the half
+with no false positives; timing is the half to tune.
+
+**Real people are refused with `too_old`.** A form left open in a tab
+over lunch is ordinary. `max_seconds` guards against a page harvested
+once and replayed for weeks, so hours, not minutes — and remember a
+reload of the form page refreshes the record.
+
+**Real people are refused with `no_form_fetch`.** `require_fetch` is
+set on a page that can reach the client without a fetch this node saw:
+a CDN or browser cache, a prerender, a form posted from another host,
+or a second proxy node that served the page (the table is per process
+and not shared). Turn it off unless all of those are impossible.
+
+**Nothing is ever refused.** Check the obvious first: the hidden field
+has to be in the served HTML, and its `name` has to match `fields`
+exactly. Then check the filter runs at all — `xproxyctl filters` counts
+denials per instance, and a route that does not list the filter never
+calls it. A submission whose `Content-Type` is not
+`application/x-www-form-urlencoded` is not parsed (by design), and a
+body larger than `max_body_bytes` passes uninspected.
+
+**Denies ban nobody.** A ban trigger names a built-in reason, and the
+filter's default reason is its own name. Set `reason: honeypot` on the
+filter to put its denies in a category a trigger can name.
+
+**Timing stopped working after a traffic increase.** The fetch table
+holds `max_clients` entries and sweeps its older half when full, so a
+busy node forgets the oldest fetches. That is deliberately permissive —
+a forgotten fetch is "no record", which is allowed — but it means the
+timing check quietly covers less. Raise `max_clients`, or rely on
+`fields`, which needs no table.
+
 ## Bot score
 
 **A real browser is scored as automation.** `xproxyctl botscore -top N`
@@ -1269,6 +1330,144 @@ are permanently zero.
 **A client is denied and then denied for ever.** `honeypot_marked` is
 worth 40 on its own and the mark lasts as long as the honeypot route's
 `mark`. `xproxyctl honeypot forget IP` clears it.
+
+## Deceptive answers
+
+**An endpoint "works" but returns nothing useful — for one client.**
+That is `deceive`, and it is meant to look exactly like this. The
+access line for that client carries `deceived: <route>` and a `deceive`
+security event names the route, the path and the method; `xproxyctl
+honeypot` says whether the client is marked and why. `GET /v1/deceive`
+lists the routes that deceive and how often each has.
+
+**A real client was deceived.** Clear the mark (`xproxyctl honeypot
+forget IP`), then fix what marked it: a decoy on a path something real
+reaches, a `bot_score_at` too low for the traffic, or a
+`client_cidrs` range wider than meant. Remember that a deceived write
+never reached the origin, so anything that client sent while deceived
+is gone — check what it was doing before deciding it is only a
+configuration issue.
+
+**Nothing is deceived although the block is there.** The conditions are
+AND-ed with the method narrowing and OR-ed among themselves: `marked`,
+`bot_score_at` and `client_cidrs` each admit on their own, but
+`methods` must also match. A `bot_score_at` needs a `bot_score` filter
+on the route to produce a score at all.
+
+**Is it safe to turn on?** The honest answer is that it is the one
+control here whose failure mode is silent. Run it first with
+`client_cidrs` on a range you have watched in the access log, or with
+`marked: true` and honeypots you trust, and watch `deceived` against
+the request count for a week before widening it.
+
+## The slow lane (degradation)
+
+**A client says the site is slow, and it is not banned.** Look for
+`degraded: <level>` in its access log lines. A level admits a client
+for one of three reasons — a honeypot or honeytoken mark, a bot score
+at or above `bot_score_at`, or a `client_cidrs` range — and the first
+level that admits the request decides, so a wide level above a narrow
+one takes traffic the narrow one was written for. `xproxyctl honeypot`
+shows whether the client is marked and why; `xproxyctl honeypot forget
+IP` clears it, and the next request is served at full speed.
+
+**Everything is degraded.** A level with no condition and no selector
+is refused by validation, so this is a level whose selectors are wider
+than intended: a `client_cidrs` prefix that is shorter than meant, or
+`marked: true` with a honeypot on a path ordinary clients reach. The
+`degraded` counter against the request count is the quickest check.
+
+**A degraded response is not slower.** Three reasons. `bytes_per_second`
+shapes the body, so a small response finishes inside the first
+second's allowance and arrives at full speed — that is deliberate.
+`delay` needs a free tarpit slot (`max_tarpits`); when none is free the
+response is served without it, and `tarpit_overflow` counts that.
+And a shaped response only slows what the proxy writes: a hijacked
+connection (WebSocket, CONNECT) is not shaped.
+
+**Legitimate clients are marked.** That is a honeypot problem rather
+than a degradation one: a decoy on a path something real reaches, or a
+crawler reading a file served honestly. See [Honeypot marks](#honeytokens)
+and give a decoy served honestly `mark: 0s`.
+
+**How much is it costing us?** A held response occupies a tarpit slot
+and a shaped one occupies a connection for longer, which is the trade.
+`in_flight`, `open_connections` and `tarpit_overflow` are the numbers
+to watch; if the tarpit is overflowing, either the delay is too long
+or the level is too wide.
+
+## Refusal at the TLS handshake
+
+**A client reports a TLS error and nothing appears in the access log.**
+That is `handshake` doing its job, and the missing line is the trade it
+makes. Look in the security log for `reason: handshake`: it carries the
+client address, both fingerprints and the detail (`banned` or
+`fingerprint`). `xproxyctl tls` prints the policy and the refusal count
+above the certificates, and `xproxy_tls_handshakes_refused_total` is
+the series to graph.
+
+**Legitimate clients are being refused.** Almost always a
+`deny_fingerprints` prefix that is wider than intended: a JA4 prefix
+names a TLS stack, and browsers share stacks with the tools built on
+them. Take the prefix out, put back the full fingerprints you have
+actually seen in your own logs, and check the `ja4` field in the access
+log for what else matches.
+
+**A banned client still gets a handshake.** `refuse_banned` needs a
+`bans` section (validation refuses it otherwise), and it only refuses
+what the ban list already holds — an address ban, or a fingerprint ban.
+A client banned *during* its connection keeps that connection: the
+refusal is per handshake, and existing connections are not torn down.
+
+**Nothing is refused although the policy is set.** The policy is per
+TLS listener; a plain HTTP listener has no handshake to refuse in, and
+validation warns when no listener has a `tls` section. An HTTP/3
+listener is covered, because QUIC carries the same ClientHello.
+
+**How to test one.** `openssl s_client -connect host:443 -servername
+name` shows the failed negotiation; the proxy's security log line for
+the same moment names the reason. There is deliberately nothing in the
+alert for a client to read.
+
+## Honeytokens
+
+**A token never fires, although the decoy holding it was read.** Three
+things in order. The value must be the one actually served — compare it
+against the decoy body, character for character, since a trailing
+newline or a shortened key is a different string. The field must be one
+the token looks in: `in` defaults to all four, but a token narrowed to
+`cookies` will not see the same value in a header. And the match mode
+has to suit the plant: `exact` compares the whole field value once a
+`Bearer `/`Basic `/`Token `/`ApiKey ` scheme is stripped, so a token
+sent as `key=<token>&x=1` inside one parameter value matches, while one
+embedded in a longer string needs `match: contains`.
+
+**A token fires on traffic that never saw the plant.** It was planted
+somewhere real traffic reaches, or the value is not distinctive enough
+— validation refuses values under 8 characters (16 for `contains`), but
+a longer value that happens to be a common identifier will still
+collide. Switch it to `action: log`, watch what arrives, and re-plant.
+
+**The value appears in a log.** It should not: a hit logs the token
+name, the field and the description. If the *value* is in an access log
+line, it arrived somewhere the access log records — the path. Move that
+plant to a header, a cookie or a query parameter, none of which the
+access log writes (`query_len` is a length, not the query).
+
+**Where did the hit come from?** The security event carries
+`client_ip`, `field` and `token`; the access line for the same
+`request_id` carries the rest. The client is also marked, so its later
+requests are labelled `honeypot_marked` and `xproxyctl honeypot` shows
+the address with the token name as its route.
+
+**Nothing is banned after a hit.** The ban needs a trigger on reason
+`honeytoken`; threshold 1 is the right value, because nobody sends one
+by accident. Without `bans`, a hit is refused and recorded but the next
+request is treated on its own merits.
+
+**A plant has to be retired.** Set `enabled: false` to keep the entry
+and stop watching, or remove it. The counters survive a reload but not
+a restart, so record the hit count before a restart if it matters.
 
 ## Origin lock
 
@@ -2009,6 +2208,8 @@ innocent.
 | `jwt` | JWT verification | yes |
 | `icap` | An ICAP service | yes |
 | `honeypot` | A honeypot route | yes |
+| `honeytoken` | A request presenting a planted credential; `detail` is the token name | yes |
+| `handshake` | The `handshake` section, before the connection became a request; `detail` is `banned` or `fingerprint` | no (it is already a refusal of what the ban list holds) |
 | `challenge` | The challenge gate | yes (only the client's own mistakes) |
 | `sensitive_data` | The DLP filter | no |
 | `account_abuse` | `account_guard` | yes |

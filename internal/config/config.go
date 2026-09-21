@@ -62,6 +62,14 @@ type Config struct {
 	// SecurityTxt serves a virtual security.txt (RFC 9116) for the hosts
 	// each entry names, before routing.
 	SecurityTxt []SecurityTxt `yaml:"security_txt"`
+	// Honeytokens are planted credentials. A request presenting one has
+	// read something it should not have.
+	Honeytokens []Honeytoken `yaml:"honeytokens"`
+	// Handshake refuses clients before the TLS handshake completes.
+	Handshake *Handshake `yaml:"handshake"`
+	// Degradation serves a suspect client slowly rather than refusing
+	// it outright.
+	Degradation *Degradation `yaml:"degradation"`
 	// Capture writes the exchanges the proxy handled as pcapng files,
 	// for the flows its rules select.
 	Capture *Capture `yaml:"capture"`
@@ -1271,6 +1279,9 @@ type Route struct {
 	Respond *Respond `yaml:"respond"`
 	// Honeypot serves a decoy and marks the client instead of proxying.
 	Honeypot *Honeypot `yaml:"honeypot"`
+	// Deceive answers a client this route no longer trusts with a
+	// plausible response instead of the origin's.
+	Deceive *Deceive `yaml:"deceive"`
 
 	StripPrefix string `yaml:"strip_prefix"`
 	RewritePath string `yaml:"rewrite_path"`
@@ -1830,6 +1841,60 @@ type Respond struct {
 	Body   string `yaml:"body"`
 }
 
+// Deceive answers a client the proxy no longer trusts with something
+// plausible instead of with the origin's answer — or with a refusal.
+//
+// A refusal is information. A scanner that gets 403 knows the request
+// it sent was the interesting one, and varies it until something is
+// not refused; the refusal is the oracle that tells it when it has
+// found the way through. An answer that looks ordinary gives it
+// nothing to steer by: the crawl completes, the data is wrong, and the
+// request that would have worked looks exactly like the one that did
+// not.
+//
+// It is a deliberately sharp tool, and the rules follow from that:
+//
+//   - It applies only to clients the proxy already has a reason to
+//     distrust — a honeypot or honeytoken mark, a bot score, a named
+//     network. A route with no condition is refused at validation,
+//     because a deceive that admits everyone is an outage that looks
+//     like a feature.
+//   - The write never reaches the origin. That is the point for a
+//     POST, and it means a false positive loses a client's data, so
+//     the conditions are worth being sure of.
+//   - It is loud on the inside. The access log line carries
+//     deceived: <route>, a security event records it, and the counter
+//     and metric are separate from every other refusal, so nobody
+//     debugs a "working" endpoint for a week.
+type Deceive struct {
+	// Marked admits a client a honeypot route or a honeytoken marked.
+	Marked bool `yaml:"marked"`
+	// BotScoreAt admits a request a bot_score filter scored at or above
+	// this. 0 does not look at the score.
+	BotScoreAt int `yaml:"bot_score_at"`
+	// ClientCIDRs admits these client networks.
+	ClientCIDRs []string `yaml:"client_cidrs"`
+	// Methods narrows the deception to these methods; empty is all of
+	// them.
+	Methods []string `yaml:"methods"`
+	// Status answers the deceived request. Default 200: the whole
+	// point is an answer that does not look like a refusal.
+	Status int `yaml:"status"`
+	// Decoy names a built-in decoy body (see routes[].honeypot), Body
+	// is a literal one and BodyFile is read from disk at load and
+	// reload. Exactly one is required.
+	Decoy    string `yaml:"decoy"`
+	Body     string `yaml:"body"`
+	BodyFile string `yaml:"body_file"`
+	// ContentType of Body and BodyFile. Default text/html; a decoy
+	// brings its own.
+	ContentType string `yaml:"content_type"`
+	// Mark labels the client for this long, as a honeypot does, so a
+	// client that was deceived once stays deceived while the mark
+	// lasts. Default 0: the condition that admitted it decides.
+	Mark Duration `yaml:"mark"`
+}
+
 // Honeypot is a decoy action: the response looks like a real page of the
 // chosen kind, the client is logged as a security event, marked for
 // `mark` so later requests on any route carry the label, and counted
@@ -1849,8 +1914,20 @@ type Honeypot struct {
 	// Delay holds the connection before answering, in a tarpit slot.
 	// Default 0, at most 60s.
 	Delay Duration `yaml:"delay"`
-	// Mark is how long the client stays marked. Default 1h.
-	Mark Duration `yaml:"mark"`
+	// Mark is how long the client stays marked. Default 1h; an
+	// explicit 0 marks nobody, which is what a decoy served honestly
+	// (robots.txt, sitemap.xml) wants: a crawler that reads it has
+	// done nothing wrong yet.
+	Mark *Duration `yaml:"mark"`
+}
+
+// MarkFor is how long a client that touched this honeypot stays
+// marked, or 0 for a honeypot that marks nobody.
+func (h *Honeypot) MarkFor() time.Duration {
+	if h == nil || h.Mark == nil {
+		return 0
+	}
+	return h.Mark.D()
 }
 
 // SecurityTxt is one virtual security.txt document (RFC 9116) and the
@@ -1933,6 +2010,161 @@ type SecurityTxt struct {
 	// CacheFor sets the Cache-Control max-age of the response. Default
 	// 1h; 0 sends no Cache-Control.
 	CacheFor Duration `yaml:"cache_for"`
+}
+
+// Degradation serves a suspect client slowly instead of refusing it.
+//
+// The proxy's other answers are binary: served, or refused. For a
+// client that has done something wrong but not enough to ban — touched
+// a decoy, scored badly, arrived from a range with a history — both
+// are wrong. Serving it in full funds the next request. Refusing it
+// tells it exactly which request to change, and hands a scanner a
+// clean signal to tune against.
+//
+// A degraded client is served, correctly, slowly. There is nothing to
+// tune against and nothing to report as broken, and a crawl that cost
+// the scanner nothing now costs it the thing it has least of.
+//
+// Levels are tried in order and the first that admits the request
+// decides, so the narrowest goes first.
+type Degradation struct {
+	Levels []DegradeLevel `yaml:"levels"`
+}
+
+// DegradeLevel is one rule: who is degraded, and by how much.
+type DegradeLevel struct {
+	// Name identifies the level in the access log, the metrics and the
+	// management view.
+	Name string `yaml:"name"`
+	// Marked admits a client a honeypot route or a honeytoken marked.
+	Marked bool `yaml:"marked"`
+	// BotScoreAt admits a request whose bot_score filter scored it at
+	// or above this. 0 does not look at the score.
+	BotScoreAt int `yaml:"bot_score_at"`
+	// ClientCIDRs narrows the level to these client networks.
+	ClientCIDRs []string `yaml:"client_cidrs"`
+	// Routes narrows it to these route names.
+	Routes []string `yaml:"routes"`
+	// Methods narrows it to these methods.
+	Methods []string `yaml:"methods"`
+	// BytesPerSecond shapes the response body. 0 does not shape.
+	BytesPerSecond int64 `yaml:"bytes_per_second"`
+	// Delay holds the response for this long before it is written, in a
+	// tarpit slot rather than a request slot. At most 60s.
+	Delay Duration `yaml:"delay"`
+	// Close ends the connection after the response, so the client pays
+	// for a new one every time.
+	Close bool `yaml:"close"`
+}
+
+// Handshake decides who is refused before a TLS handshake completes.
+//
+// Every other control in this file answers a request: the handshake
+// runs, a certificate is chosen, keys are agreed, the request is
+// parsed, and then the proxy says no. For a client already known to be
+// unwelcome that is a lot of asymmetric cryptography spent on saying
+// no, and an answer — a status, a page, a header set — that tells a
+// scanner something about what is in front of it.
+//
+// Refusing in the ClientHello is the cheapest possible no and the
+// quietest: the connection fails to negotiate and there is nothing to
+// fingerprint.
+//
+// It applies to every TLS listener, including HTTP/3, and to nothing
+// else: a plain HTTP listener has no handshake to refuse in, and what
+// arrives there is still refused the ordinary way.
+type Handshake struct {
+	// RefuseBanned refuses a client whose address or TLS fingerprint is
+	// on the ban list. Default false: a ban that answers 403 is
+	// visible to the operator in the access log, and this makes the
+	// refusal invisible there, which is a deliberate trade.
+	RefuseBanned bool `yaml:"refuse_banned"`
+	// DenyFingerprints refuses these TLS fingerprints outright,
+	// whatever the ban list says. An entry is a JA4 or JA3 string, or
+	// one prefixed "ja4:" or "ja3:" to name which it is; a JA4 entry
+	// ending in "*" matches by prefix, which is how a family of
+	// clients is named without pinning every extension order.
+	DenyFingerprints []string `yaml:"deny_fingerprints"`
+	// Log records each refusal in the security log (reason
+	// "handshake"). Default true.
+	Log *bool `yaml:"log"`
+}
+
+// LogRefusals reports whether handshake refusals are logged (default
+// true).
+func (h *Handshake) LogRefusals() bool { return h == nil || h.Log == nil || *h.Log }
+
+// Honeytoken is a credential that exists only to be stolen. It is
+// planted where an attacker will find it — in a decoy this proxy
+// serves, in a repository, in a paste, in a backup — and registered
+// here. Nothing legitimate ever sends one, so a request that presents
+// one is not a signal to weigh against others: it is an attacker
+// replaying what they read, and the only question is what to do about
+// it.
+//
+// The value is not a secret in the usual sense. Its whole purpose is
+// to be read, so it is compared as an ordinary string and it is never
+// written to a log; the logs name the token instead, which is what
+// tells an operator which plant was found.
+//
+// Bodies are not searched. Every request would have to be buffered to
+// do it, and the places a stolen credential is actually presented —
+// the authorization header, an API key header, a cookie, a query
+// parameter — are all in the head.
+type Honeytoken struct {
+	// Name identifies the token in the logs, the metrics and the
+	// management view. It is what an operator sees instead of the value.
+	Name string `yaml:"name"`
+	// Description says where this one was planted, so the alert names
+	// the leak rather than only the token.
+	Description string `yaml:"description"`
+	// Values are the planted strings. At least one of Values and
+	// ValuesFile is required.
+	Values []string `yaml:"values"`
+	// ValuesFile holds one value per line (blank lines and # comments
+	// ignored), for tokens generated by something else. Re-read on
+	// reload; must not be world readable.
+	ValuesFile string `yaml:"values_file"`
+	// In narrows where to look: "headers", "cookies", "query",
+	// "path". Default: all of them.
+	In []string `yaml:"in"`
+	// Headers narrows the header search to these names. Empty searches
+	// every header value, which is the point for a token that might be
+	// presented anywhere.
+	Headers []string `yaml:"headers"`
+	// Match is "exact" (default) or "contains". Exact compares the whole
+	// field value once the common credential prefixes ("Bearer ",
+	// "Basic ", "token ") are stripped; contains finds the token
+	// anywhere in the value, for a token planted inside a larger
+	// document a client echoes back.
+	Match string `yaml:"match"`
+	// Action is "block" (default) or "log". Log records the hit and
+	// lets the request continue, which is what a token planted in a
+	// place legitimate traffic might also reach needs until it is
+	// proven quiet.
+	Action string `yaml:"action"`
+	// Status answers a blocked request. Default 403.
+	Status int `yaml:"status"`
+	// Mark labels the client for this long, as a honeypot route does,
+	// so its later requests carry honeypot_marked. Default 24h: a
+	// stolen credential says more about the client than one probe for
+	// a decoy path does, so the label lasts longer. An explicit 0
+	// marks nobody.
+	Mark *Duration `yaml:"mark"`
+	// Enabled is false to keep a token configured without acting on it.
+	Enabled *bool `yaml:"enabled"`
+}
+
+// IsEnabled reports whether the token is active (default true).
+func (h Honeytoken) IsEnabled() bool { return h.Enabled == nil || *h.Enabled }
+
+// MarkFor is how long a client that presented this token stays marked,
+// or 0 for a token that marks nobody.
+func (h *Honeytoken) MarkFor() time.Duration {
+	if h == nil || h.Mark == nil {
+		return 0
+	}
+	return h.Mark.D()
 }
 
 // Capture writes the exchanges the proxy handled as pcapng files that

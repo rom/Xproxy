@@ -260,6 +260,204 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **[docs/DECEPTION.md](DECEPTION.md), the chapter behind the whole
+  family.** Honeypot routes and decoys, honeytokens, form honeypots,
+  the WAF files, the slow lane, deceptive answers and refusal at the
+  handshake were each documented where they are configured, and
+  nowhere as one thing. They are one thing: a cheap, unambiguous event
+  at the top (a client asked for a path that does not exist), a mark
+  carrying the judgement, and progressively more consequential actions
+  below it. The chapter sets out the rule they all follow — a
+  deception must be somewhere no legitimate client goes, or it is an
+  outage with a clever name — ranks the controls by the false-positive
+  rate they actually have, so the actions with consequences sit behind
+  the signals with none, and gives a build-out order in eleven steps
+  whose first six cannot refuse anybody. It also says what deception
+  is not: not a substitute for a fix, not an attack, not a licence to
+  lie to real users, and not free of the retention rules the access
+  log lives under.
+
+- **Thirty-eight more decoys, and the routes to serve them on.** The
+  table goes from 77 bodies to 115: source control, build and artefact
+  servers (`gitea`, `teamcity`, `nexus`, `svn-entries`,
+  `idea-workspace`), container and cluster management, which is what
+  the mining crawlers scan for (`portainer`, `rancher`, `etcd`,
+  `nomad`, `spark`, `hadoop-yarn`, `airflow`), database consoles and
+  analytics front ends (`pgadmin`, `mongo-express`, `metabase`,
+  `superset`, `zabbix`), content management systems fingerprinted by
+  version before anything is attempted (`joomla`, `drupal`, `magento`,
+  `moodle`, `zimbra`), firewalls and remote access gateways
+  (`pfsense`, `sonicwall`, `paloalto`, `cisco-asa`, `mikrotik`), the
+  framework debug consoles and the probes that hunt them — the
+  clearest signal in the set, because nothing but a scanner asks for a
+  debugger (`werkzeug-console`, `symfony-profiler`,
+  `laravel-telescope`, `thinkphp`, `phpunit-eval`, `spring-gateway`) —
+  and the files a traversal or a misconfigured server hands over,
+  which are also where a honeytoken belongs (`etc-passwd`,
+  `firebase-config`, `wp-json-users`, `dockerfile`, `rails-secrets`).
+  Every one carries a version string or a name worth reading, none
+  carries a real credential, and every one is wired up in
+  `examples/security/honeypots.yaml` with the paths and the mark
+  duration it is worth serving on.
+
+- **A third custom rule file, `examples/waf/attack-surface-rules.conf`.**
+  Twenty-seven rules for the classes of attack that arrive as a
+  recognisable shape rather than as a payload the application will
+  mis-parse: cloud metadata addresses and non-web schemes in a
+  parameter, the files a traversal asks for and the PHP stream
+  wrappers that turn an inclusion into execution, serialised Java, PHP
+  and YAML objects, external entity declarations, query operators
+  where a field name belongs (in the query string and as a JSON key),
+  a shell command after a separator, Spring's SpEL routing header and
+  Shellshock, the two Transfer-Encoding spellings that let two servers
+  disagree about where a request ends, the routing headers that poison
+  a cache and the static extension bolted onto a private path,
+  prototype pollution parameter names, header injection and off-site
+  redirects, debugger parameters, uploads that execute in a browser,
+  the scanners that still announce themselves, and interpreter error
+  pages and directory listings refused on the way out. Two rules score
+  rather than refuse, and two support rules (the 22900 block) make a
+  JSON body inspectable without the CRS and an XML body's declarations
+  visible at all — with the cost of the latter documented in the file.
+  Shape rules are blunter than payload rules, so the file says so and
+  the example `waf.yaml` loads it into a detect-mode profile. The
+  tests put one request through every rule against an engine with no
+  Core Rule Set, so a rule that stops matching cannot hide behind a
+  CRS rule that catches the same request.
+
+- **Hidden-field and timing honeypots on forms (filter kind
+  `form_guard`).** A form bot does two things a person does not: it
+  fills in every field it finds, including the one nobody can see, and
+  it submits faster than anyone could have read the page. `fields`
+  names inputs that must arrive empty — the classic hidden field, off
+  screen and `aria-hidden`, which a person never sees and so cannot
+  fill in; it is the rare signal with no false-positive rate to trade
+  against a detection rate. `min_seconds` and `max_seconds` compare the
+  submission against the last fetch of a page under `form_paths`,
+  needing no JavaScript and no cookie, and `require_fetch` refuses a
+  submission with no fetch on record for a deployment where the form
+  page cannot reach a client any other way. Both halves are searched in
+  the query string as well as the body, only
+  `application/x-www-form-urlencoded` is parsed, and the body is
+  buffered to `max_body_bytes` and replayed byte for byte, so the
+  application receives exactly what the client sent. Denies carry a
+  detail — `field:<name>`, `too_fast`, `too_old`, `no_form_fetch` — and
+  add `form_seconds` to the access log line, which is what tells you
+  where the floor belongs before you tighten it. The fetch table is
+  bounded by `max_clients` and sweeps its older half when full, in the
+  permissive direction: a forgotten fetch is "no record", which is
+  allowed, so a busy node never starts refusing people.
+  `examples/filters/form-guard.yaml`.
+
+- **Deceptive answers on real routes (`routes[].deceive`).** A refusal
+  is information: a scanner that gets 403 has learned that the request
+  it sent was the interesting one, and it varies that request until
+  something is not refused — the refusal is the oracle that tells it
+  when it has found the way through. A route with `deceive` answers a
+  client it no longer trusts with something ordinary instead. The crawl
+  completes, the data is wrong, and the request that would have worked
+  looks exactly like the one that did not.
+
+  Clients are admitted by `marked` (a honeypot or honeytoken mark),
+  `bot_score_at` or `client_cidrs`, narrowed by `methods`; the answer
+  is a literal body, a file or one of the built-in decoys, with a
+  status that defaults to 200. The origin is never asked, so a deceived
+  write is discarded — the point for a `POST`, and the reason the
+  conditions are worth being sure of.
+
+  It is the one control here whose failure mode looks like success, so
+  it is built to be hard to enable by accident and impossible to miss
+  once enabled: a route with no condition is refused at validation,
+  every route that deceives raises an advice line, and each deceived
+  request produces a `deceive` security event, a `deceived: <route>`
+  field in the access log, a counter, `xproxy_deceived_total{route}`
+  and a row in `GET /v1/deceive`. Nothing is added to the response,
+  because anything added is the tell.
+
+- **Graduated degradation (`degradation`).** Every other answer the
+  proxy gives is binary: served, or refused. For a client that has done
+  something wrong but not enough to ban — touched a decoy, scored
+  badly, arrived from a range with a history — both are wrong. Serving
+  it in full funds the next request; refusing it tells it exactly which
+  request to change, and hands a scanner the signal it tunes against.
+
+  A degradation level serves that client correctly and slowly:
+  `bytes_per_second` shapes the body through a token bucket that
+  flushes as it goes (so the client sees a slow link rather than a late
+  buffer), `delay` holds the response in a tarpit slot rather than a
+  request slot, and `close` ends the connection so the next request
+  costs a fresh handshake. Levels admit a client by `marked`,
+  `bot_score_at`, `client_cidrs`, `routes` or `methods`; the first
+  level that admits a request decides.
+
+  Nothing is added to the response for the client to read — the page is
+  the real page — so there is nothing to report as broken and nothing
+  to tune against. `degraded: <level>` is in the access log,
+  `xproxy_degraded_total{level}` counts it, and `GET /v1/degradation`
+  reports the levels. Validation refuses a level that would degrade
+  every request, and one that degrades nothing.
+
+- **Refusal at the TLS handshake (`handshake`).** A banned client still
+  got a full handshake: keys agreed, certificate sent, request parsed,
+  and then a 403. That is an asymmetric key exchange spent on a
+  refusal, and an answer a scanner can read — the certificate, the
+  negotiated cipher, the error page, the header set. The new section
+  refuses in the ClientHello instead: `refuse_banned` turns an existing
+  address or fingerprint ban into a failed negotiation, and
+  `deny_fingerprints` refuses a TLS stack outright, by full JA4 or JA3,
+  or by a JA4 prefix ending in `*` for a family of clients. It covers
+  every TLS listener including HTTP/3, since QUIC carries the same
+  hello.
+
+  What it costs is the record, and the documentation says so where an
+  operator will meet it: a refused connection never becomes a request,
+  so there is no access log line, no request id, no route and no
+  filter. The security log (reason `handshake`, detail `banned` or
+  `fingerprint`, both fingerprints and the address),
+  `xproxy_tls_handshakes_refused_total`, `GET /v1/handshake` and the
+  line `xproxyctl tls` now prints above the certificates are what
+  remain. Validation says the same as advice, refuses `refuse_banned`
+  without a `bans` section, and warns when no listener has TLS at all.
+
+- **Honeytokens: the hook on the bait (`honeytokens`).** The decoys
+  hand out an AWS key, a database password, a connection string, a
+  private key block. Nothing watched for their use, so a scanner read
+  the file and the proxy learned only that the file was read. A new
+  top-level section registers the planted values — in a decoy, a
+  repository, a paste, a backup, a document, a staging database — and
+  any request presenting one is refused before routing, counted,
+  logged and marked.
+
+  It is unlike every other control in the configuration in one
+  respect: nothing legitimate ever sends one, so there is no score to
+  tune and no false-positive rate to trade against a detection rate. A
+  ban trigger on reason `honeytoken` with `threshold: 1` is the right
+  threshold, and a single hit is worth an alert.
+
+  Each token names where it was planted, so the alert identifies the
+  leak and not only the token. `in` chooses where to look — headers
+  (each value, again with a `Bearer `, `Basic `, `Token ` or `ApiKey `
+  scheme stripped, and a Basic credential decoded into user and
+  password), cookies, query parameters, and the path with each of its
+  segments — and `headers` narrows that to named headers. `match:
+  contains` finds a token planted inside a document a client echoes
+  back; the default compares whole values. Bodies are not searched,
+  because every request would have to be buffered to do it and a
+  stolen credential is presented in the head. Values come from the
+  configuration or from a `values_file`, and the work per request is
+  bounded (256 candidate strings, 8 KiB scanned per value) because a
+  client chooses how many headers it sends.
+
+  The value is never written to a log: a hit names the token, the
+  field and the description, so finding a plant does not copy the
+  credential into a second place. Validation refuses a value short
+  enough to collide with real traffic (8 characters, 16 for
+  `contains`), refuses the same value planted twice, and advises
+  against leaving a token in `log` mode. Hits survive a reload;
+  `GET /v1/honeypot` and `xproxyctl honeypot` list the plants with
+  their hits and last hit, and `xproxy_honeytoken_hits_total{token}`
+  counts them. `examples/security/honeytokens.yaml`.
+
 - **Twenty more decoys, and the routes to serve them.** The honeypot
   table goes from 57 bodies to 77, and every one of them is wired up in
   `examples/security/honeypots.yaml`. New: `gcp-metadata` and
@@ -496,6 +694,17 @@ peer that names itself, an agent that reports its host name, a
 WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
+
+- `routes[].honeypot.mark: 0s` was silently replaced by the one-hour
+  default, because the field could not tell an absent value from a
+  zero one. The shipped example gives the `robots` route exactly that,
+  so a search engine that read `robots.txt` — which is what the file
+  is for, and what the route serves it honestly for — was marked, and
+  with the sweep trigger in the same example, banned. Reading the map
+  now marks nobody; asking for what it names still does, which was
+  always the point. `mark` is a pointer internally, so `0s` means zero
+  for honeypots and honeytokens alike, and a test drives a crawler
+  through both routes.
 
 - A `denied: true` capture rule missed the refusals decided before
   routing — a ban, the maintenance gate, a malformed `Host`, the

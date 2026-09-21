@@ -1,0 +1,76 @@
+# Filters example: hidden-field and timing honeypots on forms.
+# Validate: xproxy -config examples/filters/form-guard.yaml -validate
+#
+# Add the hidden field to the form the application serves; nothing else
+# in the page changes, and no JavaScript is involved:
+#
+#   <div style="position:absolute;left:-9999px" aria-hidden="true">
+#     <label>Leave this empty<input type="text" name="contact_reason"
+#            tabindex="-1" autocomplete="off"></label>
+#   </div>
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+filters:
+  # Sign-up: the hidden field, plus a floor on how fast the form can be
+  # filled in and a ceiling on how stale the page may be.
+  - name: signup-guard
+    kind: form_guard
+    stage: before_auth
+    options:
+      fields: [contact_reason, website]
+      min_seconds: 2
+      max_seconds: 3600
+      form_paths: [/signup]
+      # A bannable category, so the trigger below can see these denies:
+      # a ban trigger names a built-in reason, and a filter opts into one
+      # by setting it. Leave `reason` unset and the denies are logged
+      # under the filter's own name instead, and ban nobody.
+      reason: honeypot
+  # Contact form: the hidden field only. No timing, so a cached or
+  # prerendered page cannot produce a refusal.
+  - name: contact-guard
+    kind: form_guard
+    options:
+      fields: [company_url]
+      status: 422
+  # Password reset: the page is served from this proxy and nowhere
+  # else, so a submission with no fetch on record is a submission that
+  # never loaded the form.
+  - name: reset-guard
+    kind: form_guard
+    options:
+      fields: [middle_name]
+      min_seconds: 1
+      max_seconds: 900
+      form_paths: [/account/reset]
+      require_fetch: true
+      methods: [POST]
+bans:
+  triggers:
+    # A form bot that keeps trying is worth an hour of nothing.
+    - {name: form-bots, reasons: [honeypot], threshold: 5, window: 10m, duration: 1h}
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.1.10:8080"}]
+routes:
+  - name: signup
+    paths: [/signup]
+    filters: [signup-guard]
+    upstream: app
+  - name: contact
+    paths: [/contact]
+    filters: [contact-guard]
+    upstream: app
+  - name: reset
+    paths: [/account/reset]
+    filters: [reset-guard]
+    upstream: app
+  - name: app
+    paths: [/]
+    upstream: app

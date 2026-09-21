@@ -70,6 +70,7 @@ type reqState struct {
 	canary     bool   // the response came from a canary endpoint
 	cacheKey   string
 	marked     bool         // client previously hit a honeypot
+	degraded   string       // the degradation level serving this request, if any
 	pcapAsked  bool         // the capture hook ran for this request
 	mirror     string       // sent, dropped or body_too_large on a mirrored route
 	bodyDigest string       // set when the origin signature covers the body
@@ -229,6 +230,18 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	st.path = netutil.CleanPath(folded)
 	st.grpcWeb = isGRPCWeb(r)
 	st.grpc = isGRPC(r) || st.grpcWeb || isGRPCWebPreflight(r)
+
+	// A planted credential, presented back to us. Checked before
+	// routing, because a token read from a decoy can be sent anywhere,
+	// and before the challenge and security.txt paths, because a
+	// scanner replaying one is not a browser to be challenged.
+	if rt.honeytokens != nil {
+		if h, where := rt.honeytokens.check(r, st.path); h != nil {
+			if s.honeytokenHit(rw, r, st, h, where) {
+				return
+			}
+		}
+	}
 
 	// Reserved challenge paths, served on every host.
 	if ch := s.challenger.Load(); ch != nil && strings.HasPrefix(st.path, "/.xproxy/") {
@@ -581,8 +594,26 @@ admitted:
 		r = r.WithContext(ctx)
 	}
 
+	// The slow lane. Applied once the route is matched and the filters
+	// have run, so a level can read the mark and the bot score, and
+	// before the answer is produced, so it shapes whatever the action
+	// below writes.
+	if hold := s.applyDegradation(rw, r, st); hold > 0 {
+		if !s.holdDegraded(r, hold) {
+			// The client gave up while it was held. Nothing to serve.
+			s.stats.ClientAborts.Add(1)
+			rw.status, rw.wrote = 499, true
+			return
+		}
+	}
+
 	// Actions.
 	switch {
+	case cr.deceive != nil && cr.deceive.admits(st, r):
+		// Before every other action: a client this route no longer
+		// trusts gets a plausible answer rather than the origin's, and
+		// its writes never reach the origin at all.
+		s.deceive(rw, r, st, cr)
 	case cr.cfg.Redirect != nil:
 		cr.respOps.apply(rw.Header(), &tvars{r: r, st: st})
 		http.Redirect(rw, r, cr.redirectTo.Expand(&tvars{r: r, st: st}), cr.cfg.Redirect.Status)

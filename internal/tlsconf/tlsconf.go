@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -37,6 +38,12 @@ type Reloadable struct {
 	Fingerprints *FingerprintTable
 	// QUIC marks the config as serving HTTP/3 (JA4 prefix "q").
 	QUIC bool
+	// Refuse, when set, is asked about every ClientHello before the
+	// handshake completes. A non-empty reason aborts it: the client
+	// gets a failed negotiation and nothing to fingerprint, and the
+	// proxy spends no key exchange on a client it was going to refuse
+	// anyway.
+	Refuse func(remote net.Addr, fp Fingerprint) string
 
 	// ocsp and ct come from the listener's tls section.
 	ocsp    *config.OCSPStapling
@@ -154,11 +161,25 @@ func issuerOf(c *tls.Certificate) *x509.Certificate {
 	return issuer
 }
 
-// recordFingerprint is installed as GetConfigForClient; it never changes
-// the configuration, it only observes the hello.
+// ErrRefused aborts a handshake the Refuse hook turned down. The text
+// reaches no client: a TLS handshake that fails carries an alert, not a
+// message, which is the point of refusing here.
+var ErrRefused = errors.New("handshake refused")
+
+// recordFingerprint is installed as GetConfigForClient. It observes the
+// hello, and asks Refuse whether this client gets a handshake at all.
 func (r *Reloadable) recordFingerprint(h *tls.ClientHelloInfo) (*tls.Config, error) {
-	if r.Fingerprints != nil && h.Conn != nil && h.Conn.RemoteAddr() != nil {
-		r.Fingerprints.Put(h.Conn.RemoteAddr().String(), Compute(h, r.QUIC))
+	if h.Conn == nil || h.Conn.RemoteAddr() == nil {
+		return nil, nil //nolint:nilnil // nil config keeps the parent config
+	}
+	fp := Compute(h, r.QUIC)
+	if r.Fingerprints != nil {
+		r.Fingerprints.Put(h.Conn.RemoteAddr().String(), fp)
+	}
+	if r.Refuse != nil {
+		if reason := r.Refuse(h.Conn.RemoteAddr(), fp); reason != "" {
+			return nil, fmt.Errorf("%w: %s", ErrRefused, reason)
+		}
 	}
 	return nil, nil //nolint:nilnil // nil config keeps the parent config
 }

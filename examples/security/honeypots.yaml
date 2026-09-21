@@ -83,7 +83,7 @@ routes:
     paths: [/.kube/config]
     honeypot: {decoy: kubeconfig, mark: 6h, delay: 2s}
   - name: hp-compose
-    paths: [/docker-compose.yml, /docker-compose.yaml, /Dockerfile]
+    paths: [/docker-compose.yml, /docker-compose.yaml]
     honeypot: {decoy: docker-compose, mark: 1h}
   - name: hp-htpasswd
     paths: [/.htpasswd, /.htaccess]
@@ -154,7 +154,7 @@ routes:
     paths: [/appsettings.json, /appsettings.Production.json]
     honeypot: {decoy: appsettings, mark: 6h, delay: 2s}
   - name: hp-rails
-    paths: [/config/database.yml, /config/secrets.yml, /config/master.key]
+    paths: [/config/database.yml, /config/master.key]
     honeypot: {decoy: database-yml, mark: 6h, delay: 2s}
   - name: hp-nginx-conf
     paths: [/nginx.conf, /etc/nginx/nginx.conf, /conf/nginx.conf]
@@ -281,7 +281,7 @@ routes:
 
   # ---- Application internals ----------------------------------------
   - name: hp-wp-users
-    paths: [/wp-json/wp/v2/users, /wp-json/wp/v2/pages, /author/]
+    paths: [/wp-json/wp/v2/pages, /author/]
     honeypot: {decoy: wp-users, mark: 1h}
   - name: hp-graphql
     paths: [/graphql, /graphiql, /v1/graphql, /api/graphql]
@@ -308,6 +308,145 @@ routes:
   - name: hp-webshell
     paths: [/shell.php, /cmd.php, /up.php, /alfa.php, /wso.php, /c99.php, /upload.php]
     honeypot: {decoy: webshell, mark: 6h, delay: 5s}
+
+  # ---- Source control, build and artefact servers -------------------
+  # What a scanner wants here is the credentials inside, not the
+  # service. A day, because whoever finds one comes back.
+  - name: hp-gitea
+    paths: [/gitea, /gitea/user/login]
+    honeypot: {decoy: gitea, mark: 24h, delay: 2s}
+  - name: hp-teamcity
+    paths: [/teamcity, /login.html]
+    honeypot: {decoy: teamcity, mark: 24h, delay: 2s}
+  - name: hp-nexus
+    paths: [/nexus, /service/rest/v1/components]
+    honeypot: {decoy: nexus, mark: 24h, delay: 2s}
+  - name: hp-svn
+    paths: [/.svn/entries, /.svn/wc.db]
+    honeypot: {decoy: svn-entries, mark: 24h, delay: 3s}
+  - name: hp-idea
+    paths: [/.idea/workspace.xml, /.idea/modules.xml]
+    honeypot: {decoy: idea-workspace, mark: 24h, delay: 3s}
+
+  # ---- Container and cluster management ------------------------------
+  # Mining crawlers scan these in bulk; they are worth six hours and a
+  # tarpit each.
+  - name: hp-portainer
+    paths: [/portainer, /api/status]
+    honeypot: {decoy: portainer, mark: 6h, delay: 2s}
+  - name: hp-rancher
+    paths: [/rancher, /v3/clusters]
+    honeypot: {decoy: rancher, mark: 6h, delay: 2s}
+  - name: hp-etcd
+    paths: [/v2/keys]
+    honeypot: {decoy: etcd, mark: 24h, delay: 2s}
+  - name: hp-nomad
+    paths: [/v1/jobs]
+    honeypot: {decoy: nomad, mark: 6h, delay: 2s}
+  - name: hp-spark
+    paths: [/spark, /stages]
+    honeypot: {decoy: spark, mark: 6h, delay: 2s}
+  - name: hp-yarn
+    paths: [/ws/v1/cluster/info, /ws/v1/cluster/apps]
+    honeypot: {decoy: hadoop-yarn, mark: 6h, delay: 2s}
+  - name: hp-airflow
+    paths: [/airflow, /airflow/login]
+    honeypot: {decoy: airflow, mark: 6h, delay: 2s}
+
+  # ---- Database consoles and analytics -------------------------------
+  - name: hp-pgadmin
+    paths: [/pgadmin, /pgadmin4]
+    honeypot: {decoy: pgadmin, mark: 6h, delay: 2s}
+  - name: hp-mongo-express
+    paths: [/mongo-express, /db/admin/]
+    honeypot: {decoy: mongo-express, mark: 6h, delay: 2s}
+  - name: hp-metabase
+    paths: [/metabase, /api/session/properties]
+    honeypot: {decoy: metabase, mark: 6h, delay: 2s}
+  - name: hp-superset
+    paths: [/superset, /superset/welcome]
+    honeypot: {decoy: superset, mark: 6h, delay: 2s}
+  - name: hp-zabbix
+    paths: [/zabbix, /zabbix.php]
+    honeypot: {decoy: zabbix, mark: 6h, delay: 2s}
+
+  # ---- Content management systems ------------------------------------
+  # Fingerprinted by version before anything is attempted, so the
+  # version in each page is the bait.
+  - name: hp-joomla
+    paths: [/joomla, /administrator/index.php]
+    honeypot: {decoy: joomla, mark: 1h, delay: 2s}
+  - name: hp-drupal
+    paths: [/user/login, /core/CHANGELOG.txt]
+    honeypot: {decoy: drupal, mark: 1h, delay: 2s}
+  - name: hp-magento
+    paths: [/downloader, /magento_version]
+    honeypot: {decoy: magento, mark: 1h, delay: 2s}
+  - name: hp-moodle
+    paths: [/moodle, /login/index.php]
+    honeypot: {decoy: moodle, mark: 1h, delay: 2s}
+  - name: hp-zimbra
+    paths: [/zimbra, /zimbraAdmin]
+    honeypot: {decoy: zimbra, mark: 6h, delay: 2s}
+
+  # ---- Firewalls and remote access gateways --------------------------
+  # Fingerprinted in bulk before an exploit is chosen. A day.
+  - name: hp-pfsense
+    paths: [/pfsense, /status_rrd_graph_img.php]
+    honeypot: {decoy: pfsense, mark: 24h, delay: 3s}
+  - name: hp-sonicwall
+    paths: [/sonicwall, /cgi-bin/userLogin]
+    honeypot: {decoy: sonicwall, mark: 24h, delay: 3s}
+  - name: hp-paloalto
+    paths: [/global-protect/login.esp, /global-protect/portal]
+    honeypot: {decoy: paloalto, mark: 24h, delay: 3s}
+  - name: hp-cisco-asa
+    paths: [/+CSCOE+/logon.html, /+webvpn+/index.html]
+    honeypot: {decoy: cisco-asa, mark: 24h, delay: 3s}
+  - name: hp-mikrotik
+    paths: [/webfig, /jsproxy]
+    honeypot: {decoy: mikrotik, mark: 24h, delay: 3s}
+
+  # ---- Debug consoles ------------------------------------------------
+  # The clearest signal in the file: nothing but a scanner asks for a
+  # debugger. A day, and a long tarpit.
+  - name: hp-werkzeug
+    paths: [/console]
+    honeypot: {decoy: werkzeug-console, mark: 24h, delay: 5s}
+  - name: hp-symfony-profiler
+    paths: [/_profiler, /_wdt]
+    honeypot: {decoy: symfony-profiler, mark: 24h, delay: 5s}
+  - name: hp-telescope
+    paths: [/telescope, /telescope/requests]
+    honeypot: {decoy: laravel-telescope, mark: 24h, delay: 5s}
+  - name: hp-thinkphp
+    paths: [/thinkphp, /public/index.php]
+    honeypot: {decoy: thinkphp, mark: 24h, delay: 5s}
+  - name: hp-phpunit
+    paths: [/vendor/phpunit]
+    honeypot: {decoy: phpunit-eval, mark: 24h, delay: 5s}
+  - name: hp-spring-gateway
+    paths: [/actuator/gateway/routes]
+    honeypot: {decoy: spring-gateway, mark: 6h, delay: 2s}
+
+  # ---- Files a traversal hands over ----------------------------------
+  # Each is what the probe expects to see, and each is a good place to
+  # plant a honeytoken (see honeytokens.yaml).
+  - name: hp-passwd
+    paths: [/etc/passwd]
+    honeypot: {decoy: etc-passwd, mark: 24h, delay: 3s}
+  - name: hp-firebase
+    paths: [/firebase-config.js, /static/js/firebase.js]
+    honeypot: {decoy: firebase-config, mark: 24h, delay: 2s}
+  - name: hp-wp-json-users
+    paths: [/wp-json/wp/v2/users]
+    honeypot: {decoy: wp-json-users, mark: 1h, delay: 2s}
+  - name: hp-dockerfile
+    paths: [/Dockerfile, /docker/Dockerfile]
+    honeypot: {decoy: dockerfile, mark: 24h, delay: 3s}
+  - name: hp-rails-secrets
+    paths: [/config/secrets.yml, /config/credentials.yml.enc]
+    honeypot: {decoy: rails-secrets, mark: 24h, delay: 3s}
 
   # ---- The map ------------------------------------------------------
   # Served honestly: it names the paths above, so a crawler that reads

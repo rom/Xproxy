@@ -1274,7 +1274,7 @@ Nothing is proxied. Put honeypots on paths no legitimate client uses.
 | `status` | int | `200` | Response status |
 | `content_type` | string | `text/html; charset=utf-8` | For `body` and `body_file` |
 | `delay` | duration | `0` | Hold the connection before answering, in a tarpit slot (`max_tarpits`), never in a request slot; at most 60s |
-| `mark` | duration | `1h` | How long the client stays marked; at most 720h |
+| `mark` | duration | `1h` | How long the client stays marked; at most 720h. An explicit `0s` marks nobody, which is what a decoy served honestly (`robots`, `sitemap`) wants: reading it is what a crawler is meant to do, and asking for what it names is a different route |
 
 The built-in decoys, each a plausible page for the thing a scanner is
 looking for and each containing nothing an operator would mind being
@@ -1405,9 +1405,89 @@ product it came shopping for.
 | `printer` | A network printer status page with toner and page counts | `/hp/device/info_config`, `/printer` |
 | `camera` | An IP camera device information document | `/ISAPI/System/deviceInfo`, `/onvif/device_service` |
 
+Source control, build and artefact servers — what a scanner wants is
+the credentials inside them, not the service:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `gitea` | A Gitea sign-in page with its version | `/user/login`, `/gitea` |
+| `teamcity` | A TeamCity login with its build number | `/login.html`, `/teamcity` |
+| `nexus` | A Sonatype Nexus component listing naming internal artefacts | `/service/rest/v1/components`, `/nexus` |
+| `svn-entries` | A Subversion working-copy entries file naming the repository | `/.svn/entries`, `/.svn/wc.db` |
+| `idea-workspace` | A JetBrains workspace file with run configurations | `/.idea/workspace.xml` |
+
+Container and cluster management, which mining crawlers scan in bulk:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `portainer` | A Portainer status document | `/api/status`, `/portainer` |
+| `rancher` | A Rancher cluster collection | `/v3/clusters`, `/rancher` |
+| `etcd` | An etcd v2 key listing | `/v2/keys`, `/v2/keys/?recursive=true` |
+| `nomad` | A Nomad job listing | `/v1/jobs` |
+| `spark` | An Apache Spark master page with workers and cores | `/spark`, `/proxy` |
+| `hadoop-yarn` | A YARN ResourceManager cluster info document | `/ws/v1/cluster/info`, `/ws/v1/cluster/apps` |
+| `airflow` | An Apache Airflow sign-in page | `/airflow`, `/login/` |
+
+Database consoles and analytics front ends:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `pgadmin` | A pgAdmin 4 login | `/pgadmin`, `/pgadmin4` |
+| `mongo-express` | A mongo-express database listing | `/mongo-express`, `/db/admin/` |
+| `metabase` | A Metabase session properties document with its version | `/api/session/properties`, `/metabase` |
+| `superset` | An Apache Superset sign-in page | `/superset`, `/superset/welcome` |
+| `zabbix` | A Zabbix sign-in page | `/zabbix`, `/zabbix.php` |
+
+Content management systems, which are fingerprinted by version before
+anything is attempted against them:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `joomla` | A Joomla administrator login | `/administrator/`, `/administrator/index.php` |
+| `drupal` | A Drupal login with its generator meta tag | `/user/login`, `/core/CHANGELOG.txt` |
+| `magento` | A Magento admin sign-in page | `/admin`, `/downloader` |
+| `moodle` | A Moodle login | `/moodle`, `/login/index.php` |
+| `zimbra` | A Zimbra web client sign-in page | `/zimbra`, `/zimbra/public` |
+
+Firewalls and remote access gateways, fingerprinted in bulk before an
+exploit is chosen:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `pfsense` | A pfSense login naming the gateway | `/index.php` on a gateway name |
+| `sonicwall` | A SonicWall SMA login with its domain selector | `/cgi-bin/userLogin`, `/sonicwall` |
+| `paloalto` | A GlobalProtect portal login | `/global-protect/login.esp`, `/global-protect/portal` |
+| `cisco-asa` | An AnyConnect SSL VPN logon page | `/+CSCOE+/logon.html`, `/+webvpn+/index.html` |
+| `mikrotik` | A RouterOS webfig login with its version | `/webfig`, `/jsproxy` |
+
+Framework debug consoles and the probes that hunt them. These are the
+clearest signal in the set: nothing but a scanner asks for a debugger.
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `werkzeug-console` | A Werkzeug interactive debugger asking for its PIN | `/console`, `/?__debugger__=yes` |
+| `symfony-profiler` | A Symfony profiler with recent requests | `/_profiler`, `/_profiler/latest` |
+| `laravel-telescope` | A Laravel Telescope entry listing | `/telescope/requests`, `/telescope` |
+| `thinkphp` | A ThinkPHP fatal error naming the version | `/index.php?s=/index/think\app/invokefunction` |
+| `phpunit-eval` | A PHPUnit `eval-stdin.php` parse error | `/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php` |
+| `spring-gateway` | A Spring Cloud Gateway route listing naming internal hosts | `/actuator/gateway/routes` |
+
+Files a traversal or a misconfigured server hands over. Each is what
+the probe expects to see, and each is a good place for a honeytoken:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `etc-passwd` | A Unix password file with a deploy account | a traversal probe, e.g. `/download?file=../../etc/passwd` |
+| `firebase-config` | A front-end Firebase configuration with keys | `/firebase-config.js`, `/static/js/firebase.js` |
+| `wp-json-users` | A WordPress REST user listing | `/wp-json/wp/v2/users` |
+| `dockerfile` | A Dockerfile with a build argument and internal hosts | `/Dockerfile`, `/docker/Dockerfile` |
+| `rails-secrets` | A Rails secrets file with a database URL | `/config/secrets.yml`, `/config/database.yml` |
+
+
 `robots` and `sitemap` are the two to serve honestly: they name the
 decoy paths, so a crawler that reads either and then requests them has
-told you what it is.
+told you what it is. Give those two `mark: 0s`, so that reading the
+file marks nobody and only asking for what it names does.
 `examples/security/honeypots.yaml` wires the whole table up, one route
 per decoy with the paths each is worth serving on; a test fails if a
 decoy in the table has no route there. `xproxyctl honeypot` and
@@ -1420,6 +1500,62 @@ first, last, expires) and the decoy names; `DELETE /v1/honeypot?ip=` and
 `xproxyctl honeypot forget IP` remove a mark. The mark table holds at
 most 65536 addresses. Counters: `honeypot_hits`, `honeypot_marked`;
 metrics `xproxy_honeypot_hits_total`, `xproxy_honeypot_marked`.
+
+### routes[].deceive
+
+A refusal is information. A scanner that gets 403 has learned that the
+request it sent was the interesting one, and it will vary that request
+until something is not refused — the refusal is the oracle that tells
+it when it has found the way through. `deceive` answers a client the
+route no longer trusts with something ordinary instead: the crawl
+completes, the data is wrong, and the request that would have worked
+looks exactly like the one that did not.
+
+The origin is never asked, so a deceived write is discarded. That is
+the point for a `POST`, and it is why the conditions are worth being
+sure of: a false positive means a real client quietly loses data.
+
+```yaml
+routes:
+  - name: api
+    paths: [/api]
+    upstream: app
+    deceive:
+      marked: true            # a honeypot or honeytoken marked it
+      bot_score_at: 80        # or a bot_score filter scored it
+      status: 200
+      body: '{"items":[],"total":0}'
+      content_type: application/json
+      mark: 1h                # keep it on the same answer
+```
+
+A route must name at least one condition; validation refuses a
+`deceive` block that would admit everyone, and warns on every route
+that has one, because this is the one control whose failure looks like
+success.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `marked` | bool | `false` | Admit a client a honeypot route or a honeytoken marked |
+| `bot_score_at` | int | `0` | Admit a request a `bot_score` filter scored at or above this; `0` does not look at the score |
+| `client_cidrs` | list of CIDR | | Admit these client networks |
+| `methods` | list | any | Narrow the deception to these methods |
+| `status` | int | `200` | The answer. A 4xx tells the client what a refusal tells it, which is what deceiving was for; validation says so |
+| `decoy` | name | | A built-in decoy body (the table above) |
+| `body` | string | `{}` | A literal body, at most 64 KiB |
+| `body_file` | path | | A body read at load and on reload, at most 1 MiB |
+| `content_type` | string | `application/json` for the default body, else `text/html; charset=utf-8` | Content type of `body` and `body_file`; a decoy brings its own |
+| `mark` | duration | `0` | Mark the client for this long, so it keeps getting the same answer rather than seeing the endpoint change its mind |
+
+Every deceived request is loud on the inside and silent on the
+outside: `deceived: <route>` in the access log, a `deceive` security
+event with the client, path and method, the `deceived` counter,
+`xproxy_deceived_total{route}` and `GET /v1/deceive`. Nothing is added
+to the response — no header, no marker — because anything added is the
+tell.
+
+`deceive` and `honeypot` on the same route are refused: a honeypot
+already answers everyone with a decoy.
 
 ### routes[].mirror
 
@@ -1567,6 +1703,222 @@ security log's `waf_detected` entries (the requests detect mode would
 have blocked) stay explainable, then `100`. `xproxyctl waf` shows the
 share and the canary prefixes per route, and the access log carries
 `waf_enforced: true` or `false` for every request of such a route.
+
+## degradation
+
+Present means suspect clients are served slowly instead of being
+refused.
+
+Every other answer in this file is binary: a client is served, or it is
+refused. For a client that has done something wrong but not enough to
+ban — touched a decoy, scored badly, arrived from a range with a
+history — both are wrong. Serving it in full funds the next request.
+Refusing it tells it exactly which request to change, and hands a
+scanner a clean signal to tune against: it will try variations until
+one is not refused, and the refusal tells it when it has found one.
+
+A degraded client is served, correctly, slowly. The page arrives, so
+there is nothing to report as broken and nothing to tune against; it
+arrives at eight kilobytes a second on a connection that cannot be
+reused, so a crawl that cost the scanner nothing now costs it the one
+thing it has least of.
+
+Levels are tried in order and the first that admits the request
+decides, so the narrowest goes first.
+
+```yaml
+degradation:
+  levels:
+    # A client a honeypot or a honeytoken marked: slow, held, and no
+    # keep-alive.
+    - name: marked
+      marked: true
+      bytes_per_second: 8192
+      delay: 500ms
+      close: true
+
+    # A high bot score, on the endpoints worth scraping.
+    - name: likely-bot
+      bot_score_at: 60
+      routes: [catalogue, search]
+      bytes_per_second: 65536
+
+    # A range with a history, on writes only.
+    - name: known-range
+      client_cidrs: ["203.0.113.0/24"]
+      methods: [POST, PUT, PATCH]
+      delay: 2s
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `levels` | list | required | At least one, at most 64 |
+
+### degradation.levels[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | `levels[i]` | Names the level in the access log (`degraded`), the metric label and `GET /v1/degradation` |
+| `marked` | bool | `false` | Admit a client a honeypot route or a honeytoken marked |
+| `bot_score_at` | int | `0` | Admit a request a `bot_score` filter scored at or above this; `0` does not look at the score. Validation warns when no `bot_score` filter is configured |
+| `client_cidrs` | list of CIDR | any | Narrow the level to these client networks |
+| `routes` | list of names | any | Narrow it to these routes |
+| `methods` | list | any | Narrow it to these methods |
+| `bytes_per_second` | int | `0` | Shape the response body to this rate, flushing as it goes so the client sees a slow link rather than a late buffer. `0` leaves it alone; otherwise at least 256 and at most 1 GiB/s |
+| `delay` | duration | `0` | Hold the response this long before writing it. Spent in a tarpit slot, not a request slot, so held responses do not consume the concurrency sold to everyone else; when no tarpit slot is free the response is served without the delay. At most 60s |
+| `close` | bool | `false` | End the connection after the response, so the client pays for a new one — and a new TLS handshake — every time |
+
+A level must name at least one condition or selector, and must do at
+least one of the three things; validation refuses a level that would
+degrade every request, and one that degrades nothing.
+
+The effects are observable, which is the point: a degraded response is
+a correct response. `degraded: <level>` appears in the access log line,
+`xproxy_degraded_total{level}` counts them, and the `degraded` counter
+is in the stats. Nothing is added to the response for the client to
+read.
+
+## handshake
+
+Present means the proxy can refuse a client before its TLS handshake
+completes.
+
+Everything else in this file answers a request: the handshake runs, a
+certificate is chosen, keys are agreed, the request is parsed, and then
+the proxy says no. For a client already known to be unwelcome that is a
+key exchange spent on a refusal — and an answer a scanner can read off:
+a status, a page, a header set, a certificate, a supported cipher list.
+Refusing in the ClientHello costs one hello and gives back a failed
+negotiation, which says nothing.
+
+It applies to every TLS listener, HTTP/3 included, and to nothing else:
+a plain HTTP listener has no handshake, and what arrives there is
+refused the ordinary way.
+
+```yaml
+handshake:
+  # A client already on the ban list never gets a handshake.
+  refuse_banned: true
+  # Fingerprints refused outright, whatever the ban list says: a
+  # scanner whose TLS stack is its signature.
+  deny_fingerprints:
+    - "t13d1516h2_8daaf6152771_02713d6af862"   # JA4, exact
+    - "ja4:t13d31*"                            # a JA4 prefix: the family
+    - "ja3:579ccef312d18482fc42e2b822ca2430"   # a JA3 hash
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `refuse_banned` | bool | `false` | Refuse a client whose address or TLS fingerprint is on the ban list. Requires a `bans` section |
+| `deny_fingerprints` | list | `[]` | TLS fingerprints refused outright. An entry is a JA4 or JA3 string, or one prefixed `ja4:`/`ja3:` to say which it is; a JA4 entry ending in `*` matches by prefix, which names a family of clients without pinning every extension order. At most 4096 entries |
+| `log` | bool | `true` | Record each refusal in the security log as reason `handshake`, with the detail (`banned` or `fingerprint`), the client address and both fingerprints |
+
+**What you give up.** A refused connection never becomes a request, so
+it is not in the access log, it has no request id, and no route, WAF
+profile or filter ever sees it. That is the trade: the cheapest and
+quietest refusal is also the one with the least to look at afterwards.
+Validation says so as advice when `refuse_banned` is on. The security
+log and `xproxy_tls_handshakes_refused_total` are what remain, and
+`xproxyctl tls` prints the policy and its count above the certificates.
+
+Fingerprints are not identities. A JA4 names a TLS stack and its
+options, so it groups a scanner's runs together and it groups everyone
+using the same library — including, for a common prefix, ordinary
+browsers. Deny a full fingerprint you have seen in your own security
+log; reach for a prefix only when you have checked what else it
+matches. `xproxyctl waf` and the access log's `ja4` field are where to
+look before adding one.
+
+## honeytokens[]
+
+A decoy hands out a password, an API key, a connection string. Until
+something watches for their *use*, the bait has no hook: the scanner
+reads the file and the proxy learns only that the file was read. A
+honeytoken closes that. Each entry registers values that were planted
+somewhere an attacker will find them — in a decoy this proxy serves, in
+a repository, in a paste, in a backup, in a document — and any request
+presenting one is refused, counted, logged and (by default) marked.
+
+Nothing legitimate ever sends one. That is what makes this different
+from every other control in this file: there is no score to tune and no
+false-positive rate to trade against a detection rate. A hit is an
+attacker replaying what they read, and the only decision is what to do
+about it.
+
+Tokens are checked before routing — a stolen credential can be sent to
+any path — and before the challenge, so a scanner replaying one is not
+offered a browser challenge. A hit raises reason `honeytoken` with the
+token name as `detail`, which the ban triggers accept like any other
+reason, and marks the client for `mark` so its later requests carry
+`honeypot_marked` exactly as a decoy hit does.
+
+```yaml
+honeytokens:
+  # The AWS key the `env` decoy serves. Anyone sending it read the
+  # decoy and tried the credential.
+  - name: env-aws-key
+    description: planted in the env decoy
+    values: ["AKIADECOY000000EXAMPLE"]
+
+  # A session cookie seeded into a database backup that should never
+  # have left the estate. Its use says the backup did.
+  - name: backup-session
+    description: seeded in the 2026-01 database export
+    values: ["s%3Adecoy.0000000000000000000000000000"]
+    in: [cookies]
+
+  # A document identifier planted in a report, matched anywhere in a
+  # value because the client echoes the whole document back.
+  - name: leaked-report-id
+    description: embedded in the quarterly report PDF
+    values: ["decoy-report-id-0123456789abcdef"]
+    match: contains
+    in: [headers, query]
+
+  # Values generated elsewhere, one per line.
+  - name: paste-keys
+    values_file: /etc/xproxy/honeytokens/paste-keys
+    action: log
+```
+
+Where it looks: `headers` (every header value, and again with a
+`Bearer `, `Basic `, `Token ` or `ApiKey ` scheme stripped, and a Basic
+credential decoded into its user and password), `cookies` (each cookie
+value), `query` (each parameter value, decoded) and `path` (the cleaned
+path, and each of its segments). Bodies are not searched: every request
+would have to be buffered to do it, and a stolen credential is
+presented in the head.
+
+The work per request is bounded, because a client chooses how many
+headers it sends: at most 256 candidate strings are examined and a
+value over 8 KiB is not scanned for a `contains` token.
+
+**The value is not a secret.** Its purpose is to be read, so it is
+compared as an ordinary string and no constant-time comparison is
+pretended. What the proxy does protect is the log: a hit names the
+token, never the value, so finding a plant does not write the
+credential into a second place. Plant real credentials here and the
+guarantee is gone.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | identifier | required, unique | `a-z`, `0-9`, `.`, `_`, `-`, at most 63 characters. It is what the logs, the metric label and `xproxyctl honeypot` show instead of the value |
+| `description` | string | | Where this one was planted, so the alert names the leak and not only the token; at most 512 characters |
+| `values` | list | required unless `values_file` | The planted strings. At least 8 characters (16 for `match: contains`), at most 512, no whitespace, and no value planted twice across the section |
+| `values_file` | path | | One value per line; `#` comments and blank lines ignored, at most 4096 values. Read at load and on reload |
+| `in` | list | `[headers, cookies, query, path]` | Where to look |
+| `headers` | list of names | any | Narrow the header search to these names; requires `headers` in `in` |
+| `match` | `exact`, `contains` | `exact` | `exact` compares the whole field value once a credential scheme is stripped; `contains` finds the token anywhere in the value, for a token planted inside a document a client echoes back |
+| `action` | `block`, `log` | `block` | `log` records the hit and serves the request — for a token whose plant might also be reached legitimately, until it is proven quiet. Validation advises against leaving it there |
+| `status` | int | `403` | Response for `block`; 4xx or 5xx |
+| `mark` | duration | `24h` | How long the client stays marked, as a honeypot route marks one. Longer than a decoy's default hour: a stolen credential says more about the client than one probe for a decoy path does. At most 720h; an explicit `0s` marks nobody |
+| `enabled` | bool | `true` | `false` keeps the token configured without watching for it |
+
+`GET /v1/honeypot` and `xproxyctl honeypot` list the tokens with their
+hits, last hit and where each was planted; `xproxy_honeytoken_hits_total{token}`
+counts them and `honeytoken_hits` is in the stats. Hits survive a
+reload. A hit is worth an alert on its own — unlike almost everything
+else the proxy counts, one is enough.
 
 ## security_txt[]
 
@@ -1897,7 +2249,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -2079,6 +2431,54 @@ behind a proxy pool). The last two need a `challenge` section with
 score is the capped sum; a client that is
 already verified by the challenge is never challenged again. The JA4 of
 every TLS request is logged as `ja4`.
+
+### Kind `form_guard`
+
+Catches the two things a form-filling bot does and a person does not:
+it fills in every field it finds, including the one nobody can see, and
+it submits faster than anyone could have read the page.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `fields` | list of field names | | Fields that must arrive empty or absent; a value in any of them denies with detail `field:<name>`. Both the submitted body and the query string are searched |
+| `min_seconds` | seconds | `0` (off) | Refuse a submission that arrives sooner than this after the form page was fetched (detail `too_fast`); 0 to 3600 |
+| `max_seconds` | seconds | `0` (off) | Refuse a submission from a form page fetched longer ago than this (detail `too_old`); 0 to 2592000 |
+| `form_paths` | list of paths | required for timing | GETs of these paths (and anything below them) count as fetching the form |
+| `require_fetch` | bool | `false` | Refuse a submission with no form fetch on record (detail `no_form_fetch`) |
+| `methods` | list of `POST`, `PUT`, `PATCH` | `[POST]` | What counts as a submission |
+| `max_body_bytes` | int | `65536` | Body buffered and replayed for inspection; a larger body passes uninspected (1024 to 8 MiB) |
+| `max_clients` | int | `65536` | Fetch times remembered; a full table sweeps its older half (128 to 1048576) |
+| `status` | int | `403` | 4xx status on deny |
+| `reason` | string | the filter name | Deny reason in logs, counters and ban triggers |
+
+The hidden field is the classic: an input the stylesheet hides and
+`autocomplete="off"` keeps a password manager out of, with a name worth
+filling in (`contact_reason`, `website`). A person never sees it, so a
+value in it is a signal with no false positive to trade away — unlike
+timing, which is why `fields` is the option to reach for first.
+
+```html
+<div style="position:absolute;left:-9999px" aria-hidden="true">
+  <label>Leave this empty<input type="text" name="contact_reason"
+         tabindex="-1" autocomplete="off"></label>
+</div>
+```
+
+The timing check needs no JavaScript and no cookie: the filter remembers
+when the client address last fetched a page under `form_paths` and
+compares. A client with no fetch on record is allowed, because a form
+page can be cached, prerendered or served by another node; set
+`require_fetch` only where the deployment makes that impossible. Only
+`application/x-www-form-urlencoded` bodies are parsed — a JSON API
+sharing the route is none of this filter's business — and the body is
+replayed byte for byte, so the application receives exactly what the
+client sent.
+
+Denies are logged with the configured reason and a detail, and add
+`form_guard` (and `form_seconds` for a timing refusal) to the access log
+line. A ban trigger names a built-in reason, so set `reason: honeypot`
+to let one pick these denies up; left unset, they are logged under the
+filter's own name and ban nobody.
 
 ### Kind `account_guard`
 
