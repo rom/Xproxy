@@ -330,6 +330,40 @@ type SSHListener struct {
 	// in the middle with nothing to notice it.
 	UpstreamInsecureHostKey bool `yaml:"upstream_insecure_host_key"`
 	AllowInsecure           bool `yaml:"allow_insecure"`
+	// TrustedUserCAKeys is a file of CA public keys, in authorized_keys
+	// form. A client may then authenticate with a certificate signed by
+	// one of them instead of appearing in authorized_keys, and the
+	// certificate's principals decide which entry of principals applies
+	// to it. A certificate that has expired, is not yet valid, or does
+	// not list the name the client is connecting as is refused.
+	TrustedUserCAKeys string `yaml:"trusted_user_ca_keys"`
+	// Principals give one key or one certificate principal its own
+	// policy. Without them the listener's policy is the same for
+	// everyone who gets past authentication, which is the policy a jump
+	// host can hold and not much more.
+	//
+	// The first entry that matches decides. When any are configured, a
+	// client matching none of them is refused: the list is the policy,
+	// so falling back to the listener's would be the opposite of what
+	// it says. An entry naming neither a fingerprint nor a certificate
+	// principal is the default, and must be last.
+	Principals []SSHPrincipal `yaml:"principals"`
+	// AllowEnv are the environment variables a client may set, as names
+	// or name prefixes ending in "*". Default TERM, LANG and LC_*. The
+	// loader and interpreter variables (LD_*, BASH_ENV, PERL5OPT,
+	// PYTHONPATH and their kin) are refused whatever this says: passing
+	// one to a target is handing it code to run before the command the
+	// policy approved.
+	AllowEnv []string `yaml:"allow_env"`
+	// AllowFileTransferCommands accepts exec commands that are file
+	// transfer helpers: scp, rsync --server, sftp-server. Default false
+	// when sftp is configured and true when it is not.
+	//
+	// The default is the point. An estate that carefully sets a
+	// read-only sftp policy and then allows exec has left "scp -t" wide
+	// open, because scp moves files without touching the sftp
+	// subsystem at all.
+	AllowFileTransferCommands *bool `yaml:"allow_file_transfer_commands"`
 	// MFA requires a second factor after the key or the password: the
 	// client is told authentication partially succeeded and must then
 	// answer a keyboard-interactive prompt with a one-time code.
@@ -3611,4 +3645,66 @@ type MFAPolicy struct {
 	// MaxUsers bounds the table that remembers spent codes and recent
 	// failures. Default 10000.
 	MaxUsers int `yaml:"max_users"`
+}
+
+// SSHPrincipal gives one key, or one certificate principal, its own
+// policy on an ssh listener.
+type SSHPrincipal struct {
+	// Name appears in the access log and the security events, so a
+	// refusal names a person rather than a fingerprint.
+	Name string `yaml:"name"`
+	// Fingerprints are SHA256 fingerprints of the keys this entry
+	// covers, in the form ssh-keygen prints: "SHA256:" and the base64
+	// of the digest.
+	Fingerprints []string `yaml:"fingerprints"`
+	// CertPrincipals are the principals of a certificate this entry
+	// covers; they need trusted_user_ca_keys.
+	CertPrincipals []string `yaml:"cert_principals"`
+	// Users restricts the entry to these login names. Empty matches any
+	// name the key authenticated as.
+	Users []string `yaml:"users"`
+	// Policy is what this principal may do. Anything it leaves unset
+	// falls back to the listener's own setting, so an entry that only
+	// changes the target account says only that.
+	Policy *SSHPolicy `yaml:"policy"`
+}
+
+// SSHPolicy is the part of an ssh listener's policy a principal can
+// have its own copy of. Every field is optional: unset means the
+// listener's value.
+type SSHPolicy struct {
+	UpstreamUser    string      `yaml:"upstream_user"`
+	AllowChannels   []string    `yaml:"allow_channels"`
+	AllowRequests   []string    `yaml:"allow_requests"`
+	AllowSubsystems []string    `yaml:"allow_subsystems"`
+	AllowCommands   []string    `yaml:"allow_commands"`
+	AllowEnv        []string    `yaml:"allow_env"`
+	Forward         []string    `yaml:"forward"`
+	RemoteForward   *bool       `yaml:"remote_forward"`
+	SFTP            *SFTPPolicy `yaml:"sftp"`
+	// Deny refuses this principal outright, which is how a key stays in
+	// authorized_keys while the person it belongs to is off.
+	Deny bool `yaml:"deny"`
+}
+
+// SSHDeniedEnv are the variables no allow list can admit. Each one is a
+// way to run code before the command that was approved.
+var SSHDeniedEnv = []string{
+	"LD_*", "DYLD_*", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "IFS", "PS4",
+	"PERL5OPT", "PERL5LIB", "PERLLIB", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME",
+	"RUBYOPT", "RUBYLIB", "NODE_OPTIONS", "GLIBC_TUNABLES", "GCONV_PATH", "LOCPATH",
+	"TMPDIR", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_EXTERNAL_DIFF", "PATH",
+}
+
+// DefaultSSHEnv is what a client may set when allow_env says nothing: a
+// terminal type and a locale, which is what an interactive session
+// needs and all it needs.
+var DefaultSSHEnv = []string{"TERM", "LANG", "LC_*"}
+
+// SSHFileTransferCommands are the exec commands that move files past an
+// sftp policy. The name is matched on the command's first word, with
+// any directory part removed.
+var SSHFileTransferCommands = map[string]bool{
+	"scp": true, "rsync": true, "sftp-server": true, "internal-sftp": true,
+	"lftp": true, "rclone": true,
 }

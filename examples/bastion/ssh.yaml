@@ -51,6 +51,60 @@ server:
         allow_requests: [pty-req, env, shell, exec, subsystem, window-change, signal]
         allow_subsystems: [sftp]
 
+        # What a client may put in the target's environment. Everything
+        # else is refused with the request. The loader and interpreter
+        # variables are refused whatever this says: LD_PRELOAD or
+        # BASH_ENV is code that runs before the command the policy
+        # approved, so allow_commands would be decoration.
+        allow_env: [TERM, LANG, "LC_*"]
+
+        # scp and rsync move files without ever opening the sftp
+        # subsystem. On this listener there is no sftp section to
+        # bypass, so they are allowed; on the dropbox listener below
+        # they are refused, which is what makes its path policy mean
+        # something.
+        allow_file_transfer_commands: true
+
+        # Certificates instead of a growing authorized_keys: the CA
+        # signs a principal into a certificate with a lifetime, and the
+        # bastion checks the signature, the window and that the
+        # principal list covers the login.
+        trusted_user_ca_keys: /etc/xproxy/ssh/user_ca.pub
+
+        # One policy for everyone in authorized_keys means the delivery
+        # robot may run what the on-call engineer may run. Each entry
+        # says who it covers and what changes; the rest of this
+        # listener is what it leaves unset.
+        principals:
+          # The robot holds one key, runs one command, and reaches the
+          # target as an account that owns nothing else.
+          - name: deploy-bot
+            fingerprints: ["SHA256:2nFf3v0mP7nMZcRe0KQ1ZFQ5t3aJH2c7pXoLdW8yqQk"]
+            policy:
+              upstream_user: ci
+              allow_channels: [session]
+              allow_requests: [exec]
+              allow_commands: ["^/usr/local/bin/deploy( |$)"]
+              allow_env: ["DEPLOY_*"]
+              forward: []
+
+          # The on-call rota, by certificate: the CA decides who is in
+          # it this week, and nothing here changes when they do.
+          - name: on-call
+            cert_principals: [oncall]
+            policy: {upstream_user: operator}
+
+          # A key stays in authorized_keys while the person it belongs
+          # to is on leave; the record of who they are stays with it.
+          - name: on-leave
+            fingerprints: ["SHA256:8kJq0pZ1rT4yWn6XsB2cVfL9dE3hGm5uA7iOxQ1zRyM"]
+            policy: {deny: true}
+
+          # Last, and naming no key: what everyone else gets.
+          - name: staff
+            policy:
+              allow_commands: ["^(uptime|df -h|journalctl .*)$"]
+
         # Where a port forward may go. Without this list direct-tcpip
         # is a tunnel to anything the target can reach.
         forward:
@@ -82,6 +136,10 @@ server:
         upstream_user: dropbox
         upstream_key_file: /etc/xproxy/ssh/bastion_id_ed25519
         upstream_known_hosts: /etc/xproxy/ssh/known_hosts
+        # exec is not in allow_requests here, so nothing can run "scp
+        # -t" past the section below. Were it allowed, the default of
+        # allow_file_transfer_commands (false wherever there is an sftp
+        # policy) would still refuse it.
         sftp:
           # Without this section the proxy can say only that the session
           # may use sftp, which is the difference between reading a file

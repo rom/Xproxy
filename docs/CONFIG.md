@@ -628,6 +628,7 @@ the credentials are read then — not per connection, so a key added to
 | `upstream` | upstream | required | The pool of target hosts, picked with the upstream's balancer |
 | `host_keys` | list of paths | required | The bastion's own host keys, OpenSSH or PEM. Clients pin these |
 | `authorized_keys` | path | | OpenSSH authorized_keys of the clients that may connect. Options in the file are ignored; the policy lives here. A line that does not parse fails the load rather than silently shortening the list |
+| `trusted_user_ca_keys` | path | | OpenSSH public keys, one per line, that may sign user certificates. A client offering a certificate is accepted when the signature verifies, the validity window covers now and the principal list names the login it is connecting as; without this key a certificate is refused rather than treated as a plain key |
 | `users_file` | path | | A users file (as in `forward.auth`) for password authentication. Warned about on its own: a bastion behind one guessable secret is one guess from the estate |
 | `banner` | string | none | Sent before authentication. A legal notice belongs here; a version string does not |
 | `server_version` | string | `SSH-2.0-xproxy` | The identification string; must begin with `SSH-2.0-` |
@@ -641,6 +642,9 @@ the credentials are read then — not per connection, so a key added to
 | `allow_requests` | list | `pty-req, env, shell, exec, subsystem, window-change, signal` | Session requests a client may send. `x11-req` and `auth-agent-req@openssh.com` are left out and warn when added: each hands whatever runs on the target a channel back into the client, and agent forwarding lets it sign with the client's keys for the life of the session |
 | `allow_subsystems` | list | `[sftp]` | Subsystems a client may start, checked even when `subsystem` is allowed |
 | `allow_commands` | list of RE2 | `[]` (any) | An `exec` command must match one, anchored as written. Every allowed exec is a security event with the command line |
+| `allow_env` | list | `TERM, LANG, LC_*` | Environment variables a client may set, as names or as prefixes ending in `*`. Everything else is refused with the request. The loader and interpreter variables (`LD_*`, `DYLD_*`, `BASH_ENV`, `ENV`, `SHELLOPTS`, `IFS`, `PS4`, `PERL5OPT`, `PERL5LIB`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONHOME`, `RUBYOPT`, `NODE_OPTIONS`, `GLIBC_TUNABLES`, `GCONV_PATH`, `LOCPATH`, `TMPDIR`, `GIT_SSH*`, `PATH` and their kin) are refused whatever this says, and naming one fails the load: each is a way to run code before the command the policy approved |
+| `allow_file_transfer_commands` | bool | `false` with an `sftp` section, `true` without | Accept `exec` commands that are file transfer helpers: `scp`, `rsync`, `sftp-server`, `internal-sftp`, `lftp`, `rclone`. They move files without ever opening the `sftp` subsystem, so every path and operation rule there is off their path; setting this beside an `sftp` section warns, because it is exactly the bypass that section exists to close. Every word of the command is read, not only the first, each with any directory part removed and a `VAR=value` prefix skipped, so a wrapper (`env scp -t`, `sudo rsync`, `sh -c "scp …"`) is refused too |
+| `principals` | list | `[]` | Per-key policy; see below. Empty means the listener's own policy applies to everyone |
 | `forward` | list | `[]` | Destinations `direct-tcpip` may reach: `host:port`, `*.suffix:port`, `10.0.0.0/8:port`, `*` for any port. Required when `direct-tcpip` is allowed, and refused without it: a forward with no destination policy is a tunnel to anything the target can reach |
 | `remote_forward` | bool | `false` | Accept `tcpip-forward`, which asks the target to listen on the client's behalf and turns the session into an inbound path |
 | `upstream_user` | name | the authenticated name | The account on the target |
@@ -651,6 +655,49 @@ the credentials are read then — not per connection, so a key added to
 | `sftp` | object | none | Inspect the SFTP protocol inside an sftp subsystem channel; see below |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
 | `allow_clients` | list of CIDR | `[]` (any) | Others are closed before the handshake |
+
+#### server.listeners[].ssh.principals
+
+Without this list a bastion has one policy for everyone in
+`authorized_keys`: the deployment robot may run what the on-call
+engineer may run. Each entry names who it covers and what they may do,
+and the listener's own settings are what an entry leaves unset — so an
+entry that only moves someone to another account on the target says only
+that.
+
+The list is the policy. Once there is one entry, a key no entry covers
+is refused at authentication rather than served under the listener's
+default, because falling back would be the opposite of what the list
+says.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required | What the access log and the security events call this principal, so a refusal names a person rather than a fingerprint |
+| `fingerprints` | list | `[]` | SHA256 fingerprints of the keys this entry covers, in the form `ssh-keygen -lf` prints: `SHA256:` and the base64 of the digest |
+| `cert_principals` | list | `[]` | Certificate principals this entry covers. Needs `trusted_user_ca_keys`: a certificate is matched by the names its CA signed into it, and by the key it carries |
+| `users` | list | `[]` (any) | Login names the entry applies to, so one key can be one thing as `deploy` and another as `root` |
+| `policy` | object | inherit | What this principal may do; see below |
+
+An entry that names neither a fingerprint nor a certificate principal
+matches every key, which is how a list ends in a default. It must be the
+last entry, because an entry after it could never be reached.
+
+The policy object takes `upstream_user`, `allow_channels`,
+`allow_requests`, `allow_subsystems`, `allow_commands`, `allow_env`,
+`forward`, `remote_forward` and `sftp`, each meaning what it means on
+the listener and each falling back to the listener when unset, plus:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `deny` | bool | `false` | Refuse this principal outright. It is how a key stays in `authorized_keys` while the person it belongs to is on leave, without the list losing the record that they exist |
+
+A denied principal never reaches the target: the refusal is at
+authentication, before a channel or an upstream connection exists.
+
+An entry that brings its own `sftp` section to a listener that has none
+also inherits the default that section implies: file transfer helpers
+are refused for that principal, because `scp` beside a careful `sftp`
+policy is the policy with a door next to it.
 
 #### server.listeners[].ssh.mfa
 
@@ -715,7 +762,7 @@ unknown is not a check. Absolute paths always work, so nothing legitimate
 needs the other form.
 
 Every session writes one `ssh` line to the access log (client, user,
-authentication method, target, channels, refusals, duration) and each
+authentication method, principal, target, channels, refusals, duration) and each
 inspected SFTP request writes one `sftp` line with the operation and the
 path. Counters: `ssh_sessions`, `ssh_sessions_open`, `ssh_channels`,
 `ssh_refused`, `ssh_rejected`, `ssh_auth_failed`, `ssh_bytes_in`,

@@ -2995,38 +2995,199 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 	if h.RemoteForward {
 		v.warnf("%s.remote_forward: tcpip-forward asks the target to listen on the client's behalf, which turns the session into an inbound path", p)
 	}
+	if h.TrustedUserCAKeys != "" {
+		v.file(p+".trusted_user_ca_keys", h.TrustedUserCAKeys)
+	}
+	if h.AuthorizedKeys == "" && h.UsersFile == "" && h.TrustedUserCAKeys == "" {
+		// Stated again here because trusted_user_ca_keys is the third
+		// way to authenticate and the earlier check knows only two.
+		v.errf("%s: authorized_keys, users_file or trusted_user_ca_keys is required", p)
+	}
+	for i, e := range h.AllowEnv {
+		if !envPatternOK(e) {
+			v.errf("%s.allow_env[%d]: %q is not a variable name or a name ending in *", p, i, e)
+		}
+		if envDenied(e) {
+			v.errf("%s.allow_env[%d]: %q is refused whatever an allow list says; it is a way to run code before the command", p, i, e)
+		}
+	}
+	v.sshPrincipals(p, h)
+	if h.AllowFileTransferCommands != nil && *h.AllowFileTransferCommands && h.SFTP != nil {
+		v.warnf("%s.allow_file_transfer_commands: true with an sftp policy, so scp and rsync move files past every path and operation rule it sets", p)
+	}
 	if h.MFA != nil {
 		v.mfaPolicy(p+".mfa", h.MFA)
 	}
 	if h.SFTP != nil {
-		q := p + ".sftp"
-		if !reqs["subsystem"] {
-			v.errf("%s: set without subsystem in allow_requests, so no sftp session can start", q)
-		}
-		if h.SFTP.MaxPacketSize < 4096 || h.SFTP.MaxPacketSize > 1<<24 {
-			v.errf("%s.max_packet_size: must be 4096..16777216", q)
-		}
-		for i, op := range h.SFTP.DenyOperations {
-			if !SFTPOperations[strings.ToLower(op)] {
-				v.errf("%s.deny_operations[%d]: %q is not an SFTP operation", q, i, op)
-			}
-		}
-		for _, l := range []struct {
-			key  string
-			list []string
-		}{{"allow_paths", h.SFTP.AllowPaths}, {"deny_paths", h.SFTP.DenyPaths}} {
-			for i, path := range l.list {
-				if path == "" || strings.ContainsRune(path, 0) {
-					v.errf("%s.%s[%d]: must be a path", q, l.key, i)
-				}
-			}
-		}
+		v.sftpPolicy(p+".sftp", h.SFTP, reqs["subsystem"])
 	}
 	for i, c := range h.AllowClients {
 		if _, err := netip.ParsePrefix(c); err != nil {
 			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
 		}
 	}
+}
+
+// sftpPolicy validates an SFTP policy. subsystemAllowed says whether a
+// session could start one at all, because a policy on a subsystem
+// nobody may request is a policy nobody reads.
+func (v *validator) sftpPolicy(p string, s *SFTPPolicy, subsystemAllowed bool) {
+	if !subsystemAllowed {
+		v.errf("%s: set without subsystem in allow_requests, so no sftp session can start", p)
+	}
+	if s.MaxPacketSize < 4096 || s.MaxPacketSize > 1<<24 {
+		v.errf("%s.max_packet_size: must be 4096..16777216", p)
+	}
+	for i, op := range s.DenyOperations {
+		if !SFTPOperations[strings.ToLower(op)] {
+			v.errf("%s.deny_operations[%d]: %q is not an SFTP operation", p, i, op)
+		}
+	}
+	for _, l := range []struct {
+		key  string
+		list []string
+	}{{"allow_paths", s.AllowPaths}, {"deny_paths", s.DenyPaths}} {
+		for i, path := range l.list {
+			if path == "" || strings.ContainsRune(path, 0) {
+				v.errf("%s.%s[%d]: must be a path", p, l.key, i)
+			}
+		}
+	}
+}
+
+// sshPrincipals validates the per principal entries and their
+// policies.
+func (v *validator) sshPrincipals(p string, h *SSHListener) {
+	names := map[string]bool{}
+	for i := range h.Principals {
+		e := &h.Principals[i]
+		q := fmt.Sprintf("%s.principals[%d]", p, i)
+		if e.Name == "" {
+			v.errf("%s.name: required; it is what a refusal names in the log", q)
+		} else if names[e.Name] {
+			v.errf("%s.name: %q is used twice", q, e.Name)
+		}
+		names[e.Name] = true
+		for j, f := range e.Fingerprints {
+			if !strings.HasPrefix(f, "SHA256:") || len(f) != len("SHA256:")+43 {
+				v.errf("%s.fingerprints[%d]: %q is not a SHA256 fingerprint as ssh-keygen prints it", q, j, f)
+			}
+		}
+		if len(e.CertPrincipals) > 0 && h.TrustedUserCAKeys == "" {
+			v.errf("%s.cert_principals: set without trusted_user_ca_keys, so no certificate can ever be accepted", q)
+		}
+		for j, u := range e.Users {
+			if u == "" || strings.ContainsAny(u, " \t\r\n") {
+				v.errf("%s.users[%d]: must be one login name", q, j)
+			}
+		}
+		isDefault := len(e.Fingerprints) == 0 && len(e.CertPrincipals) == 0
+		if isDefault && i != len(h.Principals)-1 {
+			v.errf("%s: names neither a fingerprint nor a certificate principal, so it matches everything; a default entry must be last", q)
+		}
+		if e.Policy != nil {
+			v.sshPolicy(q+".policy", e.Policy, h)
+		}
+	}
+}
+
+// sshPolicy validates a per principal policy. It is the listener's own
+// vocabulary, so the checks are the listener's.
+func (v *validator) sshPolicy(p string, s *SSHPolicy, h *SSHListener) {
+	chans := map[string]bool{}
+	for i, ct := range s.AllowChannels {
+		if !SSHChannelTypes[ct] {
+			v.errf("%s.allow_channels[%d]: %q is not a channel type this proxy relays", p, i, ct)
+		}
+		chans[ct] = true
+	}
+	reqs := map[string]bool{}
+	for i, rt := range s.AllowRequests {
+		if !SSHRequestTypes[rt] {
+			v.errf("%s.allow_requests[%d]: %q is not a session request this proxy relays", p, i, rt)
+		}
+		reqs[rt] = true
+	}
+	for i, re := range s.AllowCommands {
+		if _, err := regexp.Compile(re); err != nil {
+			v.errf("%s.allow_commands[%d]: %v", p, i, err)
+		}
+	}
+	for i, e := range s.AllowEnv {
+		if !envPatternOK(e) {
+			v.errf("%s.allow_env[%d]: %q is not a variable name or a name ending in *", p, i, e)
+		}
+		if envDenied(e) {
+			v.errf("%s.allow_env[%d]: %q is refused whatever an allow list says", p, i, e)
+		}
+	}
+	for i, d := range s.Forward {
+		if err := sshForwardOK(d); err != nil {
+			v.errf("%s.forward[%d]: %q: %v", p, i, d, err)
+		}
+	}
+	// A principal that lists direct-tcpip and no destinations of its
+	// own falls back to the listener's, which may be empty; say so here
+	// rather than leaving every forward refused at runtime.
+	if chans["direct-tcpip"] && len(s.Forward) == 0 && len(h.Forward) == 0 {
+		v.errf("%s: direct-tcpip is allowed with no destinations here or on the listener, which refuses every forward", p)
+	}
+	if s.SFTP != nil {
+		v.sftpPolicy(p+".sftp", s.SFTP, reqs["subsystem"] || sliceHas(h.AllowRequests, "subsystem"))
+	}
+	if s.SFTP != nil && h.SFTP == nil && h.AllowFileTransferCommands != nil && *h.AllowFileTransferCommands {
+		v.warnf("%s.sftp: the listener's allow_file_transfer_commands is true, so scp and rsync move files past every path and operation rule set here", p)
+	}
+	if s.Deny && (len(s.AllowChannels) > 0 || len(s.AllowRequests) > 0 || s.UpstreamUser != "") {
+		v.warnf("%s.deny: the rest of this policy is never read", p)
+	}
+}
+
+func sliceHas(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// envPatternOK accepts a variable name, or a prefix ending in "*".
+func envPatternOK(s string) bool {
+	name := strings.TrimSuffix(s, "*")
+	if name == "" && s != "*" {
+		return false
+	}
+	if s == "*" {
+		// Every variable: that is not an allow list.
+		return false
+	}
+	for _, c := range name {
+		ok := c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// envDenied reports whether a pattern would admit a variable the proxy
+// refuses outright. A prefix that covers a denied name counts.
+func envDenied(pattern string) bool {
+	for _, d := range SSHDeniedEnv {
+		if envMatch(pattern, strings.TrimSuffix(d, "*")) || envMatch(d, strings.TrimSuffix(pattern, "*")) {
+			return true
+		}
+	}
+	return false
+}
+
+// envMatch applies one pattern to one name.
+func envMatch(pattern, name string) bool {
+	if strings.HasSuffix(pattern, "*") {
+		return strings.HasPrefix(name, strings.TrimSuffix(pattern, "*"))
+	}
+	return pattern == name
 }
 
 // sshForwardOK checks a direct-tcpip destination: host:port, where host

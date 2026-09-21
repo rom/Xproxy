@@ -1776,6 +1776,15 @@ T}	T{
 OpenSSH authorized_keys of the clients that may connect. Options in the file are ignored;\: the policy lives here. A line that does not parse fails the load rather than silently shortening the list
 T}
 T{
+\fBtrusted_\:user_\:ca_\:keys\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+OpenSSH public keys,\: one per line,\: that may sign user certificates. A client offering a certificate is accepted when the signature verifies,\: the validity window covers now and the principal list names the login it is connecting as;\: without this key a certificate is refused rather than treated as a plain key
+T}
+T{
 \fBusers_\:file\fR
 T}	T{
 path
@@ -1893,6 +1902,33 @@ T}	T{
 An \fBexec\fR command must match one,\: anchored as written. Every allowed exec is a security event with the command line
 T}
 T{
+\fBallow_\:env\fR
+T}	T{
+list
+T}	T{
+\fBTERM,\: LANG,\: LC_\:*\fR
+T}	T{
+Environment variables a client may set,\: as names or as prefixes ending in \fB*\fR. Everything else is refused with the request. The loader and interpreter variables (\fBLD_\:*\fR,\: \fBDYLD_\:*\fR,\: \fBBASH_\:ENV\fR,\: \fBENV\fR,\: \fBSHELLOPTS\fR,\: \fBIFS\fR,\: \fBPS4\fR,\: \fBPERL5OPT\fR,\: \fBPERL5LIB\fR,\: \fBPYTHONPATH\fR,\: \fBPYTHONSTARTUP\fR,\: \fBPYTHONHOME\fR,\: \fBRUBYOPT\fR,\: \fBNODE_\:OPTIONS\fR,\: \fBGLIBC_\:TUNABLES\fR,\: \fBGCONV_\:PATH\fR,\: \fBLOCPATH\fR,\: \fBTMPDIR\fR,\: \fBGIT_\:SSH*\fR,\: \fBPATH\fR and their kin) are refused whatever this says,\: and naming one fails the load: each is a way to run code before the command the policy approved
+T}
+T{
+\fBallow_\:file_\:transfer_\:commands\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR with an \fBsftp\fR section,\: \fBtrue\fR without
+T}	T{
+Accept \fBexec\fR commands that are file transfer helpers: \fBscp\fR,\: \fBrsync\fR,\: \fBsftp\-\:server\fR,\: \fBinternal\-\:sftp\fR,\: \fBlftp\fR,\: \fBrclone\fR. They move files without ever opening the \fBsftp\fR subsystem,\: so every path and operation rule there is off their path;\: setting this beside an \fBsftp\fR section warns,\: because it is exactly the bypass that section exists to close. Every word of the command is read,\: not only the first,\: each with any directory part removed and a \fBVAR=\:value\fR prefix skipped,\: so a wrapper (\fBenv scp \-\:t\fR,\: \fBsudo rsync\fR,\: \fBsh \-\:c "scp \[u2026]"\fR) is refused too
+T}
+T{
+\fBprincipals\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Per\-key policy;\: see below. Empty means the listener\(aqs own policy applies to everyone
+T}
+T{
 \fBforward\fR
 T}	T{
 list
@@ -1983,6 +2019,103 @@ T}	T{
 Others are closed before the handshake
 T}
 .TE
+.SS "server.listeners[].ssh.principals"
+.PP
+Without this list a bastion has one policy for everyone in \fBauthorized_keys\fR: the deployment robot may run what the on\-call engineer may run. Each entry names who it covers and what they may do, and the listener\(aqs own settings are what an entry leaves unset \[u2014] so an entry that only moves someone to another account on the target says only that.
+.PP
+The list is the policy. Once there is one entry, a key no entry covers is refused at authentication rather than served under the listener\(aqs default, because falling back would be the opposite of what the list says.
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.7i) lbw(0.9i) lbx
+lw(1.3i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+What the access log and the security events call this principal,\: so a refusal names a person rather than a fingerprint
+T}
+T{
+\fBfingerprints\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+SHA256 fingerprints of the keys this entry covers,\: in the form \fBssh\-\:keygen \-\:lf\fR prints: \fBSHA256:\fR and the base64 of the digest
+T}
+T{
+\fBcert_\:principals\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Certificate principals this entry covers. Needs \fBtrusted_\:user_\:ca_\:keys\fR: a certificate is matched by the names its CA signed into it,\: and by the key it carries
+T}
+T{
+\fBusers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Login names the entry applies to,\: so one key can be one thing as \fBdeploy\fR and another as \fBroot\fR
+T}
+T{
+\fBpolicy\fR
+T}	T{
+object
+T}	T{
+inherit
+T}	T{
+What this principal may do;\: see below
+T}
+.TE
+.PP
+An entry that names neither a fingerprint nor a certificate principal matches every key, which is how a list ends in a default. It must be the last entry, because an entry after it could never be reached.
+.PP
+The policy object takes \fBupstream_user\fR, \fBallow_channels\fR, \fBallow_requests\fR, \fBallow_subsystems\fR, \fBallow_commands\fR, \fBallow_env\fR, \fBforward\fR, \fBremote_forward\fR and \fBsftp\fR, each meaning what it means on the listener and each falling back to the listener when unset, plus:
+.PP
+.TS
+allbox;
+lbw(0.6i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.6i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdeny\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse this principal outright. It is how a key stays in \fBauthorized_\:keys\fR while the person it belongs to is on leave,\: without the list losing the record that they exist
+T}
+.TE
+.PP
+A denied principal never reaches the target: the refusal is at authentication, before a channel or an upstream connection exists.
+.PP
+An entry that brings its own \fBsftp\fR section to a listener that has none also inherits the default that section implies: file transfer helpers are refused for that principal, because \fBscp\fR beside a careful \fBsftp\fR policy is the policy with a door next to it.
 .SS "server.listeners[].ssh.mfa"
 .PP
 A second factor after the key or the password. The client is told authentication partially succeeded (RFC 4252 partial success) and is then asked, over keyboard\-interactive, for a one\-time code (RFC 6238 TOTP over the HMAC\-OTP of RFC 4226). Nothing about the session exists until the code verifies: a key alone opens no channel.
@@ -2156,7 +2289,7 @@ T}
 .PP
 A path that climbs above its own root after cleaning (\fB../../etc/shadow\fR) is refused rather than matched: what it means depends on a working directory the proxy cannot see, and a check on a path whose meaning is unknown is not a check. Absolute paths always work, so nothing legitimate needs the other form.
 .PP
-Every session writes one \fBssh\fR line to the access log (client, user, authentication method, target, channels, refusals, duration) and each inspected SFTP request writes one \fBsftp\fR line with the operation and the path. Counters: \fBssh_sessions\fR, \fBssh_sessions_open\fR, \fBssh_channels\fR, \fBssh_refused\fR, \fBssh_rejected\fR, \fBssh_auth_failed\fR, \fBssh_bytes_in\fR, \fBssh_bytes_out\fR, \fBsftp_requests\fR, \fBsftp_refused\fR; the matching \fBxproxy_ssh_*\fR and \fBxproxy_sftp_*\fR metrics. Refusals and failed authentication are \fBssh_denied\fR deny events, so bans apply.
+Every session writes one \fBssh\fR line to the access log (client, user, authentication method, principal, target, channels, refusals, duration) and each inspected SFTP request writes one \fBsftp\fR line with the operation and the path. Counters: \fBssh_sessions\fR, \fBssh_sessions_open\fR, \fBssh_channels\fR, \fBssh_refused\fR, \fBssh_rejected\fR, \fBssh_auth_failed\fR, \fBssh_bytes_in\fR, \fBssh_bytes_out\fR, \fBsftp_requests\fR, \fBsftp_refused\fR; the matching \fBxproxy_ssh_*\fR and \fBxproxy_sftp_*\fR metrics. Refusals and failed authentication are \fBssh_denied\fR deny events, so bans apply.
 .SS "server.listeners[].h3"
 .PP
 .TS

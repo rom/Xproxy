@@ -276,6 +276,59 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Per-principal SSH policy, environment filtering and the scp hole
+  (`ssh.principals`, `ssh.allow_env`, `ssh.trusted_user_ca_keys`,
+  `ssh.allow_file_transfer_commands`).** A bastion had one policy for
+  everyone in `authorized_keys`: the deployment robot could run what the
+  on-call engineer could run, and both reached the target as the same
+  account. `principals` gives an entry per key or per certificate
+  principal — matched by SHA256 fingerprint, by the names a CA signed
+  into a certificate, and optionally by login name — with its own
+  `upstream_user`, channels, requests, subsystems, commands,
+  environment, forwards and `sftp` section. What an entry leaves unset
+  is the listener's, so an entry that only moves someone to another
+  account says only that.
+
+  Once there is one entry the list is the policy: a key no entry covers
+  is refused at authentication rather than served under the listener's
+  default, because falling back would be the opposite of what the list
+  says. An entry naming neither a fingerprint nor a certificate
+  principal is the default and must be last; validation refuses entries
+  after it, which could never be reached. `deny: true` refuses a
+  principal outright, which is how a key stays in `authorized_keys`
+  while the person it belongs to is on leave.
+
+  `trusted_user_ca_keys` accepts OpenSSH user certificates: the
+  signature, the validity window and the principal list against the
+  login are all checked, so the rota changes at the CA rather than in
+  this file. Without it a certificate is refused rather than quietly
+  treated as the plain key inside it.
+
+  Two ways to run code that `allow_commands` never saw are now closed.
+  The first is the environment: `allow_env` defaults to `TERM`, `LANG`
+  and `LC_*`, and the loader and interpreter variables (`LD_*`,
+  `DYLD_*`, `BASH_ENV`, `ENV`, `SHELLOPTS`, `IFS`, `PS4`, `PERL5OPT`,
+  `PYTHONPATH`, `PYTHONSTARTUP`, `RUBYOPT`, `NODE_OPTIONS`,
+  `GLIBC_TUNABLES`, `GCONV_PATH`, `LOCPATH`, `TMPDIR`, `GIT_SSH*`,
+  `PATH` and their kin) are refused whatever any allow list says, with
+  naming one a load error — a target that reads `LD_PRELOAD` runs the
+  attacker's code before it runs the approved command.
+
+  The second is `scp` and `rsync`, which move files without ever opening
+  the `sftp` subsystem: a careful read-only `sftp` policy beside an
+  allowed `exec` was `scp -t` wide open. `allow_file_transfer_commands`
+  therefore defaults to `false` exactly where there is an `sftp` section
+  to bypass and `true` where there is not, and setting it beside an
+  `sftp` policy warns. Every word of the command is read, not only
+  the first, each the way a shell would take it (directory part
+  removed, `VAR=value` prefix skipped), because a wrapper is otherwise
+  all it takes to walk past the check: `env scp -t`, `sudo rsync`,
+  `sh -c 'scp -t /etc'`. It refuses more than it must, which is the
+  direction to be wrong in.
+  A principal bringing its own `sftp` section to a listener with none
+  inherits that default too, so its section is not a policy with a door
+  beside it.
+
 - **UDP and IP proxying over extended CONNECT (`forward.masque`): RFC
   9298 and RFC 9484.** HTTP CONNECT tunnels TCP and nothing else, so
   everything datagram-shaped an estate sends — DNS, QUIC, NTP,
