@@ -753,7 +753,38 @@ policy would be guesswork.
 | `allow_paths` | list | `[]` (any) | Paths a request may name: a glob where `*` does not cross a slash, or a prefix ending in `/` or `/**` for a whole tree |
 | `deny_paths` | list | `[]` | Refused whatever the allow list says |
 | `deny_operations` | list | `[]` | Operations refused by name: `open`, `read`, `write`, `remove`, `rename`, `symlink`, `setstat`, `readlink`, `extended`, … |
+| `allow_extensions` | list | `[]` (any) | File extensions a name may carry, written without the dot and compared without case. Checked on `open`, and on both names of a `rename` or a `symlink` — the requests that decide what a file is called. A name claiming no extension claims nothing to refuse and passes |
+| `deny_extensions` | list | `[]` | Refused whatever the allow list says. Every extension a name carries is read, not only the last, so `invoice.pdf.exe` is an exe |
+| `max_file_bytes` | int | `0` (none) | What one open file may be written. Counted from the highest offset a write reaches, not from the bytes sent, so writing out of order does not walk past it |
+| `max_open_files` | int | `256` | Handles one session may have open at once, which is what the per-file state costs |
+| `yara` | object | none | Rules over what is written, per file; the same section as a `tcp` listener's `yara` minus `directions`, which is not read here. See below |
 | `max_packet_size` | int | `262144` | One SFTP packet; 4096..16777216 |
+
+`allow_paths` and `deny_paths` may carry `{user}` and `{principal}`,
+substituted once per session from the login the client authenticated as
+and the `principals` entry covering its key. That is how one listener
+says "your own directory and no other" instead of one list naming
+everybody's. A name that could change what a pattern means — anything
+outside letters, digits, `-`, `_` and `.`, anything over 64 characters,
+or a name that is only dots — refuses the session rather than being
+substituted or escaped: a login of `../..` expanded into an allow list
+is an allow list for somebody else's directory. `{principal}` on a
+listener with no `principals` fails the load, since no session would
+have a name to put there. An unknown substitution is a load error too,
+not a literal: `{usr}` left as it stands matches nothing, which on an
+allow list refuses everybody and on a deny list refuses nobody.
+
+**Writes get two more checks, because a write is the one request whose
+content the proxy can see.** `max_file_bytes` bounds the file the writes
+make. `yara` runs the rule set over what goes into each file separately:
+a rule about a file's first bytes is a rule about a file, and two
+uploads interleaved on one channel are two files, so each open handle
+gets its own scanner. A match refuses that write with permission denied
+and writes a `yara_match` security event naming the path; with the
+section's `action: close` the transfer ends there rather than only the
+one packet. Both need to know which handle is which file, so a write on
+a handle whose `open` this proxy never decided on is refused: a write
+that cannot be held to a bound is not a write to pass on.
 
 A path that climbs above its own root after cleaning (`../../etc/shadow`)
 is refused rather than matched: what it means depends on a working

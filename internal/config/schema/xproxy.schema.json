@@ -3979,8 +3979,22 @@
       "description": "SFTPPolicy inspects the SFTP protocol inside an sftp subsystem channel. Refused requests are answered with a permission-denied status, so the session continues and the client is told which operation was refused rather than losing its connection.",
       "type": "object",
       "properties": {
+        "allow_extensions": {
+          "description": "AllowExtensions are the file extensions a name may carry, without the dot and compared without case. Empty allows every extension the deny list does not refuse. It is checked on open, and on both names of a rename or a symlink, which are the requests that decide what a file is called.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "allow_paths": {
-          "description": "AllowPaths are the paths a request may name: a glob where \"*\" does not cross a slash, or a prefix ending in \"/\" or \"/**\" for a whole tree. Empty allows every path the deny list does not refuse.",
+          "description": "AllowPaths are the paths a request may name: a glob where \"*\" does not cross a slash, or a prefix ending in \"/\" or \"/**\" for a whole tree. Empty allows every path the deny list does not refuse. A pattern may carry {user} or {principal}, which are the login the session authenticated as and the principals entry that covers it. They are substituted once per session, which is what lets one listener say \"your own directory and no other\" instead of one list naming everybody's.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_extensions": {
+          "description": "DenyExtensions are refused whatever the allow list says. A name is read for every extension it carries, so \"invoice.pdf.exe\" is an exe whatever the list allows.",
           "type": "array",
           "items": {
             "type": "string"
@@ -3994,11 +4008,19 @@
           }
         },
         "deny_paths": {
-          "description": "DenyPaths are refused whatever the allow list says.",
+          "description": "DenyPaths are refused whatever the allow list says. They take the same {user} and {principal} substitutions.",
           "type": "array",
           "items": {
             "type": "string"
           }
+        },
+        "max_file_bytes": {
+          "description": "MaxFileBytes bounds what one open file may be written. 0 is no bound. It is counted per handle, from the highest offset a write reaches, so a client cannot walk past it by writing out of order.",
+          "type": "integer"
+        },
+        "max_open_files": {
+          "description": "MaxOpenFiles bounds the handles one session may have open at once, which is what the per file state costs. Default 256.",
+          "type": "integer"
         },
         "max_packet_size": {
           "description": "MaxPacketSize bounds one SFTP packet. Default 262144, a little over the 32 KiB read and write sizes clients use.",
@@ -4007,6 +4029,14 @@
         "read_only": {
           "description": "ReadOnly refuses every request that changes the server: write, setstat, remove, mkdir, rmdir, rename, symlink, an open with any writing flag, and the extensions whose meaning the proxy does not know.",
           "type": "boolean"
+        },
+        "yara": {
+          "description": "YARA scans what is written, per file rather than per stream: a rule about a file's first bytes is a rule about a file, and two uploads interleaved on one channel are two files. A match refuses that write; directions is not read here, because only what the client writes is a file this proxy is choosing to accept.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/YARAPolicy"
+            }
+          ]
         }
       },
       "additionalProperties": false

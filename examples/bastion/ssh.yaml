@@ -154,6 +154,43 @@ server:
           deny_operations: [symlink, readlink]
           max_packet_size: 262144
 
+    # An upload account: each supplier writes into their own directory
+    # and nowhere else, and what they write is read before it lands.
+    - name: intake
+      address: "0.0.0.0:2223"
+      kind: ssh
+      ssh:
+        upstream: hosts
+        host_keys: [/etc/xproxy/ssh/host_ed25519]
+        authorized_keys: /etc/xproxy/ssh/intake_authorized_keys
+        allow_channels: [session]
+        allow_requests: [subsystem]
+        allow_subsystems: [sftp]
+        upstream_user: intake
+        upstream_key_file: /etc/xproxy/ssh/bastion_id_ed25519
+        upstream_known_hosts: /etc/xproxy/ssh/known_hosts
+        sftp:
+          # {user} is the login this session authenticated as. One rule
+          # instead of one per supplier, and a login that could change
+          # what the pattern means refuses the session rather than being
+          # escaped into it.
+          allow_paths:
+            - "/srv/intake/{user}/**"
+          deny_paths:
+            - "/srv/intake/{user}/.ssh/**"
+          # What a file is called. Every extension in the name is read,
+          # so invoice.pdf.exe is an exe.
+          allow_extensions: [csv, tsv, xml, pdf, gz]
+          deny_extensions: [exe, dll, so, sh, php, js, jar]
+          # One file, and the handles one session may hold.
+          max_file_bytes: 1073741824
+          max_open_files: 32
+          # Read per file rather than per stream: two uploads on one
+          # channel are two files.
+          yara:
+            rules_dir: /etc/xproxy/yara
+            action: close
+
 upstreams:
   - name: hosts
     endpoints:

@@ -77,6 +77,25 @@ func serveECH(t *testing.T, cfg *config.TLS) (string, *Reloadable) {
 	return ln.Addr().String(), r
 }
 
+// echWhen waits for the server's side of the count to catch up. In TLS
+// 1.3 the client's Dial returns once it has the server's Finished, and
+// the server is still finishing its own handshake, so the counters are
+// a moment behind the connection the client already has. Reading them
+// once is reading a race; this reads them until they say what the
+// client's own connection state already said, or gives up.
+func echWhen(t *testing.T, r *Reloadable, ok func(*ECHStatus) bool) *ECHStatus {
+	t.Helper()
+	var st *ECHStatus
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if st = r.ECH(); st != nil && ok(st) {
+			return st
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("the listener never reported it: %+v", st)
+	return nil
+}
+
 // TestECHAccepted is the end to end proof: a client that learned the
 // config encrypts its hello, the server decrypts it, and the inner name
 // — the one that matters — never appears on the wire.
@@ -100,8 +119,8 @@ func TestECHAccepted(t *testing.T) {
 	if st.ServerName != "secret.example.com" {
 		t.Fatalf("inner server name = %q", st.ServerName)
 	}
-	status := r.ECH()
-	if status == nil || !status.Enabled || status.Accepted != 1 || status.Rejected != 0 {
+	status := echWhen(t, r, func(st *ECHStatus) bool { return st.Accepted == 1 })
+	if !status.Enabled || status.Rejected != 0 {
 		t.Fatalf("status = %+v", status)
 	}
 	if len(status.Keys) != 1 || status.Keys[0].ConfigID != 1 || status.Keys[0].PublicName != "ech.example.com" || !status.Keys[0].Retry {
@@ -135,7 +154,7 @@ func TestECHFallbackStillWorks(t *testing.T) {
 		t.Fatal("a client that sent no ECH was reported as accepted")
 	}
 	_ = conn.Close()
-	if st := r.ECH(); st.Accepted != 0 || st.Rejected != 1 || st.Refused != 0 {
+	if st := echWhen(t, r, func(st *ECHStatus) bool { return st.Rejected == 1 }); st.Accepted != 0 || st.Refused != 0 {
 		t.Fatalf("status = %+v", st)
 	}
 }

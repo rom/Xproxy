@@ -671,9 +671,20 @@ func (se *sshSession) channel(nc ssh.NewChannel) {
 	se.opened.Add(1)
 	t.s.stats.SSHChannels.Add(1)
 
+	// answering is held while a client request is being decided, from
+	// the moment it is read to the moment its answer has been written.
+	// Closing inside that window loses the answer, and a client waiting
+	// for one is told the channel ended instead: an exec that ran, and
+	// whose exit status was relayed, reported to the client as EOF.
+	// The window is real because the target can finish a command and
+	// close its channel while the reply to the request that started it
+	// is still on its way back.
+	var answering sync.Mutex
 	var closeOnce sync.Once
 	closeBoth := func() {
 		closeOnce.Do(func() {
+			answering.Lock()
+			answering.Unlock() //nolint:staticcheck // waiting for the answer, not guarding anything here
 			_ = clientCh.Close()
 			_ = upCh.Close()
 		})
@@ -739,7 +750,7 @@ func (se *sshSession) channel(nc ssh.NewChannel) {
 		// Requests from the client are the policy's other half: the
 		// channel type says "a session", and these say what is done
 		// with it.
-		se.clientRequests(clientCh, upCh, clientReqs, startPump)
+		se.clientRequests(clientCh, upCh, clientReqs, startPump, &answering)
 	}()
 	// Either side finishing ends the channel: the target closed it, or
 	// the client did.
@@ -770,77 +781,98 @@ func (se *sshSession) refuse(nc ssh.NewChannel, what, detail string, reason ssh.
 // startPump is called once the request that begins the data flow has
 // been forwarded, so an inspected sftp channel is never also copied
 // blindly.
-func (se *sshSession) clientRequests(clientCh, upCh ssh.Channel, reqs <-chan *ssh.Request, startPump func()) {
-	t := se.t
+func (se *sshSession) clientRequests(clientCh, upCh ssh.Channel, reqs <-chan *ssh.Request, startPump func(), answering *sync.Mutex) {
 	for r := range reqs {
-		if !se.policy.requests[r.Type] {
-			se.refuseRequest(r, "request_refused", r.Type)
-			continue
-		}
-		switch r.Type {
-		case "env":
-			name, ok := sshEnvRequest(r.Payload)
-			if !ok {
-				se.refuseRequest(r, "malformed_request", "env")
-				continue
-			}
-			if !se.policy.envAllowed(name) {
-				// A variable the target would read before it runs the
-				// command the policy approved.
-				se.refuseRequest(r, "env_refused", name)
-				continue
-			}
-		case "subsystem":
-			name := sshStringPayload(r.Payload)
-			if !se.policy.subsystems[name] {
-				se.refuseRequest(r, "subsystem_refused", name)
-				continue
-			}
-			if name == "sftp" && se.policy.sftp != nil {
-				// From here the channel carries SFTP, which is a
-				// protocol of its own and gets its own decisions.
-				ok, err := upCh.SendRequest(r.Type, r.WantReply, r.Payload)
-				if err != nil || !ok {
-					_ = r.Reply(false, nil)
-					return
-				}
-				_ = r.Reply(true, nil)
-				se.relaySFTP(clientCh, upCh)
-				return
-			}
-		case "exec":
-			cmd := sshStringPayload(r.Payload)
-			if !se.policy.transfers && fileTransferCommand(cmd) {
-				// scp and rsync move files without ever opening the
-				// sftp subsystem, so every path and operation rule
-				// there is simply not on their path. Refusing them is
-				// what makes an sftp policy mean anything.
-				se.refuseRequest(r, "file_transfer_refused", sftpClip(cmd))
-				continue
-			}
-			if !se.commandAllowed(cmd) {
-				se.refuseRequest(r, "command_refused", sftpClip(cmd))
-				continue
-			}
-			t.s.logs.SecurityEvent(context.Background(), "allow", "ssh_exec",
-				"listener", t.cfg.Name, "client_ip", se.ip.String(), "user", trimUser(se.user),
-				"target", se.target, "command", sftpClip(cmd))
-		}
-		// The mode is chosen before the request is forwarded. The
-		// other way round, a fast command could finish and close the
-		// channel before the copier existed, and its output would be
-		// lost to a race rather than to anything the policy decided.
-		switch r.Type {
-		case "shell", "exec", "subsystem":
-			startPump()
-		}
-		ok, err := upCh.SendRequest(r.Type, r.WantReply, r.Payload)
-		if err != nil {
-			_ = r.Reply(false, nil)
+		if !se.answerRequest(clientCh, upCh, r, startPump, answering) {
 			return
 		}
-		_ = r.Reply(ok, nil)
 	}
+}
+
+// answerRequest decides one request and answers it, holding answering
+// for as long as the client is owed a reply. It reports whether the
+// loop goes on.
+func (se *sshSession) answerRequest(clientCh, upCh ssh.Channel, r *ssh.Request, startPump func(), answering *sync.Mutex) bool {
+	t := se.t
+	answering.Lock()
+	defer answering.Unlock()
+	if !se.policy.requests[r.Type] {
+		se.refuseRequest(r, "request_refused", r.Type)
+		return true
+	}
+	switch r.Type {
+	case "env":
+		name, ok := sshEnvRequest(r.Payload)
+		if !ok {
+			se.refuseRequest(r, "malformed_request", "env")
+			return true
+		}
+		if !se.policy.envAllowed(name) {
+			// A variable the target would read before it runs the
+			// command the policy approved.
+			se.refuseRequest(r, "env_refused", name)
+			return true
+		}
+	case "subsystem":
+		name := sshStringPayload(r.Payload)
+		if !se.policy.subsystems[name] {
+			se.refuseRequest(r, "subsystem_refused", name)
+			return true
+		}
+		if name == "sftp" && se.policy.sftp != nil {
+			// The path lists may name this session's own user, so
+			// they are resolved here, once, where a name that
+			// cannot stand in a pattern refuses the subsystem
+			// rather than quietly widening it.
+			sp, err := se.policy.sftp.forSession(se.user, se.principal)
+			if err != nil {
+				se.refuseRequest(r, "sftp_identity_refused", err.Error())
+				return true
+			}
+			// From here the channel carries SFTP, which is a
+			// protocol of its own and gets its own decisions.
+			ok, err := upCh.SendRequest(r.Type, r.WantReply, r.Payload)
+			if err != nil || !ok {
+				_ = r.Reply(false, nil)
+				return false
+			}
+			_ = r.Reply(true, nil)
+			se.relaySFTP(clientCh, upCh, sp)
+			return false
+		}
+	case "exec":
+		cmd := sshStringPayload(r.Payload)
+		if !se.policy.transfers && fileTransferCommand(cmd) {
+			// scp and rsync move files without ever opening the
+			// sftp subsystem, so every path and operation rule
+			// there is simply not on their path. Refusing them is
+			// what makes an sftp policy mean anything.
+			se.refuseRequest(r, "file_transfer_refused", sftpClip(cmd))
+			return true
+		}
+		if !se.commandAllowed(cmd) {
+			se.refuseRequest(r, "command_refused", sftpClip(cmd))
+			return true
+		}
+		t.s.logs.SecurityEvent(context.Background(), "allow", "ssh_exec",
+			"listener", t.cfg.Name, "client_ip", se.ip.String(), "user", trimUser(se.user),
+			"target", se.target, "command", sftpClip(cmd))
+	}
+	// The mode is chosen before the request is forwarded. The
+	// other way round, a fast command could finish and close the
+	// channel before the copier existed, and its output would be
+	// lost to a race rather than to anything the policy decided.
+	switch r.Type {
+	case "shell", "exec", "subsystem":
+		startPump()
+	}
+	ok, err := upCh.SendRequest(r.Type, r.WantReply, r.Payload)
+	if err != nil {
+		_ = r.Reply(false, nil)
+		return false
+	}
+	_ = r.Reply(ok, nil)
+	return true
 }
 
 func (se *sshSession) refuseRequest(r *ssh.Request, what, detail string) {

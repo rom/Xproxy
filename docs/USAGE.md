@@ -2446,6 +2446,44 @@ rather than matched: what it means depends on a working directory the
 proxy cannot see, and a check on a path whose meaning is unknown is not
 a check. Absolute paths always work.
 
+**One rule instead of one per person.** A path pattern may name the
+session's own identity:
+
+```yaml
+        sftp:
+          allow_paths: ["/srv/intake/{user}/**"]
+          deny_paths:  ["/srv/intake/{user}/.ssh/**"]
+          allow_extensions: [csv, xml, pdf, gz]
+          deny_extensions: [exe, dll, so, sh, php]
+          max_file_bytes: 1073741824
+          yara: {rules_dir: /etc/xproxy/yara, action: close}
+```
+
+`{user}` is the login the client authenticated as and `{principal}` the
+`principals` entry covering its key; both are substituted once, when the
+subsystem starts. A name that could change what the pattern means —
+anything outside letters, digits, `-`, `_` and `.` — refuses the session
+instead of being escaped into it, because a login of `../..` expanded
+into an allow list is an allow list for somebody else's directory.
+
+`allow_extensions` and `deny_extensions` decide what a file may be
+called, on `open` and on both names of a `rename` or `symlink`. Every
+extension in a name is read, not only the last, so `invoice.pdf.exe` is
+an exe whatever the allow list says.
+
+**A write is the one request whose content the proxy can see**, so two
+checks live there. `max_file_bytes` bounds the file the writes make,
+counted from the highest offset any write reaches rather than from the
+bytes that arrived — otherwise a client writes one byte at a gigabyte
+and stays under every total. And `yara` runs the rule set per file: each
+open handle gets its own scanner, because two uploads interleaved on one
+channel are two files and a rule about a file's first bytes is a rule
+about one of them. A match refuses that write and logs `yara_match` with
+the path; `action: close` ends the transfer rather than only that
+packet. Both of these need to know which handle is which file, so a
+write on a handle whose `open` the proxy never saw is refused: a write
+that cannot be held to a bound is not a write to pass on.
+
 Every session writes an `ssh` access line, every allowed `exec` is a
 security event with the command line, and every inspected SFTP request
 writes an `sftp` line with the operation and the path. That record is

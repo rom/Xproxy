@@ -247,7 +247,10 @@ an identifier from the access log to the upstream.
   struck whatever it says; and `scp` and `rsync` are refused wherever
   there is an SFTP policy for them to walk past.
   **SFTP is inspected inside the subsystem channel** — read-only, path
-  allow and deny lists, refused operations — because the whole
+  allow and deny lists that may name the session's own user, refused
+  operations, extension lists that read every suffix a name carries, a
+  bound on the file a client's writes make, and YARA rules over what is
+  written, per file rather than per stream — because the whole
   difference between reading a file and deleting a tree happens in
   there
 

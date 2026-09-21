@@ -57,6 +57,8 @@ type targetSSH struct {
 	reqs []string
 	// echo answers exec and shell by echoing what it read.
 	sftpFiles map[string][]byte
+	// handles numbers the handles the sftp stand-in hands out.
+	handles int
 }
 
 func startTargetSSH(t *testing.T, hostKey ssh.Signer) *targetSSH {
@@ -183,9 +185,24 @@ func (tg *targetSSH) sftp(ch ssh.Channel) {
 		typ := body[0]
 		tg.record(fmt.Sprintf("sftp:%d", typ))
 		var reply []byte
-		if typ == 1 { // INIT
+		switch typ {
+		case 1: // INIT
 			reply = []byte{0, 0, 0, 5, 2, 0, 0, 0, 3}
-		} else {
+		case 3, 11: // OPEN, OPENDIR: answer with a handle
+			id := uint32(0)
+			if len(body) >= 5 {
+				id = binary.BigEndian.Uint32(body[1:])
+			}
+			tg.mu.Lock()
+			tg.handles++
+			h := fmt.Sprintf("h%d", tg.handles)
+			tg.mu.Unlock()
+			payload := binary.BigEndian.AppendUint32(nil, id)
+			payload = append(payload, sftpStr(h)...)
+			reply = binary.BigEndian.AppendUint32(nil, uint32(len(payload)+1))
+			reply = append(reply, 102)
+			reply = append(reply, payload...)
+		default:
 			id := uint32(0)
 			if len(body) >= 5 {
 				id = binary.BigEndian.Uint32(body[1:])
@@ -490,8 +507,8 @@ func TestSFTPReadOnly(t *testing.T) {
 	if _, err := ch.Write(sftpPacket(3, body)); err != nil {
 		t.Fatal(err)
 	}
-	if typ, _ := readSFTP(t, ch); typ != 101 {
-		t.Fatalf("open reply was type %d", typ)
+	if typ, _ := readSFTP(t, ch); typ != 102 {
+		t.Fatalf("open reply was type %d, want a handle", typ)
 	}
 	// The same open for writing is refused, by the proxy.
 	write := binary.BigEndian.AppendUint32(nil, 2)
@@ -1087,5 +1104,278 @@ upstreams:
 	}
 	if len(tg.seen()) != 0 {
 		t.Fatal("a denied principal reached the target")
+	}
+}
+
+// sftpOpen writes an OPEN request and returns nothing; the caller reads
+// the reply.
+func sftpOpen(t *testing.T, ch ssh.Channel, id uint32, path string, flags uint32) {
+	t.Helper()
+	body := binary.BigEndian.AppendUint32(nil, id)
+	body = append(body, sftpStr(path)...)
+	body = binary.BigEndian.AppendUint32(body, flags)
+	body = binary.BigEndian.AppendUint32(body, 0) // no attributes
+	if _, err := ch.Write(sftpPacket(3, body)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sftpWriteReq writes a WRITE request on a handle.
+func sftpWriteReq(t *testing.T, ch ssh.Channel, id uint32, handle string, offset uint64, data []byte) {
+	t.Helper()
+	body := binary.BigEndian.AppendUint32(nil, id)
+	body = append(body, sftpStr(handle)...)
+	body = binary.BigEndian.AppendUint64(body, offset)
+	body = binary.BigEndian.AppendUint32(body, uint32(len(data)))
+	body = append(body, data...)
+	if _, err := ch.Write(sftpPacket(6, body)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sftpInit does the version exchange and returns once the server has
+// answered.
+func sftpInit(t *testing.T, ch ssh.Channel) {
+	t.Helper()
+	if _, err := ch.Write(sftpPacket(1, binary.BigEndian.AppendUint32(nil, 3))); err != nil {
+		t.Fatal(err)
+	}
+	if typ, _ := readSFTP(t, ch); typ != 2 {
+		t.Fatalf("version reply was type %d", typ)
+	}
+}
+
+// sftpOpenHandle opens a path and returns the handle the server gave.
+func sftpOpenHandle(t *testing.T, ch ssh.Channel, id uint32, path string, flags uint32) string {
+	t.Helper()
+	sftpOpen(t, ch, id, path, flags)
+	typ, payload := readSFTP(t, ch)
+	if typ != 102 {
+		t.Fatalf("open %s: reply type %d, want a handle", path, typ)
+	}
+	n := binary.BigEndian.Uint32(payload[4:])
+	return string(payload[8 : 8+n])
+}
+
+// sftpDenied reports whether the next reply is a permission-denied
+// status.
+func sftpDenied(t *testing.T, ch ssh.Channel) bool {
+	t.Helper()
+	typ, payload := readSFTP(t, ch)
+	return typ == 101 && binary.BigEndian.Uint32(payload[4:]) == 3
+}
+
+// dialBastionAs connects under a chosen login name, which is what a
+// path template stands in.
+func dialBastionAs(t *testing.T, addr, user string, signer ssh.Signer) (*ssh.Client, error) {
+	t.Helper()
+	c, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+		User:            user,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Timeout:         5 * time.Second,
+	})
+	if err == nil {
+		t.Cleanup(func() { _ = c.Close() })
+	}
+	return c, err
+}
+
+// A path pattern may name the session's own user, which is how one
+// listener says "your own directory" rather than listing everybody's.
+func TestSFTPPathTemplating(t *testing.T) {
+	_, addr, key, tg := bastion(t, `        sftp: {allow_paths: ["/home/{user}/**"], deny_paths: ["/home/{user}/.ssh/**"]}`)
+	c := dialBastion(t, addr, key) // alice
+	ch := sftpSession(t, c)
+	sftpInit(t, ch)
+
+	sftpOpen(t, ch, 1, "/home/alice/report.csv", 0x1)
+	if typ, _ := readSFTP(t, ch); typ != 102 {
+		t.Fatalf("alice's own directory was refused: type %d", typ)
+	}
+	for _, path := range []string{"/home/bob/report.csv", "/home/alice/.ssh/authorized_keys"} {
+		sftpOpen(t, ch, 2, path, 0x1)
+		if !sftpDenied(t, ch) {
+			t.Errorf("%s was allowed", path)
+		}
+	}
+	n := 0
+	for _, r := range tg.seen() {
+		if r == "sftp:3" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the target saw %d opens, want 1", n)
+	}
+}
+
+// A login name that would change what a pattern means is refused rather
+// than substituted: "../.." in an allow list is an allow list for
+// somebody else.
+func TestSFTPTemplateNameRefused(t *testing.T) {
+	_, addr, key, tg := bastion(t, `        sftp: {allow_paths: ["/home/{user}/**"]}`)
+	c, err := dialBastionAs(t, addr, "../../etc", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, reqs, err := c.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go ssh.DiscardRequests(reqs)
+	ok, err := ch.SendRequest("subsystem", true, sshStringBytes("sftp"))
+	if err == nil && ok {
+		t.Fatal("a name that cannot stand in a pattern opened an sftp session")
+	}
+	for _, r := range tg.seen() {
+		if strings.HasPrefix(r, "sftp:") {
+			t.Fatalf("the session reached the target: %s", r)
+		}
+	}
+}
+
+// File-level policy: what a file is called decides whether it may be
+// opened at all, and every extension in the name is read.
+func TestSFTPExtensionPolicy(t *testing.T) {
+	_, addr, key, _ := bastion(t, `        sftp: {allow_paths: ["/srv/data/**"], allow_extensions: [csv, txt], deny_extensions: [exe, php]}`)
+	c := dialBastion(t, addr, key)
+	ch := sftpSession(t, c)
+	sftpInit(t, ch)
+
+	var id uint32
+	for _, c := range []struct {
+		path string
+		want bool // allowed
+	}{
+		{"/srv/data/report.csv", true},
+		{"/srv/data/notes.txt", true},
+		{"/srv/data/README", true},     // claims no extension, so claims nothing to refuse
+		{"/srv/data/notes.md", false},  // not on the allow list
+		{"/srv/data/x.CSV", true},      // the comparison is without case
+		{"/srv/data/shell.php", false}, // denied outright
+		{"/srv/data/a.exe.csv", false}, // an exe whatever the last suffix says
+		{"/srv/data/invoice.pdf.exe", false},
+	} {
+		id++
+		sftpOpen(t, ch, id, c.path, 0x1)
+		typ, payload := readSFTP(t, ch)
+		allowed := typ == 102
+		if !allowed && (typ != 101 || binary.BigEndian.Uint32(payload[4:]) != 3) {
+			t.Fatalf("%s: unexpected reply type %d", c.path, typ)
+		}
+		if allowed != c.want {
+			t.Errorf("%s: allowed=%v, want %v", c.path, allowed, c.want)
+		}
+	}
+}
+
+// A size bound is counted from where a write ends, not from how much
+// has been sent, so writing out of order does not walk past it.
+func TestSFTPMaxFileBytes(t *testing.T) {
+	s, addr, key, _ := bastion(t, `        sftp: {allow_paths: ["/srv/data/**"], max_file_bytes: 64}`)
+	c := dialBastion(t, addr, key)
+	ch := sftpSession(t, c)
+	sftpInit(t, ch)
+
+	h := sftpOpenHandle(t, ch, 1, "/srv/data/upload.bin", 0x2|0x8)
+	sftpWriteReq(t, ch, 2, h, 0, make([]byte, 40))
+	if sftpDenied(t, ch) {
+		t.Fatal("a write inside the bound was refused")
+	}
+	sftpWriteReq(t, ch, 3, h, 40, make([]byte, 40))
+	if !sftpDenied(t, ch) {
+		t.Fatal("a write past the bound was allowed")
+	}
+	// A second file, written far out: the bound is about the file the
+	// writes make, not the bytes that arrived.
+	h2 := sftpOpenHandle(t, ch, 4, "/srv/data/sparse.bin", 0x2|0x8)
+	sftpWriteReq(t, ch, 5, h2, 1<<20, []byte{1})
+	if !sftpDenied(t, ch) {
+		t.Fatal("a one byte write at a megabyte made a file past the bound")
+	}
+	if sn := s.stats.snapshot(); sn.SFTPRefused < 2 {
+		t.Fatalf("refusals counted: %d", sn.SFTPRefused)
+	}
+}
+
+// A write to a handle whose open this proxy never decided on cannot be
+// held to any bound, so it is not a write to pass on.
+func TestSFTPUnknownHandle(t *testing.T) {
+	_, addr, key, tg := bastion(t, `        sftp: {allow_paths: ["/srv/data/**"], max_file_bytes: 1024}`)
+	c := dialBastion(t, addr, key)
+	ch := sftpSession(t, c)
+	sftpInit(t, ch)
+	sftpWriteReq(t, ch, 1, "invented", 0, []byte("payload"))
+	if !sftpDenied(t, ch) {
+		t.Fatal("a write on an invented handle was allowed")
+	}
+	for _, r := range tg.seen() {
+		if r == "sftp:6" {
+			t.Fatal("the write reached the target")
+		}
+	}
+}
+
+// Rules read what is written, per file: two uploads on one channel are
+// two files, and a match refuses that write rather than the other's.
+func TestSFTPYARAWrite(t *testing.T) {
+	rules := rulesFile(t)
+	extra := fmt.Sprintf(`        sftp:
+          allow_paths: ["/srv/data/**"]
+          yara: {rules_file: %s, action: log}`, rules)
+	s, addr, key, tg := bastion(t, extra)
+	c := dialBastion(t, addr, key)
+	ch := sftpSession(t, c)
+	sftpInit(t, ch)
+
+	clean := sftpOpenHandle(t, ch, 1, "/srv/data/clean.bin", 0x2|0x8)
+	dirty := sftpOpenHandle(t, ch, 2, "/srv/data/dirty.bin", 0x2|0x8)
+
+	sftpWriteReq(t, ch, 3, clean, 0, []byte("nothing of interest here"))
+	if sftpDenied(t, ch) {
+		t.Fatal("a clean write was refused")
+	}
+	sftpWriteReq(t, ch, 4, dirty, 0, []byte("carrying a TOP-SECRET-MARKER out"))
+	if !sftpDenied(t, ch) {
+		t.Fatal("a write a rule matched was allowed")
+	}
+	// The other file is untouched by the other's match: one scanner per
+	// handle, not one per channel.
+	sftpWriteReq(t, ch, 5, clean, 24, []byte(" and still nothing"))
+	if sftpDenied(t, ch) {
+		t.Fatal("the clean file was refused for what another file carried")
+	}
+	writes := 0
+	for _, r := range tg.seen() {
+		if r == "sftp:6" {
+			writes++
+		}
+	}
+	if writes != 2 {
+		t.Fatalf("the target saw %d writes, want 2", writes)
+	}
+	if sn := s.stats.snapshot(); sn.YARAMatches == 0 {
+		t.Fatal("the match was not counted")
+	}
+}
+
+// A target that finishes a command and closes its channel while the
+// reply to the exec that started it is still on its way back must not
+// cost the client that reply. The window is small, so this runs the
+// exchange enough times to catch it: before the fix it failed about
+// one run in a hundred with EOF from a command that had in fact run.
+func TestSSHExecReplyNotLost(t *testing.T) {
+	_, addr, key, _ := bastion(t, "")
+	c := dialBastion(t, addr, key)
+	for i := 0; i < 400; i++ {
+		sess, err := c.NewSession()
+		if err != nil {
+			t.Fatalf("session %d: %v", i, err)
+		}
+		out, err := sess.Output("uptime")
+		if err != nil || string(out) != "ran uptime" {
+			t.Fatalf("run %d: %q %v", i, out, err)
+		}
 	}
 }

@@ -3019,7 +3019,7 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 		v.mfaPolicy(p+".mfa", h.MFA)
 	}
 	if h.SFTP != nil {
-		v.sftpPolicy(p+".sftp", h.SFTP, reqs["subsystem"])
+		v.sftpPolicy(p+".sftp", h.SFTP, reqs["subsystem"], len(h.Principals) > 0)
 	}
 	for i, c := range h.AllowClients {
 		if _, err := netip.ParsePrefix(c); err != nil {
@@ -3031,7 +3031,7 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 // sftpPolicy validates an SFTP policy. subsystemAllowed says whether a
 // session could start one at all, because a policy on a subsystem
 // nobody may request is a policy nobody reads.
-func (v *validator) sftpPolicy(p string, s *SFTPPolicy, subsystemAllowed bool) {
+func (v *validator) sftpPolicy(p string, s *SFTPPolicy, subsystemAllowed, hasPrincipals bool) {
 	if !subsystemAllowed {
 		v.errf("%s: set without subsystem in allow_requests, so no sftp session can start", p)
 	}
@@ -3051,7 +3051,77 @@ func (v *validator) sftpPolicy(p string, s *SFTPPolicy, subsystemAllowed bool) {
 			if path == "" || strings.ContainsRune(path, 0) {
 				v.errf("%s.%s[%d]: must be a path", p, l.key, i)
 			}
+			if err := sftpTemplateOK(path); err != nil {
+				v.errf("%s.%s[%d]: %v", p, l.key, i, err)
+			} else if !hasPrincipals && strings.Contains(path, "{principal}") {
+				v.errf("%s.%s[%d]: {principal} with no principals list, so no session has a name to put here and every one would be refused", p, l.key, i)
+			}
 		}
+	}
+	for _, l := range []struct {
+		key  string
+		list []string
+	}{{"allow_extensions", s.AllowExtensions}, {"deny_extensions", s.DenyExtensions}} {
+		seen := map[string]bool{}
+		for i, e := range l.list {
+			switch {
+			case e == "":
+				v.errf("%s.%s[%d]: must be an extension", p, l.key, i)
+			case strings.ContainsAny(e, "./\\*?"):
+				v.errf("%s.%s[%d]: %q is an extension, without a dot and without a glob", p, l.key, i, e)
+			}
+			low := strings.ToLower(e)
+			if seen[low] {
+				v.errf("%s.%s[%d]: %q listed twice", p, l.key, i, e)
+			}
+			seen[low] = true
+		}
+	}
+	for _, e := range s.AllowExtensions {
+		for _, d := range s.DenyExtensions {
+			if strings.EqualFold(e, d) {
+				v.errf("%s: %q is in allow_extensions and deny_extensions; the deny list wins, so the allow entry says nothing", p, e)
+			}
+		}
+	}
+	if s.MaxFileBytes < 0 {
+		v.errf("%s.max_file_bytes: must not be negative", p)
+	}
+	if s.MaxOpenFiles < 1 || s.MaxOpenFiles > 65536 {
+		v.errf("%s.max_open_files: must be 1..65536", p)
+	}
+	if s.YARA != nil {
+		v.yaraPolicy(p+".yara", s.YARA)
+		if s.ReadOnly {
+			v.warnf("%s.yara: read_only already refuses every write, so nothing reaches these rules", p)
+		}
+	}
+}
+
+// sftpTemplateOK checks the {user} and {principal} substitutions in a
+// path pattern. An unknown one is an error rather than a literal:
+// "{usr}" left as it stands is a pattern that matches nothing, which
+// on an allow list refuses everybody and on a deny list refuses
+// nobody, and neither is what was written.
+func sftpTemplateOK(pattern string) error {
+	rest := pattern
+	for {
+		i := strings.IndexByte(rest, '{')
+		if i < 0 {
+			if strings.ContainsRune(rest, '}') {
+				return fmt.Errorf("%q has a closing brace with no substitution", pattern)
+			}
+			return nil
+		}
+		j := strings.IndexByte(rest[i:], '}')
+		if j < 0 {
+			return fmt.Errorf("%q has an unclosed substitution", pattern)
+		}
+		name := rest[i+1 : i+j]
+		if !SFTPPathVars[name] {
+			return fmt.Errorf("%q: {%s} is not a substitution here; {user} and {principal} are", pattern, name)
+		}
+		rest = rest[i+j+1:]
 	}
 }
 
@@ -3133,7 +3203,7 @@ func (v *validator) sshPolicy(p string, s *SSHPolicy, h *SSHListener) {
 		v.errf("%s: direct-tcpip is allowed with no destinations here or on the listener, which refuses every forward", p)
 	}
 	if s.SFTP != nil {
-		v.sftpPolicy(p+".sftp", s.SFTP, reqs["subsystem"] || sliceHas(h.AllowRequests, "subsystem"))
+		v.sftpPolicy(p+".sftp", s.SFTP, reqs["subsystem"] || sliceHas(h.AllowRequests, "subsystem"), len(h.Principals) > 0)
 	}
 	if s.SFTP != nil && h.SFTP == nil && h.AllowFileTransferCommands != nil && *h.AllowFileTransferCommands {
 		v.warnf("%s.sftp: the listener's allow_file_transfer_commands is true, so scp and rsync move files past every path and operation rule set here", p)

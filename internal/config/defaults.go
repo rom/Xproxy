@@ -245,15 +245,13 @@ func applyDefaults(c *Config) {
 			if len(h.AllowSubsystems) == 0 {
 				h.AllowSubsystems = append([]string(nil), DefaultSSHSubsystems...)
 			}
-			if h.SFTP != nil {
-				setInt(&h.SFTP.MaxPacketSize, 256<<10)
-			}
+			sftpDefaults(h.SFTP)
 			// A principal's own sftp section is the same section and
 			// gets the same defaults; without this it would fail
 			// validation on a packet size nobody wrote.
 			for j := range h.Principals {
-				if pp := h.Principals[j].Policy; pp != nil && pp.SFTP != nil {
-					setInt(&pp.SFTP.MaxPacketSize, 256<<10)
+				if pp := h.Principals[j].Policy; pp != nil {
+					sftpDefaults(pp.SFTP)
 				}
 			}
 			if h.MFA != nil {
@@ -955,6 +953,23 @@ func mfaDefaults(m *MFAPolicy) {
 }
 
 // yaraDefaults fills a YARA policy wherever it is used.
+// sftpDefaults fills one sftp section, the listener's or a
+// principal's.
+func sftpDefaults(p *SFTPPolicy) {
+	if p == nil {
+		return
+	}
+	setInt(&p.MaxPacketSize, 256<<10)
+	setInt(&p.MaxOpenFiles, 256)
+	if p.YARA != nil {
+		yaraDefaults(p.YARA)
+		// Only what the client writes is a file this listener is
+		// choosing to accept; the other direction is a download, which
+		// the path and operation policy already decides.
+		p.YARA.Directions = []string{"client"}
+	}
+}
+
 func yaraDefaults(y *YARAPolicy) {
 	setStr(&y.Action, "close")
 	setInt(&y.MaxWindow, 256<<10)

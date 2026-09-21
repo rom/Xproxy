@@ -393,12 +393,43 @@ type SFTPPolicy struct {
 	// does not cross a slash, or a prefix ending in "/" or "/**" for a
 	// whole tree. Empty allows every path the deny list does not
 	// refuse.
+	//
+	// A pattern may carry {user} or {principal}, which are the login
+	// the session authenticated as and the principals entry that
+	// covers it. They are substituted once per session, which is what
+	// lets one listener say "your own directory and no other" instead
+	// of one list naming everybody's.
 	AllowPaths []string `yaml:"allow_paths"`
-	// DenyPaths are refused whatever the allow list says.
+	// DenyPaths are refused whatever the allow list says. They take
+	// the same {user} and {principal} substitutions.
 	DenyPaths []string `yaml:"deny_paths"`
 	// DenyOperations refuses operations by name (open, read, write,
 	// remove, rename, symlink, setstat, ...), on top of read_only.
 	DenyOperations []string `yaml:"deny_operations"`
+	// AllowExtensions are the file extensions a name may carry, without
+	// the dot and compared without case. Empty allows every extension
+	// the deny list does not refuse. It is checked on open, and on both
+	// names of a rename or a symlink, which are the requests that
+	// decide what a file is called.
+	AllowExtensions []string `yaml:"allow_extensions"`
+	// DenyExtensions are refused whatever the allow list says. A name
+	// is read for every extension it carries, so "invoice.pdf.exe" is
+	// an exe whatever the list allows.
+	DenyExtensions []string `yaml:"deny_extensions"`
+	// MaxFileBytes bounds what one open file may be written. 0 is no
+	// bound. It is counted per handle, from the highest offset a write
+	// reaches, so a client cannot walk past it by writing out of
+	// order.
+	MaxFileBytes int64 `yaml:"max_file_bytes"`
+	// MaxOpenFiles bounds the handles one session may have open at
+	// once, which is what the per file state costs. Default 256.
+	MaxOpenFiles int `yaml:"max_open_files"`
+	// YARA scans what is written, per file rather than per stream: a
+	// rule about a file's first bytes is a rule about a file, and two
+	// uploads interleaved on one channel are two files. A match refuses
+	// that write; directions is not read here, because only what the
+	// client writes is a file this proxy is choosing to accept.
+	YARA *YARAPolicy `yaml:"yara"`
 	// MaxPacketSize bounds one SFTP packet. Default 262144, a little
 	// over the 32 KiB read and write sizes clients use.
 	MaxPacketSize int `yaml:"max_packet_size"`
@@ -3699,6 +3730,11 @@ var SSHDeniedEnv = []string{
 // DefaultSSHEnv is what a client may set when allow_env says nothing: a
 // terminal type and a locale, which is what an interactive session
 // needs and all it needs.
+// SFTPPathVars are the substitutions an sftp path pattern may carry.
+// They are deliberately few: a pattern is a security decision, and a
+// substitution the operator cannot predict the value of is not one.
+var SFTPPathVars = map[string]bool{"user": true, "principal": true}
+
 var DefaultSSHEnv = []string{"TERM", "LANG", "LC_*"}
 
 // SSHFileTransferCommands are the exec commands that move files past an

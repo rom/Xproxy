@@ -2229,8 +2229,8 @@ Only version 3 is parsed. A client that negotiates higher is refused at the vers
 .PP
 .TS
 allbox;
-lbw(1.1i) lbw(0.6i) lbw(0.8i) lbx
-lw(1.1i) lw(0.6i) lw(0.8i) lx.
+lbw(1.1i) lbw(0.7i) lbw(0.8i) lbx
+lw(1.1i) lw(0.7i) lw(0.8i) lx.
 T{
 Key
 T}	T{
@@ -2277,6 +2277,51 @@ T}	T{
 Operations refused by name: \fBopen\fR,\: \fBread\fR,\: \fBwrite\fR,\: \fBremove\fR,\: \fBrename\fR,\: \fBsymlink\fR,\: \fBsetstat\fR,\: \fBreadlink\fR,\: \fBextended\fR,\: \[u2026]
 T}
 T{
+\fBallow_\:extensions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+File extensions a name may carry,\: written without the dot and compared without case. Checked on \fBopen\fR,\: and on both names of a \fBrename\fR or a \fBsymlink\fR \[u2014] the requests that decide what a file is called. A name claiming no extension claims nothing to refuse and passes
+T}
+T{
+\fBdeny_\:extensions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Refused whatever the allow list says. Every extension a name carries is read,\: not only the last,\: so \fBinvoice.\:pdf.\:exe\fR is an exe
+T}
+T{
+\fBmax_\:file_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+What one open file may be written. Counted from the highest offset a write reaches,\: not from the bytes sent,\: so writing out of order does not walk past it
+T}
+T{
+\fBmax_\:open_\:files\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Handles one session may have open at once,\: which is what the per\-file state costs
+T}
+T{
+\fByara\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Rules over what is written,\: per file;\: the same section as a \fBtcp\fR listener\(aqs \fByara\fR minus \fBdirections\fR,\: which is not read here. See below
+T}
+T{
 \fBmax_\:packet_\:size\fR
 T}	T{
 int
@@ -2286,6 +2331,10 @@ T}	T{
 One SFTP packet;\: 4096..16777216
 T}
 .TE
+.PP
+\fBallow_paths\fR and \fBdeny_paths\fR may carry \fB{user}\fR and \fB{principal}\fR, substituted once per session from the login the client authenticated as and the \fBprincipals\fR entry covering its key. That is how one listener says "your own directory and no other" instead of one list naming everybody\(aqs. A name that could change what a pattern means \[u2014] anything outside letters, digits, \fB\-\fR, \fB_\fR and \fB.\fR, anything over 64 characters, or a name that is only dots \[u2014] refuses the session rather than being substituted or escaped: a login of \fB../..\fR expanded into an allow list is an allow list for somebody else\(aqs directory. \fB{principal}\fR on a listener with no \fBprincipals\fR fails the load, since no session would have a name to put there. An unknown substitution is a load error too, not a literal: \fB{usr}\fR left as it stands matches nothing, which on an allow list refuses everybody and on a deny list refuses nobody.
+.PP
+\fBWrites get two more checks, because a write is the one request whose content the proxy can see.\fR \fBmax_file_bytes\fR bounds the file the writes make. \fByara\fR runs the rule set over what goes into each file separately: a rule about a file\(aqs first bytes is a rule about a file, and two uploads interleaved on one channel are two files, so each open handle gets its own scanner. A match refuses that write with permission denied and writes a \fByara_match\fR security event naming the path; with the section\(aqs \fBaction: close\fR the transfer ends there rather than only the one packet. Both need to know which handle is which file, so a write on a handle whose \fBopen\fR this proxy never decided on is refused: a write that cannot be held to a bound is not a write to pass on.
 .PP
 A path that climbs above its own root after cleaning (\fB../../etc/shadow\fR) is refused rather than matched: what it means depends on a working directory the proxy cannot see, and a check on a path whose meaning is unknown is not a check. Absolute paths always work, so nothing legitimate needs the other form.
 .PP

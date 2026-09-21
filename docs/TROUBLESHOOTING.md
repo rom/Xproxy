@@ -2011,11 +2011,50 @@ remove, mkdir, rmdir, rename, symlink, and any `open` carrying a
 writing, creating or truncating flag. `sftp_refused` counts them and the
 security log names the operation and the reason.
 
+**An sftp session is refused at the subsystem request, before any
+packet.** A path pattern names `{user}` or `{principal}` and this
+session's name cannot stand in one: anything outside letters, digits,
+`-`, `_` and `.`, anything over 64 characters, or a name that is only
+dots. It is refused rather than escaped, because a login of `../..`
+substituted into an allow list is an allow list for another directory.
+The event is `ssh_sftp_identity_refused` and it names the variable.
+`{principal}` also needs a `principals` list; without one the load
+fails rather than every session.
+
+**A file is refused for its name.** `allow_extensions` and
+`deny_extensions` decide `open`, `rename` and `symlink` — not `stat` or
+`remove`, since refusing to delete a file for what it is called leaves
+it there. Every extension in a name is read, so `invoice.pdf.exe` is an
+exe however the allow list ends. Extensions are written without a dot
+and without a glob, and compared without case. The refusal is
+`sftp_refused` with `extension`.
+
+**A write is refused with `unknown_handle`.** The proxy is holding this
+session to `max_file_bytes` or to a rule set, and both need to know
+which file a handle is. It learns that from the `open` it decided on
+and the handle the server answered with, so a write on a handle it never
+saw that pair for cannot be judged. Either the client is writing to
+something it did not open through here, or `max_open_files` filled —
+raise it if a real client legitimately holds more handles at once.
+
+**Uploads fail part way with permission denied.** Check
+`max_file_bytes`: it bounds the file the writes make, counted from the
+end of the furthest write, so a sparse write far out trips it
+immediately even though little has been sent. If a `yara` section is
+set, look for a `yara_match` event with the path — a rule read what was
+being written. With `action: close` the transfer ends there; with
+`action: log` the write is still refused and the session goes on.
+`read_only` beside a `yara` section warns, because nothing then reaches
+the rules.
+
 **A session ends when a command finishes but the exit status is
-missing.** That would be a bug here rather than a policy: the bastion
-relays the target's requests before closing the client's channel, and a
-lost exit status looks to the client like a crash. If you see it,
-collect the access line and the target's own log.
+missing, or `ssh host command` fails with EOF although the command
+ran.** That would be a bug here rather than a policy: the bastion relays
+the target's requests, and waits for any request that is mid-answer,
+before closing the client's channel — a lost exit status or a lost
+reply to the `exec` itself looks to the client like a crash. One such
+race was fixed in 1.4; if you see it again, collect the access line and
+the target's own log.
 
 ## Second factor (MFA)
 

@@ -260,6 +260,19 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4)
 
+- **An SSH command that ran could be reported to the client as EOF.**
+  The bastion closed a channel as soon as the target's side was drained,
+  and the target can finish a command and close its channel while the
+  reply to the `exec` that started it is still on its way back. Closing
+  inside that window takes the reply with it, and a client waiting for
+  one is told the channel ended: `ssh host uptime` failing with EOF for
+  a command that had in fact run, its output produced and its exit
+  status relayed. It reproduced in about one exec in a hundred under
+  load, and every time when sessions were opened back to back on one
+  connection. A channel now waits for any request that is mid-answer
+  before it closes, which is the same invariant the exit-status path
+  already had. The regression test runs the exchange four hundred times.
+
 - **Every WebSocket upgrade through the proxy answered 502.** The
   transport wrapped each response body in a `ReadCloser` to account for
   the endpoint when the body closed. For a 101 the body *is* the
@@ -275,6 +288,53 @@ Open findings of the earlier rounds:
   against a real origin.
 
 ### Added (1.4)
+
+- **SFTP: per-user paths, file-level policy and rules over what is
+  written (`ssh.sftp.allow_paths` templating,
+  `allow_extensions`/`deny_extensions`, `max_file_bytes`,
+  `max_open_files`, `yara`).** A path list was a list of everybody's
+  directories, a file was whatever it was called, and the only thing a
+  write was held to was where it went.
+
+  `allow_paths` and `deny_paths` now take `{user}` and `{principal}`,
+  substituted once when the subsystem starts, so one listener says "your
+  own directory and no other". A name that could change what a pattern
+  means refuses the session rather than being escaped into it: a login
+  of `../..` expanded into an allow list is an allow list for somebody
+  else's directory. `{principal}` without a `principals` list, and any
+  unknown substitution, fail the load — `{usr}` left as a literal
+  matches nothing, which on an allow list refuses everybody and on a
+  deny list refuses nobody, and neither is what was written.
+
+  `allow_extensions` and `deny_extensions` decide `open`, `rename` and
+  `symlink` — the requests that settle what a file is called. Every
+  extension in a name is read, not only the last, so `invoice.pdf.exe`
+  is an exe on a proxy as it is on the server that would run it.
+
+  A write is the one request whose content this can see, so two checks
+  live there. `max_file_bytes` bounds the file the writes make, counted
+  from the highest offset any write reaches rather than from the bytes
+  sent, because a client that writes out of order otherwise stays under
+  every total while making a file of any size. And `yara` reads what
+  goes into each file separately: a rule about a file's first bytes is a
+  rule about a file, and two uploads interleaved on one channel are two
+  files, so each handle gets its own scanner. A match refuses that write
+  with permission denied and records `yara_match` with the path;
+  `action: close` ends the transfer.
+
+  Both need to know which handle is which file, which is why the
+  server's direction is now read for one packet — the HANDLE reply that
+  says what the `open` this proxy decided on became. A write on a handle
+  that pair was never seen for is refused: a write that cannot be held
+  to a bound is not a write to pass on. `max_open_files` bounds what
+  that state costs.
+
+  The packet layer grew with it: WRITE now yields its handle, offset and
+  bytes, the handle-bearing requests yield their handle, and both are
+  read as the server's opaque bytes rather than as text — a handle is
+  compared, never displayed, and refusing one for not being UTF-8 would
+  refuse servers that are within their rights. A truncated WRITE, which
+  used to parse as a bare handle, is now the malformed packet it is.
 
 - **Per-principal SSH policy, environment filtering and the scp hole
   (`ssh.principals`, `ssh.allow_env`, `ssh.trusted_user_ca_keys`,
@@ -1146,6 +1206,13 @@ Open findings of the earlier rounds:
 
 Security tests for the surfaces this release adds, written as an
 attacker would read them rather than as coverage.
+
+Two ECH tests read the listener's counters the instant the client's
+`Dial` returned. In TLS 1.3 that is before the server has finished its
+own handshake, so the counters were a moment behind the connection the
+client already held, and the tests failed occasionally on a listener
+that was working. They now wait for the count to catch up with what the
+client's own connection state already said.
 
 `test/bypass` gains two files. The first treats the capture file as
 what it is — the one artefact of this proxy that holds decrypted
