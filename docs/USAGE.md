@@ -2401,6 +2401,80 @@ read is a stream you cannot log.
 `examples/bastion/ssh.yaml` has an operator listener and a delivery
 account that can do nothing but read one directory over sftp.
 
+### A second factor, on SSH and on HTTPS
+
+```sh
+xproxyctl mfa enrol -user alice -issuer example.com -recovery 5
+```
+
+That prints one line for the enrolment file (0600), an `otpauth://` URI
+for the user's authenticator, and five single-use recovery codes shown
+only then. The same file serves both listeners below, which is the
+point: a second factor that means different things on different ports
+is not a second factor, because the weakest door decides.
+
+```yaml
+server:
+  listeners:
+    - name: bastion
+      address: "0.0.0.0:22"
+      kind: ssh
+      ssh:
+        upstream: hosts
+        host_keys: [/etc/xproxy/ssh/host_ed25519]
+        authorized_keys: /etc/xproxy/ssh/authorized_keys
+        upstream_key_file: /etc/xproxy/ssh/bastion_id_ed25519
+        upstream_known_hosts: /etc/xproxy/ssh/known_hosts
+        mfa:
+          file: /etc/xproxy/mfa
+
+filters:
+  - name: staff
+    kind: basic_auth
+    options: {users_file: /etc/xproxy/staff.htpasswd}
+  - name: staff-mfa
+    kind: mfa
+    options:
+      file: /etc/xproxy/mfa
+      cookie_secret_file: /etc/xproxy/mfa.cookie
+
+routes:
+  - name: app
+    paths: [/]
+    upstream: app
+    filters: [staff, staff-mfa]      # order matters
+```
+
+On SSH the key is the first factor: the client is told authentication
+partially succeeded (RFC 4252) and is then asked for a code over
+keyboard-interactive. A key alone opens no channel. On HTTPS the filter
+challenges whatever identity the filter before it established, with an
+HTML form and a signed cookie afterwards; `mfa` before `basic_auth`
+would have nothing to challenge, and refuses the request rather than
+prompting.
+
+Three properties are worth knowing because they are what makes it a
+second factor rather than a second password:
+
+- **A code is spent when used.** A later attempt at the same step, or at
+  an earlier one, is refused even though it verifies. The memory is per
+  process, so in a cluster a code can be replayed once per node; put the
+  listener behind one node where that matters, or set `skew: 0`.
+- **Failures are indistinguishable.** A wrong code, a replayed one, a
+  locked account and a name that never enrolled get one answer. On SSH
+  the prompt is shown even to a user with no enrolment: refusing before
+  asking would say the name is not enrolled.
+- **Guessing is bounded.** Six digits is a million values and a step
+  lasts thirty seconds, so `max_failures` within `window` locks the user
+  out for `lockout` — without it a fast client gets a real chance at
+  every step.
+
+`require_enrolment: false` exists and warns, because the account that
+never enrolled is the one an attacker will use.
+
+`examples/mfa/second-factor.yaml` has both listeners and the filter
+chain.
+
 ### Virtual security.txt
 
 A `security.txt` (RFC 9116) tells a finder where to report a

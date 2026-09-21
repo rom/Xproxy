@@ -64,3 +64,13 @@ func (id *Identity) Any(prefer ...string) string {
 	}
 	return ""
 }
+
+// IdentityFrom returns the identity set attached to a request's
+// context, or nil. A filter that acts on who the request is — a second
+// factor, an identity-keyed limit — reads it here rather than trusting
+// a header, because a value is only in the set once a filter verified
+// it.
+func IdentityFrom(ctx context.Context) *Identity {
+	id, _ := ctx.Value(identityKey).(*Identity)
+	return id
+}

@@ -1843,6 +1843,15 @@ T}	T{
 Accept any host key from the target. Refused unless \fBallow_\:insecure\fR is also set,\: and warned about: it is the one setting here that leaves nothing to notice a machine in the middle
 T}
 T{
+\fBmfa\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Require a second factor after the key or the password;\: see below
+T}
+T{
 \fBsftp\fR
 T}	T{
 object
@@ -1870,6 +1879,111 @@ T}	T{
 Others are closed before the handshake
 T}
 .TE
+.SS "server.listeners[].ssh.mfa"
+.PP
+A second factor after the key or the password. The client is told authentication partially succeeded (RFC 4252 partial success) and is then asked, over keyboard\-interactive, for a one\-time code (RFC 6238 TOTP over the HMAC\-OTP of RFC 4226). Nothing about the session exists until the code verifies: a key alone opens no channel.
+.PP
+The same section shape, the same enrolment file and the same rules serve the HTTP \fBmfa\fR filter. That is deliberate \[u2014] a second factor that means different things on different ports is not a second factor, because the weakest door decides.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The enrolment file (\fBxproxyctl mfa enrol\fR writes the lines). Refused if world readable: it holds every second factor
+T}
+T{
+\fBissuer\fR
+T}	T{
+name
+T}	T{
+\fBxproxy\fR
+T}	T{
+The name an authenticator application shows
+T}
+T{
+\fBprompt\fR
+T}	T{
+string
+T}	T{
+\fBOne\-\:time code:\: \fR
+T}	T{
+What the user is asked
+T}
+T{
+\fBskew\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+Steps either side of now that are accepted,\: for a clock that is a little off. Each step is a window an observed code can be replayed in,\: so above 2 it warns
+T}
+T{
+\fBrequire_\:enrolment\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a user with no enrolment. \fBfalse\fR warns: the account that never enrolled is the one an attacker will use
+T}
+T{
+\fBmax_\:failures\fR
+T}	T{
+int
+T}	T{
+\fB5\fR
+T}	T{
+Failures within \fBwindow\fR before the user is locked out
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+The window failures are counted in
+T}
+T{
+\fBlockout\fR
+T}	T{
+duration
+T}	T{
+\fB15m\fR
+T}	T{
+How long a locked user stays locked
+T}
+T{
+\fBmax_\:users\fR
+T}	T{
+int
+T}	T{
+\fB10000\fR
+T}	T{
+The table that remembers spent codes and recent failures. When it is full the least recently seen entries are dropped,\: which loses replay memory for idle users rather than refusing everyone
+T}
+.TE
+.PP
+A code is spent when it is used: a later attempt at the same step, or at an earlier one, is refused even though it verifies. The memory is per process, so in a cluster a code can be replayed once per node \[u2014] put the listener behind one node where that matters, or keep \fBskew\fR at 0.
+.PP
+What the client is told never distinguishes a wrong code from a replayed one, from a locked account, or from a name that never enrolled. The prompt is shown even to a user with no enrolment, because refusing before asking says the name is not enrolled.
 .SS "server.listeners[].ssh.sftp"
 .PP
 Without this section the proxy can say only that a session may use \fBsftp\fR. That is the difference between reading a file and deleting a tree: the whole of it happens inside the channel. With it, each SFTP request is decided, and a refusal is answered with a permission\-denied status, so the session continues and the client is told which operation was refused rather than losing its connection.
@@ -9493,6 +9607,120 @@ T}
 .TE
 .PP
 Denies answer 401 with \fBWWW\-Authenticate\fR and reason \fB<filter name>\fR; the user name is added to the access log line as \fBauth_user\fR.
+.SS "Kind \fBmfa\fR"
+.PP
+A second factor on top of whatever established the identity \[u2014] \fBbasic_auth\fR, \fBldap_auth\fR, \fBoidc\fR, a JWT or an API key. It uses the same enrolment file, replay rule and lockout as an ssh listener\(aqs \fBmfa\fR section.
+.PP
+It must run \fBafter\fR the filter that authenticates: it challenges the identity it is given, and a request with none is refused rather than challenged, because a second factor with no first factor is a prompt with no account behind it.
+.PP
+A request without a verified factor gets an HTML form (401, no redirect, so the request that needed the factor is the one that resumes). The form posts back to the same path with \fB?xproxy_mfa=verify\fR; on success a signed cookie is set and the client is sent to where it was going. The cookie names the user it was issued for and is checked against the identity of each request, so it is worth nothing on another account; it is verified against every key in the ring, so rotating the secret does not sign everyone out.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The enrolment file;\: refused if world readable
+T}
+T{
+\fBcookie_\:secret_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+32+ bytes,\: created 0600 if absent,\: rotated with \fBxproxyctl rotate\fR
+T}
+T{
+\fBcookie_\:name\fR
+T}	T{
+name
+T}	T{
+\fB_\:_\:Host\-\:xproxy\-\:mfa\fR
+T}	T{
+The cookie carrying the verified factor
+T}
+T{
+\fBttl\fR
+T}	T{
+duration
+T}	T{
+\fB12h\fR
+T}	T{
+How long a verified factor lasts;\: at most 168h
+T}
+T{
+\fBissuer\fR
+T}	T{
+name
+T}	T{
+\fBxproxy\fR
+T}	T{
+Shown as the page title
+T}
+T{
+\fBprompt\fR
+T}	T{
+string
+T}	T{
+\fBOne\-\:time code\fR
+T}	T{
+The form\(aqs label
+T}
+T{
+\fBskew\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+Steps either side of now that are accepted
+T}
+T{
+\fBrequire_\:enrolment\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a user with no enrolment
+T}
+T{
+\fBmax_\:failures\fR,\: \fBwindow\fR,\: \fBlockout\fR
+T}	T{
+
+T}	T{
+\fB5\fR,\: \fB5m\fR,\: \fB15m\fR
+T}	T{
+Guessing bound,\: as on an ssh listener
+T}
+T{
+\fBidentity\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Which identity kinds to challenge,\: in order of preference: \fBbasic\fR,\: \fBldap\fR,\: \fBoidc\fR,\: \fBjwt\fR,\: \fBapi_\:key\fR
+T}
+.TE
+.PP
+Every failure gets the same page: a wrong code, a replayed one, a locked account and a name that never enrolled are one answer. Counters: \fBmfa_verified\fR, \fBmfa_failed\fR; \fBxproxy_mfa_total\fR by outcome.
 .SS "Kind \fBldap_auth\fR"
 .PP
 HTTP Basic authentication against an LDAP or Active Directory server. Two modes: a \fBdirect bind\fR substitutes the username into \fBbind_dn_template\fR and binds with the password; a \fBsearch then bind\fR binds an optional service account (\fBbind_dn\fR), searches \fBbase_dn\fR with \fBuser_filter\fR for the user\(aqs entry, then binds as that entry, optionally requiring group membership. The username is escaped (RFC 4514 for a DN, RFC 4515 for a filter) so it cannot alter the query. \fBldaps://\fR and \fBstart_tls\fR verify the server certificate against the system roots or \fBca_file\fR. Verified credentials are cached by digest for \fBcache_ttl\fR; a directory or network error is never cached and denies the request.

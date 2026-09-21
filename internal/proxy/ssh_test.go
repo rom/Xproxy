@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/rom/xproxy/internal/mfa"
 )
 
 // sshKey writes a fresh ed25519 key pair and returns the private key
@@ -631,5 +633,181 @@ upstreams:
 	defer func() { _ = c.Close() }()
 	if _, err := c.NewSession(); err == nil {
 		t.Fatal("a session was relayed to a target with an unknown host key")
+	}
+}
+
+// enrolMFA writes an enrolment file and returns its path and secret.
+func enrolMFA(t *testing.T, dir, user string) (string, []byte) {
+	t.Helper()
+	secret, err := mfa.NewSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "mfa")
+	if err := os.WriteFile(path, []byte(user+":"+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := mfa.ParseSecret(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path, raw
+}
+
+// TestSSHMFA is the second factor on the bastion: the key alone is a
+// partial success, and the session only exists once a one-time code
+// has been answered too.
+func TestSSHMFA(t *testing.T) {
+	dir := t.TempDir()
+	mfaFile, secret := enrolMFA(t, dir, "alice")
+	s, addr, key, tg := bastion(t, "        mfa: {file: "+mfaFile+", skew: 1}")
+
+	code := func() string {
+		c, err := mfa.Code(secret, mfa.Counter(time.Now(), mfa.DefaultPeriod), mfa.Params{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	answer := func(string, string, []string, []bool) ([]string, error) {
+		return []string{code()}, nil
+	}
+	c, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+		User: "alice",
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(key),
+			ssh.KeyboardInteractive(answer),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Timeout:         5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("dial with the second factor: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := sess.Output("uptime"); err != nil || string(out) != "ran uptime" {
+		t.Fatalf("exec: %q %v", out, err)
+	}
+	if len(tg.seen()) == 0 {
+		t.Fatal("nothing reached the target")
+	}
+	if sn := s.stats.snapshot(); sn.MFAVerified != 1 {
+		t.Fatalf("verified: %d", sn.MFAVerified)
+	}
+}
+
+// The right key with the wrong code is not a session.
+func TestSSHMFAWrongCode(t *testing.T) {
+	dir := t.TempDir()
+	mfaFile, _ := enrolMFA(t, dir, "alice")
+	s, addr, key, tg := bastion(t, "        mfa: {file: "+mfaFile+"}")
+
+	_, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+		User: "alice",
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(key),
+			ssh.KeyboardInteractive(func(string, string, []string, []bool) ([]string, error) {
+				return []string{"000000"}, nil
+			}),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Timeout:         5 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("a wrong code was accepted")
+	}
+	if len(tg.seen()) != 0 {
+		t.Fatal("a half-authenticated client reached the target")
+	}
+	if sn := s.stats.snapshot(); sn.MFAFailed == 0 {
+		t.Fatal("the failure was not counted")
+	}
+}
+
+// The key alone is not enough: a client that will not do
+// keyboard-interactive never gets a session.
+func TestSSHMFAKeyAlone(t *testing.T) {
+	dir := t.TempDir()
+	mfaFile, _ := enrolMFA(t, dir, "alice")
+	_, addr, key, tg := bastion(t, "        mfa: {file: "+mfaFile+"}")
+
+	_, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+		User:            "alice",
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(key)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Timeout:         5 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("the key alone opened a session")
+	}
+	if len(tg.seen()) != 0 {
+		t.Fatal("a half-authenticated client reached the target")
+	}
+}
+
+// A code cannot be used twice, even inside its own time step.
+func TestSSHMFAReplay(t *testing.T) {
+	dir := t.TempDir()
+	mfaFile, secret := enrolMFA(t, dir, "alice")
+	_, addr, key, _ := bastion(t, "        mfa: {file: "+mfaFile+"}")
+
+	code, err := mfa.Code(secret, mfa.Counter(time.Now(), mfa.DefaultPeriod), mfa.Params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dial := func() error {
+		c, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+			User: "alice",
+			Auth: []ssh.AuthMethod{
+				ssh.PublicKeys(key),
+				ssh.KeyboardInteractive(func(string, string, []string, []bool) ([]string, error) {
+					return []string{code}, nil
+				}),
+			},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+			Timeout:         5 * time.Second,
+		})
+		if err == nil {
+			_ = c.Close()
+		}
+		return err
+	}
+	if err := dial(); err != nil {
+		t.Fatalf("first use: %v", err)
+	}
+	if err := dial(); err == nil {
+		t.Fatal("the same code opened a second session")
+	}
+}
+
+// A user with no enrolment is refused, and is asked for a code first so
+// that nothing distinguishes an enrolled name from one that is not.
+func TestSSHMFANotEnrolled(t *testing.T) {
+	dir := t.TempDir()
+	mfaFile, _ := enrolMFA(t, dir, "someone-else")
+	_, addr, key, _ := bastion(t, "        mfa: {file: "+mfaFile+"}")
+
+	asked := false
+	_, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+		User: "alice",
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(key),
+			ssh.KeyboardInteractive(func(string, string, []string, []bool) ([]string, error) {
+				asked = true
+				return []string{"000000"}, nil
+			}),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Timeout:         5 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("an unenrolled user was accepted")
+	}
+	if !asked {
+		t.Fatal("the unenrolled user was refused without being asked, which says the name is not enrolled")
 	}
 }

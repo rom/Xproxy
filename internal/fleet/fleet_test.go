@@ -249,9 +249,12 @@ func TestAgentAppliesAndReports(t *testing.T) {
 	if n.NodeID != "edge1" || n.Status.Requests != 42 || n.Status.Version != "test" || n.CertName != "edge1" || len(n.Status.Tags) != 1 {
 		t.Fatalf("node view %+v", n)
 	}
-	if _, err := os.Stat(filepath.Join(h.ctrl.Dir(), "status", "edge1.json")); err != nil {
-		t.Fatal("status not persisted")
-	}
+	// The node view is updated in memory before the status file is
+	// written, so this is waited for rather than checked once.
+	waitFor(t, "status persisted", func() bool {
+		_, err := os.Stat(filepath.Join(h.ctrl.Dir(), "status", "edge1.json"))
+		return err == nil
+	})
 
 	// A change in the directory reaches the node through the long poll.
 	first := st.Applied.Digest

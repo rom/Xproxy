@@ -330,6 +330,10 @@ type SSHListener struct {
 	// in the middle with nothing to notice it.
 	UpstreamInsecureHostKey bool `yaml:"upstream_insecure_host_key"`
 	AllowInsecure           bool `yaml:"allow_insecure"`
+	// MFA requires a second factor after the key or the password: the
+	// client is told authentication partially succeeded and must then
+	// answer a keyboard-interactive prompt with a one-time code.
+	MFA *MFAPolicy `yaml:"mfa"`
 	// SFTP inspects the sftp subsystem's own protocol; without it the
 	// proxy can say only that a session may use sftp, which is the
 	// difference between reading a file and deleting a tree.
@@ -3533,4 +3537,39 @@ var SFTPOperations = map[string]bool{
 	"setstat": true, "fsetstat": true, "opendir": true, "readdir": true, "remove": true,
 	"mkdir": true, "rmdir": true, "realpath": true, "stat": true, "rename": true,
 	"readlink": true, "symlink": true, "extended": true,
+}
+
+// MFAPolicy is a second factor, shared by every protocol that can ask
+// for one. It is one shape rather than one per protocol because a
+// second factor that means different things on different ports is not
+// a second factor: the same enrolment, the same replay rule and the
+// same lockout have to hold everywhere, or the weakest door decides.
+type MFAPolicy struct {
+	// File is the enrolment file (xproxyctl mfa enrol writes the
+	// lines). Required. It must not be world readable.
+	File string `yaml:"file"`
+	// Issuer is the name an authenticator application shows. Default
+	// "xproxy".
+	Issuer string `yaml:"issuer"`
+	// Prompt is what the user is asked. Default "One-time code: ".
+	Prompt string `yaml:"prompt"`
+	// Skew is how many time steps either side of now are accepted.
+	// Default 1, which is the usual allowance for a clock that is a
+	// little off. Each step accepted is a step an observer could
+	// replay in, so this is not a knob to raise casually.
+	Skew int `yaml:"skew"`
+	// RequireEnrolment refuses a user who has no enrolment. Default
+	// true: an optional second factor is one an attacker can decline
+	// by using an account that never enrolled.
+	RequireEnrolment *bool `yaml:"require_enrolment"`
+	// MaxFailures within Window locks a user out for Duration.
+	// Defaults 5, 5m and 15m. A six-digit code has a million values
+	// and a step lasts thirty seconds, so without a bound a fast
+	// client gets a real chance at every step.
+	MaxFailures int      `yaml:"max_failures"`
+	Window      Duration `yaml:"window"`
+	Duration    Duration `yaml:"lockout"`
+	// MaxUsers bounds the table that remembers spent codes and recent
+	// failures. Default 10000.
+	MaxUsers int `yaml:"max_users"`
 }

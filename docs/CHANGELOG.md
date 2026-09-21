@@ -337,6 +337,40 @@ Open findings of the earlier rounds:
   once each) and the parser refuses records that do not.
   `examples/blocklists/dns-encrypted.yaml`.
 
+- **A second factor, shared by SSH and HTTP (`ssh.mfa`, the `mfa`
+  filter, `xproxyctl mfa`).** TOTP (RFC 6238 over the HMAC-OTP of RFC
+  4226) against one enrolment file, used by the bastion and by the
+  request path. It is one implementation rather than one per protocol
+  because a second factor that means different things on different
+  ports is not a second factor: the weakest door decides.
+
+  On SSH the key or the password is a partial success (RFC 4252) and
+  the code is asked over keyboard-interactive; nothing about the
+  session exists until it verifies. On HTTP the filter challenges the
+  identity the filter before it established — `basic_auth`,
+  `ldap_auth`, `oidc`, a JWT or an API key — with a form and a signed
+  cookie afterwards, and refuses a request with no identity rather than
+  prompting, because a second factor with no first factor is a prompt
+  with no account behind it.
+
+  The three properties that make it a factor rather than a second
+  password: a code is spent when used, so a replay inside its own step
+  is refused (the memory is per process, and the docs say what that
+  means in a cluster); every failure gets the same answer, so a wrong
+  code, a replayed one, a locked account and a name that never enrolled
+  are indistinguishable, and the SSH prompt is shown even to a user with
+  no enrolment; and guessing is bounded, since six digits over a
+  thirty-second step is a real chance for a fast client without a
+  lockout. The cookie names the user it was issued for and is checked
+  against every key in the ring, so it is worthless on another account
+  and a rotation does not sign everyone out.
+
+  `xproxyctl mfa enrol` prints the enrolment line, the `otpauth://` URI
+  and optional single-use recovery codes, which are stored hashed;
+  `mfa verify` and `mfa list` are for checking one and seeing who is
+  enrolled. The enrolment file is refused if it is world readable.
+  `examples/mfa/second-factor.yaml`.
+
 - **SSH bastion with SFTP inspection (`kind: ssh`).** A jump host
   forwards the stream, so it cannot tell a shell from a port forward and
   the only policy it can hold is "may connect". This listener is an SSH

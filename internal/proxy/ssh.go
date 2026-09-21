@@ -18,6 +18,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/upstream"
@@ -48,6 +49,12 @@ type sshServer struct {
 	commands     []*regexp.Regexp
 	forwards     []sshForward
 	sftp         *sftpPolicy
+
+	// mfaGuard is the second factor, when one is configured. It is
+	// shared with every other listener reading the same enrolment file
+	// only in the sense that the file is the same: the replay memory
+	// and the lockout are per listener, per process.
+	mfaGuard *mfa.Guard
 
 	// keys and users are the credentials this listener accepts. They
 	// are read at build time, so a reload rebuilds the listener rather
@@ -116,6 +123,18 @@ func newSSHServer(s *Server, cfg config.Listener, ln net.Listener) (*sshServer, 
 	}
 	if err := t.loadCredentials(); err != nil {
 		return nil, err
+	}
+	if h.MFA != nil {
+		store, err := mfa.Load(h.MFA.File)
+		if err != nil {
+			return nil, fmt.Errorf("ssh mfa: %w", err)
+		}
+		t.mfaGuard = mfa.NewGuard(store, h.MFA.Skew, mfa.Lockout{
+			MaxFailures: h.MFA.MaxFailures,
+			Window:      h.MFA.Window.D(),
+			Duration:    h.MFA.Duration.D(),
+			MaxUsers:    h.MFA.MaxUsers,
+		})
 	}
 	if err := t.buildServerConfig(); err != nil {
 		return nil, err
@@ -194,6 +213,12 @@ func (t *sshServer) buildServerConfig() error {
 			if !t.keys[string(key.Marshal())] {
 				return nil, fmt.Errorf("unknown public key for %q", c.User())
 			}
+			if t.mfaGuard != nil {
+				// The key is right and the session is not authorised
+				// yet: RFC 4252 partial success, and the client is
+				// told which method comes next.
+				return nil, t.secondFactor("publickey")
+			}
 			return &ssh.Permissions{Extensions: map[string]string{
 				"auth":        "publickey",
 				"fingerprint": ssh.FingerprintSHA256(key),
@@ -211,6 +236,9 @@ func (t *sshServer) buildServerConfig() error {
 			}
 			if !passwd.Verify(hash, string(pass)) {
 				return nil, errors.New("authentication failed")
+			}
+			if t.mfaGuard != nil {
+				return nil, t.secondFactor("password")
 			}
 			return &ssh.Permissions{Extensions: map[string]string{"auth": "password"}}, nil
 		}
@@ -879,4 +907,48 @@ func sshStringPayload(b []byte) string {
 		return ""
 	}
 	return s
+}
+
+// secondFactor builds the partial success that asks for a one-time
+// code. The first factor has already been verified; nothing about the
+// session is authorised until the code is too.
+func (t *sshServer) secondFactor(first string) error {
+	return &ssh.PartialSuccessError{Next: ssh.ServerAuthCallbacks{
+		KeyboardInteractiveCallback: func(c ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
+			return t.verifyCode(c, challenge, first)
+		},
+	}}
+}
+
+// verifyCode runs the keyboard-interactive round and checks the answer.
+// What the client is told is the same whatever went wrong: a user who
+// never enrolled, a wrong code, a replayed one and a locked account are
+// one answer, because telling them apart is how an attacker learns
+// which accounts are worth attacking.
+func (t *sshServer) verifyCode(c ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge, first string) (*ssh.Permissions, error) {
+	ip := addrOf(c.RemoteAddr().String())
+	user := c.User()
+	m := t.h.MFA
+	if !t.mfaGuard.Enrolled(user) && (m.RequireEnrolment == nil || *m.RequireEnrolment) {
+		// The prompt is still shown. A client that is refused before
+		// being asked has learned that this name is not enrolled.
+		_, _ = challenge(user, "", []string{m.Prompt}, []bool{true})
+		t.s.stats.MFAFailed.Add(1)
+		t.deny(ip, "mfa_not_enrolled", trimUser(user))
+		return nil, errors.New("authentication failed")
+	}
+	answers, err := challenge(user, "", []string{m.Prompt}, []bool{true})
+	if err != nil {
+		return nil, err
+	}
+	if len(answers) != 1 {
+		return nil, errors.New("authentication failed")
+	}
+	if err := t.mfaGuard.Verify(user, strings.TrimSpace(answers[0]), time.Now()); err != nil {
+		t.s.stats.MFAFailed.Add(1)
+		t.deny(ip, "mfa_failed", err.Error())
+		return nil, errors.New("authentication failed")
+	}
+	t.s.stats.MFAVerified.Add(1)
+	return &ssh.Permissions{Extensions: map[string]string{"auth": first + "+mfa"}}, nil
 }

@@ -2979,6 +2979,9 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 	if h.RemoteForward {
 		v.warnf("%s.remote_forward: tcpip-forward asks the target to listen on the client's behalf, which turns the session into an inbound path", p)
 	}
+	if h.MFA != nil {
+		v.mfaPolicy(p+".mfa", h.MFA)
+	}
 	if h.SFTP != nil {
 		q := p + ".sftp"
 		if !reqs["subsystem"] {
@@ -3040,6 +3043,45 @@ func sshForwardOK(d string) error {
 		}
 	}
 	return nil
+}
+
+// mfaPolicy validates a second factor wherever it is configured.
+func (v *validator) mfaPolicy(p string, m *MFAPolicy) {
+	if m.File == "" {
+		v.errf("%s.file: required", p)
+	} else {
+		v.file(p+".file", m.File)
+		if st, err := os.Stat(m.File); err == nil && st.Mode().Perm()&0o004 != 0 {
+			v.errf("%s.file: %s must not be world readable: it holds every second factor", p, m.File)
+		}
+	}
+	if strings.ContainsAny(m.Issuer, ":\r\n") {
+		v.errf("%s.issuer: must not contain a colon or a line break (it is a label in the enrolment URI)", p)
+	}
+	if strings.ContainsAny(m.Prompt, "\r\n") {
+		v.errf("%s.prompt: must be one line", p)
+	}
+	if m.Skew < 0 || m.Skew > 10 {
+		v.errf("%s.skew: must be 0..10", p)
+	}
+	if m.Skew > 2 {
+		v.warnf("%s.skew: %d steps either side is a window of %d seconds in which an observed code can be replayed", p, m.Skew, (2*m.Skew+1)*30)
+	}
+	if m.MaxFailures < 1 || m.MaxFailures > 1000 {
+		v.errf("%s.max_failures: must be 1..1000", p)
+	}
+	if m.Window <= 0 || m.Window > Duration(24*time.Hour) {
+		v.errf("%s.window: must be positive and at most 24h", p)
+	}
+	if m.Duration <= 0 || m.Duration > Duration(7*24*time.Hour) {
+		v.errf("%s.lockout: must be positive and at most 168h", p)
+	}
+	if m.MaxUsers < 1 {
+		v.errf("%s.max_users: must be positive", p)
+	}
+	if m.RequireEnrolment != nil && !*m.RequireEnrolment {
+		v.warnf("%s.require_enrolment: false lets a user who never enrolled past the second factor, which is the account an attacker will use", p)
+	}
 }
 
 // grpcNameOK accepts protobuf identifiers with dots (package.Service).

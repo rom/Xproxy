@@ -599,9 +599,45 @@ the credentials are read then — not per connection, so a key added to
 | `upstream_key_file` | path | required | The private key the proxy authenticates to the target with |
 | `upstream_known_hosts` | path | required unless insecure | OpenSSH known_hosts the target's key is checked against. `revoked` entries are not trusted |
 | `upstream_insecure_host_key` | bool | `false` | Accept any host key from the target. Refused unless `allow_insecure` is also set, and warned about: it is the one setting here that leaves nothing to notice a machine in the middle |
+| `mfa` | object | none | Require a second factor after the key or the password; see below |
 | `sftp` | object | none | Inspect the SFTP protocol inside an sftp subsystem channel; see below |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
 | `allow_clients` | list of CIDR | `[]` (any) | Others are closed before the handshake |
+
+#### server.listeners[].ssh.mfa
+
+A second factor after the key or the password. The client is told
+authentication partially succeeded (RFC 4252 partial success) and is
+then asked, over keyboard-interactive, for a one-time code (RFC 6238
+TOTP over the HMAC-OTP of RFC 4226). Nothing about the session exists
+until the code verifies: a key alone opens no channel.
+
+The same section shape, the same enrolment file and the same rules serve
+the HTTP `mfa` filter. That is deliberate — a second factor that means
+different things on different ports is not a second factor, because the
+weakest door decides.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `file` | path | required | The enrolment file (`xproxyctl mfa enrol` writes the lines). Refused if world readable: it holds every second factor |
+| `issuer` | name | `xproxy` | The name an authenticator application shows |
+| `prompt` | string | `One-time code: ` | What the user is asked |
+| `skew` | int | `1` | Steps either side of now that are accepted, for a clock that is a little off. Each step is a window an observed code can be replayed in, so above 2 it warns |
+| `require_enrolment` | bool | `true` | Refuse a user with no enrolment. `false` warns: the account that never enrolled is the one an attacker will use |
+| `max_failures` | int | `5` | Failures within `window` before the user is locked out |
+| `window` | duration | `5m` | The window failures are counted in |
+| `lockout` | duration | `15m` | How long a locked user stays locked |
+| `max_users` | int | `10000` | The table that remembers spent codes and recent failures. When it is full the least recently seen entries are dropped, which loses replay memory for idle users rather than refusing everyone |
+
+A code is spent when it is used: a later attempt at the same step, or at
+an earlier one, is refused even though it verifies. The memory is per
+process, so in a cluster a code can be replayed once per node — put the
+listener behind one node where that matters, or keep `skew` at 0.
+
+What the client is told never distinguishes a wrong code from a replayed
+one, from a locked account, or from a name that never enrolled. The
+prompt is shown even to a user with no enrolment, because refusing
+before asking says the name is not enrolled.
 
 #### server.listeners[].ssh.sftp
 
@@ -2847,6 +2883,44 @@ digest so the hash cost is paid once per client session.
 
 Denies answer 401 with `WWW-Authenticate` and reason `<filter name>`;
 the user name is added to the access log line as `auth_user`.
+
+### Kind `mfa`
+
+A second factor on top of whatever established the identity —
+`basic_auth`, `ldap_auth`, `oidc`, a JWT or an API key. It uses the same
+enrolment file, replay rule and lockout as an ssh listener's `mfa`
+section.
+
+It must run **after** the filter that authenticates: it challenges the
+identity it is given, and a request with none is refused rather than
+challenged, because a second factor with no first factor is a prompt
+with no account behind it.
+
+A request without a verified factor gets an HTML form (401, no
+redirect, so the request that needed the factor is the one that
+resumes). The form posts back to the same path with `?xproxy_mfa=verify`;
+on success a signed cookie is set and the client is sent to where it was
+going. The cookie names the user it was issued for and is checked
+against the identity of each request, so it is worth nothing on another
+account; it is verified against every key in the ring, so rotating the
+secret does not sign everyone out.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `file` | path | required | The enrolment file; refused if world readable |
+| `cookie_secret_file` | path | required | 32+ bytes, created 0600 if absent, rotated with `xproxyctl rotate` |
+| `cookie_name` | name | `__Host-xproxy-mfa` | The cookie carrying the verified factor |
+| `ttl` | duration | `12h` | How long a verified factor lasts; at most 168h |
+| `issuer` | name | `xproxy` | Shown as the page title |
+| `prompt` | string | `One-time code` | The form's label |
+| `skew` | int | `1` | Steps either side of now that are accepted |
+| `require_enrolment` | bool | `true` | Refuse a user with no enrolment |
+| `max_failures`, `window`, `lockout` | | `5`, `5m`, `15m` | Guessing bound, as on an ssh listener |
+| `identity` | list | `[]` (any) | Which identity kinds to challenge, in order of preference: `basic`, `ldap`, `oidc`, `jwt`, `api_key` |
+
+Every failure gets the same page: a wrong code, a replayed one, a locked
+account and a name that never enrolled are one answer. Counters:
+`mfa_verified`, `mfa_failed`; `xproxy_mfa_total` by outcome.
 
 ### Kind `ldap_auth`
 

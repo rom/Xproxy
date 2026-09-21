@@ -29,6 +29,7 @@ import (
 	_ "github.com/rom/xproxy/internal/filters" // built-in kinds
 	"github.com/rom/xproxy/internal/filters/apikey"
 	"github.com/rom/xproxy/internal/fleet"
+	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/waf"
 )
@@ -76,6 +77,8 @@ func TestYAMLDocuments(t *testing.T) {
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/api-keys", keysFile(t)))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/ldap.secret", secretFile(t)))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/openapi/orders.yaml", filepath.Join(dir, "filters", "orders-openapi.yaml")))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/staff.htpasswd", usersFile(t)))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/mfa", mfaFile(t)))
 			if strings.Contains(string(data), "\nversion: 1\n") || strings.HasPrefix(string(data), "version: 1\n") {
 				if _, err := config.ParseWith(data, false); err != nil {
 					t.Fatalf("complete document: %v", err)
@@ -99,6 +102,20 @@ routes:
 			}
 		})
 	}
+}
+
+// mfaFile writes a one user enrolment file for the mfa example.
+func mfaFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "mfa")
+	secret, err := mfa.NewSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("alice:"+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 // usersFile writes a one user file for the basic_auth example.

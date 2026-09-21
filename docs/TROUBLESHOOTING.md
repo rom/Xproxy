@@ -1964,6 +1964,57 @@ relays the target's requests before closing the client's channel, and a
 lost exit status looks to the client like a crash. If you see it,
 collect the access line and the target's own log.
 
+## Second factor (MFA)
+
+**The SSH client says "permission denied" after the key was accepted.**
+That is the second factor doing its job: the key is a partial success
+and the session does not exist until a code verifies. A client that
+cannot do keyboard-interactive (`-o PreferredAuthentications=publickey`,
+or a batch job) will never get past it; give that account its own
+listener without `mfa`, or use a recovery code interactively.
+
+**Every code is refused.** Almost always the clock. TOTP steps are
+thirty seconds, and `skew` accepts one step either side by default;
+beyond a minute of drift nothing will verify. Check the clock on the
+proxy and on the phone. `xproxyctl mfa verify -file … -user … -code …`
+answers the same question without a session in the way.
+
+**A code works once and then never again in the same minute.** It is
+spent: a one-time password used twice is not one-time. Wait for the next
+step. This is also why `skew` above 1 warns — each extra step is a
+window in which an observed code can be replayed.
+
+**A code that failed on one node works on another.** The spent-code
+memory is per process. In a cluster a code can be replayed once per
+node; put the listener behind a single node where that matters, or set
+`skew: 0` so the window is one step.
+
+**The user is refused even with the right code.** They may be locked
+out: `max_failures` within `window` locks for `lockout`, and while
+locked even a correct code is refused. The security log has
+`mfa_failed` with the reason.
+
+**The HTTP filter refuses with "no identity to challenge".** The `mfa`
+filter runs before the one that authenticates. Put it after
+`basic_auth`, `ldap_auth` or `oidc` in the route's `filters` list —
+it challenges an identity, and a request with none has nothing to
+challenge.
+
+**The challenge form appears on every request.** The cookie is not
+coming back. It is `Secure` and defaults to the `__Host-` prefix, so it
+needs HTTPS and a path of `/`; on a plaintext listener no browser will
+return it. It is also bound to the user, so a session that changes
+identity is challenged again.
+
+**Everyone was signed out after a secret rotation.** They should not
+have been: the cookie is checked against every key in the ring. If it
+happened, the `cookie_secret_file` was replaced rather than rotated —
+use `xproxyctl rotate` so the old key stays in the ring.
+
+**A user lost their phone.** A recovery code from the enrolment works
+once in place of a code, at which point it is spent for good; re-enrol
+the user afterwards with `xproxyctl mfa enrol` and replace their line.
+
 ## Mirroring and shadowing
 
 **The mirror receives nothing.** The access line says which: `sent`,

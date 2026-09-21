@@ -2469,6 +2469,51 @@
       },
       "additionalProperties": false
     },
+    "MFAPolicy": {
+      "description": "MFAPolicy is a second factor, shared by every protocol that can ask for one. It is one shape rather than one per protocol because a second factor that means different things on different ports is not a second factor: the same enrolment, the same replay rule and the same lockout have to hold everywhere, or the weakest door decides.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "File is the enrolment file (xproxyctl mfa enrol writes the lines). Required. It must not be world readable.",
+          "type": "string"
+        },
+        "issuer": {
+          "description": "Issuer is the name an authenticator application shows. Default \"xproxy\".",
+          "type": "string"
+        },
+        "lockout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_failures": {
+          "description": "MaxFailures within Window locks a user out for Duration. Defaults 5, 5m and 15m. A six-digit code has a million values and a step lasts thirty seconds, so without a bound a fast client gets a real chance at every step.",
+          "type": "integer"
+        },
+        "max_users": {
+          "description": "MaxUsers bounds the table that remembers spent codes and recent failures. Default 10000.",
+          "type": "integer"
+        },
+        "prompt": {
+          "description": "Prompt is what the user is asked. Default \"One-time code: \".",
+          "type": "string"
+        },
+        "require_enrolment": {
+          "description": "RequireEnrolment refuses a user who has no enrolment. Default true: an optional second factor is one an attacker can decline by using an account that never enrolled.",
+          "type": "boolean"
+        },
+        "skew": {
+          "description": "Skew is how many time steps either side of now are accepted. Default 1, which is the usual allowance for a clock that is a little off. Each step accepted is a step an observer could replay in, so this is not a knob to raise casually.",
+          "type": "integer"
+        },
+        "window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
     "MQTTListener": {
       "description": "MQTTListener is a protocol-aware MQTT proxy for 3.1.1 and 5.0. It reads every control packet, decides on the ones that carry a policy question — who is connecting, what they publish, what they subscribe to — and forwards the rest untouched. The reason it is not a layer 4 listener: an MQTT broker's authorisation is per topic, and a topic is a string inside a packet. Without reading the packets there is no place to say that a device may publish its own telemetry and nothing else, and every device that holds a broker credential holds the whole tree.",
       "type": "object",
@@ -4238,6 +4283,14 @@
         "max_sessions": {
           "description": "MaxSessions bounds connections on this listener. Default 1000.",
           "type": "integer"
+        },
+        "mfa": {
+          "description": "MFA requires a second factor after the key or the password: the client is told authentication partially succeeded and must then answer a keyboard-interactive prompt with a one-time code.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MFAPolicy"
+            }
+          ]
         },
         "proxy_protocol": {
           "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the target before the SSH banner.",

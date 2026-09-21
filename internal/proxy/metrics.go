@@ -221,6 +221,8 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_ssh_bytes_total", "Bytes relayed through SSH channels.", L{"direction": "out"}, float64(sn.SSHBytesOut))
 	e.Counter("xproxy_sftp_requests_total", "SFTP requests relayed to the target.", nil, float64(sn.SFTPRequests))
 	e.Counter("xproxy_sftp_refused_total", "SFTP requests refused by the policy.", nil, float64(sn.SFTPRefused))
+	e.Counter("xproxy_mfa_total", "Second factor checks, by outcome.", L{"outcome": "verified"}, float64(sn.MFAVerified))
+	e.Counter("xproxy_mfa_total", "Second factor checks, by outcome.", L{"outcome": "failed"}, float64(sn.MFAFailed))
 	e.Counter("xproxy_forward_socks_total", "SOCKS5 connections accepted on forward listeners.", nil, float64(sn.ForwardSOCKS))
 	e.Counter("xproxy_forward_udp_associations_total", "SOCKS5 UDP associations opened.", nil, float64(sn.ForwardUDPAssociations))
 	e.Gauge("xproxy_forward_udp_open", "Open SOCKS5 UDP associations.", nil, float64(sn.ForwardUDPOpen))

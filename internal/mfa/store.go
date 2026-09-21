@@ -1,0 +1,351 @@
+package mfa
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/rom/xproxy/internal/passwd"
+)
+
+// Enrolment is one user's second factor.
+type Enrolment struct {
+	User   string
+	Secret []byte
+	Params Params
+	// Recovery are hashes of single-use recovery codes, in the same
+	// form as a users file. A code that is used is spent: the file is
+	// not rewritten, so the guard remembers which, and the operator
+	// re-enrols the user afterwards.
+	Recovery []string
+}
+
+// Store is the enrolment file, read once. The format is one user per
+// line:
+//
+//	alice:JBSWY3DPEHPK3PXP
+//	bob:JBSWY3DPEHPK3PXP:digits=6,period=30,algo=SHA1
+//	carol:JBSWY3DPEHPK3PXP::pbkdf2$...,pbkdf2$...
+//
+// Fields after the secret are optional: parameters, then recovery code
+// hashes. Blank lines and lines beginning with # are ignored.
+type Store struct {
+	byUser map[string]*Enrolment
+}
+
+// Load reads an enrolment file. A line that does not parse fails the
+// load: a user who was meant to be enrolled and silently is not is a
+// door left open, and one who was meant to be removed and is not is
+// worse.
+func Load(path string) (*Store, error) {
+	f, err := os.Open(path) //nolint:gosec // a path from the configuration
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	if st, err := f.Stat(); err == nil && st.Mode().Perm()&0o004 != 0 {
+		return nil, fmt.Errorf("%s must not be world readable: it holds every second factor", path)
+	}
+	s := &Store{byUser: map[string]*Enrolment{}}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 4096), 1<<20)
+	line := 0
+	for sc.Scan() {
+		line++
+		text := strings.TrimSpace(sc.Text())
+		if text == "" || strings.HasPrefix(text, "#") {
+			continue
+		}
+		e, err := parseLine(text)
+		if err != nil {
+			return nil, fmt.Errorf("%s:%d: %w", path, line, err)
+		}
+		if _, dup := s.byUser[e.User]; dup {
+			return nil, fmt.Errorf("%s:%d: %q is enrolled twice", path, line, e.User)
+		}
+		s.byUser[e.User] = e
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	if len(s.byUser) == 0 {
+		return nil, errors.New("no enrolments in the file")
+	}
+	return s, nil
+}
+
+func parseLine(text string) (*Enrolment, error) {
+	parts := strings.Split(text, ":")
+	if len(parts) < 2 || parts[0] == "" {
+		return nil, errors.New("expected user:secret")
+	}
+	e := &Enrolment{User: parts[0]}
+	secret, err := ParseSecret(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	e.Secret = secret
+	if len(parts) > 2 && parts[2] != "" {
+		p, err := parseParams(parts[2])
+		if err != nil {
+			return nil, err
+		}
+		e.Params = p
+	}
+	if len(parts) > 3 && parts[3] != "" {
+		for _, h := range strings.Split(parts[3], ",") {
+			h = strings.TrimSpace(h)
+			if h == "" {
+				continue
+			}
+			if !passwd.IsHash(h) {
+				return nil, errors.New("recovery codes must be stored as hashes, not in clear")
+			}
+			e.Recovery = append(e.Recovery, h)
+		}
+	}
+	if len(parts) > 4 {
+		return nil, errors.New("too many fields")
+	}
+	return e, nil
+}
+
+func parseParams(s string) (Params, error) {
+	var p Params
+	for _, kv := range strings.Split(s, ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+		if !ok {
+			return p, fmt.Errorf("parameter %q is not key=value", kv)
+		}
+		switch k {
+		case "digits":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 6 || n > 10 {
+				return p, errors.New("digits must be 6..10")
+			}
+			p.Digits = n
+		case "period":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 10 || n > 300 {
+				return p, errors.New("period must be 10..300 seconds")
+			}
+			p.Period = time.Duration(n) * time.Second
+		case "algo":
+			if _, err := newHash(v); err != nil {
+				return p, err
+			}
+			p.Algo = strings.ToUpper(v)
+		default:
+			return p, fmt.Errorf("unknown parameter %q", k)
+		}
+	}
+	return p, nil
+}
+
+// Get returns a user's enrolment.
+func (s *Store) Get(user string) (*Enrolment, bool) {
+	if s == nil {
+		return nil, false
+	}
+	e, ok := s.byUser[user]
+	return e, ok
+}
+
+// Users returns the enrolled names, for a status view.
+func (s *Store) Users() []string {
+	if s == nil {
+		return nil
+	}
+	out := make([]string, 0, len(s.byUser))
+	for u := range s.byUser {
+		out = append(out, u)
+	}
+	return out
+}
+
+// Guard verifies codes and holds the state a one-time password needs:
+// which step a user last spent, which recovery codes are gone, and how
+// many recent failures there have been.
+//
+// The state is per process. In a cluster each node holds its own, so a
+// code can be replayed once per node; where that matters, put the
+// bastion or the listener behind a single node, or accept the window
+// and keep the skew at zero.
+type Guard struct {
+	store   *Store
+	skew    int
+	lockout Lockout
+
+	mu    sync.Mutex
+	users map[string]*userState
+}
+
+// Lockout bounds guessing. A six-digit code has a million values and a
+// step lasts thirty seconds, so without a bound a client that can try
+// fast enough gets a real chance at each step.
+type Lockout struct {
+	// MaxFailures within Window locks the user out for Duration.
+	MaxFailures int
+	Window      time.Duration
+	Duration    time.Duration
+	// MaxUsers bounds the state table. When it is full the oldest
+	// entries are dropped, which loses replay memory for those users
+	// rather than refusing everyone.
+	MaxUsers int
+}
+
+type userState struct {
+	lastStep  uint64
+	spent     map[int]bool // recovery codes used
+	failures  []time.Time
+	lockUntil time.Time
+	seen      time.Time
+}
+
+// NewGuard builds a guard over a store.
+func NewGuard(s *Store, skew int, l Lockout) *Guard {
+	if l.MaxFailures <= 0 {
+		l.MaxFailures = 5
+	}
+	if l.Window <= 0 {
+		l.Window = 5 * time.Minute
+	}
+	if l.Duration <= 0 {
+		l.Duration = 15 * time.Minute
+	}
+	if l.MaxUsers <= 0 {
+		l.MaxUsers = 10000
+	}
+	return &Guard{store: s, skew: skew, lockout: l, users: map[string]*userState{}}
+}
+
+// Enrolled reports whether a user has a second factor.
+func (g *Guard) Enrolled(user string) bool {
+	_, ok := g.store.Get(user)
+	return ok
+}
+
+// Verify checks one code for a user at a moment. The error says why it
+// failed, for the log; what the client is told never distinguishes an
+// unknown user from a wrong code.
+func (g *Guard) Verify(user, code string, now time.Time) error {
+	e, ok := g.store.Get(user)
+	if !ok {
+		return ErrUnknownUser
+	}
+	g.mu.Lock()
+	st := g.state(user, now)
+	if now.Before(st.lockUntil) {
+		g.mu.Unlock()
+		return ErrLocked
+	}
+	lastStep := st.lastStep
+	spent := make(map[int]bool, len(st.spent))
+	for k, v := range st.spent {
+		spent[k] = v
+	}
+	g.mu.Unlock()
+
+	step, ok := Check(e.Secret, code, now, e.Params, g.skew)
+	switch {
+	case ok && step <= lastStep && lastStep != 0:
+		// Verified, but this step is spent. Counted as a failure:
+		// replaying is not a typo.
+		g.fail(user, now)
+		return ErrReplay
+	case ok:
+		g.succeed(user, now, step, -1)
+		return nil
+	}
+	// Recovery codes are tried only when the time-based code failed, so
+	// a working authenticator never spends one.
+	for i, h := range e.Recovery {
+		if spent[i] {
+			continue
+		}
+		if passwd.Verify(h, code) {
+			g.succeed(user, now, lastStep, i)
+			return nil
+		}
+	}
+	g.fail(user, now)
+	return ErrBadCode
+}
+
+// state returns the user's entry, making one and evicting if needed.
+// Caller holds mu.
+func (g *Guard) state(user string, now time.Time) *userState {
+	if st, ok := g.users[user]; ok {
+		st.seen = now
+		return st
+	}
+	if len(g.users) >= g.lockout.MaxUsers {
+		// Drop the least recently seen quarter rather than refusing new
+		// users: losing replay memory for an idle user is a bounded
+		// harm, and refusing everyone is not.
+		oldest := time.Time{}
+		for _, st := range g.users {
+			if oldest.IsZero() || st.seen.Before(oldest) {
+				oldest = st.seen
+			}
+		}
+		cut := oldest.Add(now.Sub(oldest) / 4)
+		for u, st := range g.users {
+			if st.seen.Before(cut) {
+				delete(g.users, u)
+			}
+		}
+		if len(g.users) >= g.lockout.MaxUsers {
+			g.users = map[string]*userState{}
+		}
+	}
+	st := &userState{spent: map[int]bool{}, seen: now}
+	g.users[user] = st
+	return st
+}
+
+func (g *Guard) succeed(user string, now time.Time, step uint64, recovery int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st := g.state(user, now)
+	if step > st.lastStep {
+		st.lastStep = step
+	}
+	if recovery >= 0 {
+		st.spent[recovery] = true
+	}
+	st.failures = nil
+}
+
+func (g *Guard) fail(user string, now time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st := g.state(user, now)
+	cut := now.Add(-g.lockout.Window)
+	kept := st.failures[:0]
+	for _, t := range st.failures {
+		if t.After(cut) {
+			kept = append(kept, t) //nolint:gocritic // filtering in place, which is why the target is the same slice
+		}
+	}
+	kept = append(kept, now)
+	st.failures = kept
+	if len(st.failures) >= g.lockout.MaxFailures {
+		st.lockUntil = now.Add(g.lockout.Duration)
+		st.failures = nil
+	}
+}
+
+// Locked reports whether a user is currently locked out, for a status
+// view; it does not change the state.
+func (g *Guard) Locked(user string, now time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st, ok := g.users[user]
+	return ok && now.Before(st.lockUntil)
+}

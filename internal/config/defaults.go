@@ -245,6 +245,9 @@ func applyDefaults(c *Config) {
 			if h.SFTP != nil {
 				setInt(&h.SFTP.MaxPacketSize, 256<<10)
 			}
+			if h.MFA != nil {
+				mfaDefaults(h.MFA)
+			}
 		}
 		ln := &s.Listeners[i]
 		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ssh" {
@@ -913,3 +916,20 @@ const (
 	DefaultIntrospectionCacheTTL = time.Minute
 	DefaultIntrospectionTimeout  = 3 * time.Second
 )
+
+// mfaDefaults fills an MFA policy wherever it is used.
+func mfaDefaults(m *MFAPolicy) {
+	setStr(&m.Issuer, "xproxy")
+	setStr(&m.Prompt, "One-time code: ")
+	if m.Skew == 0 {
+		m.Skew = 1
+	}
+	if m.RequireEnrolment == nil {
+		t := true
+		m.RequireEnrolment = &t
+	}
+	setInt(&m.MaxFailures, 5)
+	setDur(&m.Window, 5*time.Minute)
+	setDur(&m.Duration, 15*time.Minute)
+	setInt(&m.MaxUsers, 10000)
+}
