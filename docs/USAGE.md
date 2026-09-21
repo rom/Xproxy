@@ -1266,7 +1266,14 @@ log4shell-probe      active   log     403     1203  4s ago       -           JND
 A patch needs no WAF section and runs before it; patches that need the
 rule engine's transformations (decoding, normalisation, scoring) are
 still written as SecLang in `directive_files`, as
-`examples/waf/custom-rules.conf` shows.
+`examples/waf/custom-rules.conf` and `examples/waf/hardening-rules.conf`
+show. The second file is the set most estates end up writing by hand:
+backup and source-control leftovers answered 404, JNDI and template
+expressions, Spring's class loader reached through a bound parameter,
+`..;/` path parameters, the diagnostic methods, executable upload names,
+bounds on parameters, cookies and byte ranges, GraphQL introspection,
+and private keys, cloud access keys and database error messages refused
+on the way out.
 
 ### Ban list
 

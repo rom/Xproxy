@@ -54,7 +54,7 @@ upstreams:
 routes:
   # ---- PHP and WordPress -------------------------------------------
   - name: hp-wp-login
-    paths: [/wp-login.php, /wp-admin, /xmlrpc.php]
+    paths: [/wp-login.php, /wp-admin]
     honeypot: {decoy: wp-login, mark: 1h, delay: 2s}
   - name: hp-wp-config
     paths: [/wp-config.php, /wp-config.php.bak, /wp-config.php.save, /wp-config.txt]
@@ -151,7 +151,7 @@ routes:
     paths: [/.vscode/sftp.json, /sftp-config.json, /.ftpconfig]
     honeypot: {decoy: vscode-sftp, mark: 6h, delay: 2s}
   - name: hp-appsettings
-    paths: [/appsettings.json, /appsettings.Production.json, /web.config]
+    paths: [/appsettings.json, /appsettings.Production.json]
     honeypot: {decoy: appsettings, mark: 6h, delay: 2s}
   - name: hp-rails
     paths: [/config/database.yml, /config/secrets.yml, /config/master.key]
@@ -167,8 +167,7 @@ routes:
     paths:
       - /latest/meta-data
       - /latest/meta-data/iam/security-credentials
-      - /computeMetadata/v1
-      - /metadata/instance
+      - /latest/api/token
     honeypot: {decoy: imds, mark: 24h, delay: 5s}
   - name: hp-consul
     paths: [/v1/catalog/services, /v1/agent/self, /v1/kv]
@@ -179,6 +178,15 @@ routes:
   - name: hp-docker-api
     paths: [/containers/json, /v1.41/containers/json, /images/json, /info]
     honeypot: {decoy: docker-api, mark: 24h, delay: 5s}
+  - name: hp-gcp-metadata
+    paths: [/computeMetadata/v1]
+    honeypot: {decoy: gcp-metadata, mark: 24h, delay: 3s}
+  - name: hp-azure-imds
+    paths: [/metadata/instance, /metadata/identity]
+    honeypot: {decoy: azure-imds, mark: 24h, delay: 3s}
+  - name: hp-registry
+    paths: [/v2/_catalog, /v2/]
+    honeypot: {decoy: registry-catalog, mark: 6h, delay: 2s}
   - name: hp-kubelet
     paths: [/pods, /runningpods, /metrics/cadvisor]
     honeypot: {decoy: kubelet, mark: 24h, delay: 5s}
@@ -199,6 +207,18 @@ routes:
   - name: hp-prometheus
     paths: [/api/v1/status/config, /api/v1/targets, /prometheus]
     honeypot: {decoy: prometheus-config, mark: 6h, delay: 2s}
+  - name: hp-clickhouse
+    paths: [/play, /clickhouse]
+    honeypot: {decoy: clickhouse, mark: 6h, delay: 2s}
+  - name: hp-minio
+    paths: [/minio/health/live, /example-backups]
+    honeypot: {decoy: minio, mark: 6h, delay: 2s}
+  - name: hp-jupyter
+    paths: [/tree, /lab, /nbextensions]
+    honeypot: {decoy: jupyter, mark: 6h, delay: 2s}
+  - name: hp-ollama
+    paths: [/api/tags, /api/ps]
+    honeypot: {decoy: ollama, mark: 6h, delay: 2s}
   - name: hp-traefik
     paths: [/api/rawdata, /api/http/routers, /dashboard/]
     honeypot: {decoy: traefik, mark: 6h}
@@ -207,6 +227,36 @@ routes:
   # The login pages a mass scanner fingerprints before it picks an
   # exploit. Answering costs the scanner a round trip and tells this
   # proxy exactly which product it came shopping for.
+  - name: hp-argocd
+    paths: [/applications, /api/v1/session]
+    honeypot: {decoy: argocd, mark: 24h, delay: 3s}
+  - name: hp-keycloak
+    paths: [/realms/master, /auth/admin]
+    honeypot: {decoy: keycloak, mark: 24h, delay: 3s}
+  - name: hp-weblogic
+    paths: [/console/login, /wls-wsat]
+    honeypot: {decoy: weblogic, mark: 24h, delay: 3s}
+  - name: hp-jboss
+    paths: [/jmx-console, /invoker, /management]
+    honeypot: {decoy: jboss, mark: 24h, delay: 3s}
+  - name: hp-coldfusion
+    paths: [/CFIDE, /cfide, /cfdocs]
+    honeypot: {decoy: coldfusion, mark: 24h, delay: 3s}
+  - name: hp-ivanti
+    paths: [/dana-na/, /dana-ws/]
+    honeypot: {decoy: ivanti, mark: 24h, delay: 3s}
+  - name: hp-nextcloud
+    paths: [/nextcloud, /owncloud, /remote.php]
+    honeypot: {decoy: nextcloud, mark: 6h, delay: 2s}
+  - name: hp-cpanel
+    paths: [/cpanel, /whm, /webmail-login]
+    honeypot: {decoy: cpanel, mark: 24h, delay: 3s}
+  - name: hp-printer
+    paths: [/hp/device/, /printer]
+    honeypot: {decoy: printer, mark: 6h, delay: 2s}
+  - name: hp-camera
+    paths: [/ISAPI/, /onvif/]
+    honeypot: {decoy: camera, mark: 6h, delay: 2s}
   - name: hp-confluence
     paths: [/login.action, /confluence, /wiki/login.action, /pages/doenterpagevariables.action]
     honeypot: {decoy: confluence, mark: 6h, delay: 2s}
@@ -242,6 +292,15 @@ routes:
   - name: hp-adminer
     paths: [/adminer, /adminer.php, /adm.php, /db.php]
     honeypot: {decoy: adminer, mark: 1h, delay: 2s}
+  - name: hp-xmlrpc
+    paths: [/xmlrpc.php]
+    honeypot: {decoy: xmlrpc, mark: 1h, delay: 2s}
+  - name: hp-aspnet-trace
+    paths: [/trace.axd, /elmah.axd]
+    honeypot: {decoy: aspnet-trace, mark: 6h, delay: 2s}
+  - name: hp-web-config
+    paths: [/web.config, /web.config.bak, /Web.config.txt]
+    honeypot: {decoy: web-config, mark: 24h, delay: 3s}
 
   # ---- Shells somebody else supposedly left -------------------------
   # A request for one of these is a scanner looking for another
@@ -256,6 +315,9 @@ routes:
   - name: hp-robots
     paths: [/robots.txt]
     honeypot: {decoy: robots, mark: 0s}
+  - name: hp-sitemap
+    paths: [/sitemap.xml]
+    honeypot: {decoy: sitemap, mark: 0s}
 
   # The real application, last: every path above is more specific.
   - name: app

@@ -1339,6 +1339,8 @@ proxy to fetch its own credentials. Mark these hard.
 | `vault` | A Vault seal status | `/v1/sys/seal-status` |
 | `docker-api` | The Docker daemon's container list | `/containers/json` |
 | `kubelet` | An unauthenticated kubelet's pod list, environment and all | `/pods` |
+| `gcp-metadata` | A Google metadata server handing out a service account token | `/computeMetadata/v1/instance/service-accounts/default/token` |
+| `azure-imds` | An Azure instance metadata document | `/metadata/instance?api-version=2021-02-01` |
 
 **Data stores and dashboards**
 
@@ -1352,6 +1354,10 @@ proxy to fetch its own credentials. Mark these hard.
 | `grafana` | A Grafana bootstrap page | `/grafana` |
 | `prometheus-config` | A Prometheus scrape config carrying credentials | `/api/v1/status/config` |
 | `traefik` | A Traefik router dump with a basic auth hash | `/api/rawdata` |
+| `clickhouse` | A ClickHouse database list | `/?query=SHOW%20DATABASES` |
+| `minio` | An S3 compatible AccessDenied naming a backup bucket | `/example-backups`, `/minio/health/live` |
+| `jupyter` | A Jupyter notebook token prompt | `/tree`, `/lab` |
+| `ollama` | A model server listing the models it has pulled | `/api/tags` |
 
 **Application servers and internals**
 
@@ -1365,6 +1371,16 @@ proxy to fetch its own credentials. Mark these hard.
 | `debug-vars` | Go `expvar` output | `/debug/vars` |
 | `server-status` | Apache `mod_status` | `/server-status` |
 | `webshell` | A web shell someone else supposedly left | `/shell.php`, `/up.php`, `/cmd.php` |
+| `weblogic` | The WebLogic administration console login | `/console/login/LoginForm.jsp` |
+| `jboss` | A WildFly management console with deployments | `/console/`, `/jmx-console/` |
+| `coldfusion` | A ColdFusion administrator login | `/CFIDE/administrator/index.cfm` |
+| `aspnet-trace` | `trace.axd` listing recent requests and the physical path | `/trace.axd` |
+| `web-config` | An IIS `web.config` with a connection string | `/web.config`, `/web.config.bak` |
+| `xmlrpc` | The WordPress XML-RPC method list, `pingback.ping` and all | `/xmlrpc.php` |
+| `registry-catalog` | A container registry catalogue | `/v2/_catalog` |
+| `argocd` | An Argo CD sign-in page | `/applications`, `/api/v1/session` |
+| `keycloak` | A Keycloak realm login | `/realms/master/account`, `/auth/` |
+| `sitemap` | A sitemap that lists the decoy paths, like `robots` | `/sitemap.xml` |
 
 **Enterprise front doors**
 
@@ -1383,9 +1399,15 @@ product it came shopping for.
 | `idrac` | A server lights-out controller login | `/login.html` on a management name |
 | `webmail` | A webmail login | `/webmail`, `/roundcube` |
 | `cgi-bin` | An embedded router or appliance CGI page | `/cgi-bin/mainfunction.cgi`, `/cgi-bin/luci` |
+| `ivanti` | A Secure Access (Pulse) VPN sign-in page | `/dana-na/auth/url_default/welcome.cgi` |
+| `nextcloud` | A Nextcloud login | `/nextcloud/login`, `/login` |
+| `cpanel` | A cPanel login | `/cpanel`, `/whm` |
+| `printer` | A network printer status page with toner and page counts | `/hp/device/info_config`, `/printer` |
+| `camera` | An IP camera device information document | `/ISAPI/System/deviceInfo`, `/onvif/device_service` |
 
-`robots` is the one to serve honestly: it names the decoy paths, so a
-crawler that reads it and then requests them has told you what it is.
+`robots` and `sitemap` are the two to serve honestly: they name the
+decoy paths, so a crawler that reads either and then requests them has
+told you what it is.
 `examples/security/honeypots.yaml` wires the whole table up, one route
 per decoy with the paths each is worth serving on; a test fails if a
 decoy in the table has no route there. `xproxyctl honeypot` and

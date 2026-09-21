@@ -1957,7 +1957,20 @@ var HoneypotDecoys = map[string]bool{
 	// Enterprise front doors
 	"confluence": true, "gitlab-login": true, "citrix": true, "fortinet": true,
 	"esxi": true, "exchange-autodiscover": true, "idrac": true, "webmail": true,
-	"cgi-bin": true,
+	"cgi-bin": true, "ivanti": true, "nextcloud": true, "cpanel": true,
+	// Cloud metadata other than AWS (more server side request forgery)
+	"gcp-metadata": true, "azure-imds": true,
+	// Platform consoles, registries and pipelines
+	"registry-catalog": true, "argocd": true, "keycloak": true,
+	// Application servers with their own exploit history
+	"weblogic": true, "jboss": true, "coldfusion": true, "aspnet-trace": true,
+	// Documents that are XML on the wire
+	"web-config": true, "xmlrpc": true, "sitemap": true, "minio": true,
+	"camera": true,
+	// Notebooks, models and query front ends
+	"jupyter": true, "ollama": true, "clickhouse": true,
+	// Devices
+	"printer": true,
 }
 
 func (v *validator) bans(b *Bans) {

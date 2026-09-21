@@ -260,6 +260,38 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Twenty more decoys, and the routes to serve them.** The honeypot
+  table goes from 56 bodies to 76, and every one of them is wired up in
+  `examples/security/honeypots.yaml`. New: `gcp-metadata` and
+  `azure-imds` (the two metadata services a server side request forgery
+  probe asks for after it has tried AWS), `registry-catalog`, `argocd`
+  and `keycloak`, the application servers with their own exploit
+  history (`weblogic`, `jboss`, `coldfusion`, `aspnet-trace`), the
+  documents that are XML on the wire (`web-config` with a connection
+  string, `xmlrpc` with `pingback.ping`, `minio`, `camera`, and
+  `sitemap`, which like `robots` is served honestly and names the decoy
+  paths), the newer end of what gets scanned (`jupyter`, `ollama`,
+  `clickhouse`), the remote access appliances (`ivanti`, `nextcloud`,
+  `cpanel`) and a `printer`. Each is judged by the same table-wide
+  tests as the rest: plausible length, a content type that parses, a
+  body that parses as what it claims, a visible marker on anything
+  shaped like a credential, and a route in the example that serves it.
+- **A second custom rule file, `examples/waf/hardening-rules.conf`.**
+  Fifteen rules (ids 21001 upward, so they collide with neither the
+  20001 block nor the CRS) for the shapes a WAF is better placed to
+  refuse than the application is: backup and editor leftovers and
+  source-control directories answered 404 rather than 403, template
+  expressions scored at warning so one alone is not a refusal, JNDI and
+  nested expression lookups denied outright, Spring's class loader
+  reached through a bound parameter, `..;/` and path parameters in the
+  request line, the diagnostic methods, upload file names the origin
+  might execute, bounds on parameters, cookies and byte ranges, GraphQL
+  introspection, and — on the way out — private keys, cloud access keys
+  and database error messages. Every rule is exercised by
+  `TestWAFHardeningRules`, which also puts ordinary traffic through the
+  whole file, because a rule set that compiles but no longer matches is
+  a control an operator believes is there.
+
 - **Packet capture of the exchanges the proxy handled (`capture`).** A
   new section writes what the proxy saw as pcapng files that Wireshark,
   tshark and every other pcap tool open directly. The proxy terminates

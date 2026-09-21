@@ -5110,8 +5110,8 @@ A request for one of these on a public proxy is usually a server side request fo
 .PP
 .TS
 allbox;
-lbw(0.8i) lbw(1.6i) lbx
-lw(0.8i) lw(1.6i) lx.
+lbw(0.9i) lbw(1.6i) lbx
+lw(0.9i) lw(1.6i) lx.
 T{
 Decoy
 T}	T{
@@ -5153,6 +5153,20 @@ T}	T{
 An unauthenticated kubelet\(aqs pod list,\: environment and all
 T}	T{
 \fB/\:pods\fR
+T}
+T{
+\fBgcp\-\:metadata\fR
+T}	T{
+A Google metadata server handing out a service account token
+T}	T{
+\fB/\:computeMetadata/\:v1/\:instance/\:service\-\:accounts/\:default/\:token\fR
+T}
+T{
+\fBazure\-\:imds\fR
+T}	T{
+An Azure instance metadata document
+T}	T{
+\fB/\:metadata/\:instance?api\-\:version=\:2021\-\:02\-\:01\fR
 T}
 .TE
 .PP
@@ -5225,14 +5239,42 @@ A Traefik router dump with a basic auth hash
 T}	T{
 \fB/\:api/\:rawdata\fR
 T}
+T{
+\fBclickhouse\fR
+T}	T{
+A ClickHouse database list
+T}	T{
+\fB/\:?query=\:SHOW%20DATABASES\fR
+T}
+T{
+\fBminio\fR
+T}	T{
+An S3 compatible AccessDenied naming a backup bucket
+T}	T{
+\fB/\:example\-\:backups\fR,\: \fB/\:minio/\:health/\:live\fR
+T}
+T{
+\fBjupyter\fR
+T}	T{
+A Jupyter notebook token prompt
+T}	T{
+\fB/\:tree\fR,\: \fB/\:lab\fR
+T}
+T{
+\fBollama\fR
+T}	T{
+A model server listing the models it has pulled
+T}	T{
+\fB/\:api/\:tags\fR
+T}
 .TE
 .PP
 \fBApplication servers and internals\fR
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(1.4i) lbx
-lw(0.9i) lw(1.4i) lx.
+lbw(1.1i) lbw(1.5i) lbx
+lw(1.1i) lw(1.5i) lx.
 T{
 Decoy
 T}	T{
@@ -5295,6 +5337,76 @@ T}	T{
 A web shell someone else supposedly left
 T}	T{
 \fB/\:shell.\:php\fR,\: \fB/\:up.\:php\fR,\: \fB/\:cmd.\:php\fR
+T}
+T{
+\fBweblogic\fR
+T}	T{
+The WebLogic administration console login
+T}	T{
+\fB/\:console/\:login/\:LoginForm.\:jsp\fR
+T}
+T{
+\fBjboss\fR
+T}	T{
+A WildFly management console with deployments
+T}	T{
+\fB/\:console/\fR,\: \fB/\:jmx\-\:console/\fR
+T}
+T{
+\fBcoldfusion\fR
+T}	T{
+A ColdFusion administrator login
+T}	T{
+\fB/\:CFIDE/\:administrator/\:index.\:cfm\fR
+T}
+T{
+\fBaspnet\-\:trace\fR
+T}	T{
+\fBtrace.\:axd\fR listing recent requests and the physical path
+T}	T{
+\fB/\:trace.\:axd\fR
+T}
+T{
+\fBweb\-\:config\fR
+T}	T{
+An IIS \fBweb.\:config\fR with a connection string
+T}	T{
+\fB/\:web.\:config\fR,\: \fB/\:web.\:config.\:bak\fR
+T}
+T{
+\fBxmlrpc\fR
+T}	T{
+The WordPress XML\-RPC method list,\: \fBpingback.\:ping\fR and all
+T}	T{
+\fB/\:xmlrpc.\:php\fR
+T}
+T{
+\fBregistry\-\:catalog\fR
+T}	T{
+A container registry catalogue
+T}	T{
+\fB/\:v2/\:_\:catalog\fR
+T}
+T{
+\fBargocd\fR
+T}	T{
+An Argo CD sign\-in page
+T}	T{
+\fB/\:applications\fR,\: \fB/\:api/\:v1/\:session\fR
+T}
+T{
+\fBkeycloak\fR
+T}	T{
+A Keycloak realm login
+T}	T{
+\fB/\:realms/\:master/\:account\fR,\: \fB/\:auth/\fR
+T}
+T{
+\fBsitemap\fR
+T}	T{
+A sitemap that lists the decoy paths,\: like \fBrobots\fR
+T}	T{
+\fB/\:sitemap.\:xml\fR
 T}
 .TE
 .PP
@@ -5376,9 +5488,44 @@ An embedded router or appliance CGI page
 T}	T{
 \fB/\:cgi\-\:bin/\:mainfunction.\:cgi\fR,\: \fB/\:cgi\-\:bin/\:luci\fR
 T}
+T{
+\fBivanti\fR
+T}	T{
+A Secure Access (Pulse) VPN sign\-in page
+T}	T{
+\fB/\:dana\-\:na/\:auth/\:url_\:default/\:welcome.\:cgi\fR
+T}
+T{
+\fBnextcloud\fR
+T}	T{
+A Nextcloud login
+T}	T{
+\fB/\:nextcloud/\:login\fR,\: \fB/\:login\fR
+T}
+T{
+\fBcpanel\fR
+T}	T{
+A cPanel login
+T}	T{
+\fB/\:cpanel\fR,\: \fB/\:whm\fR
+T}
+T{
+\fBprinter\fR
+T}	T{
+A network printer status page with toner and page counts
+T}	T{
+\fB/\:hp/\:device/\:info_\:config\fR,\: \fB/\:printer\fR
+T}
+T{
+\fBcamera\fR
+T}	T{
+An IP camera device information document
+T}	T{
+\fB/\:ISAPI/\:System/\:deviceInfo\fR,\: \fB/\:onvif/\:device_\:service\fR
+T}
 .TE
 .PP
-\fBrobots\fR is the one to serve honestly: it names the decoy paths, so a crawler that reads it and then requests them has told you what it is. \fBexamples/security/honeypots.yaml\fR wires the whole table up, one route per decoy with the paths each is worth serving on; a test fails if a decoy in the table has no route there. \fBxproxyctl honeypot\fR and \fBGET /v1/honeypot\fR both list the names this build carries, which is the authority when a configuration is refused for an unknown decoy.
+\fBrobots\fR and \fBsitemap\fR are the two to serve honestly: they name the decoy paths, so a crawler that reads either and then requests them has told you what it is. \fBexamples/security/honeypots.yaml\fR wires the whole table up, one route per decoy with the paths each is worth serving on; a test fails if a decoy in the table has no route there. \fBxproxyctl honeypot\fR and \fBGET /v1/honeypot\fR both list the names this build carries, which is the authority when a configuration is refused for an unknown decoy.
 .PP
 \fBresponse_headers\fR apply, so a decoy can carry a \fBServer\fR header of its own. \fBGET /v1/honeypot\fR lists marked clients (address, route, hits, first, last, expires) and the decoy names; \fBDELETE /v1/honeypot?ip=\fR and \fBxproxyctl honeypot forget IP\fR remove a mark. The mark table holds at most 65536 addresses. Counters: \fBhoneypot_hits\fR, \fBhoneypot_marked\fR; metrics \fBxproxy_honeypot_hits_total\fR, \fBxproxy_honeypot_marked\fR.
 .SS "routes[].mirror"

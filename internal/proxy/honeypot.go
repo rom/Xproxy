@@ -613,6 +613,202 @@ window.__kbnBootstrapConfig__={"version":"8.7.1","buildNumber":61230,"basePath":
 <label>Password <input type="password" name="password" autocomplete="current-password"></label>
 <input type="submit" value="Login"></form></body></html>
 `},
+	// Cloud metadata services other than AWS. A request for one of
+	// these on a public proxy is a server side request forgery probe:
+	// the client is asking the proxy to fetch its own credentials.
+	"gcp-metadata": {"application/json", `{"access_token":"ya29.decoy-not-a-real-token-0000000000000000000000",
+"expires_in":3599,
+"token_type":"Bearer",
+"email":"decoy-runtime@example-project.iam.gserviceaccount.example",
+"scopes":["https://www.googleapis.example/auth/cloud-platform"]}
+`},
+	"azure-imds": {"application/json", `{"compute":{"azEnvironment":"AzurePublicCloud","location":"westeurope",
+"name":"decoy-vm-01","osType":"Linux","resourceGroupName":"rg-decoy","subscriptionId":"00000000-0000-0000-0000-000000000000",
+"vmId":"00000000-0000-0000-0000-000000000000","vmSize":"Standard_D2s_v3","tags":"env:example"},
+"network":{"interface":[{"ipv4":{"ipAddress":[{"privateIpAddress":"10.0.0.4","publicIpAddress":"198.51.100.4"}],
+"subnet":[{"address":"10.0.0.0","prefix":"24"}]},"macAddress":"000000000000"}]}}
+`},
+
+	// Registries, pipelines and platform consoles.
+	"registry-catalog": {"application/json", `{"repositories":["example/api","example/web","example/worker","example/db-backup","example/ci-runner"]}
+`},
+	"argocd": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Argo CD</title>
+<link rel="stylesheet" href="/assets/app.css"></head>
+<body><div id="app"><div class="login"><h2>Argo CD</h2>
+<form method="post" action="/api/v1/session">
+<label>Username <input name="username" autocomplete="username"></label>
+<label>Password <input type="password" name="password" autocomplete="current-password"></label>
+<button type="submit">Sign In</button></form>
+<p class="version">argocd v2.6.7+unknown</p></div></div></body></html>
+`},
+	"keycloak": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign in to master</title>
+<link rel="stylesheet" href="/resources/login/keycloak/css/login.css"></head>
+<body class="login-pf"><div id="kc-form"><h1 id="kc-page-title">Sign in to your account</h1>
+<form id="kc-form-login" action="/realms/master/login-actions/authenticate" method="post">
+<label for="username">Username or email</label><input id="username" name="username" type="text" autocomplete="username">
+<label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password">
+<input type="hidden" name="credentialId"><input type="submit" value="Sign In"></form>
+<div id="kc-info"><p>Keycloak 21.0.1</p></div></div></body></html>
+`},
+
+	// Application servers whose consoles have their own exploit history.
+	"weblogic": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><title>Oracle WebLogic Server Administration Console</title>
+<link rel="stylesheet" href="/console/framework/skins/wlsconsole/css/console.css"></head>
+<body><div id="wrap"><h1>Welcome</h1>
+<p>Log in to work with the WebLogic Server domain</p>
+<form method="post" action="/console/j_security_check" name="loginData">
+<label>Username <input name="j_username" type="text" autocomplete="username"></label>
+<label>Password <input name="j_password" type="password" autocomplete="current-password"></label>
+<input type="submit" value="Login"></form>
+<p class="footer">WebLogic Server Version: 12.2.1.4.0</p></div></body></html>
+`},
+	"jboss": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Management Interface</title>
+<link rel="stylesheet" href="/console/css/console.css"></head>
+<body><div class="header"><h1>WildFly Management Console</h1></div>
+<div class="content"><table><tr><th>Deployment</th><th>Status</th></tr>
+<tr><td>api.war</td><td>OK</td></tr><tr><td>reporting.war</td><td>OK</td></tr>
+<tr><td>jmx-console.war</td><td>OK</td></tr></table>
+<p>WildFly Full 26.1.3.Final (WildFly Core 18.1.2.Final)</p></div></body></html>
+`},
+	"coldfusion": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><title>ColdFusion Administrator Login</title>
+<link rel="stylesheet" href="/CFIDE/administrator/templates/admin.css"></head>
+<body><div id="loginbox"><h1>ColdFusion Administrator</h1>
+<form name="loginform" action="/CFIDE/administrator/index.cfm" method="post">
+<label>User Name <input type="text" name="cfadminUserId" autocomplete="username"></label>
+<label>Password <input type="password" name="cfadminPassword" autocomplete="current-password"></label>
+<input type="submit" name="submit" value="Login"></form>
+<p>ColdFusion 2018 Release, Update 15</p></div></body></html>
+`},
+	"aspnet-trace": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><title>Application Trace</title></head>
+<body bgcolor="white"><span style="font-family:Verdana;font-size:14pt"><b>Application Trace</b></span>
+<table cellpadding="0" cellspacing="0"><tr><th>No.</th><th>Time of Request</th><th>File</th><th>Status Code</th><th>Verb</th></tr>
+<tr><td>1</td><td>03/11/2026 09:14:02</td><td>/Default.aspx</td><td>200</td><td>GET</td></tr>
+<tr><td>2</td><td>03/11/2026 09:14:06</td><td>/Account/Login.aspx</td><td>200</td><td>POST</td></tr>
+<tr><td>3</td><td>03/11/2026 09:15:44</td><td>/Reports/Export.aspx</td><td>302</td><td>GET</td></tr></table>
+<p>Physical Directory: d:\inetpub\wwwroot\example\</p></body></html>
+`},
+
+	// Configuration and interface documents that are XML on the wire.
+	"web-config": {"text/xml; charset=utf-8", `<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <connectionStrings>
+    <add name="DefaultConnection" connectionString="Server=db01.example.invalid;Database=app;User Id=app;Password=decoy-Passw0rd-not-real;" providerName="System.Data.SqlClient" />
+  </connectionStrings>
+  <appSettings>
+    <add key="Environment" value="Production" />
+    <add key="ApiKey" value="decoy-api-key-0000000000000000" />
+  </appSettings>
+  <system.web>
+    <compilation debug="false" targetFramework="4.7.2" />
+    <customErrors mode="Off" />
+  </system.web>
+</configuration>
+`},
+	"xmlrpc": {"text/xml; charset=utf-8", `<?xml version="1.0" encoding="UTF-8"?>
+<methodResponse><params><param><value><array><data>
+<value><string>system.multicall</string></value>
+<value><string>system.listMethods</string></value>
+<value><string>wp.getUsersBlogs</string></value>
+<value><string>wp.getPosts</string></value>
+<value><string>pingback.ping</string></value>
+</data></array></value></param></params></methodResponse>
+`},
+	"sitemap": {"application/xml", `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>https://www.example.com/admin/</loc><changefreq>daily</changefreq></url>
+<url><loc>https://www.example.com/backup/</loc><changefreq>weekly</changefreq></url>
+<url><loc>https://www.example.com/.git/config</loc><changefreq>monthly</changefreq></url>
+<url><loc>https://www.example.com/wp-login.php</loc><changefreq>daily</changefreq></url>
+<url><loc>https://www.example.com/phpmyadmin/</loc><changefreq>weekly</changefreq></url>
+</urlset>
+`},
+	"minio": {"application/xml", `<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>AccessDenied</Code><Message>Access Denied.</Message>
+<BucketName>example-backups</BucketName><Key></Key>
+<Resource>/example-backups</Resource>
+<RequestId>17A1B2C3D4E5F600</RequestId>
+<HostId>decoy-host-id-not-real</HostId></Error>
+`},
+	"camera": {"application/xml", `<?xml version="1.0" encoding="UTF-8"?>
+<DeviceInfo version="2.0" xmlns="http://www.example.com/ver20/XMLSchema">
+<deviceName>Camera-Lobby-01</deviceName>
+<deviceID>decoy-0000-0000</deviceID>
+<model>DS-EXAMPLE-I8</model>
+<serialNumber>DS-EXAMPLE0000000000DECOY</serialNumber>
+<firmwareVersion>V5.5.82</firmwareVersion>
+<macAddress>00:00:00:00:00:00</macAddress>
+<ipAddress>192.168.1.64</ipAddress>
+</DeviceInfo>
+`},
+
+	// Notebooks, models and query front ends: the newer end of what a
+	// scanner looks for.
+	"jupyter": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Jupyter Notebook</title>
+<link rel="stylesheet" href="/static/style/style.min.css"></head>
+<body class="login"><div id="ipython-main-app" class="container">
+<h1>Token authentication is enabled</h1>
+<p class="hint">Example deployment; the token is in the server log.</p>
+<form action="/login?next=%2Ftree" method="post" class="form-inline">
+<label for="password_input">Password or token:</label>
+<input type="password" name="password" id="password_input" class="form-control">
+<button type="submit" class="btn btn-default">Log in</button></form>
+<p>Notebook Server 6.5.4</p></div></body></html>
+`},
+	"ollama": {"application/json", `{"models":[
+{"name":"llama3:8b","model":"llama3:8b","size":4661224676,"digest":"decoy0000000000000000000000000000000000000000000000000000000000","details":{"family":"llama","parameter_size":"8B","quantization_level":"Q4_0"}},
+{"name":"internal-support-assistant:latest","model":"internal-support-assistant:latest","size":3825819519,"digest":"decoy1111111111111111111111111111111111111111111111111111111111","details":{"family":"llama","parameter_size":"7B","quantization_level":"Q4_K_M"}}]}
+`},
+	"clickhouse": {"text/plain; charset=utf-8", `analytics
+billing_archive
+default
+events
+information_schema
+staging_example
+system
+`},
+
+	// Remote access appliances. These are fingerprinted in bulk before
+	// an exploit is chosen, so answering tells the proxy what the
+	// scanner came shopping for.
+	"ivanti": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Welcome</title>
+<link rel="stylesheet" href="/dana-na/css/ds.css"></head>
+<body class="dsSigninPage"><div id="dslogin"><h1>Welcome to the Secure Access Gateway</h1>
+<form name="frmLogin" action="/dana-na/auth/url_default/login.cgi" method="post">
+<label>Username <input name="username" type="text" autocomplete="username"></label>
+<label>Password <input name="password" type="password" autocomplete="current-password"></label>
+<input type="hidden" name="realm" value="Users">
+<input type="submit" value="Sign In"></form>
+<p class="footer">Secure Access 22.3R1</p></div></body></html>
+`},
+	"nextcloud": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Login &ndash; Nextcloud</title>
+<link rel="stylesheet" href="/core/css/server.css"></head>
+<body id="body-login"><div class="wrapper"><header><h1>Nextcloud</h1></header>
+<form method="post" name="login" action="/login">
+<label for="user">Account name or email</label><input type="text" name="user" id="user" autocomplete="username">
+<label for="password">Password</label><input type="password" name="password" id="password" autocomplete="current-password">
+<input type="hidden" name="requesttoken" value="decoy-token-not-real">
+<button type="submit">Log in</button></form>
+<p class="version">Nextcloud 25.0.4</p></div></body></html>
+`},
+	"cpanel": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>cPanel Login</title>
+<link rel="stylesheet" href="/unprotected/cpanel.css"></head>
+<body class="lang-en"><div id="login_container"><h1>cPanel</h1>
+<form id="login_form" action="/login/?login_only=1" method="post">
+<label for="user">Username</label><input id="user" name="user" type="text" autocomplete="username">
+<label for="pass">Password</label><input id="pass" name="pass" type="password" autocomplete="current-password">
+<button type="submit">Log in</button></form>
+<div id="footer">cPanel &amp; WHM 110.0.11</div></div></body></html>
+`},
+	"printer": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Printer Status</title></head>
+<body><h1>Office Printer 2F-East</h1>
+<table border="1"><tr><td>Model</td><td>Example LaserJet M404dn</td></tr>
+<tr><td>Serial</td><td>DECOY0000000</td></tr>
+<tr><td>Status</td><td>Ready</td></tr>
+<tr><td>Black Toner</td><td>62%</td></tr>
+<tr><td>Pages Printed</td><td>148,302</td></tr>
+<tr><td>Address</td><td>192.168.4.31</td></tr></table>
+<p><a href="/hp/device/set_config_deviceInfo.html">Device configuration</a></p></body></html>
+`},
 }
 
 // readBounded reads a file of at most limit bytes.
