@@ -83,6 +83,9 @@ type reqState struct {
 	cr           *compiledRoute
 	captures     []string
 	captureNames []string
+	// pcap is the packet capture bookkeeping, set only when a capture
+	// rule wants this exchange.
+	pcap *captureState
 	// reason is the denial category for error pages.
 	reason string
 }
@@ -126,6 +129,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.stats.BytesIn.Add(uint64(r.ContentLength)) //nolint:gosec // guarded by > 0 above
 	}
 	defer s.logAccess(rw, r, st)
+	defer func() { s.finishCapture(rw, r, st) }()
 
 	// Never advertise ourselves.
 	if s.cfg().Server.ServerHeader != "" {
@@ -369,6 +373,10 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	st.marked = s.marks.marked(st.clientIP, st.start)
+	// A packet capture, when one is recording and a rule wants this
+	// exchange. Asked here because the route is now known, and before
+	// the body is read by anything that would consume it.
+	s.beginCapture(r, st)
 
 	// Country lookup and policy (after the address ACL, which is cheaper).
 	if rt.geo != nil && rt.geoNeeded {
@@ -814,6 +822,12 @@ func (s *Server) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 				}
 			}
 			cr.respOps.apply(resp.Header, &tvars{r: r, st: st})
+			// The capture's copy is taken here, after the route's own
+			// header operations, so the file holds what the client got
+			// rather than what the upstream sent.
+			if cs := st.pcap; cs != nil && cs.respBody != nil && resp.Body != nil && resp.Body != http.NoBody {
+				resp.Body = &captureBody{ReadCloser: resp.Body, tee: cs.respBody}
+			}
 			if cr.idleTimeout > 0 && st.cancel != nil && resp.Body != nil && resp.Body != http.NoBody {
 				resp.Body = newIdleReader(resp.Body, cr.idleTimeout, st.cancel)
 			}

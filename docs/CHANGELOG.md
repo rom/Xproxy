@@ -260,6 +260,63 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Packet capture of the exchanges the proxy handled (`capture`).** A
+  new section writes what the proxy saw as pcapng files that Wireshark,
+  tshark and every other pcap tool open directly. The proxy terminates
+  TLS, so there is no point on the wire where the exchange is both
+  complete and readable — in front of it the bytes are ciphertext,
+  behind it the client is gone and the request carries the proxy's own
+  address. What this writes is the proxy's own view: the request as it
+  arrived after the header edits and the response as the client
+  received it, synthesised into a TCP conversation (handshake, data
+  segments at a 1460 byte MTU, orderly close, correct IPv4/IPv6 and TCP
+  checksums) between the real client address and the listener, so a
+  dissector reads it as HTTP and `Follow TCP stream` shows the
+  exchange. Each frame carries the `X-Request-Id` as a pcapng comment,
+  so a frame and an access log line name each other. An HTTP/2 or
+  HTTP/3 exchange is rendered with an `HTTP/1.1` start line, because a
+  dissector needs one; an exchange the client abandoned is written as
+  `HTTP/1.1 000 No Response` rather than an invented 200.
+
+  When a capture is taken is decided along two axes. `rules[]` select
+  which flows: by `hosts` (exact or `*.example.com`), `routes`,
+  `methods`, `paths`, `client_cidrs`, `statuses` (a status or a class
+  as a single digit), `reasons` (a deny reason, matched against both
+  `waf` and `waf:942100`), `denied` for every refusal whatever the
+  reason, `percent` for sampling and `max_flows` for a bound. Every
+  selector a rule names has to hold, the first matching rule decides,
+  and a rule naming none — or no `rules` at all — is every flow. The
+  selectors on the answer cannot be decided when the request arrives,
+  so those exchanges are held and written retrospectively: `denied:
+  true` produces a file of exactly what the proxy is refusing. The
+  second axis is time: the configuration says what *may* be captured
+  and reloads, while a runtime switch says whether anything is being
+  captured *now*. `xproxyctl capture start [-duration 10m]`, `stop` and
+  `status`, and `GET`/`POST /v1/capture`, drive it; both mutations are
+  audited with the caller's credentials, the window closes itself after
+  `max_duration` (default 1h, at most 24h), and a reload carries the
+  switch and its deadline over unchanged so a capture is not silently
+  stopped mid-reproduction.
+
+  The files hold decrypted traffic, and are treated as such throughout:
+  created `0600` with `O_EXCL` in a directory the operator names and
+  the proxy alone writes to, with proxy-chosen names, rotated at
+  `max_file_bytes` and pruned to `max_files`; `redact` replaces the
+  listed header values with the fixed string `REDACTED` (a fixed
+  string, not a blanked-out value, so neither the value nor its length
+  is in the file) and defaults to the authorization, cookie and API key
+  headers; CR and LF are stripped from every captured header value, so
+  a value carrying a newline cannot write a header of the attacker's
+  choosing into the file the next reader parses; bodies are off by
+  default and bounded by `max_body_bytes` when on, with a truncated
+  body marked in the frame comment rather than silently short. The
+  capture is closed on shutdown, so the last exchange — the one being
+  investigated — is not the one missing. `xproxy_capture_active`,
+  `xproxy_capture_flows_total{result}`, `xproxy_capture_truncated_total`
+  and `xproxy_capture_bytes_total` report it, and nothing runs on the
+  request path unless a capture is recording and a rule wants the
+  exchange. `examples/security/capture.yaml`.
+
 - **Virtual `security.txt`.** A new `security_txt[]` section serves an
   RFC 9116 document from the proxy at `/.well-known/security.txt` and
   the legacy `/security.txt`, before routing, so a host with no

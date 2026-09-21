@@ -1,0 +1,104 @@
+# Packet capture of the exchanges the proxy handled, as pcapng files
+# Wireshark and tshark open directly.
+#
+# The proxy terminates TLS, so there is no point on the wire where the
+# exchange is both complete and readable: in front of it the bytes are
+# ciphertext, behind it the client is gone. What this writes is the
+# proxy's own view — the request as it arrived, the response as the
+# client got it — synthesised into a TCP conversation so a dissector
+# reads it as HTTP and "Follow TCP stream" shows the exchange.
+#
+# The files hold decrypted traffic: session cookies, bearer tokens and
+# whatever the application carries. They are written 0600 into the
+# directory below and nothing else is put there, but treat that
+# directory like an access log with redaction turned off.
+#
+# Two switches, both of which have to be on. This file decides what may
+# be captured, and reloads. The runtime switch decides whether anything
+# is being captured now:
+#
+#   xproxyctl capture start -duration 10m
+#   xproxyctl capture status
+#   xproxyctl capture stop
+#
+# Validate: xproxy -config examples/security/capture.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+logging:
+  access: {enabled: true}
+trusted_proxies: ["10.0.0.0/8"]
+
+capture:
+  enabled: true
+  directory: /var/lib/xproxy/capture
+  # Four files of 64 MiB: enough for a reproduction, bounded enough to
+  # sit on the same disk as the logs.
+  max_file_bytes: 67108864
+  max_files: 4
+  # A window an operator forgets about ends by itself.
+  max_duration: 30m
+  # Bodies are where the personal data is, so they are off by default.
+  # With them on, keep the bound low and the redact list honest.
+  bodies: true
+  max_body_bytes: 65536
+  redact:
+    - authorization
+    - proxy-authorization
+    - cookie
+    - set-cookie
+    - x-api-key
+
+  # Rules are tried in order and the first that matches decides. Every
+  # selector a rule names has to hold; a rule that names none matches
+  # everything, so the catch-all goes last (or is left out entirely,
+  # which is what "capture everything" means).
+  rules:
+    # The reported client, on the route it complained about. This is
+    # the shape of a capture taken for one support ticket.
+    - name: reported-client
+      routes: [api]
+      client_cidrs: ["198.51.100.7/32"]
+
+    # Every refusal, whatever refused it. "Show me what the proxy is
+    # blocking" is the question a capture answers best, and the status
+    # and the reason are only known once the exchange is over, so the
+    # whole flow is held and written retrospectively.
+    - name: denials
+      denied: true
+      max_flows: 500
+
+    # One control's decisions, for tuning a rule that is too eager.
+    # reasons matches the reason and the reason with its detail, so
+    # "waf" also selects "waf:942100".
+    - name: waf-only
+      reasons: [waf]
+      max_flows: 200
+
+    # The 5xx responses of one brand, as a baseline while an origin
+    # misbehaves. A single digit is the whole class.
+    - name: shop-errors
+      hosts: ["shop.example.com", "*.shop.example.com"]
+      statuses: [5]
+      max_flows: 200
+
+    # A hundredth of the uploads, bounded, for a shape question that
+    # does not need every request.
+    - name: sample-uploads
+      methods: [POST, PUT]
+      paths: [/upload]
+      percent: 1
+      max_flows: 100
+
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.10:8080"}]
+
+routes:
+  - name: api
+    paths: [/api]
+    upstream: app
+  - name: web
+    paths: [/]
+    upstream: app

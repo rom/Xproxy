@@ -30,6 +30,7 @@ on the first line of the file to enable it.
 | `routes` | list | `[]` | Request matching and actions |
 | `compression` | object | none | gzip of eligible responses; see `compression` |
 | `tracing` | object | none | W3C trace context and span export; see `tracing` |
+| `capture` | object | none | pcapng capture of the exchanges the proxy handled; see `capture` |
 
 ## server
 
@@ -2681,6 +2682,134 @@ outside those directories is refused with a message to restart.
 | `capabilities.drop` | bool | `true` | Clear the bounding, ambient, permitted, effective and inheritable sets (Linux) |
 | `no_new_privs` | bool | `true` | Set PR_SET_NO_NEW_PRIVS (required by Landlock and unprivileged seccomp; systemd's `NoNewPrivileges=` sets it too) |
 | `debuggable` | bool | `false` | Keep the process attachable by a debugger and able to dump core; the default makes it non dumpable with a zero core size limit (Linux), or denies debugger attachment with a zero core size limit (macOS) |
+
+## capture
+
+Present and `enabled: true` means the proxy can write the exchanges it
+handled as pcapng files, which Wireshark, tshark and any other pcap
+reader open directly.
+
+The proxy terminates TLS, so there is no point on the wire where the
+exchange is both complete and readable: in front of the proxy it is
+ciphertext, and behind it the client is gone and the request carries the
+proxy's own address. What this section writes is the proxy's view — the
+request as it arrived after the header edits, the response as the client
+received it — synthesised into a TCP conversation (handshake, data
+segments at a 1460 byte MTU, orderly close) between the real client
+address and the listener address, so a dissector reads it as HTTP and
+`Follow TCP stream` shows the exchange. It is a faithful record of what
+the proxy saw and sent, not a byte for byte record of the packets that
+carried it: segment boundaries, sequence numbers and the frame
+timestamps are the proxy's, and TLS, HTTP/2 framing and HTTP/3 are gone
+by the time it is written (an HTTP/2 or HTTP/3 exchange is rendered with
+an `HTTP/1.1` start line, because a dissector needs one).
+
+> **The files hold decrypted traffic.** Session cookies, bearer tokens,
+> API keys and whatever personal data the application carries are in
+> them in the clear. They are created `0600` in a directory the operator
+> names, the proxy chooses the file names and writes nothing else there,
+> and `redact` blanks the header values that should not be on disk at
+> all — but the directory still has to be treated like an access log
+> with redaction turned off: not on a shared volume, not in a backup
+> that travels, and removed when the investigation is over. Bodies are
+> off by default for the same reason.
+
+Recording has two independent switches, and both have to be on for a
+byte to be written. The configuration decides *what may be* captured —
+`enabled`, and the `rules` that select flows — and it reloads. The
+runtime switch decides *whether it is* being captured now, and it is
+off unless `start_active` is set: `xproxyctl capture start` turns it on,
+`xproxyctl capture stop` turns it off, and it turns itself off after
+`max_duration` so a capture started during an incident cannot be left
+running for a month. That shape is deliberate: the usual deployment
+carries a capture section that is ready and idle, and an operator throws
+the switch for one reproduction. A reload keeps the switch exactly as it
+was, deadline included.
+
+`rules` is where "only a certain flow, or all flows" is decided. A rule
+matches when every selector it names holds; a rule that names no
+selector matches everything, and a section with rules omitted behaves as
+one such rule. The first rule that matches decides, so the broad
+catch-all goes last. Selectors that are only known once the exchange is
+over — `statuses`, `reasons`, `denied` — hold the request and response
+until then and write the whole flow retrospectively, so a rule for "the
+403s only" still produces a complete conversation.
+
+```yaml
+capture:
+  enabled: true
+  directory: /var/lib/xproxy/capture
+  max_file_bytes: 67108864      # 64 MiB, then rotate
+  max_files: 4                  # keep four, oldest removed
+  max_duration: 30m             # a window an operator forgets ends itself
+  bodies: true
+  max_body_bytes: 65536
+  redact: [authorization, cookie, set-cookie, x-api-key]
+  rules:
+    # The reproduction: one client, one API route, everything it does.
+    - name: reported-client
+      routes: [api]
+      client_cidrs: ["198.51.100.7/32"]
+
+    # Every refusal, whatever route it was on and whatever refused it.
+    - name: denials
+      denied: true
+      max_flows: 500
+
+    # The WAF's own decisions, for tuning a rule that is too eager.
+    - name: waf
+      reasons: [waf]
+
+    # A thousandth of the upload traffic, as a baseline.
+    - name: sample-uploads
+      methods: [POST, PUT]
+      paths: [/upload]
+      percent: 1
+      max_flows: 200
+```
+
+`GET /v1/capture` and `xproxyctl capture status` show whether recording
+is on, when the window ends, the current file and the counters below;
+`POST /v1/capture` with `{"active": true, "duration": "10m"}` (or
+`xproxyctl capture start -duration 10m`) opens a window and
+`{"active": false}` closes it. `xproxy_capture_flows_total{result}`
+counts `captured`, `skipped`, `dropped` and `failed` and
+`xproxy_capture_bytes_total` the bytes written.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Build the subsystem. Without it nothing is recorded and the runtime switch has nothing to turn on |
+| `start_active` | bool | `false` | Begin recording at start-up instead of waiting for the switch. Records from the first request, including start-up traffic no operator is there for; the usual shape is a section that is ready and idle |
+| `directory` | path | required | Absolute path of an existing directory the proxy owns and nothing else writes to. The proxy chooses the file names inside it and removes its own oldest files |
+| `file_prefix` | string | `xproxy` | Begins each file name, the rest being the time the file was opened. No path separators, no leading dot |
+| `max_file_bytes` | int | `67108864` | Rotate to a new file past this size (1 MiB to 8 GiB) |
+| `max_files` | int | `4` | Keep this many files, removing the oldest (1 to 1000) |
+| `max_duration` | duration | `1h` | The longest one recording window may run; a `start` without a duration gets this one, and a longer one is shortened to it. At most 24h |
+| `snap_len` | int | `262144` | The snapshot length declared in the file (128 to 1048576) |
+| `bodies` | bool | `false` | Capture request and response bodies as well as the heads. The heads answer most questions and carry far less of what should not be on disk; a body is where the personal data is |
+| `max_body_bytes` | int | `65536` | Bound each captured body. The rest is left out and the flow's comment says `truncated` (0 to 16 MiB; `0` captures heads only even with `bodies: true`) |
+| `redact` | list of header names | `authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`, `api-key` | Replace these request and response header values with `REDACTED` in the captured bytes. A fixed string, not a blanked-out one, so neither the value nor its length is in the file. An explicitly empty list turns redaction off, which is a deliberate choice and not the default |
+| `rules` | list | `[]` | Which exchanges to write; empty means all of them |
+
+### capture.rules[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | `rules[i]` | Identifies the rule in `GET /v1/capture` |
+| `hosts` | list | any | Host patterns, exact or `*.example.com`, matched against the request authority |
+| `routes` | list of names | any | Only requests matched to these routes. A request refused before routing has no route and never matches this selector |
+| `methods` | list | any | Upper-case methods |
+| `paths` | list of prefixes | any | Prefixes of the cleaned path |
+| `client_cidrs` | list of CIDR | any | Client networks, the derived client address being the one compared |
+| `statuses` | list of int | any | Response statuses, or a class as a single digit: `4` is every 4xx. A refused request has the status the proxy answered |
+| `reasons` | list | any | Deny reasons (`waf`, `rate_limit`, `ban`, `acl`, `virtual_patch`, ...), matched against the reason and against `reason:detail` |
+| `denied` | bool | `false` | Select every refusal, whatever the reason. `true` alone is the "show me what the proxy is blocking" rule |
+| `percent` | int | `100` | Sample this percentage of the exchanges the rule would otherwise take (1 to 100). Sampling is per exchange, and a sampled-out exchange is counted as skipped |
+| `max_flows` | int | `0` | Stop after writing this many exchanges for this rule, so a rule left on cannot fill a disk. `0` is unbounded, at most 10000000; the count resets on reload |
+
+Selectors within a rule are AND, values within a selector are OR, and
+rules are tried in order. To capture one route for one client, put both
+selectors in one rule; to capture two unrelated things, write two rules.
 
 ## Headers set on forwarded requests
 

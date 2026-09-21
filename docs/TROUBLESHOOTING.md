@@ -179,6 +179,7 @@ compute it.
 | An HTML page titled "Checking your browser" | The challenge gate. A browser solves it; an API client cannot — exempt the client or the route |
 | A page that is not yours, with a scanner's branding | An ICAP service replaced the response. `icap_verdict: replaced` in the access line |
 | `... table full` in the error log | A bounded table hit its cap; see [Bounded tables](#bounded-tables-and-what-full-means) |
+| `xproxyctl capture status` says `off` and no file appears | The runtime switch is off; the section alone only makes a capture possible. See [Packet capture](#packet-capture) |
 | `management socket ... already in use` | Another xproxy is running, or a stale socket after a kill -9 |
 | A reload says a listener needs a restart | Only a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`) changed on the same address |
 | `configuration advice` warnings at start | Not errors: configurations that load but are a bad idea. Read them |
@@ -223,6 +224,7 @@ do not know where to look, start at the top.
 | What the exporters are doing with your telemetry | `xproxyctl telemetry` |
 | The live picture, refreshing | `xproxyctl tui` |
 | One stream as it happens | `xproxyctl tail access\|error\|security\|audit` |
+| Exactly what a client sent and what we answered, byte for byte | `xproxyctl capture start -duration 10m`, then the pcapng in Wireshark |
 
 Two of these deserve a habit rather than a lookup. `xproxyctl config` is
 the answer to almost every "but I configured that" — it prints what the
@@ -375,6 +377,7 @@ Everything below observes without changing what clients see.
 | Would this filter block real traffic? | `sensitive_data` and `bot_score` both have a recording mode (`action: log`, `learn: true`) |
 | Does this origin refuse unsigned requests? | `xproxyctl origin-check`, which probes each origin with a signed and an unsigned request |
 | Is this endpoint healthy from *here*? | `curl` from the proxy host to the endpoint address, with the `Host` the proxy sends |
+| What exactly did the client send, and what did we answer? | `xproxyctl capture start -duration 10m` with a rule for that client or route, then read the pcapng in Wireshark. It records, it does not change what clients see — but the file holds decrypted traffic, so delete it afterwards |
 
 Two more that change behaviour but are reversible in one command:
 `xproxyctl maintenance on` (and `off`), and a `canary` endpoint in a
@@ -1441,6 +1444,73 @@ response does not finish inside the mirror `timeout`, and the detail log
 is sampled by `sample_percent` even though the metric counts every
 comparison. Look at `xproxy_mirror_diff_total{result}` before concluding
 nothing was compared.
+
+## Packet capture
+
+**Nothing is written.** Both switches have to be on. `xproxyctl capture
+status` answers in one line: `capture: no capture section configured`
+means the configuration has none (or `enabled: false`), `capture: off`
+means the section is there and nobody turned it on — `xproxyctl capture
+start -duration 10m`. A capture that *was* on and stopped by itself hit
+`max_duration`; that is the design, not a fault.
+
+**The switch is on and the file stays empty.** Look at the counters in
+`xproxyctl capture status`.
+
+| Counter climbing | What it means |
+|------------------|---------------|
+| `skipped` only | No rule matched the traffic, a rule that waits for the answer did not want it, sampling dropped it, or a rule is at its `max_flows`. The per-rule lines below the counters say which rule is taking anything at all |
+| `failed` | The file could not be written: the directory is gone, full, or not writable by the proxy user. The sandbox also has to allow it — a `directory` outside the paths Landlock was given is refused at reload, not at capture time |
+| nothing at all | No exchange reached the capture. The hook runs after routing, so a request refused before a route is matched (a ban, a listener bound, TLS) never reaches it |
+
+**A rule matches nothing.** Every selector a rule names has to hold, and
+the first matching rule decides, so a broad rule above a narrow one
+takes the traffic the narrow one was written for — put the catch-all
+last. `routes` needs the route *name*, `hosts` matches the request
+authority (a `*.example.com` pattern is not the apex), `paths` are
+prefixes of the cleaned path, and `client_cidrs` compares the derived
+client address, which is the `X-Forwarded-For` one only when the peer is
+in `trusted_proxies`.
+
+**A rule on `statuses`, `reasons` or `denied` seems not to fire.** It
+fires at the end: none of them can be decided when the request arrives,
+so the exchange is held and written once the proxy has answered. What it
+cannot do is match a request that never got a status — a client that
+disappeared mid-request is written as `HTTP/1.1 000 No Response`.
+`reasons` matches the reason and the reason with its detail, so `waf`
+also selects `waf:942100`; the deny reasons are listed under "Deny
+reasons and details" below.
+
+**Wireshark shows the conversation but no HTTP.** Check the port. The
+synthesised conversation uses the real client and listener ports, and a
+listener on a port Wireshark does not associate with HTTP needs `Decode
+As… HTTP`. An HTTP/2 or HTTP/3 exchange is written with an `HTTP/1.1`
+start line for exactly this reason, because those have no status line on
+the wire.
+
+**The bodies are missing or cut short.** `bodies: false` is the default:
+only the heads are captured. With bodies on, each one is bounded by
+`max_body_bytes`, and a body that hit the bound is marked `truncated` in
+the frame comment and counted in `truncated` — the stream is short
+because the bound cut it, not because the client stopped. A body the
+handler never read is a body the upstream never saw, and is not in the
+file either.
+
+**The file disappeared.** Rotation. A file past `max_file_bytes` is
+closed and a new one opened, and only `max_files` are kept — the oldest
+is removed. Copy a capture out of the directory before it is worth
+keeping.
+
+**A header value reads `REDACTED`.** That is `redact` doing its job. It
+is a fixed string rather than a blanked-out value, so the file carries
+neither the value nor its length. Remove the header name from `redact`
+to capture it — and then treat the file accordingly.
+
+**Somebody left a capture running.** `xproxy_capture_active` is 1 while
+one is recording; alert on it. The audit log has the answer to who:
+every `capture` action is written there with the caller's uid, gid and
+pid. The window ends by itself after `max_duration`, so the worst case
+is bounded by that value, not by the operator's memory.
 
 ## The API inventory
 

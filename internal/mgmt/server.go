@@ -219,6 +219,10 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		writeJSON(w, 200, map[string]int{"purged": n})
 	})
 	mux.HandleFunc("GET /v1/patches", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.VirtualPatches()) })
+	mux.HandleFunc("GET /v1/capture", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, s.proxy.CaptureStatus())
+	})
+	mux.HandleFunc("POST /v1/capture", s.setCapture)
 	mux.HandleFunc("GET /v1/maintenance", func(w http.ResponseWriter, _ *http.Request) {
 		on, configured := s.proxy.Maintenance(nil)
 		writeJSON(w, 200, MaintenanceStatus{Configured: configured, On: on})
@@ -586,6 +590,43 @@ func (s *Server) listBans(w http.ResponseWriter, _ *http.Request) {
 		entries = []ban.Entry{}
 	}
 	writeJSON(w, 200, entries)
+}
+
+// CaptureRequest is the body of POST /v1/capture. Duration is a Go
+// duration string ("10m"); empty or zero asks for the configured
+// maximum, and anything longer than it is shortened to it.
+type CaptureRequest struct {
+	Active   bool   `json:"active"`
+	Duration string `json:"duration,omitempty"`
+}
+
+// setCapture turns packet capture on or off. It is audited like every
+// other mutating call: a capture writes decrypted traffic to disk, so
+// who turned it on and when has to be in the record.
+func (s *Server) setCapture(w http.ResponseWriter, r *http.Request) {
+	var req CaptureRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 256)).Decode(&req); err != nil {
+		writeJSON(w, 400, result{Error: "bad request body"})
+		return
+	}
+	var d time.Duration
+	if req.Duration != "" {
+		v, err := time.ParseDuration(req.Duration)
+		if err != nil || v < 0 {
+			writeJSON(w, 400, result{Error: "duration: not a duration"})
+			return
+		}
+		d = v
+	}
+	st, err := s.proxy.SetCapture(req.Active, d)
+	if err != nil {
+		writeJSON(w, 404, result{Error: err.Error()})
+		return
+	}
+	peer := peerFromContext(r.Context())
+	s.logs.Audit.Info("management action", "action", "capture", "active", st.Active, "until", st.Until,
+		"peer_uid", peer.UID, "peer_gid", peer.GID, "peer_pid", peer.PID, "peer_known", peer.OK)
+	writeJSON(w, 200, st)
 }
 
 // MaintenanceStatus is the body of GET /v1/maintenance.

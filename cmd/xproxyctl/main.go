@@ -692,6 +692,58 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_, _ = fmt.Fprintf(out, "maintenance: %s\n", onOff(st.On))
 		return 0
+	case "capture":
+		cfs := flag.NewFlagSet("capture", flag.ContinueOnError)
+		cfs.SetOutput(errOut)
+		dur := cfs.Duration("duration", 0, "how long to record; the configured max_duration when unset")
+		if err := cfs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		var on *bool
+		switch cfs.Arg(0) {
+		case "", "status":
+		case "start":
+			v := true
+			on = &v
+		case "stop":
+			v := false
+			on = &v
+		default:
+			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl capture [status|start [-duration D]|stop]")
+			return 2
+		}
+		if *dur < 0 {
+			_, _ = fmt.Fprintln(errOut, "capture: -duration must not be negative")
+			return 2
+		}
+		st, err := c.Capture(on, *dur)
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, st)
+		}
+		if !st.Enabled {
+			_, _ = fmt.Fprintln(out, "capture: no capture section configured")
+			return 0
+		}
+		_, _ = fmt.Fprintf(out, "capture: %s\n", onOff(st.Active))
+		if !st.Until.IsZero() {
+			_, _ = fmt.Fprintf(out, "until: %s\n", st.Until.Format(time.RFC3339))
+		}
+		if st.File != "" {
+			_, _ = fmt.Fprintf(out, "file: %s (%d open)\n", st.File, st.Files)
+		}
+		_, _ = fmt.Fprintf(out, "captured: %d  skipped: %d  truncated: %d  dropped: %d  failed: %d  bytes: %d\n",
+			st.Captured, st.Skipped, st.Truncated, st.DroppedFull, st.WriteFailures, st.Bytes)
+		for _, r := range st.Rules {
+			if r.Limit > 0 {
+				_, _ = fmt.Fprintf(out, "rule %s: %d/%d\n", r.Name, r.Captured, r.Limit)
+				continue
+			}
+			_, _ = fmt.Fprintf(out, "rule %s: %d\n", r.Name, r.Captured)
+		}
+		return 0
 	case "origin-check":
 		ofs := flag.NewFlagSet("origin-check", flag.ContinueOnError)
 		ofs.SetOutput(errOut)

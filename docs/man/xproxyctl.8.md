@@ -52,6 +52,7 @@ locally; everything else goes through the socket.
 | `cluster` | Peers, inbound connections and gossip counters |
 | `api` [`all`\|`shadow`\|`zombie`\|`versions`\|`documented`\|`undocumented`] | API inventory discovered from traffic: host, method, path template, route, version, state (documented, shadow, zombie, superseded), counts, credentials seen and last seen (`-top` *N*); with `-openapi` [`-title` *T*] the view as an OpenAPI 3.0 skeleton in YAML |
 | `patches` | Virtual patches with state (active, disabled, expired), action, hits, last hit and expiry |
+| `capture` [`status`\|`start` [`-duration` *D*]\|`stop`] | Packet capture of the exchanges the proxy handled, written as pcapng: whether it is recording, when the window ends, the current file and the per rule counters; `start` opens a window (*D*, bounded by `capture.max_duration`), `stop` closes it. The files hold decrypted request and response bytes |
 | `fleet` | Fleet agent state: controller, node id, applied bundle digest and result, pending bundle, poll and report counters |
 | `accounts` [`-top` *N*] | Account guard state: endpoints with tracked addresses, accounts and pairs, active blocks (*N* per endpoint), window totals, campaign state and the action counters |
 | `maintenance` [`on`\|`off`] | Show or set maintenance mode (holds every request but the allowlist behind a 503) |
