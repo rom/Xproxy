@@ -298,6 +298,48 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Authorisation, as one policy rather than one per filter (`kind:
+  authz`).** Every authenticating filter here answered "who":
+  `basic_auth`, `ldap_auth`, `api_key`, `oidc`, the JWT filter, client
+  certificates. None of them answered "what may they do", so each had
+  grown its own small allow list — required scopes on the key, a
+  required group on the directory bind, required claims on the session.
+  An allow list per filter is a policy nobody can read in one place,
+  and the one nobody reads is the one with the hole in it.
+
+  The identity a request carries now holds more than a name. Filters
+  record what they verified — the directory's groups, the key's scopes,
+  the token's claims — and `authz` decides on them: subjects, groups,
+  scopes, claims, which filter verified the identity, the method, the
+  path and the client network, with negative forms for "everybody but".
+  Default deny, first match wins, and the decision is recorded as
+  `authz_rule` on the access line, which is the only way to tell a
+  policy that allowed from one that never matched.
+
+  It decides nothing on its own authority: every value comes from a
+  filter that verified it, so a header a client sent cannot reach a
+  rule. That also means it must run after those filters, which
+  `require_authenticated` makes obvious rather than subtle — with
+  nothing verified there is nothing to decide about, and the
+  alternative is deciding on what a client supplied.
+
+  Two shapes are deliberate and worth knowing before writing rules:
+  scopes are all-of and groups are any-of, because that is what each
+  means in practice; and a rule with no selectors matches everything,
+  which is a legitimate backstop as a deny and fails the load as an
+  allow — `default: allow` is where that belongs, out loud.
+
+  A refusal tells the client nothing about why. Which rule, which group
+  it would have needed and whether the path exists are all things a
+  prober would like to know.
+
+  `ldap_auth` also stops throwing away what it read: the group
+  attribute is fetched whenever `group_attr` is set rather than only
+  when `require_group` is, and the groups are cached with the
+  authentication answer rather than fetched again on a hit — a cache
+  that remembers the yes and forgets what it was based on is a cache
+  that quietly widens a policy.
+
 - **gRPC message inspection (`kind: grpc_guard`).** Routing gRPC by its
   path read the envelope and nothing else. The messages are
   length-prefixed frames of protobuf inside the body, so the proxy

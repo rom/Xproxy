@@ -275,6 +275,10 @@ an identifier from the access log to the upstream.
 
 **Extensibility and platforms**
 
+- **Authorisation as one policy**: every authenticating filter answers
+  "who"; `authz` answers "what may they do", deciding on the subject,
+  groups, scopes and claims those filters verified — default deny,
+  first match wins, and nothing a client sent can reach a rule
 - **gRPC message inspection**: the framing, a bound on one message
   rather than the whole stream, the protobuf structure (nesting depth,
   field count) and patterns over the strings inside — without a schema,

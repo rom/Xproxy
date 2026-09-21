@@ -47,6 +47,42 @@ filters:
       allow_compressed: false
       deny_patterns:
         - "(?i)-----BEGIN (RSA |EC )?PRIVATE KEY-----"
+  # Who a request is, every filter above can answer. What it may do,
+  # none of them can: each has its own small allow list, and an allow
+  # list per filter is a policy nobody can read in one place. This
+  # reads the identity those filters verified and decides once.
+  #
+  # It must run last in a route's filter list: before them there is
+  # nothing verified to decide about.
+  - name: policy
+    kind: authz
+    options:
+      default: deny
+      require_authenticated: true
+      forward_groups_header: X-Auth-Groups
+      rules:
+        # A deny above an allow carves an exception out of it.
+        - name: no-deletes-from-outside
+          allow: false
+          methods: [DELETE]
+          not_networks: ["10.0.0.0/8"]
+        - name: read-orders
+          allow: true
+          methods: [GET, HEAD]
+          paths: [/v1/orders, /v1/orders/**]
+          scopes: [orders:read]
+        - name: write-orders
+          allow: true
+          methods: [POST, PUT, PATCH, DELETE]
+          paths: [/v1/orders, /v1/orders/**]
+          # All of them, not any: a key carrying one of two does not
+          # satisfy this.
+          scopes: [orders:read, orders:write]
+        - name: graph
+          allow: true
+          paths: [/graphql]
+          scopes: [orders:read]
+
 rate_limits:
   - {name: per-key, key: "header:X-Api-Key", algorithm: sliding_window, limit: 600, window: 1m}
 upstreams:
@@ -57,12 +93,12 @@ routes:
     paths: [/v1/orders]
     upstream: orders
     rate_limits: [per-key]
-    filters: [keys, orders-spec]
+    filters: [keys, orders-spec, policy]
   - name: graphql
     paths: [/graphql]
     upstream: gateway
     rate_limits: [per-key]
-    filters: [keys, gql]
+    filters: [keys, gql, policy]
   - name: rpc
     paths: [/pkg.Orders/]
     upstream: orders

@@ -1904,6 +1904,44 @@ this bound.
 broker sent something this proxy would not parse. It is not passed
 through: its framing is what the client's next read depends on.
 
+## Authorisation
+
+**Everything is refused with `rule:unauthenticated`.** The policy ran
+before anything verified an identity. `authz` decides on what an
+authenticating filter recorded, so it has to be last in the route's
+`filters` list — before them there is nothing to decide about, and
+deciding on values a client supplied is exactly what this avoids. For a
+route that is meant to be open, `require_authenticated: false`.
+
+**Everything is refused with `rule:default`.** No rule matched and the
+default is deny, which is the point. The access line carries
+`authz_rule`, so the refusals say `default` rather than naming a rule.
+Check the path patterns first: a pattern is a path exactly, or one
+ending `/**` for a tree, and a prefix that is not a path boundary does
+not match — `/v1/orders` does not cover `/v1/orders-internal`.
+
+**A rule with scopes never matches.** Scopes are all-of: a credential
+carrying two of the three a rule names does not satisfy it. Groups are
+any-of. If that is the wrong way round for what you meant, split the
+rule.
+
+**Groups are empty although the directory has them.** `ldap_auth`
+records the attribute named by `group_attr`, which defaults to
+`memberOf` only when `require_group` is set; set `group_attr`
+explicitly to record groups without requiring one. For `oidc`, the
+claim is `groups_claim` (default `groups`) and it is read from the
+verified session, so a provider that only puts groups in the userinfo
+response will not have them there.
+
+**A policy allows more than it reads.** Look for a rule with no
+selectors. As a deny that is a backstop; as an allow it fails the load
+for this reason. Also check rule order: the first match decides, so an
+allow above a deny wins.
+
+**The backend sees no groups.** `forward_groups_header` has to be set,
+and the header is written only when the policy allowed. Any value a
+client sent under that name is removed before the decision, not after.
+
 ## gRPC message inspection
 
 **Calls are refused with `INVALID_ARGUMENT` and the reason

@@ -3214,7 +3214,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `grpc_guard`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `grpc_guard`, `authz`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -3684,6 +3684,75 @@ detail `check:filename` and a JSON body; the access log carries
 | `raw_uploads` | bool | `false` | Treat a non multipart body of a write request as one file, named from `Content-Disposition` or the last path segment |
 | `fields` | list | any | Form field names that may carry files |
 | `max_filename_length` | int | `255` | |
+
+### Kind `authz`
+
+Decides what a verified identity may do.
+
+Every authenticating filter here answers "who". None of them answers
+"what may they do", so each grew its own small allow list — required
+scopes on the API key, a required group on the directory bind, required
+claims on the session — and an allow list per filter is a policy nobody
+can read in one place. This reads the identity those filters verified
+and decides once, where the decision can be seen.
+
+It decides nothing on its own authority. The subject, the groups, the
+scopes and the claims all come from a filter that verified them, so a
+header a client sent cannot reach a rule here. That also means it has
+to run **after** the filters that authenticate: put it last in a route's
+`filters` list.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `default` | `deny`, `allow` | `deny` | What happens to a request no rule matched |
+| `require_authenticated` | bool | `true` | Refuse a request no filter verified. With nothing verified there is nothing to decide about, and the alternative is deciding on values a client supplied |
+| `rules` | list | required | Decided in order; the first match wins |
+| `forward_groups_header` | name | | Pass the verified groups to the backend. Any client value under that name is removed first |
+| `forward_scopes_header` | name | | The same for scopes |
+| `status` | `403`, `404` | `403` | What a refusal answers. `404` says nothing at all |
+
+Each rule:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `name` | name | Required; what the decision is logged and recorded as |
+| `allow` | bool | `true` permits, `false` refuses |
+| `methods` | list | Compared without case |
+| `paths` | list | A path exactly, or one ending `/**` for a tree. A prefix that is not a path boundary is not a match: `/v1/orders` does not cover `/v1/orders-internal` |
+| `subjects` | list | The name the authenticating filter recorded |
+| `groups` | list | Any of these; compared without case, as directories treat them |
+| `scopes` | list | **All** of these. A credential carrying two of three does not satisfy it |
+| `kinds` | list | Which filter verified the identity: `oidc`, `ldap`, `api_key`, `basic`, `jwt`, `mfa` |
+| `claims` | map | Each named claim must equal the given value |
+| `networks` | list of CIDR | The client address |
+| `not_subjects`, `not_groups`, `not_networks` | list | "Everybody but". Separate keys rather than a `!` prefix, because a group name can begin with anything |
+
+Every selector a rule names has to hold. A rule that names none matches
+everything: as a deny that is a legitimate backstop, and as an allow it
+is a policy that says yes to everything, so it fails the load — write
+`default: allow` if that is what is meant.
+
+The first matching rule decides, so a deny above an allow carves an
+exception out of it:
+
+```yaml
+rules:
+  - {name: no-deletes-from-the-field, allow: false, methods: [DELETE], not_networks: ["10.0.0.0/8"]}
+  - {name: staff, allow: true, groups: ["cn=staff,ou=groups,dc=example,dc=com"]}
+```
+
+A refusal tells the client nothing about why: which rule, which group it
+would have needed, and whether the path even exists are all things a
+prober would like to know. The reason is in the proxy's own log and the
+access line carries `authz_rule`, which is the only way to tell a policy
+that allowed from one that never matched.
+
+**What feeds it.** `oidc` records the groups from `groups_claim`
+(default `groups`), the scopes from the token's `scope`, and whatever
+`attr_claims` names; `ldap_auth` records the directory's own groups
+from `group_attr`; `api_key` records the key's scopes. A filter that
+records nothing still records the subject, so `subjects` and `kinds`
+work everywhere.
 
 ### Kind `grpc_guard`
 

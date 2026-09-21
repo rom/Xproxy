@@ -3893,6 +3893,68 @@ batches, introspection in production) without knowing the schema. The
 security log carries the filter name as the reason and the access log
 the key id (`api_key`).
 
+### Authorisation: from an identity to a policy (filter)
+
+Every authenticating filter here answers "who": `basic_auth`,
+`ldap_auth`, `api_key`, `oidc`, the JWT filter, client certificates.
+None of them answers "what may they do", so each grew its own small
+allow list — required scopes on the key, a required group on the
+directory bind, required claims on the session. An allow list per
+filter is a policy nobody can read in one place, and the one nobody
+reads is the one with the hole in it.
+
+`authz` reads the identity those filters verified and decides once:
+
+```yaml
+filters:
+  - name: keys
+    kind: api_key
+    options: {keys_file: /etc/xproxy/api-keys}
+  - name: policy
+    kind: authz
+    options:
+      default: deny
+      forward_groups_header: X-Auth-Groups
+      rules:
+        - {name: no-deletes-from-outside, allow: false, methods: [DELETE], not_networks: ["10.0.0.0/8"]}
+        - {name: read, allow: true, methods: [GET, HEAD], paths: [/v1/orders/**], scopes: [orders:read]}
+        - {name: write, allow: true, paths: [/v1/orders/**], scopes: [orders:read, orders:write]}
+routes:
+  - {name: orders, paths: [/v1/orders], upstream: orders, filters: [keys, policy]}
+```
+
+Three things worth knowing before writing rules.
+
+**It runs last.** The subject, groups, scopes and claims all come from a
+filter that verified them, so a header a client sent cannot reach a
+rule — which also means that before those filters have run there is
+nothing to decide about. Put `authz` at the end of the route's filter
+list. `require_authenticated` is on by default and refuses a request
+nothing verified, rather than deciding on values a client supplied.
+
+**Scopes are all-of, groups are any-of.** A rule naming two scopes is
+satisfied only by a credential carrying both; a rule naming two groups
+is satisfied by membership of either. That is what each of them means
+in practice, and getting it the other way round is how a policy ends up
+wider than it reads.
+
+**The first matching rule decides**, so a deny above an allow carves an
+exception out of it. A rule that names no selectors matches everything:
+as a deny that is a legitimate backstop, and as an allow it fails the
+load — `default: allow` is where that belongs, out loud.
+
+A refusal tells the client nothing about why. Which rule, which group it
+would have needed and whether the path even exists are all things a
+prober would like to know; the reason is in the proxy's log, and the
+access line carries `authz_rule`, which is the only way to tell a policy
+that allowed from one that never matched.
+
+What feeds it: `oidc` records groups from `groups_claim` (default
+`groups`), scopes from the token's `scope` and whatever `attr_claims`
+names; `ldap_auth` records the directory's own groups from `group_attr`;
+`api_key` records the key's scopes. Every filter records the subject, so
+`subjects` and `kinds` work whatever authenticated.
+
 ### Upload protection (filter)
 
 Uploads are where a web shell arrives. The `upload_guard` filter

@@ -10515,7 +10515,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBgrpc_\:guard\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBform_\:guard\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBgrpc_\:guard\fR,\: \fBauthz\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBform_\:guard\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -12159,6 +12159,192 @@ T}	T{
 
 T}
 .TE
+.SS "Kind \fBauthz\fR"
+.PP
+Decides what a verified identity may do.
+.PP
+Every authenticating filter here answers "who". None of them answers "what may they do", so each grew its own small allow list \[u2014] required scopes on the API key, a required group on the directory bind, required claims on the session \[u2014] and an allow list per filter is a policy nobody can read in one place. This reads the identity those filters verified and decides once, where the decision can be seen.
+.PP
+It decides nothing on its own authority. The subject, the groups, the scopes and the claims all come from a filter that verified them, so a header a client sent cannot reach a rule here. That also means it has to run \fBafter\fR the filters that authenticate: put it last in a route\(aqs \fBfilters\fR list.
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(0.6i) lbw(0.9i) lbx
+lw(1.4i) lw(0.6i) lw(0.9i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdefault\fR
+T}	T{
+\fBdeny\fR,\: \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+What happens to a request no rule matched
+T}
+T{
+\fBrequire_\:authenticated\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a request no filter verified. With nothing verified there is nothing to decide about,\: and the alternative is deciding on values a client supplied
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+Decided in order;\: the first match wins
+T}
+T{
+\fBforward_\:groups_\:header\fR
+T}	T{
+name
+T}	T{
+
+T}	T{
+Pass the verified groups to the backend. Any client value under that name is removed first
+T}
+T{
+\fBforward_\:scopes_\:header\fR
+T}	T{
+name
+T}	T{
+
+T}	T{
+The same for scopes
+T}
+T{
+\fBstatus\fR
+T}	T{
+\fB403\fR,\: \fB404\fR
+T}	T{
+\fB403\fR
+T}	T{
+What a refusal answers. \fB404\fR says nothing at all
+T}
+.TE
+.PP
+Each rule:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.6i) lbx
+lw(1.0i) lw(0.6i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+Required;\: what the decision is logged and recorded as
+T}
+T{
+\fBallow\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR permits,\: \fBfalse\fR refuses
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+Compared without case
+T}
+T{
+\fBpaths\fR
+T}	T{
+list
+T}	T{
+A path exactly,\: or one ending \fB/\:**\fR for a tree. A prefix that is not a path boundary is not a match: \fB/\:v1/\:orders\fR does not cover \fB/\:v1/\:orders\-\:internal\fR
+T}
+T{
+\fBsubjects\fR
+T}	T{
+list
+T}	T{
+The name the authenticating filter recorded
+T}
+T{
+\fBgroups\fR
+T}	T{
+list
+T}	T{
+Any of these;\: compared without case,\: as directories treat them
+T}
+T{
+\fBscopes\fR
+T}	T{
+list
+T}	T{
+\fBAll\fR of these. A credential carrying two of three does not satisfy it
+T}
+T{
+\fBkinds\fR
+T}	T{
+list
+T}	T{
+Which filter verified the identity: \fBoidc\fR,\: \fBldap\fR,\: \fBapi_\:key\fR,\: \fBbasic\fR,\: \fBjwt\fR,\: \fBmfa\fR
+T}
+T{
+\fBclaims\fR
+T}	T{
+map
+T}	T{
+Each named claim must equal the given value
+T}
+T{
+\fBnetworks\fR
+T}	T{
+list of CIDR
+T}	T{
+The client address
+T}
+T{
+\fBnot_\:subjects\fR,\: \fBnot_\:groups\fR,\: \fBnot_\:networks\fR
+T}	T{
+list
+T}	T{
+"Everybody but". Separate keys rather than a \fB!\fR prefix,\: because a group name can begin with anything
+T}
+.TE
+.PP
+Every selector a rule names has to hold. A rule that names none matches everything: as a deny that is a legitimate backstop, and as an allow it is a policy that says yes to everything, so it fails the load \[u2014] write \fBdefault: allow\fR if that is what is meant.
+.PP
+The first matching rule decides, so a deny above an allow carves an exception out of it:
+.PP
+.RS 4
+.nf
+.ft CR
+rules:
+  \- {name: no\-deletes\-from\-the\-field, allow: false, methods: [DELETE], not_networks: ["10.0.0.0/8"]}
+  \- {name: staff, allow: true, groups: ["cn=staff,ou=groups,dc=example,dc=com"]}
+.ft
+.fi
+.RE
+.PP
+A refusal tells the client nothing about why: which rule, which group it would have needed, and whether the path even exists are all things a prober would like to know. The reason is in the proxy\(aqs own log and the access line carries \fBauthz_rule\fR, which is the only way to tell a policy that allowed from one that never matched.
+.PP
+\fBWhat feeds it.\fR \fBoidc\fR records the groups from \fBgroups_claim\fR (default \fBgroups\fR), the scopes from the token\(aqs \fBscope\fR, and whatever \fBattr_claims\fR names; \fBldap_auth\fR records the directory\(aqs own groups from \fBgroup_attr\fR; \fBapi_key\fR records the key\(aqs scopes. A filter that records nothing still records the subject, so \fBsubjects\fR and \fBkinds\fR work everywhere.
 .SS "Kind \fBgrpc_guard\fR"
 .PP
 Reads gRPC messages rather than passing them through. A proxy that routes gRPC by its path has read the envelope; the messages are length\-prefixed frames of protobuf inside the body, and without reading them it cannot say how large one message is (only how large the whole body is), cannot notice a stream that stops in the middle of a frame, and cannot see a message nested a thousand deep \[u2014] which costs the backend\(aqs parser far more than it costs the sender to write.

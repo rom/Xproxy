@@ -7,6 +7,7 @@ package filters
 import (
 	_ "github.com/rom/xproxy/internal/filters/accountguard" // account_guard
 	_ "github.com/rom/xproxy/internal/filters/apikey"       // api_key
+	_ "github.com/rom/xproxy/internal/filters/authz"        // authz
 	_ "github.com/rom/xproxy/internal/filters/basicauth"    // basic_auth
 	_ "github.com/rom/xproxy/internal/filters/bodyrewrite"  // body_rewrite
 	_ "github.com/rom/xproxy/internal/filters/botscore"     // bot_score
