@@ -428,6 +428,45 @@ Open findings of the earlier rounds:
 
 ### Tests (1.4)
 
+Security tests for the surfaces this release adds, written as an
+attacker would read them rather than as coverage.
+
+`test/bypass` gains two files. The first treats the capture file as
+what it is — the one artefact of this proxy that holds decrypted
+traffic on disk — and tries to get a secret into it (every spelling of
+a redacted header name, a length-preserving placeholder), to get a
+header of one's own into it (encoded CRLF in the path and in a query
+value, a bare CR in a header value, a body carrying a whole fake HTTP
+message, each either refused before the capture or framed so a
+dissector cannot mistake it), and to switch it on from the outside
+(`/v1/capture` on the data plane is an application path and changes no
+state). It also asserts the file mode, that the directory holds nothing
+but the proxy's own pcapng files, and that a refusal is captured with
+the status the client got and nothing from an origin that was never
+asked. The second file is about what a scanner can learn: a decoy
+carries no cookie, no redirect and no reflection of what the client
+sent, is byte-identical for every client and on every hit, and — the
+property that makes a honeypot worth running — a marked client's
+ordinary traffic is indistinguishable from anybody else's, header for
+header, with the mark visible to the operator and never to the client
+or the origin. A last case walks every refusal the harness can produce
+and asserts none of them names an origin address, an upstream or an
+internal path.
+
+`internal/capture` gains a fuzz target over the flow writer: arbitrary
+request bytes, response bytes and comments through every endpoint
+pairing, with the result walked block by block the way a reader with no
+trust in the file would. A capture that crashes the tool it is opened
+with is a capture that cannot be read during the incident it was taken
+for.
+
+The JNDI rule of the new hardening file is tested against the
+obfuscations the payload is actually written in — `${lower:j}ndi`,
+`${::-j}` assembled character by character, the scheme split across
+`${env:}` lookups — through the query string, two headers and a JSON
+body, because a rule that only catches the plain spelling is a rule
+that catches nothing.
+
 A round of adversarial and robustness tests over the parsers, the
 protocol clients and the views, written from the outside in: what a
 client, a peer, a scanner, a certificate authority or a file on disk

