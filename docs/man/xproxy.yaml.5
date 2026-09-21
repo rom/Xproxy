@@ -9864,7 +9864,9 @@ capture:
 .fi
 .RE
 .PP
-\fBGET /v1/capture\fR and \fBxproxyctl capture status\fR show whether recording is on, when the window ends, the current file and the counters below; \fBPOST /v1/capture\fR with \fB{"active": true, "duration": "10m"}\fR (or \fBxproxyctl capture start \-duration 10m\fR) opens a window and \fB{"active": false}\fR closes it. \fBxproxy_capture_flows_total{result}\fR counts \fBcaptured\fR, \fBskipped\fR, \fBdropped\fR and \fBfailed\fR and \fBxproxy_capture_bytes_total\fR the bytes written.
+\fBGET /v1/capture\fR and \fBxproxyctl capture status\fR show whether recording is on, when the window ends, the current file and the counters below; \fBPOST /v1/capture\fR with \fB{"active": true, "duration": "10m"}\fR (or \fBxproxyctl capture start \-duration 10m\fR) opens a window and \fB{"active": false}\fR closes it. \fBxproxy_capture_flows_total{result}\fR counts \fBcaptured\fR, \fBskipped\fR, \fBdropped\fR and \fBfailed\fR, \fBxproxy_capture_bytes_total\fR the bytes written, and \fBxproxy_capture_active\fR is 1 while a capture is running \[u2014] worth an alert, since a capture left on keeps writing decrypted traffic to disk. Both mutations are audited with the caller\(aqs uid, gid and pid.
+.PP
+The web GUI does not offer any of this. It is a network service, and starting a capture writes decrypted traffic to disk; the switch stays on the management socket, where the kernel decides who may throw it.
 .PP
 .TS
 allbox;

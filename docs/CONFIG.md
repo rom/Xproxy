@@ -2801,8 +2801,15 @@ is on, when the window ends, the current file and the counters below;
 `POST /v1/capture` with `{"active": true, "duration": "10m"}` (or
 `xproxyctl capture start -duration 10m`) opens a window and
 `{"active": false}` closes it. `xproxy_capture_flows_total{result}`
-counts `captured`, `skipped`, `dropped` and `failed` and
-`xproxy_capture_bytes_total` the bytes written.
+counts `captured`, `skipped`, `dropped` and `failed`,
+`xproxy_capture_bytes_total` the bytes written, and
+`xproxy_capture_active` is 1 while a capture is running — worth an
+alert, since a capture left on keeps writing decrypted traffic to
+disk. Both mutations are audited with the caller's uid, gid and pid.
+
+The web GUI does not offer any of this. It is a network service, and
+starting a capture writes decrypted traffic to disk; the switch stays
+on the management socket, where the kernel decides who may throw it.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
