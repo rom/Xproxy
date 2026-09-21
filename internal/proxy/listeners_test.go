@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -76,8 +77,11 @@ routes:
 	if got := s.Addrs()["main"]; got != addr {
 		t.Fatalf("address changed on rebuild: %s -> %s", addr, got)
 	}
-	if resp, _ := get(t, url+"/"); resp.StatusCode != 308 {
-		t.Fatalf("rebuilt listener: %d", resp.StatusCode)
+	// On its own connection: the pooled one belongs to the generation
+	// the rebuild is draining, and reusing it would be a race with the
+	// close rather than a test of the new listener.
+	if code := fresh(t, url+"/"); code != 308 {
+		t.Fatalf("rebuilt listener: %d", code)
 	}
 	_ = idle.SetReadDeadline(time.Now().Add(3 * time.Second))
 	if _, err := idle.Read(make([]byte, 1)); err == nil {
@@ -151,4 +155,23 @@ routes:
 	if s.Stats().Reloads != 6 || s.Stats().ReloadFailures != 2 {
 		t.Fatalf("%+v", s.Stats())
 	}
+}
+
+// fresh makes one request on a connection of its own and returns the
+// status, so a reload draining a pooled connection cannot be mistaken
+// for the answer.
+func fresh(t *testing.T, url string) int {
+	t.Helper()
+	c := &http.Client{
+		Transport:     &http.Transport{DisableKeepAlives: true},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	defer c.CloseIdleConnections()
+	resp, err := c.Get(url) //nolint:noctx // a test request with the client's own timeout
+	if err != nil {
+		t.Fatalf("get %s: %v", url, err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	return resp.StatusCode
 }

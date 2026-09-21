@@ -13,8 +13,15 @@ import (
 // (which may be systemd owned and on a privileged port) is never closed
 // and re-bound and no connection is refused during the switch.
 type acceptor struct {
-	raw  net.Listener
-	ch   chan accepted
+	raw net.Listener
+	ch  chan accepted
+	// back holds connections a retiring front took from the channel
+	// before it saw that it was closed. Its own server will not serve
+	// them, so they are handed to the next generation instead of being
+	// dropped: a reload must not refuse a connection that arrived
+	// during the switch, which is the whole reason the socket is
+	// shared.
+	back chan net.Conn
 	once sync.Once
 }
 
@@ -24,7 +31,7 @@ type accepted struct {
 }
 
 func newAcceptor(raw net.Listener) *acceptor {
-	a := &acceptor{raw: raw, ch: make(chan accepted)}
+	a := &acceptor{raw: raw, ch: make(chan accepted), back: make(chan net.Conn, 16)}
 	go a.loop()
 	return a
 }
@@ -52,9 +59,20 @@ func (a *acceptor) loop() {
 }
 
 // close closes the socket; the loop ends and every front sees a closed
-// listener.
+// listener. Anything handed back and not yet taken is closed here, so a
+// removed listener leaves no connection open with nobody serving it.
 func (a *acceptor) close() {
-	a.once.Do(func() { _ = a.raw.Close() })
+	a.once.Do(func() {
+		_ = a.raw.Close()
+		for {
+			select {
+			case c := <-a.back:
+				_ = c.Close()
+			default:
+				return
+			}
+		}
+	})
 }
 
 // front is the net.Listener served by one listener generation. Closing
@@ -78,6 +96,9 @@ func (f *front) Accept() (net.Conn, error) {
 	select {
 	case <-f.closed:
 		return nil, f.closedErr()
+	case c := <-f.a.back:
+		// A connection a retiring generation took and could not serve.
+		return c, nil
 	case r, ok := <-f.a.ch:
 		if !ok {
 			return nil, f.closedErr()
@@ -87,8 +108,18 @@ func (f *front) Accept() (net.Conn, error) {
 		}
 		select {
 		case <-f.closed:
-			// Closed while a connection arrived: keep it rather than
-			// drop it, the caller drains it like any other.
+			// Closed while a connection arrived. This generation's
+			// server is shutting down and will not serve it, so keeping
+			// it would mean closing it on a client that did nothing
+			// wrong. Hand it to the next generation instead.
+			select {
+			case f.a.back <- r.c:
+			default:
+				// Nowhere to put it: a refused connection the client
+				// will retry, rather than one held open by nobody.
+				_ = r.c.Close()
+			}
+			return nil, f.closedErr()
 		default:
 		}
 		return r.c, nil

@@ -19,7 +19,8 @@ import (
 	"time"
 )
 
-// Block types (pcapng, RFC 9518 section 4).
+// Block types. pcapng is not an RFC: the format is specified by
+// draft-ietf-opsawg-pcapng, section 4.
 const (
 	blockSectionHeader = 0x0A0D0D0A
 	blockInterface     = 0x00000001

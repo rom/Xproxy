@@ -337,6 +337,46 @@ Open findings of the earlier rounds:
   once each) and the parser refuses records that do not.
   `examples/blocklists/dns-encrypted.yaml`.
 
+- **A reload could refuse a connection that arrived during the switch.**
+  The accept socket is shared across listener generations precisely so
+  that it never has to be closed and re-bound, but a retiring
+  generation blocked in `Accept` could win the race for an arriving
+  connection against the generation replacing it. Its own server was
+  already shutting down, so the connection was accepted and then
+  closed: an EOF to a client that did nothing wrong, on every reload
+  that rebuilds a listener in place. A connection taken by a front that
+  has since closed is now handed to the next generation instead, and
+  one taken when the whole listener is going away is closed rather than
+  left open with nobody serving it. Two flaky tests are fixed with it:
+  the reload test that found this, and an ECH counter read before the
+  server had finished the handshake the client had already returned
+  from.
+
+- **`docs/RFC.md`: every standard this proxy implements, in part or not
+  at all.** A proxy sits between two implementations of a specification
+  and has to be right about both. The new document is the list: around
+  a hundred rows across HTTP, QUIC, WebSocket and tunnelling, TLS, DNS,
+  mail, messaging, SSH and SFTP, proxying, identity, encoding and
+  addressing, each marked full, a named subset, or refused.
+
+  The refusals are why it exists. A proxy that quietly ignores a feature
+  it does not understand reads a message differently from the peer
+  behind it, and every smuggling and desync bug lives in that gap; the
+  last table lists thirteen things this one recognises and declines on
+  purpose, with the reason for each. The document also names what has no
+  RFC — the PROXY protocol, MQTT, SFTP version 3, ECH and the
+  post-quantum hybrid, pcapng, OpenID Connect, YARA, SecLang — so an
+  absence is not mistaken for an omission, and it states plainly where
+  something is *not* implemented (PKCE, RFC 9440's `Client-Cert`,
+  stale-while-revalidate).
+
+  Writing it turned up two citations in the code and the reference that
+  named the wrong RFC — pcapng is a draft, not RFC 9518, and the TLS
+  post-quantum hybrid is `draft-kwiatkowski-tls-ecdhe-mlkem` over FIPS
+  203, not RFC 9370 — both corrected. A test keeps the document's own
+  shape honest: every row carries a status the document defines, every
+  refusal carries a reason, and every heading in the contents exists.
+
 - **Twenty-three more decoys, their honeypot routes, and a fourth WAF
   rule file.** The new listeners put mail, messaging and remote access
   on the network, and each of those comes with its own scanners, its

@@ -173,8 +173,17 @@ func TestECHRequireRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial with ech on a requiring listener: %v", err)
 	}
+	// The client's Dial returns before the server has finished with the
+	// handshake, so the counter it keeps is waited for rather than read
+	// once: the same reason the refusal above surfaces on a read.
+	var st *ECHStatus
+	for i := 0; i < 200; i++ {
+		if st = r.ECH(); st.Accepted == 1 && st.Refused == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	_ = conn.Close()
-	st := r.ECH()
 	if st.Accepted != 1 || st.Refused != 1 {
 		t.Fatalf("status = %+v", st)
 	}

@@ -757,9 +757,10 @@ upstream `total` for those. 0-RTT is never enabled.
 
 The accepted key agreement groups, in preference order:
 `X25519MLKEM768`, `X25519`, `P-256`, `P-384`, `P-521`. The default
-leads with `X25519MLKEM768`, the hybrid that combines X25519 with the
-ML-KEM lattice KEM (RFC 9370's hybrid design, as deployed by Chrome,
-Firefox and every major CDN).
+leads with `X25519MLKEM768`, the hybrid that combines X25519 (RFC 7748)
+with the ML-KEM lattice KEM of FIPS 203, as
+`draft-kwiatkowski-tls-ecdhe-mlkem` defines it for TLS and as Chrome,
+Firefox and every major CDN deploy it.
 
 Why it is a setting at all: Go chooses a good set by itself, but *only*
 while the list is left unset, and naming any group replaces the whole

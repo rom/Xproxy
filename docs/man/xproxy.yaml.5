@@ -2319,7 +2319,7 @@ T}
 .TE
 .SS "server.listeners[].tls.key_exchange"
 .PP
-The accepted key agreement groups, in preference order: \fBX25519MLKEM768\fR, \fBX25519\fR, \fBP\-256\fR, \fBP\-384\fR, \fBP\-521\fR. The default leads with \fBX25519MLKEM768\fR, the hybrid that combines X25519 with the ML\-KEM lattice KEM (RFC 9370\(aqs hybrid design, as deployed by Chrome, Firefox and every major CDN).
+The accepted key agreement groups, in preference order: \fBX25519MLKEM768\fR, \fBX25519\fR, \fBP\-256\fR, \fBP\-384\fR, \fBP\-521\fR. The default leads with \fBX25519MLKEM768\fR, the hybrid that combines X25519 (RFC 7748) with the ML\-KEM lattice KEM of FIPS 203, as \fBdraft\-kwiatkowski\-tls\-ecdhe\-mlkem\fR defines it for TLS and as Chrome, Firefox and every major CDN deploy it.
 .PP
 Why it is a setting at all: Go chooses a good set by itself, but \fIonly\fR while the list is left unset, and naming any group replaces the whole list. A configuration written to prefer X25519 therefore drops the post\-quantum hybrid silently, and nothing in a handshake says so. Making the list explicit means the choice is validated, documented and visible in \fBxproxyctl tls\fR, rather than a side effect of a line nobody re\-read after a toolchain upgrade.
 .PP
