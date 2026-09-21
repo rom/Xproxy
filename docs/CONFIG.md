@@ -598,6 +598,153 @@ client the broker's own `$SYS` tree. `subscribe_deny: ["$SYS/#"]` is
 still worth writing, because it refuses the client that asks for it by
 name.
 
+### server.listeners[].syslog (kind: syslog)
+
+A `kind: syslog` listener is a relay that reads what it forwards.
+
+Reading it is the point. Almost every field in a syslog record is
+written by the sender and believed by the collector: the host name, the
+facility, the severity, the time. A message claiming to be `auth.emerg`
+from another machine costs nothing to send. And a message whose text
+carries a newline becomes **two** records in any collector that frames
+on newlines — the second one saying whatever the sender wanted a record
+to say, with a priority of its own.
+
+So every message is parsed, and every message is re-emitted as RFC 5424
+in one framing, whatever arrived. One dialect out is what makes the
+record a collector stores the record this relay decided about: a
+newline in the text is written as a visible symbol, a line ending in a
+structured data value is escaped, and a field that cannot appear in a
+header is replaced.
+
+Both transports: TCP (RFC 6587 framing, either kind) and UDP (RFC 5426,
+one datagram per message), on the same address. TLS is RFC 5425.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | upstream | required | The collector pool |
+| `udp` | bool | `true` | Also take datagrams on the same address, which is what most senders still send |
+| `framing` | enum | `auto` | What the stream side accepts: `octet_counting`, `non_transparent` or `auto`, decided per message by whether it starts with a digit |
+| `upstream_framing` | enum | `octet_counting` | What the relay writes. Octet counting cannot be confused by what a message contains, and is the only framing RFC 5425 allows over TLS; `non_transparent` warns |
+| `tls_mode` | enum | `implicit` with `tls`, else `none` | TLS from the first octet on the stream side |
+| `upstream_tls_mode` | enum | `none` | `none` or `implicit` towards the collector |
+| `upstream_tls` | object | | Verification of the collector |
+| `hostname` | enum | `annotate` | `keep` takes the sender's word, `observed` replaces the field with the address the message arrived from, `annotate` keeps both and records which is which. `keep` warns |
+| `allow_facilities` | list | `[]` (any) | Facilities by name: `kern`, `user`, `auth`, `authpriv`, `local0`… |
+| `deny_facilities` | list | `[]` | Refused whatever the allow list says |
+| `min_severity` | name | `debug` | Drop anything less severe: `warning` keeps `emerg` through `warning` |
+| `allow_senders` | list of CIDR | `[]` (any) | On UDP this is the only authentication there is, so leaving it empty with `udp: true` warns |
+| `deny_patterns` | list of RE2 | `[]` | Drop a message whose text matches. A filter, not a redaction: it does not arrive |
+| `redact` | list | `[]` | `{name, pattern, with}`: replace what matches and record that a rule did, in structured data |
+| `max_message_bytes` | int | `8192` | One message; 480..1048576. RFC 5426 requires every receiver to take 480 |
+| `rate_limit` | int | `0` (none) | Messages a second from one sender. Unset with `udp: true` warns |
+| `rate_burst` | int | `rate_limit` | What one sender may send at once |
+| `max_senders` | int | `65536` | The rate limit table. When it is full a new sender is refused rather than evicting the entries doing the limiting |
+| `max_connections` | int | `1000` | Stream connections |
+| `idle_timeout` | duration | `5m` | No traffic on a stream connection |
+| `queue` | int | `4096` | Parsed messages waiting for the collector. When it is full the relay drops and counts, rather than holding every sender behind one slow collector |
+
+**The secure upgrade** is `tls_mode: none` with
+`upstream_tls_mode: implicit`: a device that can only send clear syslog
+over UDP writes to this listener, and the records leave it as RFC 5425
+TLS. It does not make the sender trustworthy — between the device and
+this port the records are still in clear and still forgeable — so put
+the port where only those devices can reach it, keep `allow_senders`
+tight, and use `hostname: observed`.
+
+A message the relay cannot parse is refused, not forwarded: its
+facility, severity and host are exactly the fields every rule here
+decides on, and a record nobody could read is a record nobody can
+filter. A message with no timestamp is given the time the relay saw it,
+because a record nobody can order is a record that is hard to use.
+
+On a delimited stream a message over the bound is dropped and the
+connection carries on — the reader skips to the next line ending, so
+one long line does not cost every record behind it. On a counted stream
+it ends the connection, because refusing to read the octets a frame
+declared leaves the reader at an offset nobody knows.
+
+Counters: `syslog_received`, `syslog_forwarded`, `syslog_dropped`,
+`syslog_refused`, `syslog_rate_limited`, `syslog_redacted`,
+`syslog_queue_dropped`, `syslog_send_failed`, `syslog_connections`,
+`syslog_rejected`. Refusals are `syslog_denied` for the ban triggers.
+
+### server.listeners[].ftp (kind: ftp)
+
+A `kind: ftp` listener is a protocol-aware FTP proxy: the proxy is an
+FTP server to the client and an FTP client to the target, and it is one
+end of every data connection as well.
+
+**The data connection is why this cannot be a `tcp` listener.** Every
+transfer in FTP happens on a second connection whose address one side
+announces to the other, in the body of a reply. A proxy that forwards
+that reply has told the client to go round it: the file then travels
+between the client and the target with nothing in the middle, and the
+control connection it did read is a list of instructions for a transfer
+it never saw. So the address is replaced with the proxy's own, and the
+proxy listens on one side and dials the other.
+
+Only the *port* the target announced is used. The proxy dials the host
+its control connection is already talking to, so a target that answers
+with an address of its choosing cannot send the proxy somewhere else.
+
+**FTP is old enough to have an attack named after it.** `PORT` and
+`EPRT` ask the server to connect back to an address the client names,
+and a server that obeys is a port scanner and a relay for anyone who can
+log in — the bounce attack of CERT CA-1997-27. Active mode is off by
+default. With `allow_active: true` the announced address must be the
+client's own and the port must not be privileged; that check is the
+whole of the defence, which is why it is stated here rather than
+assumed.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | upstream | required | The pool of FTP servers |
+| `banner` | string | the target's | Replaces the 220 greeting. A banner is a legal notice; the target's own greeting usually names its software and version, which is a different thing |
+| `tls_mode` | enum | `starttls` with `tls`, else `none` | `starttls` accepts `AUTH TLS` (RFC 4217), `implicit` is TLS from the first octet (as on 990), `none` is clear |
+| `require_tls` | bool | on wherever TLS is reachable | Refuse every command but the ones that get to TLS until the control connection is encrypted. A control connection in clear carries the password |
+| `upstream_tls_mode` | enum | `none` | `none`, `starttls` or `implicit` towards the target |
+| `upstream_tls` | object | | Verification of the target; the same shape as elsewhere |
+| `commands` | list | every command this proxy can read | Verbs a client may send; everything else is 502. A verb whose effect the proxy cannot name is a verb it cannot hold to a policy, so the list cannot be widened past what it understands |
+| `read_only` | bool | `false` | Refuse `STOR`, `STOU`, `APPE`, `DELE`, `RNFR`, `RNTO`, `MKD`, `RMD`, `SITE`, `ALLO` |
+| `allow_paths` | list | `[]` (any) | Paths a command may name, matched as the sftp policy matches them, and resolved against the working directory the proxy has been following. May carry `{user}` |
+| `deny_paths` | list | `[]` | Refused whatever the allow list says |
+| `allow_extensions` | list | `[]` (any) | What a file may be called, on the commands that settle a name. Every extension in the name is read, so `invoice.pdf.exe` is an exe |
+| `deny_extensions` | list | `[]` | Refused whatever the allow list says |
+| `max_file_bytes` | int | `0` (none) | Bounds one transfer either way. It acts by cutting the data connection, because a transfer cannot be un-sent, and the client is told 426 rather than 226 |
+| `yara` | object | none | Rules over what is uploaded; the same section as elsewhere, minus `directions` |
+| `allow_active` | bool | `false` | Accept `PORT` and `EPRT`, with the address check above |
+| `data_address` | address | the control connection's | What passive replies advertise. Set it where the proxy is itself behind a NAT |
+| `data_ports` | range | `0-0` (any free port) | `"low-high"` for the passive listeners, so a firewall in front of the proxy can be narrow |
+| `data_timeout` | duration | `30s` | How long a data connection may be arranged and not used |
+| `max_command_line` | int | `4096` | One control line; 512..1048576 |
+| `max_errors` | int | `10` | Refused commands before the session ends |
+| `max_connections` | int | `1000` | Control connections on this listener |
+| `idle_timeout` | duration | `5m` | No traffic on the control connection |
+| `session_timeout` | duration | `0` (none) | A whole session, however active |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
+| `allow_clients` | list of CIDR | `[]` (any) | Others are closed at accept |
+
+A control line that is not exactly CRLF-terminated is refused, and so is
+one carrying a telnet `IAC`. Each of them is a way for the proxy and the
+target to disagree about where a command ends, which is how one command
+becomes two: the proxy reads `NOOP` and the target reads `NOOP` and the
+`DELE` hidden after a bare newline.
+
+Only the side that arranged a data connection may use it: a passive
+connection has to come from the client's own address, an active one from
+the target's. `PROT P` is terminated on both sides rather than tunnelled,
+so a protected transfer is still a transfer this proxy can hold to
+`max_file_bytes` and to its rules. `CCC` is refused: clearing the
+control channel after `AUTH TLS` puts the rest of the session, including
+every path, back in clear on the wire.
+
+Counters: `ftp_sessions`, `ftp_sessions_open`, `ftp_transfers`,
+`ftp_refused`, `ftp_rejected`, `ftp_auth_failed`. Every session writes
+an `ftp` access line and every transfer an `ftp_transfer` line with the
+command, the path, the octets and whether it was cut. Refusals are
+`ftp_denied` for the ban triggers.
+
 ### server.listeners[].ssh (kind: ssh)
 
 A `kind: ssh` listener is an SSH bastion: the proxy is an SSH server to
@@ -651,6 +798,7 @@ the credentials are read then — not per connection, so a key added to
 | `upstream_key_file` | path | required | The private key the proxy authenticates to the target with |
 | `upstream_known_hosts` | path | required unless insecure | OpenSSH known_hosts the target's key is checked against. `revoked` entries are not trusted |
 | `upstream_insecure_host_key` | bool | `false` | Accept any host key from the target. Refused unless `allow_insecure` is also set, and warned about: it is the one setting here that leaves nothing to notice a machine in the middle |
+| `recording` | object | none | Record what a session showed, to a file per channel; see below |
 | `mfa` | object | none | Require a second factor after the key or the password; see below |
 | `sftp` | object | none | Inspect the SFTP protocol inside an sftp subsystem channel; see below |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
@@ -694,10 +842,68 @@ the listener and each falling back to the listener when unset, plus:
 A denied principal never reaches the target: the refusal is at
 authentication, before a channel or an upstream connection exists.
 
+A principal's `recording` replaces the listener's, which is how one
+entry is recorded and another is not; `recording: {enabled: false}` is
+how a principal is spared where the listener records.
+
 An entry that brings its own `sftp` section to a listener that has none
 also inherits the default that section implies: file transfer helpers
 are refused for that principal, because `scp` beside a careful `sftp`
 policy is the policy with a door next to it.
+
+#### server.listeners[].ssh.recording
+
+The access log says a session happened. It cannot say what was done in
+it, because what was done is a stream of control sequences inside the
+channel. This writes that stream to a file per channel, in the
+asciicast v2 format, so "what did they actually run" is a question with
+an answer that is watched rather than reconstructed:
+
+```
+asciinema play /var/log/xproxy/sessions/session-20260921-143022.100-alice.cast
+```
+
+The format is line oriented, so a recording cut short by a crash or by
+`max_file_bytes` still plays up to where it stops, and it is text, so
+the usual tools work on it. It is a stream, not a transcript: what the
+person saw is what a terminal makes of it, which means reading one is
+replaying it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Present so a principal can turn a listener's recording off; there is no reason to write it as `true` |
+| `directory` | path | required | Where the files go. It must exist: the proxy does not create it, because where these files live is a decision to make rather than to inherit |
+| `file_prefix` | name | `session` | Begins each file name, which is then the time and the login, and always ends `.cast` |
+| `input` | bool | `false` | Record what was typed as well as what was shown. It warns, and the warning is the point: a terminal's input stream carries what the screen never showed, which includes every password typed into a `sudo` or `su` prompt |
+| `max_file_bytes` | int | `33554432` | Bounds one recording, counted in session bytes; 4096..4294967296. Past it the session carries on and the file says it stopped |
+| `max_files` | int | `1000` | Recordings this listener keeps, removing the oldest it wrote. It bounds what the proxy leaves behind; anything that must be kept belongs somewhere the proxy does not prune |
+| `commands` | bool | `true` | Record `exec` sessions too, not only the ones with a terminal |
+
+The header carries the terminal size from `pty-req`, the login and the
+target, and for an `exec` the command. A `window-change` becomes a
+resize event, so a session that was widened replays at both widths
+rather than wrapping everything after it in the wrong place. Both of
+the target's streams are recorded: a terminal does not keep stdout and
+stderr apart either, and a recording without stderr would be missing
+exactly the errors.
+
+An `sftp` channel is not recorded. It is not a terminal, and its own
+`sftp` log line already says what each request did.
+
+**These files hold everything the session showed.** On an
+administrative session that is a list of everything worth having — keys
+printed, configuration read, tokens echoed. They are written `0600` by
+the proxy user, with `O_EXCL` and proxy-chosen names, in a directory the
+operator names; the directory deserves the care the credentials in it
+will deserve. `input: true` goes further still, and is the difference
+between watching over a shoulder and running a keylogger: it is off by
+default, it warns when set, and whether it is lawful where you are is
+not a question this configuration can answer.
+
+A recording that cannot be opened does not stop the session: it is an
+error in the log and an `ssh_recording_failed` event, because a bastion
+that refuses work when a disk fills is its own outage. One that stops
+part way is logged as short, with the reason.
 
 #### server.listeners[].ssh.mfa
 
@@ -753,7 +959,38 @@ policy would be guesswork.
 | `allow_paths` | list | `[]` (any) | Paths a request may name: a glob where `*` does not cross a slash, or a prefix ending in `/` or `/**` for a whole tree |
 | `deny_paths` | list | `[]` | Refused whatever the allow list says |
 | `deny_operations` | list | `[]` | Operations refused by name: `open`, `read`, `write`, `remove`, `rename`, `symlink`, `setstat`, `readlink`, `extended`, … |
+| `allow_extensions` | list | `[]` (any) | File extensions a name may carry, written without the dot and compared without case. Checked on `open`, and on both names of a `rename` or a `symlink` — the requests that decide what a file is called. A name claiming no extension claims nothing to refuse and passes |
+| `deny_extensions` | list | `[]` | Refused whatever the allow list says. Every extension a name carries is read, not only the last, so `invoice.pdf.exe` is an exe |
+| `max_file_bytes` | int | `0` (none) | What one open file may be written. Counted from the highest offset a write reaches, not from the bytes sent, so writing out of order does not walk past it |
+| `max_open_files` | int | `256` | Handles one session may have open at once, which is what the per-file state costs |
+| `yara` | object | none | Rules over what is written, per file; the same section as a `tcp` listener's `yara` minus `directions`, which is not read here. See below |
 | `max_packet_size` | int | `262144` | One SFTP packet; 4096..16777216 |
+
+`allow_paths` and `deny_paths` may carry `{user}` and `{principal}`,
+substituted once per session from the login the client authenticated as
+and the `principals` entry covering its key. That is how one listener
+says "your own directory and no other" instead of one list naming
+everybody's. A name that could change what a pattern means — anything
+outside letters, digits, `-`, `_` and `.`, anything over 64 characters,
+or a name that is only dots — refuses the session rather than being
+substituted or escaped: a login of `../..` expanded into an allow list
+is an allow list for somebody else's directory. `{principal}` on a
+listener with no `principals` fails the load, since no session would
+have a name to put there. An unknown substitution is a load error too,
+not a literal: `{usr}` left as it stands matches nothing, which on an
+allow list refuses everybody and on a deny list refuses nobody.
+
+**Writes get two more checks, because a write is the one request whose
+content the proxy can see.** `max_file_bytes` bounds the file the writes
+make. `yara` runs the rule set over what goes into each file separately:
+a rule about a file's first bytes is a rule about a file, and two
+uploads interleaved on one channel are two files, so each open handle
+gets its own scanner. A match refuses that write with permission denied
+and writes a `yara_match` security event naming the path; with the
+section's `action: close` the transfer ends there rather than only the
+one packet. Both need to know which handle is which file, so a write on
+a handle whose `open` this proxy never decided on is refused: a write
+that cannot be held to a bound is not a write to pass on.
 
 A path that climbs above its own root after cleaning (`../../etc/shadow`)
 is refused rather than matched: what it means depends on a working
@@ -2977,7 +3214,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `grpc_guard`, `authz`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -3447,6 +3684,119 @@ detail `check:filename` and a JSON body; the access log carries
 | `raw_uploads` | bool | `false` | Treat a non multipart body of a write request as one file, named from `Content-Disposition` or the last path segment |
 | `fields` | list | any | Form field names that may carry files |
 | `max_filename_length` | int | `255` | |
+
+### Kind `authz`
+
+Decides what a verified identity may do.
+
+Every authenticating filter here answers "who". None of them answers
+"what may they do", so each grew its own small allow list — required
+scopes on the API key, a required group on the directory bind, required
+claims on the session — and an allow list per filter is a policy nobody
+can read in one place. This reads the identity those filters verified
+and decides once, where the decision can be seen.
+
+It decides nothing on its own authority. The subject, the groups, the
+scopes and the claims all come from a filter that verified them, so a
+header a client sent cannot reach a rule here. That also means it has
+to run **after** the filters that authenticate: put it last in a route's
+`filters` list.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `default` | `deny`, `allow` | `deny` | What happens to a request no rule matched |
+| `require_authenticated` | bool | `true` | Refuse a request no filter verified. With nothing verified there is nothing to decide about, and the alternative is deciding on values a client supplied |
+| `rules` | list | required | Decided in order; the first match wins |
+| `forward_groups_header` | name | | Pass the verified groups to the backend. Any client value under that name is removed first |
+| `forward_scopes_header` | name | | The same for scopes |
+| `status` | `403`, `404` | `403` | What a refusal answers. `404` says nothing at all |
+
+Each rule:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `name` | name | Required; what the decision is logged and recorded as |
+| `allow` | bool | `true` permits, `false` refuses |
+| `methods` | list | Compared without case |
+| `paths` | list | A path exactly, or one ending `/**` for a tree. A prefix that is not a path boundary is not a match: `/v1/orders` does not cover `/v1/orders-internal` |
+| `subjects` | list | The name the authenticating filter recorded |
+| `groups` | list | Any of these; compared without case, as directories treat them |
+| `scopes` | list | **All** of these. A credential carrying two of three does not satisfy it |
+| `kinds` | list | Which filter verified the identity: `oidc`, `ldap`, `api_key`, `basic`, `jwt`, `mfa` |
+| `claims` | map | Each named claim must equal the given value |
+| `networks` | list of CIDR | The client address |
+| `not_subjects`, `not_groups`, `not_networks` | list | "Everybody but". Separate keys rather than a `!` prefix, because a group name can begin with anything |
+
+Every selector a rule names has to hold. A rule that names none matches
+everything: as a deny that is a legitimate backstop, and as an allow it
+is a policy that says yes to everything, so it fails the load — write
+`default: allow` if that is what is meant.
+
+The first matching rule decides, so a deny above an allow carves an
+exception out of it:
+
+```yaml
+rules:
+  - {name: no-deletes-from-the-field, allow: false, methods: [DELETE], not_networks: ["10.0.0.0/8"]}
+  - {name: staff, allow: true, groups: ["cn=staff,ou=groups,dc=example,dc=com"]}
+```
+
+A refusal tells the client nothing about why: which rule, which group it
+would have needed, and whether the path even exists are all things a
+prober would like to know. The reason is in the proxy's own log and the
+access line carries `authz_rule`, which is the only way to tell a policy
+that allowed from one that never matched.
+
+**What feeds it.** `oidc` records the groups from `groups_claim`
+(default `groups`), the scopes from the token's `scope`, and whatever
+`attr_claims` names; `ldap_auth` records the directory's own groups
+from `group_attr`; `api_key` records the key's scopes. A filter that
+records nothing still records the subject, so `subjects` and `kinds`
+work everywhere.
+
+### Kind `grpc_guard`
+
+Reads gRPC messages rather than passing them through. A proxy that
+routes gRPC by its path has read the envelope; the messages are
+length-prefixed frames of protobuf inside the body, and without reading
+them it cannot say how large one message is (only how large the whole
+body is), cannot notice a stream that stops in the middle of a frame,
+and cannot see a message nested a thousand deep — which costs the
+backend's parser far more than it costs the sender to write.
+
+No schema is used, deliberately. A schema has to be kept in step with
+the service, and a check that is only as current as its schema is a
+check that quietly stops applying the week somebody adds a field. The
+protobuf wire format carries the field number and the wire type, which
+is enough for every bound here.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_message_bytes` | int | `4194304` | One message, not the whole stream; 1024..268435456. It is what grpc-go defaults its receive limit to, so it is the number the backend already lives with |
+| `max_messages` | int | `0` (none) | Messages in one request, which is how a streaming call is bounded |
+| `max_depth` | int | `16` | How deeply messages may nest; 1..256 |
+| `max_fields` | int | `2000` | Fields at every level together, not per message; 1..1048576 |
+| `allow_compressed` | bool | `true` | A compressed message is one this filter does not decompress, so it is passed without being walked. `false` refuses it, which is what a route that must be readable sets |
+| `deny_patterns` | list of RE2 | `[]` | Matched against the strings found in a message. Setting them with `allow_compressed: true` fails the load: a compressed message would go past them unread |
+| `max_scan_bytes` | int | `1048576` | Of one request, read and walked; beyond it the rest is forwarded unread and the access line says `grpc_partial` |
+| `max_string_bytes` | int | `4096` | One string handed to a pattern. Longer ones are truncated on a character boundary rather than dropped, because a rule about the start of a string still works on the start of it |
+| `action` | `block`, `log` | `block` | `log` records and forwards, which is how a bound is tried out before it decides anything |
+
+A length-delimited protobuf field is a nested message or a string, and
+without a schema there is no way to be certain which. It is tried as a
+message first: a nested message read as a string is a subtree the depth
+and field bounds never see, and the bounds are the part that matters.
+
+Denials carry the reason `grpc_guard:` and one of `message_too_large`,
+`too_many_messages`, `short_frame`, `compressed`, `too_deep`,
+`too_many_fields`, `malformed` or `content`; a content refusal names the
+field path it matched at. The access line carries `grpc_messages`,
+`grpc_depth` and `grpc_fields`, so a route's shape is visible before
+anybody has to guess at a bound for it.
+
+What this does not do is understand the fields. `deny_patterns` run
+against every string in a message, not against a named field, so they
+are the blunt instrument they look like.
 
 ### Kind `sensitive_data`
 

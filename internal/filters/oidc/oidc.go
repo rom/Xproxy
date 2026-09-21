@@ -66,11 +66,18 @@ type Config struct {
 	SessionTTL       string            `json:"session_ttl"`
 	ForwardHeaders   map[string]string `json:"forward_headers"`
 	RequireClaims    map[string]string `json:"require_claims"`
-	LogClaims        []string          `json:"log_claims"`
-	CAFile           string            `json:"ca_file"`
-	AllowHTTP        bool              `json:"allow_http"`
-	TokenAuth        string            `json:"token_auth"`
-	ttl              time.Duration
+	// GroupsClaim names the claim that carries the provider's groups
+	// or roles, so a policy can decide on them. Default "groups".
+	GroupsClaim string `json:"groups_claim"`
+	// AttrClaims are recorded on the identity for a policy to read,
+	// beyond the groups. Nothing is recorded that the session did not
+	// carry.
+	AttrClaims []string `json:"attr_claims"`
+	LogClaims  []string `json:"log_claims"`
+	CAFile     string   `json:"ca_file"`
+	AllowHTTP  bool     `json:"allow_http"`
+	TokenAuth  string   `json:"token_auth"`
+	ttl        time.Duration
 }
 
 func parse(opts filter.Options) (*Config, error) {
@@ -530,6 +537,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	if s, ok := f.session(r); ok {
 		in.user = s.Sub
 		filter.SetIdentity(r.Context(), "oidc", s.Sub)
+		filter.SetAttrs(r.Context(), "oidc", f.attrsOf(s))
 		for h, claim := range f.cfg.ForwardHeaders {
 			if v, ok := s.Claims[claim]; ok {
 				r.Header.Set(h, claimString(v))
@@ -549,6 +557,57 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 // claimString renders a claim for a forwarded header the same way the jwt
 // filter does: control characters stripped and the length bounded, so a
 // claim can never split or bloat a header.
+// attrsOf is what a policy may decide on: the groups the provider put
+// this session in, the scopes its token carried, and the claims the
+// configuration named. It reads only the verified session, never a
+// header.
+func (f *oidcFilter) attrsOf(s *session) filter.Attrs {
+	a := filter.Attrs{}
+	name := f.cfg.GroupsClaim
+	if name == "" {
+		name = "groups"
+	}
+	a.Groups = claimList(s.Claims[name])
+	a.Scopes = strings.Fields(claimString(s.Claims["scope"]))
+	for _, c := range f.cfg.AttrClaims {
+		v, ok := s.Claims[c]
+		if !ok {
+			continue
+		}
+		if a.Claims == nil {
+			a.Claims = map[string]string{}
+		}
+		a.Claims[c] = claimString(v)
+	}
+	return a
+}
+
+// claimList reads a claim that carries several values, which providers
+// spell as an array and, sometimes, as one space separated string.
+func claimList(v any) []string {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			if s := claimString(e); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []string:
+		return t
+	case string:
+		return strings.Fields(t)
+	default:
+		if s := claimString(v); s != "" {
+			return []string{s}
+		}
+		return nil
+	}
+}
+
 func claimString(v any) string { return jwt.ClaimString(v) }
 
 // session decodes and checks the session cookie.

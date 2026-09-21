@@ -1904,6 +1904,184 @@ this bound.
 broker sent something this proxy would not parse. It is not passed
 through: its framing is what the client's next read depends on.
 
+## Authorisation
+
+**Everything is refused with `rule:unauthenticated`.** The policy ran
+before anything verified an identity. `authz` decides on what an
+authenticating filter recorded, so it has to be last in the route's
+`filters` list — before them there is nothing to decide about, and
+deciding on values a client supplied is exactly what this avoids. For a
+route that is meant to be open, `require_authenticated: false`.
+
+**Everything is refused with `rule:default`.** No rule matched and the
+default is deny, which is the point. The access line carries
+`authz_rule`, so the refusals say `default` rather than naming a rule.
+Check the path patterns first: a pattern is a path exactly, or one
+ending `/**` for a tree, and a prefix that is not a path boundary does
+not match — `/v1/orders` does not cover `/v1/orders-internal`.
+
+**A rule with scopes never matches.** Scopes are all-of: a credential
+carrying two of the three a rule names does not satisfy it. Groups are
+any-of. If that is the wrong way round for what you meant, split the
+rule.
+
+**Groups are empty although the directory has them.** `ldap_auth`
+records the attribute named by `group_attr`, which defaults to
+`memberOf` only when `require_group` is set; set `group_attr`
+explicitly to record groups without requiring one. For `oidc`, the
+claim is `groups_claim` (default `groups`) and it is read from the
+verified session, so a provider that only puts groups in the userinfo
+response will not have them there.
+
+**A policy allows more than it reads.** Look for a rule with no
+selectors. As a deny that is a backstop; as an allow it fails the load
+for this reason. Also check rule order: the first match decides, so an
+allow above a deny wins.
+
+**The backend sees no groups.** `forward_groups_header` has to be set,
+and the header is written only when the policy allowed. Any value a
+client sent under that name is removed before the decision, not after.
+
+## gRPC message inspection
+
+**Calls are refused with `INVALID_ARGUMENT` and the reason
+`grpc_guard:malformed`.** The message did not walk as protobuf. The
+usual cause is a body that is not gRPC framing at all — a client
+sending `application/grpc` with something else inside it — or a proxy
+in front that re-framed the stream. `action: log` lets the calls
+through while the records accumulate.
+
+**`grpc_guard:short_frame`.** The body ended in the middle of a length
+the frame declared. A client that finished sends whole frames; one that
+stopped part way is a client whose message nobody has. If it happens
+under load rather than from one client, look for something cutting the
+stream between the client and this proxy.
+
+**`grpc_guard:too_deep` or `too_many_fields` on calls that work
+elsewhere.** The bounds are lower than the service's real messages.
+Turn on `action: log`, look at `grpc_depth` and `grpc_fields` in the
+access lines for a while, and set the bounds above what the service
+actually sends. Guessing and finding out in production is the thing to
+avoid here.
+
+**`deny_patterns` never match.** Two reasons. They run over the strings
+found in a message, so a value that is not valid UTF-8 is not offered
+to them; and `allow_compressed: true` with patterns fails the load for
+exactly this reason, so if the load succeeded compression is already
+off. Also check `max_scan_bytes`: past it the rest of the request is
+forwarded unread and the access line says `grpc_partial`.
+
+**A field is refused that should not be.** A length-delimited protobuf
+field is a nested message or a string, and without a schema there is no
+way to be certain which. It is tried as a message first, because a
+nested message read as a string is a subtree the depth and field bounds
+never see. A string that happens to parse as a message is walked as
+one, which costs a walk and can add to the field count.
+
+**gRPC-web calls are not inspected.** This filter reads the wire
+framing, and gRPC-web is translated to it earlier on a route that
+accepts it. Put the filter on the route and it sees the translated
+call.
+
+## Syslog relay
+
+**Nothing reaches the collector.** Look at `syslog_received` first: if
+it is zero, the messages are not arriving, and on UDP that usually means
+`allow_senders`. If it is climbing while `syslog_forwarded` is not,
+check `syslog_refused` (unparseable, oversize or a refused sender),
+`syslog_dropped` (a facility, severity or deny pattern filtered it),
+`syslog_rate_limited`, `syslog_queue_dropped` (the collector is slower
+than the senders) and `syslog_send_failed` (the collector is not
+reachable at all).
+
+**Records are refused as malformed.** The relay will not forward what it
+could not read, because a message's facility, severity and host are
+exactly the fields every rule here decides on. The usual causes are a
+priority above 191 (there is no facility to name above it), a NUL or a
+line ending inside a header field, text that is not UTF-8, and
+structured data whose values are not quoted the way RFC 5424 requires.
+The security event carries the reason.
+
+**The host name in the collector is not what the sender set.**
+`hostname` decides that. `annotate` (the default) keeps the sender's
+name and adds `xproxyOrigin@0` with the observed address; `observed`
+replaces the field; `keep` takes the sender's word, which nothing
+checks and which is why it warns.
+
+**Records arrive in a different format from the one that was sent.**
+Deliberately. Everything is re-emitted as RFC 5424 whatever arrived, so
+that the record the collector stores is the record the relay decided
+about. A newline in the text becomes a visible symbol rather than a
+second record; a line ending inside a structured data value is escaped;
+a field that cannot appear in a header is replaced.
+
+**A stream connection drops after one bad message.** On a counted frame
+(`octet_counting`), refusing to read the octets the frame declared
+leaves the reader at an offset nobody knows, so the connection ends.
+On a delimited one the reader skips to the next line ending and carries
+on. `framing: auto` decides per message by whether it starts with a
+digit.
+
+**Messages stop under load.** `rate_limit` is per sender, and
+`max_senders` bounds the table it keeps; when the table is full a new
+sender is refused rather than evicting the entries doing the limiting.
+`queue` is what waits for the collector, and a full queue drops and
+counts rather than holding every sender behind one slow collector.
+
+## FTP proxy
+
+**Transfers hang, or the client reports "cannot open data connection".**
+The data connection is separate, and the proxy is one end of it. Three
+things to check: the client is using passive mode (`PASV` or `EPSV`),
+since active is off by default; `data_ports` is open on any firewall in
+front of the proxy, and wide enough for the transfers that run at once;
+and `data_address` names an address the client can reach, which matters
+only when the proxy is itself behind a NAT. A transfer arranged and not
+used within `data_timeout` is dropped.
+
+**`PORT` or `EPRT` is answered 502.** Active mode is off by default. It
+asks the proxy to connect back to an address the client names, which is
+the bounce attack: a client that names somebody else's address has made
+the proxy open a connection on its behalf. `allow_active: true` turns it
+on, and then the address must be the client's own and the port
+unprivileged, or the answer is 501.
+
+**A transfer ends with 426 and the file is short.** Either
+`max_file_bytes` or a `yara` match. Both act by cutting the data
+connection, because a transfer cannot be un-sent, and the client is told
+426 rather than the target's 226 — telling it the transfer completed
+would be a lie. The security log says which, with the path.
+
+**A command is answered 502 although the server supports it.** Two
+different lists. `commands` is what this listener allows; the default is
+every verb the proxy can read the effect of, which is smaller than what
+a server implements — a verb whose effect it cannot name is a verb it
+cannot hold to a policy, so `SITE EXEC` and the rest are not relayable
+at all. Adding an unknown verb to `commands` fails the load rather than
+widening the proxy.
+
+**A path is refused although it looks right.** Paths are resolved
+against the working directory the proxy has been following from the
+`CWD` replies, then cleaned, then matched. A path that still climbs
+above its root is refused outright. If the session did something the
+proxy could not follow — a `CWD` it never saw the reply to — the
+directories can drift; `PWD` on the client shows the target's view and
+the refusal in the log shows the proxy's.
+
+**Everything is answered 534 before login.** `require_tls` is on, which
+is the default wherever TLS is reachable, and the control connection is
+still in clear. The client has to send `AUTH TLS` first. Only `AUTH`,
+`QUIT`, `FEAT`, `NOOP`, `PBSZ`, `PROT` and `HELP` are allowed before it.
+
+**`CCC` is refused.** Deliberately. It clears the control channel after
+`AUTH TLS`, which puts every path, every file name and every reply that
+follows back in clear on the wire; the transfer protection it is usually
+paired with does not cover any of that.
+
+**A session ends after a few refusals.** `max_errors`, default 10. A
+client walking a policy to find its edges is a client to stop talking
+to, and the refusals are `ftp_denied` for the ban triggers.
+
 ## SSH bastion
 
 **Every client is refused at authentication.** `ssh_auth_failed` counts
@@ -2011,11 +2189,82 @@ remove, mkdir, rmdir, rename, symlink, and any `open` carrying a
 writing, creating or truncating flag. `sftp_refused` counts them and the
 security log names the operation and the reason.
 
+**An sftp session is refused at the subsystem request, before any
+packet.** A path pattern names `{user}` or `{principal}` and this
+session's name cannot stand in one: anything outside letters, digits,
+`-`, `_` and `.`, anything over 64 characters, or a name that is only
+dots. It is refused rather than escaped, because a login of `../..`
+substituted into an allow list is an allow list for another directory.
+The event is `ssh_sftp_identity_refused` and it names the variable.
+`{principal}` also needs a `principals` list; without one the load
+fails rather than every session.
+
+**A file is refused for its name.** `allow_extensions` and
+`deny_extensions` decide `open`, `rename` and `symlink` — not `stat` or
+`remove`, since refusing to delete a file for what it is called leaves
+it there. Every extension in a name is read, so `invoice.pdf.exe` is an
+exe however the allow list ends. Extensions are written without a dot
+and without a glob, and compared without case. The refusal is
+`sftp_refused` with `extension`.
+
+**A write is refused with `unknown_handle`.** The proxy is holding this
+session to `max_file_bytes` or to a rule set, and both need to know
+which file a handle is. It learns that from the `open` it decided on
+and the handle the server answered with, so a write on a handle it never
+saw that pair for cannot be judged. Either the client is writing to
+something it did not open through here, or `max_open_files` filled —
+raise it if a real client legitimately holds more handles at once.
+
+**Uploads fail part way with permission denied.** Check
+`max_file_bytes`: it bounds the file the writes make, counted from the
+end of the furthest write, so a sparse write far out trips it
+immediately even though little has been sent. If a `yara` section is
+set, look for a `yara_match` event with the path — a rule read what was
+being written. With `action: close` the transfer ends there; with
+`action: log` the write is still refused and the session goes on.
+`read_only` beside a `yara` section warns, because nothing then reaches
+the rules.
+
+**The recording directory stays empty.** Three things to check, in
+order: the section is on the listener the session actually used; the
+requests it records are allowed (`shell`, or `exec` with `commands`
+left on — validation refuses a `recording` where neither can happen);
+and the principal covering that key has not turned it off with
+`recording: {enabled: false}`. A file appears when the channel opens
+and is closed when it ends, so a session still running has a file that
+is short by design.
+
+**A recording cannot be opened and the session runs anyway.** That is
+deliberate: a bastion that refuses work because a disk filled is its own
+outage. The error log says why and an `ssh_recording_failed` event is
+written, so the gap is visible rather than silent. Check that the
+directory exists — the proxy does not create it — and that the proxy
+user can write to it.
+
+**A recording stops before the session did.** `max_file_bytes`, almost
+always: the file carries a marker saying so, and the `ssh_recording`
+line has `truncated: true`. The bound is on the session's bytes, so the
+file is a little larger than the number set. Raise it, or accept that a
+command which prints for an hour is not worth keeping in full.
+
+**A replay wraps every line in the wrong place.** The recording was
+made without a `pty-req` to take the size from, so it says 80x24. A
+client that runs a command without asking for a terminal does not tell
+anyone how wide its terminal is.
+
+**Nothing shows what was typed.** `input` is off by default. Turning it
+on records the keystrokes, including passwords typed into prompts that
+never echoed them; whether that is lawful where you are is not a
+question this configuration can answer.
+
 **A session ends when a command finishes but the exit status is
-missing.** That would be a bug here rather than a policy: the bastion
-relays the target's requests before closing the client's channel, and a
-lost exit status looks to the client like a crash. If you see it,
-collect the access line and the target's own log.
+missing, or `ssh host command` fails with EOF although the command
+ran.** That would be a bug here rather than a policy: the bastion relays
+the target's requests, and waits for any request that is mid-answer,
+before closing the client's channel — a lost exit status or a lost
+reply to the `exec` itself looks to the client like a crash. One such
+race was fixed in 1.4; if you see it again, collect the access line and
+the target's own log.
 
 ## Second factor (MFA)
 
@@ -2717,6 +2966,8 @@ innocent.
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
 | `yara` | A YARA rule fired on a layer 4 stream with `action: close` | yes |
+| `syslog_denied` | The syslog relay: a refused sender, a message it could not parse, one over the bound, or a stream whose framing could not be read | yes |
+| `ftp_denied` | The FTP proxy: a refused command, path, extension or address, a failed login, a malformed control line, a bounce attempt, or a transfer cut by a bound or a rule (`detail` says which) | yes |
 | `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command, environment variable, file transfer helper or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
 

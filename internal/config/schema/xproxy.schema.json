@@ -1458,6 +1458,141 @@
       },
       "additionalProperties": false
     },
+    "FTPListener": {
+      "description": "FTPListener is a protocol-aware FTP proxy. The proxy is an FTP server to the client and an FTP client to the target, and it mediates the data connection as well as the control one. The data connection is the reason this cannot be a layer 4 listener. Every transfer happens on a second connection whose address one side announces to the other, in the body of a reply. A proxy that forwards that reply has told the client to go round it: the file then travels between the client and the target with nothing in the middle, and the control connection it did read is a list of instructions for a transfer it never saw. So the addresses are rewritten, and the proxy is one end of both connections. The other reason is that FTP is old enough to have an attack named after it. A client can name any address in PORT, and a proxy that obeys is a port scanner and a relay for anyone who can log in — the bounce attack of CERT CA-1997-27. Active mode is therefore off by default, and when it is on the announced address has to be the client's own.",
+      "type": "object",
+      "properties": {
+        "allow_active": {
+          "description": "AllowActive accepts PORT and EPRT. Default false. With it on, the address announced must be the client's own, which is the only form of active mode that is not a way to make the proxy connect somewhere on request.",
+          "type": "boolean"
+        },
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_extensions": {
+          "description": "AllowExtensions and DenyExtensions decide what a file may be called, on the commands that settle a name. Every extension a name carries is read, so \"invoice.pdf.exe\" is an exe.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_paths": {
+          "description": "AllowPaths are the paths a command may name, matched as the sftp policy matches them: a glob where \"*\" does not cross a slash, or a prefix ending in \"/\" or \"/**\" for a whole tree. They may carry {user}, which is the login the client authenticated as. Empty allows every path the deny list does not refuse.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "banner": {
+          "description": "Banner replaces the target's 220 greeting. A banner is a legal notice; the target's own greeting usually names its software and version, which is a different thing.",
+          "type": "string"
+        },
+        "commands": {
+          "description": "Commands a client may send. Everything else is refused with 502. The default is every command this proxy understands the effect of, which is the list it can hold to a policy.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "data_address": {
+          "description": "DataAddress is the address the proxy advertises for passive data connections. Default the address the control connection arrived on, which is right unless the proxy is itself behind a NAT.",
+          "type": "string"
+        },
+        "data_ports": {
+          "description": "DataPorts is the range the proxy listens on for passive data, written \"low-high\". Default \"0-0\", which is any free port. A range is what lets a firewall in front of the proxy be narrow.",
+          "type": "string"
+        },
+        "data_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "deny_extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_paths": {
+          "description": "DenyPaths are refused whatever the allow list says.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_command_line": {
+          "description": "MaxCommandLine bounds one control line. Default 4096.",
+          "type": "integer"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds control connections on this listener. Default 1000.",
+          "type": "integer"
+        },
+        "max_errors": {
+          "description": "MaxErrors ends the session after this many refused commands. Default 10.",
+          "type": "integer"
+        },
+        "max_file_bytes": {
+          "description": "MaxFileBytes bounds one transfer in either direction. 0 is no bound. The connection is cut when it is passed, because a transfer cannot be un-sent.",
+          "type": "integer"
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the target.",
+          "type": "boolean"
+        },
+        "read_only": {
+          "description": "ReadOnly refuses every command that changes the server: STOR, STOU, APPE, DELE, RNFR, RNTO, MKD, RMD, SITE, ALLO.",
+          "type": "boolean"
+        },
+        "require_tls": {
+          "description": "RequireTLS refuses every command but the ones that get to TLS until the control connection is encrypted. Defaults on wherever TLS is reachable: a control connection in clear carries the password.",
+          "type": "boolean"
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "tls_mode": {
+          "description": "TLSMode is starttls (the client may send AUTH TLS, and the listener's tls section provides the certificate), implicit (TLS from the first octet, as on 990) or none. Default starttls when tls is set.",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream is the server pool. Required.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS verifies the target when upstream_tls_mode is not none.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_tls_mode": {
+          "description": "UpstreamTLSMode is none, starttls or implicit. Default none.",
+          "type": "string"
+        },
+        "yara": {
+          "description": "YARA scans what is uploaded. A match cuts the data connection and, with action close, the session.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/YARAPolicy"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "FilterConfig": {
       "description": "FilterConfig is one middleware instance.",
       "type": "object",
@@ -2260,6 +2395,14 @@
             }
           ]
         },
+        "ftp": {
+          "description": "FTP configures a kind: ftp listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/FTPListener"
+            }
+          ]
+        },
         "h2c": {
           "description": "H2C accepts HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext http listener, for gRPC clients inside a trusted network. Default false.",
           "type": "boolean"
@@ -2326,6 +2469,14 @@
           "allOf": [
             {
               "$ref": "#/$defs/SSHListener"
+            }
+          ]
+        },
+        "syslog": {
+          "description": "Syslog configures a kind: syslog listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SyslogListener"
             }
           ]
         },
@@ -3979,8 +4130,22 @@
       "description": "SFTPPolicy inspects the SFTP protocol inside an sftp subsystem channel. Refused requests are answered with a permission-denied status, so the session continues and the client is told which operation was refused rather than losing its connection.",
       "type": "object",
       "properties": {
+        "allow_extensions": {
+          "description": "AllowExtensions are the file extensions a name may carry, without the dot and compared without case. Empty allows every extension the deny list does not refuse. It is checked on open, and on both names of a rename or a symlink, which are the requests that decide what a file is called.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "allow_paths": {
-          "description": "AllowPaths are the paths a request may name: a glob where \"*\" does not cross a slash, or a prefix ending in \"/\" or \"/**\" for a whole tree. Empty allows every path the deny list does not refuse.",
+          "description": "AllowPaths are the paths a request may name: a glob where \"*\" does not cross a slash, or a prefix ending in \"/\" or \"/**\" for a whole tree. Empty allows every path the deny list does not refuse. A pattern may carry {user} or {principal}, which are the login the session authenticated as and the principals entry that covers it. They are substituted once per session, which is what lets one listener say \"your own directory and no other\" instead of one list naming everybody's.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_extensions": {
+          "description": "DenyExtensions are refused whatever the allow list says. A name is read for every extension it carries, so \"invoice.pdf.exe\" is an exe whatever the list allows.",
           "type": "array",
           "items": {
             "type": "string"
@@ -3994,11 +4159,19 @@
           }
         },
         "deny_paths": {
-          "description": "DenyPaths are refused whatever the allow list says.",
+          "description": "DenyPaths are refused whatever the allow list says. They take the same {user} and {principal} substitutions.",
           "type": "array",
           "items": {
             "type": "string"
           }
+        },
+        "max_file_bytes": {
+          "description": "MaxFileBytes bounds what one open file may be written. 0 is no bound. It is counted per handle, from the highest offset a write reaches, so a client cannot walk past it by writing out of order.",
+          "type": "integer"
+        },
+        "max_open_files": {
+          "description": "MaxOpenFiles bounds the handles one session may have open at once, which is what the per file state costs. Default 256.",
+          "type": "integer"
         },
         "max_packet_size": {
           "description": "MaxPacketSize bounds one SFTP packet. Default 262144, a little over the 32 KiB read and write sizes clients use.",
@@ -4007,6 +4180,14 @@
         "read_only": {
           "description": "ReadOnly refuses every request that changes the server: write, setstat, remove, mkdir, rmdir, rename, symlink, an open with any writing flag, and the extensions whose meaning the proxy does not know.",
           "type": "boolean"
+        },
+        "yara": {
+          "description": "YARA scans what is written, per file rather than per stream: a rule about a file's first bytes is a rule about a file, and two uploads interleaved on one channel are two files. A match refuses that write; directions is not read here, because only what the client writes is a file this proxy is choosing to accept.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/YARAPolicy"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -4314,6 +4495,14 @@
           "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the target before the SSH banner.",
           "type": "boolean"
         },
+        "recording": {
+          "description": "Recording writes what a session showed, and optionally what was typed into it, to a file per channel.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SSHRecording"
+            }
+          ]
+        },
         "remote_forward": {
           "description": "RemoteForward accepts tcpip-forward, which asks the target to listen on the client's behalf. Default false: it turns a session into an inbound path.",
           "type": "boolean"
@@ -4410,6 +4599,14 @@
             "type": "string"
           }
         },
+        "recording": {
+          "description": "Recording replaces the listener's, which is how one entry is recorded and another is not. A principal that should not be recorded where the listener is sets enabled: false.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SSHRecording"
+            }
+          ]
+        },
         "remote_forward": {
           "type": "boolean"
         },
@@ -4458,6 +4655,41 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SSHRecording": {
+      "description": "SSHRecording records an interactive session to a file that can be replayed. A bastion's access log says a session happened; it cannot say what was done in it, because what was done is a stream of control sequences inside the channel. This writes that stream, in the asciicast v2 format, so the question \"what did they actually run\" has an answer that is watched rather than reconstructed. The files hold everything the session showed, which on an administrative session is a list of everything worth having: keys printed, configuration read, tokens echoed. They are treated the way the capture files are — the proxy user's alone, in a directory the operator names — and they are a reason to keep that directory as carefully as the credentials it will end up holding.",
+      "type": "object",
+      "properties": {
+        "commands": {
+          "description": "Commands records exec sessions too, not only the ones with a terminal. Default true: a command run without a pty is still a command run on the target.",
+          "type": "boolean"
+        },
+        "directory": {
+          "description": "Directory is where the files are written. Required. It must exist: the proxy does not create it, because where these files live is a decision to make rather than to inherit.",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Enabled is how a principal turns off a listener's recording; it defaults to true wherever the section is present.",
+          "type": "boolean"
+        },
+        "file_prefix": {
+          "description": "FilePrefix begins each file name. Default \"session\".",
+          "type": "string"
+        },
+        "input": {
+          "description": "Input records what was typed as well as what was shown. Default false, and it warns: a terminal's input stream carries what the screen never showed, which includes every password typed into a sudo or a su prompt. Recording output is watching over a shoulder; recording input is a keylogger, and the difference matters both to the people recorded and to whoever holds the files.",
+          "type": "boolean"
+        },
+        "max_file_bytes": {
+          "description": "MaxFileBytes bounds one recording. Past it the session goes on unrecorded and the file says so, rather than one command that prints for an hour filling a disk. Default 33554432.",
+          "type": "integer"
+        },
+        "max_files": {
+          "description": "MaxFiles keeps this many recordings, removing the oldest this listener wrote. Default 1000. It bounds what the proxy leaves behind; anything that must be kept belongs somewhere the proxy does not prune.",
+          "type": "integer"
         }
       },
       "additionalProperties": false
@@ -4839,6 +5071,134 @@
           "type": "integer"
         },
         "server_name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SyslogListener": {
+      "description": "SyslogListener is a syslog relay that reads what it forwards. A relay that forwards syslog without reading it is a pipe. The reason to read it is that almost every field is written by the sender and believed by the collector: the host name, the facility, the severity, the time. A message claiming to be auth.emerg from another machine costs nothing to send, and a message carrying a newline in its text becomes two records in any collector that frames on newlines — the second one saying whatever the sender wanted a record to say. So every message is parsed, and every message is re-emitted as RFC 5424 in one framing, whatever arrived. One dialect out is what makes the record a collector stores the record the relay decided about.",
+      "type": "object",
+      "properties": {
+        "allow_facilities": {
+          "description": "AllowFacilities and DenySeverities filter by what the message claims to be. Empty allows everything.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_senders": {
+          "description": "AllowSenders restricts senders to these CIDRs. On UDP this is the only authentication there is.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_facilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_patterns": {
+          "description": "DenyPatterns drop a message whose text matches, as RE2. It is a filter, not a redaction: a message that matches does not arrive.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "framing": {
+          "description": "Framing accepted on the stream side: octet_counting (RFC 6587 section 3.4.1), non_transparent (section 3.4.2, line endings) or auto. Default auto.",
+          "type": "string"
+        },
+        "hostname": {
+          "description": "Hostname decides what the HOSTNAME field says: keep takes the sender's word, observed replaces it with the address the message arrived from, and annotate keeps it and records the address in structured data. Default annotate — the sender's name is often the useful one and is never the true one.",
+          "type": "string"
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds stream connections. Default 1000.",
+          "type": "integer"
+        },
+        "max_message_bytes": {
+          "description": "MaxMessageBytes bounds one message. Default 8192. RFC 5426 requires every receiver to take 480, and most estates send more.",
+          "type": "integer"
+        },
+        "max_senders": {
+          "description": "MaxSenders bounds the rate limit table. Default 65536.",
+          "type": "integer"
+        },
+        "min_severity": {
+          "description": "MinSeverity drops anything less severe, by name: \"warning\" keeps emerg through warning. Empty keeps everything.",
+          "type": "string"
+        },
+        "queue": {
+          "description": "Queue is how many parsed messages wait for the collector. Default 4096. When it is full the relay drops and counts rather than blocking every sender behind one slow collector.",
+          "type": "integer"
+        },
+        "rate_burst": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "description": "RateLimit is messages per second accepted from one sender, with a burst. 0 is no limit. A log flood is a denial of service on the collector and a way to push older records out of whatever window it keeps.",
+          "type": "integer"
+        },
+        "redact": {
+          "description": "Redact replaces what matches with a fixed string, so the record still arrives without the part that should not be stored.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SyslogRedaction"
+          }
+        },
+        "tls_mode": {
+          "description": "TLSMode is implicit (TLS from the first octet on the stream side, as RFC 5425 defines) or none. Default implicit when tls is set.",
+          "type": "string"
+        },
+        "udp": {
+          "description": "UDP also listens on the same address for datagrams, which is what most senders still use (RFC 5426). Default true.",
+          "type": "boolean"
+        },
+        "upstream": {
+          "description": "Upstream is the collector pool. Required.",
+          "type": "string"
+        },
+        "upstream_framing": {
+          "description": "UpstreamFraming is what the relay writes: octet_counting or non_transparent. Default octet_counting, which is the only one that cannot be confused by what a message contains and the only one RFC 5425 allows over TLS.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS verifies the collector when upstream_tls_mode is not none.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_tls_mode": {
+          "description": "UpstreamTLSMode is none or implicit. Default none.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SyslogRedaction": {
+      "description": "SyslogRedaction replaces what matches a pattern in a message.",
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "description": "Pattern is RE2, matched against the message text.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name appears in the structured data the relay adds, so a reader knows something was taken out and which rule took it.",
+          "type": "string"
+        },
+        "with": {
+          "description": "With replaces every match. Default \"[redacted]\".",
           "type": "string"
         }
       },

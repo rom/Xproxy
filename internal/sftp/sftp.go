@@ -162,6 +162,16 @@ type Request struct {
 	Target string
 	// Flags are the open flags of an OPEN request.
 	Flags uint32
+	// Handle is the opaque name the server gave an open file, for the
+	// requests that work on one. It is the server's bytes, not a path
+	// and not text: the only thing to do with it is compare it with
+	// what the HANDLE reply carried.
+	Handle string
+	// Offset and Data are a WRITE request's payload. Data aliases the
+	// packet's own body, which is forwarded unchanged, so a reader
+	// must not keep it past the packet.
+	Offset uint64
+	Data   []byte
 	// Writes reports whether the request changes anything on the
 	// server: the question a read-only policy asks.
 	Writes bool
@@ -212,13 +222,30 @@ func ParseRequest(p Packet) (Request, error) {
 			return r, err
 		}
 		r.Writes = true
-	case WRITE, FSETSTAT:
+	case WRITE:
 		// Named by handle, not by path. The handle came from an OPEN
 		// the policy already decided on, which is where a write is
 		// caught; this flag is what a read-only policy refuses even so,
 		// because a handle opened for reading must not be written to.
 		r.Writes = true
-	case READ, CLOSE, FSTAT, READDIR:
+		if r.Handle, err = b.raw(); err != nil {
+			return r, err
+		}
+		if r.Offset, err = b.uint64(); err != nil {
+			return r, err
+		}
+		if r.Data, err = b.rawBytes(); err != nil {
+			return r, err
+		}
+	case FSETSTAT:
+		r.Writes = true
+		if r.Handle, err = b.raw(); err != nil {
+			return r, err
+		}
+	case CLOSE, READ, FSTAT, READDIR:
+		if r.Handle, err = b.raw(); err != nil {
+			return r, err
+		}
 	case EXTENDED:
 		// An extension is a request whose meaning this proxy does not
 		// know. It is named so a policy can refuse it by name.
@@ -228,6 +255,24 @@ func ParseRequest(p Packet) (Request, error) {
 		r.Writes = true
 	}
 	return r, nil
+}
+
+// ParseHandleReply reads the server's answer to an OPEN or OPENDIR: the
+// request it answers and the handle it gave. It is the one packet from
+// the server a proxy has to read, because without it a WRITE names
+// something the proxy cannot connect to the path it decided on.
+func ParseHandleReply(p Packet) (id uint32, handle string, err error) {
+	if p.Type != HANDLE {
+		return 0, "", ErrMalformed
+	}
+	b := &reader{b: p.Body}
+	if id, err = b.uint32(); err != nil {
+		return 0, "", err
+	}
+	if handle, err = b.raw(); err != nil {
+		return 0, "", err
+	}
+	return id, handle, nil
 }
 
 // StatusPacket builds a status reply, which is how a refusal is spelled
@@ -258,6 +303,43 @@ func (r *reader) uint32() (uint32, error) {
 	v := binary.BigEndian.Uint32(r.b[r.pos:])
 	r.pos += 4
 	return v, nil
+}
+
+func (r *reader) uint64() (uint64, error) {
+	if r.pos+8 > len(r.b) {
+		return 0, ErrMalformed
+	}
+	v := binary.BigEndian.Uint64(r.b[r.pos:])
+	r.pos += 8
+	return v, nil
+}
+
+// rawBytes reads a length-prefixed field without reading anything into
+// it: a handle is the server's opaque bytes and file data is the
+// client's, and neither is text. It aliases the packet's body rather
+// than copying, because the packet is forwarded unchanged and a copy
+// per write would be the transfer's cost twice.
+func (r *reader) rawBytes() ([]byte, error) {
+	n, err := r.uint32()
+	if err != nil {
+		return nil, err
+	}
+	if int64(n) > int64(len(r.b)-r.pos) {
+		return nil, ErrMalformed
+	}
+	b := r.b[r.pos : r.pos+int(n)]
+	r.pos += int(n)
+	return b, nil
+}
+
+// raw is rawBytes as a string, for a handle, which is compared and
+// never read.
+func (r *reader) raw() (string, error) {
+	b, err := r.rawBytes()
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func (r *reader) str() (string, error) {

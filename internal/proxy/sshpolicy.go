@@ -23,6 +23,8 @@ type sshPolicy struct {
 	forwards      []sshForward
 	remoteForward bool
 	sftp          *sftpPolicy
+	// recorder writes what a session shows, when one is configured.
+	recorder *sshRecorder
 	// transfers reports whether exec may run a file transfer helper.
 	transfers bool
 }
@@ -123,6 +125,13 @@ func compileSSHPolicy(c *config.SSHPolicy, base *sshPolicy) (*sshPolicy, error) 
 		p.sftp = sp
 	case base != nil:
 		p.sftp = base.sftp
+	}
+
+	switch {
+	case c.Recording != nil:
+		p.recorder = newSSHRecorder(c.Recording)
+	case base != nil:
+		p.recorder = base.recorder
 	}
 
 	if base != nil {

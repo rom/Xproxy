@@ -235,6 +235,23 @@ an identifier from the access log to the upstream.
   and a deny list by overlap — which is what stops a device asking for
   `#`. The will goes through the publish policy at CONNECT, the only
   moment there is
+- `kind: syslog`: a syslog relay that reads what it forwards. Almost
+  every field in a record is written by the sender and believed by the
+  collector, and a message whose text carries a newline becomes two
+  records in anything that frames on newlines. Every message is parsed
+  and re-emitted as RFC 5424 in one framing; facility, severity, sender
+  and pattern filters, redaction, per-sender rate limits; UDP, TCP and
+  TLS on one address. The two ends are configured separately, so it is
+  also a **secure upgrade**: clear UDP in from something that cannot be
+  taught TLS, RFC 5425 TLS out
+- `kind: ftp`: an FTP proxy that is actually in the middle. FTP puts
+  every transfer on a second connection whose address one side
+  announces to the other, so a proxy that forwards that reply has told
+  the client to go round it; this one rewrites the address and is one
+  end of both connections. Commands, paths, extensions, a bound on a
+  transfer and YARA over uploads; AUTH TLS both ways. **`PORT` is
+  refused by default** — it asks the proxy to connect to an address the
+  client names, which is the bounce attack
 - `kind: ssh`: an SSH bastion. The proxy is an SSH server to the client
   and an SSH client to the target, so every channel and every request
   inside the session is a decision: `direct-tcpip` only to listed
@@ -246,13 +263,27 @@ an identifier from the access log to the upstream.
   is an allow list from which the loader and interpreter variables are
   struck whatever it says; and `scp` and `rsync` are refused wherever
   there is an SFTP policy for them to walk past.
+  Sessions can be **recorded to a replayable file** (asciicast v2, one
+  per channel) — output by default, keystrokes only if you say so.
   **SFTP is inspected inside the subsystem channel** — read-only, path
-  allow and deny lists, refused operations — because the whole
+  allow and deny lists that may name the session's own user, refused
+  operations, extension lists that read every suffix a name carries, a
+  bound on the file a client's writes make, and YARA rules over what is
+  written, per file rather than per stream — because the whole
   difference between reading a file and deleting a tree happens in
   there
 
 **Extensibility and platforms**
 
+- **Authorisation as one policy**: every authenticating filter answers
+  "who"; `authz` answers "what may they do", deciding on the subject,
+  groups, scopes and claims those filters verified — default deny,
+  first match wins, and nothing a client sent can reach a rule
+- **gRPC message inspection**: the framing, a bound on one message
+  rather than the whole stream, the protobuf structure (nesting depth,
+  field count) and patterns over the strings inside — without a schema,
+  because a check that is only as current as its schema is a check that
+  quietly stops applying
 - A stable middleware interface for compiled-in filters (header
   policy, basic authentication, body rewriting, bot scoring, OpenID
   Connect), and a WebAssembly ABI that runs sandboxed modules per
@@ -379,7 +410,7 @@ engine with the Core Rule Set, bbolt for ban state, quic-go for HTTP/3,
 wazero for WebAssembly, and `golang.org/x/crypto` for the SSH bastion.
 
 Everything else is written here rather than pulled in, and the reason is
-usually the same. The SMTP, MQTT, SFTP and MASQUE parsers, the TOTP
+usually the same. The SMTP, MQTT, FTP, syslog, SFTP and MASQUE parsers, the TOTP
 implementation and the YARA engine are all first-party: a protocol this
 proxy *decides* is a protocol it has to read the same way twice, and
 linking libyara alone would have meant `CGO_ENABLED=1` and a C parser in

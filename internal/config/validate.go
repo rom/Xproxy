@@ -4,6 +4,8 @@ import (
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/ftp"
+	"github.com/rom/xproxy/internal/syslog"
 	"github.com/rom/xproxy/internal/tmpl"
 	"github.com/rom/xproxy/internal/yara"
 	"mime"
@@ -601,8 +603,32 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.sshListener(p+".ssh", ln.SSH)
 			}
+		case "ftp":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an ftp listener takes only address, ftp and tls", p)
+			}
+			if ln.FTP == nil {
+				v.errf("%s.ftp: required for kind ftp", p)
+			} else {
+				v.ftpListener(p+".ftp", ln.FTP, ln.TLS != nil)
+			}
+		case "syslog":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a syslog listener takes only address, syslog and tls", p)
+			}
+			if ln.Syslog == nil {
+				v.errf("%s.syslog: required for kind syslog", p)
+			} else {
+				v.syslogListener(p+".syslog", ln.Syslog, ln.TLS != nil)
+			}
 		default:
-			v.errf("%s.kind: must be http, tcp, forward, dns, smtp, mqtt or ssh", p)
+			v.errf("%s.kind: must be http, tcp, forward, dns, smtp, mqtt, ssh, ftp or syslog", p)
+		}
+		if ln.Syslog != nil && ln.Kind != "syslog" {
+			v.errf("%s.syslog: set on a %s listener (kind: syslog)", p, ln.Kind)
+		}
+		if ln.FTP != nil && ln.Kind != "ftp" {
+			v.errf("%s.ftp: set on a %s listener (kind: ftp)", p, ln.Kind)
 		}
 		if ln.SSH != nil && ln.Kind != "ssh" {
 			v.errf("%s.ssh: set on a %s listener (kind: ssh)", p, ln.Kind)
@@ -1945,7 +1971,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
-	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "yara": true,
+	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -3019,7 +3045,10 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 		v.mfaPolicy(p+".mfa", h.MFA)
 	}
 	if h.SFTP != nil {
-		v.sftpPolicy(p+".sftp", h.SFTP, reqs["subsystem"])
+		v.sftpPolicy(p+".sftp", h.SFTP, reqs["subsystem"], len(h.Principals) > 0)
+	}
+	if h.Recording != nil {
+		v.sshRecording(p+".recording", h.Recording, reqs)
 	}
 	for i, c := range h.AllowClients {
 		if _, err := netip.ParsePrefix(c); err != nil {
@@ -3031,7 +3060,7 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 // sftpPolicy validates an SFTP policy. subsystemAllowed says whether a
 // session could start one at all, because a policy on a subsystem
 // nobody may request is a policy nobody reads.
-func (v *validator) sftpPolicy(p string, s *SFTPPolicy, subsystemAllowed bool) {
+func (v *validator) sftpPolicy(p string, s *SFTPPolicy, subsystemAllowed, hasPrincipals bool) {
 	if !subsystemAllowed {
 		v.errf("%s: set without subsystem in allow_requests, so no sftp session can start", p)
 	}
@@ -3051,7 +3080,111 @@ func (v *validator) sftpPolicy(p string, s *SFTPPolicy, subsystemAllowed bool) {
 			if path == "" || strings.ContainsRune(path, 0) {
 				v.errf("%s.%s[%d]: must be a path", p, l.key, i)
 			}
+			if err := sftpTemplateOK(path); err != nil {
+				v.errf("%s.%s[%d]: %v", p, l.key, i, err)
+			} else if !hasPrincipals && strings.Contains(path, "{principal}") {
+				v.errf("%s.%s[%d]: {principal} with no principals list, so no session has a name to put here and every one would be refused", p, l.key, i)
+			}
 		}
+	}
+	for _, l := range []struct {
+		key  string
+		list []string
+	}{{"allow_extensions", s.AllowExtensions}, {"deny_extensions", s.DenyExtensions}} {
+		seen := map[string]bool{}
+		for i, e := range l.list {
+			switch {
+			case e == "":
+				v.errf("%s.%s[%d]: must be an extension", p, l.key, i)
+			case strings.ContainsAny(e, "./\\*?"):
+				v.errf("%s.%s[%d]: %q is an extension, without a dot and without a glob", p, l.key, i, e)
+			}
+			low := strings.ToLower(e)
+			if seen[low] {
+				v.errf("%s.%s[%d]: %q listed twice", p, l.key, i, e)
+			}
+			seen[low] = true
+		}
+	}
+	for _, e := range s.AllowExtensions {
+		for _, d := range s.DenyExtensions {
+			if strings.EqualFold(e, d) {
+				v.errf("%s: %q is in allow_extensions and deny_extensions; the deny list wins, so the allow entry says nothing", p, e)
+			}
+		}
+	}
+	if s.MaxFileBytes < 0 {
+		v.errf("%s.max_file_bytes: must not be negative", p)
+	}
+	if s.MaxOpenFiles < 1 || s.MaxOpenFiles > 65536 {
+		v.errf("%s.max_open_files: must be 1..65536", p)
+	}
+	if s.YARA != nil {
+		v.yaraPolicy(p+".yara", s.YARA)
+		if s.ReadOnly {
+			v.warnf("%s.yara: read_only already refuses every write, so nothing reaches these rules", p)
+		}
+	}
+}
+
+// sftpTemplateOK checks the {user} and {principal} substitutions in a
+// path pattern. An unknown one is an error rather than a literal:
+// "{usr}" left as it stands is a pattern that matches nothing, which
+// on an allow list refuses everybody and on a deny list refuses
+// nobody, and neither is what was written.
+func sftpTemplateOK(pattern string) error {
+	rest := pattern
+	for {
+		i := strings.IndexByte(rest, '{')
+		if i < 0 {
+			if strings.ContainsRune(rest, '}') {
+				return fmt.Errorf("%q has a closing brace with no substitution", pattern)
+			}
+			return nil
+		}
+		j := strings.IndexByte(rest[i:], '}')
+		if j < 0 {
+			return fmt.Errorf("%q has an unclosed substitution", pattern)
+		}
+		name := rest[i+1 : i+j]
+		if !SFTPPathVars[name] {
+			return fmt.Errorf("%q: {%s} is not a substitution here; {user} and {principal} are", pattern, name)
+		}
+		rest = rest[i+j+1:]
+	}
+}
+
+// sshRecording validates a session recording section. reqs is what the
+// session may ask for, because a recording of requests nobody may make
+// is a directory that stays empty.
+func (v *validator) sshRecording(p string, r *SSHRecording, reqs map[string]bool) {
+	if r.Enabled != nil && !*r.Enabled {
+		// Turned off here. Nothing is written, so nothing else in the
+		// section has to make sense, and saying more would be telling
+		// an operator to fill in a form they are opting out of.
+		return
+	}
+	if r.Directory == "" {
+		v.errf("%s.directory: required", p)
+	} else {
+		v.dir(p+".directory", r.Directory)
+	}
+	if r.FilePrefix == "" || strings.ContainsAny(r.FilePrefix, "/\\.\x00") {
+		v.errf("%s.file_prefix: must be a name without a path or a dot", p)
+	}
+	if r.MaxFileBytes < 4096 || r.MaxFileBytes > 1<<32 {
+		v.errf("%s.max_file_bytes: must be 4096..4294967296", p)
+	}
+	if r.MaxFiles < 1 || r.MaxFiles > 100000 {
+		v.errf("%s.max_files: must be 1..100000", p)
+	}
+	if r.Input {
+		v.warnf("%s.input: the input stream carries what the screen never showed, including every password typed into a sudo or su prompt", p)
+	}
+	recordsShell := reqs["shell"]
+	recordsExec := reqs["exec"] && (r.Commands == nil || *r.Commands)
+	if !recordsShell && !recordsExec {
+		v.errf("%s: neither shell nor exec is recordable here, so nothing would ever be written", p)
 	}
 }
 
@@ -3133,7 +3266,17 @@ func (v *validator) sshPolicy(p string, s *SSHPolicy, h *SSHListener) {
 		v.errf("%s: direct-tcpip is allowed with no destinations here or on the listener, which refuses every forward", p)
 	}
 	if s.SFTP != nil {
-		v.sftpPolicy(p+".sftp", s.SFTP, reqs["subsystem"] || sliceHas(h.AllowRequests, "subsystem"))
+		v.sftpPolicy(p+".sftp", s.SFTP, reqs["subsystem"] || sliceHas(h.AllowRequests, "subsystem"), len(h.Principals) > 0)
+	}
+	if s.Recording != nil {
+		merged := map[string]bool{}
+		for _, rt := range h.AllowRequests {
+			merged[rt] = true
+		}
+		for rt := range reqs {
+			merged[rt] = true
+		}
+		v.sshRecording(p+".recording", s.Recording, merged)
 	}
 	if s.SFTP != nil && h.SFTP == nil && h.AllowFileTransferCommands != nil && *h.AllowFileTransferCommands {
 		v.warnf("%s.sftp: the listener's allow_file_transfer_commands is true, so scp and rsync move files past every path and operation rule set here", p)
@@ -4995,5 +5138,237 @@ func (v *validator) when(p, src string, r *Route) {
 	}
 	if _, err := expr.Parse(src, ExprVars(), CaptureNames(r)...); err != nil {
 		v.errf("%s: %v", p, err)
+	}
+}
+
+// ftpListener validates a kind: ftp listener.
+func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
+	if f.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	switch f.TLSMode {
+	case "none":
+	case "starttls", "implicit":
+		if !hasTLS {
+			v.errf("%s.tls_mode: %q needs the listener's tls section", p, f.TLSMode)
+		}
+	default:
+		v.errf("%s.tls_mode: must be none, starttls or implicit", p)
+	}
+	if f.TLSMode == "none" && hasTLS {
+		v.warnf("%s.tls_mode: none with a tls section, so the certificate is never used", p)
+	}
+	if !f.RequireTLS && f.TLSMode != "none" {
+		v.warnf("%s.require_tls: false where TLS is reachable, so a client can send the password in clear", p)
+	}
+	switch f.UpstreamTLSMode {
+	case "none", "starttls", "implicit":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none, starttls or implicit", p)
+	}
+	if f.UpstreamTLSMode != "none" {
+		v.upstreamTLS(p+".upstream_tls", f.UpstreamTLS)
+	}
+	seen := map[string]bool{}
+	for i, c := range f.Commands {
+		verb := strings.ToUpper(strings.TrimSpace(c))
+		if !ftp.Known[verb] {
+			v.errf("%s.commands[%d]: %q is not a command this proxy can read the effect of", p, i, c)
+		}
+		if seen[verb] {
+			v.errf("%s.commands[%d]: %q listed twice", p, i, c)
+		}
+		seen[verb] = true
+	}
+	if len(f.Commands) > 0 {
+		for _, need := range []string{"USER", "QUIT"} {
+			if !seen[need] {
+				v.errf("%s.commands: %s is required; without it no session can %s", p, need,
+					map[string]string{"USER": "log in", "QUIT": "end cleanly"}[need])
+			}
+		}
+	}
+	for _, l := range []struct {
+		key  string
+		list []string
+	}{{"allow_paths", f.AllowPaths}, {"deny_paths", f.DenyPaths}} {
+		for i, pattern := range l.list {
+			if pattern == "" || strings.ContainsRune(pattern, 0) {
+				v.errf("%s.%s[%d]: must be a path", p, l.key, i)
+			}
+			if strings.Contains(pattern, "{") && !strings.Contains(pattern, "{user}") {
+				v.errf("%s.%s[%d]: {user} is the only substitution here", p, l.key, i)
+			}
+		}
+	}
+	for _, l := range []struct {
+		key  string
+		list []string
+	}{{"allow_extensions", f.AllowExtensions}, {"deny_extensions", f.DenyExtensions}} {
+		for i, e := range l.list {
+			if e == "" || strings.ContainsAny(e, "./\\*?") {
+				v.errf("%s.%s[%d]: %q is an extension, without a dot and without a glob", p, l.key, i, e)
+			}
+		}
+	}
+	if f.MaxFileBytes < 0 {
+		v.errf("%s.max_file_bytes: must not be negative", p)
+	}
+	if f.YARA != nil {
+		v.yaraPolicy(p+".yara", f.YARA)
+	}
+	if f.AllowActive {
+		v.warnf("%s.allow_active: PORT and EPRT ask the proxy to connect to an address the client names; it is refused unless the address is the client's own, and that check is all that stands between this and the bounce attack", p)
+	}
+	if f.DataAddress != "" {
+		if _, err := netip.ParseAddr(f.DataAddress); err != nil {
+			v.errf("%s.data_address: %q is not an address", p, f.DataAddress)
+		}
+	}
+	if f.DataPorts != "" && f.DataPorts != "0-0" {
+		lo, hi, ok := strings.Cut(f.DataPorts, "-")
+		l, errLo := strconv.Atoi(strings.TrimSpace(lo))
+		h, errHi := strconv.Atoi(strings.TrimSpace(hi))
+		switch {
+		case !ok || errLo != nil || errHi != nil:
+			v.errf(`%s.data_ports: must be written "low-high"`, p)
+		case l < 1 || h > 65535 || l > h:
+			v.errf("%s.data_ports: must be 1..65535 with low no higher than high", p)
+		case h-l < 8:
+			v.warnf("%s.data_ports: %d ports for concurrent transfers, which is a transfer refused as soon as they are all in use", p, h-l+1)
+		}
+	}
+	if f.DataTimeout <= 0 {
+		v.errf("%s.data_timeout: must be positive", p)
+	}
+	if f.MaxCommandLine < 512 || f.MaxCommandLine > 1<<20 {
+		v.errf("%s.max_command_line: must be 512..1048576", p)
+	}
+	if f.MaxErrors < 1 {
+		v.errf("%s.max_errors: must be at least 1", p)
+	}
+	if f.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be at least 1", p)
+	}
+	for i, c := range f.AllowClients {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+}
+
+// syslogListener validates a kind: syslog listener.
+func (v *validator) syslogListener(p string, g *SyslogListener, hasTLS bool) {
+	if g.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	switch g.Framing {
+	case "octet_counting", "non_transparent", "auto":
+	default:
+		v.errf("%s.framing: must be octet_counting, non_transparent or auto", p)
+	}
+	switch g.UpstreamFraming {
+	case "octet_counting":
+	case "non_transparent":
+		v.warnf("%s.upstream_framing: non_transparent delimits on line endings, which is the framing a message's own text can be mistaken for; octet_counting cannot be", p)
+	default:
+		v.errf("%s.upstream_framing: must be octet_counting or non_transparent", p)
+	}
+	switch g.TLSMode {
+	case "none":
+		if hasTLS {
+			v.warnf("%s.tls_mode: none with a tls section, so the certificate is never used", p)
+		}
+	case "implicit":
+		if !hasTLS {
+			v.errf("%s.tls_mode: implicit needs the listener's tls section", p)
+		}
+	default:
+		v.errf("%s.tls_mode: must be none or implicit", p)
+	}
+	switch g.UpstreamTLSMode {
+	case "none", "implicit":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none or implicit", p)
+	}
+	if g.UpstreamTLSMode != "none" {
+		v.upstreamTLS(p+".upstream_tls", g.UpstreamTLS)
+	}
+	switch g.Hostname {
+	case "keep":
+		v.warnf("%s.hostname: keep takes the sender's word for which machine a record came from, which nothing checks", p)
+	case "observed", "annotate":
+	default:
+		v.errf("%s.hostname: must be keep, observed or annotate", p)
+	}
+	for _, l := range []struct {
+		key  string
+		list []string
+	}{{"allow_facilities", g.AllowFacilities}, {"deny_facilities", g.DenyFacilities}} {
+		for i, f := range l.list {
+			if _, ok := syslog.FacilityNumber(f); !ok {
+				v.errf("%s.%s[%d]: %q is not a facility", p, l.key, i, f)
+			}
+		}
+	}
+	for _, a := range g.AllowFacilities {
+		for _, d := range g.DenyFacilities {
+			if strings.EqualFold(a, d) {
+				v.errf("%s: %q is in allow_facilities and deny_facilities; the deny list wins, so the allow entry says nothing", p, a)
+			}
+		}
+	}
+	if g.MinSeverity != "" {
+		if _, ok := syslog.SeverityNumber(g.MinSeverity); !ok {
+			v.errf("%s.min_severity: %q is not a severity", p, g.MinSeverity)
+		}
+	}
+	for i, c := range g.AllowSenders {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_senders[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+	udp := g.UDP == nil || *g.UDP
+	if udp && len(g.AllowSenders) == 0 {
+		v.warnf("%s.allow_senders: empty with udp on, so anything that can reach the port can write records; on UDP the sender's address is the only authentication there is", p)
+	}
+	for i, pat := range g.DenyPatterns {
+		if _, err := regexp.Compile(pat); err != nil {
+			v.errf("%s.deny_patterns[%d]: %v", p, i, err)
+		}
+	}
+	names := map[string]bool{}
+	for i := range g.Redact {
+		r := &g.Redact[i]
+		if r.Name == "" {
+			v.errf("%s.redact[%d].name: required; it is what the added structured data names", p, i)
+		} else if names[r.Name] {
+			v.errf("%s.redact[%d].name: %q is used twice", p, i, r.Name)
+		}
+		names[r.Name] = true
+		if r.Pattern == "" {
+			v.errf("%s.redact[%d].pattern: required", p, i)
+		} else if _, err := regexp.Compile(r.Pattern); err != nil {
+			v.errf("%s.redact[%d].pattern: %v", p, i, err)
+		}
+	}
+	if g.MaxMessageBytes < 480 || g.MaxMessageBytes > 1<<20 {
+		// RFC 5426 section 3.2: every receiver must take 480 octets.
+		v.errf("%s.max_message_bytes: must be 480..1048576", p)
+	}
+	if g.RateLimit < 0 || g.RateBurst < 0 {
+		v.errf("%s.rate_limit: must not be negative", p)
+	}
+	if g.RateLimit == 0 && udp {
+		v.warnf("%s.rate_limit: unset with udp on, so one sender can fill the collector and push older records out of whatever window it keeps", p)
+	}
+	if g.MaxSenders < 1 || g.MaxSenders > 1<<20 {
+		v.errf("%s.max_senders: must be 1..1048576", p)
+	}
+	if g.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be at least 1", p)
+	}
+	if g.Queue < 1 || g.Queue > 1<<20 {
+		v.errf("%s.queue: must be 1..1048576", p)
 	}
 }

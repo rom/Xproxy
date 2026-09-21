@@ -54,7 +54,7 @@ func TestParseRequest(t *testing.T) {
 		{"remove", req(sftp.REMOVE, 5, str("/srv/a")), "/srv/a", true},
 		{"mkdir", req(sftp.MKDIR, 6, str("/srv/a")), "/srv/a", true},
 		{"read by handle", req(sftp.READ, 7, str("h")), "", false},
-		{"write by handle", req(sftp.WRITE, 8, str("h")), "", true},
+		{"write by handle", req(sftp.WRITE, 8, str("h"), binary.BigEndian.AppendUint64(nil, 0), str("data")), "", true},
 	}
 	for _, c := range cases {
 		got, err := sftp.ParseRequest(c.packet)
@@ -65,6 +65,33 @@ func TestParseRequest(t *testing.T) {
 			t.Errorf("%s: path %q writes %v", c.name, got.Path, got.Writes)
 		}
 	}
+	// A write names a handle, an offset and the bytes themselves, which
+	// is what a size bound and a rule set need.
+	w, err := sftp.ParseRequest(req(sftp.WRITE, 10, str("h"), binary.BigEndian.AppendUint64(nil, 4096), str("payload")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Handle != "h" || w.Offset != 4096 || string(w.Data) != "payload" {
+		t.Fatalf("write: %+v", w)
+	}
+	// A handle is the server's opaque bytes, not text: it must survive
+	// what a name would be refused for.
+	h, err := sftp.ParseRequest(req(sftp.CLOSE, 11, str("\xff\x00\xfe")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Handle != "\xff\x00\xfe" {
+		t.Fatalf("handle: %q", h.Handle)
+	}
+	id, handle, err := sftp.ParseHandleReply(sftp.Packet{Type: sftp.HANDLE,
+		Body: append(binary.BigEndian.AppendUint32(nil, 7), str("\xff\x01")...)})
+	if err != nil || id != 7 || handle != "\xff\x01" {
+		t.Fatalf("handle reply: %d %q %v", id, handle, err)
+	}
+	if _, _, err := sftp.ParseHandleReply(sftp.Packet{Type: sftp.DATA}); err == nil {
+		t.Fatal("a reply that is not a handle should not parse as one")
+	}
+
 	// Rename names two paths, and both are the policy's business.
 	r, err := sftp.ParseRequest(req(sftp.RENAME, 9, str("/srv/a"), str("/etc/passwd")))
 	if err != nil {
@@ -77,10 +104,14 @@ func TestParseRequest(t *testing.T) {
 
 func TestParseRequestMalformed(t *testing.T) {
 	bad := map[string]sftp.Packet{
-		"truncated id":       {Type: sftp.STAT, Body: []byte{0, 0}},
-		"length past end":    {Type: sftp.STAT, Body: append(binary.BigEndian.AppendUint32(nil, 1), 0, 0, 0, 9, 'a')},
-		"not utf-8":          {Type: sftp.STAT, Body: append(binary.BigEndian.AppendUint32(nil, 1), str("\xff\xfe")...)},
-		"open with no flags": {Type: sftp.OPEN, Body: append(binary.BigEndian.AppendUint32(nil, 1), str("/a")...)},
+		"truncated id":         {Type: sftp.STAT, Body: []byte{0, 0}},
+		"length past end":      {Type: sftp.STAT, Body: append(binary.BigEndian.AppendUint32(nil, 1), 0, 0, 0, 9, 'a')},
+		"not utf-8":            {Type: sftp.STAT, Body: append(binary.BigEndian.AppendUint32(nil, 1), str("\xff\xfe")...)},
+		"open with no flags":   {Type: sftp.OPEN, Body: append(binary.BigEndian.AppendUint32(nil, 1), str("/a")...)},
+		"write with no offset": {Type: sftp.WRITE, Body: append(binary.BigEndian.AppendUint32(nil, 1), str("h")...)},
+		"write with no data": {Type: sftp.WRITE, Body: append(append(binary.BigEndian.AppendUint32(nil, 1), str("h")...),
+			binary.BigEndian.AppendUint64(nil, 0)...)},
+		"close with no handle": {Type: sftp.CLOSE, Body: binary.BigEndian.AppendUint32(nil, 1)},
 	}
 	for name, p := range bad {
 		if _, err := sftp.ParseRequest(p); err == nil {

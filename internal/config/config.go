@@ -232,6 +232,207 @@ type Listener struct {
 	MQTT *MQTTListener `yaml:"mqtt"`
 	// SSH configures a kind: ssh listener.
 	SSH *SSHListener `yaml:"ssh"`
+	// FTP configures a kind: ftp listener.
+	FTP *FTPListener `yaml:"ftp"`
+	// Syslog configures a kind: syslog listener.
+	Syslog *SyslogListener `yaml:"syslog"`
+}
+
+// SyslogListener is a syslog relay that reads what it forwards.
+//
+// A relay that forwards syslog without reading it is a pipe. The reason
+// to read it is that almost every field is written by the sender and
+// believed by the collector: the host name, the facility, the severity,
+// the time. A message claiming to be auth.emerg from another machine
+// costs nothing to send, and a message carrying a newline in its text
+// becomes two records in any collector that frames on newlines — the
+// second one saying whatever the sender wanted a record to say.
+//
+// So every message is parsed, and every message is re-emitted as RFC
+// 5424 in one framing, whatever arrived. One dialect out is what makes
+// the record a collector stores the record the relay decided about.
+type SyslogListener struct {
+	// Upstream is the collector pool. Required.
+	Upstream string `yaml:"upstream"`
+	// UDP also listens on the same address for datagrams, which is
+	// what most senders still use (RFC 5426). Default true.
+	UDP *bool `yaml:"udp"`
+	// Framing accepted on the stream side: octet_counting (RFC 6587
+	// section 3.4.1), non_transparent (section 3.4.2, line endings) or
+	// auto. Default auto.
+	Framing string `yaml:"framing"`
+	// UpstreamFraming is what the relay writes: octet_counting or
+	// non_transparent. Default octet_counting, which is the only one
+	// that cannot be confused by what a message contains and the only
+	// one RFC 5425 allows over TLS.
+	UpstreamFraming string `yaml:"upstream_framing"`
+	// TLSMode is implicit (TLS from the first octet on the stream
+	// side, as RFC 5425 defines) or none. Default implicit when tls is
+	// set.
+	TLSMode string `yaml:"tls_mode"`
+	// UpstreamTLSMode is none or implicit. Default none.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the collector when upstream_tls_mode is not
+	// none.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// Hostname decides what the HOSTNAME field says: keep takes the
+	// sender's word, observed replaces it with the address the message
+	// arrived from, and annotate keeps it and records the address in
+	// structured data. Default annotate — the sender's name is often
+	// the useful one and is never the true one.
+	Hostname string `yaml:"hostname"`
+	// AllowFacilities and DenySeverities filter by what the message
+	// claims to be. Empty allows everything.
+	AllowFacilities []string `yaml:"allow_facilities"`
+	DenyFacilities  []string `yaml:"deny_facilities"`
+	// MinSeverity drops anything less severe, by name: "warning" keeps
+	// emerg through warning. Empty keeps everything.
+	MinSeverity string `yaml:"min_severity"`
+	// AllowSenders restricts senders to these CIDRs. On UDP this is
+	// the only authentication there is.
+	AllowSenders []string `yaml:"allow_senders"`
+	// DenyPatterns drop a message whose text matches, as RE2. It is a
+	// filter, not a redaction: a message that matches does not arrive.
+	DenyPatterns []string `yaml:"deny_patterns"`
+	// Redact replaces what matches with a fixed string, so the record
+	// still arrives without the part that should not be stored.
+	Redact []SyslogRedaction `yaml:"redact"`
+	// MaxMessageBytes bounds one message. Default 8192. RFC 5426
+	// requires every receiver to take 480, and most estates send more.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// RateLimit is messages per second accepted from one sender, with
+	// a burst. 0 is no limit. A log flood is a denial of service on
+	// the collector and a way to push older records out of whatever
+	// window it keeps.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// MaxSenders bounds the rate limit table. Default 65536.
+	MaxSenders int `yaml:"max_senders"`
+	// MaxConnections bounds stream connections. Default 1000.
+	MaxConnections int `yaml:"max_connections"`
+	// IdleTimeout closes a stream connection with no traffic. Default
+	// 5m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// Queue is how many parsed messages wait for the collector.
+	// Default 4096. When it is full the relay drops and counts rather
+	// than blocking every sender behind one slow collector.
+	Queue int `yaml:"queue"`
+}
+
+// SyslogRedaction replaces what matches a pattern in a message.
+type SyslogRedaction struct {
+	// Name appears in the structured data the relay adds, so a reader
+	// knows something was taken out and which rule took it.
+	Name string `yaml:"name"`
+	// Pattern is RE2, matched against the message text.
+	Pattern string `yaml:"pattern"`
+	// With replaces every match. Default "[redacted]".
+	With string `yaml:"with"`
+}
+
+// FTPListener is a protocol-aware FTP proxy. The proxy is an FTP server
+// to the client and an FTP client to the target, and it mediates the
+// data connection as well as the control one.
+//
+// The data connection is the reason this cannot be a layer 4 listener.
+// Every transfer happens on a second connection whose address one side
+// announces to the other, in the body of a reply. A proxy that forwards
+// that reply has told the client to go round it: the file then travels
+// between the client and the target with nothing in the middle, and the
+// control connection it did read is a list of instructions for a
+// transfer it never saw. So the addresses are rewritten, and the proxy
+// is one end of both connections.
+//
+// The other reason is that FTP is old enough to have an attack named
+// after it. A client can name any address in PORT, and a proxy that
+// obeys is a port scanner and a relay for anyone who can log in — the
+// bounce attack of CERT CA-1997-27. Active mode is therefore off by
+// default, and when it is on the announced address has to be the
+// client's own.
+type FTPListener struct {
+	// Upstream is the server pool. Required.
+	Upstream string `yaml:"upstream"`
+	// Banner replaces the target's 220 greeting. A banner is a legal
+	// notice; the target's own greeting usually names its software and
+	// version, which is a different thing.
+	Banner string `yaml:"banner"`
+	// TLSMode is starttls (the client may send AUTH TLS, and the
+	// listener's tls section provides the certificate), implicit (TLS
+	// from the first octet, as on 990) or none. Default starttls when
+	// tls is set.
+	TLSMode string `yaml:"tls_mode"`
+	// RequireTLS refuses every command but the ones that get to TLS
+	// until the control connection is encrypted. Defaults on wherever
+	// TLS is reachable: a control connection in clear carries the
+	// password.
+	RequireTLS bool `yaml:"require_tls"`
+	// UpstreamTLSMode is none, starttls or implicit. Default none.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the target when upstream_tls_mode is not
+	// none.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// Commands a client may send. Everything else is refused with 502.
+	// The default is every command this proxy understands the effect
+	// of, which is the list it can hold to a policy.
+	Commands []string `yaml:"commands"`
+	// ReadOnly refuses every command that changes the server: STOR,
+	// STOU, APPE, DELE, RNFR, RNTO, MKD, RMD, SITE, ALLO.
+	ReadOnly bool `yaml:"read_only"`
+	// AllowPaths are the paths a command may name, matched as the sftp
+	// policy matches them: a glob where "*" does not cross a slash, or
+	// a prefix ending in "/" or "/**" for a whole tree. They may carry
+	// {user}, which is the login the client authenticated as. Empty
+	// allows every path the deny list does not refuse.
+	AllowPaths []string `yaml:"allow_paths"`
+	// DenyPaths are refused whatever the allow list says.
+	DenyPaths []string `yaml:"deny_paths"`
+	// AllowExtensions and DenyExtensions decide what a file may be
+	// called, on the commands that settle a name. Every extension a
+	// name carries is read, so "invoice.pdf.exe" is an exe.
+	AllowExtensions []string `yaml:"allow_extensions"`
+	DenyExtensions  []string `yaml:"deny_extensions"`
+	// MaxFileBytes bounds one transfer in either direction. 0 is no
+	// bound. The connection is cut when it is passed, because a
+	// transfer cannot be un-sent.
+	MaxFileBytes int64 `yaml:"max_file_bytes"`
+	// YARA scans what is uploaded. A match cuts the data connection
+	// and, with action close, the session.
+	YARA *YARAPolicy `yaml:"yara"`
+	// AllowActive accepts PORT and EPRT. Default false. With it on, the
+	// address announced must be the client's own, which is the only
+	// form of active mode that is not a way to make the proxy connect
+	// somewhere on request.
+	AllowActive bool `yaml:"allow_active"`
+	// DataAddress is the address the proxy advertises for passive data
+	// connections. Default the address the control connection arrived
+	// on, which is right unless the proxy is itself behind a NAT.
+	DataAddress string `yaml:"data_address"`
+	// DataPorts is the range the proxy listens on for passive data,
+	// written "low-high". Default "0-0", which is any free port. A
+	// range is what lets a firewall in front of the proxy be narrow.
+	DataPorts string `yaml:"data_ports"`
+	// DataTimeout bounds how long a data connection may be arranged
+	// and not used. Default 30s.
+	DataTimeout Duration `yaml:"data_timeout"`
+	// MaxCommandLine bounds one control line. Default 4096.
+	MaxCommandLine int `yaml:"max_command_line"`
+	// MaxErrors ends the session after this many refused commands.
+	// Default 10.
+	MaxErrors int `yaml:"max_errors"`
+	// MaxConnections bounds control connections on this listener.
+	// Default 1000.
+	MaxConnections int `yaml:"max_connections"`
+	// IdleTimeout is no traffic on the control connection. Default
+	// 5m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole session however active. Default 0,
+	// no bound.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// ProxyProtocol sends a PROXY protocol v2 header with the client
+	// address to the target.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs.
+	AllowClients []string `yaml:"allow_clients"`
 }
 
 // SSHListener is an SSH bastion: the proxy is an SSH server to the
@@ -364,6 +565,9 @@ type SSHListener struct {
 	// open, because scp moves files without touching the sftp
 	// subsystem at all.
 	AllowFileTransferCommands *bool `yaml:"allow_file_transfer_commands"`
+	// Recording writes what a session showed, and optionally what was
+	// typed into it, to a file per channel.
+	Recording *SSHRecording `yaml:"recording"`
 	// MFA requires a second factor after the key or the password: the
 	// client is told authentication partially succeeded and must then
 	// answer a keyboard-interactive prompt with a one-time code.
@@ -377,6 +581,54 @@ type SSHListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+}
+
+// SSHRecording records an interactive session to a file that can be
+// replayed.
+//
+// A bastion's access log says a session happened; it cannot say what
+// was done in it, because what was done is a stream of control
+// sequences inside the channel. This writes that stream, in the
+// asciicast v2 format, so the question "what did they actually run"
+// has an answer that is watched rather than reconstructed.
+//
+// The files hold everything the session showed, which on an
+// administrative session is a list of everything worth having: keys
+// printed, configuration read, tokens echoed. They are treated the way
+// the capture files are — the proxy user's alone, in a directory the
+// operator names — and they are a reason to keep that directory as
+// carefully as the credentials it will end up holding.
+type SSHRecording struct {
+	// Enabled is how a principal turns off a listener's recording; it
+	// defaults to true wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Directory is where the files are written. Required. It must
+	// exist: the proxy does not create it, because where these files
+	// live is a decision to make rather than to inherit.
+	Directory string `yaml:"directory"`
+	// FilePrefix begins each file name. Default "session".
+	FilePrefix string `yaml:"file_prefix"`
+	// Input records what was typed as well as what was shown. Default
+	// false, and it warns: a terminal's input stream carries what the
+	// screen never showed, which includes every password typed into a
+	// sudo or a su prompt. Recording output is watching over a
+	// shoulder; recording input is a keylogger, and the difference
+	// matters both to the people recorded and to whoever holds the
+	// files.
+	Input bool `yaml:"input"`
+	// MaxFileBytes bounds one recording. Past it the session goes on
+	// unrecorded and the file says so, rather than one command that
+	// prints for an hour filling a disk. Default 33554432.
+	MaxFileBytes int64 `yaml:"max_file_bytes"`
+	// MaxFiles keeps this many recordings, removing the oldest this
+	// listener wrote. Default 1000. It bounds what the proxy leaves
+	// behind; anything that must be kept belongs somewhere the proxy
+	// does not prune.
+	MaxFiles int `yaml:"max_files"`
+	// Commands records exec sessions too, not only the ones with a
+	// terminal. Default true: a command run without a pty is still a
+	// command run on the target.
+	Commands *bool `yaml:"commands"`
 }
 
 // SFTPPolicy inspects the SFTP protocol inside an sftp subsystem
@@ -393,12 +645,43 @@ type SFTPPolicy struct {
 	// does not cross a slash, or a prefix ending in "/" or "/**" for a
 	// whole tree. Empty allows every path the deny list does not
 	// refuse.
+	//
+	// A pattern may carry {user} or {principal}, which are the login
+	// the session authenticated as and the principals entry that
+	// covers it. They are substituted once per session, which is what
+	// lets one listener say "your own directory and no other" instead
+	// of one list naming everybody's.
 	AllowPaths []string `yaml:"allow_paths"`
-	// DenyPaths are refused whatever the allow list says.
+	// DenyPaths are refused whatever the allow list says. They take
+	// the same {user} and {principal} substitutions.
 	DenyPaths []string `yaml:"deny_paths"`
 	// DenyOperations refuses operations by name (open, read, write,
 	// remove, rename, symlink, setstat, ...), on top of read_only.
 	DenyOperations []string `yaml:"deny_operations"`
+	// AllowExtensions are the file extensions a name may carry, without
+	// the dot and compared without case. Empty allows every extension
+	// the deny list does not refuse. It is checked on open, and on both
+	// names of a rename or a symlink, which are the requests that
+	// decide what a file is called.
+	AllowExtensions []string `yaml:"allow_extensions"`
+	// DenyExtensions are refused whatever the allow list says. A name
+	// is read for every extension it carries, so "invoice.pdf.exe" is
+	// an exe whatever the list allows.
+	DenyExtensions []string `yaml:"deny_extensions"`
+	// MaxFileBytes bounds what one open file may be written. 0 is no
+	// bound. It is counted per handle, from the highest offset a write
+	// reaches, so a client cannot walk past it by writing out of
+	// order.
+	MaxFileBytes int64 `yaml:"max_file_bytes"`
+	// MaxOpenFiles bounds the handles one session may have open at
+	// once, which is what the per file state costs. Default 256.
+	MaxOpenFiles int `yaml:"max_open_files"`
+	// YARA scans what is written, per file rather than per stream: a
+	// rule about a file's first bytes is a rule about a file, and two
+	// uploads interleaved on one channel are two files. A match refuses
+	// that write; directions is not read here, because only what the
+	// client writes is a file this proxy is choosing to accept.
+	YARA *YARAPolicy `yaml:"yara"`
 	// MaxPacketSize bounds one SFTP packet. Default 262144, a little
 	// over the 32 KiB read and write sizes clients use.
 	MaxPacketSize int `yaml:"max_packet_size"`
@@ -3682,6 +3965,10 @@ type SSHPolicy struct {
 	Forward         []string    `yaml:"forward"`
 	RemoteForward   *bool       `yaml:"remote_forward"`
 	SFTP            *SFTPPolicy `yaml:"sftp"`
+	// Recording replaces the listener's, which is how one entry is
+	// recorded and another is not. A principal that should not be
+	// recorded where the listener is sets enabled: false.
+	Recording *SSHRecording `yaml:"recording"`
 	// Deny refuses this principal outright, which is how a key stays in
 	// authorized_keys while the person it belongs to is off.
 	Deny bool `yaml:"deny"`
@@ -3699,6 +3986,24 @@ var SSHDeniedEnv = []string{
 // DefaultSSHEnv is what a client may set when allow_env says nothing: a
 // terminal type and a locale, which is what an interactive session
 // needs and all it needs.
+// DefaultFTPCommands is every command this proxy can read the effect
+// of, which is the set it can hold to a policy. A verb outside it is
+// refused: applying a policy to an argument nobody understands is not
+// applying a policy.
+var DefaultFTPCommands = []string{
+	"USER", "PASS", "ACCT", "QUIT", "NOOP", "SYST", "FEAT", "OPTS",
+	"TYPE", "MODE", "STRU", "PWD", "XPWD", "CWD", "XCWD", "CDUP", "XCUP",
+	"PASV", "EPSV", "PORT", "EPRT", "RETR", "STOR", "STOU", "APPE",
+	"DELE", "RNFR", "RNTO", "MKD", "XMKD", "RMD", "XRMD", "LIST", "NLST",
+	"MLSD", "MLST", "SIZE", "MDTM", "STAT", "ABOR", "REST", "HELP",
+	"AUTH", "PBSZ", "PROT",
+}
+
+// SFTPPathVars are the substitutions an sftp path pattern may carry.
+// They are deliberately few: a pattern is a security decision, and a
+// substitution the operator cannot predict the value of is not one.
+var SFTPPathVars = map[string]bool{"user": true, "principal": true}
+
 var DefaultSSHEnv = []string{"TERM", "LANG", "LC_*"}
 
 // SSHFileTransferCommands are the exec commands that move files past an

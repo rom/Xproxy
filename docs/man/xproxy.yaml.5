@@ -1725,6 +1725,482 @@ T}
 Every session writes one \fBmqtt\fR line to the access log with the client address, client id, username, version, subscriptions, publications and why it closed. Counters: \fBmqtt_sessions\fR, \fBmqtt_sessions_open\fR, \fBmqtt_published\fR, \fBmqtt_subscribed\fR, \fBmqtt_refused\fR, \fBmqtt_rejected\fR, \fBmqtt_protocol_errors\fR; the matching \fBxproxy_mqtt_*\fR metrics. Refusals are \fBmqtt_denied\fR deny events, so a \fBbans.triggers\fR entry on that reason turns a device walking the topic tree into a ban.
 .PP
 A note on \fB$\fR: a wildcard at the first level of a filter never matches a topic beginning with \fB$\fR (MQTT 3.1.1 section 4.7), so \fB#\fR does not hand a client the broker\(aqs own \fB$SYS\fR tree. \fBsubscribe_deny: ["$SYS/#"]\fR is still worth writing, because it refuses the client that asks for it by name.
+.SS "server.listeners[].syslog (kind: syslog)"
+.PP
+A \fBkind: syslog\fR listener is a relay that reads what it forwards.
+.PP
+Reading it is the point. Almost every field in a syslog record is written by the sender and believed by the collector: the host name, the facility, the severity, the time. A message claiming to be \fBauth.emerg\fR from another machine costs nothing to send. And a message whose text carries a newline becomes \fBtwo\fR records in any collector that frames on newlines \[u2014] the second one saying whatever the sender wanted a record to say, with a priority of its own.
+.PP
+So every message is parsed, and every message is re\-emitted as RFC 5424 in one framing, whatever arrived. One dialect out is what makes the record a collector stores the record this relay decided about: a newline in the text is written as a visible symbol, a line ending in a structured data value is escaped, and a field that cannot appear in a header is replaced.
+.PP
+Both transports: TCP (RFC 6587 framing, either kind) and UDP (RFC 5426, one datagram per message), on the same address. TLS is RFC 5425.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.2i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required
+T}	T{
+The collector pool
+T}
+T{
+\fBudp\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Also take datagrams on the same address,\: which is what most senders still send
+T}
+T{
+\fBframing\fR
+T}	T{
+enum
+T}	T{
+\fBauto\fR
+T}	T{
+What the stream side accepts: \fBoctet_\:counting\fR,\: \fBnon_\:transparent\fR or \fBauto\fR,\: decided per message by whether it starts with a digit
+T}
+T{
+\fBupstream_\:framing\fR
+T}	T{
+enum
+T}	T{
+\fBoctet_\:counting\fR
+T}	T{
+What the relay writes. Octet counting cannot be confused by what a message contains,\: and is the only framing RFC 5425 allows over TLS;\: \fBnon_\:transparent\fR warns
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+enum
+T}	T{
+\fBimplicit\fR with \fBtls\fR,\: else \fBnone\fR
+T}	T{
+TLS from the first octet on the stream side
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+enum
+T}	T{
+\fBnone\fR
+T}	T{
+\fBnone\fR or \fBimplicit\fR towards the collector
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Verification of the collector
+T}
+T{
+\fBhostname\fR
+T}	T{
+enum
+T}	T{
+\fBannotate\fR
+T}	T{
+\fBkeep\fR takes the sender\(aqs word,\: \fBobserved\fR replaces the field with the address the message arrived from,\: \fBannotate\fR keeps both and records which is which. \fBkeep\fR warns
+T}
+T{
+\fBallow_\:facilities\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Facilities by name: \fBkern\fR,\: \fBuser\fR,\: \fBauth\fR,\: \fBauthpriv\fR,\: \fBlocal0\fR\[u2026]
+T}
+T{
+\fBdeny_\:facilities\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Refused whatever the allow list says
+T}
+T{
+\fBmin_\:severity\fR
+T}	T{
+name
+T}	T{
+\fBdebug\fR
+T}	T{
+Drop anything less severe: \fBwarning\fR keeps \fBemerg\fR through \fBwarning\fR
+T}
+T{
+\fBallow_\:senders\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+On UDP this is the only authentication there is,\: so leaving it empty with \fBudp:\: true\fR warns
+T}
+T{
+\fBdeny_\:patterns\fR
+T}	T{
+list of RE2
+T}	T{
+\fB[]\fR
+T}	T{
+Drop a message whose text matches. A filter,\: not a redaction: it does not arrive
+T}
+T{
+\fBredact\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+\fB{name,\: pattern,\: with}\fR: replace what matches and record that a rule did,\: in structured data
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+One message;\: 480..1048576. RFC 5426 requires every receiver to take 480
+T}
+T{
+\fBrate_\:limit\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+Messages a second from one sender. Unset with \fBudp:\: true\fR warns
+T}
+T{
+\fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fBrate_\:limit\fR
+T}	T{
+What one sender may send at once
+T}
+T{
+\fBmax_\:senders\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+The rate limit table. When it is full a new sender is refused rather than evicting the entries doing the limiting
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Stream connections
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+No traffic on a stream connection
+T}
+T{
+\fBqueue\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+Parsed messages waiting for the collector. When it is full the relay drops and counts,\: rather than holding every sender behind one slow collector
+T}
+.TE
+.PP
+\fBThe secure upgrade\fR is \fBtls_mode: none\fR with \fBupstream_tls_mode: implicit\fR: a device that can only send clear syslog over UDP writes to this listener, and the records leave it as RFC 5425 TLS. It does not make the sender trustworthy \[u2014] between the device and this port the records are still in clear and still forgeable \[u2014] so put the port where only those devices can reach it, keep \fBallow_senders\fR tight, and use \fBhostname: observed\fR.
+.PP
+A message the relay cannot parse is refused, not forwarded: its facility, severity and host are exactly the fields every rule here decides on, and a record nobody could read is a record nobody can filter. A message with no timestamp is given the time the relay saw it, because a record nobody can order is a record that is hard to use.
+.PP
+On a delimited stream a message over the bound is dropped and the connection carries on \[u2014] the reader skips to the next line ending, so one long line does not cost every record behind it. On a counted stream it ends the connection, because refusing to read the octets a frame declared leaves the reader at an offset nobody knows.
+.PP
+Counters: \fBsyslog_received\fR, \fBsyslog_forwarded\fR, \fBsyslog_dropped\fR, \fBsyslog_refused\fR, \fBsyslog_rate_limited\fR, \fBsyslog_redacted\fR, \fBsyslog_queue_dropped\fR, \fBsyslog_send_failed\fR, \fBsyslog_connections\fR, \fBsyslog_rejected\fR. Refusals are \fBsyslog_denied\fR for the ban triggers.
+.SS "server.listeners[].ftp (kind: ftp)"
+.PP
+A \fBkind: ftp\fR listener is a protocol\-aware FTP proxy: the proxy is an FTP server to the client and an FTP client to the target, and it is one end of every data connection as well.
+.PP
+\fBThe data connection is why this cannot be a \fBtcp\fR listener.\fR Every transfer in FTP happens on a second connection whose address one side announces to the other, in the body of a reply. A proxy that forwards that reply has told the client to go round it: the file then travels between the client and the target with nothing in the middle, and the control connection it did read is a list of instructions for a transfer it never saw. So the address is replaced with the proxy\(aqs own, and the proxy listens on one side and dials the other.
+.PP
+Only the \fIport\fR the target announced is used. The proxy dials the host its control connection is already talking to, so a target that answers with an address of its choosing cannot send the proxy somewhere else.
+.PP
+\fBFTP is old enough to have an attack named after it.\fR \fBPORT\fR and \fBEPRT\fR ask the server to connect back to an address the client names, and a server that obeys is a port scanner and a relay for anyone who can log in \[u2014] the bounce attack of CERT CA\-1997\-27. Active mode is off by default. With \fBallow_active: true\fR the announced address must be the client\(aqs own and the port must not be privileged; that check is the whole of the defence, which is why it is stated here rather than assumed.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.3i) lbx
+lw(1.2i) lw(0.9i) lw(1.3i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required
+T}	T{
+The pool of FTP servers
+T}
+T{
+\fBbanner\fR
+T}	T{
+string
+T}	T{
+the target\(aqs
+T}	T{
+Replaces the 220 greeting. A banner is a legal notice;\: the target\(aqs own greeting usually names its software and version,\: which is a different thing
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+enum
+T}	T{
+\fBstarttls\fR with \fBtls\fR,\: else \fBnone\fR
+T}	T{
+\fBstarttls\fR accepts \fBAUTH TLS\fR (RFC 4217),\: \fBimplicit\fR is TLS from the first octet (as on 990),\: \fBnone\fR is clear
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+on wherever TLS is reachable
+T}	T{
+Refuse every command but the ones that get to TLS until the control connection is encrypted. A control connection in clear carries the password
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+enum
+T}	T{
+\fBnone\fR
+T}	T{
+\fBnone\fR,\: \fBstarttls\fR or \fBimplicit\fR towards the target
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Verification of the target;\: the same shape as elsewhere
+T}
+T{
+\fBcommands\fR
+T}	T{
+list
+T}	T{
+every command this proxy can read
+T}	T{
+Verbs a client may send;\: everything else is 502. A verb whose effect the proxy cannot name is a verb it cannot hold to a policy,\: so the list cannot be widened past what it understands
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse \fBSTOR\fR,\: \fBSTOU\fR,\: \fBAPPE\fR,\: \fBDELE\fR,\: \fBRNFR\fR,\: \fBRNTO\fR,\: \fBMKD\fR,\: \fBRMD\fR,\: \fBSITE\fR,\: \fBALLO\fR
+T}
+T{
+\fBallow_\:paths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Paths a command may name,\: matched as the sftp policy matches them,\: and resolved against the working directory the proxy has been following. May carry \fB{user}\fR
+T}
+T{
+\fBdeny_\:paths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Refused whatever the allow list says
+T}
+T{
+\fBallow_\:extensions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+What a file may be called,\: on the commands that settle a name. Every extension in the name is read,\: so \fBinvoice.\:pdf.\:exe\fR is an exe
+T}
+T{
+\fBdeny_\:extensions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Refused whatever the allow list says
+T}
+T{
+\fBmax_\:file_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+Bounds one transfer either way. It acts by cutting the data connection,\: because a transfer cannot be un\-sent,\: and the client is told 426 rather than 226
+T}
+T{
+\fByara\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Rules over what is uploaded;\: the same section as elsewhere,\: minus \fBdirections\fR
+T}
+T{
+\fBallow_\:active\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept \fBPORT\fR and \fBEPRT\fR,\: with the address check above
+T}
+T{
+\fBdata_\:address\fR
+T}	T{
+address
+T}	T{
+the control connection\(aqs
+T}	T{
+What passive replies advertise. Set it where the proxy is itself behind a NAT
+T}
+T{
+\fBdata_\:ports\fR
+T}	T{
+range
+T}	T{
+\fB0\-\:0\fR (any free port)
+T}	T{
+\fB"low\-\:high"\fR for the passive listeners,\: so a firewall in front of the proxy can be narrow
+T}
+T{
+\fBdata_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long a data connection may be arranged and not used
+T}
+T{
+\fBmax_\:command_\:line\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+One control line;\: 512..1048576
+T}
+T{
+\fBmax_\:errors\fR
+T}	T{
+int
+T}	T{
+\fB10\fR
+T}	T{
+Refused commands before the session ends
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Control connections on this listener
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+No traffic on the control connection
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (none)
+T}	T{
+A whole session,\: however active
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header with the client address to the target
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Others are closed at accept
+T}
+.TE
+.PP
+A control line that is not exactly CRLF\-terminated is refused, and so is one carrying a telnet \fBIAC\fR. Each of them is a way for the proxy and the target to disagree about where a command ends, which is how one command becomes two: the proxy reads \fBNOOP\fR and the target reads \fBNOOP\fR and the \fBDELE\fR hidden after a bare newline.
+.PP
+Only the side that arranged a data connection may use it: a passive connection has to come from the client\(aqs own address, an active one from the target\(aqs. \fBPROT P\fR is terminated on both sides rather than tunnelled, so a protected transfer is still a transfer this proxy can hold to \fBmax_file_bytes\fR and to its rules. \fBCCC\fR is refused: clearing the control channel after \fBAUTH TLS\fR puts the rest of the session, including every path, back in clear on the wire.
+.PP
+Counters: \fBftp_sessions\fR, \fBftp_sessions_open\fR, \fBftp_transfers\fR, \fBftp_refused\fR, \fBftp_rejected\fR, \fBftp_auth_failed\fR. Every session writes an \fBftp\fR access line and every transfer an \fBftp_transfer\fR line with the command, the path, the octets and whether it was cut. Refusals are \fBftp_denied\fR for the ban triggers.
 .SS "server.listeners[].ssh (kind: ssh)"
 .PP
 A \fBkind: ssh\fR listener is an SSH bastion: the proxy is an SSH server to the client and an SSH client to the target, with its own host key, its own authentication and its own credential onwards.
@@ -1983,6 +2459,15 @@ T}	T{
 Accept any host key from the target. Refused unless \fBallow_\:insecure\fR is also set,\: and warned about: it is the one setting here that leaves nothing to notice a machine in the middle
 T}
 T{
+\fBrecording\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Record what a session showed,\: to a file per channel;\: see below
+T}
+T{
 \fBmfa\fR
 T}	T{
 object
@@ -2115,7 +2600,108 @@ T}
 .PP
 A denied principal never reaches the target: the refusal is at authentication, before a channel or an upstream connection exists.
 .PP
+A principal\(aqs \fBrecording\fR replaces the listener\(aqs, which is how one entry is recorded and another is not; \fBrecording: {enabled: false}\fR is how a principal is spared where the listener records.
+.PP
 An entry that brings its own \fBsftp\fR section to a listener that has none also inherits the default that section implies: file transfer helpers are refused for that principal, because \fBscp\fR beside a careful \fBsftp\fR policy is the policy with a door next to it.
+.SS "server.listeners[].ssh.recording"
+.PP
+The access log says a session happened. It cannot say what was done in it, because what was done is a stream of control sequences inside the channel. This writes that stream to a file per channel, in the asciicast v2 format, so "what did they actually run" is a question with an answer that is watched rather than reconstructed:
+.PP
+.RS 4
+.nf
+.ft CR
+asciinema play /var/log/xproxy/sessions/session\-20260921\-143022.100\-alice.cast
+.ft
+.fi
+.RE
+.PP
+The format is line oriented, so a recording cut short by a crash or by \fBmax_file_bytes\fR still plays up to where it stops, and it is text, so the usual tools work on it. It is a stream, not a transcript: what the person saw is what a terminal makes of it, which means reading one is replaying it.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.6i) lbw(0.9i) lbx
+lw(1.0i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Present so a principal can turn a listener\(aqs recording off;\: there is no reason to write it as \fBtrue\fR
+T}
+T{
+\fBdirectory\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Where the files go. It must exist: the proxy does not create it,\: because where these files live is a decision to make rather than to inherit
+T}
+T{
+\fBfile_\:prefix\fR
+T}	T{
+name
+T}	T{
+\fBsession\fR
+T}	T{
+Begins each file name,\: which is then the time and the login,\: and always ends \fB.\:cast\fR
+T}
+T{
+\fBinput\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Record what was typed as well as what was shown. It warns,\: and the warning is the point: a terminal\(aqs input stream carries what the screen never showed,\: which includes every password typed into a \fBsudo\fR or \fBsu\fR prompt
+T}
+T{
+\fBmax_\:file_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB33554432\fR
+T}	T{
+Bounds one recording,\: counted in session bytes;\: 4096..4294967296. Past it the session carries on and the file says it stopped
+T}
+T{
+\fBmax_\:files\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Recordings this listener keeps,\: removing the oldest it wrote. It bounds what the proxy leaves behind;\: anything that must be kept belongs somewhere the proxy does not prune
+T}
+T{
+\fBcommands\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Record \fBexec\fR sessions too,\: not only the ones with a terminal
+T}
+.TE
+.PP
+The header carries the terminal size from \fBpty\-req\fR, the login and the target, and for an \fBexec\fR the command. A \fBwindow\-change\fR becomes a resize event, so a session that was widened replays at both widths rather than wrapping everything after it in the wrong place. Both of the target\(aqs streams are recorded: a terminal does not keep stdout and stderr apart either, and a recording without stderr would be missing exactly the errors.
+.PP
+An \fBsftp\fR channel is not recorded. It is not a terminal, and its own \fBsftp\fR log line already says what each request did.
+.PP
+\fBThese files hold everything the session showed.\fR On an administrative session that is a list of everything worth having \[u2014] keys printed, configuration read, tokens echoed. They are written \fB0600\fR by the proxy user, with \fBO_EXCL\fR and proxy\-chosen names, in a directory the operator names; the directory deserves the care the credentials in it will deserve. \fBinput: true\fR goes further still, and is the difference between watching over a shoulder and running a keylogger: it is off by default, it warns when set, and whether it is lawful where you are is not a question this configuration can answer.
+.PP
+A recording that cannot be opened does not stop the session: it is an error in the log and an \fBssh_recording_failed\fR event, because a bastion that refuses work when a disk fills is its own outage. One that stops part way is logged as short, with the reason.
 .SS "server.listeners[].ssh.mfa"
 .PP
 A second factor after the key or the password. The client is told authentication partially succeeded (RFC 4252 partial success) and is then asked, over keyboard\-interactive, for a one\-time code (RFC 6238 TOTP over the HMAC\-OTP of RFC 4226). Nothing about the session exists until the code verifies: a key alone opens no channel.
@@ -2229,8 +2815,8 @@ Only version 3 is parsed. A client that negotiates higher is refused at the vers
 .PP
 .TS
 allbox;
-lbw(1.1i) lbw(0.6i) lbw(0.8i) lbx
-lw(1.1i) lw(0.6i) lw(0.8i) lx.
+lbw(1.1i) lbw(0.7i) lbw(0.8i) lbx
+lw(1.1i) lw(0.7i) lw(0.8i) lx.
 T{
 Key
 T}	T{
@@ -2277,6 +2863,51 @@ T}	T{
 Operations refused by name: \fBopen\fR,\: \fBread\fR,\: \fBwrite\fR,\: \fBremove\fR,\: \fBrename\fR,\: \fBsymlink\fR,\: \fBsetstat\fR,\: \fBreadlink\fR,\: \fBextended\fR,\: \[u2026]
 T}
 T{
+\fBallow_\:extensions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+File extensions a name may carry,\: written without the dot and compared without case. Checked on \fBopen\fR,\: and on both names of a \fBrename\fR or a \fBsymlink\fR \[u2014] the requests that decide what a file is called. A name claiming no extension claims nothing to refuse and passes
+T}
+T{
+\fBdeny_\:extensions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Refused whatever the allow list says. Every extension a name carries is read,\: not only the last,\: so \fBinvoice.\:pdf.\:exe\fR is an exe
+T}
+T{
+\fBmax_\:file_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+What one open file may be written. Counted from the highest offset a write reaches,\: not from the bytes sent,\: so writing out of order does not walk past it
+T}
+T{
+\fBmax_\:open_\:files\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Handles one session may have open at once,\: which is what the per\-file state costs
+T}
+T{
+\fByara\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Rules over what is written,\: per file;\: the same section as a \fBtcp\fR listener\(aqs \fByara\fR minus \fBdirections\fR,\: which is not read here. See below
+T}
+T{
 \fBmax_\:packet_\:size\fR
 T}	T{
 int
@@ -2286,6 +2917,10 @@ T}	T{
 One SFTP packet;\: 4096..16777216
 T}
 .TE
+.PP
+\fBallow_paths\fR and \fBdeny_paths\fR may carry \fB{user}\fR and \fB{principal}\fR, substituted once per session from the login the client authenticated as and the \fBprincipals\fR entry covering its key. That is how one listener says "your own directory and no other" instead of one list naming everybody\(aqs. A name that could change what a pattern means \[u2014] anything outside letters, digits, \fB\-\fR, \fB_\fR and \fB.\fR, anything over 64 characters, or a name that is only dots \[u2014] refuses the session rather than being substituted or escaped: a login of \fB../..\fR expanded into an allow list is an allow list for somebody else\(aqs directory. \fB{principal}\fR on a listener with no \fBprincipals\fR fails the load, since no session would have a name to put there. An unknown substitution is a load error too, not a literal: \fB{usr}\fR left as it stands matches nothing, which on an allow list refuses everybody and on a deny list refuses nobody.
+.PP
+\fBWrites get two more checks, because a write is the one request whose content the proxy can see.\fR \fBmax_file_bytes\fR bounds the file the writes make. \fByara\fR runs the rule set over what goes into each file separately: a rule about a file\(aqs first bytes is a rule about a file, and two uploads interleaved on one channel are two files, so each open handle gets its own scanner. A match refuses that write with permission denied and writes a \fByara_match\fR security event naming the path; with the section\(aqs \fBaction: close\fR the transfer ends there rather than only the one packet. Both need to know which handle is which file, so a write on a handle whose \fBopen\fR this proxy never decided on is refused: a write that cannot be held to a bound is not a write to pass on.
 .PP
 A path that climbs above its own root after cleaning (\fB../../etc/shadow\fR) is refused rather than matched: what it means depends on a working directory the proxy cannot see, and a check on a path whose meaning is unknown is not a check. Absolute paths always work, so nothing legitimate needs the other form.
 .PP
@@ -9880,7 +10515,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBform_\:guard\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBgrpc_\:guard\fR,\: \fBauthz\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBform_\:guard\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -11524,6 +12159,299 @@ T}	T{
 
 T}
 .TE
+.SS "Kind \fBauthz\fR"
+.PP
+Decides what a verified identity may do.
+.PP
+Every authenticating filter here answers "who". None of them answers "what may they do", so each grew its own small allow list \[u2014] required scopes on the API key, a required group on the directory bind, required claims on the session \[u2014] and an allow list per filter is a policy nobody can read in one place. This reads the identity those filters verified and decides once, where the decision can be seen.
+.PP
+It decides nothing on its own authority. The subject, the groups, the scopes and the claims all come from a filter that verified them, so a header a client sent cannot reach a rule here. That also means it has to run \fBafter\fR the filters that authenticate: put it last in a route\(aqs \fBfilters\fR list.
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(0.6i) lbw(0.9i) lbx
+lw(1.4i) lw(0.6i) lw(0.9i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdefault\fR
+T}	T{
+\fBdeny\fR,\: \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+What happens to a request no rule matched
+T}
+T{
+\fBrequire_\:authenticated\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a request no filter verified. With nothing verified there is nothing to decide about,\: and the alternative is deciding on values a client supplied
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+Decided in order;\: the first match wins
+T}
+T{
+\fBforward_\:groups_\:header\fR
+T}	T{
+name
+T}	T{
+
+T}	T{
+Pass the verified groups to the backend. Any client value under that name is removed first
+T}
+T{
+\fBforward_\:scopes_\:header\fR
+T}	T{
+name
+T}	T{
+
+T}	T{
+The same for scopes
+T}
+T{
+\fBstatus\fR
+T}	T{
+\fB403\fR,\: \fB404\fR
+T}	T{
+\fB403\fR
+T}	T{
+What a refusal answers. \fB404\fR says nothing at all
+T}
+.TE
+.PP
+Each rule:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.6i) lbx
+lw(1.0i) lw(0.6i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+Required;\: what the decision is logged and recorded as
+T}
+T{
+\fBallow\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR permits,\: \fBfalse\fR refuses
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+Compared without case
+T}
+T{
+\fBpaths\fR
+T}	T{
+list
+T}	T{
+A path exactly,\: or one ending \fB/\:**\fR for a tree. A prefix that is not a path boundary is not a match: \fB/\:v1/\:orders\fR does not cover \fB/\:v1/\:orders\-\:internal\fR
+T}
+T{
+\fBsubjects\fR
+T}	T{
+list
+T}	T{
+The name the authenticating filter recorded
+T}
+T{
+\fBgroups\fR
+T}	T{
+list
+T}	T{
+Any of these;\: compared without case,\: as directories treat them
+T}
+T{
+\fBscopes\fR
+T}	T{
+list
+T}	T{
+\fBAll\fR of these. A credential carrying two of three does not satisfy it
+T}
+T{
+\fBkinds\fR
+T}	T{
+list
+T}	T{
+Which filter verified the identity: \fBoidc\fR,\: \fBldap\fR,\: \fBapi_\:key\fR,\: \fBbasic\fR,\: \fBjwt\fR,\: \fBmfa\fR
+T}
+T{
+\fBclaims\fR
+T}	T{
+map
+T}	T{
+Each named claim must equal the given value
+T}
+T{
+\fBnetworks\fR
+T}	T{
+list of CIDR
+T}	T{
+The client address
+T}
+T{
+\fBnot_\:subjects\fR,\: \fBnot_\:groups\fR,\: \fBnot_\:networks\fR
+T}	T{
+list
+T}	T{
+"Everybody but". Separate keys rather than a \fB!\fR prefix,\: because a group name can begin with anything
+T}
+.TE
+.PP
+Every selector a rule names has to hold. A rule that names none matches everything: as a deny that is a legitimate backstop, and as an allow it is a policy that says yes to everything, so it fails the load \[u2014] write \fBdefault: allow\fR if that is what is meant.
+.PP
+The first matching rule decides, so a deny above an allow carves an exception out of it:
+.PP
+.RS 4
+.nf
+.ft CR
+rules:
+  \- {name: no\-deletes\-from\-the\-field, allow: false, methods: [DELETE], not_networks: ["10.0.0.0/8"]}
+  \- {name: staff, allow: true, groups: ["cn=staff,ou=groups,dc=example,dc=com"]}
+.ft
+.fi
+.RE
+.PP
+A refusal tells the client nothing about why: which rule, which group it would have needed, and whether the path even exists are all things a prober would like to know. The reason is in the proxy\(aqs own log and the access line carries \fBauthz_rule\fR, which is the only way to tell a policy that allowed from one that never matched.
+.PP
+\fBWhat feeds it.\fR \fBoidc\fR records the groups from \fBgroups_claim\fR (default \fBgroups\fR), the scopes from the token\(aqs \fBscope\fR, and whatever \fBattr_claims\fR names; \fBldap_auth\fR records the directory\(aqs own groups from \fBgroup_attr\fR; \fBapi_key\fR records the key\(aqs scopes. A filter that records nothing still records the subject, so \fBsubjects\fR and \fBkinds\fR work everywhere.
+.SS "Kind \fBgrpc_guard\fR"
+.PP
+Reads gRPC messages rather than passing them through. A proxy that routes gRPC by its path has read the envelope; the messages are length\-prefixed frames of protobuf inside the body, and without reading them it cannot say how large one message is (only how large the whole body is), cannot notice a stream that stops in the middle of a frame, and cannot see a message nested a thousand deep \[u2014] which costs the backend\(aqs parser far more than it costs the sender to write.
+.PP
+No schema is used, deliberately. A schema has to be kept in step with the service, and a check that is only as current as its schema is a check that quietly stops applying the week somebody adds a field. The protobuf wire format carries the field number and the wire type, which is enough for every bound here.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.7i) lbw(0.8i) lbx
+lw(1.1i) lw(0.7i) lw(0.8i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB4194304\fR
+T}	T{
+One message,\: not the whole stream;\: 1024..268435456. It is what grpc\-go defaults its receive limit to,\: so it is the number the backend already lives with
+T}
+T{
+\fBmax_\:messages\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+Messages in one request,\: which is how a streaming call is bounded
+T}
+T{
+\fBmax_\:depth\fR
+T}	T{
+int
+T}	T{
+\fB16\fR
+T}	T{
+How deeply messages may nest;\: 1..256
+T}
+T{
+\fBmax_\:fields\fR
+T}	T{
+int
+T}	T{
+\fB2000\fR
+T}	T{
+Fields at every level together,\: not per message;\: 1..1048576
+T}
+T{
+\fBallow_\:compressed\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A compressed message is one this filter does not decompress,\: so it is passed without being walked. \fBfalse\fR refuses it,\: which is what a route that must be readable sets
+T}
+T{
+\fBdeny_\:patterns\fR
+T}	T{
+list of RE2
+T}	T{
+\fB[]\fR
+T}	T{
+Matched against the strings found in a message. Setting them with \fBallow_\:compressed:\: true\fR fails the load: a compressed message would go past them unread
+T}
+T{
+\fBmax_\:scan_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+Of one request,\: read and walked;\: beyond it the rest is forwarded unread and the access line says \fBgrpc_\:partial\fR
+T}
+T{
+\fBmax_\:string_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+One string handed to a pattern. Longer ones are truncated on a character boundary rather than dropped,\: because a rule about the start of a string still works on the start of it
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBblock\fR,\: \fBlog\fR
+T}	T{
+\fBblock\fR
+T}	T{
+\fBlog\fR records and forwards,\: which is how a bound is tried out before it decides anything
+T}
+.TE
+.PP
+A length\-delimited protobuf field is a nested message or a string, and without a schema there is no way to be certain which. It is tried as a message first: a nested message read as a string is a subtree the depth and field bounds never see, and the bounds are the part that matters.
+.PP
+Denials carry the reason \fBgrpc_guard:\fR and one of \fBmessage_too_large\fR, \fBtoo_many_messages\fR, \fBshort_frame\fR, \fBcompressed\fR, \fBtoo_deep\fR, \fBtoo_many_fields\fR, \fBmalformed\fR or \fBcontent\fR; a content refusal names the field path it matched at. The access line carries \fBgrpc_messages\fR, \fBgrpc_depth\fR and \fBgrpc_fields\fR, so a route\(aqs shape is visible before anybody has to guess at a bound for it.
+.PP
+What this does not do is understand the fields. \fBdeny_patterns\fR run against every string in a message, not against a named field, so they are the blunt instrument they look like.
 .SS "Kind \fBsensitive_data\fR"
 .PP
 Detects personal and secret data in requests and responses and, per direction, logs the findings, masks them or blocks the message. The request phase scans the query string (raw and decoded, plus parameter names that carry credentials), header values and the body; the response phase scans header values and the body. Bodies of a listed media type are buffered up to \fBmax_bytes\fR and scanned whole; \fBgzip\fR, \fBdeflate\fR, \fBbr\fR and \fBzstd\fR bodies are decoded first (up to \fBmax_decoded_bytes\fR); a body larger than that is streamed through the scanner as it flows, with 4 KiB held back between reads so a value split across two reads is still seen; an unlisted media type, an unknown encoding or a partial (ranged) body passes unscanned. A masked or streamed compressed body is forwarded decoded (the encoding header is removed); a streamed body loses its content length. Because the decoded bytes are what the other side receives, a streamed decode is also bounded by \fBmax_decompression_ratio\fR: past 8 MiB decoded, a body that keeps expanding beyond that multiple of its compressed size has its transfer cut, so a compression bomb small enough to pass \fBmax_body_bytes\fR cannot be amplified through the proxy. Blocking a streamed body cuts the transfer at the finding, since the head of the message has already been forwarded. Masking rewrites the value in place (\fB************1111\fR, \fBa***@example.com\fR, the first eight characters of a token) and updates \fBContent\-Length\fR; blocking answers \fBblock_status\fR with reason \fBsensitive_data\fR, a detail \fBresponse:card,email\fR and a JSON problem naming the kinds found, never the values. The access log carries \fBsensitive_types\fR, \fBsensitive_count\fR and \fBsensitive_where\fR for every message with a finding, in every mode; blocks count in \fBdenied_sensitive_data\fR, findings and message outcomes in the \fBxproxy_sensitive_*\fR metric families.

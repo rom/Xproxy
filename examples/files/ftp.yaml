@@ -1,0 +1,110 @@
+# An FTP proxy that is actually in the middle: RFC 959 with the
+# extensions that matter (RFC 2228 and 4217 for TLS, RFC 2428 for EPSV
+# and EPRT, RFC 3659 for MLSD and SIZE).
+#
+# FTP is two connections. The control connection carries the commands,
+# and every transfer happens on a second connection whose address one
+# side announces to the other, inside a reply. A proxy that forwards
+# that reply has told the client to go round it: the file then travels
+# with nothing in the middle, and the commands it did read are
+# instructions for a transfer it never saw. So the address is rewritten
+# and the proxy is one end of both connections.
+#
+# Validate: xproxy -config examples/files/ftp.yaml -validate
+version: 1
+server:
+  listeners:
+    # A supplier drop box: each login writes into its own directory,
+    # what arrives is read before it lands, and nothing runs.
+    - name: intake
+      address: "0.0.0.0:21"
+      kind: ftp
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/ftp.pem, key_file: /etc/xproxy/certs/ftp-key.pem}
+        min_version: "1.2"
+      ftp:
+        upstream: files
+
+        # AUTH TLS, and nothing but the commands that get there until
+        # it has happened: a control connection in clear carries the
+        # password.
+        tls_mode: starttls
+        require_tls: true
+        upstream_tls_mode: starttls
+        upstream_tls:
+          server_name: files.internal
+          ca_file: /etc/xproxy/certs/internal-ca.pem
+
+        banner: |
+          Access to this system is logged.
+
+        # PORT and EPRT ask the proxy to connect to an address the
+        # client names. Left off, which is the default: with it on the
+        # address has to be the client's own, and that check is all
+        # that stands between this and the bounce attack.
+        allow_active: false
+
+        # Where the passive data connections land. A range lets the
+        # firewall in front of this be narrow.
+        data_ports: "50000-50100"
+        data_timeout: 30s
+
+        # {user} is the login this session authenticated as.
+        allow_paths:
+          - "/srv/intake/{user}/**"
+        deny_paths:
+          - "/srv/intake/{user}/.ssh/**"
+
+        # What a file may be called. Every extension in the name is
+        # read, so invoice.pdf.exe is an exe.
+        allow_extensions: [csv, tsv, xml, pdf, gz, zip]
+        deny_extensions: [exe, dll, so, sh, php, js, jar, bat]
+
+        # One transfer. It acts by cutting the data connection, because
+        # a transfer cannot be un-sent.
+        max_file_bytes: 2147483648
+
+        # Read what is uploaded.
+        yara:
+          rules_dir: /etc/xproxy/yara
+          action: close
+
+        max_errors: 5
+        max_connections: 500
+        idle_timeout: 5m
+        session_timeout: 4h
+
+    # A read-only mirror: anyone may fetch, nobody may change anything.
+    - name: mirror
+      address: "0.0.0.0:2121"
+      kind: ftp
+      ftp:
+        upstream: files
+        tls_mode: none
+        read_only: true
+        allow_paths: ["/srv/mirror/**"]
+        commands: [USER, PASS, QUIT, NOOP, SYST, FEAT, TYPE, PWD, CWD, CDUP,
+                   PASV, EPSV, RETR, LIST, NLST, MLSD, MLST, SIZE, MDTM]
+        max_connections: 2000
+
+upstreams:
+  - name: files
+    endpoints:
+      - {address: "10.30.1.10:21"}
+      - {address: "10.30.1.11:21"}
+    balancer: least_conn
+    timeouts: {connect: 5s}
+
+bans:
+  triggers:
+    # A refused command, a refused path, a bounce attempt and a failed
+    # login are all ftp_denied.
+    - name: ftp-abuse
+      reasons: [ftp_denied]
+      threshold: 10
+      window: 10m
+      duration: 1h
+
+logging:
+  access: {enabled: true}

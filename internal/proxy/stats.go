@@ -110,6 +110,23 @@ type Stats struct {
 	SSHSessionsOpen        atomic.Int64
 	SSHChannels            atomic.Uint64
 	SSHRefused             atomic.Uint64
+	FTPSessions            atomic.Uint64
+	FTPSessionsOpen        atomic.Int64
+	FTPRefused             atomic.Uint64
+	FTPRejected            atomic.Uint64
+	FTPAuthFailed          atomic.Uint64
+	FTPTransfers           atomic.Uint64
+	SyslogReceived         atomic.Uint64
+	SyslogForwarded        atomic.Uint64
+	SyslogDropped          atomic.Uint64
+	SyslogQueueDropped     atomic.Uint64
+	SyslogRefused          atomic.Uint64
+	SyslogRejected         atomic.Uint64
+	SyslogRateLimited      atomic.Uint64
+	SyslogRedacted         atomic.Uint64
+	SyslogSendFailed       atomic.Uint64
+	SyslogConnections      atomic.Uint64
+	SSHRecorded            atomic.Uint64
 	SSHRejected            atomic.Uint64
 	SSHAuthFailed          atomic.Uint64
 	SSHBytesIn             atomic.Uint64
@@ -292,6 +309,23 @@ type Snapshot struct {
 	SSHSessionsOpen        int64             `json:"ssh_sessions_open"`
 	SSHChannels            uint64            `json:"ssh_channels"`
 	SSHRefused             uint64            `json:"ssh_refused"`
+	FTPSessions            uint64            `json:"ftp_sessions"`
+	FTPSessionsOpen        int64             `json:"ftp_sessions_open"`
+	FTPRefused             uint64            `json:"ftp_refused"`
+	FTPRejected            uint64            `json:"ftp_rejected"`
+	FTPAuthFailed          uint64            `json:"ftp_auth_failed"`
+	FTPTransfers           uint64            `json:"ftp_transfers"`
+	SyslogReceived         uint64            `json:"syslog_received"`
+	SyslogForwarded        uint64            `json:"syslog_forwarded"`
+	SyslogDropped          uint64            `json:"syslog_dropped"`
+	SyslogQueueDropped     uint64            `json:"syslog_queue_dropped"`
+	SyslogRefused          uint64            `json:"syslog_refused"`
+	SyslogRejected         uint64            `json:"syslog_rejected"`
+	SyslogRateLimited      uint64            `json:"syslog_rate_limited"`
+	SyslogRedacted         uint64            `json:"syslog_redacted"`
+	SyslogSendFailed       uint64            `json:"syslog_send_failed"`
+	SyslogConnections      uint64            `json:"syslog_connections"`
+	SSHRecorded            uint64            `json:"ssh_recorded"`
 	SSHRejected            uint64            `json:"ssh_rejected"`
 	SSHAuthFailed          uint64            `json:"ssh_auth_failed"`
 	SSHBytesIn             uint64            `json:"ssh_bytes_in"`
@@ -442,6 +476,23 @@ func (s *Stats) snapshot() Snapshot {
 		SSHSessionsOpen:        s.SSHSessionsOpen.Load(),
 		SSHChannels:            s.SSHChannels.Load(),
 		SSHRefused:             s.SSHRefused.Load(),
+		FTPSessions:            s.FTPSessions.Load(),
+		FTPSessionsOpen:        s.FTPSessionsOpen.Load(),
+		FTPRefused:             s.FTPRefused.Load(),
+		FTPRejected:            s.FTPRejected.Load(),
+		FTPAuthFailed:          s.FTPAuthFailed.Load(),
+		FTPTransfers:           s.FTPTransfers.Load(),
+		SyslogReceived:         s.SyslogReceived.Load(),
+		SyslogForwarded:        s.SyslogForwarded.Load(),
+		SyslogDropped:          s.SyslogDropped.Load(),
+		SyslogQueueDropped:     s.SyslogQueueDropped.Load(),
+		SyslogRefused:          s.SyslogRefused.Load(),
+		SyslogRejected:         s.SyslogRejected.Load(),
+		SyslogRateLimited:      s.SyslogRateLimited.Load(),
+		SyslogRedacted:         s.SyslogRedacted.Load(),
+		SyslogSendFailed:       s.SyslogSendFailed.Load(),
+		SyslogConnections:      s.SyslogConnections.Load(),
+		SSHRecorded:            s.SSHRecorded.Load(),
 		SSHRejected:            s.SSHRejected.Load(),
 		SSHAuthFailed:          s.SSHAuthFailed.Load(),
 		SSHBytesIn:             s.SSHBytesIn.Load(),

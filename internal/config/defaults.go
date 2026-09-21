@@ -245,15 +245,15 @@ func applyDefaults(c *Config) {
 			if len(h.AllowSubsystems) == 0 {
 				h.AllowSubsystems = append([]string(nil), DefaultSSHSubsystems...)
 			}
-			if h.SFTP != nil {
-				setInt(&h.SFTP.MaxPacketSize, 256<<10)
-			}
+			sftpDefaults(h.SFTP)
+			sshRecordingDefaults(h.Recording)
 			// A principal's own sftp section is the same section and
 			// gets the same defaults; without this it would fail
 			// validation on a packet size nobody wrote.
 			for j := range h.Principals {
-				if pp := h.Principals[j].Policy; pp != nil && pp.SFTP != nil {
-					setInt(&pp.SFTP.MaxPacketSize, 256<<10)
+				if pp := h.Principals[j].Policy; pp != nil {
+					sftpDefaults(pp.SFTP)
+					sshRecordingDefaults(pp.Recording)
 				}
 			}
 			if h.MFA != nil {
@@ -269,12 +269,74 @@ func applyDefaults(c *Config) {
 				h.AllowFileTransferCommands = &allow
 			}
 		}
+		if f := s.Listeners[i].FTP; f != nil {
+			if f.TLSMode == "" {
+				if s.Listeners[i].TLS != nil {
+					f.TLSMode = "starttls"
+				} else {
+					f.TLSMode = "none"
+				}
+			}
+			// A control connection in clear carries the password, so
+			// require_tls defaults on wherever TLS is reachable at all.
+			if !f.RequireTLS && (f.TLSMode == "starttls" || f.TLSMode == "implicit") {
+				f.RequireTLS = true
+			}
+			setStr(&f.UpstreamTLSMode, "none")
+			if f.UpstreamTLS != nil {
+				setStr(&f.UpstreamTLS.MinVersion, "1.2")
+			}
+			if len(f.Commands) == 0 {
+				f.Commands = append([]string(nil), DefaultFTPCommands...)
+			}
+			setStr(&f.DataPorts, "0-0")
+			setInt(&f.MaxCommandLine, 4096)
+			setInt(&f.MaxErrors, 10)
+			setInt(&f.MaxConnections, 1000)
+			setDur(&f.DataTimeout, 30*time.Second)
+			setDur(&f.IdleTimeout, 5*time.Minute)
+			if f.YARA != nil {
+				yaraDefaults(f.YARA)
+				f.YARA.Directions = []string{"client"}
+			}
+		}
+		if g := s.Listeners[i].Syslog; g != nil {
+			if g.UDP == nil {
+				t := true
+				g.UDP = &t
+			}
+			if g.TLSMode == "" {
+				if s.Listeners[i].TLS != nil {
+					g.TLSMode = "implicit"
+				} else {
+					g.TLSMode = "none"
+				}
+			}
+			setStr(&g.Framing, "auto")
+			setStr(&g.UpstreamFraming, "octet_counting")
+			setStr(&g.UpstreamTLSMode, "none")
+			if g.UpstreamTLS != nil {
+				setStr(&g.UpstreamTLS.MinVersion, "1.2")
+			}
+			setStr(&g.Hostname, "annotate")
+			setInt(&g.MaxMessageBytes, 8192)
+			setInt(&g.MaxSenders, 65536)
+			setInt(&g.MaxConnections, 1000)
+			setInt(&g.Queue, 4096)
+			setDur(&g.IdleTimeout, 5*time.Minute)
+			if g.RateLimit > 0 && g.RateBurst == 0 {
+				g.RateBurst = g.RateLimit
+			}
+			for j := range g.Redact {
+				setStr(&g.Redact[j].With, "[redacted]")
+			}
+		}
 		ln := &s.Listeners[i]
-		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ssh" {
+		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ssh" || ln.Kind == "ftp" || ln.Kind == "syslog" {
 			// No HTTP protocol defaults on a non-HTTP listener; a dns,
 			// smtp or mqtt listener with TLS still gets the TLS
 			// defaults.
-			if (ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt") && ln.TLS != nil {
+			if (ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ftp" || ln.Kind == "syslog") && ln.TLS != nil {
 				setStr(&ln.TLS.MinVersion, "1.2")
 				setStr(&ln.TLS.ClientAuth, "none")
 			}
@@ -955,6 +1017,42 @@ func mfaDefaults(m *MFAPolicy) {
 }
 
 // yaraDefaults fills a YARA policy wherever it is used.
+// sshRecordingDefaults fills one recording section, the listener's or a
+// principal's.
+func sshRecordingDefaults(r *SSHRecording) {
+	if r == nil {
+		return
+	}
+	for _, b := range []**bool{&r.Enabled, &r.Commands} {
+		if *b == nil {
+			t := true
+			*b = &t
+		}
+	}
+	setStr(&r.FilePrefix, "session")
+	setInt(&r.MaxFiles, 1000)
+	if r.MaxFileBytes == 0 {
+		r.MaxFileBytes = 32 << 20
+	}
+}
+
+// sftpDefaults fills one sftp section, the listener's or a
+// principal's.
+func sftpDefaults(p *SFTPPolicy) {
+	if p == nil {
+		return
+	}
+	setInt(&p.MaxPacketSize, 256<<10)
+	setInt(&p.MaxOpenFiles, 256)
+	if p.YARA != nil {
+		yaraDefaults(p.YARA)
+		// Only what the client writes is a file this listener is
+		// choosing to accept; the other direction is a download, which
+		// the path and operation policy already decides.
+		p.YARA.Directions = []string{"client"}
+	}
+}
+
 func yaraDefaults(y *YARAPolicy) {
 	setStr(&y.Action, "close")
 	setInt(&y.MaxWindow, 256<<10)

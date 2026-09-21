@@ -166,8 +166,13 @@ type auth struct {
 }
 
 type cacheEntry struct {
-	ok  bool
-	exp time.Time
+	ok bool
+	// groups is what the entry carried when it was verified. It is
+	// cached with the answer rather than fetched again on a hit: a
+	// cache that remembers the yes and forgets what it was based on is
+	// a cache that quietly widens a policy.
+	groups []string
+	exp    time.Time
 }
 
 func (a *auth) Name() string { return a.name }
@@ -181,12 +186,21 @@ type instance struct {
 
 func (in *instance) Request(r *http.Request) filter.Verdict {
 	user, pass, ok := r.BasicAuth()
-	if !ok || user == "" || pass == "" || !in.a.check(r.Context(), user, pass) {
+	var groups []string
+	if ok && user != "" && pass != "" {
+		ok, groups = in.a.check(r.Context(), user, pass)
+	} else {
+		ok = false
+	}
+	if !ok {
 		return filter.Verdict{Deny: true, Status: http.StatusUnauthorized, Reason: in.a.name, Detail: "credentials",
 			Headers: map[string]string{"WWW-Authenticate": `Basic realm="` + in.a.cfg.Realm + `", charset="UTF-8"`}}
 	}
 	in.user = user
 	filter.SetIdentity(r.Context(), "ldap", user)
+	// The directory's own groups, so a policy can decide on them
+	// instead of every filter growing its own allow list.
+	filter.SetAttrs(r.Context(), "ldap", filter.Attrs{Groups: groups})
 	if in.a.cfg.Strip == nil || *in.a.cfg.Strip {
 		r.Header.Del("Authorization")
 	}
@@ -205,8 +219,12 @@ func (in *instance) End() []any {
 	return []any{"auth_user", in.user}
 }
 
-// check verifies credentials against the directory, through the cache.
-func (a *auth) check(ctx context.Context, user, pass string) bool {
+// check verifies credentials against the directory, through the cache,
+// and returns the groups the entry carried. The groups are part of what
+// was verified, so they are cached with the answer rather than fetched
+// again on a hit: a cache that remembers the yes and forgets what it
+// was based on is a cache that quietly widens a policy.
+func (a *auth) check(ctx context.Context, user, pass string) (bool, []string) {
 	key := sha256.Sum256([]byte(a.cfg.URL + "\x00" + user + "\x00" + pass))
 	now := time.Now()
 	if a.cfg.ttl > 0 {
@@ -214,19 +232,19 @@ func (a *auth) check(ctx context.Context, user, pass string) bool {
 		e, hit := a.cache[key]
 		a.mu.Unlock()
 		if hit && now.Before(e.exp) {
-			return e.ok
+			return e.ok, e.groups
 		}
 	}
 	if !passwd.Acquire(ctx, a.sem, &a.waiting) {
-		return false // the client left, or the queue is full: refused, not cached
+		return false, nil // the client left, or the queue is full: refused, not cached
 	}
-	ok, err := a.authenticate(user, pass)
+	ok, groups, err := a.authenticate(user, pass)
 	<-a.sem
 	if err != nil {
 		// A directory or network failure is not a credential decision; do
 		// not cache it, and log so operators see an outage.
 		a.log.Warn("ldap authentication error", "user", user, "err", err.Error())
-		return false
+		return false, nil
 	}
 	if a.cfg.ttl > 0 {
 		a.mu.Lock()
@@ -240,25 +258,28 @@ func (a *auth) check(ctx context.Context, user, pass string) bool {
 				a.cache = map[[32]byte]cacheEntry{}
 			}
 		}
-		a.cache[key] = cacheEntry{ok: ok, exp: now.Add(a.cfg.ttl)}
+		a.cache[key] = cacheEntry{ok: ok, groups: groups, exp: now.Add(a.cfg.ttl)}
 		a.mu.Unlock()
 	}
-	return ok
+	return ok, groups
 }
 
 // authenticate returns whether the credentials are valid. A nil error with
 // false means the directory rejected them; a non-nil error means the check
 // could not be completed (dial, protocol) and must not be cached.
-func (a *auth) authenticate(user, pass string) (bool, error) {
+func (a *auth) authenticate(user, pass string) (bool, []string, error) {
 	conn, err := ldap.Dial(ldap.Options{URL: a.cfg.URL, StartTLS: a.cfg.StartTLS, TLS: a.tls, Timeout: a.cfg.timeout})
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	defer func() { _ = conn.Close() }()
 	if a.cfg.searchBind() {
 		return a.searchBind(conn, user, pass)
 	}
-	return a.directBind(conn, user, pass)
+	ok, err := a.directBind(conn, user, pass)
+	// A direct bind never reads the entry, so there are no groups to
+	// report. Saying none is right; inventing some would not be.
+	return ok, nil, err
 }
 
 // directBind binds straight as the templated user DN.
@@ -275,40 +296,41 @@ func (a *auth) directBind(conn *ldap.Conn, user, pass string) (bool, error) {
 
 // searchBind binds a service account, finds the user entry, binds as it and
 // checks the group requirement.
-func (a *auth) searchBind(conn *ldap.Conn, user, pass string) (bool, error) {
+func (a *auth) searchBind(conn *ldap.Conn, user, pass string) (bool, []string, error) {
 	if a.cfg.BindDN != "" {
 		if err := conn.Bind(a.cfg.BindDN, a.bindPassword); err != nil {
-			return false, fmt.Errorf("service bind: %w", err)
+			return false, nil, fmt.Errorf("service bind: %w", err)
 		}
 	}
 	filterStr := strings.ReplaceAll(a.cfg.UserFilter, "%s", ldap.EscapeFilter(user))
 	f, err := ldap.ParseFilter(filterStr)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	var attrs []string
-	if a.cfg.RequireGroup != "" {
+	if a.cfg.GroupAttr != "" {
 		attrs = []string{a.cfg.GroupAttr}
 	}
 	entries, err := conn.Search(a.cfg.BaseDN, ldap.ScopeSub, f, attrs, 2)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	if len(entries) != 1 {
 		// Zero: no such user. More than one: ambiguous, refuse.
-		return false, nil
+		return false, nil, nil
 	}
 	entry := entries[0]
 	if err := conn.Bind(entry.DN, pass); err != nil {
 		if errors.Is(err, ldap.ErrInvalidCredentials) {
-			return false, nil
+			return false, nil, nil
 		}
-		return false, err
+		return false, nil, err
 	}
-	if a.cfg.RequireGroup != "" && !hasGroup(entry.Attrs[a.cfg.GroupAttr], a.cfg.RequireGroup) {
-		return false, nil
+	groups := entry.Attrs[a.cfg.GroupAttr]
+	if a.cfg.RequireGroup != "" && !hasGroup(groups, a.cfg.RequireGroup) {
+		return false, nil, nil
 	}
-	return true, nil
+	return true, groups, nil
 }
 
 // hasGroup reports whether want is among the group values, comparing DNs

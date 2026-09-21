@@ -35,9 +35,28 @@ func Build(kind, name string, opts filter.Options) (filter.Filter, error) {
 // Run begins an instance for r, runs the request phase, then the response
 // phase with resp (when not nil and the request passed), and End.
 func Run(f filter.Filter, r *http.Request, resp *http.Response) Result {
-	info := &filter.Info{RequestID: "test", ClientIP: netip.MustParseAddr("198.51.100.7"), Route: "test",
+	return RunWithInfo(f, nil, r, resp)
+}
+
+// RunWithInfo is Run with the request description a filter sees, for
+// the filters that decide on something outside the request itself: the
+// client address, the fingerprint, the country. A nil info gets the
+// default one.
+func RunWithInfo(f filter.Filter, info *filter.Info, r *http.Request, resp *http.Response) Result {
+	base := &filter.Info{RequestID: "test", ClientIP: netip.MustParseAddr("198.51.100.7"), Route: "test",
 		Host: r.Host, Path: r.URL.Path, Method: r.Method, TLS: r.TLS != nil}
-	in := f.Begin(context.Background(), info)
+	if info != nil {
+		if info.ClientIP.IsValid() {
+			base.ClientIP = info.ClientIP
+		}
+		if info.Country != "" {
+			base.Country = info.Country
+		}
+		if info.JA4 != "" {
+			base.JA4 = info.JA4
+		}
+	}
+	in := f.Begin(context.Background(), base)
 	if in == nil {
 		return Result{}
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -85,6 +86,7 @@ func newSSHServer(s *Server, cfg config.Listener, ln net.Listener) (*sshServer, 
 		keys: map[string]bool{}, caKeys: map[string]bool{},
 		cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
 	base, err := compileSSHPolicy(&config.SSHPolicy{
+		Recording:       h.Recording,
 		UpstreamUser:    h.UpstreamUser,
 		AllowChannels:   h.AllowChannels,
 		AllowRequests:   h.AllowRequests,
@@ -671,9 +673,20 @@ func (se *sshSession) channel(nc ssh.NewChannel) {
 	se.opened.Add(1)
 	t.s.stats.SSHChannels.Add(1)
 
+	// answering is held while a client request is being decided, from
+	// the moment it is read to the moment its answer has been written.
+	// Closing inside that window loses the answer, and a client waiting
+	// for one is told the channel ended instead: an exec that ran, and
+	// whose exit status was relayed, reported to the client as EOF.
+	// The window is real because the target can finish a command and
+	// close its channel while the reply to the request that started it
+	// is still on its way back.
+	var answering sync.Mutex
 	var closeOnce sync.Once
 	closeBoth := func() {
 		closeOnce.Do(func() {
+			answering.Lock()
+			answering.Unlock() //nolint:staticcheck // waiting for the answer, not guarding anything here
 			_ = clientCh.Close()
 			_ = upCh.Close()
 		})
@@ -694,6 +707,13 @@ func (se *sshSession) channel(nc ssh.NewChannel) {
 			_ = r.Reply(ok, nil)
 		}
 	}()
+
+	// st carries what the requests on this channel settle and the data
+	// pump then needs: the terminal they asked for, and the recording
+	// they opened. It is written by the request goroutine before it
+	// starts the pump and read by the pump after, so the channel that
+	// starts the pump is what orders the two.
+	st := &sshChannel{}
 
 	// The data pump exists from the start but waits to be told whether
 	// this channel is copied at all: an sftp channel under inspection
@@ -717,7 +737,7 @@ func (se *sshSession) channel(nc ssh.NewChannel) {
 		if !<-mode {
 			return
 		}
-		se.pipe(clientCh, upCh)
+		se.pipe(clientCh, upCh, st.rec)
 		// The target's side is drained. Its last requests are relayed
 		// first, and then anything the client still holds open ends
 		// with the channel.
@@ -739,7 +759,7 @@ func (se *sshSession) channel(nc ssh.NewChannel) {
 		// Requests from the client are the policy's other half: the
 		// channel type says "a session", and these say what is done
 		// with it.
-		se.clientRequests(clientCh, upCh, clientReqs, startPump)
+		se.clientRequests(clientCh, upCh, clientReqs, startPump, &answering, st)
 	}()
 	// Either side finishing ends the channel: the target closed it, or
 	// the client did.
@@ -757,6 +777,15 @@ func (se *sshSession) channel(nc ssh.NewChannel) {
 	}
 	<-serverDone
 	<-reqDone
+	st.rec.close(se)
+}
+
+// sshChannel is what one channel's requests settle: the terminal the
+// client asked for, and the recording that was opened for it.
+type sshChannel struct {
+	term       string
+	cols, rows int
+	rec        *sshRecording
 }
 
 func (se *sshSession) refuse(nc ssh.NewChannel, what, detail string, reason ssh.RejectionReason, msg string) {
@@ -770,77 +799,113 @@ func (se *sshSession) refuse(nc ssh.NewChannel, what, detail string, reason ssh.
 // startPump is called once the request that begins the data flow has
 // been forwarded, so an inspected sftp channel is never also copied
 // blindly.
-func (se *sshSession) clientRequests(clientCh, upCh ssh.Channel, reqs <-chan *ssh.Request, startPump func()) {
-	t := se.t
+func (se *sshSession) clientRequests(clientCh, upCh ssh.Channel, reqs <-chan *ssh.Request, startPump func(), answering *sync.Mutex, st *sshChannel) {
 	for r := range reqs {
-		if !se.policy.requests[r.Type] {
-			se.refuseRequest(r, "request_refused", r.Type)
-			continue
-		}
-		switch r.Type {
-		case "env":
-			name, ok := sshEnvRequest(r.Payload)
-			if !ok {
-				se.refuseRequest(r, "malformed_request", "env")
-				continue
-			}
-			if !se.policy.envAllowed(name) {
-				// A variable the target would read before it runs the
-				// command the policy approved.
-				se.refuseRequest(r, "env_refused", name)
-				continue
-			}
-		case "subsystem":
-			name := sshStringPayload(r.Payload)
-			if !se.policy.subsystems[name] {
-				se.refuseRequest(r, "subsystem_refused", name)
-				continue
-			}
-			if name == "sftp" && se.policy.sftp != nil {
-				// From here the channel carries SFTP, which is a
-				// protocol of its own and gets its own decisions.
-				ok, err := upCh.SendRequest(r.Type, r.WantReply, r.Payload)
-				if err != nil || !ok {
-					_ = r.Reply(false, nil)
-					return
-				}
-				_ = r.Reply(true, nil)
-				se.relaySFTP(clientCh, upCh)
-				return
-			}
-		case "exec":
-			cmd := sshStringPayload(r.Payload)
-			if !se.policy.transfers && fileTransferCommand(cmd) {
-				// scp and rsync move files without ever opening the
-				// sftp subsystem, so every path and operation rule
-				// there is simply not on their path. Refusing them is
-				// what makes an sftp policy mean anything.
-				se.refuseRequest(r, "file_transfer_refused", sftpClip(cmd))
-				continue
-			}
-			if !se.commandAllowed(cmd) {
-				se.refuseRequest(r, "command_refused", sftpClip(cmd))
-				continue
-			}
-			t.s.logs.SecurityEvent(context.Background(), "allow", "ssh_exec",
-				"listener", t.cfg.Name, "client_ip", se.ip.String(), "user", trimUser(se.user),
-				"target", se.target, "command", sftpClip(cmd))
-		}
-		// The mode is chosen before the request is forwarded. The
-		// other way round, a fast command could finish and close the
-		// channel before the copier existed, and its output would be
-		// lost to a race rather than to anything the policy decided.
-		switch r.Type {
-		case "shell", "exec", "subsystem":
-			startPump()
-		}
-		ok, err := upCh.SendRequest(r.Type, r.WantReply, r.Payload)
-		if err != nil {
-			_ = r.Reply(false, nil)
+		if !se.answerRequest(clientCh, upCh, r, startPump, answering, st) {
 			return
 		}
-		_ = r.Reply(ok, nil)
 	}
+}
+
+// answerRequest decides one request and answers it, holding answering
+// for as long as the client is owed a reply. It reports whether the
+// loop goes on.
+func (se *sshSession) answerRequest(clientCh, upCh ssh.Channel, r *ssh.Request, startPump func(), answering *sync.Mutex, st *sshChannel) bool {
+	t := se.t
+	answering.Lock()
+	defer answering.Unlock()
+	if !se.policy.requests[r.Type] {
+		se.refuseRequest(r, "request_refused", r.Type)
+		return true
+	}
+	switch r.Type {
+	case "env":
+		name, ok := sshEnvRequest(r.Payload)
+		if !ok {
+			se.refuseRequest(r, "malformed_request", "env")
+			return true
+		}
+		if !se.policy.envAllowed(name) {
+			// A variable the target would read before it runs the
+			// command the policy approved.
+			se.refuseRequest(r, "env_refused", name)
+			return true
+		}
+	case "subsystem":
+		name := sshStringPayload(r.Payload)
+		if !se.policy.subsystems[name] {
+			se.refuseRequest(r, "subsystem_refused", name)
+			return true
+		}
+		if name == "sftp" && se.policy.sftp != nil {
+			// The path lists may name this session's own user, so
+			// they are resolved here, once, where a name that
+			// cannot stand in a pattern refuses the subsystem
+			// rather than quietly widening it.
+			sp, err := se.policy.sftp.forSession(se.user, se.principal)
+			if err != nil {
+				se.refuseRequest(r, "sftp_identity_refused", err.Error())
+				return true
+			}
+			// From here the channel carries SFTP, which is a
+			// protocol of its own and gets its own decisions.
+			ok, err := upCh.SendRequest(r.Type, r.WantReply, r.Payload)
+			if err != nil || !ok {
+				_ = r.Reply(false, nil)
+				return false
+			}
+			_ = r.Reply(true, nil)
+			se.relaySFTP(clientCh, upCh, sp)
+			return false
+		}
+	case "exec":
+		cmd := sshStringPayload(r.Payload)
+		if !se.policy.transfers && fileTransferCommand(cmd) {
+			// scp and rsync move files without ever opening the
+			// sftp subsystem, so every path and operation rule
+			// there is simply not on their path. Refusing them is
+			// what makes an sftp policy mean anything.
+			se.refuseRequest(r, "file_transfer_refused", sftpClip(cmd))
+			return true
+		}
+		if !se.commandAllowed(cmd) {
+			se.refuseRequest(r, "command_refused", sftpClip(cmd))
+			return true
+		}
+		t.s.logs.SecurityEvent(context.Background(), "allow", "ssh_exec",
+			"listener", t.cfg.Name, "client_ip", se.ip.String(), "user", trimUser(se.user),
+			"target", se.target, "command", sftpClip(cmd))
+	}
+	switch r.Type {
+	case "pty-req":
+		// The size the session is drawn at, which a recording needs in
+		// its header: a player that guesses the geometry wraps every
+		// line somewhere the session did not.
+		if term, cols, rows, ok := sshPTYRequest(r.Payload); ok {
+			st.term, st.cols, st.rows = term, cols, rows
+		}
+	case "window-change":
+		if cols, rows, ok := sshWindowChange(r.Payload); ok {
+			st.cols, st.rows = cols, rows
+			st.rec.resize(cols, rows)
+		}
+	}
+	// The mode is chosen before the request is forwarded. The
+	// other way round, a fast command could finish and close the
+	// channel before the copier existed, and its output would be
+	// lost to a race rather than to anything the policy decided.
+	switch r.Type {
+	case "shell", "exec", "subsystem":
+		se.startRecording(st, r)
+		startPump()
+	}
+	ok, err := upCh.SendRequest(r.Type, r.WantReply, r.Payload)
+	if err != nil {
+		_ = r.Reply(false, nil)
+		return false
+	}
+	_ = r.Reply(ok, nil)
+	return true
 }
 
 func (se *sshSession) refuseRequest(r *ssh.Request, what, detail string) {
@@ -862,32 +927,72 @@ func (se *sshSession) commandAllowed(cmd string) bool {
 	return false
 }
 
+// startRecording opens this channel's recording, if the policy asks for
+// one. It runs before the pump, because the pump is what feeds it.
+func (se *sshSession) startRecording(st *sshChannel, r *ssh.Request) {
+	rec := se.policy.recorder
+	if rec == nil || st.rec != nil {
+		return
+	}
+	// An sftp channel is not a terminal. Its own log line says what
+	// each request did, which is the readable record; a cast file of
+	// the packet stream would be neither watchable nor useful.
+	if r.Type == "subsystem" {
+		return
+	}
+	command := ""
+	if r.Type == "exec" {
+		command = sftpClip(sshStringPayload(r.Payload))
+	}
+	if !rec.records(r.Type == "exec") {
+		return
+	}
+	f, err := rec.open(se, st.cols, st.rows, st.term, command)
+	if err != nil {
+		se.sshRecordFailed(err)
+		return
+	}
+	st.rec = f
+}
+
 // pipe copies a channel's data and its extended (stderr) data both
 // ways, and half-closes so the far side sees the end of input.
-func (se *sshSession) pipe(clientCh, upCh ssh.Channel) {
+func (se *sshSession) pipe(clientCh, upCh ssh.Channel, rec *sshRecording) {
 	// The client to target direction is not waited for. A client that
 	// runs a command without closing its input never sends EOF, so
 	// waiting for it would mean waiting for the client rather than for
 	// the command; it ends when the channel is closed.
+	var toTarget io.Writer = upCh
+	if rec != nil && rec.r.cfg.Input {
+		toTarget = sshRecordWriter{dst: upCh, rec: rec, input: true}
+	}
 	go func() {
 		defer safe.Guard("ssh data to target")
-		n, _ := copyBounded(upCh, clientCh)
+		n, _ := copyBounded(toTarget, clientCh)
 		se.t.s.stats.SSHBytesIn.Add(uint64(n)) //nolint:gosec // non-negative
 		_ = upCh.CloseWrite()
 	}()
 	var wg sync.WaitGroup
 	wg.Add(2)
+	// Both of the target's streams are what the session showed, and a
+	// terminal does not keep them apart either: a recording that left
+	// out stderr would be missing exactly the errors.
+	var toClient, toClientErr io.Writer = clientCh, clientCh.Stderr()
+	if rec != nil {
+		toClient = sshRecordWriter{dst: clientCh, rec: rec}
+		toClientErr = sshRecordWriter{dst: clientCh.Stderr(), rec: rec}
+	}
 	go func() {
 		defer wg.Done()
 		defer safe.Guard("ssh data to client")
-		n, _ := copyBounded(clientCh, upCh)
+		n, _ := copyBounded(toClient, upCh)
 		se.t.s.stats.SSHBytesOut.Add(uint64(n)) //nolint:gosec // non-negative
 		_ = clientCh.CloseWrite()
 	}()
 	go func() {
 		defer wg.Done()
 		defer safe.Guard("ssh stderr to client")
-		_, _ = copyBounded(clientCh.Stderr(), upCh.Stderr())
+		_, _ = copyBounded(toClientErr, upCh.Stderr())
 	}()
 	wg.Wait()
 }

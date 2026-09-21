@@ -254,6 +254,9 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	a.warnExpiry(k, now)
 	in.keyID = k.ID
 	filter.SetIdentity(r.Context(), "api_key", k.ID)
+	// The scopes this key carries, so a policy elsewhere can decide on
+	// them rather than every filter growing its own allow list.
+	filter.SetAttrs(r.Context(), "api_key", filter.Attrs{Scopes: k.Scopes})
 	a.Allowed.Add(1)
 	if cfg.Strip == nil || *cfg.Strip {
 		in.strip(r)

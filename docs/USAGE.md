@@ -2336,6 +2336,154 @@ of the session — validation says so rather than leaving it implied.
 `mqtt_denied`: a device does not probe topics, so something walking the
 tree is either broken or not a device.
 
+### A syslog relay that reads what it forwards
+
+```yaml
+server:
+  listeners:
+    - name: relay
+      address: "0.0.0.0:514"
+      kind: syslog
+      syslog:
+        upstream: collectors
+        udp: true
+        allow_senders: ["10.0.0.0/8"]
+        hostname: annotate
+        min_severity: info
+        rate_limit: 500
+        redact:
+          - {name: card, pattern: "[0-9]{13,16}", with: "[card]"}
+```
+
+A relay that forwards syslog without reading it is a pipe. The reason
+to read it is that almost every field is written by the sender and
+believed by the collector: the host name, the facility, the severity,
+the time. A message claiming to be `auth.emerg` from another machine
+costs nothing to send.
+
+**And a message whose text carries a newline becomes two records** in
+any collector that frames on newlines — the second one saying whatever
+the sender wanted a record to say, with a priority of its own. That is
+the injection this format invites, and it is the reason every message
+here is parsed and re-emitted as RFC 5424 in one framing, whatever
+arrived. One dialect out means the record a collector stores is the
+record the relay decided about.
+
+`hostname` is the other half of the same idea. `keep` takes the sender's
+word, which nothing checks; `observed` replaces the field with the
+address the message came from; `annotate`, the default, keeps both and
+says which is which, because the sender's name is often the useful one
+and is never the true one.
+
+The rest is what a relay in front of a SIEM needs: facility and
+severity filters, sender CIDRs (on UDP the only authentication there
+is), a per-sender rate limit — a log flood is a denial of service on
+the collector and a way to push older records out of its window —
+patterns that drop a record and patterns that redact part of one, and a
+bounded queue that drops and counts rather than holding every sender
+behind one slow collector.
+
+Both transports on one address: TCP with either RFC 6587 framing, UDP
+one datagram per message, TLS as RFC 5425 defines it. A message over
+the bound on a delimited stream is dropped and the connection carries
+on; on a counted stream it ends the connection, because refusing to
+read the octets a frame declared leaves the reader at an offset nobody
+knows.
+
+**The secure upgrade.** A switch, a printer, an appliance or a
+twenty-year-old application sends syslog the only way it knows: in
+clear, usually over UDP. It cannot be taught TLS and the vendor is not
+going to teach it. Put this relay next to it:
+
+```yaml
+    - name: legacy
+      address: "10.20.0.1:514"
+      kind: syslog
+      syslog:
+        upstream: collectors
+        udp: true
+        tls_mode: none              # the senders could not use one
+        upstream_tls_mode: implicit # this is the upgrade
+        upstream_tls: {server_name: siem.internal, ca_file: /etc/xproxy/certs/internal-ca.pem}
+        allow_senders: ["10.20.0.0/24"]
+        hostname: observed
+```
+
+Clear UDP or plain TCP in, RFC 5425 TLS out, and the records arrive at
+the collector as RFC 5424 whatever dialect the device speaks. The
+sender never changes; the part of the path that crosses anything does.
+
+What it does not do is make the sender trustworthy. Between the device
+and this port the records are still in clear and still forgeable, so
+put the port where only those devices can reach it, keep
+`allow_senders` tight, and let `hostname: observed` record where each
+record actually came from rather than what it claimed to be.
+
+`examples/logs/syslog.yaml` has a general relay, a legacy upgrade
+listener and a separate audit path with client certificates.
+
+### FTP with the data connection mediated
+
+```yaml
+server:
+  listeners:
+    - name: intake
+      address: "0.0.0.0:21"
+      kind: ftp
+      tls:
+        certificates: [{cert_file: /etc/xproxy/certs/ftp.pem, key_file: /etc/xproxy/certs/ftp-key.pem}]
+      ftp:
+        upstream: files
+        tls_mode: starttls
+        require_tls: true
+        data_ports: "50000-50100"
+        allow_paths: ["/srv/intake/{user}/**"]
+        deny_extensions: [exe, dll, so, sh, php]
+        max_file_bytes: 2147483648
+        yara: {rules_dir: /etc/xproxy/yara, action: close}
+```
+
+FTP is two connections, and the second one is why this cannot be a
+`tcp` listener. Every transfer happens on a data connection whose
+address one side announces to the other inside a reply; a proxy that
+forwards that reply has told the client to go round it, and the
+commands it read are instructions for a transfer it never saw. So the
+proxy replaces the address with its own, listens on one side and dials
+the other, and the file passes through it. Only the port the target
+announced is used — the proxy dials the host its control connection is
+already talking to, so a target cannot redirect it somewhere else. And
+only the side that arranged the connection may use it: a passive
+connection has to come from the client's own address.
+
+**`PORT` and `EPRT` are off by default**, and that is not a
+compatibility oversight. They ask the server to connect back to an
+address the client names, which makes it a port scanner and a relay for
+anyone who can log in: the bounce attack, CERT CA-1997-27. With
+`allow_active: true` the announced address has to be the client's own
+and the port unprivileged; that check is the whole of the defence.
+
+The rest is the same vocabulary as the SFTP policy, because the
+questions are the same: `read_only`, path lists that may name `{user}`,
+extension lists that read every suffix in a name, a bound on one
+transfer, and rules over what is uploaded. `max_file_bytes` and a rule
+match both act by cutting the data connection and answering 426 rather
+than 226 — a transfer cannot be un-sent, so there is nothing else
+honest to do.
+
+A control line that is not exactly CRLF-terminated is refused, and so is
+one carrying a telnet `IAC`. Each is a way for the proxy and the target
+to disagree about where a command ends: the proxy reads `NOOP` and the
+target reads `NOOP` and the `DELE` hidden behind a bare newline.
+
+`require_tls` defaults on wherever TLS is reachable, because a control
+connection in clear carries the password. `PROT P` data is terminated on
+both sides rather than tunnelled, so a protected transfer is still one
+this proxy can bound and read. `CCC` is refused: clearing the control
+channel after `AUTH TLS` puts every path that follows back in clear.
+
+`examples/files/ftp.yaml` has a supplier drop box and a read-only
+mirror.
+
 ### SSH bastion with SFTP inspection
 
 ```yaml
@@ -2446,9 +2594,79 @@ rather than matched: what it means depends on a working directory the
 proxy cannot see, and a check on a path whose meaning is unknown is not
 a check. Absolute paths always work.
 
+**One rule instead of one per person.** A path pattern may name the
+session's own identity:
+
+```yaml
+        sftp:
+          allow_paths: ["/srv/intake/{user}/**"]
+          deny_paths:  ["/srv/intake/{user}/.ssh/**"]
+          allow_extensions: [csv, xml, pdf, gz]
+          deny_extensions: [exe, dll, so, sh, php]
+          max_file_bytes: 1073741824
+          yara: {rules_dir: /etc/xproxy/yara, action: close}
+```
+
+`{user}` is the login the client authenticated as and `{principal}` the
+`principals` entry covering its key; both are substituted once, when the
+subsystem starts. A name that could change what the pattern means —
+anything outside letters, digits, `-`, `_` and `.` — refuses the session
+instead of being escaped into it, because a login of `../..` expanded
+into an allow list is an allow list for somebody else's directory.
+
+`allow_extensions` and `deny_extensions` decide what a file may be
+called, on `open` and on both names of a `rename` or `symlink`. Every
+extension in a name is read, not only the last, so `invoice.pdf.exe` is
+an exe whatever the allow list says.
+
+**A write is the one request whose content the proxy can see**, so two
+checks live there. `max_file_bytes` bounds the file the writes make,
+counted from the highest offset any write reaches rather than from the
+bytes that arrived — otherwise a client writes one byte at a gigabyte
+and stays under every total. And `yara` runs the rule set per file: each
+open handle gets its own scanner, because two uploads interleaved on one
+channel are two files and a rule about a file's first bytes is a rule
+about one of them. A match refuses that write and logs `yara_match` with
+the path; `action: close` ends the transfer rather than only that
+packet. Both of these need to know which handle is which file, so a
+write on a handle whose `open` the proxy never saw is refused: a write
+that cannot be held to a bound is not a write to pass on.
+
+**What was actually done in the session.** The access log says one
+happened; `recording` writes what it showed, one file per channel, in
+the asciicast v2 format:
+
+```yaml
+        recording:
+          directory: /var/log/xproxy/sessions
+          max_file_bytes: 33554432
+          max_files: 2000
+```
+
+`asciinema play` replays a file; the format is line oriented, so one cut
+short by a crash or by the bound still plays up to where it stops. The
+header carries the terminal size, the login and the target, and for an
+`exec` the command; a `window-change` becomes a resize event; stderr is
+recorded with stdout, because a terminal does not keep them apart and a
+recording without stderr is missing exactly the errors. An `sftp`
+channel is not recorded — it is not a terminal, and its own log line
+already says what each request did.
+
+`input: false` is the default and stays that way unless you mean it: a
+terminal's input stream carries what the screen never showed, which
+includes every password typed into a `sudo` prompt. Recording output is
+watching over a shoulder; recording input is a keylogger, and the
+difference matters to the people recorded and to whoever holds the
+files. Those files hold everything an administrative session printed —
+keys, configuration, tokens — so the directory deserves the care its
+contents will deserve. A principal's `recording` replaces the
+listener's, so one entry can be recorded and another spared with
+`recording: {enabled: false}`.
+
 Every session writes an `ssh` access line, every allowed `exec` is a
-security event with the command line, and every inspected SFTP request
-writes an `sftp` line with the operation and the path. That record is
+security event with the command line, every closed recording writes an
+`ssh_recording` line with the file and its size, and every inspected
+SFTP request writes an `sftp` line with the operation and the path. That record is
 the other reason to terminate rather than forward: a stream you cannot
 read is a stream you cannot log.
 
@@ -3075,6 +3293,53 @@ checks use the standard health service, so an endpoint that reports
 a rate limited call is refused with `RESOURCE_EXHAUSTED` rather than a
 text page a gRPC client cannot read.
 
+**Routing gRPC by its path reads the envelope.** The messages are
+length-prefixed frames of protobuf inside the body, and a proxy that
+does not read them cannot say how large *one message* is — only how
+large the whole body is — cannot notice a stream that stops in the
+middle of a frame, and cannot see a message nested a thousand deep.
+That last one costs the backend's parser far more than it costs the
+sender to write. The `grpc_guard` filter reads them:
+
+```yaml
+filters:
+  - name: rpc
+    kind: grpc_guard
+    options:
+      max_message_bytes: 4194304   # one message, not the stream
+      max_messages: 100            # a streaming call is still bounded
+      max_depth: 12
+      max_fields: 2000
+      allow_compressed: false
+      deny_patterns: ["(?i)-----BEGIN (RSA )?PRIVATE KEY-----"]
+routes:
+  - name: orders
+    grpc: {services: [orders.v1.Orders]}
+    upstream: orders
+    filters: [rpc]
+```
+
+No schema is used, and that is the design rather than a shortcut: a
+schema has to be kept in step with the service, and a check that is
+only as current as its schema is a check that quietly stops applying
+the week somebody adds a field. The protobuf wire format carries the
+field number and the wire type, which is enough for every bound above.
+
+`allow_compressed: false` is required with `deny_patterns`, and the
+load fails otherwise: a compressed message is bytes this filter does
+not decompress, so the patterns would simply not run over it. Saying so
+beats finding out.
+
+Refusals are gRPC statuses, so a client sees `RESOURCE_EXHAUSTED` or
+`INVALID_ARGUMENT` rather than a page it cannot parse, and a content
+refusal names the field path it matched at. The access line carries
+`grpc_messages`, `grpc_depth` and `grpc_fields` — run it with
+`action: log` first and those three numbers tell you what to set the
+bounds to, rather than guessing and finding out in production.
+
+What it does not do is understand the fields: `deny_patterns` run
+against every string in a message, not against a named field.
+
 ### gRPC-web for browsers
 
 ```yaml
@@ -3627,6 +3892,68 @@ queries that take an API down (deep nesting, wide lists, alias floods,
 batches, introspection in production) without knowing the schema. The
 security log carries the filter name as the reason and the access log
 the key id (`api_key`).
+
+### Authorisation: from an identity to a policy (filter)
+
+Every authenticating filter here answers "who": `basic_auth`,
+`ldap_auth`, `api_key`, `oidc`, the JWT filter, client certificates.
+None of them answers "what may they do", so each grew its own small
+allow list — required scopes on the key, a required group on the
+directory bind, required claims on the session. An allow list per
+filter is a policy nobody can read in one place, and the one nobody
+reads is the one with the hole in it.
+
+`authz` reads the identity those filters verified and decides once:
+
+```yaml
+filters:
+  - name: keys
+    kind: api_key
+    options: {keys_file: /etc/xproxy/api-keys}
+  - name: policy
+    kind: authz
+    options:
+      default: deny
+      forward_groups_header: X-Auth-Groups
+      rules:
+        - {name: no-deletes-from-outside, allow: false, methods: [DELETE], not_networks: ["10.0.0.0/8"]}
+        - {name: read, allow: true, methods: [GET, HEAD], paths: [/v1/orders/**], scopes: [orders:read]}
+        - {name: write, allow: true, paths: [/v1/orders/**], scopes: [orders:read, orders:write]}
+routes:
+  - {name: orders, paths: [/v1/orders], upstream: orders, filters: [keys, policy]}
+```
+
+Three things worth knowing before writing rules.
+
+**It runs last.** The subject, groups, scopes and claims all come from a
+filter that verified them, so a header a client sent cannot reach a
+rule — which also means that before those filters have run there is
+nothing to decide about. Put `authz` at the end of the route's filter
+list. `require_authenticated` is on by default and refuses a request
+nothing verified, rather than deciding on values a client supplied.
+
+**Scopes are all-of, groups are any-of.** A rule naming two scopes is
+satisfied only by a credential carrying both; a rule naming two groups
+is satisfied by membership of either. That is what each of them means
+in practice, and getting it the other way round is how a policy ends up
+wider than it reads.
+
+**The first matching rule decides**, so a deny above an allow carves an
+exception out of it. A rule that names no selectors matches everything:
+as a deny that is a legitimate backstop, and as an allow it fails the
+load — `default: allow` is where that belongs, out loud.
+
+A refusal tells the client nothing about why. Which rule, which group it
+would have needed and whether the path even exists are all things a
+prober would like to know; the reason is in the proxy's log, and the
+access line carries `authz_rule`, which is the only way to tell a policy
+that allowed from one that never matched.
+
+What feeds it: `oidc` records groups from `groups_claim` (default
+`groups`), scopes from the token's `scope` and whatever `attr_claims`
+names; `ldap_auth` records the directory's own groups from `group_attr`;
+`api_key` records the key's scopes. Every filter records the subject, so
+`subjects` and `kinds` work whatever authenticated.
 
 ### Upload protection (filter)
 

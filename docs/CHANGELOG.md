@@ -260,6 +260,28 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4)
 
+- **A command line one or two octets over the bound swallowed the next
+  command.** The reader's buffer is the bound plus two, so a line that
+  overshoots by one or two arrives whole rather than filling the buffer.
+  The code then skipped to the next line ending anyway — which was
+  already behind it — and ate the following command: the client was
+  answered 500 for the line it did send and nothing at all for the next
+  one. Found while writing the same reader for FTP, fixed in both, with
+  a test that pins the two lengths where it happened.
+
+- **An SSH command that ran could be reported to the client as EOF.**
+  The bastion closed a channel as soon as the target's side was drained,
+  and the target can finish a command and close its channel while the
+  reply to the `exec` that started it is still on its way back. Closing
+  inside that window takes the reply with it, and a client waiting for
+  one is told the channel ended: `ssh host uptime` failing with EOF for
+  a command that had in fact run, its output produced and its exit
+  status relayed. It reproduced in about one exec in a hundred under
+  load, and every time when sessions were opened back to back on one
+  connection. A channel now waits for any request that is mid-answer
+  before it closes, which is the same invariant the exit-status path
+  already had. The regression test runs the exchange four hundred times.
+
 - **Every WebSocket upgrade through the proxy answered 502.** The
   transport wrapped each response body in a `ReadCloser` to account for
   the endpoint when the body closed. For a 101 the body *is* the
@@ -275,6 +297,306 @@ Open findings of the earlier rounds:
   against a real origin.
 
 ### Added (1.4)
+
+- **Authorisation, as one policy rather than one per filter (`kind:
+  authz`).** Every authenticating filter here answered "who":
+  `basic_auth`, `ldap_auth`, `api_key`, `oidc`, the JWT filter, client
+  certificates. None of them answered "what may they do", so each had
+  grown its own small allow list — required scopes on the key, a
+  required group on the directory bind, required claims on the session.
+  An allow list per filter is a policy nobody can read in one place,
+  and the one nobody reads is the one with the hole in it.
+
+  The identity a request carries now holds more than a name. Filters
+  record what they verified — the directory's groups, the key's scopes,
+  the token's claims — and `authz` decides on them: subjects, groups,
+  scopes, claims, which filter verified the identity, the method, the
+  path and the client network, with negative forms for "everybody but".
+  Default deny, first match wins, and the decision is recorded as
+  `authz_rule` on the access line, which is the only way to tell a
+  policy that allowed from one that never matched.
+
+  It decides nothing on its own authority: every value comes from a
+  filter that verified it, so a header a client sent cannot reach a
+  rule. That also means it must run after those filters, which
+  `require_authenticated` makes obvious rather than subtle — with
+  nothing verified there is nothing to decide about, and the
+  alternative is deciding on what a client supplied.
+
+  Two shapes are deliberate and worth knowing before writing rules:
+  scopes are all-of and groups are any-of, because that is what each
+  means in practice; and a rule with no selectors matches everything,
+  which is a legitimate backstop as a deny and fails the load as an
+  allow — `default: allow` is where that belongs, out loud.
+
+  A refusal tells the client nothing about why. Which rule, which group
+  it would have needed and whether the path exists are all things a
+  prober would like to know.
+
+  `ldap_auth` also stops throwing away what it read: the group
+  attribute is fetched whenever `group_attr` is set rather than only
+  when `require_group` is, and the groups are cached with the
+  authentication answer rather than fetched again on a hit — a cache
+  that remembers the yes and forgets what it was based on is a cache
+  that quietly widens a policy.
+
+- **gRPC message inspection (`kind: grpc_guard`).** Routing gRPC by its
+  path read the envelope and nothing else. The messages are
+  length-prefixed frames of protobuf inside the body, so the proxy
+  could not say how large one message was — only how large the whole
+  body was, which is a different number on a streaming call — could not
+  notice a stream that stopped in the middle of a frame, and could not
+  see a message nested a thousand deep. That last one costs the
+  backend's parser far more than it costs the sender to write.
+
+  The filter reads the framing and walks the protobuf, bounding one
+  message (`max_message_bytes`, defaulting to what grpc-go defaults its
+  receive limit to, so it is the number the backend already lives
+  with), the messages in a request (`max_messages`), the nesting
+  (`max_depth`) and the fields at every level together (`max_fields`).
+  `deny_patterns` run over the strings it finds.
+
+  No schema is used, and that is the design rather than a shortcut: a
+  schema has to be kept in step with the service, and a check that is
+  only as current as its schema is a check that quietly stops applying
+  the week somebody adds a field. The protobuf wire format carries the
+  field number and the wire type, which is enough for every bound
+  above.
+
+  A length-delimited field is a nested message or a string and there is
+  no way to be certain which without a schema. It is tried as a message
+  first, because a nested message read as a string is a subtree the
+  depth and field bounds never see, and the bounds are the part that
+  matters.
+
+  `deny_patterns` with `allow_compressed: true` fails the load rather
+  than running: a compressed message is bytes this filter does not
+  decompress, so the patterns would not run over it, and saying so
+  beats finding out. A compressed message that is allowed is passed
+  without being walked, because there is nothing honest to say about
+  bytes nobody decompressed.
+
+  The access line carries `grpc_messages`, `grpc_depth` and
+  `grpc_fields`, so `action: log` for a day answers what the bounds
+  should be instead of leaving them to be guessed at. Refusals are gRPC
+  statuses, and a content refusal names the field path it matched at.
+
+  One bug was written and caught before it shipped, which is worth
+  recording because it is the shape these parsers fail in: the length
+  of a protobuf field is a varint and can encode a number larger than a
+  signed integer holds. Compared as a signed integer it goes negative,
+  the bound check passes, and the slice that follows panics. Every
+  length in a message is a client's, so that is a crash per request
+  from a body anybody can write. Lengths are compared unsigned, against
+  what is actually left, and a test pins the two values that did it.
+
+- **A syslog relay that reads what it forwards (`kind: syslog`).** A
+  relay that forwards syslog without reading it is a pipe. The reason to
+  read it is that almost every field is written by the sender and
+  believed by the collector: the host name, the facility, the severity,
+  the time. A message claiming to be `auth.emerg` from another machine
+  costs nothing to send.
+
+  And a message whose text carries a newline becomes **two** records in
+  any collector that frames on newlines, the second one saying whatever
+  the sender wanted a record to say, with a priority of its own. So
+  every message is parsed and every message is re-emitted as RFC 5424 in
+  one framing, whatever arrived: a newline in the text becomes a visible
+  symbol, a line ending in a structured data value is escaped, and a
+  field that cannot appear in a header is replaced. One dialect out is
+  what makes the record a collector stores the record the relay decided
+  about.
+
+  `hostname` is the other half of that. `keep` takes the sender's word,
+  which nothing checks and which warns; `observed` replaces the field
+  with the address the message arrived from; `annotate`, the default,
+  keeps both and states which is which, because the sender's name is
+  often the useful one and is never the true one.
+
+  The rest is what a relay in front of a SIEM needs: `allow_facilities`,
+  `deny_facilities` and `min_severity`; `allow_senders`, which on UDP is
+  the only authentication there is and warns when empty; `deny_patterns`
+  that drop a record and `redact` rules that take part of one out and
+  record that they did; a per-sender `rate_limit`, because a log flood
+  is a denial of service on the collector and a way to push older
+  records out of whatever window it keeps; and a bounded `queue` that
+  drops and counts rather than holding every sender behind one slow
+  collector.
+
+  Both transports on one address: TCP with either RFC 6587 framing, UDP
+  one datagram per message (RFC 5426), TLS as RFC 5425 defines it, and
+  octet counting towards the collector by default because it is the one
+  framing a message's own text cannot be mistaken for.
+
+  The two ends are configured separately, which makes this a **secure
+  upgrade** for everything that cannot be taught TLS: `tls_mode: none`
+  with `upstream_tls_mode: implicit` takes clear syslog over UDP from a
+  switch, a printer or a twenty-year-old application and puts it on the
+  wire as RFC 5425. The sender never changes. It does not make the
+  sender trustworthy — between the device and the port the records are
+  still in clear and still forgeable — which is what `allow_senders`
+  and `hostname: observed` are for, and what the documentation says
+  beside it.
+
+  `internal/syslog` parses both formats onto one shape — a relay with
+  two internal shapes is a relay with two sets of rules — and refuses
+  what it cannot re-emit honestly. A message over the bound on a
+  delimited stream is dropped and the reader resyncs to the next line
+  ending; on a counted stream it ends the connection, because refusing
+  to read the octets a frame declared leaves the reader at an offset
+  nobody knows.
+
+- **An FTP proxy that is actually in the middle (`kind: ftp`).** FTP is
+  two connections, and the second one is the whole problem. Every
+  transfer happens on a data connection whose address one side announces
+  to the other inside a reply, so a proxy that forwards that reply has
+  told the client to go round it: the file travels with nothing in the
+  middle, and the control connection it did read is a list of
+  instructions for a transfer it never saw. This listener rewrites the
+  address to its own, listens on one side and dials the other, and is
+  one end of both connections.
+
+  Only the port the target announced is used. The proxy dials the host
+  its control connection is already talking to, so a target answering
+  with an address of its choosing cannot send the proxy somewhere else.
+  And only the side that arranged a connection may use it: a passive
+  connection has to come from the client's own address, an active one
+  from the target's.
+
+  **`PORT` and `EPRT` are off by default.** They ask the server to
+  connect back to an address the client names, which makes it a port
+  scanner and a relay for anyone who can log in — the bounce attack of
+  CERT CA-1997-27, which is twenty-eight years old and still works
+  wherever somebody implemented the RFC and stopped there. With
+  `allow_active: true` the announced address must be the client's own
+  and the port unprivileged.
+
+  The policy is the vocabulary the sftp policy already had, because the
+  questions are the same: `commands` (bounded by what the proxy can
+  read the effect of — a verb whose effect it cannot name is a verb it
+  cannot hold to a policy, so `SITE EXEC` is not relayable at all),
+  `read_only`, `allow_paths` and `deny_paths` resolved against the
+  working directory the proxy follows and able to name `{user}`,
+  extension lists that read every suffix in a name, `max_file_bytes`,
+  and `yara` over uploads. The last two act by cutting the data
+  connection and answering 426 rather than 226: a transfer cannot be
+  un-sent, and telling the client it completed would be a lie.
+
+  TLS is RFC 4217: `AUTH TLS` on the client side with the pipelining
+  check that CVE-2011-0411 is about, `starttls` or `implicit` to the
+  target, and `require_tls` on by default wherever TLS is reachable
+  because a control connection in clear carries the password. `PROT P`
+  data is terminated on both sides rather than tunnelled, so a protected
+  transfer is still one this proxy can bound and read. `CCC` is refused:
+  clearing the control channel puts every path that follows back in
+  clear.
+
+  `internal/ftp` is the protocol layer: commands and replies with hard
+  bounds, and the address negotiations. A control line that is not
+  exactly CRLF-terminated is refused, and so is one carrying a telnet
+  `IAC` — each is a way for the proxy and the target to disagree about
+  where a command ends, which is how one command becomes two. The
+  address parsers are deliberately forgiving about the sentence around
+  the numbers, because servers have written it several ways, and
+  deliberately strict about the numbers themselves.
+
+- **SSH session recording (`ssh.recording`), in asciicast v2.** The
+  access log said a session happened. It could not say what was done in
+  it, because what was done is a stream of control sequences inside the
+  channel — which is the same reason this proxy terminates SSH rather
+  than forwarding it. Each session channel now writes that stream to a
+  file, and `asciinema play` replays it.
+
+  The format was chosen because a recording nobody can play is a
+  recording nobody reads: asciicast v2 is what asciinema records and
+  plays and what asciinema-player renders in a browser, it is line
+  oriented, so a file cut short by a crash or by a bound still plays up
+  to where it stops, and it is text. The header carries the terminal
+  size from `pty-req`, the login, the target and, for an `exec`, the
+  command; a `window-change` becomes a resize event, so a session that
+  was widened replays at both widths instead of wrapping everything
+  after it in the wrong place. Both of the target's streams are
+  recorded, because a terminal does not keep stdout and stderr apart
+  either and a recording without stderr would be missing exactly the
+  errors. An `sftp` channel is not recorded: it is not a terminal, and
+  its own log line already says what each request did.
+
+  `input` records the keystrokes too, and is off by default and warns
+  when set. A terminal's input stream carries what the screen never
+  showed, which includes every password typed into a `sudo` or `su`
+  prompt: recording output is watching over a shoulder, recording input
+  is a keylogger, and the difference matters both to the people
+  recorded and to whoever ends up holding the files. Those files hold
+  everything an administrative session printed — keys, configuration,
+  tokens — and are treated the way the capture files are: `0600` with
+  `O_EXCL`, proxy-chosen names, in a directory the operator names and
+  the proxy does not create, bounded by `max_file_bytes` per recording
+  and pruned to `max_files`.
+
+  A principal's `recording` replaces the listener's, so one entry can be
+  recorded and another spared with `recording: {enabled: false}` — the
+  deployment robot that prints logs by the megabyte and types nothing
+  does not need a recording of the log it already writes. A recording
+  that cannot be opened does not stop the session: it is an error and an
+  `ssh_recording_failed` event, because a bastion that refuses work
+  when a disk fills is its own outage. One that stops at the bound says
+  so in the file and in the `ssh_recording` log line.
+
+  The format lives in `internal/asciicast`, which is a writer and
+  nothing else. The part of it that has to be right is the escaping:
+  a session can print anything, and a quote or a newline written raw
+  would end the line early and let what a session printed forge events
+  of its own. It also carries a character that a read stopped in the
+  middle of into the next event, because terminal output arrives in
+  whatever sizes the network produced and writing each half on its own
+  would put two replacement characters where the session had one.
+
+- **SFTP: per-user paths, file-level policy and rules over what is
+  written (`ssh.sftp.allow_paths` templating,
+  `allow_extensions`/`deny_extensions`, `max_file_bytes`,
+  `max_open_files`, `yara`).** A path list was a list of everybody's
+  directories, a file was whatever it was called, and the only thing a
+  write was held to was where it went.
+
+  `allow_paths` and `deny_paths` now take `{user}` and `{principal}`,
+  substituted once when the subsystem starts, so one listener says "your
+  own directory and no other". A name that could change what a pattern
+  means refuses the session rather than being escaped into it: a login
+  of `../..` expanded into an allow list is an allow list for somebody
+  else's directory. `{principal}` without a `principals` list, and any
+  unknown substitution, fail the load — `{usr}` left as a literal
+  matches nothing, which on an allow list refuses everybody and on a
+  deny list refuses nobody, and neither is what was written.
+
+  `allow_extensions` and `deny_extensions` decide `open`, `rename` and
+  `symlink` — the requests that settle what a file is called. Every
+  extension in a name is read, not only the last, so `invoice.pdf.exe`
+  is an exe on a proxy as it is on the server that would run it.
+
+  A write is the one request whose content this can see, so two checks
+  live there. `max_file_bytes` bounds the file the writes make, counted
+  from the highest offset any write reaches rather than from the bytes
+  sent, because a client that writes out of order otherwise stays under
+  every total while making a file of any size. And `yara` reads what
+  goes into each file separately: a rule about a file's first bytes is a
+  rule about a file, and two uploads interleaved on one channel are two
+  files, so each handle gets its own scanner. A match refuses that write
+  with permission denied and records `yara_match` with the path;
+  `action: close` ends the transfer.
+
+  Both need to know which handle is which file, which is why the
+  server's direction is now read for one packet — the HANDLE reply that
+  says what the `open` this proxy decided on became. A write on a handle
+  that pair was never seen for is refused: a write that cannot be held
+  to a bound is not a write to pass on. `max_open_files` bounds what
+  that state costs.
+
+  The packet layer grew with it: WRITE now yields its handle, offset and
+  bytes, the handle-bearing requests yield their handle, and both are
+  read as the server's opaque bytes rather than as text — a handle is
+  compared, never displayed, and refusing one for not being UTF-8 would
+  refuse servers that are within their rights. A truncated WRITE, which
+  used to parse as a bare handle, is now the malformed packet it is.
 
 - **Per-principal SSH policy, environment filtering and the scp hole
   (`ssh.principals`, `ssh.allow_env`, `ssh.trusted_user_ca_keys`,
@@ -1146,6 +1468,13 @@ Open findings of the earlier rounds:
 
 Security tests for the surfaces this release adds, written as an
 attacker would read them rather than as coverage.
+
+Two ECH tests read the listener's counters the instant the client's
+`Dial` returned. In TLS 1.3 that is before the server has finished its
+own handshake, so the counters were a moment behind the connection the
+client already held, and the tests failed occasionally on a listener
+that was working. They now wait for the count to catch up with what the
+client's own connection state already said.
 
 `test/bypass` gains two files. The first treats the capture file as
 what it is — the one artefact of this proxy that holds decrypted
