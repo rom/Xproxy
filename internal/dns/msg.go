@@ -9,6 +9,7 @@ package dns
 import (
 	"encoding/binary"
 	"errors"
+	"github.com/rom/xproxy/internal/netutil"
 	"strings"
 )
 
@@ -155,7 +156,7 @@ func readName(b []byte, off int) (string, int, error) {
 			if end < 0 {
 				end = off
 			}
-			return strings.ToLower(strings.Join(labels, ".")), end, nil
+			return netutil.ASCIILower(strings.Join(labels, ".")), end, nil
 		case l&0xc0 == 0xc0:
 			if off+1 >= len(b) {
 				return "", 0, ErrShort

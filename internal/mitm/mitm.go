@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/netip"
 	"os"
 	"sync"
 	"time"
@@ -134,6 +135,13 @@ func (c *CA) NotAfter() time.Time { return c.cert.NotAfter }
 // have seen, rather than a certificate that happens to be valid for
 // something else.
 func (c *CA) Leaf(name string, real *x509.Certificate) (*tls.Certificate, error) {
+	// One of these keys can impersonate every site to every client that
+	// trusts the CA, so what it will put its name to is not a question
+	// to leave to the caller. A name that is not a name has no business
+	// in a subject, a SAN, or the key of a cache somebody else reads.
+	if !ValidName(name) {
+		return nil, fmt.Errorf("mitm: %q is not a server name", clipName(name))
+	}
 	key := cacheKey(name, real)
 	c.mu.Lock()
 	if got, ok := c.cache[key]; ok {
@@ -208,10 +216,16 @@ func (c *CA) issue(name string, real *x509.Certificate) (*tls.Certificate, error
 		// copied: not the issuer, not the extensions, not the validity,
 		// because a forged certificate should look like what it is to
 		// anybody who looks.
-		tmpl.DNSNames = mergeNames(tmpl.DNSNames, real.DNSNames)
+		//
+		// And only the ones that are names. The destination's
+		// certificate is not this proxy's to trust either: a server
+		// that puts a space, a newline or three hundred characters in
+		// its own SANs must not have that copied into something this
+		// CA signs and a client is told to believe.
+		tmpl.DNSNames = mergeNames(tmpl.DNSNames, valid(real.DNSNames))
 		tmpl.IPAddresses = mergeIPs(tmpl.IPAddresses, real.IPAddresses)
-		if real.Subject.CommonName != "" {
-			tmpl.Subject.CommonName = real.Subject.CommonName
+		if cn := real.Subject.CommonName; ValidName(cn) {
+			tmpl.Subject.CommonName = cn
 		}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.cert, key.Public(), c.key)
@@ -306,7 +320,81 @@ func ClientHelloName(b []byte) (name string, isHello bool) {
 	if len(hs) > hsLen {
 		hs = hs[:hsLen]
 	}
-	return sniFrom(hs), true
+	name = sniFrom(hs)
+	if !ValidName(name) {
+		// A hello whose name is not a name is still a hello; the name
+		// is what is missing. Returning it anyway would hand the caller
+		// bytes a client chose to put in a certificate and a log line.
+		return "", true
+	}
+	return name, true
+}
+
+// ValidName reports whether a string is a server name this proxy will
+// act on: an IA5 host name of at most 253 bytes in labels of at most
+// 63, or an IP literal. Everything else — a space, a NUL, a newline,
+// an empty label, anything above ASCII — is refused rather than
+// sanitised, because a name repaired into something that resolves is a
+// name the certificate would be wrong for.
+func ValidName(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	if _, err := netip.ParseAddr(s); err == nil {
+		return true
+	}
+	if s[0] == '.' || s[len(s)-1] == '.' {
+		return false
+	}
+	label := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '.':
+			if label == 0 {
+				return false // an empty label
+			}
+			label = 0
+			continue
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '-' || c == '_':
+		default:
+			return false
+		}
+		if label++; label > 63 {
+			return false
+		}
+	}
+	return label > 0
+}
+
+// valid keeps the names that are names.
+func valid(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if ValidName(n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// clipName bounds what an error message repeats back, because the
+// string in it came from whoever opened the connection.
+func clipName(s string) string {
+	const max = 64
+	if len(s) > max {
+		s = s[:max]
+	}
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c >= 0x20 && c < 0x7f {
+			out = append(out, c)
+		} else {
+			out = append(out, '?')
+		}
+	}
+	return string(out)
 }
 
 // sniFrom walks a ClientHello body to its server_name extension. It

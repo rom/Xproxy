@@ -29,6 +29,62 @@ var PublicSuffixes = map[string]bool{
 	"workers.dev": true, "amazonaws.com": true, "blogspot.com": true, "wordpress.com": true,
 }
 
+// ASCIILower folds a DNS name the way DNS folds one: A-Z to a-z, and
+// nothing else.
+//
+// strings.ToLower is wrong for this twice over. It applies Unicode
+// case rules, which map characters DNS treats as distinct onto one
+// another -- the Kelvin sign folds to "k" -- so two different names
+// compare equal. And on bytes that are not valid UTF-8, which a DNS
+// label may perfectly well contain, it produces the replacement
+// character: every such byte becomes the same three bytes, so distinct
+// names fold to one string, and the name gets longer than it was.
+//
+// Wherever a folded name is a key, a cache entry or the input to a
+// hash, that collision is the bug. RFC 4343 is explicit that DNS case
+// insensitivity is ASCII only.
+func ASCIILower(s string) string {
+	hasUpper := false
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c >= 'A' && c <= 'Z' {
+			hasUpper = true
+			break
+		}
+	}
+	if !hasUpper {
+		return s
+	}
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+// ASCIIEqualFold compares two DNS labels the way DNS compares them.
+// strings.EqualFold folds by Unicode rules and would call two distinct
+// labels the same.
+func ASCIIEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		x, y := a[i], b[i]
+		if x >= 'A' && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if y >= 'A' && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
+}
+
 // Registrable returns the name somebody registered: the last two labels,
 // or three where the last two are a registry suffix. A name with fewer
 // labels than that is returned as it is, because there is nothing under
@@ -39,7 +95,7 @@ var PublicSuffixes = map[string]bool{
 // last two labels, which groups a little too coarsely rather than not at
 // all — the direction that keeps a detector looking.
 func Registrable(name string) string {
-	name = strings.ToLower(strings.TrimSuffix(name, "."))
+	name = ASCIILower(strings.TrimSuffix(name, "."))
 	if name == "" {
 		return ""
 	}

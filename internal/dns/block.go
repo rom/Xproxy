@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"github.com/rom/xproxy/internal/netutil"
 	"io"
 	"os"
 	"strings"
@@ -30,7 +31,7 @@ func NewBlockList(entries []string) (*BlockList, error) {
 }
 
 func (bl *BlockList) add(e string) error {
-	e = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(e, ".")))
+	e = netutil.ASCIILower(strings.TrimSpace(strings.TrimSuffix(e, ".")))
 	if e == "" {
 		return nil
 	}

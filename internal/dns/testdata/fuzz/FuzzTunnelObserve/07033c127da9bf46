@@ -1,0 +1,4 @@
+go test fuzz v1
+string("012789A\xf2")
+uint16(69)
+int(-42)

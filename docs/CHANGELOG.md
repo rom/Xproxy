@@ -12,7 +12,75 @@ A fifth audit round over every parser the data plane runs — binary and
 wire formats, HTTP and text protocols, structured data — and the open
 findings of rounds one to four. All with regression tests.
 
+The round was extended over the parsers added since it began: the TLS
+ClientHello reader that feeds certificate issuance, RFC 5424 structured
+data, the FTP address negotiations, the gRPC framing and protobuf walk,
+and the DNS name handling the tunnel detector added a caller to. Each
+got a hostile test file, and the framing and text formats got fuzz
+targets with round-trip properties — several million executions each,
+which is where the first two below came from.
+
 Parsers:
+
+- **A ClientHello's server name was handed back exactly as the client
+  wrote it**, and TLS interception then put it in a certificate's
+  subject, its SAN, the server name of the upstream handshake and the
+  key of a cache. Nothing checked it was a name: 254 characters, a
+  space, a NUL, a newline, an empty label and bytes above ASCII all
+  came through. The mismatch check against the CONNECT authority hid
+  most of it, but not on a CONNECT to a bare address, where that check
+  does not apply — so one tunnel to an intercepted address was an
+  arbitrary string into all four (CWE-20). A name is now a name (at
+  most 253 bytes, labels at most 63, IA5 or an IP literal) or it is
+  not returned, and `Leaf` refuses to sign for anything else rather
+  than trusting its caller to have looked. The destination's own SANs
+  are filtered the same way before being copied: a server that puts a
+  space or three hundred characters in its certificate must not have
+  that copied into one this proxy signs.
+
+- **An RFC 5424 structured data element with no parameters could not be
+  read, and swallowed the element after it.** `[id]` is valid (section
+  6.3) and the relay's own formatter writes it, so two of these in a
+  chain dropped the record at the second — but the reason was worse
+  than the symptom: the id was taken up to either delimiter and the
+  closing bracket then looked for after it had already been consumed,
+  which sent the parser into the *next* element to find a parameter
+  there. `[a][b@2 k="v"]` became one element `a` with a parameter named
+  `[b@2 k`. Structured data is where provenance lives — including the
+  element this relay adds recording where a message really came from —
+  so a sender could merge that annotation into an element of its own
+  and make it unreadable downstream (CWE-115). The parser now reads
+  which delimiter ended the id, and ids and parameter names must be
+  SD-NAMEs: one to thirty-two printable characters, none of them a
+  space, `=`, `]`, `"` or `[`.
+
+- **FTP address parsing returned addresses that cannot be a peer**: the
+  unspecified address, multicast, broadcast, and addresses carrying an
+  interface zone. The session checks a client's `PORT` and `EPRT`
+  against the client's own address, so nothing was reachable through
+  it, but a parser that answers "0.0.0.0:1025 is a data connection" is
+  a bug waiting for its next caller. `ParsePORT` and `ParseEPRT` — the
+  two whose address is acted on — now refuse them. `ParsePASV` stays
+  lenient on purpose and says so: its address is advisory, the proxy
+  dials the server it is already connected to, and servers behind NAT
+  really do advertise `0.0.0.0`.
+
+- **DNS names were folded with `strings.ToLower`.** DNS case
+  insensitivity is ASCII only (RFC 4343) and a label may hold any byte
+  (RFC 1035 section 3.1), so Unicode folding is wrong twice: it maps
+  characters DNS treats as distinct onto one another — the Kelvin sign
+  lowers to `k` — and on bytes that are not valid UTF-8 it yields the
+  replacement character, so every such byte became the same three and
+  two different names folded to one string longer than either. That
+  string is the cache key, the block list comparison, the canonical
+  name a signature is verified over and the name an NSEC3 denial is
+  hashed from. Nothing reached it, because the label check refuses any
+  byte outside printable ASCII first — this is the hole that check was
+  covering, not a hole — but the check is in a different function from
+  every one of those uses, and the registrable-domain helper the tunnel
+  detector added is exported with no check in front of it at all. All
+  of them now fold in ASCII, and the gate has a test of its own so a
+  future loosening of it fails loudly.
 
 - The JSON Schema validator resolved `$ref` by writing a map on the
   request path. A validator is built once per route and shared by every
