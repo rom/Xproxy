@@ -119,9 +119,13 @@ an identifier from the access log to the upstream.
 - Bot classification from JA3 and JA4 fingerprints, headers and
   behaviour, with log, challenge and deny thresholds; country policy
   from a local MaxMind or CSV database
-- Honeypot routes with seventy-seven built-in decoys — from a WordPress
-  login to a cloud metadata document, a container registry catalogue
-  and an IP camera — that mark probing clients and feed the ban list;
+- Honeypot routes with a hundred and fifteen built-in decoys — from a
+  WordPress login to a cloud metadata document, a container registry
+  catalogue, a Werkzeug debugger and an IP camera — that mark probing
+  clients and feed the ban list; honeytokens that trip when a planted
+  credential is used; hidden-field and timing honeypots on forms;
+  graduated degradation and deceptive answers instead of a refusal a
+  scanner can tune against ([docs/DECEPTION.md](docs/DECEPTION.md));
   ICAP scanning of uploads and downloads with preview, block pages and
   fail policies
 
