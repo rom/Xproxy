@@ -326,11 +326,11 @@ T}
 T{
 \fBkind\fR
 T}	T{
-\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR
+\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBssh\fR
 T}	T{
 \fBhttp\fR
 T}	T{
-\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy and \fBmqtt\fR an MQTT proxy;\: see below
+\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy,\: \fBmqtt\fR an MQTT proxy and \fBssh\fR an SSH bastion;\: see below
 T}
 T{
 \fBredirect_\:to_\:https\fR
@@ -1621,6 +1621,324 @@ T}
 Every session writes one \fBmqtt\fR line to the access log with the client address, client id, username, version, subscriptions, publications and why it closed. Counters: \fBmqtt_sessions\fR, \fBmqtt_sessions_open\fR, \fBmqtt_published\fR, \fBmqtt_subscribed\fR, \fBmqtt_refused\fR, \fBmqtt_rejected\fR, \fBmqtt_protocol_errors\fR; the matching \fBxproxy_mqtt_*\fR metrics. Refusals are \fBmqtt_denied\fR deny events, so a \fBbans.triggers\fR entry on that reason turns a device walking the topic tree into a ban.
 .PP
 A note on \fB$\fR: a wildcard at the first level of a filter never matches a topic beginning with \fB$\fR (MQTT 3.1.1 section 4.7), so \fB#\fR does not hand a client the broker\(aqs own \fB$SYS\fR tree. \fBsubscribe_deny: ["$SYS/#"]\fR is still worth writing, because it refuses the client that asks for it by name.
+.SS "server.listeners[].ssh (kind: ssh)"
+.PP
+A \fBkind: ssh\fR listener is an SSH bastion: the proxy is an SSH server to the client and an SSH client to the target, with its own host key, its own authentication and its own credential onwards.
+.PP
+The two connections are the point. A jump host that forwards the stream cannot see which channel is a shell and which is a port forward, so the only policy it can hold is "may connect". Here every channel and every request inside the session is a decision: a service account can be given sftp to one directory and nothing else, and a port forward to a database is a rule rather than an assumption.
+.PP
+It also means the target never sees the client\(aqs key. The client authenticates to the proxy; the proxy authenticates to the target with a credential the client never holds, so a key that leaves the estate is not a key that opens a server in it. \fBupstream_known_hosts\fR is what makes the bastion the one place that can notice a machine in the middle.
+.PP
+An ssh listener takes \fBaddress\fR and \fBssh\fR and no \fBtls\fR: SSH carries its own transport security. Bans and the global connection limits apply at accept. Changing the \fBssh\fR section rebinds the listener on reload, and the credentials are read then \[u2014] not per connection, so a key added to \fBauthorized_keys\fR takes effect on reload rather than mid\-session.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.4i) lbx
+lw(1.2i) lw(0.9i) lw(1.4i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required
+T}	T{
+The pool of target hosts,\: picked with the upstream\(aqs balancer
+T}
+T{
+\fBhost_\:keys\fR
+T}	T{
+list of paths
+T}	T{
+required
+T}	T{
+The bastion\(aqs own host keys,\: OpenSSH or PEM. Clients pin these
+T}
+T{
+\fBauthorized_\:keys\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+OpenSSH authorized_keys of the clients that may connect. Options in the file are ignored;\: the policy lives here. A line that does not parse fails the load rather than silently shortening the list
+T}
+T{
+\fBusers_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+A users file (as in \fBforward.\:auth\fR) for password authentication. Warned about on its own: a bastion behind one guessable secret is one guess from the estate
+T}
+T{
+\fBbanner\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Sent before authentication. A legal notice belongs here;\: a version string does not
+T}
+T{
+\fBserver_\:version\fR
+T}	T{
+string
+T}	T{
+\fBSSH\-\:2.\:0\-\:xproxy\fR
+T}	T{
+The identification string;\: must begin with \fBSSH\-\:2.\:0\-\fR
+T}
+T{
+\fBmax_\:auth_\:tries\fR
+T}	T{
+int
+T}	T{
+\fB3\fR
+T}	T{
+Authentication attempts per connection
+T}
+T{
+\fBmax_\:sessions\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Connections on this listener
+T}
+T{
+\fBmax_\:channels\fR
+T}	T{
+int
+T}	T{
+\fB16\fR
+T}	T{
+Open channels per connection
+T}
+T{
+\fBhandshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Key exchange and authentication together
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30m\fR
+T}	T{
+No traffic either way
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (none)
+T}	T{
+A whole connection,\: however active
+T}
+T{
+\fBallow_\:channels\fR
+T}	T{
+list
+T}	T{
+\fB[session]\fR
+T}	T{
+Channel types a client may open: \fBsession\fR,\: \fBdirect\-\:tcpip\fR,\: \fBdirect\-\:streamlocal@openssh.\:com\fR
+T}
+T{
+\fBallow_\:requests\fR
+T}	T{
+list
+T}	T{
+\fBpty\-\:req,\: env,\: shell,\: exec,\: subsystem,\: window\-\:change,\: signal\fR
+T}	T{
+Session requests a client may send. \fBx11\-\:req\fR and \fBauth\-\:agent\-\:req@openssh.\:com\fR are left out and warn when added: each hands whatever runs on the target a channel back into the client,\: and agent forwarding lets it sign with the client\(aqs keys for the life of the session
+T}
+T{
+\fBallow_\:subsystems\fR
+T}	T{
+list
+T}	T{
+\fB[sftp]\fR
+T}	T{
+Subsystems a client may start,\: checked even when \fBsubsystem\fR is allowed
+T}
+T{
+\fBallow_\:commands\fR
+T}	T{
+list of RE2
+T}	T{
+\fB[]\fR (any)
+T}	T{
+An \fBexec\fR command must match one,\: anchored as written. Every allowed exec is a security event with the command line
+T}
+T{
+\fBforward\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Destinations \fBdirect\-\:tcpip\fR may reach: \fBhost:\:port\fR,\: \fB*.\:suffix:\:port\fR,\: \fB10.\:0.\:0.\:0/\:8:\:port\fR,\: \fB*\fR for any port. Required when \fBdirect\-\:tcpip\fR is allowed,\: and refused without it: a forward with no destination policy is a tunnel to anything the target can reach
+T}
+T{
+\fBremote_\:forward\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept \fBtcpip\-\:forward\fR,\: which asks the target to listen on the client\(aqs behalf and turns the session into an inbound path
+T}
+T{
+\fBupstream_\:user\fR
+T}	T{
+name
+T}	T{
+the authenticated name
+T}	T{
+The account on the target
+T}
+T{
+\fBupstream_\:key_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The private key the proxy authenticates to the target with
+T}
+T{
+\fBupstream_\:known_\:hosts\fR
+T}	T{
+path
+T}	T{
+required unless insecure
+T}	T{
+OpenSSH known_hosts the target\(aqs key is checked against. \fBrevoked\fR entries are not trusted
+T}
+T{
+\fBupstream_\:insecure_\:host_\:key\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept any host key from the target. Refused unless \fBallow_\:insecure\fR is also set,\: and warned about: it is the one setting here that leaves nothing to notice a machine in the middle
+T}
+T{
+\fBsftp\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Inspect the SFTP protocol inside an sftp subsystem channel;\: see below
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header with the client address to the target
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Others are closed before the handshake
+T}
+.TE
+.SS "server.listeners[].ssh.sftp"
+.PP
+Without this section the proxy can say only that a session may use \fBsftp\fR. That is the difference between reading a file and deleting a tree: the whole of it happens inside the channel. With it, each SFTP request is decided, and a refusal is answered with a permission\-denied status, so the session continues and the client is told which operation was refused rather than losing its connection.
+.PP
+Only version 3 is parsed. A client that negotiates higher is refused at the version exchange, because packets this cannot read are packets whose policy would be guesswork.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.1i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse everything that changes the server: write,\: setstat,\: remove,\: mkdir,\: rmdir,\: rename,\: symlink,\: an open with any writing flag,\: and the extensions whose meaning the proxy does not know
+T}
+T{
+\fBallow_\:paths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Paths a request may name: a glob where \fB*\fR does not cross a slash,\: or a prefix ending in \fB/\fR or \fB/\:**\fR for a whole tree
+T}
+T{
+\fBdeny_\:paths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Refused whatever the allow list says
+T}
+T{
+\fBdeny_\:operations\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Operations refused by name: \fBopen\fR,\: \fBread\fR,\: \fBwrite\fR,\: \fBremove\fR,\: \fBrename\fR,\: \fBsymlink\fR,\: \fBsetstat\fR,\: \fBreadlink\fR,\: \fBextended\fR,\: \[u2026]
+T}
+T{
+\fBmax_\:packet_\:size\fR
+T}	T{
+int
+T}	T{
+\fB262144\fR
+T}	T{
+One SFTP packet;\: 4096..16777216
+T}
+.TE
+.PP
+A path that climbs above its own root after cleaning (\fB../../etc/shadow\fR) is refused rather than matched: what it means depends on a working directory the proxy cannot see, and a check on a path whose meaning is unknown is not a check. Absolute paths always work, so nothing legitimate needs the other form.
+.PP
+Every session writes one \fBssh\fR line to the access log (client, user, authentication method, target, channels, refusals, duration) and each inspected SFTP request writes one \fBsftp\fR line with the operation and the path. Counters: \fBssh_sessions\fR, \fBssh_sessions_open\fR, \fBssh_channels\fR, \fBssh_refused\fR, \fBssh_rejected\fR, \fBssh_auth_failed\fR, \fBssh_bytes_in\fR, \fBssh_bytes_out\fR, \fBsftp_requests\fR, \fBsftp_refused\fR; the matching \fBxproxy_ssh_*\fR and \fBxproxy_sftp_*\fR metrics. Refusals and failed authentication are \fBssh_denied\fR deny events, so bans apply.
 .SS "server.listeners[].h3"
 .PP
 .TS
@@ -5272,7 +5590,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR
 T}
 T{
 \fBthreshold\fR

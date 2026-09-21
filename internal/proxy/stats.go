@@ -106,6 +106,16 @@ type Stats struct {
 	MQTTRefused            atomic.Uint64
 	MQTTRejected           atomic.Uint64
 	MQTTProtocolErrors     atomic.Uint64
+	SSHSessions            atomic.Uint64
+	SSHSessionsOpen        atomic.Int64
+	SSHChannels            atomic.Uint64
+	SSHRefused             atomic.Uint64
+	SSHRejected            atomic.Uint64
+	SSHAuthFailed          atomic.Uint64
+	SSHBytesIn             atomic.Uint64
+	SSHBytesOut            atomic.Uint64
+	SFTPRequests           atomic.Uint64
+	SFTPRefused            atomic.Uint64
 	WSConnections          atomic.Uint64
 	WSMessages             atomic.Uint64
 	WSViolations           atomic.Uint64
@@ -274,6 +284,16 @@ type Snapshot struct {
 	MQTTRefused            uint64            `json:"mqtt_refused"`
 	MQTTRejected           uint64            `json:"mqtt_rejected"`
 	MQTTProtocolErrors     uint64            `json:"mqtt_protocol_errors"`
+	SSHSessions            uint64            `json:"ssh_sessions"`
+	SSHSessionsOpen        int64             `json:"ssh_sessions_open"`
+	SSHChannels            uint64            `json:"ssh_channels"`
+	SSHRefused             uint64            `json:"ssh_refused"`
+	SSHRejected            uint64            `json:"ssh_rejected"`
+	SSHAuthFailed          uint64            `json:"ssh_auth_failed"`
+	SSHBytesIn             uint64            `json:"ssh_bytes_in"`
+	SSHBytesOut            uint64            `json:"ssh_bytes_out"`
+	SFTPRequests           uint64            `json:"sftp_requests"`
+	SFTPRefused            uint64            `json:"sftp_refused"`
 	WSConnections          uint64            `json:"websocket_connections"`
 	WSMessages             uint64            `json:"websocket_messages"`
 	WSViolations           uint64            `json:"websocket_violations"`
@@ -410,6 +430,16 @@ func (s *Stats) snapshot() Snapshot {
 		MQTTRefused:            s.MQTTRefused.Load(),
 		MQTTRejected:           s.MQTTRejected.Load(),
 		MQTTProtocolErrors:     s.MQTTProtocolErrors.Load(),
+		SSHSessions:            s.SSHSessions.Load(),
+		SSHSessionsOpen:        s.SSHSessionsOpen.Load(),
+		SSHChannels:            s.SSHChannels.Load(),
+		SSHRefused:             s.SSHRefused.Load(),
+		SSHRejected:            s.SSHRejected.Load(),
+		SSHAuthFailed:          s.SSHAuthFailed.Load(),
+		SSHBytesIn:             s.SSHBytesIn.Load(),
+		SSHBytesOut:            s.SSHBytesOut.Load(),
+		SFTPRequests:           s.SFTPRequests.Load(),
+		SFTPRefused:            s.SFTPRefused.Load(),
 		WSConnections:          s.WSConnections.Load(),
 		WSMessages:             s.WSMessages.Load(),
 		WSViolations:           s.WSViolations.Load(),

@@ -2321,6 +2321,14 @@
             }
           ]
         },
+        "ssh": {
+          "description": "SSH configures a kind: ssh listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SSHListener"
+            }
+          ]
+        },
         "tcp": {
           "description": "TCP configures a kind: tcp listener.",
           "allOf": [
@@ -3922,6 +3930,42 @@
       },
       "additionalProperties": false
     },
+    "SFTPPolicy": {
+      "description": "SFTPPolicy inspects the SFTP protocol inside an sftp subsystem channel. Refused requests are answered with a permission-denied status, so the session continues and the client is told which operation was refused rather than losing its connection.",
+      "type": "object",
+      "properties": {
+        "allow_paths": {
+          "description": "AllowPaths are the paths a request may name: a glob where \"*\" does not cross a slash, or a prefix ending in \"/\" or \"/**\" for a whole tree. Empty allows every path the deny list does not refuse.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_operations": {
+          "description": "DenyOperations refuses operations by name (open, read, write, remove, rename, symlink, setstat, ...), on top of read_only.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_paths": {
+          "description": "DenyPaths are refused whatever the allow list says.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_packet_size": {
+          "description": "MaxPacketSize bounds one SFTP packet. Default 262144, a little over the 32 KiB read and write sizes clients use.",
+          "type": "integer"
+        },
+        "read_only": {
+          "description": "ReadOnly refuses every request that changes the server: write, setstat, remove, mkdir, rmdir, rename, symlink, an open with any writing flag, and the extensions whose meaning the proxy does not know.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "SIEM": {
       "description": "SIEM is an HTTP collector of a SIEM: Splunk HTTP Event Collector, Elastic or OpenSearch ingest, Microsoft Sentinel, or any endpoint that accepts newline delimited JSON, CEF or LEEF.",
       "type": "object",
@@ -4105,6 +4149,144 @@
         "xclient": {
           "description": "XClientName sends the client address to the upstream with the XCLIENT command (a Postfix extension) after EHLO, when the upstream advertises it.",
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SSHListener": {
+      "description": "SSHListener is an SSH bastion: the proxy is an SSH server to the client and an SSH client to the target, with its own host key, its own authentication and its own credential onwards. The two connections are the point. A jump host that forwards the stream cannot see which channel is a shell and which is a port forward, so the only policy it can hold is \"may connect\". Here every channel and every request inside the session is a decision: a service account can be given sftp to one directory and nothing else, and a port forward to a database is a rule rather than an assumption. It also means the target never sees the client's key. The client authenticates to the proxy; the proxy authenticates to the target with a credential the client never holds, so a key that leaves the estate is not a key that opens a server in it.",
+      "type": "object",
+      "properties": {
+        "allow_channels": {
+          "description": "AllowChannels are the channel types a client may open: session, direct-tcpip (local port forwarding), direct-streamlocal (unix socket forwarding). Default [session].",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_commands": {
+          "description": "AllowCommands are RE2 patterns an exec command must match, anchored as written. Empty allows any command when exec is in allow_requests.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_insecure": {
+          "type": "boolean"
+        },
+        "allow_requests": {
+          "description": "AllowRequests are the session requests a client may send: pty-req, env, shell, exec, subsystem, window-change, signal, x11-req, auth-agent-req. Default everything but x11-req and auth-agent-req, which each hand the target a channel back into the client.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_subsystems": {
+          "description": "AllowSubsystems are the subsystems a client may start. Default [sftp].",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "authorized_keys": {
+          "description": "AuthorizedKeys is an OpenSSH authorized_keys file of the public keys that may connect. Options in the file are ignored; the policy lives here.",
+          "type": "string"
+        },
+        "banner": {
+          "description": "Banner is sent before authentication. A legal notice belongs here; a version string does not.",
+          "type": "string"
+        },
+        "forward": {
+          "description": "Forward are the destinations direct-tcpip channels may reach: \"host:port\", \"*.suffix:port\", \"10.0.0.0/8:port\", with \"*\" for any port. Empty refuses every forward even when the channel type is allowed, because a forward with no destination policy is a tunnel to anywhere the target can reach.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "handshake_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "host_keys": {
+          "description": "HostKeys are the proxy's own host key files, in OpenSSH or PEM form. At least one is required. Clients pin these, so replacing them is a fleet-wide known_hosts change: add the new key alongside the old one and remove the old one later.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_auth_tries": {
+          "description": "MaxAuthTries bounds authentication attempts per connection. Default 3.",
+          "type": "integer"
+        },
+        "max_channels": {
+          "description": "MaxChannels bounds open channels per connection. Default 16.",
+          "type": "integer"
+        },
+        "max_sessions": {
+          "description": "MaxSessions bounds connections on this listener. Default 1000.",
+          "type": "integer"
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the target before the SSH banner.",
+          "type": "boolean"
+        },
+        "remote_forward": {
+          "description": "RemoteForward accepts tcpip-forward, which asks the target to listen on the client's behalf. Default false: it turns a session into an inbound path.",
+          "type": "boolean"
+        },
+        "server_version": {
+          "description": "ServerVersion is the identification string, which must begin with \"SSH-2.0-\". Default \"SSH-2.0-xproxy\".",
+          "type": "string"
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "sftp": {
+          "description": "SFTP inspects the sftp subsystem's own protocol; without it the proxy can say only that a session may use sftp, which is the difference between reading a file and deleting a tree.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SFTPPolicy"
+            }
+          ]
+        },
+        "upstream": {
+          "description": "Upstream is the pool of target hosts. Required.",
+          "type": "string"
+        },
+        "upstream_insecure_host_key": {
+          "description": "UpstreamInsecureHostKey accepts any host key from the target. Refused unless allow_insecure is also set, and logged at start: it is the one setting here that turns the bastion into a machine in the middle with nothing to notice it.",
+          "type": "boolean"
+        },
+        "upstream_key_file": {
+          "description": "UpstreamKeyFile is the private key the proxy authenticates to the target with. Required.",
+          "type": "string"
+        },
+        "upstream_known_hosts": {
+          "description": "UpstreamKnownHosts verifies the target's host key against an OpenSSH known_hosts file. Required unless upstream_insecure_host_key is set.",
+          "type": "string"
+        },
+        "upstream_user": {
+          "description": "UpstreamUser is the account on the target. Empty uses the name the client authenticated as.",
+          "type": "string"
+        },
+        "users_file": {
+          "description": "UsersFile is a users file (as in forward.auth) for password authentication. Public keys are the better answer; a bastion with only passwords is one credential away from open.",
+          "type": "string"
         }
       },
       "additionalProperties": false

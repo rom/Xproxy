@@ -337,6 +337,48 @@ Open findings of the earlier rounds:
   once each) and the parser refuses records that do not.
   `examples/blocklists/dns-encrypted.yaml`.
 
+- **SSH bastion with SFTP inspection (`kind: ssh`).** A jump host
+  forwards the stream, so it cannot tell a shell from a port forward and
+  the only policy it can hold is "may connect". This listener is an SSH
+  server to the client and an SSH client to the target, which makes
+  every channel and every request inside the session a decision:
+  `direct-tcpip` only to the destinations in `forward` (validation
+  refuses the channel type without a destination list, because an empty
+  one refuses every forward while looking permissive), `exec` only for
+  commands matching `allow_commands`, `subsystem` only for the ones
+  listed, and `x11-req` and agent forwarding left out by default since
+  each hands whatever runs on the target a channel back into the
+  client.
+
+  The other half is the credential. The client authenticates to the
+  bastion with its own key; the bastion authenticates onwards with one
+  no client holds, so a key that leaves the estate on a laptop is not a
+  key that opens a server in it, and `upstream_known_hosts` makes the
+  bastion the one place that would notice a machine in the middle
+  (`upstream_insecure_host_key` exists, needs `allow_insecure`, and
+  says what it costs).
+
+  **SFTP is inspected inside the subsystem channel**, because the whole
+  difference between reading a file and deleting a tree happens there.
+  `read_only` refuses every request that changes the server — including
+  an `open` carrying a writing, creating or truncating flag, which is
+  where a write is actually decided — and `allow_paths`, `deny_paths`
+  and `deny_operations` decide the rest. A refusal is a
+  permission-denied status rather than a dropped connection, so the
+  client is told which operation was refused. A path that climbs above
+  its own root after cleaning is refused rather than matched: what it
+  means depends on a working directory the proxy cannot see, and a
+  check on a path whose meaning is unknown is not a check. Names
+  carrying NUL or invalid UTF-8 are refused for the same reason — the
+  server would read them where the proxy stopped.
+
+  Every session writes an `ssh` access line, every allowed `exec` is a
+  security event with its command, and every inspected SFTP request
+  writes an `sftp` line. That record is the other reason to terminate
+  rather than forward: a stream you cannot read is a stream you cannot
+  log. Refusals and authentication failures are `ssh_denied` deny
+  events. `examples/bastion/ssh.yaml`.
+
 - **MQTT proxy for 3.1.1 and 5.0 (`kind: mqtt`).** An MQTT broker's
   authorisation is per topic, and a topic is a string inside a packet.
   A layer 4 listener carries those packets without looking, so there is

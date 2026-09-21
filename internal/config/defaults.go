@@ -226,8 +226,28 @@ func applyDefaults(c *Config) {
 			setDur(&q.ConnectTimeout, 30*time.Second)
 			setDur(&q.IdleTimeout, 10*time.Minute)
 		}
+		if h := s.Listeners[i].SSH; h != nil {
+			setStr(&h.ServerVersion, "SSH-2.0-xproxy")
+			setInt(&h.MaxAuthTries, 3)
+			setInt(&h.MaxSessions, 1000)
+			setInt(&h.MaxChannels, 16)
+			setDur(&h.HandshakeTimeout, 30*time.Second)
+			setDur(&h.IdleTimeout, 30*time.Minute)
+			if len(h.AllowChannels) == 0 {
+				h.AllowChannels = append([]string(nil), DefaultSSHChannels...)
+			}
+			if len(h.AllowRequests) == 0 {
+				h.AllowRequests = append([]string(nil), DefaultSSHRequests...)
+			}
+			if len(h.AllowSubsystems) == 0 {
+				h.AllowSubsystems = append([]string(nil), DefaultSSHSubsystems...)
+			}
+			if h.SFTP != nil {
+				setInt(&h.SFTP.MaxPacketSize, 256<<10)
+			}
+		}
 		ln := &s.Listeners[i]
-		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" {
+		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ssh" {
 			// No HTTP protocol defaults on a non-HTTP listener; a dns,
 			// smtp or mqtt listener with TLS still gets the TLS
 			// defaults.

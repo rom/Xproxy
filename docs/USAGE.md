@@ -2336,6 +2336,71 @@ of the session — validation says so rather than leaving it implied.
 `mqtt_denied`: a device does not probe topics, so something walking the
 tree is either broken or not a device.
 
+### SSH bastion with SFTP inspection
+
+```yaml
+server:
+  listeners:
+    - name: bastion
+      address: "0.0.0.0:22"
+      kind: ssh
+      ssh:
+        upstream: hosts
+        host_keys: [/etc/xproxy/ssh/host_ed25519]
+        authorized_keys: /etc/xproxy/ssh/authorized_keys
+        allow_channels: [session, direct-tcpip]
+        allow_requests: [pty-req, env, shell, exec, subsystem, window-change, signal]
+        allow_subsystems: [sftp]
+        forward: ["10.20.0.0/16:5432"]
+        upstream_user: operator
+        upstream_key_file: /etc/xproxy/ssh/bastion_id_ed25519
+        upstream_known_hosts: /etc/xproxy/ssh/known_hosts
+```
+
+A jump host forwards the stream, so it cannot tell a shell from a port
+forward and the only policy it can hold is "may connect". This listener
+terminates the client's SSH session and opens its own to the target, so
+the channels and the requests inside them are decisions: `direct-tcpip`
+only to the destinations in `forward`, `exec` only for commands matching
+`allow_commands`, `subsystem` only for the ones listed, and `x11-req`
+and agent forwarding refused unless something asks for them — each of
+those hands whatever runs on the target a channel back into the client.
+
+The other half is the credential. The client authenticates to the
+bastion with its own key; the bastion authenticates to the target with
+`upstream_key_file`, which no client holds. A developer key that leaves
+on a laptop is then not a key that opens a server, and
+`upstream_known_hosts` makes the bastion the one place that would notice
+a machine in the middle.
+
+**SFTP is where "may use sftp" stops being the whole answer.** The
+entire difference between reading a file and deleting a tree happens
+inside the subsystem channel:
+
+```yaml
+        sftp:
+          read_only: true
+          allow_paths: ["/srv/exports/**"]
+          deny_paths:  ["/srv/exports/private/**"]
+          deny_operations: [symlink, readlink]
+```
+
+Each request is decided and refused with a permission-denied status, so
+the session survives and the client is told which operation was refused.
+A path that climbs above its own root (`../../etc/shadow`) is refused
+rather than matched: what it means depends on a working directory the
+proxy cannot see, and a check on a path whose meaning is unknown is not
+a check. Absolute paths always work.
+
+Every session writes an `ssh` access line, every allowed `exec` is a
+security event with the command line, and every inspected SFTP request
+writes an `sftp` line with the operation and the path. That record is
+the other reason to terminate rather than forward: a stream you cannot
+read is a stream you cannot log.
+
+`examples/bastion/ssh.yaml` has an operator listener and a delivery
+account that can do nothing but read one directory over sftp.
+
 ### Virtual security.txt
 
 A `security.txt` (RFC 9116) tells a finder where to report a

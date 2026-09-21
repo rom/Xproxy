@@ -1904,6 +1904,66 @@ this bound.
 broker sent something this proxy would not parse. It is not passed
 through: its framing is what the client's next read depends on.
 
+## SSH bastion
+
+**Every client is refused at authentication.** `ssh_auth_failed` counts
+the attempts and the security log names the method and the user. The
+usual causes are a key that is not in `authorized_keys` (the file is read
+at load, so a key added since needs a reload) and a client offering only
+a method the listener has not configured — without `users_file` there is
+no password authentication at all.
+
+**Authentication succeeds and then the connection drops.** The target
+leg failed. The error log says which: no reachable endpoint, or a host
+key that is not in `upstream_known_hosts`. That second one is the check
+working: the bastion is the one place that can notice a machine in the
+middle, so it refuses rather than connecting anyway. Add the target's
+key to known_hosts with `ssh-keyscan`, having checked it.
+
+**A command is refused but a shell works.** `exec` is in
+`allow_requests` but the command did not match `allow_commands`, which
+are RE2 patterns anchored as written — `uptime` matches anywhere in the
+line unless you write `^uptime$`. The refusal is an `ssh_denied` event
+with the command.
+
+**Port forwarding is refused.** Two separate gates: `direct-tcpip` must
+be in `allow_channels`, and the destination must be in `forward`.
+Validation refuses one without the other, so a listener that allows the
+channel type always has a destination list — an empty one would refuse
+every forward while looking permissive.
+
+**Agent forwarding or X11 does not work.** Both are left out of
+`allow_requests` on purpose. Adding them warns, because each gives
+whatever runs on the target a channel back into the client, and agent
+forwarding lets it sign with the client's keys for as long as the
+session lasts.
+
+**An SFTP client connects and then fails immediately.** Only version 3
+is parsed. A client that negotiates higher is refused at the version
+exchange rather than having its packets guessed at; most clients fall
+back when the server answers 3, but one that insists cannot be
+inspected.
+
+**SFTP refuses a path that looks allowed.** Paths are matched after
+cleaning, and a path that still climbs above its own root
+(`../../etc/x`) is refused outright: its meaning depends on the
+session's working directory, which the proxy cannot see. Use absolute
+paths. `allow_paths` patterns ending in `/**` or `/` cover a tree;
+plain globs do not cross a slash, so `/srv/data/*` does not match
+`/srv/data/a/b`.
+
+**SFTP writes fail with permission denied and the server's own
+permissions are fine.** `read_only` refuses more than `write`: setstat,
+remove, mkdir, rmdir, rename, symlink, and any `open` carrying a
+writing, creating or truncating flag. `sftp_refused` counts them and the
+security log names the operation and the reason.
+
+**A session ends when a command finishes but the exit status is
+missing.** That would be a bug here rather than a policy: the bastion
+relays the target's requests before closing the client's channel, and a
+lost exit status looks to the client like a crash. If you see it,
+collect the access line and the target's own log.
+
 ## Mirroring and shadowing
 
 **The mirror receives nothing.** The access line says which: `sent`,
@@ -2506,6 +2566,7 @@ innocent.
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
+| `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
 
 A trigger naming a reason that is not in the Ban column fails

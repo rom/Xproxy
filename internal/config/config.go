@@ -230,6 +230,140 @@ type Listener struct {
 	SMTP *SMTPListener `yaml:"smtp"`
 	// MQTT configures a kind: mqtt listener.
 	MQTT *MQTTListener `yaml:"mqtt"`
+	// SSH configures a kind: ssh listener.
+	SSH *SSHListener `yaml:"ssh"`
+}
+
+// SSHListener is an SSH bastion: the proxy is an SSH server to the
+// client and an SSH client to the target, with its own host key, its
+// own authentication and its own credential onwards.
+//
+// The two connections are the point. A jump host that forwards the
+// stream cannot see which channel is a shell and which is a port
+// forward, so the only policy it can hold is "may connect". Here every
+// channel and every request inside the session is a decision: a service
+// account can be given sftp to one directory and nothing else, and a
+// port forward to a database is a rule rather than an assumption.
+//
+// It also means the target never sees the client's key. The client
+// authenticates to the proxy; the proxy authenticates to the target
+// with a credential the client never holds, so a key that leaves the
+// estate is not a key that opens a server in it.
+type SSHListener struct {
+	// Upstream is the pool of target hosts. Required.
+	Upstream string `yaml:"upstream"`
+	// HostKeys are the proxy's own host key files, in OpenSSH or PEM
+	// form. At least one is required. Clients pin these, so replacing
+	// them is a fleet-wide known_hosts change: add the new key
+	// alongside the old one and remove the old one later.
+	HostKeys []string `yaml:"host_keys"`
+	// AuthorizedKeys is an OpenSSH authorized_keys file of the public
+	// keys that may connect. Options in the file are ignored; the
+	// policy lives here.
+	AuthorizedKeys string `yaml:"authorized_keys"`
+	// UsersFile is a users file (as in forward.auth) for password
+	// authentication. Public keys are the better answer; a bastion with
+	// only passwords is one credential away from open.
+	UsersFile string `yaml:"users_file"`
+	// Banner is sent before authentication. A legal notice belongs
+	// here; a version string does not.
+	Banner string `yaml:"banner"`
+	// ServerVersion is the identification string, which must begin with
+	// "SSH-2.0-". Default "SSH-2.0-xproxy".
+	ServerVersion string `yaml:"server_version"`
+	// MaxAuthTries bounds authentication attempts per connection.
+	// Default 3.
+	MaxAuthTries int `yaml:"max_auth_tries"`
+	// MaxSessions bounds connections on this listener. Default 1000.
+	MaxSessions int `yaml:"max_sessions"`
+	// MaxChannels bounds open channels per connection. Default 16.
+	MaxChannels int `yaml:"max_channels"`
+	// HandshakeTimeout bounds the key exchange and authentication.
+	// Default 30s.
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+	// IdleTimeout closes a connection with no traffic either way.
+	// Default 30m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole connection. 0 is no bound. Default
+	// 0.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// AllowChannels are the channel types a client may open: session,
+	// direct-tcpip (local port forwarding), direct-streamlocal (unix
+	// socket forwarding). Default [session].
+	AllowChannels []string `yaml:"allow_channels"`
+	// AllowRequests are the session requests a client may send:
+	// pty-req, env, shell, exec, subsystem, window-change, signal,
+	// x11-req, auth-agent-req. Default everything but x11-req and
+	// auth-agent-req, which each hand the target a channel back into
+	// the client.
+	AllowRequests []string `yaml:"allow_requests"`
+	// AllowSubsystems are the subsystems a client may start. Default
+	// [sftp].
+	AllowSubsystems []string `yaml:"allow_subsystems"`
+	// AllowCommands are RE2 patterns an exec command must match,
+	// anchored as written. Empty allows any command when exec is in
+	// allow_requests.
+	AllowCommands []string `yaml:"allow_commands"`
+	// Forward are the destinations direct-tcpip channels may reach:
+	// "host:port", "*.suffix:port", "10.0.0.0/8:port", with "*" for any
+	// port. Empty refuses every forward even when the channel type is
+	// allowed, because a forward with no destination policy is a tunnel
+	// to anywhere the target can reach.
+	Forward []string `yaml:"forward"`
+	// RemoteForward accepts tcpip-forward, which asks the target to
+	// listen on the client's behalf. Default false: it turns a session
+	// into an inbound path.
+	RemoteForward bool `yaml:"remote_forward"`
+	// UpstreamUser is the account on the target. Empty uses the name
+	// the client authenticated as.
+	UpstreamUser string `yaml:"upstream_user"`
+	// UpstreamKeyFile is the private key the proxy authenticates to the
+	// target with. Required.
+	UpstreamKeyFile string `yaml:"upstream_key_file"`
+	// UpstreamKnownHosts verifies the target's host key against an
+	// OpenSSH known_hosts file. Required unless
+	// upstream_insecure_host_key is set.
+	UpstreamKnownHosts string `yaml:"upstream_known_hosts"`
+	// UpstreamInsecureHostKey accepts any host key from the target.
+	// Refused unless allow_insecure is also set, and logged at start:
+	// it is the one setting here that turns the bastion into a machine
+	// in the middle with nothing to notice it.
+	UpstreamInsecureHostKey bool `yaml:"upstream_insecure_host_key"`
+	AllowInsecure           bool `yaml:"allow_insecure"`
+	// SFTP inspects the sftp subsystem's own protocol; without it the
+	// proxy can say only that a session may use sftp, which is the
+	// difference between reading a file and deleting a tree.
+	SFTP *SFTPPolicy `yaml:"sftp"`
+	// ProxyProtocol sends a PROXY protocol v2 header with the client
+	// address to the target before the SSH banner.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs.
+	AllowClients []string `yaml:"allow_clients"`
+}
+
+// SFTPPolicy inspects the SFTP protocol inside an sftp subsystem
+// channel. Refused requests are answered with a permission-denied
+// status, so the session continues and the client is told which
+// operation was refused rather than losing its connection.
+type SFTPPolicy struct {
+	// ReadOnly refuses every request that changes the server: write,
+	// setstat, remove, mkdir, rmdir, rename, symlink, an open with any
+	// writing flag, and the extensions whose meaning the proxy does not
+	// know.
+	ReadOnly bool `yaml:"read_only"`
+	// AllowPaths are the paths a request may name: a glob where "*"
+	// does not cross a slash, or a prefix ending in "/" or "/**" for a
+	// whole tree. Empty allows every path the deny list does not
+	// refuse.
+	AllowPaths []string `yaml:"allow_paths"`
+	// DenyPaths are refused whatever the allow list says.
+	DenyPaths []string `yaml:"deny_paths"`
+	// DenyOperations refuses operations by name (open, read, write,
+	// remove, rename, symlink, setstat, ...), on top of read_only.
+	DenyOperations []string `yaml:"deny_operations"`
+	// MaxPacketSize bounds one SFTP packet. Default 262144, a little
+	// over the 32 KiB read and write sizes clients use.
+	MaxPacketSize int `yaml:"max_packet_size"`
 }
 
 // MQTTListener is a protocol-aware MQTT proxy for 3.1.1 and 5.0. It
@@ -3372,3 +3506,31 @@ var SMTPAlwaysHidden = []string{"STARTTLS", "CHUNKING", "BDAT"}
 // version it cannot parse is a packet it cannot check, so there is no
 // "accept anything" setting.
 var DefaultMQTTVersions = []string{"3.1.1", "5.0"}
+
+// The default policy of an ssh listener: a shell and sftp, and nothing
+// that hands the target a channel back into the client.
+var (
+	DefaultSSHChannels   = []string{"session"}
+	DefaultSSHRequests   = []string{"pty-req", "env", "shell", "exec", "subsystem", "window-change", "signal"}
+	DefaultSSHSubsystems = []string{"sftp"}
+
+	// SSHChannelTypes and SSHRequestTypes are what the allow lists may
+	// name. A type the proxy does not relay is not a type an operator
+	// can allow by writing it down.
+	SSHChannelTypes = map[string]bool{
+		"session": true, "direct-tcpip": true, "direct-streamlocal@openssh.com": true,
+	}
+	SSHRequestTypes = map[string]bool{
+		"pty-req": true, "env": true, "shell": true, "exec": true, "subsystem": true,
+		"window-change": true, "signal": true, "x11-req": true, "auth-agent-req@openssh.com": true,
+		"break": true, "eow@openssh.com": true,
+	}
+)
+
+// SFTPOperations are the names deny_operations may use.
+var SFTPOperations = map[string]bool{
+	"open": true, "close": true, "read": true, "write": true, "lstat": true, "fstat": true,
+	"setstat": true, "fsetstat": true, "opendir": true, "readdir": true, "remove": true,
+	"mkdir": true, "rmdir": true, "realpath": true, "stat": true, "rename": true,
+	"readlink": true, "symlink": true, "extended": true,
+}

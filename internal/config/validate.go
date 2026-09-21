@@ -341,6 +341,9 @@ func (v *validator) config(c *Config) {
 		if q := c.Server.Listeners[i].MQTT; q != nil && q.Upstream != "" && !upstreams[q.Upstream] {
 			v.errf("server.listeners[%d].mqtt.upstream: unknown upstream %q", i, q.Upstream)
 		}
+		if h := c.Server.Listeners[i].SSH; h != nil && h.Upstream != "" && !upstreams[h.Upstream] {
+			v.errf("server.listeners[%d].ssh.upstream: unknown upstream %q", i, h.Upstream)
+		}
 	}
 	dnsListeners := map[string]bool{}
 	for _, ln := range c.Server.Listeners {
@@ -588,8 +591,20 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.mqttListener(p+".mqtt", ln.MQTT, ln.TLS != nil)
 			}
+		case "ssh":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: an ssh listener takes only address and ssh (SSH carries its own transport security)", p)
+			}
+			if ln.SSH == nil {
+				v.errf("%s.ssh: required for kind ssh", p)
+			} else {
+				v.sshListener(p+".ssh", ln.SSH)
+			}
 		default:
-			v.errf("%s.kind: must be http, tcp, forward, dns, smtp or mqtt", p)
+			v.errf("%s.kind: must be http, tcp, forward, dns, smtp, mqtt or ssh", p)
+		}
+		if ln.SSH != nil && ln.Kind != "ssh" {
+			v.errf("%s.ssh: set on a %s listener (kind: ssh)", p, ln.Kind)
 		}
 		if ln.SMTP != nil && ln.Kind != "smtp" {
 			v.errf("%s.smtp: set on a %s listener (kind: smtp)", p, ln.Kind)
@@ -1929,7 +1944,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
-	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true,
+	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -2838,6 +2853,190 @@ func validTopicFilter(f string) error {
 		case l == "+":
 		case strings.ContainsAny(l, "+#"):
 			return errors.New("a wildcard takes a whole level or none of it")
+		}
+	}
+	return nil
+}
+
+// sshListener validates an SSH bastion listener.
+func (v *validator) sshListener(p string, h *SSHListener) {
+	if h.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	if len(h.HostKeys) == 0 {
+		v.errf("%s.host_keys: at least one is required (clients pin it, so it is the bastion's identity)", p)
+	}
+	for i, f := range h.HostKeys {
+		v.file(fmt.Sprintf("%s.host_keys[%d]", p, i), f)
+	}
+	if h.AuthorizedKeys == "" && h.UsersFile == "" {
+		v.errf("%s: authorized_keys or users_file is required; a bastion that authenticates nobody forwards everybody", p)
+	}
+	if h.AuthorizedKeys != "" {
+		v.file(p+".authorized_keys", h.AuthorizedKeys)
+	}
+	if h.UsersFile != "" {
+		v.file(p+".users_file", h.UsersFile)
+		if h.AuthorizedKeys == "" {
+			v.warnf("%s.users_file: password authentication alone puts the whole estate behind one guessable secret; add authorized_keys", p)
+		}
+	}
+	if h.UpstreamKeyFile == "" {
+		v.errf("%s.upstream_key_file: required (the credential the proxy authenticates to the target with)", p)
+	} else {
+		v.file(p+".upstream_key_file", h.UpstreamKeyFile)
+	}
+	switch {
+	case h.UpstreamKnownHosts != "":
+		v.file(p+".upstream_known_hosts", h.UpstreamKnownHosts)
+		if h.UpstreamInsecureHostKey {
+			v.errf("%s.upstream_insecure_host_key: set together with upstream_known_hosts, which would never be read", p)
+		}
+	case h.UpstreamInsecureHostKey:
+		if !h.AllowInsecure {
+			v.errf("%s.upstream_insecure_host_key: refused unless allow_insecure is also true", p)
+		} else {
+			v.warnf("%s.upstream_insecure_host_key: every target's host key is accepted, so nothing would notice a machine in the middle "+
+				"between the bastion and the target", p)
+		}
+	default:
+		v.errf("%s.upstream_known_hosts: required unless upstream_insecure_host_key is set", p)
+	}
+	if !strings.HasPrefix(h.ServerVersion, "SSH-2.0-") {
+		v.errf("%s.server_version: must begin with SSH-2.0-", p)
+	}
+	if strings.ContainsAny(h.ServerVersion, "\r\n") || len(h.ServerVersion) > 240 {
+		v.errf("%s.server_version: must be one line of at most 240 characters", p)
+	}
+	if strings.Contains(h.Banner, "\x00") {
+		v.errf("%s.banner: must not contain NUL", p)
+	}
+	if h.MaxAuthTries < 1 || h.MaxAuthTries > 100 {
+		v.errf("%s.max_auth_tries: must be 1..100", p)
+	}
+	if h.MaxSessions < 1 {
+		v.errf("%s.max_sessions: must be positive", p)
+	}
+	if h.MaxChannels < 1 || h.MaxChannels > 1000 {
+		v.errf("%s.max_channels: must be 1..1000", p)
+	}
+	if h.HandshakeTimeout <= 0 || h.HandshakeTimeout > Duration(10*time.Minute) {
+		v.errf("%s.handshake_timeout: must be positive and at most 10m", p)
+	}
+	if h.IdleTimeout <= 0 || h.IdleTimeout > Duration(24*time.Hour) {
+		v.errf("%s.idle_timeout: must be positive and at most 24h", p)
+	}
+	if h.SessionTimeout < 0 || h.SessionTimeout > Duration(7*24*time.Hour) {
+		v.errf("%s.session_timeout: must be 0 (no bound) or at most 168h", p)
+	}
+	chans := map[string]bool{}
+	for i, ct := range h.AllowChannels {
+		if !SSHChannelTypes[ct] {
+			v.errf("%s.allow_channels[%d]: %q is not a channel type this proxy relays", p, i, ct)
+		}
+		chans[ct] = true
+	}
+	reqs := map[string]bool{}
+	for i, rt := range h.AllowRequests {
+		if !SSHRequestTypes[rt] {
+			v.errf("%s.allow_requests[%d]: %q is not a session request this proxy relays", p, i, rt)
+		}
+		reqs[rt] = true
+	}
+	if reqs["x11-req"] {
+		v.warnf("%s.allow_requests: x11-req lets the target open a channel back into the client's display", p)
+	}
+	if reqs["auth-agent-req@openssh.com"] {
+		v.warnf("%s.allow_requests: agent forwarding lets anything on the target sign with the client's keys for as long as the session lasts", p)
+	}
+	if reqs["subsystem"] && len(h.AllowSubsystems) == 0 {
+		v.errf("%s.allow_subsystems: subsystem is allowed but no subsystem is", p)
+	}
+	for i, sub := range h.AllowSubsystems {
+		if sub == "" || strings.ContainsAny(sub, " \t\r\n") {
+			v.errf("%s.allow_subsystems[%d]: must be one name", p, i)
+		}
+	}
+	for i, re := range h.AllowCommands {
+		if _, err := regexp.Compile(re); err != nil {
+			v.errf("%s.allow_commands[%d]: %v", p, i, err)
+		}
+	}
+	if len(h.AllowCommands) > 0 && !reqs["exec"] {
+		v.errf("%s.allow_commands: set without exec in allow_requests, so nothing would ever match it", p)
+	}
+	for i, d := range h.Forward {
+		if err := sshForwardOK(d); err != nil {
+			v.errf("%s.forward[%d]: %q: %v", p, i, d, err)
+		}
+	}
+	if len(h.Forward) > 0 && !chans["direct-tcpip"] {
+		v.errf("%s.forward: set without direct-tcpip in allow_channels, so no forward can be opened", p)
+	}
+	if chans["direct-tcpip"] && len(h.Forward) == 0 {
+		v.errf("%s.forward: direct-tcpip is allowed with no destinations, which would refuse every forward; list the destinations or drop the channel type", p)
+	}
+	if h.RemoteForward {
+		v.warnf("%s.remote_forward: tcpip-forward asks the target to listen on the client's behalf, which turns the session into an inbound path", p)
+	}
+	if h.SFTP != nil {
+		q := p + ".sftp"
+		if !reqs["subsystem"] {
+			v.errf("%s: set without subsystem in allow_requests, so no sftp session can start", q)
+		}
+		if h.SFTP.MaxPacketSize < 4096 || h.SFTP.MaxPacketSize > 1<<24 {
+			v.errf("%s.max_packet_size: must be 4096..16777216", q)
+		}
+		for i, op := range h.SFTP.DenyOperations {
+			if !SFTPOperations[strings.ToLower(op)] {
+				v.errf("%s.deny_operations[%d]: %q is not an SFTP operation", q, i, op)
+			}
+		}
+		for _, l := range []struct {
+			key  string
+			list []string
+		}{{"allow_paths", h.SFTP.AllowPaths}, {"deny_paths", h.SFTP.DenyPaths}} {
+			for i, path := range l.list {
+				if path == "" || strings.ContainsRune(path, 0) {
+					v.errf("%s.%s[%d]: must be a path", q, l.key, i)
+				}
+			}
+		}
+	}
+	for i, c := range h.AllowClients {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+}
+
+// sshForwardOK checks a direct-tcpip destination: host:port, where host
+// is a name, a *.suffix pattern or a CIDR, and port is a number or "*".
+func sshForwardOK(d string) error {
+	host, port, err := net.SplitHostPort(d)
+	if err != nil {
+		return errors.New("must be host:port")
+	}
+	if port != "*" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return errors.New("port must be 1..65535 or *")
+		}
+	}
+	switch {
+	case host == "":
+		return errors.New("host is required")
+	case strings.Contains(host, "/"):
+		if _, err := netip.ParsePrefix(host); err != nil {
+			return fmt.Errorf("not a CIDR: %w", err)
+		}
+	case strings.HasPrefix(host, "*."):
+		if !hostPatternOK(host) {
+			return errors.New("not a *.suffix pattern")
+		}
+	default:
+		if _, err := netip.ParseAddr(host); err != nil && !hostPatternOK(host) {
+			return errors.New("not a name, *.suffix pattern, address or CIDR")
 		}
 	}
 	return nil

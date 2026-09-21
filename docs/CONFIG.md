@@ -66,7 +66,7 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; not on `kind: tcp` (which forwards a header instead) or `dns`. |
-| `kind` | `http`, `tcp`, `forward`, `dns`, `smtp`, `mqtt` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy and `mqtt` an MQTT proxy; see below |
+| `kind` | `http`, `tcp`, `forward`, `dns`, `smtp`, `mqtt`, `ssh` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy and `ssh` an SSH bastion; see below |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 
 ### server.listeners[].tcp (kind: tcp)
@@ -549,6 +549,95 @@ topic beginning with `$` (MQTT 3.1.1 section 4.7), so `#` does not hand a
 client the broker's own `$SYS` tree. `subscribe_deny: ["$SYS/#"]` is
 still worth writing, because it refuses the client that asks for it by
 name.
+
+### server.listeners[].ssh (kind: ssh)
+
+A `kind: ssh` listener is an SSH bastion: the proxy is an SSH server to
+the client and an SSH client to the target, with its own host key, its
+own authentication and its own credential onwards.
+
+The two connections are the point. A jump host that forwards the stream
+cannot see which channel is a shell and which is a port forward, so the
+only policy it can hold is "may connect". Here every channel and every
+request inside the session is a decision: a service account can be given
+sftp to one directory and nothing else, and a port forward to a database
+is a rule rather than an assumption.
+
+It also means the target never sees the client's key. The client
+authenticates to the proxy; the proxy authenticates to the target with a
+credential the client never holds, so a key that leaves the estate is
+not a key that opens a server in it. `upstream_known_hosts` is what makes
+the bastion the one place that can notice a machine in the middle.
+
+An ssh listener takes `address` and `ssh` and no `tls`: SSH carries its
+own transport security. Bans and the global connection limits apply at
+accept. Changing the `ssh` section rebinds the listener on reload, and
+the credentials are read then — not per connection, so a key added to
+`authorized_keys` takes effect on reload rather than mid-session.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | upstream | required | The pool of target hosts, picked with the upstream's balancer |
+| `host_keys` | list of paths | required | The bastion's own host keys, OpenSSH or PEM. Clients pin these |
+| `authorized_keys` | path | | OpenSSH authorized_keys of the clients that may connect. Options in the file are ignored; the policy lives here. A line that does not parse fails the load rather than silently shortening the list |
+| `users_file` | path | | A users file (as in `forward.auth`) for password authentication. Warned about on its own: a bastion behind one guessable secret is one guess from the estate |
+| `banner` | string | none | Sent before authentication. A legal notice belongs here; a version string does not |
+| `server_version` | string | `SSH-2.0-xproxy` | The identification string; must begin with `SSH-2.0-` |
+| `max_auth_tries` | int | `3` | Authentication attempts per connection |
+| `max_sessions` | int | `1000` | Connections on this listener |
+| `max_channels` | int | `16` | Open channels per connection |
+| `handshake_timeout` | duration | `30s` | Key exchange and authentication together |
+| `idle_timeout` | duration | `30m` | No traffic either way |
+| `session_timeout` | duration | `0` (none) | A whole connection, however active |
+| `allow_channels` | list | `[session]` | Channel types a client may open: `session`, `direct-tcpip`, `direct-streamlocal@openssh.com` |
+| `allow_requests` | list | `pty-req, env, shell, exec, subsystem, window-change, signal` | Session requests a client may send. `x11-req` and `auth-agent-req@openssh.com` are left out and warn when added: each hands whatever runs on the target a channel back into the client, and agent forwarding lets it sign with the client's keys for the life of the session |
+| `allow_subsystems` | list | `[sftp]` | Subsystems a client may start, checked even when `subsystem` is allowed |
+| `allow_commands` | list of RE2 | `[]` (any) | An `exec` command must match one, anchored as written. Every allowed exec is a security event with the command line |
+| `forward` | list | `[]` | Destinations `direct-tcpip` may reach: `host:port`, `*.suffix:port`, `10.0.0.0/8:port`, `*` for any port. Required when `direct-tcpip` is allowed, and refused without it: a forward with no destination policy is a tunnel to anything the target can reach |
+| `remote_forward` | bool | `false` | Accept `tcpip-forward`, which asks the target to listen on the client's behalf and turns the session into an inbound path |
+| `upstream_user` | name | the authenticated name | The account on the target |
+| `upstream_key_file` | path | required | The private key the proxy authenticates to the target with |
+| `upstream_known_hosts` | path | required unless insecure | OpenSSH known_hosts the target's key is checked against. `revoked` entries are not trusted |
+| `upstream_insecure_host_key` | bool | `false` | Accept any host key from the target. Refused unless `allow_insecure` is also set, and warned about: it is the one setting here that leaves nothing to notice a machine in the middle |
+| `sftp` | object | none | Inspect the SFTP protocol inside an sftp subsystem channel; see below |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
+| `allow_clients` | list of CIDR | `[]` (any) | Others are closed before the handshake |
+
+#### server.listeners[].ssh.sftp
+
+Without this section the proxy can say only that a session may use
+`sftp`. That is the difference between reading a file and deleting a
+tree: the whole of it happens inside the channel. With it, each SFTP
+request is decided, and a refusal is answered with a permission-denied
+status, so the session continues and the client is told which operation
+was refused rather than losing its connection.
+
+Only version 3 is parsed. A client that negotiates higher is refused at
+the version exchange, because packets this cannot read are packets whose
+policy would be guesswork.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `read_only` | bool | `false` | Refuse everything that changes the server: write, setstat, remove, mkdir, rmdir, rename, symlink, an open with any writing flag, and the extensions whose meaning the proxy does not know |
+| `allow_paths` | list | `[]` (any) | Paths a request may name: a glob where `*` does not cross a slash, or a prefix ending in `/` or `/**` for a whole tree |
+| `deny_paths` | list | `[]` | Refused whatever the allow list says |
+| `deny_operations` | list | `[]` | Operations refused by name: `open`, `read`, `write`, `remove`, `rename`, `symlink`, `setstat`, `readlink`, `extended`, … |
+| `max_packet_size` | int | `262144` | One SFTP packet; 4096..16777216 |
+
+A path that climbs above its own root after cleaning (`../../etc/shadow`)
+is refused rather than matched: what it means depends on a working
+directory the proxy cannot see, and a check on a path whose meaning is
+unknown is not a check. Absolute paths always work, so nothing legitimate
+needs the other form.
+
+Every session writes one `ssh` line to the access log (client, user,
+authentication method, target, channels, refusals, duration) and each
+inspected SFTP request writes one `sftp` line with the operation and the
+path. Counters: `ssh_sessions`, `ssh_sessions_open`, `ssh_channels`,
+`ssh_refused`, `ssh_rejected`, `ssh_auth_failed`, `ssh_bytes_in`,
+`ssh_bytes_out`, `sftp_requests`, `sftp_refused`; the matching
+`xproxy_ssh_*` and `xproxy_sftp_*` metrics. Refusals and failed
+authentication are `ssh_denied` deny events, so bans apply.
 
 ### server.listeners[].h3
 
@@ -1559,7 +1648,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied`, `mqtt_denied` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied`, `mqtt_denied`, `ssh_denied` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
