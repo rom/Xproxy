@@ -260,6 +260,15 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4)
 
+- **A command line one or two octets over the bound swallowed the next
+  command.** The reader's buffer is the bound plus two, so a line that
+  overshoots by one or two arrives whole rather than filling the buffer.
+  The code then skipped to the next line ending anyway — which was
+  already behind it — and ate the following command: the client was
+  answered 500 for the line it did send and nothing at all for the next
+  one. Found while writing the same reader for FTP, fixed in both, with
+  a test that pins the two lengths where it happened.
+
 - **An SSH command that ran could be reported to the client as EOF.**
   The bastion closed a channel as soon as the target's side was drained,
   and the target can finish a command and close its channel while the
@@ -288,6 +297,60 @@ Open findings of the earlier rounds:
   against a real origin.
 
 ### Added (1.4)
+
+- **An FTP proxy that is actually in the middle (`kind: ftp`).** FTP is
+  two connections, and the second one is the whole problem. Every
+  transfer happens on a data connection whose address one side announces
+  to the other inside a reply, so a proxy that forwards that reply has
+  told the client to go round it: the file travels with nothing in the
+  middle, and the control connection it did read is a list of
+  instructions for a transfer it never saw. This listener rewrites the
+  address to its own, listens on one side and dials the other, and is
+  one end of both connections.
+
+  Only the port the target announced is used. The proxy dials the host
+  its control connection is already talking to, so a target answering
+  with an address of its choosing cannot send the proxy somewhere else.
+  And only the side that arranged a connection may use it: a passive
+  connection has to come from the client's own address, an active one
+  from the target's.
+
+  **`PORT` and `EPRT` are off by default.** They ask the server to
+  connect back to an address the client names, which makes it a port
+  scanner and a relay for anyone who can log in — the bounce attack of
+  CERT CA-1997-27, which is twenty-eight years old and still works
+  wherever somebody implemented the RFC and stopped there. With
+  `allow_active: true` the announced address must be the client's own
+  and the port unprivileged.
+
+  The policy is the vocabulary the sftp policy already had, because the
+  questions are the same: `commands` (bounded by what the proxy can
+  read the effect of — a verb whose effect it cannot name is a verb it
+  cannot hold to a policy, so `SITE EXEC` is not relayable at all),
+  `read_only`, `allow_paths` and `deny_paths` resolved against the
+  working directory the proxy follows and able to name `{user}`,
+  extension lists that read every suffix in a name, `max_file_bytes`,
+  and `yara` over uploads. The last two act by cutting the data
+  connection and answering 426 rather than 226: a transfer cannot be
+  un-sent, and telling the client it completed would be a lie.
+
+  TLS is RFC 4217: `AUTH TLS` on the client side with the pipelining
+  check that CVE-2011-0411 is about, `starttls` or `implicit` to the
+  target, and `require_tls` on by default wherever TLS is reachable
+  because a control connection in clear carries the password. `PROT P`
+  data is terminated on both sides rather than tunnelled, so a protected
+  transfer is still one this proxy can bound and read. `CCC` is refused:
+  clearing the control channel puts every path that follows back in
+  clear.
+
+  `internal/ftp` is the protocol layer: commands and replies with hard
+  bounds, and the address negotiations. A control line that is not
+  exactly CRLF-terminated is refused, and so is one carrying a telnet
+  `IAC` — each is a way for the proxy and the target to disagree about
+  where a command ends, which is how one command becomes two. The
+  address parsers are deliberately forgiving about the sentence around
+  the numbers, because servers have written it several ways, and
+  deliberately strict about the numbers themselves.
 
 - **SSH session recording (`ssh.recording`), in asciicast v2.** The
   access log said a session happened. It could not say what was done in

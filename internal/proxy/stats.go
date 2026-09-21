@@ -110,6 +110,12 @@ type Stats struct {
 	SSHSessionsOpen        atomic.Int64
 	SSHChannels            atomic.Uint64
 	SSHRefused             atomic.Uint64
+	FTPSessions            atomic.Uint64
+	FTPSessionsOpen        atomic.Int64
+	FTPRefused             atomic.Uint64
+	FTPRejected            atomic.Uint64
+	FTPAuthFailed          atomic.Uint64
+	FTPTransfers           atomic.Uint64
 	SSHRecorded            atomic.Uint64
 	SSHRejected            atomic.Uint64
 	SSHAuthFailed          atomic.Uint64
@@ -293,6 +299,12 @@ type Snapshot struct {
 	SSHSessionsOpen        int64             `json:"ssh_sessions_open"`
 	SSHChannels            uint64            `json:"ssh_channels"`
 	SSHRefused             uint64            `json:"ssh_refused"`
+	FTPSessions            uint64            `json:"ftp_sessions"`
+	FTPSessionsOpen        int64             `json:"ftp_sessions_open"`
+	FTPRefused             uint64            `json:"ftp_refused"`
+	FTPRejected            uint64            `json:"ftp_rejected"`
+	FTPAuthFailed          uint64            `json:"ftp_auth_failed"`
+	FTPTransfers           uint64            `json:"ftp_transfers"`
 	SSHRecorded            uint64            `json:"ssh_recorded"`
 	SSHRejected            uint64            `json:"ssh_rejected"`
 	SSHAuthFailed          uint64            `json:"ssh_auth_failed"`
@@ -444,6 +456,12 @@ func (s *Stats) snapshot() Snapshot {
 		SSHSessionsOpen:        s.SSHSessionsOpen.Load(),
 		SSHChannels:            s.SSHChannels.Load(),
 		SSHRefused:             s.SSHRefused.Load(),
+		FTPSessions:            s.FTPSessions.Load(),
+		FTPSessionsOpen:        s.FTPSessionsOpen.Load(),
+		FTPRefused:             s.FTPRefused.Load(),
+		FTPRejected:            s.FTPRejected.Load(),
+		FTPAuthFailed:          s.FTPAuthFailed.Load(),
+		FTPTransfers:           s.FTPTransfers.Load(),
 		SSHRecorded:            s.SSHRecorded.Load(),
 		SSHRejected:            s.SSHRejected.Load(),
 		SSHAuthFailed:          s.SSHAuthFailed.Load(),

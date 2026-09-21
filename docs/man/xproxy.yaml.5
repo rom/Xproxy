@@ -1725,6 +1725,261 @@ T}
 Every session writes one \fBmqtt\fR line to the access log with the client address, client id, username, version, subscriptions, publications and why it closed. Counters: \fBmqtt_sessions\fR, \fBmqtt_sessions_open\fR, \fBmqtt_published\fR, \fBmqtt_subscribed\fR, \fBmqtt_refused\fR, \fBmqtt_rejected\fR, \fBmqtt_protocol_errors\fR; the matching \fBxproxy_mqtt_*\fR metrics. Refusals are \fBmqtt_denied\fR deny events, so a \fBbans.triggers\fR entry on that reason turns a device walking the topic tree into a ban.
 .PP
 A note on \fB$\fR: a wildcard at the first level of a filter never matches a topic beginning with \fB$\fR (MQTT 3.1.1 section 4.7), so \fB#\fR does not hand a client the broker\(aqs own \fB$SYS\fR tree. \fBsubscribe_deny: ["$SYS/#"]\fR is still worth writing, because it refuses the client that asks for it by name.
+.SS "server.listeners[].ftp (kind: ftp)"
+.PP
+A \fBkind: ftp\fR listener is a protocol\-aware FTP proxy: the proxy is an FTP server to the client and an FTP client to the target, and it is one end of every data connection as well.
+.PP
+\fBThe data connection is why this cannot be a \fBtcp\fR listener.\fR Every transfer in FTP happens on a second connection whose address one side announces to the other, in the body of a reply. A proxy that forwards that reply has told the client to go round it: the file then travels between the client and the target with nothing in the middle, and the control connection it did read is a list of instructions for a transfer it never saw. So the address is replaced with the proxy\(aqs own, and the proxy listens on one side and dials the other.
+.PP
+Only the \fIport\fR the target announced is used. The proxy dials the host its control connection is already talking to, so a target that answers with an address of its choosing cannot send the proxy somewhere else.
+.PP
+\fBFTP is old enough to have an attack named after it.\fR \fBPORT\fR and \fBEPRT\fR ask the server to connect back to an address the client names, and a server that obeys is a port scanner and a relay for anyone who can log in \[u2014] the bounce attack of CERT CA\-1997\-27. Active mode is off by default. With \fBallow_active: true\fR the announced address must be the client\(aqs own and the port must not be privileged; that check is the whole of the defence, which is why it is stated here rather than assumed.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.3i) lbx
+lw(1.2i) lw(0.9i) lw(1.3i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required
+T}	T{
+The pool of FTP servers
+T}
+T{
+\fBbanner\fR
+T}	T{
+string
+T}	T{
+the target\(aqs
+T}	T{
+Replaces the 220 greeting. A banner is a legal notice;\: the target\(aqs own greeting usually names its software and version,\: which is a different thing
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+enum
+T}	T{
+\fBstarttls\fR with \fBtls\fR,\: else \fBnone\fR
+T}	T{
+\fBstarttls\fR accepts \fBAUTH TLS\fR (RFC 4217),\: \fBimplicit\fR is TLS from the first octet (as on 990),\: \fBnone\fR is clear
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+on wherever TLS is reachable
+T}	T{
+Refuse every command but the ones that get to TLS until the control connection is encrypted. A control connection in clear carries the password
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+enum
+T}	T{
+\fBnone\fR
+T}	T{
+\fBnone\fR,\: \fBstarttls\fR or \fBimplicit\fR towards the target
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Verification of the target;\: the same shape as elsewhere
+T}
+T{
+\fBcommands\fR
+T}	T{
+list
+T}	T{
+every command this proxy can read
+T}	T{
+Verbs a client may send;\: everything else is 502. A verb whose effect the proxy cannot name is a verb it cannot hold to a policy,\: so the list cannot be widened past what it understands
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse \fBSTOR\fR,\: \fBSTOU\fR,\: \fBAPPE\fR,\: \fBDELE\fR,\: \fBRNFR\fR,\: \fBRNTO\fR,\: \fBMKD\fR,\: \fBRMD\fR,\: \fBSITE\fR,\: \fBALLO\fR
+T}
+T{
+\fBallow_\:paths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Paths a command may name,\: matched as the sftp policy matches them,\: and resolved against the working directory the proxy has been following. May carry \fB{user}\fR
+T}
+T{
+\fBdeny_\:paths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Refused whatever the allow list says
+T}
+T{
+\fBallow_\:extensions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+What a file may be called,\: on the commands that settle a name. Every extension in the name is read,\: so \fBinvoice.\:pdf.\:exe\fR is an exe
+T}
+T{
+\fBdeny_\:extensions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Refused whatever the allow list says
+T}
+T{
+\fBmax_\:file_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+Bounds one transfer either way. It acts by cutting the data connection,\: because a transfer cannot be un\-sent,\: and the client is told 426 rather than 226
+T}
+T{
+\fByara\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Rules over what is uploaded;\: the same section as elsewhere,\: minus \fBdirections\fR
+T}
+T{
+\fBallow_\:active\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept \fBPORT\fR and \fBEPRT\fR,\: with the address check above
+T}
+T{
+\fBdata_\:address\fR
+T}	T{
+address
+T}	T{
+the control connection\(aqs
+T}	T{
+What passive replies advertise. Set it where the proxy is itself behind a NAT
+T}
+T{
+\fBdata_\:ports\fR
+T}	T{
+range
+T}	T{
+\fB0\-\:0\fR (any free port)
+T}	T{
+\fB"low\-\:high"\fR for the passive listeners,\: so a firewall in front of the proxy can be narrow
+T}
+T{
+\fBdata_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long a data connection may be arranged and not used
+T}
+T{
+\fBmax_\:command_\:line\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+One control line;\: 512..1048576
+T}
+T{
+\fBmax_\:errors\fR
+T}	T{
+int
+T}	T{
+\fB10\fR
+T}	T{
+Refused commands before the session ends
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Control connections on this listener
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+No traffic on the control connection
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (none)
+T}	T{
+A whole session,\: however active
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header with the client address to the target
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Others are closed at accept
+T}
+.TE
+.PP
+A control line that is not exactly CRLF\-terminated is refused, and so is one carrying a telnet \fBIAC\fR. Each of them is a way for the proxy and the target to disagree about where a command ends, which is how one command becomes two: the proxy reads \fBNOOP\fR and the target reads \fBNOOP\fR and the \fBDELE\fR hidden after a bare newline.
+.PP
+Only the side that arranged a data connection may use it: a passive connection has to come from the client\(aqs own address, an active one from the target\(aqs. \fBPROT P\fR is terminated on both sides rather than tunnelled, so a protected transfer is still a transfer this proxy can hold to \fBmax_file_bytes\fR and to its rules. \fBCCC\fR is refused: clearing the control channel after \fBAUTH TLS\fR puts the rest of the session, including every path, back in clear on the wire.
+.PP
+Counters: \fBftp_sessions\fR, \fBftp_sessions_open\fR, \fBftp_transfers\fR, \fBftp_refused\fR, \fBftp_rejected\fR, \fBftp_auth_failed\fR. Every session writes an \fBftp\fR access line and every transfer an \fBftp_transfer\fR line with the command, the path, the octets and whether it was cut. Refusals are \fBftp_denied\fR for the ban triggers.
 .SS "server.listeners[].ssh (kind: ssh)"
 .PP
 A \fBkind: ssh\fR listener is an SSH bastion: the proxy is an SSH server to the client and an SSH client to the target, with its own host key, its own authentication and its own credential onwards.

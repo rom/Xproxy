@@ -232,6 +232,113 @@ type Listener struct {
 	MQTT *MQTTListener `yaml:"mqtt"`
 	// SSH configures a kind: ssh listener.
 	SSH *SSHListener `yaml:"ssh"`
+	// FTP configures a kind: ftp listener.
+	FTP *FTPListener `yaml:"ftp"`
+}
+
+// FTPListener is a protocol-aware FTP proxy. The proxy is an FTP server
+// to the client and an FTP client to the target, and it mediates the
+// data connection as well as the control one.
+//
+// The data connection is the reason this cannot be a layer 4 listener.
+// Every transfer happens on a second connection whose address one side
+// announces to the other, in the body of a reply. A proxy that forwards
+// that reply has told the client to go round it: the file then travels
+// between the client and the target with nothing in the middle, and the
+// control connection it did read is a list of instructions for a
+// transfer it never saw. So the addresses are rewritten, and the proxy
+// is one end of both connections.
+//
+// The other reason is that FTP is old enough to have an attack named
+// after it. A client can name any address in PORT, and a proxy that
+// obeys is a port scanner and a relay for anyone who can log in — the
+// bounce attack of CERT CA-1997-27. Active mode is therefore off by
+// default, and when it is on the announced address has to be the
+// client's own.
+type FTPListener struct {
+	// Upstream is the server pool. Required.
+	Upstream string `yaml:"upstream"`
+	// Banner replaces the target's 220 greeting. A banner is a legal
+	// notice; the target's own greeting usually names its software and
+	// version, which is a different thing.
+	Banner string `yaml:"banner"`
+	// TLSMode is starttls (the client may send AUTH TLS, and the
+	// listener's tls section provides the certificate), implicit (TLS
+	// from the first octet, as on 990) or none. Default starttls when
+	// tls is set.
+	TLSMode string `yaml:"tls_mode"`
+	// RequireTLS refuses every command but the ones that get to TLS
+	// until the control connection is encrypted. Defaults on wherever
+	// TLS is reachable: a control connection in clear carries the
+	// password.
+	RequireTLS bool `yaml:"require_tls"`
+	// UpstreamTLSMode is none, starttls or implicit. Default none.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the target when upstream_tls_mode is not
+	// none.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// Commands a client may send. Everything else is refused with 502.
+	// The default is every command this proxy understands the effect
+	// of, which is the list it can hold to a policy.
+	Commands []string `yaml:"commands"`
+	// ReadOnly refuses every command that changes the server: STOR,
+	// STOU, APPE, DELE, RNFR, RNTO, MKD, RMD, SITE, ALLO.
+	ReadOnly bool `yaml:"read_only"`
+	// AllowPaths are the paths a command may name, matched as the sftp
+	// policy matches them: a glob where "*" does not cross a slash, or
+	// a prefix ending in "/" or "/**" for a whole tree. They may carry
+	// {user}, which is the login the client authenticated as. Empty
+	// allows every path the deny list does not refuse.
+	AllowPaths []string `yaml:"allow_paths"`
+	// DenyPaths are refused whatever the allow list says.
+	DenyPaths []string `yaml:"deny_paths"`
+	// AllowExtensions and DenyExtensions decide what a file may be
+	// called, on the commands that settle a name. Every extension a
+	// name carries is read, so "invoice.pdf.exe" is an exe.
+	AllowExtensions []string `yaml:"allow_extensions"`
+	DenyExtensions  []string `yaml:"deny_extensions"`
+	// MaxFileBytes bounds one transfer in either direction. 0 is no
+	// bound. The connection is cut when it is passed, because a
+	// transfer cannot be un-sent.
+	MaxFileBytes int64 `yaml:"max_file_bytes"`
+	// YARA scans what is uploaded. A match cuts the data connection
+	// and, with action close, the session.
+	YARA *YARAPolicy `yaml:"yara"`
+	// AllowActive accepts PORT and EPRT. Default false. With it on, the
+	// address announced must be the client's own, which is the only
+	// form of active mode that is not a way to make the proxy connect
+	// somewhere on request.
+	AllowActive bool `yaml:"allow_active"`
+	// DataAddress is the address the proxy advertises for passive data
+	// connections. Default the address the control connection arrived
+	// on, which is right unless the proxy is itself behind a NAT.
+	DataAddress string `yaml:"data_address"`
+	// DataPorts is the range the proxy listens on for passive data,
+	// written "low-high". Default "0-0", which is any free port. A
+	// range is what lets a firewall in front of the proxy be narrow.
+	DataPorts string `yaml:"data_ports"`
+	// DataTimeout bounds how long a data connection may be arranged
+	// and not used. Default 30s.
+	DataTimeout Duration `yaml:"data_timeout"`
+	// MaxCommandLine bounds one control line. Default 4096.
+	MaxCommandLine int `yaml:"max_command_line"`
+	// MaxErrors ends the session after this many refused commands.
+	// Default 10.
+	MaxErrors int `yaml:"max_errors"`
+	// MaxConnections bounds control connections on this listener.
+	// Default 1000.
+	MaxConnections int `yaml:"max_connections"`
+	// IdleTimeout is no traffic on the control connection. Default
+	// 5m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole session however active. Default 0,
+	// no bound.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// ProxyProtocol sends a PROXY protocol v2 header with the client
+	// address to the target.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs.
+	AllowClients []string `yaml:"allow_clients"`
 }
 
 // SSHListener is an SSH bastion: the proxy is an SSH server to the
@@ -3785,6 +3892,19 @@ var SSHDeniedEnv = []string{
 // DefaultSSHEnv is what a client may set when allow_env says nothing: a
 // terminal type and a locale, which is what an interactive session
 // needs and all it needs.
+// DefaultFTPCommands is every command this proxy can read the effect
+// of, which is the set it can hold to a policy. A verb outside it is
+// refused: applying a policy to an argument nobody understands is not
+// applying a policy.
+var DefaultFTPCommands = []string{
+	"USER", "PASS", "ACCT", "QUIT", "NOOP", "SYST", "FEAT", "OPTS",
+	"TYPE", "MODE", "STRU", "PWD", "XPWD", "CWD", "XCWD", "CDUP", "XCUP",
+	"PASV", "EPSV", "PORT", "EPRT", "RETR", "STOR", "STOU", "APPE",
+	"DELE", "RNFR", "RNTO", "MKD", "XMKD", "RMD", "XRMD", "LIST", "NLST",
+	"MLSD", "MLST", "SIZE", "MDTM", "STAT", "ABOR", "REST", "HELP",
+	"AUTH", "PBSZ", "PROT",
+}
+
 // SFTPPathVars are the substitutions an sftp path pattern may carry.
 // They are deliberately few: a pattern is a security decision, and a
 // substitution the operator cannot predict the value of is not one.

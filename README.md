@@ -235,6 +235,14 @@ an identifier from the access log to the upstream.
   and a deny list by overlap — which is what stops a device asking for
   `#`. The will goes through the publish policy at CONNECT, the only
   moment there is
+- `kind: ftp`: an FTP proxy that is actually in the middle. FTP puts
+  every transfer on a second connection whose address one side
+  announces to the other, so a proxy that forwards that reply has told
+  the client to go round it; this one rewrites the address and is one
+  end of both connections. Commands, paths, extensions, a bound on a
+  transfer and YARA over uploads; AUTH TLS both ways. **`PORT` is
+  refused by default** — it asks the proxy to connect to an address the
+  client names, which is the bounce attack
 - `kind: ssh`: an SSH bastion. The proxy is an SSH server to the client
   and an SSH client to the target, so every channel and every request
   inside the session is a decision: `direct-tcpip` only to listed
@@ -384,7 +392,7 @@ engine with the Core Rule Set, bbolt for ban state, quic-go for HTTP/3,
 wazero for WebAssembly, and `golang.org/x/crypto` for the SSH bastion.
 
 Everything else is written here rather than pulled in, and the reason is
-usually the same. The SMTP, MQTT, SFTP and MASQUE parsers, the TOTP
+usually the same. The SMTP, MQTT, FTP, SFTP and MASQUE parsers, the TOTP
 implementation and the YARA engine are all first-party: a protocol this
 proxy *decides* is a protocol it has to read the same way twice, and
 linking libyara alone would have meant `CGO_ENABLED=1` and a C parser in

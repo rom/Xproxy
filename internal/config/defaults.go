@@ -269,12 +269,43 @@ func applyDefaults(c *Config) {
 				h.AllowFileTransferCommands = &allow
 			}
 		}
+		if f := s.Listeners[i].FTP; f != nil {
+			if f.TLSMode == "" {
+				if s.Listeners[i].TLS != nil {
+					f.TLSMode = "starttls"
+				} else {
+					f.TLSMode = "none"
+				}
+			}
+			// A control connection in clear carries the password, so
+			// require_tls defaults on wherever TLS is reachable at all.
+			if !f.RequireTLS && (f.TLSMode == "starttls" || f.TLSMode == "implicit") {
+				f.RequireTLS = true
+			}
+			setStr(&f.UpstreamTLSMode, "none")
+			if f.UpstreamTLS != nil {
+				setStr(&f.UpstreamTLS.MinVersion, "1.2")
+			}
+			if len(f.Commands) == 0 {
+				f.Commands = append([]string(nil), DefaultFTPCommands...)
+			}
+			setStr(&f.DataPorts, "0-0")
+			setInt(&f.MaxCommandLine, 4096)
+			setInt(&f.MaxErrors, 10)
+			setInt(&f.MaxConnections, 1000)
+			setDur(&f.DataTimeout, 30*time.Second)
+			setDur(&f.IdleTimeout, 5*time.Minute)
+			if f.YARA != nil {
+				yaraDefaults(f.YARA)
+				f.YARA.Directions = []string{"client"}
+			}
+		}
 		ln := &s.Listeners[i]
-		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ssh" {
+		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ssh" || ln.Kind == "ftp" {
 			// No HTTP protocol defaults on a non-HTTP listener; a dns,
 			// smtp or mqtt listener with TLS still gets the TLS
 			// defaults.
-			if (ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt") && ln.TLS != nil {
+			if (ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ftp") && ln.TLS != nil {
 				setStr(&ln.TLS.MinVersion, "1.2")
 				setStr(&ln.TLS.ClientAuth, "none")
 			}

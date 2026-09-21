@@ -90,11 +90,21 @@ func (r *Reader) SetMax(max int) { r.max = max }
 // chooses to.
 func (r *Reader) ReadLine() ([]byte, error) {
 	line, err := r.br.ReadSlice('\n')
-	if errors.Is(err, bufio.ErrBufferFull) || (err == nil && len(line) > r.max) {
+	switch {
+	case errors.Is(err, bufio.ErrBufferFull):
+		// The buffer filled before a line ending arrived, so the reader
+		// is in the middle of a line; skip to the end of it, or the
+		// rest would be read as a command of its own.
 		r.discardLine()
 		return nil, ErrLineTooLong
-	}
-	if err != nil {
+	case err == nil && len(line) > r.max:
+		// A whole line, and a longer one than the bound allows. The
+		// buffer is two octets larger than the bound, so a line that
+		// overshoots by one or two arrives complete: the reader is
+		// already at the next line and discarding here would swallow
+		// the command after it.
+		return nil, ErrLineTooLong
+	case err != nil:
 		return nil, err
 	}
 	body := line[:len(line)-1]

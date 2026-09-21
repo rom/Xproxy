@@ -4,6 +4,7 @@ import (
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/tmpl"
 	"github.com/rom/xproxy/internal/yara"
 	"mime"
@@ -601,8 +602,20 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.sshListener(p+".ssh", ln.SSH)
 			}
+		case "ftp":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an ftp listener takes only address, ftp and tls", p)
+			}
+			if ln.FTP == nil {
+				v.errf("%s.ftp: required for kind ftp", p)
+			} else {
+				v.ftpListener(p+".ftp", ln.FTP, ln.TLS != nil)
+			}
 		default:
-			v.errf("%s.kind: must be http, tcp, forward, dns, smtp, mqtt or ssh", p)
+			v.errf("%s.kind: must be http, tcp, forward, dns, smtp, mqtt, ssh or ftp", p)
+		}
+		if ln.FTP != nil && ln.Kind != "ftp" {
+			v.errf("%s.ftp: set on a %s listener (kind: ftp)", p, ln.Kind)
 		}
 		if ln.SSH != nil && ln.Kind != "ssh" {
 			v.errf("%s.ssh: set on a %s listener (kind: ssh)", p, ln.Kind)
@@ -1945,7 +1958,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
-	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "yara": true,
+	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "yara": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -5112,5 +5125,121 @@ func (v *validator) when(p, src string, r *Route) {
 	}
 	if _, err := expr.Parse(src, ExprVars(), CaptureNames(r)...); err != nil {
 		v.errf("%s: %v", p, err)
+	}
+}
+
+// ftpListener validates a kind: ftp listener.
+func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
+	if f.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	switch f.TLSMode {
+	case "none":
+	case "starttls", "implicit":
+		if !hasTLS {
+			v.errf("%s.tls_mode: %q needs the listener's tls section", p, f.TLSMode)
+		}
+	default:
+		v.errf("%s.tls_mode: must be none, starttls or implicit", p)
+	}
+	if f.TLSMode == "none" && hasTLS {
+		v.warnf("%s.tls_mode: none with a tls section, so the certificate is never used", p)
+	}
+	if !f.RequireTLS && f.TLSMode != "none" {
+		v.warnf("%s.require_tls: false where TLS is reachable, so a client can send the password in clear", p)
+	}
+	switch f.UpstreamTLSMode {
+	case "none", "starttls", "implicit":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none, starttls or implicit", p)
+	}
+	if f.UpstreamTLSMode != "none" {
+		v.upstreamTLS(p+".upstream_tls", f.UpstreamTLS)
+	}
+	seen := map[string]bool{}
+	for i, c := range f.Commands {
+		verb := strings.ToUpper(strings.TrimSpace(c))
+		if !ftp.Known[verb] {
+			v.errf("%s.commands[%d]: %q is not a command this proxy can read the effect of", p, i, c)
+		}
+		if seen[verb] {
+			v.errf("%s.commands[%d]: %q listed twice", p, i, c)
+		}
+		seen[verb] = true
+	}
+	if len(f.Commands) > 0 {
+		for _, need := range []string{"USER", "QUIT"} {
+			if !seen[need] {
+				v.errf("%s.commands: %s is required; without it no session can %s", p, need,
+					map[string]string{"USER": "log in", "QUIT": "end cleanly"}[need])
+			}
+		}
+	}
+	for _, l := range []struct {
+		key  string
+		list []string
+	}{{"allow_paths", f.AllowPaths}, {"deny_paths", f.DenyPaths}} {
+		for i, pattern := range l.list {
+			if pattern == "" || strings.ContainsRune(pattern, 0) {
+				v.errf("%s.%s[%d]: must be a path", p, l.key, i)
+			}
+			if strings.Contains(pattern, "{") && !strings.Contains(pattern, "{user}") {
+				v.errf("%s.%s[%d]: {user} is the only substitution here", p, l.key, i)
+			}
+		}
+	}
+	for _, l := range []struct {
+		key  string
+		list []string
+	}{{"allow_extensions", f.AllowExtensions}, {"deny_extensions", f.DenyExtensions}} {
+		for i, e := range l.list {
+			if e == "" || strings.ContainsAny(e, "./\\*?") {
+				v.errf("%s.%s[%d]: %q is an extension, without a dot and without a glob", p, l.key, i, e)
+			}
+		}
+	}
+	if f.MaxFileBytes < 0 {
+		v.errf("%s.max_file_bytes: must not be negative", p)
+	}
+	if f.YARA != nil {
+		v.yaraPolicy(p+".yara", f.YARA)
+	}
+	if f.AllowActive {
+		v.warnf("%s.allow_active: PORT and EPRT ask the proxy to connect to an address the client names; it is refused unless the address is the client's own, and that check is all that stands between this and the bounce attack", p)
+	}
+	if f.DataAddress != "" {
+		if _, err := netip.ParseAddr(f.DataAddress); err != nil {
+			v.errf("%s.data_address: %q is not an address", p, f.DataAddress)
+		}
+	}
+	if f.DataPorts != "" && f.DataPorts != "0-0" {
+		lo, hi, ok := strings.Cut(f.DataPorts, "-")
+		l, errLo := strconv.Atoi(strings.TrimSpace(lo))
+		h, errHi := strconv.Atoi(strings.TrimSpace(hi))
+		switch {
+		case !ok || errLo != nil || errHi != nil:
+			v.errf(`%s.data_ports: must be written "low-high"`, p)
+		case l < 1 || h > 65535 || l > h:
+			v.errf("%s.data_ports: must be 1..65535 with low no higher than high", p)
+		case h-l < 8:
+			v.warnf("%s.data_ports: %d ports for concurrent transfers, which is a transfer refused as soon as they are all in use", p, h-l+1)
+		}
+	}
+	if f.DataTimeout <= 0 {
+		v.errf("%s.data_timeout: must be positive", p)
+	}
+	if f.MaxCommandLine < 512 || f.MaxCommandLine > 1<<20 {
+		v.errf("%s.max_command_line: must be 512..1048576", p)
+	}
+	if f.MaxErrors < 1 {
+		v.errf("%s.max_errors: must be at least 1", p)
+	}
+	if f.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be at least 1", p)
+	}
+	for i, c := range f.AllowClients {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
 	}
 }

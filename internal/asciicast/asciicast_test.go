@@ -17,7 +17,7 @@ func lines(t *testing.T, b []byte) (map[string]any, [][]any) {
 	if err := json.Unmarshal([]byte(parts[0]), &hdr); err != nil {
 		t.Fatalf("header %q: %v", parts[0], err)
 	}
-	var out [][]any
+	out := make([][]any, 0, len(parts)-1)
 	for _, p := range parts[1:] {
 		var ev []any
 		if err := json.Unmarshal([]byte(p), &ev); err != nil {

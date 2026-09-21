@@ -1411,7 +1411,7 @@ func readCast(t *testing.T, dir string) (map[string]any, [][]any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var names []string
+	names := make([]string, 0, len(entries))
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
@@ -1434,7 +1434,7 @@ func readCast(t *testing.T, dir string) (map[string]any, [][]any) {
 	if err := json.Unmarshal([]byte(parts[0]), &hdr); err != nil {
 		t.Fatalf("header %q: %v", parts[0], err)
 	}
-	var evs [][]any
+	evs := make([][]any, 0, len(parts)-1)
 	for _, p := range parts[1:] {
 		var ev []any
 		if err := json.Unmarshal([]byte(p), &ev); err != nil {

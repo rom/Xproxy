@@ -229,3 +229,27 @@ func FuzzParseCommand(f *testing.F) {
 		}
 	})
 }
+
+// A line one octet over the bound arrives complete, because the buffer
+// is larger than the bound. Skipping to the next line ending then
+// swallows the command after it: the client is answered 500 for a line
+// it did send and nothing at all for the next one.
+func TestReadLineResyncsAtTheBoundary(t *testing.T) {
+	// The buffer is the bound plus two, so these are the lengths that
+	// arrive whole while still being over: anything longer fills the
+	// buffer first and takes the other path.
+	for _, total := range []int{513, 514} {
+		in := "MAIL FROM:<" + strings.Repeat("a", total-14) + ">\r\nNOOP\r\n"
+		if len(in) != total+6 {
+			t.Fatalf("the test built a %d octet line, want %d", len(in)-6, total)
+		}
+		r := smtp.NewReader(strings.NewReader(in), 512)
+		if _, err := r.ReadLine(); !errors.Is(err, smtp.ErrLineTooLong) {
+			t.Fatalf("a %d octet line: err = %v", total, err)
+		}
+		line, err := r.ReadLine()
+		if err != nil || string(line) != "NOOP" {
+			t.Errorf("after a %d octet line the next command was %q %v", total, line, err)
+		}
+	}
+}

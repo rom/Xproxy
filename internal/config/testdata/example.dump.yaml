@@ -18,6 +18,7 @@ server:
           smtp: null
           mqtt: null
           ssh: null
+          ftp: null
         - name: public
           address: :443
           protocols:
@@ -55,6 +56,7 @@ server:
           smtp: null
           mqtt: null
           ssh: null
+          ftp: null
     limits:
         max_header_bytes: 65536
         max_body_bytes: 10485760

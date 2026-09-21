@@ -1904,6 +1904,60 @@ this bound.
 broker sent something this proxy would not parse. It is not passed
 through: its framing is what the client's next read depends on.
 
+## FTP proxy
+
+**Transfers hang, or the client reports "cannot open data connection".**
+The data connection is separate, and the proxy is one end of it. Three
+things to check: the client is using passive mode (`PASV` or `EPSV`),
+since active is off by default; `data_ports` is open on any firewall in
+front of the proxy, and wide enough for the transfers that run at once;
+and `data_address` names an address the client can reach, which matters
+only when the proxy is itself behind a NAT. A transfer arranged and not
+used within `data_timeout` is dropped.
+
+**`PORT` or `EPRT` is answered 502.** Active mode is off by default. It
+asks the proxy to connect back to an address the client names, which is
+the bounce attack: a client that names somebody else's address has made
+the proxy open a connection on its behalf. `allow_active: true` turns it
+on, and then the address must be the client's own and the port
+unprivileged, or the answer is 501.
+
+**A transfer ends with 426 and the file is short.** Either
+`max_file_bytes` or a `yara` match. Both act by cutting the data
+connection, because a transfer cannot be un-sent, and the client is told
+426 rather than the target's 226 — telling it the transfer completed
+would be a lie. The security log says which, with the path.
+
+**A command is answered 502 although the server supports it.** Two
+different lists. `commands` is what this listener allows; the default is
+every verb the proxy can read the effect of, which is smaller than what
+a server implements — a verb whose effect it cannot name is a verb it
+cannot hold to a policy, so `SITE EXEC` and the rest are not relayable
+at all. Adding an unknown verb to `commands` fails the load rather than
+widening the proxy.
+
+**A path is refused although it looks right.** Paths are resolved
+against the working directory the proxy has been following from the
+`CWD` replies, then cleaned, then matched. A path that still climbs
+above its root is refused outright. If the session did something the
+proxy could not follow — a `CWD` it never saw the reply to — the
+directories can drift; `PWD` on the client shows the target's view and
+the refusal in the log shows the proxy's.
+
+**Everything is answered 534 before login.** `require_tls` is on, which
+is the default wherever TLS is reachable, and the control connection is
+still in clear. The client has to send `AUTH TLS` first. Only `AUTH`,
+`QUIT`, `FEAT`, `NOOP`, `PBSZ`, `PROT` and `HELP` are allowed before it.
+
+**`CCC` is refused.** Deliberately. It clears the control channel after
+`AUTH TLS`, which puts every path, every file name and every reply that
+follows back in clear on the wire; the transfer protection it is usually
+paired with does not cover any of that.
+
+**A session ends after a few refusals.** `max_errors`, default 10. A
+client walking a policy to find its edges is a client to stop talking
+to, and the refusals are `ftp_denied` for the ban triggers.
+
 ## SSH bastion
 
 **Every client is refused at authentication.** `ssh_auth_failed` counts
@@ -2788,6 +2842,7 @@ innocent.
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
 | `yara` | A YARA rule fired on a layer 4 stream with `action: close` | yes |
+| `ftp_denied` | The FTP proxy: a refused command, path, extension or address, a failed login, a malformed control line, a bounce attempt, or a transfer cut by a bound or a rule (`detail` says which) | yes |
 | `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command, environment variable, file transfer helper or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
 

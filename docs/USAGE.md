@@ -2336,6 +2336,68 @@ of the session — validation says so rather than leaving it implied.
 `mqtt_denied`: a device does not probe topics, so something walking the
 tree is either broken or not a device.
 
+### FTP with the data connection mediated
+
+```yaml
+server:
+  listeners:
+    - name: intake
+      address: "0.0.0.0:21"
+      kind: ftp
+      tls:
+        certificates: [{cert_file: /etc/xproxy/certs/ftp.pem, key_file: /etc/xproxy/certs/ftp-key.pem}]
+      ftp:
+        upstream: files
+        tls_mode: starttls
+        require_tls: true
+        data_ports: "50000-50100"
+        allow_paths: ["/srv/intake/{user}/**"]
+        deny_extensions: [exe, dll, so, sh, php]
+        max_file_bytes: 2147483648
+        yara: {rules_dir: /etc/xproxy/yara, action: close}
+```
+
+FTP is two connections, and the second one is why this cannot be a
+`tcp` listener. Every transfer happens on a data connection whose
+address one side announces to the other inside a reply; a proxy that
+forwards that reply has told the client to go round it, and the
+commands it read are instructions for a transfer it never saw. So the
+proxy replaces the address with its own, listens on one side and dials
+the other, and the file passes through it. Only the port the target
+announced is used — the proxy dials the host its control connection is
+already talking to, so a target cannot redirect it somewhere else. And
+only the side that arranged the connection may use it: a passive
+connection has to come from the client's own address.
+
+**`PORT` and `EPRT` are off by default**, and that is not a
+compatibility oversight. They ask the server to connect back to an
+address the client names, which makes it a port scanner and a relay for
+anyone who can log in: the bounce attack, CERT CA-1997-27. With
+`allow_active: true` the announced address has to be the client's own
+and the port unprivileged; that check is the whole of the defence.
+
+The rest is the same vocabulary as the SFTP policy, because the
+questions are the same: `read_only`, path lists that may name `{user}`,
+extension lists that read every suffix in a name, a bound on one
+transfer, and rules over what is uploaded. `max_file_bytes` and a rule
+match both act by cutting the data connection and answering 426 rather
+than 226 — a transfer cannot be un-sent, so there is nothing else
+honest to do.
+
+A control line that is not exactly CRLF-terminated is refused, and so is
+one carrying a telnet `IAC`. Each is a way for the proxy and the target
+to disagree about where a command ends: the proxy reads `NOOP` and the
+target reads `NOOP` and the `DELE` hidden behind a bare newline.
+
+`require_tls` defaults on wherever TLS is reachable, because a control
+connection in clear carries the password. `PROT P` data is terminated on
+both sides rather than tunnelled, so a protected transfer is still one
+this proxy can bound and read. `CCC` is refused: clearing the control
+channel after `AUTH TLS` puts every path that follows back in clear.
+
+`examples/files/ftp.yaml` has a supplier drop box and a read-only
+mirror.
+
 ### SSH bastion with SFTP inspection
 
 ```yaml

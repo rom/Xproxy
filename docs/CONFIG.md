@@ -598,6 +598,82 @@ client the broker's own `$SYS` tree. `subscribe_deny: ["$SYS/#"]` is
 still worth writing, because it refuses the client that asks for it by
 name.
 
+### server.listeners[].ftp (kind: ftp)
+
+A `kind: ftp` listener is a protocol-aware FTP proxy: the proxy is an
+FTP server to the client and an FTP client to the target, and it is one
+end of every data connection as well.
+
+**The data connection is why this cannot be a `tcp` listener.** Every
+transfer in FTP happens on a second connection whose address one side
+announces to the other, in the body of a reply. A proxy that forwards
+that reply has told the client to go round it: the file then travels
+between the client and the target with nothing in the middle, and the
+control connection it did read is a list of instructions for a transfer
+it never saw. So the address is replaced with the proxy's own, and the
+proxy listens on one side and dials the other.
+
+Only the *port* the target announced is used. The proxy dials the host
+its control connection is already talking to, so a target that answers
+with an address of its choosing cannot send the proxy somewhere else.
+
+**FTP is old enough to have an attack named after it.** `PORT` and
+`EPRT` ask the server to connect back to an address the client names,
+and a server that obeys is a port scanner and a relay for anyone who can
+log in — the bounce attack of CERT CA-1997-27. Active mode is off by
+default. With `allow_active: true` the announced address must be the
+client's own and the port must not be privileged; that check is the
+whole of the defence, which is why it is stated here rather than
+assumed.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | upstream | required | The pool of FTP servers |
+| `banner` | string | the target's | Replaces the 220 greeting. A banner is a legal notice; the target's own greeting usually names its software and version, which is a different thing |
+| `tls_mode` | enum | `starttls` with `tls`, else `none` | `starttls` accepts `AUTH TLS` (RFC 4217), `implicit` is TLS from the first octet (as on 990), `none` is clear |
+| `require_tls` | bool | on wherever TLS is reachable | Refuse every command but the ones that get to TLS until the control connection is encrypted. A control connection in clear carries the password |
+| `upstream_tls_mode` | enum | `none` | `none`, `starttls` or `implicit` towards the target |
+| `upstream_tls` | object | | Verification of the target; the same shape as elsewhere |
+| `commands` | list | every command this proxy can read | Verbs a client may send; everything else is 502. A verb whose effect the proxy cannot name is a verb it cannot hold to a policy, so the list cannot be widened past what it understands |
+| `read_only` | bool | `false` | Refuse `STOR`, `STOU`, `APPE`, `DELE`, `RNFR`, `RNTO`, `MKD`, `RMD`, `SITE`, `ALLO` |
+| `allow_paths` | list | `[]` (any) | Paths a command may name, matched as the sftp policy matches them, and resolved against the working directory the proxy has been following. May carry `{user}` |
+| `deny_paths` | list | `[]` | Refused whatever the allow list says |
+| `allow_extensions` | list | `[]` (any) | What a file may be called, on the commands that settle a name. Every extension in the name is read, so `invoice.pdf.exe` is an exe |
+| `deny_extensions` | list | `[]` | Refused whatever the allow list says |
+| `max_file_bytes` | int | `0` (none) | Bounds one transfer either way. It acts by cutting the data connection, because a transfer cannot be un-sent, and the client is told 426 rather than 226 |
+| `yara` | object | none | Rules over what is uploaded; the same section as elsewhere, minus `directions` |
+| `allow_active` | bool | `false` | Accept `PORT` and `EPRT`, with the address check above |
+| `data_address` | address | the control connection's | What passive replies advertise. Set it where the proxy is itself behind a NAT |
+| `data_ports` | range | `0-0` (any free port) | `"low-high"` for the passive listeners, so a firewall in front of the proxy can be narrow |
+| `data_timeout` | duration | `30s` | How long a data connection may be arranged and not used |
+| `max_command_line` | int | `4096` | One control line; 512..1048576 |
+| `max_errors` | int | `10` | Refused commands before the session ends |
+| `max_connections` | int | `1000` | Control connections on this listener |
+| `idle_timeout` | duration | `5m` | No traffic on the control connection |
+| `session_timeout` | duration | `0` (none) | A whole session, however active |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
+| `allow_clients` | list of CIDR | `[]` (any) | Others are closed at accept |
+
+A control line that is not exactly CRLF-terminated is refused, and so is
+one carrying a telnet `IAC`. Each of them is a way for the proxy and the
+target to disagree about where a command ends, which is how one command
+becomes two: the proxy reads `NOOP` and the target reads `NOOP` and the
+`DELE` hidden after a bare newline.
+
+Only the side that arranged a data connection may use it: a passive
+connection has to come from the client's own address, an active one from
+the target's. `PROT P` is terminated on both sides rather than tunnelled,
+so a protected transfer is still a transfer this proxy can hold to
+`max_file_bytes` and to its rules. `CCC` is refused: clearing the
+control channel after `AUTH TLS` puts the rest of the session, including
+every path, back in clear on the wire.
+
+Counters: `ftp_sessions`, `ftp_sessions_open`, `ftp_transfers`,
+`ftp_refused`, `ftp_rejected`, `ftp_auth_failed`. Every session writes
+an `ftp` access line and every transfer an `ftp_transfer` line with the
+command, the path, the octets and whether it was cut. Refusals are
+`ftp_denied` for the ban triggers.
+
 ### server.listeners[].ssh (kind: ssh)
 
 A `kind: ssh` listener is an SSH bastion: the proxy is an SSH server to

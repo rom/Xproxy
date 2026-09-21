@@ -1458,6 +1458,141 @@
       },
       "additionalProperties": false
     },
+    "FTPListener": {
+      "description": "FTPListener is a protocol-aware FTP proxy. The proxy is an FTP server to the client and an FTP client to the target, and it mediates the data connection as well as the control one. The data connection is the reason this cannot be a layer 4 listener. Every transfer happens on a second connection whose address one side announces to the other, in the body of a reply. A proxy that forwards that reply has told the client to go round it: the file then travels between the client and the target with nothing in the middle, and the control connection it did read is a list of instructions for a transfer it never saw. So the addresses are rewritten, and the proxy is one end of both connections. The other reason is that FTP is old enough to have an attack named after it. A client can name any address in PORT, and a proxy that obeys is a port scanner and a relay for anyone who can log in — the bounce attack of CERT CA-1997-27. Active mode is therefore off by default, and when it is on the announced address has to be the client's own.",
+      "type": "object",
+      "properties": {
+        "allow_active": {
+          "description": "AllowActive accepts PORT and EPRT. Default false. With it on, the address announced must be the client's own, which is the only form of active mode that is not a way to make the proxy connect somewhere on request.",
+          "type": "boolean"
+        },
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_extensions": {
+          "description": "AllowExtensions and DenyExtensions decide what a file may be called, on the commands that settle a name. Every extension a name carries is read, so \"invoice.pdf.exe\" is an exe.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_paths": {
+          "description": "AllowPaths are the paths a command may name, matched as the sftp policy matches them: a glob where \"*\" does not cross a slash, or a prefix ending in \"/\" or \"/**\" for a whole tree. They may carry {user}, which is the login the client authenticated as. Empty allows every path the deny list does not refuse.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "banner": {
+          "description": "Banner replaces the target's 220 greeting. A banner is a legal notice; the target's own greeting usually names its software and version, which is a different thing.",
+          "type": "string"
+        },
+        "commands": {
+          "description": "Commands a client may send. Everything else is refused with 502. The default is every command this proxy understands the effect of, which is the list it can hold to a policy.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "data_address": {
+          "description": "DataAddress is the address the proxy advertises for passive data connections. Default the address the control connection arrived on, which is right unless the proxy is itself behind a NAT.",
+          "type": "string"
+        },
+        "data_ports": {
+          "description": "DataPorts is the range the proxy listens on for passive data, written \"low-high\". Default \"0-0\", which is any free port. A range is what lets a firewall in front of the proxy be narrow.",
+          "type": "string"
+        },
+        "data_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "deny_extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_paths": {
+          "description": "DenyPaths are refused whatever the allow list says.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_command_line": {
+          "description": "MaxCommandLine bounds one control line. Default 4096.",
+          "type": "integer"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds control connections on this listener. Default 1000.",
+          "type": "integer"
+        },
+        "max_errors": {
+          "description": "MaxErrors ends the session after this many refused commands. Default 10.",
+          "type": "integer"
+        },
+        "max_file_bytes": {
+          "description": "MaxFileBytes bounds one transfer in either direction. 0 is no bound. The connection is cut when it is passed, because a transfer cannot be un-sent.",
+          "type": "integer"
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the target.",
+          "type": "boolean"
+        },
+        "read_only": {
+          "description": "ReadOnly refuses every command that changes the server: STOR, STOU, APPE, DELE, RNFR, RNTO, MKD, RMD, SITE, ALLO.",
+          "type": "boolean"
+        },
+        "require_tls": {
+          "description": "RequireTLS refuses every command but the ones that get to TLS until the control connection is encrypted. Defaults on wherever TLS is reachable: a control connection in clear carries the password.",
+          "type": "boolean"
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "tls_mode": {
+          "description": "TLSMode is starttls (the client may send AUTH TLS, and the listener's tls section provides the certificate), implicit (TLS from the first octet, as on 990) or none. Default starttls when tls is set.",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream is the server pool. Required.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS verifies the target when upstream_tls_mode is not none.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_tls_mode": {
+          "description": "UpstreamTLSMode is none, starttls or implicit. Default none.",
+          "type": "string"
+        },
+        "yara": {
+          "description": "YARA scans what is uploaded. A match cuts the data connection and, with action close, the session.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/YARAPolicy"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "FilterConfig": {
       "description": "FilterConfig is one middleware instance.",
       "type": "object",
@@ -2257,6 +2392,14 @@
           "allOf": [
             {
               "$ref": "#/$defs/ForwardListener"
+            }
+          ]
+        },
+        "ftp": {
+          "description": "FTP configures a kind: ftp listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/FTPListener"
             }
           ]
         },
