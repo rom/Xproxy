@@ -1529,6 +1529,14 @@
           "items": {
             "type": "integer"
           }
+        },
+        "socks5": {
+          "description": "SOCKS5 also accepts SOCKS5 (RFC 1928) on this listener. The two protocols share the port: a greeting starts with the version byte and an HTTP request with a method, so one byte tells them apart. Destinations, ports, credentials, bans and logging are the same.",
+          "type": "boolean"
+        },
+        "socks_udp": {
+          "description": "SOCKSUDP allows UDP ASSOCIATE, which is how DNS and QUIC travel through a SOCKS proxy. Each association is bound to the client address that opened it and dies with its control connection.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false

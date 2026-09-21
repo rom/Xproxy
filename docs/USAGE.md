@@ -2006,6 +2006,65 @@ internal address or in front of `tls` with client certificates; a
 forward proxy reachable from the Internet without `auth` is an open
 relay.
 
+### SOCKS5 on the same port
+
+```yaml
+server:
+  listeners:
+    - name: egress
+      address: "10.0.0.5:1080"
+      kind: forward
+      forward:
+        socks5: true
+        socks_udp: true                  # only if something needs datagrams
+        ports: [80, 443, 22, 53]
+        allow: ["*.github.com", "proxy.golang.org", "*.example.com"]
+        auth: {users_file: /etc/xproxy/egress.htpasswd, realm: egress}
+```
+
+```sh
+curl --socks5-hostname 10.0.0.5:1080 https://api.example.com/
+git config --global http.proxy socks5h://build-agent:pass@10.0.0.5:1080
+ssh -o ProxyCommand='nc -X 5 -x 10.0.0.5:1080 %h %p' gateway.example.com
+```
+
+An HTTP proxy only helps clients that speak HTTP proxying. Everything
+else — `ssh`, `git`, package managers, database clients, anything using
+`curl --socks5-hostname` — speaks SOCKS5, and without it that traffic
+leaves the estate outside the policy entirely. Turning it on puts it
+back under the same destination rules, the same credentials, the same
+access log and the same bans.
+
+The two protocols share the port: a SOCKS greeting begins with `0x05`
+and an HTTP request with a method, so the first byte separates them.
+Nothing is configured twice, and `xproxyctl status` counts both.
+
+With `auth`, SOCKS clients authenticate with RFC 1929
+username/password against the same users file, and a client that offers
+only "no authentication" is refused outright. Without `auth`, the
+listener is an open proxy for both protocols — validation says so at
+load, and the answer is an internal address, an allow list, or
+credentials.
+
+Refusals come back as the closest SOCKS reply code rather than a
+blanket failure, so a client reports something true: "connection not
+allowed" for a destination the policy refused, "host unreachable" for a
+name that does not resolve. SOCKS4 is refused (no authentication, no
+names) and `BIND` is not implemented, because it asks the proxy to open
+a listening socket on a client's say-so.
+
+`socks_udp: true` adds `UDP ASSOCIATE`, which is how DNS and QUIC
+travel through a SOCKS proxy. Each association gets its own socket,
+belongs to the client address that opened it, relays answers only from
+destinations that client actually sent to, and dies with its control
+connection — the three properties that keep a UDP relay from being an
+open reflector. Leave it off unless something needs it;
+`forward_udp_dropped` counts every datagram refused, which is what to
+watch if it is on.
+
+`examples/forward/socks.yaml` is a complete egress proxy with both
+protocols, an allow list, credentials and the ban triggers.
+
 ### Virtual security.txt
 
 A `security.txt` (RFC 9116) tells a finder where to report a

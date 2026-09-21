@@ -541,9 +541,38 @@ T}	T{
 T}	T{
 Largest plain response body relayed;\: a larger one is cut off and the connection closed;\: 0 disables
 T}
+T{
+\fBsocks5\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Also speak SOCKS5 (RFC 1928) on this port;\: see below
+T}
+T{
+\fBsocks_\:udp\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Allow SOCKS5 \fBUDP ASSOCIATE\fR (requires \fBsocks5\fR)
+T}
 .TE
+.SS "SOCKS5 on a forward listener"
 .PP
-Each request writes one \fBforward\fR line to the access log with the client address, user, method, destination, status, bytes and duration. Counters: \fBforward_requests\fR, \fBforward_tunnels\fR, \fBforward_tunnels_open\fR, \fBforward_denied\fR, \fBforward_auth_failed\fR, \fBforward_rejected\fR, \fBforward_errors\fR, \fBforward_bytes_in\fR, \fBforward_bytes_out\fR; \fBxproxy_forward_*\fR metrics. The policy and the users file reload; the address and TLS settings need a restart like every listener.
+\fBsocks5: true\fR accepts SOCKS5 on the same port as the HTTP proxy. The two cannot be confused: a SOCKS greeting starts with the version byte \fB0x05\fR and an HTTP request starts with a method, so the first byte decides and nothing is configured twice.
+.PP
+Everything the HTTP side applies applies here: the port list, \fBallow\fR, \fBdeny\fR, \fBallow_private\fR, the checked address being the one dialled, the tunnel bound, the idle timeout, the ban list and the counters. \fBauth\fR is enforced with RFC 1929 username/password against the same users file, sharing the same credential cache and the same bounded hashing \[u2014] so a listener with \fBauth\fR refuses a SOCKS client that offers only "no authentication" (reply \fB0xFF\fR), and one without \fBauth\fR is an open proxy for both protocols, which validation says out loud.
+.PP
+A policy refusal is answered with the closest SOCKS reply code rather than a blanket failure: \fB0x02\fR (connection not allowed) for a port, name, address or private\-range refusal, \fB0x04\fR (host unreachable) for a name that does not resolve. SOCKS4 is refused \[u2014] it has no authentication and no names \[u2014] and \fBBIND\fR is not implemented, because it asks the proxy to open a listening socket on a client\(aqs say\-so.
+.PP
+\fBWhy bother.\fR SOCKS5 is what everything that is not a browser speaks: \fBssh \-o ProxyCommand\fR, \fBgit\fR, \fBcurl \-\-socks5\-hostname\fR, database clients, package managers. Without it that traffic goes around the proxy; with it, it is under the same destination policy, the same logs and the same bans.
+.PP
+\fBUDP associations\fR (\fBsocks_udp: true\fR) are how DNS and QUIC travel through a SOCKS proxy. Each association binds its own socket, is fixed to the client address that opened it (the first datagram sets it), only relays answers from destinations that client has actually sent to, and dies with its TCP control connection \[u2014] which is what RFC 1928 requires and what keeps the socket from becoming an open reflector. Datagram headers are parsed with the same care as the handshake: fragments are dropped rather than reassembled, and the peer table is bounded. \fBforward_udp_associations\fR, \fBforward_udp_open\fR and \fBforward_udp_dropped\fR count the association and everything refused.
+.PP
+Each request writes one \fBforward\fR line to the access log with the client address, user, method, destination, status, bytes and duration. SOCKS connections write the same line with \fBprotocol: socks5\fR. Counters: \fBforward_requests\fR, \fBforward_tunnels\fR, \fBforward_tunnels_open\fR, \fBforward_denied\fR, \fBforward_auth_failed\fR, \fBforward_rejected\fR, \fBforward_errors\fR, \fBforward_bytes_in\fR, \fBforward_bytes_out\fR, \fBforward_socks\fR, \fBforward_udp_associations\fR, \fBforward_udp_open\fR, \fBforward_udp_dropped\fR; \fBxproxy_forward_*\fR metrics. The policy and the users file reload; the address and TLS settings need a restart like every listener.
 .SS "server.listeners[].dns (kind: dns)"
 .PP
 A \fBkind: dns\fR listener is a forwarding DNS proxy on the listener address over UDP and TCP. Queries are answered from a bounded cache when they can be, refused or blocked by policy, and otherwise forwarded to the upstream resolvers with a fresh transaction id on a fresh socket (random source port) per query; the answer must echo the id and the question. A truncated UDP answer is retried over TCP to the upstream, and an answer larger than the client\(aqs UDP size (512 bytes or its EDNS advertisement, honoured up to 1232 bytes per RFC 9715 so a spoofed source cannot draw a large reply) is truncated so the client retries over TCP. Only one question per query and the QUERY opcode are handled (FORMERR and NOTIMP otherwise); responses arriving as queries and packets from banned clients are dropped. A dns listener takes \fBaddress\fR, \fBdns\fR and optionally \fBtls\fR; bans and the global connection limits apply to TCP clients as on every listener. The policy, upstreams and cache bounds reload (the cache is kept); the address needs a restart.

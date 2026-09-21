@@ -139,12 +139,57 @@ connection limits and the header timeouts apply as on every listener.
 | `idle_timeout` | duration | `10m` | Close a tunnel after no bytes in either direction; at most 24h |
 | `max_tunnels` | int | `10000` | Open CONNECT tunnels on this listener; over it CONNECT answers 503 |
 | `max_response_bytes` | int | `67108864` | Largest plain response body relayed; a larger one is cut off and the connection closed; 0 disables |
+| `socks5` | bool | `false` | Also speak SOCKS5 (RFC 1928) on this port; see below |
+| `socks_udp` | bool | `false` | Allow SOCKS5 `UDP ASSOCIATE` (requires `socks5`) |
+
+#### SOCKS5 on a forward listener
+
+`socks5: true` accepts SOCKS5 on the same port as the HTTP proxy. The
+two cannot be confused: a SOCKS greeting starts with the version byte
+`0x05` and an HTTP request starts with a method, so the first byte
+decides and nothing is configured twice.
+
+Everything the HTTP side applies applies here: the port list, `allow`,
+`deny`, `allow_private`, the checked address being the one dialled, the
+tunnel bound, the idle timeout, the ban list and the counters. `auth`
+is enforced with RFC 1929 username/password against the same users
+file, sharing the same credential cache and the same bounded hashing —
+so a listener with `auth` refuses a SOCKS client that offers only
+"no authentication" (reply `0xFF`), and one without `auth` is an open
+proxy for both protocols, which validation says out loud.
+
+A policy refusal is answered with the closest SOCKS reply code rather
+than a blanket failure: `0x02` (connection not allowed) for a port,
+name, address or private-range refusal, `0x04` (host unreachable) for
+a name that does not resolve. SOCKS4 is refused — it has no
+authentication and no names — and `BIND` is not implemented, because it
+asks the proxy to open a listening socket on a client's say-so.
+
+**Why bother.** SOCKS5 is what everything that is not a browser speaks:
+`ssh -o ProxyCommand`, `git`, `curl --socks5-hostname`, database
+clients, package managers. Without it that traffic goes around the
+proxy; with it, it is under the same destination policy, the same logs
+and the same bans.
+
+**UDP associations** (`socks_udp: true`) are how DNS and QUIC travel
+through a SOCKS proxy. Each association binds its own socket, is fixed
+to the client address that opened it (the first datagram sets it), only
+relays answers from destinations that client has actually sent to, and
+dies with its TCP control connection — which is what RFC 1928 requires
+and what keeps the socket from becoming an open reflector. Datagram
+headers are parsed with the same care as the handshake: fragments are
+dropped rather than reassembled, and the peer table is bounded.
+`forward_udp_associations`, `forward_udp_open` and
+`forward_udp_dropped` count the association and everything refused.
 
 Each request writes one `forward` line to the access log with the
 client address, user, method, destination, status, bytes and duration.
+SOCKS connections write the same line with `protocol: socks5`.
 Counters: `forward_requests`, `forward_tunnels`, `forward_tunnels_open`,
 `forward_denied`, `forward_auth_failed`, `forward_rejected`,
-`forward_errors`, `forward_bytes_in`, `forward_bytes_out`;
+`forward_errors`, `forward_bytes_in`, `forward_bytes_out`,
+`forward_socks`, `forward_udp_associations`, `forward_udp_open`,
+`forward_udp_dropped`;
 `xproxy_forward_*` metrics. The policy and the users file reload; the
 address and TLS settings need a restart like every listener.
 

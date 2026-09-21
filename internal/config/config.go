@@ -413,6 +413,15 @@ type ForwardListener struct {
 	// MaxResponseBytes bounds the body of a plain (non CONNECT) response
 	// relayed to the client. Default 64 MiB; 0 disables.
 	MaxResponseBytes int64 `yaml:"max_response_bytes"`
+	// SOCKS5 also accepts SOCKS5 (RFC 1928) on this listener. The two
+	// protocols share the port: a greeting starts with the version byte
+	// and an HTTP request with a method, so one byte tells them apart.
+	// Destinations, ports, credentials, bans and logging are the same.
+	SOCKS5 bool `yaml:"socks5"`
+	// SOCKSUDP allows UDP ASSOCIATE, which is how DNS and QUIC travel
+	// through a SOCKS proxy. Each association is bound to the client
+	// address that opened it and dies with its control connection.
+	SOCKSUDP bool `yaml:"socks_udp"`
 }
 
 // ForwardAuth is the credential source of a forward listener.

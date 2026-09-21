@@ -1652,6 +1652,35 @@ tell a policy refusal from a broken upstream.
 **`CONNECT` refused with `forward_denied`.** The destination is not in
 the allow list or the port is not in `ports`.
 
+**A SOCKS client gets "general SOCKS server failure".** Look for the
+`forward` access line with `protocol: socks5`: the `reason` field says
+which check refused it. Policy refusals come back as "connection not
+allowed" and an unresolvable name as "host unreachable", so a general
+failure is usually the tunnel bound (`tunnel_limit`) or a shutdown in
+progress.
+
+**A SOCKS client is refused before it sends a destination.** Two
+causes. The listener has `auth` and the client offered only "no
+authentication" — it gets method `0xFF` and a close; configure the
+credentials in the client (`socks5h://user:pass@host:port`). Or the
+client is speaking SOCKS4, which is refused outright: it has no
+authentication and no names, and every modern client can do SOCKS5.
+
+**SOCKS works but DNS does not.** The client is resolving names itself
+and sending an address. Use the form that asks the proxy to resolve —
+`socks5h://` in curl and git, `-o ProxyUseFdpass` style options
+elsewhere — or the destination policy sees an address where you wrote a
+name in `allow`.
+
+**UDP through SOCKS does nothing.** `socks_udp` must be on (validation
+refuses `socks_udp` without `socks5`), and the association only relays
+for the client address that opened it: a client behind a NAT that
+changes its source port between the control connection and the
+datagrams is not the same client as far as the relay is concerned.
+`forward_udp_dropped` counts each refusal; a rising count with no
+traffic getting through is that mismatch, a refused destination, or a
+fragmented datagram (never reassembled, always dropped).
+
 **A layer 4 route picks the default.** The server name was not readable:
 a client that does not send SNI, or one that fragments its ClientHello
 across TLS records in a way that never completes inside the peek

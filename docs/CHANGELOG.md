@@ -260,6 +260,41 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **SOCKS5 and UDP associations on a forward listener
+  (`forward.socks5`, `forward.socks_udp`).** An HTTP forward proxy only
+  helps clients that speak HTTP proxying. Everything else in an estate
+  — `ssh`, `git`, package managers, database clients, anything behind
+  `curl --socks5-hostname` — speaks SOCKS5, and without it that traffic
+  leaves outside the destination policy, the access log and the ban
+  list. RFC 1928 and RFC 1929 are now spoken on the same port as the
+  HTTP proxy: a greeting begins with the version byte and an HTTP
+  request with a method, so one peeked byte separates them and nothing
+  is configured twice.
+
+  It is the same proxy, not a second one: the port list, `allow`,
+  `deny`, `allow_private`, dialling the address that passed the check
+  rather than re-resolving, the tunnel bound, the idle timeout, the
+  security events, the `forward_denied` ban reason and the counters all
+  apply unchanged. Credentials are verified against the same users file
+  through the same cache and the same bounded hashing, so a listener
+  with `auth` refuses a client that offers only "no authentication",
+  and one without it is an open proxy for both protocols — which
+  validation now says out loud. Policy refusals map to the closest
+  SOCKS reply code instead of a blanket failure, so a client reports
+  something true. SOCKS4 is refused (no authentication, no names) and
+  `BIND` is not implemented, because it asks the proxy to open a
+  listening socket on a client's say-so.
+
+  `UDP ASSOCIATE` is how DNS and QUIC travel through a SOCKS proxy, and
+  it is opt-in because a UDP relay is a wider exposure than a tunnel.
+  Each association binds its own socket, is fixed to the client address
+  that opened it, relays answers only from destinations that client has
+  actually sent to, and dies with its control connection — the
+  properties RFC 1928 requires and the ones that keep it from being an
+  open reflector. Fragmented datagrams are dropped rather than
+  reassembled and the peer table is bounded.
+  `examples/forward/socks.yaml`.
+
 - **Encrypted Client Hello (`tls.ech`), with the tooling to run it.**
   TLS 1.3 encrypts everything about a connection except the one field
   that says where it is going: the SNI, which is what network-level

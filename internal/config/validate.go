@@ -2686,6 +2686,18 @@ func (v *validator) forwardListener(p string, f *ForwardListener) {
 	if f.MaxResponseBytes < 0 {
 		v.errf("%s.max_response_bytes: must not be negative", p)
 	}
+	if f.SOCKSUDP && !f.SOCKS5 {
+		v.errf("%s.socks_udp: needs socks5", p)
+	}
+	if f.SOCKS5 && f.Auth == nil {
+		// A SOCKS proxy without credentials is an open proxy to
+		// everything the destination policy allows, and unlike the HTTP
+		// side there is no header a middlebox will strip by accident.
+		v.warnf("%s.socks5: no auth is configured, so anyone who can reach this port can use the proxy; restrict the listener address, the destinations, or add auth", p)
+	}
+	if f.SOCKSUDP {
+		v.warnf("%s.socks_udp: a UDP association relays datagrams for the client that opened it; it is bound to that client's address and dies with the control connection, but it is a wider exposure than a TCP tunnel", p)
+	}
 }
 
 func (v *validator) icap(ic *ICAP, seen map[string]bool) {

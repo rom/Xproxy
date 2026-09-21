@@ -186,6 +186,10 @@ func (s *Server) Collect(e metrics.Collector) {
 	for g, n := range sn.KeyExchange {
 		e.Counter("xproxy_tls_key_exchange_total", "Completed handshakes by key agreement group.", L{"group": g}, float64(n))
 	}
+	e.Counter("xproxy_forward_socks_total", "SOCKS5 connections accepted on forward listeners.", nil, float64(sn.ForwardSOCKS))
+	e.Counter("xproxy_forward_udp_associations_total", "SOCKS5 UDP associations opened.", nil, float64(sn.ForwardUDPAssociations))
+	e.Gauge("xproxy_forward_udp_open", "Open SOCKS5 UDP associations.", nil, float64(sn.ForwardUDPOpen))
+	e.Counter("xproxy_forward_udp_dropped_total", "Datagrams dropped by an association: a bad header, a refused destination, an unsolicited sender or a full peer table.", nil, float64(sn.ForwardUDPDropped))
 	for name, st := range s.ECH() {
 		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "accepted"}, float64(st.Accepted))
 		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "not_used"}, float64(st.Rejected))

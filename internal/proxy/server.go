@@ -760,6 +760,11 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		}
 		bl.forward = fw
 		handler = fw
+		if fw.socksEnabled() {
+			// SOCKS greetings are taken off the accept path before the
+			// HTTP server sees them; everything else is handed on.
+			bl.ln = &socksListener{Listener: bl.ln, f: fw}
+		}
 	}
 	bl.httpSrv = &http.Server{
 		Handler:           handler,
