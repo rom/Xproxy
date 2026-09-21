@@ -261,7 +261,7 @@ Open findings of the earlier rounds:
 ### Added (1.4)
 
 - **Twenty more decoys, and the routes to serve them.** The honeypot
-  table goes from 56 bodies to 76, and every one of them is wired up in
+  table goes from 57 bodies to 77, and every one of them is wired up in
   `examples/security/honeypots.yaml`. New: `gcp-metadata` and
   `azure-imds` (the two metadata services a server side request forgery
   probe asks for after it has tried AWS), `registry-catalog`, `argocd`

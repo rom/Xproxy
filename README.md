@@ -119,9 +119,11 @@ an identifier from the access log to the upstream.
 - Bot classification from JA3 and JA4 fingerprints, headers and
   behaviour, with log, challenge and deny thresholds; country policy
   from a local MaxMind or CSV database
-- Honeypot routes with built-in decoys that mark probing clients and
-  feed the ban list; ICAP scanning of uploads and downloads with
-  preview, block pages and fail policies
+- Honeypot routes with seventy-seven built-in decoys — from a WordPress
+  login to a cloud metadata document, a container registry catalogue
+  and an IP camera — that mark probing clients and feed the ban list;
+  ICAP scanning of uploads and downloads with preview, block pages and
+  fail policies
 
 **Identity**
 
@@ -170,6 +172,12 @@ an identifier from the access log to the upstream.
   TUI; a web GUI with
   viewer and operator roles, configuration editing with validation,
   graphs and live logs
+- Packet capture of the exchanges the proxy handled, written as pcapng
+  that Wireshark and tshark open: the decrypted request and response
+  synthesised into a TCP conversation, selected by host, route, method,
+  path, client network, status, deny reason or a sample, switched on
+  for a bounded window with `xproxyctl capture start` and redacted so
+  the file does not carry the headers that should not be on disk
 - An expression language for routes and header operations: `when`
   conditions over addresses, headers, cookies, query parameters,
   patterns, captures and the time of day, checked at load
