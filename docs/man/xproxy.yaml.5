@@ -599,7 +599,7 @@ list
 T}	T{
 required
 T}	T{
-Resolvers tried in turn,\: rotating the first choice per query: \fBhost:\:port\fR (UDP,\: TCP on truncation),\: \fBtls:\:/\:/\:host:\:port\fR (DNS over TLS,\: connections reused),\: \fBhttps:\:/\:/\:host[:\:port]/\:path\fR (DNS over HTTPS,\: POST \fBapplication/\:dns\-\:message\fR with id 0)
+Resolvers tried in turn,\: rotating the first choice per query: \fBhost:\:port\fR (UDP,\: TCP on truncation),\: \fBtls:\:/\:/\:host:\:port\fR (DNS over TLS,\: connections reused),\: \fBquic:\:/\:/\:host:\:port\fR (DNS over QUIC,\: RFC 9250,\: connection reused,\: id 0),\: \fBhttps:\:/\:/\:host[:\:port]/\:path\fR (DNS over HTTPS,\: POST \fBapplication/\:dns\-\:message\fR with id 0)
 T}
 T{
 \fBupstream_\:ca_\:file\fR
@@ -746,6 +746,33 @@ T}	T{
 DNS over HTTPS path on an encrypted listener;\: other paths answer 404
 T}
 T{
+\fBdoq\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Also serve DNS over QUIC (RFC 9250) on this listener\(aqs UDP port;\: see below
+T}
+T{
+\fBdiscovery\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Advertise this resolver\(aqs encrypted endpoints at \fB_\:dns.\:resolver.\:arpa\fR (RFC 9462);\: see below
+T}
+T{
+\fBrecords\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+SVCB and HTTPS records this resolver answers itself;\: see below
+T}
+T{
 \fBdnssec\fR
 T}	T{
 object
@@ -755,6 +782,161 @@ T}	T{
 Validate answers;\: see below
 T}
 .TE
+.SS "server.listeners[].dns.doq"
+.PP
+DNS over QUIC. DoT and DoH both carry DNS over TCP, so they inherit its head\-of\-line blocking: one slow answer holds up every query behind it on the same connection, which is precisely the shape of a resolver\(aqs traffic. DoQ puts each query on its own QUIC stream, so the answers are independent, while keeping DoT\(aqs privacy properties \[u2014] the same certificate, the same server name, no HTTP layer.
+.PP
+It shares the listener\(aqs address and certificate, on UDP where DoT and DoH use TCP, and is separated from HTTP/3 by its ALPN (\fBdoq\fR). Each stream carries one query and one answer with a two byte length prefix, as over TCP. The message id is zero on the wire, which RFC 9250 requires: the stream identifies the exchange, so an id would only leak something about the client. \fBqueries_doq\fR counts them.
+.PP
+\fBquic://host:port\fR is the matching upstream transport, so a chain of resolvers can be QUIC end to end.
+.SS "server.listeners[].dns.discovery"
+.PP
+Discovery of Designated Resolvers (RFC 9462). A client handed this proxy\(aqs address by DHCP has no way to know it also speaks DoT, DoH or DoQ. DDR is the answer: the client asks \fB_dns.resolver.arpa\fR for SVCB records, this resolver answers with its own encrypted endpoints, the client verifies the certificate against the name in the record, and upgrades itself. Nothing is configured on the client.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.0i) lbw(1.2i) lbx
+lw(1.0i) lw(1.0i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBtransport\fR
+T}	T{
+\fBdot\fR,\: \fBdoh\fR,\: \fBdoq\fR
+T}	T{
+required
+T}	T{
+Which encrypted transport this entry advertises
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+The name the endpoint\(aqs certificate covers;\: a client that cannot verify it stays on plaintext rather than trusting the record
+T}
+T{
+\fBport\fR
+T}	T{
+int
+T}	T{
+853 (\fBdot\fR,\: \fBdoq\fR),\: 443 (\fBdoh\fR)
+T}	T{
+The endpoint\(aqs port
+T}
+T{
+\fBdoh_\:path\fR
+T}	T{
+URI template
+T}	T{
+\fB/\:dns\-\:query{?dns}\fR
+T}	T{
+For \fBdoh\fR;\: RFC 9461\(aqs \fBdohpath\fR parameter
+T}
+T{
+\fBipv4\fR,\: \fBipv6\fR
+T}	T{
+lists of addresses
+T}	T{
+\fB[]\fR
+T}	T{
+Address hints,\: so a client need not resolve the name it was just handed
+T}
+T{
+\fBttl\fR
+T}	T{
+int
+T}	T{
+\fB300\fR
+T}	T{
+TTL of the records
+T}
+.TE
+.PP
+Entries are advertised in the order listed: the first gets priority 1, which is what a client prefers. The verification is the point \[u2014] a record that names a certificate this endpoint cannot present makes clients fall back to plaintext, so the name has to be one the listener really serves.
+.SS "server.listeners[].dns.records"
+.PP
+SVCB and HTTPS records (RFC 9460) this resolver answers itself, without asking an upstream. The reason this exists is ECH: a client cannot encrypt its ClientHello until it has read the \fBech\fR parameter from an HTTPS record, so an estate running its own resolver publishes it here.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.8i) lbw(0.9i) lbx
+lw(0.9i) lw(0.8i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+The name the record is published for
+T}
+T{
+\fBtype\fR
+T}	T{
+\fBhttps\fR,\: \fBsvcb\fR
+T}	T{
+\fBhttps\fR
+T}	T{
+Record type
+T}
+T{
+\fBpriority\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+0 is an alias record (no parameters);\: 1 and up are service records,\: lowest first
+T}
+T{
+\fBtarget\fR
+T}	T{
+name
+T}	T{
+\fB.\fR
+T}	T{
+The endpoint name;\: \fB.\fR means the owner name itself
+T}
+T{
+\fBttl\fR
+T}	T{
+int
+T}	T{
+\fB300\fR
+T}	T{
+Seconds
+T}
+T{
+\fBparams\fR
+T}	T{
+mapping
+T}	T{
+\fB{}\fR
+T}	T{
+Service parameters in presentation form: \fBalpn:\: "h3,\:h2"\fR,\: \fBport:\: "443"\fR,\: \fBech:\: "AEr+DQ.\:.\:.\:"\fR (the value \fBxproxyctl ech keygen\fR prints),\: \fBipv4hint\fR,\: \fBipv6hint\fR,\: \fBdohpath\fR,\: \fBmandatory\fR,\: \fBno\-\:default\-\:alpn\fR,\: or \fBkeyNNNNN\fR for one this build does not name
+T}
+.TE
+.PP
+A name listed here is \fBowned\fR: it is answered from this set and never forwarded, and a type it does not have gets NOERROR with no answers rather than an upstream lookup, because a forwarded answer would contradict the local one. Answers carry the AA bit. \fBqueries_local\fR counts them and \fBxproxyctl dns\fR lists the names.
 .SS "server.listeners[].dns.dnssec"
 .PP
 With the section present the listener is a validating resolver in front of its upstreams: every upstream query carries the DO bit, and each answer is checked before it reaches the client or the cache. Positive answers need a verified RRSIG on every RRset, chained through DNSKEY and DS records up to a trust anchor; negative answers need a verified NSEC or NSEC3 proof (NXDOMAIN, NODATA, wildcard, opt\-out); an insecure delegation proven by the parent makes answers below it insecure. The outcome shapes the answer: secure answers carry AD when the client set AD or DO, bogus answers become SERVFAIL (a \fBdns_bogus\fR security event) unless the client set CD, insecure and indeterminate answers pass without AD. Clients without DO never receive RRSIG, NSEC or NSEC3 records. Algorithms 5, 7, 8, 10, 13, 14 and 15 and DS digests 1, 2 and 4 are supported; a zone signed only with others counts as insecure (RFC 4035). DNSKEY and DS lookups go to the same upstreams and are cached per zone until the shorter of their TTL and signature validity, bounded to 10000 zones. \fBxproxyctl dns\fR shows secure, insecure, bogus and indeterminate counts, the key cache size and lookups.

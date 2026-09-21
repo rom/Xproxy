@@ -223,7 +223,7 @@ browsers should use it) side by side.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `upstreams` | list | required | Resolvers tried in turn, rotating the first choice per query: `host:port` (UDP, TCP on truncation), `tls://host:port` (DNS over TLS, connections reused), `https://host[:port]/path` (DNS over HTTPS, POST `application/dns-message` with id 0) |
+| `upstreams` | list | required | Resolvers tried in turn, rotating the first choice per query: `host:port` (UDP, TCP on truncation), `tls://host:port` (DNS over TLS, connections reused), `quic://host:port` (DNS over QUIC, RFC 9250, connection reused, id 0), `https://host[:port]/path` (DNS over HTTPS, POST `application/dns-message` with id 0) |
 | `upstream_ca_file` | path | system pool | Pins the CA of `tls://` and `https://` upstreams; the host in the upstream string is the name verified |
 | `timeout` | duration | `2s` | One upstream attempt; at most 30s |
 | `allow_clients` | list of CIDR | `[]` (any) | Other clients get REFUSED |
@@ -240,7 +240,75 @@ browsers should use it) side by side.
 | `max_in_flight` | int | `1024` | Queries being handled at once; beyond it UDP queries are dropped |
 | `log_queries` | bool | `false` | One `dns` access log line per query (client, name, type, rcode, source, bytes, duration). Query logs are personal data; leave off unless needed |
 | `doh_path` | path | `/dns-query` | DNS over HTTPS path on an encrypted listener; other paths answer 404 |
+| `doq` | bool | `false` | Also serve DNS over QUIC (RFC 9250) on this listener's UDP port; see below |
+| `discovery` | list | `[]` | Advertise this resolver's encrypted endpoints at `_dns.resolver.arpa` (RFC 9462); see below |
+| `records` | list | `[]` | SVCB and HTTPS records this resolver answers itself; see below |
 | `dnssec` | object | none | Validate answers; see below |
+
+#### server.listeners[].dns.doq
+
+DNS over QUIC. DoT and DoH both carry DNS over TCP, so they inherit its
+head-of-line blocking: one slow answer holds up every query behind it
+on the same connection, which is precisely the shape of a resolver's
+traffic. DoQ puts each query on its own QUIC stream, so the answers are
+independent, while keeping DoT's privacy properties — the same
+certificate, the same server name, no HTTP layer.
+
+It shares the listener's address and certificate, on UDP where DoT and
+DoH use TCP, and is separated from HTTP/3 by its ALPN (`doq`). Each
+stream carries one query and one answer with a two byte length prefix,
+as over TCP. The message id is zero on the wire, which RFC 9250
+requires: the stream identifies the exchange, so an id would only leak
+something about the client. `queries_doq` counts them.
+
+`quic://host:port` is the matching upstream transport, so a chain of
+resolvers can be QUIC end to end.
+
+#### server.listeners[].dns.discovery
+
+Discovery of Designated Resolvers (RFC 9462). A client handed this
+proxy's address by DHCP has no way to know it also speaks DoT, DoH or
+DoQ. DDR is the answer: the client asks `_dns.resolver.arpa` for SVCB
+records, this resolver answers with its own encrypted endpoints, the
+client verifies the certificate against the name in the record, and
+upgrades itself. Nothing is configured on the client.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `transport` | `dot`, `doh`, `doq` | required | Which encrypted transport this entry advertises |
+| `name` | name | required | The name the endpoint's certificate covers; a client that cannot verify it stays on plaintext rather than trusting the record |
+| `port` | int | 853 (`dot`, `doq`), 443 (`doh`) | The endpoint's port |
+| `doh_path` | URI template | `/dns-query{?dns}` | For `doh`; RFC 9461's `dohpath` parameter |
+| `ipv4`, `ipv6` | lists of addresses | `[]` | Address hints, so a client need not resolve the name it was just handed |
+| `ttl` | int | `300` | TTL of the records |
+
+Entries are advertised in the order listed: the first gets priority 1,
+which is what a client prefers. The verification is the point — a
+record that names a certificate this endpoint cannot present makes
+clients fall back to plaintext, so the name has to be one the listener
+really serves.
+
+#### server.listeners[].dns.records
+
+SVCB and HTTPS records (RFC 9460) this resolver answers itself, without
+asking an upstream. The reason this exists is ECH: a client cannot
+encrypt its ClientHello until it has read the `ech` parameter from an
+HTTPS record, so an estate running its own resolver publishes it here.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required | The name the record is published for |
+| `type` | `https`, `svcb` | `https` | Record type |
+| `priority` | int | `0` | 0 is an alias record (no parameters); 1 and up are service records, lowest first |
+| `target` | name | `.` | The endpoint name; `.` means the owner name itself |
+| `ttl` | int | `300` | Seconds |
+| `params` | mapping | `{}` | Service parameters in presentation form: `alpn: "h3,h2"`, `port: "443"`, `ech: "AEr+DQ..."` (the value `xproxyctl ech keygen` prints), `ipv4hint`, `ipv6hint`, `dohpath`, `mandatory`, `no-default-alpn`, or `keyNNNNN` for one this build does not name |
+
+A name listed here is **owned**: it is answered from this set and never
+forwarded, and a type it does not have gets NOERROR with no answers
+rather than an upstream lookup, because a forwarded answer would
+contradict the local one. Answers carry the AA bit. `queries_local`
+counts them and `xproxyctl dns` lists the names.
 
 #### server.listeners[].dns.dnssec
 

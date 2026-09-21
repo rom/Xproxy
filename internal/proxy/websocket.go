@@ -439,7 +439,7 @@ func (s *wsSide) checkPayload(fin bool, opcode byte, payload []byte, c *wsConn) 
 			return v
 		}
 	}
-	if wantText && g.cfg.UTF8() && !utf8.Valid(s.inspect) && int64(s.fragBytes) <= g.cfg.MaxInspectBytes {
+	if wantText && g.cfg.UTF8() && !utf8.Valid(s.inspect) && s.fragBytes <= g.cfg.MaxInspectBytes {
 		// Only when the whole message was inspected: a prefix of a
 		// valid UTF-8 message can end mid-rune.
 		return &wsViolation{"protocol", "a text message that is not UTF-8", wsCloseProtocolError}
@@ -525,9 +525,11 @@ func (c *wsConn) fail(v *wsViolation) error {
 	// and carries the code, so the client logs something meaningful
 	// rather than a reset.
 	frame := []byte{0x88, 2, byte(code >> 8), byte(code)} //nolint:gosec // a close code is 16 bits
-	_ = c.Conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	// Written through the embedded connection, not this wrapper: the
+	// wrapper would scan the close frame it is itself sending.
 	_, _ = c.Conn.Write(frame)
-	_ = c.Conn.Close()
+	_ = c.Close()
 	return v
 }
 

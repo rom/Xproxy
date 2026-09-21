@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/rom/xproxy/internal/config"
@@ -13,6 +14,44 @@ import (
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
 )
+
+// compileDNSRecord turns one configured record into its wire form.
+func compileDNSRecord(r config.DNSRecord) (dns.LocalRecord, error) {
+	out := dns.LocalRecord{Name: r.Name, Type: dns.TypeHTTPS, TTL: 300}
+	if r.Type == "svcb" {
+		out.Type = dns.TypeSVCB
+	}
+	if r.TTL > 0 {
+		out.TTL = uint32(r.TTL) //nolint:gosec // validated range
+	}
+	target := r.Target
+	if target == "" || target == "." {
+		// RFC 9460: the empty target means the owner name.
+		target = "."
+	}
+	out.SVCB = dns.SVCB{Priority: uint16(r.Priority), Target: target} //nolint:gosec // validated range
+	for _, name := range sortedParamNames(r.Params) {
+		p, err := dns.ParseSVCBParam(name, r.Params[name])
+		if err != nil {
+			return dns.LocalRecord{}, err
+		}
+		out.SVCB.Params = append(out.SVCB.Params, p)
+	}
+	if _, err := out.SVCB.Encode(); err != nil {
+		return dns.LocalRecord{}, err
+	}
+	return out, nil
+}
+
+// sortedParamNames keeps the compiled record independent of map order.
+func sortedParamNames(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // dnsPolicy compiles a listener configuration into the DNS server's
 // reloadable policy.
@@ -53,6 +92,33 @@ func dnsPolicy(cfg *config.DNSListener) (*dns.Policy, error) {
 		b := a.As16()
 		p.Sinkhole6 = b[:]
 	}
+	// Local records: the discovery set (RFC 9462) and whatever the
+	// operator publishes, most usefully an ECH configuration.
+	local := make([]dns.LocalRecord, 0, len(cfg.Discovery)+len(cfg.Records))
+	if len(cfg.Discovery) > 0 {
+		eps := make([]dns.Designated, 0, len(cfg.Discovery))
+		ttl := uint32(300)
+		for _, d := range cfg.Discovery {
+			if d.TTL > 0 {
+				ttl = uint32(d.TTL) //nolint:gosec // validated range
+			}
+			eps = append(eps, dns.Designated{Transport: d.Transport, Name: d.Name,
+				Port: d.Port, DoHPath: d.DoHPath, IPv4: d.IPv4, IPv6: d.IPv6})
+		}
+		recs, err := dns.DiscoveryRecords(eps, ttl)
+		if err != nil {
+			return nil, fmt.Errorf("discovery: %w", err)
+		}
+		local = append(local, recs...)
+	}
+	for i, r := range cfg.Records {
+		rec, err := compileDNSRecord(r)
+		if err != nil {
+			return nil, fmt.Errorf("records[%d]: %w", i, err)
+		}
+		local = append(local, rec)
+	}
+	p.Local = dns.NewLocalRecords(local)
 	if rl := cfg.RateLimit; rl != nil {
 		p.RateLimit = limits.NewKeyedLimiter(rl.QPS, rl.Burst, 65536)
 	}
@@ -127,7 +193,11 @@ func (s *Server) DNS() []dns.Status {
 	var out []dns.Status
 	for _, bl := range s.listeners {
 		if bl.dns != nil {
-			out = append(out, bl.dns.Status())
+			st := bl.dns.Status()
+			if bl.doq != nil {
+				st.DoQ = true
+			}
+			out = append(out, st)
 		}
 	}
 	return out

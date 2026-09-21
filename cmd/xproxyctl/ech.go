@@ -153,7 +153,7 @@ func echRecord(args []string, out, errOut io.Writer) int {
 
 // readConfigs reads one file, which may hold a single config or a list.
 func readConfigs(path string) ([]ech.Config, error) {
-	raw, err := os.ReadFile(path) //nolint:gosec // operator supplied path
+	raw, err := os.ReadFile(path) //nolint:gosec // a path the operator typed on their own command line
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +182,7 @@ func readConfigs(path string) ([]ech.Config, error) {
 // writeNew refuses to overwrite: a key file replaced by accident is a
 // listener that cannot decrypt what DNS still advertises.
 func writeNew(path string, data []byte, mode os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode) //nolint:gosec // a path the operator gave on their own command line
 	if err != nil {
 		if os.IsExist(err) {
 			return fmt.Errorf("%s already exists; remove it or choose another -id", path)

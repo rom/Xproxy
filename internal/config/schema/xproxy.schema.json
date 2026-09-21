@@ -976,6 +976,46 @@
       },
       "additionalProperties": false
     },
+    "DNSDesignated": {
+      "description": "DNSDesignated is one encrypted endpoint advertised by discovery.",
+      "type": "object",
+      "properties": {
+        "doh_path": {
+          "description": "DoHPath is the URI template for a doh endpoint. Default /dns-query{?dns}.",
+          "type": "string"
+        },
+        "ipv4": {
+          "description": "IPv4 and IPv6 are address hints, so a client need not resolve the name it was just handed.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ipv6": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name is the certificate name clients verify. It must be a name the endpoint's certificate covers, or the upgrade fails closed.",
+          "type": "string"
+        },
+        "port": {
+          "description": "Port the endpoint listens on. Default 853 for dot and doq, 443 for doh.",
+          "type": "integer"
+        },
+        "transport": {
+          "description": "Transport is dot, doh or doq.",
+          "type": "string"
+        },
+        "ttl": {
+          "description": "TTL of the discovery records. Default 300.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "DNSListener": {
       "description": "DNSListener is a forwarding DNS proxy on the listener address over UDP and TCP: a bounded cache, a block policy and forwarding to upstream resolvers with fresh transaction ids and source ports. The policy, upstreams and cache bounds reload; the address needs a restart.",
       "type": "object",
@@ -1010,6 +1050,13 @@
             }
           ]
         },
+        "discovery": {
+          "description": "Discovery advertises this resolver's encrypted endpoints at _dns.resolver.arpa (RFC 9462), so a client handed this address by DHCP can upgrade itself from plaintext DNS.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DNSDesignated"
+          }
+        },
         "dnssec": {
           "description": "DNSSEC validates upstream answers against a trust anchor.",
           "allOf": [
@@ -1021,6 +1068,10 @@
         "doh_path": {
           "description": "DoHPath is the DNS over HTTPS path served on an encrypted dns listener (one with tls). Default /dns-query.",
           "type": "string"
+        },
+        "doq": {
+          "description": "DoQ also serves DNS over QUIC (RFC 9250) on this listener's address over UDP. Needs tls; the certificate is shared with DoT and DoH, since they are the same service.",
+          "type": "boolean"
         },
         "log_queries": {
           "description": "LogQueries writes one dns line per query to the access log. Default false (query logs are personal data).",
@@ -1037,6 +1088,13 @@
               "$ref": "#/$defs/DNSRateLimit"
             }
           ]
+        },
+        "records": {
+          "description": "Records are SVCB and HTTPS records this resolver answers itself, most usefully the ECH configuration of a name this proxy terminates.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DNSRecord"
+          }
         },
         "sinkhole_ipv4": {
           "description": "SinkholeIPv4 and SinkholeIPv6 answer A and AAAA for blocked names with block_action sinkhole. Default 0.0.0.0 and ::.",
@@ -1073,6 +1131,40 @@
         },
         "qps": {
           "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DNSRecord": {
+      "description": "DNSRecord is one locally served SVCB or HTTPS record.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Type is https (default) or svcb.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name the record is published for.",
+          "type": "string"
+        },
+        "params": {
+          "description": "Params are service parameters in presentation form: {alpn: \"h2,h3\", port: \"443\", ech: \"AEr+DQ...\", ipv4hint: \"...\"}.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "priority": {
+          "description": "Priority 0 makes it an alias record, which takes no parameters.",
+          "type": "integer"
+        },
+        "target": {
+          "description": "Target is the endpoint name; \".\" means the owner name itself.",
+          "type": "string"
+        },
+        "ttl": {
+          "description": "TTL in seconds. Default 300.",
+          "type": "integer"
         }
       },
       "additionalProperties": false

@@ -15,8 +15,11 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/quic-go/quic-go"
 )
 
 // Upstream transports.
@@ -24,6 +27,7 @@ const (
 	transportPlain = iota // UDP with TCP fallback (host:port)
 	transportTLS          // DNS over TLS, RFC 7858 (tls://host:port)
 	transportHTTPS        // DNS over HTTPS, RFC 8484 (https://host/path)
+	transportQUIC         // DNS over QUIC, RFC 9250 (quic://host:port)
 )
 
 // upstreamServer is one parsed upstream.
@@ -35,6 +39,9 @@ type upstreamServer struct {
 	host      string // TLS server name
 	// idle holds reusable DNS over TLS connections.
 	idle chan net.Conn
+	// quic is the reused DNS over QUIC connection, guarded by mu.
+	mu   sync.Mutex
+	quic *quic.Conn
 }
 
 // Resolver forwards queries to upstream servers. Every query goes out
@@ -52,8 +59,8 @@ type Resolver struct {
 	Failures atomic.Uint64
 }
 
-// ParseUpstream validates one upstream string: host:port, tls://host:port
-// or https://host[:port]/path.
+// ParseUpstream validates one upstream string: host:port, tls://host:port,
+// quic://host:port or https://host[:port]/path.
 func ParseUpstream(s string) (*upstreamServer, error) {
 	switch {
 	case strings.HasPrefix(s, "tls://"):
@@ -63,6 +70,13 @@ func ParseUpstream(s string) (*upstreamServer, error) {
 			return nil, fmt.Errorf("%q must be tls://host:port", s)
 		}
 		return &upstreamServer{raw: s, transport: transportTLS, addr: addr, host: host, idle: make(chan net.Conn, 4)}, nil
+	case strings.HasPrefix(s, "quic://"):
+		addr := strings.TrimPrefix(s, "quic://")
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil || host == "" || port == "" {
+			return nil, fmt.Errorf("%q must be quic://host:port", s)
+		}
+		return &upstreamServer{raw: s, transport: transportQUIC, addr: addr, host: host}, nil
 	case strings.HasPrefix(s, "https://"):
 		u, err := url.Parse(s)
 		if err != nil || u.Host == "" || u.Path == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
@@ -70,7 +84,7 @@ func ParseUpstream(s string) (*upstreamServer, error) {
 		}
 		return &upstreamServer{raw: s, transport: transportHTTPS, url: s, host: u.Hostname()}, nil
 	case strings.Contains(s, "://"):
-		return nil, fmt.Errorf("%q: unknown transport (use host:port, tls:// or https://)", s)
+		return nil, fmt.Errorf("%q: unknown transport (use host:port, tls://, quic:// or https://)", s)
 	default:
 		host, port, err := net.SplitHostPort(s)
 		if err != nil || host == "" || port == "" {
@@ -189,6 +203,12 @@ func (r *Resolver) Exchange(ctx context.Context, query []byte, qEnd int, q Quest
 		switch server.transport {
 		case transportTLS:
 			resp, err = r.exchangeTLS(actx, server, out)
+		case transportQUIC:
+			// RFC 9250: the id is zero on the wire, as with DoH.
+			SetID(out, 0)
+			want = 0
+			resp, err = r.exchangeQUIC(actx, server, out)
+			SetID(out, id)
 		case transportHTTPS:
 			// RFC 8484: the id is 0 so responses cache well; the
 			// question still has to match.

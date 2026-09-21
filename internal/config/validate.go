@@ -890,7 +890,7 @@ func (v *validator) websocketGuard(p string, r *Route) {
 		// proxy claiming a protocol condition it did not observe.
 		v.errf("%s.websocket_guard.close_code: must be between 3000 and 4999 (the ranges an application may use), or unset to use the protocol's own code", p)
 	}
-	if g.Masked() == false { //nolint:gosimple // reads better against the RFC
+	if !g.Masked() {
 		v.warnf("%s.websocket_guard.require_masked: false accepts unmasked client frames, which RFC 6455 forbids and which is how a request is smuggled past an intermediary", p)
 	}
 }
@@ -2697,6 +2697,104 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 	if d.MaxInFlight < 1 || d.MaxInFlight > 1_000_000 {
 		v.errf("%s.max_in_flight: must be between 1 and 1000000", p)
 	}
+	v.dnsDiscovery(p, d)
+	v.dnsRecords(p, d)
+}
+
+// dnsDiscovery checks the designated resolver advertisement. Getting
+// this wrong is worse than not having it: a client that believes the
+// record upgrades itself to an endpoint that has to work, and verifies
+// a certificate name that has to match.
+func (v *validator) dnsDiscovery(p string, d *DNSListener) {
+	seen := map[string]bool{}
+	for i := range d.Discovery {
+		e := &d.Discovery[i]
+		ep := fmt.Sprintf("%s.discovery[%d]", p, i)
+		switch e.Transport {
+		case "dot", "doq":
+			if e.Port == 0 {
+				e.Port = 853
+			}
+		case "doh":
+			if e.Port == 0 {
+				e.Port = 443
+			}
+			if e.DoHPath == "" {
+				e.DoHPath = dns.DefaultDoHPath + "{?dns}"
+			}
+			if !strings.HasPrefix(e.DoHPath, "/") {
+				v.errf("%s.doh_path: must start with /", ep)
+			}
+		case "":
+			v.errf("%s.transport: required (dot, doh or doq)", ep)
+			continue
+		default:
+			v.errf("%s.transport: %q must be dot, doh or doq", ep, e.Transport)
+			continue
+		}
+		if e.Name == "" || !hostPatternOK(strings.ToLower(e.Name)) || strings.HasPrefix(e.Name, "*.") {
+			v.errf("%s.name: %q must be the fully qualified name the endpoint's certificate covers", ep, e.Name)
+		}
+		if e.Port < 1 || e.Port > 65535 {
+			v.errf("%s.port: %d is not a port", ep, e.Port)
+		}
+		key := e.Transport + "/" + e.Name + "/" + strconv.Itoa(e.Port)
+		if seen[key] {
+			v.errf("%s: the same transport, name and port appears twice", ep)
+		}
+		seen[key] = true
+		for j, a := range e.IPv4 {
+			if addr, err := netip.ParseAddr(a); err != nil || !addr.Is4() {
+				v.errf("%s.ipv4[%d]: %q is not an IPv4 address", ep, j, a)
+			}
+		}
+		for j, a := range e.IPv6 {
+			if addr, err := netip.ParseAddr(a); err != nil || !addr.Is6() || addr.Is4In6() {
+				v.errf("%s.ipv6[%d]: %q is not an IPv6 address", ep, j, a)
+			}
+		}
+		if e.TTL < 0 || e.TTL > 86400 {
+			v.errf("%s.ttl: must be between 0 and 86400", ep)
+		}
+		if e.Transport == "doq" && !d.DoQ {
+			v.warnf("%s: doq is advertised but this listener does not serve it (set dns.doq)", ep)
+		}
+	}
+}
+
+// dnsRecords checks the locally served SVCB and HTTPS records.
+func (v *validator) dnsRecords(p string, d *DNSListener) {
+	for i := range d.Records {
+		r := &d.Records[i]
+		rp := fmt.Sprintf("%s.records[%d]", p, i)
+		if r.Name == "" || !hostPatternOK(strings.ToLower(strings.TrimSuffix(r.Name, "."))) {
+			v.errf("%s.name: %q is not a name", rp, r.Name)
+		}
+		switch r.Type {
+		case "", "https":
+			r.Type = "https"
+		case "svcb":
+		default:
+			v.errf("%s.type: must be https or svcb", rp)
+		}
+		if r.Priority < 0 || r.Priority > 65535 {
+			v.errf("%s.priority: must be between 0 and 65535", rp)
+		}
+		if r.Priority == 0 && len(r.Params) > 0 {
+			v.errf("%s: priority 0 is an alias record and takes no params", rp)
+		}
+		if r.TTL < 0 || r.TTL > 604800 {
+			v.errf("%s.ttl: must be between 0 and 604800", rp)
+		}
+		if r.Target != "" && r.Target != "." && !hostPatternOK(strings.ToLower(strings.TrimSuffix(r.Target, "."))) {
+			v.errf("%s.target: %q is not a name", rp, r.Target)
+		}
+		for name, value := range r.Params {
+			if _, err := dns.ParseSVCBParam(name, value); err != nil {
+				v.errf("%s.params.%s: %v", rp, name, err)
+			}
+		}
+	}
 }
 
 // dnsUpstreamOK mirrors dns.ParseUpstream without importing the package.
@@ -2706,6 +2804,11 @@ func dnsUpstreamOK(s string) error {
 		host, port, err := net.SplitHostPort(strings.TrimPrefix(s, "tls://"))
 		if err != nil || host == "" || port == "" {
 			return fmt.Errorf("%q must be tls://host:port", s)
+		}
+	case strings.HasPrefix(s, "quic://"):
+		host, port, err := net.SplitHostPort(strings.TrimPrefix(s, "quic://"))
+		if err != nil || host == "" || port == "" {
+			return fmt.Errorf("%q must be quic://host:port", s)
 		}
 	case strings.HasPrefix(s, "https://"):
 		u, err := url.Parse(s)

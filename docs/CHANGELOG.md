@@ -276,6 +276,36 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **DNS over QUIC, discovery, and SVCB/HTTPS records
+  (`dns.doq`, `dns.discovery`, `dns.records`, `quic://` upstreams).**
+  DoT and DoH both carry DNS over TCP and inherit its head-of-line
+  blocking: one slow answer holds up every query behind it on that
+  connection, which is the shape of a resolver's traffic. RFC 9250 puts
+  each query on its own QUIC stream. It shares the listener's address
+  and certificate, is separated from HTTP/3 by the `doq` ALPN, and
+  sends the zero message id the RFC requires. `quic://host:port` is the
+  matching upstream transport, with the connection reused across
+  queries.
+
+  Discovery (RFC 9462) is what makes any of it reach a client. One
+  handed this proxy's address by DHCP cannot know the same service
+  speaks DoQ; with `discovery` it asks `_dns.resolver.arpa`, gets SVCB
+  records naming the encrypted endpoints, verifies their certificate
+  and upgrades itself. Nothing is configured on the client, and a
+  certificate it cannot verify means it stays on plaintext rather than
+  trusting the record.
+
+  `records` publishes SVCB and HTTPS records (RFC 9460) the resolver
+  answers itself. The reason it exists is ECH: a client cannot encrypt
+  its ClientHello until it has read the `ech` parameter from DNS, so
+  for an estate running its own resolver this is the other half of the
+  ECH feature. A name listed there is owned — answered locally, never
+  forwarded, and NOERROR with no answers for a type it does not have,
+  because a forwarded answer would contradict the local one. The
+  encoder follows RFC 9460's canonical form (parameters in key order,
+  once each) and the parser refuses records that do not.
+  `examples/blocklists/dns-encrypted.yaml`.
+
 - **WebSocket message inspection (`routes[].websocket_guard`).** An
   upgraded connection was the one place this proxy stopped looking:
   everything before the 101 went through routing, the WAF, the filters

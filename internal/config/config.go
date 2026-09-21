@@ -271,6 +271,56 @@ type DNSListener struct {
 	DoHPath string `yaml:"doh_path"`
 	// DNSSEC validates upstream answers against a trust anchor.
 	DNSSEC *DNSSEC `yaml:"dnssec"`
+	// DoQ also serves DNS over QUIC (RFC 9250) on this listener's
+	// address over UDP. Needs tls; the certificate is shared with DoT
+	// and DoH, since they are the same service.
+	DoQ bool `yaml:"doq"`
+	// Discovery advertises this resolver's encrypted endpoints at
+	// _dns.resolver.arpa (RFC 9462), so a client handed this address by
+	// DHCP can upgrade itself from plaintext DNS.
+	Discovery []DNSDesignated `yaml:"discovery"`
+	// Records are SVCB and HTTPS records this resolver answers itself,
+	// most usefully the ECH configuration of a name this proxy
+	// terminates.
+	Records []DNSRecord `yaml:"records"`
+}
+
+// DNSDesignated is one encrypted endpoint advertised by discovery.
+type DNSDesignated struct {
+	// Transport is dot, doh or doq.
+	Transport string `yaml:"transport"`
+	// Name is the certificate name clients verify. It must be a name
+	// the endpoint's certificate covers, or the upgrade fails closed.
+	Name string `yaml:"name"`
+	// Port the endpoint listens on. Default 853 for dot and doq, 443
+	// for doh.
+	Port int `yaml:"port"`
+	// DoHPath is the URI template for a doh endpoint. Default
+	// /dns-query{?dns}.
+	DoHPath string `yaml:"doh_path"`
+	// IPv4 and IPv6 are address hints, so a client need not resolve the
+	// name it was just handed.
+	IPv4 []string `yaml:"ipv4"`
+	IPv6 []string `yaml:"ipv6"`
+	// TTL of the discovery records. Default 300.
+	TTL int `yaml:"ttl"`
+}
+
+// DNSRecord is one locally served SVCB or HTTPS record.
+type DNSRecord struct {
+	// Name the record is published for.
+	Name string `yaml:"name"`
+	// Type is https (default) or svcb.
+	Type string `yaml:"type"`
+	// Priority 0 makes it an alias record, which takes no parameters.
+	Priority int `yaml:"priority"`
+	// Target is the endpoint name; "." means the owner name itself.
+	Target string `yaml:"target"`
+	// TTL in seconds. Default 300.
+	TTL int `yaml:"ttl"`
+	// Params are service parameters in presentation form:
+	// {alpn: "h2,h3", port: "443", ech: "AEr+DQ...", ipv4hint: "..."}.
+	Params map[string]string `yaml:"params"`
 }
 
 // DNSSEC configures validation on a dns listener: answers are fetched

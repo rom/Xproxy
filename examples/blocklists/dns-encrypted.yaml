@@ -1,0 +1,62 @@
+# An encrypted resolver: DoT, DoH and DoQ on one port and one
+# certificate, discovery so clients upgrade themselves, and the HTTPS
+# records that make ECH usable.
+#
+# Validate: xproxy -config examples/blocklists/dns-encrypted.yaml -validate
+version: 1
+server:
+  listeners:
+    # Plaintext on 53 for what cannot do better. It advertises the
+    # encrypted endpoints, so a client that supports DDR moves itself
+    # off this listener without being told.
+    - name: dns-plain
+      kind: dns
+      address: "10.0.0.53:53"
+      dns:
+        upstreams: ["quic://9.9.9.9:853", "tls://149.112.112.112:853"]
+        allow_clients: [10.0.0.0/8]
+        dnssec: {enabled: true}
+        discovery:
+          # Order is preference: a client that can do DoQ uses it.
+          - {transport: doq, name: dns.example.com, port: 853, ipv4: [10.0.0.53]}
+          - {transport: dot, name: dns.example.com, port: 853, ipv4: [10.0.0.53]}
+          - {transport: doh, name: dns.example.com, port: 443, doh_path: "/dns-query{?dns}"}
+
+    # The encrypted listener: DoT and DoH over TCP, DoQ over UDP, all on
+    # 853 with the certificate the discovery records name.
+    - name: dns-encrypted
+      kind: dns
+      address: "10.0.0.53:853"
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/dns.pem, key_file: /etc/xproxy/certs/dns-key.pem}
+      dns:
+        upstreams: ["quic://9.9.9.9:853", "tls://149.112.112.112:853"]
+        allow_clients: [10.0.0.0/8]
+        dnssec: {enabled: true}
+        doq: true
+        doh_path: /dns-query
+        # The records this resolver owns. The ech value is what
+        # `xproxyctl ech keygen` printed for the listener that
+        # terminates www.example.com: without it in DNS, no client can
+        # use ECH at all.
+        records:
+          - name: www.example.com
+            type: https
+            priority: 1
+            target: "."
+            params:
+              alpn: "h3,h2"
+              port: "443"
+              ipv4hint: "10.0.1.10"
+              ech: "AEr+DQBGAwAgACDXVp0R4KydR11wQylDhXKnuhBmXCjAqHi0tDaNfscdegAMAAEAAQABAAIAAQADQA9lY2guZXhhbXBsZS5jb20AAA=="
+          # An alias record: the apex points at the service name.
+          - {name: example.com, type: https, priority: 0, target: www.example.com}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+bans:
+  action: drop
+  triggers:
+    - {name: dns-abuse, reasons: [dns_blocked, dns_bogus], threshold: 50, window: 1m, duration: 1h}

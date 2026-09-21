@@ -126,6 +126,7 @@ type boundListener struct {
 	tcp       *tcpServer     // kind: tcp listeners
 	forward   *forwardServer // kind: forward listeners
 	dns       *dns.Server    // kind: dns listeners
+	doq       *dns.DoQServer // DNS over QUIC on a dns listener
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -727,6 +728,29 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		d.Encrypted = true
 		d.DoHPath = lc.DNS.DoHPath
 		bl.dns = d
+		if lc.DNS.DoQ {
+			// DNS over QUIC shares the listener's address and
+			// certificate; only the transport differs, and the ALPN is
+			// what separates it from HTTP/3 on the same port.
+			udpAddr := lc.Address
+			if strings.HasSuffix(lc.Address, ":0") {
+				udpAddr = ln.Addr().String()
+			}
+			pc, _, err := packetFor(activated, lc.Name+"-doq", udpAddr)
+			if err != nil {
+				_ = fr.Close()
+				rl.Close()
+				return nil, fmt.Errorf("listener %s: doq: %w", lc.Name, err)
+			}
+			q, err := dns.NewDoQ(d, pc, tc, lim.IdleTimeout.D(), lc.DNS.MaxInFlight)
+			if err != nil {
+				_ = fr.Close()
+				_ = pc.Close()
+				rl.Close()
+				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+			}
+			bl.doq = q
+		}
 		return bl, nil
 	}
 	if lc.Kind == "dns" {
@@ -864,6 +888,9 @@ func (s *Server) serve(bl *boundListener) {
 		return
 	}
 	if bl.dns != nil {
+		if bl.doq != nil {
+			bl.doq.Serve()
+		}
 		bl.dns.Serve()
 		return
 	}
@@ -1316,6 +1343,9 @@ func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocke
 	case bl.tcp != nil:
 		bl.tcp.shutdown(ctx)
 	case bl.dns != nil:
+		if bl.doq != nil {
+			_ = bl.doq.Close()
+		}
 		bl.dns.Shutdown(ctx)
 		bl.dns.Close()
 		if bl.tlsReload != nil {

@@ -1925,6 +1925,86 @@ the same block list and cache. `xproxyctl dns` shows the
 counters; `log_queries: true` writes every question to the access log
 when an investigation needs it.
 
+### Encrypted DNS: DoT, DoH, DoQ and discovery
+
+```yaml
+server:
+  listeners:
+    - name: dns-plain
+      address: "10.0.0.53:53"
+      kind: dns
+      dns:
+        upstreams: ["quic://9.9.9.9:853", "tls://149.112.112.112:853"]
+        discovery:
+          - {transport: doq, name: dns.example.com, port: 853, ipv4: [10.0.0.53]}
+          - {transport: dot, name: dns.example.com, port: 853, ipv4: [10.0.0.53]}
+          - {transport: doh, name: dns.example.com, port: 443}
+    - name: dns-encrypted
+      address: "10.0.0.53:853"
+      kind: dns
+      tls:
+        certificates: [{cert_file: /etc/xproxy/certs/dns.pem, key_file: /etc/xproxy/certs/dns-key.pem}]
+      dns:
+        upstreams: ["quic://9.9.9.9:853"]
+        doq: true
+```
+
+One certificate and one policy serve all three encrypted transports.
+DoT and DoH share the TCP port; **DoQ** takes the UDP one, separated
+from HTTP/3 by its ALPN. The reason to add DoQ rather than stop at DoT
+is head-of-line blocking: DoT and DoH both ride TCP, so one slow answer
+holds up every query queued behind it on that connection — which is
+exactly what a resolver's traffic looks like. QUIC gives each query its
+own stream.
+
+**Discovery** is the part that changes anything in practice. A client
+handed `10.0.0.53` by DHCP has no way to know the same service speaks
+DoQ. With `discovery`, it asks `_dns.resolver.arpa` for SVCB records,
+gets the endpoints above, verifies the certificate against
+`dns.example.com`, and upgrades itself — no client configuration, and
+no trust placed in the record, since a certificate it cannot verify
+means it stays on plaintext. Order is preference.
+
+```sh
+kdig @10.0.0.53 -t SVCB _dns.resolver.arpa            # what a client sees
+kdig +quic @10.0.0.53 example.com                     # DoQ
+xproxyctl dns                                         # queries_doq, queries_local
+```
+
+Watch `xproxy_dns_queries_by_transport_total`: the plaintext share is
+the number a rollout has to move, and it moves as clients discover the
+encrypted endpoints rather than as this file changes.
+
+### Publishing HTTPS records (and making ECH work)
+
+```yaml
+    dns:
+      records:
+        - name: www.example.com
+          type: https
+          priority: 1
+          target: "."
+          params:
+            alpn: "h3,h2"
+            ipv4hint: "10.0.1.10"
+            ech: "AEr+DQBGAwAgACD..."      # from xproxyctl ech keygen
+        - {name: example.com, type: https, priority: 0, target: www.example.com}
+```
+
+A client cannot use Encrypted Client Hello until it has read the `ech`
+parameter from an HTTPS record, so for an estate running its own
+resolver this is the other half of that feature: the value
+`xproxyctl ech keygen` printed goes here, and `xproxyctl tls` prints
+the list the listener is actually serving so the two can be compared.
+
+A name listed in `records` is **owned**: answered locally, never
+forwarded, and a type it does not have gets NOERROR with no answers
+rather than an upstream lookup — a forwarded answer would contradict
+the local one. Answers carry the AA bit and `queries_local` counts
+them. `examples/blocklists/dns-encrypted.yaml` is the whole
+arrangement: plaintext with discovery, encrypted with all three
+transports, and the records.
+
 ### Validating DNSSEC for clients
 
 ```yaml

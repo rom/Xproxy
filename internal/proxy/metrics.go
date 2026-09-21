@@ -243,6 +243,15 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_dns_servfail_total", "DNS queries answered SERVFAIL (no upstream answer).", l, float64(d.ServFail))
 		e.Counter("xproxy_dns_truncated_total", "DNS answers truncated for UDP clients.", l, float64(d.Truncated))
 		e.Counter("xproxy_dns_upstream_failures_total", "DNS upstream attempts without an answer.", l, float64(d.UpstreamFail))
+		// Per transport, which is how an operator sees an encrypted
+		// rollout happening: the plaintext share is the number that has
+		// to fall.
+		for proto, n := range map[string]uint64{"udp": d.QueriesUDP, "tcp": d.QueriesTCP,
+			"dot": d.QueriesDoT, "doh": d.QueriesDoH, "doq": d.QueriesDoQ} {
+			e.Counter("xproxy_dns_queries_by_transport_total", "DNS queries by transport.",
+				L{"listener": d.Listener, "transport": proto}, float64(n))
+		}
+		e.Counter("xproxy_dns_local_total", "DNS queries answered from the local record set (discovery and published SVCB or HTTPS records).", l, float64(d.QueriesLocal))
 	}
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "sent"}, float64(sn.MirrorSent))
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "dropped"}, float64(sn.MirrorDropped))

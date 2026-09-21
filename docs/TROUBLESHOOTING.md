@@ -1687,6 +1687,32 @@ the URL to match the certificate. `xproxyctl dns` counts upstream
 failures separately from refusals and drops, which is the fastest way to
 tell a policy refusal from a broken upstream.
 
+**DoQ clients cannot connect.** Three things, in order: `doq: true` on
+an encrypted listener (it needs `tls`), UDP reachable on that port (DoT
+and DoH use TCP on the same number, so a firewall that allows 853/tcp
+may not allow 853/udp), and the client actually speaking DoQ — the ALPN
+is the only thing separating it from HTTP/3, and a client offering `h3`
+is refused rather than served.
+
+**Discovery records are published but clients stay on plaintext.** A
+client verifies the certificate of the endpoint the record names before
+using it, and falls back silently when that fails. Check that the
+listener really serves the `name` in the record, that the certificate
+covers it, and that the port is right. `kdig -t SVCB _dns.resolver.arpa`
+against the plaintext listener shows what clients are being told.
+
+**A name in `records` returns nothing.** That is what an owned name
+with no record of the asked type does: NOERROR and no answers, never a
+forwarded lookup. If the name should also have A or AAAA records from
+upstream, it does not belong in `records` — the local set is
+authoritative for the whole name, not for one type of it.
+
+**The ECH parameter in a record does not match the listener.**
+`xproxyctl tls` prints the config list the TLS listener actually
+serves; compare it with the `ech` value here. A mismatch means clients
+fall back to the public name on every attempt, which looks healthy and
+encrypts nothing.
+
 ## Forward proxy, layer 4 and QUIC
 
 **`CONNECT` refused with `forward_denied`.** The destination is not in
