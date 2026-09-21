@@ -28,6 +28,7 @@ import (
 	"github.com/rom/xproxy/internal/bodybudget"
 	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/cache"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
@@ -81,6 +82,9 @@ type Server struct {
 	wafStats *waf.Stats
 	// patches keeps virtual patch hit counters across generations.
 	patches patchCounters
+	// capture writes exchanges as pcapng, kept across generations so a
+	// recording survives a reload.
+	capture atomic.Pointer[capture.Capturer]
 	// inventory is the API inventory, kept across generations.
 	inventory *apiinv.Table
 	// tickets manages shared session ticket keys; nil without the section.
@@ -167,6 +171,15 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	}
 	if cfg.Shedding != nil {
 		s.shedder.Store(shed.New(cfg.Shedding, s.concurrency.InFlight, cfg.Server.Limits.MaxConcurrentRequests))
+	}
+	if cfg.Capture != nil {
+		cp, err := capture.New(cfg.Capture)
+		if err != nil {
+			return nil, err
+		}
+		if cp != nil {
+			s.capture.Store(cp)
+		}
 	}
 	if cfg.Challenge != nil {
 		ch, err := challenge.New(cfg.Challenge)
@@ -840,6 +853,14 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
+	// Capture: rebuild it from the new rules, and carry the recording
+	// state across so a reload during a reproduction does not silently
+	// stop the capture. A section that disappeared closes its file.
+	if err := s.reloadCapture(cfg); err != nil {
+		rt.stop()
+		s.stats.ReloadFailures.Add(1)
+		return err
+	}
 	// A challenge section that appears on this reload needs its key before
 	// the swap: routes in mode always would otherwise serve unchallenged
 	// until the next reload if the secret file were unreadable (fail open).
@@ -1266,11 +1287,58 @@ func (s *Server) ReloadCertificates() error {
 	return nil
 }
 
+// reloadCapture swaps the capturer for one built from the new
+// configuration, keeping whether it was recording and for how long.
+func (s *Server) reloadCapture(cfg *config.Config) error {
+	old := s.capture.Load()
+	cp, err := capture.New(cfg.Capture)
+	if err != nil {
+		return fmt.Errorf("capture: %w", err)
+	}
+	if old != nil {
+		cp.CarryFrom(old)
+		old.Close()
+	}
+	if cp == nil {
+		s.capture.Store(nil)
+		return nil
+	}
+	s.capture.Store(cp)
+	return nil
+}
+
+// Capture returns the capturer, or nil when the configuration has no
+// capture section.
+func (s *Server) Capture() *capture.Capturer { return s.capture.Load() }
+
+// CaptureStatus reports the capture state, with Enabled false when the
+// configuration has no capture section.
+func (s *Server) CaptureStatus() capture.Stats { return s.capture.Load().Stats() }
+
+// SetCapture turns recording on or off and reports the new state. A
+// proxy without a capture section refuses: there is nothing to turn on,
+// and silently doing nothing would leave an operator waiting for a file
+// that is never written.
+func (s *Server) SetCapture(on bool, d time.Duration) (capture.Stats, error) {
+	cp := s.capture.Load()
+	if cp == nil {
+		return capture.Stats{}, capture.ErrNotEnabled
+	}
+	cp.SetActive(on, d)
+	return cp.Stats(), nil
+}
+
 // Shutdown drains connections gracefully within ctx, then closes listeners
 // and upstream pools.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.tickets.Stop()
 	s.inventory.Stop()
+	// The capture file is flushed and closed here: a truncated pcapng is
+	// readable, but the last exchange in it would be the one that is
+	// missing, which is the one being investigated.
+	if cp := s.capture.Load(); cp != nil {
+		cp.Close()
+	}
 	s.mu.Lock()
 	lns := s.listeners
 	s.mu.Unlock()

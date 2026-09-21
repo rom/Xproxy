@@ -73,7 +73,7 @@ func TestDecoyReferenceComplete(t *testing.T) {
 	// tables are the ones between the decoy heading and the paragraph
 	// that follows them.
 	start := strings.Index(text, "The built-in decoys,")
-	end := strings.Index(text, "`robots` is the one to serve honestly")
+	end := strings.Index(text, "`robots` and `sitemap` are the two to serve honestly")
 	if start < 0 || end < start {
 		t.Fatal("the decoy section is not where the test expects it")
 	}

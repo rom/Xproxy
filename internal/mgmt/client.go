@@ -15,6 +15,7 @@ import (
 	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/apiinv"
 	"github.com/rom/xproxy/internal/ban"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/filters/accountguard"
 	"github.com/rom/xproxy/internal/filters/botscore"
@@ -133,6 +134,20 @@ func (c *Client) Maintenance(on *bool) (*MaintenanceStatus, error) {
 		return &st, c.do("GET", "/v1/maintenance", &st)
 	}
 	return &st, c.doBody("POST", "/v1/maintenance", MaintenanceRequest{On: *on}, &st)
+}
+
+// Capture queries (on nil) or sets the runtime packet capture state.
+// A non-zero d bounds the recording window.
+func (c *Client) Capture(on *bool, d time.Duration) (*capture.Stats, error) {
+	var st capture.Stats
+	if on == nil {
+		return &st, c.do("GET", "/v1/capture", &st)
+	}
+	req := CaptureRequest{Active: *on}
+	if d > 0 {
+		req.Duration = d.String()
+	}
+	return &st, c.doBody("POST", "/v1/capture", req, &st)
 }
 
 // BotScore fetches the learning-mode bot_score baselines.

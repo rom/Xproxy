@@ -451,6 +451,9 @@ func (v *validator) config(c *Config) {
 		}
 	}
 	v.virtualPatches(c.VirtualPatches, routes)
+	if c.Capture != nil {
+		v.capture(c.Capture, routes)
+	}
 	if a := c.APIInventory; a != nil {
 		for i, r := range a.Routes {
 			if !routes[r] {
@@ -1815,6 +1818,118 @@ func (v *validator) securityTxtValues(path string, values []string) {
 	}
 }
 
+// capture checks the pcapng capture section. The bounds matter more
+// than most: the files hold decrypted request and response bytes, and
+// an unbounded capture is a disk filling with other people's cookies.
+func (v *validator) capture(c *Capture, routes map[string]bool) {
+	const p = "capture"
+	if !c.Enabled {
+		// A section that is present and off is a prepared capture, which
+		// is the intended shape; nothing else in it needs to be usable
+		// until somebody enables it.
+		return
+	}
+	if !strings.HasPrefix(c.Directory, "/") {
+		v.errf("%s.directory: must be an absolute path", p)
+	} else {
+		v.dir(p+".directory", c.Directory)
+	}
+	if c.FilePrefix == "" || strings.ContainsAny(c.FilePrefix, "/\\.\x00") || len(c.FilePrefix) > 64 {
+		v.errf("%s.file_prefix: 1 to 64 characters without a separator or a dot", p)
+	}
+	if c.MaxFileBytes < 1<<20 || c.MaxFileBytes > 8<<30 {
+		v.errf("%s.max_file_bytes: must be between 1 MiB and 8 GiB", p)
+	}
+	if c.MaxFiles < 1 || c.MaxFiles > 1000 {
+		v.errf("%s.max_files: must be between 1 and 1000", p)
+	}
+	if c.MaxDuration < Duration(time.Second) || c.MaxDuration > Duration(24*time.Hour) {
+		v.errf("%s.max_duration: must be between 1s and 24h", p)
+	}
+	if c.SnapLen < 128 || c.SnapLen > 1<<20 {
+		v.errf("%s.snap_len: must be between 128 and 1048576", p)
+	}
+	if c.MaxBodyBytes < 0 || c.MaxBodyBytes > 16<<20 {
+		v.errf("%s.max_body_bytes: must be between 0 and 16 MiB", p)
+	}
+	for i, h := range c.Redact {
+		if !headerNameOK(h) {
+			v.errf("%s.redact[%d]: %q is not a header name", p, i, h)
+		}
+	}
+	if c.Bodies && len(c.Redact) == 0 {
+		v.warnf("capture.bodies is on with an empty redact list: the files will hold request and response bodies in the clear, " +
+			"including anything the application carries in them")
+	}
+	if c.StartActive {
+		v.warnf("capture.start_active records from start-up; a capture is normally turned on for one reproduction " +
+			"with xproxyctl capture start and off again")
+	}
+	names := map[string]bool{}
+	for i := range c.Rules {
+		r := &c.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name != "" {
+			if names[r.Name] {
+				v.errf("%s.name: duplicate %q", q, r.Name)
+			}
+			names[r.Name] = true
+		}
+		for j, h := range r.Hosts {
+			if !hostPatternOK(h) {
+				v.errf("%s.hosts[%d]: %q is not a valid host pattern", q, j, h)
+			}
+		}
+		for j, n := range r.Routes {
+			if !routes[n] {
+				v.errf("%s.routes[%d]: unknown route %q", q, j, n)
+			}
+		}
+		v.methodList(q+".methods", r.Methods)
+		for j, path := range r.Paths {
+			if !strings.HasPrefix(path, "/") {
+				v.errf("%s.paths[%d]: %q must start with /", q, j, path)
+			}
+		}
+		for j, cidr := range r.ClientCIDRs {
+			if _, err := netip.ParsePrefix(cidr); err != nil {
+				v.errf("%s.client_cidrs[%d]: %q is not a CIDR", q, j, cidr)
+			}
+		}
+		for j, st := range r.Statuses {
+			if (st < 100 || st > 599) && (st < 1 || st > 5) {
+				v.errf("%s.statuses[%d]: %d is neither a status nor a class (1 to 5)", q, j, st)
+			}
+		}
+		for j, reason := range r.Reasons {
+			base, _, _ := strings.Cut(reason, ":")
+			if !denyReasons[base] && !allDenyReasons[base] {
+				v.errf("%s.reasons[%d]: unknown reason %q", q, j, reason)
+			}
+		}
+		if r.Percent < 1 || r.Percent > 100 {
+			v.errf("%s.percent: must be between 1 and 100", q)
+		}
+		if r.MaxFlows < 0 || r.MaxFlows > 10_000_000 {
+			v.errf("%s.max_flows: must be between 0 and 10000000", q)
+		}
+	}
+}
+
+// allDenyReasons are every reason the proxy raises, including the ones
+// a ban trigger may not name: a capture rule is a diagnostic and may
+// select on anything the access log can show.
+var allDenyReasons = map[string]bool{
+	"acl_deny": true, "acl_allow": true, "banned": true, "body_budget": true,
+	"normalization": true, "grpc_web": true, "webtransport": true, "cors": true,
+	"maintenance": true, "policy": true, "virtual_patch": true, "sensitive_data": true,
+	"shed": true, "filter": true, "challenge": true, "waf": true, "jwt": true,
+	"honeypot": true, "icap": true, "geo": true, "rate_limit": true, "no_route": true,
+	"body_size": true, "uri_length": true, "bad_host": true, "concurrency": true,
+	"websocket": true, "account_abuse": true, "tcp_no_route": true,
+	"forward_denied": true, "forward_auth": true, "dns_blocked": true, "dns_bogus": true,
+}
+
 // HoneypotDecoys are the built-in decoy names (bodies live in the proxy,
 // which imports this package and so cannot be imported back). The two
 // lists are kept in step by a test that fails when either side gains a
@@ -1842,7 +1957,20 @@ var HoneypotDecoys = map[string]bool{
 	// Enterprise front doors
 	"confluence": true, "gitlab-login": true, "citrix": true, "fortinet": true,
 	"esxi": true, "exchange-autodiscover": true, "idrac": true, "webmail": true,
-	"cgi-bin": true,
+	"cgi-bin": true, "ivanti": true, "nextcloud": true, "cpanel": true,
+	// Cloud metadata other than AWS (more server side request forgery)
+	"gcp-metadata": true, "azure-imds": true,
+	// Platform consoles, registries and pipelines
+	"registry-catalog": true, "argocd": true, "keycloak": true,
+	// Application servers with their own exploit history
+	"weblogic": true, "jboss": true, "coldfusion": true, "aspnet-trace": true,
+	// Documents that are XML on the wire
+	"web-config": true, "xmlrpc": true, "sitemap": true, "minio": true,
+	"camera": true,
+	// Notebooks, models and query front ends
+	"jupyter": true, "ollama": true, "clickhouse": true,
+	// Devices
+	"printer": true,
 }
 
 func (v *validator) bans(b *Bans) {

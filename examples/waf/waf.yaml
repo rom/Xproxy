@@ -31,10 +31,12 @@ waf:
       directive_files:
         - /etc/xproxy/waf/exclusions.conf
         - /etc/xproxy/waf/custom-rules.conf
+        - /etc/xproxy/waf/hardening-rules.conf
     - name: api
       crs: {paranoia_level: 2, inbound_threshold: 5}
       directive_files:
         - /etc/xproxy/waf/custom-rules.conf
+        - /etc/xproxy/waf/hardening-rules.conf
       # Order writes must match the schema before the rules see them.
       json_schemas:
         - name: order

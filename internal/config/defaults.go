@@ -481,6 +481,28 @@ func applyDefaults(c *Config) {
 		setDur(&a.ZombieAfter, 720*time.Hour)
 		setDur(&a.SaveInterval, 5*time.Minute)
 	}
+	if cp := c.Capture; cp != nil {
+		setStr(&cp.FilePrefix, "xproxy")
+		setDur(&cp.MaxDuration, time.Hour)
+		if cp.MaxFileBytes == 0 {
+			cp.MaxFileBytes = 64 << 20
+		}
+		setInt(&cp.MaxFiles, 4)
+		setInt(&cp.SnapLen, 256<<10)
+		setInt(&cp.MaxBodyBytes, 64<<10)
+		if cp.Redact == nil {
+			// The values that should never be on disk in the clear, and
+			// the ones an operator forgets. An explicit empty list turns
+			// redaction off, which is a deliberate act.
+			cp.Redact = []string{"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie", "X-Api-Key", "Api-Key"}
+		}
+		for i := range cp.Rules {
+			setInt(&cp.Rules[i].Percent, 100)
+			if cp.Rules[i].Name == "" {
+				cp.Rules[i].Name = fmt.Sprintf("rules[%d]", i)
+			}
+		}
+	}
 	if f := c.Fleet; f != nil {
 		setDur(&f.Interval, 30*time.Second)
 		setDur(&f.Timeout, 10*time.Second)

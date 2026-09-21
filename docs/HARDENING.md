@@ -40,7 +40,8 @@ are open, and before it reports ready, the daemon confines itself
 
 - Landlock file system rules derived from the configuration: the
   directory of every configured file is readable, the log, state,
-  history and certificate directories are writable, the resolver files,
+  history, capture and certificate directories are writable, the
+  resolver files,
   trust stores and time zone data are readable, and nothing else exists.
   On kernels with Landlock ABI 4 (6.7 and newer) new TCP binds are
   refused as well. The rules are the file system view the process keeps

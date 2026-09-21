@@ -62,6 +62,9 @@ type Config struct {
 	// SecurityTxt serves a virtual security.txt (RFC 9116) for the hosts
 	// each entry names, before routing.
 	SecurityTxt []SecurityTxt `yaml:"security_txt"`
+	// Capture writes the exchanges the proxy handled as pcapng files,
+	// for the flows its rules select.
+	Capture *Capture `yaml:"capture"`
 	// Fleet makes this node fetch its configuration bundle from a fleet
 	// controller and report its status there (xproxy-fleet).
 	Fleet *Fleet `yaml:"fleet"`
@@ -1930,6 +1933,89 @@ type SecurityTxt struct {
 	// CacheFor sets the Cache-Control max-age of the response. Default
 	// 1h; 0 sends no Cache-Control.
 	CacheFor Duration `yaml:"cache_for"`
+}
+
+// Capture writes the exchanges the proxy handled as pcapng files that
+// Wireshark and tshark read. The proxy terminates TLS, so a capture
+// taken on the wire in front of it is ciphertext and one taken behind
+// it has lost the client; this is the proxy's own view of the
+// decrypted exchange, synthesised into a TCP conversation so a
+// dissector reads it as HTTP.
+//
+// A capture file holds request and response bytes in the clear:
+// cookies, bearer tokens, personal data, whatever the application
+// carries. It is written 0600 into a directory the operator names,
+// nothing else is ever put there, and `redact` blanks the header
+// values that should not be in it at all. Treat the directory as you
+// would treat the access log with redaction turned off.
+type Capture struct {
+	// Enabled builds the subsystem. Without it nothing is recorded and
+	// the runtime switch has nothing to turn on.
+	Enabled bool `yaml:"enabled"`
+	// StartActive begins recording at start-up. Default false: the
+	// usual shape is a configuration that is ready and a switch an
+	// operator throws for one reproduction.
+	StartActive bool `yaml:"start_active"`
+	// Directory holds the files. Absolute, and owned by the proxy user.
+	Directory string `yaml:"directory"`
+	// FilePrefix begins each file name; the rest is the time it was
+	// opened. Default "xproxy".
+	FilePrefix string `yaml:"file_prefix"`
+	// MaxFileBytes rotates to a new file past this size. Default 64 MiB.
+	MaxFileBytes int64 `yaml:"max_file_bytes"`
+	// MaxFiles keeps this many files, removing the oldest. Default 4.
+	MaxFiles int `yaml:"max_files"`
+	// MaxDuration bounds one recording window, so a capture started
+	// during an incident cannot be left running for a month. Default 1h.
+	MaxDuration Duration `yaml:"max_duration"`
+	// SnapLen is the largest frame written. Default 262144.
+	SnapLen int `yaml:"snap_len"`
+	// Bodies captures request and response bodies as well as the heads.
+	// Default false: the heads answer most questions and carry far less
+	// of what should not be on disk.
+	Bodies bool `yaml:"bodies"`
+	// MaxBodyBytes bounds each captured body; the rest is left out and
+	// the frame is marked truncated. Default 65536.
+	MaxBodyBytes int `yaml:"max_body_bytes"`
+	// Redact blanks these request and response header values in the
+	// captured bytes. Default: the authorization, cookie and API key
+	// headers.
+	Redact []string `yaml:"redact"`
+	// Rules select which exchanges are written. No rules means every
+	// exchange, which is what a section with only a directory means.
+	Rules []CaptureRule `yaml:"rules"`
+}
+
+// CaptureRule selects exchanges. Every selector it names must hold, and
+// a rule that names none matches everything; the first rule that
+// matches decides. Selectors on the answer (statuses, reasons, denied)
+// are only known once the exchange is over, so a rule using them
+// captures the whole exchange retrospectively.
+type CaptureRule struct {
+	// Name identifies the rule in the status view.
+	Name string `yaml:"name"`
+	// Hosts are exact names or "*.example.com" patterns.
+	Hosts []string `yaml:"hosts"`
+	// Routes are route names.
+	Routes []string `yaml:"routes"`
+	// Methods are upper-case tokens.
+	Methods []string `yaml:"methods"`
+	// Paths are prefixes of the routing path.
+	Paths []string `yaml:"paths"`
+	// ClientCIDRs restrict the rule to these client networks.
+	ClientCIDRs []string `yaml:"client_cidrs"`
+	// Statuses are response statuses, or classes 1 to 5.
+	Statuses []int `yaml:"statuses"`
+	// Reasons are deny reasons ("waf", "rate_limit", ...), matched
+	// against the reason and against the reason with its detail.
+	Reasons []string `yaml:"reasons"`
+	// Denied selects every refusal, whatever the reason.
+	Denied bool `yaml:"denied"`
+	// Percent samples the exchanges this rule would take. Default 100.
+	Percent int `yaml:"percent"`
+	// MaxFlows bounds how many exchanges this rule ever writes, so a
+	// rule left on cannot fill a disk. 0 is unbounded.
+	MaxFlows int `yaml:"max_flows"`
 }
 
 // HeaderOps describes header mutations.

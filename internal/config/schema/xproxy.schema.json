@@ -40,6 +40,14 @@
         }
       ]
     },
+    "capture": {
+      "description": "Capture writes the exchanges the proxy handled as pcapng files, for the flows its rules select.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Capture"
+        }
+      ]
+    },
     "challenge": {
       "description": "Challenge configures the browser challenge used by routes with a challenge block.",
       "allOf": [
@@ -556,6 +564,140 @@
         "verify_url": {
           "description": "VerifyURL overrides the provider's siteverify endpoint (tests, enterprise endpoints).",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Capture": {
+      "description": "Capture writes the exchanges the proxy handled as pcapng files that Wireshark and tshark read. The proxy terminates TLS, so a capture taken on the wire in front of it is ciphertext and one taken behind it has lost the client; this is the proxy's own view of the decrypted exchange, synthesised into a TCP conversation so a dissector reads it as HTTP. A capture file holds request and response bytes in the clear: cookies, bearer tokens, personal data, whatever the application carries. It is written 0600 into a directory the operator names, nothing else is ever put there, and `redact` blanks the header values that should not be in it at all. Treat the directory as you would treat the access log with redaction turned off.",
+      "type": "object",
+      "properties": {
+        "bodies": {
+          "description": "Bodies captures request and response bodies as well as the heads. Default false: the heads answer most questions and carry far less of what should not be on disk.",
+          "type": "boolean"
+        },
+        "directory": {
+          "description": "Directory holds the files. Absolute, and owned by the proxy user.",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Enabled builds the subsystem. Without it nothing is recorded and the runtime switch has nothing to turn on.",
+          "type": "boolean"
+        },
+        "file_prefix": {
+          "description": "FilePrefix begins each file name; the rest is the time it was opened. Default \"xproxy\".",
+          "type": "string"
+        },
+        "max_body_bytes": {
+          "description": "MaxBodyBytes bounds each captured body; the rest is left out and the frame is marked truncated. Default 65536.",
+          "type": "integer"
+        },
+        "max_duration": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_file_bytes": {
+          "description": "MaxFileBytes rotates to a new file past this size. Default 64 MiB.",
+          "type": "integer"
+        },
+        "max_files": {
+          "description": "MaxFiles keeps this many files, removing the oldest. Default 4.",
+          "type": "integer"
+        },
+        "redact": {
+          "description": "Redact blanks these request and response header values in the captured bytes. Default: the authorization, cookie and API key headers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rules": {
+          "description": "Rules select which exchanges are written. No rules means every exchange, which is what a section with only a directory means.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CaptureRule"
+          }
+        },
+        "snap_len": {
+          "description": "SnapLen is the largest frame written. Default 262144.",
+          "type": "integer"
+        },
+        "start_active": {
+          "description": "StartActive begins recording at start-up. Default false: the usual shape is a configuration that is ready and a switch an operator throws for one reproduction.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CaptureRule": {
+      "description": "CaptureRule selects exchanges. Every selector it names must hold, and a rule that names none matches everything; the first rule that matches decides. Selectors on the answer (statuses, reasons, denied) are only known once the exchange is over, so a rule using them captures the whole exchange retrospectively.",
+      "type": "object",
+      "properties": {
+        "client_cidrs": {
+          "description": "ClientCIDRs restrict the rule to these client networks.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "denied": {
+          "description": "Denied selects every refusal, whatever the reason.",
+          "type": "boolean"
+        },
+        "hosts": {
+          "description": "Hosts are exact names or \"*.example.com\" patterns.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_flows": {
+          "description": "MaxFlows bounds how many exchanges this rule ever writes, so a rule left on cannot fill a disk. 0 is unbounded.",
+          "type": "integer"
+        },
+        "methods": {
+          "description": "Methods are upper-case tokens.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name identifies the rule in the status view.",
+          "type": "string"
+        },
+        "paths": {
+          "description": "Paths are prefixes of the routing path.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "percent": {
+          "description": "Percent samples the exchanges this rule would take. Default 100.",
+          "type": "integer"
+        },
+        "reasons": {
+          "description": "Reasons are deny reasons (\"waf\", \"rate_limit\", ...), matched against the reason and against the reason with its detail.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "routes": {
+          "description": "Routes are route names.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "statuses": {
+          "description": "Statuses are response statuses, or classes 1 to 5.",
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
         }
       },
       "additionalProperties": false

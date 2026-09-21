@@ -170,6 +170,11 @@ T}	T{
 Virtual patches with state (active,\: disabled,\: expired),\: action,\: hits,\: last hit and expiry
 T}
 T{
+\fBcapture\fR [\fBstatus\fR|\:\fBstart\fR [\fB\-\:duration\fR \fID\fR]|\:\fBstop\fR]
+T}	T{
+Packet capture of the exchanges the proxy handled,\: written as pcapng: whether it is recording,\: when the window ends,\: the current file and the per rule counters;\: \fBstart\fR opens a window (\fID\fR,\: bounded by \fBcapture.\:max_\:duration\fR),\: \fBstop\fR closes it. The files hold decrypted request and response bytes
+T}
+T{
 \fBfleet\fR
 T}	T{
 Fleet agent state: controller,\: node id,\: applied bundle digest and result,\: pending bundle,\: poll and report counters

@@ -93,6 +93,7 @@ xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-js
 | `geoip` | Country database kind, path, build date, lookup and unknown counters |
 | `cache` | Cache entries, bytes and counters; `cache purge [HOST [PATH-PREFIX]]` removes entries |
 | `honeypot` | Clients marked by honeypot routes and the decoy names; `honeypot forget IP` removes a mark |
+| `capture` [`status`\|`start`\|`stop`] | Packet capture of the exchanges the proxy handled as pcapng: whether it is recording, when the window ends, the current file and the per-rule counters; `start [-duration 10m]` opens a window (bounded by `capture.max_duration`), `stop` closes it (both audited) |
 | `dns` | DNS listener counters (queries, cache, blocked, refused, dropped, upstream failures); `dns purge` empties the caches |
 | `ingress` | Kubernetes ingress controller status: syncs, watches, counts, warnings |
 | `otlp` | OpenTelemetry metrics exporter status: pushes, failures, last error |
@@ -1265,7 +1266,14 @@ log4shell-probe      active   log     403     1203  4s ago       -           JND
 A patch needs no WAF section and runs before it; patches that need the
 rule engine's transformations (decoding, normalisation, scoring) are
 still written as SecLang in `directive_files`, as
-`examples/waf/custom-rules.conf` shows.
+`examples/waf/custom-rules.conf` and `examples/waf/hardening-rules.conf`
+show. The second file is the set most estates end up writing by hand:
+backup and source-control leftovers answered 404, JNDI and template
+expressions, Spring's class loader reached through a bound parameter,
+`..;/` path parameters, the diagnostic methods, executable upload names,
+bounds on parameters, cookies and byte ranges, GraphQL introspection,
+and private keys, cloud access keys and database error messages refused
+on the way out.
 
 ### Ban list
 
@@ -2211,6 +2219,94 @@ and the same `X-Request-Id` as the live request, so the two backends'
 logs can be joined. The client only ever sees the live response;
 copies are bounded in body size, time and number in flight, and
 dropped rather than queued when the candidate falls behind.
+
+### Packet capture (pcapng)
+
+A tcpdump in front of the proxy captures ciphertext, and one behind it
+has lost the client. `capture` writes what the proxy itself saw — the
+request as it arrived, the response as the client got it — as a pcapng
+file Wireshark, tshark and every other pcap tool open directly. Each
+exchange becomes one synthesised TCP conversation between the client
+address and the listener, so `Follow TCP stream` shows the request and
+the answer, and each frame carries the `X-Request-Id` as a pcapng
+comment, so a frame and an access log line name each other.
+
+```yaml
+capture:
+  enabled: true
+  directory: /var/lib/xproxy/capture
+  max_duration: 30m
+  bodies: true
+  max_body_bytes: 65536
+  redact: [authorization, cookie, set-cookie, x-api-key]
+  rules:
+    - {name: reported-client, routes: [api], client_cidrs: ["198.51.100.7/32"]}
+    - {name: denials, denied: true, max_flows: 500}
+    - {name: waf-only, reasons: [waf], max_flows: 200}
+    - {name: sample-uploads, methods: [POST], paths: [/upload], percent: 1}
+```
+
+Two switches, and both have to be on. The configuration decides what
+*may* be captured and reloads; the runtime switch decides whether
+anything is being captured *now*, and is off unless `start_active` is
+set:
+
+```console
+# xproxyctl capture start -duration 10m
+capture: on
+until: 2026-09-21T12:10:00Z
+# xproxyctl capture status
+capture: on
+until: 2026-09-21T12:10:00Z
+file: /var/lib/xproxy/capture/xproxy-20260921-120000.123.pcapng (1 open)
+captured: 42  skipped: 1180  truncated: 3  dropped: 0  failed: 0  bytes: 2216440
+rule denials: 42/500
+# xproxyctl capture stop
+capture: off
+```
+
+The window closes on its own after `max_duration`, so a capture started
+during an incident cannot be left running for a month, and a reload
+keeps the switch exactly as it was, deadline included.
+
+Rules are how "only this flow" is said. Every selector a rule names has
+to hold, the first matching rule decides, and a rule that names no
+selector matches everything — which is also what leaving `rules` out
+means. The selectors on the answer (`statuses`, `reasons`, `denied`)
+cannot be decided when the request arrives, so those exchanges are held
+and written once the proxy has answered: `denied: true` gives a file of
+exactly what the proxy is refusing, which is the question a capture
+answers best. That includes the refusals decided before a route is
+known — a ban, the maintenance gate, a malformed `Host` — which no
+request-side selector can describe and which are written without
+bodies, because nothing read them.
+
+Then open the file:
+
+```console
+$ tshark -r xproxy-20260921-120000.123.pcapng -Y http -T fields \
+    -e frame.comment -e http.request.method -e http.request.uri -e http.response.code
+```
+
+Read what the file is, and is not. It is the proxy's view, so segment
+boundaries, sequence numbers and frame timestamps are synthesised, and
+TLS, HTTP/2 framing and HTTP/3 are gone by the time it is written (an
+HTTP/2 or HTTP/3 exchange is rendered with an `HTTP/1.1` start line,
+because a dissector needs one). It is not the packets that were on the
+wire, and it is not evidence of what a client sent byte for byte.
+
+**The files hold decrypted traffic.** Session cookies, bearer tokens
+and whatever personal data the application carries are in them in the
+clear. They are created `0600` in the directory the operator names, the
+proxy chooses the names and writes nothing else there, and `redact`
+replaces the listed header values with `REDACTED` — a fixed string, so
+neither the value nor its length is in the file. Bodies are off by
+default. Treat the directory like an access log with redaction turned
+off: not on a shared volume, not in a backup that travels, and removed
+when the investigation is over. `xproxy_capture_flows_total{result}`
+and `xproxy_capture_bytes_total` say how much has been written, and
+`xproxy_capture_active` is 1 while a capture is running, which is worth
+an alert if one is ever left on.
 
 ### Response caching
 

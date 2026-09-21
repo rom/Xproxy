@@ -178,6 +178,16 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_virtual_patch_hits_total", "Requests matched by a virtual patch.", L{"patch": vp.cfg.ID}, float64(vp.hits.Load()))
 	}
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
+	if cp := s.capture.Load(); cp != nil {
+		cs := cp.Stats()
+		e.Gauge("xproxy_capture_active", "1 while the proxy is recording exchanges to a pcapng file.", nil, b2f(cs.Active))
+		e.Counter("xproxy_capture_flows_total", "Exchanges seen while recording, by what became of them.", L{"result": "captured"}, float64(cs.Captured))
+		e.Counter("xproxy_capture_flows_total", "Exchanges seen while recording, by what became of them.", L{"result": "skipped"}, float64(cs.Skipped))
+		e.Counter("xproxy_capture_flows_total", "Exchanges seen while recording, by what became of them.", L{"result": "dropped"}, float64(cs.DroppedFull))
+		e.Counter("xproxy_capture_flows_total", "Exchanges seen while recording, by what became of them.", L{"result": "failed"}, float64(cs.WriteFailures))
+		e.Counter("xproxy_capture_truncated_total", "Captured bodies cut short at max_body_bytes.", nil, float64(cs.Truncated))
+		e.Counter("xproxy_capture_bytes_total", "Bytes written to capture files.", nil, float64(cs.Bytes))
+	}
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "served"}, float64(sn.StaticServed))
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "not_found"}, float64(sn.StaticNotFound))
 	e.Counter("xproxy_compressed_responses_total", "Responses the proxy compressed with gzip.", nil, float64(sn.Compressed))

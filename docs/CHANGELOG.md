@@ -260,6 +260,95 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Twenty more decoys, and the routes to serve them.** The honeypot
+  table goes from 57 bodies to 77, and every one of them is wired up in
+  `examples/security/honeypots.yaml`. New: `gcp-metadata` and
+  `azure-imds` (the two metadata services a server side request forgery
+  probe asks for after it has tried AWS), `registry-catalog`, `argocd`
+  and `keycloak`, the application servers with their own exploit
+  history (`weblogic`, `jboss`, `coldfusion`, `aspnet-trace`), the
+  documents that are XML on the wire (`web-config` with a connection
+  string, `xmlrpc` with `pingback.ping`, `minio`, `camera`, and
+  `sitemap`, which like `robots` is served honestly and names the decoy
+  paths), the newer end of what gets scanned (`jupyter`, `ollama`,
+  `clickhouse`), the remote access appliances (`ivanti`, `nextcloud`,
+  `cpanel`) and a `printer`. Each is judged by the same table-wide
+  tests as the rest: plausible length, a content type that parses, a
+  body that parses as what it claims, a visible marker on anything
+  shaped like a credential, and a route in the example that serves it.
+- **A second custom rule file, `examples/waf/hardening-rules.conf`.**
+  Fifteen rules (ids 21001 upward, so they collide with neither the
+  20001 block nor the CRS) for the shapes a WAF is better placed to
+  refuse than the application is: backup and editor leftovers and
+  source-control directories answered 404 rather than 403, template
+  expressions scored at warning so one alone is not a refusal, JNDI and
+  nested expression lookups denied outright, Spring's class loader
+  reached through a bound parameter, `..;/` and path parameters in the
+  request line, the diagnostic methods, upload file names the origin
+  might execute, bounds on parameters, cookies and byte ranges, GraphQL
+  introspection, and — on the way out — private keys, cloud access keys
+  and database error messages. Every rule is exercised by
+  `TestWAFHardeningRules`, which also puts ordinary traffic through the
+  whole file, because a rule set that compiles but no longer matches is
+  a control an operator believes is there.
+
+- **Packet capture of the exchanges the proxy handled (`capture`).** A
+  new section writes what the proxy saw as pcapng files that Wireshark,
+  tshark and every other pcap tool open directly. The proxy terminates
+  TLS, so there is no point on the wire where the exchange is both
+  complete and readable — in front of it the bytes are ciphertext,
+  behind it the client is gone and the request carries the proxy's own
+  address. What this writes is the proxy's own view: the request as it
+  arrived after the header edits and the response as the client
+  received it, synthesised into a TCP conversation (handshake, data
+  segments at a 1460 byte MTU, orderly close, correct IPv4/IPv6 and TCP
+  checksums) between the real client address and the listener, so a
+  dissector reads it as HTTP and `Follow TCP stream` shows the
+  exchange. Each frame carries the `X-Request-Id` as a pcapng comment,
+  so a frame and an access log line name each other. An HTTP/2 or
+  HTTP/3 exchange is rendered with an `HTTP/1.1` start line, because a
+  dissector needs one; an exchange the client abandoned is written as
+  `HTTP/1.1 000 No Response` rather than an invented 200.
+
+  When a capture is taken is decided along two axes. `rules[]` select
+  which flows: by `hosts` (exact or `*.example.com`), `routes`,
+  `methods`, `paths`, `client_cidrs`, `statuses` (a status or a class
+  as a single digit), `reasons` (a deny reason, matched against both
+  `waf` and `waf:942100`), `denied` for every refusal whatever the
+  reason, `percent` for sampling and `max_flows` for a bound. Every
+  selector a rule names has to hold, the first matching rule decides,
+  and a rule naming none — or no `rules` at all — is every flow. The
+  selectors on the answer cannot be decided when the request arrives,
+  so those exchanges are held and written retrospectively: `denied:
+  true` produces a file of exactly what the proxy is refusing. The
+  second axis is time: the configuration says what *may* be captured
+  and reloads, while a runtime switch says whether anything is being
+  captured *now*. `xproxyctl capture start [-duration 10m]`, `stop` and
+  `status`, and `GET`/`POST /v1/capture`, drive it; both mutations are
+  audited with the caller's credentials, the window closes itself after
+  `max_duration` (default 1h, at most 24h), and a reload carries the
+  switch and its deadline over unchanged so a capture is not silently
+  stopped mid-reproduction.
+
+  The files hold decrypted traffic, and are treated as such throughout:
+  created `0600` with `O_EXCL` in a directory the operator names and
+  the proxy alone writes to, with proxy-chosen names, rotated at
+  `max_file_bytes` and pruned to `max_files`; `redact` replaces the
+  listed header values with the fixed string `REDACTED` (a fixed
+  string, not a blanked-out value, so neither the value nor its length
+  is in the file) and defaults to the authorization, cookie and API key
+  headers; CR and LF are stripped from every captured header value, so
+  a value carrying a newline cannot write a header of the attacker's
+  choosing into the file the next reader parses; bodies are off by
+  default and bounded by `max_body_bytes` when on, with a truncated
+  body marked in the frame comment rather than silently short. The
+  capture is closed on shutdown, so the last exchange — the one being
+  investigated — is not the one missing. `xproxy_capture_active`,
+  `xproxy_capture_flows_total{result}`, `xproxy_capture_truncated_total`
+  and `xproxy_capture_bytes_total` report it, and nothing runs on the
+  request path unless a capture is recording and a rule wants the
+  exchange. `examples/security/capture.yaml`.
+
 - **Virtual `security.txt`.** A new `security_txt[]` section serves an
   RFC 9116 document from the proxy at `/.well-known/security.txt` and
   the legacy `/security.txt`, before routing, so a host with no
@@ -339,6 +428,45 @@ Open findings of the earlier rounds:
 
 ### Tests (1.4)
 
+Security tests for the surfaces this release adds, written as an
+attacker would read them rather than as coverage.
+
+`test/bypass` gains two files. The first treats the capture file as
+what it is — the one artefact of this proxy that holds decrypted
+traffic on disk — and tries to get a secret into it (every spelling of
+a redacted header name, a length-preserving placeholder), to get a
+header of one's own into it (encoded CRLF in the path and in a query
+value, a bare CR in a header value, a body carrying a whole fake HTTP
+message, each either refused before the capture or framed so a
+dissector cannot mistake it), and to switch it on from the outside
+(`/v1/capture` on the data plane is an application path and changes no
+state). It also asserts the file mode, that the directory holds nothing
+but the proxy's own pcapng files, and that a refusal is captured with
+the status the client got and nothing from an origin that was never
+asked. The second file is about what a scanner can learn: a decoy
+carries no cookie, no redirect and no reflection of what the client
+sent, is byte-identical for every client and on every hit, and — the
+property that makes a honeypot worth running — a marked client's
+ordinary traffic is indistinguishable from anybody else's, header for
+header, with the mark visible to the operator and never to the client
+or the origin. A last case walks every refusal the harness can produce
+and asserts none of them names an origin address, an upstream or an
+internal path.
+
+`internal/capture` gains a fuzz target over the flow writer: arbitrary
+request bytes, response bytes and comments through every endpoint
+pairing, with the result walked block by block the way a reader with no
+trust in the file would. A capture that crashes the tool it is opened
+with is a capture that cannot be read during the incident it was taken
+for.
+
+The JNDI rule of the new hardening file is tested against the
+obfuscations the payload is actually written in — `${lower:j}ndi`,
+`${::-j}` assembled character by character, the scheme split across
+`${env:}` lookups — through the query string, two headers and a JSON
+body, because a rule that only catches the plain spelling is a rule
+that catches nothing.
+
 A round of adversarial and robustness tests over the parsers, the
 protocol clients and the views, written from the outside in: what a
 client, a peer, a scanner, a certificate authority or a file on disk
@@ -368,6 +496,36 @@ peer that names itself, an agent that reports its host name, a
 WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
+
+- A `denied: true` capture rule missed the refusals decided before
+  routing — a ban, the maintenance gate, a malformed `Host`, the
+  concurrency ceiling — because the capture hook runs once the route is
+  known and those requests never reach it. They are the refusals an
+  operator most wants in the file. An exchange that never reached the
+  hook is now offered to the rules at the end instead, without bodies,
+  since nothing read them.
+- The sandbox gave the capture directory a read rule rather than a
+  write one, because the Landlock rules are derived from the
+  configuration by key name and nothing knew about `capture.directory`.
+  A capture that was configured, enabled and switched on would then
+  write nothing on any Linux host with the sandbox on, which is the
+  default — the failure counter would climb and the directory stay
+  empty. `Derive` now grants the directory of an enabled capture
+  section, and `TestDerive` covers it along with the one other key of
+  that name, the ACME directory, which is a URL and must produce no
+  rule at all.
+- `internal/challenge` `TestFlow` asserted that the counter `1` fails a
+  difficulty-10 proof. One nonce in a thousand is solved by it, so the
+  test failed about that often for no reason. It now looks up a counter
+  that provably does not solve the nonce it was given.
+- `xproxy_capture_bytes_total` reported the size of the current capture
+  file rather than the bytes written in total, so a rotation looked
+  like a counter restart to anything reading it as the counter it is
+  declared to be. It now accumulates across files. `capture.directory`
+  and `capture.start_active` are also documented as they behave: the
+  directory must exist and is the proxy's alone, and a capture that
+  begins at start-up runs until something turns it off — `max_duration`
+  bounds the window an operator opens, not that one.
 
 - `Keyring.All` and `Keyring.Keys` handed out the ring's own key
   material rather than a copy, so a caller working in place would have

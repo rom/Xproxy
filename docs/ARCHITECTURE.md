@@ -864,6 +864,7 @@ Endpoints:
 | POST | `/v1/logs/reopen` | reopen log files |
 | GET | `/v1/bans`, POST `/v1/bans`, DELETE `/v1/bans?target=` | ban list |
 | GET | `/v1/cluster` | cluster peers and counters |
+| GET | `/v1/capture`, POST `/v1/capture` | packet capture state (recording, window, current file, per rule counters); `{"active":true,"duration":"10m"}` opens a bounded window and `{"active":false}` closes it (audited; 404 without a `capture` section) |
 | GET | `/v1/acme`, POST `/v1/acme/renew` | managed certificate status; forced renewal (audited) |
 | GET | `/metrics` | Prometheus exposition |
 | GET | `/v1/series?since=10m&limit=60` | sampled series for graphs |

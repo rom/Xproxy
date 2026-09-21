@@ -1351,7 +1351,8 @@ configuration needs, so its file system view is coarse.
 **Decision.** After the listeners, logs, state files and the management
 socket are open and before `READY=1`, the daemon applies Landlock rules
 derived from its own configuration (directories of configured files for
-reading; log, state, history and certificate directories for writing;
+reading; log, state, history, capture and certificate directories for
+writing;
 the standard library's resolver and trust store paths), refuses new TCP
 binds where the ABI allows, installs a seccomp deny list with
 `TSYNC` on every thread, clears every capability set, sets
