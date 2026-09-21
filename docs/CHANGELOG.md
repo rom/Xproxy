@@ -276,6 +276,37 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **UDP and IP proxying over extended CONNECT (`forward.masque`): RFC
+  9298 and RFC 9484.** HTTP CONNECT tunnels TCP and nothing else, so
+  everything datagram-shaped an estate sends — DNS, QUIC, NTP,
+  telemetry — either went around this proxy or did not go at all, and
+  going around it was the usual answer. CONNECT-UDP is the same
+  explicit proxy for datagrams: the same destination policy, the same
+  credentials, the same access log, the same bans. Datagrams travel as
+  capsules (RFC 9297), the fallback RFC 9298 requires when HTTP
+  datagrams are unavailable — reliable and ordered, which for a proxy
+  applying a policy per datagram is a feature rather than a cost.
+
+  Every extended CONNECT is answered by this path, not only the two
+  protocols implemented: an unimplemented one gets 501 rather than
+  falling through to the ordinary CONNECT handler, where a request
+  carrying a path and no authority would have been treated as a TCP
+  tunnel to whatever its `:authority` said.
+
+  CONNECT-IP is a VPN endpoint and is treated as one. The proxy does
+  not create a tunnel device: a userspace process cannot put an
+  arbitrary IP packet on the wire, a raw socket would need CAP_NET_RAW
+  and would let a bug here forge any packet on the network, and the
+  routing and firewalling of a VPN belong to the host's configuration.
+  The operator creates, addresses and firewalls a `tun` interface and
+  the proxy opens it; where none is available the request is refused
+  with 501 and a reason in the error log. `ip_assign` and `ip_routes`
+  are required because they are the anti-spoofing rule — a packet whose
+  source is not the assigned address, or whose destination is outside
+  the advertised routes, is dropped and counted — and the client is
+  told both in ADDRESS_ASSIGN and ROUTE_ADVERTISEMENT capsules before
+  it can send anything. `examples/forward/masque.yaml`.
+
 - **DNS over QUIC, discovery, and SVCB/HTTPS records
   (`dns.doq`, `dns.discovery`, `dns.records`, `quic://` upstreams).**
   DoT and DoH both carry DNS over TCP and inherit its head-of-line

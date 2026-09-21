@@ -2876,8 +2876,60 @@ func (v *validator) forwardListener(p string, f *ForwardListener) {
 		// side there is no header a middlebox will strip by accident.
 		v.warnf("%s.socks5: no auth is configured, so anyone who can reach this port can use the proxy; restrict the listener address, the destinations, or add auth", p)
 	}
+	v.masque(p, f)
 	if f.SOCKSUDP {
 		v.warnf("%s.socks_udp: a UDP association relays datagrams for the client that opened it; it is bound to that client's address and dies with the control connection, but it is a wider exposure than a TCP tunnel", p)
+	}
+}
+
+// masque checks the MASQUE section of a forward listener.
+func (v *validator) masque(p string, f *ForwardListener) {
+	m := f.Masque
+	if m == nil {
+		return
+	}
+	if !m.UDP && !m.IP {
+		v.errf("%s.masque: neither udp nor ip is enabled, so the section does nothing", p)
+	}
+	if m.MaxSessions < 0 || m.MaxSessions > 1_000_000 {
+		v.errf("%s.masque.max_sessions: must be between 0 and 1000000", p)
+	}
+	if m.IP {
+		if m.IPDevice == "" {
+			v.errf("%s.masque.ip_device: required with ip: a userspace process cannot put an IP packet on the wire without a tunnel device", p)
+		}
+		if len(m.IPAssign) == 0 {
+			v.errf("%s.masque.ip_assign: required with ip: a client cannot send until it has been told a source address", p)
+		}
+		if len(m.IPRoutes) == 0 {
+			v.errf("%s.masque.ip_routes: required with ip: a client cannot send until it has been told where it may send", p)
+		}
+	}
+	for i, a := range m.IPAssign {
+		pfx, err := netip.ParsePrefix(a)
+		if err != nil {
+			v.errf("%s.masque.ip_assign[%d]: %q is not a CIDR", p, i, a)
+			continue
+		}
+		if pfx.Addr().IsUnspecified() && pfx.Bits() == 0 {
+			v.errf("%s.masque.ip_assign[%d]: %q would let a client claim any source address", p, i, a)
+		}
+	}
+	for i, rt := range m.IPRoutes {
+		pfx, err := netip.ParsePrefix(rt)
+		if err != nil {
+			v.errf("%s.masque.ip_routes[%d]: %q is not a CIDR", p, i, rt)
+			continue
+		}
+		if pfx.Bits() == 0 {
+			v.warnf("%s.masque.ip_routes[%d]: %q advertises the whole internet to clients of this tunnel; the tunnel device's own firewall is then the only thing narrowing it", p, i, rt)
+		}
+	}
+	if m.IPDevice != "" && !m.IP {
+		v.warnf("%s.masque.ip_device: set without ip: true, so nothing uses it", p)
+	}
+	if (m.UDP || m.IP) && f.Auth == nil {
+		v.warnf("%s.masque: no auth is configured, so anyone who can reach this listener can send datagrams through it", p)
 	}
 }
 

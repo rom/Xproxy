@@ -87,6 +87,10 @@ type Stats struct {
 	ForwardBytesIn         atomic.Uint64
 	ForwardBytesOut        atomic.Uint64
 	ForwardSOCKS           atomic.Uint64
+	MasqueUDP              atomic.Uint64
+	MasqueIP               atomic.Uint64
+	MasqueOpen             atomic.Int64
+	MasqueDropped          atomic.Uint64
 	WSConnections          atomic.Uint64
 	WSMessages             atomic.Uint64
 	WSViolations           atomic.Uint64
@@ -236,6 +240,10 @@ type Snapshot struct {
 	ForwardRejected        uint64            `json:"forward_rejected"`
 	ForwardErrors          uint64            `json:"forward_errors"`
 	ForwardSOCKS           uint64            `json:"forward_socks"`
+	MasqueUDP              uint64            `json:"masque_udp"`
+	MasqueIP               uint64            `json:"masque_ip"`
+	MasqueOpen             int64             `json:"masque_open"`
+	MasqueDropped          uint64            `json:"masque_dropped"`
 	WSConnections          uint64            `json:"websocket_connections"`
 	WSMessages             uint64            `json:"websocket_messages"`
 	WSViolations           uint64            `json:"websocket_violations"`
@@ -353,6 +361,10 @@ func (s *Stats) snapshot() Snapshot {
 		ForwardRejected:        s.ForwardRejected.Load(),
 		ForwardErrors:          s.ForwardErrors.Load(),
 		ForwardSOCKS:           s.ForwardSOCKS.Load(),
+		MasqueUDP:              s.MasqueUDP.Load(),
+		MasqueIP:               s.MasqueIP.Load(),
+		MasqueOpen:             s.MasqueOpen.Load(),
+		MasqueDropped:          s.MasqueDropped.Load(),
 		WSConnections:          s.WSConnections.Load(),
 		WSMessages:             s.WSMessages.Load(),
 		WSViolations:           s.WSViolations.Load(),

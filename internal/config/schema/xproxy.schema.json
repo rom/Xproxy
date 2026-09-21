@@ -1607,6 +1607,14 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "masque": {
+          "description": "Masque enables the MASQUE proxying protocols on this listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Masque"
+            }
+          ]
+        },
         "max_response_bytes": {
           "description": "MaxResponseBytes bounds the body of a plain (non CONNECT) response relayed to the client. Default 64 MiB; 0 disables.",
           "type": "integer"
@@ -2491,6 +2499,43 @@
         "socket_mode": {
           "description": "SocketMode is the octal permission mode of the socket, default 0660.",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Masque": {
+      "description": "Masque configures UDP proxying (RFC 9298) and IP proxying (RFC 9484) over extended CONNECT. Both need HTTP/2 or HTTP/3, so the listener needs tls with h2 in its protocols.",
+      "type": "object",
+      "properties": {
+        "ip": {
+          "description": "IP accepts connect-ip. It also needs ip_device, ip_assign and ip_routes: a userspace process cannot put an arbitrary IP packet on the wire without a tunnel device.",
+          "type": "boolean"
+        },
+        "ip_assign": {
+          "description": "IPAssign are the prefixes a client is told to use as its source address; packets from anything else are dropped.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ip_device": {
+          "description": "IPDevice is an existing tun interface the operator created, addressed, routed and firewalled (Linux only).",
+          "type": "string"
+        },
+        "ip_routes": {
+          "description": "IPRoutes are the ranges a client may send to; packets to anything else are dropped.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_sessions": {
+          "description": "MaxSessions bounds concurrent MASQUE sessions. Default 1024.",
+          "type": "integer"
+        },
+        "udp": {
+          "description": "UDP accepts connect-udp. The destination policy applies to each association exactly as it does to a CONNECT tunnel.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false

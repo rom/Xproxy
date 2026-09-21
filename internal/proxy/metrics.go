@@ -192,6 +192,10 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_websocket_violations_total", "WebSocket frames or messages that broke the route's policy.", L{"route": g.Route}, float64(g.Violations))
 		e.Counter("xproxy_websocket_closed_total", "Connections closed by a websocket guard.", L{"route": g.Route}, float64(g.Closed))
 	}
+	e.Counter("xproxy_masque_sessions_total", "MASQUE sessions accepted, by protocol.", L{"protocol": "connect-udp"}, float64(sn.MasqueUDP))
+	e.Counter("xproxy_masque_sessions_total", "MASQUE sessions accepted, by protocol.", L{"protocol": "connect-ip"}, float64(sn.MasqueIP))
+	e.Gauge("xproxy_masque_sessions_open", "Open MASQUE sessions.", nil, float64(sn.MasqueOpen))
+	e.Counter("xproxy_masque_dropped_total", "Datagrams or packets dropped by a MASQUE session: an unknown context, a bad header, a source or destination the policy refuses.", nil, float64(sn.MasqueDropped))
 	e.Counter("xproxy_forward_socks_total", "SOCKS5 connections accepted on forward listeners.", nil, float64(sn.ForwardSOCKS))
 	e.Counter("xproxy_forward_udp_associations_total", "SOCKS5 UDP associations opened.", nil, float64(sn.ForwardUDPAssociations))
 	e.Gauge("xproxy_forward_udp_open", "Open SOCKS5 UDP associations.", nil, float64(sn.ForwardUDPOpen))

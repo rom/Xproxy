@@ -2145,6 +2145,77 @@ watch if it is on.
 `examples/forward/socks.yaml` is a complete egress proxy with both
 protocols, an allow list, credentials and the ban triggers.
 
+### UDP and IP proxying (MASQUE)
+
+```yaml
+server:
+  listeners:
+    - name: egress
+      address: "10.0.0.5:443"
+      kind: forward
+      protocols: [h1, h2]          # extended CONNECT needs HTTP/2
+      tls: {certificates: [{cert_file: /etc/xproxy/certs/proxy.pem, key_file: /etc/xproxy/certs/proxy-key.pem}]}
+      forward:
+        ports: [53, 443, 853]
+        allow: ["9.9.9.9", "*.example.com"]
+        auth: {users_file: /etc/xproxy/egress.htpasswd, realm: egress}
+        masque:
+          udp: true
+```
+
+`CONNECT` tunnels TCP and nothing else. Everything datagram-shaped an
+estate sends — DNS, QUIC, NTP, telemetry — either goes around the proxy
+or does not go at all, and going around it is the usual answer, which
+is the problem this solves rather than the protocol being interesting.
+A client asks for
+
+```
+CONNECT https://proxy/.well-known/masque/udp/9.9.9.9/853/
+:protocol = connect-udp
+```
+
+and gets a session carrying datagrams as capsules, under the same
+destination rules, credentials, access log and bans as a CONNECT
+tunnel. `xproxyctl status` counts the sessions and `GET /v1/masque`
+reports them per listener.
+
+**CONNECT-IP is a VPN endpoint, and is treated like one.** It needs a
+`tun` device that the *operator* creates, addresses, routes and
+firewalls — the proxy only opens it:
+
+```sh
+ip tuntap add mode tun xproxy0
+ip addr add 10.8.0.1/24 dev xproxy0
+ip link set xproxy0 up
+# then the firewall rules that decide what this tunnel may reach
+```
+
+```yaml
+        masque:
+          ip: true
+          ip_device: xproxy0
+          ip_assign: ["10.8.0.2/32"]     # the source a client may use
+          ip_routes: ["10.0.0.0/8"]      # where it may send
+```
+
+The division is deliberate. A userspace process cannot put an arbitrary
+IP packet on the wire: a raw socket would need `CAP_NET_RAW`, would not
+receive the replies a session needs, and would let a bug here forge any
+packet on the network. A tun device confines the traffic to what the
+host's routing and firewall allow, and the network policy of a VPN
+belongs in the host's configuration rather than in this file. Where no
+device is available the request is refused with 501 and the reason goes
+to the error log.
+
+`ip_assign` and `ip_routes` are both required because they are the
+anti-spoofing rule: a packet whose source is not the assigned address,
+or whose destination is outside the advertised routes, is dropped and
+counted in `xproxy_masque_dropped_total`. A client is told both in
+ADDRESS_ASSIGN and ROUTE_ADVERTISEMENT capsules before it can send
+anything.
+
+`examples/forward/masque.yaml` has both, with `ip` off by default.
+
 ### Virtual security.txt
 
 A `security.txt` (RFC 9116) tells a finder where to report a

@@ -141,6 +141,57 @@ connection limits and the header timeouts apply as on every listener.
 | `max_response_bytes` | int | `67108864` | Largest plain response body relayed; a larger one is cut off and the connection closed; 0 disables |
 | `socks5` | bool | `false` | Also speak SOCKS5 (RFC 1928) on this port; see below |
 | `socks_udp` | bool | `false` | Allow SOCKS5 `UDP ASSOCIATE` (requires `socks5`) |
+| `masque` | object | none | UDP and IP proxying over extended CONNECT (RFC 9298, RFC 9484); see below |
+
+#### MASQUE on a forward listener
+
+HTTP `CONNECT` tunnels TCP, and that is all it tunnels. Everything else
+an estate sends — DNS, QUIC, NTP, WireGuard, telemetry — either leaves
+the network outside this policy or does not leave at all, and the first
+is the usual answer. CONNECT-UDP (RFC 9298) is the same explicit proxy
+for datagrams, with the same destination rules, credentials, logs and
+bans; CONNECT-IP (RFC 9484) carries IP packets, which is how a MASQUE
+VPN is built.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `udp` | bool | `false` | Accept `connect-udp` |
+| `ip` | bool | `false` | Accept `connect-ip`; needs `ip_device`, `ip_assign` and `ip_routes` |
+| `max_sessions` | int | `1024` | Concurrent MASQUE sessions on this listener; over it, 503 |
+| `ip_device` | name | | An existing `tun` interface the operator created, addressed, routed and firewalled (Linux only) |
+| `ip_assign` | list of CIDR | | The source addresses a client is told to use; a packet from anything else is dropped |
+| `ip_routes` | list of CIDR | | The ranges a client may send to; a packet to anything else is dropped |
+
+Both need **HTTP/2 or HTTP/3**, because an extended CONNECT carries a
+`:protocol` pseudo-header that HTTP/1.1 has no way to express: the
+listener needs `tls` with `h2` in its `protocols`. Datagrams travel as
+capsules (RFC 9297) rather than HTTP datagrams — the fallback RFC 9298
+requires, reliable and ordered, which for a proxy applying a policy to
+each datagram is a feature: an unreliable path would make a refused
+datagram indistinguishable from a lost one.
+
+Every extended CONNECT is answered here, not only the two protocols
+implemented: an unimplemented one gets 501 rather than falling through
+to the ordinary `CONNECT` path, where a request carrying a path and no
+authority would otherwise be treated as a TCP tunnel to whatever its
+`:authority` said.
+
+**CONNECT-IP needs a tunnel device**, and the proxy does not create
+one. A userspace process cannot put an arbitrary IP packet on the wire;
+a raw socket would need `CAP_NET_RAW`, would not receive the replies a
+session needs, and would let a bug here forge any packet on the
+network. A `tun` interface is the honest mechanism: the operator
+creates, addresses, routes and firewalls it (`ip tuntap add mode tun
+xproxy0`, and the rest), and the proxy only opens it. The network
+policy of a VPN belongs to the host's configuration, not to this file.
+Where no device is available the request is refused with 501 and a
+reason in the error log rather than failing obscurely.
+
+Packets are checked before forwarding: the source must be inside
+`ip_assign` and the destination inside `ip_routes`, or the packet is
+dropped and counted. That is the anti-spoofing rule, and it is why both
+lists are required — a client that has not been told a source address
+and a destination range has no business sending anything.
 
 #### SOCKS5 on a forward listener
 

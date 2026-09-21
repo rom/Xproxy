@@ -1718,6 +1718,28 @@ encrypts nothing.
 **`CONNECT` refused with `forward_denied`.** The destination is not in
 the allow list or the port is not in `ports`.
 
+**A MASQUE request answers 501.** Either the protocol is not enabled
+(`masque.udp` or `masque.ip`), or it is one this proxy does not
+implement — every extended CONNECT is answered here rather than falling
+through to the ordinary CONNECT path, because a request with a path and
+no authority is not a TCP tunnel request. For `connect-ip`, 501 with
+`masque_no_device` means the tunnel device could not be opened; the
+error log says why, and the usual causes are that it has not been
+created (`ip tuntap add mode tun xproxy0`) or that the process may not
+open `/dev/net/tun`.
+
+**A MASQUE client cannot even send the request.** Extended CONNECT
+needs HTTP/2 or HTTP/3; a listener without `h2` in `protocols` has no
+way to carry `:protocol`. Check the negotiated protocol, not just that
+TLS works.
+
+**Datagrams disappear.** `xproxy_masque_dropped_total` counts them. For
+`connect-udp` the causes are a capsule with a context other than 0 (an
+extension nothing here registers) and an answer from an address other
+than the target. For `connect-ip` it is the anti-spoofing rule: the
+source must be inside `ip_assign` and the destination inside
+`ip_routes`.
+
 **A SOCKS client gets "general SOCKS server failure".** Look for the
 `forward` access line with `protocol: socks5`: the `reason` field says
 which check refused it. Policy refusals come back as "connection not

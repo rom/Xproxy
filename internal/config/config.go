@@ -472,6 +472,32 @@ type ForwardListener struct {
 	// through a SOCKS proxy. Each association is bound to the client
 	// address that opened it and dies with its control connection.
 	SOCKSUDP bool `yaml:"socks_udp"`
+	// Masque enables the MASQUE proxying protocols on this listener.
+	Masque *Masque `yaml:"masque"`
+}
+
+// Masque configures UDP proxying (RFC 9298) and IP proxying (RFC 9484)
+// over extended CONNECT. Both need HTTP/2 or HTTP/3, so the listener
+// needs tls with h2 in its protocols.
+type Masque struct {
+	// UDP accepts connect-udp. The destination policy applies to each
+	// association exactly as it does to a CONNECT tunnel.
+	UDP bool `yaml:"udp"`
+	// IP accepts connect-ip. It also needs ip_device, ip_assign and
+	// ip_routes: a userspace process cannot put an arbitrary IP packet
+	// on the wire without a tunnel device.
+	IP bool `yaml:"ip"`
+	// MaxSessions bounds concurrent MASQUE sessions. Default 1024.
+	MaxSessions int `yaml:"max_sessions"`
+	// IPDevice is an existing tun interface the operator created,
+	// addressed, routed and firewalled (Linux only).
+	IPDevice string `yaml:"ip_device"`
+	// IPAssign are the prefixes a client is told to use as its source
+	// address; packets from anything else are dropped.
+	IPAssign []string `yaml:"ip_assign"`
+	// IPRoutes are the ranges a client may send to; packets to
+	// anything else are dropped.
+	IPRoutes []string `yaml:"ip_routes"`
 }
 
 // ForwardAuth is the credential source of a forward listener.
