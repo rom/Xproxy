@@ -2967,7 +2967,25 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 ## Troubleshooting
 
 Every symptom, the log line that proves it and the fix live in
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md): a sixty-second triage, a field
-guide to the access log, a symptom index, a section per subsystem, the
-deny reasons with the component that raises each, and what to collect for
-a bug report.
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md), in five parts:
+
+- **Orientation** — a sixty-second triage, a field guide to the access
+  log line, a symptom index, what each `xproxyctl` command is for, the
+  ordered list of every stage a request can die at, the timeout ladder,
+  how to prove the problem is not the proxy, and how to reproduce one
+  without affecting clients.
+- **The proxy itself** — start-up, reload, routing, TLS, upstreams, the
+  three HTTP versions, WebSockets and streaming, gRPC, static files,
+  cache and compression.
+- **Protection** — rate limits, bans, shedding and tarpits, the WAF,
+  virtual patches and the positive policy, authentication, the challenge
+  and CAPTCHA, filters, bot scoring, origin lock and security.txt.
+- **Beyond one proxy** — cluster, DNS listener, forward proxy and layer
+  4, mirroring and shadowing, the API inventory, Kubernetes ingress
+  mode, fleet.
+- **Operations and reference** — the management socket and GUI, logs and
+  telemetry, the sandbox, performance, capacity, clocks, misbehaving
+  clients, emergency procedures, upgrades, the bounded tables, every
+  deny reason with the component that raises it and whether a ban
+  trigger may name it, when to escalate, a glossary, and what to collect
+  for a bug report.

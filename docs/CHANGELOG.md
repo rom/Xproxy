@@ -517,10 +517,39 @@ WebAssembly module that reaches past its sandbox).
 ### Changed (1.4)
 
 - Troubleshooting moved out of `docs/USAGE.md` into a document of its
-  own, [`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md): a sixty-second
-  triage, a field guide to the access log line, a symptom index, a
-  section per subsystem, every deny reason with the component that
-  raises it, and what to collect for a bug report.
+  own, [`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md), and then grew to
+  about two and a half times its original size: forty-eight sections in
+  five parts.
+
+  New orientation material: what each `xproxyctl` command is for; **where
+  a request can die**, the thirty-three stages in the order the proxy
+  evaluates them with what each one can refuse (which is the answer to
+  "why has this counter not moved"); the **timeout ladder**, all eight
+  timeouts across three configuration sections in the order they fire;
+  how to prove the problem is not the proxy; and how to reproduce one
+  without affecting clients.
+
+  New subsystem sections: the three HTTP versions, WebSockets and
+  streaming, gRPC and gRPC-web, static files, virtual patches and the
+  positive policy, mirroring and shadowing, bot scoring, the API
+  inventory, origin lock, virtual security.txt, Kubernetes ingress mode,
+  clocks and expiry, misbehaving clients, capacity and sizing,
+  emergencies, upgrades and rollback, when to escalate, and a glossary.
+  The existing sections gained about a page each.
+
+  Five things the document said that were not true are fixed: there is
+  no `xproxyctl pools` command (it is all in `upstreams`), the cache is
+  purged with `cache purge HOST PREFIX` and not with flags,
+  `waf-exclusions` is `waf exclusions`, `spki` reads a certificate file
+  rather than a live address, and the access log has no `upstream_ms`
+  field — the upstream's share of a request comes from the trace or from
+  `xproxyctl upstreams`. The access log's `challenge_tier` and the
+  cache's `store` value did not exist either.
+
+  The deny reason table now says which reasons a `bans.triggers[]` entry
+  may name, and explains the three spellings one refusal has: the access
+  log's `denied`, the security log's `reason` plus `detail`, and the
+  folded ban category a trigger matches on.
 
 ### Security (1.3)
 
