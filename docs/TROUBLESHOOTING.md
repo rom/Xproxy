@@ -1904,6 +1904,51 @@ this bound.
 broker sent something this proxy would not parse. It is not passed
 through: its framing is what the client's next read depends on.
 
+## Syslog relay
+
+**Nothing reaches the collector.** Look at `syslog_received` first: if
+it is zero, the messages are not arriving, and on UDP that usually means
+`allow_senders`. If it is climbing while `syslog_forwarded` is not,
+check `syslog_refused` (unparseable, oversize or a refused sender),
+`syslog_dropped` (a facility, severity or deny pattern filtered it),
+`syslog_rate_limited`, `syslog_queue_dropped` (the collector is slower
+than the senders) and `syslog_send_failed` (the collector is not
+reachable at all).
+
+**Records are refused as malformed.** The relay will not forward what it
+could not read, because a message's facility, severity and host are
+exactly the fields every rule here decides on. The usual causes are a
+priority above 191 (there is no facility to name above it), a NUL or a
+line ending inside a header field, text that is not UTF-8, and
+structured data whose values are not quoted the way RFC 5424 requires.
+The security event carries the reason.
+
+**The host name in the collector is not what the sender set.**
+`hostname` decides that. `annotate` (the default) keeps the sender's
+name and adds `xproxyOrigin@0` with the observed address; `observed`
+replaces the field; `keep` takes the sender's word, which nothing
+checks and which is why it warns.
+
+**Records arrive in a different format from the one that was sent.**
+Deliberately. Everything is re-emitted as RFC 5424 whatever arrived, so
+that the record the collector stores is the record the relay decided
+about. A newline in the text becomes a visible symbol rather than a
+second record; a line ending inside a structured data value is escaped;
+a field that cannot appear in a header is replaced.
+
+**A stream connection drops after one bad message.** On a counted frame
+(`octet_counting`), refusing to read the octets the frame declared
+leaves the reader at an offset nobody knows, so the connection ends.
+On a delimited one the reader skips to the next line ending and carries
+on. `framing: auto` decides per message by whether it starts with a
+digit.
+
+**Messages stop under load.** `rate_limit` is per sender, and
+`max_senders` bounds the table it keeps; when the table is full a new
+sender is refused rather than evicting the entries doing the limiting.
+`queue` is what waits for the collector, and a full queue drops and
+counts rather than holding every sender behind one slow collector.
+
 ## FTP proxy
 
 **Transfers hang, or the client reports "cannot open data connection".**
@@ -2842,6 +2887,7 @@ innocent.
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
 | `yara` | A YARA rule fired on a layer 4 stream with `action: close` | yes |
+| `syslog_denied` | The syslog relay: a refused sender, a message it could not parse, one over the bound, or a stream whose framing could not be read | yes |
 | `ftp_denied` | The FTP proxy: a refused command, path, extension or address, a failed login, a malformed control line, a bounce attempt, or a transfer cut by a bound or a rule (`detail` says which) | yes |
 | `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command, environment variable, file transfer helper or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |

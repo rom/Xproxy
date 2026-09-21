@@ -131,6 +131,7 @@ type boundListener struct {
 	mqtt      *mqttServer    // kind: mqtt listeners
 	ssh       *sshServer     // kind: ssh listeners
 	ftp       *ftpServer     // kind: ftp listeners
+	syslog    *syslogServer  // kind: syslog listeners
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -753,6 +754,54 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		bl.mqtt = q
 		return bl, nil
 	}
+	if lc.Kind == "syslog" {
+		// Streams and datagrams both, on the same address: most senders
+		// still use UDP, and a relay that takes only one of them is a
+		// relay half the estate goes around.
+		var tc *tls.Config
+		if lc.TLS != nil {
+			c, rl, err := tlsconf.Server(lc.TLS, nil)
+			if err != nil {
+				_ = fr.Close()
+				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+			}
+			s.tickets.Attach(c)
+			rl.Fingerprints = s.fingerprints
+			rl.Refuse = s.refuseHandshake
+			rl.StartStapling(s.logs.Error)
+			bl.tlsReload = rl
+			tc = c
+		}
+		var pc net.PacketConn
+		if lc.Syslog.UDP == nil || *lc.Syslog.UDP {
+			udpAddr := lc.Address
+			if strings.HasSuffix(lc.Address, ":0") {
+				udpAddr = ln.Addr().String()
+			}
+			p, _, err := packetFor(activated, lc.Name, udpAddr)
+			if err != nil {
+				_ = fr.Close()
+				if bl.tlsReload != nil {
+					bl.tlsReload.Close()
+				}
+				return nil, fmt.Errorf("listener %s: udp: %w", lc.Name, err)
+			}
+			pc = p
+		}
+		g, err := newSyslogServer(s, lc, bl.ln, pc, tc)
+		if err != nil {
+			_ = fr.Close()
+			if pc != nil {
+				_ = pc.Close()
+			}
+			if bl.tlsReload != nil {
+				bl.tlsReload.Close()
+			}
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		bl.syslog = g
+		return bl, nil
+	}
 	if lc.Kind == "ftp" {
 		// Like SMTP, the listener is not wrapped even for implicit
 		// mode: AUTH TLS has to read cleartext first, so the session
@@ -1015,6 +1064,10 @@ func (s *Server) serve(bl *boundListener) {
 	}
 	if bl.ftp != nil {
 		bl.ftp.serve()
+		return
+	}
+	if bl.syslog != nil {
+		bl.syslog.serve()
 		return
 	}
 	if bl.cfg.TLS != nil {
@@ -1486,6 +1539,11 @@ func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocke
 		}
 	case bl.ssh != nil:
 		bl.ssh.shutdown(ctx)
+	case bl.syslog != nil:
+		bl.syslog.shutdown(ctx)
+		if bl.tlsReload != nil {
+			bl.tlsReload.Close()
+		}
 	case bl.ftp != nil:
 		bl.ftp.shutdown(ctx)
 		if bl.tlsReload != nil {

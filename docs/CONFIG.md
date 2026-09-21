@@ -598,6 +598,69 @@ client the broker's own `$SYS` tree. `subscribe_deny: ["$SYS/#"]` is
 still worth writing, because it refuses the client that asks for it by
 name.
 
+### server.listeners[].syslog (kind: syslog)
+
+A `kind: syslog` listener is a relay that reads what it forwards.
+
+Reading it is the point. Almost every field in a syslog record is
+written by the sender and believed by the collector: the host name, the
+facility, the severity, the time. A message claiming to be `auth.emerg`
+from another machine costs nothing to send. And a message whose text
+carries a newline becomes **two** records in any collector that frames
+on newlines — the second one saying whatever the sender wanted a record
+to say, with a priority of its own.
+
+So every message is parsed, and every message is re-emitted as RFC 5424
+in one framing, whatever arrived. One dialect out is what makes the
+record a collector stores the record this relay decided about: a
+newline in the text is written as a visible symbol, a line ending in a
+structured data value is escaped, and a field that cannot appear in a
+header is replaced.
+
+Both transports: TCP (RFC 6587 framing, either kind) and UDP (RFC 5426,
+one datagram per message), on the same address. TLS is RFC 5425.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | upstream | required | The collector pool |
+| `udp` | bool | `true` | Also take datagrams on the same address, which is what most senders still send |
+| `framing` | enum | `auto` | What the stream side accepts: `octet_counting`, `non_transparent` or `auto`, decided per message by whether it starts with a digit |
+| `upstream_framing` | enum | `octet_counting` | What the relay writes. Octet counting cannot be confused by what a message contains, and is the only framing RFC 5425 allows over TLS; `non_transparent` warns |
+| `tls_mode` | enum | `implicit` with `tls`, else `none` | TLS from the first octet on the stream side |
+| `upstream_tls_mode` | enum | `none` | `none` or `implicit` towards the collector |
+| `upstream_tls` | object | | Verification of the collector |
+| `hostname` | enum | `annotate` | `keep` takes the sender's word, `observed` replaces the field with the address the message arrived from, `annotate` keeps both and records which is which. `keep` warns |
+| `allow_facilities` | list | `[]` (any) | Facilities by name: `kern`, `user`, `auth`, `authpriv`, `local0`… |
+| `deny_facilities` | list | `[]` | Refused whatever the allow list says |
+| `min_severity` | name | `debug` | Drop anything less severe: `warning` keeps `emerg` through `warning` |
+| `allow_senders` | list of CIDR | `[]` (any) | On UDP this is the only authentication there is, so leaving it empty with `udp: true` warns |
+| `deny_patterns` | list of RE2 | `[]` | Drop a message whose text matches. A filter, not a redaction: it does not arrive |
+| `redact` | list | `[]` | `{name, pattern, with}`: replace what matches and record that a rule did, in structured data |
+| `max_message_bytes` | int | `8192` | One message; 480..1048576. RFC 5426 requires every receiver to take 480 |
+| `rate_limit` | int | `0` (none) | Messages a second from one sender. Unset with `udp: true` warns |
+| `rate_burst` | int | `rate_limit` | What one sender may send at once |
+| `max_senders` | int | `65536` | The rate limit table. When it is full a new sender is refused rather than evicting the entries doing the limiting |
+| `max_connections` | int | `1000` | Stream connections |
+| `idle_timeout` | duration | `5m` | No traffic on a stream connection |
+| `queue` | int | `4096` | Parsed messages waiting for the collector. When it is full the relay drops and counts, rather than holding every sender behind one slow collector |
+
+A message the relay cannot parse is refused, not forwarded: its
+facility, severity and host are exactly the fields every rule here
+decides on, and a record nobody could read is a record nobody can
+filter. A message with no timestamp is given the time the relay saw it,
+because a record nobody can order is a record that is hard to use.
+
+On a delimited stream a message over the bound is dropped and the
+connection carries on — the reader skips to the next line ending, so
+one long line does not cost every record behind it. On a counted stream
+it ends the connection, because refusing to read the octets a frame
+declared leaves the reader at an offset nobody knows.
+
+Counters: `syslog_received`, `syslog_forwarded`, `syslog_dropped`,
+`syslog_refused`, `syslog_rate_limited`, `syslog_redacted`,
+`syslog_queue_dropped`, `syslog_send_failed`, `syslog_connections`,
+`syslog_rejected`. Refusals are `syslog_denied` for the ban triggers.
+
 ### server.listeners[].ftp (kind: ftp)
 
 A `kind: ftp` listener is a protocol-aware FTP proxy: the proxy is an

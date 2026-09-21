@@ -298,6 +298,52 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A syslog relay that reads what it forwards (`kind: syslog`).** A
+  relay that forwards syslog without reading it is a pipe. The reason to
+  read it is that almost every field is written by the sender and
+  believed by the collector: the host name, the facility, the severity,
+  the time. A message claiming to be `auth.emerg` from another machine
+  costs nothing to send.
+
+  And a message whose text carries a newline becomes **two** records in
+  any collector that frames on newlines, the second one saying whatever
+  the sender wanted a record to say, with a priority of its own. So
+  every message is parsed and every message is re-emitted as RFC 5424 in
+  one framing, whatever arrived: a newline in the text becomes a visible
+  symbol, a line ending in a structured data value is escaped, and a
+  field that cannot appear in a header is replaced. One dialect out is
+  what makes the record a collector stores the record the relay decided
+  about.
+
+  `hostname` is the other half of that. `keep` takes the sender's word,
+  which nothing checks and which warns; `observed` replaces the field
+  with the address the message arrived from; `annotate`, the default,
+  keeps both and states which is which, because the sender's name is
+  often the useful one and is never the true one.
+
+  The rest is what a relay in front of a SIEM needs: `allow_facilities`,
+  `deny_facilities` and `min_severity`; `allow_senders`, which on UDP is
+  the only authentication there is and warns when empty; `deny_patterns`
+  that drop a record and `redact` rules that take part of one out and
+  record that they did; a per-sender `rate_limit`, because a log flood
+  is a denial of service on the collector and a way to push older
+  records out of whatever window it keeps; and a bounded `queue` that
+  drops and counts rather than holding every sender behind one slow
+  collector.
+
+  Both transports on one address: TCP with either RFC 6587 framing, UDP
+  one datagram per message (RFC 5426), TLS as RFC 5425 defines it, and
+  octet counting towards the collector by default because it is the one
+  framing a message's own text cannot be mistaken for.
+
+  `internal/syslog` parses both formats onto one shape — a relay with
+  two internal shapes is a relay with two sets of rules — and refuses
+  what it cannot re-emit honestly. A message over the bound on a
+  delimited stream is dropped and the reader resyncs to the next line
+  ending; on a counted stream it ends the connection, because refusing
+  to read the octets a frame declared leaves the reader at an offset
+  nobody knows.
+
 - **An FTP proxy that is actually in the middle (`kind: ftp`).** FTP is
   two connections, and the second one is the whole problem. Every
   transfer happens on a data connection whose address one side announces

@@ -1725,6 +1725,225 @@ T}
 Every session writes one \fBmqtt\fR line to the access log with the client address, client id, username, version, subscriptions, publications and why it closed. Counters: \fBmqtt_sessions\fR, \fBmqtt_sessions_open\fR, \fBmqtt_published\fR, \fBmqtt_subscribed\fR, \fBmqtt_refused\fR, \fBmqtt_rejected\fR, \fBmqtt_protocol_errors\fR; the matching \fBxproxy_mqtt_*\fR metrics. Refusals are \fBmqtt_denied\fR deny events, so a \fBbans.triggers\fR entry on that reason turns a device walking the topic tree into a ban.
 .PP
 A note on \fB$\fR: a wildcard at the first level of a filter never matches a topic beginning with \fB$\fR (MQTT 3.1.1 section 4.7), so \fB#\fR does not hand a client the broker\(aqs own \fB$SYS\fR tree. \fBsubscribe_deny: ["$SYS/#"]\fR is still worth writing, because it refuses the client that asks for it by name.
+.SS "server.listeners[].syslog (kind: syslog)"
+.PP
+A \fBkind: syslog\fR listener is a relay that reads what it forwards.
+.PP
+Reading it is the point. Almost every field in a syslog record is written by the sender and believed by the collector: the host name, the facility, the severity, the time. A message claiming to be \fBauth.emerg\fR from another machine costs nothing to send. And a message whose text carries a newline becomes \fBtwo\fR records in any collector that frames on newlines \[u2014] the second one saying whatever the sender wanted a record to say, with a priority of its own.
+.PP
+So every message is parsed, and every message is re\-emitted as RFC 5424 in one framing, whatever arrived. One dialect out is what makes the record a collector stores the record this relay decided about: a newline in the text is written as a visible symbol, a line ending in a structured data value is escaped, and a field that cannot appear in a header is replaced.
+.PP
+Both transports: TCP (RFC 6587 framing, either kind) and UDP (RFC 5426, one datagram per message), on the same address. TLS is RFC 5425.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.2i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required
+T}	T{
+The collector pool
+T}
+T{
+\fBudp\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Also take datagrams on the same address,\: which is what most senders still send
+T}
+T{
+\fBframing\fR
+T}	T{
+enum
+T}	T{
+\fBauto\fR
+T}	T{
+What the stream side accepts: \fBoctet_\:counting\fR,\: \fBnon_\:transparent\fR or \fBauto\fR,\: decided per message by whether it starts with a digit
+T}
+T{
+\fBupstream_\:framing\fR
+T}	T{
+enum
+T}	T{
+\fBoctet_\:counting\fR
+T}	T{
+What the relay writes. Octet counting cannot be confused by what a message contains,\: and is the only framing RFC 5425 allows over TLS;\: \fBnon_\:transparent\fR warns
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+enum
+T}	T{
+\fBimplicit\fR with \fBtls\fR,\: else \fBnone\fR
+T}	T{
+TLS from the first octet on the stream side
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+enum
+T}	T{
+\fBnone\fR
+T}	T{
+\fBnone\fR or \fBimplicit\fR towards the collector
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Verification of the collector
+T}
+T{
+\fBhostname\fR
+T}	T{
+enum
+T}	T{
+\fBannotate\fR
+T}	T{
+\fBkeep\fR takes the sender\(aqs word,\: \fBobserved\fR replaces the field with the address the message arrived from,\: \fBannotate\fR keeps both and records which is which. \fBkeep\fR warns
+T}
+T{
+\fBallow_\:facilities\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Facilities by name: \fBkern\fR,\: \fBuser\fR,\: \fBauth\fR,\: \fBauthpriv\fR,\: \fBlocal0\fR\[u2026]
+T}
+T{
+\fBdeny_\:facilities\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Refused whatever the allow list says
+T}
+T{
+\fBmin_\:severity\fR
+T}	T{
+name
+T}	T{
+\fBdebug\fR
+T}	T{
+Drop anything less severe: \fBwarning\fR keeps \fBemerg\fR through \fBwarning\fR
+T}
+T{
+\fBallow_\:senders\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+On UDP this is the only authentication there is,\: so leaving it empty with \fBudp:\: true\fR warns
+T}
+T{
+\fBdeny_\:patterns\fR
+T}	T{
+list of RE2
+T}	T{
+\fB[]\fR
+T}	T{
+Drop a message whose text matches. A filter,\: not a redaction: it does not arrive
+T}
+T{
+\fBredact\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+\fB{name,\: pattern,\: with}\fR: replace what matches and record that a rule did,\: in structured data
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+One message;\: 480..1048576. RFC 5426 requires every receiver to take 480
+T}
+T{
+\fBrate_\:limit\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+Messages a second from one sender. Unset with \fBudp:\: true\fR warns
+T}
+T{
+\fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fBrate_\:limit\fR
+T}	T{
+What one sender may send at once
+T}
+T{
+\fBmax_\:senders\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+The rate limit table. When it is full a new sender is refused rather than evicting the entries doing the limiting
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Stream connections
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+No traffic on a stream connection
+T}
+T{
+\fBqueue\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+Parsed messages waiting for the collector. When it is full the relay drops and counts,\: rather than holding every sender behind one slow collector
+T}
+.TE
+.PP
+A message the relay cannot parse is refused, not forwarded: its facility, severity and host are exactly the fields every rule here decides on, and a record nobody could read is a record nobody can filter. A message with no timestamp is given the time the relay saw it, because a record nobody can order is a record that is hard to use.
+.PP
+On a delimited stream a message over the bound is dropped and the connection carries on \[u2014] the reader skips to the next line ending, so one long line does not cost every record behind it. On a counted stream it ends the connection, because refusing to read the octets a frame declared leaves the reader at an offset nobody knows.
+.PP
+Counters: \fBsyslog_received\fR, \fBsyslog_forwarded\fR, \fBsyslog_dropped\fR, \fBsyslog_refused\fR, \fBsyslog_rate_limited\fR, \fBsyslog_redacted\fR, \fBsyslog_queue_dropped\fR, \fBsyslog_send_failed\fR, \fBsyslog_connections\fR, \fBsyslog_rejected\fR. Refusals are \fBsyslog_denied\fR for the ban triggers.
 .SS "server.listeners[].ftp (kind: ftp)"
 .PP
 A \fBkind: ftp\fR listener is a protocol\-aware FTP proxy: the proxy is an FTP server to the client and an FTP client to the target, and it is one end of every data connection as well.

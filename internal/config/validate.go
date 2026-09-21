@@ -5,6 +5,7 @@ import (
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/ftp"
+	"github.com/rom/xproxy/internal/syslog"
 	"github.com/rom/xproxy/internal/tmpl"
 	"github.com/rom/xproxy/internal/yara"
 	"mime"
@@ -611,8 +612,20 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.ftpListener(p+".ftp", ln.FTP, ln.TLS != nil)
 			}
+		case "syslog":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a syslog listener takes only address, syslog and tls", p)
+			}
+			if ln.Syslog == nil {
+				v.errf("%s.syslog: required for kind syslog", p)
+			} else {
+				v.syslogListener(p+".syslog", ln.Syslog, ln.TLS != nil)
+			}
 		default:
-			v.errf("%s.kind: must be http, tcp, forward, dns, smtp, mqtt, ssh or ftp", p)
+			v.errf("%s.kind: must be http, tcp, forward, dns, smtp, mqtt, ssh, ftp or syslog", p)
+		}
+		if ln.Syslog != nil && ln.Kind != "syslog" {
+			v.errf("%s.syslog: set on a %s listener (kind: syslog)", p, ln.Kind)
 		}
 		if ln.FTP != nil && ln.Kind != "ftp" {
 			v.errf("%s.ftp: set on a %s listener (kind: ftp)", p, ln.Kind)
@@ -1958,7 +1971,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
-	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "yara": true,
+	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -5241,5 +5254,121 @@ func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 		if _, err := netip.ParsePrefix(c); err != nil {
 			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
 		}
+	}
+}
+
+// syslogListener validates a kind: syslog listener.
+func (v *validator) syslogListener(p string, g *SyslogListener, hasTLS bool) {
+	if g.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	switch g.Framing {
+	case "octet_counting", "non_transparent", "auto":
+	default:
+		v.errf("%s.framing: must be octet_counting, non_transparent or auto", p)
+	}
+	switch g.UpstreamFraming {
+	case "octet_counting":
+	case "non_transparent":
+		v.warnf("%s.upstream_framing: non_transparent delimits on line endings, which is the framing a message's own text can be mistaken for; octet_counting cannot be", p)
+	default:
+		v.errf("%s.upstream_framing: must be octet_counting or non_transparent", p)
+	}
+	switch g.TLSMode {
+	case "none":
+		if hasTLS {
+			v.warnf("%s.tls_mode: none with a tls section, so the certificate is never used", p)
+		}
+	case "implicit":
+		if !hasTLS {
+			v.errf("%s.tls_mode: implicit needs the listener's tls section", p)
+		}
+	default:
+		v.errf("%s.tls_mode: must be none or implicit", p)
+	}
+	switch g.UpstreamTLSMode {
+	case "none", "implicit":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none or implicit", p)
+	}
+	if g.UpstreamTLSMode != "none" {
+		v.upstreamTLS(p+".upstream_tls", g.UpstreamTLS)
+	}
+	switch g.Hostname {
+	case "keep":
+		v.warnf("%s.hostname: keep takes the sender's word for which machine a record came from, which nothing checks", p)
+	case "observed", "annotate":
+	default:
+		v.errf("%s.hostname: must be keep, observed or annotate", p)
+	}
+	for _, l := range []struct {
+		key  string
+		list []string
+	}{{"allow_facilities", g.AllowFacilities}, {"deny_facilities", g.DenyFacilities}} {
+		for i, f := range l.list {
+			if _, ok := syslog.FacilityNumber(f); !ok {
+				v.errf("%s.%s[%d]: %q is not a facility", p, l.key, i, f)
+			}
+		}
+	}
+	for _, a := range g.AllowFacilities {
+		for _, d := range g.DenyFacilities {
+			if strings.EqualFold(a, d) {
+				v.errf("%s: %q is in allow_facilities and deny_facilities; the deny list wins, so the allow entry says nothing", p, a)
+			}
+		}
+	}
+	if g.MinSeverity != "" {
+		if _, ok := syslog.SeverityNumber(g.MinSeverity); !ok {
+			v.errf("%s.min_severity: %q is not a severity", p, g.MinSeverity)
+		}
+	}
+	for i, c := range g.AllowSenders {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_senders[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+	udp := g.UDP == nil || *g.UDP
+	if udp && len(g.AllowSenders) == 0 {
+		v.warnf("%s.allow_senders: empty with udp on, so anything that can reach the port can write records; on UDP the sender's address is the only authentication there is", p)
+	}
+	for i, pat := range g.DenyPatterns {
+		if _, err := regexp.Compile(pat); err != nil {
+			v.errf("%s.deny_patterns[%d]: %v", p, i, err)
+		}
+	}
+	names := map[string]bool{}
+	for i := range g.Redact {
+		r := &g.Redact[i]
+		if r.Name == "" {
+			v.errf("%s.redact[%d].name: required; it is what the added structured data names", p, i)
+		} else if names[r.Name] {
+			v.errf("%s.redact[%d].name: %q is used twice", p, i, r.Name)
+		}
+		names[r.Name] = true
+		if r.Pattern == "" {
+			v.errf("%s.redact[%d].pattern: required", p, i)
+		} else if _, err := regexp.Compile(r.Pattern); err != nil {
+			v.errf("%s.redact[%d].pattern: %v", p, i, err)
+		}
+	}
+	if g.MaxMessageBytes < 480 || g.MaxMessageBytes > 1<<20 {
+		// RFC 5426 section 3.2: every receiver must take 480 octets.
+		v.errf("%s.max_message_bytes: must be 480..1048576", p)
+	}
+	if g.RateLimit < 0 || g.RateBurst < 0 {
+		v.errf("%s.rate_limit: must not be negative", p)
+	}
+	if g.RateLimit == 0 && udp {
+		v.warnf("%s.rate_limit: unset with udp on, so one sender can fill the collector and push older records out of whatever window it keeps", p)
+	}
+	if g.MaxSenders < 1 || g.MaxSenders > 1<<20 {
+		v.errf("%s.max_senders: must be 1..1048576", p)
+	}
+	if g.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be at least 1", p)
+	}
+	if g.Queue < 1 || g.Queue > 1<<20 {
+		v.errf("%s.queue: must be 1..1048576", p)
 	}
 }

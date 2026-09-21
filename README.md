@@ -235,6 +235,13 @@ an identifier from the access log to the upstream.
   and a deny list by overlap — which is what stops a device asking for
   `#`. The will goes through the publish policy at CONNECT, the only
   moment there is
+- `kind: syslog`: a syslog relay that reads what it forwards. Almost
+  every field in a record is written by the sender and believed by the
+  collector, and a message whose text carries a newline becomes two
+  records in anything that frames on newlines. Every message is parsed
+  and re-emitted as RFC 5424 in one framing; facility, severity, sender
+  and pattern filters, redaction, per-sender rate limits; UDP, TCP and
+  TLS on one address
 - `kind: ftp`: an FTP proxy that is actually in the middle. FTP puts
   every transfer on a second connection whose address one side
   announces to the other, so a proxy that forwards that reply has told
@@ -392,7 +399,7 @@ engine with the Core Rule Set, bbolt for ban state, quic-go for HTTP/3,
 wazero for WebAssembly, and `golang.org/x/crypto` for the SSH bastion.
 
 Everything else is written here rather than pulled in, and the reason is
-usually the same. The SMTP, MQTT, FTP, SFTP and MASQUE parsers, the TOTP
+usually the same. The SMTP, MQTT, FTP, syslog, SFTP and MASQUE parsers, the TOTP
 implementation and the YARA engine are all first-party: a protocol this
 proxy *decides* is a protocol it has to read the same way twice, and
 linking libyara alone would have meant `CGO_ENABLED=1` and a C parser in

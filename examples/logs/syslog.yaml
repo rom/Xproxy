@@ -1,0 +1,130 @@
+# A syslog relay that reads what it forwards: RFC 5424 records, the
+# older RFC 3164 ones most of the estate still sends, over UDP (RFC
+# 5426), TCP (RFC 6587) and TLS (RFC 5425).
+#
+# Reading them is the point. Almost every field is written by the
+# sender and believed by the collector: the host name, the facility,
+# the severity, the time. A message claiming to be auth.emerg from
+# another machine costs nothing to send. And a message whose text
+# carries a newline becomes two records in any collector that frames on
+# newlines, the second one saying whatever the sender wanted a record
+# to say.
+#
+# Validate: xproxy -config examples/logs/syslog.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: relay
+      address: "0.0.0.0:514"
+      kind: syslog
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/syslog.pem, key_file: /etc/xproxy/certs/syslog-key.pem}
+        min_version: "1.2"
+      syslog:
+        upstream: collectors
+
+        # Datagrams as well as streams, because most senders still send
+        # them. On UDP the sender's address is the only authentication
+        # there is, so the list below is not optional in practice.
+        udp: true
+        allow_senders:
+          - "10.0.0.0/8"
+          - "192.168.0.0/16"
+
+        # Take either framing on the stream side and write one: octet
+        # counting cannot be confused by what a message contains.
+        framing: auto
+        upstream_framing: octet_counting
+
+        tls_mode: implicit
+        upstream_tls_mode: implicit
+        upstream_tls:
+          server_name: siem.internal
+          ca_file: /etc/xproxy/certs/internal-ca.pem
+
+        # The sender's host name is often the useful one and is never
+        # the true one, so both are kept and which is which is stated.
+        hostname: annotate
+
+        # A log flood is a denial of service on the collector, and a
+        # way to push older records out of whatever window it keeps.
+        rate_limit: 500
+        rate_burst: 2000
+        max_senders: 65536
+
+        # Debug from every host in the estate is how a SIEM licence is
+        # spent and how the records that matter get buried.
+        min_severity: info
+
+        # What should not be stored, taken out of the record rather
+        # than taking the record out.
+        redact:
+          - name: card
+            pattern: "[0-9]{13,16}"
+            with: "[card]"
+          - name: bearer
+            pattern: "(?i)bearer [A-Za-z0-9._~+/-]{16,}"
+            with: "bearer [redacted]"
+
+        # A message this noisy is not worth the storage.
+        deny_patterns:
+          - "^CRON\\[[0-9]+\\]: pam_unix\\(cron:session\\)"
+
+        max_message_bytes: 16384
+        queue: 16384
+        max_connections: 2000
+        idle_timeout: 10m
+
+    # The audit path: one facility, kept separate, and nothing dropped
+    # for volume.
+    - name: audit
+      address: "0.0.0.0:6514"
+      kind: syslog
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/syslog.pem, key_file: /etc/xproxy/certs/syslog-key.pem}
+        min_version: "1.3"
+        client_auth: require
+        client_ca_file: /etc/xproxy/certs/hosts-ca.pem
+      syslog:
+        upstream: audit-collectors
+        # Streams only: an audit record that may be lost in transit is
+        # not an audit record.
+        udp: false
+        framing: octet_counting
+        tls_mode: implicit
+        upstream_tls_mode: implicit
+        upstream_tls:
+          server_name: audit.internal
+          ca_file: /etc/xproxy/certs/internal-ca.pem
+        # The client certificate says which host this is; the field in
+        # the message is still replaced, because nothing checks it.
+        hostname: observed
+        allow_facilities: [auth, authpriv, audit]
+        queue: 65536
+
+upstreams:
+  - name: collectors
+    endpoints:
+      - {address: "10.40.1.10:601"}
+      - {address: "10.40.1.11:601"}
+    balancer: least_conn
+    timeouts: {connect: 5s}
+  - name: audit-collectors
+    endpoints:
+      - {address: "10.40.2.10:6514"}
+    timeouts: {connect: 5s}
+
+bans:
+  triggers:
+    # A sender that is refused, malformed or oversize again and again is
+    # not a logging host.
+    - name: syslog-abuse
+      reasons: [syslog_denied]
+      threshold: 50
+      window: 5m
+      duration: 1h
+
+logging:
+  access: {enabled: true}

@@ -116,6 +116,16 @@ type Stats struct {
 	FTPRejected            atomic.Uint64
 	FTPAuthFailed          atomic.Uint64
 	FTPTransfers           atomic.Uint64
+	SyslogReceived         atomic.Uint64
+	SyslogForwarded        atomic.Uint64
+	SyslogDropped          atomic.Uint64
+	SyslogQueueDropped     atomic.Uint64
+	SyslogRefused          atomic.Uint64
+	SyslogRejected         atomic.Uint64
+	SyslogRateLimited      atomic.Uint64
+	SyslogRedacted         atomic.Uint64
+	SyslogSendFailed       atomic.Uint64
+	SyslogConnections      atomic.Uint64
 	SSHRecorded            atomic.Uint64
 	SSHRejected            atomic.Uint64
 	SSHAuthFailed          atomic.Uint64
@@ -305,6 +315,16 @@ type Snapshot struct {
 	FTPRejected            uint64            `json:"ftp_rejected"`
 	FTPAuthFailed          uint64            `json:"ftp_auth_failed"`
 	FTPTransfers           uint64            `json:"ftp_transfers"`
+	SyslogReceived         uint64            `json:"syslog_received"`
+	SyslogForwarded        uint64            `json:"syslog_forwarded"`
+	SyslogDropped          uint64            `json:"syslog_dropped"`
+	SyslogQueueDropped     uint64            `json:"syslog_queue_dropped"`
+	SyslogRefused          uint64            `json:"syslog_refused"`
+	SyslogRejected         uint64            `json:"syslog_rejected"`
+	SyslogRateLimited      uint64            `json:"syslog_rate_limited"`
+	SyslogRedacted         uint64            `json:"syslog_redacted"`
+	SyslogSendFailed       uint64            `json:"syslog_send_failed"`
+	SyslogConnections      uint64            `json:"syslog_connections"`
 	SSHRecorded            uint64            `json:"ssh_recorded"`
 	SSHRejected            uint64            `json:"ssh_rejected"`
 	SSHAuthFailed          uint64            `json:"ssh_auth_failed"`
@@ -462,6 +482,16 @@ func (s *Stats) snapshot() Snapshot {
 		FTPRejected:            s.FTPRejected.Load(),
 		FTPAuthFailed:          s.FTPAuthFailed.Load(),
 		FTPTransfers:           s.FTPTransfers.Load(),
+		SyslogReceived:         s.SyslogReceived.Load(),
+		SyslogForwarded:        s.SyslogForwarded.Load(),
+		SyslogDropped:          s.SyslogDropped.Load(),
+		SyslogQueueDropped:     s.SyslogQueueDropped.Load(),
+		SyslogRefused:          s.SyslogRefused.Load(),
+		SyslogRejected:         s.SyslogRejected.Load(),
+		SyslogRateLimited:      s.SyslogRateLimited.Load(),
+		SyslogRedacted:         s.SyslogRedacted.Load(),
+		SyslogSendFailed:       s.SyslogSendFailed.Load(),
+		SyslogConnections:      s.SyslogConnections.Load(),
 		SSHRecorded:            s.SSHRecorded.Load(),
 		SSHRejected:            s.SSHRejected.Load(),
 		SSHAuthFailed:          s.SSHAuthFailed.Load(),

@@ -300,12 +300,43 @@ func applyDefaults(c *Config) {
 				f.YARA.Directions = []string{"client"}
 			}
 		}
+		if g := s.Listeners[i].Syslog; g != nil {
+			if g.UDP == nil {
+				t := true
+				g.UDP = &t
+			}
+			if g.TLSMode == "" {
+				if s.Listeners[i].TLS != nil {
+					g.TLSMode = "implicit"
+				} else {
+					g.TLSMode = "none"
+				}
+			}
+			setStr(&g.Framing, "auto")
+			setStr(&g.UpstreamFraming, "octet_counting")
+			setStr(&g.UpstreamTLSMode, "none")
+			if g.UpstreamTLS != nil {
+				setStr(&g.UpstreamTLS.MinVersion, "1.2")
+			}
+			setStr(&g.Hostname, "annotate")
+			setInt(&g.MaxMessageBytes, 8192)
+			setInt(&g.MaxSenders, 65536)
+			setInt(&g.MaxConnections, 1000)
+			setInt(&g.Queue, 4096)
+			setDur(&g.IdleTimeout, 5*time.Minute)
+			if g.RateLimit > 0 && g.RateBurst == 0 {
+				g.RateBurst = g.RateLimit
+			}
+			for j := range g.Redact {
+				setStr(&g.Redact[j].With, "[redacted]")
+			}
+		}
 		ln := &s.Listeners[i]
-		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ssh" || ln.Kind == "ftp" {
+		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ssh" || ln.Kind == "ftp" || ln.Kind == "syslog" {
 			// No HTTP protocol defaults on a non-HTTP listener; a dns,
 			// smtp or mqtt listener with TLS still gets the TLS
 			// defaults.
-			if (ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ftp") && ln.TLS != nil {
+			if (ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ftp" || ln.Kind == "syslog") && ln.TLS != nil {
 				setStr(&ln.TLS.MinVersion, "1.2")
 				setStr(&ln.TLS.ClientAuth, "none")
 			}

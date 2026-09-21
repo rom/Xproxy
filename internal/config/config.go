@@ -234,6 +234,100 @@ type Listener struct {
 	SSH *SSHListener `yaml:"ssh"`
 	// FTP configures a kind: ftp listener.
 	FTP *FTPListener `yaml:"ftp"`
+	// Syslog configures a kind: syslog listener.
+	Syslog *SyslogListener `yaml:"syslog"`
+}
+
+// SyslogListener is a syslog relay that reads what it forwards.
+//
+// A relay that forwards syslog without reading it is a pipe. The reason
+// to read it is that almost every field is written by the sender and
+// believed by the collector: the host name, the facility, the severity,
+// the time. A message claiming to be auth.emerg from another machine
+// costs nothing to send, and a message carrying a newline in its text
+// becomes two records in any collector that frames on newlines — the
+// second one saying whatever the sender wanted a record to say.
+//
+// So every message is parsed, and every message is re-emitted as RFC
+// 5424 in one framing, whatever arrived. One dialect out is what makes
+// the record a collector stores the record the relay decided about.
+type SyslogListener struct {
+	// Upstream is the collector pool. Required.
+	Upstream string `yaml:"upstream"`
+	// UDP also listens on the same address for datagrams, which is
+	// what most senders still use (RFC 5426). Default true.
+	UDP *bool `yaml:"udp"`
+	// Framing accepted on the stream side: octet_counting (RFC 6587
+	// section 3.4.1), non_transparent (section 3.4.2, line endings) or
+	// auto. Default auto.
+	Framing string `yaml:"framing"`
+	// UpstreamFraming is what the relay writes: octet_counting or
+	// non_transparent. Default octet_counting, which is the only one
+	// that cannot be confused by what a message contains and the only
+	// one RFC 5425 allows over TLS.
+	UpstreamFraming string `yaml:"upstream_framing"`
+	// TLSMode is implicit (TLS from the first octet on the stream
+	// side, as RFC 5425 defines) or none. Default implicit when tls is
+	// set.
+	TLSMode string `yaml:"tls_mode"`
+	// UpstreamTLSMode is none or implicit. Default none.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the collector when upstream_tls_mode is not
+	// none.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// Hostname decides what the HOSTNAME field says: keep takes the
+	// sender's word, observed replaces it with the address the message
+	// arrived from, and annotate keeps it and records the address in
+	// structured data. Default annotate — the sender's name is often
+	// the useful one and is never the true one.
+	Hostname string `yaml:"hostname"`
+	// AllowFacilities and DenySeverities filter by what the message
+	// claims to be. Empty allows everything.
+	AllowFacilities []string `yaml:"allow_facilities"`
+	DenyFacilities  []string `yaml:"deny_facilities"`
+	// MinSeverity drops anything less severe, by name: "warning" keeps
+	// emerg through warning. Empty keeps everything.
+	MinSeverity string `yaml:"min_severity"`
+	// AllowSenders restricts senders to these CIDRs. On UDP this is
+	// the only authentication there is.
+	AllowSenders []string `yaml:"allow_senders"`
+	// DenyPatterns drop a message whose text matches, as RE2. It is a
+	// filter, not a redaction: a message that matches does not arrive.
+	DenyPatterns []string `yaml:"deny_patterns"`
+	// Redact replaces what matches with a fixed string, so the record
+	// still arrives without the part that should not be stored.
+	Redact []SyslogRedaction `yaml:"redact"`
+	// MaxMessageBytes bounds one message. Default 8192. RFC 5426
+	// requires every receiver to take 480, and most estates send more.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// RateLimit is messages per second accepted from one sender, with
+	// a burst. 0 is no limit. A log flood is a denial of service on
+	// the collector and a way to push older records out of whatever
+	// window it keeps.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// MaxSenders bounds the rate limit table. Default 65536.
+	MaxSenders int `yaml:"max_senders"`
+	// MaxConnections bounds stream connections. Default 1000.
+	MaxConnections int `yaml:"max_connections"`
+	// IdleTimeout closes a stream connection with no traffic. Default
+	// 5m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// Queue is how many parsed messages wait for the collector.
+	// Default 4096. When it is full the relay drops and counts rather
+	// than blocking every sender behind one slow collector.
+	Queue int `yaml:"queue"`
+}
+
+// SyslogRedaction replaces what matches a pattern in a message.
+type SyslogRedaction struct {
+	// Name appears in the structured data the relay adds, so a reader
+	// knows something was taken out and which rule took it.
+	Name string `yaml:"name"`
+	// Pattern is RE2, matched against the message text.
+	Pattern string `yaml:"pattern"`
+	// With replaces every match. Default "[redacted]".
+	With string `yaml:"with"`
 }
 
 // FTPListener is a protocol-aware FTP proxy. The proxy is an FTP server
