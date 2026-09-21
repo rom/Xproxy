@@ -672,7 +672,166 @@ none
 T}	T{
 UDP and IP proxying over extended CONNECT (RFC 9298,\: RFC 9484);\: see below
 T}
+T{
+\fBintercept\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Terminate TLS inside a CONNECT tunnel and read what passes through it;\: see below
+T}
 .TE
+.SS "TLS interception on a forward listener"
+.PP
+A CONNECT tunnel is opaque by design: the proxy sees a name and a byte count and nothing else, so a destination policy is the only policy it can apply. \fBintercept\fR changes that. The proxy answers the client\(aqs handshake with a certificate it signs itself, opens its own TLS connection to the destination, and relays the plaintext between the two \[u2014] which is what lets YARA rules, and everything else that reads bytes, see inside HTTPS.
+.PP
+This is the one feature here that makes a proxy \fIless\fR safe if it is built carelessly, because it replaces a connection the client verified end to end with two connections the client cannot see past. Three things follow from that, and none of them is optional.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.9i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBca_\:cert_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The signing certificate clients have to trust;\: it must be a CA with \fBkeyCertSign\fR and must not have expired
+T}
+T{
+\fBca_\:key_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Its private key;\: refused,\: at validation and at load,\: if anybody but its owner can read it
+T}
+T{
+\fBhosts\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (all)
+T}	T{
+Destinations to intercept: a name,\: \fB*.\:suffix\fR,\: an address or a CIDR;\: empty intercepts everything the listener allows,\: which warns
+T}
+T{
+\fBbypass_\:hosts\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Destinations never intercepted,\: whatever \fBhosts\fR says;\: checked first and wins
+T}
+T{
+\fBverify_\:upstream\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Verify the destination\(aqs own certificate with the ordinary rules;\: \fBfalse\fR warns loudly
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system store
+T}	T{
+Roots the destination is verified against
+T}
+T{
+\fBmin_\:version\fR
+T}	T{
+\fB1.\:2\fR|\:\fB1.\:3\fR
+T}	T{
+\fB1.\:2\fR
+T}	T{
+Lowest TLS version the proxy speaks to the destination
+T}
+T{
+\fBleaf_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB24h\fR
+T}	T{
+Validity of an issued certificate;\: at most 720h
+T}
+T{
+\fBmax_\:cache\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Issued certificates kept in memory;\: the oldest are dropped
+T}
+T{
+\fBalpn\fR
+T}	T{
+list
+T}	T{
+\fB["http/\:1.\:1"]\fR
+T}	T{
+Offered to the destination and accepted from the client;\: \fBh2\fR warns
+T}
+T{
+\fByara\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Rules over the decrypted stream,\: with the same keys as everywhere else
+T}
+.TE
+.PP
+\fBThe destination is verified first, and only then is a certificate forged.\fR A client never sees a forged certificate for a server whose own certificate did not verify \[u2014] it sees the handshake fail, which is what it would have seen with no proxy in the way. An interception proxy that gets this backwards turns every verified connection through it into an unverified one while leaving the padlock in place, which is worse than not intercepting at all. \fBverify_upstream: false\fR exists as a key so that turning it off is a decision somebody wrote down.
+.PP
+\fBThe signing key can impersonate every site to every client that trusts the CA.\fR It is refused if its mode allows anyone but its owner to read it, both by \fBxproxy check\fR and at startup.
+.PP
+\fBSome traffic must not be read at all\fR, whatever the estate\(aqs policy says: banking, health, anything carrying somebody\(aqs own credentials. \fBbypass_hosts\fR is where that is written, and it is consulted before anything is decrypted \[u2014] a rule that another rule can overtake is not that rule.
+.PP
+Two more things the proxy refuses rather than guesses. A tunnel whose first bytes are not a TLS ClientHello is spliced through untouched: CONNECT carries SSH, database protocols and anything else, and answering a handshake to something that was not offering one breaks it for no reason (\fBforward_intercept_passed\fR). And a handshake whose server name disagrees with the host in the CONNECT is refused (\fBforward_sni_mismatch\fR), because a tunnel opened to one name and a handshake for another is somebody reaching a destination the policy checked against a different one.
+.PP
+The issued certificate carries the \fIreal\fR certificate\(aqs names \[u2014] its SANs, its IP addresses, its common name \[u2014] so a client that pins a name still works and one that pins a key still fails, as it should. The cache is keyed on the name and on the real certificate\(aqs fingerprint, so a destination that rotates its certificate gets a fresh forgery rather than a stale one. \fBalpn\fR defaults to \fBhttp/1.1\fR alone: a stream the proxy relays is one it has to be able to read, and offering \fBh2\fR without parsing HTTP/2 is how an interception proxy breaks a site.
+.PP
+An intercepted connection writes a \fBforward_intercept\fR access line with the client, user, destination, negotiated ALPN and the TLS version reached upstream. Counters: \fBforward_intercepted\fR, \fBforward_intercept_refused\fR, \fBforward_intercept_passed\fR and \fBforward_intercept_bytes\fR.
+.PP
+.RS 4
+.nf
+.ft CR
+\- name: egress
+  address: "0.0.0.0:3128"
+  kind: forward
+  forward:
+    ports: [80, 443]
+    auth: {users_file: /etc/xproxy/proxy.htpasswd}
+    intercept:
+      ca_cert_file: /etc/xproxy/mitm\-ca.pem
+      ca_key_file: /etc/xproxy/mitm\-ca\-key.pem
+      hosts: ["*.example.com", "*.cdn.test"]
+      bypass_hosts: ["*.bank.test", "*.health.test"]
+      yara: {rules_dir: /etc/xproxy/yara}
+.ft
+.fi
+.RE
 .SS "MASQUE on a forward listener"
 .PP
 HTTP \fBCONNECT\fR tunnels TCP, and that is all it tunnels. Everything else an estate sends \[u2014] DNS, QUIC, NTP, WireGuard, telemetry \[u2014] either leaves the network outside this policy or does not leave at all, and the first is the usual answer. CONNECT\-UDP (RFC 9298) is the same explicit proxy for datagrams, with the same destination rules, credentials, logs and bans; CONNECT\-IP (RFC 9484) carries IP packets, which is how a MASQUE VPN is built.
@@ -765,7 +924,7 @@ A policy refusal is answered with the closest SOCKS reply code rather than a bla
 .PP
 \fBUDP associations\fR (\fBsocks_udp: true\fR) are how DNS and QUIC travel through a SOCKS proxy. Each association binds its own socket, is fixed to the client address that opened it (the first datagram sets it), only relays answers from destinations that client has actually sent to, and dies with its TCP control connection \[u2014] which is what RFC 1928 requires and what keeps the socket from becoming an open reflector. Datagram headers are parsed with the same care as the handshake: fragments are dropped rather than reassembled, and the peer table is bounded. \fBforward_udp_associations\fR, \fBforward_udp_open\fR and \fBforward_udp_dropped\fR count the association and everything refused.
 .PP
-Each request writes one \fBforward\fR line to the access log with the client address, user, method, destination, status, bytes and duration. SOCKS connections write the same line with \fBprotocol: socks5\fR. Counters: \fBforward_requests\fR, \fBforward_tunnels\fR, \fBforward_tunnels_open\fR, \fBforward_denied\fR, \fBforward_auth_failed\fR, \fBforward_rejected\fR, \fBforward_errors\fR, \fBforward_bytes_in\fR, \fBforward_bytes_out\fR, \fBforward_socks\fR, \fBforward_udp_associations\fR, \fBforward_udp_open\fR, \fBforward_udp_dropped\fR; \fBxproxy_forward_*\fR metrics. The policy and the users file reload; the address and TLS settings need a restart like every listener.
+Each request writes one \fBforward\fR line to the access log with the client address, user, method, destination, status, bytes and duration. SOCKS connections write the same line with \fBprotocol: socks5\fR. Counters: \fBforward_requests\fR, \fBforward_tunnels\fR, \fBforward_tunnels_open\fR, \fBforward_denied\fR, \fBforward_auth_failed\fR, \fBforward_rejected\fR, \fBforward_errors\fR, \fBforward_bytes_in\fR, \fBforward_bytes_out\fR, \fBforward_socks\fR, \fBforward_udp_associations\fR, \fBforward_udp_open\fR, \fBforward_udp_dropped\fR, \fBforward_intercepted\fR, \fBforward_intercept_refused\fR, \fBforward_intercept_passed\fR, \fBforward_intercept_bytes\fR; \fBxproxy_forward_*\fR metrics. The policy and the users file reload; the address and TLS settings need a restart like every listener.
 .SS "server.listeners[].dns (kind: dns)"
 .PP
 A \fBkind: dns\fR listener is a forwarding DNS proxy on the listener address over UDP and TCP. Queries are answered from a bounded cache when they can be, refused or blocked by policy, and otherwise forwarded to the upstream resolvers with a fresh transaction id on a fresh socket (random source port) per query; the answer must echo the id and the question. A truncated UDP answer is retried over TCP to the upstream, and an answer larger than the client\(aqs UDP size (512 bytes or its EDNS advertisement, honoured up to 1232 bytes per RFC 9715 so a spoofed source cannot draw a large reply) is truncated so the client retries over TCP. Only one question per query and the QUERY opcode are handled (FORMERR and NOTIMP otherwise); responses arriving as queries and packets from banned clients are dropped. A dns listener takes \fBaddress\fR, \fBdns\fR and optionally \fBtls\fR; bans and the global connection limits apply to TCP clients as on every listener. The policy, upstreams and cache bounds reload (the cache is kept); the address needs a restart.

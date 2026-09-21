@@ -1782,6 +1782,60 @@ within the pending-datagram bound, is dropped.
 actually reachable (it is a different socket from TCP), and that
 `Alt-Svc` is being served.
 
+## TLS interception
+
+**Every intercepted site fails with a certificate error in the
+browser.** The client does not trust the interception CA. Install
+`ca_cert_file` — the certificate, never the key — in the trust store of
+the machine, and remember that Firefox, Java and Node each keep their
+own store separate from the system one. `forward_intercept_refused`
+climbs and the tunnel closes right after the CONNECT succeeds.
+
+**The proxy refuses to start: "readable by more than its owner".** The
+signing key can impersonate every site to every client that trusts the
+CA, so `ca_key_file` must be mode 0600 and owned by the user the proxy
+runs as. `xproxy check` says the same thing before a restart does.
+
+**One site fails while the rest work.** Look at the security log for
+`forward_upstream_tls`: the destination's own certificate did not
+verify against `ca_file` (or the system store), and the proxy refuses
+to forge a certificate for a server it could not check. That is the
+intended behaviour — it is the same failure the client would have had
+without the proxy. If the destination legitimately uses a private CA,
+add it to `ca_file`; do not reach for `verify_upstream: false`, which
+turns the check off for every destination at once.
+
+**A site works through the proxy but not when intercepted, and the
+error is about the protocol rather than the certificate.** `alpn`
+defaults to `http/1.1` alone on purpose. If you added `h2`, the
+decrypted stream is relayed as bytes and not parsed as HTTP/2, which
+some sites survive and some do not; validation warns about it.
+
+**Something that is not a browser stops working through the tunnel.**
+If it is not speaking TLS at all it is passed through untouched
+(`forward_intercept_passed` climbs) and interception is not the cause.
+If it is speaking TLS and pinning a key — mobile apps, some agents —
+then it is working exactly as designed and the destination belongs in
+`bypass_hosts`.
+
+**`forward_sni_mismatch` in the security log.** The handshake inside
+the tunnel named a different host from the `CONNECT`. Ordinary clients
+never do this; treat it as somebody trying to reach a destination the
+policy checked against another name. A `CONNECT` to a bare address is
+not subject to the check — the address is what the policy checked and
+where the bytes go, and the name only picks a virtual host there.
+
+**Nothing is intercepted at all.** Check `hosts` — a name there matches
+the host in the CONNECT, not the address behind it — and check that the
+destination is not also in `bypass_hosts`, which is consulted first and
+wins. `forward_intercepted` staying at zero while `forward_tunnels`
+climbs is that.
+
+**YARA rules do not fire on HTTPS.** They only see what is decrypted,
+so the destination has to be intercepted, and `directions` has to
+include the side the bytes are on: `client` for what leaves,
+`upstream` for what arrives.
+
 ## SMTP listener
 
 **Every session ends with `421 4.4.1 upstream unavailable`.** The proxy
@@ -2962,6 +3016,8 @@ innocent.
 | `shed` | Load shedding (`detail` is the class) | no |
 | `filter` | Any other filter (`detail` is the filter name) | no |
 | `forward_denied`, `forward_auth` | The forward proxy | yes |
+| `forward_sni_mismatch` | TLS interception: the handshake inside a tunnel named a host the `CONNECT` did not | yes |
+| `forward_upstream_tls` | TLS interception: the destination's own certificate did not verify, so nothing was forged for it | no (it is the destination's fault, not the client's) |
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |

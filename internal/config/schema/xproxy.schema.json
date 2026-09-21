@@ -1702,6 +1702,70 @@
       },
       "additionalProperties": false
     },
+    "ForwardIntercept": {
+      "description": "ForwardIntercept terminates TLS inside a CONNECT tunnel: the proxy answers the client's handshake with a certificate it signs itself, opens its own TLS connection to the destination, and relays what passes between them in clear. This is the one feature here that makes a proxy less safe if it is built carelessly, because it replaces a connection the client verified end to end with two connections the client cannot see past. Three things follow, and none of them is optional: The proxy verifies the real server itself, with the ordinary rules, and a client only ever sees a forged certificate for a server whose own certificate verified. verify_upstream exists as a key so that turning it off is a decision somebody wrote down; it warns loudly, because an interception proxy that does not verify turns every client's verified connection into an unverified one while leaving the padlock in place. The signing key can impersonate every site to every client that trusts the CA. It is refused if anybody but its owner can read it. And some traffic must not be read at all, whatever the estate's policy is. bypass_hosts is where that is written, and it is checked before anything is decrypted.",
+      "type": "object",
+      "properties": {
+        "alpn": {
+          "description": "ALPN is what the proxy offers the destination and accepts from the client. Default [\"http/1.1\"]: a stream the proxy relays is one it has to be able to read, and offering h2 without reading h2 is how an interception proxy breaks a site.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "bypass_hosts": {
+          "description": "BypassHosts are never intercepted, whatever hosts says. This is where the traffic an estate must not read goes: banking, health, anything carrying somebody's own credentials.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ca_cert_file": {
+          "description": "CACertFile and CAKeyFile are the signing identity. Clients have to trust the certificate, which is what makes this visible to the people whose traffic it reads.",
+          "type": "string"
+        },
+        "ca_file": {
+          "description": "CAFile is the roots the destination is verified against. Empty uses the system store.",
+          "type": "string"
+        },
+        "ca_key_file": {
+          "type": "string"
+        },
+        "hosts": {
+          "description": "Hosts are the destinations to intercept: a name, *.suffix, or a CIDR. Empty intercepts every destination the listener allows, which is a large decision to leave implicit — it warns.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "leaf_ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_cache": {
+          "description": "MaxCache bounds the issued certificates kept in memory. Default 1024.",
+          "type": "integer"
+        },
+        "min_version": {
+          "description": "MinVersion of the TLS the proxy speaks to the destination. Default 1.2.",
+          "type": "string"
+        },
+        "verify_upstream": {
+          "description": "VerifyUpstream verifies the destination's certificate with the ordinary rules. Default true, and false warns.",
+          "type": "boolean"
+        },
+        "yara": {
+          "description": "YARA scans the decrypted stream, which is the point of doing any of this.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/YARAPolicy"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "ForwardListener": {
       "description": "ForwardListener is an explicit forward proxy: clients send CONNECT host:port for tunnels (TLS stays end to end) or absolute http:// URIs for plain requests. Destinations are policy checked by name, resolved address and port; private and loopback addresses are refused unless allow_private is set, and the checked address is the one dialled.",
       "type": "object",
@@ -1741,6 +1805,14 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "intercept": {
+          "description": "Intercept terminates TLS inside a CONNECT tunnel, so the proxy sees the requests rather than only the destination.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ForwardIntercept"
+            }
+          ]
         },
         "masque": {
           "description": "Masque enables the MASQUE proxying protocols on this listener.",

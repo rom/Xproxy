@@ -190,6 +190,102 @@ connection limits and the header timeouts apply as on every listener.
 | `socks5` | bool | `false` | Also speak SOCKS5 (RFC 1928) on this port; see below |
 | `socks_udp` | bool | `false` | Allow SOCKS5 `UDP ASSOCIATE` (requires `socks5`) |
 | `masque` | object | none | UDP and IP proxying over extended CONNECT (RFC 9298, RFC 9484); see below |
+| `intercept` | object | none | Terminate TLS inside a CONNECT tunnel and read what passes through it; see below |
+
+#### TLS interception on a forward listener
+
+A CONNECT tunnel is opaque by design: the proxy sees a name and a byte
+count and nothing else, so a destination policy is the only policy it
+can apply. `intercept` changes that. The proxy answers the client's
+handshake with a certificate it signs itself, opens its own TLS
+connection to the destination, and relays the plaintext between the two
+— which is what lets YARA rules, and everything else that reads bytes,
+see inside HTTPS.
+
+This is the one feature here that makes a proxy *less* safe if it is
+built carelessly, because it replaces a connection the client verified
+end to end with two connections the client cannot see past. Three
+things follow from that, and none of them is optional.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ca_cert_file` | path | required | The signing certificate clients have to trust; it must be a CA with `keyCertSign` and must not have expired |
+| `ca_key_file` | path | required | Its private key; refused, at validation and at load, if anybody but its owner can read it |
+| `hosts` | list | `[]` (all) | Destinations to intercept: a name, `*.suffix`, an address or a CIDR; empty intercepts everything the listener allows, which warns |
+| `bypass_hosts` | list | `[]` | Destinations never intercepted, whatever `hosts` says; checked first and wins |
+| `verify_upstream` | bool | `true` | Verify the destination's own certificate with the ordinary rules; `false` warns loudly |
+| `ca_file` | path | system store | Roots the destination is verified against |
+| `min_version` | `1.2`\|`1.3` | `1.2` | Lowest TLS version the proxy speaks to the destination |
+| `leaf_ttl` | duration | `24h` | Validity of an issued certificate; at most 720h |
+| `max_cache` | int | `1024` | Issued certificates kept in memory; the oldest are dropped |
+| `alpn` | list | `["http/1.1"]` | Offered to the destination and accepted from the client; `h2` warns |
+| `yara` | object | none | Rules over the decrypted stream, with the same keys as everywhere else |
+
+**The destination is verified first, and only then is a certificate
+forged.** A client never sees a forged certificate for a server whose
+own certificate did not verify — it sees the handshake fail, which is
+what it would have seen with no proxy in the way. An interception proxy
+that gets this backwards turns every verified connection through it
+into an unverified one while leaving the padlock in place, which is
+worse than not intercepting at all. `verify_upstream: false` exists as
+a key so that turning it off is a decision somebody wrote down.
+
+**The signing key can impersonate every site to every client that
+trusts the CA.** It is refused if its mode allows anyone but its owner
+to read it, both by `xproxy check` and at startup.
+
+**Some traffic must not be read at all**, whatever the estate's policy
+says: banking, health, anything carrying somebody's own credentials.
+`bypass_hosts` is where that is written, and it is consulted before
+anything is decrypted — a rule that another rule can overtake is not
+that rule.
+
+Two more things the proxy refuses rather than guesses. A tunnel whose
+first bytes are not a TLS ClientHello is spliced through untouched:
+CONNECT carries SSH, database protocols and anything else, and
+answering a handshake to something that was not offering one breaks it
+for no reason (`forward_intercept_passed`). And a handshake whose
+server name disagrees with the host in the CONNECT is refused
+(`forward_sni_mismatch`), because a tunnel opened to one name and a
+handshake for another is somebody reaching a destination the policy
+checked against a different one. A tunnel opened to an *address* is the
+exception and not a hole: there the policy checked the address, the
+bytes reach that address whatever the handshake says, and the name only
+picks a virtual host once they arrive.
+
+The issued certificate carries the *real* certificate's names — its
+SANs, its IP addresses, its common name — so a client that pins a name
+still works and one that pins a key still fails, as it should. The
+cache is keyed on the name and on the real certificate's fingerprint,
+so a destination that rotates its certificate gets a fresh forgery
+rather than a stale one. `alpn` defaults to `http/1.1` alone: a stream
+the proxy relays is one it has to be able to read, and offering `h2`
+without parsing HTTP/2 is how an interception proxy breaks a site.
+
+`socks5` tunnels on the same listener are intercepted by the same
+rules: a destination reachable in either protocol on one port under one
+policy is not a policy if one of the two walks past it.
+
+An intercepted connection writes a `forward_intercept` access line with
+the client, user, destination, negotiated ALPN and the TLS version
+reached upstream. Counters: `forward_intercepted`,
+`forward_intercept_refused`, `forward_intercept_passed` and
+`forward_intercept_bytes`.
+
+```yaml
+- name: egress
+  address: "0.0.0.0:3128"
+  kind: forward
+  forward:
+    ports: [80, 443]
+    auth: {users_file: /etc/xproxy/proxy.htpasswd}
+    intercept:
+      ca_cert_file: /etc/xproxy/mitm-ca.pem
+      ca_key_file: /etc/xproxy/mitm-ca-key.pem
+      hosts: ["*.example.com", "*.cdn.test"]
+      bypass_hosts: ["*.bank.test", "*.health.test"]
+      yara: {rules_dir: /etc/xproxy/yara}
+```
 
 #### MASQUE on a forward listener
 
@@ -288,7 +384,9 @@ Counters: `forward_requests`, `forward_tunnels`, `forward_tunnels_open`,
 `forward_denied`, `forward_auth_failed`, `forward_rejected`,
 `forward_errors`, `forward_bytes_in`, `forward_bytes_out`,
 `forward_socks`, `forward_udp_associations`, `forward_udp_open`,
-`forward_udp_dropped`;
+`forward_udp_dropped`, `forward_intercepted`,
+`forward_intercept_refused`, `forward_intercept_passed`,
+`forward_intercept_bytes`;
 `xproxy_forward_*` metrics. The policy and the users file reload; the
 address and TLS settings need a restart like every listener.
 

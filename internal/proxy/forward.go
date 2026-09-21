@@ -35,6 +35,11 @@ type forwardServer struct {
 	// built once: turning UDP or IP proxying on or off is a listener
 	// change, not a policy swap.
 	masque *masquePolicy
+	// mitm is the compiled intercept section, nil without one. Like
+	// masque it is built once: turning interception on or off is a
+	// listener change, not a policy swap, because it holds a signing
+	// key and a certificate cache.
+	mitm *interceptor
 
 	open atomic.Int64
 	wg   sync.WaitGroup
@@ -81,6 +86,15 @@ func newForwardServer(s *Server, lc config.Listener) (*forwardServer, error) {
 		return nil, err
 	}
 	f.masque = newMasquePolicy(lc.Forward.Masque)
+	if lc.Forward.Intercept != nil {
+		mi, err := newInterceptor(lc.Forward.Intercept, lc.Forward.ConnectTimeout.D())
+		if err != nil {
+			return nil, fmt.Errorf("forward intercept: %w", err)
+		}
+		f.mitm = mi
+		s.logs.Error.Warn("TLS interception is on: clients on this listener see certificates this proxy signs",
+			"listener", lc.Name, "ca", mi.ca.Subject(), "ca_expires", mi.ca.NotAfter().Format(time.RFC3339))
+	}
 	f.tr = &http.Transport{
 		Proxy:                 nil,
 		DialContext:           f.dialChecked,
@@ -481,6 +495,16 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 		_ = dst.Close()
 		return
 	}
+	if f.mitm != nil && f.mitm.wants(host, ips) {
+		// Whatever the client sent before our reply is the start of the
+		// handshake this is about to terminate, so it stays on the
+		// client's side rather than being sent on to the destination.
+		in, out, reason := f.intercept(bufferedConn(client, bufrw.Reader), dst, host, ip, user)
+		s.stats.ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
+		s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+		f.log(r, ip, user, r.Host, http.StatusOK, in, out, start, reason)
+		return
+	}
 	var early int64
 	if n := bufrw.Reader.Buffered(); n > 0 { // bytes the client sent before our reply
 		b, _ := bufrw.Peek(n)
@@ -490,6 +514,7 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 			return
 		}
 		early = int64(n)
+		_, _ = bufrw.Discard(n)
 	}
 	in, out := splice(client, dst, p.cfg.IdleTimeout.D())
 	in += early

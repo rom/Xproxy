@@ -229,6 +229,10 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_forward_udp_associations_total", "SOCKS5 UDP associations opened.", nil, float64(sn.ForwardUDPAssociations))
 	e.Gauge("xproxy_forward_udp_open", "Open SOCKS5 UDP associations.", nil, float64(sn.ForwardUDPOpen))
 	e.Counter("xproxy_forward_udp_dropped_total", "Datagrams dropped by an association: a bad header, a refused destination, an unsolicited sender or a full peer table.", nil, float64(sn.ForwardUDPDropped))
+	e.Counter("xproxy_forward_intercepted_total", "CONNECT tunnels whose TLS was terminated and read.", nil, float64(sn.Intercepted))
+	e.Counter("xproxy_forward_intercept_refused_total", "Tunnels refused rather than intercepted: the destination did not verify, the handshake named another host, or the client did not trust the CA.", nil, float64(sn.InterceptRefused))
+	e.Counter("xproxy_forward_intercept_passed_total", "Tunnels passed through untouched because they were not carrying TLS.", nil, float64(sn.InterceptPassed))
+	e.Counter("xproxy_forward_intercept_bytes_total", "Plaintext bytes relayed through an intercepted tunnel.", nil, float64(sn.InterceptBytes))
 	for name, st := range s.ECH() {
 		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "accepted"}, float64(st.Accepted))
 		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "not_used"}, float64(st.Rejected))

@@ -140,6 +140,21 @@ func applyDefaults(c *Config) {
 			if f.Auth != nil {
 				setStr(&f.Auth.Realm, "proxy")
 			}
+			if ic := f.Intercept; ic != nil {
+				if ic.VerifyUpstream == nil {
+					t := true
+					ic.VerifyUpstream = &t
+				}
+				setStr(&ic.MinVersion, "1.2")
+				setInt(&ic.MaxCache, 1024)
+				setDur(&ic.LeafTTL, 24*time.Hour)
+				if len(ic.ALPN) == 0 {
+					ic.ALPN = []string{"http/1.1"}
+				}
+				if ic.YARA != nil {
+					yaraDefaults(ic.YARA)
+				}
+			}
 		}
 		if d := s.Listeners[i].DNS; d != nil {
 			setDur(&d.Timeout, 2*time.Second)

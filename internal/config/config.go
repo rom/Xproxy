@@ -1101,6 +1101,9 @@ type ForwardListener struct {
 	AllowPrivate bool `yaml:"allow_private"`
 	// Auth requires Proxy-Authorization Basic credentials.
 	Auth *ForwardAuth `yaml:"auth"`
+	// Intercept terminates TLS inside a CONNECT tunnel, so the proxy
+	// sees the requests rather than only the destination.
+	Intercept *ForwardIntercept `yaml:"intercept"`
 	// ConnectTimeout bounds the dial to the destination. Default 10s.
 	ConnectTimeout Duration `yaml:"connect_timeout"`
 	// IdleTimeout closes a tunnel with no bytes in either direction.
@@ -1147,6 +1150,70 @@ type Masque struct {
 	// IPRoutes are the ranges a client may send to; packets to
 	// anything else are dropped.
 	IPRoutes []string `yaml:"ip_routes"`
+}
+
+// ForwardIntercept terminates TLS inside a CONNECT tunnel: the proxy
+// answers the client's handshake with a certificate it signs itself,
+// opens its own TLS connection to the destination, and relays what
+// passes between them in clear.
+//
+// This is the one feature here that makes a proxy less safe if it is
+// built carelessly, because it replaces a connection the client
+// verified end to end with two connections the client cannot see past.
+// Three things follow, and none of them is optional:
+//
+// The proxy verifies the real server itself, with the ordinary rules,
+// and a client only ever sees a forged certificate for a server whose
+// own certificate verified. verify_upstream exists as a key so that
+// turning it off is a decision somebody wrote down; it warns loudly,
+// because an interception proxy that does not verify turns every
+// client's verified connection into an unverified one while leaving
+// the padlock in place.
+//
+// The signing key can impersonate every site to every client that
+// trusts the CA. It is refused if anybody but its owner can read it.
+//
+// And some traffic must not be read at all, whatever the estate's
+// policy is. bypass_hosts is where that is written, and it is checked
+// before anything is decrypted.
+type ForwardIntercept struct {
+	// CACertFile and CAKeyFile are the signing identity. Clients have
+	// to trust the certificate, which is what makes this visible to
+	// the people whose traffic it reads.
+	CACertFile string `yaml:"ca_cert_file"`
+	CAKeyFile  string `yaml:"ca_key_file"`
+	// Hosts are the destinations to intercept: a name, *.suffix, or a
+	// CIDR. Empty intercepts every destination the listener allows,
+	// which is a large decision to leave implicit — it warns.
+	Hosts []string `yaml:"hosts"`
+	// BypassHosts are never intercepted, whatever hosts says. This is
+	// where the traffic an estate must not read goes: banking, health,
+	// anything carrying somebody's own credentials.
+	BypassHosts []string `yaml:"bypass_hosts"`
+	// VerifyUpstream verifies the destination's certificate with the
+	// ordinary rules. Default true, and false warns.
+	VerifyUpstream *bool `yaml:"verify_upstream"`
+	// CAFile is the roots the destination is verified against. Empty
+	// uses the system store.
+	CAFile string `yaml:"ca_file"`
+	// MinVersion of the TLS the proxy speaks to the destination.
+	// Default 1.2.
+	MinVersion string `yaml:"min_version"`
+	// LeafTTL is how long an issued certificate is valid. Default 24h:
+	// a forged certificate that outlives the proxy that made it is one
+	// somebody else can still be holding.
+	LeafTTL Duration `yaml:"leaf_ttl"`
+	// MaxCache bounds the issued certificates kept in memory. Default
+	// 1024.
+	MaxCache int `yaml:"max_cache"`
+	// ALPN is what the proxy offers the destination and accepts from
+	// the client. Default ["http/1.1"]: a stream the proxy relays is
+	// one it has to be able to read, and offering h2 without reading
+	// h2 is how an interception proxy breaks a site.
+	ALPN []string `yaml:"alpn"`
+	// YARA scans the decrypted stream, which is the point of doing any
+	// of this.
+	YARA *YARAPolicy `yaml:"yara"`
 }
 
 // ForwardAuth is the credential source of a forward listener.

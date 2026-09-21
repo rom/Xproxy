@@ -348,6 +348,16 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 	// The handshake deadline must go before the relay, or a long lived
 	// tunnel dies at 30 seconds.
 	_ = c.SetDeadline(time.Time{})
+	if f.mitm != nil && f.mitm.wants(host, ips) {
+		// SOCKS is the same listener under the same policy. A tunnel
+		// that escapes interception by asking for it in the other
+		// protocol on the same port is not a policy.
+		in, out, reason := f.intercept(c, dst, host, ip, user)
+		s.stats.ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
+		s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+		f.logSOCKS(ip, user, dest, in, out, start, reason)
+		return
+	}
 	in, out := splice(c, dst, p.cfg.IdleTimeout.D())
 	s.stats.ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
 	s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative

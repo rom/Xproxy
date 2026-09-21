@@ -1972,6 +1972,7 @@ var denyReasons = map[string]bool{
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
 	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
+	"forward_sni_mismatch": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -3776,9 +3777,80 @@ func (v *validator) forwardListener(p string, f *ForwardListener) {
 		// side there is no header a middlebox will strip by accident.
 		v.warnf("%s.socks5: no auth is configured, so anyone who can reach this port can use the proxy; restrict the listener address, the destinations, or add auth", p)
 	}
+	v.forwardIntercept(p+".intercept", f.Intercept)
 	v.masque(p, f)
 	if f.SOCKSUDP {
 		v.warnf("%s.socks_udp: a UDP association relays datagrams for the client that opened it; it is bound to that client's address and dies with the control connection, but it is a wider exposure than a TCP tunnel", p)
+	}
+}
+
+// forwardIntercept checks the TLS interception section. Every check here
+// exists because the feature is the one that replaces a connection the
+// client verified with two connections it cannot see past: what is
+// refused is refused, and what is merely a decision is warned about so
+// it appears in the log somebody reads after the fact.
+func (v *validator) forwardIntercept(p string, ic *ForwardIntercept) {
+	if ic == nil {
+		return
+	}
+	if ic.CACertFile == "" {
+		v.errf("%s.ca_cert_file: required", p)
+	} else {
+		v.file(p+".ca_cert_file", ic.CACertFile)
+	}
+	if ic.CAKeyFile == "" {
+		v.errf("%s.ca_key_file: required", p)
+	} else {
+		v.file(p+".ca_key_file", ic.CAKeyFile)
+		v.privateFile(p+".ca_key_file", ic.CAKeyFile)
+	}
+	for _, d := range ic.Hosts {
+		if !destinationPatternOK(d) {
+			v.errf("%s.hosts: %q is not a name, *.suffix, address or CIDR", p, d)
+		}
+	}
+	for _, d := range ic.BypassHosts {
+		if !destinationPatternOK(d) {
+			v.errf("%s.bypass_hosts: %q is not a name, *.suffix, address or CIDR", p, d)
+		}
+	}
+	if len(ic.Hosts) == 0 {
+		v.warnf("%s.hosts: empty, so every destination this listener allows is decrypted; list the destinations the policy covers, and put what must not be read in bypass_hosts", p)
+	}
+	if ic.VerifyUpstream != nil && !*ic.VerifyUpstream {
+		v.warnf("%s.verify_upstream: false means the proxy does not check the destination's certificate while still presenting a trusted one to the client, which turns every verified connection through this listener into an unverified one with the padlock left in place", p)
+	}
+	if ic.CAFile != "" {
+		v.file(p+".ca_file", ic.CAFile)
+	}
+	switch ic.MinVersion {
+	case "1.2", "1.3":
+	default:
+		v.errf("%s.min_version: must be 1.2 or 1.3", p)
+	}
+	if ic.LeafTTL <= 0 || ic.LeafTTL > Duration(30*24*time.Hour) {
+		v.errf("%s.leaf_ttl: must be positive and at most 720h", p)
+	}
+	if ic.MaxCache < 1 || ic.MaxCache > 1_000_000 {
+		v.errf("%s.max_cache: must be 1..1000000", p)
+	}
+	seen := map[string]bool{}
+	for i, a := range ic.ALPN {
+		switch a {
+		case "http/1.1", "h2":
+		default:
+			v.errf("%s.alpn[%d]: must be http/1.1 or h2", p, i)
+		}
+		if seen[a] {
+			v.errf("%s.alpn[%d]: %q listed twice", p, i, a)
+		}
+		seen[a] = true
+	}
+	if seen["h2"] {
+		v.warnf("%s.alpn: h2 is offered, and the decrypted stream is relayed as a byte stream rather than parsed as HTTP/2; rules written for requests will not see framed messages", p)
+	}
+	if ic.YARA != nil {
+		v.yaraPolicy(p+".yara", ic.YARA)
 	}
 }
 
@@ -4283,6 +4355,24 @@ func (v *validator) file(p, path string) {
 	}
 	if st.IsDir() {
 		v.errf("%s: %s is a directory", p, path)
+	}
+}
+
+// privateFile refuses a key file anybody but its owner can read. A
+// signing key that can impersonate every site to every client that
+// trusts it is not a file to leave group- or world-readable, and the
+// check belongs here as well as at load: the operator finds out from
+// "xproxy check" rather than from a refused start.
+func (v *validator) privateFile(p, path string) {
+	if !v.fileCheck || !strings.HasPrefix(path, "/") {
+		return
+	}
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return // already reported by file
+	}
+	if st.Mode().Perm()&0o077 != 0 {
+		v.errf("%s: %s is readable by more than its owner (mode %04o); this key can impersonate every site to every client that trusts the CA", p, path, st.Mode().Perm())
 	}
 }
 

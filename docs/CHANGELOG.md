@@ -298,6 +298,64 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **TLS interception on the forward proxy
+  (`forward.intercept`).** A CONNECT tunnel is opaque by design: the
+  proxy knew a name, a port and a byte count, so the destination policy
+  was the only policy it could apply. Every rule an estate actually has
+  — this file must not leave, that binary must not arrive — is written
+  against bytes, and the bytes were inside TLS. The proxy now answers
+  the client's handshake with a certificate it signs itself, opens its
+  own TLS connection to the destination, and relays the plaintext
+  between the two, where the YARA rules and everything else that reads
+  bytes can see it in both directions.
+
+  This is the one feature here that makes a proxy less safe if it is
+  built carelessly, because it replaces a connection the client
+  verified end to end with two connections the client cannot see past.
+  Three things follow, and none of them is optional.
+
+  The destination is dialled and verified first, and only then is a
+  certificate forged for it. A client never sees a trusted certificate
+  for a server whose own certificate did not verify — it sees the
+  handshake fail, which is what it would have seen with no proxy in the
+  way. A proxy that gets this backwards takes the padlock away from
+  every client behind it and leaves the picture of one.
+  `verify_upstream: false` exists as a key so that turning it off is a
+  decision somebody wrote down, and it warns at validation.
+
+  The signing key can impersonate every site to every client that
+  trusts the CA, so it is refused — at `xproxy check` and again at
+  startup — if anybody but its owner can read it. The CA itself has to
+  be a CA, has to carry `keyCertSign`, and has to not have expired.
+
+  And some traffic must not be read at all, whatever the estate's
+  policy says: banking, health, anything carrying somebody's own
+  credentials. `bypass_hosts` is where that is written and it is
+  consulted before anything is decrypted, because a rule another rule
+  can overtake is not the rule you wanted.
+
+  Two things are refused rather than guessed at. A tunnel whose first
+  bytes are not a ClientHello is spliced through untouched — CONNECT
+  carries SSH and database protocols too, and answering a handshake to
+  one of those breaks it for nothing. And a handshake whose server name
+  disagrees with the host in the CONNECT is closed and counted as a ban
+  reason: a tunnel opened to one name and a handshake for another is
+  somebody reaching a destination the policy checked against a
+  different one. Reading that name meant reading the whole ClientHello
+  record rather than its first few bytes, which is where the extension
+  lives.
+
+  The issued certificate carries the real certificate's names — SANs,
+  IP addresses, common name — so a client pinning a name still works
+  and one pinning a key still fails, as it should; the bounded cache is
+  keyed on the destination's real certificate, so a rotation upstream
+  produces a fresh forgery rather than a stale one; and `alpn` defaults
+  to `http/1.1` alone, because a stream the proxy relays is one it has
+  to be able to read. `forward_intercepted`,
+  `forward_intercept_refused`, `forward_intercept_passed` and
+  `forward_intercept_bytes` count it, with a `forward_intercept` access
+  line per connection. `examples/forward/intercept.yaml`.
+
 - **Authorisation, as one policy rather than one per filter (`kind:
   authz`).** Every authenticating filter here answered "who":
   `basic_auth`, `ldap_auth`, `api_key`, `oidc`, the JWT filter, client

@@ -88,6 +88,23 @@ func WriteCA(t testing.TB, dir string) *CA {
 	return &CA{Cert: cert, Key: key, CertPEM: pemBytes, Path: p}
 }
 
+// WriteKey writes the CA's own private key to dir/ca-key.pem, owner
+// readable only, and returns the path. It is what a test needs to hand
+// the CA to something that signs with it rather than merely verifies
+// against it.
+func (ca *CA) WriteKey(t testing.TB, dir string) string {
+	t.Helper()
+	kd, err := x509.MarshalECPrivateKey(ca.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "ca-key.pem")
+	if err := os.WriteFile(p, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kd}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // Issue writes a certificate for name signed by the CA, valid for server
 // and client authentication, and returns the certificate and key paths.
 func (ca *CA) Issue(t testing.TB, dir, name string) (certPath, keyPath string) {
