@@ -2858,7 +2858,9 @@ upstreams, rate limits, trusted proxies, logging levels, limits other than
 listeners, certificate files, WAF profiles and modes, ban triggers and
 exemptions (active bans are kept; changing `bans.state_file` opens a new
 list), cluster peers, intervals and sharing flags, shedding thresholds,
-challenge settings (the key is kept), priority classes. Listeners are
+challenge settings (the key is kept), priority classes, and the
+`capture` section (the recording switch and its deadline are carried
+over unchanged; a new file is opened for the new configuration). Listeners are
 matched by name: an added listener is bound and served by the reload, a
 removed one stops accepting and drains its connections for
 `shutdown_timeout`, and one whose settings changed beyond certificate
