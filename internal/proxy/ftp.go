@@ -753,11 +753,16 @@ func (se *ftpSession) closeData() {
 func (se *ftpSession) listenData() (net.Listener, error) {
 	t := se.t
 	host := se.localAddr()
+	var lc net.ListenConfig
+	ctx := context.Background()
 	if t.loPort == 0 && t.hiPort == 0 {
-		return net.Listen("tcp", net.JoinHostPort(host, "0"))
+		return lc.Listen(ctx, "tcp", net.JoinHostPort(host, "0"))
 	}
+	// A range is what lets a firewall in front of the proxy be narrow,
+	// so it is walked until one is free rather than failing on the
+	// first port somebody else holds.
 	for p := t.loPort; p <= t.hiPort; p++ {
-		ln, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(p)))
+		ln, err := lc.Listen(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(p)))
 		if err == nil {
 			return ln, nil
 		}
