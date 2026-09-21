@@ -178,6 +178,7 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_virtual_patch_hits_total", "Requests matched by a virtual patch.", L{"patch": vp.cfg.ID}, float64(vp.hits.Load()))
 	}
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
+	e.Counter("xproxy_tls_handshakes_refused_total", "TLS handshakes refused in the ClientHello.", nil, float64(sn.HandshakesRefused))
 	// Per token only: one series with a token label and one without
 	// would not sum, and the name of the plant that was found is the
 	// whole point of the counter.

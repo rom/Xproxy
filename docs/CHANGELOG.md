@@ -260,6 +260,28 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Refusal at the TLS handshake (`handshake`).** A banned client still
+  got a full handshake: keys agreed, certificate sent, request parsed,
+  and then a 403. That is an asymmetric key exchange spent on a
+  refusal, and an answer a scanner can read — the certificate, the
+  negotiated cipher, the error page, the header set. The new section
+  refuses in the ClientHello instead: `refuse_banned` turns an existing
+  address or fingerprint ban into a failed negotiation, and
+  `deny_fingerprints` refuses a TLS stack outright, by full JA4 or JA3,
+  or by a JA4 prefix ending in `*` for a family of clients. It covers
+  every TLS listener including HTTP/3, since QUIC carries the same
+  hello.
+
+  What it costs is the record, and the documentation says so where an
+  operator will meet it: a refused connection never becomes a request,
+  so there is no access log line, no request id, no route and no
+  filter. The security log (reason `handshake`, detail `banned` or
+  `fingerprint`, both fingerprints and the address),
+  `xproxy_tls_handshakes_refused_total`, `GET /v1/handshake` and the
+  line `xproxyctl tls` now prints above the certificates are what
+  remain. Validation says the same as advice, refuses `refuse_banned`
+  without a `bans` section, and warns when no listener has TLS at all.
+
 - **Honeytokens: the hook on the bait (`honeytokens`).** The decoys
   hand out an AWS key, a database password, a connection string, a
   private key block. Nothing watched for their use, so a scanner read

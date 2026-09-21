@@ -1569,6 +1569,57 @@ have blocked) stay explainable, then `100`. `xproxyctl waf` shows the
 share and the canary prefixes per route, and the access log carries
 `waf_enforced: true` or `false` for every request of such a route.
 
+## handshake
+
+Present means the proxy can refuse a client before its TLS handshake
+completes.
+
+Everything else in this file answers a request: the handshake runs, a
+certificate is chosen, keys are agreed, the request is parsed, and then
+the proxy says no. For a client already known to be unwelcome that is a
+key exchange spent on a refusal — and an answer a scanner can read off:
+a status, a page, a header set, a certificate, a supported cipher list.
+Refusing in the ClientHello costs one hello and gives back a failed
+negotiation, which says nothing.
+
+It applies to every TLS listener, HTTP/3 included, and to nothing else:
+a plain HTTP listener has no handshake, and what arrives there is
+refused the ordinary way.
+
+```yaml
+handshake:
+  # A client already on the ban list never gets a handshake.
+  refuse_banned: true
+  # Fingerprints refused outright, whatever the ban list says: a
+  # scanner whose TLS stack is its signature.
+  deny_fingerprints:
+    - "t13d1516h2_8daaf6152771_02713d6af862"   # JA4, exact
+    - "ja4:t13d31*"                            # a JA4 prefix: the family
+    - "ja3:579ccef312d18482fc42e2b822ca2430"   # a JA3 hash
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `refuse_banned` | bool | `false` | Refuse a client whose address or TLS fingerprint is on the ban list. Requires a `bans` section |
+| `deny_fingerprints` | list | `[]` | TLS fingerprints refused outright. An entry is a JA4 or JA3 string, or one prefixed `ja4:`/`ja3:` to say which it is; a JA4 entry ending in `*` matches by prefix, which names a family of clients without pinning every extension order. At most 4096 entries |
+| `log` | bool | `true` | Record each refusal in the security log as reason `handshake`, with the detail (`banned` or `fingerprint`), the client address and both fingerprints |
+
+**What you give up.** A refused connection never becomes a request, so
+it is not in the access log, it has no request id, and no route, WAF
+profile or filter ever sees it. That is the trade: the cheapest and
+quietest refusal is also the one with the least to look at afterwards.
+Validation says so as advice when `refuse_banned` is on. The security
+log and `xproxy_tls_handshakes_refused_total` are what remain, and
+`xproxyctl tls` prints the policy and its count above the certificates.
+
+Fingerprints are not identities. A JA4 names a TLS stack and its
+options, so it groups a scanner's runs together and it groups everyone
+using the same library — including, for a common prefix, ordinary
+browsers. Deny a full fingerprint you have seen in your own security
+log; reach for a prefix only when you have checked what else it
+matches. `xproxyctl waf` and the access log's `ja4` field are where to
+look before adding one.
+
 ## honeytokens[]
 
 A decoy hands out a password, an API key, a connection string. Until

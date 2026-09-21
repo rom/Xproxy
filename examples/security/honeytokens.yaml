@@ -39,6 +39,13 @@ bans:
       escalation: 2
       max_duration: 720h
 
+# The last layer: a client the ban list already holds does not get a
+# TLS handshake at all. The refusal costs one hello and tells the
+# scanner nothing — but it never becomes a request, so it is in the
+# security log and the metrics rather than the access log.
+handshake:
+  refuse_banned: true
+
 honeytokens:
   # The values the built-in decoys serve. An attacker who read
   # /.env or /.aws/credentials through a honeypot route and then tried

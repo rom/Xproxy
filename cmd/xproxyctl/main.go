@@ -409,6 +409,16 @@ func run(args []string, out, errOut io.Writer) int {
 			_, _ = out.Write(b)
 			return 0
 		}
+		// The pre-handshake policy belongs with the certificates: both
+		// are what a client meets before it has sent a request.
+		var hs proxy.HandshakeStatus
+		if hb, err := c.Raw("/v1/handshake"); err == nil {
+			_ = json.Unmarshal(hb, &hs)
+		}
+		if hs.Enabled {
+			_, _ = fmt.Fprintf(out, "handshake: refuse_banned=%v fingerprints=%d refused=%d\n\n",
+				hs.RefuseBanned, hs.Fingerprints, hs.Refused)
+		}
 		var certs map[string][]tlsconf.CertInfo
 		if err := json.Unmarshal(b, &certs); err != nil {
 			return fail(err)

@@ -161,6 +161,7 @@ compute it.
 | 403 with `reason: waf` | A rule matched. `waf_matched` names it; see [WAF](#waf) |
 | 403 with `reason: honeypot` | The client asked for a honeypot path. That is the honeypot working |
 | 403 with `reason: honeytoken` | The client presented a planted credential. `detail` names the plant; see [Honeytokens](#honeytokens) |
+| A TLS error at the client and no access log line | `handshake` refused the connection before it became a request; see [Refusal at the TLS handshake](#refusal-at-the-tls-handshake) |
 | 403 with `reason: cors` | The `Origin` is not allowed by the route's `cors` block |
 | 401 with `WWW-Authenticate: Bearer` | JWT missing or invalid. The security log names the category |
 | 405 on `/.well-known/security.txt` | Only `GET` and `HEAD` are answered there |
@@ -1271,6 +1272,39 @@ are permanently zero.
 worth 40 on its own and the mark lasts as long as the honeypot route's
 `mark`. `xproxyctl honeypot forget IP` clears it.
 
+## Refusal at the TLS handshake
+
+**A client reports a TLS error and nothing appears in the access log.**
+That is `handshake` doing its job, and the missing line is the trade it
+makes. Look in the security log for `reason: handshake`: it carries the
+client address, both fingerprints and the detail (`banned` or
+`fingerprint`). `xproxyctl tls` prints the policy and the refusal count
+above the certificates, and `xproxy_tls_handshakes_refused_total` is
+the series to graph.
+
+**Legitimate clients are being refused.** Almost always a
+`deny_fingerprints` prefix that is wider than intended: a JA4 prefix
+names a TLS stack, and browsers share stacks with the tools built on
+them. Take the prefix out, put back the full fingerprints you have
+actually seen in your own logs, and check the `ja4` field in the access
+log for what else matches.
+
+**A banned client still gets a handshake.** `refuse_banned` needs a
+`bans` section (validation refuses it otherwise), and it only refuses
+what the ban list already holds — an address ban, or a fingerprint ban.
+A client banned *during* its connection keeps that connection: the
+refusal is per handshake, and existing connections are not torn down.
+
+**Nothing is refused although the policy is set.** The policy is per
+TLS listener; a plain HTTP listener has no handshake to refuse in, and
+validation warns when no listener has a `tls` section. An HTTP/3
+listener is covered, because QUIC carries the same ClientHello.
+
+**How to test one.** `openssl s_client -connect host:443 -servername
+name` shows the failed negotiation; the proxy's security log line for
+the same moment names the reason. There is deliberately nothing in the
+alert for a client to read.
+
 ## Honeytokens
 
 **A token never fires, although the decoy holding it was read.** Three
@@ -2051,6 +2085,7 @@ innocent.
 | `icap` | An ICAP service | yes |
 | `honeypot` | A honeypot route | yes |
 | `honeytoken` | A request presenting a planted credential; `detail` is the token name | yes |
+| `handshake` | The `handshake` section, before the connection became a request; `detail` is `banned` or `fingerprint` | no (it is already a refusal of what the ban list holds) |
 | `challenge` | The challenge gate | yes (only the client's own mistakes) |
 | `sensitive_data` | The DLP filter | no |
 | `account_abuse` | `account_guard` | yes |

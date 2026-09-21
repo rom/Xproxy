@@ -5862,6 +5862,75 @@ T}
 .TE
 .PP
 Gradual roll\-out: detect everywhere, then \fBblock_percent: 0\fR with the testers in \fBblock_cidrs\fR, then raise the share in steps while the security log\(aqs \fBwaf_detected\fR entries (the requests detect mode would have blocked) stay explainable, then \fB100\fR. \fBxproxyctl waf\fR shows the share and the canary prefixes per route, and the access log carries \fBwaf_enforced: true\fR or \fBfalse\fR for every request of such a route.
+.SH "handshake"
+.PP
+Present means the proxy can refuse a client before its TLS handshake completes.
+.PP
+Everything else in this file answers a request: the handshake runs, a certificate is chosen, keys are agreed, the request is parsed, and then the proxy says no. For a client already known to be unwelcome that is a key exchange spent on a refusal \[u2014] and an answer a scanner can read off: a status, a page, a header set, a certificate, a supported cipher list. Refusing in the ClientHello costs one hello and gives back a failed negotiation, which says nothing.
+.PP
+It applies to every TLS listener, HTTP/3 included, and to nothing else: a plain HTTP listener has no handshake, and what arrives there is refused the ordinary way.
+.PP
+.RS 4
+.nf
+.ft CR
+handshake:
+  # A client already on the ban list never gets a handshake.
+  refuse_banned: true
+  # Fingerprints refused outright, whatever the ban list says: a
+  # scanner whose TLS stack is its signature.
+  deny_fingerprints:
+    \- "t13d1516h2_8daaf6152771_02713d6af862"   # JA4, exact
+    \- "ja4:t13d31*"                            # a JA4 prefix: the family
+    \- "ja3:579ccef312d18482fc42e2b822ca2430"   # a JA3 hash
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.3i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrefuse_\:banned\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a client whose address or TLS fingerprint is on the ban list. Requires a \fBbans\fR section
+T}
+T{
+\fBdeny_\:fingerprints\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+TLS fingerprints refused outright. An entry is a JA4 or JA3 string,\: or one prefixed \fBja4:\fR/\:\fBja3:\fR to say which it is;\: a JA4 entry ending in \fB*\fR matches by prefix,\: which names a family of clients without pinning every extension order. At most 4096 entries
+T}
+T{
+\fBlog\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Record each refusal in the security log as reason \fBhandshake\fR,\: with the detail (\fBbanned\fR or \fBfingerprint\fR),\: the client address and both fingerprints
+T}
+.TE
+.PP
+\fBWhat you give up.\fR A refused connection never becomes a request, so it is not in the access log, it has no request id, and no route, WAF profile or filter ever sees it. That is the trade: the cheapest and quietest refusal is also the one with the least to look at afterwards. Validation says so as advice when \fBrefuse_banned\fR is on. The security log and \fBxproxy_tls_handshakes_refused_total\fR are what remain, and \fBxproxyctl tls\fR prints the policy and its count above the certificates.
+.PP
+Fingerprints are not identities. A JA4 names a TLS stack and its options, so it groups a scanner\(aqs runs together and it groups everyone using the same library \[u2014] including, for a common prefix, ordinary browsers. Deny a full fingerprint you have seen in your own security log; reach for a prefix only when you have checked what else it matches. \fBxproxyctl waf\fR and the access log\(aqs \fBja4\fR field are where to look before adding one.
 .SH "honeytokens[]"
 .PP
 A decoy hands out a password, an API key, a connection string. Until something watches for their \fIuse\fR, the bait has no hook: the scanner reads the file and the proxy learns only that the file was read. A honeytoken closes that. Each entry registers values that were planted somewhere an attacker will find them \[u2014] in a decoy this proxy serves, in a repository, in a paste, in a backup, in a document \[u2014] and any request presenting one is refused, counted, logged and (by default) marked.

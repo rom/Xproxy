@@ -766,6 +766,7 @@ cluster:
 virtual_patches: []
 security_txt: []
 honeytokens: []
+handshake: null
 capture: null
 fleet: null
 api_inventory: null

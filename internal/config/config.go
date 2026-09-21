@@ -65,6 +65,8 @@ type Config struct {
 	// Honeytokens are planted credentials. A request presenting one has
 	// read something it should not have.
 	Honeytokens []Honeytoken `yaml:"honeytokens"`
+	// Handshake refuses clients before the TLS handshake completes.
+	Handshake *Handshake `yaml:"handshake"`
 	// Capture writes the exchanges the proxy handled as pcapng files,
 	// for the flows its rules select.
 	Capture *Capture `yaml:"capture"`
@@ -1949,6 +1951,43 @@ type SecurityTxt struct {
 	// 1h; 0 sends no Cache-Control.
 	CacheFor Duration `yaml:"cache_for"`
 }
+
+// Handshake decides who is refused before a TLS handshake completes.
+//
+// Every other control in this file answers a request: the handshake
+// runs, a certificate is chosen, keys are agreed, the request is
+// parsed, and then the proxy says no. For a client already known to be
+// unwelcome that is a lot of asymmetric cryptography spent on saying
+// no, and an answer — a status, a page, a header set — that tells a
+// scanner something about what is in front of it.
+//
+// Refusing in the ClientHello is the cheapest possible no and the
+// quietest: the connection fails to negotiate and there is nothing to
+// fingerprint.
+//
+// It applies to every TLS listener, including HTTP/3, and to nothing
+// else: a plain HTTP listener has no handshake to refuse in, and what
+// arrives there is still refused the ordinary way.
+type Handshake struct {
+	// RefuseBanned refuses a client whose address or TLS fingerprint is
+	// on the ban list. Default false: a ban that answers 403 is
+	// visible to the operator in the access log, and this makes the
+	// refusal invisible there, which is a deliberate trade.
+	RefuseBanned bool `yaml:"refuse_banned"`
+	// DenyFingerprints refuses these TLS fingerprints outright,
+	// whatever the ban list says. An entry is a JA4 or JA3 string, or
+	// one prefixed "ja4:" or "ja3:" to name which it is; a JA4 entry
+	// ending in "*" matches by prefix, which is how a family of
+	// clients is named without pinning every extension order.
+	DenyFingerprints []string `yaml:"deny_fingerprints"`
+	// Log records each refusal in the security log (reason
+	// "handshake"). Default true.
+	Log *bool `yaml:"log"`
+}
+
+// LogRefusals reports whether handshake refusals are logged (default
+// true).
+func (h *Handshake) LogRefusals() bool { return h == nil || h.Log == nil || *h.Log }
 
 // Honeytoken is a credential that exists only to be stolen. It is
 // planted where an attacker will find it — in a decoy this proxy

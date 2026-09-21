@@ -1995,6 +1995,39 @@ answers `/admin`, do not shadow it here — and keep the catch-all route
 last, so every decoy path is the more specific match. The shipped
 example is checked for both.
 
+### Refusing before the handshake
+
+A banned client still gets a TLS handshake: keys agreed, certificate
+sent, request parsed, and then a 403. That is a key exchange spent on a
+refusal, and an answer a scanner can read — the certificate, the cipher
+list, the error page, the headers.
+
+```yaml
+handshake:
+  refuse_banned: true
+  deny_fingerprints: ["ja4:t13d31*", "579ccef312d18482fc42e2b822ca2430"]
+bans:
+  action: reject
+  triggers:
+    - {name: probes, reasons: [honeypot, honeytoken], threshold: 1, window: 10m, duration: 24h}
+```
+
+Now the ban is enforced one layer down: the ClientHello is answered
+with a failed negotiation and nothing else. It applies to every TLS
+listener including HTTP/3, and `deny_fingerprints` refuses a TLS stack
+outright whether or not its address is banned.
+
+What you give up is the record. A refused connection never becomes a
+request, so there is no access log line, no request id and no route —
+only the security log (reason `handshake`) and
+`xproxy_tls_handshakes_refused_total`. `xproxyctl tls` prints the
+policy and the count above the certificates.
+
+Fingerprints group clients, they do not identify them. A full JA4 is
+safe to deny once you have seen it in your own security log; a prefix
+covers a whole family, browsers included, so check what else it matches
+before adding one.
+
 ### Honeytokens: the hook on the bait
 
 A decoy hands out an AWS key, a database password, a connection string.

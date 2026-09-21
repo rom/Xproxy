@@ -85,6 +85,9 @@ type Server struct {
 	// honeytokenHits keeps honeytoken counters across generations: a
 	// plant that has been found stays found across a reload.
 	honeytokenHits honeytokenCounters
+	// handshake refuses clients in the ClientHello. It is read from
+	// inside the TLS handshake, so it is swapped rather than locked.
+	handshake atomic.Pointer[handshakePolicy]
 	// capture writes exchanges as pcapng, kept across generations so a
 	// recording survives a reload.
 	capture atomic.Pointer[capture.Capturer]
@@ -199,6 +202,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		bl := s.bans.Load()
 		return bl != nil && bl.DropsConnections() && bl.Banned(addr)
 	}
+	s.handshake.Store(newHandshakePolicy(cfg.Handshake))
 	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s), s.wafStats, &s.patches, &s.honeytokenHits)
 	if err != nil {
 		if bl := s.bans.Load(); bl != nil {
@@ -655,6 +659,7 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		}
 		tc.NextProtos = []string{dns.ALPNDoT, dns.ALPNH2, dns.ALPNHTTP}
 		rl.Fingerprints = s.fingerprints
+		rl.Refuse = s.refuseHandshake
 		rl.StartStapling(s.logs.Error)
 		bl.tlsReload = rl
 		bl.ln = tls.NewListener(bl.ln, tc)
@@ -732,6 +737,7 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 			rl.Challenge = s.acme.TLSALPN01
 		}
 		rl.Fingerprints = s.fingerprints
+		rl.Refuse = s.refuseHandshake
 		for _, w := range rl.CTWarnings() {
 			s.logs.Security.Warn("certificate transparency", "listener", lc.Name, "issue", w)
 		}
@@ -864,6 +870,10 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
+	// The handshake policy is read from inside every TLS handshake, so
+	// it is swapped whole; the refusal counter starts again with the
+	// new policy, which is the honest reading of a changed rule set.
+	s.handshake.Store(newHandshakePolicy(cfg.Handshake))
 	// A challenge section that appears on this reload needs its key before
 	// the swap: routes in mode always would otherwise serve unchallenged
 	// until the next reload if the secret file were unreadable (fail open).

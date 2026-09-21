@@ -452,6 +452,7 @@ func (v *validator) config(c *Config) {
 	}
 	v.virtualPatches(c.VirtualPatches, routes)
 	v.honeytokens(c.Honeytokens)
+	v.handshake(c)
 	if c.Capture != nil {
 		v.capture(c.Capture, routes)
 	}
@@ -3340,6 +3341,63 @@ func (v *validator) patchMatches(p string, list []PatchMatch) {
 				v.errf("%s[%d].pattern: %v", p, j, err)
 			}
 		}
+	}
+}
+
+// fingerprintRE bounds a JA3 or JA4 entry: the character set both
+// fingerprints use, and a trailing star for a JA4 prefix.
+var fingerprintRE = regexp.MustCompile(`^[a-z0-9_]{4,128}\*?$`)
+
+// handshake validates the pre-handshake refusal policy.
+func (v *validator) handshake(c *Config) {
+	h := c.Handshake
+	if h == nil {
+		return
+	}
+	const p = "handshake"
+	if h.RefuseBanned && c.Bans == nil {
+		v.errf("%s.refuse_banned: there is no bans section to refuse from", p)
+	}
+	seen := map[string]bool{}
+	for i, f := range h.DenyFingerprints {
+		q := fmt.Sprintf("%s.deny_fingerprints[%d]", p, i)
+		value := f
+		switch {
+		case strings.HasPrefix(f, "ja4:"):
+			value = strings.TrimPrefix(f, "ja4:")
+		case strings.HasPrefix(f, "ja3:"):
+			value = strings.TrimPrefix(f, "ja3:")
+			if strings.HasSuffix(value, "*") {
+				v.errf("%s: a JA3 fingerprint is a hash; only a JA4 entry may end in *", q)
+			}
+		}
+		if !fingerprintRE.MatchString(value) {
+			v.errf("%s: %q is not a JA3 or JA4 fingerprint", q, f)
+		}
+		if seen[f] {
+			v.errf("%s: duplicate %q", q, f)
+		}
+		seen[f] = true
+		if value == "*" || len(strings.TrimSuffix(value, "*")) < 4 {
+			v.errf("%s: %q is too short to name a client", q, f)
+		}
+	}
+	if len(h.DenyFingerprints) > 4096 {
+		v.errf("%s.deny_fingerprints: at most 4096 entries", p)
+	}
+	tls := false
+	for _, l := range c.Server.Listeners {
+		if l.TLS != nil {
+			tls = true
+		}
+	}
+	if !tls && (h.RefuseBanned || len(h.DenyFingerprints) > 0) {
+		v.warnf("handshake refuses clients before a TLS handshake, and no listener has a tls section: " +
+			"what arrives on a plain listener is refused the ordinary way")
+	}
+	if h.RefuseBanned {
+		v.warnf("handshake.refuse_banned makes a banned client's refusal invisible in the access log: " +
+			"the connection never becomes a request. The security log records it as reason handshake when log is on")
 	}
 }
 
