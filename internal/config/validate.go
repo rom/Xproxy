@@ -1688,6 +1688,11 @@ func (v *validator) securityTxt(c *Config) {
 				v.errf("%s.host_regex: %v", p, err)
 			}
 		}
+		for j, cidr := range st.HostCIDRs {
+			if _, err := netip.ParsePrefix(cidr); err != nil {
+				v.errf("%s.host_cidrs[%d]: %q is not a CIDR", p, j, cidr)
+			}
+		}
 		for j, cidr := range st.ClientCIDRs {
 			if _, err := netip.ParsePrefix(cidr); err != nil {
 				v.errf("%s.client_cidrs[%d]: %q is not a CIDR", p, j, cidr)
@@ -1810,8 +1815,35 @@ func (v *validator) securityTxtValues(path string, values []string) {
 	}
 }
 
-// HoneypotDecoys are the built-in decoy names (bodies live in the proxy).
-var HoneypotDecoys = map[string]bool{"actuator": true, "admin-login": true, "aws-credentials": true, "backup-sql": true, "debug-vars": true, "docker-compose": true, "elasticsearch": true, "env": true, "git-config": true, "grafana": true, "htpasswd": true, "idrac": true, "jenkins": true, "kubeconfig": true, "phpinfo": true, "phpmyadmin": true, "robots": true, "s3-listing": true, "server-status": true, "ssh-key": true, "swagger": true, "tomcat-manager": true, "webmail": true, "webshell": true, "wp-config": true, "wp-login": true}
+// HoneypotDecoys are the built-in decoy names (bodies live in the proxy,
+// which imports this package and so cannot be imported back). The two
+// lists are kept in step by a test that fails when either side gains a
+// name the other does not have.
+var HoneypotDecoys = map[string]bool{
+	// PHP and WordPress
+	"wp-login": true, "wp-config": true, "wp-users": true, "phpmyadmin": true,
+	"phpinfo": true, "adminer": true,
+	// Generic and leaked files
+	"admin-login": true, "robots": true, "env": true, "git-config": true,
+	"htpasswd": true, "backup-sql": true, "s3-listing": true, "laravel-log": true,
+	// Secrets and build files
+	"aws-credentials": true, "ssh-key": true, "kubeconfig": true,
+	"docker-compose": true, "npmrc": true, "pypirc": true, "gitlab-ci": true,
+	"terraform-state": true, "vscode-sftp": true, "appsettings": true,
+	"database-yml": true, "nginx-config": true,
+	// Cloud and orchestration APIs (server side request forgery probes)
+	"imds": true, "consul": true, "vault": true, "docker-api": true, "kubelet": true,
+	// Data stores and dashboards
+	"elasticsearch": true, "couchdb": true, "solr": true, "rabbitmq": true,
+	"kibana": true, "grafana": true, "prometheus-config": true, "traefik": true,
+	// Application servers and internals
+	"tomcat-manager": true, "jenkins": true, "actuator": true, "swagger": true,
+	"graphql": true, "debug-vars": true, "server-status": true, "webshell": true,
+	// Enterprise front doors
+	"confluence": true, "gitlab-login": true, "citrix": true, "fortinet": true,
+	"esxi": true, "exchange-autodiscover": true, "idrac": true, "webmail": true,
+	"cgi-bin": true,
+}
 
 func (v *validator) bans(b *Bans) {
 	if b.StateFile != "" && !strings.HasPrefix(b.StateFile, "/") {

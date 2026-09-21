@@ -279,19 +279,254 @@ Open findings of the earlier rounds:
   let it append a `Contact` line of somebody else's choosing. Responses
   are `GET`/`HEAD` only (405 otherwise), cached for `cache_for` and
   counted in `security_txt`.
-- **Twenty more honeypot decoys.** `honeypot.decoy` now takes 26 names
-  covering the paths scanners actually probe — `phpmyadmin`,
-  `tomcat-manager`, `jenkins`, `grafana`, `actuator`,
-  `elasticsearch`, `aws-credentials`, `ssh-key`, `kubeconfig`,
-  `docker-compose`, `wp-config`, `htpasswd`, `backup-sql`,
-  `s3-listing`, `swagger`, `debug-vars`, `server-status`, `webshell`,
-  `idrac` and `webmail` beside the original six. Every credential, key
-  and host name in them is visibly fake.
-  `examples/security/honeypots.yaml` wires all of them with a ban
-  trigger on the sweep.
+- **`security_txt[].host_cidrs`: a document selected by address range.**
+  The virtual `security.txt` could already be scoped to one host, to a
+  wildcard domain, to a regular expression, to a client network, to a
+  listener, or to everything. The one host a name-based selector cannot
+  reach is the one that has no name: a machine found in a range scan,
+  a parked address, a range a provider assigned. That client sends
+  `Host: 198.51.100.7`, and it is the finder with the least to go on
+  and the most need of somewhere to report.
+
+  `host_cidrs` matches the `Host` header read as an address literal, in
+  either family and in either spelling — `::ffff:198.51.100.7` is the
+  IPv4 address it carries, so one prefix covers both. It joins the
+  other host selectors as a union, so one entry can name the hosts it
+  knows and the range everything else sits in;
+  `host_cidrs: ["0.0.0.0/0", "::/0"]` is every address literal there
+  is. A `Host` that is a name never matches it, whatever that name
+  resolves to: the proxy does not resolve the `Host` header, and a
+  document that turned on what a name resolves to would be answering
+  on the client's word.
+
+  `docs/USAGE.md` gains the section the feature never had, with the
+  table that maps one host, a group and all of them onto the selector
+  that expresses each; `examples/security/security-txt.yaml` gains the
+  parked-address entry and the commented any-address one.
+
+- **Fifty-six honeypot decoys.** `honeypot.decoy` now takes 56 names
+  covering the paths scanners actually probe, grouped in
+  docs/CONFIG.md by what the scanner is after. Beside the original PHP,
+  WordPress and leaked-file set: the secrets a laptop or a build agent
+  leaves in a deployment (`npmrc`, `pypirc`, `gitlab-ci`,
+  `terraform-state`, `vscode-sftp`, `appsettings`, `database-yml`,
+  `nginx-config`, `laravel-log`); the cloud and orchestration APIs a
+  server side request forgery probe asks for, where the client is
+  asking the proxy to fetch its own credentials (`imds`, `consul`,
+  `vault`, `docker-api`, `kubelet`); data stores and dashboards
+  (`couchdb`, `solr`, `rabbitmq`, `kibana`, `prometheus-config`,
+  `traefik`); the enterprise front doors a mass scanner fingerprints
+  before it picks an exploit (`confluence`, `gitlab-login`, `citrix`,
+  `fortinet`, `esxi`, `exchange-autodiscover`, `cgi-bin`); and the
+  application internals that leak a shape rather than a file
+  (`wp-users`, `graphql`, `adminer`).
+
+  Every credential, key and host name in them is visibly fake, and that
+  is now a test rather than a convention: a decoy whose body assigns a
+  password, a token or a key fails unless the value carries a marker a
+  reader recognises, and a private key block fails unless what it holds
+  decodes to a message saying it is a decoy. The documentation
+  reference and the names the validator accepts are checked against
+  each other, so a decoy cannot exist in one and not the other.
+
+  `examples/security/honeypots.yaml` wires up all 56 — one route per
+  decoy with the paths each is worth serving on, and the mark scaled to
+  what the request means: an hour for a path a confused crawler might
+  reach, six hours for a file only a credential hunt asks for, a day
+  for a metadata or orchestration probe. A test refuses a decoy the
+  example never demonstrates, a path two routes both claim, and a
+  catch-all that is not last.
+
+### Tests (1.4)
+
+A round of adversarial and robustness tests over the parsers, the
+protocol clients and the views, written from the outside in: what a
+client, a peer, a scanner, a certificate authority or a file on disk
+can put in front of each of them. Forty-six packages gained a suite;
+`docs/TESTS.md` lists every case. The findings each have their own
+entry above.
+
+The categories, and where they landed: expansion and recursion bombs
+(the configuration's YAML anchors, JSON Schema `$ref` chains, GraphQL
+fragment spreads, MMDB pointer loops); truncation at every length and
+single-bit corruption (ClientHello, QUIC Initial, PROXY protocol, MMDB,
+the configuration); type confusion and the numbers a format disagrees
+about (leading zeros, octal, hex, underscores, int64 edges, NaN, Inf, a
+decimal comma); time (every instant around `exp` and `nbf`, the 2038
+rollover, the largest exact float64 integer); encodings and i18n
+(BOM, CRLF, lone CR, UTF-16, invalid UTF-8, lone surrogates, homoglyphs,
+combining marks, the Turkish dotted i, the Kelvin sign, bidi and
+zero-width controls); line breaks and separators (nineteen hostile
+values through every log format); the file system (permissions,
+symlinks, a truncated file, long and non-ASCII names, a failed write);
+algorithmic complexity (ReDoS, quadratic `uniqueItems`, alias floods);
+resource bounds (in-flight limits, queues that drop rather than block,
+tables an attacker fills); concurrency and determinism (shared
+validators, shared filters, shared ban lists, byte-identical error
+text); and the trust boundaries (a scanner that rewrites a request, a
+peer that names itself, an agent that reports its host name, a
+WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
 
+- `Keyring.All` and `Keyring.Keys` handed out the ring's own key
+  material rather than a copy, so a caller working in place would have
+  changed what the proxy signs with, and `Primary` panicked on a ring
+  with no keys. Both now copy, and the accessors answer for an empty or
+  nil ring.
+- A password verification whose caller had already gone away still took
+  a slot and spent a full hash on an answer nobody would read. The
+  select between the semaphore and the context picks either when both
+  are ready, so a client that disconnects during a burst of logins
+  still cost the proxy the work. `passwd.Acquire` now returns at once
+  for a context that is already done.
+- The ingress controller built file names under `cert_dir` out of the
+  namespace and secret name an API server sent it, and put the same two
+  values into the request path it fetched a Secret with. A name
+  carrying a separator or a dot segment — which a real API server never
+  sends, but a compromised or impersonated one does — would have left
+  the directory and overwritten a file the proxy user can write. Both
+  are now checked against what the API server itself would have
+  accepted, and a name that is not one is refused before the request.
+- An Ingress rule's host and path went into the proxy's own
+  configuration unchecked. A tenant who can create an Ingress could put
+  a space, a carriage return or a NUL into a route host or path, where
+  it became a routing key, a metric label and a log field for every
+  other tenant on the proxy. A host must now be a DNS name (a leading
+  wildcard label allowed) and a path must be a plain prefix with no
+  space or control character; anything else is dropped with a warning,
+  the way an unresolvable service already was.
+- A TLS secret referenced by an Ingress or a Gateway was read whatever
+  its type, so a reference to an Opaque secret that happened to carry
+  `tls.crt` and `tls.key` published it. The Ingress API requires a
+  `kubernetes.io/tls` secret; anything else is now refused with a
+  warning.
+- The canonical form of a SOA record lowercased only its first name.
+  RFC 4034 section 6.2 requires both the MNAME and the RNAME to be
+  lowered before a signature is checked, and the helper stops at the
+  root label of the name it starts on, so a zone whose RNAME carries
+  any upper case letter had its SOA signature computed over the wrong
+  bytes. SOA records appear in every negative answer, so the effect was
+  a denial proof that could not be verified and a name that reads as
+  bogus.
+- `lowerName` sliced its input at an offset it had not checked. The
+  record types that reach it carry a fixed part before the name (a
+  preference, a priority and a port), and rdata shorter than that
+  fixed part — which is what a malformed or hostile answer holds —
+  panicked the goroutine reading the upstream's reply. It now returns
+  nothing to lower.
+- An RSA DNSKEY with an exponent of 0 or 1, or an even one, was
+  accepted by the key parser. Verification refused it afterwards, so
+  nothing was ever verified with it, but a key that cannot be a key is
+  refused where it is read.
+- `xproxyctl` printed what the daemon told it, byte for byte, including
+  the control characters a terminal acts on. Most of what its tables
+  carry came off the network — a ban target and its reason, an endpoint
+  discovered by DNS, a path the API inventory learned from a request, a
+  cluster peer's node id and last error, a certificate subject, a
+  honeypot hit's path and user agent — so a client able to get a value
+  into one of those tables could clear the operator's screen, set the
+  terminal title, or overwrite the line above with a carriage return
+  while the operator read it. Everything the tool prints now goes
+  through a filter that replaces every C0 byte and DEL with `?`, one
+  for one, keeping newline and tab so the columns still line up and
+  leaving UTF-8 untouched. The terminal interface and the fleet tool
+  already did this; the control tool did not.
+- The last-resort rate-limit key took the client's network, and answered
+  an invalid client address with the literal text `net:invalid Prefix`.
+  `netip` gives the zero address the zero prefix and no error, so the
+  guard that was there never fired, and every client whose address the
+  listener could not parse shared one bucket named after a stringer's
+  error text. The key is now empty for an address that is not one, which
+  is the answer the limiter already handles: with nothing coarser left
+  it refuses rather than admits.
+- `dnsPolicy` dereferenced the `cache` section of a `dns` listener
+  without checking it. Parsing always fills it in, so no configuration
+  file reached it nil, but the type permits it and a configuration
+  assembled another way would have panicked the process at bind time
+  instead of reporting a bad listener. The defaults are now used for a
+  missing section.
+- The LDAP filter parser had no depth bound. It is recursive, and the
+  filter template is parsed once per login attempt, so a `user_filter`
+  nested a few million levels deep — pasted in, generated, or copied
+  from somewhere — met the goroutine stack limit and took the whole
+  proxy down at the next login, rather than failing validation. Filters
+  now nest at most 32 levels, the same bound the BER decoder applies, so
+  a filter that would not survive its own encoding is refused where it
+  is written.
+- The web interface answered 500 for a log stream whose file did not
+  exist yet. That is the ordinary state right after an install, or for a
+  stream nothing has written to since the last rotation, and an operator
+  opening the log view saw a failure of the proxy where there was none.
+  A configured stream with no file is now an empty view; a stream that
+  is not configured is still refused.
+- The web interface could not answer 413 for an oversize configuration.
+  The documented ceiling is 8 MiB of text, but every request body went
+  through a 4 MiB reader first, so a document between the two limits was
+  refused as a malformed body rather than as an oversize one. The
+  configuration endpoints now read up to twice their own text ceiling,
+  so the size check is the one that answers.
+- A line in the users file with an empty hash was accepted. The user
+  existed, appeared in the list and could never log in, because an empty
+  hash verifies against nothing; a truncated line or a botched edit read
+  as a deliberate account. Such a line is now an error naming the file
+  and the line, with the `x509` spelling for a certificate-only user in
+  the message. `xproxy-admin user add` already refused it.
+- The terminal interface raced with itself. Each view is fetched by two
+  goroutines — one waiting, one calling — so that a slow view does not
+  hold the others; the waiting one gives up at the refresh deadline and
+  the calling one is left running. It then stored its answer into the
+  `Data` the fetch had already returned and the renderer was already
+  drawing, which is a write to a live map from a goroutine nobody is
+  waiting for. A management call slower than the refresh interval was
+  enough. The result is now marked as no longer ours once the fetch
+  returns, and a late answer is dropped.
+- The terminal interface filtered only its security log view. Every
+  other cell — a ban reason, a peer's node id and last error, a
+  certificate's subject, a WAF rule's message, an upstream address, the
+  error text of a subsystem that failed — was drawn as it arrived, so a
+  compromised cluster node or a hostile certificate could clear the
+  operator's screen, set the terminal title, repaint another row with a
+  carriage return or move the cursor. Every rendered line is now
+  filtered, keeping only the eight colour codes the renderer itself
+  emits; the worst a value can still do is colour a cell.
+- `bans.exempt_cidrs` did not release the bans it covers. The
+  exemption was consulted when a ban was placed and never afterwards,
+  so an operator who added the range for a monitoring probe, a partner
+  or their own office found the reload changed nothing — and neither
+  did a restart, because the state file restored the ban. Bans covered
+  by the exemptions are now dropped when the configuration is applied
+  and again after the state file is read, with a log line naming each.
+- `tracing.Tracer.StartServer`, `Span.Traceparent`, `Span.TraceIDString`
+  and `Span.SpanIDString` panicked on the nil value the rest of the
+  package uses to mean "tracing is off", and `Encode` dereferenced an
+  exporter a propagate-only tracer never builds. Every caller in the
+  proxy checks first, so none of this was reachable; they are nil-safe
+  now, like the other methods, so a future call site cannot make it so.
+- The GeoIP metadata reader turned a NaN into a number. NaN compares
+  false against both ends of a range check, so the guard let it through
+  and the conversion produced an implementation-defined value that then
+  became a node count, a record size or an index. The range check now
+  asks whether the number is a number first. No database in the wild
+  carries one, and the counts are re-validated afterwards, so this was
+  latent rather than reachable — but it is the same defect the JSON
+  Schema coercion was fixed for.
+- A bearer token with a trailing newline verified as the token itself.
+  Go's base64 decoder skips carriage returns and newlines, so
+  `<token>\n` and `<token>` were one credential with two spellings —
+  which the introspection cache, a revocation list and every log line
+  key on separately. A compact JWS is base64url and dots and nothing
+  else, and anything else is now refused before the token is parsed.
+- A `Host` header could carry two spellings of one name. Unicode's
+  simple lower-case mapping sends U+0130 (Turkish dotted capital I) to
+  ASCII `i` and U+212A (Kelvin sign) to ASCII `k`, and the ASCII check
+  ran after the fold, so `İnternal.test` folded into
+  `internal.test` and became its routing key while the upstream read
+  the name the client sent. The same held for anything after the last
+  colon: `example.com:https` and `example.com:` were stripped to
+  `example.com`. Both are now refused — non-ASCII is rejected before
+  folding, and only a numeric port may follow the name — which is the
+  rule the bracketed IPv6 form already enforced.
 - A JSON Schema `enum` that lists `null` refused `null`. The null check
   ran before the enum and had no way to consult it, so a schema that
   explicitly admits a null field rejected one. The null branch now asks
@@ -307,10 +542,39 @@ Open findings of the earlier rounds:
 ### Changed (1.4)
 
 - Troubleshooting moved out of `docs/USAGE.md` into a document of its
-  own, [`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md): a sixty-second
-  triage, a field guide to the access log line, a symptom index, a
-  section per subsystem, every deny reason with the component that
-  raises it, and what to collect for a bug report.
+  own, [`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md), and then grew to
+  about two and a half times its original size: forty-eight sections in
+  five parts.
+
+  New orientation material: what each `xproxyctl` command is for; **where
+  a request can die**, the thirty-three stages in the order the proxy
+  evaluates them with what each one can refuse (which is the answer to
+  "why has this counter not moved"); the **timeout ladder**, all eight
+  timeouts across three configuration sections in the order they fire;
+  how to prove the problem is not the proxy; and how to reproduce one
+  without affecting clients.
+
+  New subsystem sections: the three HTTP versions, WebSockets and
+  streaming, gRPC and gRPC-web, static files, virtual patches and the
+  positive policy, mirroring and shadowing, bot scoring, the API
+  inventory, origin lock, virtual security.txt, Kubernetes ingress mode,
+  clocks and expiry, misbehaving clients, capacity and sizing,
+  emergencies, upgrades and rollback, when to escalate, and a glossary.
+  The existing sections gained about a page each.
+
+  Five things the document said that were not true are fixed: there is
+  no `xproxyctl pools` command (it is all in `upstreams`), the cache is
+  purged with `cache purge HOST PREFIX` and not with flags,
+  `waf-exclusions` is `waf exclusions`, `spki` reads a certificate file
+  rather than a live address, and the access log has no `upstream_ms`
+  field — the upstream's share of a request comes from the trace or from
+  `xproxyctl upstreams`. The access log's `challenge_tier` and the
+  cache's `store` value did not exist either.
+
+  The deny reason table now says which reasons a `bans.triggers[]` entry
+  may name, and explains the three spellings one refusal has: the access
+  log's `denied`, the security log's `reason` plus `detail`, and the
+  folded ban category a trigger matches on.
 
 ### Security (1.3)
 

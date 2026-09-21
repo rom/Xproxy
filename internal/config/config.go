@@ -1871,6 +1871,15 @@ type SecurityTxt struct {
 	// HostRegex additionally matches the host against an RE2 expression,
 	// for a naming scheme a wildcard cannot express.
 	HostRegex string `yaml:"host_regex"`
+	// HostCIDRs match a request whose Host is an address literal rather
+	// than a name, against these networks: the parked addresses, a
+	// range a provider assigned, or "0.0.0.0/0" and "::/0" for every
+	// literal there is. This is the selector for the host a scanner
+	// reaches by address because no name points at it, which is exactly
+	// where a finder has nothing else to go on. A Host that is a name
+	// is never matched by it, whatever that name resolves to: the proxy
+	// does not resolve the Host header.
+	HostCIDRs []string `yaml:"host_cidrs"`
 	// ClientCIDRs restrict the entry to clients inside these networks, so
 	// an internal document can differ from the public one.
 	ClientCIDRs []string `yaml:"client_cidrs"`

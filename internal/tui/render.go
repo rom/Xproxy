@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/rom/xproxy/internal/sandbox"
 )
@@ -111,10 +112,56 @@ func Render(d Data, st State, sty Style) []string {
 		content = append(content, "")
 	}
 	for _, c := range content {
-		lines = append(lines, clip(c, w))
+		lines = append(lines, clip(sanitize(c, sty), w))
 	}
-	lines = append(lines, footer(st, sty, w), promptLine(st, sty, w))
+	lines = append(lines, sanitize(footer(st, sty, w), sty), sanitize(promptLine(st, sty, w), sty))
+	for i, l := range lines {
+		lines[i] = sanitize(l, sty)
+	}
 	return lines
+}
+
+// sanitize drops every rune a terminal acts on rather than shows,
+// keeping only the escape sequences this renderer's own style emits.
+//
+// Most of what these views draw arrived from somewhere else: a ban
+// reason, a peer's node id and its last error, a certificate's subject,
+// a WAF rule's message, an upstream address, the error text of a
+// subsystem that failed. A compromised node or a hostile certificate
+// could otherwise clear the operator's screen, set the terminal title,
+// repaint another row with a carriage return, or move the cursor. The
+// security log view has been filtered this way since it was written;
+// this extends it to every other cell.
+//
+// A value that happens to contain one of the eight style codes exactly
+// survives, so the worst an attacker can still do is colour a cell.
+func sanitize(line string, sty Style) string {
+	codes := [...]string{sty.Reset, sty.Bold, sty.Dim, sty.Red, sty.Green, sty.Yellow, sty.Cyan, sty.Inverse}
+	var b strings.Builder
+	b.Grow(len(line))
+	for i := 0; i < len(line); {
+		if c, ok := matchCode(line[i:], &codes); ok {
+			b.WriteString(c)
+			i += len(c)
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		if r == ' ' || unicode.IsPrint(r) {
+			b.WriteRune(r)
+		}
+		i += size
+	}
+	return b.String()
+}
+
+// matchCode returns the style code line starts with, if any.
+func matchCode(line string, codes *[8]string) (string, bool) {
+	for _, c := range codes {
+		if c != "" && strings.HasPrefix(line, c) {
+			return c, true
+		}
+	}
+	return "", false
 }
 
 func header(d Data, st State, sty Style, w int) string {

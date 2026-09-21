@@ -233,3 +233,132 @@ func TestFirstMatchWins(t *testing.T) {
 		t.Fatalf("%v", doc)
 	}
 }
+
+// An address literal in the Host header is the case a name-based
+// selector cannot reach: the parked address a scanner found in a range
+// scan, where a finder has no name to go on and most urgently needs
+// somewhere to report.
+func TestHostCIDRSelectsAddressLiterals(t *testing.T) {
+	s := build(t,
+		config.SecurityTxt{Name: "parked-v4", HostCIDRs: []string{"198.51.100.0/24"}, Contact: []string{"mailto:v4@example.com"}},
+		config.SecurityTxt{Name: "parked-v6", HostCIDRs: []string{"2001:db8:1::/48"}, Contact: []string{"mailto:v6@example.com"}},
+		config.SecurityTxt{Name: "named", Hosts: []string{"shop.example.com"}, Contact: []string{"mailto:s@example.com"}},
+		config.SecurityTxt{Name: "default", Contact: []string{"mailto:d@example.com"}},
+	)
+	client := netip.MustParseAddr("203.0.113.7")
+	for _, tc := range []struct{ host, want string }{
+		// Inside the range, at both ends of it.
+		{"198.51.100.0", "parked-v4"},
+		{"198.51.100.7", "parked-v4"},
+		{"198.51.100.255", "parked-v4"},
+		// Just outside, on either side.
+		{"198.51.99.255", "default"},
+		{"198.51.101.0", "default"},
+		// IPv6 arrives bracketed, as it travels in the header.
+		{"[2001:db8:1::1]", "parked-v6"},
+		{"[2001:db8:1:ffff::ffff]", "parked-v6"},
+		{"[2001:db8:2::1]", "default"},
+		// A mapped address is the IPv4 address it carries, so one
+		// prefix covers both spellings of the same host.
+		{"[::ffff:198.51.100.7]", "parked-v4"},
+		// A name is never an address, however it resolves: the proxy
+		// does not resolve the Host header, and a document that turned
+		// on what a name resolves to would answer on the client's word.
+		{"shop.example.com", "named"},
+		{"localhost", "default"},
+		{"198.51.100.7.example.com", "default"},
+		// Things that look like addresses and are not.
+		{"198.51.100", "default"},
+		{"198.51.100.256", "default"},
+		{"[not-an-address]", "default"},
+	} {
+		doc := s.Match(tc.host, client, "main")
+		name := "<none>"
+		if doc != nil {
+			name = doc.Name()
+		}
+		if name != tc.want {
+			t.Errorf("Host %q answered %s, want %s", tc.host, name, tc.want)
+		}
+	}
+}
+
+// "Every address there is" is two prefixes, which is the shape an
+// operator writes for a fleet whose addresses are not known in advance.
+func TestHostCIDRCanCoverEveryLiteral(t *testing.T) {
+	s := build(t,
+		config.SecurityTxt{Name: "by-address", HostCIDRs: []string{"0.0.0.0/0", "::/0"}, Contact: []string{"mailto:a@example.com"}},
+		config.SecurityTxt{Name: "by-name", Contact: []string{"mailto:n@example.com"}},
+	)
+	client := netip.MustParseAddr("203.0.113.7")
+	for _, host := range []string{"10.0.0.1", "198.51.100.7", "[2001:db8::1]", "[::1]", "127.0.0.1"} {
+		if doc := s.Match(host, client, "main"); doc == nil || doc.Name() != "by-address" {
+			t.Errorf("%q did not reach the address document", host)
+		}
+	}
+	// A name still falls through to the document that has no selectors.
+	if doc := s.Match("example.com", client, "main"); doc == nil || doc.Name() != "by-name" {
+		t.Error("a name reached the address document")
+	}
+}
+
+// The host selectors are a union, so one document can name the hosts it
+// knows and the range everything else in the estate sits in.
+func TestHostCIDRJoinsTheOtherHostSelectors(t *testing.T) {
+	s := build(t, config.SecurityTxt{
+		Name:      "estate",
+		Hosts:     []string{"shop.example.com", "*.corp.example.com"},
+		HostRegex: `^api[0-9]+\.example\.com$`,
+		HostCIDRs: []string{"198.51.100.0/24"},
+		Contact:   []string{"mailto:a@example.com"},
+	})
+	client := netip.MustParseAddr("203.0.113.7")
+	for _, host := range []string{"shop.example.com", "eu.corp.example.com", "api7.example.com", "198.51.100.9"} {
+		if s.Match(host, client, "main") == nil {
+			t.Errorf("%q matched no selector", host)
+		}
+	}
+	for _, host := range []string{"corp.example.com", "api.example.com", "198.51.101.9", "other.test"} {
+		if doc := s.Match(host, client, "main"); doc != nil {
+			t.Errorf("%q matched %s and should not have", host, doc.Name())
+		}
+	}
+}
+
+// A client network and a host range are different questions about one
+// request, and a document naming both needs both to hold.
+func TestHostCIDRAndClientCIDRAreSeparateTests(t *testing.T) {
+	s := build(t, config.SecurityTxt{
+		Name:        "internal-view-of-the-parked-range",
+		HostCIDRs:   []string{"198.51.100.0/24"},
+		ClientCIDRs: []string{"10.0.0.0/8"},
+		Contact:     []string{"mailto:a@example.com"},
+	})
+	inside, outside := netip.MustParseAddr("10.1.2.3"), netip.MustParseAddr("203.0.113.7")
+	if s.Match("198.51.100.7", inside, "main") == nil {
+		t.Error("the right host from the right client did not match")
+	}
+	if doc := s.Match("198.51.100.7", outside, "main"); doc != nil {
+		t.Error("the right host from the wrong client matched")
+	}
+	if doc := s.Match("example.com", inside, "main"); doc != nil {
+		t.Error("the wrong host from the right client matched")
+	}
+}
+
+func TestHostCIDRCompileErrors(t *testing.T) {
+	for _, cidr := range []string{"198.51.100.0", "198.51.100.0/33", "not-a-cidr", ""} {
+		if _, err := New([]config.SecurityTxt{{
+			Name: "bad", HostCIDRs: []string{cidr},
+			Contact: []string{"mailto:a@example.com"}, ValidFor: config.Duration(24 * time.Hour),
+		}}, epoch); err == nil {
+			t.Errorf("host_cidrs %q compiled", cidr)
+		}
+	}
+	// A prefix with host bits set is masked rather than refused, so
+	// 198.51.100.7/24 means the network it is in.
+	s := build(t, config.SecurityTxt{Name: "masked", HostCIDRs: []string{"198.51.100.7/24"}, Contact: []string{"mailto:a@example.com"}})
+	if s.Match("198.51.100.200", netip.MustParseAddr("203.0.113.1"), "main") == nil {
+		t.Error("a prefix with host bits set did not cover its network")
+	}
+}

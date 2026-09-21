@@ -3920,6 +3920,8 @@ T}
 .PP
 Translation: every \fBrules[].http.paths[]\fR entry becomes a route named \fBk8s\-<namespace>\-<ingress>\-<n>\fR with the rule\(aqs host, the path as a prefix (\fBpathType: Exact\fR gets priority 10 so it wins over a prefix of the same length; \fBImplementationSpecific\fR paths with wildcards are skipped with a warning), and an upstream \fBk8s\-<namespace>\-<service>\-<port>\fR whose endpoints are the ready addresses of the service\(aqs EndpointSlices on the port the service maps to (a service without ready endpoints gets an unreachable placeholder so the route answers 503 rather than disappearing). \fBdefaultBackend\fR becomes a hostless \fB/\fR route with priority \-100; only the first Ingress with one counts. Annotations with the prefix \fBxproxy.sysctl.se/\fR set route options: \fBwebsocket\fR (\fB"true"\fR), \fBpriority\-class\fR, \fBrate\-limits\fR and \fBfilters\fR (comma separated names from this file), \fBtimeout\fR, \fBmax\-body\-bytes\fR, \fBstrip\-prefix\fR (\fB"true"\fR strips the matched path), \fBhost\-header\fR. Names over 64 bytes are shortened with a digest.
 .PP
+What a tenant writes is checked before it becomes configuration: a rule\(aqs host must be a DNS name (a leading \fB*.\fR label allowed) and its path a plain prefix with no space or control character, a namespace and an Ingress name must be DNS labels, and a TLS secret must be of type \fBkubernetes.io/tls\fR and carry \fBtls.crt\fR and \fBtls.key\fR. Anything else is skipped with a warning in \fBGET /v1/ingress\fR and the log, so one namespace cannot put a value into the shared configuration that the other namespaces\(aq routes are matched, logged or counted against.
+.PP
 Gateway API: Gateways whose \fBgatewayClassName\fR is \fBclass\fR and the HTTPRoutes whose \fBparentRefs\fR name them translate as well. Route hostnames come from the HTTPRoute or, when it has none, from the parent listeners\(aq hostnames (wildcards allowed). Each rule and match becomes a route \fBk8s\-gw\-<namespace>\-<httproute>\-<rule>\-<match>\fR: \fBPathPrefix\fR and \fBExact\fR paths (priority 10 for exact), \fBRegularExpression\fR paths as \fBpath_regex\fR, a \fBmethod\fR match, and header matches of type \fBExact\fR and \fBRegularExpression\fR as \fBheaders\fR conditions (a match with an unknown header match type or a pattern that does not compile is skipped with a warning). Filters: \fBRequestHeaderModifier\fR and \fBResponseHeaderModifier\fR become header operations, \fBURLRewrite\fR with \fBReplaceFullPath\fR becomes \fBrewrite_path\fR, with \fBReplacePrefixMatch: /\fR \fBstrip_prefix\fR, and a \fBhostname\fR \fBhost_header\fR; \fBRequestRedirect\fR with a \fBhostname\fR becomes a redirect action (a redirect without a hostname is not supported). A rule with one backend uses that service; several \fBbackendRefs\fR become one \fBweighted\fR upstream over all their endpoints with the reference weights (weight 0 excluded). Listener \fBcertificateRefs\fR install the secrets like Ingress TLS. \fBGET /v1/ingress\fR and \fBxproxyctl ingress\fR show syncs, errors, watch streams and events, counts (Ingresses, Gateways, HTTPRoutes, routes, upstreams, certificates) and the translation warnings. \fBdeploy/kubernetes/xproxy.yaml\fR is a complete deployment with RBAC, an IngressClass and a ConfigMap; \fBdeploy/kubernetes/Containerfile\fR builds the image.
 .SH "metrics"
 .PP
@@ -4246,7 +4248,7 @@ list
 T}	T{
 \fB[]\fR
 T}	T{
-Never banned,\: by trigger or by operator
+Never banned,\: by trigger or by operator. Adding a range also releases the bans it covers,\: on the reload that adds it and on a restart that restores them from the state file
 T}
 T{
 \fBaction\fR
@@ -4862,12 +4864,14 @@ How long the client stays marked;\: at most 720h
 T}
 .TE
 .PP
-The built\-in decoys, each a plausible page for the thing a scanner is looking for and each containing nothing an operator would mind being read \[u2014] every credential, key and host name in them is visibly fake:
+The built\-in decoys, each a plausible page for the thing a scanner is looking for and each containing nothing an operator would mind being read \[u2014] every credential, key and host name in them is visibly fake, and a test refuses a decoy that hands out a password, a token or a key without a marker that says so:
+.PP
+\fBPHP and WordPress\fR
 .PP
 .TS
 allbox;
-lbw(1.4i) lbw(1.5i) lbx
-lw(1.4i) lw(1.5i) lx.
+lbw(1.1i) lbw(1.1i) lbx
+lw(1.1i) lw(1.1i) lx.
 T{
 Decoy
 T}	T{
@@ -4890,11 +4894,25 @@ T}	T{
 \fB/\:wp\-\:config.\:php\fR,\: \fB/\:wp\-\:config.\:php.\:bak\fR
 T}
 T{
+\fBwp\-\:users\fR
+T}	T{
+The \fBwp\-\:json\fR user list,\: which is how usernames leak
+T}	T{
+\fB/\:wp\-\:json/\:wp/\:v2/\:users\fR
+T}
+T{
 \fBphpmyadmin\fR
 T}	T{
 A phpMyAdmin login
 T}	T{
 \fB/\:phpmyadmin\fR,\: \fB/\:pma\fR
+T}
+T{
+\fBadminer\fR
+T}	T{
+An Adminer login,\: server and database prefilled
+T}	T{
+\fB/\:adminer.\:php\fR,\: \fB/\:adm.\:php\fR
 T}
 T{
 \fBphpinfo\fR
@@ -4903,68 +4921,27 @@ T}	T{
 T}	T{
 \fB/\:phpinfo.\:php\fR,\: \fB/\:info.\:php\fR
 T}
+.TE
+.PP
+\fBGeneric and leaked files\fR
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.5i) lbx
+lw(0.9i) lw(1.5i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
 T{
 \fBadmin\-\:login\fR
 T}	T{
 A generic administration login
 T}	T{
 \fB/\:admin\fR,\: \fB/\:administrator\fR
-T}
-T{
-\fBtomcat\-\:manager\fR
-T}	T{
-The Tomcat manager application listing
-T}	T{
-\fB/\:manager/\:html\fR
-T}
-T{
-\fBjenkins\fR
-T}	T{
-A Jenkins sign\-in page
-T}	T{
-\fB/\:jenkins\fR,\: \fB/\:login?from=\:%2F\fR
-T}
-T{
-\fBgrafana\fR
-T}	T{
-A Grafana bootstrap page
-T}	T{
-\fB/\:grafana\fR
-T}
-T{
-\fBactuator\fR
-T}	T{
-A Spring Boot actuator index,\: \fBheapdump\fR and all
-T}	T{
-\fB/\:actuator\fR
-T}
-T{
-\fBelasticsearch\fR
-T}	T{
-An Elasticsearch root document
-T}	T{
-\fB/\:_\:cluster/\:health\fR,\: \fB/\fR on port 9200
-T}
-T{
-\fBswagger\fR
-T}	T{
-An OpenAPI document naming tempting operations
-T}	T{
-\fB/\:swagger.\:json\fR,\: \fB/\:v2/\:api\-\:docs\fR
-T}
-T{
-\fBdebug\-\:vars\fR
-T}	T{
-Go \fBexpvar\fR output
-T}	T{
-\fB/\:debug/\:vars\fR
-T}
-T{
-\fBserver\-\:status\fR
-T}	T{
-Apache \fBmod_\:status\fR
-T}	T{
-\fB/\:server\-\:status\fR
 T}
 T{
 \fBenv\fR
@@ -4979,34 +4956,6 @@ T}	T{
 A \fB.\:git/\:config\fR with an internal remote
 T}	T{
 \fB/\:.\:git/\:config\fR
-T}
-T{
-\fBaws\-\:credentials\fR
-T}	T{
-An \fB~/\:.\:aws/\:credentials\fR
-T}	T{
-\fB/\:.\:aws/\:credentials\fR
-T}
-T{
-\fBssh\-\:key\fR
-T}	T{
-An OpenSSH private key block
-T}	T{
-\fB/\:.\:ssh/\:id_\:rsa\fR
-T}
-T{
-\fBkubeconfig\fR
-T}	T{
-A kubeconfig with a token
-T}	T{
-\fB/\:.\:kube/\:config\fR
-T}
-T{
-\fBdocker\-\:compose\fR
-T}	T{
-A compose file with database credentials
-T}	T{
-\fB/\:docker\-\:compose.\:yml\fR
 T}
 T{
 \fBhtpasswd\fR
@@ -5030,6 +4979,374 @@ T}	T{
 \fB/\:backups/\fR
 T}
 T{
+\fBlaravel\-\:log\fR
+T}	T{
+An application log with a stack trace and a password in it
+T}	T{
+\fB/\:storage/\:logs/\:laravel.\:log\fR
+T}
+T{
+\fBrobots\fR
+T}	T{
+A \fBrobots.\:txt\fR pointing at the paths above
+T}	T{
+\fB/\:robots.\:txt\fR
+T}
+.TE
+.PP
+\fBSecrets and build files\fR
+.PP
+The files a laptop or a build agent leaves in a deployment. Nothing links to them, so a request is never a browser.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.3i) lbx
+lw(1.2i) lw(1.3i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBaws\-\:credentials\fR
+T}	T{
+An \fB~/\:.\:aws/\:credentials\fR
+T}	T{
+\fB/\:.\:aws/\:credentials\fR
+T}
+T{
+\fBssh\-\:key\fR
+T}	T{
+An OpenSSH private key block (it decodes to a message saying so)
+T}	T{
+\fB/\:.\:ssh/\:id_\:rsa\fR
+T}
+T{
+\fBkubeconfig\fR
+T}	T{
+A kubeconfig with a token
+T}	T{
+\fB/\:.\:kube/\:config\fR
+T}
+T{
+\fBdocker\-\:compose\fR
+T}	T{
+A compose file with database credentials
+T}	T{
+\fB/\:docker\-\:compose.\:yml\fR
+T}
+T{
+\fBnpmrc\fR
+T}	T{
+An \fB.\:npmrc\fR with a registry auth token
+T}	T{
+\fB/\:.\:npmrc\fR
+T}
+T{
+\fBpypirc\fR
+T}	T{
+A \fB.\:pypirc\fR with an upload token
+T}	T{
+\fB/\:.\:pypirc\fR,\: \fB/\:.\:netrc\fR
+T}
+T{
+\fBgitlab\-\:ci\fR
+T}	T{
+A CI pipeline with a deploy token and a target host
+T}	T{
+\fB/\:.\:gitlab\-\:ci.\:yml\fR
+T}
+T{
+\fBterraform\-\:state\fR
+T}	T{
+A \fBterraform.\:tfstate\fR with sensitive outputs
+T}	T{
+\fB/\:terraform.\:tfstate\fR
+T}
+T{
+\fBvscode\-\:sftp\fR
+T}	T{
+An editor\(aqs SFTP profile with host,\: user and password
+T}	T{
+\fB/\:.\:vscode/\:sftp.\:json\fR
+T}
+T{
+\fBappsettings\fR
+T}	T{
+An ASP.NET \fBappsettings.\:json\fR with a connection string
+T}	T{
+\fB/\:appsettings.\:json\fR
+T}
+T{
+\fBdatabase\-\:yml\fR
+T}	T{
+A Rails \fBconfig/\:database.\:yml\fR
+T}	T{
+\fB/\:config/\:database.\:yml\fR
+T}
+T{
+\fBnginx\-\:config\fR
+T}	T{
+An \fBnginx.\:conf\fR with an internal location and a token
+T}	T{
+\fB/\:nginx.\:conf\fR
+T}
+.TE
+.PP
+\fBCloud and orchestration APIs\fR
+.PP
+A request for one of these on a public proxy is usually a server side request forgery probe rather than a path scan: the client is asking the proxy to fetch its own credentials. Mark these hard.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(1.6i) lbx
+lw(0.8i) lw(1.6i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBimds\fR
+T}	T{
+Instance metadata handing out role credentials
+T}	T{
+\fB/\:latest/\:meta\-\:data/\:iam/\:security\-\:credentials/\:\[u2026]\fR
+T}
+T{
+\fBconsul\fR
+T}	T{
+A Consul service catalogue
+T}	T{
+\fB/\:v1/\:catalog/\:services\fR
+T}
+T{
+\fBvault\fR
+T}	T{
+A Vault seal status
+T}	T{
+\fB/\:v1/\:sys/\:seal\-\:status\fR
+T}
+T{
+\fBdocker\-\:api\fR
+T}	T{
+The Docker daemon\(aqs container list
+T}	T{
+\fB/\:containers/\:json\fR
+T}
+T{
+\fBkubelet\fR
+T}	T{
+An unauthenticated kubelet\(aqs pod list,\: environment and all
+T}	T{
+\fB/\:pods\fR
+T}
+.TE
+.PP
+\fBData stores and dashboards\fR
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(1.4i) lbx
+lw(1.4i) lw(1.4i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBelasticsearch\fR
+T}	T{
+An Elasticsearch root document
+T}	T{
+\fB/\:_\:cluster/\:health\fR,\: \fB/\fR on port 9200
+T}
+T{
+\fBcouchdb\fR
+T}	T{
+A CouchDB database list
+T}	T{
+\fB/\:_\:all_\:dbs\fR
+T}
+T{
+\fBsolr\fR
+T}	T{
+A Solr core listing with document counts
+T}	T{
+\fB/\:solr/\:admin/\:cores\fR
+T}
+T{
+\fBrabbitmq\fR
+T}	T{
+A RabbitMQ management overview
+T}	T{
+\fB/\:api/\:overview\fR
+T}
+T{
+\fBkibana\fR
+T}	T{
+A Kibana bootstrap page
+T}	T{
+\fB/\:app/\:kibana\fR
+T}
+T{
+\fBgrafana\fR
+T}	T{
+A Grafana bootstrap page
+T}	T{
+\fB/\:grafana\fR
+T}
+T{
+\fBprometheus\-\:config\fR
+T}	T{
+A Prometheus scrape config carrying credentials
+T}	T{
+\fB/\:api/\:v1/\:status/\:config\fR
+T}
+T{
+\fBtraefik\fR
+T}	T{
+A Traefik router dump with a basic auth hash
+T}	T{
+\fB/\:api/\:rawdata\fR
+T}
+.TE
+.PP
+\fBApplication servers and internals\fR
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.4i) lbx
+lw(0.9i) lw(1.4i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBtomcat\-\:manager\fR
+T}	T{
+The Tomcat manager application listing
+T}	T{
+\fB/\:manager/\:html\fR
+T}
+T{
+\fBjenkins\fR
+T}	T{
+A Jenkins sign\-in page
+T}	T{
+\fB/\:jenkins\fR,\: \fB/\:login?from=\:%2F\fR
+T}
+T{
+\fBactuator\fR
+T}	T{
+A Spring Boot actuator index,\: \fBheapdump\fR and all
+T}	T{
+\fB/\:actuator\fR
+T}
+T{
+\fBswagger\fR
+T}	T{
+An OpenAPI document naming tempting operations
+T}	T{
+\fB/\:swagger.\:json\fR,\: \fB/\:v2/\:api\-\:docs\fR
+T}
+T{
+\fBgraphql\fR
+T}	T{
+An introspection reply naming an impersonate mutation
+T}	T{
+\fB/\:graphql\fR,\: \fB/\:graphiql\fR
+T}
+T{
+\fBdebug\-\:vars\fR
+T}	T{
+Go \fBexpvar\fR output
+T}	T{
+\fB/\:debug/\:vars\fR
+T}
+T{
+\fBserver\-\:status\fR
+T}	T{
+Apache \fBmod_\:status\fR
+T}	T{
+\fB/\:server\-\:status\fR
+T}
+T{
+\fBwebshell\fR
+T}	T{
+A web shell someone else supposedly left
+T}	T{
+\fB/\:shell.\:php\fR,\: \fB/\:up.\:php\fR,\: \fB/\:cmd.\:php\fR
+T}
+.TE
+.PP
+\fBEnterprise front doors\fR
+.PP
+The login pages a mass scanner fingerprints before it picks an exploit. Answering costs the scanner a round trip and tells the proxy which product it came shopping for.
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(1.3i) lbx
+lw(1.3i) lw(1.3i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBconfluence\fR
+T}	T{
+An Atlassian Confluence login
+T}	T{
+\fB/\:login.\:action\fR
+T}
+T{
+\fBgitlab\-\:login\fR
+T}	T{
+A GitLab sign\-in page
+T}	T{
+\fB/\:users/\:sign_\:in\fR
+T}
+T{
+\fBcitrix\fR
+T}	T{
+A Citrix Gateway logon page
+T}	T{
+\fB/\:vpn/\:index.\:html\fR,\: \fB/\:cgi/\:login\fR
+T}
+T{
+\fBfortinet\fR
+T}	T{
+A FortiGate SSL\-VPN login
+T}	T{
+\fB/\:remote/\:login\fR
+T}
+T{
+\fBesxi\fR
+T}	T{
+A VMware ESXi host client login
+T}	T{
+\fB/\:ui/\fR
+T}
+T{
+\fBexchange\-\:autodiscover\fR
+T}	T{
+An Exchange autodiscover reply naming internal hosts
+T}	T{
+\fB/\:autodiscover/\:autodiscover.\:xml\fR
+T}
+T{
 \fBidrac\fR
 T}	T{
 A server lights\-out controller login
@@ -5044,22 +5361,15 @@ T}	T{
 \fB/\:webmail\fR,\: \fB/\:roundcube\fR
 T}
 T{
-\fBwebshell\fR
+\fBcgi\-\:bin\fR
 T}	T{
-A web shell someone else supposedly left
+An embedded router or appliance CGI page
 T}	T{
-\fB/\:shell.\:php\fR,\: \fB/\:up.\:php\fR,\: \fB/\:cmd.\:php\fR
-T}
-T{
-\fBrobots\fR
-T}	T{
-A \fBrobots.\:txt\fR pointing at the paths above
-T}	T{
-\fB/\:robots.\:txt\fR
+\fB/\:cgi\-\:bin/\:mainfunction.\:cgi\fR,\: \fB/\:cgi\-\:bin/\:luci\fR
 T}
 .TE
 .PP
-\fBrobots\fR is the one to serve honestly: it names the decoy paths, so a crawler that reads it and then requests them has told you what it is. \fBexamples/security/honeypots.yaml\fR wires the whole table up.
+\fBrobots\fR is the one to serve honestly: it names the decoy paths, so a crawler that reads it and then requests them has told you what it is. \fBexamples/security/honeypots.yaml\fR wires the whole table up, one route per decoy with the paths each is worth serving on; a test fails if a decoy in the table has no route there. \fBxproxyctl honeypot\fR and \fBGET /v1/honeypot\fR both list the names this build carries, which is the authority when a configuration is refused for an unknown decoy.
 .PP
 \fBresponse_headers\fR apply, so a decoy can carry a \fBServer\fR header of its own. \fBGET /v1/honeypot\fR lists marked clients (address, route, hits, first, last, expires) and the decoy names; \fBDELETE /v1/honeypot?ip=\fR and \fBxproxyctl honeypot forget IP\fR remove a mark. The mark table holds at most 65536 addresses. Counters: \fBhoneypot_hits\fR, \fBhoneypot_marked\fR; metrics \fBxproxy_honeypot_hits_total\fR, \fBxproxy_honeypot_marked\fR.
 .SS "routes[].mirror"
@@ -5402,6 +5712,79 @@ A virtual \fBsecurity.txt\fR (RFC 9116): the document that tells a finder where 
 .PP
 Entries are tried in order and the first whose selectors all match answers, so an entry with no selectors placed last is the fallback for every other host. A request that matches no entry falls through to routing, so an origin already serving its own file keeps doing so.
 .PP
+\fBSelecting who sees which document.\fR An entry has two independent kinds of selector, and both must hold for it to answer:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBWhich host was asked for\fR \[u2014] \fBhosts\fR (exact names and \fB*.\fR wildcard patterns), \fBhost_regex\fR, and \fBhost_cidrs\fR for a \fBHost\fR that is an address literal rather than a name. These are a \fIunion\fR: an entry answers for a host any one of them names. An entry naming none of them answers for every host.
+.PP
+.ti -3n
+\(bu
+\fBWho is asking, and where\fR \[u2014] \fBclient_cidrs\fR (the client\(aqs own address) and \fBlisteners\fR. These \fInarrow\fR: an entry naming them answers only inside them.
+.RE
+.PP
+.PP
+That covers the whole range from one host to all of them:
+.PP
+.TS
+allbox;
+lbw(1.1i) lbx
+lw(1.1i) lx.
+T{
+You want
+T}	T{
+Write
+T}
+T{
+One host
+T}	T{
+\fBhosts:\: ["shop.\:example.\:com"]\fR
+T}
+T{
+A domain and everything under it
+T}	T{
+\fBhosts:\: ["example.\:com",\: "*.\:example.\:com"]\fR
+T}
+T{
+Several brands in one document
+T}	T{
+\fBhosts:\: ["a.\:example.\:com",\: "*.\:b.\:example.\:net"]\fR
+T}
+T{
+A naming scheme a wildcard cannot express
+T}	T{
+\fBhost_\:regex:\: \(aq^api[0\-\:9]+\e.\:example\e.\:com$\(aq\fR
+T}
+T{
+A range of addresses,\: for hosts reached by address
+T}	T{
+\fBhost_\:cidrs:\: ["198.\:51.\:100.\:0/\:24",\: "2001:\:db8:\:1:\::\:/\:48"]\fR
+T}
+T{
+Every address literal,\: whatever the range
+T}	T{
+\fBhost_\:cidrs:\: ["0.\:0.\:0.\:0/\:0",\: ":\::\:/\:0"]\fR
+T}
+T{
+Every host,\: name or address
+T}	T{
+no host selector at all
+T}
+T{
+A different document for internal clients
+T}	T{
+\fBclient_\:cidrs:\: ["10.\:0.\:0.\:0/\:8"]\fR on an earlier entry
+T}
+T{
+A different document on the management listener
+T}	T{
+\fBlisteners:\: [mgmt]\fR on an earlier entry
+T}
+.TE
+.PP
+\fBhost_cidrs\fR is the selector for a host a finder reached by address because no name points at it \[u2014] a parked address, a range a provider assigned, a machine found in a range scan. It matches the \fBHost\fR header read as an address, in either family and in either spelling (\fB::ffff:198.51.100.7\fR is the IPv4 address it carries), and it never matches a name: the proxy does not resolve the \fBHost\fR header, and a document that turned on what a name resolves to would be answering on the client\(aqs word.
+.PP
 .RS 4
 .nf
 .ft CR
@@ -5420,6 +5803,13 @@ security_txt:
     policy: ["https://example.com/vdp"]
     acknowledgments: ["https://example.com/hall\-of\-fame"]
     canonical: ["https://shop.example.com/.well\-known/security.txt"]
+  # The addresses themselves: a scanner that found the machine in a
+  # range scan has no name to go on, and is the finder most likely to
+  # need somewhere to report.
+  \- name: parked\-addresses
+    host_cidrs: ["198.51.100.0/24", "2001:db8:1::/48"]
+    contact: ["mailto:security@example.com"]
+    comment: "This address is not a service. Reports are still welcome."
   # Everything else, including parked names.
   \- name: default
     contact: ["mailto:security@example.com"]
@@ -5467,6 +5857,15 @@ T}	T{
 none
 T}	T{
 Matches the host as well,\: for a naming scheme a wildcard cannot express;\: at most 512 bytes
+T}
+T{
+\fBhost_\:cidrs\fR
+T}	T{
+list
+T}	T{
+none
+T}	T{
+Matches a \fBHost\fR that is an address literal,\: in either family;\: \fB0.\:0.\:0.\:0/\:0\fR and \fB:\::\:/\:0\fR together cover every literal. A \fBHost\fR that is a name never matches,\: whatever it resolves to
 T}
 T{
 \fBclient_\:cidrs\fR
@@ -6728,7 +7127,7 @@ filter
 T}	T{
 required for search
 T}	T{
-RFC 4515 filter with \fB%s\fR for the escaped username,\: e.g. \fB(sAMAccountName=\:%s)\fR;\: supports \fB&\fR,\: \fB|\fR,\: \fB!\fR,\: equality and presence
+RFC 4515 filter with \fB%s\fR for the escaped username,\: e.g. \fB(sAMAccountName=\:%s)\fR;\: supports \fB&\fR,\: \fB|\fR,\: \fB!\fR,\: equality and presence,\: nested at most 32 levels deep
 T}
 T{
 \fBrequire_\:group\fR
@@ -7676,7 +8075,7 @@ int
 T}	T{
 \fB1000\fR
 T}	T{
-Cap of one multiplier,\: and the value assumed for a variable
+Cap of one multiplier,\: and the value assumed for a variable. It bounds the cost model,\: not the page size: \fBfirst:\: 1000000\fR is scored as \fBmax_\:list\fR,\: because a client can move the number into a variable whose value this filter never sees. The page size itself belongs to the origin,\: or to an \fBopenapi\fR route policy
 T}
 .TE
 .SS "Kind \fBupload_guard\fR"

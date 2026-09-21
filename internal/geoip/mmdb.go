@@ -189,7 +189,11 @@ func toUint(v any) uint64 {
 		}
 		return uint64(x)
 	case float64:
-		if x < 0 || x > math.MaxUint32 {
+		// NaN compares false against both bounds, so a plain range
+		// check lets it through and the conversion then produces an
+		// implementation-defined number. Every caller here feeds the
+		// result into an index or a count.
+		if math.IsNaN(x) || x < 0 || x > math.MaxUint32 {
 			return 0
 		}
 		return uint64(x)

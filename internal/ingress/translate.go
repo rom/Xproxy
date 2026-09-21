@@ -127,6 +127,30 @@ func (r *endpointResolver) resolve(ns, svc string, port int, portName string) ([
 
 var labelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
+// hostRE is a DNS name, optionally with the leading wildcard label an
+// Ingress rule may carry. A rule's host becomes a route host in the
+// proxy's own configuration, and it is written by whoever can create an
+// Ingress in a namespace, so it is checked rather than trusted.
+var hostRE = regexp.MustCompile(`^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.?$`)
+
+// hostOK reports whether a rule's host can be a route host.
+func hostOK(h string) bool { return len(h) <= 253 && hostRE.MatchString(h) }
+
+// pathOK reports whether a rule's path can be a route path: a plain
+// prefix with nothing in it that a header, a log line or a routing key
+// would have to escape.
+func pathOK(p string) bool {
+	if !strings.HasPrefix(p, "/") || len(p) > 2048 {
+		return false
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f || r == ' ' {
+			return false
+		}
+	}
+	return true
+}
+
 // objName builds a configuration name from Kubernetes names; a name
 // over the 64 byte bound is shortened with a digest so it stays unique.
 func objName(parts ...string) string {
@@ -202,6 +226,14 @@ func Translate(in Input, class string) Snapshot {
 					warn(ing, "path %q is not a plain prefix (regular expressions are not supported)", path)
 					continue
 				}
+				if !pathOK(path) {
+					warn(ing, "path %q carries a space or a control character", path)
+					continue
+				}
+				if rule.Host != "" && !hostOK(strings.ToLower(rule.Host)) {
+					warn(ing, "host %q is not a DNS name", rule.Host)
+					continue
+				}
 				r := config.Route{Name: objName(ing.Metadata.Namespace, ing.Metadata.Name, strconv.Itoa(n)), Paths: []string{path}, Upstream: up}
 				n++
 				if rule.Host != "" {
@@ -231,6 +263,13 @@ func Translate(in Input, class string) Snapshot {
 			s, ok := in.Secrets[ing.Metadata.Namespace+"/"+t.SecretName]
 			if !ok || s == nil {
 				warn(ing, "tls secret %s not found", t.SecretName)
+				continue
+			}
+			if s.Type != "" && s.Type != "kubernetes.io/tls" {
+				// The Ingress API requires a kubernetes.io/tls secret;
+				// anything else is a secret that was not meant to be a
+				// certificate, and pointing at one should not publish it.
+				warn(ing, "tls secret %s is of type %s, not kubernetes.io/tls", t.SecretName, s.Type)
 				continue
 			}
 			crt, key := s.Data["tls.crt"], s.Data["tls.key"]

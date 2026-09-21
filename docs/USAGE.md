@@ -1840,6 +1840,79 @@ internal address or in front of `tls` with client certificates; a
 forward proxy reachable from the Internet without `auth` is an open
 relay.
 
+### Virtual security.txt
+
+A `security.txt` (RFC 9116) tells a finder where to report a
+vulnerability. It belongs to the organisation rather than to any one
+application, so putting a file on every origin means every team that
+owns an origin has to remember it — and the host that forgot is the one
+a finder tries. Here it is configuration, served by the proxy **before
+routing**, so a host with no route at all still answers.
+
+```yaml
+security_txt:
+  # Internal clients get the contact that reaches somebody today.
+  - name: internal
+    client_cidrs: ["10.0.0.0/8", "fd00::/8"]
+    contact: ["mailto:appsec@corp.internal"]
+    valid_for: 720h
+  # One brand.
+  - name: shop
+    hosts: ["shop.example.com", "*.shop.example.com"]
+    contact: ["https://example.com/vdp", "mailto:security@example.com"]
+    policy: ["https://example.com/vdp"]
+  # A naming scheme a wildcard cannot express.
+  - name: numbered-api
+    host_regex: '^api[0-9]{1,3}\.example\.com$'
+    contact: ["mailto:api-security@example.com"]
+  # The addresses themselves: a machine found in a range scan has no
+  # name for a finder to go on.
+  - name: parked-addresses
+    host_cidrs: ["198.51.100.0/24", "2001:db8:1::/48"]
+    contact: ["mailto:security@example.com"]
+  # Everything else, parked names included. No selectors, so it goes
+  # last and answers what the entries above did not.
+  - name: default
+    contact: ["mailto:security@example.com"]
+```
+
+Entries are tried in order and the first whose selectors *all* match
+answers. Selectors come in two kinds, and both must hold:
+
+- **Which host was asked for** — `hosts` (exact names and `*.`
+  wildcards), `host_regex`, and `host_cidrs` for a `Host` that is an
+  address literal rather than a name. These are a union: any one of
+  them naming the host is enough. An entry with none of them answers
+  for every host.
+- **Who is asking, and where** — `client_cidrs` and `listeners`. These
+  narrow: an entry naming them answers only inside them.
+
+So one host is `hosts: ["shop.example.com"]`, a group is a wildcard, a
+regular expression or a CIDR, and all of them is an entry with no host
+selector at all. `host_cidrs: ["0.0.0.0/0", "::/0"]` is every address
+literal there is, for an estate whose addresses are not known in
+advance; a `Host` that is a name never matches it, because the proxy
+does not resolve the `Host` header and a document that turned on what a
+name resolves to would be answering on the client's word.
+
+The document is rendered from the fields, with `Expires` required by
+the RFC: set it explicitly, or set `valid_for` and let every reload
+push it forward so it cannot quietly go stale. For a clear-signed
+document, `body_file` is served verbatim and re-read on reload — give
+that one an explicit `Expires` inside the signature, since `valid_for`
+cannot refresh what is signed.
+
+```sh
+curl -s http://localhost:8080/.well-known/security.txt
+curl -s -H 'Host: 198.51.100.7' http://localhost:8080/security.txt
+```
+
+A request that matches no entry is routed as usual, so an origin
+already serving its own file keeps doing so. Only `GET` and `HEAD` are
+answered; the `security_txt` counter records how many were served, and
+the access log names the entry that answered.
+`examples/security/security-txt.yaml` is the whole pattern.
+
 ### Honeypot routes and decoys
 
 ```yaml
@@ -1864,7 +1937,50 @@ on the spot; the security log records the request with reason
 `honeypot`. Clients that touched a honeypot stay marked for an hour by
 default: their later requests on every route carry
 `honeypot_marked: true` in the access log, and a `bot_score` filter can
-weigh the mark. `xproxyctl honeypot` lists the marks.
+weigh the mark. `xproxyctl honeypot` lists the marks and the decoy names
+this build carries.
+
+Fifty-six decoys ship built in, grouped in docs/CONFIG.md by what a
+scanner is after: PHP and WordPress, leaked files, the secrets a laptop
+or a build agent leaves behind (`.npmrc`, `.pypirc`, `.gitlab-ci.yml`,
+`terraform.tfstate`, `.vscode/sftp.json`, `appsettings.json`,
+`config/database.yml`), the cloud and orchestration APIs a server side
+request forgery probe asks for (`imds`, `consul`, `vault`, `docker-api`,
+`kubelet`), data stores and dashboards (`couchdb`, `solr`, `rabbitmq`,
+`kibana`, `prometheus-config`, `traefik`), and the enterprise front
+doors a mass scanner fingerprints before it picks an exploit
+(`confluence`, `gitlab-login`, `citrix`, `fortinet`, `esxi`,
+`exchange-autodiscover`, `cgi-bin`). Every credential, key and host name
+in them is visibly fake, and a test refuses a decoy that hands one out
+without a marker saying so.
+
+`examples/security/honeypots.yaml` wires up all of them — fifty-six
+routes and the ban ladder that turns a sweep into a ban — with the mark
+scaled to what the request means: an hour for a path a confused crawler
+might reach, six hours for a file that only a credential hunt asks for,
+a day for a metadata or orchestration probe.
+
+```yaml
+# The probes that are never a mistake: the client is asking this proxy
+# to fetch its own credentials.
+routes:
+  - name: hp-imds
+    paths:
+      - /latest/meta-data
+      - /latest/meta-data/iam/security-credentials
+      - /computeMetadata/v1
+      - /metadata/instance
+    honeypot: {decoy: imds, mark: 24h, delay: 5s}
+  - name: hp-kubelet
+    paths: [/pods, /runningpods, /metrics/cadvisor]
+    honeypot: {decoy: kubelet, mark: 24h, delay: 5s}
+```
+
+Two rules keep a honeypot from becoming an outage of its own. Never put
+one in front of a namespace a real application serves — if the origin
+answers `/admin`, do not shadow it here — and keep the catch-all route
+last, so every decoy path is the more specific match. The shipped
+example is checked for both.
 
 ### gRPC services
 
@@ -2619,7 +2735,11 @@ del` (or removing the line by hand, or from configuration management)
 ends their live sessions at their next request, and lowering a role takes
 their write access away at once. A users file that cannot be parsed keeps
 the previous set in force and is reported in the log, so a half-written
-file does not lock everyone out. Accounts from the identity provider are
+file does not lock everyone out. Each line is `name:role:hash`; the hash
+is either a `pbkdf2-sha256` string or the literal `x509` for a user who
+only logs in with a client certificate. An empty hash is a parse error
+rather than an account nobody can use, because it can only come from a
+truncated line or a botched edit. Accounts from the identity provider are
 not in the users file, and the provider's claims decide their role.
 
 Screens:
@@ -2920,7 +3040,25 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 ## Troubleshooting
 
 Every symptom, the log line that proves it and the fix live in
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md): a sixty-second triage, a field
-guide to the access log, a symptom index, a section per subsystem, the
-deny reasons with the component that raises each, and what to collect for
-a bug report.
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md), in five parts:
+
+- **Orientation** — a sixty-second triage, a field guide to the access
+  log line, a symptom index, what each `xproxyctl` command is for, the
+  ordered list of every stage a request can die at, the timeout ladder,
+  how to prove the problem is not the proxy, and how to reproduce one
+  without affecting clients.
+- **The proxy itself** — start-up, reload, routing, TLS, upstreams, the
+  three HTTP versions, WebSockets and streaming, gRPC, static files,
+  cache and compression.
+- **Protection** — rate limits, bans, shedding and tarpits, the WAF,
+  virtual patches and the positive policy, authentication, the challenge
+  and CAPTCHA, filters, bot scoring, origin lock and security.txt.
+- **Beyond one proxy** — cluster, DNS listener, forward proxy and layer
+  4, mirroring and shadowing, the API inventory, Kubernetes ingress
+  mode, fleet.
+- **Operations and reference** — the management socket and GUI, logs and
+  telemetry, the sandbox, performance, capacity, clocks, misbehaving
+  clients, emergency procedures, upgrades, the bounded tables, every
+  deny reason with the component that raises it and whether a ban
+  trigger may name it, when to escalate, a glossary, and what to collect
+  for a bug report.

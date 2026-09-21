@@ -969,6 +969,15 @@ separated names from this file), `timeout`, `max-body-bytes`,
 `strip-prefix` (`"true"` strips the matched path), `host-header`.
 Names over 64 bytes are shortened with a digest.
 
+What a tenant writes is checked before it becomes configuration: a
+rule's host must be a DNS name (a leading `*.` label allowed) and its
+path a plain prefix with no space or control character, a namespace and
+an Ingress name must be DNS labels, and a TLS secret must be of type
+`kubernetes.io/tls` and carry `tls.crt` and `tls.key`. Anything else is
+skipped with a warning in `GET /v1/ingress` and the log, so one
+namespace cannot put a value into the shared configuration that the
+other namespaces' routes are matched, logged or counted against.
+
 Gateway API: Gateways whose `gatewayClassName` is `class` and the
 HTTPRoutes whose `parentRefs` name them translate as well. Route
 hostnames come from the HTTPRoute or, when it has none, from the
@@ -1119,7 +1128,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 |-----|------|---------|-------------|
 | `state_file` | path | `""` (memory only) | bbolt file that persists bans across restarts |
 | `max_entries` | int | `100000` | Bound on banned addresses; the soonest expiring are evicted when full |
-| `exempt_cidrs` | list | `[]` | Never banned, by trigger or by operator |
+| `exempt_cidrs` | list | `[]` | Never banned, by trigger or by operator. Adding a range also releases the bans it covers, on the reload that adds it and on a restart that restores them from the state file |
 | `action` | `drop`, `reject` | `drop` | Close at accept, or answer 403 only |
 | `triggers` | list | `[]` | Automatic bans; see below |
 
@@ -1268,40 +1277,119 @@ Nothing is proxied. Put honeypots on paths no legitimate client uses.
 
 The built-in decoys, each a plausible page for the thing a scanner is
 looking for and each containing nothing an operator would mind being
-read — every credential, key and host name in them is visibly fake:
+read — every credential, key and host name in them is visibly fake, and
+a test refuses a decoy that hands out a password, a token or a key
+without a marker that says so:
+
+**PHP and WordPress**
 
 | Decoy | Looks like | Typical bait path |
 |-------|-----------|-------------------|
 | `wp-login` | A WordPress login page | `/wp-login.php` |
 | `wp-config` | `wp-config.php` served as text | `/wp-config.php`, `/wp-config.php.bak` |
+| `wp-users` | The `wp-json` user list, which is how usernames leak | `/wp-json/wp/v2/users` |
 | `phpmyadmin` | A phpMyAdmin login | `/phpmyadmin`, `/pma` |
+| `adminer` | An Adminer login, server and database prefilled | `/adminer.php`, `/adm.php` |
 | `phpinfo` | `phpinfo()` output | `/phpinfo.php`, `/info.php` |
+
+**Generic and leaked files**
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
 | `admin-login` | A generic administration login | `/admin`, `/administrator` |
-| `tomcat-manager` | The Tomcat manager application listing | `/manager/html` |
-| `jenkins` | A Jenkins sign-in page | `/jenkins`, `/login?from=%2F` |
-| `grafana` | A Grafana bootstrap page | `/grafana` |
-| `actuator` | A Spring Boot actuator index, `heapdump` and all | `/actuator` |
-| `elasticsearch` | An Elasticsearch root document | `/_cluster/health`, `/` on port 9200 |
-| `swagger` | An OpenAPI document naming tempting operations | `/swagger.json`, `/v2/api-docs` |
-| `debug-vars` | Go `expvar` output | `/debug/vars` |
-| `server-status` | Apache `mod_status` | `/server-status` |
 | `env` | A Laravel `.env` | `/.env`, `/.env.production` |
 | `git-config` | A `.git/config` with an internal remote | `/.git/config` |
-| `aws-credentials` | An `~/.aws/credentials` | `/.aws/credentials` |
-| `ssh-key` | An OpenSSH private key block | `/.ssh/id_rsa` |
-| `kubeconfig` | A kubeconfig with a token | `/.kube/config` |
-| `docker-compose` | A compose file with database credentials | `/docker-compose.yml` |
 | `htpasswd` | An `.htpasswd` | `/.htpasswd` |
 | `backup-sql` | A MySQL dump with a users table | `/backup.sql`, `/dump.sql` |
 | `s3-listing` | An S3 bucket listing of nightly backups | `/backups/` |
+| `laravel-log` | An application log with a stack trace and a password in it | `/storage/logs/laravel.log` |
+| `robots` | A `robots.txt` pointing at the paths above | `/robots.txt` |
+
+**Secrets and build files**
+
+The files a laptop or a build agent leaves in a deployment. Nothing
+links to them, so a request is never a browser.
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `aws-credentials` | An `~/.aws/credentials` | `/.aws/credentials` |
+| `ssh-key` | An OpenSSH private key block (it decodes to a message saying so) | `/.ssh/id_rsa` |
+| `kubeconfig` | A kubeconfig with a token | `/.kube/config` |
+| `docker-compose` | A compose file with database credentials | `/docker-compose.yml` |
+| `npmrc` | An `.npmrc` with a registry auth token | `/.npmrc` |
+| `pypirc` | A `.pypirc` with an upload token | `/.pypirc`, `/.netrc` |
+| `gitlab-ci` | A CI pipeline with a deploy token and a target host | `/.gitlab-ci.yml` |
+| `terraform-state` | A `terraform.tfstate` with sensitive outputs | `/terraform.tfstate` |
+| `vscode-sftp` | An editor's SFTP profile with host, user and password | `/.vscode/sftp.json` |
+| `appsettings` | An ASP.NET `appsettings.json` with a connection string | `/appsettings.json` |
+| `database-yml` | A Rails `config/database.yml` | `/config/database.yml` |
+| `nginx-config` | An `nginx.conf` with an internal location and a token | `/nginx.conf` |
+
+**Cloud and orchestration APIs**
+
+A request for one of these on a public proxy is usually a server side
+request forgery probe rather than a path scan: the client is asking the
+proxy to fetch its own credentials. Mark these hard.
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `imds` | Instance metadata handing out role credentials | `/latest/meta-data/iam/security-credentials/…` |
+| `consul` | A Consul service catalogue | `/v1/catalog/services` |
+| `vault` | A Vault seal status | `/v1/sys/seal-status` |
+| `docker-api` | The Docker daemon's container list | `/containers/json` |
+| `kubelet` | An unauthenticated kubelet's pod list, environment and all | `/pods` |
+
+**Data stores and dashboards**
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `elasticsearch` | An Elasticsearch root document | `/_cluster/health`, `/` on port 9200 |
+| `couchdb` | A CouchDB database list | `/_all_dbs` |
+| `solr` | A Solr core listing with document counts | `/solr/admin/cores` |
+| `rabbitmq` | A RabbitMQ management overview | `/api/overview` |
+| `kibana` | A Kibana bootstrap page | `/app/kibana` |
+| `grafana` | A Grafana bootstrap page | `/grafana` |
+| `prometheus-config` | A Prometheus scrape config carrying credentials | `/api/v1/status/config` |
+| `traefik` | A Traefik router dump with a basic auth hash | `/api/rawdata` |
+
+**Application servers and internals**
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `tomcat-manager` | The Tomcat manager application listing | `/manager/html` |
+| `jenkins` | A Jenkins sign-in page | `/jenkins`, `/login?from=%2F` |
+| `actuator` | A Spring Boot actuator index, `heapdump` and all | `/actuator` |
+| `swagger` | An OpenAPI document naming tempting operations | `/swagger.json`, `/v2/api-docs` |
+| `graphql` | An introspection reply naming an impersonate mutation | `/graphql`, `/graphiql` |
+| `debug-vars` | Go `expvar` output | `/debug/vars` |
+| `server-status` | Apache `mod_status` | `/server-status` |
+| `webshell` | A web shell someone else supposedly left | `/shell.php`, `/up.php`, `/cmd.php` |
+
+**Enterprise front doors**
+
+The login pages a mass scanner fingerprints before it picks an exploit.
+Answering costs the scanner a round trip and tells the proxy which
+product it came shopping for.
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `confluence` | An Atlassian Confluence login | `/login.action` |
+| `gitlab-login` | A GitLab sign-in page | `/users/sign_in` |
+| `citrix` | A Citrix Gateway logon page | `/vpn/index.html`, `/cgi/login` |
+| `fortinet` | A FortiGate SSL-VPN login | `/remote/login` |
+| `esxi` | A VMware ESXi host client login | `/ui/` |
+| `exchange-autodiscover` | An Exchange autodiscover reply naming internal hosts | `/autodiscover/autodiscover.xml` |
 | `idrac` | A server lights-out controller login | `/login.html` on a management name |
 | `webmail` | A webmail login | `/webmail`, `/roundcube` |
-| `webshell` | A web shell someone else supposedly left | `/shell.php`, `/up.php`, `/cmd.php` |
-| `robots` | A `robots.txt` pointing at the paths above | `/robots.txt` |
+| `cgi-bin` | An embedded router or appliance CGI page | `/cgi-bin/mainfunction.cgi`, `/cgi-bin/luci` |
 
 `robots` is the one to serve honestly: it names the decoy paths, so a
 crawler that reads it and then requests them has told you what it is.
-`examples/security/honeypots.yaml` wires the whole table up.
+`examples/security/honeypots.yaml` wires the whole table up, one route
+per decoy with the paths each is worth serving on; a test fails if a
+decoy in the table has no route there. `xproxyctl honeypot` and
+`GET /v1/honeypot` both list the names this build carries, which is the
+authority when a configuration is refused for an unknown decoy.
 
 `response_headers` apply, so a decoy can carry a `Server` header of its
 own. `GET /v1/honeypot` lists marked clients (address, route, hits,
@@ -1471,6 +1559,41 @@ answers, so an entry with no selectors placed last is the fallback for
 every other host. A request that matches no entry falls through to
 routing, so an origin already serving its own file keeps doing so.
 
+**Selecting who sees which document.** An entry has two independent
+kinds of selector, and both must hold for it to answer:
+
+- **Which host was asked for** — `hosts` (exact names and `*.` wildcard
+  patterns), `host_regex`, and `host_cidrs` for a `Host` that is an
+  address literal rather than a name. These are a *union*: an entry
+  answers for a host any one of them names. An entry naming none of
+  them answers for every host.
+- **Who is asking, and where** — `client_cidrs` (the client's own
+  address) and `listeners`. These *narrow*: an entry naming them answers
+  only inside them.
+
+That covers the whole range from one host to all of them:
+
+| You want | Write |
+|----------|-------|
+| One host | `hosts: ["shop.example.com"]` |
+| A domain and everything under it | `hosts: ["example.com", "*.example.com"]` |
+| Several brands in one document | `hosts: ["a.example.com", "*.b.example.net"]` |
+| A naming scheme a wildcard cannot express | `host_regex: '^api[0-9]+\.example\.com$'` |
+| A range of addresses, for hosts reached by address | `host_cidrs: ["198.51.100.0/24", "2001:db8:1::/48"]` |
+| Every address literal, whatever the range | `host_cidrs: ["0.0.0.0/0", "::/0"]` |
+| Every host, name or address | no host selector at all |
+| A different document for internal clients | `client_cidrs: ["10.0.0.0/8"]` on an earlier entry |
+| A different document on the management listener | `listeners: [mgmt]` on an earlier entry |
+
+`host_cidrs` is the selector for a host a finder reached by address
+because no name points at it — a parked address, a range a provider
+assigned, a machine found in a range scan. It matches the `Host` header
+read as an address, in either family and in either spelling
+(`::ffff:198.51.100.7` is the IPv4 address it carries), and it never
+matches a name: the proxy does not resolve the `Host` header, and a
+document that turned on what a name resolves to would be answering on
+the client's word.
+
 ```yaml
 security_txt:
   # Internal clients get the internal contact.
@@ -1487,6 +1610,13 @@ security_txt:
     policy: ["https://example.com/vdp"]
     acknowledgments: ["https://example.com/hall-of-fame"]
     canonical: ["https://shop.example.com/.well-known/security.txt"]
+  # The addresses themselves: a scanner that found the machine in a
+  # range scan has no name to go on, and is the finder most likely to
+  # need somewhere to report.
+  - name: parked-addresses
+    host_cidrs: ["198.51.100.0/24", "2001:db8:1::/48"]
+    contact: ["mailto:security@example.com"]
+    comment: "This address is not a service. Reports are still welcome."
   # Everything else, including parked names.
   - name: default
     contact: ["mailto:security@example.com"]
@@ -1498,6 +1628,7 @@ security_txt:
 | `name` | string | `security_txt[i]` | Names the entry in `xproxyctl stats`, the access log and the security log |
 | `hosts` | list | any host | Exact names or wildcard patterns (`*.example.com`, which matches a label or more and not the bare name) |
 | `host_regex` | RE2 | none | Matches the host as well, for a naming scheme a wildcard cannot express; at most 512 bytes |
+| `host_cidrs` | list | none | Matches a `Host` that is an address literal, in either family; `0.0.0.0/0` and `::/0` together cover every literal. A `Host` that is a name never matches, whatever it resolves to |
 | `client_cidrs` | list | any client | Only clients inside these networks see this entry, so an internal document can differ from the public one |
 | `listeners` | list | any listener | Only these listener names serve this entry |
 | `contact` | list | required | How to report, most preferred first: `mailto:`, `tel:` or `https:`. RFC 9116 requires at least one, and a `security.txt` with no way to report is worse than none |
@@ -1800,7 +1931,7 @@ error is never cached and denies the request.
 | `bind_dn` | DN | | Search bind: service account DN to bind before searching (anonymous search when empty) |
 | `bind_password_file` | path | required with `bind_dn` | Service account password; trailing newline trimmed; must exist and not be world readable |
 | `base_dn` | DN | required for search | Search base |
-| `user_filter` | filter | required for search | RFC 4515 filter with `%s` for the escaped username, e.g. `(sAMAccountName=%s)`; supports `&`, `|`, `!`, equality and presence |
+| `user_filter` | filter | required for search | RFC 4515 filter with `%s` for the escaped username, e.g. `(sAMAccountName=%s)`; supports `&`, `|`, `!`, equality and presence, nested at most 32 levels deep |
 | `require_group` | DN | none | Require this DN among the user's `group_attr` values (search mode only) |
 | `group_attr` | attribute | `memberOf` | Attribute read from the user entry for `require_group` |
 | `realm` | string | `restricted` | `WWW-Authenticate` realm |
@@ -2070,7 +2201,7 @@ introspection. Nothing is executed or forwarded to a schema. Denials are
 | `max_query_bytes` | int | `65536` | Query text and body size (256 to 16 MiB) |
 | `introspection` | bool | `true` | `false` refuses `__schema` and `__type` |
 | `list_args` | list | `[first, last, limit]` | Arguments whose integer value multiplies the cost of the fields below |
-| `max_list` | int | `1000` | Cap of one multiplier, and the value assumed for a variable |
+| `max_list` | int | `1000` | Cap of one multiplier, and the value assumed for a variable. It bounds the cost model, not the page size: `first: 1000000` is scored as `max_list`, because a client can move the number into a variable whose value this filter never sees. The page size itself belongs to the origin, or to an `openapi` route policy |
 
 ### Kind `upload_guard`
 

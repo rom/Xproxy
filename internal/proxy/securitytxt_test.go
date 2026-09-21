@@ -173,3 +173,72 @@ routes:
 		t.Fatalf("after the reload: %q", got)
 	}
 }
+
+// A request whose Host is an address literal is the case a name-based
+// selector cannot reach: a scanner that found the address in a range
+// scan, with no name to go on. The whole path is exercised here — the
+// Host header normalisation, the selector and the served document —
+// because the bracketed IPv6 spelling only exists on the wire.
+func TestSecurityTxtByHostAddress(t *testing.T) {
+	backend := newBackend(t, "a")
+	_, url := startServer(t, fmt.Sprintf(`
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+logging: {access: {enabled: false}}
+security_txt:
+  - name: parked
+    host_cidrs: ["198.51.100.0/24", "2001:db8:1::/48"]
+    contact: ["mailto:noc@example.com"]
+    comment: "This address is not a service."
+  - name: shop
+    hosts: ["shop.test"]
+    contact: ["https://example.com/vdp"]
+upstreams:
+  - name: a
+    endpoints: [{address: "%s"}]
+routes:
+  - name: app
+    paths: [/]
+    upstream: a
+`, backend.addr()))
+
+	get := func(host string) (*http.Response, string) {
+		t.Helper()
+		req, err := http.NewRequest("GET", url+"/.well-known/security.txt", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = host
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return resp, string(b)
+	}
+
+	// Inside the ranges, in both families and with a port, which is what
+	// a client actually sends.
+	for _, host := range []string{
+		"198.51.100.7", "198.51.100.7:443", "[2001:db8:1::9]", "[2001:db8:1::9]:8443",
+	} {
+		resp, body := get(host)
+		if resp.StatusCode != 200 || !strings.Contains(body, "mailto:noc@example.com") {
+			t.Errorf("Host %q: %d\n%s", host, resp.StatusCode, body)
+		}
+	}
+	// Outside them, and for a name, there is no document at all here, so
+	// the request is routed like any other.
+	for _, host := range []string{"198.51.101.7", "[2001:db8:2::9]", "other.test"} {
+		resp, body := get(host)
+		if resp.StatusCode != 200 || strings.Contains(body, "Contact:") {
+			t.Errorf("Host %q reached a document: %d\n%s", host, resp.StatusCode, body)
+		}
+	}
+	// A named host still reaches its own document.
+	if _, body := get("shop.test"); !strings.Contains(body, "https://example.com/vdp") {
+		t.Errorf("shop.test:\n%s", body)
+	}
+}

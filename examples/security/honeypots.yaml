@@ -97,7 +97,7 @@ routes:
 
   # ---- Management interfaces ---------------------------------------
   - name: hp-admin
-    paths: [/admin, /administrator, /admin.php, /adminer.php]
+    paths: [/admin, /administrator, /admin.php, /admin/login]
     honeypot: {decoy: admin-login, mark: 1h, delay: 2s}
   - name: hp-tomcat
     paths: [/manager/html, /manager/status, /host-manager/html]
@@ -131,6 +131,117 @@ routes:
   - name: hp-status
     paths: [/server-status, /server-info, /nginx_status, /status]
     honeypot: {decoy: server-status, mark: 1h}
+
+  # ---- Developer leftovers ------------------------------------------
+  # The files a laptop or a build agent leaves in a deployment. A
+  # request for one of them is never a browser: nothing links to them.
+  - name: hp-npmrc
+    paths: [/.npmrc, /.yarnrc, /.yarnrc.yml]
+    honeypot: {decoy: npmrc, mark: 6h, delay: 2s}
+  - name: hp-pypirc
+    paths: [/.pypirc, /.netrc, /.pip/pip.conf]
+    honeypot: {decoy: pypirc, mark: 6h, delay: 2s}
+  - name: hp-gitlab-ci
+    paths: [/.gitlab-ci.yml, /.travis.yml, /.circleci/config.yml, /bitbucket-pipelines.yml]
+    honeypot: {decoy: gitlab-ci, mark: 1h}
+  - name: hp-terraform
+    paths: [/terraform.tfstate, /terraform.tfstate.backup, /.terraform/terraform.tfstate]
+    honeypot: {decoy: terraform-state, mark: 6h, delay: 3s}
+  - name: hp-sftp-json
+    paths: [/.vscode/sftp.json, /sftp-config.json, /.ftpconfig]
+    honeypot: {decoy: vscode-sftp, mark: 6h, delay: 2s}
+  - name: hp-appsettings
+    paths: [/appsettings.json, /appsettings.Production.json, /web.config]
+    honeypot: {decoy: appsettings, mark: 6h, delay: 2s}
+  - name: hp-rails
+    paths: [/config/database.yml, /config/secrets.yml, /config/master.key]
+    honeypot: {decoy: database-yml, mark: 6h, delay: 2s}
+  - name: hp-nginx-conf
+    paths: [/nginx.conf, /etc/nginx/nginx.conf, /conf/nginx.conf]
+    honeypot: {decoy: nginx-config, mark: 1h}
+
+  # ---- Metadata and orchestration APIs ------------------------------
+  # These paths are server side request forgery probes: the client is
+  # asking this proxy to fetch its own credentials. Mark hard.
+  - name: hp-imds
+    paths:
+      - /latest/meta-data
+      - /latest/meta-data/iam/security-credentials
+      - /computeMetadata/v1
+      - /metadata/instance
+    honeypot: {decoy: imds, mark: 24h, delay: 5s}
+  - name: hp-consul
+    paths: [/v1/catalog/services, /v1/agent/self, /v1/kv]
+    honeypot: {decoy: consul, mark: 6h, delay: 2s}
+  - name: hp-vault
+    paths: [/v1/sys/seal-status, /v1/sys/health, /v1/secret]
+    honeypot: {decoy: vault, mark: 6h, delay: 2s}
+  - name: hp-docker-api
+    paths: [/containers/json, /v1.41/containers/json, /images/json, /info]
+    honeypot: {decoy: docker-api, mark: 24h, delay: 5s}
+  - name: hp-kubelet
+    paths: [/pods, /runningpods, /metrics/cadvisor]
+    honeypot: {decoy: kubelet, mark: 24h, delay: 5s}
+
+  # ---- Data stores and dashboards -----------------------------------
+  - name: hp-couchdb
+    paths: [/_all_dbs, /_utils, /_membership]
+    honeypot: {decoy: couchdb, mark: 6h}
+  - name: hp-solr
+    paths: [/solr, /solr/admin/cores, /solr/admin/info/system]
+    honeypot: {decoy: solr, mark: 6h}
+  - name: hp-rabbitmq
+    paths: [/api/overview, /rabbitmq, /api/vhosts]
+    honeypot: {decoy: rabbitmq, mark: 6h}
+  - name: hp-kibana
+    paths: [/app/kibana, /kibana, /app/home]
+    honeypot: {decoy: kibana, mark: 1h}
+  - name: hp-prometheus
+    paths: [/api/v1/status/config, /api/v1/targets, /prometheus]
+    honeypot: {decoy: prometheus-config, mark: 6h, delay: 2s}
+  - name: hp-traefik
+    paths: [/api/rawdata, /api/http/routers, /dashboard/]
+    honeypot: {decoy: traefik, mark: 6h}
+
+  # ---- Enterprise front doors ---------------------------------------
+  # The login pages a mass scanner fingerprints before it picks an
+  # exploit. Answering costs the scanner a round trip and tells this
+  # proxy exactly which product it came shopping for.
+  - name: hp-confluence
+    paths: [/login.action, /confluence, /wiki/login.action, /pages/doenterpagevariables.action]
+    honeypot: {decoy: confluence, mark: 6h, delay: 2s}
+  - name: hp-gitlab
+    paths: [/users/sign_in, /gitlab, /explore]
+    honeypot: {decoy: gitlab-login, mark: 1h}
+  - name: hp-citrix
+    paths: [/vpn/index.html, /cgi/login, /citrix, /logon/LogonPoint/index.html]
+    honeypot: {decoy: citrix, mark: 24h, delay: 3s}
+  - name: hp-fortinet
+    paths: [/remote/login, /remote/fgt_lang, /sslvpn]
+    honeypot: {decoy: fortinet, mark: 24h, delay: 3s}
+  - name: hp-esxi
+    paths: [/ui/, /sdk, /folder]
+    honeypot: {decoy: esxi, mark: 24h, delay: 3s}
+  - name: hp-exchange
+    paths: [/autodiscover/autodiscover.xml, /ecp/, /powershell]
+    honeypot: {decoy: exchange-autodiscover, mark: 24h, delay: 3s}
+  - name: hp-cgi
+    paths: [/cgi-bin/mainfunction.cgi, /cgi-bin/luci, /cgi-bin/test.cgi, /boaform/admin/formLogin]
+    honeypot: {decoy: cgi-bin, mark: 24h, delay: 5s}
+
+  # ---- Application internals ----------------------------------------
+  - name: hp-wp-users
+    paths: [/wp-json/wp/v2/users, /wp-json/wp/v2/pages, /author/]
+    honeypot: {decoy: wp-users, mark: 1h}
+  - name: hp-graphql
+    paths: [/graphql, /graphiql, /v1/graphql, /api/graphql]
+    honeypot: {decoy: graphql, mark: 1h, delay: 2s}
+  - name: hp-laravel-log
+    paths: [/storage/logs/laravel.log, /logs/laravel.log, /log/production.log]
+    honeypot: {decoy: laravel-log, mark: 6h, delay: 2s}
+  - name: hp-adminer
+    paths: [/adminer, /adminer.php, /adm.php, /db.php]
+    honeypot: {decoy: adminer, mark: 1h, delay: 2s}
 
   # ---- Shells somebody else supposedly left -------------------------
   # A request for one of these is a scanner looking for another

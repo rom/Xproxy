@@ -147,6 +147,12 @@ func (t *Tracer) Status() Status {
 // traceparent is continued (its sampled flag honoured) or a new trace
 // started, sampled by percent.
 func (t *Tracer) StartServer(r *http.Request, name string) *Span {
+	// A nil tracer is how this package spells "tracing is off", and
+	// every other method already takes one; a nil span is inert in the
+	// same way, so a caller that skipped the check still works.
+	if t == nil {
+		return nil
+	}
 	s := &Span{Name: name, Kind: 2, Start: time.Now(), tracer: t}
 	t.started.Add(1)
 	if tp := r.Header.Get("Traceparent"); tp != "" {
@@ -191,7 +197,12 @@ func (parent *Span) Child(name string) *Span {
 }
 
 // Traceparent renders the header value that names this span as parent.
+// A nil span has no trace to name, so it renders as nothing and the
+// header is simply not sent.
 func (s *Span) Traceparent() string {
+	if s == nil {
+		return ""
+	}
 	flags := "00"
 	if s.Sampled {
 		flags = "01"
@@ -199,9 +210,22 @@ func (s *Span) Traceparent() string {
 	return "00-" + hex.EncodeToString(s.TraceID[:]) + "-" + hex.EncodeToString(s.SpanID[:]) + "-" + flags
 }
 
-// TraceIDString and SpanIDString return the hex identifiers for logs.
-func (s *Span) TraceIDString() string { return hex.EncodeToString(s.TraceID[:]) }
-func (s *Span) SpanIDString() string  { return hex.EncodeToString(s.SpanID[:]) }
+// TraceIDString and SpanIDString return the hex identifiers for logs,
+// or "" for a nil span, so a log line built without tracing carries an
+// empty field rather than crashing the request.
+func (s *Span) TraceIDString() string {
+	if s == nil {
+		return ""
+	}
+	return hex.EncodeToString(s.TraceID[:])
+}
+
+func (s *Span) SpanIDString() string {
+	if s == nil {
+		return ""
+	}
+	return hex.EncodeToString(s.SpanID[:])
+}
 
 // Set adds attributes.
 func (s *Span) Set(kv ...otlp.KV) {
@@ -378,8 +402,15 @@ func (t *Tracer) encode(batch []*Span) []byte {
 	return body
 }
 
-// Encode is exposed for tests.
-func (t *Tracer) Encode(batch []*Span) []byte { return t.encode(batch) }
+// Encode is exposed for tests. A tracer that only propagates has no
+// exporter and therefore no resource to describe, so it encodes to
+// nothing rather than dereferencing a client it never built.
+func (t *Tracer) Encode(batch []*Span) []byte {
+	if t == nil || t.client == nil {
+		return nil
+	}
+	return t.encode(batch)
+}
 
 var mrand = rand2{}
 

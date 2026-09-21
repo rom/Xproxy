@@ -51,20 +51,41 @@ type Keyring struct {
 	path string
 }
 
-// Primary returns the signing key.
-func (k *Keyring) Primary() []byte { return k.keys[0].Bytes }
+// Primary returns the signing key, or nil for a ring with no keys (a
+// ring loaded from a file always has one; the guard keeps a caller from
+// panicking on a zero value).
+func (k *Keyring) Primary() []byte {
+	if k == nil || len(k.keys) == 0 {
+		return nil
+	}
+	return k.keys[0].Bytes
+}
 
-// All returns every key, primary first, for verification.
+// All returns a copy of every key, primary first, for verification. The
+// bytes are copied because they are the signing material: a caller that
+// worked in place would change what the proxy signs with.
 func (k *Keyring) All() [][]byte {
+	if k == nil {
+		return nil
+	}
 	out := make([][]byte, len(k.keys))
 	for i, e := range k.keys {
-		out[i] = e.Bytes
+		out[i] = append([]byte(nil), e.Bytes...)
 	}
 	return out
 }
 
-// Keys returns the entries with their dates.
-func (k *Keyring) Keys() []Key { return append([]Key(nil), k.keys...) }
+// Keys returns a copy of the entries with their dates.
+func (k *Keyring) Keys() []Key {
+	if k == nil {
+		return nil
+	}
+	out := make([]Key, len(k.keys))
+	for i, e := range k.keys {
+		out[i] = Key{Bytes: append([]byte(nil), e.Bytes...), Since: e.Since}
+	}
+	return out
+}
 
 // Len returns the number of keys.
 func (k *Keyring) Len() int { return len(k.keys) }

@@ -1524,6 +1524,13 @@ func (s *Server) digestBody(rw *responseWriter, r *http.Request, st *reqState) b
 // client's /24 or /48, which one client cannot rotate out of the way
 // the address itself can be rotated.
 func coarseKey(ip netip.Addr) string {
+	// The zero address has no prefix: netip answers it with the zero
+	// Prefix and no error, whose String is the word "invalid", so
+	// without this guard every client the listener could not parse an
+	// address for would share one bucket named after that word.
+	if !ip.IsValid() {
+		return ""
+	}
 	bits := 24
 	if ip.Is6() && !ip.Is4In6() {
 		bits = 48

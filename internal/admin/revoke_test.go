@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/rom/xproxy/internal/passwd"
 )
 
 // Revocation must take effect while the GUI runs. Before this, the users
@@ -117,7 +119,7 @@ func TestSessionLosesOperatorRightsWhenTheRoleIsLowered(t *testing.T) {
 	if st := c.login("op", "operator-password-1"); st != 200 {
 		t.Fatalf("login: %d", st)
 	}
-	vw, err := hashPassword("operator-password-1", 1000)
+	vw, err := passwd.HashWithIterations("operator-password-1", 1000)
 	if err != nil {
 		t.Fatal(err)
 	}

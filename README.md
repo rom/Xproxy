@@ -222,7 +222,7 @@ every feature above.
 |----------|---------|
 | [docs/USAGE.md](docs/USAGE.md) | Operating the proxy: an example per feature, the control tool, logging |
 | [docs/CONFIG.md](docs/CONFIG.md) | Configuration reference, every key with its default |
-| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Symptom index, triage, deny reasons and what to collect for a bug report |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Triage, a symptom index, the stages a request can die at, the timeout ladder, a section per subsystem, emergency procedures, every deny reason and what to collect for a bug report |
 | [docs/SETUP.md](docs/SETUP.md) | Installation on Fedora |
 | [docs/SETUP_MACOS.md](docs/SETUP_MACOS.md) | Installation on macOS |
 | [examples/](examples/) | WAF rules, block lists, filters, a WebAssembly module, rewriting and routing examples, all validated by tests |

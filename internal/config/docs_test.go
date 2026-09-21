@@ -52,3 +52,40 @@ func TestConfigReferenceComplete(t *testing.T) {
 		t.Fatalf("keys without a mention in docs/CONFIG.md:\n  %s", strings.Join(missing, "\n  "))
 	}
 }
+
+// TestDecoyReferenceComplete keeps the decoy table in docs/CONFIG.md in
+// step with the names the validator accepts. A decoy an operator cannot
+// find in the reference is a decoy nobody uses, and one in the reference
+// that the build does not carry is a configuration that fails to load
+// after somebody copied the documentation.
+func TestDecoyReferenceComplete(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/CONFIG.md")
+	if err != nil {
+		t.Skip("docs not available:", err)
+	}
+	text := string(doc)
+	for name := range HoneypotDecoys {
+		if !strings.Contains(text, "| `"+name+"` |") {
+			t.Errorf("decoy %q has no row in the docs/CONFIG.md table", name)
+		}
+	}
+	// Every row in a decoy table names a decoy the build carries. The
+	// tables are the ones between the decoy heading and the paragraph
+	// that follows them.
+	start := strings.Index(text, "The built-in decoys,")
+	end := strings.Index(text, "`robots` is the one to serve honestly")
+	if start < 0 || end < start {
+		t.Fatal("the decoy section is not where the test expects it")
+	}
+	row := regexp.MustCompile("(?m)^\\| `([a-z0-9-]+)` \\| ")
+	found := 0
+	for _, m := range row.FindAllStringSubmatch(text[start:end], -1) {
+		if !HoneypotDecoys[m[1]] {
+			t.Errorf("the decoy table has a row for %q, which the build does not carry", m[1])
+		}
+		found++
+	}
+	if found != len(HoneypotDecoys) {
+		t.Errorf("the decoy tables hold %d rows for %d decoys", found, len(HoneypotDecoys))
+	}
+}

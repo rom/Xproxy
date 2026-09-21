@@ -160,6 +160,11 @@ func New(cfg *config.Bans, log *slog.Logger) (*List, error) {
 			_ = db.Close()
 			return nil, err
 		}
+		// The file may hold bans the current exemptions cover: an
+		// operator who added a range and restarted expects them gone.
+		l.mu.Lock()
+		l.dropExemptLocked()
+		l.mu.Unlock()
 	}
 	l.wg.Add(1)
 	go l.purgeLoop()
@@ -341,6 +346,49 @@ func (l *List) configure(cfg *config.Bans) {
 		trig = append(trig, t)
 	}
 	l.triggers = trig
+	l.dropExemptLocked()
+}
+
+// dropExemptLocked removes the entries the current exemptions cover.
+//
+// exempt_cidrs is the lever an operator pulls when a monitoring
+// probe, a partner or their own office has been banned: they add the
+// range and reload. Without this the reload changes nothing for the
+// ban already in the table, and neither does a restart, because the
+// state file restores it — so the fix appears not to work until the
+// ban expires on its own.
+func (l *List) dropExemptLocked() {
+	if len(l.exempt) == 0 {
+		return
+	}
+	var dropped []*Entry
+	for k, e := range l.addrs {
+		if l.exemptTarget(e) {
+			delete(l.addrs, k)
+			dropped = append(dropped, e)
+		}
+	}
+	live := l.prefixes[:0]
+	for _, e := range l.prefixes {
+		if l.exemptTarget(e) {
+			dropped = append(dropped, e)
+			continue
+		}
+		live = append(live, e)
+	}
+	if len(live) != len(l.prefixes) {
+		l.prefixes = live
+		l.reindexPrefixes()
+	}
+	for _, e := range dropped {
+		l.forgetHistory(e.Target)
+		l.log.Info("ban released: the target is now exempt", "target", e.Target, "reason", e.Reason)
+	}
+	if l.db != nil {
+		for _, e := range dropped {
+			l.persist(e, true)
+		}
+	}
 }
 
 // DropsConnections reports whether banned peers should be closed at accept.

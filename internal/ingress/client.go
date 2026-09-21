@@ -290,9 +290,35 @@ func (c *client) watch(ctx context.Context, path string, fn func(kind string)) e
 }
 
 func (c *client) secret(ctx context.Context, ns, name string) (*Secret, error) {
+	// The namespace and the name are built into a request path and, for
+	// what comes back, into a file name under cert_dir. Both arrive from
+	// a resource somebody else wrote, so they are checked against what
+	// the API server itself would have accepted rather than trusted.
+	if !objectNameOK(ns) || !objectNameOK(name) {
+		return nil, fmt.Errorf("secret %q/%q: not a valid object name", ns, name)
+	}
 	var s Secret
 	if err := c.get(ctx, "/api/v1/namespaces/"+ns+"/secrets/"+name, &s); err != nil {
 		return nil, err
 	}
 	return &s, nil
+}
+
+// objectNameOK reports whether s is a Kubernetes object name (RFC 1123:
+// lower case letters, digits, '-' and '.', at most 253 characters). A
+// value with a separator or a dot segment in it would leave the request
+// path and the certificate directory, and only a compromised or
+// impersonated API server sends one.
+func objectNameOK(s string) bool {
+	if s == "" || len(s) > 253 || s == "." || s == ".." {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }

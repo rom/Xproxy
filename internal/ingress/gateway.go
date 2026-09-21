@@ -466,6 +466,10 @@ func addCert(snap *Snapshot, ns, name string, s *Secret, hosts []string, warn fu
 			return
 		}
 	}
+	if s.Type != "" && s.Type != "kubernetes.io/tls" {
+		warn("tls secret %s is of type %s, not kubernetes.io/tls", name, s.Type)
+		return
+	}
 	crt, key := s.Data["tls.crt"], s.Data["tls.key"]
 	if crt == "" || key == "" {
 		warn("tls secret %s lacks tls.crt or tls.key", name)
