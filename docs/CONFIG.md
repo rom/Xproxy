@@ -3214,7 +3214,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `grpc_guard`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -3684,6 +3684,50 @@ detail `check:filename` and a JSON body; the access log carries
 | `raw_uploads` | bool | `false` | Treat a non multipart body of a write request as one file, named from `Content-Disposition` or the last path segment |
 | `fields` | list | any | Form field names that may carry files |
 | `max_filename_length` | int | `255` | |
+
+### Kind `grpc_guard`
+
+Reads gRPC messages rather than passing them through. A proxy that
+routes gRPC by its path has read the envelope; the messages are
+length-prefixed frames of protobuf inside the body, and without reading
+them it cannot say how large one message is (only how large the whole
+body is), cannot notice a stream that stops in the middle of a frame,
+and cannot see a message nested a thousand deep — which costs the
+backend's parser far more than it costs the sender to write.
+
+No schema is used, deliberately. A schema has to be kept in step with
+the service, and a check that is only as current as its schema is a
+check that quietly stops applying the week somebody adds a field. The
+protobuf wire format carries the field number and the wire type, which
+is enough for every bound here.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_message_bytes` | int | `4194304` | One message, not the whole stream; 1024..268435456. It is what grpc-go defaults its receive limit to, so it is the number the backend already lives with |
+| `max_messages` | int | `0` (none) | Messages in one request, which is how a streaming call is bounded |
+| `max_depth` | int | `16` | How deeply messages may nest; 1..256 |
+| `max_fields` | int | `2000` | Fields at every level together, not per message; 1..1048576 |
+| `allow_compressed` | bool | `true` | A compressed message is one this filter does not decompress, so it is passed without being walked. `false` refuses it, which is what a route that must be readable sets |
+| `deny_patterns` | list of RE2 | `[]` | Matched against the strings found in a message. Setting them with `allow_compressed: true` fails the load: a compressed message would go past them unread |
+| `max_scan_bytes` | int | `1048576` | Of one request, read and walked; beyond it the rest is forwarded unread and the access line says `grpc_partial` |
+| `max_string_bytes` | int | `4096` | One string handed to a pattern. Longer ones are truncated on a character boundary rather than dropped, because a rule about the start of a string still works on the start of it |
+| `action` | `block`, `log` | `block` | `log` records and forwards, which is how a bound is tried out before it decides anything |
+
+A length-delimited protobuf field is a nested message or a string, and
+without a schema there is no way to be certain which. It is tried as a
+message first: a nested message read as a string is a subtree the depth
+and field bounds never see, and the bounds are the part that matters.
+
+Denials carry the reason `grpc_guard:` and one of `message_too_large`,
+`too_many_messages`, `short_frame`, `compressed`, `too_deep`,
+`too_many_fields`, `malformed` or `content`; a content refusal names the
+field path it matched at. The access line carries `grpc_messages`,
+`grpc_depth` and `grpc_fields`, so a route's shape is visible before
+anybody has to guess at a bound for it.
+
+What this does not do is understand the fields. `deny_patterns` run
+against every string in a message, not against a named field, so they
+are the blunt instrument they look like.
 
 ### Kind `sensitive_data`
 

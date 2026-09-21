@@ -298,6 +298,56 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **gRPC message inspection (`kind: grpc_guard`).** Routing gRPC by its
+  path read the envelope and nothing else. The messages are
+  length-prefixed frames of protobuf inside the body, so the proxy
+  could not say how large one message was — only how large the whole
+  body was, which is a different number on a streaming call — could not
+  notice a stream that stopped in the middle of a frame, and could not
+  see a message nested a thousand deep. That last one costs the
+  backend's parser far more than it costs the sender to write.
+
+  The filter reads the framing and walks the protobuf, bounding one
+  message (`max_message_bytes`, defaulting to what grpc-go defaults its
+  receive limit to, so it is the number the backend already lives
+  with), the messages in a request (`max_messages`), the nesting
+  (`max_depth`) and the fields at every level together (`max_fields`).
+  `deny_patterns` run over the strings it finds.
+
+  No schema is used, and that is the design rather than a shortcut: a
+  schema has to be kept in step with the service, and a check that is
+  only as current as its schema is a check that quietly stops applying
+  the week somebody adds a field. The protobuf wire format carries the
+  field number and the wire type, which is enough for every bound
+  above.
+
+  A length-delimited field is a nested message or a string and there is
+  no way to be certain which without a schema. It is tried as a message
+  first, because a nested message read as a string is a subtree the
+  depth and field bounds never see, and the bounds are the part that
+  matters.
+
+  `deny_patterns` with `allow_compressed: true` fails the load rather
+  than running: a compressed message is bytes this filter does not
+  decompress, so the patterns would not run over it, and saying so
+  beats finding out. A compressed message that is allowed is passed
+  without being walked, because there is nothing honest to say about
+  bytes nobody decompressed.
+
+  The access line carries `grpc_messages`, `grpc_depth` and
+  `grpc_fields`, so `action: log` for a day answers what the bounds
+  should be instead of leaving them to be guessed at. Refusals are gRPC
+  statuses, and a content refusal names the field path it matched at.
+
+  One bug was written and caught before it shipped, which is worth
+  recording because it is the shape these parsers fail in: the length
+  of a protobuf field is a varint and can encode a number larger than a
+  signed integer holds. Compared as a signed integer it goes negative,
+  the bound check passes, and the slice that follows panics. Every
+  length in a message is a client's, so that is a crash per request
+  from a body anybody can write. Lengths are compared unsigned, against
+  what is actually left, and a test pins the two values that did it.
+
 - **A syslog relay that reads what it forwards (`kind: syslog`).** A
   relay that forwards syslog without reading it is a pipe. The reason to
   read it is that almost every field is written by the sender and

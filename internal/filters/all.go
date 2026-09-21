@@ -12,6 +12,7 @@ import (
 	_ "github.com/rom/xproxy/internal/filters/botscore"     // bot_score
 	_ "github.com/rom/xproxy/internal/filters/formguard"    // form_guard
 	_ "github.com/rom/xproxy/internal/filters/graphql"      // graphql
+	_ "github.com/rom/xproxy/internal/filters/grpcguard"    // grpc_guard
 	_ "github.com/rom/xproxy/internal/filters/headerguard"  // header_guard
 	_ "github.com/rom/xproxy/internal/filters/ldapauth"     // ldap_auth
 	_ "github.com/rom/xproxy/internal/filters/mfagate"      // mfa

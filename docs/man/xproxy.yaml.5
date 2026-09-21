@@ -1939,6 +1939,8 @@ Parsed messages waiting for the collector. When it is full the relay drops and c
 T}
 .TE
 .PP
+\fBThe secure upgrade\fR is \fBtls_mode: none\fR with \fBupstream_tls_mode: implicit\fR: a device that can only send clear syslog over UDP writes to this listener, and the records leave it as RFC 5425 TLS. It does not make the sender trustworthy \[u2014] between the device and this port the records are still in clear and still forgeable \[u2014] so put the port where only those devices can reach it, keep \fBallow_senders\fR tight, and use \fBhostname: observed\fR.
+.PP
 A message the relay cannot parse is refused, not forwarded: its facility, severity and host are exactly the fields every rule here decides on, and a record nobody could read is a record nobody can filter. A message with no timestamp is given the time the relay saw it, because a record nobody can order is a record that is hard to use.
 .PP
 On a delimited stream a message over the bound is dropped and the connection carries on \[u2014] the reader skips to the next line ending, so one long line does not cost every record behind it. On a counted stream it ends the connection, because refusing to read the octets a frame declared leaves the reader at an offset nobody knows.
@@ -10513,7 +10515,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBform_\:guard\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBgrpc_\:guard\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBform_\:guard\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -12157,6 +12159,113 @@ T}	T{
 
 T}
 .TE
+.SS "Kind \fBgrpc_guard\fR"
+.PP
+Reads gRPC messages rather than passing them through. A proxy that routes gRPC by its path has read the envelope; the messages are length\-prefixed frames of protobuf inside the body, and without reading them it cannot say how large one message is (only how large the whole body is), cannot notice a stream that stops in the middle of a frame, and cannot see a message nested a thousand deep \[u2014] which costs the backend\(aqs parser far more than it costs the sender to write.
+.PP
+No schema is used, deliberately. A schema has to be kept in step with the service, and a check that is only as current as its schema is a check that quietly stops applying the week somebody adds a field. The protobuf wire format carries the field number and the wire type, which is enough for every bound here.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.7i) lbw(0.8i) lbx
+lw(1.1i) lw(0.7i) lw(0.8i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB4194304\fR
+T}	T{
+One message,\: not the whole stream;\: 1024..268435456. It is what grpc\-go defaults its receive limit to,\: so it is the number the backend already lives with
+T}
+T{
+\fBmax_\:messages\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+Messages in one request,\: which is how a streaming call is bounded
+T}
+T{
+\fBmax_\:depth\fR
+T}	T{
+int
+T}	T{
+\fB16\fR
+T}	T{
+How deeply messages may nest;\: 1..256
+T}
+T{
+\fBmax_\:fields\fR
+T}	T{
+int
+T}	T{
+\fB2000\fR
+T}	T{
+Fields at every level together,\: not per message;\: 1..1048576
+T}
+T{
+\fBallow_\:compressed\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A compressed message is one this filter does not decompress,\: so it is passed without being walked. \fBfalse\fR refuses it,\: which is what a route that must be readable sets
+T}
+T{
+\fBdeny_\:patterns\fR
+T}	T{
+list of RE2
+T}	T{
+\fB[]\fR
+T}	T{
+Matched against the strings found in a message. Setting them with \fBallow_\:compressed:\: true\fR fails the load: a compressed message would go past them unread
+T}
+T{
+\fBmax_\:scan_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+Of one request,\: read and walked;\: beyond it the rest is forwarded unread and the access line says \fBgrpc_\:partial\fR
+T}
+T{
+\fBmax_\:string_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+One string handed to a pattern. Longer ones are truncated on a character boundary rather than dropped,\: because a rule about the start of a string still works on the start of it
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBblock\fR,\: \fBlog\fR
+T}	T{
+\fBblock\fR
+T}	T{
+\fBlog\fR records and forwards,\: which is how a bound is tried out before it decides anything
+T}
+.TE
+.PP
+A length\-delimited protobuf field is a nested message or a string, and without a schema there is no way to be certain which. It is tried as a message first: a nested message read as a string is a subtree the depth and field bounds never see, and the bounds are the part that matters.
+.PP
+Denials carry the reason \fBgrpc_guard:\fR and one of \fBmessage_too_large\fR, \fBtoo_many_messages\fR, \fBshort_frame\fR, \fBcompressed\fR, \fBtoo_deep\fR, \fBtoo_many_fields\fR, \fBmalformed\fR or \fBcontent\fR; a content refusal names the field path it matched at. The access line carries \fBgrpc_messages\fR, \fBgrpc_depth\fR and \fBgrpc_fields\fR, so a route\(aqs shape is visible before anybody has to guess at a bound for it.
+.PP
+What this does not do is understand the fields. \fBdeny_patterns\fR run against every string in a message, not against a named field, so they are the blunt instrument they look like.
 .SS "Kind \fBsensitive_data\fR"
 .PP
 Detects personal and secret data in requests and responses and, per direction, logs the findings, masks them or blocks the message. The request phase scans the query string (raw and decoded, plus parameter names that carry credentials), header values and the body; the response phase scans header values and the body. Bodies of a listed media type are buffered up to \fBmax_bytes\fR and scanned whole; \fBgzip\fR, \fBdeflate\fR, \fBbr\fR and \fBzstd\fR bodies are decoded first (up to \fBmax_decoded_bytes\fR); a body larger than that is streamed through the scanner as it flows, with 4 KiB held back between reads so a value split across two reads is still seen; an unlisted media type, an unknown encoding or a partial (ranged) body passes unscanned. A masked or streamed compressed body is forwarded decoded (the encoding header is removed); a streamed body loses its content length. Because the decoded bytes are what the other side receives, a streamed decode is also bounded by \fBmax_decompression_ratio\fR: past 8 MiB decoded, a body that keeps expanding beyond that multiple of its compressed size has its transfer cut, so a compression bomb small enough to pass \fBmax_body_bytes\fR cannot be amplified through the proxy. Blocking a streamed body cuts the transfer at the finding, since the head of the message has already been forwarded. Masking rewrites the value in place (\fB************1111\fR, \fBa***@example.com\fR, the first eight characters of a token) and updates \fBContent\-Length\fR; blocking answers \fBblock_status\fR with reason \fBsensitive_data\fR, a detail \fBresponse:card,email\fR and a JSON problem naming the kinds found, never the values. The access log carries \fBsensitive_types\fR, \fBsensitive_count\fR and \fBsensitive_where\fR for every message with a finding, in every mode; blocks count in \fBdenied_sensitive_data\fR, findings and message outcomes in the \fBxproxy_sensitive_*\fR metric families.

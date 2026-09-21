@@ -3293,6 +3293,53 @@ checks use the standard health service, so an endpoint that reports
 a rate limited call is refused with `RESOURCE_EXHAUSTED` rather than a
 text page a gRPC client cannot read.
 
+**Routing gRPC by its path reads the envelope.** The messages are
+length-prefixed frames of protobuf inside the body, and a proxy that
+does not read them cannot say how large *one message* is — only how
+large the whole body is — cannot notice a stream that stops in the
+middle of a frame, and cannot see a message nested a thousand deep.
+That last one costs the backend's parser far more than it costs the
+sender to write. The `grpc_guard` filter reads them:
+
+```yaml
+filters:
+  - name: rpc
+    kind: grpc_guard
+    options:
+      max_message_bytes: 4194304   # one message, not the stream
+      max_messages: 100            # a streaming call is still bounded
+      max_depth: 12
+      max_fields: 2000
+      allow_compressed: false
+      deny_patterns: ["(?i)-----BEGIN (RSA )?PRIVATE KEY-----"]
+routes:
+  - name: orders
+    grpc: {services: [orders.v1.Orders]}
+    upstream: orders
+    filters: [rpc]
+```
+
+No schema is used, and that is the design rather than a shortcut: a
+schema has to be kept in step with the service, and a check that is
+only as current as its schema is a check that quietly stops applying
+the week somebody adds a field. The protobuf wire format carries the
+field number and the wire type, which is enough for every bound above.
+
+`allow_compressed: false` is required with `deny_patterns`, and the
+load fails otherwise: a compressed message is bytes this filter does
+not decompress, so the patterns would simply not run over it. Saying so
+beats finding out.
+
+Refusals are gRPC statuses, so a client sees `RESOURCE_EXHAUSTED` or
+`INVALID_ARGUMENT` rather than a page it cannot parse, and a content
+refusal names the field path it matched at. The access line carries
+`grpc_messages`, `grpc_depth` and `grpc_fields` — run it with
+`action: log` first and those three numbers tell you what to set the
+bounds to, rather than guessing and finding out in production.
+
+What it does not do is understand the fields: `deny_patterns` run
+against every string in a message, not against a named field.
+
 ### gRPC-web for browsers
 
 ```yaml

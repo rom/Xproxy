@@ -275,6 +275,11 @@ an identifier from the access log to the upstream.
 
 **Extensibility and platforms**
 
+- **gRPC message inspection**: the framing, a bound on one message
+  rather than the whole stream, the protobuf structure (nesting depth,
+  field count) and patterns over the strings inside — without a schema,
+  because a check that is only as current as its schema is a check that
+  quietly stops applying
 - A stable middleware interface for compiled-in filters (header
   policy, basic authentication, body rewriting, bot scoring, OpenID
   Connect), and a WebAssembly ABI that runs sandboxed modules per

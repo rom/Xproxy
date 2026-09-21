@@ -1904,6 +1904,47 @@ this bound.
 broker sent something this proxy would not parse. It is not passed
 through: its framing is what the client's next read depends on.
 
+## gRPC message inspection
+
+**Calls are refused with `INVALID_ARGUMENT` and the reason
+`grpc_guard:malformed`.** The message did not walk as protobuf. The
+usual cause is a body that is not gRPC framing at all — a client
+sending `application/grpc` with something else inside it — or a proxy
+in front that re-framed the stream. `action: log` lets the calls
+through while the records accumulate.
+
+**`grpc_guard:short_frame`.** The body ended in the middle of a length
+the frame declared. A client that finished sends whole frames; one that
+stopped part way is a client whose message nobody has. If it happens
+under load rather than from one client, look for something cutting the
+stream between the client and this proxy.
+
+**`grpc_guard:too_deep` or `too_many_fields` on calls that work
+elsewhere.** The bounds are lower than the service's real messages.
+Turn on `action: log`, look at `grpc_depth` and `grpc_fields` in the
+access lines for a while, and set the bounds above what the service
+actually sends. Guessing and finding out in production is the thing to
+avoid here.
+
+**`deny_patterns` never match.** Two reasons. They run over the strings
+found in a message, so a value that is not valid UTF-8 is not offered
+to them; and `allow_compressed: true` with patterns fails the load for
+exactly this reason, so if the load succeeded compression is already
+off. Also check `max_scan_bytes`: past it the rest of the request is
+forwarded unread and the access line says `grpc_partial`.
+
+**A field is refused that should not be.** A length-delimited protobuf
+field is a nested message or a string, and without a schema there is no
+way to be certain which. It is tried as a message first, because a
+nested message read as a string is a subtree the depth and field bounds
+never see. A string that happens to parse as a message is walked as
+one, which costs a walk and can add to the field count.
+
+**gRPC-web calls are not inspected.** This filter reads the wire
+framing, and gRPC-web is translated to it earlier on a route that
+accepts it. Put the filter on the route and it sees the translated
+call.
+
 ## Syslog relay
 
 **Nothing reaches the collector.** Look at `syslog_received` first: if
