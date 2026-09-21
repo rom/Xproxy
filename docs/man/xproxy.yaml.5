@@ -4864,12 +4864,14 @@ How long the client stays marked;\: at most 720h
 T}
 .TE
 .PP
-The built\-in decoys, each a plausible page for the thing a scanner is looking for and each containing nothing an operator would mind being read \[u2014] every credential, key and host name in them is visibly fake:
+The built\-in decoys, each a plausible page for the thing a scanner is looking for and each containing nothing an operator would mind being read \[u2014] every credential, key and host name in them is visibly fake, and a test refuses a decoy that hands out a password, a token or a key without a marker that says so:
+.PP
+\fBPHP and WordPress\fR
 .PP
 .TS
 allbox;
-lbw(1.4i) lbw(1.5i) lbx
-lw(1.4i) lw(1.5i) lx.
+lbw(1.1i) lbw(1.1i) lbx
+lw(1.1i) lw(1.1i) lx.
 T{
 Decoy
 T}	T{
@@ -4892,11 +4894,25 @@ T}	T{
 \fB/\:wp\-\:config.\:php\fR,\: \fB/\:wp\-\:config.\:php.\:bak\fR
 T}
 T{
+\fBwp\-\:users\fR
+T}	T{
+The \fBwp\-\:json\fR user list,\: which is how usernames leak
+T}	T{
+\fB/\:wp\-\:json/\:wp/\:v2/\:users\fR
+T}
+T{
 \fBphpmyadmin\fR
 T}	T{
 A phpMyAdmin login
 T}	T{
 \fB/\:phpmyadmin\fR,\: \fB/\:pma\fR
+T}
+T{
+\fBadminer\fR
+T}	T{
+An Adminer login,\: server and database prefilled
+T}	T{
+\fB/\:adminer.\:php\fR,\: \fB/\:adm.\:php\fR
 T}
 T{
 \fBphpinfo\fR
@@ -4905,68 +4921,27 @@ T}	T{
 T}	T{
 \fB/\:phpinfo.\:php\fR,\: \fB/\:info.\:php\fR
 T}
+.TE
+.PP
+\fBGeneric and leaked files\fR
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.5i) lbx
+lw(0.9i) lw(1.5i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
 T{
 \fBadmin\-\:login\fR
 T}	T{
 A generic administration login
 T}	T{
 \fB/\:admin\fR,\: \fB/\:administrator\fR
-T}
-T{
-\fBtomcat\-\:manager\fR
-T}	T{
-The Tomcat manager application listing
-T}	T{
-\fB/\:manager/\:html\fR
-T}
-T{
-\fBjenkins\fR
-T}	T{
-A Jenkins sign\-in page
-T}	T{
-\fB/\:jenkins\fR,\: \fB/\:login?from=\:%2F\fR
-T}
-T{
-\fBgrafana\fR
-T}	T{
-A Grafana bootstrap page
-T}	T{
-\fB/\:grafana\fR
-T}
-T{
-\fBactuator\fR
-T}	T{
-A Spring Boot actuator index,\: \fBheapdump\fR and all
-T}	T{
-\fB/\:actuator\fR
-T}
-T{
-\fBelasticsearch\fR
-T}	T{
-An Elasticsearch root document
-T}	T{
-\fB/\:_\:cluster/\:health\fR,\: \fB/\fR on port 9200
-T}
-T{
-\fBswagger\fR
-T}	T{
-An OpenAPI document naming tempting operations
-T}	T{
-\fB/\:swagger.\:json\fR,\: \fB/\:v2/\:api\-\:docs\fR
-T}
-T{
-\fBdebug\-\:vars\fR
-T}	T{
-Go \fBexpvar\fR output
-T}	T{
-\fB/\:debug/\:vars\fR
-T}
-T{
-\fBserver\-\:status\fR
-T}	T{
-Apache \fBmod_\:status\fR
-T}	T{
-\fB/\:server\-\:status\fR
 T}
 T{
 \fBenv\fR
@@ -4981,34 +4956,6 @@ T}	T{
 A \fB.\:git/\:config\fR with an internal remote
 T}	T{
 \fB/\:.\:git/\:config\fR
-T}
-T{
-\fBaws\-\:credentials\fR
-T}	T{
-An \fB~/\:.\:aws/\:credentials\fR
-T}	T{
-\fB/\:.\:aws/\:credentials\fR
-T}
-T{
-\fBssh\-\:key\fR
-T}	T{
-An OpenSSH private key block
-T}	T{
-\fB/\:.\:ssh/\:id_\:rsa\fR
-T}
-T{
-\fBkubeconfig\fR
-T}	T{
-A kubeconfig with a token
-T}	T{
-\fB/\:.\:kube/\:config\fR
-T}
-T{
-\fBdocker\-\:compose\fR
-T}	T{
-A compose file with database credentials
-T}	T{
-\fB/\:docker\-\:compose.\:yml\fR
 T}
 T{
 \fBhtpasswd\fR
@@ -5032,6 +4979,374 @@ T}	T{
 \fB/\:backups/\fR
 T}
 T{
+\fBlaravel\-\:log\fR
+T}	T{
+An application log with a stack trace and a password in it
+T}	T{
+\fB/\:storage/\:logs/\:laravel.\:log\fR
+T}
+T{
+\fBrobots\fR
+T}	T{
+A \fBrobots.\:txt\fR pointing at the paths above
+T}	T{
+\fB/\:robots.\:txt\fR
+T}
+.TE
+.PP
+\fBSecrets and build files\fR
+.PP
+The files a laptop or a build agent leaves in a deployment. Nothing links to them, so a request is never a browser.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.3i) lbx
+lw(1.2i) lw(1.3i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBaws\-\:credentials\fR
+T}	T{
+An \fB~/\:.\:aws/\:credentials\fR
+T}	T{
+\fB/\:.\:aws/\:credentials\fR
+T}
+T{
+\fBssh\-\:key\fR
+T}	T{
+An OpenSSH private key block (it decodes to a message saying so)
+T}	T{
+\fB/\:.\:ssh/\:id_\:rsa\fR
+T}
+T{
+\fBkubeconfig\fR
+T}	T{
+A kubeconfig with a token
+T}	T{
+\fB/\:.\:kube/\:config\fR
+T}
+T{
+\fBdocker\-\:compose\fR
+T}	T{
+A compose file with database credentials
+T}	T{
+\fB/\:docker\-\:compose.\:yml\fR
+T}
+T{
+\fBnpmrc\fR
+T}	T{
+An \fB.\:npmrc\fR with a registry auth token
+T}	T{
+\fB/\:.\:npmrc\fR
+T}
+T{
+\fBpypirc\fR
+T}	T{
+A \fB.\:pypirc\fR with an upload token
+T}	T{
+\fB/\:.\:pypirc\fR,\: \fB/\:.\:netrc\fR
+T}
+T{
+\fBgitlab\-\:ci\fR
+T}	T{
+A CI pipeline with a deploy token and a target host
+T}	T{
+\fB/\:.\:gitlab\-\:ci.\:yml\fR
+T}
+T{
+\fBterraform\-\:state\fR
+T}	T{
+A \fBterraform.\:tfstate\fR with sensitive outputs
+T}	T{
+\fB/\:terraform.\:tfstate\fR
+T}
+T{
+\fBvscode\-\:sftp\fR
+T}	T{
+An editor\(aqs SFTP profile with host,\: user and password
+T}	T{
+\fB/\:.\:vscode/\:sftp.\:json\fR
+T}
+T{
+\fBappsettings\fR
+T}	T{
+An ASP.NET \fBappsettings.\:json\fR with a connection string
+T}	T{
+\fB/\:appsettings.\:json\fR
+T}
+T{
+\fBdatabase\-\:yml\fR
+T}	T{
+A Rails \fBconfig/\:database.\:yml\fR
+T}	T{
+\fB/\:config/\:database.\:yml\fR
+T}
+T{
+\fBnginx\-\:config\fR
+T}	T{
+An \fBnginx.\:conf\fR with an internal location and a token
+T}	T{
+\fB/\:nginx.\:conf\fR
+T}
+.TE
+.PP
+\fBCloud and orchestration APIs\fR
+.PP
+A request for one of these on a public proxy is usually a server side request forgery probe rather than a path scan: the client is asking the proxy to fetch its own credentials. Mark these hard.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(1.6i) lbx
+lw(0.8i) lw(1.6i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBimds\fR
+T}	T{
+Instance metadata handing out role credentials
+T}	T{
+\fB/\:latest/\:meta\-\:data/\:iam/\:security\-\:credentials/\:\[u2026]\fR
+T}
+T{
+\fBconsul\fR
+T}	T{
+A Consul service catalogue
+T}	T{
+\fB/\:v1/\:catalog/\:services\fR
+T}
+T{
+\fBvault\fR
+T}	T{
+A Vault seal status
+T}	T{
+\fB/\:v1/\:sys/\:seal\-\:status\fR
+T}
+T{
+\fBdocker\-\:api\fR
+T}	T{
+The Docker daemon\(aqs container list
+T}	T{
+\fB/\:containers/\:json\fR
+T}
+T{
+\fBkubelet\fR
+T}	T{
+An unauthenticated kubelet\(aqs pod list,\: environment and all
+T}	T{
+\fB/\:pods\fR
+T}
+.TE
+.PP
+\fBData stores and dashboards\fR
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(1.4i) lbx
+lw(1.4i) lw(1.4i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBelasticsearch\fR
+T}	T{
+An Elasticsearch root document
+T}	T{
+\fB/\:_\:cluster/\:health\fR,\: \fB/\fR on port 9200
+T}
+T{
+\fBcouchdb\fR
+T}	T{
+A CouchDB database list
+T}	T{
+\fB/\:_\:all_\:dbs\fR
+T}
+T{
+\fBsolr\fR
+T}	T{
+A Solr core listing with document counts
+T}	T{
+\fB/\:solr/\:admin/\:cores\fR
+T}
+T{
+\fBrabbitmq\fR
+T}	T{
+A RabbitMQ management overview
+T}	T{
+\fB/\:api/\:overview\fR
+T}
+T{
+\fBkibana\fR
+T}	T{
+A Kibana bootstrap page
+T}	T{
+\fB/\:app/\:kibana\fR
+T}
+T{
+\fBgrafana\fR
+T}	T{
+A Grafana bootstrap page
+T}	T{
+\fB/\:grafana\fR
+T}
+T{
+\fBprometheus\-\:config\fR
+T}	T{
+A Prometheus scrape config carrying credentials
+T}	T{
+\fB/\:api/\:v1/\:status/\:config\fR
+T}
+T{
+\fBtraefik\fR
+T}	T{
+A Traefik router dump with a basic auth hash
+T}	T{
+\fB/\:api/\:rawdata\fR
+T}
+.TE
+.PP
+\fBApplication servers and internals\fR
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.4i) lbx
+lw(0.9i) lw(1.4i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBtomcat\-\:manager\fR
+T}	T{
+The Tomcat manager application listing
+T}	T{
+\fB/\:manager/\:html\fR
+T}
+T{
+\fBjenkins\fR
+T}	T{
+A Jenkins sign\-in page
+T}	T{
+\fB/\:jenkins\fR,\: \fB/\:login?from=\:%2F\fR
+T}
+T{
+\fBactuator\fR
+T}	T{
+A Spring Boot actuator index,\: \fBheapdump\fR and all
+T}	T{
+\fB/\:actuator\fR
+T}
+T{
+\fBswagger\fR
+T}	T{
+An OpenAPI document naming tempting operations
+T}	T{
+\fB/\:swagger.\:json\fR,\: \fB/\:v2/\:api\-\:docs\fR
+T}
+T{
+\fBgraphql\fR
+T}	T{
+An introspection reply naming an impersonate mutation
+T}	T{
+\fB/\:graphql\fR,\: \fB/\:graphiql\fR
+T}
+T{
+\fBdebug\-\:vars\fR
+T}	T{
+Go \fBexpvar\fR output
+T}	T{
+\fB/\:debug/\:vars\fR
+T}
+T{
+\fBserver\-\:status\fR
+T}	T{
+Apache \fBmod_\:status\fR
+T}	T{
+\fB/\:server\-\:status\fR
+T}
+T{
+\fBwebshell\fR
+T}	T{
+A web shell someone else supposedly left
+T}	T{
+\fB/\:shell.\:php\fR,\: \fB/\:up.\:php\fR,\: \fB/\:cmd.\:php\fR
+T}
+.TE
+.PP
+\fBEnterprise front doors\fR
+.PP
+The login pages a mass scanner fingerprints before it picks an exploit. Answering costs the scanner a round trip and tells the proxy which product it came shopping for.
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(1.3i) lbx
+lw(1.3i) lw(1.3i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBconfluence\fR
+T}	T{
+An Atlassian Confluence login
+T}	T{
+\fB/\:login.\:action\fR
+T}
+T{
+\fBgitlab\-\:login\fR
+T}	T{
+A GitLab sign\-in page
+T}	T{
+\fB/\:users/\:sign_\:in\fR
+T}
+T{
+\fBcitrix\fR
+T}	T{
+A Citrix Gateway logon page
+T}	T{
+\fB/\:vpn/\:index.\:html\fR,\: \fB/\:cgi/\:login\fR
+T}
+T{
+\fBfortinet\fR
+T}	T{
+A FortiGate SSL\-VPN login
+T}	T{
+\fB/\:remote/\:login\fR
+T}
+T{
+\fBesxi\fR
+T}	T{
+A VMware ESXi host client login
+T}	T{
+\fB/\:ui/\fR
+T}
+T{
+\fBexchange\-\:autodiscover\fR
+T}	T{
+An Exchange autodiscover reply naming internal hosts
+T}	T{
+\fB/\:autodiscover/\:autodiscover.\:xml\fR
+T}
+T{
 \fBidrac\fR
 T}	T{
 A server lights\-out controller login
@@ -5046,22 +5361,15 @@ T}	T{
 \fB/\:webmail\fR,\: \fB/\:roundcube\fR
 T}
 T{
-\fBwebshell\fR
+\fBcgi\-\:bin\fR
 T}	T{
-A web shell someone else supposedly left
+An embedded router or appliance CGI page
 T}	T{
-\fB/\:shell.\:php\fR,\: \fB/\:up.\:php\fR,\: \fB/\:cmd.\:php\fR
-T}
-T{
-\fBrobots\fR
-T}	T{
-A \fBrobots.\:txt\fR pointing at the paths above
-T}	T{
-\fB/\:robots.\:txt\fR
+\fB/\:cgi\-\:bin/\:mainfunction.\:cgi\fR,\: \fB/\:cgi\-\:bin/\:luci\fR
 T}
 .TE
 .PP
-\fBrobots\fR is the one to serve honestly: it names the decoy paths, so a crawler that reads it and then requests them has told you what it is. \fBexamples/security/honeypots.yaml\fR wires the whole table up.
+\fBrobots\fR is the one to serve honestly: it names the decoy paths, so a crawler that reads it and then requests them has told you what it is. \fBexamples/security/honeypots.yaml\fR wires the whole table up, one route per decoy with the paths each is worth serving on; a test fails if a decoy in the table has no route there. \fBxproxyctl honeypot\fR and \fBGET /v1/honeypot\fR both list the names this build carries, which is the authority when a configuration is refused for an unknown decoy.
 .PP
 \fBresponse_headers\fR apply, so a decoy can carry a \fBServer\fR header of its own. \fBGET /v1/honeypot\fR lists marked clients (address, route, hits, first, last, expires) and the decoy names; \fBDELETE /v1/honeypot?ip=\fR and \fBxproxyctl honeypot forget IP\fR remove a mark. The mark table holds at most 65536 addresses. Counters: \fBhoneypot_hits\fR, \fBhoneypot_marked\fR; metrics \fBxproxy_honeypot_hits_total\fR, \fBxproxy_honeypot_marked\fR.
 .SS "routes[].mirror"

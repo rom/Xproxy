@@ -1864,7 +1864,50 @@ on the spot; the security log records the request with reason
 `honeypot`. Clients that touched a honeypot stay marked for an hour by
 default: their later requests on every route carry
 `honeypot_marked: true` in the access log, and a `bot_score` filter can
-weigh the mark. `xproxyctl honeypot` lists the marks.
+weigh the mark. `xproxyctl honeypot` lists the marks and the decoy names
+this build carries.
+
+Fifty-six decoys ship built in, grouped in docs/CONFIG.md by what a
+scanner is after: PHP and WordPress, leaked files, the secrets a laptop
+or a build agent leaves behind (`.npmrc`, `.pypirc`, `.gitlab-ci.yml`,
+`terraform.tfstate`, `.vscode/sftp.json`, `appsettings.json`,
+`config/database.yml`), the cloud and orchestration APIs a server side
+request forgery probe asks for (`imds`, `consul`, `vault`, `docker-api`,
+`kubelet`), data stores and dashboards (`couchdb`, `solr`, `rabbitmq`,
+`kibana`, `prometheus-config`, `traefik`), and the enterprise front
+doors a mass scanner fingerprints before it picks an exploit
+(`confluence`, `gitlab-login`, `citrix`, `fortinet`, `esxi`,
+`exchange-autodiscover`, `cgi-bin`). Every credential, key and host name
+in them is visibly fake, and a test refuses a decoy that hands one out
+without a marker saying so.
+
+`examples/security/honeypots.yaml` wires up all of them — fifty-six
+routes and the ban ladder that turns a sweep into a ban — with the mark
+scaled to what the request means: an hour for a path a confused crawler
+might reach, six hours for a file that only a credential hunt asks for,
+a day for a metadata or orchestration probe.
+
+```yaml
+# The probes that are never a mistake: the client is asking this proxy
+# to fetch its own credentials.
+routes:
+  - name: hp-imds
+    paths:
+      - /latest/meta-data
+      - /latest/meta-data/iam/security-credentials
+      - /computeMetadata/v1
+      - /metadata/instance
+    honeypot: {decoy: imds, mark: 24h, delay: 5s}
+  - name: hp-kubelet
+    paths: [/pods, /runningpods, /metrics/cadvisor]
+    honeypot: {decoy: kubelet, mark: 24h, delay: 5s}
+```
+
+Two rules keep a honeypot from becoming an outage of its own. Never put
+one in front of a namespace a real application serves — if the origin
+answers `/admin`, do not shadow it here — and keep the catch-all route
+last, so every decoy path is the more specific match. The shipped
+example is checked for both.
 
 ### gRPC services
 

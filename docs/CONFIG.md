@@ -1277,40 +1277,119 @@ Nothing is proxied. Put honeypots on paths no legitimate client uses.
 
 The built-in decoys, each a plausible page for the thing a scanner is
 looking for and each containing nothing an operator would mind being
-read — every credential, key and host name in them is visibly fake:
+read — every credential, key and host name in them is visibly fake, and
+a test refuses a decoy that hands out a password, a token or a key
+without a marker that says so:
+
+**PHP and WordPress**
 
 | Decoy | Looks like | Typical bait path |
 |-------|-----------|-------------------|
 | `wp-login` | A WordPress login page | `/wp-login.php` |
 | `wp-config` | `wp-config.php` served as text | `/wp-config.php`, `/wp-config.php.bak` |
+| `wp-users` | The `wp-json` user list, which is how usernames leak | `/wp-json/wp/v2/users` |
 | `phpmyadmin` | A phpMyAdmin login | `/phpmyadmin`, `/pma` |
+| `adminer` | An Adminer login, server and database prefilled | `/adminer.php`, `/adm.php` |
 | `phpinfo` | `phpinfo()` output | `/phpinfo.php`, `/info.php` |
+
+**Generic and leaked files**
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
 | `admin-login` | A generic administration login | `/admin`, `/administrator` |
-| `tomcat-manager` | The Tomcat manager application listing | `/manager/html` |
-| `jenkins` | A Jenkins sign-in page | `/jenkins`, `/login?from=%2F` |
-| `grafana` | A Grafana bootstrap page | `/grafana` |
-| `actuator` | A Spring Boot actuator index, `heapdump` and all | `/actuator` |
-| `elasticsearch` | An Elasticsearch root document | `/_cluster/health`, `/` on port 9200 |
-| `swagger` | An OpenAPI document naming tempting operations | `/swagger.json`, `/v2/api-docs` |
-| `debug-vars` | Go `expvar` output | `/debug/vars` |
-| `server-status` | Apache `mod_status` | `/server-status` |
 | `env` | A Laravel `.env` | `/.env`, `/.env.production` |
 | `git-config` | A `.git/config` with an internal remote | `/.git/config` |
-| `aws-credentials` | An `~/.aws/credentials` | `/.aws/credentials` |
-| `ssh-key` | An OpenSSH private key block | `/.ssh/id_rsa` |
-| `kubeconfig` | A kubeconfig with a token | `/.kube/config` |
-| `docker-compose` | A compose file with database credentials | `/docker-compose.yml` |
 | `htpasswd` | An `.htpasswd` | `/.htpasswd` |
 | `backup-sql` | A MySQL dump with a users table | `/backup.sql`, `/dump.sql` |
 | `s3-listing` | An S3 bucket listing of nightly backups | `/backups/` |
+| `laravel-log` | An application log with a stack trace and a password in it | `/storage/logs/laravel.log` |
+| `robots` | A `robots.txt` pointing at the paths above | `/robots.txt` |
+
+**Secrets and build files**
+
+The files a laptop or a build agent leaves in a deployment. Nothing
+links to them, so a request is never a browser.
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `aws-credentials` | An `~/.aws/credentials` | `/.aws/credentials` |
+| `ssh-key` | An OpenSSH private key block (it decodes to a message saying so) | `/.ssh/id_rsa` |
+| `kubeconfig` | A kubeconfig with a token | `/.kube/config` |
+| `docker-compose` | A compose file with database credentials | `/docker-compose.yml` |
+| `npmrc` | An `.npmrc` with a registry auth token | `/.npmrc` |
+| `pypirc` | A `.pypirc` with an upload token | `/.pypirc`, `/.netrc` |
+| `gitlab-ci` | A CI pipeline with a deploy token and a target host | `/.gitlab-ci.yml` |
+| `terraform-state` | A `terraform.tfstate` with sensitive outputs | `/terraform.tfstate` |
+| `vscode-sftp` | An editor's SFTP profile with host, user and password | `/.vscode/sftp.json` |
+| `appsettings` | An ASP.NET `appsettings.json` with a connection string | `/appsettings.json` |
+| `database-yml` | A Rails `config/database.yml` | `/config/database.yml` |
+| `nginx-config` | An `nginx.conf` with an internal location and a token | `/nginx.conf` |
+
+**Cloud and orchestration APIs**
+
+A request for one of these on a public proxy is usually a server side
+request forgery probe rather than a path scan: the client is asking the
+proxy to fetch its own credentials. Mark these hard.
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `imds` | Instance metadata handing out role credentials | `/latest/meta-data/iam/security-credentials/…` |
+| `consul` | A Consul service catalogue | `/v1/catalog/services` |
+| `vault` | A Vault seal status | `/v1/sys/seal-status` |
+| `docker-api` | The Docker daemon's container list | `/containers/json` |
+| `kubelet` | An unauthenticated kubelet's pod list, environment and all | `/pods` |
+
+**Data stores and dashboards**
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `elasticsearch` | An Elasticsearch root document | `/_cluster/health`, `/` on port 9200 |
+| `couchdb` | A CouchDB database list | `/_all_dbs` |
+| `solr` | A Solr core listing with document counts | `/solr/admin/cores` |
+| `rabbitmq` | A RabbitMQ management overview | `/api/overview` |
+| `kibana` | A Kibana bootstrap page | `/app/kibana` |
+| `grafana` | A Grafana bootstrap page | `/grafana` |
+| `prometheus-config` | A Prometheus scrape config carrying credentials | `/api/v1/status/config` |
+| `traefik` | A Traefik router dump with a basic auth hash | `/api/rawdata` |
+
+**Application servers and internals**
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `tomcat-manager` | The Tomcat manager application listing | `/manager/html` |
+| `jenkins` | A Jenkins sign-in page | `/jenkins`, `/login?from=%2F` |
+| `actuator` | A Spring Boot actuator index, `heapdump` and all | `/actuator` |
+| `swagger` | An OpenAPI document naming tempting operations | `/swagger.json`, `/v2/api-docs` |
+| `graphql` | An introspection reply naming an impersonate mutation | `/graphql`, `/graphiql` |
+| `debug-vars` | Go `expvar` output | `/debug/vars` |
+| `server-status` | Apache `mod_status` | `/server-status` |
+| `webshell` | A web shell someone else supposedly left | `/shell.php`, `/up.php`, `/cmd.php` |
+
+**Enterprise front doors**
+
+The login pages a mass scanner fingerprints before it picks an exploit.
+Answering costs the scanner a round trip and tells the proxy which
+product it came shopping for.
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `confluence` | An Atlassian Confluence login | `/login.action` |
+| `gitlab-login` | A GitLab sign-in page | `/users/sign_in` |
+| `citrix` | A Citrix Gateway logon page | `/vpn/index.html`, `/cgi/login` |
+| `fortinet` | A FortiGate SSL-VPN login | `/remote/login` |
+| `esxi` | A VMware ESXi host client login | `/ui/` |
+| `exchange-autodiscover` | An Exchange autodiscover reply naming internal hosts | `/autodiscover/autodiscover.xml` |
 | `idrac` | A server lights-out controller login | `/login.html` on a management name |
 | `webmail` | A webmail login | `/webmail`, `/roundcube` |
-| `webshell` | A web shell someone else supposedly left | `/shell.php`, `/up.php`, `/cmd.php` |
-| `robots` | A `robots.txt` pointing at the paths above | `/robots.txt` |
+| `cgi-bin` | An embedded router or appliance CGI page | `/cgi-bin/mainfunction.cgi`, `/cgi-bin/luci` |
 
 `robots` is the one to serve honestly: it names the decoy paths, so a
 crawler that reads it and then requests them has told you what it is.
-`examples/security/honeypots.yaml` wires the whole table up.
+`examples/security/honeypots.yaml` wires the whole table up, one route
+per decoy with the paths each is worth serving on; a test fails if a
+decoy in the table has no route there. `xproxyctl honeypot` and
+`GET /v1/honeypot` both list the names this build carries, which is the
+authority when a configuration is refused for an unknown decoy.
 
 `response_headers` apply, so a decoy can carry a `Server` header of its
 own. `GET /v1/honeypot` lists marked clients (address, route, hits,

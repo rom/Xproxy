@@ -279,16 +279,38 @@ Open findings of the earlier rounds:
   let it append a `Contact` line of somebody else's choosing. Responses
   are `GET`/`HEAD` only (405 otherwise), cached for `cache_for` and
   counted in `security_txt`.
-- **Twenty more honeypot decoys.** `honeypot.decoy` now takes 26 names
-  covering the paths scanners actually probe — `phpmyadmin`,
-  `tomcat-manager`, `jenkins`, `grafana`, `actuator`,
-  `elasticsearch`, `aws-credentials`, `ssh-key`, `kubeconfig`,
-  `docker-compose`, `wp-config`, `htpasswd`, `backup-sql`,
-  `s3-listing`, `swagger`, `debug-vars`, `server-status`, `webshell`,
-  `idrac` and `webmail` beside the original six. Every credential, key
-  and host name in them is visibly fake.
-  `examples/security/honeypots.yaml` wires all of them with a ban
-  trigger on the sweep.
+- **Fifty-six honeypot decoys.** `honeypot.decoy` now takes 56 names
+  covering the paths scanners actually probe, grouped in
+  docs/CONFIG.md by what the scanner is after. Beside the original PHP,
+  WordPress and leaked-file set: the secrets a laptop or a build agent
+  leaves in a deployment (`npmrc`, `pypirc`, `gitlab-ci`,
+  `terraform-state`, `vscode-sftp`, `appsettings`, `database-yml`,
+  `nginx-config`, `laravel-log`); the cloud and orchestration APIs a
+  server side request forgery probe asks for, where the client is
+  asking the proxy to fetch its own credentials (`imds`, `consul`,
+  `vault`, `docker-api`, `kubelet`); data stores and dashboards
+  (`couchdb`, `solr`, `rabbitmq`, `kibana`, `prometheus-config`,
+  `traefik`); the enterprise front doors a mass scanner fingerprints
+  before it picks an exploit (`confluence`, `gitlab-login`, `citrix`,
+  `fortinet`, `esxi`, `exchange-autodiscover`, `cgi-bin`); and the
+  application internals that leak a shape rather than a file
+  (`wp-users`, `graphql`, `adminer`).
+
+  Every credential, key and host name in them is visibly fake, and that
+  is now a test rather than a convention: a decoy whose body assigns a
+  password, a token or a key fails unless the value carries a marker a
+  reader recognises, and a private key block fails unless what it holds
+  decodes to a message saying it is a decoy. The documentation
+  reference and the names the validator accepts are checked against
+  each other, so a decoy cannot exist in one and not the other.
+
+  `examples/security/honeypots.yaml` wires up all 56 — one route per
+  decoy with the paths each is worth serving on, and the mark scaled to
+  what the request means: an hour for a path a confused crawler might
+  reach, six hours for a file only a credential hunt asks for, a day
+  for a metadata or orchestration probe. A test refuses a decoy the
+  example never demonstrates, a path two routes both claim, and a
+  catch-all that is not last.
 
 ### Tests (1.4)
 
