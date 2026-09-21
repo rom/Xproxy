@@ -2276,7 +2276,10 @@ means. The selectors on the answer (`statuses`, `reasons`, `denied`)
 cannot be decided when the request arrives, so those exchanges are held
 and written once the proxy has answered: `denied: true` gives a file of
 exactly what the proxy is refusing, which is the question a capture
-answers best.
+answers best. That includes the refusals decided before a route is
+known — a ban, the maintenance gate, a malformed `Host` — which no
+request-side selector can describe and which are written without
+bodies, because nothing read them.
 
 Then open the file:
 
