@@ -110,6 +110,7 @@ type Stats struct {
 	SSHSessionsOpen        atomic.Int64
 	SSHChannels            atomic.Uint64
 	SSHRefused             atomic.Uint64
+	SSHRecorded            atomic.Uint64
 	SSHRejected            atomic.Uint64
 	SSHAuthFailed          atomic.Uint64
 	SSHBytesIn             atomic.Uint64
@@ -292,6 +293,7 @@ type Snapshot struct {
 	SSHSessionsOpen        int64             `json:"ssh_sessions_open"`
 	SSHChannels            uint64            `json:"ssh_channels"`
 	SSHRefused             uint64            `json:"ssh_refused"`
+	SSHRecorded            uint64            `json:"ssh_recorded"`
 	SSHRejected            uint64            `json:"ssh_rejected"`
 	SSHAuthFailed          uint64            `json:"ssh_auth_failed"`
 	SSHBytesIn             uint64            `json:"ssh_bytes_in"`
@@ -442,6 +444,7 @@ func (s *Stats) snapshot() Snapshot {
 		SSHSessionsOpen:        s.SSHSessionsOpen.Load(),
 		SSHChannels:            s.SSHChannels.Load(),
 		SSHRefused:             s.SSHRefused.Load(),
+		SSHRecorded:            s.SSHRecorded.Load(),
 		SSHRejected:            s.SSHRejected.Load(),
 		SSHAuthFailed:          s.SSHAuthFailed.Load(),
 		SSHBytesIn:             s.SSHBytesIn.Load(),

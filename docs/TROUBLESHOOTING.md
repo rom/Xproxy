@@ -2047,6 +2047,38 @@ being written. With `action: close` the transfer ends there; with
 `read_only` beside a `yara` section warns, because nothing then reaches
 the rules.
 
+**The recording directory stays empty.** Three things to check, in
+order: the section is on the listener the session actually used; the
+requests it records are allowed (`shell`, or `exec` with `commands`
+left on — validation refuses a `recording` where neither can happen);
+and the principal covering that key has not turned it off with
+`recording: {enabled: false}`. A file appears when the channel opens
+and is closed when it ends, so a session still running has a file that
+is short by design.
+
+**A recording cannot be opened and the session runs anyway.** That is
+deliberate: a bastion that refuses work because a disk filled is its own
+outage. The error log says why and an `ssh_recording_failed` event is
+written, so the gap is visible rather than silent. Check that the
+directory exists — the proxy does not create it — and that the proxy
+user can write to it.
+
+**A recording stops before the session did.** `max_file_bytes`, almost
+always: the file carries a marker saying so, and the `ssh_recording`
+line has `truncated: true`. The bound is on the session's bytes, so the
+file is a little larger than the number set. Raise it, or accept that a
+command which prints for an hour is not worth keeping in full.
+
+**A replay wraps every line in the wrong place.** The recording was
+made without a `pty-req` to take the size from, so it says 80x24. A
+client that runs a command without asking for a terminal does not tell
+anyone how wide its terminal is.
+
+**Nothing shows what was typed.** `input` is off by default. Turning it
+on records the keystrokes, including passwords typed into prompts that
+never echoed them; whether that is lawful where you are is not a
+question this configuration can answer.
+
 **A session ends when a command finishes but the exit status is
 missing, or `ssh host command` fails with EOF although the command
 ran.** That would be a bug here rather than a policy: the bastion relays

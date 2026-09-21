@@ -65,6 +65,23 @@ func (f *countingSource) count() int {
 	return f.fetches
 }
 
+// until polls for something the terminal is expected to do, instead of
+// assuming one fixed pause covers it. A keystroke goes through a
+// pseudo-terminal, a reader goroutine and a redraw, so how long it
+// takes depends on what else the machine is running: a pause that is
+// generous on an idle machine is not generous beside the rest of the
+// suite, and the test then fails on a program that works.
+func until(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		if ok() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("%s never happened", what)
+}
+
 func TestRunOverAPseudoTerminal(t *testing.T) {
 	master, slave := openPTY(t)
 	var out lockedBuffer
@@ -147,45 +164,34 @@ func TestRunOverAPseudoTerminal(t *testing.T) {
 		}
 	}
 	// The refresh key fetched again.
-	if src.count() < 2 {
-		t.Errorf("only %d fetches", src.count())
-	}
+	until(t, "a second fetch", func() bool { return src.count() >= 2 })
 	// The unban prompt: it asks, and only "y" confirms.
 	if _, err := master.WriteString("u"); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	if !strings.Contains(out.string(), "unban") {
-		t.Error("the unban prompt was not drawn")
+	until(t, "the unban prompt", func() bool { return strings.Contains(out.string(), "unban") })
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(unbanned)
 	}
 	typeLine("n\r")
-	time.Sleep(50 * time.Millisecond)
-	mu.Lock()
-	n := len(unbanned)
-	mu.Unlock()
-	if n != 0 {
-		t.Errorf("an unban happened without confirmation: %v", unbanned)
+	// A negative is the one thing polling cannot establish, so it keeps
+	// its pause: nothing is expected to arrive, and the wait is for it
+	// to have had the chance.
+	time.Sleep(100 * time.Millisecond)
+	if n := count(); n != 0 {
+		t.Errorf("an unban happened without confirmation: %d", n)
 	}
 	typeLine("uy\r")
-	time.Sleep(100 * time.Millisecond)
-	mu.Lock()
-	n = len(unbanned)
-	mu.Unlock()
-	if n != 1 {
-		t.Errorf("the confirmed unban did not happen: %v", unbanned)
-	}
+	until(t, "the confirmed unban", func() bool { return count() == 1 })
 	// The ban prompt takes a line, and backspace edits it.
 	typeLine("b203.0.113.99 1hX\x7f reason\r")
-	time.Sleep(100 * time.Millisecond)
-	mu.Lock()
-	last := ""
-	if len(unbanned) > 0 {
-		last = unbanned[len(unbanned)-1]
-	}
-	mu.Unlock()
-	if !strings.HasPrefix(last, "ban:203.0.113.99:1h:") {
-		t.Errorf("the ban prompt produced %q", last)
-	}
+	until(t, "the ban", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(unbanned) > 1 && strings.HasPrefix(unbanned[len(unbanned)-1], "ban:203.0.113.99:1h:")
+	})
 	// Escape cancels a prompt.
 	typeLine("b\x1b")
 	time.Sleep(50 * time.Millisecond)

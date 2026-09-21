@@ -289,6 +289,57 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **SSH session recording (`ssh.recording`), in asciicast v2.** The
+  access log said a session happened. It could not say what was done in
+  it, because what was done is a stream of control sequences inside the
+  channel — which is the same reason this proxy terminates SSH rather
+  than forwarding it. Each session channel now writes that stream to a
+  file, and `asciinema play` replays it.
+
+  The format was chosen because a recording nobody can play is a
+  recording nobody reads: asciicast v2 is what asciinema records and
+  plays and what asciinema-player renders in a browser, it is line
+  oriented, so a file cut short by a crash or by a bound still plays up
+  to where it stops, and it is text. The header carries the terminal
+  size from `pty-req`, the login, the target and, for an `exec`, the
+  command; a `window-change` becomes a resize event, so a session that
+  was widened replays at both widths instead of wrapping everything
+  after it in the wrong place. Both of the target's streams are
+  recorded, because a terminal does not keep stdout and stderr apart
+  either and a recording without stderr would be missing exactly the
+  errors. An `sftp` channel is not recorded: it is not a terminal, and
+  its own log line already says what each request did.
+
+  `input` records the keystrokes too, and is off by default and warns
+  when set. A terminal's input stream carries what the screen never
+  showed, which includes every password typed into a `sudo` or `su`
+  prompt: recording output is watching over a shoulder, recording input
+  is a keylogger, and the difference matters both to the people
+  recorded and to whoever ends up holding the files. Those files hold
+  everything an administrative session printed — keys, configuration,
+  tokens — and are treated the way the capture files are: `0600` with
+  `O_EXCL`, proxy-chosen names, in a directory the operator names and
+  the proxy does not create, bounded by `max_file_bytes` per recording
+  and pruned to `max_files`.
+
+  A principal's `recording` replaces the listener's, so one entry can be
+  recorded and another spared with `recording: {enabled: false}` — the
+  deployment robot that prints logs by the megabyte and types nothing
+  does not need a recording of the log it already writes. A recording
+  that cannot be opened does not stop the session: it is an error and an
+  `ssh_recording_failed` event, because a bastion that refuses work
+  when a disk fills is its own outage. One that stops at the bound says
+  so in the file and in the `ssh_recording` log line.
+
+  The format lives in `internal/asciicast`, which is a writer and
+  nothing else. The part of it that has to be right is the escaping:
+  a session can print anything, and a quote or a newline written raw
+  would end the line early and let what a session printed forge events
+  of its own. It also carries a character that a read stopped in the
+  middle of into the next event, because terminal output arrives in
+  whatever sizes the network produced and writing each half on its own
+  would put two replacement characters where the session had one.
+
 - **SFTP: per-user paths, file-level policy and rules over what is
   written (`ssh.sftp.allow_paths` templating,
   `allow_extensions`/`deny_extensions`, `max_file_bytes`,

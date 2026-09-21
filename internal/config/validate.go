@@ -3021,6 +3021,9 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 	if h.SFTP != nil {
 		v.sftpPolicy(p+".sftp", h.SFTP, reqs["subsystem"], len(h.Principals) > 0)
 	}
+	if h.Recording != nil {
+		v.sshRecording(p+".recording", h.Recording, reqs)
+	}
 	for i, c := range h.AllowClients {
 		if _, err := netip.ParsePrefix(c); err != nil {
 			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
@@ -3125,6 +3128,40 @@ func sftpTemplateOK(pattern string) error {
 	}
 }
 
+// sshRecording validates a session recording section. reqs is what the
+// session may ask for, because a recording of requests nobody may make
+// is a directory that stays empty.
+func (v *validator) sshRecording(p string, r *SSHRecording, reqs map[string]bool) {
+	if r.Enabled != nil && !*r.Enabled {
+		// Turned off here. Nothing is written, so nothing else in the
+		// section has to make sense, and saying more would be telling
+		// an operator to fill in a form they are opting out of.
+		return
+	}
+	if r.Directory == "" {
+		v.errf("%s.directory: required", p)
+	} else {
+		v.dir(p+".directory", r.Directory)
+	}
+	if r.FilePrefix == "" || strings.ContainsAny(r.FilePrefix, "/\\.\x00") {
+		v.errf("%s.file_prefix: must be a name without a path or a dot", p)
+	}
+	if r.MaxFileBytes < 4096 || r.MaxFileBytes > 1<<32 {
+		v.errf("%s.max_file_bytes: must be 4096..4294967296", p)
+	}
+	if r.MaxFiles < 1 || r.MaxFiles > 100000 {
+		v.errf("%s.max_files: must be 1..100000", p)
+	}
+	if r.Input {
+		v.warnf("%s.input: the input stream carries what the screen never showed, including every password typed into a sudo or su prompt", p)
+	}
+	recordsShell := reqs["shell"]
+	recordsExec := reqs["exec"] && (r.Commands == nil || *r.Commands)
+	if !recordsShell && !recordsExec {
+		v.errf("%s: neither shell nor exec is recordable here, so nothing would ever be written", p)
+	}
+}
+
 // sshPrincipals validates the per principal entries and their
 // policies.
 func (v *validator) sshPrincipals(p string, h *SSHListener) {
@@ -3204,6 +3241,16 @@ func (v *validator) sshPolicy(p string, s *SSHPolicy, h *SSHListener) {
 	}
 	if s.SFTP != nil {
 		v.sftpPolicy(p+".sftp", s.SFTP, reqs["subsystem"] || sliceHas(h.AllowRequests, "subsystem"), len(h.Principals) > 0)
+	}
+	if s.Recording != nil {
+		merged := map[string]bool{}
+		for _, rt := range h.AllowRequests {
+			merged[rt] = true
+		}
+		for rt := range reqs {
+			merged[rt] = true
+		}
+		v.sshRecording(p+".recording", s.Recording, merged)
 	}
 	if s.SFTP != nil && h.SFTP == nil && h.AllowFileTransferCommands != nil && *h.AllowFileTransferCommands {
 		v.warnf("%s.sftp: the listener's allow_file_transfer_commands is true, so scp and rsync move files past every path and operation rule set here", p)

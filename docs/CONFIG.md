@@ -651,6 +651,7 @@ the credentials are read then — not per connection, so a key added to
 | `upstream_key_file` | path | required | The private key the proxy authenticates to the target with |
 | `upstream_known_hosts` | path | required unless insecure | OpenSSH known_hosts the target's key is checked against. `revoked` entries are not trusted |
 | `upstream_insecure_host_key` | bool | `false` | Accept any host key from the target. Refused unless `allow_insecure` is also set, and warned about: it is the one setting here that leaves nothing to notice a machine in the middle |
+| `recording` | object | none | Record what a session showed, to a file per channel; see below |
 | `mfa` | object | none | Require a second factor after the key or the password; see below |
 | `sftp` | object | none | Inspect the SFTP protocol inside an sftp subsystem channel; see below |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
@@ -694,10 +695,68 @@ the listener and each falling back to the listener when unset, plus:
 A denied principal never reaches the target: the refusal is at
 authentication, before a channel or an upstream connection exists.
 
+A principal's `recording` replaces the listener's, which is how one
+entry is recorded and another is not; `recording: {enabled: false}` is
+how a principal is spared where the listener records.
+
 An entry that brings its own `sftp` section to a listener that has none
 also inherits the default that section implies: file transfer helpers
 are refused for that principal, because `scp` beside a careful `sftp`
 policy is the policy with a door next to it.
+
+#### server.listeners[].ssh.recording
+
+The access log says a session happened. It cannot say what was done in
+it, because what was done is a stream of control sequences inside the
+channel. This writes that stream to a file per channel, in the
+asciicast v2 format, so "what did they actually run" is a question with
+an answer that is watched rather than reconstructed:
+
+```
+asciinema play /var/log/xproxy/sessions/session-20260921-143022.100-alice.cast
+```
+
+The format is line oriented, so a recording cut short by a crash or by
+`max_file_bytes` still plays up to where it stops, and it is text, so
+the usual tools work on it. It is a stream, not a transcript: what the
+person saw is what a terminal makes of it, which means reading one is
+replaying it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Present so a principal can turn a listener's recording off; there is no reason to write it as `true` |
+| `directory` | path | required | Where the files go. It must exist: the proxy does not create it, because where these files live is a decision to make rather than to inherit |
+| `file_prefix` | name | `session` | Begins each file name, which is then the time and the login, and always ends `.cast` |
+| `input` | bool | `false` | Record what was typed as well as what was shown. It warns, and the warning is the point: a terminal's input stream carries what the screen never showed, which includes every password typed into a `sudo` or `su` prompt |
+| `max_file_bytes` | int | `33554432` | Bounds one recording, counted in session bytes; 4096..4294967296. Past it the session carries on and the file says it stopped |
+| `max_files` | int | `1000` | Recordings this listener keeps, removing the oldest it wrote. It bounds what the proxy leaves behind; anything that must be kept belongs somewhere the proxy does not prune |
+| `commands` | bool | `true` | Record `exec` sessions too, not only the ones with a terminal |
+
+The header carries the terminal size from `pty-req`, the login and the
+target, and for an `exec` the command. A `window-change` becomes a
+resize event, so a session that was widened replays at both widths
+rather than wrapping everything after it in the wrong place. Both of
+the target's streams are recorded: a terminal does not keep stdout and
+stderr apart either, and a recording without stderr would be missing
+exactly the errors.
+
+An `sftp` channel is not recorded. It is not a terminal, and its own
+`sftp` log line already says what each request did.
+
+**These files hold everything the session showed.** On an
+administrative session that is a list of everything worth having — keys
+printed, configuration read, tokens echoed. They are written `0600` by
+the proxy user, with `O_EXCL` and proxy-chosen names, in a directory the
+operator names; the directory deserves the care the credentials in it
+will deserve. `input: true` goes further still, and is the difference
+between watching over a shoulder and running a keylogger: it is off by
+default, it warns when set, and whether it is lawful where you are is
+not a question this configuration can answer.
+
+A recording that cannot be opened does not stop the session: it is an
+error in the log and an `ssh_recording_failed` event, because a bastion
+that refuses work when a disk fills is its own outage. One that stops
+part way is logged as short, with the reason.
 
 #### server.listeners[].ssh.mfa
 

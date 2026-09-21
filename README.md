@@ -246,6 +246,8 @@ an identifier from the access log to the upstream.
   is an allow list from which the loader and interpreter variables are
   struck whatever it says; and `scp` and `rsync` are refused wherever
   there is an SFTP policy for them to walk past.
+  Sessions can be **recorded to a replayable file** (asciicast v2, one
+  per channel) — output by default, keystrokes only if you say so.
   **SFTP is inspected inside the subsystem channel** — read-only, path
   allow and deny lists that may name the session's own user, refused
   operations, extension lists that read every suffix a name carries, a

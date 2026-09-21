@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -145,7 +146,15 @@ func (tg *targetSSH) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 		switch r.Type {
 		case "exec":
 			_ = r.Reply(true, nil)
-			_, _ = fmt.Fprintf(ch, "ran %s", payload)
+			if payload == "cat" {
+				// One command reads its input and echoes it, so a test
+				// can see what crossed the channel in that direction.
+				// The others answer and end at once, which is the
+				// timing the reply race lives in.
+				_, _ = io.Copy(ch, ch)
+			} else {
+				_, _ = fmt.Fprintf(ch, "ran %s", payload)
+			}
 			_, _ = ch.SendRequest("exit-status", false, binary.BigEndian.AppendUint32(nil, 0))
 			return
 		case "shell":
@@ -1377,5 +1386,248 @@ func TestSSHExecReplyNotLost(t *testing.T) {
 		if err != nil || string(out) != "ran uptime" {
 			t.Fatalf("run %d: %q %v", i, out, err)
 		}
+	}
+}
+
+// recorded waits for the listener to finish and close a recording. The
+// file is written as the session runs and closed when the channel ends,
+// which is after the client's own connection has gone.
+func recorded(t *testing.T, s *Server, want uint64) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if s.stats.snapshot().SSHRecorded >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("only %d recordings were closed, want %d", s.stats.snapshot().SSHRecorded, want)
+}
+
+// readCast reads the one recording in a directory and returns its
+// header and events.
+func readCast(t *testing.T, dir string) (map[string]any, [][]any) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 1 {
+		t.Fatalf("recordings in %s: %v", dir, names)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, names[0])) //nolint:gosec // a directory this test made
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dir, names[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("recording mode %v: it holds everything the session showed", perm)
+	}
+	parts := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	var hdr map[string]any
+	if err := json.Unmarshal([]byte(parts[0]), &hdr); err != nil {
+		t.Fatalf("header %q: %v", parts[0], err)
+	}
+	var evs [][]any
+	for _, p := range parts[1:] {
+		var ev []any
+		if err := json.Unmarshal([]byte(p), &ev); err != nil {
+			t.Fatalf("event %q: %v", p, err)
+		}
+		evs = append(evs, ev)
+	}
+	return hdr, evs
+}
+
+// castText joins the data of every event of one kind.
+func castText(evs [][]any, kind string) string {
+	var b strings.Builder
+	for _, ev := range evs {
+		if len(ev) == 3 && ev[1] == kind {
+			if s, ok := ev[2].(string); ok {
+				b.WriteString(s)
+			}
+		}
+	}
+	return b.String()
+}
+
+// What the session showed is written to a file that can be replayed,
+// and what was typed is not, because the input stream carries what the
+// screen never showed.
+func TestSSHRecording(t *testing.T) {
+	dir := t.TempDir()
+	extra := fmt.Sprintf("        recording: {directory: %s}", dir)
+	s, addr, key, _ := bastion(t, extra)
+	c := dialBastion(t, addr, key)
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := sess.Output("uptime"); err != nil || string(out) != "ran uptime" {
+		t.Fatalf("exec: %q %v", out, err)
+	}
+	_ = c.Close()
+	recorded(t, s, 1)
+
+	hdr, evs := readCast(t, dir)
+	if hdr["version"] != float64(2) {
+		t.Fatalf("header = %v", hdr)
+	}
+	if hdr["command"] != "uptime" {
+		t.Errorf("the command is not in the header: %v", hdr["command"])
+	}
+	if title, _ := hdr["title"].(string); !strings.Contains(title, "alice") {
+		t.Errorf("title = %q, which does not say whose session it is", title)
+	}
+	if got := castText(evs, "o"); got != "ran uptime" {
+		t.Errorf("recorded output %q, want %q", got, "ran uptime")
+	}
+	if got := castText(evs, "i"); got != "" {
+		t.Errorf("input was recorded without being asked for: %q", got)
+	}
+}
+
+// With input on, the keystrokes are there too — which is the setting
+// that turns a recording into a keylogger, and why it is not the
+// default.
+func TestSSHRecordingInput(t *testing.T) {
+	dir := t.TempDir()
+	extra := fmt.Sprintf("        recording: {directory: %s, input: true}", dir)
+	s, addr, key, _ := bastion(t, extra)
+	c := dialBastion(t, addr, key)
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.Stdin = strings.NewReader("hunter2\n")
+	out, err := sess.Output("cat")
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if string(out) != "hunter2\n" {
+		t.Fatalf("the session itself lost the line: %q", out)
+	}
+	_ = c.Close()
+	recorded(t, s, 1)
+
+	_, evs := readCast(t, dir)
+	if got := castText(evs, "i"); !strings.Contains(got, "hunter2") {
+		t.Errorf("input = %q, want the typed line", got)
+	}
+}
+
+// The bound stops the file rather than the session, and the file says
+// so: a recording that is silently short still looks like the whole
+// session.
+func TestSSHRecordingBound(t *testing.T) {
+	dir := t.TempDir()
+	extra := fmt.Sprintf("        recording: {directory: %s, max_file_bytes: 4096}", dir)
+	s, addr, key, tg := bastion(t, extra)
+	c := dialBastion(t, addr, key)
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("x", 9000)
+	out, err := sess.Output(long)
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	// The session itself is untouched by the bound.
+	if len(out) != len("ran ")+len(long) {
+		t.Fatalf("the session lost output: %d bytes", len(out))
+	}
+	if len(tg.seen()) == 0 {
+		t.Fatal("nothing reached the target")
+	}
+	_ = c.Close()
+	recorded(t, s, 1)
+
+	_, evs := readCast(t, dir)
+	if len(castText(evs, "o")) >= len(out) {
+		t.Error("the bound did not stop the recording")
+	}
+	if !strings.Contains(castText(evs, "m"), "max_file_bytes") {
+		t.Error("the file does not say it is short")
+	}
+}
+
+// A principal may be recorded where the listener is not, and a
+// principal may be spared where it is.
+func TestSSHRecordingPerPrincipal(t *testing.T) {
+	dir := t.TempDir()
+	quiet := t.TempDir()
+	testDir := t.TempDir()
+	hostKeyPath, _, _ := sshKey(t, testDir, "host")
+	_, targetHostSigner, _ := sshKey(t, testDir, "target_host")
+	upKeyPath, _, _ := sshKey(t, testDir, "upstream")
+	_, watchedSigner, watchedAuthorized := sshKey(t, testDir, "watched")
+	_, sparedSigner, sparedAuthorized := sshKey(t, testDir, "spared")
+	tg := startTargetSSH(t, targetHostSigner)
+
+	authorized := filepath.Join(testDir, "authorized_keys")
+	if err := os.WriteFile(authorized, []byte(watchedAuthorized+sparedAuthorized), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	known := filepath.Join(testDir, "known_hosts")
+	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(ssh.MarshalAuthorizedKey(targetHostSigner.PublicKey()))))
+	if err := os.WriteFile(known, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: bastion
+      address: "127.0.0.1:0"
+      kind: ssh
+      ssh:
+        upstream: hosts
+        host_keys: [%s]
+        authorized_keys: %s
+        upstream_key_file: %s
+        upstream_known_hosts: %s
+        recording: {directory: %s}
+        principals:
+          - name: spared
+            fingerprints: ["%s"]
+            policy:
+              recording: {enabled: false}
+          - name: watched
+            fingerprints: ["%s"]
+logging: {access: {enabled: false}}
+upstreams:
+  - name: hosts
+    endpoints: [{address: %s}]
+`, hostKeyPath, authorized, upKeyPath, known, dir,
+		ssh.FingerprintSHA256(sparedSigner.PublicKey()),
+		ssh.FingerprintSHA256(watchedSigner.PublicKey()), tg.addr())
+	s, _ := startServer(t, yaml)
+	addr := s.Addrs()["bastion"]
+
+	for _, signer := range []ssh.Signer{sparedSigner, watchedSigner} {
+		c := dialBastion(t, addr, signer)
+		sess, err := c.NewSession()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sess.Output("uptime"); err != nil {
+			t.Fatal(err)
+		}
+		_ = c.Close()
+	}
+	recorded(t, s, 1)
+	if _, evs := readCast(t, dir); !strings.Contains(castText(evs, "o"), "ran uptime") {
+		t.Error("the watched principal was not recorded")
+	}
+	if entries, err := os.ReadDir(quiet); err != nil || len(entries) != 0 {
+		t.Errorf("the spared principal wrote something: %v %v", entries, err)
 	}
 }

@@ -4344,6 +4344,14 @@
           "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the target before the SSH banner.",
           "type": "boolean"
         },
+        "recording": {
+          "description": "Recording writes what a session showed, and optionally what was typed into it, to a file per channel.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SSHRecording"
+            }
+          ]
+        },
         "remote_forward": {
           "description": "RemoteForward accepts tcpip-forward, which asks the target to listen on the client's behalf. Default false: it turns a session into an inbound path.",
           "type": "boolean"
@@ -4440,6 +4448,14 @@
             "type": "string"
           }
         },
+        "recording": {
+          "description": "Recording replaces the listener's, which is how one entry is recorded and another is not. A principal that should not be recorded where the listener is sets enabled: false.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SSHRecording"
+            }
+          ]
+        },
         "remote_forward": {
           "type": "boolean"
         },
@@ -4488,6 +4504,41 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SSHRecording": {
+      "description": "SSHRecording records an interactive session to a file that can be replayed. A bastion's access log says a session happened; it cannot say what was done in it, because what was done is a stream of control sequences inside the channel. This writes that stream, in the asciicast v2 format, so the question \"what did they actually run\" has an answer that is watched rather than reconstructed. The files hold everything the session showed, which on an administrative session is a list of everything worth having: keys printed, configuration read, tokens echoed. They are treated the way the capture files are — the proxy user's alone, in a directory the operator names — and they are a reason to keep that directory as carefully as the credentials it will end up holding.",
+      "type": "object",
+      "properties": {
+        "commands": {
+          "description": "Commands records exec sessions too, not only the ones with a terminal. Default true: a command run without a pty is still a command run on the target.",
+          "type": "boolean"
+        },
+        "directory": {
+          "description": "Directory is where the files are written. Required. It must exist: the proxy does not create it, because where these files live is a decision to make rather than to inherit.",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Enabled is how a principal turns off a listener's recording; it defaults to true wherever the section is present.",
+          "type": "boolean"
+        },
+        "file_prefix": {
+          "description": "FilePrefix begins each file name. Default \"session\".",
+          "type": "string"
+        },
+        "input": {
+          "description": "Input records what was typed as well as what was shown. Default false, and it warns: a terminal's input stream carries what the screen never showed, which includes every password typed into a sudo or a su prompt. Recording output is watching over a shoulder; recording input is a keylogger, and the difference matters both to the people recorded and to whoever holds the files.",
+          "type": "boolean"
+        },
+        "max_file_bytes": {
+          "description": "MaxFileBytes bounds one recording. Past it the session goes on unrecorded and the file says so, rather than one command that prints for an hour filling a disk. Default 33554432.",
+          "type": "integer"
+        },
+        "max_files": {
+          "description": "MaxFiles keeps this many recordings, removing the oldest this listener wrote. Default 1000. It bounds what the proxy leaves behind; anything that must be kept belongs somewhere the proxy does not prune.",
+          "type": "integer"
         }
       },
       "additionalProperties": false

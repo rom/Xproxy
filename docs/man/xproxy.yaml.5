@@ -1983,6 +1983,15 @@ T}	T{
 Accept any host key from the target. Refused unless \fBallow_\:insecure\fR is also set,\: and warned about: it is the one setting here that leaves nothing to notice a machine in the middle
 T}
 T{
+\fBrecording\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Record what a session showed,\: to a file per channel;\: see below
+T}
+T{
 \fBmfa\fR
 T}	T{
 object
@@ -2115,7 +2124,108 @@ T}
 .PP
 A denied principal never reaches the target: the refusal is at authentication, before a channel or an upstream connection exists.
 .PP
+A principal\(aqs \fBrecording\fR replaces the listener\(aqs, which is how one entry is recorded and another is not; \fBrecording: {enabled: false}\fR is how a principal is spared where the listener records.
+.PP
 An entry that brings its own \fBsftp\fR section to a listener that has none also inherits the default that section implies: file transfer helpers are refused for that principal, because \fBscp\fR beside a careful \fBsftp\fR policy is the policy with a door next to it.
+.SS "server.listeners[].ssh.recording"
+.PP
+The access log says a session happened. It cannot say what was done in it, because what was done is a stream of control sequences inside the channel. This writes that stream to a file per channel, in the asciicast v2 format, so "what did they actually run" is a question with an answer that is watched rather than reconstructed:
+.PP
+.RS 4
+.nf
+.ft CR
+asciinema play /var/log/xproxy/sessions/session\-20260921\-143022.100\-alice.cast
+.ft
+.fi
+.RE
+.PP
+The format is line oriented, so a recording cut short by a crash or by \fBmax_file_bytes\fR still plays up to where it stops, and it is text, so the usual tools work on it. It is a stream, not a transcript: what the person saw is what a terminal makes of it, which means reading one is replaying it.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.6i) lbw(0.9i) lbx
+lw(1.0i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Present so a principal can turn a listener\(aqs recording off;\: there is no reason to write it as \fBtrue\fR
+T}
+T{
+\fBdirectory\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Where the files go. It must exist: the proxy does not create it,\: because where these files live is a decision to make rather than to inherit
+T}
+T{
+\fBfile_\:prefix\fR
+T}	T{
+name
+T}	T{
+\fBsession\fR
+T}	T{
+Begins each file name,\: which is then the time and the login,\: and always ends \fB.\:cast\fR
+T}
+T{
+\fBinput\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Record what was typed as well as what was shown. It warns,\: and the warning is the point: a terminal\(aqs input stream carries what the screen never showed,\: which includes every password typed into a \fBsudo\fR or \fBsu\fR prompt
+T}
+T{
+\fBmax_\:file_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB33554432\fR
+T}	T{
+Bounds one recording,\: counted in session bytes;\: 4096..4294967296. Past it the session carries on and the file says it stopped
+T}
+T{
+\fBmax_\:files\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Recordings this listener keeps,\: removing the oldest it wrote. It bounds what the proxy leaves behind;\: anything that must be kept belongs somewhere the proxy does not prune
+T}
+T{
+\fBcommands\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Record \fBexec\fR sessions too,\: not only the ones with a terminal
+T}
+.TE
+.PP
+The header carries the terminal size from \fBpty\-req\fR, the login and the target, and for an \fBexec\fR the command. A \fBwindow\-change\fR becomes a resize event, so a session that was widened replays at both widths rather than wrapping everything after it in the wrong place. Both of the target\(aqs streams are recorded: a terminal does not keep stdout and stderr apart either, and a recording without stderr would be missing exactly the errors.
+.PP
+An \fBsftp\fR channel is not recorded. It is not a terminal, and its own \fBsftp\fR log line already says what each request did.
+.PP
+\fBThese files hold everything the session showed.\fR On an administrative session that is a list of everything worth having \[u2014] keys printed, configuration read, tokens echoed. They are written \fB0600\fR by the proxy user, with \fBO_EXCL\fR and proxy\-chosen names, in a directory the operator names; the directory deserves the care the credentials in it will deserve. \fBinput: true\fR goes further still, and is the difference between watching over a shoulder and running a keylogger: it is off by default, it warns when set, and whether it is lawful where you are is not a question this configuration can answer.
+.PP
+A recording that cannot be opened does not stop the session: it is an error in the log and an \fBssh_recording_failed\fR event, because a bastion that refuses work when a disk fills is its own outage. One that stops part way is logged as short, with the reason.
 .SS "server.listeners[].ssh.mfa"
 .PP
 A second factor after the key or the password. The client is told authentication partially succeeded (RFC 4252 partial success) and is then asked, over keyboard\-interactive, for a one\-time code (RFC 6238 TOTP over the HMAC\-OTP of RFC 4226). Nothing about the session exists until the code verifies: a key alone opens no channel.

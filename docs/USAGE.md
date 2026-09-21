@@ -2484,9 +2484,41 @@ packet. Both of these need to know which handle is which file, so a
 write on a handle whose `open` the proxy never saw is refused: a write
 that cannot be held to a bound is not a write to pass on.
 
+**What was actually done in the session.** The access log says one
+happened; `recording` writes what it showed, one file per channel, in
+the asciicast v2 format:
+
+```yaml
+        recording:
+          directory: /var/log/xproxy/sessions
+          max_file_bytes: 33554432
+          max_files: 2000
+```
+
+`asciinema play` replays a file; the format is line oriented, so one cut
+short by a crash or by the bound still plays up to where it stops. The
+header carries the terminal size, the login and the target, and for an
+`exec` the command; a `window-change` becomes a resize event; stderr is
+recorded with stdout, because a terminal does not keep them apart and a
+recording without stderr is missing exactly the errors. An `sftp`
+channel is not recorded — it is not a terminal, and its own log line
+already says what each request did.
+
+`input: false` is the default and stays that way unless you mean it: a
+terminal's input stream carries what the screen never showed, which
+includes every password typed into a `sudo` prompt. Recording output is
+watching over a shoulder; recording input is a keylogger, and the
+difference matters to the people recorded and to whoever holds the
+files. Those files hold everything an administrative session printed —
+keys, configuration, tokens — so the directory deserves the care its
+contents will deserve. A principal's `recording` replaces the
+listener's, so one entry can be recorded and another spared with
+`recording: {enabled: false}`.
+
 Every session writes an `ssh` access line, every allowed `exec` is a
-security event with the command line, and every inspected SFTP request
-writes an `sftp` line with the operation and the path. That record is
+security event with the command line, every closed recording writes an
+`ssh_recording` line with the file and its size, and every inspected
+SFTP request writes an `sftp` line with the operation and the path. That record is
 the other reason to terminate rather than forward: a stream you cannot
 read is a stream you cannot log.
 

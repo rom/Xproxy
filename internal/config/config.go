@@ -364,6 +364,9 @@ type SSHListener struct {
 	// open, because scp moves files without touching the sftp
 	// subsystem at all.
 	AllowFileTransferCommands *bool `yaml:"allow_file_transfer_commands"`
+	// Recording writes what a session showed, and optionally what was
+	// typed into it, to a file per channel.
+	Recording *SSHRecording `yaml:"recording"`
 	// MFA requires a second factor after the key or the password: the
 	// client is told authentication partially succeeded and must then
 	// answer a keyboard-interactive prompt with a one-time code.
@@ -377,6 +380,54 @@ type SSHListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+}
+
+// SSHRecording records an interactive session to a file that can be
+// replayed.
+//
+// A bastion's access log says a session happened; it cannot say what
+// was done in it, because what was done is a stream of control
+// sequences inside the channel. This writes that stream, in the
+// asciicast v2 format, so the question "what did they actually run"
+// has an answer that is watched rather than reconstructed.
+//
+// The files hold everything the session showed, which on an
+// administrative session is a list of everything worth having: keys
+// printed, configuration read, tokens echoed. They are treated the way
+// the capture files are — the proxy user's alone, in a directory the
+// operator names — and they are a reason to keep that directory as
+// carefully as the credentials it will end up holding.
+type SSHRecording struct {
+	// Enabled is how a principal turns off a listener's recording; it
+	// defaults to true wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Directory is where the files are written. Required. It must
+	// exist: the proxy does not create it, because where these files
+	// live is a decision to make rather than to inherit.
+	Directory string `yaml:"directory"`
+	// FilePrefix begins each file name. Default "session".
+	FilePrefix string `yaml:"file_prefix"`
+	// Input records what was typed as well as what was shown. Default
+	// false, and it warns: a terminal's input stream carries what the
+	// screen never showed, which includes every password typed into a
+	// sudo or a su prompt. Recording output is watching over a
+	// shoulder; recording input is a keylogger, and the difference
+	// matters both to the people recorded and to whoever holds the
+	// files.
+	Input bool `yaml:"input"`
+	// MaxFileBytes bounds one recording. Past it the session goes on
+	// unrecorded and the file says so, rather than one command that
+	// prints for an hour filling a disk. Default 33554432.
+	MaxFileBytes int64 `yaml:"max_file_bytes"`
+	// MaxFiles keeps this many recordings, removing the oldest this
+	// listener wrote. Default 1000. It bounds what the proxy leaves
+	// behind; anything that must be kept belongs somewhere the proxy
+	// does not prune.
+	MaxFiles int `yaml:"max_files"`
+	// Commands records exec sessions too, not only the ones with a
+	// terminal. Default true: a command run without a pty is still a
+	// command run on the target.
+	Commands *bool `yaml:"commands"`
 }
 
 // SFTPPolicy inspects the SFTP protocol inside an sftp subsystem
@@ -3713,6 +3764,10 @@ type SSHPolicy struct {
 	Forward         []string    `yaml:"forward"`
 	RemoteForward   *bool       `yaml:"remote_forward"`
 	SFTP            *SFTPPolicy `yaml:"sftp"`
+	// Recording replaces the listener's, which is how one entry is
+	// recorded and another is not. A principal that should not be
+	// recorded where the listener is sets enabled: false.
+	Recording *SSHRecording `yaml:"recording"`
 	// Deny refuses this principal outright, which is how a key stays in
 	// authorized_keys while the person it belongs to is off.
 	Deny bool `yaml:"deny"`
