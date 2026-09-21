@@ -161,6 +161,7 @@ compute it.
 | 403 with `reason: waf` | A rule matched. `waf_matched` names it; see [WAF](#waf) |
 | 403 with `reason: honeypot` | The client asked for a honeypot path. That is the honeypot working |
 | 403 with `reason: honeytoken` | The client presented a planted credential. `detail` names the plant; see [Honeytokens](#honeytokens) |
+| 403 on a form submission with `form_guard` in the line | `form_guard` fired. `detail` says which half: `field:<name>` is the hidden field, `too_fast`/`too_old`/`no_form_fetch` is the clock; see [Form honeypots](#form-honeypots) |
 | An endpoint returns empty or wrong data for one client only | A `deceive` block on that route admitted it; see [Deceptive answers](#deceptive-answers) |
 | A client reports the site is slow and is not banned | A `degradation` level admitted it; the access line says `degraded: <level>`. See [The slow lane](#the-slow-lane-degradation) |
 | A TLS error at the client and no access log line | `handshake` refused the connection before it became a request; see [Refusal at the TLS handshake](#refusal-at-the-tls-handshake) |
@@ -1249,6 +1250,57 @@ the proxy's word for it, never the client's.
 the route means either the filter admits everything, or the requests die
 before the filter chain — see [Where a request can
 die](#where-a-request-can-die).
+
+## Form honeypots
+
+**Real people are refused with `field:<name>`.** Something is filling
+the hidden field for them, which means it is not hidden enough. A
+password manager will fill an input it can see in the DOM: give it
+`tabindex="-1"` and `autocomplete="off"`. An accessibility tool will
+read a field that is only visually hidden: `aria-hidden="true"` and a
+label that says to leave it empty. And a field positioned off screen
+survives a stylesheet that failed to load, where `display:none` set in
+CSS does not — a person on a page with no styles sees the field and
+fills it in.
+
+**Real people are refused with `too_fast`.** `min_seconds` is set to
+what an average fill takes rather than the shortest honest one. A
+password manager submits a login form in well under a second, a
+one-field newsletter box almost as fast, and a returning user with a
+browser-autofilled address form faster than you would guess. Read
+`form_seconds` in the access log for the denied requests: the
+distribution tells you where the floor belongs. Fields are the half
+with no false positives; timing is the half to tune.
+
+**Real people are refused with `too_old`.** A form left open in a tab
+over lunch is ordinary. `max_seconds` guards against a page harvested
+once and replayed for weeks, so hours, not minutes — and remember a
+reload of the form page refreshes the record.
+
+**Real people are refused with `no_form_fetch`.** `require_fetch` is
+set on a page that can reach the client without a fetch this node saw:
+a CDN or browser cache, a prerender, a form posted from another host,
+or a second proxy node that served the page (the table is per process
+and not shared). Turn it off unless all of those are impossible.
+
+**Nothing is ever refused.** Check the obvious first: the hidden field
+has to be in the served HTML, and its `name` has to match `fields`
+exactly. Then check the filter runs at all — `xproxyctl filters` counts
+denials per instance, and a route that does not list the filter never
+calls it. A submission whose `Content-Type` is not
+`application/x-www-form-urlencoded` is not parsed (by design), and a
+body larger than `max_body_bytes` passes uninspected.
+
+**Denies ban nobody.** A ban trigger names a built-in reason, and the
+filter's default reason is its own name. Set `reason: honeypot` on the
+filter to put its denies in a category a trigger can name.
+
+**Timing stopped working after a traffic increase.** The fetch table
+holds `max_clients` entries and sweeps its older half when full, so a
+busy node forgets the oldest fetches. That is deliberately permissive —
+a forgotten fetch is "no record", which is allowed — but it means the
+timing check quietly covers less. Raise `max_clients`, or rely on
+`fields`, which needs no table.
 
 ## Bot score
 

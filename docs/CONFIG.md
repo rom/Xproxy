@@ -2170,7 +2170,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -2352,6 +2352,54 @@ behind a proxy pool). The last two need a `challenge` section with
 score is the capped sum; a client that is
 already verified by the challenge is never challenged again. The JA4 of
 every TLS request is logged as `ja4`.
+
+### Kind `form_guard`
+
+Catches the two things a form-filling bot does and a person does not:
+it fills in every field it finds, including the one nobody can see, and
+it submits faster than anyone could have read the page.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `fields` | list of field names | | Fields that must arrive empty or absent; a value in any of them denies with detail `field:<name>`. Both the submitted body and the query string are searched |
+| `min_seconds` | seconds | `0` (off) | Refuse a submission that arrives sooner than this after the form page was fetched (detail `too_fast`); 0 to 3600 |
+| `max_seconds` | seconds | `0` (off) | Refuse a submission from a form page fetched longer ago than this (detail `too_old`); 0 to 2592000 |
+| `form_paths` | list of paths | required for timing | GETs of these paths (and anything below them) count as fetching the form |
+| `require_fetch` | bool | `false` | Refuse a submission with no form fetch on record (detail `no_form_fetch`) |
+| `methods` | list of `POST`, `PUT`, `PATCH` | `[POST]` | What counts as a submission |
+| `max_body_bytes` | int | `65536` | Body buffered and replayed for inspection; a larger body passes uninspected (1024 to 8 MiB) |
+| `max_clients` | int | `65536` | Fetch times remembered; a full table sweeps its older half (128 to 1048576) |
+| `status` | int | `403` | 4xx status on deny |
+| `reason` | string | the filter name | Deny reason in logs, counters and ban triggers |
+
+The hidden field is the classic: an input the stylesheet hides and
+`autocomplete="off"` keeps a password manager out of, with a name worth
+filling in (`contact_reason`, `website`). A person never sees it, so a
+value in it is a signal with no false positive to trade away — unlike
+timing, which is why `fields` is the option to reach for first.
+
+```html
+<div style="position:absolute;left:-9999px" aria-hidden="true">
+  <label>Leave this empty<input type="text" name="contact_reason"
+         tabindex="-1" autocomplete="off"></label>
+</div>
+```
+
+The timing check needs no JavaScript and no cookie: the filter remembers
+when the client address last fetched a page under `form_paths` and
+compares. A client with no fetch on record is allowed, because a form
+page can be cached, prerendered or served by another node; set
+`require_fetch` only where the deployment makes that impossible. Only
+`application/x-www-form-urlencoded` bodies are parsed — a JSON API
+sharing the route is none of this filter's business — and the body is
+replayed byte for byte, so the application receives exactly what the
+client sent.
+
+Denies are logged with the configured reason and a detail, and add
+`form_guard` (and `form_seconds` for a timing refusal) to the access log
+line. A ban trigger names a built-in reason, so set `reason: honeypot`
+to let one pick these denies up; left unset, they are logged under the
+filter's own name and ban nobody.
 
 ### Kind `account_guard`
 

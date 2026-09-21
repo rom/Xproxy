@@ -260,6 +260,30 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Hidden-field and timing honeypots on forms (filter kind
+  `form_guard`).** A form bot does two things a person does not: it
+  fills in every field it finds, including the one nobody can see, and
+  it submits faster than anyone could have read the page. `fields`
+  names inputs that must arrive empty — the classic hidden field, off
+  screen and `aria-hidden`, which a person never sees and so cannot
+  fill in; it is the rare signal with no false-positive rate to trade
+  against a detection rate. `min_seconds` and `max_seconds` compare the
+  submission against the last fetch of a page under `form_paths`,
+  needing no JavaScript and no cookie, and `require_fetch` refuses a
+  submission with no fetch on record for a deployment where the form
+  page cannot reach a client any other way. Both halves are searched in
+  the query string as well as the body, only
+  `application/x-www-form-urlencoded` is parsed, and the body is
+  buffered to `max_body_bytes` and replayed byte for byte, so the
+  application receives exactly what the client sent. Denies carry a
+  detail — `field:<name>`, `too_fast`, `too_old`, `no_form_fetch` — and
+  add `form_seconds` to the access log line, which is what tells you
+  where the floor belongs before you tighten it. The fetch table is
+  bounded by `max_clients` and sweeps its older half when full, in the
+  permissive direction: a forgotten fetch is "no record", which is
+  allowed, so a busy node never starts refusing people.
+  `examples/filters/form-guard.yaml`.
+
 - **Deceptive answers on real routes (`routes[].deceive`).** A refusal
   is information: a scanner that gets 403 has learned that the request
   it sent was the interesting one, and it varies that request until

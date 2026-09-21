@@ -2144,6 +2144,72 @@ quiet — a token that fires on real traffic was planted somewhere real
 traffic reaches — and never register a real credential: the value is
 compared as an ordinary string and the whole design assumes it is fake.
 
+### Form honeypots: the hidden field and the clock
+
+A form bot does two things a person does not. It fills in every field
+it finds, including the one nobody can see, and it submits faster than
+anyone could have read the page. The `form_guard` filter watches for
+both.
+
+```yaml
+filters:
+  - name: signup-guard
+    kind: form_guard
+    stage: before_auth
+    options:
+      fields: [contact_reason, website]   # must arrive empty or absent
+      min_seconds: 2                      # after the form page was fetched
+      max_seconds: 3600                   # and not from a page fetched yesterday
+      form_paths: [/signup]
+      reason: honeypot
+routes:
+  - name: signup
+    paths: [/signup]
+    filters: [signup-guard]
+    upstream: app
+```
+
+The hidden field costs the application one element and no JavaScript:
+
+```html
+<div style="position:absolute;left:-9999px" aria-hidden="true">
+  <label>Leave this empty<input type="text" name="contact_reason"
+         tabindex="-1" autocomplete="off"></label>
+</div>
+```
+
+Keep it off screen rather than `display:none` (some crawlers skip what
+is not rendered), give it a name worth filling in, and keep password
+managers out with `tabindex="-1"` and `autocomplete="off"`. A person
+never sees the field, so a value in it is a signal with no
+false-positive rate to trade away — which is why `fields` is the option
+to reach for first and the one to start with alone.
+
+Timing is the weaker half and needs the care. The filter remembers when
+the client address last fetched a page under `form_paths`; a
+submission that arrives within `min_seconds` of it is `too_fast`, and
+one from a page fetched longer ago than `max_seconds` is `too_old`. A
+client with no fetch on record is allowed, because a form page can be
+cached, prerendered, or served by another node — set `require_fetch`
+only where the deployment makes all three impossible. Set
+`min_seconds` to what the shortest honest fill takes, not to what an
+average one does: a password manager filling a login form is quick, and
+a one-field newsletter box is quicker.
+
+Only `application/x-www-form-urlencoded` bodies are parsed, up to
+`max_body_bytes`, and the body is replayed byte for byte, so the
+application receives exactly what the client sent; a JSON API sharing
+the route passes untouched. The query string of a submission is
+searched too, so a field cannot be smuggled past the body check.
+
+Denies carry a detail — `field:<name>`, `too_fast`, `too_old`,
+`no_form_fetch` — that says which half fired, and `form_seconds` in the
+access log says by how much. Watch the details for a week before
+tightening anything: `field:` hits are the ones to ban on,
+`too_fast` is the one to tune. `examples/filters/form-guard.yaml`
+pairs a sign-up, a contact form and a password reset, each with the
+amount of checking its page can carry.
+
 ### gRPC services
 
 ```yaml

@@ -7565,7 +7565,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBform_\:guard\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -8289,6 +8289,131 @@ T}
 .TE
 .PP
 Signals and default weights: \fBua_bot\fR 40 (curl, wget, python, Go, Java, scanners, headless browsers and the like), \fBua_missing\fR 30, \fBbrowser_headers_missing\fR 25 (a browser user agent without \fBAccept\fR or \fBAccept\-Language\fR), \fBfingerprint_mismatch\fR 35 (a browser user agent on a hello without \fBh2\fR ALPN or with fewer than ten cipher suites), \fBerror_rate\fR 30 (more than half of at least ten recent requests were 4xx or denied), \fBpath_spread\fR 15 (fifty or more distinct paths in the window), \fBregular_interval\fR 20 (eight or more requests with machine\-like timing), \fBhigh_rate\fR 15, \fBhoneypot_marked\fR 40 (the client touched a honeypot route on this node or, with cluster sharing, on a peer), \fBautomation_markers\fR 45 (the challenge cookie says the script saw WebDriver, driver globals, chromedriver, a headless user agent, no languages, no plugins or a zero sized window when the client solved its challenge) and \fBdevice_shared\fR 25 (the cookie\(aqs device identifier came from \fBdevice_addresses\fR or more addresses in the window: one tool behind a proxy pool). The last two need a \fBchallenge\fR section with \fBdevice\fR on and only apply once the client holds a cookie. The score is the capped sum; a client that is already verified by the challenge is never challenged again. The JA4 of every TLS request is logged as \fBja4\fR.
+.SS "Kind \fBform_guard\fR"
+.PP
+Catches the two things a form\-filling bot does and a person does not: it fills in every field it finds, including the one nobody can see, and it submits faster than anyone could have read the page.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.8i) lbw(0.9i) lbx
+lw(0.9i) lw(0.8i) lw(0.9i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBfields\fR
+T}	T{
+list of field names
+T}	T{
+
+T}	T{
+Fields that must arrive empty or absent;\: a value in any of them denies with detail \fBfield:\:<name>\fR. Both the submitted body and the query string are searched
+T}
+T{
+\fBmin_\:seconds\fR
+T}	T{
+seconds
+T}	T{
+\fB0\fR (off)
+T}	T{
+Refuse a submission that arrives sooner than this after the form page was fetched (detail \fBtoo_\:fast\fR);\: 0 to 3600
+T}
+T{
+\fBmax_\:seconds\fR
+T}	T{
+seconds
+T}	T{
+\fB0\fR (off)
+T}	T{
+Refuse a submission from a form page fetched longer ago than this (detail \fBtoo_\:old\fR);\: 0 to 2592000
+T}
+T{
+\fBform_\:paths\fR
+T}	T{
+list of paths
+T}	T{
+required for timing
+T}	T{
+GETs of these paths (and anything below them) count as fetching the form
+T}
+T{
+\fBrequire_\:fetch\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a submission with no form fetch on record (detail \fBno_\:form_\:fetch\fR)
+T}
+T{
+\fBmethods\fR
+T}	T{
+list of \fBPOST\fR,\: \fBPUT\fR,\: \fBPATCH\fR
+T}	T{
+\fB[POST]\fR
+T}	T{
+What counts as a submission
+T}
+T{
+\fBmax_\:body_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Body buffered and replayed for inspection;\: a larger body passes uninspected (1024 to 8 MiB)
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Fetch times remembered;\: a full table sweeps its older half (128 to 1048576)
+T}
+T{
+\fBstatus\fR
+T}	T{
+int
+T}	T{
+\fB403\fR
+T}	T{
+4xx status on deny
+T}
+T{
+\fBreason\fR
+T}	T{
+string
+T}	T{
+the filter name
+T}	T{
+Deny reason in logs,\: counters and ban triggers
+T}
+.TE
+.PP
+The hidden field is the classic: an input the stylesheet hides and \fBautocomplete="off"\fR keeps a password manager out of, with a name worth filling in (\fBcontact_reason\fR, \fBwebsite\fR). A person never sees it, so a value in it is a signal with no false positive to trade away \[u2014] unlike timing, which is why \fBfields\fR is the option to reach for first.
+.PP
+.RS 4
+.nf
+.ft CR
+<div style="position:absolute;left:\-9999px" aria\-hidden="true">
+  <label>Leave this empty<input type="text" name="contact_reason"
+         tabindex="\-1" autocomplete="off"></label>
+</div>
+.ft
+.fi
+.RE
+.PP
+The timing check needs no JavaScript and no cookie: the filter remembers when the client address last fetched a page under \fBform_paths\fR and compares. A client with no fetch on record is allowed, because a form page can be cached, prerendered or served by another node; set \fBrequire_fetch\fR only where the deployment makes that impossible. Only \fBapplication/x\-www\-form\-urlencoded\fR bodies are parsed \[u2014] a JSON API sharing the route is none of this filter\(aqs business \[u2014] and the body is replayed byte for byte, so the application receives exactly what the client sent.
+.PP
+Denies are logged with the configured reason and a detail, and add \fBform_guard\fR (and \fBform_seconds\fR for a timing refusal) to the access log line. A ban trigger names a built\-in reason, so set \fBreason: honeypot\fR to let one pick these denies up; left unset, they are logged under the filter\(aqs own name and ban nobody.
 .SS "Kind \fBaccount_guard\fR"
 .PP
 Protects the endpoints where accounts are attacked. Each endpoint has a class with a default ladder of progressive actions over a window: \fBlogin\fR counts failed attempts (recognised in the response) per client address, per account, per address and account pair, distinct accounts per address (credential stuffing) and distinct addresses per account (spraying, distributed brute force); \fBregister\fR, \fBreset\fR, \fBcart\fR and \fBscrape\fR count requests; \fBcustom\fR needs its own steps. A step fires when any of its thresholds is reached and the highest firing step acts: \fBlog\fR records, \fBdelay\fR holds the request, \fBchallenge\fR serves the browser challenge to unverified clients (a plain 403 without a \fBchallenge\fR section), \fBcaptcha\fR serves the CAPTCHA tier (\fBchallenge.captcha\fR; the proof of work without one) to clients that have not passed it, and \fBblock\fR refuses the key that crossed the threshold for \fBduration\fR, on every node of a cluster. Blocks and denials use reason \fBaccount_abuse\fR (a ban trigger category) with status \fBblock_status\fR; the access log carries \fBaccount_endpoint\fR, \fBaccount_action\fR, \fBaccount_by\fR, \fBaccount_counts\fR, \fBaccount_hash\fR, \fBaccount_campaign\fR, \fBaccount_device\fR and \fBaccount_outcome\fR; \fBxproxyctl accounts\fR and \fBGET /v1/accounts\fR show the live state (tracked keys, active blocks, campaigns) and the process wide counters, which the \fBxproxy_account_*\fR metric families export. Identities are trimmed, lower cased and hashed before they are counted or logged. A campaign spread over many addresses, each under its own thresholds, is detected from the endpoint\(aqs totals (\fBdistributed\fR): while it lasts every unverified request of the endpoint is challenged (or blocked).
