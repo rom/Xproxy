@@ -127,6 +127,7 @@ type boundListener struct {
 	forward   *forwardServer // kind: forward listeners
 	dns       *dns.Server    // kind: dns listeners
 	doq       *dns.DoQServer // DNS over QUIC on a dns listener
+	smtp      *smtpServer    // kind: smtp listeners
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -704,6 +705,35 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		}
 		return bl, nil
 	}
+	if lc.Kind == "smtp" {
+		// The listener is not wrapped in a TLS listener even for
+		// implicit mode: STARTTLS has to read cleartext first, so the
+		// session decides when the handshake happens.
+		var tc *tls.Config
+		if lc.TLS != nil {
+			c, rl, err := tlsconf.Server(lc.TLS, nil)
+			if err != nil {
+				_ = fr.Close()
+				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+			}
+			s.tickets.Attach(c)
+			rl.Fingerprints = s.fingerprints
+			rl.Refuse = s.refuseHandshake
+			rl.StartStapling(s.logs.Error)
+			bl.tlsReload = rl
+			tc = c
+		}
+		m, err := newSMTPServer(s, lc, bl.ln, tc)
+		if err != nil {
+			_ = fr.Close()
+			if bl.tlsReload != nil {
+				bl.tlsReload.Close()
+			}
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		bl.smtp = m
+		return bl, nil
+	}
 	if lc.Kind == "dns" && lc.TLS != nil {
 		// Encrypted: DNS over TLS and DNS over HTTPS on the TCP port, no
 		// plain UDP.
@@ -892,6 +922,10 @@ func (s *Server) serve(bl *boundListener) {
 			bl.doq.Serve()
 		}
 		bl.dns.Serve()
+		return
+	}
+	if bl.smtp != nil {
+		bl.smtp.serve()
 		return
 	}
 	if bl.cfg.TLS != nil {
@@ -1348,6 +1382,11 @@ func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocke
 		}
 		bl.dns.Shutdown(ctx)
 		bl.dns.Close()
+		if bl.tlsReload != nil {
+			bl.tlsReload.Close()
+		}
+	case bl.smtp != nil:
+		bl.smtp.shutdown(ctx)
 		if bl.tlsReload != nil {
 			bl.tlsReload.Close()
 		}

@@ -337,6 +337,48 @@ Open findings of the earlier rounds:
   once each) and the parser refuses records that do not.
   `examples/blocklists/dns-encrypted.yaml`.
 
+- **SMTP and submission proxy (`kind: smtp`).** Mail was the traffic
+  this proxy could only splice. A `kind: tcp` listener carries the same
+  octets to the same mail server, but then the client and the server
+  each decide on their own where a command and a message end — and that
+  gap is where every SMTP smuggling bug lives. This listener speaks one
+  session to the client and a second to the upstream, reads each line
+  and each message itself, and writes them out again, so the framing is
+  decided once.
+
+  What that buys, concretely. A line must end with CRLF: a bare LF is
+  the 2023 smuggling class (`\n.\n` ends a message for a permissive
+  parser and not for a strict one) and is refused, or repaired to CRLF
+  under `bare_newlines: convert`, which is only safe because the proxy
+  re-emits the line. `CHUNKING` and `BDAT` are never advertised or
+  relayed, because a length-framed message would put the decision back
+  in two places. A reply the proxy cannot parse is never passed
+  through: the client gets 421, since a reply the proxy did not
+  understand is exactly the one the client would read differently. And
+  anything pipelined behind `STARTTLS` ends the session — those octets
+  were written before the client could see the 220, which is
+  CVE-2011-0411 — with the session's greeting and authentication
+  discarded after the handshake as RFC 3207 requires.
+
+  It terminates STARTTLS (RFC 3207) or implicit TLS (RFC 8314, port
+  465) for the client and can open its own to the upstream, so the hop
+  is never the plaintext one by accident; with `upstream_tls_mode:
+  starttls` an upstream that does not offer it fails the session
+  instead. `require_tls` and `require_auth` hold AUTH and MAIL until
+  the session is encrypted and authenticated. The capability list the
+  client sees is the proxy's promise rather than the upstream's:
+  hidden keywords stripped, `SIZE` replaced by `max_message_size`,
+  `STARTTLS` advertised only while the proxy can still answer it, and
+  `banner` in place of a greeting that otherwise names the mail
+  server's brand and version. Bounds on recipients, messages, line
+  length and refused commands keep one session from becoming a fan-out
+  or a free walk through the command space; `VRFY` and `EXPN` are out
+  of the default command set because they answer whether an address
+  exists. A message past `max_message_size` drops the upstream
+  connection without its terminator, so a truncated message is never
+  queued as a whole one. Violations are `smtp_denied` deny events, so
+  bans apply. `examples/mail/submission.yaml`.
+
 - **WebSocket message inspection (`routes[].websocket_guard`).** An
   upgraded connection was the one place this proxy stopped looking:
   everything before the 101 went through routing, the WAF, the filters

@@ -91,6 +91,14 @@ type Stats struct {
 	MasqueIP               atomic.Uint64
 	MasqueOpen             atomic.Int64
 	MasqueDropped          atomic.Uint64
+	SMTPSessions           atomic.Uint64
+	SMTPSessionsOpen       atomic.Int64
+	SMTPMessages           atomic.Uint64
+	SMTPRefused            atomic.Uint64
+	SMTPRejected           atomic.Uint64
+	SMTPTLSUpgrades        atomic.Uint64
+	SMTPProtocolErrors     atomic.Uint64
+	SMTPBytesIn            atomic.Uint64
 	WSConnections          atomic.Uint64
 	WSMessages             atomic.Uint64
 	WSViolations           atomic.Uint64
@@ -244,6 +252,14 @@ type Snapshot struct {
 	MasqueIP               uint64            `json:"masque_ip"`
 	MasqueOpen             int64             `json:"masque_open"`
 	MasqueDropped          uint64            `json:"masque_dropped"`
+	SMTPSessions           uint64            `json:"smtp_sessions"`
+	SMTPSessionsOpen       int64             `json:"smtp_sessions_open"`
+	SMTPMessages           uint64            `json:"smtp_messages"`
+	SMTPRefused            uint64            `json:"smtp_refused"`
+	SMTPRejected           uint64            `json:"smtp_rejected"`
+	SMTPTLSUpgrades        uint64            `json:"smtp_tls_upgrades"`
+	SMTPProtocolErrors     uint64            `json:"smtp_protocol_errors"`
+	SMTPBytesIn            uint64            `json:"smtp_bytes_in"`
 	WSConnections          uint64            `json:"websocket_connections"`
 	WSMessages             uint64            `json:"websocket_messages"`
 	WSViolations           uint64            `json:"websocket_violations"`
@@ -365,6 +381,14 @@ func (s *Stats) snapshot() Snapshot {
 		MasqueIP:               s.MasqueIP.Load(),
 		MasqueOpen:             s.MasqueOpen.Load(),
 		MasqueDropped:          s.MasqueDropped.Load(),
+		SMTPSessions:           s.SMTPSessions.Load(),
+		SMTPSessionsOpen:       s.SMTPSessionsOpen.Load(),
+		SMTPMessages:           s.SMTPMessages.Load(),
+		SMTPRefused:            s.SMTPRefused.Load(),
+		SMTPRejected:           s.SMTPRejected.Load(),
+		SMTPTLSUpgrades:        s.SMTPTLSUpgrades.Load(),
+		SMTPProtocolErrors:     s.SMTPProtocolErrors.Load(),
+		SMTPBytesIn:            s.SMTPBytesIn.Load(),
 		WSConnections:          s.WSConnections.Load(),
 		WSMessages:             s.WSMessages.Load(),
 		WSViolations:           s.WSViolations.Load(),

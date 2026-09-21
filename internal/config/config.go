@@ -217,8 +217,8 @@ type Listener struct {
 	// Kind is http (default), tcp (an L4 listener that forwards
 	// connections by TLS server name without terminating TLS), forward
 	// (an explicit HTTP proxy for clients: CONNECT tunnels and absolute
-	// URI requests to destinations the policy allows) or dns (a DNS
-	// proxy).
+	// URI requests to destinations the policy allows), dns (a DNS
+	// proxy) or smtp (a protocol-aware SMTP and submission proxy).
 	Kind string `yaml:"kind"`
 	// TCP configures a kind: tcp listener.
 	TCP *TCPListener `yaml:"tcp"`
@@ -226,6 +226,102 @@ type Listener struct {
 	Forward *ForwardListener `yaml:"forward"`
 	// DNS configures a kind: dns listener.
 	DNS *DNSListener `yaml:"dns"`
+	// SMTP configures a kind: smtp listener.
+	SMTP *SMTPListener `yaml:"smtp"`
+}
+
+// SMTPListener is a protocol-aware SMTP proxy: it speaks the session to
+// the client, speaks a second one to the upstream, and decides for
+// itself where each command and each message ends. That is the point of
+// it. A layer 4 splice would carry the same bytes, but the client and
+// the mail server would each parse them on their own, and every
+// SMTP smuggling bug there has ever been lives in the gap between two
+// such parses.
+//
+// It terminates STARTTLS (RFC 3207) for the client and may start its
+// own to the upstream, so the hop the proxy makes is never the plaintext
+// one by accident.
+type SMTPListener struct {
+	// Upstream is the pool to relay to. Required.
+	Upstream string `yaml:"upstream"`
+	// TLSMode is how the client reaches this listener: starttls (plain
+	// on 25 or 587, upgraded by the STARTTLS command), implicit (TLS
+	// from the first octet, as on 465) or none. starttls and implicit
+	// need the listener's tls section. Default starttls when tls is set
+	// and none otherwise.
+	TLSMode string `yaml:"tls_mode"`
+	// RequireTLS refuses AUTH, MAIL and VRFY until the session is
+	// encrypted. On a submission listener this is the difference between
+	// offering TLS and requiring it. Default true when TLSMode is
+	// starttls or implicit.
+	RequireTLS bool `yaml:"require_tls"`
+	// RequireAuth refuses MAIL until the session has authenticated,
+	// which keeps a submission listener from relaying for anyone who can
+	// reach it. Default false: a listener taking inbound mail for its
+	// own domains has no authentication to require.
+	RequireAuth bool `yaml:"require_auth"`
+	// Banner replaces the upstream greeting. The proxy's own name
+	// belongs here; leaving the upstream's banner in place tells every
+	// prober which mail server is behind this address.
+	Banner string `yaml:"banner"`
+	// Hostname is the name the proxy gives as its own in a synthesised
+	// greeting and in its EHLO to the upstream. Default the banner's
+	// first word, else the system hostname.
+	Hostname string `yaml:"hostname"`
+	// MaxCommandLine bounds a command line including CRLF. Default 512,
+	// the limit in RFC 5321 section 4.5.3.1.1.
+	MaxCommandLine int `yaml:"max_command_line"`
+	// MaxTextLine bounds a message line including CRLF. Default 1000.
+	MaxTextLine int `yaml:"max_text_line"`
+	// MaxMessageSize bounds one message in octets and is advertised as
+	// the SIZE capability. 0 keeps the upstream's own limit. Default 0.
+	MaxMessageSize int64 `yaml:"max_message_size"`
+	// MaxRecipients bounds RCPT commands per message. Default 100.
+	MaxRecipients int `yaml:"max_recipients"`
+	// MaxMessages bounds messages per connection. Default 100.
+	MaxMessages int `yaml:"max_messages"`
+	// MaxErrors closes the session after this many refused commands,
+	// which is what stops a prober walking the command space. Default 10.
+	MaxErrors int `yaml:"max_errors"`
+	// MaxConnections bounds sessions on this listener. Default 1000.
+	MaxConnections int `yaml:"max_connections"`
+	// ReadTimeout bounds waiting for one command or message line.
+	// Default 5m, the minimum RFC 5321 section 4.5.3.2 asks for.
+	ReadTimeout Duration `yaml:"read_timeout"`
+	// SessionTimeout bounds a whole session. Default 30m.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// Commands is the verbs a client may send. Everything else is
+	// refused with 502 and counts towards max_errors. Default: EHLO,
+	// HELO, MAIL, RCPT, DATA, RSET, NOOP, QUIT, AUTH, STARTTLS.
+	Commands []string `yaml:"commands"`
+	// HideCapabilities are EHLO keywords stripped from the upstream's
+	// answer, on top of the ones the proxy always removes (STARTTLS,
+	// which it answers itself, and CHUNKING, whose BDAT has no dot
+	// terminator to agree on). Default: none.
+	HideCapabilities []string `yaml:"hide_capabilities"`
+	// BareNewlines is reject (the default) or convert. A line ended by
+	// LF alone is forbidden by RFC 5321 section 2.3.8 and is how a
+	// message ends in one place for the proxy and another for the next
+	// hop; convert repairs it to CRLF instead of refusing the session,
+	// which is safe because the proxy re-emits every line itself.
+	BareNewlines string `yaml:"bare_newlines"`
+	// UpstreamTLSMode is how the proxy reaches the upstream: none,
+	// starttls or implicit. Default none, which is right when the hop
+	// is inside a trusted network and wrong everywhere else.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the upstream when upstream_tls_mode is not
+	// none.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// ProxyProtocol sends a PROXY protocol v2 header to the upstream so
+	// it logs the client address rather than the proxy's.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs. Empty allows all,
+	// which is right for inbound mail and wrong for submission.
+	AllowClients []string `yaml:"allow_clients"`
+	// XClientName sends the client address to the upstream with the
+	// XCLIENT command (a Postfix extension) after EHLO, when the
+	// upstream advertises it.
+	XClient bool `yaml:"xclient"`
 }
 
 // DNSListener is a forwarding DNS proxy on the listener address over UDP
@@ -2482,8 +2578,9 @@ type Bans struct {
 type BanTrigger struct {
 	Name string `yaml:"name"`
 	// Reasons restricts which deny reasons count (acl, rate_limit, waf,
-	// body_size, uri_length, bad_host, no_route, websocket, concurrency).
-	// Empty counts every deny.
+	// body_size, uri_length, bad_host, no_route, websocket, concurrency,
+	// smtp_denied and the rest; validation lists them). Empty counts
+	// every deny.
 	Reasons   []string `yaml:"reasons"`
 	Threshold int      `yaml:"threshold"`
 	Window    Duration `yaml:"window"`
@@ -3149,3 +3246,25 @@ type ACME struct {
 	// CheckInterval is how often expiry is checked. Default 12h.
 	CheckInterval Duration `yaml:"check_interval"`
 }
+
+// The SMTP line bounds of RFC 5321 section 4.5.3.1, repeated here
+// because config must not import the smtp package (which imports this
+// one for nothing, but the direction is the point).
+const (
+	smtpMaxCommandLine = 512
+	smtpMaxTextLine    = 1000
+)
+
+// DefaultSMTPCommands is the verb set a session allows when the
+// configuration names none: enough for submission and for inbound mail,
+// and nothing that asks the upstream to enumerate its users. VRFY and
+// EXPN are left out on purpose; a listener that wants them says so.
+var DefaultSMTPCommands = []string{"EHLO", "HELO", "MAIL", "RCPT", "DATA", "RSET", "NOOP", "QUIT", "AUTH", "STARTTLS"}
+
+// SMTPAlwaysHidden are EHLO keywords the proxy never passes through.
+// STARTTLS because the proxy answers it itself and the upstream's
+// offer is about a different hop; CHUNKING because BDAT carries a
+// length instead of a dot terminator, so relaying it would mean two
+// parsers deciding where a message ends, which is the one thing this
+// listener exists to prevent.
+var SMTPAlwaysHidden = []string{"STARTTLS", "CHUNKING", "BDAT"}

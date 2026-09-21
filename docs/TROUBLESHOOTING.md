@@ -1782,6 +1782,75 @@ within the pending-datagram bound, is dropped.
 actually reachable (it is a different socket from TCP), and that
 `Alt-Svc` is being served.
 
+## SMTP listener
+
+**Every session ends with `421 4.4.1 upstream unavailable`.** The proxy
+could not open its own session to the mail server. The error log says
+which step failed: no reachable endpoint, a greeting that was not
+`220`, an EHLO the upstream refused, or — with
+`upstream_tls_mode: starttls` — an upstream that does not advertise
+`STARTTLS`. That last one fails on purpose rather than continuing in
+clear.
+
+**`421 4.3.0 upstream failure` in the middle of a session.** The
+upstream sent a reply this proxy would not parse: a code that changed
+mid-continuation, a line without CRLF, or more continuation lines than
+any registered extension uses. It is never passed through, because a
+reply the proxy did not understand is the one the client would read
+differently. `smtp_protocol_errors` counts it and the error log has the
+reason.
+
+**A client says the server does not support STARTTLS.** Check
+`tls_mode` (it must be `starttls`), that the listener has a `tls`
+section, and that `STARTTLS` is still in `commands`. The proxy
+advertises it from its own capability, never from the upstream's: the
+upstream's offer is about a different hop.
+
+**`554 5.7.0 data pipelined across STARTTLS`.** The client wrote
+another command before reading the `220`. That is CVE-2011-0411, and it
+is refused whether it was an attack or a client that pipelines without
+checking for the `PIPELINING` capability. The session ends and the
+event is a `smtp_denied` deny.
+
+**`500 5.5.2 line must end with CRLF`.** A bare LF, which is the SMTP
+smuggling vector. If the sender is a real client that cannot be fixed,
+`bare_newlines: convert` repairs the line instead of refusing the
+session — the proxy re-emits every line itself, so both ends still
+agree. A bare CR inside a line is always refused; there is no safe
+repair for it.
+
+**`552` on a message the sender says is small enough.** Two different
+checks. A `SIZE=` on MAIL over `max_message_size` is refused before the
+body is sent. A body that runs past it is refused while it is being
+read, and the upstream connection is then dropped **without** its
+terminator, so the mail server discards the partial message rather than
+queueing a truncated one; the client's session ends too.
+
+**Recipients are refused with `452` well below the mail server's
+limit.** `max_recipients` is the proxy's own bound, per message, and it
+counts only the RCPT commands the upstream accepted.
+
+**A session ends with `421 4.7.0 too many errors`.** `max_errors`
+counts every refusal the proxy itself answers — an unknown verb, an
+out-of-order command, a recipient over the bound, a declared size over
+the limit — not just bad syntax. A client that legitimately trips it is
+usually one probing capabilities it was never offered.
+
+**A client is answered `554 5.7.1 access denied` before the banner.**
+It is outside `allow_clients`. `smtp_rejected` counts it, and the
+upstream is never contacted.
+
+**The mail server logs the proxy as the client.** Turn on `xclient`.
+It only takes effect when the upstream advertises `XCLIENT`, which
+Postfix does after `smtpd_authorized_xclient_hosts` names the proxy.
+`proxy_protocol` is the other way to do it, and the two are
+independent.
+
+**A message was delivered but the headers look different.** They are
+not rewritten. What changes is framing: lines are re-emitted with CRLF,
+and a message that used bare newlines is either refused or repaired
+depending on `bare_newlines`.
+
 ## Mirroring and shadowing
 
 **The mirror receives nothing.** The access line says which: `sent`,
@@ -2383,6 +2452,7 @@ innocent.
 | `forward_denied`, `forward_auth` | The forward proxy | yes |
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
+| `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
 
 A trigger naming a reason that is not in the Ban column fails
 validation with the list of the ones that are, so this is not something

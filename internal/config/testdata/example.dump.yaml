@@ -15,6 +15,7 @@ server:
           tcp: null
           forward: null
           dns: null
+          smtp: null
         - name: public
           address: :443
           protocols:
@@ -49,6 +50,7 @@ server:
           tcp: null
           forward: null
           dns: null
+          smtp: null
     limits:
         max_header_bytes: 65536
         max_body_bytes: 10485760

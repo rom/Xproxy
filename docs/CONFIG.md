@@ -66,7 +66,7 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; not on `kind: tcp` (which forwards a header instead) or `dns`. |
-| `kind` | `http`, `tcp`, `forward`, `dns` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients and `dns` a DNS proxy; see below |
+| `kind` | `http`, `tcp`, `forward`, `dns`, `smtp` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients, `dns` a DNS proxy and `smtp` a protocol-aware SMTP and submission proxy; see below |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 
 ### server.listeners[].tcp (kind: tcp)
@@ -392,6 +392,79 @@ indeterminate counts, the key cache size and lookups.
 cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated,
 upstream failures); `DELETE /v1/dns` and `xproxyctl dns purge` empty
 the caches. Metrics: `xproxy_dns_*{listener}`.
+
+### server.listeners[].smtp (kind: smtp)
+
+A `kind: smtp` listener is a protocol-aware SMTP proxy. It speaks one
+session to the client and a second one to the upstream, and decides for
+itself where every command and every message ends, writing each one out
+again rather than passing bytes through. That is the whole point of it:
+a layer 4 splice carries the same octets, but then the client and the
+mail server each parse them on their own, and every SMTP smuggling bug
+there has ever been lives in the gap between two such parses.
+
+What follows from that:
+
+- A line must end with CRLF. A bare LF is refused (`bare_newlines:
+  reject`) or repaired to CRLF (`convert`); a bare CR inside a line is
+  always refused. Either way the two ends see the same line structure.
+- The end of a message is `CRLF.CRLF` and nothing else, decided once,
+  on the stream the proxy itself writes. Dot stuffing is passed through
+  untouched, so only the terminator is interpreted.
+- `CHUNKING` and `BDAT` are never advertised or relayed: BDAT carries a
+  length instead of a terminator, so relaying it would put the decision
+  back in two places.
+- A reply the proxy cannot parse is never passed on. The client gets
+  `421` and the session ends, because a reply the proxy did not
+  understand is exactly the one the client would read differently.
+- Anything pipelined behind `STARTTLS` ends the session with `554`
+  (`starttls_injection`, a `smtp_denied` ban reason). Those octets were
+  written before the client could see the `220`, so they were meant to
+  be plaintext for one side and ciphertext for the other —
+  CVE-2011-0411. After the handshake the session forgets its greeting
+  and its authentication, as RFC 3207 section 4.2 requires, and the
+  upstream leg is reset with it.
+
+The listener takes `address`, `smtp`, and `tls` when a TLS mode needs a
+certificate; `proxy_protocol` works as on an HTTP listener. Bans and the
+global connection limits apply at accept. Changing the `smtp` section
+rebinds the listener on reload.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | upstream | required | The mail server pool. Endpoints are picked with the upstream's balancer, dial failures try the next and feed outlier ejection |
+| `tls_mode` | `starttls`, `implicit`, `none` | `starttls` with `tls`, else `none` | How the client reaches the listener: upgraded by the STARTTLS command (25, 587), TLS from the first octet (465, RFC 8314), or never. `starttls` and `implicit` need the listener's `tls` |
+| `require_tls` | bool | `true` when a TLS mode is set | Refuse AUTH (`538`), MAIL and VRFY (`530`) until the session is encrypted. This is the difference between offering TLS and requiring it |
+| `require_auth` | bool | `false` | Refuse MAIL (`530`) until the session has authenticated. A submission listener wants this; a listener taking inbound mail has no authentication to require |
+| `banner` | string | none | Replace the upstream greeting. Without it, every prober learns which mail server is behind this address, version and all |
+| `hostname` | name | the banner's first word, else `xproxy` | The name the proxy gives in its own EHLO to the upstream |
+| `max_command_line` | int | `512` | Command line including CRLF, the bound of RFC 5321 section 4.5.3.1.1; 64..4096. Over it: `500` and the session ends, with the rest of the line consumed so its tail is never read as a command |
+| `max_text_line` | int | `1000` | Message line including CRLF; at least `max_command_line`, at most 1048576 |
+| `max_message_size` | int | `0` (the upstream's own limit) | One message in octets, advertised as `SIZE` and replacing the upstream's. A `SIZE=` on MAIL over it is refused before the body is sent; a body that runs over it is refused with `552` and the upstream connection is dropped without its terminator, so a truncated message is never delivered as a whole one |
+| `max_recipients` | int | `100` | RCPT commands per message; over it `452` |
+| `max_messages` | int | `100` | Messages per connection; over it `421` |
+| `max_errors` | int | `10` | Refused commands before the session ends with `421`. This is what stops a prober walking the command space |
+| `max_connections` | int | `1000` | Sessions on this listener; over it `421` |
+| `read_timeout` | duration | `5m` | One command or message line, the minimum RFC 5321 section 4.5.3.2 asks for; at most 1h |
+| `session_timeout` | duration | `30m` | A whole session; at most 24h, and not shorter than `read_timeout` |
+| `commands` | list | `EHLO, HELO, MAIL, RCPT, DATA, RSET, NOOP, QUIT, AUTH, STARTTLS` | Verbs a client may send; anything else is `502` and counts towards `max_errors`. `QUIT` and one of `EHLO`/`HELO` are required. `VRFY` and `EXPN` are left out by default and warn when added: they let a prober test whether an address exists |
+| `hide_capabilities` | list | `[]` | EHLO keywords stripped from the upstream's answer, on top of `STARTTLS`, `CHUNKING` and `BDAT`, which are always removed |
+| `bare_newlines` | `reject`, `convert` | `reject` | A line ended by LF alone: refuse the session, or repair it to CRLF. Repair is safe only because the proxy re-emits every line itself |
+| `upstream_tls_mode` | `none`, `starttls`, `implicit` | `none` | How the proxy reaches the upstream. `none` is right when the hop is inside a trusted network and wrong everywhere else; with `starttls` an upstream that does not offer it fails the session rather than continuing in clear |
+| `upstream_tls` | object | none | Verification for the upstream leg: same keys as `upstreams[].tls`. Without `server_name` the endpoint's host is verified |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the upstream |
+| `allow_clients` | list of CIDR | `[]` (any) | Others get `554` before any session starts (`client_not_allowed`). Empty is right for inbound mail and wrong for submission |
+| `xclient` | bool | `false` | After the proxy's own EHLO, send `XCLIENT ADDR= PORT=` (the Postfix extension) when the upstream advertises it, so the mail server's logs and policies see the real client |
+
+Every session writes one `smtp` line to the access log with the client
+address, whether it was encrypted, messages, octets, refusals, the
+endpoint and why it closed. AUTH arguments, challenges and responses are
+never logged: they carry the password. Counters: `smtp_sessions`,
+`smtp_sessions_open`, `smtp_messages`, `smtp_refused`, `smtp_rejected`,
+`smtp_tls_upgrades`, `smtp_protocol_errors`, `smtp_bytes_in`; the
+matching `xproxy_smtp_*` metrics. Protocol violations are `smtp_denied`
+deny events, so a `bans.triggers` entry on that reason turns a prober
+into a ban.
 
 ### server.listeners[].h3
 
@@ -1402,7 +1475,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `account_abuse` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

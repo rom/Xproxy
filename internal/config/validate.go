@@ -335,6 +335,9 @@ func (v *validator) config(c *Config) {
 				}
 			}
 		}
+		if m := c.Server.Listeners[i].SMTP; m != nil && m.Upstream != "" && !upstreams[m.Upstream] {
+			v.errf("server.listeners[%d].smtp.upstream: unknown upstream %q", i, m.Upstream)
+		}
 	}
 	dnsListeners := map[string]bool{}
 	for _, ln := range c.Server.Listeners {
@@ -564,8 +567,20 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.forwardListener(p+".forward", ln.Forward)
 			}
+		case "smtp":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an smtp listener takes only address, smtp and tls", p)
+			}
+			if ln.SMTP == nil {
+				v.errf("%s.smtp: required for kind smtp", p)
+			} else {
+				v.smtpListener(p+".smtp", ln.SMTP, ln.TLS != nil)
+			}
 		default:
-			v.errf("%s.kind: must be http, tcp, forward or dns", p)
+			v.errf("%s.kind: must be http, tcp, forward, dns or smtp", p)
+		}
+		if ln.SMTP != nil && ln.Kind != "smtp" {
+			v.errf("%s.smtp: set on a %s listener (kind: smtp)", p, ln.Kind)
 		}
 		if ln.TLS == nil {
 			for _, proto := range ln.Protocols {
@@ -1899,7 +1914,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
-	"account_abuse": true, "honeytoken": true,
+	"account_abuse": true, "honeytoken": true, "smtp_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -2551,6 +2566,123 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	if t.QUIC && t.ProxyProtocol {
 		v.errf("%s.quic: the PROXY protocol header cannot be sent on a datagram flow; disable proxy_protocol or quic", p)
 	}
+}
+
+// smtpListener validates an SMTP proxy listener. hasTLS says whether the
+// listener carries a tls section, which decides whether the TLS modes
+// are even reachable.
+func (v *validator) smtpListener(p string, m *SMTPListener, hasTLS bool) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	switch m.TLSMode {
+	case "starttls", "implicit":
+		if !hasTLS {
+			v.errf("%s.tls_mode: %s needs the listener's tls section (a certificate to answer with)", p, m.TLSMode)
+		}
+	case "none":
+		if m.RequireTLS {
+			v.errf("%s.require_tls: nothing can satisfy it with tls_mode: none", p)
+		}
+	default:
+		v.errf("%s.tls_mode: must be starttls, implicit or none", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "none", "starttls", "implicit":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none, starttls or implicit", p)
+	}
+	if m.UpstreamTLSMode == "none" && m.UpstreamTLS != nil {
+		v.errf("%s.upstream_tls: set with upstream_tls_mode: none, which never uses it", p)
+	}
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+	}
+	switch m.BareNewlines {
+	case "reject", "convert":
+	default:
+		v.errf("%s.bare_newlines: must be reject or convert", p)
+	}
+	if m.MaxCommandLine < 64 || m.MaxCommandLine > 4096 {
+		v.errf("%s.max_command_line: must be 64..4096 (RFC 5321 asks for at least 512)", p)
+	}
+	if m.MaxTextLine < m.MaxCommandLine || m.MaxTextLine > 1<<20 {
+		v.errf("%s.max_text_line: must be at least max_command_line and at most 1048576", p)
+	}
+	if m.MaxMessageSize < 0 {
+		v.errf("%s.max_message_size: must not be negative", p)
+	}
+	if m.MaxRecipients < 1 || m.MaxRecipients > 100000 {
+		v.errf("%s.max_recipients: must be 1..100000", p)
+	}
+	if m.MaxMessages < 1 {
+		v.errf("%s.max_messages: must be positive", p)
+	}
+	if m.MaxErrors < 1 {
+		v.errf("%s.max_errors: must be positive", p)
+	}
+	if m.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be positive", p)
+	}
+	if m.ReadTimeout <= 0 || m.ReadTimeout > Duration(time.Hour) {
+		v.errf("%s.read_timeout: must be positive and at most 1h", p)
+	}
+	if m.SessionTimeout <= 0 || m.SessionTimeout > Duration(24*time.Hour) {
+		v.errf("%s.session_timeout: must be positive and at most 24h", p)
+	}
+	if m.SessionTimeout < m.ReadTimeout {
+		v.errf("%s.session_timeout: must not be shorter than read_timeout", p)
+	}
+	seen := map[string]bool{}
+	for i, cmd := range m.Commands {
+		u := strings.ToUpper(cmd)
+		if !smtpVerbs[u] {
+			v.errf("%s.commands[%d]: %q is not an SMTP verb this proxy relays", p, i, cmd)
+		}
+		if seen[u] {
+			v.errf("%s.commands[%d]: %q listed twice", p, i, cmd)
+		}
+		seen[u] = true
+	}
+	if !seen["QUIT"] {
+		v.errf("%s.commands: QUIT must be allowed; a client with no way to end the session waits for the timeout", p)
+	}
+	if !seen["EHLO"] && !seen["HELO"] {
+		v.errf("%s.commands: EHLO or HELO must be allowed", p)
+	}
+	if m.TLSMode == "starttls" && !seen["STARTTLS"] {
+		v.errf("%s.commands: tls_mode starttls needs STARTTLS in commands", p)
+	}
+	if m.RequireAuth && !seen["AUTH"] {
+		v.errf("%s.require_auth: needs AUTH in commands", p)
+	}
+	if seen["VRFY"] || seen["EXPN"] {
+		v.warnf("%s.commands: VRFY and EXPN let a prober test whether an address exists; leave them out unless something depends on them", p)
+	}
+	for i, kw := range m.HideCapabilities {
+		if strings.TrimSpace(kw) == "" || strings.ContainsAny(kw, " \t") {
+			v.errf("%s.hide_capabilities[%d]: must be one EHLO keyword", p, i)
+		}
+	}
+	for i, c := range m.AllowClients {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+	if m.TLSMode == "none" {
+		v.warnf("%s.tls_mode: none carries every password and every message in clear; use starttls with require_tls, or implicit", p)
+	} else if !m.RequireTLS {
+		v.warnf("%s.require_tls: false lets a client skip STARTTLS and send its password in clear", p)
+	}
+}
+
+// smtpVerbs is what commands may name. The list is the registered
+// command set; whether a verb is wise is a separate question the
+// defaults answer.
+var smtpVerbs = map[string]bool{
+	"EHLO": true, "HELO": true, "MAIL": true, "RCPT": true, "DATA": true,
+	"RSET": true, "NOOP": true, "QUIT": true, "AUTH": true, "STARTTLS": true,
+	"VRFY": true, "EXPN": true, "HELP": true,
 }
 
 // grpcNameOK accepts protobuf identifiers with dots (package.Service).

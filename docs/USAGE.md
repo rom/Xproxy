@@ -2216,6 +2216,69 @@ anything.
 
 `examples/forward/masque.yaml` has both, with `ip` off by default.
 
+### Mail submission (SMTP and STARTTLS)
+
+```yaml
+server:
+  listeners:
+    - name: submission
+      address: "0.0.0.0:587"
+      kind: smtp
+      tls: {certificates: [{cert_file: /etc/xproxy/certs/mail.pem, key_file: /etc/xproxy/certs/mail-key.pem}]}
+      smtp:
+        upstream: mta
+        banner: "mail.example.com ESMTP"
+        require_tls: true            # no AUTH or MAIL in clear
+        require_auth: true           # relay for users, not for whoever connects
+        max_recipients: 50
+        max_message_size: 26214400   # advertised as SIZE
+        upstream_tls_mode: starttls
+        upstream_tls: {server_name: mta.internal, ca_file: /etc/xproxy/certs/internal-ca.pem}
+```
+
+A `kind: tcp` listener would carry the same bytes to the same mail
+server. The reason this is a protocol-aware listener instead is that
+SMTP's framing is decided by the reader, and a splice leaves two readers
+to decide it separately. The proxy reads each command and each message
+itself and writes them out again, so there is one decision:
+
+- **Lines end with CRLF.** A line ended by LF alone is the 2023 SMTP
+  smuggling class: a permissive parser sees `\n.\n` as the end of a
+  message and a strict one sees a line of text, and the attacker gets a
+  second message the first server never knew about. Here it is `500`
+  and the session ends (`bare_newlines: convert` repairs the line
+  instead, which is only safe because the proxy re-emits it).
+- **`STARTTLS` accepts nothing pipelined behind it.** Octets already
+  buffered when the command arrives were written before the client
+  could see the `220`; treating them as part of the encrypted session
+  is CVE-2011-0411. The session ends with `554`, and the event is a
+  `smtp_denied` deny that `bans.triggers` can act on.
+- **`CHUNKING` is never advertised.** BDAT frames a message with a
+  length instead of a terminator, so relaying it would put the framing
+  decision back in two places.
+- **A reply the proxy cannot parse is not passed on.** The client gets
+  `421`. A reply the proxy did not understand is exactly the one the
+  client would read differently.
+
+On 465, `tls_mode: implicit` gives RFC 8314 implicit TLS with no
+plaintext phase to downgrade; drop `STARTTLS` from `commands` there, so
+nothing offers an upgrade that is already done.
+
+The capability list the client sees is the proxy's promise rather than
+the upstream's: hidden keywords are stripped, `SIZE` is replaced by
+`max_message_size` when one is set, and `STARTTLS` is advertised only
+while the proxy can still answer it. `banner` replaces the mail
+server's greeting, which otherwise tells every prober its brand and
+version.
+
+Refusals are bounded on purpose. `max_errors` ends a session that walks
+the command space, `max_recipients` and `max_messages` keep one
+connection from becoming a fan-out, and `VRFY` and `EXPN` are not in
+the default command set because they answer whether an address exists.
+
+`examples/mail/submission.yaml` has both listeners, the ban trigger and
+the upstream TLS.
+
 ### Virtual security.txt
 
 A `security.txt` (RFC 9116) tells a finder where to report a

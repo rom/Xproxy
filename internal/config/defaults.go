@@ -164,11 +164,42 @@ func applyDefaults(c *Config) {
 				setInt(&d.RateLimit.Burst, 100)
 			}
 		}
+		if m := s.Listeners[i].SMTP; m != nil {
+			if m.TLSMode == "" {
+				if s.Listeners[i].TLS != nil {
+					m.TLSMode = "starttls"
+				} else {
+					m.TLSMode = "none"
+				}
+			}
+			// require_tls defaults on where TLS is reachable at all.
+			// A listener that offers STARTTLS and does not insist on it
+			// is one downgrade away from sending the password in clear.
+			if !m.RequireTLS && (m.TLSMode == "starttls" || m.TLSMode == "implicit") {
+				m.RequireTLS = true
+			}
+			setStr(&m.UpstreamTLSMode, "none")
+			if m.UpstreamTLS != nil {
+				setStr(&m.UpstreamTLS.MinVersion, "1.2")
+			}
+			setStr(&m.BareNewlines, "reject")
+			setInt(&m.MaxCommandLine, smtpMaxCommandLine)
+			setInt(&m.MaxTextLine, smtpMaxTextLine)
+			setInt(&m.MaxRecipients, 100)
+			setInt(&m.MaxMessages, 100)
+			setInt(&m.MaxErrors, 10)
+			setInt(&m.MaxConnections, 1000)
+			setDur(&m.ReadTimeout, 5*time.Minute)
+			setDur(&m.SessionTimeout, 30*time.Minute)
+			if len(m.Commands) == 0 {
+				m.Commands = append([]string(nil), DefaultSMTPCommands...)
+			}
+		}
 		ln := &s.Listeners[i]
-		if ln.Kind == "tcp" || ln.Kind == "dns" {
-			// No HTTP protocol defaults on a non-HTTP listener; an
-			// encrypted dns listener still gets the TLS defaults.
-			if ln.Kind == "dns" && ln.TLS != nil {
+		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" {
+			// No HTTP protocol defaults on a non-HTTP listener; a dns
+			// or smtp listener with TLS still gets the TLS defaults.
+			if (ln.Kind == "dns" || ln.Kind == "smtp") && ln.TLS != nil {
 				setStr(&ln.TLS.MinVersion, "1.2")
 				setStr(&ln.TLS.ClientAuth, "none")
 			}

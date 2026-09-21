@@ -326,11 +326,11 @@ T}
 T{
 \fBkind\fR
 T}	T{
-\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR
+\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR
 T}	T{
 \fBhttp\fR
 T}	T{
-\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients and \fBdns\fR a DNS proxy;\: see below
+\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy and \fBsmtp\fR a protocol\-aware SMTP and submission proxy;\: see below
 T}
 T{
 \fBredirect_\:to_\:https\fR
@@ -1082,6 +1082,260 @@ T}
 .TE
 .PP
 \fBGET /v1/dns\fR and \fBxproxyctl dns\fR show per listener counters (queries, cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated, upstream failures); \fBDELETE /v1/dns\fR and \fBxproxyctl dns purge\fR empty the caches. Metrics: \fBxproxy_dns_*{listener}\fR.
+.SS "server.listeners[].smtp (kind: smtp)"
+.PP
+A \fBkind: smtp\fR listener is a protocol\-aware SMTP proxy. It speaks one session to the client and a second one to the upstream, and decides for itself where every command and every message ends, writing each one out again rather than passing bytes through. That is the whole point of it: a layer 4 splice carries the same octets, but then the client and the mail server each parse them on their own, and every SMTP smuggling bug there has ever been lives in the gap between two such parses.
+.PP
+What follows from that:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+A line must end with CRLF. A bare LF is refused (\fBbare_newlines: reject\fR) or repaired to CRLF (\fBconvert\fR); a bare CR inside a line is always refused. Either way the two ends see the same line structure.
+.PP
+.ti -3n
+\(bu
+The end of a message is \fBCRLF.CRLF\fR and nothing else, decided once, on the stream the proxy itself writes. Dot stuffing is passed through untouched, so only the terminator is interpreted.
+.PP
+.ti -3n
+\(bu
+\fBCHUNKING\fR and \fBBDAT\fR are never advertised or relayed: BDAT carries a length instead of a terminator, so relaying it would put the decision back in two places.
+.PP
+.ti -3n
+\(bu
+A reply the proxy cannot parse is never passed on. The client gets \fB421\fR and the session ends, because a reply the proxy did not understand is exactly the one the client would read differently.
+.PP
+.ti -3n
+\(bu
+Anything pipelined behind \fBSTARTTLS\fR ends the session with \fB554\fR (\fBstarttls_injection\fR, a \fBsmtp_denied\fR ban reason). Those octets were written before the client could see the \fB220\fR, so they were meant to be plaintext for one side and ciphertext for the other \[u2014] CVE\-2011\-0411. After the handshake the session forgets its greeting and its authentication, as RFC 3207 section 4.2 requires, and the upstream leg is reset with it.
+.RE
+.PP
+.PP
+The listener takes \fBaddress\fR, \fBsmtp\fR, and \fBtls\fR when a TLS mode needs a certificate; \fBproxy_protocol\fR works as on an HTTP listener. Bans and the global connection limits apply at accept. Changing the \fBsmtp\fR section rebinds the listener on reload.
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(1.0i) lbw(1.1i) lbx
+lw(1.3i) lw(1.0i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required
+T}	T{
+The mail server pool. Endpoints are picked with the upstream\(aqs balancer,\: dial failures try the next and feed outlier ejection
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+\fBstarttls\fR,\: \fBimplicit\fR,\: \fBnone\fR
+T}	T{
+\fBstarttls\fR with \fBtls\fR,\: else \fBnone\fR
+T}	T{
+How the client reaches the listener: upgraded by the STARTTLS command (25,\: 587),\: TLS from the first octet (465,\: RFC 8314),\: or never. \fBstarttls\fR and \fBimplicit\fR need the listener\(aqs \fBtls\fR
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR when a TLS mode is set
+T}	T{
+Refuse AUTH (\fB538\fR),\: MAIL and VRFY (\fB530\fR) until the session is encrypted. This is the difference between offering TLS and requiring it
+T}
+T{
+\fBrequire_\:auth\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse MAIL (\fB530\fR) until the session has authenticated. A submission listener wants this;\: a listener taking inbound mail has no authentication to require
+T}
+T{
+\fBbanner\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Replace the upstream greeting. Without it,\: every prober learns which mail server is behind this address,\: version and all
+T}
+T{
+\fBhostname\fR
+T}	T{
+name
+T}	T{
+the banner\(aqs first word,\: else \fBxproxy\fR
+T}	T{
+The name the proxy gives in its own EHLO to the upstream
+T}
+T{
+\fBmax_\:command_\:line\fR
+T}	T{
+int
+T}	T{
+\fB512\fR
+T}	T{
+Command line including CRLF,\: the bound of RFC 5321 section 4.5.3.1.1;\: 64..4096. Over it: \fB500\fR and the session ends,\: with the rest of the line consumed so its tail is never read as a command
+T}
+T{
+\fBmax_\:text_\:line\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Message line including CRLF;\: at least \fBmax_\:command_\:line\fR,\: at most 1048576
+T}
+T{
+\fBmax_\:message_\:size\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (the upstream\(aqs own limit)
+T}	T{
+One message in octets,\: advertised as \fBSIZE\fR and replacing the upstream\(aqs. A \fBSIZE=\fR on MAIL over it is refused before the body is sent;\: a body that runs over it is refused with \fB552\fR and the upstream connection is dropped without its terminator,\: so a truncated message is never delivered as a whole one
+T}
+T{
+\fBmax_\:recipients\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+RCPT commands per message;\: over it \fB452\fR
+T}
+T{
+\fBmax_\:messages\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+Messages per connection;\: over it \fB421\fR
+T}
+T{
+\fBmax_\:errors\fR
+T}	T{
+int
+T}	T{
+\fB10\fR
+T}	T{
+Refused commands before the session ends with \fB421\fR. This is what stops a prober walking the command space
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Sessions on this listener;\: over it \fB421\fR
+T}
+T{
+\fBread_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+One command or message line,\: the minimum RFC 5321 section 4.5.3.2 asks for;\: at most 1h
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30m\fR
+T}	T{
+A whole session;\: at most 24h,\: and not shorter than \fBread_\:timeout\fR
+T}
+T{
+\fBcommands\fR
+T}	T{
+list
+T}	T{
+\fBEHLO,\: HELO,\: MAIL,\: RCPT,\: DATA,\: RSET,\: NOOP,\: QUIT,\: AUTH,\: STARTTLS\fR
+T}	T{
+Verbs a client may send;\: anything else is \fB502\fR and counts towards \fBmax_\:errors\fR. \fBQUIT\fR and one of \fBEHLO\fR/\:\fBHELO\fR are required. \fBVRFY\fR and \fBEXPN\fR are left out by default and warn when added: they let a prober test whether an address exists
+T}
+T{
+\fBhide_\:capabilities\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+EHLO keywords stripped from the upstream\(aqs answer,\: on top of \fBSTARTTLS\fR,\: \fBCHUNKING\fR and \fBBDAT\fR,\: which are always removed
+T}
+T{
+\fBbare_\:newlines\fR
+T}	T{
+\fBreject\fR,\: \fBconvert\fR
+T}	T{
+\fBreject\fR
+T}	T{
+A line ended by LF alone: refuse the session,\: or repair it to CRLF. Repair is safe only because the proxy re\-emits every line itself
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+\fBnone\fR,\: \fBstarttls\fR,\: \fBimplicit\fR
+T}	T{
+\fBnone\fR
+T}	T{
+How the proxy reaches the upstream. \fBnone\fR is right when the hop is inside a trusted network and wrong everywhere else;\: with \fBstarttls\fR an upstream that does not offer it fails the session rather than continuing in clear
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Verification for the upstream leg: same keys as \fBupstreams[].\:tls\fR. Without \fBserver_\:name\fR the endpoint\(aqs host is verified
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header with the client address to the upstream
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Others get \fB554\fR before any session starts (\fBclient_\:not_\:allowed\fR). Empty is right for inbound mail and wrong for submission
+T}
+T{
+\fBxclient\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+After the proxy\(aqs own EHLO,\: send \fBXCLIENT ADDR=\: PORT=\fR (the Postfix extension) when the upstream advertises it,\: so the mail server\(aqs logs and policies see the real client
+T}
+.TE
+.PP
+Every session writes one \fBsmtp\fR line to the access log with the client address, whether it was encrypted, messages, octets, refusals, the endpoint and why it closed. AUTH arguments, challenges and responses are never logged: they carry the password. Counters: \fBsmtp_sessions\fR, \fBsmtp_sessions_open\fR, \fBsmtp_messages\fR, \fBsmtp_refused\fR, \fBsmtp_rejected\fR, \fBsmtp_tls_upgrades\fR, \fBsmtp_protocol_errors\fR, \fBsmtp_bytes_in\fR; the matching \fBxproxy_smtp_*\fR metrics. Protocol violations are \fBsmtp_denied\fR deny events, so a \fBbans.triggers\fR entry on that reason turns a prober into a ban.
 .SS "server.listeners[].h3"
 .PP
 .TS
@@ -4733,7 +4987,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBaccount_\:abuse\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR
 T}
 T{
 \fBthreshold\fR
