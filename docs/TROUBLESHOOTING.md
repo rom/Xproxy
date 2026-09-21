@@ -1926,6 +1926,59 @@ are RE2 patterns anchored as written — `uptime` matches anywhere in the
 line unless you write `^uptime$`. The refusal is an `ssh_denied` event
 with the command.
 
+**A key in `authorized_keys` is refused once `principals` exists.** That
+is the list being the policy. With one entry present, a key no entry
+covers is refused at authentication rather than falling back to the
+listener's own settings — falling back would be the opposite of what the
+list says. Add the key's `SHA256:` fingerprint (`ssh-keygen -lf`) to an
+entry, or end the list with an entry that names neither a fingerprint
+nor a certificate principal, which matches everything. Such an entry
+must be last; validation refuses one with entries after it, because they
+could never be reached.
+
+**A certificate is refused although the CA is right.** Three things are
+checked, and the error log says which failed: the signature against
+`trusted_user_ca_keys`, the validity window against now, and the
+certificate's principal list against the login being used. `ssh -v`
+shows which certificate was offered; `ssh-keygen -Lf` prints its
+principals and window. Without `trusted_user_ca_keys` a certificate is
+refused outright rather than treated as the plain key inside it.
+
+**A principal is refused at authentication with no other explanation.**
+`deny: true` is exactly that: the entry exists so the key can stay in
+`authorized_keys` while the person it belongs to is off. The refusal
+names the principal, so the security log says who rather than which
+fingerprint.
+
+**A principal's policy seems to ignore a listener setting.** It does not
+— unset fields inherit, set ones replace. A `policy` that lists
+`allow_requests: [exec]` replaces the listener's whole list rather than
+adding to it, so `pty-req` and `shell` are gone with it. Write out every
+value an entry needs.
+
+**`Setenv` fails, or a variable never reaches the target.** `allow_env`
+defaults to `TERM`, `LANG` and `LC_*`; anything else is refused with the
+request and logged as `env_refused`. The loader and interpreter
+variables (`LD_*`, `BASH_ENV`, `PERL5OPT`, `PYTHONPATH`, `PATH`, …) are
+refused whatever `allow_env` says, and naming one fails the load: each
+is a way to run code before the command the policy approved, which would
+make `allow_commands` decoration. Note that `env` must also be in
+`allow_requests`, and that most clients send nothing unless asked to
+(`ssh -o SendEnv=…`).
+
+**`scp` or `rsync` is refused although `exec` is allowed.** Neither ever
+opens the `sftp` subsystem, so every path and operation rule there is
+off their path: `allow_file_transfer_commands` therefore defaults to
+`false` exactly where there is an `sftp` section to bypass. Set it to
+`true` if the transfer is what you want (it warns beside an `sftp`
+policy, because that is the bypass the section exists to close), or move
+the transfer onto sftp. The refusal is `file_transfer_refused` with the
+command. Every word is read, not only the first, each with any directory part
+removed and `VAR=value` prefixes skipped, so `env scp -t` and
+`sh -c 'scp …'` are refused too. A command whose argument merely says
+`scp` is refused with them; that is the direction to be wrong in on a
+bastion.
+
 **Port forwarding is refused.** Two separate gates: `direct-tcpip` must
 be in `allow_channels`, and the destination must be in `forward`.
 Validation refuses one without the other, so a listener that allows the
@@ -2664,7 +2717,7 @@ innocent.
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
 | `yara` | A YARA rule fired on a layer 4 stream with `action: close` | yes |
-| `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command or forward, or a refused SFTP request (`detail` says which) | yes |
+| `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command, environment variable, file transfer helper or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
 
 A trigger naming a reason that is not in the Ban column fails

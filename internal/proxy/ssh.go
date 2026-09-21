@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,12 +42,13 @@ type sshServer struct {
 	upstreamAuth ssh.AuthMethod
 	hostKeyCheck ssh.HostKeyCallback
 	allow        []netip.Prefix
-	channels     map[string]bool
-	requests     map[string]bool
-	subsystems   map[string]bool
-	commands     []*regexp.Regexp
-	forwards     []sshForward
-	sftp         *sftpPolicy
+	// base is the listener's own policy, used by a session that no
+	// principal entry refined.
+	base       *sshPolicy
+	principals []*sshPrincipal
+	// caKeys are the user certificate authorities, when one is
+	// configured.
+	caKeys map[string]bool
 
 	// mfaGuard is the second factor, when one is configured. It is
 	// shared with every other listener reading the same enrolment file
@@ -82,30 +82,49 @@ type sshForward struct {
 func newSSHServer(s *Server, cfg config.Listener, ln net.Listener) (*sshServer, error) {
 	h := cfg.SSH
 	t := &sshServer{s: s, cfg: cfg, h: h, ln: ln,
-		channels: map[string]bool{}, requests: map[string]bool{}, subsystems: map[string]bool{},
-		keys: map[string]bool{}, cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
-	for _, c := range h.AllowChannels {
-		t.channels[c] = true
+		keys: map[string]bool{}, caKeys: map[string]bool{},
+		cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
+	base, err := compileSSHPolicy(&config.SSHPolicy{
+		UpstreamUser:    h.UpstreamUser,
+		AllowChannels:   h.AllowChannels,
+		AllowRequests:   h.AllowRequests,
+		AllowSubsystems: h.AllowSubsystems,
+		AllowCommands:   h.AllowCommands,
+		AllowEnv:        h.AllowEnv,
+		Forward:         h.Forward,
+		RemoteForward:   &h.RemoteForward,
+		SFTP:            h.SFTP,
+	}, nil)
+	if err != nil {
+		return nil, err
 	}
-	for _, r := range h.AllowRequests {
-		t.requests[r] = true
+	if h.AllowFileTransferCommands != nil {
+		base.transfers = *h.AllowFileTransferCommands
 	}
-	for _, sub := range h.AllowSubsystems {
-		t.subsystems[sub] = true
-	}
-	for _, re := range h.AllowCommands {
-		c, err := regexp.Compile(re)
-		if err != nil {
-			return nil, fmt.Errorf("ssh allow_commands: %w", err)
+	t.base = base
+	for i := range h.Principals {
+		e := &h.Principals[i]
+		pr := &sshPrincipal{name: e.Name, users: map[string]bool{}, certs: map[string]bool{},
+			fingerprints: map[string]bool{}, policy: base}
+		for _, f := range e.Fingerprints {
+			pr.fingerprints[f] = true
 		}
-		t.commands = append(t.commands, c)
-	}
-	for _, d := range h.Forward {
-		f, err := parseSSHForward(d)
-		if err != nil {
-			return nil, fmt.Errorf("ssh forward %q: %w", d, err)
+		for _, c := range e.CertPrincipals {
+			pr.certs[c] = true
 		}
-		t.forwards = append(t.forwards, f)
+		for _, u := range e.Users {
+			pr.users[u] = true
+		}
+		pr.isDefault = len(pr.fingerprints) == 0 && len(pr.certs) == 0
+		if e.Policy != nil {
+			pr.deny = e.Policy.Deny
+			p, err := compileSSHPolicy(e.Policy, base)
+			if err != nil {
+				return nil, fmt.Errorf("ssh principal %q: %w", e.Name, err)
+			}
+			pr.policy = p
+		}
+		t.principals = append(t.principals, pr)
 	}
 	for _, c := range h.AllowClients {
 		p, err := netip.ParsePrefix(c)
@@ -113,13 +132,6 @@ func newSSHServer(s *Server, cfg config.Listener, ln net.Listener) (*sshServer, 
 			return nil, fmt.Errorf("ssh allow_clients: %w", err)
 		}
 		t.allow = append(t.allow, p)
-	}
-	if h.SFTP != nil {
-		p, err := newSFTPPolicy(h.SFTP)
-		if err != nil {
-			return nil, err
-		}
-		t.sftp = p
 	}
 	if err := t.loadCredentials(); err != nil {
 		return nil, err
@@ -167,6 +179,23 @@ func (t *sshServer) loadCredentials() error {
 			return errors.New("ssh authorized_keys: no keys in the file")
 		}
 	}
+	if h.TrustedUserCAKeys != "" {
+		raw, err := os.ReadFile(h.TrustedUserCAKeys) //nolint:gosec // a path from the configuration
+		if err != nil {
+			return fmt.Errorf("ssh trusted_user_ca_keys: %w", err)
+		}
+		for len(raw) > 0 {
+			key, _, _, rest, err := ssh.ParseAuthorizedKey(raw)
+			if err != nil {
+				return fmt.Errorf("ssh trusted_user_ca_keys: %w", err)
+			}
+			t.caKeys[string(key.Marshal())] = true
+			raw = rest
+		}
+		if len(t.caKeys) == 0 {
+			return errors.New("ssh trusted_user_ca_keys: no keys in the file")
+		}
+	}
 	if h.UsersFile != "" {
 		users, err := passwd.LoadUsers(h.UsersFile)
 		if err != nil {
@@ -208,21 +237,36 @@ func (t *sshServer) buildServerConfig() error {
 		}
 		cfg.BannerCallback = func(ssh.ConnMetadata) string { return banner }
 	}
-	if len(t.keys) > 0 {
+	if len(t.keys) > 0 || len(t.caKeys) > 0 {
 		cfg.PublicKeyCallback = func(c ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			if !t.keys[string(key.Marshal())] {
-				return nil, fmt.Errorf("unknown public key for %q", c.User())
+			kind, err := t.acceptKey(c, key)
+			if err != nil {
+				return nil, err
+			}
+			// The key is accepted; which principal it is decides the
+			// policy, and a key nobody claims is refused here rather
+			// than served under the listener's default.
+			pr, ok := t.principalFor(c.User(), key)
+			if !ok {
+				return nil, fmt.Errorf("no principal covers this key for %q", c.User())
+			}
+			if pr != nil && pr.deny {
+				return nil, fmt.Errorf("principal %q is denied", pr.name)
+			}
+			ext := map[string]string{
+				"auth":        kind,
+				"fingerprint": ssh.FingerprintSHA256(key),
+			}
+			if pr != nil {
+				ext["principal"] = pr.name
 			}
 			if t.mfaGuard != nil {
 				// The key is right and the session is not authorised
 				// yet: RFC 4252 partial success, and the client is
 				// told which method comes next.
-				return nil, t.secondFactor("publickey")
+				return nil, t.secondFactor(kind, ext)
 			}
-			return &ssh.Permissions{Extensions: map[string]string{
-				"auth":        "publickey",
-				"fingerprint": ssh.FingerprintSHA256(key),
-			}}, nil
+			return &ssh.Permissions{Extensions: ext}, nil
 		}
 	}
 	if len(t.users) > 0 {
@@ -238,7 +282,7 @@ func (t *sshServer) buildServerConfig() error {
 				return nil, errors.New("authentication failed")
 			}
 			if t.mfaGuard != nil {
-				return nil, t.secondFactor("password")
+				return nil, t.secondFactor("password", map[string]string{"auth": "password"})
 			}
 			return &ssh.Permissions{Extensions: map[string]string{"auth": "password"}}, nil
 		}
@@ -398,6 +442,10 @@ type sshSession struct {
 	user   string
 	auth   string
 	target string
+	// policy is the listener's, or the one the matched principal
+	// refined it to. principal names that entry for the log.
+	policy    *sshPolicy
+	principal string
 
 	channels atomic.Int64
 	opened   atomic.Uint64
@@ -434,8 +482,18 @@ func (t *sshServer) handle(raw net.Conn) {
 	_ = raw.SetDeadline(time.Time{})
 	se.sconn = sconn
 	se.user = sconn.User()
+	se.policy = t.base
 	if sconn.Permissions != nil {
 		se.auth = sconn.Permissions.Extensions["auth"]
+		se.principal = sconn.Permissions.Extensions["principal"]
+	}
+	if se.principal != "" {
+		for _, pr := range t.principals {
+			if pr.name == se.principal {
+				se.policy = pr.policy
+				break
+			}
+		}
 	}
 	if t.h.SessionTimeout > 0 {
 		timer := time.AfterFunc(t.h.SessionTimeout.D(), func() { _ = sconn.Close() })
@@ -471,7 +529,7 @@ func (t *sshServer) handle(raw net.Conn) {
 
 func (t *sshServer) log(se *sshSession, start time.Time, reason string) {
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(),
-		"user", trimUser(se.user), "auth", se.auth, "target", se.target,
+		"user", trimUser(se.user), "auth", se.auth, "principal", se.principal, "target", se.target,
 		"channels", se.opened.Load(), "refused", se.refused.Load(),
 		"duration_ms", float64(time.Since(start).Microseconds()) / 1000}
 	if reason != "" {
@@ -489,7 +547,7 @@ func (se *sshSession) connect() error {
 	if pool == nil {
 		return fmt.Errorf("upstream %q has no pool", t.h.Upstream)
 	}
-	user := t.h.UpstreamUser
+	user := se.policy.upstreamUser
 	if user == "" {
 		user = se.user
 	}
@@ -553,7 +611,7 @@ func (se *sshSession) globalRequests(reqs <-chan *ssh.Request) {
 		switch {
 		case r.Type == "keepalive@openssh.com":
 			_ = r.Reply(true, nil)
-		case (r.Type == "tcpip-forward" || r.Type == "cancel-tcpip-forward") && se.t.h.RemoteForward:
+		case (r.Type == "tcpip-forward" || r.Type == "cancel-tcpip-forward") && se.policy.remoteForward:
 			ok, payload, err := se.client.SendRequest(r.Type, r.WantReply, r.Payload)
 			if err != nil {
 				_ = r.Reply(false, nil)
@@ -576,7 +634,7 @@ func (se *sshSession) globalRequests(reqs <-chan *ssh.Request) {
 func (se *sshSession) channel(nc ssh.NewChannel) {
 	t := se.t
 	kind := nc.ChannelType()
-	if !t.channels[kind] {
+	if !se.policy.channels[kind] {
 		se.refuse(nc, "channel_refused", kind, ssh.Prohibited, "channel type not allowed")
 		return
 	}
@@ -587,7 +645,7 @@ func (se *sshSession) channel(nc ssh.NewChannel) {
 			se.refuse(nc, "malformed_channel", kind, ssh.ConnectionFailed, "malformed channel request")
 			return
 		}
-		if !t.forwardAllowed(host, port) {
+		if !se.policy.forwardAllowed(host, port) {
 			se.refuse(nc, "forward_refused", net.JoinHostPort(host, strconv.Itoa(port)), ssh.Prohibited, "destination not allowed")
 			return
 		}
@@ -715,18 +773,30 @@ func (se *sshSession) refuse(nc ssh.NewChannel, what, detail string, reason ssh.
 func (se *sshSession) clientRequests(clientCh, upCh ssh.Channel, reqs <-chan *ssh.Request, startPump func()) {
 	t := se.t
 	for r := range reqs {
-		if !t.requests[r.Type] {
+		if !se.policy.requests[r.Type] {
 			se.refuseRequest(r, "request_refused", r.Type)
 			continue
 		}
 		switch r.Type {
+		case "env":
+			name, ok := sshEnvRequest(r.Payload)
+			if !ok {
+				se.refuseRequest(r, "malformed_request", "env")
+				continue
+			}
+			if !se.policy.envAllowed(name) {
+				// A variable the target would read before it runs the
+				// command the policy approved.
+				se.refuseRequest(r, "env_refused", name)
+				continue
+			}
 		case "subsystem":
 			name := sshStringPayload(r.Payload)
-			if !t.subsystems[name] {
+			if !se.policy.subsystems[name] {
 				se.refuseRequest(r, "subsystem_refused", name)
 				continue
 			}
-			if name == "sftp" && t.sftp != nil {
+			if name == "sftp" && se.policy.sftp != nil {
 				// From here the channel carries SFTP, which is a
 				// protocol of its own and gets its own decisions.
 				ok, err := upCh.SendRequest(r.Type, r.WantReply, r.Payload)
@@ -740,6 +810,14 @@ func (se *sshSession) clientRequests(clientCh, upCh ssh.Channel, reqs <-chan *ss
 			}
 		case "exec":
 			cmd := sshStringPayload(r.Payload)
+			if !se.policy.transfers && fileTransferCommand(cmd) {
+				// scp and rsync move files without ever opening the
+				// sftp subsystem, so every path and operation rule
+				// there is simply not on their path. Refusing them is
+				// what makes an sftp policy mean anything.
+				se.refuseRequest(r, "file_transfer_refused", sftpClip(cmd))
+				continue
+			}
 			if !se.commandAllowed(cmd) {
 				se.refuseRequest(r, "command_refused", sftpClip(cmd))
 				continue
@@ -773,10 +851,10 @@ func (se *sshSession) refuseRequest(r *ssh.Request, what, detail string) {
 }
 
 func (se *sshSession) commandAllowed(cmd string) bool {
-	if len(se.t.commands) == 0 {
+	if len(se.policy.commands) == 0 {
 		return true
 	}
-	for _, re := range se.t.commands {
+	for _, re := range se.policy.commands {
 		if re.MatchString(cmd) {
 			return true
 		}
@@ -815,12 +893,12 @@ func (se *sshSession) pipe(clientCh, upCh ssh.Channel) {
 }
 
 // forwardAllowed applies the direct-tcpip destination policy.
-func (t *sshServer) forwardAllowed(host string, port int) bool {
+func (p *sshPolicy) forwardAllowed(host string, port int) bool {
 	addr, isAddr := netip.ParseAddr(host)
 	if isAddr == nil {
 		addr = addr.Unmap()
 	}
-	for _, f := range t.forwards {
+	for _, f := range p.forwards {
 		if f.port != 0 && f.port != port {
 			continue
 		}
@@ -912,10 +990,10 @@ func sshStringPayload(b []byte) string {
 // secondFactor builds the partial success that asks for a one-time
 // code. The first factor has already been verified; nothing about the
 // session is authorised until the code is too.
-func (t *sshServer) secondFactor(first string) error {
+func (t *sshServer) secondFactor(first string, ext map[string]string) error {
 	return &ssh.PartialSuccessError{Next: ssh.ServerAuthCallbacks{
 		KeyboardInteractiveCallback: func(c ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
-			return t.verifyCode(c, challenge, first)
+			return t.verifyCode(c, challenge, first, ext)
 		},
 	}}
 }
@@ -925,7 +1003,7 @@ func (t *sshServer) secondFactor(first string) error {
 // never enrolled, a wrong code, a replayed one and a locked account are
 // one answer, because telling them apart is how an attacker learns
 // which accounts are worth attacking.
-func (t *sshServer) verifyCode(c ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge, first string) (*ssh.Permissions, error) {
+func (t *sshServer) verifyCode(c ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge, first string, ext map[string]string) (*ssh.Permissions, error) {
 	ip := addrOf(c.RemoteAddr().String())
 	user := c.User()
 	m := t.h.MFA
@@ -950,5 +1028,10 @@ func (t *sshServer) verifyCode(c ssh.ConnMetadata, challenge ssh.KeyboardInterac
 		return nil, errors.New("authentication failed")
 	}
 	t.s.stats.MFAVerified.Add(1)
-	return &ssh.Permissions{Extensions: map[string]string{"auth": first + "+mfa"}}, nil
+	out := map[string]string{}
+	for k, v := range ext {
+		out[k] = v
+	}
+	out["auth"] = first + "+mfa"
+	return &ssh.Permissions{Extensions: out}, nil
 }

@@ -2373,6 +2373,60 @@ on a laptop is then not a key that opens a server, and
 `upstream_known_hosts` makes the bastion the one place that would notice
 a machine in the middle.
 
+**One policy for everyone is one policy too few.** `authorized_keys`
+says who may connect; `principals` says what each of them may do, and
+the listener's own settings are what an entry leaves unset:
+
+```yaml
+        trusted_user_ca_keys: /etc/xproxy/ssh/user_ca.pub
+        principals:
+          - name: deploy-bot
+            fingerprints: ["SHA256:2nFf3v0mP7nMZcRe0KQ1ZFQ5t3aJH2c7pXoLdW8yqQk"]
+            policy:
+              upstream_user: ci
+              allow_requests: [exec]
+              allow_commands: ["^/usr/local/bin/deploy( |$)"]
+          - name: on-call
+            cert_principals: [oncall]      # signed by the CA above
+            policy: {upstream_user: operator}
+          - name: on-leave
+            fingerprints: ["SHA256:8kJq0pZ1rT4yWn6XsB2cVfL9dE3hGm5uA7iOxQ1zRyM"]
+            policy: {deny: true}
+          - name: staff                    # names no key, so it is the default
+            policy: {allow_commands: ["^(uptime|df -h)$"]}
+```
+
+Once there is one entry the list is the policy: a key no entry covers is
+refused at authentication rather than served under the listener's
+default, because falling back would be the opposite of what the list
+says. An entry naming neither a fingerprint nor a certificate principal
+matches everything and must therefore be last. `deny: true` is how a key
+stays in `authorized_keys` while the person it belongs to is on leave,
+without the list losing the record that they exist.
+
+With `trusted_user_ca_keys` a certificate is accepted when its signature
+verifies, its validity window covers now, and its principal list names
+the login being used — which is how the rota changes without this file
+changing.
+
+**Two ways to run code the command policy never sees.** The first is the
+environment. `allow_env` defaults to `TERM`, `LANG` and `LC_*`, and the
+loader and interpreter variables (`LD_PRELOAD`, `BASH_ENV`, `PERL5OPT`,
+`PYTHONSTARTUP`, `PATH`, …) are refused whatever it says — naming one
+fails the load. A target that reads `LD_PRELOAD` runs the attacker's
+code before it runs the command `allow_commands` approved.
+
+The second is `scp` and `rsync`. Neither ever opens the `sftp`
+subsystem, so a read-only `sftp` policy with `exec` allowed is a
+read-only policy with `scp -t` wide open beside it. So
+`allow_file_transfer_commands` defaults to `false` exactly where there
+is an `sftp` section to bypass, and setting it to `true` there warns.
+Every word of the command is read, not only the first, each the way a
+shell would take it (directory part removed, `VAR=value` prefixes
+skipped): a wrapper is otherwise all it takes to walk past the check —
+`env scp -t`, `sudo rsync`, `sh -c 'scp -t /etc'`. That refuses more
+than it must, which is the direction to be wrong in.
+
 **SFTP is where "may use sftp" stops being the whole answer.** The
 entire difference between reading a file and deleting a tree happens
 inside the subsystem channel:
@@ -2398,8 +2452,10 @@ writes an `sftp` line with the operation and the path. That record is
 the other reason to terminate rather than forward: a stream you cannot
 read is a stream you cannot log.
 
-`examples/bastion/ssh.yaml` has an operator listener and a delivery
-account that can do nothing but read one directory over sftp.
+`examples/bastion/ssh.yaml` has an operator listener with principals for
+a deployment robot, an on-call rota by certificate and everyone else,
+and a delivery account that can do nothing but read one directory over
+sftp.
 
 ### A second factor, on SSH and on HTTPS
 

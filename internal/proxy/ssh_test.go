@@ -811,3 +811,281 @@ func TestSSHMFANotEnrolled(t *testing.T) {
 		t.Fatal("the unenrolled user was refused without being asked, which says the name is not enrolled")
 	}
 }
+
+// TestSSHFileTransferHole is the gap an sftp policy has without this
+// check: scp and rsync never open the sftp subsystem, so every path and
+// operation rule there is simply not on their path.
+func TestSSHFileTransferHole(t *testing.T) {
+	extra := "        sftp: {read_only: true, allow_paths: [\"/srv/data/**\"]}"
+	s, addr, key, tg := bastion(t, extra)
+	c := dialBastion(t, addr, key)
+
+	for _, cmd := range []string{
+		"scp -t /srv/data/x",
+		"scp -f /etc/shadow",
+		"rsync --server -vlogDtpre.iLsfxC . /srv/",
+		"/usr/lib/openssh/sftp-server",
+		"LANG=C scp -t /tmp/x",
+		// A wrapper is all it takes to walk past a check that reads
+		// only the first word.
+		"env scp -t /tmp/x",
+		"sudo -u root rsync --server . /srv/",
+		"sh -c 'scp -t /srv/data/x'",
+		"nice -n 19 /usr/bin/scp -t /tmp/x",
+	} {
+		sess, err := c.NewSession()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sess.Output(cmd); err == nil {
+			t.Errorf("%q was allowed past the sftp policy", cmd)
+		}
+		_ = sess.Close()
+	}
+	for _, r := range tg.seen() {
+		if strings.HasPrefix(r, "exec:") {
+			t.Fatalf("a file transfer command reached the target: %s", r)
+		}
+	}
+	if sn := s.stats.snapshot(); sn.SSHRefused == 0 {
+		t.Fatal("the refusals were not counted")
+	}
+	// An ordinary command still runs: the check names transfer helpers,
+	// not every command.
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := sess.Output("uptime"); err != nil || string(out) != "ran uptime" {
+		t.Fatalf("ordinary command: %q %v", out, err)
+	}
+}
+
+// With no sftp policy there is nothing to bypass, so the helpers run.
+func TestSSHFileTransferAllowedWithoutSFTP(t *testing.T) {
+	_, addr, key, tg := bastion(t, "")
+	c := dialBastion(t, addr, key)
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.Output("scp -t /tmp/x"); err != nil {
+		t.Fatalf("scp should run where no sftp policy exists: %v", err)
+	}
+	found := false
+	for _, r := range tg.seen() {
+		if strings.HasPrefix(r, "exec:scp") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the command did not reach the target")
+	}
+}
+
+// A principal that brings its own sftp policy to a listener with none
+// gets the transfer default its own policy implies, not the listener's:
+// otherwise the entry that carefully restricts sftp keeps scp beside it.
+func TestSSHPrincipalSFTPClosesTransfers(t *testing.T) {
+	_, addr, key, tg := bastion(t, `        principals:
+          - name: everyone
+            policy:
+              sftp: {read_only: true}`)
+	c := dialBastion(t, addr, key)
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.Output("scp -t /tmp/x"); err == nil {
+		t.Fatal("scp ran past the principal's own sftp policy")
+	}
+	for _, r := range tg.seen() {
+		if strings.HasPrefix(r, "exec:scp") {
+			t.Fatal("the command reached the target")
+		}
+	}
+}
+
+// env requests are filtered: a terminal type passes, a loader variable
+// never does, whatever the allow list says.
+func TestSSHEnvFiltering(t *testing.T) {
+	_, addr, key, tg := bastion(t, "        allow_env: [TERM, LANG, \"LC_*\", BUILD_ID]")
+	c := dialBastion(t, addr, key)
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ok := range []struct {
+		name, value string
+		want        bool
+	}{
+		{"TERM", "xterm-256color", true},
+		{"LC_ALL", "C.UTF-8", true},
+		{"BUILD_ID", "4821", true},
+		{"LD_PRELOAD", "/tmp/evil.so", false},
+		{"BASH_ENV", "/tmp/evil.sh", false},
+		{"PATH", "/tmp:/usr/bin", false},
+		{"PYTHONSTARTUP", "/tmp/evil.py", false},
+		{"EDITOR", "vi", false}, // not on the allow list
+	} {
+		err := sess.Setenv(ok.name, ok.value)
+		if (err == nil) != ok.want {
+			t.Errorf("Setenv(%q) = %v, want allowed=%v", ok.name, err, ok.want)
+		}
+	}
+	for _, r := range tg.seen() {
+		for _, bad := range []string{"LD_PRELOAD", "BASH_ENV", "PATH", "PYTHONSTARTUP", "EDITOR"} {
+			if strings.HasPrefix(r, "env:"+bad) {
+				t.Errorf("%s reached the target", bad)
+			}
+		}
+	}
+}
+
+// A principal entry gives one key its own policy, and a key no entry
+// covers is refused rather than served under the listener's default.
+func TestSSHPrincipals(t *testing.T) {
+	dir := t.TempDir()
+	hostKeyPath, _, _ := sshKey(t, dir, "host")
+	_, targetHostSigner, _ := sshKey(t, dir, "target_host")
+	upKeyPath, _, _ := sshKey(t, dir, "upstream")
+	_, opsSigner, opsAuthorized := sshKey(t, dir, "ops")
+	_, botSigner, botAuthorized := sshKey(t, dir, "bot")
+	_, straySigner, strayAuthorized := sshKey(t, dir, "stray")
+	tg := startTargetSSH(t, targetHostSigner)
+
+	authorized := filepath.Join(dir, "authorized_keys")
+	if err := os.WriteFile(authorized, []byte(opsAuthorized+botAuthorized+strayAuthorized), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	known := filepath.Join(dir, "known_hosts")
+	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(ssh.MarshalAuthorizedKey(targetHostSigner.PublicKey()))))
+	if err := os.WriteFile(known, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: bastion
+      address: "127.0.0.1:0"
+      kind: ssh
+      ssh:
+        upstream: hosts
+        host_keys: [%s]
+        authorized_keys: %s
+        upstream_key_file: %s
+        upstream_known_hosts: %s
+        allow_requests: [pty-req, env, shell, exec, subsystem, window-change, signal]
+        principals:
+          - name: ops
+            fingerprints: ["%s"]
+            policy: {upstream_user: operator}
+          - name: bot
+            fingerprints: ["%s"]
+            policy:
+              upstream_user: ci
+              allow_commands: ["^deploy( |$)"]
+logging: {access: {enabled: false}}
+upstreams:
+  - name: hosts
+    endpoints: [{address: %s}]
+`, hostKeyPath, authorized, upKeyPath, known,
+		ssh.FingerprintSHA256(opsSigner.PublicKey()),
+		ssh.FingerprintSHA256(botSigner.PublicKey()), tg.addr())
+	s, _ := startServer(t, yaml)
+	addr := s.Addrs()["bastion"]
+
+	// ops gets the listener's command policy, which is everything.
+	ops := dialBastion(t, addr, opsSigner)
+	sess, err := ops.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := sess.Output("uptime"); err != nil || string(out) != "ran uptime" {
+		t.Fatalf("ops: %q %v", out, err)
+	}
+
+	// bot gets its own, narrower one.
+	bot := dialBastion(t, addr, botSigner)
+	allowed, err := bot.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := allowed.Output("deploy 2026.3.1"); err != nil {
+		t.Fatalf("bot's own command was refused: %v", err)
+	}
+	refused, err := bot.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := refused.Output("uptime"); err == nil {
+		t.Fatal("bot ran a command outside its policy")
+	}
+
+	// A key in authorized_keys that no entry covers is refused: the
+	// list is the policy, so falling back would be the opposite of
+	// what it says.
+	if _, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+		User:            "alice",
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(straySigner)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Timeout:         5 * time.Second,
+	}); err == nil {
+		t.Fatal("a key no principal covers was accepted")
+	}
+}
+
+// A principal may be denied outright, which is how a key stays in
+// authorized_keys while the person it belongs to is off.
+func TestSSHPrincipalDeny(t *testing.T) {
+	dir := t.TempDir()
+	hostKeyPath, _, _ := sshKey(t, dir, "host")
+	_, targetHostSigner, _ := sshKey(t, dir, "target_host")
+	upKeyPath, _, _ := sshKey(t, dir, "upstream")
+	_, signer, authorizedLine := sshKey(t, dir, "client")
+	tg := startTargetSSH(t, targetHostSigner)
+	authorized := filepath.Join(dir, "authorized_keys")
+	if err := os.WriteFile(authorized, []byte(authorizedLine), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	known := filepath.Join(dir, "known_hosts")
+	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(ssh.MarshalAuthorizedKey(targetHostSigner.PublicKey()))))
+	if err := os.WriteFile(known, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: bastion
+      address: "127.0.0.1:0"
+      kind: ssh
+      ssh:
+        upstream: hosts
+        host_keys: [%s]
+        authorized_keys: %s
+        upstream_key_file: %s
+        upstream_known_hosts: %s
+        principals:
+          - name: on-leave
+            fingerprints: ["%s"]
+            policy: {deny: true}
+logging: {access: {enabled: false}}
+upstreams:
+  - name: hosts
+    endpoints: [{address: %s}]
+`, hostKeyPath, authorized, upKeyPath, known, ssh.FingerprintSHA256(signer.PublicKey()), tg.addr())
+	s, _ := startServer(t, yaml)
+	if _, err := ssh.Dial("tcp", s.Addrs()["bastion"], &ssh.ClientConfig{
+		User:            "alice",
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Timeout:         5 * time.Second,
+	}); err == nil {
+		t.Fatal("a denied principal connected")
+	}
+	if len(tg.seen()) != 0 {
+		t.Fatal("a denied principal reached the target")
+	}
+}

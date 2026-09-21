@@ -97,7 +97,7 @@ func (p *sftpPolicy) check(r sftp.Request) string {
 // rather than into the middle of one.
 func (se *sshSession) relaySFTP(clientCh, upCh ssh.Channel) {
 	t := se.t
-	p := t.sftp
+	p := se.policy.sftp
 	var mu sync.Mutex
 	write := func(dst io.Writer, pkt sftp.Packet) error {
 		mu.Lock()

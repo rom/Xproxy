@@ -248,8 +248,25 @@ func applyDefaults(c *Config) {
 			if h.SFTP != nil {
 				setInt(&h.SFTP.MaxPacketSize, 256<<10)
 			}
+			// A principal's own sftp section is the same section and
+			// gets the same defaults; without this it would fail
+			// validation on a packet size nobody wrote.
+			for j := range h.Principals {
+				if pp := h.Principals[j].Policy; pp != nil && pp.SFTP != nil {
+					setInt(&pp.SFTP.MaxPacketSize, 256<<10)
+				}
+			}
 			if h.MFA != nil {
 				mfaDefaults(h.MFA)
+			}
+			if len(h.AllowEnv) == 0 {
+				h.AllowEnv = append([]string(nil), DefaultSSHEnv...)
+			}
+			if h.AllowFileTransferCommands == nil {
+				// Refused by default exactly where there is an sftp
+				// policy to bypass.
+				allow := h.SFTP == nil
+				h.AllowFileTransferCommands = &allow
 			}
 		}
 		ln := &s.Listeners[i]

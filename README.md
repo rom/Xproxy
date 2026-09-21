@@ -240,6 +240,12 @@ an identifier from the access log to the upstream.
   inside the session is a decision: `direct-tcpip` only to listed
   destinations, `exec` only for matching commands, X11 and agent
   forwarding off by default. The target never sees the client's key.
+  Policy is **per principal** — by key fingerprint or by the principals
+  of an OpenSSH user certificate — so the deployment robot and the
+  on-call engineer are not one policy; the environment a client may set
+  is an allow list from which the loader and interpreter variables are
+  struck whatever it says; and `scp` and `rsync` are refused wherever
+  there is an SFTP policy for them to walk past.
   **SFTP is inspected inside the subsystem channel** — read-only, path
   allow and deny lists, refused operations — because the whole
   difference between reading a file and deleting a tree happens in

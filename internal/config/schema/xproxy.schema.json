@@ -4223,6 +4223,17 @@
             "type": "string"
           }
         },
+        "allow_env": {
+          "description": "AllowEnv are the environment variables a client may set, as names or name prefixes ending in \"*\". Default TERM, LANG and LC_*. The loader and interpreter variables (LD_*, BASH_ENV, PERL5OPT, PYTHONPATH and their kin) are refused whatever this says: passing one to a target is handing it code to run before the command the policy approved.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_file_transfer_commands": {
+          "description": "AllowFileTransferCommands accepts exec commands that are file transfer helpers: scp, rsync --server, sftp-server. Default false when sftp is configured and true when it is not. The default is the point. An estate that carefully sets a read-only sftp policy and then allows exec has left \"scp -t\" wide open, because scp moves files without touching the sftp subsystem at all.",
+          "type": "boolean"
+        },
         "allow_insecure": {
           "type": "boolean"
         },
@@ -4292,6 +4303,13 @@
             }
           ]
         },
+        "principals": {
+          "description": "Principals give one key or one certificate principal its own policy. Without them the listener's policy is the same for everyone who gets past authentication, which is the policy a jump host can hold and not much more. The first entry that matches decides. When any are configured, a client matching none of them is refused: the list is the policy, so falling back to the listener's would be the opposite of what it says. An entry naming neither a fingerprint nor a certificate principal is the default, and must be last.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SSHPrincipal"
+          }
+        },
         "proxy_protocol": {
           "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the target before the SSH banner.",
           "type": "boolean"
@@ -4317,6 +4335,10 @@
             }
           ]
         },
+        "trusted_user_ca_keys": {
+          "description": "TrustedUserCAKeys is a file of CA public keys, in authorized_keys form. A client may then authenticate with a certificate signed by one of them instead of appearing in authorized_keys, and the certificate's principals decide which entry of principals applies to it. A certificate that has expired, is not yet valid, or does not list the name the client is connecting as is refused.",
+          "type": "string"
+        },
         "upstream": {
           "description": "Upstream is the pool of target hosts. Required.",
           "type": "string"
@@ -4340,6 +4362,102 @@
         "users_file": {
           "description": "UsersFile is a users file (as in forward.auth) for password authentication. Public keys are the better answer; a bastion with only passwords is one credential away from open.",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SSHPolicy": {
+      "description": "SSHPolicy is the part of an ssh listener's policy a principal can have its own copy of. Every field is optional: unset means the listener's value.",
+      "type": "object",
+      "properties": {
+        "allow_channels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_env": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_requests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_subsystems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny": {
+          "description": "Deny refuses this principal outright, which is how a key stays in authorized_keys while the person it belongs to is off.",
+          "type": "boolean"
+        },
+        "forward": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "remote_forward": {
+          "type": "boolean"
+        },
+        "sftp": {
+          "$ref": "#/$defs/SFTPPolicy"
+        },
+        "upstream_user": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SSHPrincipal": {
+      "description": "SSHPrincipal gives one key, or one certificate principal, its own policy on an ssh listener.",
+      "type": "object",
+      "properties": {
+        "cert_principals": {
+          "description": "CertPrincipals are the principals of a certificate this entry covers; they need trusted_user_ca_keys.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fingerprints": {
+          "description": "Fingerprints are SHA256 fingerprints of the keys this entry covers, in the form ssh-keygen prints: \"SHA256:\" and the base64 of the digest.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name appears in the access log and the security events, so a refusal names a person rather than a fingerprint.",
+          "type": "string"
+        },
+        "policy": {
+          "description": "Policy is what this principal may do. Anything it leaves unset falls back to the listener's own setting, so an entry that only changes the target account says only that.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SSHPolicy"
+            }
+          ]
+        },
+        "users": {
+          "description": "Users restricts the entry to these login names. Empty matches any name the key authenticated as.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
