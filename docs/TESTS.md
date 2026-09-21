@@ -50,6 +50,10 @@ server.
 | `internal/proxy` (request path deciders) | `TestTemplateVarsResolveEveryName` (every variable name asked with nothing to answer from, with a request only and with full state; an unset one reports not-found rather than an empty value a header operation would still set), `TestCertFieldEveryField` and `TestCertFieldQuotesHostileSubject` (every client certificate field, a PEM with no line break in it, an `xfcc` whose subject carries `;` and `,` quoted, a certificate with no common name and no names at all), `TestCompileOpsRejectsBadTemplates`, `TestCompiledOpsStripClientCertHeaders` (a client's own identity headers are removed even when the condition rejects the request), `TestCacheKeyRefusesUncacheableRequests` and `TestCacheKeySeparatesVariants` (eight requests that key nothing; HEAD shares GET's entry, the raw host with its port does not, an escaped separator does not collide with two parameters), `TestStorableRefusesWhatMustNotBeShared` (eleven responses that must not be stored, `public` re-admitting an authenticated one, the year 9999 and a max-age of 1e12 both cut to the ceiling), `TestEtagMatchesEdges`, `TestAcceptEncodingsParsing`, `TestEligibleTypeRefusesMalformed`, `TestCompressWriterHijackAndUnwrap` (nothing is written after a hijack, so a gzip trailer cannot corrupt an upgraded connection), `TestCompressWriterUndecidedBodies`, `TestResponseWriterRecordsWhatWasSent`, `TestProxyV2HeaderShapes` (a mixed address pair takes the IPv6 shape; a socket that is not TCP gets LOCAL with no address), `TestAddrOfEdges`, `TestFramingProblemDetectsSmuggling` (eleven framings), `TestErrorPagesLookupFallsBack`, `TestWantsJSON`, `TestTrimIsByteBounded`, `TestAuthKindNamesTheCredential`, `TestMediaTypeNormalises`, `TestCoarseKeyCollapsesRotation`, `TestErrReaderAlwaysFails`, `TestMarksDroppedCountsRefusals`, `TestStaticOpenRefusesSpecialFiles`, `TestHasDotSegment`, `TestEventBusDispatch` | Each of these runs on every request from the network, and each is easier to get wrong than it looks |
 | `internal/proxy` (server-side deciders) | `TestRateKeyEveryShape` (fifteen key shapes, every unanswerable one falling back to the client address rather than one shared bucket, an object claim naming no bucket, a 4 KiB header cut to the bound), `TestBanCategoryFolding`, `TestDigestBodyBounds` (a replayable buffer, one byte past what a digest covers answered 413, a body that fails mid-read answered 400), `TestQueueRefusedAnswers` (a full queue, a queue timeout and a client that walked away, each moving its own counter), `TestTarpitHoldsThenDenies` (a cancelled request is not held for the configured delay), `TestClusterRateSourceDecide` (an unknown and a non-exact policy answer nothing; an exact policy's consumption is never gossiped), `TestHoneypotAccessorsOnAServer` (a peer's year-long mark is cut to what this node would place, only the placing peer withdraws it, four unparseable addresses and an expired deadline place nothing), `TestInventoryRouteSelectors`, `TestSplitOrigin`, `TestHashUpToRespectsTheBound`, `TestServeCachedConditionalRequests` (five validators that get 304 and three that do not, and two hits that must not see each other's template values through the shared entry's spare capacity), `TestDNSPolicyCompilation`, `TestFilterDeniedError`, `TestActivatedListenersRefusesBadEnvironment` (another process's descriptor set ignored, four counts refused, the variables consumed), `TestListenerForPrefersActivatedSockets`, `TestTCPRetryNeedsAReplayableBody`, `TestGRPCWebTextBodyRefusesBadInput`, `TestPatchSelectorsNarrowCorrectly` (twelve selectors each rejecting on its own), `TestFilterNamesAreStable` | The deciders that need a live generation, driven directly so the branch under test is the one that runs |
 | `internal/ingress` (merge and the cluster's answers) | `TestMergeRefusesCollisionsAndBadListeners` (a snapshot whose route or upstream name collides with the operator's own is refused, the certificates go on the named listener, a listener with no tls section and one that does not exist are both errors, and the configuration handed in is never modified), `TestMatchesClass` (the field beats the deprecated annotation; an unclassed Ingress is nobody's), `TestHeaderOpsFromAFilter`, `TestAddCertRefusals` (eight secrets that must not become a certificate, the same reference added once, an untyped secret still accepted), `TestWriteIfChangedFailures` (unchanged content is not rewritten under the running proxy, no temporary file is left behind, and four write failures are reported), `TestWriteCertsSweepsOnlyItsOwnFiles` (the operator's own files and a directory survive the sweep, a withdrawn secret's file does not, and four unusable names are dropped rather than written), `TestFetchReportsWhichResourceFailed`, `TestSecretFailuresDoNotStopTheSync`, `TestNamespacedListPaths`, `TestWatchStreamFailures` (a 403, an undecodable stream, an event with no type, a request that cannot be built), `TestWatchLoopBacksOffAndStops` (a 404 and a 500 both end when the context does, with no watch left counted open), `TestTranslateGatewayRefusals` (a Gateway whose name is not a DNS label, another controller's class, a certificate reference to a ConfigMap and to a secret nobody fetched, four parent references that attach to nothing, three filters the proxy cannot express, and the redirect a route becomes) | The controller turns what an API server says into the proxy's own configuration and into files on disk |
+| `internal/h3` (a real QUIC endpoint) | `TestNewRefusesIncompleteOptions` (four option sets, and the UDP socket handed back so a reload can move the endpoint), `TestServeAndClientRoundTrip` (a request over HTTP/3 against a real endpoint, `Te` stripped from the outbound request without touching the caller's, Alt-Svc advertising the port), `TestClientRefusesAnUnreachableServer` and `TestIsTransportError` (five QUIC errors and three from above the QUIC layer, wrapped and bare, because the classification decides whether the proxy retries over TCP), `TestConnectionsPastTheLimitAreRefused` (the second client is refused by the same admission the TCP listener applies, before any request runs), `TestWebTransportEndpointServes`, `TestSessionCode`, `TestAddrOf`, `TestSocketBufferAdvice` | The only package that imports quic-go, so its tests speak QUIC |
+| `internal/mgmt` (a proxy with nothing optional configured) | `TestSubsystemsThatAreNotConfigured` (bans, cluster and maintenance each say so rather than answering with an empty list), `TestActionsThatAreNotAvailable` (an action nobody wired up is 501, a failing dry run is 409 carrying the reason, a successful one answers the change set without touching the generation), `TestBanRequestsThatAreWrong` (a duration that is not one, a reason past the field, an unparseable target, an unban of something that is not banned, and a body that is not JSON on both endpoints that take one), `TestConfigEndpointRedactsAndNamesItsFiles`, `TestEveryReadEndpointAnswersOnABareProxy` (thirty-eight reads, two writes and five deletes, each answering rather than hanging or panicking), `TestStartRefusesAnImpossibleSocket` | Every operator command and the web interface reach the proxy through this one socket |
+| `internal/config` (the sections the rich fixture misses) | `TestWiderConfigValid` and `TestWiderValidationBranches` (fifty-one mutations of one valid document covering the log shipper, the sandbox paths, maintenance, the challenge and its CAPTCHA, the fleet agent, the virtual patches, the error pages, security.txt and the positive policy), `TestValidateEntryPointsAndAdvice` (`Validate` with the file checks and `ValidateNoFiles` without them, and the advice channel a weakening but valid document fills), `TestSandboxOn`, `TestListenerChangeClassification` (a certificate, a forward policy and a DNS policy change in place; an address change rebuilds; a listener that also binds UDP needs a restart), `TestListenerHasUDP`, `TestClusterNeedsRestart` | The validator is what stands between a typing mistake and a proxy serving something nobody meant |
+| `internal/config/schema/schemagen` (types it cannot express) | `TestGenerateRefusesWhatItCannotExpress` (eleven sources that must not become a schema, among them a channel, a function, an external type, a map keyed by an integer and a field with no yaml tag), `TestGenerateExpressesEveryShapeItSupports` (every scalar, a free-form object against a typed one, a named string type as an enumeration, a duration with its pattern, a self reference rendered once, a field tagged `-` absent, and the doc comments that become descriptions) | The schema is what an editor and CI validate a configuration against, so a type it cannot express must stop the generation |
 | `internal/secret` (keyring edges) | `TestLoadOrCreate` (an ephemeral ring per call, a created file at 0600, the same key across loads, and a file that cannot be created reported rather than silently becoming ephemeral), `TestRotateEdges` (four keep counts refused before anything is written, the newest-first order, `keep: 0` as the emergency path, a raw key file converted with its old key kept, and a malformed ring refused without changing the file), `TestKeyringAccessors` (the material is copied out, and a zero or nil ring answers instead of panicking) | The file is the secret that signs cookies, seals sessions and pseudonymises logs |
 | `internal/tlsconf` (client and stapling) | `TestClientOptions` (nine option sets refused, and verification skipped only when both flags are set), `TestSPKIPinning` (a pin is the digest of the key, another certificate from the same authority does not match, several pins roll a key over, a connection with no certificate fails), `TestVersionName`, `TestLoadPool` (five files that are not a certificate pool), `TestParseLogList` (nine documents that must not become a log list, a nil list that answers for no log), `TestServerCertificateSelection` (six server names including one nobody has a certificate for, the tls-alpn-01 handshake answered only from the challenge hook, managed certificates alongside file ones, a listener with none), `TestServerOptionRefusals` (nine listener option sets), `TestOCSPFetchFailures` (a certificate naming no responder, a chain without its issuer, six responders answering something else, a response signed by another authority, a responder that is not there, and the staple that is never served once it has expired) | What the proxy will talk to, and what it staples to every handshake |
 | `internal/fleet` (hostile controller) | `TestValidPath` (twenty paths that must not enter a bundle), `TestDigestCoversEveryField`, `TestValidateRefusals` (twelve bundles that must not be applied, including a world writable mode, a setuid mode, a duplicate path and a digest that does not match), `TestReadRefusesWhatItCannotSend` (dot files and dot directories never leave the controller, a symbolic link is refused, a later directory overrides file by file), `TestWriteAndRestore` (the restore after a refused reload, a file the bundle does not mention left alone, a directory not overwritten, no temporary files left), `TestAgentAgainstAHostileController` (thirteen answers that must not change a byte on the node — among them a path that escapes, an absolute path and a world writable mode — plus 304 and 404 which are not failures, and a controller that goes away) | A bundle is a set of files a controller sends and a node writes as the proxy user |
@@ -348,74 +352,75 @@ packages' tests reach in it):
 | Package | Coverage | Statements |
 |---------|----------|------------|
 | `internal/bodybudget` | 100 % | 23 |
+| `internal/bound` | 100 % | 20 |
+| `internal/otlp` | 100 % | 59 |
 | `internal/securitytxt` | 100 % | 122 |
 | `internal/safe` | 100 % | 10 |
-| `internal/bound` | 100 % | 20 |
 | `internal/filter` | 99 % | 96 |
 | `internal/router` | 99 % | 151 |
+| `internal/ldap` | 98 % | 355 |
 | `internal/shed` | 98 % | 92 |
 | `internal/limits` | 98 % | 266 |
 | `internal/tmpl` | 98 % | 82 |
-| `internal/cache` | 96 % | 132 |
+| `internal/cache` | 97 % | 132 |
+| `internal/config/schema/schemagen` | 96 % | 159 |
 | `internal/originsig` | 95 % | 84 |
 | `internal/jsonschema` | 95 % | 362 |
-| `internal/geoip` | 94 % | 296 |
+| `internal/acme/jose` | 95 % | 55 |
+| `internal/passwd` | 94 % | 69 |
 | `internal/metrics` | 94 % | 295 |
+| `internal/geoip` | 94 % | 296 |
 | `internal/manpage` | 93 % | 242 |
-| `internal/netutil` | 93 % | 488 |
+| `internal/tui` | 93 % | 671 |
 | `internal/filters/oidc` | 93 % | 449 |
+| `internal/netutil` | 93 % | 488 |
 | `internal/challenge` | 93 % | 371 |
+| `internal/filters/botscore` | 93 % | 280 |
 | `internal/filters/headerguard` | 93 % | 54 |
 | `internal/upstream` | 92 % | 878 |
 | `internal/expr` | 92 % | 296 |
 | `internal/filters/sensitive` | 92 % | 541 |
 | `internal/tracing` | 92 % | 164 |
+| `internal/filters/openapi` | 91 % | 449 |
 | `internal/waf` | 91 % | 814 |
+| `internal/mgmt` | 91 % | 557 |
+| `internal/filters/wasm` | 91 % | 370 |
+| `internal/filters/apikey` | 91 % | 313 |
+| `internal/filters/ldapauth` | 91 % | 165 |
 | `internal/filters/graphql` | 91 % | 387 |
+| `internal/ldap/ldaptest` | 91 % | 170 |
 | `internal/filters/bodyrewrite` | 90 % | 125 |
+| `internal/h3` | 90 % | 164 |
 | `internal/icap` | 90 % | 397 |
 | `internal/filters/accountguard` | 90 % | 604 |
+| `internal/tlsconf` | 90 % | 731 |
+| `internal/ingress` | 90 % | 801 |
 | `internal/apiinv` | 90 % | 367 |
+| `internal/cluster` | 90 % | 575 |
+| `internal/ban` | 90 % | 535 |
 | `internal/filters/basicauth` | 90 % | 79 |
 | `internal/filters/uploadguard` | 90 % | 265 |
-| `internal/ban` | 90 % | 535 |
+| `internal/config` | 90 % | 2883 |
 | `internal/jwt` | 90 % | 523 |
-| `internal/secret` | 89 % | 124 |
-| `internal/cluster` | 90 % | 575 |
-| `internal/config/schema/schemagen` | 87 % | 159 |
-| `internal/filters/botscore` | 93 % | 280 |
-| `internal/logging` | 89 % | 946 |
-| `internal/config` | 86 % | 2883 |
-| `internal/filters/openapi` | 91 % | 449 |
-| `internal/mgmt` | 86 % | 557 |
-| `internal/tlsconf` | 89 % | 731 |
-| `internal/filters/apikey` | 91 % | 313 |
-| `internal/fleet` | 86 % | 575 |
-| `internal/tui` | 93 % | 671 |
-| `internal/passwd` | 94 % | 67 |
 | `internal/proxy` | 89 % | 5237 |
-| `internal/h3` | 82 % | 164 |
-| `internal/acme/jose` | 95 % | 55 |
-| `internal/dns` | 88 % | 1861 |
-| `internal/filters/ldapauth` | 92 % | 165 |
-| `internal/acme` | 87 % | 430 |
-| `internal/ingress` | 90 % | 801 |
-| `internal/ldap` | 96 % | 350 |
-| `internal/admin` | 89 % | 1028 |
-| `internal/filters/wasm` | 91 % | 370 |
-| `internal/ldap/ldaptest` | 95 % | 169 |
-| `internal/otlp` | 71 % | 59 |
+| `internal/logging` | 89 % | 946 |
+| `internal/secret` | 89 % | 133 |
+| `internal/acme` | 89 % | 430 |
+| `internal/admin` | 89 % | 1033 |
+| `internal/dns` | 88 % | 1868 |
+| `internal/fleet` | 88 % | 575 |
 | `internal/sandbox` | the mechanisms run in a confined child that cannot write a coverage file; the child's probes assert the effects instead (excluded from the gate) | |
 | `cmd/xproxy-fleet` | 92 % from its own tests (not part of the gate) | |
 | `cmd/xproxyctl` | 82 % from its own tests (not part of the gate); what remains is the formatting of views whose subsystems need a live peer, certificate authority, resolver or scanner behind them, which `internal/proxy` and `internal/mgmt` exercise from the other side | |
-| **core packages together** | **86.4 % of 28594 statements** | |
+| **core packages together** | **90.7 % of 28658 statements** | |
 
-Not covered: the raw terminal loop of the TUI (pseudo terminal check),
-socket activation (needs systemd), the QUIC transport internals beyond
-the handshake and admission tests, the error paths that need a failing
-`crypto/rand` or a failing `fsync`, and file system failures other than
-a full disk and the permission and path cases in
-`internal/secret/filesystem_test.go`.
+Not covered: the descriptor handover of socket activation (the matching
+and the refusals are tested; inheriting a real descriptor needs
+systemd), the QUIC transport internals beyond the handshake, relay and
+admission tests, the error paths that need a failing `crypto/rand`, a
+failing `fsync` or a write that fails after the file was created, and
+file system failures other than a full disk and the permission and path
+cases in `internal/secret/filesystem_test.go`.
 
 ## Mutation testing
 

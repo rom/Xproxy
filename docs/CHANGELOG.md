@@ -295,7 +295,7 @@ Open findings of the earlier rounds:
 A round of adversarial and robustness tests over the parsers, the
 protocol clients and the views, written from the outside in: what a
 client, a peer, a scanner, a certificate authority or a file on disk
-can put in front of each of them. Forty-two packages gained a suite;
+can put in front of each of them. Forty-six packages gained a suite;
 `docs/TESTS.md` lists every case. The findings each have their own
 entry above.
 
