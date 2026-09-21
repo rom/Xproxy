@@ -58,6 +58,28 @@ security_txt:
     policy: ["https://example.com/vdp"]
     valid_for: 8760h
 
+  # The addresses themselves. A machine found in a range scan has no
+  # name for a finder to go on, and a bare address is exactly where a
+  # name-based selector cannot reach. host_cidrs matches a Host header
+  # that is an address literal, in either family; a Host that is a name
+  # never matches, whatever it resolves to.
+  - name: parked-addresses
+    host_cidrs:
+      - "198.51.100.0/24"       # the range the provider assigned
+      - "2001:db8:1::/48"
+    comment: |
+      This address is not a service. If you found something here, the
+      report is still welcome.
+    contact: ["mailto:security@example.com"]
+    policy: ["https://example.com/vdp"]
+    valid_for: 8760h
+
+  # Every address literal there is, for an estate whose addresses are
+  # not known in advance. Two prefixes, one per family.
+  # - name: any-address
+  #   host_cidrs: ["0.0.0.0/0", "::/0"]
+  #   contact: ["mailto:security@example.com"]
+
   # A clear-signed document, kept as a file so the signature survives.
   # A reload re-reads it, so re-signing needs no restart. Give a signed
   # document an explicit Expires inside the signature: valid_for cannot

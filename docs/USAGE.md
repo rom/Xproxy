@@ -1840,6 +1840,79 @@ internal address or in front of `tls` with client certificates; a
 forward proxy reachable from the Internet without `auth` is an open
 relay.
 
+### Virtual security.txt
+
+A `security.txt` (RFC 9116) tells a finder where to report a
+vulnerability. It belongs to the organisation rather than to any one
+application, so putting a file on every origin means every team that
+owns an origin has to remember it — and the host that forgot is the one
+a finder tries. Here it is configuration, served by the proxy **before
+routing**, so a host with no route at all still answers.
+
+```yaml
+security_txt:
+  # Internal clients get the contact that reaches somebody today.
+  - name: internal
+    client_cidrs: ["10.0.0.0/8", "fd00::/8"]
+    contact: ["mailto:appsec@corp.internal"]
+    valid_for: 720h
+  # One brand.
+  - name: shop
+    hosts: ["shop.example.com", "*.shop.example.com"]
+    contact: ["https://example.com/vdp", "mailto:security@example.com"]
+    policy: ["https://example.com/vdp"]
+  # A naming scheme a wildcard cannot express.
+  - name: numbered-api
+    host_regex: '^api[0-9]{1,3}\.example\.com$'
+    contact: ["mailto:api-security@example.com"]
+  # The addresses themselves: a machine found in a range scan has no
+  # name for a finder to go on.
+  - name: parked-addresses
+    host_cidrs: ["198.51.100.0/24", "2001:db8:1::/48"]
+    contact: ["mailto:security@example.com"]
+  # Everything else, parked names included. No selectors, so it goes
+  # last and answers what the entries above did not.
+  - name: default
+    contact: ["mailto:security@example.com"]
+```
+
+Entries are tried in order and the first whose selectors *all* match
+answers. Selectors come in two kinds, and both must hold:
+
+- **Which host was asked for** — `hosts` (exact names and `*.`
+  wildcards), `host_regex`, and `host_cidrs` for a `Host` that is an
+  address literal rather than a name. These are a union: any one of
+  them naming the host is enough. An entry with none of them answers
+  for every host.
+- **Who is asking, and where** — `client_cidrs` and `listeners`. These
+  narrow: an entry naming them answers only inside them.
+
+So one host is `hosts: ["shop.example.com"]`, a group is a wildcard, a
+regular expression or a CIDR, and all of them is an entry with no host
+selector at all. `host_cidrs: ["0.0.0.0/0", "::/0"]` is every address
+literal there is, for an estate whose addresses are not known in
+advance; a `Host` that is a name never matches it, because the proxy
+does not resolve the `Host` header and a document that turned on what a
+name resolves to would be answering on the client's word.
+
+The document is rendered from the fields, with `Expires` required by
+the RFC: set it explicitly, or set `valid_for` and let every reload
+push it forward so it cannot quietly go stale. For a clear-signed
+document, `body_file` is served verbatim and re-read on reload — give
+that one an explicit `Expires` inside the signature, since `valid_for`
+cannot refresh what is signed.
+
+```sh
+curl -s http://localhost:8080/.well-known/security.txt
+curl -s -H 'Host: 198.51.100.7' http://localhost:8080/security.txt
+```
+
+A request that matches no entry is routed as usual, so an origin
+already serving its own file keeps doing so. Only `GET` and `HEAD` are
+answered; the `security_txt` counter records how many were served, and
+the access log names the entry that answered.
+`examples/security/security-txt.yaml` is the whole pattern.
+
 ### Honeypot routes and decoys
 
 ```yaml

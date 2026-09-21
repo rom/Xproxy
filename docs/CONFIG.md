@@ -1559,6 +1559,41 @@ answers, so an entry with no selectors placed last is the fallback for
 every other host. A request that matches no entry falls through to
 routing, so an origin already serving its own file keeps doing so.
 
+**Selecting who sees which document.** An entry has two independent
+kinds of selector, and both must hold for it to answer:
+
+- **Which host was asked for** — `hosts` (exact names and `*.` wildcard
+  patterns), `host_regex`, and `host_cidrs` for a `Host` that is an
+  address literal rather than a name. These are a *union*: an entry
+  answers for a host any one of them names. An entry naming none of
+  them answers for every host.
+- **Who is asking, and where** — `client_cidrs` (the client's own
+  address) and `listeners`. These *narrow*: an entry naming them answers
+  only inside them.
+
+That covers the whole range from one host to all of them:
+
+| You want | Write |
+|----------|-------|
+| One host | `hosts: ["shop.example.com"]` |
+| A domain and everything under it | `hosts: ["example.com", "*.example.com"]` |
+| Several brands in one document | `hosts: ["a.example.com", "*.b.example.net"]` |
+| A naming scheme a wildcard cannot express | `host_regex: '^api[0-9]+\.example\.com$'` |
+| A range of addresses, for hosts reached by address | `host_cidrs: ["198.51.100.0/24", "2001:db8:1::/48"]` |
+| Every address literal, whatever the range | `host_cidrs: ["0.0.0.0/0", "::/0"]` |
+| Every host, name or address | no host selector at all |
+| A different document for internal clients | `client_cidrs: ["10.0.0.0/8"]` on an earlier entry |
+| A different document on the management listener | `listeners: [mgmt]` on an earlier entry |
+
+`host_cidrs` is the selector for a host a finder reached by address
+because no name points at it — a parked address, a range a provider
+assigned, a machine found in a range scan. It matches the `Host` header
+read as an address, in either family and in either spelling
+(`::ffff:198.51.100.7` is the IPv4 address it carries), and it never
+matches a name: the proxy does not resolve the `Host` header, and a
+document that turned on what a name resolves to would be answering on
+the client's word.
+
 ```yaml
 security_txt:
   # Internal clients get the internal contact.
@@ -1575,6 +1610,13 @@ security_txt:
     policy: ["https://example.com/vdp"]
     acknowledgments: ["https://example.com/hall-of-fame"]
     canonical: ["https://shop.example.com/.well-known/security.txt"]
+  # The addresses themselves: a scanner that found the machine in a
+  # range scan has no name to go on, and is the finder most likely to
+  # need somewhere to report.
+  - name: parked-addresses
+    host_cidrs: ["198.51.100.0/24", "2001:db8:1::/48"]
+    contact: ["mailto:security@example.com"]
+    comment: "This address is not a service. Reports are still welcome."
   # Everything else, including parked names.
   - name: default
     contact: ["mailto:security@example.com"]
@@ -1586,6 +1628,7 @@ security_txt:
 | `name` | string | `security_txt[i]` | Names the entry in `xproxyctl stats`, the access log and the security log |
 | `hosts` | list | any host | Exact names or wildcard patterns (`*.example.com`, which matches a label or more and not the bare name) |
 | `host_regex` | RE2 | none | Matches the host as well, for a naming scheme a wildcard cannot express; at most 512 bytes |
+| `host_cidrs` | list | none | Matches a `Host` that is an address literal, in either family; `0.0.0.0/0` and `::/0` together cover every literal. A `Host` that is a name never matches, whatever it resolves to |
 | `client_cidrs` | list | any client | Only clients inside these networks see this entry, so an internal document can differ from the public one |
 | `listeners` | list | any listener | Only these listener names serve this entry |
 | `contact` | list | required | How to report, most preferred first: `mailto:`, `tel:` or `https:`. RFC 9116 requires at least one, and a `security.txt` with no way to report is worse than none |

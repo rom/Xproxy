@@ -1688,6 +1688,11 @@ func (v *validator) securityTxt(c *Config) {
 				v.errf("%s.host_regex: %v", p, err)
 			}
 		}
+		for j, cidr := range st.HostCIDRs {
+			if _, err := netip.ParsePrefix(cidr); err != nil {
+				v.errf("%s.host_cidrs[%d]: %q is not a CIDR", p, j, cidr)
+			}
+		}
 		for j, cidr := range st.ClientCIDRs {
 			if _, err := netip.ParsePrefix(cidr); err != nil {
 				v.errf("%s.client_cidrs[%d]: %q is not a CIDR", p, j, cidr)

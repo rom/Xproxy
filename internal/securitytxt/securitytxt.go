@@ -47,9 +47,12 @@ type Doc struct {
 	name string
 	// hosts are exact lower-case names; suffixes are wildcard patterns
 	// stored as ".example.com" and match one label or more.
-	hosts     map[string]bool
-	suffixes  []string
-	hostRE    *regexp.Regexp
+	hosts    map[string]bool
+	suffixes []string
+	hostRE   *regexp.Regexp
+	// hostNets match a Host that is an address literal. They are a host
+	// selector, not a client one: the address the finder asked for.
+	hostNets  []netip.Prefix
 	clients   []netip.Prefix
 	listeners map[string]bool
 	body      []byte
@@ -116,6 +119,13 @@ func compile(c *config.SecurityTxt, now time.Time) (*Doc, error) {
 		}
 		d.hostRE = re
 	}
+	for _, cidr := range c.HostCIDRs {
+		p, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+		if err != nil {
+			return nil, fmt.Errorf("host_cidrs: %q is not a CIDR", cidr)
+		}
+		d.hostNets = append(d.hostNets, p.Masked())
+	}
 	for _, cidr := range c.ClientCIDRs {
 		p, err := netip.ParsePrefix(strings.TrimSpace(cidr))
 		if err != nil {
@@ -164,7 +174,7 @@ func (d *Doc) matches(host string, client netip.Addr, listener string) bool {
 	}
 	// Host selectors are a union: a document with several kinds answers
 	// for a name any one of them names.
-	if len(d.hosts) == 0 && len(d.suffixes) == 0 && d.hostRE == nil {
+	if len(d.hosts) == 0 && len(d.suffixes) == 0 && d.hostRE == nil && len(d.hostNets) == 0 {
 		return true
 	}
 	if d.hosts[host] {
@@ -175,7 +185,30 @@ func (d *Doc) matches(host string, client netip.Addr, listener string) bool {
 			return true
 		}
 	}
+	if len(d.hostNets) > 0 {
+		if ip, ok := hostAddr(host); ok && netutil.Contains(d.hostNets, ip) {
+			return true
+		}
+	}
 	return d.hostRE != nil && d.hostRE.MatchString(host)
+}
+
+// hostAddr reads a normalised Host as an address literal. The proxy
+// hands IPv6 literals over bracketed, as they travel in the header, and
+// never resolves a name: a Host of "example.com" is not an address here
+// however it resolves, because the address a name points at is the
+// client's claim and not something this document should turn on.
+func hostAddr(host string) (netip.Addr, bool) {
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	// An address written as ::ffff:192.0.2.1 is the IPv4 address it
+	// carries, so one prefix matches both spellings.
+	return ip.Unmap(), true
 }
 
 // Serve writes the document. Only GET and HEAD are answered; anything

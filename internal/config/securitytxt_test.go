@@ -28,6 +28,7 @@ func TestSecurityTxtValidation(t *testing.T) {
 	cfg, err := Parse([]byte(securityTxtConfig(`name: public
 hosts: ["example.com", "*.example.com"]
 host_regex: '^api[0-9]+\.example\.com$'
+host_cidrs: ["198.51.100.0/24", "2001:db8::/32"]
 client_cidrs: ["10.0.0.0/8"]
 listeners: [main]
 contact: ["mailto:security@example.com"]
@@ -90,6 +91,12 @@ host_regex: "("`, "host_regex"},
 		{`name: a
 contact: ["mailto:a@example.com"]
 client_cidrs: ["10.0.0.0/33"]`, "not a CIDR"},
+		{`name: a
+contact: ["mailto:a@example.com"]
+host_cidrs: ["198.51.100.0"]`, "host_cidrs[0]"},
+		{`name: a
+contact: ["mailto:a@example.com"]
+host_cidrs: ["not-a-network/24"]`, "host_cidrs[0]"},
 		{`name: a
 contact: ["mailto:a@example.com"]
 listeners: [nope]`, "unknown listener"},

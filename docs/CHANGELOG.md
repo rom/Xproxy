@@ -279,6 +279,31 @@ Open findings of the earlier rounds:
   let it append a `Contact` line of somebody else's choosing. Responses
   are `GET`/`HEAD` only (405 otherwise), cached for `cache_for` and
   counted in `security_txt`.
+- **`security_txt[].host_cidrs`: a document selected by address range.**
+  The virtual `security.txt` could already be scoped to one host, to a
+  wildcard domain, to a regular expression, to a client network, to a
+  listener, or to everything. The one host a name-based selector cannot
+  reach is the one that has no name: a machine found in a range scan,
+  a parked address, a range a provider assigned. That client sends
+  `Host: 198.51.100.7`, and it is the finder with the least to go on
+  and the most need of somewhere to report.
+
+  `host_cidrs` matches the `Host` header read as an address literal, in
+  either family and in either spelling — `::ffff:198.51.100.7` is the
+  IPv4 address it carries, so one prefix covers both. It joins the
+  other host selectors as a union, so one entry can name the hosts it
+  knows and the range everything else sits in;
+  `host_cidrs: ["0.0.0.0/0", "::/0"]` is every address literal there
+  is. A `Host` that is a name never matches it, whatever that name
+  resolves to: the proxy does not resolve the `Host` header, and a
+  document that turned on what a name resolves to would be answering
+  on the client's word.
+
+  `docs/USAGE.md` gains the section the feature never had, with the
+  table that maps one host, a group and all of them onto the selector
+  that expresses each; `examples/security/security-txt.yaml` gains the
+  parked-address entry and the commented any-address one.
+
 - **Fifty-six honeypot decoys.** `honeypot.decoy` now takes 56 names
   covering the paths scanners actually probe, grouped in
   docs/CONFIG.md by what the scanner is after. Beside the original PHP,

@@ -5712,6 +5712,79 @@ A virtual \fBsecurity.txt\fR (RFC 9116): the document that tells a finder where 
 .PP
 Entries are tried in order and the first whose selectors all match answers, so an entry with no selectors placed last is the fallback for every other host. A request that matches no entry falls through to routing, so an origin already serving its own file keeps doing so.
 .PP
+\fBSelecting who sees which document.\fR An entry has two independent kinds of selector, and both must hold for it to answer:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBWhich host was asked for\fR \[u2014] \fBhosts\fR (exact names and \fB*.\fR wildcard patterns), \fBhost_regex\fR, and \fBhost_cidrs\fR for a \fBHost\fR that is an address literal rather than a name. These are a \fIunion\fR: an entry answers for a host any one of them names. An entry naming none of them answers for every host.
+.PP
+.ti -3n
+\(bu
+\fBWho is asking, and where\fR \[u2014] \fBclient_cidrs\fR (the client\(aqs own address) and \fBlisteners\fR. These \fInarrow\fR: an entry naming them answers only inside them.
+.RE
+.PP
+.PP
+That covers the whole range from one host to all of them:
+.PP
+.TS
+allbox;
+lbw(1.1i) lbx
+lw(1.1i) lx.
+T{
+You want
+T}	T{
+Write
+T}
+T{
+One host
+T}	T{
+\fBhosts:\: ["shop.\:example.\:com"]\fR
+T}
+T{
+A domain and everything under it
+T}	T{
+\fBhosts:\: ["example.\:com",\: "*.\:example.\:com"]\fR
+T}
+T{
+Several brands in one document
+T}	T{
+\fBhosts:\: ["a.\:example.\:com",\: "*.\:b.\:example.\:net"]\fR
+T}
+T{
+A naming scheme a wildcard cannot express
+T}	T{
+\fBhost_\:regex:\: \(aq^api[0\-\:9]+\e.\:example\e.\:com$\(aq\fR
+T}
+T{
+A range of addresses,\: for hosts reached by address
+T}	T{
+\fBhost_\:cidrs:\: ["198.\:51.\:100.\:0/\:24",\: "2001:\:db8:\:1:\::\:/\:48"]\fR
+T}
+T{
+Every address literal,\: whatever the range
+T}	T{
+\fBhost_\:cidrs:\: ["0.\:0.\:0.\:0/\:0",\: ":\::\:/\:0"]\fR
+T}
+T{
+Every host,\: name or address
+T}	T{
+no host selector at all
+T}
+T{
+A different document for internal clients
+T}	T{
+\fBclient_\:cidrs:\: ["10.\:0.\:0.\:0/\:8"]\fR on an earlier entry
+T}
+T{
+A different document on the management listener
+T}	T{
+\fBlisteners:\: [mgmt]\fR on an earlier entry
+T}
+.TE
+.PP
+\fBhost_cidrs\fR is the selector for a host a finder reached by address because no name points at it \[u2014] a parked address, a range a provider assigned, a machine found in a range scan. It matches the \fBHost\fR header read as an address, in either family and in either spelling (\fB::ffff:198.51.100.7\fR is the IPv4 address it carries), and it never matches a name: the proxy does not resolve the \fBHost\fR header, and a document that turned on what a name resolves to would be answering on the client\(aqs word.
+.PP
 .RS 4
 .nf
 .ft CR
@@ -5730,6 +5803,13 @@ security_txt:
     policy: ["https://example.com/vdp"]
     acknowledgments: ["https://example.com/hall\-of\-fame"]
     canonical: ["https://shop.example.com/.well\-known/security.txt"]
+  # The addresses themselves: a scanner that found the machine in a
+  # range scan has no name to go on, and is the finder most likely to
+  # need somewhere to report.
+  \- name: parked\-addresses
+    host_cidrs: ["198.51.100.0/24", "2001:db8:1::/48"]
+    contact: ["mailto:security@example.com"]
+    comment: "This address is not a service. Reports are still welcome."
   # Everything else, including parked names.
   \- name: default
     contact: ["mailto:security@example.com"]
@@ -5777,6 +5857,15 @@ T}	T{
 none
 T}	T{
 Matches the host as well,\: for a naming scheme a wildcard cannot express;\: at most 512 bytes
+T}
+T{
+\fBhost_\:cidrs\fR
+T}	T{
+list
+T}	T{
+none
+T}	T{
+Matches a \fBHost\fR that is an address literal,\: in either family;\: \fB0.\:0.\:0.\:0/\:0\fR and \fB:\::\:/\:0\fR together cover every literal. A \fBHost\fR that is a name never matches,\: whatever it resolves to
 T}
 T{
 \fBclient_\:cidrs\fR
