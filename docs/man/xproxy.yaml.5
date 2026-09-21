@@ -5525,6 +5525,377 @@ T}	T{
 T}
 .TE
 .PP
+Source control, build and artefact servers \[u2014] what a scanner wants is the credentials inside them, not the service:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.5i) lbx
+lw(1.0i) lw(1.5i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBgitea\fR
+T}	T{
+A Gitea sign\-in page with its version
+T}	T{
+\fB/\:user/\:login\fR,\: \fB/\:gitea\fR
+T}
+T{
+\fBteamcity\fR
+T}	T{
+A TeamCity login with its build number
+T}	T{
+\fB/\:login.\:html\fR,\: \fB/\:teamcity\fR
+T}
+T{
+\fBnexus\fR
+T}	T{
+A Sonatype Nexus component listing naming internal artefacts
+T}	T{
+\fB/\:service/\:rest/\:v1/\:components\fR,\: \fB/\:nexus\fR
+T}
+T{
+\fBsvn\-\:entries\fR
+T}	T{
+A Subversion working\-copy entries file naming the repository
+T}	T{
+\fB/\:.\:svn/\:entries\fR,\: \fB/\:.\:svn/\:wc.\:db\fR
+T}
+T{
+\fBidea\-\:workspace\fR
+T}	T{
+A JetBrains workspace file with run configurations
+T}	T{
+\fB/\:.\:idea/\:workspace.\:xml\fR
+T}
+.TE
+.PP
+Container and cluster management, which mining crawlers scan in bulk:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.6i) lbx
+lw(1.0i) lw(1.6i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBportainer\fR
+T}	T{
+A Portainer status document
+T}	T{
+\fB/\:api/\:status\fR,\: \fB/\:portainer\fR
+T}
+T{
+\fBrancher\fR
+T}	T{
+A Rancher cluster collection
+T}	T{
+\fB/\:v3/\:clusters\fR,\: \fB/\:rancher\fR
+T}
+T{
+\fBetcd\fR
+T}	T{
+An etcd v2 key listing
+T}	T{
+\fB/\:v2/\:keys\fR,\: \fB/\:v2/\:keys/\:?recursive=\:true\fR
+T}
+T{
+\fBnomad\fR
+T}	T{
+A Nomad job listing
+T}	T{
+\fB/\:v1/\:jobs\fR
+T}
+T{
+\fBspark\fR
+T}	T{
+An Apache Spark master page with workers and cores
+T}	T{
+\fB/\:spark\fR,\: \fB/\:proxy\fR
+T}
+T{
+\fBhadoop\-\:yarn\fR
+T}	T{
+A YARN ResourceManager cluster info document
+T}	T{
+\fB/\:ws/\:v1/\:cluster/\:info\fR,\: \fB/\:ws/\:v1/\:cluster/\:apps\fR
+T}
+T{
+\fBairflow\fR
+T}	T{
+An Apache Airflow sign\-in page
+T}	T{
+\fB/\:airflow\fR,\: \fB/\:login/\fR
+T}
+.TE
+.PP
+Database consoles and analytics front ends:
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.4i) lbx
+lw(0.9i) lw(1.4i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBpgadmin\fR
+T}	T{
+A pgAdmin 4 login
+T}	T{
+\fB/\:pgadmin\fR,\: \fB/\:pgadmin4\fR
+T}
+T{
+\fBmongo\-\:express\fR
+T}	T{
+A mongo\-express database listing
+T}	T{
+\fB/\:mongo\-\:express\fR,\: \fB/\:db/\:admin/\fR
+T}
+T{
+\fBmetabase\fR
+T}	T{
+A Metabase session properties document with its version
+T}	T{
+\fB/\:api/\:session/\:properties\fR,\: \fB/\:metabase\fR
+T}
+T{
+\fBsuperset\fR
+T}	T{
+An Apache Superset sign\-in page
+T}	T{
+\fB/\:superset\fR,\: \fB/\:superset/\:welcome\fR
+T}
+T{
+\fBzabbix\fR
+T}	T{
+A Zabbix sign\-in page
+T}	T{
+\fB/\:zabbix\fR,\: \fB/\:zabbix.\:php\fR
+T}
+.TE
+.PP
+Content management systems, which are fingerprinted by version before anything is attempted against them:
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(1.4i) lbx
+lw(0.8i) lw(1.4i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBjoomla\fR
+T}	T{
+A Joomla administrator login
+T}	T{
+\fB/\:administrator/\fR,\: \fB/\:administrator/\:index.\:php\fR
+T}
+T{
+\fBdrupal\fR
+T}	T{
+A Drupal login with its generator meta tag
+T}	T{
+\fB/\:user/\:login\fR,\: \fB/\:core/\:CHANGELOG.\:txt\fR
+T}
+T{
+\fBmagento\fR
+T}	T{
+A Magento admin sign\-in page
+T}	T{
+\fB/\:admin\fR,\: \fB/\:downloader\fR
+T}
+T{
+\fBmoodle\fR
+T}	T{
+A Moodle login
+T}	T{
+\fB/\:moodle\fR,\: \fB/\:login/\:index.\:php\fR
+T}
+T{
+\fBzimbra\fR
+T}	T{
+A Zimbra web client sign\-in page
+T}	T{
+\fB/\:zimbra\fR,\: \fB/\:zimbra/\:public\fR
+T}
+.TE
+.PP
+Firewalls and remote access gateways, fingerprinted in bulk before an exploit is chosen:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.4i) lbx
+lw(1.0i) lw(1.4i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBpfsense\fR
+T}	T{
+A pfSense login naming the gateway
+T}	T{
+\fB/\:index.\:php\fR on a gateway name
+T}
+T{
+\fBsonicwall\fR
+T}	T{
+A SonicWall SMA login with its domain selector
+T}	T{
+\fB/\:cgi\-\:bin/\:userLogin\fR,\: \fB/\:sonicwall\fR
+T}
+T{
+\fBpaloalto\fR
+T}	T{
+A GlobalProtect portal login
+T}	T{
+\fB/\:global\-\:protect/\:login.\:esp\fR,\: \fB/\:global\-\:protect/\:portal\fR
+T}
+T{
+\fBcisco\-\:asa\fR
+T}	T{
+An AnyConnect SSL VPN logon page
+T}	T{
+\fB/\:+CSCOE+/\:logon.\:html\fR,\: \fB/\:+webvpn+/\:index.\:html\fR
+T}
+T{
+\fBmikrotik\fR
+T}	T{
+A RouterOS webfig login with its version
+T}	T{
+\fB/\:webfig\fR,\: \fB/\:jsproxy\fR
+T}
+.TE
+.PP
+Framework debug consoles and the probes that hunt them. These are the clearest signal in the set: nothing but a scanner asks for a debugger.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.2i) lbx
+lw(1.0i) lw(1.2i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBwerkzeug\-\:console\fR
+T}	T{
+A Werkzeug interactive debugger asking for its PIN
+T}	T{
+\fB/\:console\fR,\: \fB/\:?_\:_\:debugger_\:_\:=\:yes\fR
+T}
+T{
+\fBsymfony\-\:profiler\fR
+T}	T{
+A Symfony profiler with recent requests
+T}	T{
+\fB/\:_\:profiler\fR,\: \fB/\:_\:profiler/\:latest\fR
+T}
+T{
+\fBlaravel\-\:telescope\fR
+T}	T{
+A Laravel Telescope entry listing
+T}	T{
+\fB/\:telescope/\:requests\fR,\: \fB/\:telescope\fR
+T}
+T{
+\fBthinkphp\fR
+T}	T{
+A ThinkPHP fatal error naming the version
+T}	T{
+\fB/\:index.\:php?s=\:/\:index/\:think\eapp/\:invokefunction\fR
+T}
+T{
+\fBphpunit\-\:eval\fR
+T}	T{
+A PHPUnit \fBeval\-\:stdin.\:php\fR parse error
+T}	T{
+\fB/\:vendor/\:phpunit/\:phpunit/\:src/\:Util/\:PHP/\:eval\-\:stdin.\:php\fR
+T}
+T{
+\fBspring\-\:gateway\fR
+T}	T{
+A Spring Cloud Gateway route listing naming internal hosts
+T}	T{
+\fB/\:actuator/\:gateway/\:routes\fR
+T}
+.TE
+.PP
+Files a traversal or a misconfigured server hands over. Each is what the probe expects to see, and each is a good place for a honeytoken:
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(1.4i) lbx
+lw(1.1i) lw(1.4i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBetc\-\:passwd\fR
+T}	T{
+A Unix password file with a deploy account
+T}	T{
+a traversal probe,\: e.g. \fB/\:download?file=\:.\:.\:/\:.\:.\:/\:etc/\:passwd\fR
+T}
+T{
+\fBfirebase\-\:config\fR
+T}	T{
+A front\-end Firebase configuration with keys
+T}	T{
+\fB/\:firebase\-\:config.\:js\fR,\: \fB/\:static/\:js/\:firebase.\:js\fR
+T}
+T{
+\fBwp\-\:json\-\:users\fR
+T}	T{
+A WordPress REST user listing
+T}	T{
+\fB/\:wp\-\:json/\:wp/\:v2/\:users\fR
+T}
+T{
+\fBdockerfile\fR
+T}	T{
+A Dockerfile with a build argument and internal hosts
+T}	T{
+\fB/\:Dockerfile\fR,\: \fB/\:docker/\:Dockerfile\fR
+T}
+T{
+\fBrails\-\:secrets\fR
+T}	T{
+A Rails secrets file with a database URL
+T}	T{
+\fB/\:config/\:secrets.\:yml\fR,\: \fB/\:config/\:database.\:yml\fR
+T}
+.TE
+.PP
 \fBrobots\fR and \fBsitemap\fR are the two to serve honestly: they name the decoy paths, so a crawler that reads either and then requests them has told you what it is. Give those two \fBmark: 0s\fR, so that reading the file marks nobody and only asking for what it names does. \fBexamples/security/honeypots.yaml\fR wires the whole table up, one route per decoy with the paths each is worth serving on; a test fails if a decoy in the table has no route there. \fBxproxyctl honeypot\fR and \fBGET /v1/honeypot\fR both list the names this build carries, which is the authority when a configuration is refused for an unknown decoy.
 .PP
 \fBresponse_headers\fR apply, so a decoy can carry a \fBServer\fR header of its own. \fBGET /v1/honeypot\fR lists marked clients (address, route, hits, first, last, expires) and the decoy names; \fBDELETE /v1/honeypot?ip=\fR and \fBxproxyctl honeypot forget IP\fR remove a mark. The mark table holds at most 65536 addresses. Counters: \fBhoneypot_hits\fR, \fBhoneypot_marked\fR; metrics \fBxproxy_honeypot_hits_total\fR, \fBxproxy_honeypot_marked\fR.

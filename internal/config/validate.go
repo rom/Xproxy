@@ -2028,6 +2028,26 @@ var HoneypotDecoys = map[string]bool{
 	"jupyter": true, "ollama": true, "clickhouse": true,
 	// Devices
 	"printer": true,
+	// Source control, build and artefact servers
+	"gitea": true, "teamcity": true, "nexus": true, "svn-entries": true,
+	"idea-workspace": true,
+	// Container and cluster management
+	"portainer": true, "rancher": true, "etcd": true, "nomad": true,
+	"spark": true, "hadoop-yarn": true, "airflow": true,
+	// Database consoles and analytics front ends
+	"pgadmin": true, "mongo-express": true, "metabase": true, "superset": true,
+	"zabbix": true,
+	// Content management systems
+	"joomla": true, "drupal": true, "magento": true, "moodle": true, "zimbra": true,
+	// Firewalls and remote access gateways
+	"pfsense": true, "sonicwall": true, "paloalto": true, "cisco-asa": true,
+	"mikrotik": true,
+	// Framework debug consoles and the probes that hunt them
+	"werkzeug-console": true, "symfony-profiler": true, "laravel-telescope": true,
+	"thinkphp": true, "phpunit-eval": true, "spring-gateway": true,
+	// Files a traversal or a misconfigured server hands over
+	"etc-passwd": true, "firebase-config": true, "wp-json-users": true,
+	"dockerfile": true, "rails-secrets": true,
 }
 
 func (v *validator) bans(b *Bans) {

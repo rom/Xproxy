@@ -809,6 +809,339 @@ system
 <tr><td>Address</td><td>192.168.4.31</td></tr></table>
 <p><a href="/hp/device/set_config_deviceInfo.html">Device configuration</a></p></body></html>
 `},
+
+	// Source control, build and artefact servers. A scanner that finds
+	// one of these is after the credentials inside it, not the service.
+	"gitea": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign In - Gitea: Git with a cup of tea</title>
+<link rel="stylesheet" href="/assets/css/index.css"></head>
+<body><div class="page-content"><h1>Sign In</h1>
+<form action="/user/login" method="post">
+<input type="hidden" name="_csrf" value="decoy-csrf-not-real">
+<label>Username or Email Address<input name="user_name" autocomplete="username"></label>
+<label>Password<input name="password" type="password" autocomplete="current-password"></label>
+<label><input type="checkbox" name="remember"> Remember this device</label>
+<button type="submit">Sign In</button></form>
+<p class="version">Powered by Gitea Version: 1.19.3</p></div></body></html>
+`},
+	"teamcity": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Log in to TeamCity</title>
+<link rel="stylesheet" href="/css/login.css"></head>
+<body><div id="loginPage"><h1>TeamCity</h1>
+<form id="loginForm" action="/loginSubmit.html" method="post">
+<label for="username">Username</label><input id="username" name="username" autocomplete="username">
+<label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password">
+<input type="submit" value="Log in"></form>
+<div class="version">TeamCity Professional 2022.10.3 (build 116751)</div></div></body></html>
+`},
+	"nexus": {"application/json", `{"items":[
+{"id":"decoy0","repository":"maven-releases","name":"com/example/internal-billing","version":"4.2.1","format":"maven2"},
+{"id":"decoy1","repository":"npm-internal","name":"@example/deploy-scripts","version":"0.9.7","format":"npm"},
+{"id":"decoy2","repository":"docker-private","name":"example/payments-api","version":"2024.3","format":"docker"}],
+"continuationToken":null}
+`},
+	"svn-entries": {"text/plain; charset=utf-8", `12
+dir
+41284
+https://svn.example.internal/repos/site/trunk
+https://svn.example.internal/repos/site
+2019-11-04T09:12:44.000000Z
+41201
+build-agent
+config
+dir
+db
+dir
+deploy.sh
+file
+`},
+	"idea-workspace": {"application/xml", `<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ChangeListManager">
+    <list default="true" id="decoy-0000" name="Default Changelist" comment="" />
+  </component>
+  <component name="RunManager">
+    <configuration name="deploy-staging" type="ShConfigurationType">
+      <option name="SCRIPT_TEXT" value="./deploy.sh staging" />
+      <option name="SCRIPT_PATH" value="$PROJECT_DIR$/deploy.sh" />
+    </configuration>
+  </component>
+  <component name="PropertiesComponent">
+    <property name="last.opened.file.path" value="$PROJECT_DIR$/config/settings.example.yml" />
+  </component>
+</project>
+`},
+
+	// Container and cluster management. These get scanned in bulk by
+	// crypto-mining crawlers, which is why they answer plausibly and
+	// then say nothing more.
+	"portainer": {"application/json", `{"Version":"2.18.3","InstanceID":"decoy-0000-0000-0000","DemoEnvironment":{"Enabled":false},"Edition":"CE"}
+`},
+	"rancher": {"application/json", `{"type":"collection","resourceType":"cluster","data":[
+{"id":"c-decoy0","type":"cluster","name":"production","state":"active","provider":"rke","k8sVersion":"v1.26.4"},
+{"id":"c-decoy1","type":"cluster","name":"staging","state":"active","provider":"rke","k8sVersion":"v1.25.9"}]}
+`},
+	"etcd": {"application/json", `{"action":"get","node":{"dir":true,"nodes":[
+{"key":"/registry","dir":true,"modifiedIndex":18,"createdIndex":18},
+{"key":"/deployment","dir":true,"modifiedIndex":204,"createdIndex":204},
+{"key":"/service-config","dir":true,"modifiedIndex":871,"createdIndex":871}]}}
+`},
+	"nomad": {"application/json", `[{"ID":"batch-reindex","Name":"batch-reindex","Type":"batch","Status":"dead","Datacenters":["dc1"],"JobSummary":{"JobID":"batch-reindex"}},
+{"ID":"api","Name":"api","Type":"service","Status":"running","Datacenters":["dc1"],"JobSummary":{"JobID":"api"}}]
+`},
+	"spark": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Spark Master at spark://master:7077</title>
+<link rel="stylesheet" href="/static/bootstrap.min.css"></head>
+<body><div class="container-fluid"><h3>Spark Master at spark://master:7077</h3>
+<ul class="list-unstyled">
+<li><strong>URL:</strong> spark://master:7077</li>
+<li><strong>Alive Workers:</strong> 3</li>
+<li><strong>Cores in use:</strong> 24 Total, 0 Used</li>
+<li><strong>Memory in use:</strong> 96.0 GiB Total, 0.0 B Used</li>
+<li><strong>Status:</strong> ALIVE</li></ul>
+<h4>Running Applications</h4><p>No running applications.</p>
+<p>Spark 3.3.2</p></div></body></html>
+`},
+	"hadoop-yarn": {"application/json", `{"clusterInfo":{"id":1700000000000,"startedOn":1700000000000,"state":"STARTED","haState":"ACTIVE",
+"resourceManagerVersion":"3.3.4","hadoopVersion":"3.3.4","resourceManagerBuildVersion":"3.3.4 from decoy by example"}}
+`},
+	"airflow": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Sign In - Airflow</title>
+<link rel="stylesheet" href="/static/appbuilder/css/flask-appbuilder.css"></head>
+<body class="login"><div class="panel"><h3>Sign In</h3>
+<form action="/login/" method="post">
+<input type="hidden" name="csrf_token" value="decoy-token-not-real">
+<label for="username">Username</label><input id="username" name="username" autocomplete="username">
+<label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password">
+<button type="submit">Sign In</button></form>
+<footer>Apache Airflow 2.5.3</footer></div></body></html>
+`},
+
+	// Database consoles and analytics front ends.
+	"pgadmin": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>pgAdmin 4</title>
+<link rel="stylesheet" href="/static/vendor/bootstrap/css/bootstrap.css"></head>
+<body><div class="login-container"><h4>Login to pgAdmin 4</h4>
+<form method="post" action="/login?next=/browser/">
+<input type="hidden" name="csrf_token" value="decoy-token-not-real">
+<label for="email">Email Address / Username</label><input id="email" name="email" autocomplete="username">
+<label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password">
+<button type="submit">Login</button></form>
+<div class="version">pgAdmin 4 v6.21</div></div></body></html>
+`},
+	"mongo-express": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Home - Mongo Express</title>
+<link rel="stylesheet" href="/public/css/bootstrap.min.css"></head>
+<body><div class="container"><h1>Mongo Express</h1>
+<h3>Databases</h3><table class="table"><thead><tr><th>Database Name</th><th>Collections</th></tr></thead>
+<tbody><tr><td><a href="/db/admin/">admin</a></td><td>3</td></tr>
+<tr><td><a href="/db/sessions/">sessions</a></td><td>2</td></tr>
+<tr><td><a href="/db/example_app/">example_app</a></td><td>17</td></tr></tbody></table>
+<footer>mongo-express 1.0.0-alpha.4</footer></div></body></html>
+`},
+	"metabase": {"application/json", `{"version":{"tag":"v0.45.2","date":"2023-03-28","branch":"release-x.45.x"},
+"setup-token":null,"has-user-setup":true,"engines":{"postgres":{"driver-name":"PostgreSQL"},"mysql":{"driver-name":"MySQL"}},
+"site-name":"Example Analytics","anon-tracking-enabled":false}
+`},
+	"superset": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Sign In - Superset</title>
+<link rel="stylesheet" href="/static/appbuilder/css/flask-appbuilder.css"></head>
+<body><div class="panel"><h4>Sign In</h4>
+<form action="/login/" method="post">
+<input type="hidden" name="csrf_token" value="decoy-token-not-real">
+<label for="username">Username</label><input id="username" name="username" autocomplete="username">
+<label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password">
+<button type="submit">Sign In</button></form>
+<footer>Apache Superset 2.0.1</footer></div></body></html>
+`},
+	"zabbix": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Zabbix</title>
+<link rel="stylesheet" href="/assets/styles/blue-theme.css"></head>
+<body><main><div class="signin-container"><h1>Zabbix</h1>
+<form action="index.php" method="post">
+<label for="name">Username</label><input id="name" name="name" autocomplete="username">
+<label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password">
+<button type="submit" name="enter" value="Sign in">Sign in</button></form>
+<footer>Zabbix 6.0.17</footer></div></main></body></html>
+`},
+
+	// Content management systems, which are probed by version before
+	// anything is attempted against them.
+	"joomla": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Administration - Log in</title>
+<link rel="stylesheet" href="/administrator/templates/atum/css/template.min.css"></head>
+<body class="admin com_login"><div class="view-login"><h1>Log in</h1>
+<form action="/administrator/index.php" method="post" id="form-login">
+<label for="mod-login-username">Username</label><input id="mod-login-username" name="username" autocomplete="username">
+<label for="mod-login-password">Password</label><input id="mod-login-password" name="passwd" type="password" autocomplete="current-password">
+<input type="hidden" name="option" value="com_login"><input type="hidden" name="task" value="login">
+<button type="submit">Log in</button></form>
+<div class="footer">Joomla! 4.2.8</div></div></body></html>
+`},
+	"drupal": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Log in | Example</title>
+<meta name="Generator" content="Drupal 9 (https://www.drupal.org)">
+<link rel="stylesheet" href="/core/themes/claro/css/base/base.css"></head>
+<body class="path-user"><div class="layout-container"><h1>Log in</h1>
+<form action="/user/login" method="post" id="user-login-form">
+<label for="edit-name">Username</label><input id="edit-name" name="name" autocomplete="username">
+<label for="edit-pass">Password</label><input id="edit-pass" name="pass" type="password" autocomplete="current-password">
+<input type="hidden" name="form_id" value="user_login_form">
+<input type="submit" value="Log in"></form>
+<p><a href="/user/password">Reset your password</a></p></div></body></html>
+`},
+	"magento": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Magento Admin</title>
+<link rel="stylesheet" href="/static/adminhtml/Magento/backend/en_US/css/styles.css"></head>
+<body class="page-layout-admin-login"><div class="login-content"><h1>Welcome, please sign in</h1>
+<form method="post" action="/admin/admin/index/index/">
+<input type="hidden" name="form_key" value="decoykeynotreal00">
+<label for="username">Username</label><input id="username" name="login[username]" autocomplete="username">
+<label for="login">Password</label><input id="login" name="login[password]" type="password" autocomplete="current-password">
+<button type="submit">Sign in</button></form>
+<p class="copyright">Magento ver. 2.4.5-p1</p></div></body></html>
+`},
+	"moodle": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Example Learning: Log in</title>
+<link rel="stylesheet" href="/theme/styles.php/boost/all"></head>
+<body id="page-login-index"><div class="loginform"><h1>Log in to Example Learning</h1>
+<form action="/login/index.php" method="post" id="login">
+<input type="hidden" name="logintoken" value="decoytokennotreal">
+<label for="username">Username</label><input id="username" name="username" autocomplete="username">
+<label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password">
+<button type="submit">Log in</button></form>
+<div class="footer">Moodle 4.1.2+</div></div></body></html>
+`},
+	"zimbra": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Zimbra Web Client Sign In</title>
+<link rel="stylesheet" href="/zimbra/css/login.css"></head>
+<body onload="zLoginFocus()"><div class="ZLoginPanel"><h1>Zimbra</h1>
+<form method="post" name="loginForm" action="/zimbra/">
+<input type="hidden" name="loginOp" value="login">
+<label for="username">Username</label><input id="username" name="username" autocomplete="username">
+<label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password">
+<input type="submit" value="Sign In"></form>
+<div class="ZLoginFooterText">Zimbra Collaboration Suite 8.8.15</div></div></body></html>
+`},
+
+	// Firewalls and remote access gateways.
+	"pfsense": {"text/html; charset=utf-8", `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>gateway.example.internal - Login</title>
+<link rel="stylesheet" href="/css/pfSense.css"></head>
+<body class="no-menu"><div class="login-form"><h2>Login to gateway.example.internal</h2>
+<form method="post" action="/index.php">
+<label for="usernamefld">Username</label><input id="usernamefld" name="usernamefld" autocomplete="username">
+<label for="passwordfld">Password</label><input id="passwordfld" name="passwordfld" type="password" autocomplete="current-password">
+<button type="submit" name="login">Sign In</button></form></div></body></html>
+`},
+	"sonicwall": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>SonicWall - Authentication</title>
+<link rel="stylesheet" href="/styleBlueTheme.css"></head>
+<body><div id="authArea"><h2>Secure Remote Access</h2>
+<form name="loginForm" method="post" action="/cgi-bin/userLogin">
+<label>Username <input name="username" autocomplete="username"></label>
+<label>Password <input name="pass" type="password" autocomplete="current-password"></label>
+<label>Domain <select name="domain"><option value="LocalDomain">LocalDomain</option></select></label>
+<input type="submit" value="Login"></form>
+<div class="footer">SMA 10.2.1.2</div></div></body></html>
+`},
+	"paloalto": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>GlobalProtect Portal</title>
+<link rel="stylesheet" href="/global-protect/portal/css/login.css"></head>
+<body><div id="container"><h1>GlobalProtect Portal</h1>
+<form id="loginForm" method="post" action="/global-protect/login.esp">
+<input type="hidden" name="prot" value="https:"><input type="hidden" name="server" value="vpn.example.com">
+<label>Name <input name="user" autocomplete="username"></label>
+<label>Password <input name="passwd" type="password" autocomplete="current-password"></label>
+<input type="submit" value="Log In"></form></div></body></html>
+`},
+	"cisco-asa": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>SSL VPN Service</title>
+<link rel="stylesheet" href="/+CSCOU+/csco_logo.css"></head>
+<body><div id="logonbox"><h1>Login</h1>
+<p>Please enter your username and password.</p>
+<form name="Login" method="post" action="/+webvpn+/index.html">
+<label>USERNAME <input name="username" autocomplete="username"></label>
+<label>PASSWORD <input name="password" type="password" autocomplete="current-password"></label>
+<input type="hidden" name="tgroup" value="DefaultWEBVPNGroup">
+<input type="submit" value="Logon"></form></div></body></html>
+`},
+	"mikrotik": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>router - RouterOS</title>
+<link rel="stylesheet" href="/webfig/webfig.css"></head>
+<body><div id="login"><h1>RouterOS router</h1>
+<form name="login" action="/jsproxy" method="post">
+<label>Login <input name="name" autocomplete="username"></label>
+<label>Password <input name="password" type="password" autocomplete="current-password"></label>
+<input type="submit" value="Login"></form>
+<div class="foot">RouterOS v6.49.7 | webfig</div></div></body></html>
+`},
+
+	// Framework debug consoles and the probes that hunt them. An answer
+	// here is the clearest signal in the set: nothing but a scanner
+	// asks for a debugger.
+	"werkzeug-console": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Console // Werkzeug Debugger</title>
+<link rel="stylesheet" href="?__debugger__=yes&cmd=resource&f=style.css"></head>
+<body><div class="debugger"><h1>Interactive Console</h1>
+<p>In this console you can execute Python expressions in the context of the application.</p>
+<div class="console"><div class="inner">The console is locked and needs to be unlocked by entering the PIN.
+You can find the PIN printed out on the standard output of your shell that runs the server.</div></div>
+<form><label>PIN <input type="text" name="pin"></label><input type="submit" value="Confirm Pin"></form>
+</div></body></html>
+`},
+	"symfony-profiler": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Symfony Profiler</title>
+<link rel="stylesheet" href="/_wdt/css/profiler.css"></head>
+<body><div id="summary"><h2>Latest requests</h2>
+<table><thead><tr><th>Token</th><th>Method</th><th>URL</th><th>Time</th><th>Status</th></tr></thead>
+<tbody><tr><td><a href="/_profiler/decoy0">decoy0</a></td><td>GET</td><td>/</td><td>12:04:11</td><td>200</td></tr>
+<tr><td><a href="/_profiler/decoy1">decoy1</a></td><td>POST</td><td>/login</td><td>12:03:58</td><td>302</td></tr></tbody></table>
+<p>Symfony 5.4.21 | Environment: prod</p></div></body></html>
+`},
+	"laravel-telescope": {"application/json", `{"entries":[
+{"id":"decoy-0000","type":"request","content":{"method":"GET","uri":"/api/health","response_status":200,"duration":7}},
+{"id":"decoy-0001","type":"query","content":{"connection":"mysql","sql":"select * from users where id = ?","time":"1.42"}}],
+"status":"enabled"}
+`},
+	"thinkphp": {"text/html; charset=utf-8", `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ThinkPHP</title></head>
+<body><div class="error"><h1>Fatal error</h1>
+<p>Call to undefined method think\App::invokefunction()</p>
+<p class="file">File: /var/www/example/thinkphp/library/think/App.php  Line: 434</p>
+<p class="version">ThinkPHP V5.0.24 { Fast &amp; Simple OOP PHP Framework }</p></div></body></html>
+`},
+	"phpunit-eval": {"text/plain; charset=utf-8", `PHP Parse error:  syntax error, unexpected end of file in /var/www/example/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php(1) : eval()'d code on line 1
+`},
+	"spring-gateway": {"application/json", `[{"route_id":"internal-billing","uri":"lb://billing","predicate":"Paths: [/billing/**]","order":0},
+{"route_id":"admin-tools","uri":"http://10.0.9.4:8080","predicate":"Paths: [/admin-tools/**]","order":0},
+{"route_id":"public-api","uri":"lb://api","predicate":"Paths: [/api/**]","order":10}]
+`},
+
+	// Files a traversal or a misconfigured server hands over. Each one
+	// is what the probe expects to see, and nothing in it is real.
+	"etc-passwd": {"text/plain; charset=utf-8", `root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+bin:x:2:2:bin:/bin:/usr/sbin/nologin
+sys:x:3:3:sys:/dev:/usr/sbin/nologin
+www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
+sshd:x:105:65534::/run/sshd:/usr/sbin/nologin
+deploy:x:1000:1000:Deploy Account:/home/deploy:/bin/bash
+`},
+	"firebase-config": {"application/javascript", `var firebaseConfig = {
+  apiKey: "AIzaDecoyNotARealKey0000000000000000000",
+  authDomain: "example-decoy.firebaseapp.com",
+  databaseURL: "https://example-decoy.firebaseio.com",
+  projectId: "example-decoy",
+  storageBucket: "example-decoy.appspot.com",
+  messagingSenderId: "000000000000",
+  appId: "1:000000000000:web:0000000000000000000000"
+};
+firebase.initializeApp(firebaseConfig);
+`},
+	"wp-json-users": {"application/json", `[{"id":1,"name":"admin","slug":"admin","description":"","link":"https://www.example.com/author/admin/"},
+{"id":4,"name":"editor","slug":"editor","description":"","link":"https://www.example.com/author/editor/"},
+{"id":7,"name":"deploy","slug":"deploy","description":"Automation account","link":"https://www.example.com/author/deploy/"}]
+`},
+	"dockerfile": {"text/plain; charset=utf-8", `FROM node:18-alpine
+WORKDIR /srv/app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY . .
+ENV NODE_ENV=production
+ENV API_BASE=https://api.internal.example
+ARG BUILD_TOKEN=decoy-build-token-not-real
+EXPOSE 3000
+USER node
+CMD ["node", "server.js"]
+`},
+	"rails-secrets": {"text/yaml; charset=utf-8", `development:
+  secret_key_base: decoy0000000000000000000000000000000000000000000000000000000000
+production:
+  secret_key_base: decoy1111111111111111111111111111111111111111111111111111111111
+  smtp_user_name: notifications@example.com
+  smtp_password: decoy-not-a-real-password
+  database_url: postgres://app:decoy-not-a-real-password@db.internal.example:5432/app
+`},
 }
 
 // readBounded reads a file of at most limit bytes.

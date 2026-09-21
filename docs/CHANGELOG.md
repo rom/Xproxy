@@ -260,6 +260,54 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Thirty-eight more decoys, and the routes to serve them on.** The
+  table goes from 77 bodies to 115: source control, build and artefact
+  servers (`gitea`, `teamcity`, `nexus`, `svn-entries`,
+  `idea-workspace`), container and cluster management, which is what
+  the mining crawlers scan for (`portainer`, `rancher`, `etcd`,
+  `nomad`, `spark`, `hadoop-yarn`, `airflow`), database consoles and
+  analytics front ends (`pgadmin`, `mongo-express`, `metabase`,
+  `superset`, `zabbix`), content management systems fingerprinted by
+  version before anything is attempted (`joomla`, `drupal`, `magento`,
+  `moodle`, `zimbra`), firewalls and remote access gateways
+  (`pfsense`, `sonicwall`, `paloalto`, `cisco-asa`, `mikrotik`), the
+  framework debug consoles and the probes that hunt them — the
+  clearest signal in the set, because nothing but a scanner asks for a
+  debugger (`werkzeug-console`, `symfony-profiler`,
+  `laravel-telescope`, `thinkphp`, `phpunit-eval`, `spring-gateway`) —
+  and the files a traversal or a misconfigured server hands over,
+  which are also where a honeytoken belongs (`etc-passwd`,
+  `firebase-config`, `wp-json-users`, `dockerfile`, `rails-secrets`).
+  Every one carries a version string or a name worth reading, none
+  carries a real credential, and every one is wired up in
+  `examples/security/honeypots.yaml` with the paths and the mark
+  duration it is worth serving on.
+
+- **A third custom rule file, `examples/waf/attack-surface-rules.conf`.**
+  Twenty-seven rules for the classes of attack that arrive as a
+  recognisable shape rather than as a payload the application will
+  mis-parse: cloud metadata addresses and non-web schemes in a
+  parameter, the files a traversal asks for and the PHP stream
+  wrappers that turn an inclusion into execution, serialised Java, PHP
+  and YAML objects, external entity declarations, query operators
+  where a field name belongs (in the query string and as a JSON key),
+  a shell command after a separator, Spring's SpEL routing header and
+  Shellshock, the two Transfer-Encoding spellings that let two servers
+  disagree about where a request ends, the routing headers that poison
+  a cache and the static extension bolted onto a private path,
+  prototype pollution parameter names, header injection and off-site
+  redirects, debugger parameters, uploads that execute in a browser,
+  the scanners that still announce themselves, and interpreter error
+  pages and directory listings refused on the way out. Two rules score
+  rather than refuse, and two support rules (the 22900 block) make a
+  JSON body inspectable without the CRS and an XML body's declarations
+  visible at all — with the cost of the latter documented in the file.
+  Shape rules are blunter than payload rules, so the file says so and
+  the example `waf.yaml` loads it into a detect-mode profile. The
+  tests put one request through every rule against an engine with no
+  Core Rule Set, so a rule that stops matching cannot hide behind a
+  CRS rule that catches the same request.
+
 - **Hidden-field and timing honeypots on forms (filter kind
   `form_guard`).** A form bot does two things a person does not: it
   fills in every field it finds, including the one nobody can see, and

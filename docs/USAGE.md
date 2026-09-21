@@ -1275,6 +1275,26 @@ bounds on parameters, cookies and byte ranges, GraphQL introspection,
 and private keys, cloud access keys and database error messages refused
 on the way out.
 
+`examples/waf/attack-surface-rules.conf` is a third file, and a
+different kind of rule: it refuses *shapes* rather than payloads —
+cloud metadata addresses and non-web schemes in a parameter, the files
+a traversal asks for and the PHP stream wrappers that turn one into
+code, serialised Java, PHP and YAML objects, external entity
+declarations, query operators where a field name belongs, a shell
+command after a separator, Spring's SpEL routing header and
+Shellshock, the two Transfer-Encoding spellings that let two servers
+disagree, the routing headers that poison a cache and the static
+extension bolted onto a private path, prototype pollution parameter
+names, header injection and off-site redirects, debugger parameters,
+uploads that execute in a browser, the scanners that still announce
+themselves, and interpreter error pages and directory listings on the
+way out. Shape rules are blunter than payload rules: an application
+that legitimately fetches `file://` URLs, speaks a Mongo-style query
+language or accepts SVG uploads will be refused by one of them. Load
+the file into a `mode: detect` profile, read `xproxyctl waf rules` for
+a week, and promote what is quiet — which is what the example
+`waf.yaml` does.
+
 ### Ban list
 
 ```yaml

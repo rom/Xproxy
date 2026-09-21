@@ -1405,6 +1405,85 @@ product it came shopping for.
 | `printer` | A network printer status page with toner and page counts | `/hp/device/info_config`, `/printer` |
 | `camera` | An IP camera device information document | `/ISAPI/System/deviceInfo`, `/onvif/device_service` |
 
+Source control, build and artefact servers — what a scanner wants is
+the credentials inside them, not the service:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `gitea` | A Gitea sign-in page with its version | `/user/login`, `/gitea` |
+| `teamcity` | A TeamCity login with its build number | `/login.html`, `/teamcity` |
+| `nexus` | A Sonatype Nexus component listing naming internal artefacts | `/service/rest/v1/components`, `/nexus` |
+| `svn-entries` | A Subversion working-copy entries file naming the repository | `/.svn/entries`, `/.svn/wc.db` |
+| `idea-workspace` | A JetBrains workspace file with run configurations | `/.idea/workspace.xml` |
+
+Container and cluster management, which mining crawlers scan in bulk:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `portainer` | A Portainer status document | `/api/status`, `/portainer` |
+| `rancher` | A Rancher cluster collection | `/v3/clusters`, `/rancher` |
+| `etcd` | An etcd v2 key listing | `/v2/keys`, `/v2/keys/?recursive=true` |
+| `nomad` | A Nomad job listing | `/v1/jobs` |
+| `spark` | An Apache Spark master page with workers and cores | `/spark`, `/proxy` |
+| `hadoop-yarn` | A YARN ResourceManager cluster info document | `/ws/v1/cluster/info`, `/ws/v1/cluster/apps` |
+| `airflow` | An Apache Airflow sign-in page | `/airflow`, `/login/` |
+
+Database consoles and analytics front ends:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `pgadmin` | A pgAdmin 4 login | `/pgadmin`, `/pgadmin4` |
+| `mongo-express` | A mongo-express database listing | `/mongo-express`, `/db/admin/` |
+| `metabase` | A Metabase session properties document with its version | `/api/session/properties`, `/metabase` |
+| `superset` | An Apache Superset sign-in page | `/superset`, `/superset/welcome` |
+| `zabbix` | A Zabbix sign-in page | `/zabbix`, `/zabbix.php` |
+
+Content management systems, which are fingerprinted by version before
+anything is attempted against them:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `joomla` | A Joomla administrator login | `/administrator/`, `/administrator/index.php` |
+| `drupal` | A Drupal login with its generator meta tag | `/user/login`, `/core/CHANGELOG.txt` |
+| `magento` | A Magento admin sign-in page | `/admin`, `/downloader` |
+| `moodle` | A Moodle login | `/moodle`, `/login/index.php` |
+| `zimbra` | A Zimbra web client sign-in page | `/zimbra`, `/zimbra/public` |
+
+Firewalls and remote access gateways, fingerprinted in bulk before an
+exploit is chosen:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `pfsense` | A pfSense login naming the gateway | `/index.php` on a gateway name |
+| `sonicwall` | A SonicWall SMA login with its domain selector | `/cgi-bin/userLogin`, `/sonicwall` |
+| `paloalto` | A GlobalProtect portal login | `/global-protect/login.esp`, `/global-protect/portal` |
+| `cisco-asa` | An AnyConnect SSL VPN logon page | `/+CSCOE+/logon.html`, `/+webvpn+/index.html` |
+| `mikrotik` | A RouterOS webfig login with its version | `/webfig`, `/jsproxy` |
+
+Framework debug consoles and the probes that hunt them. These are the
+clearest signal in the set: nothing but a scanner asks for a debugger.
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `werkzeug-console` | A Werkzeug interactive debugger asking for its PIN | `/console`, `/?__debugger__=yes` |
+| `symfony-profiler` | A Symfony profiler with recent requests | `/_profiler`, `/_profiler/latest` |
+| `laravel-telescope` | A Laravel Telescope entry listing | `/telescope/requests`, `/telescope` |
+| `thinkphp` | A ThinkPHP fatal error naming the version | `/index.php?s=/index/think\app/invokefunction` |
+| `phpunit-eval` | A PHPUnit `eval-stdin.php` parse error | `/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php` |
+| `spring-gateway` | A Spring Cloud Gateway route listing naming internal hosts | `/actuator/gateway/routes` |
+
+Files a traversal or a misconfigured server hands over. Each is what
+the probe expects to see, and each is a good place for a honeytoken:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `etc-passwd` | A Unix password file with a deploy account | a traversal probe, e.g. `/download?file=../../etc/passwd` |
+| `firebase-config` | A front-end Firebase configuration with keys | `/firebase-config.js`, `/static/js/firebase.js` |
+| `wp-json-users` | A WordPress REST user listing | `/wp-json/wp/v2/users` |
+| `dockerfile` | A Dockerfile with a build argument and internal hosts | `/Dockerfile`, `/docker/Dockerfile` |
+| `rails-secrets` | A Rails secrets file with a database URL | `/config/secrets.yml`, `/config/database.yml` |
+
+
 `robots` and `sitemap` are the two to serve honestly: they name the
 decoy paths, so a crawler that reads either and then requests them has
 told you what it is. Give those two `mark: 0s`, so that reading the
