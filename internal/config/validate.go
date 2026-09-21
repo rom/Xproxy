@@ -724,6 +724,197 @@ func (v *validator) tls(p string, t *TLS) {
 			v.errf("%s.cipher_suites[%d]: unknown cipher suite %q", p, i, name)
 		}
 	}
+	v.keyExchange(p, t.KeyExchange)
+	v.ech(p, t)
+}
+
+// ech checks the Encrypted Client Hello section. The files are parsed
+// here rather than only at listener build, so a broken key is a
+// configuration error and not a listener that starts and quietly
+// serves no ECH at all.
+func (v *validator) ech(p string, t *TLS) {
+	e := t.ECH
+	if e == nil {
+		return
+	}
+	if len(e.Keys) == 0 {
+		v.errf("%s.ech.keys: at least one key is required", p)
+		return
+	}
+	if len(e.Keys) > 8 {
+		v.errf("%s.ech.keys: at most 8 keys (a rotation needs two, not eight)", p)
+	}
+	ids := map[uint8]bool{}
+	names := map[string]bool{}
+	retry := false
+	for i := range e.Keys {
+		k := &e.Keys[i]
+		kp := fmt.Sprintf("%s.ech.keys[%d]", p, i)
+		if k.ConfigFile == "" || k.KeyFile == "" {
+			v.errf("%s: config_file and key_file are required", kp)
+			continue
+		}
+		v.file(kp+".config_file", k.ConfigFile)
+		v.file(kp+".key_file", k.KeyFile)
+		if k.RetryOffered() {
+			retry = true
+		}
+		if !v.fileCheck {
+			continue
+		}
+		if st, err := os.Stat(k.KeyFile); err == nil && st.Mode().Perm()&0o004 != 0 {
+			v.errf("%s.key_file: %s must not be world readable", kp, k.KeyFile)
+		}
+		cfg, _, err := LoadECHKey(k.ConfigFile, k.KeyFile)
+		if err != nil {
+			v.errf("%s: %v", kp, err)
+			continue
+		}
+		if ids[cfg.ID] {
+			v.errf("%s: config id %d is used by another key on this listener; a client echoes the id, so two keys sharing one means half the handshakes try the wrong key", kp, cfg.ID)
+		}
+		ids[cfg.ID] = true
+		names[cfg.PublicName] = true
+	}
+	if len(names) > 1 {
+		v.warnf("%s.ech: the keys carry %d different public names; a client falls back to the name in the config it used, so each of them needs a certificate on this listener", p, len(names))
+	}
+	// The fallback name has to be servable here, or a client whose key
+	// is stale meets a certificate error instead of a working page.
+	for name := range names {
+		if !v.tlsServes(t, name) {
+			v.warnf("%s.ech: no certificate on this listener covers the public name %q; a client whose key is stale falls back to it and will see a certificate error", p, name)
+		}
+	}
+	if !retry && len(e.Keys) > 0 {
+		v.warnf("%s.ech: no key has retry set, so a client with a stale config is never told the new one and keeps falling back", p)
+	}
+	if e.Require {
+		v.warnf("%s.ech.require: every client that did not get the ECH key is refused, including one whose DNS answer was filtered; use it only on a listener that exists for ECH clients", p)
+	}
+}
+
+// tlsServes reports whether a listener has a certificate for a name.
+// It is a best-effort check on the configuration: ACME groups name
+// their hosts, and file certificates are read for their SANs.
+func (v *validator) tlsServes(t *TLS, name string) bool {
+	for _, g := range t.ACME {
+		for _, h := range g.Hosts {
+			if strings.EqualFold(h, name) {
+				return true
+			}
+		}
+	}
+	if !v.fileCheck {
+		// Without file access the SANs cannot be read, so nothing is
+		// claimed either way.
+		return true
+	}
+	for _, c := range t.Certificates {
+		if certCovers(c.CertFile, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// websocketGuard checks the frame policy of a route.
+func (v *validator) websocketGuard(p string, r *Route) {
+	g := r.WebSocketGuard
+	if g == nil {
+		return
+	}
+	if !r.WebSocket {
+		v.errf("%s.websocket_guard: needs websocket: true, or nothing upgrades on this route", p)
+	}
+	if g.MaxFrameBytes == 0 {
+		g.MaxFrameBytes = 1 << 20
+	}
+	if g.MaxFrameBytes < 128 || g.MaxFrameBytes > 64<<20 {
+		v.errf("%s.websocket_guard.max_frame_bytes: must be between 128 and 64 MiB", p)
+	}
+	if g.MaxMessageBytes == 0 {
+		g.MaxMessageBytes = 8 << 20
+	}
+	if g.MaxMessageBytes < g.MaxFrameBytes {
+		v.errf("%s.websocket_guard.max_message_bytes: must be at least max_frame_bytes", p)
+	}
+	if g.MaxMessageBytes > 256<<20 {
+		v.errf("%s.websocket_guard.max_message_bytes: must be at most 256 MiB", p)
+	}
+	if g.MessagesPerSecond < 0 || g.MessagesPerSecond > 1_000_000 {
+		v.errf("%s.websocket_guard.messages_per_second: must be between 0 and 1000000", p)
+	}
+	for i, op := range g.AllowOpcodes {
+		switch strings.ToLower(op) {
+		case "text", "binary", "close", "ping", "pong", "continuation":
+		default:
+			v.errf("%s.websocket_guard.allow_opcodes[%d]: %q is not a websocket opcode", p, i, op)
+		}
+	}
+	for i, sp := range g.AllowSubprotocols {
+		if sp == "" || strings.ContainsAny(sp, " \t\r\n,;") {
+			v.errf("%s.websocket_guard.allow_subprotocols[%d]: %q is not a subprotocol token", p, i, sp)
+		}
+	}
+	switch g.Inspect {
+	case "", "text":
+		g.Inspect = "text"
+	case "none", "all":
+	default:
+		v.errf("%s.websocket_guard.inspect: must be none, text or all", p)
+	}
+	if g.MaxInspectBytes == 0 {
+		g.MaxInspectBytes = 64 << 10
+	}
+	if g.MaxInspectBytes < 0 || g.MaxInspectBytes > 8<<20 {
+		v.errf("%s.websocket_guard.max_inspect_bytes: must be between 0 and 8 MiB", p)
+	}
+	for i, pat := range g.DenyPatterns {
+		if _, err := regexp.Compile(pat); err != nil {
+			v.errf("%s.websocket_guard.deny_patterns[%d]: %v", p, i, err)
+		}
+	}
+	if len(g.DenyPatterns) > 0 && g.Inspect == "none" {
+		v.errf("%s.websocket_guard: deny_patterns with inspect: none matches nothing", p)
+	}
+	switch g.Action {
+	case "", "close":
+		g.Action = "close"
+	case "log":
+	default:
+		v.errf("%s.websocket_guard.action: must be close or log", p)
+	}
+	if g.CloseCode != 0 && (g.CloseCode < 3000 || g.CloseCode > 4999) {
+		// A code outside the private and registered ranges would be the
+		// proxy claiming a protocol condition it did not observe.
+		v.errf("%s.websocket_guard.close_code: must be between 3000 and 4999 (the ranges an application may use), or unset to use the protocol's own code", p)
+	}
+	if g.Masked() == false { //nolint:gosimple // reads better against the RFC
+		v.warnf("%s.websocket_guard.require_masked: false accepts unmasked client frames, which RFC 6455 forbids and which is how a request is smuggled past an intermediary", p)
+	}
+}
+
+// keyExchange checks the named groups. An empty list is the default,
+// which leads with the post-quantum hybrid; a list that names groups
+// and leaves the hybrid out is allowed — a client fleet that cannot do
+// it exists — but it is worth saying so, because the traffic it
+// protects is recorded today and attacked later.
+func (v *validator) keyExchange(p string, names []string) {
+	seen := map[string]bool{}
+	for i, n := range names {
+		if _, ok := KeyExchangeID(n); !ok {
+			v.errf("%s.key_exchange[%d]: unknown group %q (known: %s)", p, i, n, strings.Join(KeyExchangeNames(), ", "))
+			continue
+		}
+		if seen[n] {
+			v.errf("%s.key_exchange[%d]: duplicate %q", p, i, n)
+		}
+		seen[n] = true
+	}
+	if len(names) > 0 && !HasPostQuantum(names) {
+		v.warnf("%s.key_exchange: no post-quantum group is offered, so a recording adversary can decrypt this traffic once it has a quantum computer; add X25519MLKEM768 unless a client cannot negotiate it", p)
+	}
 }
 
 func (v *validator) management(m *Management) {
@@ -1354,6 +1545,7 @@ func (v *validator) upstreamTLS(p string, t *UpstreamTLS) {
 	if t.InsecureSkipVerify && !t.AllowInsecure {
 		v.errf("%s.insecure_skip_verify: refused unless allow_insecure is also true", p)
 	}
+	v.keyExchange(p, t.KeyExchange)
 }
 
 func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[string]bool) {
@@ -1364,6 +1556,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 		v.errf("%s.name: duplicate %q", p, r.Name)
 	}
 	seen[r.Name] = true
+	v.websocketGuard(p, r)
 
 	for j, h := range r.Hosts {
 		if !hostPatternOK(h) {
@@ -2570,6 +2763,18 @@ func (v *validator) forwardListener(p string, f *ForwardListener) {
 	}
 	if f.MaxResponseBytes < 0 {
 		v.errf("%s.max_response_bytes: must not be negative", p)
+	}
+	if f.SOCKSUDP && !f.SOCKS5 {
+		v.errf("%s.socks_udp: needs socks5", p)
+	}
+	if f.SOCKS5 && f.Auth == nil {
+		// A SOCKS proxy without credentials is an open proxy to
+		// everything the destination policy allows, and unlike the HTTP
+		// side there is no header a middlebox will strip by accident.
+		v.warnf("%s.socks5: no auth is configured, so anyone who can reach this port can use the proxy; restrict the listener address, the destinations, or add auth", p)
+	}
+	if f.SOCKSUDP {
+		v.warnf("%s.socks_udp: a UDP association relays datagrams for the client that opened it; it is bound to that client's address and dies with the control connection, but it is a wider exposure than a TCP tunnel", p)
 	}
 }
 

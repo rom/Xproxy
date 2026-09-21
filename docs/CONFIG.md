@@ -139,12 +139,57 @@ connection limits and the header timeouts apply as on every listener.
 | `idle_timeout` | duration | `10m` | Close a tunnel after no bytes in either direction; at most 24h |
 | `max_tunnels` | int | `10000` | Open CONNECT tunnels on this listener; over it CONNECT answers 503 |
 | `max_response_bytes` | int | `67108864` | Largest plain response body relayed; a larger one is cut off and the connection closed; 0 disables |
+| `socks5` | bool | `false` | Also speak SOCKS5 (RFC 1928) on this port; see below |
+| `socks_udp` | bool | `false` | Allow SOCKS5 `UDP ASSOCIATE` (requires `socks5`) |
+
+#### SOCKS5 on a forward listener
+
+`socks5: true` accepts SOCKS5 on the same port as the HTTP proxy. The
+two cannot be confused: a SOCKS greeting starts with the version byte
+`0x05` and an HTTP request starts with a method, so the first byte
+decides and nothing is configured twice.
+
+Everything the HTTP side applies applies here: the port list, `allow`,
+`deny`, `allow_private`, the checked address being the one dialled, the
+tunnel bound, the idle timeout, the ban list and the counters. `auth`
+is enforced with RFC 1929 username/password against the same users
+file, sharing the same credential cache and the same bounded hashing —
+so a listener with `auth` refuses a SOCKS client that offers only
+"no authentication" (reply `0xFF`), and one without `auth` is an open
+proxy for both protocols, which validation says out loud.
+
+A policy refusal is answered with the closest SOCKS reply code rather
+than a blanket failure: `0x02` (connection not allowed) for a port,
+name, address or private-range refusal, `0x04` (host unreachable) for
+a name that does not resolve. SOCKS4 is refused — it has no
+authentication and no names — and `BIND` is not implemented, because it
+asks the proxy to open a listening socket on a client's say-so.
+
+**Why bother.** SOCKS5 is what everything that is not a browser speaks:
+`ssh -o ProxyCommand`, `git`, `curl --socks5-hostname`, database
+clients, package managers. Without it that traffic goes around the
+proxy; with it, it is under the same destination policy, the same logs
+and the same bans.
+
+**UDP associations** (`socks_udp: true`) are how DNS and QUIC travel
+through a SOCKS proxy. Each association binds its own socket, is fixed
+to the client address that opened it (the first datagram sets it), only
+relays answers from destinations that client has actually sent to, and
+dies with its TCP control connection — which is what RFC 1928 requires
+and what keeps the socket from becoming an open reflector. Datagram
+headers are parsed with the same care as the handshake: fragments are
+dropped rather than reassembled, and the peer table is bounded.
+`forward_udp_associations`, `forward_udp_open` and
+`forward_udp_dropped` count the association and everything refused.
 
 Each request writes one `forward` line to the access log with the
 client address, user, method, destination, status, bytes and duration.
+SOCKS connections write the same line with `protocol: socks5`.
 Counters: `forward_requests`, `forward_tunnels`, `forward_tunnels_open`,
 `forward_denied`, `forward_auth_failed`, `forward_rejected`,
-`forward_errors`, `forward_bytes_in`, `forward_bytes_out`;
+`forward_errors`, `forward_bytes_in`, `forward_bytes_out`,
+`forward_socks`, `forward_udp_associations`, `forward_udp_open`,
+`forward_udp_dropped`;
 `xproxy_forward_*` metrics. The policy and the users file reload; the
 address and TLS settings need a restart like every listener.
 
@@ -254,8 +299,106 @@ upstream `total` for those. 0-RTT is never enabled.
 | `client_auth` | `none`, `request`, `require` | `none` | Client certificates; `request` verifies if presented |
 | `client_ca_file` | path | | Required for `request` and `require` |
 | `cipher_suites` | list of names | ECDHE AEAD suites | TLS 1.2 suites, crypto/tls names. Insecure suites are rejected. TLS 1.3 suites are not configurable. |
+| `key_exchange` | list of group names | `X25519MLKEM768`, `X25519`, `P-256`, `P-384` | Key agreement groups this listener accepts; see below |
+| `ech` | object | none | Accept Encrypted Client Hello; see below |
 | `ocsp_stapling` | object | none | Fetch OCSP responses for the served certificates in the background and staple them into handshakes; see below |
 | `ct` | object | none | Check the Certificate Transparency SCTs embedded in file certificates at load; see below |
+
+#### server.listeners[].tls.key_exchange
+
+The accepted key agreement groups, in preference order:
+`X25519MLKEM768`, `X25519`, `P-256`, `P-384`, `P-521`. The default
+leads with `X25519MLKEM768`, the hybrid that combines X25519 with the
+ML-KEM lattice KEM (RFC 9370's hybrid design, as deployed by Chrome,
+Firefox and every major CDN).
+
+Why it is a setting at all: Go chooses a good set by itself, but *only*
+while the list is left unset, and naming any group replaces the whole
+list. A configuration written to prefer X25519 therefore drops the
+post-quantum hybrid silently, and nothing in a handshake says so. Making
+the list explicit means the choice is validated, documented and visible
+in `xproxyctl tls`, rather than a side effect of a line nobody re-read
+after a toolchain upgrade.
+
+Why the hybrid leads: traffic recorded today is decrypted by whoever
+holds a quantum computer in ten years — the data does not have to be
+interesting now, only later. A hybrid exchange costs about a kilobyte
+in the ClientHello and removes that trade entirely, and its classical
+half keeps the exchange at least as strong as X25519 alone if the
+lattice half is ever broken.
+
+Note what the list is: the set the server *accepts*. In TLS 1.3 the
+client sends a key share, and the server takes the first offered share
+it accepts rather than forcing its own favourite with a retry — so a
+server that accepts several groups usually ends up on the client's
+first choice, and a client that offers nothing acceptable is sent a
+HelloRetryRequest naming one it can use. Restricting the list to one
+group is how you force it, at the cost of a round trip for clients that
+guessed differently.
+
+A list that names groups but no post-quantum one loads with an advice
+line rather than an error: a client fleet that cannot negotiate the
+hybrid exists, and that is an operator's decision, not the proxy's.
+
+The negotiated group is in the access log as `tls_group`, counted by
+`xproxy_tls_key_exchange_total{group}`, and summarised by `xproxyctl
+tls` with the post-quantum share — which is the number a rollout is
+actually measured by, because it moves as client fleets upgrade and not
+as this file changes.
+
+#### server.listeners[].tls.ech
+
+Encrypted Client Hello. A TLS 1.3 handshake still names its destination
+in the clear — the SNI is the last plaintext identifier in a modern
+connection, and the one that monitoring and blocking actually use. ECH
+encrypts the real ClientHello (SNI, ALPN, everything) to a public key
+the client fetched from DNS, and wraps it in an outer hello naming a
+*public name* shared by everything behind that key. An observer sees a
+connection to the public name and cannot tell which site it was for.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `keys` | list | required | The configurations this listener can decrypt; 1 to 8. Several are live during a rotation |
+| `keys[].config_file` | path | required | The ECHConfig: raw bytes, base64, or the `ech=` value pasted from a record |
+| `keys[].key_file` | path | required | The X25519 private key: raw 32 bytes, base64, hex or PKCS#8 PEM. Must not be world readable |
+| `keys[].retry` | bool | `true` | Offer this config to a client whose key was stale, which is how a rotation heals itself |
+| `require` | bool | `false` | Refuse a handshake that did not use ECH |
+
+Generate a key and the record to publish with `xproxyctl ech keygen`;
+the configuration and key files it writes are what `config_file` and
+`key_file` point at. Enabling ECH raises the listener to TLS 1.3, since
+a 1.2 handshake has no encrypted hello to carry it.
+
+**The public name needs a certificate here.** A client whose key is
+stale — a cached DNS answer, a record that has not propagated — falls
+back to an ordinary handshake with the public name, and meets a
+certificate error unless this listener can serve it. Validation warns
+when no configured certificate covers it. That fallback is not a
+failure mode to be avoided; it is what makes rotation safe.
+
+**Rotating.** Generate the new key, add it to `keys` with `retry: true`,
+publish an `ech=` list containing both, wait out the old record's TTL
+everywhere, then drop the old key. `xproxyctl tls` prints the list the
+listener is actually serving, so the published value and the served
+value cannot drift apart unnoticed. `xproxyctl reload-certs` re-reads
+ECH keys along with certificates.
+
+**`require` is a blunt instrument.** It refuses every client that did
+not use ECH, including one whose DNS answer was stripped by a resolver
+that does not know the record, and one whose platform does not
+implement ECH at all. It is for a listener that exists only for ECH
+clients; validation prints an advice line saying so.
+
+**ECH and layer 4 routing.** A `kind: tcp` listener routes on the SNI
+it can see, which with ECH is the *outer* name: every ECH client looks
+like a connection to the public name, so a passthrough listener in
+front of an ECH listener cannot split them. Terminate TLS where ECH is
+accepted, or give the public name its own backend.
+
+**Fingerprints.** The outer hello is what JA3 and JA4 are computed
+from, so fingerprinting keeps working; what changes is that the SNI in
+`sni` is the public name for every ECH client. The access log carries
+`ech: true` when ECH was accepted, which is how to tell the two apart.
 
 #### server.listeners[].tls.ocsp_stapling
 
@@ -718,6 +861,7 @@ beyond the first is gated by `retry_budget` when one is set.
 | `server_name` | string | endpoint host | SNI and verification name |
 | `ca_file` | path | system pool | PEM bundle to verify against |
 | `min_version` | `"1.2"`, `"1.3"` | `"1.2"` | Minimum TLS version towards the upstream |
+| `key_exchange` | list of group names | `X25519MLKEM768`, `X25519`, `P-256`, `P-384` | As on a listener, for the connection to the origin: the same adversary records both halves of the path |
 | `client_cert_file`, `client_key_file` | path | | Mutual TLS to the upstream; set both. Re-read by `xproxyctl reload-certs` and by configuration reload; idle connections are dropped so new ones present the new certificate |
 | `origin_signature` | object | none | Sign every forwarded request so the origin can refuse traffic that bypassed the proxy; see `upstreams[].origin_signature` |
 | `spki_pins` | list of base64 SHA-256 | `[]` | Pins of the upstream leaf public key; the connection is refused unless the presented leaf matches one, in addition to chain verification. `xproxyctl spki CERT.pem` prints a pin. Cannot be combined with `insecure_skip_verify` |
@@ -917,6 +1061,7 @@ not match is skipped and the next candidate is tried.
 | `timeouts.total` | duration | none | Same as `timeout` |
 | `timeouts.idle` | duration | none | Cancels a response that produces no bytes for this long, for streaming or long-poll routes where `total` is too coarse. Connect and response-header timeouts are configured per upstream (`upstreams[].timeouts`), since the connection pool is shared |
 | `websocket` | bool | `false` | Allow `Upgrade` requests |
+| `websocket_guard` | object | none | Inspect the frames of an upgraded connection; see below |
 | `webtransport` | bool | `false` | Relay WebTransport sessions (extended CONNECT over HTTP/3) to the upstream: bidirectional and unidirectional streams and datagrams in both directions, with the request header operations applied to the CONNECT. Needs a listener with `h3.webtransport: true` and an upstream with `h3: true`; on any other listener or protocol the session is refused |
 | `grpc.web` | bool | `false` | Accept gRPC-web requests (`application/grpc-web`, `grpc-web+proto`, `grpc-web-text`, `grpc-web-text+proto`, over HTTP/1.1 or HTTP/2) on this gRPC route and translate them: the upstream sees plain gRPC, the response trailers come back as a trailer frame in the body and the text variants are base64. Without it a gRPC-web request is refused with gRPC status 2 |
 | `grpc.web_origins` | list | `[]` | Browser origins (`https://app.example.com`, or `*`) whose CORS preflights are answered (`POST`, the requested headers, ten minutes) and whose responses get `Access-Control-Allow-Origin` and the exposed `grpc-status` and `grpc-message`; needs `web: true`. Empty leaves CORS to the upstream or to header operations |
@@ -1500,6 +1645,62 @@ first, last, expires) and the decoy names; `DELETE /v1/honeypot?ip=` and
 `xproxyctl honeypot forget IP` remove a mark. The mark table holds at
 most 65536 addresses. Counters: `honeypot_hits`, `honeypot_marked`;
 metrics `xproxy_honeypot_hits_total`, `xproxy_honeypot_marked`.
+
+### routes[].websocket_guard
+
+An upgraded connection is the one place a request-oriented proxy stops
+looking. Everything before the 101 goes through routing, the WAF, the
+filters and the logs; everything after it is an opaque byte stream that
+happens to be travelling over a connection the proxy opened.
+Applications put their real API in there — chat, trading, terminals,
+GraphQL subscriptions — so a proxy that stops at the handshake is
+guarding the doorway of a building with no walls.
+
+`websocket_guard` parses RFC 6455 frames in **both** directions and
+applies structure, bounds and patterns. It never rewrites a frame: a
+violation closes the connection with a close code that says why, or is
+only recorded, depending on `action`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `max_frame_bytes` | int | `1048576` | Largest single frame, either direction; 128 to 64 MiB |
+| `max_message_bytes` | int | `8388608` | Largest reassembled message; at least `max_frame_bytes`, at most 256 MiB |
+| `messages_per_second` | int | `0` (no bound) | Client message rate; the origin is the estate's own application and is not rate limited |
+| `allow_opcodes` | list | text, binary, close, ping, pong | Opcodes a peer may use; continuation is always allowed |
+| `allow_subprotocols` | list | any | The `Sec-WebSocket-Protocol` the origin may negotiate, checked on the 101 before any frame exists |
+| `require_masked` | bool | `true` | Enforce RFC 6455 masking: set on client frames, clear on server frames |
+| `validate_utf8` | bool | `true` | Refuse a text message that is not UTF-8 |
+| `inspect` | `none`, `text`, `all` | `text` | Which messages are kept for pattern matching |
+| `max_inspect_bytes` | int | `65536` | Prefix of a message kept for matching; the rest passes uninspected |
+| `deny_patterns` | list of RE2 | `[]` | Patterns matched against inspected messages |
+| `action` | `close`, `log` | `close` | Close the connection, or record and forward |
+| `close_code` | int | protocol's own | Override the close code; 3000-4999 only |
+
+The structural checks are the half with no false positives, because
+they are the protocol's own rules: a reserved bit set without a
+negotiated extension, a reserved opcode, an unmasked client frame or a
+masked server one, a fragmented or oversize control frame, a
+continuation with nothing to continue, a new message before the
+previous one finished, a close frame with one byte of status, a close
+code that must never appear on the wire, a close reason or text message
+that is not UTF-8. A client that does any of these is not a browser.
+
+The bounds are the half worth thinking about: `max_frame_bytes` and
+`max_message_bytes` are what stop one connection deciding how much
+memory the proxy uses, and `messages_per_second` is what stops it
+deciding how much CPU the origin uses. The pattern list is the part
+with a real false-positive rate — start with `action: log` and read
+`xproxy_websocket_violations_total{route}` for a week.
+
+Messages larger than `max_inspect_bytes` are checked up to that bound
+and forwarded: the alternative is buffering whatever a client chooses
+to send. Compressed frames (`permessage-deflate`) cannot be inspected
+at all, which is why a reserved bit is refused rather than ignored — a
+negotiated compression extension would silently turn every check off.
+
+Violations are security events with reason `websocket`, counted per
+route by `xproxyctl` and `GET /v1/websocket`, and exported as
+`xproxy_websocket_violations_total` and `xproxy_websocket_closed_total`.
 
 ### routes[].deceive
 

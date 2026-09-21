@@ -45,6 +45,15 @@ type Reloadable struct {
 	// anyway.
 	Refuse func(remote net.Addr, fp Fingerprint) string
 
+	// ech holds the Encrypted Client Hello keys, swapped by a reload;
+	// echCfg is what to re-read them from. The counters sit here rather
+	// than in the key set so a key rotation does not reset them.
+	ech         atomic.Pointer[echKeys]
+	echCfg      *config.ECH
+	echAccepted atomic.Uint64
+	echRejected atomic.Uint64
+	echRefused  atomic.Uint64
+
 	// ocsp and ct come from the listener's tls section.
 	ocsp    *config.OCSPStapling
 	ct      *config.CT
@@ -166,6 +175,10 @@ func issuerOf(c *tls.Certificate) *x509.Certificate {
 // message, which is the point of refusing here.
 var ErrRefused = errors.New("handshake refused")
 
+// ErrECHRequired aborts a handshake that did not use Encrypted Client
+// Hello on a listener that requires it.
+var ErrECHRequired = errors.New("encrypted client hello is required on this listener")
+
 // recordFingerprint is installed as GetConfigForClient. It observes the
 // hello, and asks Refuse whether this client gets a handshake at all.
 func (r *Reloadable) recordFingerprint(h *tls.ClientHelloInfo) (*tls.Config, error) {
@@ -225,6 +238,9 @@ func (r *Reloadable) Load() error {
 	r.ctState = state
 	r.ctMu.Unlock()
 	r.certs.Store(&certs)
+	if err := r.ReloadECH(); err != nil {
+		return err
+	}
 	if r.stapler != nil {
 		r.stapler.wake()
 	}
@@ -303,7 +319,7 @@ func (r *Reloadable) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificat
 // Server builds a server tls.Config for a listener. The returned Reloadable
 // can be used to hot reload certificates.
 func Server(cfg *config.TLS, protocols []config.Protocol) (*tls.Config, *Reloadable, error) {
-	r := &Reloadable{cfgs: cfg.Certificates, ocsp: cfg.OCSPStapling, ct: cfg.CT}
+	r := &Reloadable{cfgs: cfg.Certificates, ocsp: cfg.OCSPStapling, ct: cfg.CT, echCfg: cfg.ECH}
 	if cfg.CT != nil && cfg.CT.LogListFile != "" {
 		ll, err := LoadLogList(cfg.CT.LogListFile)
 		if err != nil {
@@ -314,11 +330,18 @@ func Server(cfg *config.TLS, protocols []config.Protocol) (*tls.Config, *Reloada
 	if err := r.Load(); err != nil {
 		return nil, nil, err
 	}
+	groups, err := config.CurveIDs(cfg.KeyExchange)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The keys were read by Load above; this is only the question of
+	// whether the listener has any.
+	keys := r.ech.Load()
 	tc := &tls.Config{
 		MinVersion:               tls.VersionTLS12,
 		GetCertificate:           r.getCertificate,
 		GetConfigForClient:       r.recordFingerprint,
-		CurvePreferences:         []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384},
+		CurvePreferences:         groups,
 		Renegotiation:            tls.RenegotiateNever,
 		SessionTicketsDisabled:   false,
 		PreferServerCipherSuites: true,
@@ -348,6 +371,14 @@ func Server(cfg *config.TLS, protocols []config.Protocol) (*tls.Config, *Reloada
 	}
 	if len(cfg.ACME) > 0 {
 		tc.NextProtos = append(tc.NextProtos, ACMEALPN)
+	}
+	if keys != nil {
+		// ECH needs TLS 1.3; a 1.2 handshake has no encrypted hello to
+		// carry it, so the listener's floor rises rather than the
+		// feature quietly not applying.
+		tc.MinVersion = tls.VersionTLS13
+		tc.GetEncryptedClientHelloKeys = r.ECHKeys
+		tc.VerifyConnection = r.verifyECH
 	}
 	switch cfg.ClientAuth {
 	case "request", "require":
@@ -432,12 +463,17 @@ func (r *ClientReloadable) Load() error {
 func Client(cfg *config.UpstreamTLS) (*tls.Config, *ClientReloadable, error) {
 	tc := &tls.Config{
 		MinVersion:       tls.VersionTLS12,
-		CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384},
+		CurvePreferences: config.DefaultKeyExchange(),
 		Renegotiation:    tls.RenegotiateNever,
 	}
 	if cfg == nil {
 		return tc, nil, nil
 	}
+	groups, err := config.CurveIDs(cfg.KeyExchange)
+	if err != nil {
+		return nil, nil, err
+	}
+	tc.CurvePreferences = groups
 	if cfg.MinVersion == "1.3" {
 		tc.MinVersion = tls.VersionTLS13
 	}

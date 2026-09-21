@@ -301,6 +301,144 @@ server:
 
 Add more certificates to the list; SNI selects the matching one.
 
+### Encrypted Client Hello
+
+The SNI is the last plaintext identifier in a modern connection. TLS
+1.3 encrypts the certificate, ALPN and everything after it, but the
+name being visited still travels in the clear at the front of the
+ClientHello, which is what network-level monitoring and blocking
+actually key on. ECH encrypts the real hello to a key published in DNS
+and wraps it in an outer hello naming a *public name* shared by
+everything behind that key.
+
+```sh
+# One key, its files, and the record to publish.
+xproxyctl ech keygen -public-name ech.example.com -id 1 -dir /etc/xproxy/ech
+```
+
+```yaml
+server:
+  listeners:
+    - name: public
+      address: ":443"
+      tls:
+        certificates:
+          # This certificate must cover ech.example.com as well as the
+          # sites served here.
+          - {cert_file: /etc/xproxy/certs/site.pem, key_file: /etc/xproxy/certs/site-key.pem}
+        ech:
+          keys:
+            - {config_file: /etc/xproxy/ech/1.echconfig, key_file: /etc/xproxy/ech/1.key}
+```
+
+Publish the record `keygen` printed for every name served behind the
+key:
+
+```
+www.example.com. 300 IN HTTPS 1 . ech="AEr+DQBG..."
+```
+
+**The public name is a real site, not a label.** A client whose key is
+stale — a cached DNS answer, a record that has not propagated, a
+resolver that strips the parameter — falls back to an ordinary
+handshake with the public name, and gets a certificate error unless
+this listener can serve it. Give it a certificate and something
+ordinary to answer with. That fallback is not a failure to design
+around: it is what makes key rotation safe.
+
+**Rotating a key.** Generate the second key, add it to `keys`, publish
+a record containing both configs, wait out the old record's TTL
+everywhere, then remove the old key and republish. Clients holding a
+stale config are handed the current one *during the handshake they
+fail*, so a rotation heals itself:
+
+```sh
+xproxyctl ech keygen -public-name ech.example.com -id 2 -dir /etc/xproxy/ech
+xproxyctl ech record -name www.example.com /etc/xproxy/ech/1.echconfig /etc/xproxy/ech/2.echconfig
+xproxyctl reload-certs      # re-reads ECH keys with the certificates
+```
+
+**Check what is actually served, not what you meant to publish.**
+
+```
+$ xproxyctl tls
+ech public: 2 key(s), require=false, accepted 41203, without ech 6112, refused 0 (87.1% of handshakes)
+  config id 1  public name ech.example.com  retry=true  /etc/xproxy/ech/1.echconfig
+  config id 2  public name ech.example.com  retry=true  /etc/xproxy/ech/2.echconfig
+  publish: ech="AEr+DQBG..."
+```
+
+The `publish:` line is generated from the keys the listener holds, so a
+record that has drifted from the deployment shows up as a difference
+between that string and the one in DNS.
+
+**What it changes elsewhere.** `sni` in the access log is the public
+name for every ECH client, so `ech: true` is the field that separates
+them from clients that genuinely asked for that name. JA3 and JA4 are
+computed from the outer hello and keep working. A `kind: tcp` listener
+routes on the outer name, so it cannot split ECH clients apart —
+terminate TLS where ECH is accepted.
+
+**`require`** refuses every handshake that did not use ECH. That
+includes clients whose DNS answer was filtered and platforms with no
+ECH support at all, so it belongs on a listener that exists for ECH
+clients and nothing else. Validation says so when you set it.
+
+### Post-quantum key exchange
+
+```yaml
+server:
+  listeners:
+    - name: public
+      address: ":443"
+      tls:
+        certificates: [{cert_file: /etc/xproxy/certs/site.pem, key_file: /etc/xproxy/certs/site-key.pem}]
+        # The default. Written out here because it is worth knowing it
+        # is on, and because naming any group replaces the whole list.
+        key_exchange: [X25519MLKEM768, X25519, P-256, P-384]
+upstreams:
+  - name: app
+    scheme: https
+    endpoints: [{address: "10.0.1.10:443"}]
+    tls: {key_exchange: [X25519MLKEM768, X25519]}
+```
+
+The threat is not a quantum computer today; it is a recorder today and
+a quantum computer later. Traffic captured now — a session, a token, a
+year of an API — is decrypted whenever the key exchange falls, and
+nothing about the recording has to be noticed at the time. A hybrid
+group closes that: X25519MLKEM768 agrees a secret that needs *both*
+X25519 and ML-KEM broken, costs about a kilobyte in the ClientHello,
+and is what Chrome, Firefox and the large CDNs already negotiate.
+
+The reason it is a setting rather than a default buried in the runtime
+is a trap worth naming: Go picks a good set on its own, but only while
+the list is unset, and naming a single group replaces the lot. A
+listener written years ago to "prefer X25519" therefore stops offering
+the hybrid the day the toolchain adds it, silently, with a handshake
+that looks perfectly healthy. Making the list explicit turns that into
+something validated, documented and visible.
+
+Measure it on traffic, not on configuration:
+
+```
+$ xproxyctl tls
+key exchange public: X25519MLKEM768, X25519, P-256, P-384
+negotiated: X25519MLKEM768 184203  X25519 26611  P-256 44  (post-quantum 87.4%)
+```
+
+`tls_group` in the access log says which group each request's
+connection agreed, and `xproxy_tls_key_exchange_total{group}` charts
+the share over time. That share moves as client fleets upgrade; it is
+the only honest measure of a rollout, and it is the one to watch before
+deciding whether the classical groups can ever be removed.
+
+A list that names groups but leaves the hybrid out still loads — some
+fleets genuinely cannot negotiate it — but it loads with an advice line
+saying what has been traded away. Restricting the list to one group
+forces it at the cost of a HelloRetryRequest for clients that guessed
+differently, which is a round trip, not a failure.
+
 ### Session tickets shared across a cluster
 
 ```yaml
@@ -1868,6 +2006,65 @@ internal address or in front of `tls` with client certificates; a
 forward proxy reachable from the Internet without `auth` is an open
 relay.
 
+### SOCKS5 on the same port
+
+```yaml
+server:
+  listeners:
+    - name: egress
+      address: "10.0.0.5:1080"
+      kind: forward
+      forward:
+        socks5: true
+        socks_udp: true                  # only if something needs datagrams
+        ports: [80, 443, 22, 53]
+        allow: ["*.github.com", "proxy.golang.org", "*.example.com"]
+        auth: {users_file: /etc/xproxy/egress.htpasswd, realm: egress}
+```
+
+```sh
+curl --socks5-hostname 10.0.0.5:1080 https://api.example.com/
+git config --global http.proxy socks5h://build-agent:pass@10.0.0.5:1080
+ssh -o ProxyCommand='nc -X 5 -x 10.0.0.5:1080 %h %p' gateway.example.com
+```
+
+An HTTP proxy only helps clients that speak HTTP proxying. Everything
+else — `ssh`, `git`, package managers, database clients, anything using
+`curl --socks5-hostname` — speaks SOCKS5, and without it that traffic
+leaves the estate outside the policy entirely. Turning it on puts it
+back under the same destination rules, the same credentials, the same
+access log and the same bans.
+
+The two protocols share the port: a SOCKS greeting begins with `0x05`
+and an HTTP request with a method, so the first byte separates them.
+Nothing is configured twice, and `xproxyctl status` counts both.
+
+With `auth`, SOCKS clients authenticate with RFC 1929
+username/password against the same users file, and a client that offers
+only "no authentication" is refused outright. Without `auth`, the
+listener is an open proxy for both protocols — validation says so at
+load, and the answer is an internal address, an allow list, or
+credentials.
+
+Refusals come back as the closest SOCKS reply code rather than a
+blanket failure, so a client reports something true: "connection not
+allowed" for a destination the policy refused, "host unreachable" for a
+name that does not resolve. SOCKS4 is refused (no authentication, no
+names) and `BIND` is not implemented, because it asks the proxy to open
+a listening socket on a client's say-so.
+
+`socks_udp: true` adds `UDP ASSOCIATE`, which is how DNS and QUIC
+travel through a SOCKS proxy. Each association gets its own socket,
+belongs to the client address that opened it, relays answers only from
+destinations that client actually sent to, and dies with its control
+connection — the three properties that keep a UDP relay from being an
+open reflector. Leave it off unless something needs it;
+`forward_udp_dropped` counts every datagram refused, which is what to
+watch if it is on.
+
+`examples/forward/socks.yaml` is a complete egress proxy with both
+protocols, an allow list, credentials and the ban triggers.
+
 ### Virtual security.txt
 
 A `security.txt` (RFC 9116) tells a finder where to report a
@@ -2236,6 +2433,76 @@ tightening anything: `field:` hits are the ones to ban on,
 `too_fast` is the one to tune. `examples/filters/form-guard.yaml`
 pairs a sign-up, a contact form and a password reset, each with the
 amount of checking its page can carry.
+
+### WebSocket message inspection
+
+```yaml
+routes:
+  - name: chat
+    paths: [/ws/chat]
+    websocket: true
+    websocket_guard:
+      max_frame_bytes: 65536
+      max_message_bytes: 262144
+      messages_per_second: 30
+      allow_subprotocols: [chat.v2]
+      allow_opcodes: [text, close, ping, pong]
+      deny_patterns: ["(?i)<script[^>]*>"]
+      action: close
+    upstream: chat
+```
+
+`websocket: true` allows the upgrade. `websocket_guard` is what happens
+after it. Without the guard, everything before the 101 is inspected —
+routing, the WAF, the filters, the logs — and everything after it is a
+byte stream nobody looks at. Applications put their real API in there.
+
+Three kinds of check, with three different false-positive profiles:
+
+**Structure** has none, because it is the protocol's own rules. A
+reserved bit set without a negotiated extension, a reserved opcode, an
+unmasked client frame, a masked server frame, a fragmented or oversize
+control frame, a continuation with nothing to continue, a close frame
+with one byte of status, a close code that must never appear on the
+wire, text that is not UTF-8. A browser does none of these.
+
+**Bounds** are a capacity decision. `max_frame_bytes` and
+`max_message_bytes` stop one connection deciding how much memory the
+proxy uses; `messages_per_second` stops it deciding how much CPU the
+origin uses. Set them from what the application actually sends —
+`xproxy_websocket_messages_total{route}` tells you.
+
+**Patterns** are the part with a real rate, so start there in log mode:
+
+```yaml
+    websocket_guard: {deny_patterns: ["(?i)\\bDROP\\s+TABLE\\b"], action: log}
+```
+
+```
+$ xproxyctl metrics | grep websocket
+xproxy_websocket_connections_total{route="chat"} 4120
+xproxy_websocket_messages_total{route="chat"} 1840223
+xproxy_websocket_violations_total{route="chat"} 3
+xproxy_websocket_closed_total{route="chat"} 0
+```
+
+Both directions are inspected. That is deliberate: the origin is the
+side that holds the data, and a compromised or simply buggy
+application pushing something it should not is the case worth catching.
+It is also why a violation count can be double what you expect — a
+denied message and its echo are two.
+
+A few things worth knowing. The subprotocol is checked on the 101,
+before any frame exists, so an application that answers with an
+unlisted one never gets a connection. Messages over
+`max_inspect_bytes` are checked up to that bound and forwarded, because
+the alternative is buffering whatever a client sends. And
+`permessage-deflate` is refused rather than ignored: a compressed frame
+cannot be inspected, so a negotiated compression extension would turn
+every check above off silently.
+
+`examples/routes/websocket.yaml` pairs a chat route with tight bounds
+and a market-data feed with wide ones and no inspection.
 
 ### gRPC services
 

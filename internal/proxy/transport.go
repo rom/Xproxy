@@ -203,7 +203,18 @@ func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Respon
 		// Count 503 (and every retry_on status) as a passive failure
 		// signal; other statuses are the application's business.
 		failed := resp.StatusCode == http.StatusServiceUnavailable || t.retryStatus(resp.StatusCode)
-		resp.Body = &endBody{ReadCloser: resp.Body, done: func() { t.pool.End(e, failed, ttfb) }}
+		done := func() { t.pool.End(e, failed, ttfb) }
+		// A 101 response's body is the connection itself: the transport
+		// hands back an io.ReadWriteCloser so the caller can splice both
+		// directions. Wrapping it in a plain ReadCloser is how an
+		// upgrade turns into "101 switching protocols response with
+		// non-writable body" three layers up, so the wrapper keeps the
+		// write half when there is one.
+		if rw, ok := resp.Body.(io.ReadWriteCloser); ok {
+			resp.Body = &endBodyRW{ReadWriteCloser: rw, done: done}
+		} else {
+			resp.Body = &endBody{ReadCloser: resp.Body, done: done}
+		}
 		return resp, nil
 	}
 	return nil, lastErr
@@ -286,6 +297,28 @@ func (b *endBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.once.Do(b.done)
 	return err
+}
+
+// endBodyRW is endBody for a response whose body is writable: an
+// upgraded connection. It forwards CloseWrite as well, which is how
+// httputil.ReverseProxy half-closes one direction of a WebSocket.
+type endBodyRW struct {
+	io.ReadWriteCloser
+	once sync.Once
+	done func()
+}
+
+func (b *endBodyRW) Close() error {
+	err := b.ReadWriteCloser.Close()
+	b.once.Do(b.done)
+	return err
+}
+
+func (b *endBodyRW) CloseWrite() error {
+	if cw, ok := b.ReadWriteCloser.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
 }
 
 // tcpRetry rebuilds the outbound request for the TCP transport; a body

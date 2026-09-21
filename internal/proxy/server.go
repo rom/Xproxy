@@ -390,6 +390,57 @@ func (s *Server) Certificates() map[string][]tlsconf.CertInfo {
 	return out
 }
 
+// KeyExchangeStatus is the management view of the key agreement policy
+// and what clients actually negotiated.
+type KeyExchangeStatus struct {
+	// Groups is the offered list per TLS listener, in preference order.
+	Groups map[string][]string `json:"groups"`
+	// Negotiated counts completed handshakes by group.
+	Negotiated map[string]uint64 `json:"negotiated"`
+	// PostQuantum is how many of those used a hybrid group, which is
+	// the number a rollout is measured by.
+	PostQuantum uint64 `json:"post_quantum"`
+}
+
+// KeyExchange reports the configured groups and the negotiated ones.
+func (s *Server) KeyExchange() KeyExchangeStatus {
+	st := KeyExchangeStatus{Groups: map[string][]string{},
+		Negotiated: s.stats.KeyExchangeCounts(), PostQuantum: s.stats.KeyExchangePQ.Load()}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, bl := range s.listeners {
+		if bl.cfg.TLS == nil {
+			continue
+		}
+		names := bl.cfg.TLS.KeyExchange
+		if len(names) == 0 {
+			for _, id := range config.DefaultKeyExchange() {
+				names = append(names, config.GroupName(id))
+			}
+		}
+		st.Groups[bl.cfg.Name] = names
+	}
+	return st
+}
+
+// ECH reports the Encrypted Client Hello state per listener. A listener
+// without the section is left out rather than reported as disabled, so
+// an empty map means no listener accepts ECH.
+func (s *Server) ECH() map[string]*tlsconf.ECHStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]*tlsconf.ECHStatus{}
+	for _, bl := range s.listeners {
+		if bl.tlsReload == nil {
+			continue
+		}
+		if st := bl.tlsReload.ECH(); st != nil {
+			out[bl.cfg.Name] = st
+		}
+	}
+	return out
+}
+
 // Tickets returns the session ticket key status, nil without the section.
 func (s *Server) Tickets() *tlsconf.TicketStatus { return s.tickets.Status() }
 
@@ -709,6 +760,11 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		}
 		bl.forward = fw
 		handler = fw
+		if fw.socksEnabled() {
+			// SOCKS greetings are taken off the accept path before the
+			// HTTP server sees them; everything else is handed on.
+			bl.ln = &socksListener{Listener: bl.ln, f: fw}
+		}
 	}
 	bl.httpSrv = &http.Server{
 		Handler:           handler,

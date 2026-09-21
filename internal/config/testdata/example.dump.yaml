@@ -29,12 +29,14 @@ server:
             client_auth: none
             client_ca_file: ""
             cipher_suites: []
+            key_exchange: []
             acme:
                 - hosts:
                     - shop.example.com
                     - www.shop.example.com
             ocsp_stapling: null
             ct: null
+            ech: null
           proxy_protocol: false
           redirect_to_https: false
           h3:
@@ -271,6 +273,7 @@ upstreams:
         client_cert_file: /etc/xproxy/certs/edge.pem
         client_key_file: /etc/xproxy/certs/edge-key.pem
         spki_pins: []
+        key_exchange: []
         insecure_skip_verify: false
         allow_insecure: false
       health_check: null
@@ -335,6 +338,7 @@ routes:
       timeout: 0s
       timeouts: null
       websocket: false
+      websocket_guard: null
       webtransport: false
       waf: null
       priority_class: high
@@ -398,6 +402,7 @@ routes:
       timeout: 0s
       timeouts: null
       websocket: false
+      websocket_guard: null
       webtransport: false
       waf:
         mode: block
@@ -464,6 +469,7 @@ routes:
       timeout: 0s
       timeouts: null
       websocket: false
+      websocket_guard: null
       webtransport: false
       waf: null
       priority_class: critical
@@ -525,6 +531,7 @@ routes:
       timeout: 0s
       timeouts: null
       websocket: false
+      websocket_guard: null
       webtransport: false
       waf: null
       priority_class: normal
@@ -591,6 +598,7 @@ routes:
       timeout: 0s
       timeouts: null
       websocket: true
+      websocket_guard: null
       webtransport: false
       waf: null
       priority_class: normal
@@ -652,6 +660,7 @@ routes:
       timeout: 0s
       timeouts: null
       websocket: false
+      websocket_guard: null
       webtransport: false
       waf:
         mode: detect

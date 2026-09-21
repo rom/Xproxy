@@ -61,6 +61,7 @@ var commandTable = []command{
 	{name: "htpasswd", args: "FILE NAME", summary: "Add or replace a basic_auth user (password on stdin)", files: true},
 	{name: "apikey", args: "add|rotate|revoke|remove|list [ID] [-file PATH] [-scopes a,b] [-expires 90d] [-note TEXT] [-grace 24h]", summary: "Manage api_key filter keys (issue, rotate with grace, revoke, remove, list)", words: []string{"add", "rotate", "revoke", "remove", "list"}, flags: []string{"-file", "-scopes", "-expires", "-note", "-grace"}, files: true},
 	{name: "spki", args: "CERT.pem", summary: "Print the spki_pins value of a certificate", files: true},
+	{name: "ech", args: "keygen -public-name NAME [-id N] [-dir D] | show CONFIG... | record [-name NAME] [-ttl N] CONFIG...", summary: "Encrypted Client Hello keys and the HTTPS record to publish", words: []string{"keygen", "show", "record"}, flags: []string{"-public-name", "-id", "-dir", "-name", "-ttl"}, files: true},
 	{name: "metrics", summary: "Print the Prometheus exposition"},
 	{name: "series", args: "[-since D] [-last N]", summary: "Print sampled series", flags: []string{"-since", "-last"}},
 	{name: "tui", args: "[-refresh D] [-no-color]", summary: "Full-screen live view", flags: []string{"-refresh", "-no-color"}},

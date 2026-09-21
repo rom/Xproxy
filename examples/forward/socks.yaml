@@ -1,0 +1,59 @@
+# An explicit proxy that speaks both HTTP CONNECT and SOCKS5 on one
+# port, under one destination policy.
+#
+# SOCKS5 is what everything that is not a browser speaks:
+#   ssh -o ProxyCommand='nc -x proxy.internal:1080 %h %p' host
+#   git config --global http.proxy socks5h://proxy.internal:1080
+#   curl --socks5-hostname proxy.internal:1080 https://example.com
+#   psql "host=db.example.com" with a SOCKS wrapper
+# Without it, that traffic leaves the estate outside this policy.
+#
+# Validate: xproxy -config examples/forward/socks.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: egress
+      # Bind to the internal interface. An explicit proxy reachable
+      # from the internet is somebody else's proxy.
+      address: "10.0.0.5:1080"
+      kind: forward
+      forward:
+        socks5: true
+        # DNS and QUIC through the proxy need this. Each association is
+        # bound to the client that opened it and dies with the control
+        # connection; leave it off if nothing needs datagrams.
+        socks_udp: true
+        ports: [80, 443, 22, 53, 587]
+        # Credentials for both protocols, from one file:
+        #   xproxyctl htpasswd /etc/xproxy/egress.htpasswd build-agent
+        auth: {users_file: /etc/xproxy/egress.htpasswd, realm: egress}
+        # Where the estate is allowed to reach. An allow list is the
+        # difference between an egress proxy and an open one.
+        allow:
+          - "*.github.com"
+          - "*.githubusercontent.com"
+          - "proxy.golang.org"
+          - "registry.npmjs.org"
+          - "*.docker.io"
+          - "*.example.com"
+        deny:
+          - "*.onion"
+          - "169.254.169.254"         # the cloud metadata service
+        allow_private: false          # the SSRF guard: keep it off
+        connect_timeout: 10s
+        idle_timeout: 5m
+        max_tunnels: 2000
+bans:
+  triggers:
+    # A client probing destinations it is not allowed to reach.
+    - {name: egress-probing, reasons: [forward_denied], threshold: 20, window: 5m, duration: 1h}
+    # Credential guessing against the proxy itself.
+    - {name: egress-auth, reasons: [forward_auth], threshold: 10, window: 5m, duration: 1h}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: unused
+    endpoints: [{address: "127.0.0.1:1"}]
+routes: []

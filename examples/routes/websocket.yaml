@@ -1,0 +1,55 @@
+# WebSocket routes with frame inspection.
+#
+# Without a guard an upgrade is an opaque tunnel: everything before the
+# 101 is inspected and everything after it is not. Applications put
+# their real API in there, so this is where to look.
+#
+# Validate: xproxy -config examples/routes/websocket.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: chat
+    endpoints: [{address: "10.0.1.10:8080"}]
+  - name: market
+    endpoints: [{address: "10.0.1.20:8080"}]
+routes:
+  # A chat API: small messages, many of them, one subprotocol.
+  - name: chat
+    paths: [/ws/chat]
+    websocket: true
+    websocket_guard:
+      max_frame_bytes: 65536
+      max_message_bytes: 262144
+      messages_per_second: 30
+      allow_subprotocols: [chat.v2]
+      allow_opcodes: [text, close, ping, pong]   # no binary on this route
+      inspect: text
+      deny_patterns:
+        # Payloads that have no business in a chat message. Start these
+        # with action: log and read the counters before enforcing.
+        - "(?i)<script[^>]*>"
+        - "(?i)\\bDROP\\s+TABLE\\b"
+      action: close
+    upstream: chat
+  # A market data feed: large binary frames, one way, high rate. The
+  # bounds are wide and the inspection is off, because the content is
+  # binary and nothing here would read it usefully.
+  - name: market
+    paths: [/ws/market]
+    websocket: true
+    websocket_guard:
+      max_frame_bytes: 4194304
+      max_message_bytes: 16777216
+      allow_opcodes: [binary, close, ping, pong]
+      inspect: none
+    upstream: market
+  # Everything else on the host: no upgrade at all.
+  - name: app
+    paths: [/]
+    upstream: chat

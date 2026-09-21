@@ -1,0 +1,51 @@
+# Encrypted Client Hello: the client encrypts its real ClientHello —
+# SNI included — to a key it learned from DNS, and wraps it in an outer
+# hello naming a public name shared by everything behind that key.
+#
+# Generate the key and the record with:
+#   xproxyctl ech keygen -public-name ech.example.com -id 1 -dir /etc/xproxy/ech
+#
+# Validate: xproxy -config examples/security/ech.yaml -validate
+#   (the key files must exist; keygen writes them)
+version: 1
+server:
+  listeners:
+    - name: public
+      address: "0.0.0.0:443"
+      tls:
+        certificates:
+          # One certificate covering the sites served here AND the ECH
+          # public name. The public name is not decoration: a client
+          # whose key is stale falls back to an ordinary handshake with
+          # it, and that fallback is what makes rotation safe.
+          - {cert_file: /etc/xproxy/certs/site.pem, key_file: /etc/xproxy/certs/site-key.pem}
+        ech:
+          keys:
+            # During a rotation both keys are live and both are in the
+            # published list. Drop the old one only after the old
+            # record's TTL has passed everywhere.
+            - {config_file: /etc/xproxy/ech/1.echconfig, key_file: /etc/xproxy/ech/1.key}
+            - {config_file: /etc/xproxy/ech/2.echconfig, key_file: /etc/xproxy/ech/2.key}
+          # Leave this off on a public site: it refuses every client
+          # that did not get the key, including one whose DNS answer was
+          # filtered on the way.
+          require: false
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.1.10:8080"}]
+  - name: public-name
+    endpoints: [{address: "10.0.1.20:8080"}]
+routes:
+  # The public name is a real site: it is what an observer sees, and
+  # what a stale client reaches. Serve something ordinary there.
+  - name: ech-public-name
+    hosts: [ech.example.com]
+    upstream: public-name
+  - name: app
+    hosts: [private.example.com]
+    paths: [/]
+    upstream: app

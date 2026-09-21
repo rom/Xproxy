@@ -179,6 +179,28 @@ func (s *Server) Collect(e metrics.Collector) {
 	}
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
 	e.Counter("xproxy_tls_handshakes_refused_total", "TLS handshakes refused in the ClientHello.", nil, float64(sn.HandshakesRefused))
+	// Per group, so a post-quantum rollout is measured on real traffic:
+	// the share of handshakes that agreed a hybrid key is the number,
+	// and it moves as client fleets upgrade, not as the configuration
+	// changes.
+	for g, n := range sn.KeyExchange {
+		e.Counter("xproxy_tls_key_exchange_total", "Completed handshakes by key agreement group.", L{"group": g}, float64(n))
+	}
+	for _, g := range s.WebSocketGuards() {
+		e.Counter("xproxy_websocket_connections_total", "Upgraded connections inspected by a websocket guard.", L{"route": g.Route}, float64(g.Connections))
+		e.Counter("xproxy_websocket_messages_total", "WebSocket messages seen by a guard.", L{"route": g.Route}, float64(g.Messages))
+		e.Counter("xproxy_websocket_violations_total", "WebSocket frames or messages that broke the route's policy.", L{"route": g.Route}, float64(g.Violations))
+		e.Counter("xproxy_websocket_closed_total", "Connections closed by a websocket guard.", L{"route": g.Route}, float64(g.Closed))
+	}
+	e.Counter("xproxy_forward_socks_total", "SOCKS5 connections accepted on forward listeners.", nil, float64(sn.ForwardSOCKS))
+	e.Counter("xproxy_forward_udp_associations_total", "SOCKS5 UDP associations opened.", nil, float64(sn.ForwardUDPAssociations))
+	e.Gauge("xproxy_forward_udp_open", "Open SOCKS5 UDP associations.", nil, float64(sn.ForwardUDPOpen))
+	e.Counter("xproxy_forward_udp_dropped_total", "Datagrams dropped by an association: a bad header, a refused destination, an unsolicited sender or a full peer table.", nil, float64(sn.ForwardUDPDropped))
+	for name, st := range s.ECH() {
+		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "accepted"}, float64(st.Accepted))
+		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "not_used"}, float64(st.Rejected))
+		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "refused"}, float64(st.Refused))
+	}
 	for _, d := range s.Deceptions() {
 		e.Counter("xproxy_deceived_total", "Requests answered with a deceptive response instead of the origin's.", L{"route": d.Route}, float64(d.Served))
 	}

@@ -258,7 +258,133 @@ Open findings of the earlier rounds:
   defaults. A request that does not fit is refused with 503 before it
   is read.
 
+### Fixed (1.4)
+
+- **Every WebSocket upgrade through the proxy answered 502.** The
+  transport wrapped each response body in a `ReadCloser` to account for
+  the endpoint when the body closed. For a 101 the body *is* the
+  connection, handed back as an `io.ReadWriteCloser` so the caller can
+  splice both directions — and the wrapper hid the write half, so
+  `httputil.ReverseProxy` refused it with "101 switching protocols
+  response with non-writable body" and the client got a bad gateway.
+  The idle reader and the capture tee hid it the same way. Upgrades now
+  keep a writable body (with `CloseWrite`, which is how one direction
+  is half-closed), and the wrappers that only make sense for a response
+  body are skipped for a 101. This was found by writing the first end
+  to end WebSocket test; `websocket: true` had never been exercised
+  against a real origin.
+
 ### Added (1.4)
+
+- **WebSocket message inspection (`routes[].websocket_guard`).** An
+  upgraded connection was the one place this proxy stopped looking:
+  everything before the 101 went through routing, the WAF, the filters
+  and the logs, and everything after it was an opaque stream. That is
+  where applications put their real API. The guard parses RFC 6455
+  frames in both directions and applies three kinds of check with three
+  different false-positive profiles — structure (the protocol's own
+  rules: reserved bits, reserved opcodes, masking, control frame size
+  and fragmentation, continuation state, close codes and UTF-8), bounds
+  (frame size, reassembled message size, client message rate), and
+  patterns (an RE2 list over inspected messages). It never rewrites a
+  frame: a violation closes with a close code that says why, or is
+  recorded and forwarded under `action: log`.
+
+  Both directions are inspected because the origin is the side holding
+  the data. The negotiated subprotocol is checked on the 101, before a
+  frame exists. Messages over `max_inspect_bytes` are checked to that
+  bound and forwarded rather than buffered, so a client cannot choose
+  the proxy's memory use. `permessage-deflate` is refused rather than
+  ignored: a compressed frame cannot be inspected, so accepting the
+  extension would turn every check off silently.
+  `examples/routes/websocket.yaml`.
+
+- **SOCKS5 and UDP associations on a forward listener
+  (`forward.socks5`, `forward.socks_udp`).** An HTTP forward proxy only
+  helps clients that speak HTTP proxying. Everything else in an estate
+  — `ssh`, `git`, package managers, database clients, anything behind
+  `curl --socks5-hostname` — speaks SOCKS5, and without it that traffic
+  leaves outside the destination policy, the access log and the ban
+  list. RFC 1928 and RFC 1929 are now spoken on the same port as the
+  HTTP proxy: a greeting begins with the version byte and an HTTP
+  request with a method, so one peeked byte separates them and nothing
+  is configured twice.
+
+  It is the same proxy, not a second one: the port list, `allow`,
+  `deny`, `allow_private`, dialling the address that passed the check
+  rather than re-resolving, the tunnel bound, the idle timeout, the
+  security events, the `forward_denied` ban reason and the counters all
+  apply unchanged. Credentials are verified against the same users file
+  through the same cache and the same bounded hashing, so a listener
+  with `auth` refuses a client that offers only "no authentication",
+  and one without it is an open proxy for both protocols — which
+  validation now says out loud. Policy refusals map to the closest
+  SOCKS reply code instead of a blanket failure, so a client reports
+  something true. SOCKS4 is refused (no authentication, no names) and
+  `BIND` is not implemented, because it asks the proxy to open a
+  listening socket on a client's say-so.
+
+  `UDP ASSOCIATE` is how DNS and QUIC travel through a SOCKS proxy, and
+  it is opt-in because a UDP relay is a wider exposure than a tunnel.
+  Each association binds its own socket, is fixed to the client address
+  that opened it, relays answers only from destinations that client has
+  actually sent to, and dies with its control connection — the
+  properties RFC 1928 requires and the ones that keep it from being an
+  open reflector. Fragmented datagrams are dropped rather than
+  reassembled and the peer table is bounded.
+  `examples/forward/socks.yaml`.
+
+- **Encrypted Client Hello (`tls.ech`), with the tooling to run it.**
+  TLS 1.3 encrypts everything about a connection except the one field
+  that says where it is going: the SNI, which is what network-level
+  monitoring and blocking key on. ECH encrypts the real ClientHello to
+  a key published in a DNS HTTPS record and wraps it in an outer hello
+  naming a public name shared by everything behind that key. The
+  listener accepts several keys at once, hands a client with a stale
+  config the current one during the handshake it fails (so a rotation
+  heals itself), and reloads keys with `xproxyctl reload-certs`.
+
+  The parts that make it operable are the point. `xproxyctl ech keygen`
+  writes the config and key files and prints both the YAML and the
+  HTTPS record; `ech record` rebuilds a record from several configs for
+  a rotation; `ech show` reads one back; and `xproxyctl tls` prints the
+  config list the listener is *actually* serving, so a published record
+  that has drifted from the deployment is visible rather than inferred.
+  Validation refuses a config and key that do not belong together —
+  the fault that otherwise hides perfectly, since every ECH attempt
+  then falls back and the site looks healthy while encrypting nothing —
+  refuses two keys sharing a config id, and warns when no certificate
+  on the listener covers the public name a stale client falls back to.
+  `require` refuses handshakes without ECH and says in an advice line
+  what that costs. The access log carries `ech: true`, and
+  `xproxy_tls_ech_total{listener,outcome}` counts accepted, not_used
+  and refused. Enabling ECH raises the listener to TLS 1.3.
+
+  What it changes elsewhere is documented rather than discovered: `sni`
+  is the public name for every ECH client, JA3 and JA4 are computed
+  from the outer hello and keep working, and a `kind: tcp` listener can
+  no longer split ECH clients apart because the outer name is all it
+  sees.
+
+- **Post-quantum key exchange, as an explicit setting
+  (`tls.key_exchange`, `upstreams[].tls.key_exchange`).** The proxy set
+  `CurvePreferences` to `[X25519, P-256, P-384]`, which in Go replaces
+  the default list rather than reordering it — so the X25519MLKEM768
+  hybrid the toolchain gained was never offered, on any listener or to
+  any origin, and no handshake said so. The list is now configuration,
+  validated against the known groups, and its default leads with the
+  hybrid. The threat it answers is not a quantum computer today but a
+  recorder today: traffic captured now is decrypted whenever the key
+  exchange falls, and a hybrid exchange costs about a kilobyte to
+  remove that trade. A list that names groups but no post-quantum one
+  loads with an advice line rather than an error, because a client
+  fleet that cannot negotiate the hybrid exists and that is an
+  operator's call. The negotiated group is in the access log as
+  `tls_group`, counted by `xproxy_tls_key_exchange_total{group}`, and
+  summarised with its post-quantum share by `xproxyctl tls` and `GET
+  /v1/tls/key-exchange` — a rollout is measured on traffic, since the
+  share moves as client fleets upgrade and not as the configuration
+  changes.
 
 - **[docs/DECEPTION.md](DECEPTION.md), the chapter behind the whole
   family.** Honeypot routes and decoys, honeytokens, form honeypots,

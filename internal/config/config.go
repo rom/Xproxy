@@ -413,6 +413,15 @@ type ForwardListener struct {
 	// MaxResponseBytes bounds the body of a plain (non CONNECT) response
 	// relayed to the client. Default 64 MiB; 0 disables.
 	MaxResponseBytes int64 `yaml:"max_response_bytes"`
+	// SOCKS5 also accepts SOCKS5 (RFC 1928) on this listener. The two
+	// protocols share the port: a greeting starts with the version byte
+	// and an HTTP request with a method, so one byte tells them apart.
+	// Destinations, ports, credentials, bans and logging are the same.
+	SOCKS5 bool `yaml:"socks5"`
+	// SOCKSUDP allows UDP ASSOCIATE, which is how DNS and QUIC travel
+	// through a SOCKS proxy. Each association is bound to the client
+	// address that opened it and dies with its control connection.
+	SOCKSUDP bool `yaml:"socks_udp"`
 }
 
 // ForwardAuth is the credential source of a forward listener.
@@ -423,6 +432,47 @@ type ForwardAuth struct {
 	// Realm is sent in Proxy-Authenticate. Default "proxy".
 	Realm string `yaml:"realm"`
 }
+
+// WebSocketGuard is the frame policy of an upgraded connection. Every
+// bound applies to both directions; the rate applies to the client,
+// whose traffic the estate does not control.
+type WebSocketGuard struct {
+	// MaxFrameBytes is the largest single frame. Default 1 MiB.
+	MaxFrameBytes int64 `yaml:"max_frame_bytes"`
+	// MaxMessageBytes is the largest reassembled message. Default 8 MiB.
+	MaxMessageBytes int64 `yaml:"max_message_bytes"`
+	// MessagesPerSecond bounds the client's message rate. 0 is no bound.
+	MessagesPerSecond int `yaml:"messages_per_second"`
+	// AllowOpcodes names the opcodes a peer may use. Default text,
+	// binary, close, ping and pong.
+	AllowOpcodes []string `yaml:"allow_opcodes"`
+	// AllowSubprotocols restricts the negotiated Sec-WebSocket-Protocol.
+	AllowSubprotocols []string `yaml:"allow_subprotocols"`
+	// RequireMasked enforces RFC 6455 masking: set on client frames,
+	// clear on server frames. Default true.
+	RequireMasked *bool `yaml:"require_masked"`
+	// ValidateUTF8 refuses a text message that is not UTF-8. Default
+	// true.
+	ValidateUTF8 *bool `yaml:"validate_utf8"`
+	// Inspect is none, text or all: which messages are kept for
+	// pattern matching. Default text.
+	Inspect string `yaml:"inspect"`
+	// MaxInspectBytes bounds the prefix of a message kept for matching.
+	// Default 64 KiB.
+	MaxInspectBytes int64 `yaml:"max_inspect_bytes"`
+	// DenyPatterns are RE2 patterns matched against inspected messages.
+	DenyPatterns []string `yaml:"deny_patterns"`
+	// Action is close or log. Default close.
+	Action string `yaml:"action"`
+	// CloseCode overrides the close code sent on a violation.
+	CloseCode int `yaml:"close_code"`
+}
+
+// Masked reports the effective require_masked.
+func (w *WebSocketGuard) Masked() bool { return w == nil || w.RequireMasked == nil || *w.RequireMasked }
+
+// UTF8 reports the effective validate_utf8.
+func (w *WebSocketGuard) UTF8() bool { return w == nil || w.ValidateUTF8 == nil || *w.ValidateUTF8 }
 
 // TCPListener routes raw connections to upstream pools. TLS connections
 // are routed by the server name of the ClientHello (peeked, never
@@ -488,6 +538,10 @@ type TLS struct {
 	// not configurable in Go). Names as in crypto/tls, e.g.
 	// TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256.
 	CipherSuites []string `yaml:"cipher_suites"`
+	// KeyExchange is the offered key agreement groups in preference
+	// order: X25519MLKEM768 (post-quantum hybrid), X25519, P-256, P-384,
+	// P-521. Empty means the default, which leads with the hybrid.
+	KeyExchange []string `yaml:"key_exchange"`
 	// ACME lists host groups that get an automatically issued certificate
 	// each (one certificate per group, hosts as SANs). Requires the
 	// top-level acme section.
@@ -498,7 +552,39 @@ type TLS struct {
 	// CT checks the signed certificate timestamps embedded in the file
 	// certificates at load.
 	CT *CT `yaml:"ct"`
+	// ECH accepts Encrypted Client Hello on this listener.
+	ECH *ECH `yaml:"ech"`
 }
+
+// ECH configures Encrypted Client Hello: the client encrypts the real
+// ClientHello (SNI included) to a key published in DNS, and sends it
+// inside an outer hello that names a shared public name.
+type ECH struct {
+	// Keys are the configurations this listener can decrypt. Several
+	// are live at once during a rotation.
+	Keys []ECHKey `yaml:"keys"`
+	// Require refuses a handshake that did not use ECH. It cuts off
+	// every client that has not got the key — including one whose DNS
+	// answer was stripped — so it is for a listener that exists only
+	// for ECH clients.
+	Require bool `yaml:"require"`
+}
+
+// ECHKey is one ECH configuration and its private key.
+type ECHKey struct {
+	// ConfigFile holds the ECHConfig, raw or base64, as written by
+	// `xproxyctl ech keygen`.
+	ConfigFile string `yaml:"config_file"`
+	// KeyFile holds the X25519 private key, raw, base64 or hex. It
+	// must not be world readable.
+	KeyFile string `yaml:"key_file"`
+	// Retry offers this config to a client whose key was stale, which
+	// is how a rotation heals itself. Default true.
+	Retry *bool `yaml:"retry"`
+}
+
+// RetryOffered reports whether this key is sent as a retry config.
+func (k *ECHKey) RetryOffered() bool { return k == nil || k.Retry == nil || *k.Retry }
 
 // OCSPStapling configures the background OCSP fetcher of a listener.
 type OCSPStapling struct {
@@ -1150,6 +1236,9 @@ type UpstreamTLS struct {
 	// unless the presented leaf matches one pin, in addition to chain
 	// verification.
 	SPKIPins []string `yaml:"spki_pins"`
+	// KeyExchange is the offered key agreement groups in preference
+	// order, as in the listener section. Empty means the default.
+	KeyExchange []string `yaml:"key_exchange"`
 	// InsecureSkipVerify disables verification. Refused unless
 	// allow_insecure is also true; logged as a security warning at start.
 	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
@@ -1313,6 +1402,9 @@ type Route struct {
 	Timeouts *RouteTimeouts `yaml:"timeouts"`
 	// WebSocket allows Upgrade: websocket to be forwarded. Default false.
 	WebSocket bool `yaml:"websocket"`
+	// WebSocketGuard inspects the frames of an upgraded connection.
+	// Without it an upgrade is an opaque tunnel.
+	WebSocketGuard *WebSocketGuard `yaml:"websocket_guard"`
 	// WebTransport relays WebTransport sessions (extended CONNECT over
 	// HTTP/3 on a listener with h3) to the upstream, which must speak
 	// HTTP/3 (h3: true): bidirectional and unidirectional streams and

@@ -1277,6 +1277,43 @@
       },
       "additionalProperties": false
     },
+    "ECH": {
+      "description": "ECH configures Encrypted Client Hello: the client encrypts the real ClientHello (SNI included) to a key published in DNS, and sends it inside an outer hello that names a shared public name.",
+      "type": "object",
+      "properties": {
+        "keys": {
+          "description": "Keys are the configurations this listener can decrypt. Several are live at once during a rotation.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ECHKey"
+          }
+        },
+        "require": {
+          "description": "Require refuses a handshake that did not use ECH. It cuts off every client that has not got the key — including one whose DNS answer was stripped — so it is for a listener that exists only for ECH clients.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ECHKey": {
+      "description": "ECHKey is one ECH configuration and its private key.",
+      "type": "object",
+      "properties": {
+        "config_file": {
+          "description": "ConfigFile holds the ECHConfig, raw or base64, as written by `xproxyctl ech keygen`.",
+          "type": "string"
+        },
+        "key_file": {
+          "description": "KeyFile holds the X25519 private key, raw, base64 or hex. It must not be world readable.",
+          "type": "string"
+        },
+        "retry": {
+          "description": "Retry offers this config to a client whose key was stale, which is how a rotation heals itself. Default true.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "Endpoint": {
       "description": "Endpoint is a single upstream address.",
       "type": "object",
@@ -1492,6 +1529,14 @@
           "items": {
             "type": "integer"
           }
+        },
+        "socks5": {
+          "description": "SOCKS5 also accepts SOCKS5 (RFC 1928) on this listener. The two protocols share the port: a greeting starts with the version byte and an HTTP request with a method, so one byte tells them apart. Destinations, ports, credentials, bans and logging are the same.",
+          "type": "boolean"
+        },
+        "socks_udp": {
+          "description": "SOCKSUDP allows UDP ASSOCIATE, which is how DNS and QUIC travel through a SOCKS proxy. Each association is bound to the client address that opened it and dies with its control connection.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -3195,6 +3240,14 @@
           "description": "WebSocket allows Upgrade: websocket to be forwarded. Default false.",
           "type": "boolean"
         },
+        "websocket_guard": {
+          "description": "WebSocketGuard inspects the frames of an upgraded connection. Without it an upgrade is an opaque tunnel.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/WebSocketGuard"
+            }
+          ]
+        },
         "webtransport": {
           "description": "WebTransport relays WebTransport sessions (extended CONNECT over HTTP/3 on a listener with h3) to the upstream, which must speak HTTP/3 (h3: true): bidirectional and unidirectional streams and datagrams in both directions. Default false.",
           "type": "boolean"
@@ -4138,6 +4191,21 @@
             }
           ]
         },
+        "ech": {
+          "description": "ECH accepts Encrypted Client Hello on this listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ECH"
+            }
+          ]
+        },
+        "key_exchange": {
+          "description": "KeyExchange is the offered key agreement groups in preference order: X25519MLKEM768 (post-quantum hybrid), X25519, P-256, P-384, P-521. Empty means the default, which leads with the hybrid.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "min_version": {
           "description": "MinVersion is \"1.2\" or \"1.3\". Default \"1.2\".",
           "type": "string",
@@ -4418,6 +4486,13 @@
         "insecure_skip_verify": {
           "description": "InsecureSkipVerify disables verification. Refused unless allow_insecure is also true; logged as a security warning at start.",
           "type": "boolean"
+        },
+        "key_exchange": {
+          "description": "KeyExchange is the offered key agreement groups in preference order, as in the listener section. Empty means the default.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "min_version": {
           "description": "MinVersion is \"1.2\" or \"1.3\". Default \"1.2\".",
@@ -4726,6 +4801,70 @@
         },
         "name": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WebSocketGuard": {
+      "description": "WebSocketGuard is the frame policy of an upgraded connection. Every bound applies to both directions; the rate applies to the client, whose traffic the estate does not control.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is close or log. Default close.",
+          "type": "string"
+        },
+        "allow_opcodes": {
+          "description": "AllowOpcodes names the opcodes a peer may use. Default text, binary, close, ping and pong.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_subprotocols": {
+          "description": "AllowSubprotocols restricts the negotiated Sec-WebSocket-Protocol.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "close_code": {
+          "description": "CloseCode overrides the close code sent on a violation.",
+          "type": "integer"
+        },
+        "deny_patterns": {
+          "description": "DenyPatterns are RE2 patterns matched against inspected messages.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "inspect": {
+          "description": "Inspect is none, text or all: which messages are kept for pattern matching. Default text.",
+          "type": "string"
+        },
+        "max_frame_bytes": {
+          "description": "MaxFrameBytes is the largest single frame. Default 1 MiB.",
+          "type": "integer"
+        },
+        "max_inspect_bytes": {
+          "description": "MaxInspectBytes bounds the prefix of a message kept for matching. Default 64 KiB.",
+          "type": "integer"
+        },
+        "max_message_bytes": {
+          "description": "MaxMessageBytes is the largest reassembled message. Default 8 MiB.",
+          "type": "integer"
+        },
+        "messages_per_second": {
+          "description": "MessagesPerSecond bounds the client's message rate. 0 is no bound.",
+          "type": "integer"
+        },
+        "require_masked": {
+          "description": "RequireMasked enforces RFC 6455 masking: set on client frames, clear on server frames. Default true.",
+          "type": "boolean"
+        },
+        "validate_utf8": {
+          "description": "ValidateUTF8 refuses a text message that is not UTF-8. Default true.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
