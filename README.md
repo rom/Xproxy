@@ -1,20 +1,57 @@
 # Xproxy
 
-Xproxy is a security focused edge proxy for Fedora Linux and macOS: an HTTP/1.1,
-HTTP/2 and HTTP/3 reverse proxy and load balancer with a web
-application firewall, a ban list, rate limiting and load shedding at
-its core, plus the listener kinds an edge needs around it (layer 4 TLS
-passthrough, a forward proxy, a DNS proxy) and the integrations that
-put it to work (OpenID Connect login, gRPC, Kubernetes ingress,
-WebAssembly extensions). It is one static Go binary with no cgo, runs
-unprivileged under a hardened systemd unit confined by SELinux, and is
-managed over a local socket from a CLI, a terminal UI and a web GUI.
+Xproxy is a security proxy that terminates protocols rather than
+forwarding bytes. It is an HTTP/1.1, HTTP/2 and HTTP/3 reverse proxy
+and load balancer with a web application firewall, a ban list, rate
+limiting and load shedding at its core — and, around that core, the
+other protocols an estate actually runs: SMTP and submission, MQTT, an
+SSH bastion with SFTP inspection, DNS over UDP, TCP, TLS, HTTPS and
+QUIC, SOCKS5 and MASQUE on a forward proxy, and layer 4 passthrough
+where terminating would be wrong.
 
-Status: 1.3 in development on top of the **1.0.0** release
+It is one static Go binary with no cgo, runs unprivileged under a
+hardened systemd unit confined by SELinux, and is managed over a local
+socket from a CLI, a terminal UI and a web GUI.
+
+Status: 1.4 in development on top of the **1.0.0** release
 ([release notes](docs/RELEASE_NOTES_1.0.md), [how a release is
 cut](docs/RELEASING.md)). [docs/ROADMAP.md](docs/ROADMAP.md) lists what
 each version delivered and what is planned;
 [docs/CHANGELOG.md](docs/CHANGELOG.md) has the details.
+
+## The idea
+
+A proxy sits between two implementations of a specification and has to
+be right about both. Almost every serious proxy bug is the same bug:
+the proxy read a message one way and the peer behind it read the same
+bytes another way. Request smuggling is that. SMTP smuggling is that.
+A `Transfer-Encoding` nobody agrees on is that.
+
+So the rule this codebase is built around is: **decide the framing
+once, and never pass on what you could not read.**
+
+- HTTP framing is decided in one parser; a message with two framings is
+  refused rather than resolved.
+- An SMTP message ends where this proxy says it ends, and every line is
+  re-emitted, so a bare newline cannot mean two different things to two
+  servers.
+- An MQTT packet whose length has a non-shortest encoding is two
+  packets to somebody; it is refused.
+- An upstream reply the proxy cannot parse is never relayed: it is
+  exactly the reply the client would read differently.
+- An unimplemented extended-CONNECT protocol is answered `501`, not
+  quietly turned into a TCP tunnel.
+
+The same rule is why terminating is the default. A jump host that
+forwards an SSH stream cannot tell a shell from a port forward, so the
+only policy it can hold is "may connect". A layer 4 listener in front
+of a broker cannot see a topic, so it cannot say that a device may
+publish its own telemetry and nothing else. Reading the protocol is
+what makes a policy possible.
+
+[docs/RFC.md](docs/RFC.md) is the full account: every standard
+implemented, every named subset, and every feature deliberately refused
+with the reason.
 
 ## How it works
 
@@ -26,13 +63,13 @@ management plane for other protocols.
 
 ```
 client ──▶ listener (accept limits, bans) ──▶ admission pipeline ──▶ route action ──▶ upstream pool
-              http | tcp | forward | dns        concurrency, host and       proxy, redirect,      balancer, health,
-                                                path checks, route match,   respond, honeypot,    ejection, retries,
+       http | tcp | forward | dns | smtp        concurrency, host and       proxy, redirect,      balancer, health,
+                | mqtt | ssh                    path checks, route match,   respond, honeypot,    ejection, retries,
                                                 country, ACL, challenge,    static files          affinity, mirror
                                                 shedding, rate limits,
                                                 body limit, filters
-                                                (auth, WAF, ICAP, yours),
-                                                cache
+                                                (auth, MFA, WAF, YARA,
+                                                ICAP, yours), cache
 ```
 
 Configuration is one YAML file (optionally with included fragments),
@@ -50,6 +87,15 @@ an identifier from the access log to the upstream.
   certificates, OCSP stapling, Certificate Transparency checks, client
   certificates (request or require), ACME issuance and renewal (HTTP-01
   and TLS-ALPN-01)
+- Post-quantum key exchange as an explicit setting: `X25519MLKEM768`
+  leads the default list, because a session recorded today is a session
+  decrypted later — and naming any group at all used to replace the
+  whole list, which is how a configuration written to prefer X25519
+  silently dropped the hybrid
+- Encrypted Client Hello: the server name is not on the wire, keys
+  rotate with a fallback to the public name that keeps rotation safe,
+  and `require` refuses the fallback where the name itself is the
+  secret; `xproxyctl ech` generates the keys and the HTTPS record
 - HTTP/1.1, HTTP/2 (ALPN, or `h2c` on trusted networks) and HTTP/3 over
   QUIC with address validation and Alt-Svc advertisement; HTTP/3 to
   upstreams with a TCP fallback, gRPC-web translation for browsers and
@@ -70,7 +116,8 @@ an identifier from the access log to the upstream.
   statuses, signed cookie affinity, canary endpoints selected by header,
   cookie or share
 - Response caching with per route key policies, `Vary` and conditional
-  requests; gzip compression of eligible responses; request mirroring
+  requests; gzip, brotli and zstd compression of eligible responses,
+  negotiated with the client; request mirroring
   of sampled traffic to a candidate upstream, bounded and invisible to
   clients
 - Static file serving from a directory with index files, listings and a
@@ -81,8 +128,19 @@ an identifier from the access log to the upstream.
 **Defence**
 
 - Connection limits at accept (global and per address), concurrency
-  ceiling, header, body and idle timeouts, URI and body size limits,
-  WebSocket opt-in per route
+  ceiling, header, body and idle timeouts, URI and body size limits
+- WebSockets opt in per route, and where they are allowed the messages
+  are inspected in both directions: RFC 6455 framing
+  (reserved bits and opcodes, masking, control frame size and
+  fragmentation, continuation state, close codes, UTF-8), bounds on
+  frame, message and rate, and an expression list over the messages
+  themselves — the upgraded connection used to be the one place this
+  proxy stopped looking, which is where applications put their real API
+- YARA rules over streams and bodies: a subset of the language
+  implemented in Go, applied to a layer 4 connection as it passes or to
+  a request or response body before it is forwarded, with a rule
+  reported the first time its condition is true rather than after the
+  transfer
 - Keyed rate limits (address, network, route, endpoint, country, TLS
   fingerprint, header, cookie, token claim) with reject or tarpit; CIDR
   allow and deny lists; trusted proxy handling for forwarded addresses
@@ -119,9 +177,10 @@ an identifier from the access log to the upstream.
 - Bot classification from JA3 and JA4 fingerprints, headers and
   behaviour, with log, challenge and deny thresholds; country policy
   from a local MaxMind or CSV database
-- Honeypot routes with a hundred and fifteen built-in decoys — from a
-  WordPress login to a cloud metadata document, a container registry
-  catalogue, a Werkzeug debugger and an IP camera — that mark probing
+- Honeypot routes with a hundred and forty-two built-in decoys — from
+  a WordPress login to a cloud metadata document, a container registry
+  catalogue, a Werkzeug debugger, an IP camera, a Postfix `main.cf`, a
+  broker ACL file and an `authorized_keys` — that mark probing
   clients and feed the ban list; honeytokens that trip when a planted
   credential is used; hidden-field and timing honeypots on forms;
   graduated degradation and deceptive answers instead of a refusal a
@@ -133,21 +192,58 @@ an identifier from the access log to the upstream.
 
 - JWT validation at the edge with JWKS rotation, algorithm allow lists
   and claim forwarding
-- OpenID Connect login (authorization code with PKCE) with sealed
+- OpenID Connect login (the authorization code flow) with sealed
   session cookies, required claims, identity headers for applications
   and logout through the provider
-- HTTP Basic authentication from a file of PBKDF2 hashes
+- HTTP Basic authentication from a file of PBKDF2 hashes, and LDAP
+  bind against a directory
+- A second factor shared by every protocol that can ask for one: TOTP
+  against one enrolment file, asked for over keyboard-interactive on
+  the SSH bastion and through a filter in front of a web application.
+  One implementation on purpose — a second factor that means different
+  things on different ports is not a second factor, because the weakest
+  door decides. A code is spent when used, every failure gets the same
+  answer, and guessing is bounded by a lockout
 
 **Other listener kinds**
 
 - `kind: tcp`: layer 4 TLS and QUIC passthrough routed by server name
-  without terminating TLS, with PROXY protocol v2 to TCP upstreams
+  without terminating TLS, with PROXY protocol v2 to TCP upstreams and
+  optional YARA rules over the bytes it relays
 - `kind: forward`: an explicit proxy for clients with CONNECT tunnels,
   a destination policy that refuses private ranges by default, and
-  proxy credentials
-- `kind: dns`: a DNS proxy over UDP, TCP, TLS and HTTPS with DNSSEC
-  validation, a cache, block lists, sinkholes, client allow lists and
-  per client rate limits
+  proxy credentials. It also speaks **SOCKS5** on the same port (one
+  peeked byte separates a greeting from an HTTP request), with UDP
+  associations pinned to the client that opened them, and **MASQUE**:
+  CONNECT-UDP for datagram traffic and CONNECT-IP for packets through a
+  tun device the operator owns, both under the same destination policy,
+  credentials, log and bans as a CONNECT tunnel
+- `kind: dns`: a DNS proxy over UDP, TCP, TLS, HTTPS and **QUIC** with
+  DNSSEC validation, a cache, block lists, sinkholes, client allow lists
+  and per client rate limits; it advertises its own encrypted endpoints
+  through RFC 9462 discovery so clients upgrade themselves, and answers
+  the SVCB and HTTPS records for the names it fronts, which is the other
+  half of Encrypted Client Hello
+- `kind: smtp`: SMTP and submission with STARTTLS or implicit TLS,
+  where the proxy decides where every command and every message ends and
+  writes each one out again. `CHUNKING` is never relayed, a bare newline
+  is refused or repaired, and anything pipelined behind `STARTTLS` ends
+  the session. Requires TLS and authentication before `MAIL` where you
+  say so; bounds recipients, messages, line length and refused commands
+- `kind: mqtt`: MQTT 3.1.1 and 5.0 with a topic policy. A subscription
+  is a filter, not a topic, so an allow list is checked by subsumption
+  and a deny list by overlap — which is what stops a device asking for
+  `#`. The will goes through the publish policy at CONNECT, the only
+  moment there is
+- `kind: ssh`: an SSH bastion. The proxy is an SSH server to the client
+  and an SSH client to the target, so every channel and every request
+  inside the session is a decision: `direct-tcpip` only to listed
+  destinations, `exec` only for matching commands, X11 and agent
+  forwarding off by default. The target never sees the client's key.
+  **SFTP is inspected inside the subsystem channel** — read-only, path
+  allow and deny lists, refused operations — because the whole
+  difference between reading a file and deleting a tree happens in
+  there
 
 **Extensibility and platforms**
 
@@ -172,7 +268,8 @@ an identifier from the access log to the upstream.
   status, upstreams, quotas per tenant and route, WAF rule statistics,
   learned exclusions and flagged clients, reload with dry run,
   configuration diff, history and rollback, certificates, logs, bans,
-  cache, honeypots, DNS, ingress, cluster, metrics and a full screen
+  cache, honeypots, DNS, ingress, cluster, metrics, ECH keys and the
+  HTTPS record to publish, second-factor enrolment, and a full screen
   TUI; a web GUI with
   viewer and operator roles, configuration editing with validation,
   graphs and live logs
@@ -226,7 +323,10 @@ curl -i http://127.0.0.1:8080/
 
 [docs/SETUP.md](docs/SETUP.md) covers the RPM, the systemd units, SELinux
 and the web GUI; [docs/USAGE.md](docs/USAGE.md) has a worked example for
-every feature above.
+every feature above, and [examples/](examples/) has complete
+configurations — a submission proxy, an MQTT fleet, an SSH bastion, an
+encrypted resolver, an egress proxy with SOCKS5 and MASQUE, YARA rules,
+honeypots — each one validated by a test that runs on every build.
 
 ## Documentation
 
@@ -269,8 +369,15 @@ make build-darwin   # macOS binaries (arm64 and amd64), see docs/SETUP_MACOS.md
 
 Go 1.25 or newer. No cgo. Dependencies are few, listed and justified in
 [docs/AMR.md](docs/AMR.md) (AMR-004): the YAML parser, the Coraza WAF
-engine with the Core Rule Set, bbolt for ban state, quic-go for HTTP/3
-and wazero for WebAssembly.
+engine with the Core Rule Set, bbolt for ban state, quic-go for HTTP/3,
+wazero for WebAssembly, and `golang.org/x/crypto` for the SSH bastion.
+
+Everything else is written here rather than pulled in, and the reason is
+usually the same. The SMTP, MQTT, SFTP and MASQUE parsers, the TOTP
+implementation and the YARA engine are all first-party: a protocol this
+proxy *decides* is a protocol it has to read the same way twice, and
+linking libyara alone would have meant `CGO_ENABLED=1` and a C parser in
+the data plane.
 
 ## Licence
 

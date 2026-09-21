@@ -337,6 +337,19 @@ Open findings of the earlier rounds:
   once each) and the parser refuses records that do not.
   `examples/blocklists/dns-encrypted.yaml`.
 
+- **README rewritten for what this has become.** It opened by calling
+  itself an HTTP reverse proxy with some listener kinds around it, which
+  stopped being the shape of the thing several protocols ago. It now
+  leads with the idea the codebase is actually built around — decide the
+  framing once, never pass on what you could not read — because that is
+  what makes terminating SMTP, MQTT and SSH worth the code, and why an
+  unparseable upstream reply is a `421` rather than a relay. Each
+  listener kind is described by the decision it makes rather than the
+  bytes it moves; ECH, post-quantum key exchange, WebSocket inspection,
+  YARA, SOCKS5, MASQUE, DNS over QUIC and the shared second factor are
+  in the feature set; two claims that were not true are gone (PKCE, and
+  gzip as the only compression), and the decoy count is current.
+
 - **A reload could refuse a connection that arrived during the switch.**
   The accept socket is shared across listener generations precisely so
   that it never has to be closed and re-bound, but a retiring
