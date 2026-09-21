@@ -1,0 +1,117 @@
+# An SSH bastion that reads the session: RFC 4251-4254, with SFTP
+# (draft-ietf-secsh-filexfer-02, version 3) inspected inside it.
+#
+# A jump host that forwards the stream cannot see which channel is a
+# shell and which is a port forward, so the only policy it can hold is
+# "may connect". Here the proxy is an SSH server to the client and an
+# SSH client to the target, so every channel and every request inside
+# the session is a decision.
+#
+# It also means the target never sees the client's key. The client
+# authenticates to the bastion; the bastion authenticates to the target
+# with a credential no client holds. A key that leaves the estate on a
+# laptop is then not a key that opens a server in it.
+#
+# Validate: xproxy -config examples/bastion/ssh.yaml -validate
+version: 1
+server:
+  listeners:
+    # Operators: a shell, commands, and port forwards to the databases.
+    - name: bastion
+      address: "0.0.0.0:22"
+      kind: ssh
+      ssh:
+        upstream: hosts
+
+        # The bastion's own identity. Clients pin it, so replacing it is
+        # a fleet-wide known_hosts change: add the new key beside the
+        # old one, let clients learn it, then remove the old one.
+        host_keys:
+          - /etc/xproxy/ssh/host_ed25519
+          - /etc/xproxy/ssh/host_rsa
+
+        authorized_keys: /etc/xproxy/ssh/authorized_keys
+
+        banner: |
+          Access to this system is logged. Disconnect now if you are not
+          authorised to use it.
+
+        max_auth_tries: 3
+        max_sessions: 500
+        max_channels: 8
+        handshake_timeout: 20s
+        idle_timeout: 30m
+        session_timeout: 12h
+
+        allow_channels: [session, direct-tcpip]
+        # x11-req and auth-agent-req are left out: each hands whatever
+        # runs on the target a channel back into the client, and agent
+        # forwarding lets it sign with the client's keys for as long as
+        # the session lasts.
+        allow_requests: [pty-req, env, shell, exec, subsystem, window-change, signal]
+        allow_subsystems: [sftp]
+
+        # Where a port forward may go. Without this list direct-tcpip
+        # is a tunnel to anything the target can reach.
+        forward:
+          - "10.20.0.0/16:5432"
+          - "*.db.internal:*"
+        remote_forward: false
+
+        # The credential onwards, and the check that the target is the
+        # target: the bastion is the one place that can notice a machine
+        # in the middle.
+        upstream_user: operator
+        upstream_key_file: /etc/xproxy/ssh/bastion_id_ed25519
+        upstream_known_hosts: /etc/xproxy/ssh/known_hosts
+
+        proxy_protocol: false
+
+    # A delivery account: sftp into one directory, read-only, and no
+    # shell at all.
+    - name: dropbox
+      address: "0.0.0.0:2222"
+      kind: ssh
+      ssh:
+        upstream: hosts
+        host_keys: [/etc/xproxy/ssh/host_ed25519]
+        authorized_keys: /etc/xproxy/ssh/dropbox_authorized_keys
+        allow_channels: [session]
+        allow_requests: [subsystem]
+        allow_subsystems: [sftp]
+        upstream_user: dropbox
+        upstream_key_file: /etc/xproxy/ssh/bastion_id_ed25519
+        upstream_known_hosts: /etc/xproxy/ssh/known_hosts
+        sftp:
+          # Without this section the proxy can say only that the session
+          # may use sftp, which is the difference between reading a file
+          # and deleting a tree.
+          read_only: true
+          allow_paths:
+            - "/srv/exports/**"
+          deny_paths:
+            - "/srv/exports/private/**"
+          # Symbolic links are how a path policy is escaped from the
+          # inside; readlink is refused with them.
+          deny_operations: [symlink, readlink]
+          max_packet_size: 262144
+
+upstreams:
+  - name: hosts
+    endpoints:
+      - {address: "10.20.1.10:22"}
+      - {address: "10.20.1.11:22"}
+    balancer: least_conn
+    timeouts: {connect: 5s}
+
+bans:
+  triggers:
+    # Authentication failures and refused channels are both ssh_denied.
+    - name: ssh-abuse
+      reasons: [ssh_denied]
+      threshold: 8
+      window: 10m
+      duration: 2h
+
+logging:
+  access: {enabled: true}

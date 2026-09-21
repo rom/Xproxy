@@ -31,6 +31,10 @@ type forwardServer struct {
 	name   string
 	policy atomic.Pointer[forwardPolicy]
 	tr     *http.Transport
+	// masque is the compiled MASQUE section, nil without one. It is
+	// built once: turning UDP or IP proxying on or off is a listener
+	// change, not a policy swap.
+	masque *masquePolicy
 
 	open atomic.Int64
 	wg   sync.WaitGroup
@@ -76,6 +80,7 @@ func newForwardServer(s *Server, lc config.Listener) (*forwardServer, error) {
 	if err := f.apply(lc.Forward); err != nil {
 		return nil, err
 	}
+	f.masque = newMasquePolicy(lc.Forward.Masque)
 	f.tr = &http.Transport{
 		Proxy:                 nil,
 		DialContext:           f.dialChecked,
@@ -351,6 +356,11 @@ func (f *forwardServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		user = u
 		r.Header.Del("Proxy-Authorization")
+	}
+	// An extended CONNECT carries a :protocol pseudo-header: it is
+	// asking for UDP or IP proxying rather than a TCP tunnel.
+	if f.serveMasque(w, r, p, ip, user, start) {
+		return
 	}
 	if r.Method == http.MethodConnect {
 		f.connect(w, r, p, ip, user, start)

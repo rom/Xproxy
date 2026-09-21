@@ -1173,6 +1173,8 @@ func run(args []string, out, errOut io.Writer) int {
 		return 0
 	case "ech":
 		return echCommand(fs, out, errOut)
+	case "mfa":
+		return mfaCommand(fs, out, errOut)
 	case "fleet":
 		st, err := c.FleetStatus()
 		if err != nil {

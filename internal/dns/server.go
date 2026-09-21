@@ -34,6 +34,10 @@ type Policy struct {
 	LogQueries   bool
 	// DNSSEC validates upstream answers when set.
 	DNSSEC *Validator
+	// Local answers SVCB and HTTPS records this resolver owns: the
+	// discovery name of RFC 9462, and any record an operator publishes
+	// here (an ECH configuration, most usefully).
+	Local *LocalRecords
 }
 
 // Hooks connect the server to the proxy's logs and ban list.
@@ -77,7 +81,9 @@ type Server struct {
 
 	Queries, Hits, Blocked, Refused, Dropped, ServFail, Truncated, FormErr atomic.Uint64
 	// Per transport counters.
-	UDP, TCP, DoT, DoH atomic.Uint64
+	UDP, TCP, DoT, DoH, DoQ atomic.Uint64
+	// Local counts answers served from the local record set.
+	Local atomic.Uint64
 	// dropNotice warns when queries are dropped for lack of workers.
 	dropNotice bound.Notice
 }
@@ -91,26 +97,32 @@ func (s *Server) drop() {
 
 // Status is the management view of a listener.
 type Status struct {
-	Listener     string        `json:"listener"`
-	Queries      uint64        `json:"queries"`
-	CacheHits    uint64        `json:"cache_hits"`
-	CacheEntries int           `json:"cache_entries"`
-	Blocked      uint64        `json:"blocked"`
-	BlockEntries int           `json:"block_entries"`
-	Refused      uint64        `json:"refused"`
-	Dropped      uint64        `json:"dropped"`
-	ServFail     uint64        `json:"servfail"`
-	Truncated    uint64        `json:"truncated"`
-	FormErr      uint64        `json:"formerr"`
-	Upstreams    []string      `json:"upstreams"`
-	UpstreamFail uint64        `json:"upstream_failures"`
-	Encrypted    bool          `json:"encrypted"`
-	DoHPath      string        `json:"doh_path,omitempty"`
-	QueriesUDP   uint64        `json:"queries_udp"`
-	QueriesTCP   uint64        `json:"queries_tcp"`
-	QueriesDoT   uint64        `json:"queries_dot"`
-	QueriesDoH   uint64        `json:"queries_doh"`
-	DNSSEC       *DNSSECStatus `json:"dnssec,omitempty"`
+	Listener     string   `json:"listener"`
+	Queries      uint64   `json:"queries"`
+	CacheHits    uint64   `json:"cache_hits"`
+	CacheEntries int      `json:"cache_entries"`
+	Blocked      uint64   `json:"blocked"`
+	BlockEntries int      `json:"block_entries"`
+	Refused      uint64   `json:"refused"`
+	Dropped      uint64   `json:"dropped"`
+	ServFail     uint64   `json:"servfail"`
+	Truncated    uint64   `json:"truncated"`
+	FormErr      uint64   `json:"formerr"`
+	Upstreams    []string `json:"upstreams"`
+	UpstreamFail uint64   `json:"upstream_failures"`
+	Encrypted    bool     `json:"encrypted"`
+	DoHPath      string   `json:"doh_path,omitempty"`
+	QueriesUDP   uint64   `json:"queries_udp"`
+	QueriesTCP   uint64   `json:"queries_tcp"`
+	QueriesDoT   uint64   `json:"queries_dot"`
+	QueriesDoH   uint64   `json:"queries_doh"`
+	QueriesDoQ   uint64   `json:"queries_doq"`
+	QueriesLocal uint64   `json:"queries_local"`
+	// LocalNames are the names answered from the local record set.
+	LocalNames []string `json:"local_names,omitempty"`
+	// DoQ reports whether DNS over QUIC is served on this listener.
+	DoQ    bool          `json:"doq"`
+	DNSSEC *DNSSECStatus `json:"dnssec,omitempty"`
 }
 
 // New creates a server on the given sockets (either may be nil) with a
@@ -147,7 +159,10 @@ func (s *Server) Status() Status {
 	st := Status{Listener: s.Name, Queries: s.Queries.Load(), CacheHits: s.Hits.Load(), CacheEntries: s.cache.Len(),
 		Blocked: s.Blocked.Load(), Refused: s.Refused.Load(), Dropped: s.Dropped.Load(), ServFail: s.ServFail.Load(),
 		Truncated: s.Truncated.Load(), FormErr: s.FormErr.Load(), Encrypted: s.Encrypted,
-		QueriesUDP: s.UDP.Load(), QueriesTCP: s.TCP.Load(), QueriesDoT: s.DoT.Load(), QueriesDoH: s.DoH.Load()}
+		QueriesUDP: s.UDP.Load(), QueriesTCP: s.TCP.Load(), QueriesDoT: s.DoT.Load(), QueriesDoH: s.DoH.Load(), QueriesDoQ: s.DoQ.Load(), QueriesLocal: s.Local.Load()}
+	if p != nil {
+		st.LocalNames = p.Local.Names()
+	}
 	if s.Encrypted {
 		st.DoHPath = s.DoHPath
 		if st.DoHPath == "" {
@@ -381,6 +396,8 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		s.DoT.Add(1)
 	case "doh":
 		s.DoH.Add(1)
+	case "doq":
+		// counted by the DoQ server, which sees the stream
 	}
 	h, err := ParseHeader(query)
 	if err != nil || h.Response() {
@@ -420,6 +437,15 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	if q.Type == TypeANY && !tcp {
 		s.Truncated.Add(1)
 		return s.finish(query, qEnd, h, q, client, proto, start, "any_truncated", Truncate(Reply(query, qEnd, h, RcodeNoError), qEnd))
+	}
+	// A name this resolver owns is answered from the local set and
+	// never forwarded: an upstream answer would contradict it, and for
+	// the discovery name there is no upstream that could answer
+	// truthfully at all.
+	if recs, owned := p.Local.Lookup(q); owned {
+		s.Local.Add(1)
+		return s.finish(query, qEnd, h, q, client, proto, start, "local",
+			s.fit(query, qEnd, h, AnswerLocal(query, qEnd, h, q, recs), len(query), tcp))
 	}
 	if p.Block != nil && p.Block.Match(q.Name) {
 		s.Blocked.Add(1)

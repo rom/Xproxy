@@ -101,12 +101,12 @@ func (f *forwardServer) serveSOCKS(c net.Conn) {
 		// SOCKS4 and an unacceptable method both end here. There is no
 		// status line to send: the refusal is a byte and a close.
 		s.stats.ForwardAuthFailed.Add(1)
-		f.logSOCKS(ip, "", "", 0, 0, 0, start, err.Error())
+		f.logSOCKS(ip, "", "", 0, 0, start, err.Error())
 		return
 	}
 	cmd, host, port, err := f.socksRequest(c)
 	if err != nil {
-		f.logSOCKS(ip, user, "", 0, 0, 0, start, err.Error())
+		f.logSOCKS(ip, user, "", 0, 0, start, err.Error())
 		return
 	}
 	dest := net.JoinHostPort(host, strconv.Itoa(port))
@@ -121,7 +121,7 @@ func (f *forwardServer) serveSOCKS(c net.Conn) {
 		// listening socket opened on a client's say-so.
 		_ = socksReply(c, socksReplyCmdNotSupported, netip.AddrPort{})
 		s.stats.ForwardDenied.Add(1)
-		f.logSOCKS(ip, user, dest, 0, 0, 0, start, "command")
+		f.logSOCKS(ip, user, dest, 0, 0, start, "command")
 	}
 }
 
@@ -311,13 +311,13 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 		if bl := s.bans.Load(); bl != nil {
 			bl.Observe(ip, "forward_denied")
 		}
-		f.logSOCKS(ip, user, dest, 0, 0, 0, start, reason)
+		f.logSOCKS(ip, user, dest, 0, 0, start, reason)
 		return
 	}
 	select {
 	case <-f.done:
 		_ = socksReply(c, socksReplyGeneralFailure, netip.AddrPort{})
-		f.logSOCKS(ip, user, dest, 0, 0, 0, start, "shutting_down")
+		f.logSOCKS(ip, user, dest, 0, 0, start, "shutting_down")
 		return
 	default:
 	}
@@ -325,7 +325,7 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 		f.open.Add(-1)
 		s.stats.ForwardRejected.Add(1)
 		_ = socksReply(c, socksReplyGeneralFailure, netip.AddrPort{})
-		f.logSOCKS(ip, user, dest, 0, 0, 0, start, "tunnel_limit")
+		f.logSOCKS(ip, user, dest, 0, 0, start, "tunnel_limit")
 		return
 	}
 	defer f.open.Add(-1)
@@ -334,7 +334,7 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 	if err != nil {
 		s.stats.ForwardErrors.Add(1)
 		_ = socksReply(c, socksReplyHostUnreachable, netip.AddrPort{})
-		f.logSOCKS(ip, user, dest, 0, 0, 0, start, "dial")
+		f.logSOCKS(ip, user, dest, 0, 0, start, "dial")
 		return
 	}
 	defer func() { _ = dst.Close() }()
@@ -351,7 +351,7 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 	in, out := splice(c, dst, p.cfg.IdleTimeout.D())
 	s.stats.ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
 	s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
-	f.logSOCKS(ip, user, dest, 0, in, out, start, "")
+	f.logSOCKS(ip, user, dest, in, out, start, "")
 }
 
 // socksDenyCode maps a policy refusal to the closest reply code, so a
@@ -390,9 +390,12 @@ func socksReply(c net.Conn, code byte, bound netip.AddrPort) error {
 	return err
 }
 
-func (f *forwardServer) logSOCKS(ip netip.Addr, user, dest string, status int, in, out int64, start time.Time, reason string) {
+// logSOCKS writes the forward access line for a SOCKS exchange. There
+// is no status code in SOCKS the way there is in HTTP: the reply code
+// went to the client and the reason field carries it here.
+func (f *forwardServer) logSOCKS(ip netip.Addr, user, dest string, in, out int64, start time.Time, reason string) {
 	attrs := []any{"listener", f.name, "protocol", "socks5", "client_ip", ip.String(), "user", user,
-		"destination", dest, "status", status, "bytes_in", in, "bytes_out", out,
+		"destination", dest, "bytes_in", in, "bytes_out", out,
 		"duration_ms", float64(time.Since(start).Microseconds()) / 1000}
 	if reason != "" {
 		attrs = append(attrs, "reason", reason)
@@ -465,11 +468,6 @@ func (f *forwardServer) socksEnabled() bool {
 	return p != nil && p.cfg.SOCKS5
 }
 
-func (f *forwardServer) socksUDPEnabled() bool {
-	p := f.policy.Load()
-	return p != nil && p.cfg.SOCKS5 && p.cfg.SOCKSUDP
-}
-
 // socksUDP sets up a UDP association: a socket bound for this client,
 // a reply naming it, and a relay that lives as long as the TCP control
 // connection. RFC 1928 ties the two together deliberately — when the
@@ -479,14 +477,14 @@ func (f *forwardServer) socksUDP(c net.Conn, p *forwardPolicy, ip netip.Addr, us
 	s := f.s
 	if !p.cfg.SOCKSUDP {
 		_ = socksReply(c, socksReplyCmdNotSupported, netip.AddrPort{})
-		f.logSOCKS(ip, user, "", 0, 0, 0, start, "udp_disabled")
+		f.logSOCKS(ip, user, "", 0, 0, start, "udp_disabled")
 		return
 	}
 	if f.open.Add(1) > int64(p.cfg.MaxTunnels) {
 		f.open.Add(-1)
 		s.stats.ForwardRejected.Add(1)
 		_ = socksReply(c, socksReplyGeneralFailure, netip.AddrPort{})
-		f.logSOCKS(ip, user, "", 0, 0, 0, start, "tunnel_limit")
+		f.logSOCKS(ip, user, "", 0, 0, start, "tunnel_limit")
 		return
 	}
 	defer f.open.Add(-1)
@@ -498,11 +496,12 @@ func (f *forwardServer) socksUDP(c net.Conn, p *forwardPolicy, ip netip.Addr, us
 	if local.Addr().Is6() {
 		bindAddr = "[::]:0"
 	}
-	pc, err := net.ListenPacket("udp", bindAddr)
+	var lc net.ListenConfig
+	pc, err := lc.ListenPacket(context.Background(), "udp", bindAddr)
 	if err != nil {
 		s.stats.ForwardErrors.Add(1)
 		_ = socksReply(c, socksReplyGeneralFailure, netip.AddrPort{})
-		f.logSOCKS(ip, user, "", 0, 0, 0, start, "udp_bind")
+		f.logSOCKS(ip, user, "", 0, 0, start, "udp_bind")
 		return
 	}
 	defer func() { _ = pc.Close() }()
@@ -535,7 +534,7 @@ func (f *forwardServer) socksUDP(c net.Conn, p *forwardPolicy, ip netip.Addr, us
 		_ = pc.Close()
 	}()
 	in, out := a.relay(done)
-	f.logSOCKS(ip, user, "udp", 0, in, out, start, "")
+	f.logSOCKS(ip, user, "udp", in, out, start, "")
 }
 
 // socksAssoc is one UDP association.
@@ -593,8 +592,8 @@ func (a *socksAssoc) relay(done <-chan struct{}) (in, out int64) {
 			a.f.s.stats.ForwardUDPDropped.Add(1)
 			continue
 		}
-		hdr := socksUDPHeader(src)
-		msg := append(hdr, buf[:n]...)
+		msg := socksUDPHeader(src)
+		msg = append(msg, buf[:n]...)
 		_ = a.pc.SetWriteDeadline(time.Now().Add(a.idle))
 		if _, err := a.pc.WriteTo(msg, net.UDPAddrFromAddrPort(a.clientAddr)); err != nil {
 			return in, out

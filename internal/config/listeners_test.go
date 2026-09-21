@@ -73,7 +73,7 @@ routes:
 	cases := []struct {
 		name, snippet, want string
 	}{
-		{"unknown kind", "    - {name: x, address: \":1\", kind: udp}\n", "must be http, tcp, forward or dns"},
+		{"unknown kind", "    - {name: x, address: \":1\", kind: udp}\n", "must be http, tcp, forward, dns, smtp, mqtt or ssh"},
 		{"tcp block on http", "    - {name: x, address: \":1\", tcp: {default: app}}\n", "set on an http listener"},
 		{"forward block on http", "    - {name: x, address: \":1\", forward: {}}\n", "set on an http listener"},
 		{"proxy protocol needs trusted proxies", "    - {name: x, address: \":1\", proxy_protocol: true}\n", "needs trusted_proxies"},
@@ -112,7 +112,12 @@ routes:
 		{"dns bad upstream", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9\"]}}\n", "must be host:port"},
 		{"dns tls upstream", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"tls://9.9.9.9\"]}}\n", "tls://host:port"},
 		{"dns https upstream", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"https://dns.test\"]}}\n", "https://host"},
-		{"dns transport", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"quic://dns.test:853\"]}}\n", "unknown transport"},
+		{"dns transport", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"sctp://dns.test:853\"]}}\n", "unknown transport"},
+		{"dns quic upstream without a port", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"quic://dns.test\"]}}\n", "quic://host:port"},
+		{"dns discovery transport", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"], discovery: [{transport: dov, name: dns.test}]}}\n", "must be dot, doh or doq"},
+		{"dns discovery name", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"], discovery: [{transport: dot, name: \"*.dns.test\"}]}}\n", "discovery[0].name"},
+		{"dns record param", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"], records: [{name: a.test, priority: 1, params: {alpn: \"\"}}]}}\n", "params.alpn"},
+		{"dns alias record with params", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"], records: [{name: a.test, priority: 0, params: {alpn: h2}}]}}\n", "alias record"},
 		{"dns ca", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"tls://9.9.9.9:853\"], upstream_ca_file: rel.pem}}\n", "upstream_ca_file"},
 		{"dns timeout", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"], timeout: 1m}}\n", "dns.timeout"},
 		{"dns client cidr", "    - {name: x, address: \":1\", kind: dns, dns: {upstreams: [\"9.9.9.9:53\"], allow_clients: [x]}}\n", "allow_clients"},

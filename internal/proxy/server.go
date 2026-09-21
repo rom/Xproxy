@@ -126,6 +126,10 @@ type boundListener struct {
 	tcp       *tcpServer     // kind: tcp listeners
 	forward   *forwardServer // kind: forward listeners
 	dns       *dns.Server    // kind: dns listeners
+	doq       *dns.DoQServer // DNS over QUIC on a dns listener
+	smtp      *smtpServer    // kind: smtp listeners
+	mqtt      *mqttServer    // kind: mqtt listeners
+	ssh       *sshServer     // kind: ssh listeners
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -703,6 +707,75 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		}
 		return bl, nil
 	}
+	if lc.Kind == "ssh" {
+		// SSH carries its own transport security, so there is no TLS
+		// here and no listener wrapper: the bastion owns the handshake.
+		h, err := newSSHServer(s, lc, bl.ln)
+		if err != nil {
+			_ = fr.Close()
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		bl.ssh = h
+		return bl, nil
+	}
+	if lc.Kind == "mqtt" {
+		// MQTT has no in-band upgrade, so implicit TLS is the only
+		// mode; the session still owns the handshake, which keeps its
+		// deadline and its logging with the rest of the session.
+		var tc *tls.Config
+		if lc.TLS != nil {
+			c, rl, err := tlsconf.Server(lc.TLS, nil)
+			if err != nil {
+				_ = fr.Close()
+				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+			}
+			s.tickets.Attach(c)
+			rl.Fingerprints = s.fingerprints
+			rl.Refuse = s.refuseHandshake
+			rl.StartStapling(s.logs.Error)
+			bl.tlsReload = rl
+			tc = c
+		}
+		q, err := newMQTTServer(s, lc, bl.ln, tc)
+		if err != nil {
+			_ = fr.Close()
+			if bl.tlsReload != nil {
+				bl.tlsReload.Close()
+			}
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		bl.mqtt = q
+		return bl, nil
+	}
+	if lc.Kind == "smtp" {
+		// The listener is not wrapped in a TLS listener even for
+		// implicit mode: STARTTLS has to read cleartext first, so the
+		// session decides when the handshake happens.
+		var tc *tls.Config
+		if lc.TLS != nil {
+			c, rl, err := tlsconf.Server(lc.TLS, nil)
+			if err != nil {
+				_ = fr.Close()
+				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+			}
+			s.tickets.Attach(c)
+			rl.Fingerprints = s.fingerprints
+			rl.Refuse = s.refuseHandshake
+			rl.StartStapling(s.logs.Error)
+			bl.tlsReload = rl
+			tc = c
+		}
+		m, err := newSMTPServer(s, lc, bl.ln, tc)
+		if err != nil {
+			_ = fr.Close()
+			if bl.tlsReload != nil {
+				bl.tlsReload.Close()
+			}
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		bl.smtp = m
+		return bl, nil
+	}
 	if lc.Kind == "dns" && lc.TLS != nil {
 		// Encrypted: DNS over TLS and DNS over HTTPS on the TCP port, no
 		// plain UDP.
@@ -727,6 +800,29 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		d.Encrypted = true
 		d.DoHPath = lc.DNS.DoHPath
 		bl.dns = d
+		if lc.DNS.DoQ {
+			// DNS over QUIC shares the listener's address and
+			// certificate; only the transport differs, and the ALPN is
+			// what separates it from HTTP/3 on the same port.
+			udpAddr := lc.Address
+			if strings.HasSuffix(lc.Address, ":0") {
+				udpAddr = ln.Addr().String()
+			}
+			pc, _, err := packetFor(activated, lc.Name+"-doq", udpAddr)
+			if err != nil {
+				_ = fr.Close()
+				rl.Close()
+				return nil, fmt.Errorf("listener %s: doq: %w", lc.Name, err)
+			}
+			q, err := dns.NewDoQ(d, pc, tc, lim.IdleTimeout.D(), lc.DNS.MaxInFlight)
+			if err != nil {
+				_ = fr.Close()
+				_ = pc.Close()
+				rl.Close()
+				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+			}
+			bl.doq = q
+		}
 		return bl, nil
 	}
 	if lc.Kind == "dns" {
@@ -864,7 +960,22 @@ func (s *Server) serve(bl *boundListener) {
 		return
 	}
 	if bl.dns != nil {
+		if bl.doq != nil {
+			bl.doq.Serve()
+		}
 		bl.dns.Serve()
+		return
+	}
+	if bl.smtp != nil {
+		bl.smtp.serve()
+		return
+	}
+	if bl.mqtt != nil {
+		bl.mqtt.serve()
+		return
+	}
+	if bl.ssh != nil {
+		bl.ssh.serve()
 		return
 	}
 	if bl.cfg.TLS != nil {
@@ -1316,11 +1427,26 @@ func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocke
 	case bl.tcp != nil:
 		bl.tcp.shutdown(ctx)
 	case bl.dns != nil:
+		if bl.doq != nil {
+			_ = bl.doq.Close()
+		}
 		bl.dns.Shutdown(ctx)
 		bl.dns.Close()
 		if bl.tlsReload != nil {
 			bl.tlsReload.Close()
 		}
+	case bl.smtp != nil:
+		bl.smtp.shutdown(ctx)
+		if bl.tlsReload != nil {
+			bl.tlsReload.Close()
+		}
+	case bl.mqtt != nil:
+		bl.mqtt.shutdown(ctx)
+		if bl.tlsReload != nil {
+			bl.tlsReload.Close()
+		}
+	case bl.ssh != nil:
+		bl.ssh.shutdown(ctx)
 	default:
 		err = bl.httpSrv.Shutdown(ctx)
 		if bl.tlsReload != nil {

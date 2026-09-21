@@ -404,7 +404,7 @@
           "type": "integer"
         },
         "reasons": {
-          "description": "Reasons restricts which deny reasons count (acl, rate_limit, waf, body_size, uri_length, bad_host, no_route, websocket, concurrency). Empty counts every deny.",
+          "description": "Reasons restricts which deny reasons count (acl, rate_limit, waf, body_size, uri_length, bad_host, no_route, websocket, concurrency, smtp_denied and the rest; validation lists them). Empty counts every deny.",
           "type": "array",
           "items": {
             "type": "string"
@@ -976,6 +976,46 @@
       },
       "additionalProperties": false
     },
+    "DNSDesignated": {
+      "description": "DNSDesignated is one encrypted endpoint advertised by discovery.",
+      "type": "object",
+      "properties": {
+        "doh_path": {
+          "description": "DoHPath is the URI template for a doh endpoint. Default /dns-query{?dns}.",
+          "type": "string"
+        },
+        "ipv4": {
+          "description": "IPv4 and IPv6 are address hints, so a client need not resolve the name it was just handed.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ipv6": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name is the certificate name clients verify. It must be a name the endpoint's certificate covers, or the upgrade fails closed.",
+          "type": "string"
+        },
+        "port": {
+          "description": "Port the endpoint listens on. Default 853 for dot and doq, 443 for doh.",
+          "type": "integer"
+        },
+        "transport": {
+          "description": "Transport is dot, doh or doq.",
+          "type": "string"
+        },
+        "ttl": {
+          "description": "TTL of the discovery records. Default 300.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "DNSListener": {
       "description": "DNSListener is a forwarding DNS proxy on the listener address over UDP and TCP: a bounded cache, a block policy and forwarding to upstream resolvers with fresh transaction ids and source ports. The policy, upstreams and cache bounds reload; the address needs a restart.",
       "type": "object",
@@ -1010,6 +1050,13 @@
             }
           ]
         },
+        "discovery": {
+          "description": "Discovery advertises this resolver's encrypted endpoints at _dns.resolver.arpa (RFC 9462), so a client handed this address by DHCP can upgrade itself from plaintext DNS.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DNSDesignated"
+          }
+        },
         "dnssec": {
           "description": "DNSSEC validates upstream answers against a trust anchor.",
           "allOf": [
@@ -1021,6 +1068,10 @@
         "doh_path": {
           "description": "DoHPath is the DNS over HTTPS path served on an encrypted dns listener (one with tls). Default /dns-query.",
           "type": "string"
+        },
+        "doq": {
+          "description": "DoQ also serves DNS over QUIC (RFC 9250) on this listener's address over UDP. Needs tls; the certificate is shared with DoT and DoH, since they are the same service.",
+          "type": "boolean"
         },
         "log_queries": {
           "description": "LogQueries writes one dns line per query to the access log. Default false (query logs are personal data).",
@@ -1037,6 +1088,13 @@
               "$ref": "#/$defs/DNSRateLimit"
             }
           ]
+        },
+        "records": {
+          "description": "Records are SVCB and HTTPS records this resolver answers itself, most usefully the ECH configuration of a name this proxy terminates.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DNSRecord"
+          }
         },
         "sinkhole_ipv4": {
           "description": "SinkholeIPv4 and SinkholeIPv6 answer A and AAAA for blocked names with block_action sinkhole. Default 0.0.0.0 and ::.",
@@ -1073,6 +1131,40 @@
         },
         "qps": {
           "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DNSRecord": {
+      "description": "DNSRecord is one locally served SVCB or HTTPS record.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Type is https (default) or svcb.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name the record is published for.",
+          "type": "string"
+        },
+        "params": {
+          "description": "Params are service parameters in presentation form: {alpn: \"h2,h3\", port: \"443\", ech: \"AEr+DQ...\", ipv4hint: \"...\"}.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "priority": {
+          "description": "Priority 0 makes it an alias record, which takes no parameters.",
+          "type": "integer"
+        },
+        "target": {
+          "description": "Target is the endpoint name; \".\" means the owner name itself.",
+          "type": "string"
+        },
+        "ttl": {
+          "description": "TTL in seconds. Default 300.",
+          "type": "integer"
         }
       },
       "additionalProperties": false
@@ -1514,6 +1606,14 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "masque": {
+          "description": "Masque enables the MASQUE proxying protocols on this listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Masque"
+            }
+          ]
         },
         "max_response_bytes": {
           "description": "MaxResponseBytes bounds the body of a plain (non CONNECT) response relayed to the client. Default 64 MiB; 0 disables.",
@@ -2173,13 +2273,21 @@
           ]
         },
         "kind": {
-          "description": "Kind is http (default), tcp (an L4 listener that forwards connections by TLS server name without terminating TLS), forward (an explicit HTTP proxy for clients: CONNECT tunnels and absolute URI requests to destinations the policy allows) or dns (a DNS proxy).",
+          "description": "Kind is http (default), tcp (an L4 listener that forwards connections by TLS server name without terminating TLS), forward (an explicit HTTP proxy for clients: CONNECT tunnels and absolute URI requests to destinations the policy allows), dns (a DNS proxy) or smtp (a protocol-aware SMTP and submission proxy).",
           "type": "string",
           "enum": [
             "http",
             "tcp",
             "forward",
             "dns"
+          ]
+        },
+        "mqtt": {
+          "description": "MQTT configures a kind: mqtt listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MQTTListener"
+            }
           ]
         },
         "name": {
@@ -2204,6 +2312,22 @@
         "redirect_to_https": {
           "description": "RedirectToHTTPS makes a plaintext listener answer every request with a 308 redirect to https. Useful for the :80 listener.",
           "type": "boolean"
+        },
+        "smtp": {
+          "description": "SMTP configures a kind: smtp listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SMTPListener"
+            }
+          ]
+        },
+        "ssh": {
+          "description": "SSH configures a kind: ssh listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SSHListener"
+            }
+          ]
         },
         "tcp": {
           "description": "TCP configures a kind: tcp listener.",
@@ -2345,6 +2469,184 @@
       },
       "additionalProperties": false
     },
+    "MFAPolicy": {
+      "description": "MFAPolicy is a second factor, shared by every protocol that can ask for one. It is one shape rather than one per protocol because a second factor that means different things on different ports is not a second factor: the same enrolment, the same replay rule and the same lockout have to hold everywhere, or the weakest door decides.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "File is the enrolment file (xproxyctl mfa enrol writes the lines). Required. It must not be world readable.",
+          "type": "string"
+        },
+        "issuer": {
+          "description": "Issuer is the name an authenticator application shows. Default \"xproxy\".",
+          "type": "string"
+        },
+        "lockout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_failures": {
+          "description": "MaxFailures within Window locks a user out for Duration. Defaults 5, 5m and 15m. A six-digit code has a million values and a step lasts thirty seconds, so without a bound a fast client gets a real chance at every step.",
+          "type": "integer"
+        },
+        "max_users": {
+          "description": "MaxUsers bounds the table that remembers spent codes and recent failures. Default 10000.",
+          "type": "integer"
+        },
+        "prompt": {
+          "description": "Prompt is what the user is asked. Default \"One-time code: \".",
+          "type": "string"
+        },
+        "require_enrolment": {
+          "description": "RequireEnrolment refuses a user who has no enrolment. Default true: an optional second factor is one an attacker can decline by using an account that never enrolled.",
+          "type": "boolean"
+        },
+        "skew": {
+          "description": "Skew is how many time steps either side of now are accepted. Default 1, which is the usual allowance for a clock that is a little off. Each step accepted is a step an observer could replay in, so this is not a knob to raise casually.",
+          "type": "integer"
+        },
+        "window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MQTTListener": {
+      "description": "MQTTListener is a protocol-aware MQTT proxy for 3.1.1 and 5.0. It reads every control packet, decides on the ones that carry a policy question — who is connecting, what they publish, what they subscribe to — and forwards the rest untouched. The reason it is not a layer 4 listener: an MQTT broker's authorisation is per topic, and a topic is a string inside a packet. Without reading the packets there is no place to say that a device may publish its own telemetry and nothing else, and every device that holds a broker credential holds the whole tree.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action on a refused PUBLISH or SUBSCRIBE: disconnect (the default) ends the session, drop refuses the one packet and acknowledges it so the session continues.",
+          "type": "string"
+        },
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_empty_client_id": {
+          "description": "AllowEmptyClientID accepts the empty client id, which 3.1.1 allows with a clean session and 5.0 answers with an assigned one. Default true; turning it off is what makes every session identifiable in the logs.",
+          "type": "boolean"
+        },
+        "allow_retain": {
+          "description": "AllowRetain accepts PUBLISH with the retain flag. A retained message outlives the session that set it, so a device that can retain can leave something behind. Default true.",
+          "type": "boolean"
+        },
+        "allow_wildcard_subscribe": {
+          "description": "AllowWildcardSubscribe accepts \"+\" and \"#\" in a subscription at all. Default true; with an allow list it rarely needs turning off, and without one it is the difference between a client reading its own topics and reading the estate's.",
+          "type": "boolean"
+        },
+        "client_id_pattern": {
+          "description": "ClientIDPattern is an RE2 the client id must match, anchored as written. Empty accepts any.",
+          "type": "string"
+        },
+        "connect_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "keep_alive_max": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_client_id": {
+          "description": "MaxClientID bounds the client id. Default 128.",
+          "type": "integer"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds sessions on this listener. Default 10000.",
+          "type": "integer"
+        },
+        "max_packet_size": {
+          "description": "MaxPacketSize bounds one control packet including its header, and is what a 5.0 client is told in CONNACK. Default 1048576.",
+          "type": "integer"
+        },
+        "max_subscriptions": {
+          "description": "MaxSubscriptions bounds live subscriptions per session. Default 64.",
+          "type": "integer"
+        },
+        "max_topic_length": {
+          "description": "MaxTopicLength and MaxTopicLevels bound a topic or filter. Defaults 512 and 16.",
+          "type": "integer"
+        },
+        "max_topic_levels": {
+          "type": "integer"
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the broker.",
+          "type": "boolean"
+        },
+        "publish_allow": {
+          "description": "PublishAllow and PublishDeny are topic filters checked against the topic of every PUBLISH from the client, and against the will topic of its CONNECT. Deny wins. An empty allow list allows everything the deny list does not refuse.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "publish_deny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "require_auth": {
+          "description": "RequireAuth refuses a CONNECT without a username. The broker still verifies the password; this only stops an anonymous session reaching it. Default false.",
+          "type": "boolean"
+        },
+        "subscribe_allow": {
+          "description": "SubscribeAllow and SubscribeDeny are topic filters checked against every filter a client subscribes to. A subscription is allowed only when an entry of the allow list covers everything it could deliver, and refused when it could reach anything denied — a filter is not a topic, and matching it as one would let \"#\" through an allow list of \"sensors/+\".",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "subscribe_deny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tls_mode": {
+          "description": "TLSMode is implicit (TLS from the first octet, as on 8883, and needs the listener's tls section) or none. Default implicit when tls is set.",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream is the broker pool. Required.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS verifies the broker when upstream_tls_mode is not none.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_tls_mode": {
+          "description": "UpstreamTLSMode is none or implicit. Default none.",
+          "type": "string"
+        },
+        "versions": {
+          "description": "Versions are the protocol versions accepted: \"3.1.1\", \"5.0\". Default both. A version the proxy does not parse cannot be checked, so anything else is refused at CONNECT.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "Maintenance": {
       "description": "Maintenance is the maintenance-mode policy.",
       "type": "object",
@@ -2399,6 +2701,43 @@
         "socket_mode": {
           "description": "SocketMode is the octal permission mode of the socket, default 0660.",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Masque": {
+      "description": "Masque configures UDP proxying (RFC 9298) and IP proxying (RFC 9484) over extended CONNECT. Both need HTTP/2 or HTTP/3, so the listener needs tls with h2 in its protocols.",
+      "type": "object",
+      "properties": {
+        "ip": {
+          "description": "IP accepts connect-ip. It also needs ip_device, ip_assign and ip_routes: a userspace process cannot put an arbitrary IP packet on the wire without a tunnel device.",
+          "type": "boolean"
+        },
+        "ip_assign": {
+          "description": "IPAssign are the prefixes a client is told to use as its source address; packets from anything else are dropped.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ip_device": {
+          "description": "IPDevice is an existing tun interface the operator created, addressed, routed and firewalled (Linux only).",
+          "type": "string"
+        },
+        "ip_routes": {
+          "description": "IPRoutes are the ranges a client may send to; packets to anything else are dropped.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_sessions": {
+          "description": "MaxSessions bounds concurrent MASQUE sessions. Default 1024.",
+          "type": "integer"
+        },
+        "udp": {
+          "description": "UDP accepts connect-udp. The destination policy applies to each association exactly as it does to a CONNECT tunnel.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -3636,6 +3975,42 @@
       },
       "additionalProperties": false
     },
+    "SFTPPolicy": {
+      "description": "SFTPPolicy inspects the SFTP protocol inside an sftp subsystem channel. Refused requests are answered with a permission-denied status, so the session continues and the client is told which operation was refused rather than losing its connection.",
+      "type": "object",
+      "properties": {
+        "allow_paths": {
+          "description": "AllowPaths are the paths a request may name: a glob where \"*\" does not cross a slash, or a prefix ending in \"/\" or \"/**\" for a whole tree. Empty allows every path the deny list does not refuse.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_operations": {
+          "description": "DenyOperations refuses operations by name (open, read, write, remove, rename, symlink, setstat, ...), on top of read_only.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_paths": {
+          "description": "DenyPaths are refused whatever the allow list says.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_packet_size": {
+          "description": "MaxPacketSize bounds one SFTP packet. Default 262144, a little over the 32 KiB read and write sizes clients use.",
+          "type": "integer"
+        },
+        "read_only": {
+          "description": "ReadOnly refuses every request that changes the server: write, setstat, remove, mkdir, rmdir, rename, symlink, an open with any writing flag, and the extensions whose meaning the proxy does not know.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "SIEM": {
       "description": "SIEM is an HTTP collector of a SIEM: Splunk HTTP Event Collector, Elastic or OpenSearch ingest, Microsoft Sentinel, or any endpoint that accepts newline delimited JSON, CEF or LEEF.",
       "type": "object",
@@ -3704,6 +4079,266 @@
         },
         "vendor": {
           "description": "Vendor and Product fill the CEF and LEEF header fields. Defaults Sysctl and Xproxy.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SMTPListener": {
+      "description": "SMTPListener is a protocol-aware SMTP proxy: it speaks the session to the client, speaks a second one to the upstream, and decides for itself where each command and each message ends. That is the point of it. A layer 4 splice would carry the same bytes, but the client and the mail server would each parse them on their own, and every SMTP smuggling bug there has ever been lives in the gap between two such parses. It terminates STARTTLS (RFC 3207) for the client and may start its own to the upstream, so the hop the proxy makes is never the plaintext one by accident.",
+      "type": "object",
+      "properties": {
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs. Empty allows all, which is right for inbound mail and wrong for submission.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "banner": {
+          "description": "Banner replaces the upstream greeting. The proxy's own name belongs here; leaving the upstream's banner in place tells every prober which mail server is behind this address.",
+          "type": "string"
+        },
+        "bare_newlines": {
+          "description": "BareNewlines is reject (the default) or convert. A line ended by LF alone is forbidden by RFC 5321 section 2.3.8 and is how a message ends in one place for the proxy and another for the next hop; convert repairs it to CRLF instead of refusing the session, which is safe because the proxy re-emits every line itself.",
+          "type": "string"
+        },
+        "commands": {
+          "description": "Commands is the verbs a client may send. Everything else is refused with 502 and counts towards max_errors. Default: EHLO, HELO, MAIL, RCPT, DATA, RSET, NOOP, QUIT, AUTH, STARTTLS.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hide_capabilities": {
+          "description": "HideCapabilities are EHLO keywords stripped from the upstream's answer, on top of the ones the proxy always removes (STARTTLS, which it answers itself, and CHUNKING, whose BDAT has no dot terminator to agree on). Default: none.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hostname": {
+          "description": "Hostname is the name the proxy gives as its own in a synthesised greeting and in its EHLO to the upstream. Default the banner's first word, else the system hostname.",
+          "type": "string"
+        },
+        "max_command_line": {
+          "description": "MaxCommandLine bounds a command line including CRLF. Default 512, the limit in RFC 5321 section 4.5.3.1.1.",
+          "type": "integer"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds sessions on this listener. Default 1000.",
+          "type": "integer"
+        },
+        "max_errors": {
+          "description": "MaxErrors closes the session after this many refused commands, which is what stops a prober walking the command space. Default 10.",
+          "type": "integer"
+        },
+        "max_message_size": {
+          "description": "MaxMessageSize bounds one message in octets and is advertised as the SIZE capability. 0 keeps the upstream's own limit. Default 0.",
+          "type": "integer"
+        },
+        "max_messages": {
+          "description": "MaxMessages bounds messages per connection. Default 100.",
+          "type": "integer"
+        },
+        "max_recipients": {
+          "description": "MaxRecipients bounds RCPT commands per message. Default 100.",
+          "type": "integer"
+        },
+        "max_text_line": {
+          "description": "MaxTextLine bounds a message line including CRLF. Default 1000.",
+          "type": "integer"
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header to the upstream so it logs the client address rather than the proxy's.",
+          "type": "boolean"
+        },
+        "read_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "require_auth": {
+          "description": "RequireAuth refuses MAIL until the session has authenticated, which keeps a submission listener from relaying for anyone who can reach it. Default false: a listener taking inbound mail for its own domains has no authentication to require.",
+          "type": "boolean"
+        },
+        "require_tls": {
+          "description": "RequireTLS refuses AUTH, MAIL and VRFY until the session is encrypted. On a submission listener this is the difference between offering TLS and requiring it. Default true when TLSMode is starttls or implicit.",
+          "type": "boolean"
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "tls_mode": {
+          "description": "TLSMode is how the client reaches this listener: starttls (plain on 25 or 587, upgraded by the STARTTLS command), implicit (TLS from the first octet, as on 465) or none. starttls and implicit need the listener's tls section. Default starttls when tls is set and none otherwise.",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream is the pool to relay to. Required.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS verifies the upstream when upstream_tls_mode is not none.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_tls_mode": {
+          "description": "UpstreamTLSMode is how the proxy reaches the upstream: none, starttls or implicit. Default none, which is right when the hop is inside a trusted network and wrong everywhere else.",
+          "type": "string"
+        },
+        "xclient": {
+          "description": "XClientName sends the client address to the upstream with the XCLIENT command (a Postfix extension) after EHLO, when the upstream advertises it.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SSHListener": {
+      "description": "SSHListener is an SSH bastion: the proxy is an SSH server to the client and an SSH client to the target, with its own host key, its own authentication and its own credential onwards. The two connections are the point. A jump host that forwards the stream cannot see which channel is a shell and which is a port forward, so the only policy it can hold is \"may connect\". Here every channel and every request inside the session is a decision: a service account can be given sftp to one directory and nothing else, and a port forward to a database is a rule rather than an assumption. It also means the target never sees the client's key. The client authenticates to the proxy; the proxy authenticates to the target with a credential the client never holds, so a key that leaves the estate is not a key that opens a server in it.",
+      "type": "object",
+      "properties": {
+        "allow_channels": {
+          "description": "AllowChannels are the channel types a client may open: session, direct-tcpip (local port forwarding), direct-streamlocal (unix socket forwarding). Default [session].",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_commands": {
+          "description": "AllowCommands are RE2 patterns an exec command must match, anchored as written. Empty allows any command when exec is in allow_requests.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_insecure": {
+          "type": "boolean"
+        },
+        "allow_requests": {
+          "description": "AllowRequests are the session requests a client may send: pty-req, env, shell, exec, subsystem, window-change, signal, x11-req, auth-agent-req. Default everything but x11-req and auth-agent-req, which each hand the target a channel back into the client.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_subsystems": {
+          "description": "AllowSubsystems are the subsystems a client may start. Default [sftp].",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "authorized_keys": {
+          "description": "AuthorizedKeys is an OpenSSH authorized_keys file of the public keys that may connect. Options in the file are ignored; the policy lives here.",
+          "type": "string"
+        },
+        "banner": {
+          "description": "Banner is sent before authentication. A legal notice belongs here; a version string does not.",
+          "type": "string"
+        },
+        "forward": {
+          "description": "Forward are the destinations direct-tcpip channels may reach: \"host:port\", \"*.suffix:port\", \"10.0.0.0/8:port\", with \"*\" for any port. Empty refuses every forward even when the channel type is allowed, because a forward with no destination policy is a tunnel to anywhere the target can reach.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "handshake_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "host_keys": {
+          "description": "HostKeys are the proxy's own host key files, in OpenSSH or PEM form. At least one is required. Clients pin these, so replacing them is a fleet-wide known_hosts change: add the new key alongside the old one and remove the old one later.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_auth_tries": {
+          "description": "MaxAuthTries bounds authentication attempts per connection. Default 3.",
+          "type": "integer"
+        },
+        "max_channels": {
+          "description": "MaxChannels bounds open channels per connection. Default 16.",
+          "type": "integer"
+        },
+        "max_sessions": {
+          "description": "MaxSessions bounds connections on this listener. Default 1000.",
+          "type": "integer"
+        },
+        "mfa": {
+          "description": "MFA requires a second factor after the key or the password: the client is told authentication partially succeeded and must then answer a keyboard-interactive prompt with a one-time code.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MFAPolicy"
+            }
+          ]
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the target before the SSH banner.",
+          "type": "boolean"
+        },
+        "remote_forward": {
+          "description": "RemoteForward accepts tcpip-forward, which asks the target to listen on the client's behalf. Default false: it turns a session into an inbound path.",
+          "type": "boolean"
+        },
+        "server_version": {
+          "description": "ServerVersion is the identification string, which must begin with \"SSH-2.0-\". Default \"SSH-2.0-xproxy\".",
+          "type": "string"
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "sftp": {
+          "description": "SFTP inspects the sftp subsystem's own protocol; without it the proxy can say only that a session may use sftp, which is the difference between reading a file and deleting a tree.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SFTPPolicy"
+            }
+          ]
+        },
+        "upstream": {
+          "description": "Upstream is the pool of target hosts. Required.",
+          "type": "string"
+        },
+        "upstream_insecure_host_key": {
+          "description": "UpstreamInsecureHostKey accepts any host key from the target. Refused unless allow_insecure is also set, and logged at start: it is the one setting here that turns the bastion into a machine in the middle with nothing to notice it.",
+          "type": "boolean"
+        },
+        "upstream_key_file": {
+          "description": "UpstreamKeyFile is the private key the proxy authenticates to the target with. Required.",
+          "type": "string"
+        },
+        "upstream_known_hosts": {
+          "description": "UpstreamKnownHosts verifies the target's host key against an OpenSSH known_hosts file. Required unless upstream_insecure_host_key is set.",
+          "type": "string"
+        },
+        "upstream_user": {
+          "description": "UpstreamUser is the account on the target. Empty uses the name the client authenticated as.",
+          "type": "string"
+        },
+        "users_file": {
+          "description": "UsersFile is a users file (as in forward.auth) for password authentication. Public keys are the better answer; a bastion with only passwords is one credential away from open.",
           "type": "string"
         }
       },

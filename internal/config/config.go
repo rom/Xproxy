@@ -217,8 +217,8 @@ type Listener struct {
 	// Kind is http (default), tcp (an L4 listener that forwards
 	// connections by TLS server name without terminating TLS), forward
 	// (an explicit HTTP proxy for clients: CONNECT tunnels and absolute
-	// URI requests to destinations the policy allows) or dns (a DNS
-	// proxy).
+	// URI requests to destinations the policy allows), dns (a DNS
+	// proxy) or smtp (a protocol-aware SMTP and submission proxy).
 	Kind string `yaml:"kind"`
 	// TCP configures a kind: tcp listener.
 	TCP *TCPListener `yaml:"tcp"`
@@ -226,6 +226,338 @@ type Listener struct {
 	Forward *ForwardListener `yaml:"forward"`
 	// DNS configures a kind: dns listener.
 	DNS *DNSListener `yaml:"dns"`
+	// SMTP configures a kind: smtp listener.
+	SMTP *SMTPListener `yaml:"smtp"`
+	// MQTT configures a kind: mqtt listener.
+	MQTT *MQTTListener `yaml:"mqtt"`
+	// SSH configures a kind: ssh listener.
+	SSH *SSHListener `yaml:"ssh"`
+}
+
+// SSHListener is an SSH bastion: the proxy is an SSH server to the
+// client and an SSH client to the target, with its own host key, its
+// own authentication and its own credential onwards.
+//
+// The two connections are the point. A jump host that forwards the
+// stream cannot see which channel is a shell and which is a port
+// forward, so the only policy it can hold is "may connect". Here every
+// channel and every request inside the session is a decision: a service
+// account can be given sftp to one directory and nothing else, and a
+// port forward to a database is a rule rather than an assumption.
+//
+// It also means the target never sees the client's key. The client
+// authenticates to the proxy; the proxy authenticates to the target
+// with a credential the client never holds, so a key that leaves the
+// estate is not a key that opens a server in it.
+type SSHListener struct {
+	// Upstream is the pool of target hosts. Required.
+	Upstream string `yaml:"upstream"`
+	// HostKeys are the proxy's own host key files, in OpenSSH or PEM
+	// form. At least one is required. Clients pin these, so replacing
+	// them is a fleet-wide known_hosts change: add the new key
+	// alongside the old one and remove the old one later.
+	HostKeys []string `yaml:"host_keys"`
+	// AuthorizedKeys is an OpenSSH authorized_keys file of the public
+	// keys that may connect. Options in the file are ignored; the
+	// policy lives here.
+	AuthorizedKeys string `yaml:"authorized_keys"`
+	// UsersFile is a users file (as in forward.auth) for password
+	// authentication. Public keys are the better answer; a bastion with
+	// only passwords is one credential away from open.
+	UsersFile string `yaml:"users_file"`
+	// Banner is sent before authentication. A legal notice belongs
+	// here; a version string does not.
+	Banner string `yaml:"banner"`
+	// ServerVersion is the identification string, which must begin with
+	// "SSH-2.0-". Default "SSH-2.0-xproxy".
+	ServerVersion string `yaml:"server_version"`
+	// MaxAuthTries bounds authentication attempts per connection.
+	// Default 3.
+	MaxAuthTries int `yaml:"max_auth_tries"`
+	// MaxSessions bounds connections on this listener. Default 1000.
+	MaxSessions int `yaml:"max_sessions"`
+	// MaxChannels bounds open channels per connection. Default 16.
+	MaxChannels int `yaml:"max_channels"`
+	// HandshakeTimeout bounds the key exchange and authentication.
+	// Default 30s.
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+	// IdleTimeout closes a connection with no traffic either way.
+	// Default 30m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole connection. 0 is no bound. Default
+	// 0.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// AllowChannels are the channel types a client may open: session,
+	// direct-tcpip (local port forwarding), direct-streamlocal (unix
+	// socket forwarding). Default [session].
+	AllowChannels []string `yaml:"allow_channels"`
+	// AllowRequests are the session requests a client may send:
+	// pty-req, env, shell, exec, subsystem, window-change, signal,
+	// x11-req, auth-agent-req. Default everything but x11-req and
+	// auth-agent-req, which each hand the target a channel back into
+	// the client.
+	AllowRequests []string `yaml:"allow_requests"`
+	// AllowSubsystems are the subsystems a client may start. Default
+	// [sftp].
+	AllowSubsystems []string `yaml:"allow_subsystems"`
+	// AllowCommands are RE2 patterns an exec command must match,
+	// anchored as written. Empty allows any command when exec is in
+	// allow_requests.
+	AllowCommands []string `yaml:"allow_commands"`
+	// Forward are the destinations direct-tcpip channels may reach:
+	// "host:port", "*.suffix:port", "10.0.0.0/8:port", with "*" for any
+	// port. Empty refuses every forward even when the channel type is
+	// allowed, because a forward with no destination policy is a tunnel
+	// to anywhere the target can reach.
+	Forward []string `yaml:"forward"`
+	// RemoteForward accepts tcpip-forward, which asks the target to
+	// listen on the client's behalf. Default false: it turns a session
+	// into an inbound path.
+	RemoteForward bool `yaml:"remote_forward"`
+	// UpstreamUser is the account on the target. Empty uses the name
+	// the client authenticated as.
+	UpstreamUser string `yaml:"upstream_user"`
+	// UpstreamKeyFile is the private key the proxy authenticates to the
+	// target with. Required.
+	UpstreamKeyFile string `yaml:"upstream_key_file"`
+	// UpstreamKnownHosts verifies the target's host key against an
+	// OpenSSH known_hosts file. Required unless
+	// upstream_insecure_host_key is set.
+	UpstreamKnownHosts string `yaml:"upstream_known_hosts"`
+	// UpstreamInsecureHostKey accepts any host key from the target.
+	// Refused unless allow_insecure is also set, and logged at start:
+	// it is the one setting here that turns the bastion into a machine
+	// in the middle with nothing to notice it.
+	UpstreamInsecureHostKey bool `yaml:"upstream_insecure_host_key"`
+	AllowInsecure           bool `yaml:"allow_insecure"`
+	// MFA requires a second factor after the key or the password: the
+	// client is told authentication partially succeeded and must then
+	// answer a keyboard-interactive prompt with a one-time code.
+	MFA *MFAPolicy `yaml:"mfa"`
+	// SFTP inspects the sftp subsystem's own protocol; without it the
+	// proxy can say only that a session may use sftp, which is the
+	// difference between reading a file and deleting a tree.
+	SFTP *SFTPPolicy `yaml:"sftp"`
+	// ProxyProtocol sends a PROXY protocol v2 header with the client
+	// address to the target before the SSH banner.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs.
+	AllowClients []string `yaml:"allow_clients"`
+}
+
+// SFTPPolicy inspects the SFTP protocol inside an sftp subsystem
+// channel. Refused requests are answered with a permission-denied
+// status, so the session continues and the client is told which
+// operation was refused rather than losing its connection.
+type SFTPPolicy struct {
+	// ReadOnly refuses every request that changes the server: write,
+	// setstat, remove, mkdir, rmdir, rename, symlink, an open with any
+	// writing flag, and the extensions whose meaning the proxy does not
+	// know.
+	ReadOnly bool `yaml:"read_only"`
+	// AllowPaths are the paths a request may name: a glob where "*"
+	// does not cross a slash, or a prefix ending in "/" or "/**" for a
+	// whole tree. Empty allows every path the deny list does not
+	// refuse.
+	AllowPaths []string `yaml:"allow_paths"`
+	// DenyPaths are refused whatever the allow list says.
+	DenyPaths []string `yaml:"deny_paths"`
+	// DenyOperations refuses operations by name (open, read, write,
+	// remove, rename, symlink, setstat, ...), on top of read_only.
+	DenyOperations []string `yaml:"deny_operations"`
+	// MaxPacketSize bounds one SFTP packet. Default 262144, a little
+	// over the 32 KiB read and write sizes clients use.
+	MaxPacketSize int `yaml:"max_packet_size"`
+}
+
+// MQTTListener is a protocol-aware MQTT proxy for 3.1.1 and 5.0. It
+// reads every control packet, decides on the ones that carry a policy
+// question — who is connecting, what they publish, what they subscribe
+// to — and forwards the rest untouched.
+//
+// The reason it is not a layer 4 listener: an MQTT broker's
+// authorisation is per topic, and a topic is a string inside a packet.
+// Without reading the packets there is no place to say that a device
+// may publish its own telemetry and nothing else, and every device that
+// holds a broker credential holds the whole tree.
+type MQTTListener struct {
+	// Upstream is the broker pool. Required.
+	Upstream string `yaml:"upstream"`
+	// TLSMode is implicit (TLS from the first octet, as on 8883, and
+	// needs the listener's tls section) or none. Default implicit when
+	// tls is set.
+	TLSMode string `yaml:"tls_mode"`
+	// UpstreamTLSMode is none or implicit. Default none.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the broker when upstream_tls_mode is not
+	// none.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// Versions are the protocol versions accepted: "3.1.1", "5.0".
+	// Default both. A version the proxy does not parse cannot be
+	// checked, so anything else is refused at CONNECT.
+	Versions []string `yaml:"versions"`
+	// RequireAuth refuses a CONNECT without a username. The broker
+	// still verifies the password; this only stops an anonymous session
+	// reaching it. Default false.
+	RequireAuth bool `yaml:"require_auth"`
+	// AllowEmptyClientID accepts the empty client id, which 3.1.1 allows
+	// with a clean session and 5.0 answers with an assigned one. Default
+	// true; turning it off is what makes every session identifiable in
+	// the logs.
+	AllowEmptyClientID *bool `yaml:"allow_empty_client_id"`
+	// MaxClientID bounds the client id. Default 128.
+	MaxClientID int `yaml:"max_client_id"`
+	// ClientIDPattern is an RE2 the client id must match, anchored as
+	// written. Empty accepts any.
+	ClientIDPattern string `yaml:"client_id_pattern"`
+	// MaxPacketSize bounds one control packet including its header, and
+	// is what a 5.0 client is told in CONNACK. Default 1048576.
+	MaxPacketSize int `yaml:"max_packet_size"`
+	// MaxTopicLength and MaxTopicLevels bound a topic or filter.
+	// Defaults 512 and 16.
+	MaxTopicLength int `yaml:"max_topic_length"`
+	MaxTopicLevels int `yaml:"max_topic_levels"`
+	// PublishAllow and PublishDeny are topic filters checked against
+	// the topic of every PUBLISH from the client, and against the will
+	// topic of its CONNECT. Deny wins. An empty allow list allows
+	// everything the deny list does not refuse.
+	PublishAllow []string `yaml:"publish_allow"`
+	PublishDeny  []string `yaml:"publish_deny"`
+	// SubscribeAllow and SubscribeDeny are topic filters checked
+	// against every filter a client subscribes to. A subscription is
+	// allowed only when an entry of the allow list covers everything it
+	// could deliver, and refused when it could reach anything denied —
+	// a filter is not a topic, and matching it as one would let "#"
+	// through an allow list of "sensors/+".
+	SubscribeAllow []string `yaml:"subscribe_allow"`
+	SubscribeDeny  []string `yaml:"subscribe_deny"`
+	// MaxSubscriptions bounds live subscriptions per session. Default
+	// 64.
+	MaxSubscriptions int `yaml:"max_subscriptions"`
+	// AllowRetain accepts PUBLISH with the retain flag. A retained
+	// message outlives the session that set it, so a device that can
+	// retain can leave something behind. Default true.
+	AllowRetain *bool `yaml:"allow_retain"`
+	// AllowWildcardSubscribe accepts "+" and "#" in a subscription at
+	// all. Default true; with an allow list it rarely needs turning
+	// off, and without one it is the difference between a client
+	// reading its own topics and reading the estate's.
+	AllowWildcardSubscribe *bool `yaml:"allow_wildcard_subscribe"`
+	// KeepAliveMax bounds the keep alive a client asks for, so a
+	// session cannot sit idle indefinitely on the broker's side.
+	// 0 accepts any. Default 0.
+	KeepAliveMax Duration `yaml:"keep_alive_max"`
+	// MaxConnections bounds sessions on this listener. Default 10000.
+	MaxConnections int `yaml:"max_connections"`
+	// ConnectTimeout bounds the wait for the CONNECT packet. Default
+	// 30s, which is what 3.1.1 section 3.1 asks a server to do.
+	ConnectTimeout Duration `yaml:"connect_timeout"`
+	// IdleTimeout closes a session with no packet in either direction.
+	// Default 10m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// Action on a refused PUBLISH or SUBSCRIBE: disconnect (the
+	// default) ends the session, drop refuses the one packet and
+	// acknowledges it so the session continues.
+	Action string `yaml:"action"`
+	// ProxyProtocol sends a PROXY protocol v2 header with the client
+	// address to the broker.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs.
+	AllowClients []string `yaml:"allow_clients"`
+}
+
+// SMTPListener is a protocol-aware SMTP proxy: it speaks the session to
+// the client, speaks a second one to the upstream, and decides for
+// itself where each command and each message ends. That is the point of
+// it. A layer 4 splice would carry the same bytes, but the client and
+// the mail server would each parse them on their own, and every
+// SMTP smuggling bug there has ever been lives in the gap between two
+// such parses.
+//
+// It terminates STARTTLS (RFC 3207) for the client and may start its
+// own to the upstream, so the hop the proxy makes is never the plaintext
+// one by accident.
+type SMTPListener struct {
+	// Upstream is the pool to relay to. Required.
+	Upstream string `yaml:"upstream"`
+	// TLSMode is how the client reaches this listener: starttls (plain
+	// on 25 or 587, upgraded by the STARTTLS command), implicit (TLS
+	// from the first octet, as on 465) or none. starttls and implicit
+	// need the listener's tls section. Default starttls when tls is set
+	// and none otherwise.
+	TLSMode string `yaml:"tls_mode"`
+	// RequireTLS refuses AUTH, MAIL and VRFY until the session is
+	// encrypted. On a submission listener this is the difference between
+	// offering TLS and requiring it. Default true when TLSMode is
+	// starttls or implicit.
+	RequireTLS bool `yaml:"require_tls"`
+	// RequireAuth refuses MAIL until the session has authenticated,
+	// which keeps a submission listener from relaying for anyone who can
+	// reach it. Default false: a listener taking inbound mail for its
+	// own domains has no authentication to require.
+	RequireAuth bool `yaml:"require_auth"`
+	// Banner replaces the upstream greeting. The proxy's own name
+	// belongs here; leaving the upstream's banner in place tells every
+	// prober which mail server is behind this address.
+	Banner string `yaml:"banner"`
+	// Hostname is the name the proxy gives as its own in a synthesised
+	// greeting and in its EHLO to the upstream. Default the banner's
+	// first word, else the system hostname.
+	Hostname string `yaml:"hostname"`
+	// MaxCommandLine bounds a command line including CRLF. Default 512,
+	// the limit in RFC 5321 section 4.5.3.1.1.
+	MaxCommandLine int `yaml:"max_command_line"`
+	// MaxTextLine bounds a message line including CRLF. Default 1000.
+	MaxTextLine int `yaml:"max_text_line"`
+	// MaxMessageSize bounds one message in octets and is advertised as
+	// the SIZE capability. 0 keeps the upstream's own limit. Default 0.
+	MaxMessageSize int64 `yaml:"max_message_size"`
+	// MaxRecipients bounds RCPT commands per message. Default 100.
+	MaxRecipients int `yaml:"max_recipients"`
+	// MaxMessages bounds messages per connection. Default 100.
+	MaxMessages int `yaml:"max_messages"`
+	// MaxErrors closes the session after this many refused commands,
+	// which is what stops a prober walking the command space. Default 10.
+	MaxErrors int `yaml:"max_errors"`
+	// MaxConnections bounds sessions on this listener. Default 1000.
+	MaxConnections int `yaml:"max_connections"`
+	// ReadTimeout bounds waiting for one command or message line.
+	// Default 5m, the minimum RFC 5321 section 4.5.3.2 asks for.
+	ReadTimeout Duration `yaml:"read_timeout"`
+	// SessionTimeout bounds a whole session. Default 30m.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// Commands is the verbs a client may send. Everything else is
+	// refused with 502 and counts towards max_errors. Default: EHLO,
+	// HELO, MAIL, RCPT, DATA, RSET, NOOP, QUIT, AUTH, STARTTLS.
+	Commands []string `yaml:"commands"`
+	// HideCapabilities are EHLO keywords stripped from the upstream's
+	// answer, on top of the ones the proxy always removes (STARTTLS,
+	// which it answers itself, and CHUNKING, whose BDAT has no dot
+	// terminator to agree on). Default: none.
+	HideCapabilities []string `yaml:"hide_capabilities"`
+	// BareNewlines is reject (the default) or convert. A line ended by
+	// LF alone is forbidden by RFC 5321 section 2.3.8 and is how a
+	// message ends in one place for the proxy and another for the next
+	// hop; convert repairs it to CRLF instead of refusing the session,
+	// which is safe because the proxy re-emits every line itself.
+	BareNewlines string `yaml:"bare_newlines"`
+	// UpstreamTLSMode is how the proxy reaches the upstream: none,
+	// starttls or implicit. Default none, which is right when the hop
+	// is inside a trusted network and wrong everywhere else.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the upstream when upstream_tls_mode is not
+	// none.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// ProxyProtocol sends a PROXY protocol v2 header to the upstream so
+	// it logs the client address rather than the proxy's.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs. Empty allows all,
+	// which is right for inbound mail and wrong for submission.
+	AllowClients []string `yaml:"allow_clients"`
+	// XClientName sends the client address to the upstream with the
+	// XCLIENT command (a Postfix extension) after EHLO, when the
+	// upstream advertises it.
+	XClient bool `yaml:"xclient"`
 }
 
 // DNSListener is a forwarding DNS proxy on the listener address over UDP
@@ -271,6 +603,56 @@ type DNSListener struct {
 	DoHPath string `yaml:"doh_path"`
 	// DNSSEC validates upstream answers against a trust anchor.
 	DNSSEC *DNSSEC `yaml:"dnssec"`
+	// DoQ also serves DNS over QUIC (RFC 9250) on this listener's
+	// address over UDP. Needs tls; the certificate is shared with DoT
+	// and DoH, since they are the same service.
+	DoQ bool `yaml:"doq"`
+	// Discovery advertises this resolver's encrypted endpoints at
+	// _dns.resolver.arpa (RFC 9462), so a client handed this address by
+	// DHCP can upgrade itself from plaintext DNS.
+	Discovery []DNSDesignated `yaml:"discovery"`
+	// Records are SVCB and HTTPS records this resolver answers itself,
+	// most usefully the ECH configuration of a name this proxy
+	// terminates.
+	Records []DNSRecord `yaml:"records"`
+}
+
+// DNSDesignated is one encrypted endpoint advertised by discovery.
+type DNSDesignated struct {
+	// Transport is dot, doh or doq.
+	Transport string `yaml:"transport"`
+	// Name is the certificate name clients verify. It must be a name
+	// the endpoint's certificate covers, or the upgrade fails closed.
+	Name string `yaml:"name"`
+	// Port the endpoint listens on. Default 853 for dot and doq, 443
+	// for doh.
+	Port int `yaml:"port"`
+	// DoHPath is the URI template for a doh endpoint. Default
+	// /dns-query{?dns}.
+	DoHPath string `yaml:"doh_path"`
+	// IPv4 and IPv6 are address hints, so a client need not resolve the
+	// name it was just handed.
+	IPv4 []string `yaml:"ipv4"`
+	IPv6 []string `yaml:"ipv6"`
+	// TTL of the discovery records. Default 300.
+	TTL int `yaml:"ttl"`
+}
+
+// DNSRecord is one locally served SVCB or HTTPS record.
+type DNSRecord struct {
+	// Name the record is published for.
+	Name string `yaml:"name"`
+	// Type is https (default) or svcb.
+	Type string `yaml:"type"`
+	// Priority 0 makes it an alias record, which takes no parameters.
+	Priority int `yaml:"priority"`
+	// Target is the endpoint name; "." means the owner name itself.
+	Target string `yaml:"target"`
+	// TTL in seconds. Default 300.
+	TTL int `yaml:"ttl"`
+	// Params are service parameters in presentation form:
+	// {alpn: "h2,h3", port: "443", ech: "AEr+DQ...", ipv4hint: "..."}.
+	Params map[string]string `yaml:"params"`
 }
 
 // DNSSEC configures validation on a dns listener: answers are fetched
@@ -422,6 +804,32 @@ type ForwardListener struct {
 	// through a SOCKS proxy. Each association is bound to the client
 	// address that opened it and dies with its control connection.
 	SOCKSUDP bool `yaml:"socks_udp"`
+	// Masque enables the MASQUE proxying protocols on this listener.
+	Masque *Masque `yaml:"masque"`
+}
+
+// Masque configures UDP proxying (RFC 9298) and IP proxying (RFC 9484)
+// over extended CONNECT. Both need HTTP/2 or HTTP/3, so the listener
+// needs tls with h2 in its protocols.
+type Masque struct {
+	// UDP accepts connect-udp. The destination policy applies to each
+	// association exactly as it does to a CONNECT tunnel.
+	UDP bool `yaml:"udp"`
+	// IP accepts connect-ip. It also needs ip_device, ip_assign and
+	// ip_routes: a userspace process cannot put an arbitrary IP packet
+	// on the wire without a tunnel device.
+	IP bool `yaml:"ip"`
+	// MaxSessions bounds concurrent MASQUE sessions. Default 1024.
+	MaxSessions int `yaml:"max_sessions"`
+	// IPDevice is an existing tun interface the operator created,
+	// addressed, routed and firewalled (Linux only).
+	IPDevice string `yaml:"ip_device"`
+	// IPAssign are the prefixes a client is told to use as its source
+	// address; packets from anything else are dropped.
+	IPAssign []string `yaml:"ip_assign"`
+	// IPRoutes are the ranges a client may send to; packets to
+	// anything else are dropped.
+	IPRoutes []string `yaml:"ip_routes"`
 }
 
 // ForwardAuth is the credential source of a forward listener.
@@ -2406,8 +2814,9 @@ type Bans struct {
 type BanTrigger struct {
 	Name string `yaml:"name"`
 	// Reasons restricts which deny reasons count (acl, rate_limit, waf,
-	// body_size, uri_length, bad_host, no_route, websocket, concurrency).
-	// Empty counts every deny.
+	// body_size, uri_length, bad_host, no_route, websocket, concurrency,
+	// smtp_denied and the rest; validation lists them). Empty counts
+	// every deny.
 	Reasons   []string `yaml:"reasons"`
 	Threshold int      `yaml:"threshold"`
 	Window    Duration `yaml:"window"`
@@ -3072,4 +3481,95 @@ type ACME struct {
 	RenewBefore Duration `yaml:"renew_before"`
 	// CheckInterval is how often expiry is checked. Default 12h.
 	CheckInterval Duration `yaml:"check_interval"`
+}
+
+// The SMTP line bounds of RFC 5321 section 4.5.3.1, repeated here
+// because config must not import the smtp package (which imports this
+// one for nothing, but the direction is the point).
+const (
+	smtpMaxCommandLine = 512
+	smtpMaxTextLine    = 1000
+)
+
+// DefaultSMTPCommands is the verb set a session allows when the
+// configuration names none: enough for submission and for inbound mail,
+// and nothing that asks the upstream to enumerate its users. VRFY and
+// EXPN are left out on purpose; a listener that wants them says so.
+var DefaultSMTPCommands = []string{"EHLO", "HELO", "MAIL", "RCPT", "DATA", "RSET", "NOOP", "QUIT", "AUTH", "STARTTLS"}
+
+// SMTPAlwaysHidden are EHLO keywords the proxy never passes through.
+// STARTTLS because the proxy answers it itself and the upstream's
+// offer is about a different hop; CHUNKING because BDAT carries a
+// length instead of a dot terminator, so relaying it would mean two
+// parsers deciding where a message ends, which is the one thing this
+// listener exists to prevent.
+var SMTPAlwaysHidden = []string{"STARTTLS", "CHUNKING", "BDAT"}
+
+// DefaultMQTTVersions is the protocol set an mqtt listener accepts when
+// the configuration names none: both versions this proxy can parse. A
+// version it cannot parse is a packet it cannot check, so there is no
+// "accept anything" setting.
+var DefaultMQTTVersions = []string{"3.1.1", "5.0"}
+
+// The default policy of an ssh listener: a shell and sftp, and nothing
+// that hands the target a channel back into the client.
+var (
+	DefaultSSHChannels   = []string{"session"}
+	DefaultSSHRequests   = []string{"pty-req", "env", "shell", "exec", "subsystem", "window-change", "signal"}
+	DefaultSSHSubsystems = []string{"sftp"}
+
+	// SSHChannelTypes and SSHRequestTypes are what the allow lists may
+	// name. A type the proxy does not relay is not a type an operator
+	// can allow by writing it down.
+	SSHChannelTypes = map[string]bool{
+		"session": true, "direct-tcpip": true, "direct-streamlocal@openssh.com": true,
+	}
+	SSHRequestTypes = map[string]bool{
+		"pty-req": true, "env": true, "shell": true, "exec": true, "subsystem": true,
+		"window-change": true, "signal": true, "x11-req": true, "auth-agent-req@openssh.com": true,
+		"break": true, "eow@openssh.com": true,
+	}
+)
+
+// SFTPOperations are the names deny_operations may use.
+var SFTPOperations = map[string]bool{
+	"open": true, "close": true, "read": true, "write": true, "lstat": true, "fstat": true,
+	"setstat": true, "fsetstat": true, "opendir": true, "readdir": true, "remove": true,
+	"mkdir": true, "rmdir": true, "realpath": true, "stat": true, "rename": true,
+	"readlink": true, "symlink": true, "extended": true,
+}
+
+// MFAPolicy is a second factor, shared by every protocol that can ask
+// for one. It is one shape rather than one per protocol because a
+// second factor that means different things on different ports is not
+// a second factor: the same enrolment, the same replay rule and the
+// same lockout have to hold everywhere, or the weakest door decides.
+type MFAPolicy struct {
+	// File is the enrolment file (xproxyctl mfa enrol writes the
+	// lines). Required. It must not be world readable.
+	File string `yaml:"file"`
+	// Issuer is the name an authenticator application shows. Default
+	// "xproxy".
+	Issuer string `yaml:"issuer"`
+	// Prompt is what the user is asked. Default "One-time code: ".
+	Prompt string `yaml:"prompt"`
+	// Skew is how many time steps either side of now are accepted.
+	// Default 1, which is the usual allowance for a clock that is a
+	// little off. Each step accepted is a step an observer could
+	// replay in, so this is not a knob to raise casually.
+	Skew int `yaml:"skew"`
+	// RequireEnrolment refuses a user who has no enrolment. Default
+	// true: an optional second factor is one an attacker can decline
+	// by using an account that never enrolled.
+	RequireEnrolment *bool `yaml:"require_enrolment"`
+	// MaxFailures within Window locks a user out for Duration.
+	// Defaults 5, 5m and 15m. A six-digit code has a million values
+	// and a step lasts thirty seconds, so without a bound a fast
+	// client gets a real chance at every step.
+	MaxFailures int      `yaml:"max_failures"`
+	Window      Duration `yaml:"window"`
+	Duration    Duration `yaml:"lockout"`
+	// MaxUsers bounds the table that remembers spent codes and recent
+	// failures. Default 10000.
+	MaxUsers int `yaml:"max_users"`
 }

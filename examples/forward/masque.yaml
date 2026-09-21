@@ -1,0 +1,65 @@
+# UDP and IP proxying over extended CONNECT: RFC 9298 (connect-udp) and
+# RFC 9484 (connect-ip).
+#
+# HTTP CONNECT tunnels TCP and nothing else, so DNS, QUIC, NTP and
+# everything else datagram-shaped leaves the estate outside the proxy's
+# policy — or does not leave at all. MASQUE is the same explicit proxy
+# for those.
+#
+# Validate: xproxy -config examples/forward/masque.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: egress
+      address: "10.0.0.5:443"
+      kind: forward
+      # Extended CONNECT needs HTTP/2 (or HTTP/3): HTTP/1.1 has no way
+      # to carry the :protocol pseudo-header these use.
+      protocols: [h1, h2]
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/proxy.pem, key_file: /etc/xproxy/certs/proxy-key.pem}
+      forward:
+        ports: [53, 443, 853, 123]
+        allow:
+          - "*.example.com"
+          - "9.9.9.9"
+          - "149.112.112.112"
+        allow_private: false
+        auth: {users_file: /etc/xproxy/egress.htpasswd, realm: egress}
+        masque:
+          # Datagrams: DNS and QUIC through the proxy, under the same
+          # allow list as a CONNECT tunnel.
+          udp: true
+          max_sessions: 4000
+
+          # IP packets. The proxy does not create the tunnel device:
+          # the operator does, along with its addressing, routing and
+          # firewalling, because that is host network policy and not a
+          # proxy setting.
+          #
+          #   ip tuntap add mode tun xproxy0
+          #   ip addr add 10.8.0.1/24 dev xproxy0
+          #   ip link set xproxy0 up
+          #   ...plus the firewall rules that decide what this tunnel
+          #      may actually reach.
+          #
+          # Leave ip off unless you mean to run a VPN endpoint.
+          ip: false
+          ip_device: xproxy0
+          # The source addresses a client may use, and the ranges it
+          # may reach. A packet outside either is dropped: without
+          # these the tunnel would forward anything a client forged.
+          ip_assign: ["10.8.0.2/32"]
+          ip_routes: ["10.0.0.0/8", "192.0.2.0/24"]
+bans:
+  triggers:
+    - {name: egress-probing, reasons: [forward_denied], threshold: 20, window: 5m, duration: 1h}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: unused
+    endpoints: [{address: "127.0.0.1:1"}]
+routes: []

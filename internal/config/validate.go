@@ -335,6 +335,15 @@ func (v *validator) config(c *Config) {
 				}
 			}
 		}
+		if m := c.Server.Listeners[i].SMTP; m != nil && m.Upstream != "" && !upstreams[m.Upstream] {
+			v.errf("server.listeners[%d].smtp.upstream: unknown upstream %q", i, m.Upstream)
+		}
+		if q := c.Server.Listeners[i].MQTT; q != nil && q.Upstream != "" && !upstreams[q.Upstream] {
+			v.errf("server.listeners[%d].mqtt.upstream: unknown upstream %q", i, q.Upstream)
+		}
+		if h := c.Server.Listeners[i].SSH; h != nil && h.Upstream != "" && !upstreams[h.Upstream] {
+			v.errf("server.listeners[%d].ssh.upstream: unknown upstream %q", i, h.Upstream)
+		}
 	}
 	dnsListeners := map[string]bool{}
 	for _, ln := range c.Server.Listeners {
@@ -564,8 +573,44 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.forwardListener(p+".forward", ln.Forward)
 			}
+		case "smtp":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an smtp listener takes only address, smtp and tls", p)
+			}
+			if ln.SMTP == nil {
+				v.errf("%s.smtp: required for kind smtp", p)
+			} else {
+				v.smtpListener(p+".smtp", ln.SMTP, ln.TLS != nil)
+			}
+		case "mqtt":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an mqtt listener takes only address, mqtt and tls", p)
+			}
+			if ln.MQTT == nil {
+				v.errf("%s.mqtt: required for kind mqtt", p)
+			} else {
+				v.mqttListener(p+".mqtt", ln.MQTT, ln.TLS != nil)
+			}
+		case "ssh":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: an ssh listener takes only address and ssh (SSH carries its own transport security)", p)
+			}
+			if ln.SSH == nil {
+				v.errf("%s.ssh: required for kind ssh", p)
+			} else {
+				v.sshListener(p+".ssh", ln.SSH)
+			}
 		default:
-			v.errf("%s.kind: must be http, tcp, forward or dns", p)
+			v.errf("%s.kind: must be http, tcp, forward, dns, smtp, mqtt or ssh", p)
+		}
+		if ln.SSH != nil && ln.Kind != "ssh" {
+			v.errf("%s.ssh: set on a %s listener (kind: ssh)", p, ln.Kind)
+		}
+		if ln.SMTP != nil && ln.Kind != "smtp" {
+			v.errf("%s.smtp: set on a %s listener (kind: smtp)", p, ln.Kind)
+		}
+		if ln.MQTT != nil && ln.Kind != "mqtt" {
+			v.errf("%s.mqtt: set on a %s listener (kind: mqtt)", p, ln.Kind)
 		}
 		if ln.TLS == nil {
 			for _, proto := range ln.Protocols {
@@ -890,7 +935,7 @@ func (v *validator) websocketGuard(p string, r *Route) {
 		// proxy claiming a protocol condition it did not observe.
 		v.errf("%s.websocket_guard.close_code: must be between 3000 and 4999 (the ranges an application may use), or unset to use the protocol's own code", p)
 	}
-	if g.Masked() == false { //nolint:gosimple // reads better against the RFC
+	if !g.Masked() {
 		v.warnf("%s.websocket_guard.require_masked: false accepts unmasked client frames, which RFC 6455 forbids and which is how a request is smuggled past an intermediary", p)
 	}
 }
@@ -1899,7 +1944,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
-	"account_abuse": true, "honeytoken": true,
+	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -2553,6 +2598,492 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	}
 }
 
+// smtpListener validates an SMTP proxy listener. hasTLS says whether the
+// listener carries a tls section, which decides whether the TLS modes
+// are even reachable.
+func (v *validator) smtpListener(p string, m *SMTPListener, hasTLS bool) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	switch m.TLSMode {
+	case "starttls", "implicit":
+		if !hasTLS {
+			v.errf("%s.tls_mode: %s needs the listener's tls section (a certificate to answer with)", p, m.TLSMode)
+		}
+	case "none":
+		if m.RequireTLS {
+			v.errf("%s.require_tls: nothing can satisfy it with tls_mode: none", p)
+		}
+	default:
+		v.errf("%s.tls_mode: must be starttls, implicit or none", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "none", "starttls", "implicit":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none, starttls or implicit", p)
+	}
+	if m.UpstreamTLSMode == "none" && m.UpstreamTLS != nil {
+		v.errf("%s.upstream_tls: set with upstream_tls_mode: none, which never uses it", p)
+	}
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+	}
+	switch m.BareNewlines {
+	case "reject", "convert":
+	default:
+		v.errf("%s.bare_newlines: must be reject or convert", p)
+	}
+	if m.MaxCommandLine < 64 || m.MaxCommandLine > 4096 {
+		v.errf("%s.max_command_line: must be 64..4096 (RFC 5321 asks for at least 512)", p)
+	}
+	if m.MaxTextLine < m.MaxCommandLine || m.MaxTextLine > 1<<20 {
+		v.errf("%s.max_text_line: must be at least max_command_line and at most 1048576", p)
+	}
+	if m.MaxMessageSize < 0 {
+		v.errf("%s.max_message_size: must not be negative", p)
+	}
+	if m.MaxRecipients < 1 || m.MaxRecipients > 100000 {
+		v.errf("%s.max_recipients: must be 1..100000", p)
+	}
+	if m.MaxMessages < 1 {
+		v.errf("%s.max_messages: must be positive", p)
+	}
+	if m.MaxErrors < 1 {
+		v.errf("%s.max_errors: must be positive", p)
+	}
+	if m.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be positive", p)
+	}
+	if m.ReadTimeout <= 0 || m.ReadTimeout > Duration(time.Hour) {
+		v.errf("%s.read_timeout: must be positive and at most 1h", p)
+	}
+	if m.SessionTimeout <= 0 || m.SessionTimeout > Duration(24*time.Hour) {
+		v.errf("%s.session_timeout: must be positive and at most 24h", p)
+	}
+	if m.SessionTimeout < m.ReadTimeout {
+		v.errf("%s.session_timeout: must not be shorter than read_timeout", p)
+	}
+	seen := map[string]bool{}
+	for i, cmd := range m.Commands {
+		u := strings.ToUpper(cmd)
+		if !smtpVerbs[u] {
+			v.errf("%s.commands[%d]: %q is not an SMTP verb this proxy relays", p, i, cmd)
+		}
+		if seen[u] {
+			v.errf("%s.commands[%d]: %q listed twice", p, i, cmd)
+		}
+		seen[u] = true
+	}
+	if !seen["QUIT"] {
+		v.errf("%s.commands: QUIT must be allowed; a client with no way to end the session waits for the timeout", p)
+	}
+	if !seen["EHLO"] && !seen["HELO"] {
+		v.errf("%s.commands: EHLO or HELO must be allowed", p)
+	}
+	if m.TLSMode == "starttls" && !seen["STARTTLS"] {
+		v.errf("%s.commands: tls_mode starttls needs STARTTLS in commands", p)
+	}
+	if m.RequireAuth && !seen["AUTH"] {
+		v.errf("%s.require_auth: needs AUTH in commands", p)
+	}
+	if seen["VRFY"] || seen["EXPN"] {
+		v.warnf("%s.commands: VRFY and EXPN let a prober test whether an address exists; leave them out unless something depends on them", p)
+	}
+	for i, kw := range m.HideCapabilities {
+		if strings.TrimSpace(kw) == "" || strings.ContainsAny(kw, " \t") {
+			v.errf("%s.hide_capabilities[%d]: must be one EHLO keyword", p, i)
+		}
+	}
+	for i, c := range m.AllowClients {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+	if m.TLSMode == "none" {
+		v.warnf("%s.tls_mode: none carries every password and every message in clear; use starttls with require_tls, or implicit", p)
+	} else if !m.RequireTLS {
+		v.warnf("%s.require_tls: false lets a client skip STARTTLS and send its password in clear", p)
+	}
+}
+
+// smtpVerbs is what commands may name. The list is the registered
+// command set; whether a verb is wise is a separate question the
+// defaults answer.
+var smtpVerbs = map[string]bool{
+	"EHLO": true, "HELO": true, "MAIL": true, "RCPT": true, "DATA": true,
+	"RSET": true, "NOOP": true, "QUIT": true, "AUTH": true, "STARTTLS": true,
+	"VRFY": true, "EXPN": true, "HELP": true,
+}
+
+// mqttListener validates an MQTT proxy listener.
+func (v *validator) mqttListener(p string, m *MQTTListener, hasTLS bool) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	switch m.TLSMode {
+	case "implicit":
+		if !hasTLS {
+			v.errf("%s.tls_mode: implicit needs the listener's tls section (a certificate to answer with)", p)
+		}
+	case "none":
+		v.warnf("%s.tls_mode: none carries every credential and every message in clear; MQTT has no in-band upgrade, so use implicit on 8883", p)
+	default:
+		v.errf("%s.tls_mode: must be implicit or none", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "none", "implicit":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none or implicit", p)
+	}
+	if m.UpstreamTLSMode == "none" && m.UpstreamTLS != nil {
+		v.errf("%s.upstream_tls: set with upstream_tls_mode: none, which never uses it", p)
+	}
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+	}
+	seen := map[string]bool{}
+	for i, ver := range m.Versions {
+		switch ver {
+		case "3.1.1", "5.0":
+		default:
+			v.errf("%s.versions[%d]: must be 3.1.1 or 5.0 (the versions this proxy parses; one it cannot parse it cannot check)", p, i)
+		}
+		if seen[ver] {
+			v.errf("%s.versions[%d]: %q listed twice", p, i, ver)
+		}
+		seen[ver] = true
+	}
+	if len(m.Versions) == 0 {
+		v.errf("%s.versions: at least one version is required", p)
+	}
+	switch m.Action {
+	case "disconnect", "drop":
+	default:
+		v.errf("%s.action: must be disconnect or drop", p)
+	}
+	if m.MaxClientID < 1 || m.MaxClientID > 65535 {
+		v.errf("%s.max_client_id: must be 1..65535", p)
+	}
+	if m.ClientIDPattern != "" {
+		if _, err := regexp.Compile(m.ClientIDPattern); err != nil {
+			v.errf("%s.client_id_pattern: %v", p, err)
+		}
+	}
+	// The floor is the largest packet a session cannot do without: a
+	// CONNECT carrying a client id, a username and a will.
+	if m.MaxPacketSize < 1024 || m.MaxPacketSize > 268435460 {
+		v.errf("%s.max_packet_size: must be 1024..268435460", p)
+	}
+	if m.MaxTopicLength < 1 || m.MaxTopicLength > 65535 {
+		v.errf("%s.max_topic_length: must be 1..65535", p)
+	}
+	if m.MaxTopicLevels < 1 || m.MaxTopicLevels > 1000 {
+		v.errf("%s.max_topic_levels: must be 1..1000", p)
+	}
+	if m.MaxSubscriptions < 1 {
+		v.errf("%s.max_subscriptions: must be positive", p)
+	}
+	if m.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be positive", p)
+	}
+	if m.ConnectTimeout <= 0 || m.ConnectTimeout > Duration(10*time.Minute) {
+		v.errf("%s.connect_timeout: must be positive and at most 10m", p)
+	}
+	if m.IdleTimeout <= 0 || m.IdleTimeout > Duration(24*time.Hour) {
+		v.errf("%s.idle_timeout: must be positive and at most 24h", p)
+	}
+	// Keep alive is carried as seconds in a uint16.
+	if m.KeepAliveMax < 0 || m.KeepAliveMax > Duration(65535*time.Second) {
+		v.errf("%s.keep_alive_max: must be 0 (any) or at most 18h12m15s", p)
+	}
+	for _, l := range []struct {
+		key  string
+		list []string
+		kind string
+	}{
+		{"publish_allow", m.PublishAllow, "filter"},
+		{"publish_deny", m.PublishDeny, "filter"},
+		{"subscribe_allow", m.SubscribeAllow, "filter"},
+		{"subscribe_deny", m.SubscribeDeny, "filter"},
+	} {
+		for i, f := range l.list {
+			if err := validTopicFilter(f); err != nil {
+				v.errf("%s.%s[%d]: %q is not a topic filter: %v", p, l.key, i, f, err)
+			}
+		}
+	}
+	if m.AllowWildcardSubscribe != nil && !*m.AllowWildcardSubscribe {
+		for i, f := range m.SubscribeAllow {
+			if strings.ContainsAny(f, "+#") {
+				v.errf("%s.subscribe_allow[%d]: %q has a wildcard, which allow_wildcard_subscribe: false refuses outright", p, i, f)
+			}
+		}
+	}
+	for i, c := range m.AllowClients {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+	if len(m.PublishAllow) == 0 && len(m.PublishDeny) == 0 &&
+		len(m.SubscribeAllow) == 0 && len(m.SubscribeDeny) == 0 {
+		v.warnf("%s: no topic policy, so every client may publish and subscribe to everything the broker allows; "+
+			"an mqtt listener without one is a layer 4 listener with extra parsing", p)
+	}
+}
+
+// validTopicFilter is the MQTT 3.1.1 section 4.7 rule, repeated here
+// because config must not import the mqtt package.
+func validTopicFilter(f string) error {
+	if f == "" {
+		return errors.New("empty")
+	}
+	if len(f) > 65535 {
+		return errors.New("longer than a topic can be")
+	}
+	if strings.ContainsRune(f, 0) {
+		return errors.New("contains NUL")
+	}
+	levels := strings.Split(f, "/")
+	for i, l := range levels {
+		switch {
+		case l == "#":
+			if i != len(levels)-1 {
+				return errors.New("# is only allowed as the last level")
+			}
+		case l == "+":
+		case strings.ContainsAny(l, "+#"):
+			return errors.New("a wildcard takes a whole level or none of it")
+		}
+	}
+	return nil
+}
+
+// sshListener validates an SSH bastion listener.
+func (v *validator) sshListener(p string, h *SSHListener) {
+	if h.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	if len(h.HostKeys) == 0 {
+		v.errf("%s.host_keys: at least one is required (clients pin it, so it is the bastion's identity)", p)
+	}
+	for i, f := range h.HostKeys {
+		v.file(fmt.Sprintf("%s.host_keys[%d]", p, i), f)
+	}
+	if h.AuthorizedKeys == "" && h.UsersFile == "" {
+		v.errf("%s: authorized_keys or users_file is required; a bastion that authenticates nobody forwards everybody", p)
+	}
+	if h.AuthorizedKeys != "" {
+		v.file(p+".authorized_keys", h.AuthorizedKeys)
+	}
+	if h.UsersFile != "" {
+		v.file(p+".users_file", h.UsersFile)
+		if h.AuthorizedKeys == "" {
+			v.warnf("%s.users_file: password authentication alone puts the whole estate behind one guessable secret; add authorized_keys", p)
+		}
+	}
+	if h.UpstreamKeyFile == "" {
+		v.errf("%s.upstream_key_file: required (the credential the proxy authenticates to the target with)", p)
+	} else {
+		v.file(p+".upstream_key_file", h.UpstreamKeyFile)
+	}
+	switch {
+	case h.UpstreamKnownHosts != "":
+		v.file(p+".upstream_known_hosts", h.UpstreamKnownHosts)
+		if h.UpstreamInsecureHostKey {
+			v.errf("%s.upstream_insecure_host_key: set together with upstream_known_hosts, which would never be read", p)
+		}
+	case h.UpstreamInsecureHostKey:
+		if !h.AllowInsecure {
+			v.errf("%s.upstream_insecure_host_key: refused unless allow_insecure is also true", p)
+		} else {
+			v.warnf("%s.upstream_insecure_host_key: every target's host key is accepted, so nothing would notice a machine in the middle "+
+				"between the bastion and the target", p)
+		}
+	default:
+		v.errf("%s.upstream_known_hosts: required unless upstream_insecure_host_key is set", p)
+	}
+	if !strings.HasPrefix(h.ServerVersion, "SSH-2.0-") {
+		v.errf("%s.server_version: must begin with SSH-2.0-", p)
+	}
+	if strings.ContainsAny(h.ServerVersion, "\r\n") || len(h.ServerVersion) > 240 {
+		v.errf("%s.server_version: must be one line of at most 240 characters", p)
+	}
+	if strings.Contains(h.Banner, "\x00") {
+		v.errf("%s.banner: must not contain NUL", p)
+	}
+	if h.MaxAuthTries < 1 || h.MaxAuthTries > 100 {
+		v.errf("%s.max_auth_tries: must be 1..100", p)
+	}
+	if h.MaxSessions < 1 {
+		v.errf("%s.max_sessions: must be positive", p)
+	}
+	if h.MaxChannels < 1 || h.MaxChannels > 1000 {
+		v.errf("%s.max_channels: must be 1..1000", p)
+	}
+	if h.HandshakeTimeout <= 0 || h.HandshakeTimeout > Duration(10*time.Minute) {
+		v.errf("%s.handshake_timeout: must be positive and at most 10m", p)
+	}
+	if h.IdleTimeout <= 0 || h.IdleTimeout > Duration(24*time.Hour) {
+		v.errf("%s.idle_timeout: must be positive and at most 24h", p)
+	}
+	if h.SessionTimeout < 0 || h.SessionTimeout > Duration(7*24*time.Hour) {
+		v.errf("%s.session_timeout: must be 0 (no bound) or at most 168h", p)
+	}
+	chans := map[string]bool{}
+	for i, ct := range h.AllowChannels {
+		if !SSHChannelTypes[ct] {
+			v.errf("%s.allow_channels[%d]: %q is not a channel type this proxy relays", p, i, ct)
+		}
+		chans[ct] = true
+	}
+	reqs := map[string]bool{}
+	for i, rt := range h.AllowRequests {
+		if !SSHRequestTypes[rt] {
+			v.errf("%s.allow_requests[%d]: %q is not a session request this proxy relays", p, i, rt)
+		}
+		reqs[rt] = true
+	}
+	if reqs["x11-req"] {
+		v.warnf("%s.allow_requests: x11-req lets the target open a channel back into the client's display", p)
+	}
+	if reqs["auth-agent-req@openssh.com"] {
+		v.warnf("%s.allow_requests: agent forwarding lets anything on the target sign with the client's keys for as long as the session lasts", p)
+	}
+	if reqs["subsystem"] && len(h.AllowSubsystems) == 0 {
+		v.errf("%s.allow_subsystems: subsystem is allowed but no subsystem is", p)
+	}
+	for i, sub := range h.AllowSubsystems {
+		if sub == "" || strings.ContainsAny(sub, " \t\r\n") {
+			v.errf("%s.allow_subsystems[%d]: must be one name", p, i)
+		}
+	}
+	for i, re := range h.AllowCommands {
+		if _, err := regexp.Compile(re); err != nil {
+			v.errf("%s.allow_commands[%d]: %v", p, i, err)
+		}
+	}
+	if len(h.AllowCommands) > 0 && !reqs["exec"] {
+		v.errf("%s.allow_commands: set without exec in allow_requests, so nothing would ever match it", p)
+	}
+	for i, d := range h.Forward {
+		if err := sshForwardOK(d); err != nil {
+			v.errf("%s.forward[%d]: %q: %v", p, i, d, err)
+		}
+	}
+	if len(h.Forward) > 0 && !chans["direct-tcpip"] {
+		v.errf("%s.forward: set without direct-tcpip in allow_channels, so no forward can be opened", p)
+	}
+	if chans["direct-tcpip"] && len(h.Forward) == 0 {
+		v.errf("%s.forward: direct-tcpip is allowed with no destinations, which would refuse every forward; list the destinations or drop the channel type", p)
+	}
+	if h.RemoteForward {
+		v.warnf("%s.remote_forward: tcpip-forward asks the target to listen on the client's behalf, which turns the session into an inbound path", p)
+	}
+	if h.MFA != nil {
+		v.mfaPolicy(p+".mfa", h.MFA)
+	}
+	if h.SFTP != nil {
+		q := p + ".sftp"
+		if !reqs["subsystem"] {
+			v.errf("%s: set without subsystem in allow_requests, so no sftp session can start", q)
+		}
+		if h.SFTP.MaxPacketSize < 4096 || h.SFTP.MaxPacketSize > 1<<24 {
+			v.errf("%s.max_packet_size: must be 4096..16777216", q)
+		}
+		for i, op := range h.SFTP.DenyOperations {
+			if !SFTPOperations[strings.ToLower(op)] {
+				v.errf("%s.deny_operations[%d]: %q is not an SFTP operation", q, i, op)
+			}
+		}
+		for _, l := range []struct {
+			key  string
+			list []string
+		}{{"allow_paths", h.SFTP.AllowPaths}, {"deny_paths", h.SFTP.DenyPaths}} {
+			for i, path := range l.list {
+				if path == "" || strings.ContainsRune(path, 0) {
+					v.errf("%s.%s[%d]: must be a path", q, l.key, i)
+				}
+			}
+		}
+	}
+	for i, c := range h.AllowClients {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+}
+
+// sshForwardOK checks a direct-tcpip destination: host:port, where host
+// is a name, a *.suffix pattern or a CIDR, and port is a number or "*".
+func sshForwardOK(d string) error {
+	host, port, err := net.SplitHostPort(d)
+	if err != nil {
+		return errors.New("must be host:port")
+	}
+	if port != "*" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return errors.New("port must be 1..65535 or *")
+		}
+	}
+	switch {
+	case host == "":
+		return errors.New("host is required")
+	case strings.Contains(host, "/"):
+		if _, err := netip.ParsePrefix(host); err != nil {
+			return fmt.Errorf("not a CIDR: %w", err)
+		}
+	case strings.HasPrefix(host, "*."):
+		if !hostPatternOK(host) {
+			return errors.New("not a *.suffix pattern")
+		}
+	default:
+		if _, err := netip.ParseAddr(host); err != nil && !hostPatternOK(host) {
+			return errors.New("not a name, *.suffix pattern, address or CIDR")
+		}
+	}
+	return nil
+}
+
+// mfaPolicy validates a second factor wherever it is configured.
+func (v *validator) mfaPolicy(p string, m *MFAPolicy) {
+	if m.File == "" {
+		v.errf("%s.file: required", p)
+	} else {
+		v.file(p+".file", m.File)
+		if st, err := os.Stat(m.File); err == nil && st.Mode().Perm()&0o004 != 0 {
+			v.errf("%s.file: %s must not be world readable: it holds every second factor", p, m.File)
+		}
+	}
+	if strings.ContainsAny(m.Issuer, ":\r\n") {
+		v.errf("%s.issuer: must not contain a colon or a line break (it is a label in the enrolment URI)", p)
+	}
+	if strings.ContainsAny(m.Prompt, "\r\n") {
+		v.errf("%s.prompt: must be one line", p)
+	}
+	if m.Skew < 0 || m.Skew > 10 {
+		v.errf("%s.skew: must be 0..10", p)
+	}
+	if m.Skew > 2 {
+		v.warnf("%s.skew: %d steps either side is a window of %d seconds in which an observed code can be replayed", p, m.Skew, (2*m.Skew+1)*30)
+	}
+	if m.MaxFailures < 1 || m.MaxFailures > 1000 {
+		v.errf("%s.max_failures: must be 1..1000", p)
+	}
+	if m.Window <= 0 || m.Window > Duration(24*time.Hour) {
+		v.errf("%s.window: must be positive and at most 24h", p)
+	}
+	if m.Duration <= 0 || m.Duration > Duration(7*24*time.Hour) {
+		v.errf("%s.lockout: must be positive and at most 168h", p)
+	}
+	if m.MaxUsers < 1 {
+		v.errf("%s.max_users: must be positive", p)
+	}
+	if m.RequireEnrolment != nil && !*m.RequireEnrolment {
+		v.warnf("%s.require_enrolment: false lets a user who never enrolled past the second factor, which is the account an attacker will use", p)
+	}
+}
+
 // grpcNameOK accepts protobuf identifiers with dots (package.Service).
 func grpcNameOK(s string) bool {
 	if s == "" || len(s) > 253 {
@@ -2697,6 +3228,104 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 	if d.MaxInFlight < 1 || d.MaxInFlight > 1_000_000 {
 		v.errf("%s.max_in_flight: must be between 1 and 1000000", p)
 	}
+	v.dnsDiscovery(p, d)
+	v.dnsRecords(p, d)
+}
+
+// dnsDiscovery checks the designated resolver advertisement. Getting
+// this wrong is worse than not having it: a client that believes the
+// record upgrades itself to an endpoint that has to work, and verifies
+// a certificate name that has to match.
+func (v *validator) dnsDiscovery(p string, d *DNSListener) {
+	seen := map[string]bool{}
+	for i := range d.Discovery {
+		e := &d.Discovery[i]
+		ep := fmt.Sprintf("%s.discovery[%d]", p, i)
+		switch e.Transport {
+		case "dot", "doq":
+			if e.Port == 0 {
+				e.Port = 853
+			}
+		case "doh":
+			if e.Port == 0 {
+				e.Port = 443
+			}
+			if e.DoHPath == "" {
+				e.DoHPath = dns.DefaultDoHPath + "{?dns}"
+			}
+			if !strings.HasPrefix(e.DoHPath, "/") {
+				v.errf("%s.doh_path: must start with /", ep)
+			}
+		case "":
+			v.errf("%s.transport: required (dot, doh or doq)", ep)
+			continue
+		default:
+			v.errf("%s.transport: %q must be dot, doh or doq", ep, e.Transport)
+			continue
+		}
+		if e.Name == "" || !hostPatternOK(strings.ToLower(e.Name)) || strings.HasPrefix(e.Name, "*.") {
+			v.errf("%s.name: %q must be the fully qualified name the endpoint's certificate covers", ep, e.Name)
+		}
+		if e.Port < 1 || e.Port > 65535 {
+			v.errf("%s.port: %d is not a port", ep, e.Port)
+		}
+		key := e.Transport + "/" + e.Name + "/" + strconv.Itoa(e.Port)
+		if seen[key] {
+			v.errf("%s: the same transport, name and port appears twice", ep)
+		}
+		seen[key] = true
+		for j, a := range e.IPv4 {
+			if addr, err := netip.ParseAddr(a); err != nil || !addr.Is4() {
+				v.errf("%s.ipv4[%d]: %q is not an IPv4 address", ep, j, a)
+			}
+		}
+		for j, a := range e.IPv6 {
+			if addr, err := netip.ParseAddr(a); err != nil || !addr.Is6() || addr.Is4In6() {
+				v.errf("%s.ipv6[%d]: %q is not an IPv6 address", ep, j, a)
+			}
+		}
+		if e.TTL < 0 || e.TTL > 86400 {
+			v.errf("%s.ttl: must be between 0 and 86400", ep)
+		}
+		if e.Transport == "doq" && !d.DoQ {
+			v.warnf("%s: doq is advertised but this listener does not serve it (set dns.doq)", ep)
+		}
+	}
+}
+
+// dnsRecords checks the locally served SVCB and HTTPS records.
+func (v *validator) dnsRecords(p string, d *DNSListener) {
+	for i := range d.Records {
+		r := &d.Records[i]
+		rp := fmt.Sprintf("%s.records[%d]", p, i)
+		if r.Name == "" || !hostPatternOK(strings.ToLower(strings.TrimSuffix(r.Name, "."))) {
+			v.errf("%s.name: %q is not a name", rp, r.Name)
+		}
+		switch r.Type {
+		case "", "https":
+			r.Type = "https"
+		case "svcb":
+		default:
+			v.errf("%s.type: must be https or svcb", rp)
+		}
+		if r.Priority < 0 || r.Priority > 65535 {
+			v.errf("%s.priority: must be between 0 and 65535", rp)
+		}
+		if r.Priority == 0 && len(r.Params) > 0 {
+			v.errf("%s: priority 0 is an alias record and takes no params", rp)
+		}
+		if r.TTL < 0 || r.TTL > 604800 {
+			v.errf("%s.ttl: must be between 0 and 604800", rp)
+		}
+		if r.Target != "" && r.Target != "." && !hostPatternOK(strings.ToLower(strings.TrimSuffix(r.Target, "."))) {
+			v.errf("%s.target: %q is not a name", rp, r.Target)
+		}
+		for name, value := range r.Params {
+			if _, err := dns.ParseSVCBParam(name, value); err != nil {
+				v.errf("%s.params.%s: %v", rp, name, err)
+			}
+		}
+	}
 }
 
 // dnsUpstreamOK mirrors dns.ParseUpstream without importing the package.
@@ -2706,6 +3335,11 @@ func dnsUpstreamOK(s string) error {
 		host, port, err := net.SplitHostPort(strings.TrimPrefix(s, "tls://"))
 		if err != nil || host == "" || port == "" {
 			return fmt.Errorf("%q must be tls://host:port", s)
+		}
+	case strings.HasPrefix(s, "quic://"):
+		host, port, err := net.SplitHostPort(strings.TrimPrefix(s, "quic://"))
+		if err != nil || host == "" || port == "" {
+			return fmt.Errorf("%q must be quic://host:port", s)
 		}
 	case strings.HasPrefix(s, "https://"):
 		u, err := url.Parse(s)
@@ -2773,8 +3407,60 @@ func (v *validator) forwardListener(p string, f *ForwardListener) {
 		// side there is no header a middlebox will strip by accident.
 		v.warnf("%s.socks5: no auth is configured, so anyone who can reach this port can use the proxy; restrict the listener address, the destinations, or add auth", p)
 	}
+	v.masque(p, f)
 	if f.SOCKSUDP {
 		v.warnf("%s.socks_udp: a UDP association relays datagrams for the client that opened it; it is bound to that client's address and dies with the control connection, but it is a wider exposure than a TCP tunnel", p)
+	}
+}
+
+// masque checks the MASQUE section of a forward listener.
+func (v *validator) masque(p string, f *ForwardListener) {
+	m := f.Masque
+	if m == nil {
+		return
+	}
+	if !m.UDP && !m.IP {
+		v.errf("%s.masque: neither udp nor ip is enabled, so the section does nothing", p)
+	}
+	if m.MaxSessions < 0 || m.MaxSessions > 1_000_000 {
+		v.errf("%s.masque.max_sessions: must be between 0 and 1000000", p)
+	}
+	if m.IP {
+		if m.IPDevice == "" {
+			v.errf("%s.masque.ip_device: required with ip: a userspace process cannot put an IP packet on the wire without a tunnel device", p)
+		}
+		if len(m.IPAssign) == 0 {
+			v.errf("%s.masque.ip_assign: required with ip: a client cannot send until it has been told a source address", p)
+		}
+		if len(m.IPRoutes) == 0 {
+			v.errf("%s.masque.ip_routes: required with ip: a client cannot send until it has been told where it may send", p)
+		}
+	}
+	for i, a := range m.IPAssign {
+		pfx, err := netip.ParsePrefix(a)
+		if err != nil {
+			v.errf("%s.masque.ip_assign[%d]: %q is not a CIDR", p, i, a)
+			continue
+		}
+		if pfx.Addr().IsUnspecified() && pfx.Bits() == 0 {
+			v.errf("%s.masque.ip_assign[%d]: %q would let a client claim any source address", p, i, a)
+		}
+	}
+	for i, rt := range m.IPRoutes {
+		pfx, err := netip.ParsePrefix(rt)
+		if err != nil {
+			v.errf("%s.masque.ip_routes[%d]: %q is not a CIDR", p, i, rt)
+			continue
+		}
+		if pfx.Bits() == 0 {
+			v.warnf("%s.masque.ip_routes[%d]: %q advertises the whole internet to clients of this tunnel; the tunnel device's own firewall is then the only thing narrowing it", p, i, rt)
+		}
+	}
+	if m.IPDevice != "" && !m.IP {
+		v.warnf("%s.masque.ip_device: set without ip: true, so nothing uses it", p)
+	}
+	if (m.UDP || m.IP) && f.Auth == nil {
+		v.warnf("%s.masque: no auth is configured, so anyone who can reach this listener can send datagrams through it", p)
 	}
 }
 

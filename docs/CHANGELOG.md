@@ -276,6 +276,229 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **UDP and IP proxying over extended CONNECT (`forward.masque`): RFC
+  9298 and RFC 9484.** HTTP CONNECT tunnels TCP and nothing else, so
+  everything datagram-shaped an estate sends — DNS, QUIC, NTP,
+  telemetry — either went around this proxy or did not go at all, and
+  going around it was the usual answer. CONNECT-UDP is the same
+  explicit proxy for datagrams: the same destination policy, the same
+  credentials, the same access log, the same bans. Datagrams travel as
+  capsules (RFC 9297), the fallback RFC 9298 requires when HTTP
+  datagrams are unavailable — reliable and ordered, which for a proxy
+  applying a policy per datagram is a feature rather than a cost.
+
+  Every extended CONNECT is answered by this path, not only the two
+  protocols implemented: an unimplemented one gets 501 rather than
+  falling through to the ordinary CONNECT handler, where a request
+  carrying a path and no authority would have been treated as a TCP
+  tunnel to whatever its `:authority` said.
+
+  CONNECT-IP is a VPN endpoint and is treated as one. The proxy does
+  not create a tunnel device: a userspace process cannot put an
+  arbitrary IP packet on the wire, a raw socket would need CAP_NET_RAW
+  and would let a bug here forge any packet on the network, and the
+  routing and firewalling of a VPN belong to the host's configuration.
+  The operator creates, addresses and firewalls a `tun` interface and
+  the proxy opens it; where none is available the request is refused
+  with 501 and a reason in the error log. `ip_assign` and `ip_routes`
+  are required because they are the anti-spoofing rule — a packet whose
+  source is not the assigned address, or whose destination is outside
+  the advertised routes, is dropped and counted — and the client is
+  told both in ADDRESS_ASSIGN and ROUTE_ADVERTISEMENT capsules before
+  it can send anything. `examples/forward/masque.yaml`.
+
+- **DNS over QUIC, discovery, and SVCB/HTTPS records
+  (`dns.doq`, `dns.discovery`, `dns.records`, `quic://` upstreams).**
+  DoT and DoH both carry DNS over TCP and inherit its head-of-line
+  blocking: one slow answer holds up every query behind it on that
+  connection, which is the shape of a resolver's traffic. RFC 9250 puts
+  each query on its own QUIC stream. It shares the listener's address
+  and certificate, is separated from HTTP/3 by the `doq` ALPN, and
+  sends the zero message id the RFC requires. `quic://host:port` is the
+  matching upstream transport, with the connection reused across
+  queries.
+
+  Discovery (RFC 9462) is what makes any of it reach a client. One
+  handed this proxy's address by DHCP cannot know the same service
+  speaks DoQ; with `discovery` it asks `_dns.resolver.arpa`, gets SVCB
+  records naming the encrypted endpoints, verifies their certificate
+  and upgrades itself. Nothing is configured on the client, and a
+  certificate it cannot verify means it stays on plaintext rather than
+  trusting the record.
+
+  `records` publishes SVCB and HTTPS records (RFC 9460) the resolver
+  answers itself. The reason it exists is ECH: a client cannot encrypt
+  its ClientHello until it has read the `ech` parameter from DNS, so
+  for an estate running its own resolver this is the other half of the
+  ECH feature. A name listed there is owned — answered locally, never
+  forwarded, and NOERROR with no answers for a type it does not have,
+  because a forwarded answer would contradict the local one. The
+  encoder follows RFC 9460's canonical form (parameters in key order,
+  once each) and the parser refuses records that do not.
+  `examples/blocklists/dns-encrypted.yaml`.
+
+- **A second factor, shared by SSH and HTTP (`ssh.mfa`, the `mfa`
+  filter, `xproxyctl mfa`).** TOTP (RFC 6238 over the HMAC-OTP of RFC
+  4226) against one enrolment file, used by the bastion and by the
+  request path. It is one implementation rather than one per protocol
+  because a second factor that means different things on different
+  ports is not a second factor: the weakest door decides.
+
+  On SSH the key or the password is a partial success (RFC 4252) and
+  the code is asked over keyboard-interactive; nothing about the
+  session exists until it verifies. On HTTP the filter challenges the
+  identity the filter before it established — `basic_auth`,
+  `ldap_auth`, `oidc`, a JWT or an API key — with a form and a signed
+  cookie afterwards, and refuses a request with no identity rather than
+  prompting, because a second factor with no first factor is a prompt
+  with no account behind it.
+
+  The three properties that make it a factor rather than a second
+  password: a code is spent when used, so a replay inside its own step
+  is refused (the memory is per process, and the docs say what that
+  means in a cluster); every failure gets the same answer, so a wrong
+  code, a replayed one, a locked account and a name that never enrolled
+  are indistinguishable, and the SSH prompt is shown even to a user with
+  no enrolment; and guessing is bounded, since six digits over a
+  thirty-second step is a real chance for a fast client without a
+  lockout. The cookie names the user it was issued for and is checked
+  against every key in the ring, so it is worthless on another account
+  and a rotation does not sign everyone out.
+
+  `xproxyctl mfa enrol` prints the enrolment line, the `otpauth://` URI
+  and optional single-use recovery codes, which are stored hashed;
+  `mfa verify` and `mfa list` are for checking one and seeing who is
+  enrolled. The enrolment file is refused if it is world readable.
+  `examples/mfa/second-factor.yaml`.
+
+- **SSH bastion with SFTP inspection (`kind: ssh`).** A jump host
+  forwards the stream, so it cannot tell a shell from a port forward and
+  the only policy it can hold is "may connect". This listener is an SSH
+  server to the client and an SSH client to the target, which makes
+  every channel and every request inside the session a decision:
+  `direct-tcpip` only to the destinations in `forward` (validation
+  refuses the channel type without a destination list, because an empty
+  one refuses every forward while looking permissive), `exec` only for
+  commands matching `allow_commands`, `subsystem` only for the ones
+  listed, and `x11-req` and agent forwarding left out by default since
+  each hands whatever runs on the target a channel back into the
+  client.
+
+  The other half is the credential. The client authenticates to the
+  bastion with its own key; the bastion authenticates onwards with one
+  no client holds, so a key that leaves the estate on a laptop is not a
+  key that opens a server in it, and `upstream_known_hosts` makes the
+  bastion the one place that would notice a machine in the middle
+  (`upstream_insecure_host_key` exists, needs `allow_insecure`, and
+  says what it costs).
+
+  **SFTP is inspected inside the subsystem channel**, because the whole
+  difference between reading a file and deleting a tree happens there.
+  `read_only` refuses every request that changes the server — including
+  an `open` carrying a writing, creating or truncating flag, which is
+  where a write is actually decided — and `allow_paths`, `deny_paths`
+  and `deny_operations` decide the rest. A refusal is a
+  permission-denied status rather than a dropped connection, so the
+  client is told which operation was refused. A path that climbs above
+  its own root after cleaning is refused rather than matched: what it
+  means depends on a working directory the proxy cannot see, and a
+  check on a path whose meaning is unknown is not a check. Names
+  carrying NUL or invalid UTF-8 are refused for the same reason — the
+  server would read them where the proxy stopped.
+
+  Every session writes an `ssh` access line, every allowed `exec` is a
+  security event with its command, and every inspected SFTP request
+  writes an `sftp` line. That record is the other reason to terminate
+  rather than forward: a stream you cannot read is a stream you cannot
+  log. Refusals and authentication failures are `ssh_denied` deny
+  events. `examples/bastion/ssh.yaml`.
+
+- **MQTT proxy for 3.1.1 and 5.0 (`kind: mqtt`).** An MQTT broker's
+  authorisation is per topic, and a topic is a string inside a packet.
+  A layer 4 listener carries those packets without looking, so there is
+  nowhere to say that a device may publish its own telemetry and
+  nothing else — and a device that holds a broker credential holds the
+  whole tree, including what every other device publishes. This
+  listener reads every control packet and decides the ones that carry a
+  policy question before they reach the broker.
+
+  The part worth stating plainly is that a subscription is a filter,
+  not a topic. A device asking for `#` is asking for all of them, so
+  `subscribe_allow` is checked by subsumption — an entry must cover
+  everything the requested filter could deliver — and `subscribe_deny`
+  by overlap, refusing a filter that could reach anything denied rather
+  than only one that names it. Matching a filter as though it were a
+  topic is exactly how `#` slips past an allow list of `sensors/+`.
+  `publish_allow` and `publish_deny` apply to concrete topics, and to
+  the will, which is checked at CONNECT because that is the only moment
+  there is.
+
+  The framing is held to the specification rather than to what brokers
+  tolerate: a non-shortest remaining length (two spellings of one
+  length are two readings of one packet), QoS 3, DUP on a QoS 0
+  publication, a packet id of zero, a string that is not UTF-8 or
+  carries NUL or a surrogate, reserved flag bits. A packet that does
+  not parse ends the session with nothing forwarded, in either
+  direction, because its length is what the next read depends on. A
+  session begins with CONNECT and has exactly one; a second would take
+  a new identity on a session already authorised as another. Only the
+  two versions the proxy parses are accepted, since a version it cannot
+  parse is a packet it cannot check.
+
+  `action: drop` refuses one packet instead of the session and answers
+  it properly — PUBACK or PUBREC with not-authorized, a SUBACK of
+  failures, and the PUBREL of a refused QoS 2 publication answered by
+  the proxy, since the broker never saw the PUBLISH — so one
+  misconfigured device does not take a fleet off the network. Bounds on
+  packet size, topic length and depth, subscriptions per session, keep
+  alive and client id shape, with `allow_retain` for the messages that
+  outlive the session that set them. MQTT has no STARTTLS, so
+  `tls_mode: implicit` on 8883 is the only encrypted shape and
+  validation says so rather than leaving it implied. Refusals are
+  `mqtt_denied` deny events. `examples/iot/mqtt.yaml`.
+
+- **SMTP and submission proxy (`kind: smtp`).** Mail was the traffic
+  this proxy could only splice. A `kind: tcp` listener carries the same
+  octets to the same mail server, but then the client and the server
+  each decide on their own where a command and a message end — and that
+  gap is where every SMTP smuggling bug lives. This listener speaks one
+  session to the client and a second to the upstream, reads each line
+  and each message itself, and writes them out again, so the framing is
+  decided once.
+
+  What that buys, concretely. A line must end with CRLF: a bare LF is
+  the 2023 smuggling class (`\n.\n` ends a message for a permissive
+  parser and not for a strict one) and is refused, or repaired to CRLF
+  under `bare_newlines: convert`, which is only safe because the proxy
+  re-emits the line. `CHUNKING` and `BDAT` are never advertised or
+  relayed, because a length-framed message would put the decision back
+  in two places. A reply the proxy cannot parse is never passed
+  through: the client gets 421, since a reply the proxy did not
+  understand is exactly the one the client would read differently. And
+  anything pipelined behind `STARTTLS` ends the session — those octets
+  were written before the client could see the 220, which is
+  CVE-2011-0411 — with the session's greeting and authentication
+  discarded after the handshake as RFC 3207 requires.
+
+  It terminates STARTTLS (RFC 3207) or implicit TLS (RFC 8314, port
+  465) for the client and can open its own to the upstream, so the hop
+  is never the plaintext one by accident; with `upstream_tls_mode:
+  starttls` an upstream that does not offer it fails the session
+  instead. `require_tls` and `require_auth` hold AUTH and MAIL until
+  the session is encrypted and authenticated. The capability list the
+  client sees is the proxy's promise rather than the upstream's:
+  hidden keywords stripped, `SIZE` replaced by `max_message_size`,
+  `STARTTLS` advertised only while the proxy can still answer it, and
+  `banner` in place of a greeting that otherwise names the mail
+  server's brand and version. Bounds on recipients, messages, line
+  length and refused commands keep one session from becoming a fan-out
+  or a free walk through the command space; `VRFY` and `EXPN` are out
+  of the default command set because they answer whether an address
+  exists. A message past `max_message_size` drops the upstream
+  connection without its terminator, so a truncated message is never
+  queued as a whole one. Violations are `smtp_denied` deny events, so
+  bans apply. `examples/mail/submission.yaml`.
+
 - **WebSocket message inspection (`routes[].websocket_guard`).** An
   upgraded connection was the one place this proxy stopped looking:
   everything before the 101 went through routing, the WAF, the filters

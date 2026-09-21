@@ -1687,10 +1687,58 @@ the URL to match the certificate. `xproxyctl dns` counts upstream
 failures separately from refusals and drops, which is the fastest way to
 tell a policy refusal from a broken upstream.
 
+**DoQ clients cannot connect.** Three things, in order: `doq: true` on
+an encrypted listener (it needs `tls`), UDP reachable on that port (DoT
+and DoH use TCP on the same number, so a firewall that allows 853/tcp
+may not allow 853/udp), and the client actually speaking DoQ — the ALPN
+is the only thing separating it from HTTP/3, and a client offering `h3`
+is refused rather than served.
+
+**Discovery records are published but clients stay on plaintext.** A
+client verifies the certificate of the endpoint the record names before
+using it, and falls back silently when that fails. Check that the
+listener really serves the `name` in the record, that the certificate
+covers it, and that the port is right. `kdig -t SVCB _dns.resolver.arpa`
+against the plaintext listener shows what clients are being told.
+
+**A name in `records` returns nothing.** That is what an owned name
+with no record of the asked type does: NOERROR and no answers, never a
+forwarded lookup. If the name should also have A or AAAA records from
+upstream, it does not belong in `records` — the local set is
+authoritative for the whole name, not for one type of it.
+
+**The ECH parameter in a record does not match the listener.**
+`xproxyctl tls` prints the config list the TLS listener actually
+serves; compare it with the `ech` value here. A mismatch means clients
+fall back to the public name on every attempt, which looks healthy and
+encrypts nothing.
+
 ## Forward proxy, layer 4 and QUIC
 
 **`CONNECT` refused with `forward_denied`.** The destination is not in
 the allow list or the port is not in `ports`.
+
+**A MASQUE request answers 501.** Either the protocol is not enabled
+(`masque.udp` or `masque.ip`), or it is one this proxy does not
+implement — every extended CONNECT is answered here rather than falling
+through to the ordinary CONNECT path, because a request with a path and
+no authority is not a TCP tunnel request. For `connect-ip`, 501 with
+`masque_no_device` means the tunnel device could not be opened; the
+error log says why, and the usual causes are that it has not been
+created (`ip tuntap add mode tun xproxy0`) or that the process may not
+open `/dev/net/tun`.
+
+**A MASQUE client cannot even send the request.** Extended CONNECT
+needs HTTP/2 or HTTP/3; a listener without `h2` in `protocols` has no
+way to carry `:protocol`. Check the negotiated protocol, not just that
+TLS works.
+
+**Datagrams disappear.** `xproxy_masque_dropped_total` counts them. For
+`connect-udp` the causes are a capsule with a context other than 0 (an
+extension nothing here registers) and an answer from an address other
+than the target. For `connect-ip` it is the anti-spoofing rule: the
+source must be inside `ip_assign` and the destination inside
+`ip_routes`.
 
 **A SOCKS client gets "general SOCKS server failure".** Look for the
 `forward` access line with `protocol: socks5`: the `reason` field says
@@ -1733,6 +1781,239 @@ within the pending-datagram bound, is dropped.
 **HTTP/3 clients fall back to HTTP/2.** Check that the UDP port is
 actually reachable (it is a different socket from TCP), and that
 `Alt-Svc` is being served.
+
+## SMTP listener
+
+**Every session ends with `421 4.4.1 upstream unavailable`.** The proxy
+could not open its own session to the mail server. The error log says
+which step failed: no reachable endpoint, a greeting that was not
+`220`, an EHLO the upstream refused, or — with
+`upstream_tls_mode: starttls` — an upstream that does not advertise
+`STARTTLS`. That last one fails on purpose rather than continuing in
+clear.
+
+**`421 4.3.0 upstream failure` in the middle of a session.** The
+upstream sent a reply this proxy would not parse: a code that changed
+mid-continuation, a line without CRLF, or more continuation lines than
+any registered extension uses. It is never passed through, because a
+reply the proxy did not understand is the one the client would read
+differently. `smtp_protocol_errors` counts it and the error log has the
+reason.
+
+**A client says the server does not support STARTTLS.** Check
+`tls_mode` (it must be `starttls`), that the listener has a `tls`
+section, and that `STARTTLS` is still in `commands`. The proxy
+advertises it from its own capability, never from the upstream's: the
+upstream's offer is about a different hop.
+
+**`554 5.7.0 data pipelined across STARTTLS`.** The client wrote
+another command before reading the `220`. That is CVE-2011-0411, and it
+is refused whether it was an attack or a client that pipelines without
+checking for the `PIPELINING` capability. The session ends and the
+event is a `smtp_denied` deny.
+
+**`500 5.5.2 line must end with CRLF`.** A bare LF, which is the SMTP
+smuggling vector. If the sender is a real client that cannot be fixed,
+`bare_newlines: convert` repairs the line instead of refusing the
+session — the proxy re-emits every line itself, so both ends still
+agree. A bare CR inside a line is always refused; there is no safe
+repair for it.
+
+**`552` on a message the sender says is small enough.** Two different
+checks. A `SIZE=` on MAIL over `max_message_size` is refused before the
+body is sent. A body that runs past it is refused while it is being
+read, and the upstream connection is then dropped **without** its
+terminator, so the mail server discards the partial message rather than
+queueing a truncated one; the client's session ends too.
+
+**Recipients are refused with `452` well below the mail server's
+limit.** `max_recipients` is the proxy's own bound, per message, and it
+counts only the RCPT commands the upstream accepted.
+
+**A session ends with `421 4.7.0 too many errors`.** `max_errors`
+counts every refusal the proxy itself answers — an unknown verb, an
+out-of-order command, a recipient over the bound, a declared size over
+the limit — not just bad syntax. A client that legitimately trips it is
+usually one probing capabilities it was never offered.
+
+**A client is answered `554 5.7.1 access denied` before the banner.**
+It is outside `allow_clients`. `smtp_rejected` counts it, and the
+upstream is never contacted.
+
+**The mail server logs the proxy as the client.** Turn on `xclient`.
+It only takes effect when the upstream advertises `XCLIENT`, which
+Postfix does after `smtpd_authorized_xclient_hosts` names the proxy.
+`proxy_protocol` is the other way to do it, and the two are
+independent.
+
+**A message was delivered but the headers look different.** They are
+not rewritten. What changes is framing: lines are re-emitted with CRLF,
+and a message that used bare newlines is either refused or repaired
+depending on `bare_newlines`.
+
+## MQTT listener
+
+**A device connects and is immediately dropped with no CONNACK.** Three
+causes, in this order: it is outside `allow_clients`, the listener is
+over `max_connections`, or its first packet was not a CONNECT. MQTT has
+no reply before CONNACK, so a close is the only answer the protocol
+allows; the access log line says which (`client_not_allowed`,
+`not_connect`), and `mqtt_rejected` counts the first two.
+
+**CONNACK carries a refusal code.** The code says which check: `0x01`
+or `0x84` is the protocol version, `0x02` or `0x85` the client id
+(empty, too long, or not matching `client_id_pattern`), `0x05` or
+`0x87` the policy — no username with `require_auth`, a keep alive
+outside `keep_alive_max`, or a will topic the publish policy refuses.
+3.1.1 and 5.0 spell the same refusal differently, which is why there
+are two codes for each.
+
+**A subscription that looks allowed is refused.** A filter is not a
+topic. `subscribe_allow: ["devices/+/commands"]` allows
+`devices/1/commands` and `devices/+/commands`, and refuses
+`devices/#` and `#`, because those could deliver topics the entry never
+covered. Widen the allow list to the shape you actually want to permit
+rather than relying on the device asking narrowly.
+
+**A subscription to a name that is not denied is still refused.**
+`subscribe_deny` is checked by overlap: `secret/+/key` refuses
+`secret/#` and `+/1/key` too, since either could reach a denied topic.
+
+**Publications vanish with `action: drop`.** They are refused, not
+lost: `mqtt_refused` counts them, the security log says which topic, and
+a QoS 1 or 2 publisher is answered with not-authorized rather than left
+retrying. At QoS 0 there is nothing to answer with, so the drop is
+silent to the client by design.
+
+**The session ends on a packet the device thinks is fine.** Check
+`mqtt_protocol_errors`. The parser refuses what the specification
+forbids and some brokers tolerate: a remaining length with a
+non-shortest encoding, QoS 3, DUP on a QoS 0 publication, a packet id of
+zero, a string that is not UTF-8 or carries NUL or a surrogate, reserved
+flag bits. Nothing is forwarded after one, because the length field is
+what the next read depends on.
+
+**`max_packet_size` ends sessions on a firmware update topic.** The
+bound covers the whole packet and applies in both directions; raise it,
+or move bulk transfers off MQTT. 5.0 clients are not told the proxy's
+maximum in CONNACK — the broker's own value is passed through — so a
+client may believe a larger packet is acceptable and be disconnected by
+this bound.
+
+**A broker packet ends the session with `upstream_protocol`.** The
+broker sent something this proxy would not parse. It is not passed
+through: its framing is what the client's next read depends on.
+
+## SSH bastion
+
+**Every client is refused at authentication.** `ssh_auth_failed` counts
+the attempts and the security log names the method and the user. The
+usual causes are a key that is not in `authorized_keys` (the file is read
+at load, so a key added since needs a reload) and a client offering only
+a method the listener has not configured — without `users_file` there is
+no password authentication at all.
+
+**Authentication succeeds and then the connection drops.** The target
+leg failed. The error log says which: no reachable endpoint, or a host
+key that is not in `upstream_known_hosts`. That second one is the check
+working: the bastion is the one place that can notice a machine in the
+middle, so it refuses rather than connecting anyway. Add the target's
+key to known_hosts with `ssh-keyscan`, having checked it.
+
+**A command is refused but a shell works.** `exec` is in
+`allow_requests` but the command did not match `allow_commands`, which
+are RE2 patterns anchored as written — `uptime` matches anywhere in the
+line unless you write `^uptime$`. The refusal is an `ssh_denied` event
+with the command.
+
+**Port forwarding is refused.** Two separate gates: `direct-tcpip` must
+be in `allow_channels`, and the destination must be in `forward`.
+Validation refuses one without the other, so a listener that allows the
+channel type always has a destination list — an empty one would refuse
+every forward while looking permissive.
+
+**Agent forwarding or X11 does not work.** Both are left out of
+`allow_requests` on purpose. Adding them warns, because each gives
+whatever runs on the target a channel back into the client, and agent
+forwarding lets it sign with the client's keys for as long as the
+session lasts.
+
+**An SFTP client connects and then fails immediately.** Only version 3
+is parsed. A client that negotiates higher is refused at the version
+exchange rather than having its packets guessed at; most clients fall
+back when the server answers 3, but one that insists cannot be
+inspected.
+
+**SFTP refuses a path that looks allowed.** Paths are matched after
+cleaning, and a path that still climbs above its own root
+(`../../etc/x`) is refused outright: its meaning depends on the
+session's working directory, which the proxy cannot see. Use absolute
+paths. `allow_paths` patterns ending in `/**` or `/` cover a tree;
+plain globs do not cross a slash, so `/srv/data/*` does not match
+`/srv/data/a/b`.
+
+**SFTP writes fail with permission denied and the server's own
+permissions are fine.** `read_only` refuses more than `write`: setstat,
+remove, mkdir, rmdir, rename, symlink, and any `open` carrying a
+writing, creating or truncating flag. `sftp_refused` counts them and the
+security log names the operation and the reason.
+
+**A session ends when a command finishes but the exit status is
+missing.** That would be a bug here rather than a policy: the bastion
+relays the target's requests before closing the client's channel, and a
+lost exit status looks to the client like a crash. If you see it,
+collect the access line and the target's own log.
+
+## Second factor (MFA)
+
+**The SSH client says "permission denied" after the key was accepted.**
+That is the second factor doing its job: the key is a partial success
+and the session does not exist until a code verifies. A client that
+cannot do keyboard-interactive (`-o PreferredAuthentications=publickey`,
+or a batch job) will never get past it; give that account its own
+listener without `mfa`, or use a recovery code interactively.
+
+**Every code is refused.** Almost always the clock. TOTP steps are
+thirty seconds, and `skew` accepts one step either side by default;
+beyond a minute of drift nothing will verify. Check the clock on the
+proxy and on the phone. `xproxyctl mfa verify -file … -user … -code …`
+answers the same question without a session in the way.
+
+**A code works once and then never again in the same minute.** It is
+spent: a one-time password used twice is not one-time. Wait for the next
+step. This is also why `skew` above 1 warns — each extra step is a
+window in which an observed code can be replayed.
+
+**A code that failed on one node works on another.** The spent-code
+memory is per process. In a cluster a code can be replayed once per
+node; put the listener behind a single node where that matters, or set
+`skew: 0` so the window is one step.
+
+**The user is refused even with the right code.** They may be locked
+out: `max_failures` within `window` locks for `lockout`, and while
+locked even a correct code is refused. The security log has
+`mfa_failed` with the reason.
+
+**The HTTP filter refuses with "no identity to challenge".** The `mfa`
+filter runs before the one that authenticates. Put it after
+`basic_auth`, `ldap_auth` or `oidc` in the route's `filters` list —
+it challenges an identity, and a request with none has nothing to
+challenge.
+
+**The challenge form appears on every request.** The cookie is not
+coming back. It is `Secure` and defaults to the `__Host-` prefix, so it
+needs HTTPS and a path of `/`; on a plaintext listener no browser will
+return it. It is also bound to the user, so a session that changes
+identity is challenged again.
+
+**Everyone was signed out after a secret rotation.** They should not
+have been: the cookie is checked against every key in the ring. If it
+happened, the `cookie_secret_file` was replaced rather than rotated —
+use `xproxyctl rotate` so the old key stays in the ring.
+
+**A user lost their phone.** A recovery code from the enrolment works
+once in place of a code, at which point it is spent for good; re-enrol
+the user afterwards with `xproxyctl mfa enrol` and replace their line.
 
 ## Mirroring and shadowing
 
@@ -2335,6 +2616,9 @@ innocent.
 | `forward_denied`, `forward_auth` | The forward proxy | yes |
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
+| `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
+| `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command or forward, or a refused SFTP request (`detail` says which) | yes |
+| `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
 
 A trigger naming a reason that is not in the Ban column fails
 validation with the list of the ones that are, so this is not something

@@ -164,11 +164,97 @@ func applyDefaults(c *Config) {
 				setInt(&d.RateLimit.Burst, 100)
 			}
 		}
+		if m := s.Listeners[i].SMTP; m != nil {
+			if m.TLSMode == "" {
+				if s.Listeners[i].TLS != nil {
+					m.TLSMode = "starttls"
+				} else {
+					m.TLSMode = "none"
+				}
+			}
+			// require_tls defaults on where TLS is reachable at all.
+			// A listener that offers STARTTLS and does not insist on it
+			// is one downgrade away from sending the password in clear.
+			if !m.RequireTLS && (m.TLSMode == "starttls" || m.TLSMode == "implicit") {
+				m.RequireTLS = true
+			}
+			setStr(&m.UpstreamTLSMode, "none")
+			if m.UpstreamTLS != nil {
+				setStr(&m.UpstreamTLS.MinVersion, "1.2")
+			}
+			setStr(&m.BareNewlines, "reject")
+			setInt(&m.MaxCommandLine, smtpMaxCommandLine)
+			setInt(&m.MaxTextLine, smtpMaxTextLine)
+			setInt(&m.MaxRecipients, 100)
+			setInt(&m.MaxMessages, 100)
+			setInt(&m.MaxErrors, 10)
+			setInt(&m.MaxConnections, 1000)
+			setDur(&m.ReadTimeout, 5*time.Minute)
+			setDur(&m.SessionTimeout, 30*time.Minute)
+			if len(m.Commands) == 0 {
+				m.Commands = append([]string(nil), DefaultSMTPCommands...)
+			}
+		}
+		if q := s.Listeners[i].MQTT; q != nil {
+			if q.TLSMode == "" {
+				if s.Listeners[i].TLS != nil {
+					q.TLSMode = "implicit"
+				} else {
+					q.TLSMode = "none"
+				}
+			}
+			setStr(&q.UpstreamTLSMode, "none")
+			if q.UpstreamTLS != nil {
+				setStr(&q.UpstreamTLS.MinVersion, "1.2")
+			}
+			setStr(&q.Action, "disconnect")
+			for _, b := range []**bool{&q.AllowEmptyClientID, &q.AllowRetain, &q.AllowWildcardSubscribe} {
+				if *b == nil {
+					t := true
+					*b = &t
+				}
+			}
+			if len(q.Versions) == 0 {
+				q.Versions = append([]string(nil), DefaultMQTTVersions...)
+			}
+			setInt(&q.MaxClientID, 128)
+			setInt(&q.MaxPacketSize, 1<<20)
+			setInt(&q.MaxTopicLength, 512)
+			setInt(&q.MaxTopicLevels, 16)
+			setInt(&q.MaxSubscriptions, 64)
+			setInt(&q.MaxConnections, 10000)
+			setDur(&q.ConnectTimeout, 30*time.Second)
+			setDur(&q.IdleTimeout, 10*time.Minute)
+		}
+		if h := s.Listeners[i].SSH; h != nil {
+			setStr(&h.ServerVersion, "SSH-2.0-xproxy")
+			setInt(&h.MaxAuthTries, 3)
+			setInt(&h.MaxSessions, 1000)
+			setInt(&h.MaxChannels, 16)
+			setDur(&h.HandshakeTimeout, 30*time.Second)
+			setDur(&h.IdleTimeout, 30*time.Minute)
+			if len(h.AllowChannels) == 0 {
+				h.AllowChannels = append([]string(nil), DefaultSSHChannels...)
+			}
+			if len(h.AllowRequests) == 0 {
+				h.AllowRequests = append([]string(nil), DefaultSSHRequests...)
+			}
+			if len(h.AllowSubsystems) == 0 {
+				h.AllowSubsystems = append([]string(nil), DefaultSSHSubsystems...)
+			}
+			if h.SFTP != nil {
+				setInt(&h.SFTP.MaxPacketSize, 256<<10)
+			}
+			if h.MFA != nil {
+				mfaDefaults(h.MFA)
+			}
+		}
 		ln := &s.Listeners[i]
-		if ln.Kind == "tcp" || ln.Kind == "dns" {
-			// No HTTP protocol defaults on a non-HTTP listener; an
-			// encrypted dns listener still gets the TLS defaults.
-			if ln.Kind == "dns" && ln.TLS != nil {
+		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ssh" {
+			// No HTTP protocol defaults on a non-HTTP listener; a dns,
+			// smtp or mqtt listener with TLS still gets the TLS
+			// defaults.
+			if (ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt") && ln.TLS != nil {
 				setStr(&ln.TLS.MinVersion, "1.2")
 				setStr(&ln.TLS.ClientAuth, "none")
 			}
@@ -830,3 +916,20 @@ const (
 	DefaultIntrospectionCacheTTL = time.Minute
 	DefaultIntrospectionTimeout  = 3 * time.Second
 )
+
+// mfaDefaults fills an MFA policy wherever it is used.
+func mfaDefaults(m *MFAPolicy) {
+	setStr(&m.Issuer, "xproxy")
+	setStr(&m.Prompt, "One-time code: ")
+	if m.Skew == 0 {
+		m.Skew = 1
+	}
+	if m.RequireEnrolment == nil {
+		t := true
+		m.RequireEnrolment = &t
+	}
+	setInt(&m.MaxFailures, 5)
+	setDur(&m.Window, 5*time.Minute)
+	setDur(&m.Duration, 15*time.Minute)
+	setInt(&m.MaxUsers, 10000)
+}

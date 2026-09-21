@@ -66,7 +66,7 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; not on `kind: tcp` (which forwards a header instead) or `dns`. |
-| `kind` | `http`, `tcp`, `forward`, `dns` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients and `dns` a DNS proxy; see below |
+| `kind` | `http`, `tcp`, `forward`, `dns`, `smtp`, `mqtt`, `ssh` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy and `ssh` an SSH bastion; see below |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 
 ### server.listeners[].tcp (kind: tcp)
@@ -141,6 +141,57 @@ connection limits and the header timeouts apply as on every listener.
 | `max_response_bytes` | int | `67108864` | Largest plain response body relayed; a larger one is cut off and the connection closed; 0 disables |
 | `socks5` | bool | `false` | Also speak SOCKS5 (RFC 1928) on this port; see below |
 | `socks_udp` | bool | `false` | Allow SOCKS5 `UDP ASSOCIATE` (requires `socks5`) |
+| `masque` | object | none | UDP and IP proxying over extended CONNECT (RFC 9298, RFC 9484); see below |
+
+#### MASQUE on a forward listener
+
+HTTP `CONNECT` tunnels TCP, and that is all it tunnels. Everything else
+an estate sends — DNS, QUIC, NTP, WireGuard, telemetry — either leaves
+the network outside this policy or does not leave at all, and the first
+is the usual answer. CONNECT-UDP (RFC 9298) is the same explicit proxy
+for datagrams, with the same destination rules, credentials, logs and
+bans; CONNECT-IP (RFC 9484) carries IP packets, which is how a MASQUE
+VPN is built.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `udp` | bool | `false` | Accept `connect-udp` |
+| `ip` | bool | `false` | Accept `connect-ip`; needs `ip_device`, `ip_assign` and `ip_routes` |
+| `max_sessions` | int | `1024` | Concurrent MASQUE sessions on this listener; over it, 503 |
+| `ip_device` | name | | An existing `tun` interface the operator created, addressed, routed and firewalled (Linux only) |
+| `ip_assign` | list of CIDR | | The source addresses a client is told to use; a packet from anything else is dropped |
+| `ip_routes` | list of CIDR | | The ranges a client may send to; a packet to anything else is dropped |
+
+Both need **HTTP/2 or HTTP/3**, because an extended CONNECT carries a
+`:protocol` pseudo-header that HTTP/1.1 has no way to express: the
+listener needs `tls` with `h2` in its `protocols`. Datagrams travel as
+capsules (RFC 9297) rather than HTTP datagrams — the fallback RFC 9298
+requires, reliable and ordered, which for a proxy applying a policy to
+each datagram is a feature: an unreliable path would make a refused
+datagram indistinguishable from a lost one.
+
+Every extended CONNECT is answered here, not only the two protocols
+implemented: an unimplemented one gets 501 rather than falling through
+to the ordinary `CONNECT` path, where a request carrying a path and no
+authority would otherwise be treated as a TCP tunnel to whatever its
+`:authority` said.
+
+**CONNECT-IP needs a tunnel device**, and the proxy does not create
+one. A userspace process cannot put an arbitrary IP packet on the wire;
+a raw socket would need `CAP_NET_RAW`, would not receive the replies a
+session needs, and would let a bug here forge any packet on the
+network. A `tun` interface is the honest mechanism: the operator
+creates, addresses, routes and firewalls it (`ip tuntap add mode tun
+xproxy0`, and the rest), and the proxy only opens it. The network
+policy of a VPN belongs to the host's configuration, not to this file.
+Where no device is available the request is refused with 501 and a
+reason in the error log rather than failing obscurely.
+
+Packets are checked before forwarding: the source must be inside
+`ip_assign` and the destination inside `ip_routes`, or the packet is
+dropped and counted. That is the anti-spoofing rule, and it is why both
+lists are required — a client that has not been told a source address
+and a destination range has no business sending anything.
 
 #### SOCKS5 on a forward listener
 
@@ -223,7 +274,7 @@ browsers should use it) side by side.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `upstreams` | list | required | Resolvers tried in turn, rotating the first choice per query: `host:port` (UDP, TCP on truncation), `tls://host:port` (DNS over TLS, connections reused), `https://host[:port]/path` (DNS over HTTPS, POST `application/dns-message` with id 0) |
+| `upstreams` | list | required | Resolvers tried in turn, rotating the first choice per query: `host:port` (UDP, TCP on truncation), `tls://host:port` (DNS over TLS, connections reused), `quic://host:port` (DNS over QUIC, RFC 9250, connection reused, id 0), `https://host[:port]/path` (DNS over HTTPS, POST `application/dns-message` with id 0) |
 | `upstream_ca_file` | path | system pool | Pins the CA of `tls://` and `https://` upstreams; the host in the upstream string is the name verified |
 | `timeout` | duration | `2s` | One upstream attempt; at most 30s |
 | `allow_clients` | list of CIDR | `[]` (any) | Other clients get REFUSED |
@@ -240,7 +291,75 @@ browsers should use it) side by side.
 | `max_in_flight` | int | `1024` | Queries being handled at once; beyond it UDP queries are dropped |
 | `log_queries` | bool | `false` | One `dns` access log line per query (client, name, type, rcode, source, bytes, duration). Query logs are personal data; leave off unless needed |
 | `doh_path` | path | `/dns-query` | DNS over HTTPS path on an encrypted listener; other paths answer 404 |
+| `doq` | bool | `false` | Also serve DNS over QUIC (RFC 9250) on this listener's UDP port; see below |
+| `discovery` | list | `[]` | Advertise this resolver's encrypted endpoints at `_dns.resolver.arpa` (RFC 9462); see below |
+| `records` | list | `[]` | SVCB and HTTPS records this resolver answers itself; see below |
 | `dnssec` | object | none | Validate answers; see below |
+
+#### server.listeners[].dns.doq
+
+DNS over QUIC. DoT and DoH both carry DNS over TCP, so they inherit its
+head-of-line blocking: one slow answer holds up every query behind it
+on the same connection, which is precisely the shape of a resolver's
+traffic. DoQ puts each query on its own QUIC stream, so the answers are
+independent, while keeping DoT's privacy properties — the same
+certificate, the same server name, no HTTP layer.
+
+It shares the listener's address and certificate, on UDP where DoT and
+DoH use TCP, and is separated from HTTP/3 by its ALPN (`doq`). Each
+stream carries one query and one answer with a two byte length prefix,
+as over TCP. The message id is zero on the wire, which RFC 9250
+requires: the stream identifies the exchange, so an id would only leak
+something about the client. `queries_doq` counts them.
+
+`quic://host:port` is the matching upstream transport, so a chain of
+resolvers can be QUIC end to end.
+
+#### server.listeners[].dns.discovery
+
+Discovery of Designated Resolvers (RFC 9462). A client handed this
+proxy's address by DHCP has no way to know it also speaks DoT, DoH or
+DoQ. DDR is the answer: the client asks `_dns.resolver.arpa` for SVCB
+records, this resolver answers with its own encrypted endpoints, the
+client verifies the certificate against the name in the record, and
+upgrades itself. Nothing is configured on the client.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `transport` | `dot`, `doh`, `doq` | required | Which encrypted transport this entry advertises |
+| `name` | name | required | The name the endpoint's certificate covers; a client that cannot verify it stays on plaintext rather than trusting the record |
+| `port` | int | 853 (`dot`, `doq`), 443 (`doh`) | The endpoint's port |
+| `doh_path` | URI template | `/dns-query{?dns}` | For `doh`; RFC 9461's `dohpath` parameter |
+| `ipv4`, `ipv6` | lists of addresses | `[]` | Address hints, so a client need not resolve the name it was just handed |
+| `ttl` | int | `300` | TTL of the records |
+
+Entries are advertised in the order listed: the first gets priority 1,
+which is what a client prefers. The verification is the point — a
+record that names a certificate this endpoint cannot present makes
+clients fall back to plaintext, so the name has to be one the listener
+really serves.
+
+#### server.listeners[].dns.records
+
+SVCB and HTTPS records (RFC 9460) this resolver answers itself, without
+asking an upstream. The reason this exists is ECH: a client cannot
+encrypt its ClientHello until it has read the `ech` parameter from an
+HTTPS record, so an estate running its own resolver publishes it here.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required | The name the record is published for |
+| `type` | `https`, `svcb` | `https` | Record type |
+| `priority` | int | `0` | 0 is an alias record (no parameters); 1 and up are service records, lowest first |
+| `target` | name | `.` | The endpoint name; `.` means the owner name itself |
+| `ttl` | int | `300` | Seconds |
+| `params` | mapping | `{}` | Service parameters in presentation form: `alpn: "h3,h2"`, `port: "443"`, `ech: "AEr+DQ..."` (the value `xproxyctl ech keygen` prints), `ipv4hint`, `ipv6hint`, `dohpath`, `mandatory`, `no-default-alpn`, or `keyNNNNN` for one this build does not name |
+
+A name listed here is **owned**: it is answered from this set and never
+forwarded, and a type it does not have gets NOERROR with no answers
+rather than an upstream lookup, because a forwarded answer would
+contradict the local one. Answers carry the AA bit. `queries_local`
+counts them and `xproxyctl dns` lists the names.
 
 #### server.listeners[].dns.dnssec
 
@@ -273,6 +392,288 @@ indeterminate counts, the key cache size and lookups.
 cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated,
 upstream failures); `DELETE /v1/dns` and `xproxyctl dns purge` empty
 the caches. Metrics: `xproxy_dns_*{listener}`.
+
+### server.listeners[].smtp (kind: smtp)
+
+A `kind: smtp` listener is a protocol-aware SMTP proxy. It speaks one
+session to the client and a second one to the upstream, and decides for
+itself where every command and every message ends, writing each one out
+again rather than passing bytes through. That is the whole point of it:
+a layer 4 splice carries the same octets, but then the client and the
+mail server each parse them on their own, and every SMTP smuggling bug
+there has ever been lives in the gap between two such parses.
+
+What follows from that:
+
+- A line must end with CRLF. A bare LF is refused (`bare_newlines:
+  reject`) or repaired to CRLF (`convert`); a bare CR inside a line is
+  always refused. Either way the two ends see the same line structure.
+- The end of a message is `CRLF.CRLF` and nothing else, decided once,
+  on the stream the proxy itself writes. Dot stuffing is passed through
+  untouched, so only the terminator is interpreted.
+- `CHUNKING` and `BDAT` are never advertised or relayed: BDAT carries a
+  length instead of a terminator, so relaying it would put the decision
+  back in two places.
+- A reply the proxy cannot parse is never passed on. The client gets
+  `421` and the session ends, because a reply the proxy did not
+  understand is exactly the one the client would read differently.
+- Anything pipelined behind `STARTTLS` ends the session with `554`
+  (`starttls_injection`, a `smtp_denied` ban reason). Those octets were
+  written before the client could see the `220`, so they were meant to
+  be plaintext for one side and ciphertext for the other —
+  CVE-2011-0411. After the handshake the session forgets its greeting
+  and its authentication, as RFC 3207 section 4.2 requires, and the
+  upstream leg is reset with it.
+
+The listener takes `address`, `smtp`, and `tls` when a TLS mode needs a
+certificate; `proxy_protocol` works as on an HTTP listener. Bans and the
+global connection limits apply at accept. Changing the `smtp` section
+rebinds the listener on reload.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | upstream | required | The mail server pool. Endpoints are picked with the upstream's balancer, dial failures try the next and feed outlier ejection |
+| `tls_mode` | `starttls`, `implicit`, `none` | `starttls` with `tls`, else `none` | How the client reaches the listener: upgraded by the STARTTLS command (25, 587), TLS from the first octet (465, RFC 8314), or never. `starttls` and `implicit` need the listener's `tls` |
+| `require_tls` | bool | `true` when a TLS mode is set | Refuse AUTH (`538`), MAIL and VRFY (`530`) until the session is encrypted. This is the difference between offering TLS and requiring it |
+| `require_auth` | bool | `false` | Refuse MAIL (`530`) until the session has authenticated. A submission listener wants this; a listener taking inbound mail has no authentication to require |
+| `banner` | string | none | Replace the upstream greeting. Without it, every prober learns which mail server is behind this address, version and all |
+| `hostname` | name | the banner's first word, else `xproxy` | The name the proxy gives in its own EHLO to the upstream |
+| `max_command_line` | int | `512` | Command line including CRLF, the bound of RFC 5321 section 4.5.3.1.1; 64..4096. Over it: `500` and the session ends, with the rest of the line consumed so its tail is never read as a command |
+| `max_text_line` | int | `1000` | Message line including CRLF; at least `max_command_line`, at most 1048576 |
+| `max_message_size` | int | `0` (the upstream's own limit) | One message in octets, advertised as `SIZE` and replacing the upstream's. A `SIZE=` on MAIL over it is refused before the body is sent; a body that runs over it is refused with `552` and the upstream connection is dropped without its terminator, so a truncated message is never delivered as a whole one |
+| `max_recipients` | int | `100` | RCPT commands per message; over it `452` |
+| `max_messages` | int | `100` | Messages per connection; over it `421` |
+| `max_errors` | int | `10` | Refused commands before the session ends with `421`. This is what stops a prober walking the command space |
+| `max_connections` | int | `1000` | Sessions on this listener; over it `421` |
+| `read_timeout` | duration | `5m` | One command or message line, the minimum RFC 5321 section 4.5.3.2 asks for; at most 1h |
+| `session_timeout` | duration | `30m` | A whole session; at most 24h, and not shorter than `read_timeout` |
+| `commands` | list | `EHLO, HELO, MAIL, RCPT, DATA, RSET, NOOP, QUIT, AUTH, STARTTLS` | Verbs a client may send; anything else is `502` and counts towards `max_errors`. `QUIT` and one of `EHLO`/`HELO` are required. `VRFY` and `EXPN` are left out by default and warn when added: they let a prober test whether an address exists |
+| `hide_capabilities` | list | `[]` | EHLO keywords stripped from the upstream's answer, on top of `STARTTLS`, `CHUNKING` and `BDAT`, which are always removed |
+| `bare_newlines` | `reject`, `convert` | `reject` | A line ended by LF alone: refuse the session, or repair it to CRLF. Repair is safe only because the proxy re-emits every line itself |
+| `upstream_tls_mode` | `none`, `starttls`, `implicit` | `none` | How the proxy reaches the upstream. `none` is right when the hop is inside a trusted network and wrong everywhere else; with `starttls` an upstream that does not offer it fails the session rather than continuing in clear |
+| `upstream_tls` | object | none | Verification for the upstream leg: same keys as `upstreams[].tls`. Without `server_name` the endpoint's host is verified |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the upstream |
+| `allow_clients` | list of CIDR | `[]` (any) | Others get `554` before any session starts (`client_not_allowed`). Empty is right for inbound mail and wrong for submission |
+| `xclient` | bool | `false` | After the proxy's own EHLO, send `XCLIENT ADDR= PORT=` (the Postfix extension) when the upstream advertises it, so the mail server's logs and policies see the real client |
+
+Every session writes one `smtp` line to the access log with the client
+address, whether it was encrypted, messages, octets, refusals, the
+endpoint and why it closed. AUTH arguments, challenges and responses are
+never logged: they carry the password. Counters: `smtp_sessions`,
+`smtp_sessions_open`, `smtp_messages`, `smtp_refused`, `smtp_rejected`,
+`smtp_tls_upgrades`, `smtp_protocol_errors`, `smtp_bytes_in`; the
+matching `xproxy_smtp_*` metrics. Protocol violations are `smtp_denied`
+deny events, so a `bans.triggers` entry on that reason turns a prober
+into a ban.
+
+### server.listeners[].mqtt (kind: mqtt)
+
+A `kind: mqtt` listener is a protocol-aware MQTT proxy for 3.1.1 (OASIS,
+also ISO/IEC 20922) and 5.0. Every control packet is read; the ones that
+carry a policy question — who is connecting, what they publish, what
+they subscribe to — are decided before they reach the broker, and the
+rest are forwarded untouched.
+
+The reason it is not a layer 4 listener: an MQTT broker's authorisation
+is per topic, and a topic is a string inside a packet. Without reading
+the packets there is nowhere to say that a device may publish its own
+telemetry and nothing else, and a device holding a broker credential
+holds the whole tree.
+
+What that gets you beyond a splice:
+
+- **A subscription is a filter, not a topic.** `sensors/#` is allowed
+  only when an entry of `subscribe_allow` covers everything that filter
+  could deliver, and refused when it could reach anything in
+  `subscribe_deny`. Matching a filter as though it were a topic is how
+  `#` slips through an allow list of `sensors/+`.
+- **The will goes through the publish policy.** A will is a message the
+  broker publishes for the client after it is gone; checking it at
+  CONNECT is the only moment there is.
+- **A malformed packet ends the session, forwarding nothing.** Its
+  remaining length is what the next read depends on, so a packet the
+  proxy could not parse is a stream it can no longer frame — in either
+  direction.
+- **A session begins with CONNECT and has exactly one.** A first packet
+  of another type never reaches the broker, and a second CONNECT would
+  take a new identity on a session already authorised as another.
+- **Only the versions the proxy parses are accepted.** A version it
+  cannot parse is a packet it cannot check, so there is no "accept
+  anything" setting.
+
+MQTT has no in-band upgrade, so `tls_mode` is `implicit` or nothing; a
+plaintext listener stays plaintext for the life of the session. The
+listener takes `address`, `mqtt` and `tls`; `proxy_protocol` works as on
+an HTTP listener, and bans and the global connection limits apply at
+accept. Changing the `mqtt` section rebinds the listener on reload.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | upstream | required | The broker pool. Endpoints are picked with the upstream's balancer, dial failures try the next and feed outlier ejection |
+| `tls_mode` | `implicit`, `none` | `implicit` with `tls`, else `none` | TLS from the first octet (8883), or never. `implicit` needs the listener's `tls`; `none` warns, because there is no upgrade to fall back on |
+| `upstream_tls_mode` | `none`, `implicit` | `none` | How the proxy reaches the broker |
+| `upstream_tls` | object | none | Verification for the broker leg: same keys as `upstreams[].tls`. Without `server_name` the endpoint's host is verified |
+| `versions` | list | `["3.1.1", "5.0"]` | Protocol versions accepted. Anything else is refused at CONNECT with the code that version spells it with (`0x01` in 3.1.1, `0x84` in 5.0) |
+| `require_auth` | bool | `false` | Refuse a CONNECT without a username. The broker still verifies the password; this stops an anonymous session reaching it |
+| `allow_empty_client_id` | bool | `true` | The empty client id, which 3.1.1 allows with a clean session and 5.0 answers with an assigned one. Turning it off is what makes every session identifiable in the logs |
+| `max_client_id` | int | `128` | Client id length; 1..65535 |
+| `client_id_pattern` | RE2 | none | The client id must match, anchored as written |
+| `max_packet_size` | int | `1048576` | One control packet including its header, in either direction; 1024..268435460. Refused **before** the body is read, so the bound is on what the proxy allocates |
+| `max_topic_length` | int | `512` | A topic name or filter |
+| `max_topic_levels` | int | `16` | Levels in a topic or filter |
+| `publish_allow` | list of filters | `[]` (any) | Checked against the topic of every client PUBLISH and against the will topic |
+| `publish_deny` | list of filters | `[]` | Checked the same way; deny wins |
+| `subscribe_allow` | list of filters | `[]` (any) | A subscription is allowed only when one entry subsumes it |
+| `subscribe_deny` | list of filters | `[]` | A subscription is refused when it overlaps one entry |
+| `max_subscriptions` | int | `64` | Live subscriptions per session |
+| `allow_retain` | bool | `true` | PUBLISH with the retain flag, and a retained will. A retained message outlives the session that set it |
+| `allow_wildcard_subscribe` | bool | `true` | `+` and `#` in a subscription at all. With an allow list this rarely needs turning off |
+| `keep_alive_max` | duration | `0` (any) | The largest keep alive a client may ask for; `0` from the client is also refused, since it asks the broker never to time the session out. At most 18h12m15s, the range of the uint16 the protocol carries it in |
+| `max_connections` | int | `10000` | Sessions on this listener; over it the connection is closed (MQTT has no reply before CONNECT) |
+| `connect_timeout` | duration | `30s` | Waiting for the CONNECT packet, as 3.1.1 section 3.1 asks |
+| `idle_timeout` | duration | `10m` | No packet in either direction |
+| `action` | `disconnect`, `drop` | `disconnect` | On a refused PUBLISH or SUBSCRIBE. `drop` refuses the one packet and acknowledges it — PUBACK or PUBREC with `0x87` at QoS 1 and 2, a SUBACK of `0x80` for every filter — so a fleet does not fall off the network over one misconfigured device. A PUBREL for a refused QoS 2 publication is answered by the proxy, since the broker never saw the PUBLISH |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the broker |
+| `allow_clients` | list of CIDR | `[]` (any) | Others are closed before the CONNECT is read |
+
+Every session writes one `mqtt` line to the access log with the client
+address, client id, username, version, subscriptions, publications and
+why it closed. Counters: `mqtt_sessions`, `mqtt_sessions_open`,
+`mqtt_published`, `mqtt_subscribed`, `mqtt_refused`, `mqtt_rejected`,
+`mqtt_protocol_errors`; the matching `xproxy_mqtt_*` metrics. Refusals
+are `mqtt_denied` deny events, so a `bans.triggers` entry on that reason
+turns a device walking the topic tree into a ban.
+
+A note on `$`: a wildcard at the first level of a filter never matches a
+topic beginning with `$` (MQTT 3.1.1 section 4.7), so `#` does not hand a
+client the broker's own `$SYS` tree. `subscribe_deny: ["$SYS/#"]` is
+still worth writing, because it refuses the client that asks for it by
+name.
+
+### server.listeners[].ssh (kind: ssh)
+
+A `kind: ssh` listener is an SSH bastion: the proxy is an SSH server to
+the client and an SSH client to the target, with its own host key, its
+own authentication and its own credential onwards.
+
+The two connections are the point. A jump host that forwards the stream
+cannot see which channel is a shell and which is a port forward, so the
+only policy it can hold is "may connect". Here every channel and every
+request inside the session is a decision: a service account can be given
+sftp to one directory and nothing else, and a port forward to a database
+is a rule rather than an assumption.
+
+It also means the target never sees the client's key. The client
+authenticates to the proxy; the proxy authenticates to the target with a
+credential the client never holds, so a key that leaves the estate is
+not a key that opens a server in it. `upstream_known_hosts` is what makes
+the bastion the one place that can notice a machine in the middle.
+
+An ssh listener takes `address` and `ssh` and no `tls`: SSH carries its
+own transport security. Bans and the global connection limits apply at
+accept. Changing the `ssh` section rebinds the listener on reload, and
+the credentials are read then — not per connection, so a key added to
+`authorized_keys` takes effect on reload rather than mid-session.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | upstream | required | The pool of target hosts, picked with the upstream's balancer |
+| `host_keys` | list of paths | required | The bastion's own host keys, OpenSSH or PEM. Clients pin these |
+| `authorized_keys` | path | | OpenSSH authorized_keys of the clients that may connect. Options in the file are ignored; the policy lives here. A line that does not parse fails the load rather than silently shortening the list |
+| `users_file` | path | | A users file (as in `forward.auth`) for password authentication. Warned about on its own: a bastion behind one guessable secret is one guess from the estate |
+| `banner` | string | none | Sent before authentication. A legal notice belongs here; a version string does not |
+| `server_version` | string | `SSH-2.0-xproxy` | The identification string; must begin with `SSH-2.0-` |
+| `max_auth_tries` | int | `3` | Authentication attempts per connection |
+| `max_sessions` | int | `1000` | Connections on this listener |
+| `max_channels` | int | `16` | Open channels per connection |
+| `handshake_timeout` | duration | `30s` | Key exchange and authentication together |
+| `idle_timeout` | duration | `30m` | No traffic either way |
+| `session_timeout` | duration | `0` (none) | A whole connection, however active |
+| `allow_channels` | list | `[session]` | Channel types a client may open: `session`, `direct-tcpip`, `direct-streamlocal@openssh.com` |
+| `allow_requests` | list | `pty-req, env, shell, exec, subsystem, window-change, signal` | Session requests a client may send. `x11-req` and `auth-agent-req@openssh.com` are left out and warn when added: each hands whatever runs on the target a channel back into the client, and agent forwarding lets it sign with the client's keys for the life of the session |
+| `allow_subsystems` | list | `[sftp]` | Subsystems a client may start, checked even when `subsystem` is allowed |
+| `allow_commands` | list of RE2 | `[]` (any) | An `exec` command must match one, anchored as written. Every allowed exec is a security event with the command line |
+| `forward` | list | `[]` | Destinations `direct-tcpip` may reach: `host:port`, `*.suffix:port`, `10.0.0.0/8:port`, `*` for any port. Required when `direct-tcpip` is allowed, and refused without it: a forward with no destination policy is a tunnel to anything the target can reach |
+| `remote_forward` | bool | `false` | Accept `tcpip-forward`, which asks the target to listen on the client's behalf and turns the session into an inbound path |
+| `upstream_user` | name | the authenticated name | The account on the target |
+| `upstream_key_file` | path | required | The private key the proxy authenticates to the target with |
+| `upstream_known_hosts` | path | required unless insecure | OpenSSH known_hosts the target's key is checked against. `revoked` entries are not trusted |
+| `upstream_insecure_host_key` | bool | `false` | Accept any host key from the target. Refused unless `allow_insecure` is also set, and warned about: it is the one setting here that leaves nothing to notice a machine in the middle |
+| `mfa` | object | none | Require a second factor after the key or the password; see below |
+| `sftp` | object | none | Inspect the SFTP protocol inside an sftp subsystem channel; see below |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
+| `allow_clients` | list of CIDR | `[]` (any) | Others are closed before the handshake |
+
+#### server.listeners[].ssh.mfa
+
+A second factor after the key or the password. The client is told
+authentication partially succeeded (RFC 4252 partial success) and is
+then asked, over keyboard-interactive, for a one-time code (RFC 6238
+TOTP over the HMAC-OTP of RFC 4226). Nothing about the session exists
+until the code verifies: a key alone opens no channel.
+
+The same section shape, the same enrolment file and the same rules serve
+the HTTP `mfa` filter. That is deliberate — a second factor that means
+different things on different ports is not a second factor, because the
+weakest door decides.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `file` | path | required | The enrolment file (`xproxyctl mfa enrol` writes the lines). Refused if world readable: it holds every second factor |
+| `issuer` | name | `xproxy` | The name an authenticator application shows |
+| `prompt` | string | `One-time code: ` | What the user is asked |
+| `skew` | int | `1` | Steps either side of now that are accepted, for a clock that is a little off. Each step is a window an observed code can be replayed in, so above 2 it warns |
+| `require_enrolment` | bool | `true` | Refuse a user with no enrolment. `false` warns: the account that never enrolled is the one an attacker will use |
+| `max_failures` | int | `5` | Failures within `window` before the user is locked out |
+| `window` | duration | `5m` | The window failures are counted in |
+| `lockout` | duration | `15m` | How long a locked user stays locked |
+| `max_users` | int | `10000` | The table that remembers spent codes and recent failures. When it is full the least recently seen entries are dropped, which loses replay memory for idle users rather than refusing everyone |
+
+A code is spent when it is used: a later attempt at the same step, or at
+an earlier one, is refused even though it verifies. The memory is per
+process, so in a cluster a code can be replayed once per node — put the
+listener behind one node where that matters, or keep `skew` at 0.
+
+What the client is told never distinguishes a wrong code from a replayed
+one, from a locked account, or from a name that never enrolled. The
+prompt is shown even to a user with no enrolment, because refusing
+before asking says the name is not enrolled.
+
+#### server.listeners[].ssh.sftp
+
+Without this section the proxy can say only that a session may use
+`sftp`. That is the difference between reading a file and deleting a
+tree: the whole of it happens inside the channel. With it, each SFTP
+request is decided, and a refusal is answered with a permission-denied
+status, so the session continues and the client is told which operation
+was refused rather than losing its connection.
+
+Only version 3 is parsed. A client that negotiates higher is refused at
+the version exchange, because packets this cannot read are packets whose
+policy would be guesswork.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `read_only` | bool | `false` | Refuse everything that changes the server: write, setstat, remove, mkdir, rmdir, rename, symlink, an open with any writing flag, and the extensions whose meaning the proxy does not know |
+| `allow_paths` | list | `[]` (any) | Paths a request may name: a glob where `*` does not cross a slash, or a prefix ending in `/` or `/**` for a whole tree |
+| `deny_paths` | list | `[]` | Refused whatever the allow list says |
+| `deny_operations` | list | `[]` | Operations refused by name: `open`, `read`, `write`, `remove`, `rename`, `symlink`, `setstat`, `readlink`, `extended`, … |
+| `max_packet_size` | int | `262144` | One SFTP packet; 4096..16777216 |
+
+A path that climbs above its own root after cleaning (`../../etc/shadow`)
+is refused rather than matched: what it means depends on a working
+directory the proxy cannot see, and a check on a path whose meaning is
+unknown is not a check. Absolute paths always work, so nothing legitimate
+needs the other form.
+
+Every session writes one `ssh` line to the access log (client, user,
+authentication method, target, channels, refusals, duration) and each
+inspected SFTP request writes one `sftp` line with the operation and the
+path. Counters: `ssh_sessions`, `ssh_sessions_open`, `ssh_channels`,
+`ssh_refused`, `ssh_rejected`, `ssh_auth_failed`, `ssh_bytes_in`,
+`ssh_bytes_out`, `sftp_requests`, `sftp_refused`; the matching
+`xproxy_ssh_*` and `xproxy_sftp_*` metrics. Refusals and failed
+authentication are `ssh_denied` deny events, so bans apply.
 
 ### server.listeners[].h3
 
@@ -1283,7 +1684,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `account_abuse` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied`, `mqtt_denied`, `ssh_denied` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -2482,6 +2883,44 @@ digest so the hash cost is paid once per client session.
 
 Denies answer 401 with `WWW-Authenticate` and reason `<filter name>`;
 the user name is added to the access log line as `auth_user`.
+
+### Kind `mfa`
+
+A second factor on top of whatever established the identity —
+`basic_auth`, `ldap_auth`, `oidc`, a JWT or an API key. It uses the same
+enrolment file, replay rule and lockout as an ssh listener's `mfa`
+section.
+
+It must run **after** the filter that authenticates: it challenges the
+identity it is given, and a request with none is refused rather than
+challenged, because a second factor with no first factor is a prompt
+with no account behind it.
+
+A request without a verified factor gets an HTML form (401, no
+redirect, so the request that needed the factor is the one that
+resumes). The form posts back to the same path with `?xproxy_mfa=verify`;
+on success a signed cookie is set and the client is sent to where it was
+going. The cookie names the user it was issued for and is checked
+against the identity of each request, so it is worth nothing on another
+account; it is verified against every key in the ring, so rotating the
+secret does not sign everyone out.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `file` | path | required | The enrolment file; refused if world readable |
+| `cookie_secret_file` | path | required | 32+ bytes, created 0600 if absent, rotated with `xproxyctl rotate` |
+| `cookie_name` | name | `__Host-xproxy-mfa` | The cookie carrying the verified factor |
+| `ttl` | duration | `12h` | How long a verified factor lasts; at most 168h |
+| `issuer` | name | `xproxy` | Shown as the page title |
+| `prompt` | string | `One-time code` | The form's label |
+| `skew` | int | `1` | Steps either side of now that are accepted |
+| `require_enrolment` | bool | `true` | Refuse a user with no enrolment |
+| `max_failures`, `window`, `lockout` | | `5`, `5m`, `15m` | Guessing bound, as on an ssh listener |
+| `identity` | list | `[]` (any) | Which identity kinds to challenge, in order of preference: `basic`, `ldap`, `oidc`, `jwt`, `api_key` |
+
+Every failure gets the same page: a wrong code, a replayed one, a locked
+account and a name that never enrolled are one answer. Counters:
+`mfa_verified`, `mfa_failed`; `xproxy_mfa_total` by outcome.
 
 ### Kind `ldap_auth`
 

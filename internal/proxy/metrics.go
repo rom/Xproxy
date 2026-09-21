@@ -192,6 +192,37 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_websocket_violations_total", "WebSocket frames or messages that broke the route's policy.", L{"route": g.Route}, float64(g.Violations))
 		e.Counter("xproxy_websocket_closed_total", "Connections closed by a websocket guard.", L{"route": g.Route}, float64(g.Closed))
 	}
+	e.Counter("xproxy_masque_sessions_total", "MASQUE sessions accepted, by protocol.", L{"protocol": "connect-udp"}, float64(sn.MasqueUDP))
+	e.Counter("xproxy_masque_sessions_total", "MASQUE sessions accepted, by protocol.", L{"protocol": "connect-ip"}, float64(sn.MasqueIP))
+	e.Gauge("xproxy_masque_sessions_open", "Open MASQUE sessions.", nil, float64(sn.MasqueOpen))
+	e.Counter("xproxy_masque_dropped_total", "Datagrams or packets dropped by a MASQUE session: an unknown context, a bad header, a source or destination the policy refuses.", nil, float64(sn.MasqueDropped))
+	e.Counter("xproxy_smtp_sessions_total", "SMTP sessions accepted.", nil, float64(sn.SMTPSessions))
+	e.Gauge("xproxy_smtp_sessions_open", "Open SMTP sessions.", nil, float64(sn.SMTPSessionsOpen))
+	e.Counter("xproxy_smtp_messages_total", "Messages relayed by smtp listeners.", nil, float64(sn.SMTPMessages))
+	e.Counter("xproxy_smtp_refused_total", "SMTP commands refused by the proxy's own policy.", nil, float64(sn.SMTPRefused))
+	e.Counter("xproxy_smtp_rejected_total", "SMTP connections closed at accept: over the listener bound, or from a client the policy does not allow.", nil, float64(sn.SMTPRejected))
+	e.Counter("xproxy_smtp_tls_upgrades_total", "SMTP sessions that completed STARTTLS.", nil, float64(sn.SMTPTLSUpgrades))
+	e.Counter("xproxy_smtp_protocol_errors_total", "SMTP sessions ended on a protocol violation: an overlong line, a bare newline, a reply that did not parse, or data pipelined across STARTTLS.", nil, float64(sn.SMTPProtocolErrors))
+	e.Counter("xproxy_smtp_bytes_total", "Message octets relayed by smtp listeners.", L{"direction": "in"}, float64(sn.SMTPBytesIn))
+	e.Counter("xproxy_mqtt_sessions_total", "MQTT sessions accepted.", nil, float64(sn.MQTTSessions))
+	e.Gauge("xproxy_mqtt_sessions_open", "Open MQTT sessions.", nil, float64(sn.MQTTSessionsOpen))
+	e.Counter("xproxy_mqtt_published_total", "PUBLISH packets relayed to the broker.", nil, float64(sn.MQTTPublished))
+	e.Counter("xproxy_mqtt_subscribed_total", "SUBSCRIBE packets relayed to the broker.", nil, float64(sn.MQTTSubscribed))
+	e.Counter("xproxy_mqtt_refused_total", "MQTT packets refused by the topic policy or a bound.", nil, float64(sn.MQTTRefused))
+	e.Counter("xproxy_mqtt_rejected_total", "MQTT connections closed at accept: over the listener bound, or from a client the policy does not allow.", nil, float64(sn.MQTTRejected))
+	e.Counter("xproxy_mqtt_protocol_errors_total", "MQTT sessions ended on a malformed packet, from either side.", nil, float64(sn.MQTTProtocolErrors))
+	e.Counter("xproxy_ssh_sessions_total", "SSH bastion sessions accepted.", nil, float64(sn.SSHSessions))
+	e.Gauge("xproxy_ssh_sessions_open", "Open SSH bastion sessions.", nil, float64(sn.SSHSessionsOpen))
+	e.Counter("xproxy_ssh_channels_total", "SSH channels opened through the bastion.", nil, float64(sn.SSHChannels))
+	e.Counter("xproxy_ssh_refused_total", "SSH channels and requests refused by the bastion's policy.", nil, float64(sn.SSHRefused))
+	e.Counter("xproxy_ssh_rejected_total", "SSH connections closed at accept: over the listener bound, or from a client the policy does not allow.", nil, float64(sn.SSHRejected))
+	e.Counter("xproxy_ssh_auth_failed_total", "Failed SSH authentication attempts.", nil, float64(sn.SSHAuthFailed))
+	e.Counter("xproxy_ssh_bytes_total", "Bytes relayed through SSH channels.", L{"direction": "in"}, float64(sn.SSHBytesIn))
+	e.Counter("xproxy_ssh_bytes_total", "Bytes relayed through SSH channels.", L{"direction": "out"}, float64(sn.SSHBytesOut))
+	e.Counter("xproxy_sftp_requests_total", "SFTP requests relayed to the target.", nil, float64(sn.SFTPRequests))
+	e.Counter("xproxy_sftp_refused_total", "SFTP requests refused by the policy.", nil, float64(sn.SFTPRefused))
+	e.Counter("xproxy_mfa_total", "Second factor checks, by outcome.", L{"outcome": "verified"}, float64(sn.MFAVerified))
+	e.Counter("xproxy_mfa_total", "Second factor checks, by outcome.", L{"outcome": "failed"}, float64(sn.MFAFailed))
 	e.Counter("xproxy_forward_socks_total", "SOCKS5 connections accepted on forward listeners.", nil, float64(sn.ForwardSOCKS))
 	e.Counter("xproxy_forward_udp_associations_total", "SOCKS5 UDP associations opened.", nil, float64(sn.ForwardUDPAssociations))
 	e.Gauge("xproxy_forward_udp_open", "Open SOCKS5 UDP associations.", nil, float64(sn.ForwardUDPOpen))
@@ -243,6 +274,15 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_dns_servfail_total", "DNS queries answered SERVFAIL (no upstream answer).", l, float64(d.ServFail))
 		e.Counter("xproxy_dns_truncated_total", "DNS answers truncated for UDP clients.", l, float64(d.Truncated))
 		e.Counter("xproxy_dns_upstream_failures_total", "DNS upstream attempts without an answer.", l, float64(d.UpstreamFail))
+		// Per transport, which is how an operator sees an encrypted
+		// rollout happening: the plaintext share is the number that has
+		// to fall.
+		for proto, n := range map[string]uint64{"udp": d.QueriesUDP, "tcp": d.QueriesTCP,
+			"dot": d.QueriesDoT, "doh": d.QueriesDoH, "doq": d.QueriesDoQ} {
+			e.Counter("xproxy_dns_queries_by_transport_total", "DNS queries by transport.",
+				L{"listener": d.Listener, "transport": proto}, float64(n))
+		}
+		e.Counter("xproxy_dns_local_total", "DNS queries answered from the local record set (discovery and published SVCB or HTTPS records).", l, float64(d.QueriesLocal))
 	}
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "sent"}, float64(sn.MirrorSent))
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "dropped"}, float64(sn.MirrorDropped))

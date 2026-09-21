@@ -87,6 +87,37 @@ type Stats struct {
 	ForwardBytesIn         atomic.Uint64
 	ForwardBytesOut        atomic.Uint64
 	ForwardSOCKS           atomic.Uint64
+	MasqueUDP              atomic.Uint64
+	MasqueIP               atomic.Uint64
+	MasqueOpen             atomic.Int64
+	MasqueDropped          atomic.Uint64
+	SMTPSessions           atomic.Uint64
+	SMTPSessionsOpen       atomic.Int64
+	SMTPMessages           atomic.Uint64
+	SMTPRefused            atomic.Uint64
+	SMTPRejected           atomic.Uint64
+	SMTPTLSUpgrades        atomic.Uint64
+	SMTPProtocolErrors     atomic.Uint64
+	SMTPBytesIn            atomic.Uint64
+	MQTTSessions           atomic.Uint64
+	MQTTSessionsOpen       atomic.Int64
+	MQTTPublished          atomic.Uint64
+	MQTTSubscribed         atomic.Uint64
+	MQTTRefused            atomic.Uint64
+	MQTTRejected           atomic.Uint64
+	MQTTProtocolErrors     atomic.Uint64
+	SSHSessions            atomic.Uint64
+	SSHSessionsOpen        atomic.Int64
+	SSHChannels            atomic.Uint64
+	SSHRefused             atomic.Uint64
+	SSHRejected            atomic.Uint64
+	SSHAuthFailed          atomic.Uint64
+	SSHBytesIn             atomic.Uint64
+	SSHBytesOut            atomic.Uint64
+	SFTPRequests           atomic.Uint64
+	SFTPRefused            atomic.Uint64
+	MFAVerified            atomic.Uint64
+	MFAFailed              atomic.Uint64
 	WSConnections          atomic.Uint64
 	WSMessages             atomic.Uint64
 	WSViolations           atomic.Uint64
@@ -236,6 +267,37 @@ type Snapshot struct {
 	ForwardRejected        uint64            `json:"forward_rejected"`
 	ForwardErrors          uint64            `json:"forward_errors"`
 	ForwardSOCKS           uint64            `json:"forward_socks"`
+	MasqueUDP              uint64            `json:"masque_udp"`
+	MasqueIP               uint64            `json:"masque_ip"`
+	MasqueOpen             int64             `json:"masque_open"`
+	MasqueDropped          uint64            `json:"masque_dropped"`
+	SMTPSessions           uint64            `json:"smtp_sessions"`
+	SMTPSessionsOpen       int64             `json:"smtp_sessions_open"`
+	SMTPMessages           uint64            `json:"smtp_messages"`
+	SMTPRefused            uint64            `json:"smtp_refused"`
+	SMTPRejected           uint64            `json:"smtp_rejected"`
+	SMTPTLSUpgrades        uint64            `json:"smtp_tls_upgrades"`
+	SMTPProtocolErrors     uint64            `json:"smtp_protocol_errors"`
+	SMTPBytesIn            uint64            `json:"smtp_bytes_in"`
+	MQTTSessions           uint64            `json:"mqtt_sessions"`
+	MQTTSessionsOpen       int64             `json:"mqtt_sessions_open"`
+	MQTTPublished          uint64            `json:"mqtt_published"`
+	MQTTSubscribed         uint64            `json:"mqtt_subscribed"`
+	MQTTRefused            uint64            `json:"mqtt_refused"`
+	MQTTRejected           uint64            `json:"mqtt_rejected"`
+	MQTTProtocolErrors     uint64            `json:"mqtt_protocol_errors"`
+	SSHSessions            uint64            `json:"ssh_sessions"`
+	SSHSessionsOpen        int64             `json:"ssh_sessions_open"`
+	SSHChannels            uint64            `json:"ssh_channels"`
+	SSHRefused             uint64            `json:"ssh_refused"`
+	SSHRejected            uint64            `json:"ssh_rejected"`
+	SSHAuthFailed          uint64            `json:"ssh_auth_failed"`
+	SSHBytesIn             uint64            `json:"ssh_bytes_in"`
+	SSHBytesOut            uint64            `json:"ssh_bytes_out"`
+	SFTPRequests           uint64            `json:"sftp_requests"`
+	SFTPRefused            uint64            `json:"sftp_refused"`
+	MFAVerified            uint64            `json:"mfa_verified"`
+	MFAFailed              uint64            `json:"mfa_failed"`
 	WSConnections          uint64            `json:"websocket_connections"`
 	WSMessages             uint64            `json:"websocket_messages"`
 	WSViolations           uint64            `json:"websocket_violations"`
@@ -353,6 +415,37 @@ func (s *Stats) snapshot() Snapshot {
 		ForwardRejected:        s.ForwardRejected.Load(),
 		ForwardErrors:          s.ForwardErrors.Load(),
 		ForwardSOCKS:           s.ForwardSOCKS.Load(),
+		MasqueUDP:              s.MasqueUDP.Load(),
+		MasqueIP:               s.MasqueIP.Load(),
+		MasqueOpen:             s.MasqueOpen.Load(),
+		MasqueDropped:          s.MasqueDropped.Load(),
+		SMTPSessions:           s.SMTPSessions.Load(),
+		SMTPSessionsOpen:       s.SMTPSessionsOpen.Load(),
+		SMTPMessages:           s.SMTPMessages.Load(),
+		SMTPRefused:            s.SMTPRefused.Load(),
+		SMTPRejected:           s.SMTPRejected.Load(),
+		SMTPTLSUpgrades:        s.SMTPTLSUpgrades.Load(),
+		SMTPProtocolErrors:     s.SMTPProtocolErrors.Load(),
+		SMTPBytesIn:            s.SMTPBytesIn.Load(),
+		MQTTSessions:           s.MQTTSessions.Load(),
+		MQTTSessionsOpen:       s.MQTTSessionsOpen.Load(),
+		MQTTPublished:          s.MQTTPublished.Load(),
+		MQTTSubscribed:         s.MQTTSubscribed.Load(),
+		MQTTRefused:            s.MQTTRefused.Load(),
+		MQTTRejected:           s.MQTTRejected.Load(),
+		MQTTProtocolErrors:     s.MQTTProtocolErrors.Load(),
+		SSHSessions:            s.SSHSessions.Load(),
+		SSHSessionsOpen:        s.SSHSessionsOpen.Load(),
+		SSHChannels:            s.SSHChannels.Load(),
+		SSHRefused:             s.SSHRefused.Load(),
+		SSHRejected:            s.SSHRejected.Load(),
+		SSHAuthFailed:          s.SSHAuthFailed.Load(),
+		SSHBytesIn:             s.SSHBytesIn.Load(),
+		SSHBytesOut:            s.SSHBytesOut.Load(),
+		SFTPRequests:           s.SFTPRequests.Load(),
+		SFTPRefused:            s.SFTPRefused.Load(),
+		MFAVerified:            s.MFAVerified.Load(),
+		MFAFailed:              s.MFAFailed.Load(),
 		WSConnections:          s.WSConnections.Load(),
 		WSMessages:             s.WSMessages.Load(),
 		WSViolations:           s.WSViolations.Load(),

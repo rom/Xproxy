@@ -326,11 +326,11 @@ T}
 T{
 \fBkind\fR
 T}	T{
-\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR
+\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBssh\fR
 T}	T{
 \fBhttp\fR
 T}	T{
-\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients and \fBdns\fR a DNS proxy;\: see below
+\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy,\: \fBmqtt\fR an MQTT proxy and \fBssh\fR an SSH bastion;\: see below
 T}
 T{
 \fBredirect_\:to_\:https\fR
@@ -559,7 +559,96 @@ T}	T{
 T}	T{
 Allow SOCKS5 \fBUDP ASSOCIATE\fR (requires \fBsocks5\fR)
 T}
+T{
+\fBmasque\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+UDP and IP proxying over extended CONNECT (RFC 9298,\: RFC 9484);\: see below
+T}
 .TE
+.SS "MASQUE on a forward listener"
+.PP
+HTTP \fBCONNECT\fR tunnels TCP, and that is all it tunnels. Everything else an estate sends \[u2014] DNS, QUIC, NTP, WireGuard, telemetry \[u2014] either leaves the network outside this policy or does not leave at all, and the first is the usual answer. CONNECT\-UDP (RFC 9298) is the same explicit proxy for datagrams, with the same destination rules, credentials, logs and bans; CONNECT\-IP (RFC 9484) carries IP packets, which is how a MASQUE VPN is built.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.9i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBudp\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept \fBconnect\-\:udp\fR
+T}
+T{
+\fBip\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept \fBconnect\-\:ip\fR;\: needs \fBip_\:device\fR,\: \fBip_\:assign\fR and \fBip_\:routes\fR
+T}
+T{
+\fBmax_\:sessions\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Concurrent MASQUE sessions on this listener;\: over it,\: 503
+T}
+T{
+\fBip_\:device\fR
+T}	T{
+name
+T}	T{
+
+T}	T{
+An existing \fBtun\fR interface the operator created,\: addressed,\: routed and firewalled (Linux only)
+T}
+T{
+\fBip_\:assign\fR
+T}	T{
+list of CIDR
+T}	T{
+
+T}	T{
+The source addresses a client is told to use;\: a packet from anything else is dropped
+T}
+T{
+\fBip_\:routes\fR
+T}	T{
+list of CIDR
+T}	T{
+
+T}	T{
+The ranges a client may send to;\: a packet to anything else is dropped
+T}
+.TE
+.PP
+Both need \fBHTTP/2 or HTTP/3\fR, because an extended CONNECT carries a \fB:protocol\fR pseudo\-header that HTTP/1.1 has no way to express: the listener needs \fBtls\fR with \fBh2\fR in its \fBprotocols\fR. Datagrams travel as capsules (RFC 9297) rather than HTTP datagrams \[u2014] the fallback RFC 9298 requires, reliable and ordered, which for a proxy applying a policy to each datagram is a feature: an unreliable path would make a refused datagram indistinguishable from a lost one.
+.PP
+Every extended CONNECT is answered here, not only the two protocols implemented: an unimplemented one gets 501 rather than falling through to the ordinary \fBCONNECT\fR path, where a request carrying a path and no authority would otherwise be treated as a TCP tunnel to whatever its \fB:authority\fR said.
+.PP
+\fBCONNECT\-IP needs a tunnel device\fR, and the proxy does not create one. A userspace process cannot put an arbitrary IP packet on the wire; a raw socket would need \fBCAP_NET_RAW\fR, would not receive the replies a session needs, and would let a bug here forge any packet on the network. A \fBtun\fR interface is the honest mechanism: the operator creates, addresses, routes and firewalls it (\fBip tuntap add mode tun xproxy0\fR, and the rest), and the proxy only opens it. The network policy of a VPN belongs to the host\(aqs configuration, not to this file. Where no device is available the request is refused with 501 and a reason in the error log rather than failing obscurely.
+.PP
+Packets are checked before forwarding: the source must be inside \fBip_assign\fR and the destination inside \fBip_routes\fR, or the packet is dropped and counted. That is the anti\-spoofing rule, and it is why both lists are required \[u2014] a client that has not been told a source address and a destination range has no business sending anything.
 .SS "SOCKS5 on a forward listener"
 .PP
 \fBsocks5: true\fR accepts SOCKS5 on the same port as the HTTP proxy. The two cannot be confused: a SOCKS greeting starts with the version byte \fB0x05\fR and an HTTP request starts with a method, so the first byte decides and nothing is configured twice.
@@ -599,7 +688,7 @@ list
 T}	T{
 required
 T}	T{
-Resolvers tried in turn,\: rotating the first choice per query: \fBhost:\:port\fR (UDP,\: TCP on truncation),\: \fBtls:\:/\:/\:host:\:port\fR (DNS over TLS,\: connections reused),\: \fBhttps:\:/\:/\:host[:\:port]/\:path\fR (DNS over HTTPS,\: POST \fBapplication/\:dns\-\:message\fR with id 0)
+Resolvers tried in turn,\: rotating the first choice per query: \fBhost:\:port\fR (UDP,\: TCP on truncation),\: \fBtls:\:/\:/\:host:\:port\fR (DNS over TLS,\: connections reused),\: \fBquic:\:/\:/\:host:\:port\fR (DNS over QUIC,\: RFC 9250,\: connection reused,\: id 0),\: \fBhttps:\:/\:/\:host[:\:port]/\:path\fR (DNS over HTTPS,\: POST \fBapplication/\:dns\-\:message\fR with id 0)
 T}
 T{
 \fBupstream_\:ca_\:file\fR
@@ -746,6 +835,33 @@ T}	T{
 DNS over HTTPS path on an encrypted listener;\: other paths answer 404
 T}
 T{
+\fBdoq\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Also serve DNS over QUIC (RFC 9250) on this listener\(aqs UDP port;\: see below
+T}
+T{
+\fBdiscovery\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Advertise this resolver\(aqs encrypted endpoints at \fB_\:dns.\:resolver.\:arpa\fR (RFC 9462);\: see below
+T}
+T{
+\fBrecords\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+SVCB and HTTPS records this resolver answers itself;\: see below
+T}
+T{
 \fBdnssec\fR
 T}	T{
 object
@@ -755,6 +871,161 @@ T}	T{
 Validate answers;\: see below
 T}
 .TE
+.SS "server.listeners[].dns.doq"
+.PP
+DNS over QUIC. DoT and DoH both carry DNS over TCP, so they inherit its head\-of\-line blocking: one slow answer holds up every query behind it on the same connection, which is precisely the shape of a resolver\(aqs traffic. DoQ puts each query on its own QUIC stream, so the answers are independent, while keeping DoT\(aqs privacy properties \[u2014] the same certificate, the same server name, no HTTP layer.
+.PP
+It shares the listener\(aqs address and certificate, on UDP where DoT and DoH use TCP, and is separated from HTTP/3 by its ALPN (\fBdoq\fR). Each stream carries one query and one answer with a two byte length prefix, as over TCP. The message id is zero on the wire, which RFC 9250 requires: the stream identifies the exchange, so an id would only leak something about the client. \fBqueries_doq\fR counts them.
+.PP
+\fBquic://host:port\fR is the matching upstream transport, so a chain of resolvers can be QUIC end to end.
+.SS "server.listeners[].dns.discovery"
+.PP
+Discovery of Designated Resolvers (RFC 9462). A client handed this proxy\(aqs address by DHCP has no way to know it also speaks DoT, DoH or DoQ. DDR is the answer: the client asks \fB_dns.resolver.arpa\fR for SVCB records, this resolver answers with its own encrypted endpoints, the client verifies the certificate against the name in the record, and upgrades itself. Nothing is configured on the client.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.0i) lbw(1.2i) lbx
+lw(1.0i) lw(1.0i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBtransport\fR
+T}	T{
+\fBdot\fR,\: \fBdoh\fR,\: \fBdoq\fR
+T}	T{
+required
+T}	T{
+Which encrypted transport this entry advertises
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+The name the endpoint\(aqs certificate covers;\: a client that cannot verify it stays on plaintext rather than trusting the record
+T}
+T{
+\fBport\fR
+T}	T{
+int
+T}	T{
+853 (\fBdot\fR,\: \fBdoq\fR),\: 443 (\fBdoh\fR)
+T}	T{
+The endpoint\(aqs port
+T}
+T{
+\fBdoh_\:path\fR
+T}	T{
+URI template
+T}	T{
+\fB/\:dns\-\:query{?dns}\fR
+T}	T{
+For \fBdoh\fR;\: RFC 9461\(aqs \fBdohpath\fR parameter
+T}
+T{
+\fBipv4\fR,\: \fBipv6\fR
+T}	T{
+lists of addresses
+T}	T{
+\fB[]\fR
+T}	T{
+Address hints,\: so a client need not resolve the name it was just handed
+T}
+T{
+\fBttl\fR
+T}	T{
+int
+T}	T{
+\fB300\fR
+T}	T{
+TTL of the records
+T}
+.TE
+.PP
+Entries are advertised in the order listed: the first gets priority 1, which is what a client prefers. The verification is the point \[u2014] a record that names a certificate this endpoint cannot present makes clients fall back to plaintext, so the name has to be one the listener really serves.
+.SS "server.listeners[].dns.records"
+.PP
+SVCB and HTTPS records (RFC 9460) this resolver answers itself, without asking an upstream. The reason this exists is ECH: a client cannot encrypt its ClientHello until it has read the \fBech\fR parameter from an HTTPS record, so an estate running its own resolver publishes it here.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.8i) lbw(0.9i) lbx
+lw(0.9i) lw(0.8i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+The name the record is published for
+T}
+T{
+\fBtype\fR
+T}	T{
+\fBhttps\fR,\: \fBsvcb\fR
+T}	T{
+\fBhttps\fR
+T}	T{
+Record type
+T}
+T{
+\fBpriority\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+0 is an alias record (no parameters);\: 1 and up are service records,\: lowest first
+T}
+T{
+\fBtarget\fR
+T}	T{
+name
+T}	T{
+\fB.\fR
+T}	T{
+The endpoint name;\: \fB.\fR means the owner name itself
+T}
+T{
+\fBttl\fR
+T}	T{
+int
+T}	T{
+\fB300\fR
+T}	T{
+Seconds
+T}
+T{
+\fBparams\fR
+T}	T{
+mapping
+T}	T{
+\fB{}\fR
+T}	T{
+Service parameters in presentation form: \fBalpn:\: "h3,\:h2"\fR,\: \fBport:\: "443"\fR,\: \fBech:\: "AEr+DQ.\:.\:.\:"\fR (the value \fBxproxyctl ech keygen\fR prints),\: \fBipv4hint\fR,\: \fBipv6hint\fR,\: \fBdohpath\fR,\: \fBmandatory\fR,\: \fBno\-\:default\-\:alpn\fR,\: or \fBkeyNNNNN\fR for one this build does not name
+T}
+.TE
+.PP
+A name listed here is \fBowned\fR: it is answered from this set and never forwarded, and a type it does not have gets NOERROR with no answers rather than an upstream lookup, because a forwarded answer would contradict the local one. Answers carry the AA bit. \fBqueries_local\fR counts them and \fBxproxyctl dns\fR lists the names.
 .SS "server.listeners[].dns.dnssec"
 .PP
 With the section present the listener is a validating resolver in front of its upstreams: every upstream query carries the DO bit, and each answer is checked before it reaches the client or the cache. Positive answers need a verified RRSIG on every RRset, chained through DNSKEY and DS records up to a trust anchor; negative answers need a verified NSEC or NSEC3 proof (NXDOMAIN, NODATA, wildcard, opt\-out); an insecure delegation proven by the parent makes answers below it insecure. The outcome shapes the answer: secure answers carry AD when the client set AD or DO, bogus answers become SERVFAIL (a \fBdns_bogus\fR security event) unless the client set CD, insecure and indeterminate answers pass without AD. Clients without DO never receive RRSIG, NSEC or NSEC3 records. Algorithms 5, 7, 8, 10, 13, 14 and 15 and DS digests 1, 2 and 4 are supported; a zone signed only with others counts as insecure (RFC 4035). DNSKEY and DS lookups go to the same upstreams and are cached per zone until the shorter of their TTL and signature validity, bounded to 10000 zones. \fBxproxyctl dns\fR shows secure, insecure, bogus and indeterminate counts, the key cache size and lookups.
@@ -811,6 +1082,977 @@ T}
 .TE
 .PP
 \fBGET /v1/dns\fR and \fBxproxyctl dns\fR show per listener counters (queries, cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated, upstream failures); \fBDELETE /v1/dns\fR and \fBxproxyctl dns purge\fR empty the caches. Metrics: \fBxproxy_dns_*{listener}\fR.
+.SS "server.listeners[].smtp (kind: smtp)"
+.PP
+A \fBkind: smtp\fR listener is a protocol\-aware SMTP proxy. It speaks one session to the client and a second one to the upstream, and decides for itself where every command and every message ends, writing each one out again rather than passing bytes through. That is the whole point of it: a layer 4 splice carries the same octets, but then the client and the mail server each parse them on their own, and every SMTP smuggling bug there has ever been lives in the gap between two such parses.
+.PP
+What follows from that:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+A line must end with CRLF. A bare LF is refused (\fBbare_newlines: reject\fR) or repaired to CRLF (\fBconvert\fR); a bare CR inside a line is always refused. Either way the two ends see the same line structure.
+.PP
+.ti -3n
+\(bu
+The end of a message is \fBCRLF.CRLF\fR and nothing else, decided once, on the stream the proxy itself writes. Dot stuffing is passed through untouched, so only the terminator is interpreted.
+.PP
+.ti -3n
+\(bu
+\fBCHUNKING\fR and \fBBDAT\fR are never advertised or relayed: BDAT carries a length instead of a terminator, so relaying it would put the decision back in two places.
+.PP
+.ti -3n
+\(bu
+A reply the proxy cannot parse is never passed on. The client gets \fB421\fR and the session ends, because a reply the proxy did not understand is exactly the one the client would read differently.
+.PP
+.ti -3n
+\(bu
+Anything pipelined behind \fBSTARTTLS\fR ends the session with \fB554\fR (\fBstarttls_injection\fR, a \fBsmtp_denied\fR ban reason). Those octets were written before the client could see the \fB220\fR, so they were meant to be plaintext for one side and ciphertext for the other \[u2014] CVE\-2011\-0411. After the handshake the session forgets its greeting and its authentication, as RFC 3207 section 4.2 requires, and the upstream leg is reset with it.
+.RE
+.PP
+.PP
+The listener takes \fBaddress\fR, \fBsmtp\fR, and \fBtls\fR when a TLS mode needs a certificate; \fBproxy_protocol\fR works as on an HTTP listener. Bans and the global connection limits apply at accept. Changing the \fBsmtp\fR section rebinds the listener on reload.
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(1.0i) lbw(1.1i) lbx
+lw(1.3i) lw(1.0i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required
+T}	T{
+The mail server pool. Endpoints are picked with the upstream\(aqs balancer,\: dial failures try the next and feed outlier ejection
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+\fBstarttls\fR,\: \fBimplicit\fR,\: \fBnone\fR
+T}	T{
+\fBstarttls\fR with \fBtls\fR,\: else \fBnone\fR
+T}	T{
+How the client reaches the listener: upgraded by the STARTTLS command (25,\: 587),\: TLS from the first octet (465,\: RFC 8314),\: or never. \fBstarttls\fR and \fBimplicit\fR need the listener\(aqs \fBtls\fR
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR when a TLS mode is set
+T}	T{
+Refuse AUTH (\fB538\fR),\: MAIL and VRFY (\fB530\fR) until the session is encrypted. This is the difference between offering TLS and requiring it
+T}
+T{
+\fBrequire_\:auth\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse MAIL (\fB530\fR) until the session has authenticated. A submission listener wants this;\: a listener taking inbound mail has no authentication to require
+T}
+T{
+\fBbanner\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Replace the upstream greeting. Without it,\: every prober learns which mail server is behind this address,\: version and all
+T}
+T{
+\fBhostname\fR
+T}	T{
+name
+T}	T{
+the banner\(aqs first word,\: else \fBxproxy\fR
+T}	T{
+The name the proxy gives in its own EHLO to the upstream
+T}
+T{
+\fBmax_\:command_\:line\fR
+T}	T{
+int
+T}	T{
+\fB512\fR
+T}	T{
+Command line including CRLF,\: the bound of RFC 5321 section 4.5.3.1.1;\: 64..4096. Over it: \fB500\fR and the session ends,\: with the rest of the line consumed so its tail is never read as a command
+T}
+T{
+\fBmax_\:text_\:line\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Message line including CRLF;\: at least \fBmax_\:command_\:line\fR,\: at most 1048576
+T}
+T{
+\fBmax_\:message_\:size\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (the upstream\(aqs own limit)
+T}	T{
+One message in octets,\: advertised as \fBSIZE\fR and replacing the upstream\(aqs. A \fBSIZE=\fR on MAIL over it is refused before the body is sent;\: a body that runs over it is refused with \fB552\fR and the upstream connection is dropped without its terminator,\: so a truncated message is never delivered as a whole one
+T}
+T{
+\fBmax_\:recipients\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+RCPT commands per message;\: over it \fB452\fR
+T}
+T{
+\fBmax_\:messages\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+Messages per connection;\: over it \fB421\fR
+T}
+T{
+\fBmax_\:errors\fR
+T}	T{
+int
+T}	T{
+\fB10\fR
+T}	T{
+Refused commands before the session ends with \fB421\fR. This is what stops a prober walking the command space
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Sessions on this listener;\: over it \fB421\fR
+T}
+T{
+\fBread_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+One command or message line,\: the minimum RFC 5321 section 4.5.3.2 asks for;\: at most 1h
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30m\fR
+T}	T{
+A whole session;\: at most 24h,\: and not shorter than \fBread_\:timeout\fR
+T}
+T{
+\fBcommands\fR
+T}	T{
+list
+T}	T{
+\fBEHLO,\: HELO,\: MAIL,\: RCPT,\: DATA,\: RSET,\: NOOP,\: QUIT,\: AUTH,\: STARTTLS\fR
+T}	T{
+Verbs a client may send;\: anything else is \fB502\fR and counts towards \fBmax_\:errors\fR. \fBQUIT\fR and one of \fBEHLO\fR/\:\fBHELO\fR are required. \fBVRFY\fR and \fBEXPN\fR are left out by default and warn when added: they let a prober test whether an address exists
+T}
+T{
+\fBhide_\:capabilities\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+EHLO keywords stripped from the upstream\(aqs answer,\: on top of \fBSTARTTLS\fR,\: \fBCHUNKING\fR and \fBBDAT\fR,\: which are always removed
+T}
+T{
+\fBbare_\:newlines\fR
+T}	T{
+\fBreject\fR,\: \fBconvert\fR
+T}	T{
+\fBreject\fR
+T}	T{
+A line ended by LF alone: refuse the session,\: or repair it to CRLF. Repair is safe only because the proxy re\-emits every line itself
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+\fBnone\fR,\: \fBstarttls\fR,\: \fBimplicit\fR
+T}	T{
+\fBnone\fR
+T}	T{
+How the proxy reaches the upstream. \fBnone\fR is right when the hop is inside a trusted network and wrong everywhere else;\: with \fBstarttls\fR an upstream that does not offer it fails the session rather than continuing in clear
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Verification for the upstream leg: same keys as \fBupstreams[].\:tls\fR. Without \fBserver_\:name\fR the endpoint\(aqs host is verified
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header with the client address to the upstream
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Others get \fB554\fR before any session starts (\fBclient_\:not_\:allowed\fR). Empty is right for inbound mail and wrong for submission
+T}
+T{
+\fBxclient\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+After the proxy\(aqs own EHLO,\: send \fBXCLIENT ADDR=\: PORT=\fR (the Postfix extension) when the upstream advertises it,\: so the mail server\(aqs logs and policies see the real client
+T}
+.TE
+.PP
+Every session writes one \fBsmtp\fR line to the access log with the client address, whether it was encrypted, messages, octets, refusals, the endpoint and why it closed. AUTH arguments, challenges and responses are never logged: they carry the password. Counters: \fBsmtp_sessions\fR, \fBsmtp_sessions_open\fR, \fBsmtp_messages\fR, \fBsmtp_refused\fR, \fBsmtp_rejected\fR, \fBsmtp_tls_upgrades\fR, \fBsmtp_protocol_errors\fR, \fBsmtp_bytes_in\fR; the matching \fBxproxy_smtp_*\fR metrics. Protocol violations are \fBsmtp_denied\fR deny events, so a \fBbans.triggers\fR entry on that reason turns a prober into a ban.
+.SS "server.listeners[].mqtt (kind: mqtt)"
+.PP
+A \fBkind: mqtt\fR listener is a protocol\-aware MQTT proxy for 3.1.1 (OASIS, also ISO/IEC 20922) and 5.0. Every control packet is read; the ones that carry a policy question \[u2014] who is connecting, what they publish, what they subscribe to \[u2014] are decided before they reach the broker, and the rest are forwarded untouched.
+.PP
+The reason it is not a layer 4 listener: an MQTT broker\(aqs authorisation is per topic, and a topic is a string inside a packet. Without reading the packets there is nowhere to say that a device may publish its own telemetry and nothing else, and a device holding a broker credential holds the whole tree.
+.PP
+What that gets you beyond a splice:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBA subscription is a filter, not a topic.\fR \fBsensors/#\fR is allowed only when an entry of \fBsubscribe_allow\fR covers everything that filter could deliver, and refused when it could reach anything in \fBsubscribe_deny\fR. Matching a filter as though it were a topic is how \fB#\fR slips through an allow list of \fBsensors/+\fR.
+.PP
+.ti -3n
+\(bu
+\fBThe will goes through the publish policy.\fR A will is a message the broker publishes for the client after it is gone; checking it at CONNECT is the only moment there is.
+.PP
+.ti -3n
+\(bu
+\fBA malformed packet ends the session, forwarding nothing.\fR Its remaining length is what the next read depends on, so a packet the proxy could not parse is a stream it can no longer frame \[u2014] in either direction.
+.PP
+.ti -3n
+\(bu
+\fBA session begins with CONNECT and has exactly one.\fR A first packet of another type never reaches the broker, and a second CONNECT would take a new identity on a session already authorised as another.
+.PP
+.ti -3n
+\(bu
+\fBOnly the versions the proxy parses are accepted.\fR A version it cannot parse is a packet it cannot check, so there is no "accept anything" setting.
+.RE
+.PP
+.PP
+MQTT has no in\-band upgrade, so \fBtls_mode\fR is \fBimplicit\fR or nothing; a plaintext listener stays plaintext for the life of the session. The listener takes \fBaddress\fR, \fBmqtt\fR and \fBtls\fR; \fBproxy_protocol\fR works as on an HTTP listener, and bans and the global connection limits apply at accept. Changing the \fBmqtt\fR section rebinds the listener on reload.
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(1.2i) lbw(1.1i) lbx
+lw(1.4i) lw(1.2i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required
+T}	T{
+The broker pool. Endpoints are picked with the upstream\(aqs balancer,\: dial failures try the next and feed outlier ejection
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+\fBimplicit\fR,\: \fBnone\fR
+T}	T{
+\fBimplicit\fR with \fBtls\fR,\: else \fBnone\fR
+T}	T{
+TLS from the first octet (8883),\: or never. \fBimplicit\fR needs the listener\(aqs \fBtls\fR;\: \fBnone\fR warns,\: because there is no upgrade to fall back on
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+\fBnone\fR,\: \fBimplicit\fR
+T}	T{
+\fBnone\fR
+T}	T{
+How the proxy reaches the broker
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Verification for the broker leg: same keys as \fBupstreams[].\:tls\fR. Without \fBserver_\:name\fR the endpoint\(aqs host is verified
+T}
+T{
+\fBversions\fR
+T}	T{
+list
+T}	T{
+\fB["3.\:1.\:1",\: "5.\:0"]\fR
+T}	T{
+Protocol versions accepted. Anything else is refused at CONNECT with the code that version spells it with (\fB0x01\fR in 3.1.1,\: \fB0x84\fR in 5.0)
+T}
+T{
+\fBrequire_\:auth\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a CONNECT without a username. The broker still verifies the password;\: this stops an anonymous session reaching it
+T}
+T{
+\fBallow_\:empty_\:client_\:id\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+The empty client id,\: which 3.1.1 allows with a clean session and 5.0 answers with an assigned one. Turning it off is what makes every session identifiable in the logs
+T}
+T{
+\fBmax_\:client_\:id\fR
+T}	T{
+int
+T}	T{
+\fB128\fR
+T}	T{
+Client id length;\: 1..65535
+T}
+T{
+\fBclient_\:id_\:pattern\fR
+T}	T{
+RE2
+T}	T{
+none
+T}	T{
+The client id must match,\: anchored as written
+T}
+T{
+\fBmax_\:packet_\:size\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+One control packet including its header,\: in either direction;\: 1024..268435460. Refused \fBbefore\fR the body is read,\: so the bound is on what the proxy allocates
+T}
+T{
+\fBmax_\:topic_\:length\fR
+T}	T{
+int
+T}	T{
+\fB512\fR
+T}	T{
+A topic name or filter
+T}
+T{
+\fBmax_\:topic_\:levels\fR
+T}	T{
+int
+T}	T{
+\fB16\fR
+T}	T{
+Levels in a topic or filter
+T}
+T{
+\fBpublish_\:allow\fR
+T}	T{
+list of filters
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Checked against the topic of every client PUBLISH and against the will topic
+T}
+T{
+\fBpublish_\:deny\fR
+T}	T{
+list of filters
+T}	T{
+\fB[]\fR
+T}	T{
+Checked the same way;\: deny wins
+T}
+T{
+\fBsubscribe_\:allow\fR
+T}	T{
+list of filters
+T}	T{
+\fB[]\fR (any)
+T}	T{
+A subscription is allowed only when one entry subsumes it
+T}
+T{
+\fBsubscribe_\:deny\fR
+T}	T{
+list of filters
+T}	T{
+\fB[]\fR
+T}	T{
+A subscription is refused when it overlaps one entry
+T}
+T{
+\fBmax_\:subscriptions\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+Live subscriptions per session
+T}
+T{
+\fBallow_\:retain\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+PUBLISH with the retain flag,\: and a retained will. A retained message outlives the session that set it
+T}
+T{
+\fBallow_\:wildcard_\:subscribe\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+\fB+\fR and \fB#\fR in a subscription at all. With an allow list this rarely needs turning off
+T}
+T{
+\fBkeep_\:alive_\:max\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (any)
+T}	T{
+The largest keep alive a client may ask for;\: \fB0\fR from the client is also refused,\: since it asks the broker never to time the session out. At most 18h12m15s,\: the range of the uint16 the protocol carries it in
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB10000\fR
+T}	T{
+Sessions on this listener;\: over it the connection is closed (MQTT has no reply before CONNECT)
+T}
+T{
+\fBconnect_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Waiting for the CONNECT packet,\: as 3.1.1 section 3.1 asks
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10m\fR
+T}	T{
+No packet in either direction
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBdisconnect\fR,\: \fBdrop\fR
+T}	T{
+\fBdisconnect\fR
+T}	T{
+On a refused PUBLISH or SUBSCRIBE. \fBdrop\fR refuses the one packet and acknowledges it \[u2014] PUBACK or PUBREC with \fB0x87\fR at QoS 1 and 2,\: a SUBACK of \fB0x80\fR for every filter \[u2014] so a fleet does not fall off the network over one misconfigured device. A PUBREL for a refused QoS 2 publication is answered by the proxy,\: since the broker never saw the PUBLISH
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header with the client address to the broker
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Others are closed before the CONNECT is read
+T}
+.TE
+.PP
+Every session writes one \fBmqtt\fR line to the access log with the client address, client id, username, version, subscriptions, publications and why it closed. Counters: \fBmqtt_sessions\fR, \fBmqtt_sessions_open\fR, \fBmqtt_published\fR, \fBmqtt_subscribed\fR, \fBmqtt_refused\fR, \fBmqtt_rejected\fR, \fBmqtt_protocol_errors\fR; the matching \fBxproxy_mqtt_*\fR metrics. Refusals are \fBmqtt_denied\fR deny events, so a \fBbans.triggers\fR entry on that reason turns a device walking the topic tree into a ban.
+.PP
+A note on \fB$\fR: a wildcard at the first level of a filter never matches a topic beginning with \fB$\fR (MQTT 3.1.1 section 4.7), so \fB#\fR does not hand a client the broker\(aqs own \fB$SYS\fR tree. \fBsubscribe_deny: ["$SYS/#"]\fR is still worth writing, because it refuses the client that asks for it by name.
+.SS "server.listeners[].ssh (kind: ssh)"
+.PP
+A \fBkind: ssh\fR listener is an SSH bastion: the proxy is an SSH server to the client and an SSH client to the target, with its own host key, its own authentication and its own credential onwards.
+.PP
+The two connections are the point. A jump host that forwards the stream cannot see which channel is a shell and which is a port forward, so the only policy it can hold is "may connect". Here every channel and every request inside the session is a decision: a service account can be given sftp to one directory and nothing else, and a port forward to a database is a rule rather than an assumption.
+.PP
+It also means the target never sees the client\(aqs key. The client authenticates to the proxy; the proxy authenticates to the target with a credential the client never holds, so a key that leaves the estate is not a key that opens a server in it. \fBupstream_known_hosts\fR is what makes the bastion the one place that can notice a machine in the middle.
+.PP
+An ssh listener takes \fBaddress\fR and \fBssh\fR and no \fBtls\fR: SSH carries its own transport security. Bans and the global connection limits apply at accept. Changing the \fBssh\fR section rebinds the listener on reload, and the credentials are read then \[u2014] not per connection, so a key added to \fBauthorized_keys\fR takes effect on reload rather than mid\-session.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.4i) lbx
+lw(1.2i) lw(0.9i) lw(1.4i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required
+T}	T{
+The pool of target hosts,\: picked with the upstream\(aqs balancer
+T}
+T{
+\fBhost_\:keys\fR
+T}	T{
+list of paths
+T}	T{
+required
+T}	T{
+The bastion\(aqs own host keys,\: OpenSSH or PEM. Clients pin these
+T}
+T{
+\fBauthorized_\:keys\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+OpenSSH authorized_keys of the clients that may connect. Options in the file are ignored;\: the policy lives here. A line that does not parse fails the load rather than silently shortening the list
+T}
+T{
+\fBusers_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+A users file (as in \fBforward.\:auth\fR) for password authentication. Warned about on its own: a bastion behind one guessable secret is one guess from the estate
+T}
+T{
+\fBbanner\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Sent before authentication. A legal notice belongs here;\: a version string does not
+T}
+T{
+\fBserver_\:version\fR
+T}	T{
+string
+T}	T{
+\fBSSH\-\:2.\:0\-\:xproxy\fR
+T}	T{
+The identification string;\: must begin with \fBSSH\-\:2.\:0\-\fR
+T}
+T{
+\fBmax_\:auth_\:tries\fR
+T}	T{
+int
+T}	T{
+\fB3\fR
+T}	T{
+Authentication attempts per connection
+T}
+T{
+\fBmax_\:sessions\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Connections on this listener
+T}
+T{
+\fBmax_\:channels\fR
+T}	T{
+int
+T}	T{
+\fB16\fR
+T}	T{
+Open channels per connection
+T}
+T{
+\fBhandshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Key exchange and authentication together
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30m\fR
+T}	T{
+No traffic either way
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (none)
+T}	T{
+A whole connection,\: however active
+T}
+T{
+\fBallow_\:channels\fR
+T}	T{
+list
+T}	T{
+\fB[session]\fR
+T}	T{
+Channel types a client may open: \fBsession\fR,\: \fBdirect\-\:tcpip\fR,\: \fBdirect\-\:streamlocal@openssh.\:com\fR
+T}
+T{
+\fBallow_\:requests\fR
+T}	T{
+list
+T}	T{
+\fBpty\-\:req,\: env,\: shell,\: exec,\: subsystem,\: window\-\:change,\: signal\fR
+T}	T{
+Session requests a client may send. \fBx11\-\:req\fR and \fBauth\-\:agent\-\:req@openssh.\:com\fR are left out and warn when added: each hands whatever runs on the target a channel back into the client,\: and agent forwarding lets it sign with the client\(aqs keys for the life of the session
+T}
+T{
+\fBallow_\:subsystems\fR
+T}	T{
+list
+T}	T{
+\fB[sftp]\fR
+T}	T{
+Subsystems a client may start,\: checked even when \fBsubsystem\fR is allowed
+T}
+T{
+\fBallow_\:commands\fR
+T}	T{
+list of RE2
+T}	T{
+\fB[]\fR (any)
+T}	T{
+An \fBexec\fR command must match one,\: anchored as written. Every allowed exec is a security event with the command line
+T}
+T{
+\fBforward\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Destinations \fBdirect\-\:tcpip\fR may reach: \fBhost:\:port\fR,\: \fB*.\:suffix:\:port\fR,\: \fB10.\:0.\:0.\:0/\:8:\:port\fR,\: \fB*\fR for any port. Required when \fBdirect\-\:tcpip\fR is allowed,\: and refused without it: a forward with no destination policy is a tunnel to anything the target can reach
+T}
+T{
+\fBremote_\:forward\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept \fBtcpip\-\:forward\fR,\: which asks the target to listen on the client\(aqs behalf and turns the session into an inbound path
+T}
+T{
+\fBupstream_\:user\fR
+T}	T{
+name
+T}	T{
+the authenticated name
+T}	T{
+The account on the target
+T}
+T{
+\fBupstream_\:key_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The private key the proxy authenticates to the target with
+T}
+T{
+\fBupstream_\:known_\:hosts\fR
+T}	T{
+path
+T}	T{
+required unless insecure
+T}	T{
+OpenSSH known_hosts the target\(aqs key is checked against. \fBrevoked\fR entries are not trusted
+T}
+T{
+\fBupstream_\:insecure_\:host_\:key\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept any host key from the target. Refused unless \fBallow_\:insecure\fR is also set,\: and warned about: it is the one setting here that leaves nothing to notice a machine in the middle
+T}
+T{
+\fBmfa\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Require a second factor after the key or the password;\: see below
+T}
+T{
+\fBsftp\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Inspect the SFTP protocol inside an sftp subsystem channel;\: see below
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header with the client address to the target
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Others are closed before the handshake
+T}
+.TE
+.SS "server.listeners[].ssh.mfa"
+.PP
+A second factor after the key or the password. The client is told authentication partially succeeded (RFC 4252 partial success) and is then asked, over keyboard\-interactive, for a one\-time code (RFC 6238 TOTP over the HMAC\-OTP of RFC 4226). Nothing about the session exists until the code verifies: a key alone opens no channel.
+.PP
+The same section shape, the same enrolment file and the same rules serve the HTTP \fBmfa\fR filter. That is deliberate \[u2014] a second factor that means different things on different ports is not a second factor, because the weakest door decides.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The enrolment file (\fBxproxyctl mfa enrol\fR writes the lines). Refused if world readable: it holds every second factor
+T}
+T{
+\fBissuer\fR
+T}	T{
+name
+T}	T{
+\fBxproxy\fR
+T}	T{
+The name an authenticator application shows
+T}
+T{
+\fBprompt\fR
+T}	T{
+string
+T}	T{
+\fBOne\-\:time code:\: \fR
+T}	T{
+What the user is asked
+T}
+T{
+\fBskew\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+Steps either side of now that are accepted,\: for a clock that is a little off. Each step is a window an observed code can be replayed in,\: so above 2 it warns
+T}
+T{
+\fBrequire_\:enrolment\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a user with no enrolment. \fBfalse\fR warns: the account that never enrolled is the one an attacker will use
+T}
+T{
+\fBmax_\:failures\fR
+T}	T{
+int
+T}	T{
+\fB5\fR
+T}	T{
+Failures within \fBwindow\fR before the user is locked out
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+The window failures are counted in
+T}
+T{
+\fBlockout\fR
+T}	T{
+duration
+T}	T{
+\fB15m\fR
+T}	T{
+How long a locked user stays locked
+T}
+T{
+\fBmax_\:users\fR
+T}	T{
+int
+T}	T{
+\fB10000\fR
+T}	T{
+The table that remembers spent codes and recent failures. When it is full the least recently seen entries are dropped,\: which loses replay memory for idle users rather than refusing everyone
+T}
+.TE
+.PP
+A code is spent when it is used: a later attempt at the same step, or at an earlier one, is refused even though it verifies. The memory is per process, so in a cluster a code can be replayed once per node \[u2014] put the listener behind one node where that matters, or keep \fBskew\fR at 0.
+.PP
+What the client is told never distinguishes a wrong code from a replayed one, from a locked account, or from a name that never enrolled. The prompt is shown even to a user with no enrolment, because refusing before asking says the name is not enrolled.
+.SS "server.listeners[].ssh.sftp"
+.PP
+Without this section the proxy can say only that a session may use \fBsftp\fR. That is the difference between reading a file and deleting a tree: the whole of it happens inside the channel. With it, each SFTP request is decided, and a refusal is answered with a permission\-denied status, so the session continues and the client is told which operation was refused rather than losing its connection.
+.PP
+Only version 3 is parsed. A client that negotiates higher is refused at the version exchange, because packets this cannot read are packets whose policy would be guesswork.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.6i) lbw(0.8i) lbx
+lw(1.1i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse everything that changes the server: write,\: setstat,\: remove,\: mkdir,\: rmdir,\: rename,\: symlink,\: an open with any writing flag,\: and the extensions whose meaning the proxy does not know
+T}
+T{
+\fBallow_\:paths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Paths a request may name: a glob where \fB*\fR does not cross a slash,\: or a prefix ending in \fB/\fR or \fB/\:**\fR for a whole tree
+T}
+T{
+\fBdeny_\:paths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Refused whatever the allow list says
+T}
+T{
+\fBdeny_\:operations\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Operations refused by name: \fBopen\fR,\: \fBread\fR,\: \fBwrite\fR,\: \fBremove\fR,\: \fBrename\fR,\: \fBsymlink\fR,\: \fBsetstat\fR,\: \fBreadlink\fR,\: \fBextended\fR,\: \[u2026]
+T}
+T{
+\fBmax_\:packet_\:size\fR
+T}	T{
+int
+T}	T{
+\fB262144\fR
+T}	T{
+One SFTP packet;\: 4096..16777216
+T}
+.TE
+.PP
+A path that climbs above its own root after cleaning (\fB../../etc/shadow\fR) is refused rather than matched: what it means depends on a working directory the proxy cannot see, and a check on a path whose meaning is unknown is not a check. Absolute paths always work, so nothing legitimate needs the other form.
+.PP
+Every session writes one \fBssh\fR line to the access log (client, user, authentication method, target, channels, refusals, duration) and each inspected SFTP request writes one \fBsftp\fR line with the operation and the path. Counters: \fBssh_sessions\fR, \fBssh_sessions_open\fR, \fBssh_channels\fR, \fBssh_refused\fR, \fBssh_rejected\fR, \fBssh_auth_failed\fR, \fBssh_bytes_in\fR, \fBssh_bytes_out\fR, \fBsftp_requests\fR, \fBsftp_refused\fR; the matching \fBxproxy_ssh_*\fR and \fBxproxy_sftp_*\fR metrics. Refusals and failed authentication are \fBssh_denied\fR deny events, so bans apply.
 .SS "server.listeners[].h3"
 .PP
 .TS
@@ -4462,7 +5704,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBaccount_\:abuse\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR
 T}
 T{
 \fBthreshold\fR
@@ -8365,6 +9607,120 @@ T}
 .TE
 .PP
 Denies answer 401 with \fBWWW\-Authenticate\fR and reason \fB<filter name>\fR; the user name is added to the access log line as \fBauth_user\fR.
+.SS "Kind \fBmfa\fR"
+.PP
+A second factor on top of whatever established the identity \[u2014] \fBbasic_auth\fR, \fBldap_auth\fR, \fBoidc\fR, a JWT or an API key. It uses the same enrolment file, replay rule and lockout as an ssh listener\(aqs \fBmfa\fR section.
+.PP
+It must run \fBafter\fR the filter that authenticates: it challenges the identity it is given, and a request with none is refused rather than challenged, because a second factor with no first factor is a prompt with no account behind it.
+.PP
+A request without a verified factor gets an HTML form (401, no redirect, so the request that needed the factor is the one that resumes). The form posts back to the same path with \fB?xproxy_mfa=verify\fR; on success a signed cookie is set and the client is sent to where it was going. The cookie names the user it was issued for and is checked against the identity of each request, so it is worth nothing on another account; it is verified against every key in the ring, so rotating the secret does not sign everyone out.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The enrolment file;\: refused if world readable
+T}
+T{
+\fBcookie_\:secret_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+32+ bytes,\: created 0600 if absent,\: rotated with \fBxproxyctl rotate\fR
+T}
+T{
+\fBcookie_\:name\fR
+T}	T{
+name
+T}	T{
+\fB_\:_\:Host\-\:xproxy\-\:mfa\fR
+T}	T{
+The cookie carrying the verified factor
+T}
+T{
+\fBttl\fR
+T}	T{
+duration
+T}	T{
+\fB12h\fR
+T}	T{
+How long a verified factor lasts;\: at most 168h
+T}
+T{
+\fBissuer\fR
+T}	T{
+name
+T}	T{
+\fBxproxy\fR
+T}	T{
+Shown as the page title
+T}
+T{
+\fBprompt\fR
+T}	T{
+string
+T}	T{
+\fBOne\-\:time code\fR
+T}	T{
+The form\(aqs label
+T}
+T{
+\fBskew\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+Steps either side of now that are accepted
+T}
+T{
+\fBrequire_\:enrolment\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a user with no enrolment
+T}
+T{
+\fBmax_\:failures\fR,\: \fBwindow\fR,\: \fBlockout\fR
+T}	T{
+
+T}	T{
+\fB5\fR,\: \fB5m\fR,\: \fB15m\fR
+T}	T{
+Guessing bound,\: as on an ssh listener
+T}
+T{
+\fBidentity\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Which identity kinds to challenge,\: in order of preference: \fBbasic\fR,\: \fBldap\fR,\: \fBoidc\fR,\: \fBjwt\fR,\: \fBapi_\:key\fR
+T}
+.TE
+.PP
+Every failure gets the same page: a wrong code, a replayed one, a locked account and a name that never enrolled are one answer. Counters: \fBmfa_verified\fR, \fBmfa_failed\fR; \fBxproxy_mfa_total\fR by outcome.
 .SS "Kind \fBldap_auth\fR"
 .PP
 HTTP Basic authentication against an LDAP or Active Directory server. Two modes: a \fBdirect bind\fR substitutes the username into \fBbind_dn_template\fR and binds with the password; a \fBsearch then bind\fR binds an optional service account (\fBbind_dn\fR), searches \fBbase_dn\fR with \fBuser_filter\fR for the user\(aqs entry, then binds as that entry, optionally requiring group membership. The username is escaped (RFC 4514 for a DN, RFC 4515 for a filter) so it cannot alter the query. \fBldaps://\fR and \fBstart_tls\fR verify the server certificate against the system roots or \fBca_file\fR. Verified credentials are cached by digest for \fBcache_ttl\fR; a directory or network error is never cached and denies the request.

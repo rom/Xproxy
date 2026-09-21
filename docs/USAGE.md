@@ -1925,6 +1925,86 @@ the same block list and cache. `xproxyctl dns` shows the
 counters; `log_queries: true` writes every question to the access log
 when an investigation needs it.
 
+### Encrypted DNS: DoT, DoH, DoQ and discovery
+
+```yaml
+server:
+  listeners:
+    - name: dns-plain
+      address: "10.0.0.53:53"
+      kind: dns
+      dns:
+        upstreams: ["quic://9.9.9.9:853", "tls://149.112.112.112:853"]
+        discovery:
+          - {transport: doq, name: dns.example.com, port: 853, ipv4: [10.0.0.53]}
+          - {transport: dot, name: dns.example.com, port: 853, ipv4: [10.0.0.53]}
+          - {transport: doh, name: dns.example.com, port: 443}
+    - name: dns-encrypted
+      address: "10.0.0.53:853"
+      kind: dns
+      tls:
+        certificates: [{cert_file: /etc/xproxy/certs/dns.pem, key_file: /etc/xproxy/certs/dns-key.pem}]
+      dns:
+        upstreams: ["quic://9.9.9.9:853"]
+        doq: true
+```
+
+One certificate and one policy serve all three encrypted transports.
+DoT and DoH share the TCP port; **DoQ** takes the UDP one, separated
+from HTTP/3 by its ALPN. The reason to add DoQ rather than stop at DoT
+is head-of-line blocking: DoT and DoH both ride TCP, so one slow answer
+holds up every query queued behind it on that connection — which is
+exactly what a resolver's traffic looks like. QUIC gives each query its
+own stream.
+
+**Discovery** is the part that changes anything in practice. A client
+handed `10.0.0.53` by DHCP has no way to know the same service speaks
+DoQ. With `discovery`, it asks `_dns.resolver.arpa` for SVCB records,
+gets the endpoints above, verifies the certificate against
+`dns.example.com`, and upgrades itself — no client configuration, and
+no trust placed in the record, since a certificate it cannot verify
+means it stays on plaintext. Order is preference.
+
+```sh
+kdig @10.0.0.53 -t SVCB _dns.resolver.arpa            # what a client sees
+kdig +quic @10.0.0.53 example.com                     # DoQ
+xproxyctl dns                                         # queries_doq, queries_local
+```
+
+Watch `xproxy_dns_queries_by_transport_total`: the plaintext share is
+the number a rollout has to move, and it moves as clients discover the
+encrypted endpoints rather than as this file changes.
+
+### Publishing HTTPS records (and making ECH work)
+
+```yaml
+    dns:
+      records:
+        - name: www.example.com
+          type: https
+          priority: 1
+          target: "."
+          params:
+            alpn: "h3,h2"
+            ipv4hint: "10.0.1.10"
+            ech: "AEr+DQBGAwAgACD..."      # from xproxyctl ech keygen
+        - {name: example.com, type: https, priority: 0, target: www.example.com}
+```
+
+A client cannot use Encrypted Client Hello until it has read the `ech`
+parameter from an HTTPS record, so for an estate running its own
+resolver this is the other half of that feature: the value
+`xproxyctl ech keygen` printed goes here, and `xproxyctl tls` prints
+the list the listener is actually serving so the two can be compared.
+
+A name listed in `records` is **owned**: answered locally, never
+forwarded, and a type it does not have gets NOERROR with no answers
+rather than an upstream lookup — a forwarded answer would contradict
+the local one. Answers carry the AA bit and `queries_local` counts
+them. `examples/blocklists/dns-encrypted.yaml` is the whole
+arrangement: plaintext with discovery, encrypted with all three
+transports, and the records.
+
 ### Validating DNSSEC for clients
 
 ```yaml
@@ -2064,6 +2144,336 @@ watch if it is on.
 
 `examples/forward/socks.yaml` is a complete egress proxy with both
 protocols, an allow list, credentials and the ban triggers.
+
+### UDP and IP proxying (MASQUE)
+
+```yaml
+server:
+  listeners:
+    - name: egress
+      address: "10.0.0.5:443"
+      kind: forward
+      protocols: [h1, h2]          # extended CONNECT needs HTTP/2
+      tls: {certificates: [{cert_file: /etc/xproxy/certs/proxy.pem, key_file: /etc/xproxy/certs/proxy-key.pem}]}
+      forward:
+        ports: [53, 443, 853]
+        allow: ["9.9.9.9", "*.example.com"]
+        auth: {users_file: /etc/xproxy/egress.htpasswd, realm: egress}
+        masque:
+          udp: true
+```
+
+`CONNECT` tunnels TCP and nothing else. Everything datagram-shaped an
+estate sends — DNS, QUIC, NTP, telemetry — either goes around the proxy
+or does not go at all, and going around it is the usual answer, which
+is the problem this solves rather than the protocol being interesting.
+A client asks for
+
+```
+CONNECT https://proxy/.well-known/masque/udp/9.9.9.9/853/
+:protocol = connect-udp
+```
+
+and gets a session carrying datagrams as capsules, under the same
+destination rules, credentials, access log and bans as a CONNECT
+tunnel. `xproxyctl status` counts the sessions and `GET /v1/masque`
+reports them per listener.
+
+**CONNECT-IP is a VPN endpoint, and is treated like one.** It needs a
+`tun` device that the *operator* creates, addresses, routes and
+firewalls — the proxy only opens it:
+
+```sh
+ip tuntap add mode tun xproxy0
+ip addr add 10.8.0.1/24 dev xproxy0
+ip link set xproxy0 up
+# then the firewall rules that decide what this tunnel may reach
+```
+
+```yaml
+        masque:
+          ip: true
+          ip_device: xproxy0
+          ip_assign: ["10.8.0.2/32"]     # the source a client may use
+          ip_routes: ["10.0.0.0/8"]      # where it may send
+```
+
+The division is deliberate. A userspace process cannot put an arbitrary
+IP packet on the wire: a raw socket would need `CAP_NET_RAW`, would not
+receive the replies a session needs, and would let a bug here forge any
+packet on the network. A tun device confines the traffic to what the
+host's routing and firewall allow, and the network policy of a VPN
+belongs in the host's configuration rather than in this file. Where no
+device is available the request is refused with 501 and the reason goes
+to the error log.
+
+`ip_assign` and `ip_routes` are both required because they are the
+anti-spoofing rule: a packet whose source is not the assigned address,
+or whose destination is outside the advertised routes, is dropped and
+counted in `xproxy_masque_dropped_total`. A client is told both in
+ADDRESS_ASSIGN and ROUTE_ADVERTISEMENT capsules before it can send
+anything.
+
+`examples/forward/masque.yaml` has both, with `ip` off by default.
+
+### Mail submission (SMTP and STARTTLS)
+
+```yaml
+server:
+  listeners:
+    - name: submission
+      address: "0.0.0.0:587"
+      kind: smtp
+      tls: {certificates: [{cert_file: /etc/xproxy/certs/mail.pem, key_file: /etc/xproxy/certs/mail-key.pem}]}
+      smtp:
+        upstream: mta
+        banner: "mail.example.com ESMTP"
+        require_tls: true            # no AUTH or MAIL in clear
+        require_auth: true           # relay for users, not for whoever connects
+        max_recipients: 50
+        max_message_size: 26214400   # advertised as SIZE
+        upstream_tls_mode: starttls
+        upstream_tls: {server_name: mta.internal, ca_file: /etc/xproxy/certs/internal-ca.pem}
+```
+
+A `kind: tcp` listener would carry the same bytes to the same mail
+server. The reason this is a protocol-aware listener instead is that
+SMTP's framing is decided by the reader, and a splice leaves two readers
+to decide it separately. The proxy reads each command and each message
+itself and writes them out again, so there is one decision:
+
+- **Lines end with CRLF.** A line ended by LF alone is the 2023 SMTP
+  smuggling class: a permissive parser sees `\n.\n` as the end of a
+  message and a strict one sees a line of text, and the attacker gets a
+  second message the first server never knew about. Here it is `500`
+  and the session ends (`bare_newlines: convert` repairs the line
+  instead, which is only safe because the proxy re-emits it).
+- **`STARTTLS` accepts nothing pipelined behind it.** Octets already
+  buffered when the command arrives were written before the client
+  could see the `220`; treating them as part of the encrypted session
+  is CVE-2011-0411. The session ends with `554`, and the event is a
+  `smtp_denied` deny that `bans.triggers` can act on.
+- **`CHUNKING` is never advertised.** BDAT frames a message with a
+  length instead of a terminator, so relaying it would put the framing
+  decision back in two places.
+- **A reply the proxy cannot parse is not passed on.** The client gets
+  `421`. A reply the proxy did not understand is exactly the one the
+  client would read differently.
+
+On 465, `tls_mode: implicit` gives RFC 8314 implicit TLS with no
+plaintext phase to downgrade; drop `STARTTLS` from `commands` there, so
+nothing offers an upgrade that is already done.
+
+The capability list the client sees is the proxy's promise rather than
+the upstream's: hidden keywords are stripped, `SIZE` is replaced by
+`max_message_size` when one is set, and `STARTTLS` is advertised only
+while the proxy can still answer it. `banner` replaces the mail
+server's greeting, which otherwise tells every prober its brand and
+version.
+
+Refusals are bounded on purpose. `max_errors` ends a session that walks
+the command space, `max_recipients` and `max_messages` keep one
+connection from becoming a fan-out, and `VRFY` and `EXPN` are not in
+the default command set because they answer whether an address exists.
+
+`examples/mail/submission.yaml` has both listeners, the ban trigger and
+the upstream TLS.
+
+### MQTT for a device fleet
+
+```yaml
+server:
+  listeners:
+    - name: iot
+      address: "0.0.0.0:8883"
+      kind: mqtt
+      tls: {certificates: [{cert_file: /etc/xproxy/certs/iot.pem, key_file: /etc/xproxy/certs/iot-key.pem}]}
+      mqtt:
+        upstream: broker
+        require_auth: true
+        client_id_pattern: "^device-[0-9a-f]{12}$"
+        publish_allow: ["devices/+/telemetry", "devices/+/status"]
+        publish_deny:  ["$SYS/#", "devices/+/commands"]
+        subscribe_allow: ["devices/+/commands", "estate/announcements"]
+        subscribe_deny:  ["$SYS/#"]
+        allow_retain: false
+        upstream_tls_mode: implicit
+        upstream_tls: {server_name: broker.internal, ca_file: /etc/xproxy/certs/internal-ca.pem}
+```
+
+An MQTT broker's authorisation is per topic, and a topic is a string
+inside a packet. A `kind: tcp` listener carries those packets without
+looking, so there is nowhere to say that a device may publish its own
+telemetry and nothing else — and a device that holds a broker
+credential holds the whole tree, including what every other device
+publishes. That is what this listener is for.
+
+The subtlety worth knowing is that **a subscription is a filter, not a
+topic**. A device asking for `#` is not asking for one topic; it is
+asking for all of them. So `subscribe_allow` is checked by subsumption:
+an entry must cover everything the requested filter could deliver.
+`devices/+/commands` allows `devices/1/commands` and allows
+`devices/+/commands`, and refuses `devices/#` and `#`. `subscribe_deny`
+is checked the other way, by overlap: a filter is refused when it could
+reach anything denied, not only when it names it.
+
+`publish_allow` and `publish_deny` are simpler, because a publication
+names one concrete topic. They also cover the will — the message the
+broker publishes on the device's behalf once it is gone — which is
+checked at CONNECT, the only moment there is.
+
+Refusals end the session by default. `action: drop` refuses the one
+packet instead and answers it properly (PUBACK or PUBREC with
+not-authorized, a SUBACK of failures), which is what a fleet wants: one
+misconfigured device should not fall off the network, and a QoS 1
+publisher that is never acknowledged retries for ever.
+
+MQTT has no STARTTLS. `tls_mode: implicit` on 8883 is the only
+encrypted shape, and a plaintext listener stays plaintext for the life
+of the session — validation says so rather than leaving it implied.
+
+`examples/iot/mqtt.yaml` has the whole thing, with a ban trigger on
+`mqtt_denied`: a device does not probe topics, so something walking the
+tree is either broken or not a device.
+
+### SSH bastion with SFTP inspection
+
+```yaml
+server:
+  listeners:
+    - name: bastion
+      address: "0.0.0.0:22"
+      kind: ssh
+      ssh:
+        upstream: hosts
+        host_keys: [/etc/xproxy/ssh/host_ed25519]
+        authorized_keys: /etc/xproxy/ssh/authorized_keys
+        allow_channels: [session, direct-tcpip]
+        allow_requests: [pty-req, env, shell, exec, subsystem, window-change, signal]
+        allow_subsystems: [sftp]
+        forward: ["10.20.0.0/16:5432"]
+        upstream_user: operator
+        upstream_key_file: /etc/xproxy/ssh/bastion_id_ed25519
+        upstream_known_hosts: /etc/xproxy/ssh/known_hosts
+```
+
+A jump host forwards the stream, so it cannot tell a shell from a port
+forward and the only policy it can hold is "may connect". This listener
+terminates the client's SSH session and opens its own to the target, so
+the channels and the requests inside them are decisions: `direct-tcpip`
+only to the destinations in `forward`, `exec` only for commands matching
+`allow_commands`, `subsystem` only for the ones listed, and `x11-req`
+and agent forwarding refused unless something asks for them — each of
+those hands whatever runs on the target a channel back into the client.
+
+The other half is the credential. The client authenticates to the
+bastion with its own key; the bastion authenticates to the target with
+`upstream_key_file`, which no client holds. A developer key that leaves
+on a laptop is then not a key that opens a server, and
+`upstream_known_hosts` makes the bastion the one place that would notice
+a machine in the middle.
+
+**SFTP is where "may use sftp" stops being the whole answer.** The
+entire difference between reading a file and deleting a tree happens
+inside the subsystem channel:
+
+```yaml
+        sftp:
+          read_only: true
+          allow_paths: ["/srv/exports/**"]
+          deny_paths:  ["/srv/exports/private/**"]
+          deny_operations: [symlink, readlink]
+```
+
+Each request is decided and refused with a permission-denied status, so
+the session survives and the client is told which operation was refused.
+A path that climbs above its own root (`../../etc/shadow`) is refused
+rather than matched: what it means depends on a working directory the
+proxy cannot see, and a check on a path whose meaning is unknown is not
+a check. Absolute paths always work.
+
+Every session writes an `ssh` access line, every allowed `exec` is a
+security event with the command line, and every inspected SFTP request
+writes an `sftp` line with the operation and the path. That record is
+the other reason to terminate rather than forward: a stream you cannot
+read is a stream you cannot log.
+
+`examples/bastion/ssh.yaml` has an operator listener and a delivery
+account that can do nothing but read one directory over sftp.
+
+### A second factor, on SSH and on HTTPS
+
+```sh
+xproxyctl mfa enrol -user alice -issuer example.com -recovery 5
+```
+
+That prints one line for the enrolment file (0600), an `otpauth://` URI
+for the user's authenticator, and five single-use recovery codes shown
+only then. The same file serves both listeners below, which is the
+point: a second factor that means different things on different ports
+is not a second factor, because the weakest door decides.
+
+```yaml
+server:
+  listeners:
+    - name: bastion
+      address: "0.0.0.0:22"
+      kind: ssh
+      ssh:
+        upstream: hosts
+        host_keys: [/etc/xproxy/ssh/host_ed25519]
+        authorized_keys: /etc/xproxy/ssh/authorized_keys
+        upstream_key_file: /etc/xproxy/ssh/bastion_id_ed25519
+        upstream_known_hosts: /etc/xproxy/ssh/known_hosts
+        mfa:
+          file: /etc/xproxy/mfa
+
+filters:
+  - name: staff
+    kind: basic_auth
+    options: {users_file: /etc/xproxy/staff.htpasswd}
+  - name: staff-mfa
+    kind: mfa
+    options:
+      file: /etc/xproxy/mfa
+      cookie_secret_file: /etc/xproxy/mfa.cookie
+
+routes:
+  - name: app
+    paths: [/]
+    upstream: app
+    filters: [staff, staff-mfa]      # order matters
+```
+
+On SSH the key is the first factor: the client is told authentication
+partially succeeded (RFC 4252) and is then asked for a code over
+keyboard-interactive. A key alone opens no channel. On HTTPS the filter
+challenges whatever identity the filter before it established, with an
+HTML form and a signed cookie afterwards; `mfa` before `basic_auth`
+would have nothing to challenge, and refuses the request rather than
+prompting.
+
+Three properties are worth knowing because they are what makes it a
+second factor rather than a second password:
+
+- **A code is spent when used.** A later attempt at the same step, or at
+  an earlier one, is refused even though it verifies. The memory is per
+  process, so in a cluster a code can be replayed once per node; put the
+  listener behind one node where that matters, or set `skew: 0`.
+- **Failures are indistinguishable.** A wrong code, a replayed one, a
+  locked account and a name that never enrolled get one answer. On SSH
+  the prompt is shown even to a user with no enrolment: refusing before
+  asking would say the name is not enrolled.
+- **Guessing is bounded.** Six digits is a million values and a step
+  lasts thirty seconds, so `max_failures` within `window` locks the user
+  out for `lockout` — without it a fast client gets a real chance at
+  every step.
+
+`require_enrolment: false` exists and warns, because the account that
+never enrolled is the one an attacker will use.
+
+`examples/mfa/second-factor.yaml` has both listeners and the filter
+chain.
 
 ### Virtual security.txt
 
