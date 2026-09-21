@@ -260,6 +260,23 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **[docs/DECEPTION.md](DECEPTION.md), the chapter behind the whole
+  family.** Honeypot routes and decoys, honeytokens, form honeypots,
+  the WAF files, the slow lane, deceptive answers and refusal at the
+  handshake were each documented where they are configured, and
+  nowhere as one thing. They are one thing: a cheap, unambiguous event
+  at the top (a client asked for a path that does not exist), a mark
+  carrying the judgement, and progressively more consequential actions
+  below it. The chapter sets out the rule they all follow — a
+  deception must be somewhere no legitimate client goes, or it is an
+  outage with a clever name — ranks the controls by the false-positive
+  rate they actually have, so the actions with consequences sit behind
+  the signals with none, and gives a build-out order in eleven steps
+  whose first six cannot refuse anybody. It also says what deception
+  is not: not a substitute for a fix, not an attack, not a licence to
+  lie to real users, and not free of the retention rules the access
+  log lives under.
+
 - **Thirty-eight more decoys, and the routes to serve them on.** The
   table goes from 77 bodies to 115: source control, build and artefact
   servers (`gitea`, `teamcity`, `nexus`, `svn-entries`,

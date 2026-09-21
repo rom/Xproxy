@@ -1253,6 +1253,11 @@ die](#where-a-request-can-die).
 
 ## Form honeypots
 
+[DECEPTION.md](DECEPTION.md) is the chapter behind this section and the
+five that follow it: what each deception control is for, how its
+signals chain into the others, and the order to deploy them in.
+
+
 **Real people are refused with `field:<name>`.** Something is filling
 the hidden field for them, which means it is not hidden enough. A
 password manager will fill an input it can see in the DOM: give it

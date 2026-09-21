@@ -1943,6 +1943,13 @@ the access log names the entry that answered.
 
 ### Honeypot routes and decoys
 
+The sections that follow — honeypot routes, honeytokens, form
+honeypots, the slow lane, deceptive answers and refusal at the
+handshake — are one family, and [DECEPTION.md](DECEPTION.md) is the
+chapter that reads them together: what each costs an attacker, how a
+mark propagates from one to the next, and the order to build them in.
+Each section here is the worked example of one.
+
 ```yaml
 routes:
   - name: wp-probe

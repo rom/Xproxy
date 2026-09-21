@@ -15,7 +15,7 @@ import (
 
 // docsYAMLFiles are the documents whose fenced yaml blocks are checked.
 var docsYAMLFiles = []string{"../../README.md", "../../docs/USAGE.md", "../../docs/CONFIG.md", "../../docs/EXTENDING.md",
-	"../../docs/SETUP.md", "../../docs/SETUP_MACOS.md", "../../docs/HARDENING.md"}
+	"../../docs/SETUP.md", "../../docs/SETUP_MACOS.md", "../../docs/HARDENING.md", "../../docs/DECEPTION.md"}
 
 type yamlBlock struct {
 	file string

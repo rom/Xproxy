@@ -230,6 +230,7 @@ every feature above.
 |----------|---------|
 | [docs/USAGE.md](docs/USAGE.md) | Operating the proxy: an example per feature, the control tool, logging |
 | [docs/CONFIG.md](docs/CONFIG.md) | Configuration reference, every key with its default |
+| [docs/DECEPTION.md](docs/DECEPTION.md) | Honeypot routes, decoys, honeytokens, form honeypots, WAF shape rules, the slow lane, deceptive answers and handshake refusal as one family: what each costs an attacker, how the signals chain, and the order to build them in |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Triage, a symptom index, the stages a request can die at, the timeout ladder, a section per subsystem, emergency procedures, every deny reason and what to collect for a bug report |
 | [docs/SETUP.md](docs/SETUP.md) | Installation on Fedora |
 | [docs/SETUP_MACOS.md](docs/SETUP_MACOS.md) | Installation on macOS |
