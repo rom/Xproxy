@@ -1422,6 +1422,62 @@ first, last, expires) and the decoy names; `DELETE /v1/honeypot?ip=` and
 most 65536 addresses. Counters: `honeypot_hits`, `honeypot_marked`;
 metrics `xproxy_honeypot_hits_total`, `xproxy_honeypot_marked`.
 
+### routes[].deceive
+
+A refusal is information. A scanner that gets 403 has learned that the
+request it sent was the interesting one, and it will vary that request
+until something is not refused — the refusal is the oracle that tells
+it when it has found the way through. `deceive` answers a client the
+route no longer trusts with something ordinary instead: the crawl
+completes, the data is wrong, and the request that would have worked
+looks exactly like the one that did not.
+
+The origin is never asked, so a deceived write is discarded. That is
+the point for a `POST`, and it is why the conditions are worth being
+sure of: a false positive means a real client quietly loses data.
+
+```yaml
+routes:
+  - name: api
+    paths: [/api]
+    upstream: app
+    deceive:
+      marked: true            # a honeypot or honeytoken marked it
+      bot_score_at: 80        # or a bot_score filter scored it
+      status: 200
+      body: '{"items":[],"total":0}'
+      content_type: application/json
+      mark: 1h                # keep it on the same answer
+```
+
+A route must name at least one condition; validation refuses a
+`deceive` block that would admit everyone, and warns on every route
+that has one, because this is the one control whose failure looks like
+success.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `marked` | bool | `false` | Admit a client a honeypot route or a honeytoken marked |
+| `bot_score_at` | int | `0` | Admit a request a `bot_score` filter scored at or above this; `0` does not look at the score |
+| `client_cidrs` | list of CIDR | | Admit these client networks |
+| `methods` | list | any | Narrow the deception to these methods |
+| `status` | int | `200` | The answer. A 4xx tells the client what a refusal tells it, which is what deceiving was for; validation says so |
+| `decoy` | name | | A built-in decoy body (the table above) |
+| `body` | string | `{}` | A literal body, at most 64 KiB |
+| `body_file` | path | | A body read at load and on reload, at most 1 MiB |
+| `content_type` | string | `application/json` for the default body, else `text/html; charset=utf-8` | Content type of `body` and `body_file`; a decoy brings its own |
+| `mark` | duration | `0` | Mark the client for this long, so it keeps getting the same answer rather than seeing the endpoint change its mind |
+
+Every deceived request is loud on the inside and silent on the
+outside: `deceived: <route>` in the access log, a `deceive` security
+event with the client, path and method, the `deceived` counter,
+`xproxy_deceived_total{route}` and `GET /v1/deceive`. Nothing is added
+to the response — no header, no marker — because anything added is the
+tell.
+
+`deceive` and `honeypot` on the same route are refused: a honeypot
+already answers everyone with a decoy.
+
 ### routes[].mirror
 
 A mirrored route sends a copy of each request (sampled by `percent`) to

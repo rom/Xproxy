@@ -260,6 +260,31 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Deceptive answers on real routes (`routes[].deceive`).** A refusal
+  is information: a scanner that gets 403 has learned that the request
+  it sent was the interesting one, and it varies that request until
+  something is not refused — the refusal is the oracle that tells it
+  when it has found the way through. A route with `deceive` answers a
+  client it no longer trusts with something ordinary instead. The crawl
+  completes, the data is wrong, and the request that would have worked
+  looks exactly like the one that did not.
+
+  Clients are admitted by `marked` (a honeypot or honeytoken mark),
+  `bot_score_at` or `client_cidrs`, narrowed by `methods`; the answer
+  is a literal body, a file or one of the built-in decoys, with a
+  status that defaults to 200. The origin is never asked, so a deceived
+  write is discarded — the point for a `POST`, and the reason the
+  conditions are worth being sure of.
+
+  It is the one control here whose failure mode looks like success, so
+  it is built to be hard to enable by accident and impossible to miss
+  once enabled: a route with no condition is refused at validation,
+  every route that deceives raises an advice line, and each deceived
+  request produces a `deceive` security event, a `deceived: <route>`
+  field in the access log, a counter, `xproxy_deceived_total{route}`
+  and a row in `GET /v1/deceive`. Nothing is added to the response,
+  because anything added is the tell.
+
 - **Graduated degradation (`degradation`).** Every other answer the
   proxy gives is binary: served, or refused. For a client that has done
   something wrong but not enough to ban — touched a decoy, scored

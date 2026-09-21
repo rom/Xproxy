@@ -140,8 +140,11 @@ type compiledRoute struct {
 	pool         *upstream.Pool
 	honeypotBody []byte
 	honeypotType string
-	static       *staticSite
-	compress     *compressPolicy
+	// deceive answers clients this route no longer trusts with
+	// something plausible instead of the origin's answer.
+	deceive  *deceivePolicy
+	static   *staticSite
+	compress *compressPolicy
 	// compressAuth allows compressing a response to a request that
 	// carried Authorization or Cookie; see BREACH in the configuration
 	// reference.
@@ -456,6 +459,14 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, events 
 					cr.geoDeny[cc] = true
 				}
 			}
+		}
+		if d := r.Deceive; d != nil {
+			pol, err := newDeceivePolicy(d)
+			if err != nil {
+				rt.stop()
+				return nil, fmt.Errorf("route %s: deceive: %w", r.Name, err)
+			}
+			cr.deceive = pol
 		}
 		if hp := r.Honeypot; hp != nil {
 			cr.honeypotType = hp.ContentType

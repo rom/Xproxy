@@ -1103,6 +1103,58 @@
       },
       "additionalProperties": false
     },
+    "Deceive": {
+      "description": "Deceive answers a client the proxy no longer trusts with something plausible instead of with the origin's answer — or with a refusal. A refusal is information. A scanner that gets 403 knows the request it sent was the interesting one, and varies it until something is not refused; the refusal is the oracle that tells it when it has found the way through. An answer that looks ordinary gives it nothing to steer by: the crawl completes, the data is wrong, and the request that would have worked looks exactly like the one that did not. It is a deliberately sharp tool, and the rules follow from that: - It applies only to clients the proxy already has a reason to distrust — a honeypot or honeytoken mark, a bot score, a named network. A route with no condition is refused at validation, because a deceive that admits everyone is an outage that looks like a feature. - The write never reaches the origin. That is the point for a POST, and it means a false positive loses a client's data, so the conditions are worth being sure of. - It is loud on the inside. The access log line carries deceived: \u003croute\u003e, a security event records it, and the counter and metric are separate from every other refusal, so nobody debugs a \"working\" endpoint for a week.",
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "body_file": {
+          "type": "string"
+        },
+        "bot_score_at": {
+          "description": "BotScoreAt admits a request a bot_score filter scored at or above this. 0 does not look at the score.",
+          "type": "integer"
+        },
+        "client_cidrs": {
+          "description": "ClientCIDRs admits these client networks.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "content_type": {
+          "description": "ContentType of Body and BodyFile. Default text/html; a decoy brings its own.",
+          "type": "string"
+        },
+        "decoy": {
+          "description": "Decoy names a built-in decoy body (see routes[].honeypot), Body is a literal one and BodyFile is read from disk at load and reload. Exactly one is required.",
+          "type": "string"
+        },
+        "mark": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "marked": {
+          "description": "Marked admits a client a honeypot route or a honeytoken marked.",
+          "type": "boolean"
+        },
+        "methods": {
+          "description": "Methods narrows the deception to these methods; empty is all of them.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "description": "Status answers the deceived request. Default 200: the whole point is an answer that does not look like a refusal.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "Degradation": {
       "description": "Degradation serves a suspect client slowly instead of refusing it. The proxy's other answers are binary: served, or refused. For a client that has done something wrong but not enough to ban — touched a decoy, scored badly, arrived from a range with a history — both are wrong. Serving it in full funds the next request. Refusing it tells it exactly which request to change, and hands a scanner a clean signal to tune against. A degraded client is served, correctly, slowly. There is nothing to tune against and nothing to report as broken, and a crawl that cost the scanner nothing now costs it the thing it has least of. Levels are tried in order and the first that admits the request decides, so the narrowest goes first.",
       "type": "object",
@@ -2913,6 +2965,14 @@
           "allOf": [
             {
               "$ref": "#/$defs/RouteCORS"
+            }
+          ]
+        },
+        "deceive": {
+          "description": "Deceive answers a client this route no longer trusts with a plausible response instead of the origin's.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Deceive"
             }
           ]
         },

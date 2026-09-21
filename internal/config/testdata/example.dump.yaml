@@ -310,6 +310,7 @@ routes:
       redirect: null
       respond: null
       honeypot: null
+      deceive: null
       strip_prefix: ""
       rewrite_path: ""
       rewrite_regex: null
@@ -370,6 +371,7 @@ routes:
       redirect: null
       respond: null
       honeypot: null
+      deceive: null
       strip_prefix: /v1
       rewrite_path: ""
       rewrite_regex: null
@@ -437,6 +439,7 @@ routes:
       redirect: null
       respond: null
       honeypot: null
+      deceive: null
       strip_prefix: ""
       rewrite_path: ""
       rewrite_regex: null
@@ -498,6 +501,7 @@ routes:
       redirect: null
       respond: null
       honeypot: null
+      deceive: null
       strip_prefix: ""
       rewrite_path: ""
       rewrite_regex: null
@@ -559,6 +563,7 @@ routes:
       redirect: null
       respond: null
       honeypot: null
+      deceive: null
       strip_prefix: ""
       rewrite_path: ""
       rewrite_regex: null
@@ -624,6 +629,7 @@ routes:
         body: |
             not found
       honeypot: null
+      deceive: null
       strip_prefix: ""
       rewrite_path: ""
       rewrite_regex: null

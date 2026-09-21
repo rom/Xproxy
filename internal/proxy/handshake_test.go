@@ -81,13 +81,30 @@ func tlsGet(addr, path string) (int, string, error) {
 }
 
 // clientJA4 is the fingerprint the test's own client sends, learned
-// from the proxy that just saw it.
+// from the proxy that just saw it. The connection is held open across
+// the lookup: the proxy drops a fingerprint when its connection
+// closes, so a transport that closed first would leave nothing to read.
 func clientJA4(t *testing.T, s *Server, addr string) string {
 	t.Helper()
-	code, local, err := tlsGet(addr, "/")
-	if err != nil || code != 200 {
-		t.Fatalf("baseline request: %d %v", code, err)
+	var local string
+	d := &net.Dialer{Timeout: 5 * time.Second}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: "tls.test"}, //nolint:gosec // test
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			c, err := d.DialContext(ctx, network, address)
+			if err == nil {
+				local = c.LocalAddr().String()
+			}
+			return c, err
+		},
 	}
+	defer tr.CloseIdleConnections()
+	resp, err := (&http.Client{Transport: tr, Timeout: 5 * time.Second}).Get("https://" + addr + "/")
+	if err != nil {
+		t.Fatalf("baseline request: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 	fp, ok := s.fingerprints.Get(local)
 	if !ok || fp.JA4 == "" {
 		t.Fatalf("the proxy recorded no fingerprint for %s", local)

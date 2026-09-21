@@ -126,6 +126,21 @@ upstreams:
     endpoints: [{address: "10.0.0.10:8080"}]
 
 routes:
+  # The route a marked client no longer gets the truth from. Its crawl
+  # completes, its data is wrong, and its writes are discarded — and
+  # nothing in the answer says so. Every deceived request is in the
+  # security log and counted separately, which is the only way to run
+  # a control whose failure looks like success.
+  - name: api
+    paths: [/api]
+    upstream: app
+    deceive:
+      marked: true
+      status: 200
+      body: '{"items":[],"total":0}'
+      content_type: application/json
+      mark: 1h
+
   - name: hp-dotenv
     paths: [/.env, /.env.local, /.env.production]
     honeypot: {decoy: env, mark: 24h, delay: 2s}

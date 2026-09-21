@@ -1995,6 +1995,43 @@ answers `/admin`, do not shadow it here — and keep the catch-all route
 last, so every decoy path is the more specific match. The shipped
 example is checked for both.
 
+### Answering a scanner with something plausible
+
+Refusing tells the scanner which request was the interesting one. It
+will vary that request until something is not refused, and the refusal
+is the signal that says when it has found the way through.
+
+```yaml
+routes:
+  - name: api
+    paths: [/api]
+    upstream: app
+    deceive:
+      marked: true
+      status: 200
+      body: '{"items":[],"total":0}'
+      content_type: application/json
+      mark: 1h
+```
+
+A client a honeypot or a honeytoken marked now gets an empty, valid,
+uninteresting answer from `/api` — and its writes never reach the
+origin. The crawl finishes, the data is wrong, and nothing in the
+response says so.
+
+This is the sharpest tool in the configuration, so treat it that way. A
+route must name a condition (validation refuses one that would admit
+everybody, and warns on every route that has a `deceive` block), the
+conditions should be ones you have already watched in the access log,
+and a false positive means a real client silently losing data. Start
+with `client_cidrs` on a range you are certain of, or `marked: true`
+with honeypots you trust, before reaching for a score.
+
+It is loud on the inside: `deceived: <route>` in the access log, a
+`deceive` security event, `xproxy_deceived_total{route}`, and
+`GET /v1/deceive`. Nothing is added to the response, because anything
+added is the tell.
+
 ### Serving a suspect client slowly
 
 Refusing a scanner tells it which request to change. It will try
@@ -3245,7 +3282,7 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 `bans_total`, `cluster_peers`, `cluster_connected`, `shed`, `load_level`,
 `upstream_latency_ms`, `shedding_classes`, `challenges_issued`,
 `challenges_passed`, `challenges_failed`, `captchas_passed`,
-`honeytoken_hits`, `handshakes_refused`, `degraded`,
+`honeytoken_hits`, `handshakes_refused`, `degraded`, `deceived`,
 `denied_sensitive_data`, `denied_account_abuse`, `sensitive_findings`,
 `account_blocks`, `account_campaigns`, `account_blocks_active`, `reloads`,
 `reload_failures`,

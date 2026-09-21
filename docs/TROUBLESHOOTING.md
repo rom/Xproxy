@@ -161,6 +161,7 @@ compute it.
 | 403 with `reason: waf` | A rule matched. `waf_matched` names it; see [WAF](#waf) |
 | 403 with `reason: honeypot` | The client asked for a honeypot path. That is the honeypot working |
 | 403 with `reason: honeytoken` | The client presented a planted credential. `detail` names the plant; see [Honeytokens](#honeytokens) |
+| An endpoint returns empty or wrong data for one client only | A `deceive` block on that route admitted it; see [Deceptive answers](#deceptive-answers) |
 | A client reports the site is slow and is not banned | A `degradation` level admitted it; the access line says `degraded: <level>`. See [The slow lane](#the-slow-lane-degradation) |
 | A TLS error at the client and no access log line | `handshake` refused the connection before it became a request; see [Refusal at the TLS handshake](#refusal-at-the-tls-handshake) |
 | 403 with `reason: cors` | The `Origin` is not allowed by the route's `cors` block |
@@ -1272,6 +1273,35 @@ are permanently zero.
 **A client is denied and then denied for ever.** `honeypot_marked` is
 worth 40 on its own and the mark lasts as long as the honeypot route's
 `mark`. `xproxyctl honeypot forget IP` clears it.
+
+## Deceptive answers
+
+**An endpoint "works" but returns nothing useful — for one client.**
+That is `deceive`, and it is meant to look exactly like this. The
+access line for that client carries `deceived: <route>` and a `deceive`
+security event names the route, the path and the method; `xproxyctl
+honeypot` says whether the client is marked and why. `GET /v1/deceive`
+lists the routes that deceive and how often each has.
+
+**A real client was deceived.** Clear the mark (`xproxyctl honeypot
+forget IP`), then fix what marked it: a decoy on a path something real
+reaches, a `bot_score_at` too low for the traffic, or a
+`client_cidrs` range wider than meant. Remember that a deceived write
+never reached the origin, so anything that client sent while deceived
+is gone — check what it was doing before deciding it is only a
+configuration issue.
+
+**Nothing is deceived although the block is there.** The conditions are
+AND-ed with the method narrowing and OR-ed among themselves: `marked`,
+`bot_score_at` and `client_cidrs` each admit on their own, but
+`methods` must also match. A `bot_score_at` needs a `bot_score` filter
+on the route to produce a score at all.
+
+**Is it safe to turn on?** The honest answer is that it is the one
+control here whose failure mode is silent. Run it first with
+`client_cidrs` on a range you have watched in the access log, or with
+`marked: true` and honeypots you trust, and watch `deceived` against
+the request count for a week before widening it.
 
 ## The slow lane (degradation)
 

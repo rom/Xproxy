@@ -609,6 +609,11 @@ admitted:
 
 	// Actions.
 	switch {
+	case cr.deceive != nil && cr.deceive.admits(st, r):
+		// Before every other action: a client this route no longer
+		// trusts gets a plausible answer rather than the origin's, and
+		// its writes never reach the origin at all.
+		s.deceive(rw, r, st, cr)
 	case cr.cfg.Redirect != nil:
 		cr.respOps.apply(rw.Header(), &tvars{r: r, st: st})
 		http.Redirect(rw, r, cr.redirectTo.Expand(&tvars{r: r, st: st}), cr.cfg.Redirect.Status)

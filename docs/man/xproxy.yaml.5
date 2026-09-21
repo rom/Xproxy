@@ -5528,6 +5528,140 @@ T}
 \fBrobots\fR and \fBsitemap\fR are the two to serve honestly: they name the decoy paths, so a crawler that reads either and then requests them has told you what it is. Give those two \fBmark: 0s\fR, so that reading the file marks nobody and only asking for what it names does. \fBexamples/security/honeypots.yaml\fR wires the whole table up, one route per decoy with the paths each is worth serving on; a test fails if a decoy in the table has no route there. \fBxproxyctl honeypot\fR and \fBGET /v1/honeypot\fR both list the names this build carries, which is the authority when a configuration is refused for an unknown decoy.
 .PP
 \fBresponse_headers\fR apply, so a decoy can carry a \fBServer\fR header of its own. \fBGET /v1/honeypot\fR lists marked clients (address, route, hits, first, last, expires) and the decoy names; \fBDELETE /v1/honeypot?ip=\fR and \fBxproxyctl honeypot forget IP\fR remove a mark. The mark table holds at most 65536 addresses. Counters: \fBhoneypot_hits\fR, \fBhoneypot_marked\fR; metrics \fBxproxy_honeypot_hits_total\fR, \fBxproxy_honeypot_marked\fR.
+.SS "routes[].deceive"
+.PP
+A refusal is information. A scanner that gets 403 has learned that the request it sent was the interesting one, and it will vary that request until something is not refused \[u2014] the refusal is the oracle that tells it when it has found the way through. \fBdeceive\fR answers a client the route no longer trusts with something ordinary instead: the crawl completes, the data is wrong, and the request that would have worked looks exactly like the one that did not.
+.PP
+The origin is never asked, so a deceived write is discarded. That is the point for a \fBPOST\fR, and it is why the conditions are worth being sure of: a false positive means a real client quietly loses data.
+.PP
+.RS 4
+.nf
+.ft CR
+routes:
+  \- name: api
+    paths: [/api]
+    upstream: app
+    deceive:
+      marked: true            # a honeypot or honeytoken marked it
+      bot_score_at: 80        # or a bot_score filter scored it
+      status: 200
+      body: '{"items":[],"total":0}'
+      content_type: application/json
+      mark: 1h                # keep it on the same answer
+.ft
+.fi
+.RE
+.PP
+A route must name at least one condition; validation refuses a \fBdeceive\fR block that would admit everyone, and warns on every route that has one, because this is the one control whose failure looks like success.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(1.3i) lbx
+lw(0.9i) lw(0.9i) lw(1.3i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmarked\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Admit a client a honeypot route or a honeytoken marked
+T}
+T{
+\fBbot_\:score_\:at\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Admit a request a \fBbot_\:score\fR filter scored at or above this;\: \fB0\fR does not look at the score
+T}
+T{
+\fBclient_\:cidrs\fR
+T}	T{
+list of CIDR
+T}	T{
+
+T}	T{
+Admit these client networks
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Narrow the deception to these methods
+T}
+T{
+\fBstatus\fR
+T}	T{
+int
+T}	T{
+\fB200\fR
+T}	T{
+The answer. A 4xx tells the client what a refusal tells it,\: which is what deceiving was for;\: validation says so
+T}
+T{
+\fBdecoy\fR
+T}	T{
+name
+T}	T{
+
+T}	T{
+A built\-in decoy body (the table above)
+T}
+T{
+\fBbody\fR
+T}	T{
+string
+T}	T{
+\fB{}\fR
+T}	T{
+A literal body,\: at most 64 KiB
+T}
+T{
+\fBbody_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+A body read at load and on reload,\: at most 1 MiB
+T}
+T{
+\fBcontent_\:type\fR
+T}	T{
+string
+T}	T{
+\fBapplication/\:json\fR for the default body,\: else \fBtext/\:html; charset=\:utf\-\:8\fR
+T}	T{
+Content type of \fBbody\fR and \fBbody_\:file\fR;\: a decoy brings its own
+T}
+T{
+\fBmark\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Mark the client for this long,\: so it keeps getting the same answer rather than seeing the endpoint change its mind
+T}
+.TE
+.PP
+Every deceived request is loud on the inside and silent on the outside: \fBdeceived: <route>\fR in the access log, a \fBdeceive\fR security event with the client, path and method, the \fBdeceived\fR counter, \fBxproxy_deceived_total{route}\fR and \fBGET /v1/deceive\fR. Nothing is added to the response \[u2014] no header, no marker \[u2014] because anything added is the tell.
+.PP
+\fBdeceive\fR and \fBhoneypot\fR on the same route are refused: a honeypot already answers everyone with a decoy.
 .SS "routes[].mirror"
 .PP
 A mirrored route sends a copy of each request (sampled by \fBpercent\fR) to another upstream in the background while the live request proceeds as usual. The copy is built like the live outbound request (path rules, \fBhost_header\fR, forwarding headers, \fBrequest_headers\fR) and carries \fBX\-Xproxy\-Mirror: 1\fR and the same \fBX\-Request\-Id\fR; its response is read and discarded, so a slow, failing or absent mirror never changes what the client sees. Bodies are buffered up to \fBmax_body_bytes\fR so that both requests can read them; larger requests are proxied and not mirrored. Upgrade requests are never mirrored. Only routes with an \fBupstream\fR can mirror.

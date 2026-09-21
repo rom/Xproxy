@@ -86,6 +86,7 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("GET /v1/tls", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Certificates()) })
 	mux.HandleFunc("GET /v1/handshake", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Handshake()) })
 	mux.HandleFunc("GET /v1/degradation", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Degradation()) })
+	mux.HandleFunc("GET /v1/deceive", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Deceptions()) })
 	mux.HandleFunc("GET /v1/tls/tickets", func(w http.ResponseWriter, _ *http.Request) {
 		if st := s.proxy.Tickets(); st != nil {
 			writeJSON(w, 200, st)

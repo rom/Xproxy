@@ -1485,6 +1485,59 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 			v.errf("%s.honeypot.mark: must be positive and at most 720h", p)
 		}
 	}
+	if d := r.Deceive; d != nil {
+		// Not an action: the route keeps whatever it does for everyone
+		// else, and deceive only changes the answer for the clients it
+		// admits.
+		if r.Honeypot != nil {
+			v.errf("%s.deceive: a honeypot route already answers with a decoy", p)
+		}
+		if !d.Marked && d.BotScoreAt == 0 && len(d.ClientCIDRs) == 0 {
+			v.errf("%s.deceive: names no condition, so every client would be answered with a lie", p)
+		}
+		if d.BotScoreAt < 0 || d.BotScoreAt > 1000 {
+			v.errf("%s.deceive.bot_score_at: must be between 0 and 1000", p)
+		}
+		for i, c := range d.ClientCIDRs {
+			if _, err := netip.ParsePrefix(c); err != nil {
+				v.errf("%s.deceive.client_cidrs[%d]: %q is not a CIDR", p, i, c)
+			}
+		}
+		v.methodList(p+".deceive.methods", d.Methods)
+		n := 0
+		for _, set := range []bool{d.Decoy != "", d.Body != "", d.BodyFile != ""} {
+			if set {
+				n++
+			}
+		}
+		if n != 1 {
+			v.errf("%s.deceive: exactly one of decoy, body or body_file is required", p)
+		}
+		if d.Decoy != "" && !HoneypotDecoys[d.Decoy] {
+			v.errf("%s.deceive.decoy: unknown decoy %q", p, d.Decoy)
+		}
+		if len(d.Body) > 64<<10 {
+			v.errf("%s.deceive.body: exceeds 64 KiB", p)
+		}
+		if d.BodyFile != "" && !strings.HasPrefix(d.BodyFile, "/") {
+			v.errf("%s.deceive.body_file: must be an absolute path", p)
+		}
+		if strings.ContainsAny(d.ContentType, "\r\n") {
+			v.errf("%s.deceive.content_type: invalid", p)
+		}
+		if d.Status < 100 || d.Status > 599 {
+			v.errf("%s.deceive.status: must be a valid status", p)
+		}
+		if d.Status >= 400 {
+			v.warnf("%s.deceive.status is %d: an answer that looks like a refusal tells the client what a refusal tells it, "+
+				"which is what deceiving was meant to avoid", p, d.Status)
+		}
+		if d.Mark < 0 || d.Mark > Duration(30*24*time.Hour) {
+			v.errf("%s.deceive.mark: must be between 0 and 720h", p)
+		}
+		v.warnf("%s deceives: the clients it admits get a plausible answer instead of the origin's, and their writes "+
+			"never reach it. Check the conditions against the access log before trusting it", p)
+	}
 	if r.DoH != nil {
 		actions++
 		if r.DoH.Listener == "" {

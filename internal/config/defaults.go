@@ -725,6 +725,14 @@ func applyDefaults(c *Config) {
 				}
 			}
 		}
+		if d := r.Deceive; d != nil {
+			setInt(&d.Status, 200)
+			if d.Decoy == "" && d.Body == "" && d.BodyFile == "" {
+				d.Body = "{}"
+				setStr(&d.ContentType, "application/json")
+			}
+			setStr(&d.ContentType, "text/html; charset=utf-8")
+		}
 		if hp := r.Honeypot; hp != nil {
 			setInt(&hp.Status, 200)
 			setStr(&hp.ContentType, "text/html; charset=utf-8")

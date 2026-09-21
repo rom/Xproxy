@@ -1279,6 +1279,9 @@ type Route struct {
 	Respond *Respond `yaml:"respond"`
 	// Honeypot serves a decoy and marks the client instead of proxying.
 	Honeypot *Honeypot `yaml:"honeypot"`
+	// Deceive answers a client this route no longer trusts with a
+	// plausible response instead of the origin's.
+	Deceive *Deceive `yaml:"deceive"`
 
 	StripPrefix string `yaml:"strip_prefix"`
 	RewritePath string `yaml:"rewrite_path"`
@@ -1836,6 +1839,60 @@ func (r *RateLimit) IdentityKeyed() bool {
 type Respond struct {
 	Status int    `yaml:"status"`
 	Body   string `yaml:"body"`
+}
+
+// Deceive answers a client the proxy no longer trusts with something
+// plausible instead of with the origin's answer — or with a refusal.
+//
+// A refusal is information. A scanner that gets 403 knows the request
+// it sent was the interesting one, and varies it until something is
+// not refused; the refusal is the oracle that tells it when it has
+// found the way through. An answer that looks ordinary gives it
+// nothing to steer by: the crawl completes, the data is wrong, and the
+// request that would have worked looks exactly like the one that did
+// not.
+//
+// It is a deliberately sharp tool, and the rules follow from that:
+//
+//   - It applies only to clients the proxy already has a reason to
+//     distrust — a honeypot or honeytoken mark, a bot score, a named
+//     network. A route with no condition is refused at validation,
+//     because a deceive that admits everyone is an outage that looks
+//     like a feature.
+//   - The write never reaches the origin. That is the point for a
+//     POST, and it means a false positive loses a client's data, so
+//     the conditions are worth being sure of.
+//   - It is loud on the inside. The access log line carries
+//     deceived: <route>, a security event records it, and the counter
+//     and metric are separate from every other refusal, so nobody
+//     debugs a "working" endpoint for a week.
+type Deceive struct {
+	// Marked admits a client a honeypot route or a honeytoken marked.
+	Marked bool `yaml:"marked"`
+	// BotScoreAt admits a request a bot_score filter scored at or above
+	// this. 0 does not look at the score.
+	BotScoreAt int `yaml:"bot_score_at"`
+	// ClientCIDRs admits these client networks.
+	ClientCIDRs []string `yaml:"client_cidrs"`
+	// Methods narrows the deception to these methods; empty is all of
+	// them.
+	Methods []string `yaml:"methods"`
+	// Status answers the deceived request. Default 200: the whole
+	// point is an answer that does not look like a refusal.
+	Status int `yaml:"status"`
+	// Decoy names a built-in decoy body (see routes[].honeypot), Body
+	// is a literal one and BodyFile is read from disk at load and
+	// reload. Exactly one is required.
+	Decoy    string `yaml:"decoy"`
+	Body     string `yaml:"body"`
+	BodyFile string `yaml:"body_file"`
+	// ContentType of Body and BodyFile. Default text/html; a decoy
+	// brings its own.
+	ContentType string `yaml:"content_type"`
+	// Mark labels the client for this long, as a honeypot does, so a
+	// client that was deceived once stays deceived while the mark
+	// lasts. Default 0: the condition that admitted it decides.
+	Mark Duration `yaml:"mark"`
 }
 
 // Honeypot is a decoy action: the response looks like a real page of the
