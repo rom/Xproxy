@@ -7395,6 +7395,182 @@ T}	T{
 T}
 .TE
 .PP
+\fBMail, messaging and remote access\fR \[u2014] the surfaces the smtp, mqtt and ssh listeners put on the network have their own scanners, and their own habit of leaving configuration files where a web server can reach them:
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(1.7i) lbx
+lw(1.3i) lw(1.7i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBroundcube\fR
+T}	T{
+A Roundcube webmail login with its version
+T}	T{
+\fB/\:roundcube/\fR,\: \fB/\:mail/\fR
+T}
+T{
+\fBpostfixadmin\fR
+T}	T{
+A PostfixAdmin login
+T}	T{
+\fB/\:postfixadmin/\:login.\:php\fR
+T}
+T{
+\fBsmtp\-\:config\fR
+T}	T{
+A Postfix \fBmain.\:cf\fR with a relay credential
+T}	T{
+\fB/\:main.\:cf\fR,\: \fB/\:etc/\:postfix/\:main.\:cf\fR
+T}
+T{
+\fBdovecot\-\:users\fR
+T}	T{
+A Dovecot passwd\-file with hashes
+T}	T{
+\fB/\:dovecot/\:users\fR,\: \fB/\:etc/\:dovecot/\:users\fR
+T}
+T{
+\fBmail\-\:queue\fR
+T}	T{
+A mail queue listing naming partners and deferrals
+T}	T{
+\fB/\:api/\:queue\fR,\: \fB/\:mailq.\:json\fR
+T}
+T{
+\fBemqx\-\:dashboard\fR
+T}	T{
+An EMQX broker dashboard login
+T}	T{
+\fB/\:dashboard/\fR,\: \fB/\:api/\:v5/\:login\fR
+T}
+T{
+\fBmosquitto\-\:conf\fR
+T}	T{
+A \fBmosquitto.\:conf\fR with a bridge password
+T}	T{
+\fB/\:mosquitto.\:conf\fR,\: \fB/\:config/\:mosquitto.\:conf\fR
+T}
+T{
+\fBmqtt\-\:clients\fR
+T}	T{
+A broker\(aqs connected\-client listing
+T}	T{
+\fB/\:api/\:v5/\:clients\fR,\: \fB/\:api/\:clients\fR
+T}
+T{
+\fBmqtt\-\:acl\fR
+T}	T{
+A broker ACL file naming the topic tree
+T}	T{
+\fB/\:aclfile\fR,\: \fB/\:etc/\:mosquitto/\:aclfile\fR
+T}
+T{
+\fBteleport\fR
+T}	T{
+A Teleport proxy page with its cluster name
+T}	T{
+\fB/\:web/\:login\fR,\: \fB/\:webapi/\:ping\fR
+T}
+T{
+\fBguacamole\fR
+T}	T{
+An Apache Guacamole login naming guacd
+T}	T{
+\fB/\:guacamole/\fR,\: \fB/\:guacamole/\:api/\:tokens\fR
+T}
+T{
+\fBauthorized\-\:keys\fR
+T}	T{
+An \fBauthorized_\:keys\fR file with forced commands
+T}	T{
+\fB/\:.\:ssh/\:authorized_\:keys\fR
+T}
+T{
+\fBknown\-\:hosts\fR
+T}	T{
+A \fBknown_\:hosts\fR file naming internal hosts
+T}	T{
+\fB/\:.\:ssh/\:known_\:hosts\fR
+T}
+T{
+\fBsshd\-\:config\fR
+T}	T{
+An \fBsshd_\:config\fR with an sftp chroot block
+T}	T{
+\fB/\:sshd_\:config\fR,\: \fB/\:etc/\:ssh/\:sshd_\:config\fR
+T}
+T{
+\fBsftp\-\:audit\fR
+T}	T{
+An SFTP server log showing transfers and paths
+T}	T{
+\fB/\:logs/\:sftp.\:log\fR,\: \fB/\:var/\:log/\:sftp.\:log\fR
+T}
+T{
+\fBopenvpn\-\:config\fR
+T}	T{
+A client \fB.\:ovpn\fR profile with inline blocks
+T}	T{
+\fB/\:client.\:ovpn\fR,\: \fB/\:vpn/\:config.\:ovpn\fR
+T}
+T{
+\fBwireguard\-\:conf\fR
+T}	T{
+A \fBwg0.\:conf\fR with peers
+T}	T{
+\fB/\:wg0.\:conf\fR,\: \fB/\:etc/\:wireguard/\:wg0.\:conf\fR
+T}
+T{
+\fBfilezilla\-\:sites\fR
+T}	T{
+A FileZilla site manager with saved logins
+T}	T{
+\fB/\:sitemanager.\:xml\fR,\: \fB/\:filezilla.\:xml\fR
+T}
+T{
+\fBwinscp\-\:ini\fR
+T}	T{
+A WinSCP session file with saved passwords
+T}	T{
+\fB/\:WinSCP.\:ini\fR,\: \fB/\:winscp.\:ini\fR
+T}
+T{
+\fBvsftpd\-\:conf\fR
+T}	T{
+A \fBvsftpd.\:conf\fR with passive ports and TLS paths
+T}	T{
+\fB/\:vsftpd.\:conf\fR,\: \fB/\:etc/\:vsftpd.\:conf\fR
+T}
+T{
+\fBrsync\-\:modules\fR
+T}	T{
+An \fBrsyncd.\:conf\fR naming backup modules
+T}	T{
+\fB/\:rsyncd.\:conf\fR,\: \fB/\:etc/\:rsyncd.\:conf\fR
+T}
+T{
+\fBwebmin\fR
+T}	T{
+A Webmin login naming the host
+T}	T{
+\fB/\:session_\:login.\:cgi\fR,\: \fB/\:webmin/\fR
+T}
+T{
+\fBcockpit\fR
+T}	T{
+A Cockpit login naming the host and distribution
+T}	T{
+\fB/\:cockpit/\:login\fR,\: \fB/\:cockpit/\fR
+T}
+.TE
+.PP
 \fBrobots\fR and \fBsitemap\fR are the two to serve honestly: they name the decoy paths, so a crawler that reads either and then requests them has told you what it is. Give those two \fBmark: 0s\fR, so that reading the file marks nobody and only asking for what it names does. \fBexamples/security/honeypots.yaml\fR wires the whole table up, one route per decoy with the paths each is worth serving on; a test fails if a decoy in the table has no route there. \fBxproxyctl honeypot\fR and \fBGET /v1/honeypot\fR both list the names this build carries, which is the authority when a configuration is refused for an unknown decoy.
 .PP
 \fBresponse_headers\fR apply, so a decoy can carry a \fBServer\fR header of its own. \fBGET /v1/honeypot\fR lists marked clients (address, route, hits, first, last, expires) and the decoy names; \fBDELETE /v1/honeypot?ip=\fR and \fBxproxyctl honeypot forget IP\fR remove a mark. The mark table holds at most 65536 addresses. Counters: \fBhoneypot_hits\fR, \fBhoneypot_marked\fR; metrics \fBxproxy_honeypot_hits_total\fR, \fBxproxy_honeypot_marked\fR.

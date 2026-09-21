@@ -448,6 +448,80 @@ routes:
     paths: [/config/secrets.yml, /config/credentials.yml.enc]
     honeypot: {decoy: rails-secrets, mark: 24h, delay: 3s}
 
+  # ---- Mail, messaging and remote access ----------------------------
+  # The surfaces that come with the estate's other protocols. A
+  # scanner that finds a webmail login on a web application is not
+  # confused; it is mapping, and the paths below are what it maps.
+  - name: hp-roundcube
+    paths: [/roundcube/, /mail/, /webmail/index.php]
+    honeypot: {decoy: roundcube, mark: 12h, delay: 2s}
+  - name: hp-postfixadmin
+    paths: [/postfixadmin/login.php, /postfixadmin/]
+    honeypot: {decoy: postfixadmin, mark: 12h, delay: 2s}
+  - name: hp-smtp-config
+    paths: [/main.cf, /etc/postfix/main.cf]
+    honeypot: {decoy: smtp-config, mark: 24h, delay: 3s}
+  - name: hp-dovecot-users
+    paths: [/etc/dovecot/users, /dovecot/users]
+    honeypot: {decoy: dovecot-users, mark: 24h, delay: 3s}
+  - name: hp-mail-queue
+    paths: [/api/queue, /mailq.json]
+    honeypot: {decoy: mail-queue, mark: 12h, delay: 2s}
+  - name: hp-emqx
+    paths: [/emqx/, /api/v5/login]
+    honeypot: {decoy: emqx-dashboard, mark: 12h, delay: 2s}
+  - name: hp-mosquitto-conf
+    paths: [/mosquitto.conf, /config/mosquitto.conf]
+    honeypot: {decoy: mosquitto-conf, mark: 24h, delay: 3s}
+  - name: hp-mqtt-clients
+    paths: [/api/v5/clients, /api/clients]
+    honeypot: {decoy: mqtt-clients, mark: 12h, delay: 2s}
+  - name: hp-mqtt-acl
+    paths: [/aclfile, /etc/mosquitto/aclfile]
+    honeypot: {decoy: mqtt-acl, mark: 24h, delay: 3s}
+  - name: hp-teleport
+    paths: [/web/login, /webapi/ping]
+    honeypot: {decoy: teleport, mark: 12h, delay: 2s}
+  - name: hp-guacamole
+    paths: [/guacamole/, /guacamole/api/tokens]
+    honeypot: {decoy: guacamole, mark: 12h, delay: 2s}
+  - name: hp-authorized-keys
+    paths: [/.ssh/authorized_keys]
+    honeypot: {decoy: authorized-keys, mark: 24h, delay: 3s}
+  - name: hp-known-hosts
+    paths: [/.ssh/known_hosts]
+    honeypot: {decoy: known-hosts, mark: 24h, delay: 3s}
+  - name: hp-sshd-config
+    paths: [/sshd_config, /etc/ssh/sshd_config]
+    honeypot: {decoy: sshd-config, mark: 24h, delay: 3s}
+  - name: hp-sftp-audit
+    paths: [/logs/sftp.log, /var/log/sftp.log]
+    honeypot: {decoy: sftp-audit, mark: 24h, delay: 3s}
+  - name: hp-openvpn
+    paths: [/client.ovpn, /vpn/config.ovpn]
+    honeypot: {decoy: openvpn-config, mark: 24h, delay: 3s}
+  - name: hp-wireguard
+    paths: [/wg0.conf, /etc/wireguard/wg0.conf]
+    honeypot: {decoy: wireguard-conf, mark: 24h, delay: 3s}
+  - name: hp-filezilla
+    paths: [/sitemanager.xml, /filezilla.xml]
+    honeypot: {decoy: filezilla-sites, mark: 24h, delay: 3s}
+  - name: hp-winscp
+    paths: [/WinSCP.ini, /winscp.ini]
+    honeypot: {decoy: winscp-ini, mark: 24h, delay: 3s}
+  - name: hp-vsftpd
+    paths: [/vsftpd.conf, /etc/vsftpd.conf]
+    honeypot: {decoy: vsftpd-conf, mark: 24h, delay: 3s}
+  - name: hp-rsync
+    paths: [/rsyncd.conf, /etc/rsyncd.conf]
+    honeypot: {decoy: rsync-modules, mark: 24h, delay: 3s}
+  - name: hp-webmin
+    paths: [/session_login.cgi, /webmin/]
+    honeypot: {decoy: webmin, mark: 12h, delay: 2s}
+  - name: hp-cockpit
+    paths: [/cockpit/login, /cockpit/]
+    honeypot: {decoy: cockpit, mark: 12h, delay: 2s}
+
   # ---- The map ------------------------------------------------------
   # Served honestly: it names the paths above, so a crawler that reads
   # it and then asks for them has told you what it is.

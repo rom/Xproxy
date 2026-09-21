@@ -337,6 +337,35 @@ Open findings of the earlier rounds:
   once each) and the parser refuses records that do not.
   `examples/blocklists/dns-encrypted.yaml`.
 
+- **Twenty-three more decoys, their honeypot routes, and a fourth WAF
+  rule file.** The new listeners put mail, messaging and remote access
+  on the network, and each of those comes with its own scanners, its
+  own administrative web interface and its own habit of leaving a
+  configuration file where a web server can reach it. The decoy table
+  now answers for that surface too: webmail and mail administration
+  logins, a Postfix `main.cf` and a Dovecot passwd-file, a mail queue,
+  a broker dashboard, a `mosquitto.conf` with a bridge password, a
+  client listing and an ACL file, a bastion and a remote-desktop
+  console, `authorized_keys`, `known_hosts`, an `sshd_config` and an
+  SFTP log, an OpenVPN profile and a WireGuard config, the session
+  files FileZilla and WinSCP save passwords in, an FTP and an rsync
+  configuration, and two host management consoles. 142 decoys in all,
+  every one of them demonstrated by a route in
+  `examples/security/honeypots.yaml`, which a test enforces.
+
+  `examples/waf/protocol-surface-rules.conf` is the matching rule file
+  (ids 23001 upward): the paths that only exist on a mail server, a
+  broker or a bastion; mail header injection and SMTP commands behind a
+  line break in a form field; `$SYS` and wildcard topics through an
+  HTTP bridge; SSH and VPN material and file transfer session files
+  asked for over HTTP; a private key in a request body; an absolute URI
+  or a MASQUE path reaching a reverse proxy, which is a client looking
+  for an open one; the protocol scanners' user agents; and a host with
+  a service port in the same form, which is a connect request whatever
+  the fields were meant for. Each rule has a test that names it, so a
+  CRS rule catching the same request cannot hide one that has rotted,
+  and eight shapes an ordinary application sends that must still pass.
+
 - **A second factor, shared by SSH and HTTP (`ssh.mfa`, the `mfa`
   filter, `xproxyctl mfa`).** TOTP (RFC 6238 over the HMAC-OTP of RFC
   4226) against one enrolment file, used by the bastion and by the

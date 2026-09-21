@@ -2287,6 +2287,15 @@ var HoneypotDecoys = map[string]bool{
 	// Files a traversal or a misconfigured server hands over
 	"etc-passwd": true, "firebase-config": true, "wp-json-users": true,
 	"dockerfile": true, "rails-secrets": true,
+	// Mail, messaging and remote access
+	"roundcube": true, "postfixadmin": true, "smtp-config": true,
+	"dovecot-users": true, "mail-queue": true,
+	"emqx-dashboard": true, "mosquitto-conf": true, "mqtt-clients": true, "mqtt-acl": true,
+	"teleport": true, "guacamole": true, "authorized-keys": true, "known-hosts": true,
+	"sshd-config": true, "sftp-audit": true,
+	"openvpn-config": true, "wireguard-conf": true,
+	"filezilla-sites": true, "winscp-ini": true, "vsftpd-conf": true, "rsync-modules": true,
+	"webmin": true, "cockpit": true,
 }
 
 func (v *validator) bans(b *Bans) {

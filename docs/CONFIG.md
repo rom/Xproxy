@@ -2077,6 +2077,36 @@ the probe expects to see, and each is a good place for a honeytoken:
 | `dockerfile` | A Dockerfile with a build argument and internal hosts | `/Dockerfile`, `/docker/Dockerfile` |
 | `rails-secrets` | A Rails secrets file with a database URL | `/config/secrets.yml`, `/config/database.yml` |
 
+**Mail, messaging and remote access** — the surfaces the smtp, mqtt and
+ssh listeners put on the network have their own scanners, and their own
+habit of leaving configuration files where a web server can reach them:
+
+| Decoy | Looks like | Typical bait path |
+|-------|-----------|-------------------|
+| `roundcube` | A Roundcube webmail login with its version | `/roundcube/`, `/mail/` |
+| `postfixadmin` | A PostfixAdmin login | `/postfixadmin/login.php` |
+| `smtp-config` | A Postfix `main.cf` with a relay credential | `/main.cf`, `/etc/postfix/main.cf` |
+| `dovecot-users` | A Dovecot passwd-file with hashes | `/dovecot/users`, `/etc/dovecot/users` |
+| `mail-queue` | A mail queue listing naming partners and deferrals | `/api/queue`, `/mailq.json` |
+| `emqx-dashboard` | An EMQX broker dashboard login | `/dashboard/`, `/api/v5/login` |
+| `mosquitto-conf` | A `mosquitto.conf` with a bridge password | `/mosquitto.conf`, `/config/mosquitto.conf` |
+| `mqtt-clients` | A broker's connected-client listing | `/api/v5/clients`, `/api/clients` |
+| `mqtt-acl` | A broker ACL file naming the topic tree | `/aclfile`, `/etc/mosquitto/aclfile` |
+| `teleport` | A Teleport proxy page with its cluster name | `/web/login`, `/webapi/ping` |
+| `guacamole` | An Apache Guacamole login naming guacd | `/guacamole/`, `/guacamole/api/tokens` |
+| `authorized-keys` | An `authorized_keys` file with forced commands | `/.ssh/authorized_keys` |
+| `known-hosts` | A `known_hosts` file naming internal hosts | `/.ssh/known_hosts` |
+| `sshd-config` | An `sshd_config` with an sftp chroot block | `/sshd_config`, `/etc/ssh/sshd_config` |
+| `sftp-audit` | An SFTP server log showing transfers and paths | `/logs/sftp.log`, `/var/log/sftp.log` |
+| `openvpn-config` | A client `.ovpn` profile with inline blocks | `/client.ovpn`, `/vpn/config.ovpn` |
+| `wireguard-conf` | A `wg0.conf` with peers | `/wg0.conf`, `/etc/wireguard/wg0.conf` |
+| `filezilla-sites` | A FileZilla site manager with saved logins | `/sitemanager.xml`, `/filezilla.xml` |
+| `winscp-ini` | A WinSCP session file with saved passwords | `/WinSCP.ini`, `/winscp.ini` |
+| `vsftpd-conf` | A `vsftpd.conf` with passive ports and TLS paths | `/vsftpd.conf`, `/etc/vsftpd.conf` |
+| `rsync-modules` | An `rsyncd.conf` naming backup modules | `/rsyncd.conf`, `/etc/rsyncd.conf` |
+| `webmin` | A Webmin login naming the host | `/session_login.cgi`, `/webmin/` |
+| `cockpit` | A Cockpit login naming the host and distribution | `/cockpit/login`, `/cockpit/` |
+
 
 `robots` and `sitemap` are the two to serve honestly: they name the
 decoy paths, so a crawler that reads either and then requests them has

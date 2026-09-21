@@ -17,6 +17,10 @@ linters:
     gosec:
       excludes:
         - G104 # unhandled errors are reviewed case by case; errcheck covers them
+    misspell:
+      ignore-rules:
+        # Eclipse Mosquitto is a product name, spelled with two t's.
+        - mosquitto
   exclusions:
     rules:
       - path: _test\.go

@@ -128,13 +128,17 @@ and paths a real crawler would only learn from a decoy that names them.
 Check the access log for 404s first — the paths already being probed are
 the paths worth answering, and the log tells you which they are.
 
-**The decoys.** The build carries 115 of them (`xproxyctl honeypot`
+**The decoys.** The build carries 142 of them (`xproxyctl honeypot`
 lists the names; [CONFIG.md](CONFIG.md#routeshoneypot) tables them with
 a typical bait path each). They cover PHP and WordPress, leaked files,
 secrets and build files, cloud metadata, platform consoles and
 registries, application servers, appliances and gateways, notebooks and
 model servers, databases, content management systems, framework debug
-consoles and the files a traversal hands over. Each looks like the real
+consoles, the files a traversal hands over, and the surfaces that come
+with the estate's other protocols — webmail and mail administration,
+broker dashboards and ACL files, bastion and remote-access consoles,
+SSH and VPN material, and the session files an FTP or SFTP client
+saves passwords in. Each looks like the real
 thing down to a version string, and each contains nothing an operator
 would mind being read: every credential, key and host name in them is
 visibly fake, and a test refuses a decoy that hands out a password, a
@@ -268,13 +272,14 @@ tells you where the floor belongs before you tighten it.
 
 ## WAF rules that feed the same signals
 
-Three example rule files, in increasing bluntness:
+Four example rule files, in increasing bluntness:
 
 | File | What it holds |
 |------|---------------|
 | `examples/waf/custom-rules.conf` | The handful every estate writes: a debug header, a virtual patch, an IP `Host`, a JSON content type on writes, a secret-path probe scored rather than refused |
 | `examples/waf/hardening-rules.conf` | Themed payload rules: backup and source-control leftovers, template and JNDI expressions, class-loader binding, `..;/` path parameters, diagnostic methods, executable uploads, bounds on parameters, cookies and ranges, GraphQL introspection, keys and database errors on the way out |
 | `examples/waf/attack-surface-rules.conf` | Shape rules: cloud metadata and non-web schemes, traversal targets and stream wrappers, serialised objects, external entities, query operators as field names, shell commands, SpEL and Shellshock, smuggling spellings, cache poisoning and cache deception, prototype pollution, header injection, debugger parameters, browser-executing uploads, scanner user agents, interpreter error pages and directory listings |
+| `examples/waf/protocol-surface-rules.conf` | The web surfaces beside the other protocols: webmail and mail administration paths, mail header and SMTP command injection, broker dashboards and `$SYS` topics, wildcard subscriptions, SSH and VPN material and file transfer session files, remote access consoles, private keys in bodies, absolute URIs and MASQUE paths reaching a reverse proxy, protocol scanner agents, and a host with a service port in one form |
 
 Three conventions make them work with everything above rather than
 beside it:
