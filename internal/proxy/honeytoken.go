@@ -404,8 +404,8 @@ func (s *Server) honeytokenHit(rw *responseWriter, r *http.Request, st *reqState
 		"host", r.Host, "path", r.URL.Path, "route", st.route, "user_agent", r.UserAgent(),
 		"token", h.cfg.Name, "field", where, "description", h.cfg.Description,
 		"action", h.cfg.Action)
-	if h.cfg.Mark > 0 {
-		s.marks.add(st.clientIP, "honeytoken:"+h.cfg.Name, h.cfg.Mark.D(), now)
+	if d := h.cfg.MarkFor(); d > 0 {
+		s.marks.add(st.clientIP, "honeytoken:"+h.cfg.Name, d, now)
 	}
 	if h.cfg.Action != "block" {
 		return false

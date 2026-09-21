@@ -144,3 +144,60 @@ func TestHoneypotMarks(t *testing.T) {
 		}
 	}
 }
+
+// A decoy served honestly marks nobody. robots.txt and sitemap.xml
+// name the decoy paths, which is the point: a crawler that reads one
+// has done what it is meant to do, and marking it — then banning it
+// through the honeypot trigger — punishes the search engine rather
+// than the scanner. Asking for what the file names is the part that
+// says something, and that is a different route.
+func TestHoneypotMarkZeroMarksNobody(t *testing.T) {
+	b := newBackend(t, "origin")
+	yaml := `
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+logging: {access: {enabled: false}}
+trusted_proxies: [127.0.0.0/8]
+bans:
+  action: reject
+  triggers:
+    - {name: probes, reasons: [honeypot], threshold: 1, window: 1m, duration: 1h}
+upstreams:
+  - {name: app, endpoints: [{address: "` + b.addr() + `"}]}
+routes:
+  - {name: hp-robots, paths: [/robots.txt], honeypot: {decoy: robots, mark: 0s}}
+  - {name: hp-env, paths: [/.env], honeypot: {decoy: env}}
+  - {name: app, paths: [/], upstream: app}
+`
+	s, url := startServer(t, yaml)
+
+	// The honestly served file: answered, counted, and nothing else.
+	resp, body := get(t, url+"/robots.txt", "X-Forwarded-For", "203.0.113.50")
+	if resp.StatusCode != 200 || !strings.Contains(body, "Disallow") {
+		t.Fatalf("robots.txt: %d %q", resp.StatusCode, body)
+	}
+	if n := len(s.HoneypotMarks()); n != 0 {
+		t.Errorf("%d marks after reading robots.txt, want none", n)
+	}
+	// And the crawler is still served everywhere else.
+	if resp, _ := get(t, url+"/page", "X-Forwarded-For", "203.0.113.50"); resp.StatusCode != 200 {
+		t.Errorf("the crawler was refused afterwards: %d", resp.StatusCode)
+	}
+	if n := s.Stats().HoneypotHits; n != 1 {
+		t.Errorf("honeypot_hits = %d, want the hit still counted", n)
+	}
+
+	// A decoy that does mark still marks, so the zero is a choice and
+	// not a broken default.
+	if resp, _ := get(t, url+"/.env", "X-Forwarded-For", "203.0.113.51"); resp.StatusCode != 200 {
+		t.Fatalf("/.env: %d", resp.StatusCode)
+	}
+	marks := s.HoneypotMarks()
+	if len(marks) != 1 || marks[0].Address != "203.0.113.51" {
+		t.Fatalf("marks %+v, want the .env reader only", marks)
+	}
+	if resp, _ := get(t, url+"/page", "X-Forwarded-For", "203.0.113.51"); resp.StatusCode != 403 {
+		t.Errorf("the .env reader was not banned: %d", resp.StatusCode)
+	}
+}

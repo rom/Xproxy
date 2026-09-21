@@ -536,6 +536,17 @@ WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
 
+- `routes[].honeypot.mark: 0s` was silently replaced by the one-hour
+  default, because the field could not tell an absent value from a
+  zero one. The shipped example gives the `robots` route exactly that,
+  so a search engine that read `robots.txt` — which is what the file
+  is for, and what the route serves it honestly for — was marked, and
+  with the sweep trigger in the same example, banned. Reading the map
+  now marks nobody; asking for what it names still does, which was
+  always the point. `mark` is a pointer internally, so `0s` means zero
+  for honeypots and honeytokens alike, and a test drives a crawler
+  through both routes.
+
 - A `denied: true` capture rule missed the refusals decided before
   routing — a ban, the maintenance gate, a malformed `Host`, the
   concurrency ceiling — because the capture hook runs once the route is

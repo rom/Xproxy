@@ -1852,8 +1852,20 @@ type Honeypot struct {
 	// Delay holds the connection before answering, in a tarpit slot.
 	// Default 0, at most 60s.
 	Delay Duration `yaml:"delay"`
-	// Mark is how long the client stays marked. Default 1h.
-	Mark Duration `yaml:"mark"`
+	// Mark is how long the client stays marked. Default 1h; an
+	// explicit 0 marks nobody, which is what a decoy served honestly
+	// (robots.txt, sitemap.xml) wants: a crawler that reads it has
+	// done nothing wrong yet.
+	Mark *Duration `yaml:"mark"`
+}
+
+// MarkFor is how long a client that touched this honeypot stays
+// marked, or 0 for a honeypot that marks nobody.
+func (h *Honeypot) MarkFor() time.Duration {
+	if h == nil || h.Mark == nil {
+		return 0
+	}
+	return h.Mark.D()
 }
 
 // SecurityTxt is one virtual security.txt document (RFC 9116) and the
@@ -1992,14 +2004,24 @@ type Honeytoken struct {
 	// Mark labels the client for this long, as a honeypot route does,
 	// so its later requests carry honeypot_marked. Default 24h: a
 	// stolen credential says more about the client than one probe for
-	// a decoy path does, so the label lasts longer.
-	Mark Duration `yaml:"mark"`
+	// a decoy path does, so the label lasts longer. An explicit 0
+	// marks nobody.
+	Mark *Duration `yaml:"mark"`
 	// Enabled is false to keep a token configured without acting on it.
 	Enabled *bool `yaml:"enabled"`
 }
 
 // IsEnabled reports whether the token is active (default true).
 func (h Honeytoken) IsEnabled() bool { return h.Enabled == nil || *h.Enabled }
+
+// MarkFor is how long a client that presented this token stays marked,
+// or 0 for a token that marks nobody.
+func (h *Honeytoken) MarkFor() time.Duration {
+	if h == nil || h.Mark == nil {
+		return 0
+	}
+	return h.Mark.D()
+}
 
 // Capture writes the exchanges the proxy handled as pcapng files that
 // Wireshark and tshark read. The proxy terminates TLS, so a capture

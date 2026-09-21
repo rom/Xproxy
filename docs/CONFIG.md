@@ -1274,7 +1274,7 @@ Nothing is proxied. Put honeypots on paths no legitimate client uses.
 | `status` | int | `200` | Response status |
 | `content_type` | string | `text/html; charset=utf-8` | For `body` and `body_file` |
 | `delay` | duration | `0` | Hold the connection before answering, in a tarpit slot (`max_tarpits`), never in a request slot; at most 60s |
-| `mark` | duration | `1h` | How long the client stays marked; at most 720h |
+| `mark` | duration | `1h` | How long the client stays marked; at most 720h. An explicit `0s` marks nobody, which is what a decoy served honestly (`robots`, `sitemap`) wants: reading it is what a crawler is meant to do, and asking for what it names is a different route |
 
 The built-in decoys, each a plausible page for the thing a scanner is
 looking for and each containing nothing an operator would mind being
@@ -1407,7 +1407,8 @@ product it came shopping for.
 
 `robots` and `sitemap` are the two to serve honestly: they name the
 decoy paths, so a crawler that reads either and then requests them has
-told you what it is.
+told you what it is. Give those two `mark: 0s`, so that reading the
+file marks nobody and only asking for what it names does.
 `examples/security/honeypots.yaml` wires the whole table up, one route
 per decoy with the paths each is worth serving on; a test fails if a
 decoy in the table has no route there. `xproxyctl honeypot` and
@@ -1650,7 +1651,7 @@ guarantee is gone.
 | `match` | `exact`, `contains` | `exact` | `exact` compares the whole field value once a credential scheme is stripped; `contains` finds the token anywhere in the value, for a token planted inside a document a client echoes back |
 | `action` | `block`, `log` | `block` | `log` records the hit and serves the request — for a token whose plant might also be reached legitimately, until it is proven quiet. Validation advises against leaving it there |
 | `status` | int | `403` | Response for `block`; 4xx or 5xx |
-| `mark` | duration | `24h` | How long the client stays marked, as a honeypot route marks one. Longer than a decoy's default hour: a stolen credential says more about the client than one probe for a decoy path does. At most 720h |
+| `mark` | duration | `24h` | How long the client stays marked, as a honeypot route marks one. Longer than a decoy's default hour: a stolen credential says more about the client than one probe for a decoy path does. At most 720h; an explicit `0s` marks nobody |
 | `enabled` | bool | `true` | `false` keeps the token configured without watching for it |
 
 `GET /v1/honeypot` and `xproxyctl honeypot` list the tokens with their

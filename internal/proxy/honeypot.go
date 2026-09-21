@@ -1036,10 +1036,15 @@ func (s *Server) honeypot(rw *responseWriter, r *http.Request, st *reqState, cr 
 	if induced := thirdPartyInduced(r); induced {
 		st.extra = append(st.extra, "honeypot_induced", true)
 	} else {
-		s.marks.add(st.clientIP, cr.cfg.Name, hp.Mark.D(), now)
-		s.publishEvent(cluster.Event{Kind: eventHoneypotMark, Key: st.clientIP.String(), Route: cr.cfg.Name, Until: now.Add(hp.Mark.D())})
-		if bl := s.bans.Load(); bl != nil {
-			bl.Observe(st.clientIP, "honeypot")
+		// A honeypot served honestly — robots.txt, sitemap.xml — marks
+		// nobody: reading it is what a crawler is meant to do. Asking
+		// for what it names is the part that says something.
+		if d := hp.MarkFor(); d > 0 {
+			s.marks.add(st.clientIP, cr.cfg.Name, d, now)
+			s.publishEvent(cluster.Event{Kind: eventHoneypotMark, Key: st.clientIP.String(), Route: cr.cfg.Name, Until: now.Add(d)})
+			if bl := s.bans.Load(); bl != nil {
+				bl.Observe(st.clientIP, "honeypot")
+			}
 		}
 	}
 	rw.Header().Set("X-Robots-Tag", "noindex, nofollow")

@@ -4869,7 +4869,7 @@ duration
 T}	T{
 \fB1h\fR
 T}	T{
-How long the client stays marked;\: at most 720h
+How long the client stays marked;\: at most 720h. An explicit \fB0s\fR marks nobody,\: which is what a decoy served honestly (\fBrobots\fR,\: \fBsitemap\fR) wants: reading it is what a crawler is meant to do,\: and asking for what it names is a different route
 T}
 .TE
 .PP
@@ -5525,7 +5525,7 @@ T}	T{
 T}
 .TE
 .PP
-\fBrobots\fR and \fBsitemap\fR are the two to serve honestly: they name the decoy paths, so a crawler that reads either and then requests them has told you what it is. \fBexamples/security/honeypots.yaml\fR wires the whole table up, one route per decoy with the paths each is worth serving on; a test fails if a decoy in the table has no route there. \fBxproxyctl honeypot\fR and \fBGET /v1/honeypot\fR both list the names this build carries, which is the authority when a configuration is refused for an unknown decoy.
+\fBrobots\fR and \fBsitemap\fR are the two to serve honestly: they name the decoy paths, so a crawler that reads either and then requests them has told you what it is. Give those two \fBmark: 0s\fR, so that reading the file marks nobody and only asking for what it names does. \fBexamples/security/honeypots.yaml\fR wires the whole table up, one route per decoy with the paths each is worth serving on; a test fails if a decoy in the table has no route there. \fBxproxyctl honeypot\fR and \fBGET /v1/honeypot\fR both list the names this build carries, which is the authority when a configuration is refused for an unknown decoy.
 .PP
 \fBresponse_headers\fR apply, so a decoy can carry a \fBServer\fR header of its own. \fBGET /v1/honeypot\fR lists marked clients (address, route, hits, first, last, expires) and the decoy names; \fBDELETE /v1/honeypot?ip=\fR and \fBxproxyctl honeypot forget IP\fR remove a mark. The mark table holds at most 65536 addresses. Counters: \fBhoneypot_hits\fR, \fBhoneypot_marked\fR; metrics \fBxproxy_honeypot_hits_total\fR, \fBxproxy_honeypot_marked\fR.
 .SS "routes[].mirror"
@@ -6010,7 +6010,7 @@ duration
 T}	T{
 \fB24h\fR
 T}	T{
-How long the client stays marked,\: as a honeypot route marks one. Longer than a decoy\(aqs default hour: a stolen credential says more about the client than one probe for a decoy path does. At most 720h
+How long the client stays marked,\: as a honeypot route marks one. Longer than a decoy\(aqs default hour: a stolen credential says more about the client than one probe for a decoy path does. At most 720h;\: an explicit \fB0s\fR marks nobody
 T}
 T{
 \fBenabled\fR

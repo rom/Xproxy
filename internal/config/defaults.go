@@ -489,8 +489,9 @@ func applyDefaults(c *Config) {
 		setStr(&h.Match, "exact")
 		setStr(&h.Action, "block")
 		setInt(&h.Status, 403)
-		if h.Mark == 0 {
-			h.Mark = Duration(24 * time.Hour)
+		if h.Mark == nil {
+			d := Duration(24 * time.Hour)
+			h.Mark = &d
 		}
 		if len(h.In) == 0 {
 			h.In = []string{"headers", "cookies", "query", "path"}
@@ -720,7 +721,12 @@ func applyDefaults(c *Config) {
 		if hp := r.Honeypot; hp != nil {
 			setInt(&hp.Status, 200)
 			setStr(&hp.ContentType, "text/html; charset=utf-8")
-			setDur(&hp.Mark, time.Hour)
+			if hp.Mark == nil {
+				// Absent means the usual hour; an explicit 0 means this
+				// honeypot marks nobody.
+				d := Duration(time.Hour)
+				hp.Mark = &d
+			}
 			if hp.Decoy == "" && hp.Body == "" && hp.BodyFile == "" {
 				hp.Decoy = "admin-login"
 			}

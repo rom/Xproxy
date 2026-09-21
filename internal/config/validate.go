@@ -1479,7 +1479,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 		if hp.Delay < 0 || hp.Delay > Duration(60*time.Second) {
 			v.errf("%s.honeypot.delay: must be between 0 and 60s", p)
 		}
-		if hp.Mark <= 0 || hp.Mark > Duration(30*24*time.Hour) {
+		if hp.MarkFor() < 0 || hp.MarkFor() > 30*24*time.Hour {
 			v.errf("%s.honeypot.mark: must be positive and at most 720h", p)
 		}
 	}
@@ -3431,7 +3431,7 @@ func (v *validator) honeytokens(tokens []Honeytoken) {
 		if h.Status < 400 || h.Status > 599 {
 			v.errf("%s.status: must be a 4xx or 5xx status", p)
 		}
-		if h.Mark < 0 || h.Mark > Duration(720*time.Hour) {
+		if h.MarkFor() < 0 || h.MarkFor() > 720*time.Hour {
 			v.errf("%s.mark: must be between 0 and 720h", p)
 		}
 		if h.Action == "log" && h.IsEnabled() {
