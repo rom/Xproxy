@@ -295,7 +295,7 @@ Open findings of the earlier rounds:
 A round of adversarial and robustness tests over the parsers, the
 protocol clients and the views, written from the outside in: what a
 client, a peer, a scanner, a certificate authority or a file on disk
-can put in front of each of them. Forty-one packages gained a suite;
+can put in front of each of them. Forty-two packages gained a suite;
 `docs/TESTS.md` lists every case. The findings each have their own
 entry above.
 
@@ -385,6 +385,20 @@ WebAssembly module that reaches past its sandbox).
   for one, keeping newline and tab so the columns still line up and
   leaving UTF-8 untouched. The terminal interface and the fleet tool
   already did this; the control tool did not.
+- The last-resort rate-limit key took the client's network, and answered
+  an invalid client address with the literal text `net:invalid Prefix`.
+  `netip` gives the zero address the zero prefix and no error, so the
+  guard that was there never fired, and every client whose address the
+  listener could not parse shared one bucket named after a stringer's
+  error text. The key is now empty for an address that is not one, which
+  is the answer the limiter already handles: with nothing coarser left
+  it refuses rather than admits.
+- `dnsPolicy` dereferenced the `cache` section of a `dns` listener
+  without checking it. Parsing always fills it in, so no configuration
+  file reached it nil, but the type permits it and a configuration
+  assembled another way would have panicked the process at bind time
+  instead of reporting a bad listener. The defaults are now used for a
+  missing section.
 - The LDAP filter parser had no depth bound. It is recursive, and the
   filter template is parsed once per login attempt, so a `user_filter`
   nested a few million levels deep — pasted in, generated, or copied

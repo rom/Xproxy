@@ -30,11 +30,19 @@ func dnsPolicy(cfg *config.DNSListener) (*dns.Policy, error) {
 	if err != nil {
 		return nil, err
 	}
+	// cache is optional in the type; parsing fills it in, but a
+	// configuration assembled another way (a translator, a test) may
+	// leave it nil, and a nil dereference here would take the process
+	// down at bind time rather than report a bad listener.
+	cc := cfg.Cache
+	if cc == nil {
+		cc = &config.DNSCache{}
+	}
 	p := &dns.Policy{
 		Block: block, BlockAction: cfg.BlockAction, SinkholeTTL: 60,
 		AllowClients: netutil.ParsePrefixes(cfg.AllowClients),
 		Resolver:     resolver,
-		MinTTL:       cfg.Cache.MinTTL.D(), MaxTTL: cfg.Cache.MaxTTL.D(), NegativeTTL: cfg.Cache.NegativeTTL.D(),
+		MinTTL:       cc.MinTTL.D(), MaxTTL: cc.MaxTTL.D(), NegativeTTL: cc.NegativeTTL.D(),
 		LogQueries: cfg.LogQueries,
 	}
 	if a, err := netip.ParseAddr(cfg.SinkholeIPv4); err == nil {
