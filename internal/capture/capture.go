@@ -490,7 +490,7 @@ func (c *Capturer) ensureFileLocked() error {
 	c.w = &writer{w: c.bw}
 	c.written = 0
 	snap := uint32(c.cfg.SnapLen) //nolint:gosec // validated positive
-	if err := c.w.header("xproxy", "proxy-view", snap); err != nil {
+	if err := c.w.header(snap); err != nil {
 		c.closeFileLocked()
 		return err
 	}

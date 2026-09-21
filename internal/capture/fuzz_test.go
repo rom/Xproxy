@@ -30,7 +30,7 @@ func FuzzWriteFlow(f *testing.F) {
 		p := pairs[int(pairing)%len(pairs)]
 		var buf capBuffer
 		w := &writer{w: &buf}
-		if err := w.header("xproxy", "proxy-view", 262144); err != nil {
+		if err := w.header(262144); err != nil {
 			t.Fatal(err)
 		}
 		flow := newFlow(p[0], p[1], sanitise(comment))

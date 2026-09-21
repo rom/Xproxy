@@ -72,7 +72,7 @@ func options(t *testing.T, b []byte) map[uint16][]byte {
 
 func readPackets(t *testing.T, blocks []blockRec) []packetRec {
 	t.Helper()
-	var out []packetRec
+	out := make([]packetRec, 0, len(blocks))
 	for _, blk := range blocks {
 		if blk.kind != blockEnhanced {
 			continue
@@ -227,7 +227,7 @@ func TestOptionSkipsEmpty(t *testing.T) {
 func TestHeaderIsAWholeFile(t *testing.T) {
 	var buf capBuffer
 	p := &writer{w: &buf}
-	if err := p.header("xproxy", "proxy-view", 4096); err != nil {
+	if err := p.header(4096); err != nil {
 		t.Fatal(err)
 	}
 	blocks := readBlocks(t, buf.b)
@@ -310,7 +310,7 @@ func (c *capBuffer) Write(p []byte) (int, error) {
 func TestWriterReportsFailure(t *testing.T) {
 	buf := &capBuffer{fail: fmt.Errorf("disk full")}
 	p := &writer{w: buf}
-	if err := p.header("xproxy", "proxy-view", 4096); err == nil {
+	if err := p.header(4096); err == nil {
 		t.Fatal("a failed write reported success; the capture would look healthy while nothing was recorded")
 	}
 }

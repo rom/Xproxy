@@ -183,7 +183,9 @@ func checksum(b []byte) uint16 {
 	for sum>>16 != 0 {
 		sum = sum&0xffff + sum>>16
 	}
-	return ^uint16(sum)
+	// The fold above leaves the value in the low 16 bits, which is what
+	// makes the conversion exact rather than a truncation.
+	return ^uint16(sum & 0xffff) //nolint:gosec // masked to 16 bits
 }
 
 // tcpChecksum covers the pseudo-header and the segment, which is what

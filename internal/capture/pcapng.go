@@ -41,6 +41,9 @@ const (
 	optShbApp  = 4
 )
 
+// mask32 keeps the low half of a 64-bit timestamp.
+const mask32 = 0xFFFFFFFF
+
 // writer emits pcapng blocks to an underlying writer. It is not safe
 // for concurrent use; the sink above it serialises.
 type writer struct {
@@ -93,10 +96,18 @@ func (p *writer) block(kind uint32, body []byte) error {
 	return p.write(out)
 }
 
+// The two names a reader sees in the file: what wrote it, and what the
+// one interface in it is. Both say the same thing — this is the proxy's
+// own view of the exchange, not a capture taken on a wire.
+const (
+	shbApplication = "xproxy"
+	interfaceName  = "proxy-view"
+)
+
 // header writes the section header and one interface description. Every
 // file begins with exactly this, so a rotated file is a whole file
 // rather than a fragment that needs the previous one to be read.
-func (p *writer) header(app, iface string, snapLen uint32) error {
+func (p *writer) header(snapLen uint32) error {
 	body := make([]byte, 0, 64)
 	body = binary.LittleEndian.AppendUint32(body, byteOrderMagic)
 	body = binary.LittleEndian.AppendUint16(body, 1) // major
@@ -104,7 +115,7 @@ func (p *writer) header(app, iface string, snapLen uint32) error {
 	// Section length unknown: this file is written as it goes and its
 	// length is not known until it is closed.
 	body = binary.LittleEndian.AppendUint64(body, ^uint64(0))
-	body = option(body, optShbApp, []byte(app))
+	body = option(body, optShbApp, []byte(shbApplication))
 	body = binary.LittleEndian.AppendUint16(body, optEnd)
 	body = binary.LittleEndian.AppendUint16(body, 0)
 	if err := p.block(blockSectionHeader, body); err != nil {
@@ -115,7 +126,7 @@ func (p *writer) header(app, iface string, snapLen uint32) error {
 	idb = binary.LittleEndian.AppendUint16(idb, linkTypeEthernet)
 	idb = binary.LittleEndian.AppendUint16(idb, 0) // reserved
 	idb = binary.LittleEndian.AppendUint32(idb, snapLen)
-	idb = option(idb, optIfName, []byte(iface))
+	idb = option(idb, optIfName, []byte(interfaceName))
 	// Microsecond timestamps, which is what the packets below carry.
 	idb = option(idb, optIfTsRes, []byte{6})
 	idb = binary.LittleEndian.AppendUint16(idb, optEnd)
@@ -130,8 +141,10 @@ func (p *writer) packet(t time.Time, frame []byte, origLen int, comment string) 
 	us := uint64(t.UnixMicro()) //nolint:gosec // times before 1970 are not produced here
 	body := make([]byte, 0, 32+len(frame)+len(comment))
 	body = binary.LittleEndian.AppendUint32(body, 0) // interface 0
-	body = binary.LittleEndian.AppendUint32(body, uint32(us>>32))
-	body = binary.LittleEndian.AppendUint32(body, uint32(us))
+	// pcapng splits the timestamp into two 32-bit halves; the
+	// truncation is the format, not a loss.
+	body = binary.LittleEndian.AppendUint32(body, uint32(us>>32))                   //nolint:gosec // the high half, by definition
+	body = binary.LittleEndian.AppendUint32(body, uint32(us&mask32))                //nolint:gosec // the low half, masked
 	body = binary.LittleEndian.AppendUint32(body, uint32(len(frame)))               //nolint:gosec // bounded by snapLen
 	body = binary.LittleEndian.AppendUint32(body, uint32(max(origLen, len(frame)))) //nolint:gosec // bounded by the caller
 	body = append(body, frame...)

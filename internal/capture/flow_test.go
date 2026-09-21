@@ -44,7 +44,7 @@ func TestFlowIsAConversationADissectorAccepts(t *testing.T) {
 	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
 	segs := writeFlowTo(t, client, server, req, resp)
 
-	var shape []string
+	shape := make([]string, 0, len(segs))
 	for _, s := range segs {
 		dir := "->"
 		if !s.fromClient {
