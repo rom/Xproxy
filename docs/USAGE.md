@@ -1995,6 +1995,39 @@ answers `/admin`, do not shadow it here — and keep the catch-all route
 last, so every decoy path is the more specific match. The shipped
 example is checked for both.
 
+### Serving a suspect client slowly
+
+Refusing a scanner tells it which request to change. It will try
+variations until one is not refused, and the refusal is the signal that
+tells it when it has found one. Serving it in full, meanwhile, funds
+the next request.
+
+```yaml
+degradation:
+  levels:
+    - name: marked
+      marked: true
+      bytes_per_second: 8192
+      delay: 500ms
+      close: true
+    - name: likely-bot
+      bot_score_at: 60
+      routes: [catalogue, search]
+      bytes_per_second: 65536
+```
+
+A client a honeypot or a honeytoken marked now gets the real page, at
+eight kilobytes a second, half a second late, on a connection it cannot
+reuse. There is nothing to report as broken and nothing to tune
+against; the only thing that changed is what the crawl costs. The
+delay is spent in a tarpit slot rather than a request slot, so held
+responses never eat the concurrency sold to everyone else.
+
+Levels are tried in order and the first match decides, so put the
+narrow ones first. `degraded: <level>` appears in the access log line
+and `xproxy_degraded_total{level}` counts them; `xproxyctl status` and
+`GET /v1/degradation` show how often each level applied.
+
 ### Refusing before the handshake
 
 A banned client still gets a TLS handshake: keys agreed, certificate
@@ -3212,7 +3245,7 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 `bans_total`, `cluster_peers`, `cluster_connected`, `shed`, `load_level`,
 `upstream_latency_ms`, `shedding_classes`, `challenges_issued`,
 `challenges_passed`, `challenges_failed`, `captchas_passed`,
-`honeytoken_hits`,
+`honeytoken_hits`, `handshakes_refused`, `degraded`,
 `denied_sensitive_data`, `denied_account_abuse`, `sensitive_findings`,
 `account_blocks`, `account_campaigns`, `account_blocks_active`, `reloads`,
 `reload_failures`,

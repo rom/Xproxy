@@ -260,6 +260,29 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Graduated degradation (`degradation`).** Every other answer the
+  proxy gives is binary: served, or refused. For a client that has done
+  something wrong but not enough to ban — touched a decoy, scored
+  badly, arrived from a range with a history — both are wrong. Serving
+  it in full funds the next request; refusing it tells it exactly which
+  request to change, and hands a scanner the signal it tunes against.
+
+  A degradation level serves that client correctly and slowly:
+  `bytes_per_second` shapes the body through a token bucket that
+  flushes as it goes (so the client sees a slow link rather than a late
+  buffer), `delay` holds the response in a tarpit slot rather than a
+  request slot, and `close` ends the connection so the next request
+  costs a fresh handshake. Levels admit a client by `marked`,
+  `bot_score_at`, `client_cidrs`, `routes` or `methods`; the first
+  level that admits a request decides.
+
+  Nothing is added to the response for the client to read — the page is
+  the real page — so there is nothing to report as broken and nothing
+  to tune against. `degraded: <level>` is in the access log,
+  `xproxy_degraded_total{level}` counts it, and `GET /v1/degradation`
+  reports the levels. Validation refuses a level that would degrade
+  every request, and one that degrades nothing.
+
 - **Refusal at the TLS handshake (`handshake`).** A banned client still
   got a full handshake: keys agreed, certificate sent, request parsed,
   and then a 403. That is an asymmetric key exchange spent on a

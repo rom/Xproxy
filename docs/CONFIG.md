@@ -1569,6 +1569,80 @@ have blocked) stay explainable, then `100`. `xproxyctl waf` shows the
 share and the canary prefixes per route, and the access log carries
 `waf_enforced: true` or `false` for every request of such a route.
 
+## degradation
+
+Present means suspect clients are served slowly instead of being
+refused.
+
+Every other answer in this file is binary: a client is served, or it is
+refused. For a client that has done something wrong but not enough to
+ban — touched a decoy, scored badly, arrived from a range with a
+history — both are wrong. Serving it in full funds the next request.
+Refusing it tells it exactly which request to change, and hands a
+scanner a clean signal to tune against: it will try variations until
+one is not refused, and the refusal tells it when it has found one.
+
+A degraded client is served, correctly, slowly. The page arrives, so
+there is nothing to report as broken and nothing to tune against; it
+arrives at eight kilobytes a second on a connection that cannot be
+reused, so a crawl that cost the scanner nothing now costs it the one
+thing it has least of.
+
+Levels are tried in order and the first that admits the request
+decides, so the narrowest goes first.
+
+```yaml
+degradation:
+  levels:
+    # A client a honeypot or a honeytoken marked: slow, held, and no
+    # keep-alive.
+    - name: marked
+      marked: true
+      bytes_per_second: 8192
+      delay: 500ms
+      close: true
+
+    # A high bot score, on the endpoints worth scraping.
+    - name: likely-bot
+      bot_score_at: 60
+      routes: [catalogue, search]
+      bytes_per_second: 65536
+
+    # A range with a history, on writes only.
+    - name: known-range
+      client_cidrs: ["203.0.113.0/24"]
+      methods: [POST, PUT, PATCH]
+      delay: 2s
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `levels` | list | required | At least one, at most 64 |
+
+### degradation.levels[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | `levels[i]` | Names the level in the access log (`degraded`), the metric label and `GET /v1/degradation` |
+| `marked` | bool | `false` | Admit a client a honeypot route or a honeytoken marked |
+| `bot_score_at` | int | `0` | Admit a request a `bot_score` filter scored at or above this; `0` does not look at the score. Validation warns when no `bot_score` filter is configured |
+| `client_cidrs` | list of CIDR | any | Narrow the level to these client networks |
+| `routes` | list of names | any | Narrow it to these routes |
+| `methods` | list | any | Narrow it to these methods |
+| `bytes_per_second` | int | `0` | Shape the response body to this rate, flushing as it goes so the client sees a slow link rather than a late buffer. `0` leaves it alone; otherwise at least 256 and at most 1 GiB/s |
+| `delay` | duration | `0` | Hold the response this long before writing it. Spent in a tarpit slot, not a request slot, so held responses do not consume the concurrency sold to everyone else; when no tarpit slot is free the response is served without the delay. At most 60s |
+| `close` | bool | `false` | End the connection after the response, so the client pays for a new one — and a new TLS handshake — every time |
+
+A level must name at least one condition or selector, and must do at
+least one of the three things; validation refuses a level that would
+degrade every request, and one that degrades nothing.
+
+The effects are observable, which is the point: a degraded response is
+a correct response. `degraded: <level>` appears in the access log line,
+`xproxy_degraded_total{level}` counts them, and the `degraded` counter
+is in the stats. Nothing is added to the response for the client to
+read.
+
 ## handshake
 
 Present means the proxy can refuse a client before its TLS handshake

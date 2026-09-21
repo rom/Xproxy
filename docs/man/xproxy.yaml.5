@@ -5862,6 +5862,168 @@ T}
 .TE
 .PP
 Gradual roll\-out: detect everywhere, then \fBblock_percent: 0\fR with the testers in \fBblock_cidrs\fR, then raise the share in steps while the security log\(aqs \fBwaf_detected\fR entries (the requests detect mode would have blocked) stay explainable, then \fB100\fR. \fBxproxyctl waf\fR shows the share and the canary prefixes per route, and the access log carries \fBwaf_enforced: true\fR or \fBfalse\fR for every request of such a route.
+.SH "degradation"
+.PP
+Present means suspect clients are served slowly instead of being refused.
+.PP
+Every other answer in this file is binary: a client is served, or it is refused. For a client that has done something wrong but not enough to ban \[u2014] touched a decoy, scored badly, arrived from a range with a history \[u2014] both are wrong. Serving it in full funds the next request. Refusing it tells it exactly which request to change, and hands a scanner a clean signal to tune against: it will try variations until one is not refused, and the refusal tells it when it has found one.
+.PP
+A degraded client is served, correctly, slowly. The page arrives, so there is nothing to report as broken and nothing to tune against; it arrives at eight kilobytes a second on a connection that cannot be reused, so a crawl that cost the scanner nothing now costs it the one thing it has least of.
+.PP
+Levels are tried in order and the first that admits the request decides, so the narrowest goes first.
+.PP
+.RS 4
+.nf
+.ft CR
+degradation:
+  levels:
+    # A client a honeypot or a honeytoken marked: slow, held, and no
+    # keep\-alive.
+    \- name: marked
+      marked: true
+      bytes_per_second: 8192
+      delay: 500ms
+      close: true
+
+    # A high bot score, on the endpoints worth scraping.
+    \- name: likely\-bot
+      bot_score_at: 60
+      routes: [catalogue, search]
+      bytes_per_second: 65536
+
+    # A range with a history, on writes only.
+    \- name: known\-range
+      client_cidrs: ["203.0.113.0/24"]
+      methods: [POST, PUT, PATCH]
+      delay: 2s
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(0.7i) lbw(0.6i) lbw(0.9i) lbx
+lw(0.7i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBlevels\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+At least one,\: at most 64
+T}
+.TE
+.SS "degradation.levels[]"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(1.0i) lbx
+lw(0.8i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+\fBlevels[i]\fR
+T}	T{
+Names the level in the access log (\fBdegraded\fR),\: the metric label and \fBGET /\:v1/\:degradation\fR
+T}
+T{
+\fBmarked\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Admit a client a honeypot route or a honeytoken marked
+T}
+T{
+\fBbot_\:score_\:at\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Admit a request a \fBbot_\:score\fR filter scored at or above this;\: \fB0\fR does not look at the score. Validation warns when no \fBbot_\:score\fR filter is configured
+T}
+T{
+\fBclient_\:cidrs\fR
+T}	T{
+list of CIDR
+T}	T{
+any
+T}	T{
+Narrow the level to these client networks
+T}
+T{
+\fBroutes\fR
+T}	T{
+list of names
+T}	T{
+any
+T}	T{
+Narrow it to these routes
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Narrow it to these methods
+T}
+T{
+\fBbytes_\:per_\:second\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Shape the response body to this rate,\: flushing as it goes so the client sees a slow link rather than a late buffer. \fB0\fR leaves it alone;\: otherwise at least 256 and at most 1 GiB/\:s
+T}
+T{
+\fBdelay\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Hold the response this long before writing it. Spent in a tarpit slot,\: not a request slot,\: so held responses do not consume the concurrency sold to everyone else;\: when no tarpit slot is free the response is served without the delay. At most 60s
+T}
+T{
+\fBclose\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+End the connection after the response,\: so the client pays for a new one \[u2014] and a new TLS handshake \[u2014] every time
+T}
+.TE
+.PP
+A level must name at least one condition or selector, and must do at least one of the three things; validation refuses a level that would degrade every request, and one that degrades nothing.
+.PP
+The effects are observable, which is the point: a degraded response is a correct response. \fBdegraded: <level>\fR appears in the access log line, \fBxproxy_degraded_total{level}\fR counts them, and the \fBdegraded\fR counter is in the stats. Nothing is added to the response for the client to read.
 .SH "handshake"
 .PP
 Present means the proxy can refuse a client before its TLS handshake completes.

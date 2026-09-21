@@ -70,6 +70,7 @@ type reqState struct {
 	canary     bool   // the response came from a canary endpoint
 	cacheKey   string
 	marked     bool         // client previously hit a honeypot
+	degraded   string       // the degradation level serving this request, if any
 	pcapAsked  bool         // the capture hook ran for this request
 	mirror     string       // sent, dropped or body_too_large on a mirrored route
 	bodyDigest string       // set when the origin signature covers the body
@@ -591,6 +592,19 @@ admitted:
 		// the upstream stalls; keep the canceller reachable through st.
 		st.cancel = cancel
 		r = r.WithContext(ctx)
+	}
+
+	// The slow lane. Applied once the route is matched and the filters
+	// have run, so a level can read the mark and the bot score, and
+	// before the answer is produced, so it shapes whatever the action
+	// below writes.
+	if hold := s.applyDegradation(rw, r, st); hold > 0 {
+		if !s.holdDegraded(r, hold) {
+			// The client gave up while it was held. Nothing to serve.
+			s.stats.ClientAborts.Add(1)
+			rw.status, rw.wrote = 499, true
+			return
+		}
 	}
 
 	// Actions.

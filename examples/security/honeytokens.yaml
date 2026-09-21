@@ -39,6 +39,18 @@ bans:
       escalation: 2
       max_duration: 720h
 
+# Between serving in full and refusing outright: a client a decoy or a
+# token marked is served the real page, slowly, on a connection it
+# cannot reuse. There is nothing for it to report as broken and nothing
+# to tune against - only a crawl that now costs time.
+degradation:
+  levels:
+    - name: marked
+      marked: true
+      bytes_per_second: 8192
+      delay: 500ms
+      close: true
+
 # The last layer: a client the ban list already holds does not get a
 # TLS handshake at all. The refusal costs one hello and tells the
 # scanner nothing — but it never becomes a request, so it is in the

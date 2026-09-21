@@ -453,6 +453,7 @@ func (v *validator) config(c *Config) {
 	v.virtualPatches(c.VirtualPatches, routes)
 	v.honeytokens(c.Honeytokens)
 	v.handshake(c)
+	v.degradation(c, routes)
 	if c.Capture != nil {
 		v.capture(c.Capture, routes)
 	}
@@ -3342,6 +3343,75 @@ func (v *validator) patchMatches(p string, list []PatchMatch) {
 			}
 		}
 	}
+}
+
+// degradation validates the slow-lane levels.
+func (v *validator) degradation(c *Config, routes map[string]bool) {
+	d := c.Degradation
+	if d == nil {
+		return
+	}
+	const p = "degradation"
+	if len(d.Levels) == 0 {
+		v.errf("%s.levels: at least one level is required", p)
+	}
+	if len(d.Levels) > 64 {
+		v.errf("%s.levels: at most 64 levels", p)
+	}
+	names := map[string]bool{}
+	for i := range d.Levels {
+		l := &d.Levels[i]
+		q := fmt.Sprintf("%s.levels[%d]", p, i)
+		if names[l.Name] {
+			v.errf("%s.name: duplicate %q", q, l.Name)
+		}
+		names[l.Name] = true
+		if l.BotScoreAt < 0 || l.BotScoreAt > 1000 {
+			v.errf("%s.bot_score_at: must be between 0 and 1000", q)
+		}
+		for j, cidr := range l.ClientCIDRs {
+			if _, err := netip.ParsePrefix(cidr); err != nil {
+				v.errf("%s.client_cidrs[%d]: %q is not a CIDR", q, j, cidr)
+			}
+		}
+		for j, r := range l.Routes {
+			if !routes[r] {
+				v.errf("%s.routes[%d]: unknown route %q", q, j, r)
+			}
+		}
+		v.methodList(q+".methods", l.Methods)
+		if l.BytesPerSecond < 0 || (l.BytesPerSecond > 0 && l.BytesPerSecond < 256) {
+			v.errf("%s.bytes_per_second: 0 to leave the body alone, or at least 256", q)
+		}
+		if l.BytesPerSecond > 1<<30 {
+			v.errf("%s.bytes_per_second: at most 1 GiB/s", q)
+		}
+		if l.Delay < 0 || l.Delay > Duration(60*time.Second) {
+			v.errf("%s.delay: must be between 0 and 60s", q)
+		}
+		if l.BytesPerSecond == 0 && l.Delay == 0 && !l.Close {
+			v.errf("%s: a level that shapes nothing, delays nothing and closes nothing does nothing", q)
+		}
+		// A level with no condition at all applies to everything its
+		// selectors admit, which is a choice; one with no selectors
+		// either is almost certainly a mistake.
+		if !l.Marked && l.BotScoreAt == 0 && len(l.ClientCIDRs) == 0 && len(l.Routes) == 0 && len(l.Methods) == 0 {
+			v.errf("%s: names no condition and no selector, so it would degrade every request", q)
+		}
+		if l.BotScoreAt > 0 && !hasBotScoreFilter(c) {
+			v.warnf("%s.bot_score_at is set and no bot_score filter is configured, so no request carries a score", q)
+		}
+	}
+}
+
+// hasBotScoreFilter reports whether any filter can produce a score.
+func hasBotScoreFilter(c *Config) bool {
+	for _, f := range c.Filters {
+		if f.Kind == "bot_score" {
+			return true
+		}
+	}
+	return false
 }
 
 // fingerprintRE bounds a JA3 or JA4 entry: the character set both

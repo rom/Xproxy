@@ -161,6 +161,7 @@ compute it.
 | 403 with `reason: waf` | A rule matched. `waf_matched` names it; see [WAF](#waf) |
 | 403 with `reason: honeypot` | The client asked for a honeypot path. That is the honeypot working |
 | 403 with `reason: honeytoken` | The client presented a planted credential. `detail` names the plant; see [Honeytokens](#honeytokens) |
+| A client reports the site is slow and is not banned | A `degradation` level admitted it; the access line says `degraded: <level>`. See [The slow lane](#the-slow-lane-degradation) |
 | A TLS error at the client and no access log line | `handshake` refused the connection before it became a request; see [Refusal at the TLS handshake](#refusal-at-the-tls-handshake) |
 | 403 with `reason: cors` | The `Origin` is not allowed by the route's `cors` block |
 | 401 with `WWW-Authenticate: Bearer` | JWT missing or invalid. The security log names the category |
@@ -1271,6 +1272,42 @@ are permanently zero.
 **A client is denied and then denied for ever.** `honeypot_marked` is
 worth 40 on its own and the mark lasts as long as the honeypot route's
 `mark`. `xproxyctl honeypot forget IP` clears it.
+
+## The slow lane (degradation)
+
+**A client says the site is slow, and it is not banned.** Look for
+`degraded: <level>` in its access log lines. A level admits a client
+for one of three reasons — a honeypot or honeytoken mark, a bot score
+at or above `bot_score_at`, or a `client_cidrs` range — and the first
+level that admits the request decides, so a wide level above a narrow
+one takes traffic the narrow one was written for. `xproxyctl honeypot`
+shows whether the client is marked and why; `xproxyctl honeypot forget
+IP` clears it, and the next request is served at full speed.
+
+**Everything is degraded.** A level with no condition and no selector
+is refused by validation, so this is a level whose selectors are wider
+than intended: a `client_cidrs` prefix that is shorter than meant, or
+`marked: true` with a honeypot on a path ordinary clients reach. The
+`degraded` counter against the request count is the quickest check.
+
+**A degraded response is not slower.** Three reasons. `bytes_per_second`
+shapes the body, so a small response finishes inside the first
+second's allowance and arrives at full speed — that is deliberate.
+`delay` needs a free tarpit slot (`max_tarpits`); when none is free the
+response is served without it, and `tarpit_overflow` counts that.
+And a shaped response only slows what the proxy writes: a hijacked
+connection (WebSocket, CONNECT) is not shaped.
+
+**Legitimate clients are marked.** That is a honeypot problem rather
+than a degradation one: a decoy on a path something real reaches, or a
+crawler reading a file served honestly. See [Honeypot marks](#honeytokens)
+and give a decoy served honestly `mark: 0s`.
+
+**How much is it costing us?** A held response occupies a tarpit slot
+and a shaped one occupies a connection for longer, which is the trade.
+`in_flight`, `open_connections` and `tarpit_overflow` are the numbers
+to watch; if the tarpit is overflowing, either the delay is too long
+or the level is too wide.
 
 ## Refusal at the TLS handshake
 

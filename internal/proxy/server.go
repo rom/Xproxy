@@ -88,6 +88,9 @@ type Server struct {
 	// handshake refuses clients in the ClientHello. It is read from
 	// inside the TLS handshake, so it is swapped rather than locked.
 	handshake atomic.Pointer[handshakePolicy]
+	// degradation serves suspect clients slowly. Swapped on reload; the
+	// counters start again with the new levels.
+	degradation atomic.Pointer[degradation]
 	// capture writes exchanges as pcapng, kept across generations so a
 	// recording survives a reload.
 	capture atomic.Pointer[capture.Capturer]
@@ -203,6 +206,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		return bl != nil && bl.DropsConnections() && bl.Banned(addr)
 	}
 	s.handshake.Store(newHandshakePolicy(cfg.Handshake))
+	s.degradation.Store(newDegradation(cfg.Degradation))
 	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s), s.wafStats, &s.patches, &s.honeytokenHits)
 	if err != nil {
 		if bl := s.bans.Load(); bl != nil {
@@ -874,6 +878,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 	// it is swapped whole; the refusal counter starts again with the
 	// new policy, which is the honest reading of a changed rule set.
 	s.handshake.Store(newHandshakePolicy(cfg.Handshake))
+	s.degradation.Store(newDegradation(cfg.Degradation))
 	// A challenge section that appears on this reload needs its key before
 	// the swap: routes in mode always would otherwise serve unchallenged
 	// until the next reload if the secret file were unreadable (fail open).

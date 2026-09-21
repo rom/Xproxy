@@ -481,6 +481,13 @@ func applyDefaults(c *Config) {
 		setDur(&a.ZombieAfter, 720*time.Hour)
 		setDur(&a.SaveInterval, 5*time.Minute)
 	}
+	if d := c.Degradation; d != nil {
+		for i := range d.Levels {
+			if d.Levels[i].Name == "" {
+				d.Levels[i].Name = fmt.Sprintf("levels[%d]", i)
+			}
+		}
+	}
 	for i := range c.Honeytokens {
 		h := &c.Honeytokens[i]
 		if h.Name == "" {

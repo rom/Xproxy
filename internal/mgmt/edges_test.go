@@ -215,7 +215,7 @@ func TestEveryReadEndpointAnswersOnABareProxy(t *testing.T) {
 		"/v1/quotas?top=100000", "/v1/waf?top=5", "/v1/waf?top=-1", "/v1/waf/exclusions",
 		"/v1/sandbox", "/v1/maintenance", "/v1/cache", "/v1/dns", "/v1/geoip",
 		"/v1/honeypot", "/v1/icap", "/v1/ingress", "/v1/otlp", "/v1/patches",
-		"/v1/capture", "/v1/handshake",
+		"/v1/capture", "/v1/handshake", "/v1/degradation",
 		"/v1/telemetry", "/v1/filters", "/v1/fleet", "/v1/acme", "/v1/botscore?top=3",
 		"/v1/accounts?top=3", "/v1/api?view=all&top=3", "/v1/history", "/v1/diff",
 		"/v1/series?since=300s&limit=10",

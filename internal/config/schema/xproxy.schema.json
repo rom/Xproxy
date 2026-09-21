@@ -72,6 +72,14 @@
         }
       ]
     },
+    "degradation": {
+      "description": "Degradation serves a suspect client slowly rather than refusing it outright.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Degradation"
+        }
+      ]
+    },
     "filters": {
       "description": "Filters are middleware instances of registered kinds (see docs/EXTENDING.md) that routes attach by name.",
       "type": "array",
@@ -1091,6 +1099,72 @@
         "trust_anchors_file": {
           "description": "TrustAnchorsFile adds DS lines from a file (comments with #).",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Degradation": {
+      "description": "Degradation serves a suspect client slowly instead of refusing it. The proxy's other answers are binary: served, or refused. For a client that has done something wrong but not enough to ban — touched a decoy, scored badly, arrived from a range with a history — both are wrong. Serving it in full funds the next request. Refusing it tells it exactly which request to change, and hands a scanner a clean signal to tune against. A degraded client is served, correctly, slowly. There is nothing to tune against and nothing to report as broken, and a crawl that cost the scanner nothing now costs it the thing it has least of. Levels are tried in order and the first that admits the request decides, so the narrowest goes first.",
+      "type": "object",
+      "properties": {
+        "levels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DegradeLevel"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "DegradeLevel": {
+      "description": "DegradeLevel is one rule: who is degraded, and by how much.",
+      "type": "object",
+      "properties": {
+        "bot_score_at": {
+          "description": "BotScoreAt admits a request whose bot_score filter scored it at or above this. 0 does not look at the score.",
+          "type": "integer"
+        },
+        "bytes_per_second": {
+          "description": "BytesPerSecond shapes the response body. 0 does not shape.",
+          "type": "integer"
+        },
+        "client_cidrs": {
+          "description": "ClientCIDRs narrows the level to these client networks.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "close": {
+          "description": "Close ends the connection after the response, so the client pays for a new one every time.",
+          "type": "boolean"
+        },
+        "delay": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "marked": {
+          "description": "Marked admits a client a honeypot route or a honeytoken marked.",
+          "type": "boolean"
+        },
+        "methods": {
+          "description": "Methods narrows it to these methods.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name identifies the level in the access log, the metrics and the management view.",
+          "type": "string"
+        },
+        "routes": {
+          "description": "Routes narrows it to these route names.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

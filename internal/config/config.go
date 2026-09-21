@@ -67,6 +67,9 @@ type Config struct {
 	Honeytokens []Honeytoken `yaml:"honeytokens"`
 	// Handshake refuses clients before the TLS handshake completes.
 	Handshake *Handshake `yaml:"handshake"`
+	// Degradation serves a suspect client slowly rather than refusing
+	// it outright.
+	Degradation *Degradation `yaml:"degradation"`
 	// Capture writes the exchanges the proxy handled as pcapng files,
 	// for the flows its rules select.
 	Capture *Capture `yaml:"capture"`
@@ -1950,6 +1953,51 @@ type SecurityTxt struct {
 	// CacheFor sets the Cache-Control max-age of the response. Default
 	// 1h; 0 sends no Cache-Control.
 	CacheFor Duration `yaml:"cache_for"`
+}
+
+// Degradation serves a suspect client slowly instead of refusing it.
+//
+// The proxy's other answers are binary: served, or refused. For a
+// client that has done something wrong but not enough to ban — touched
+// a decoy, scored badly, arrived from a range with a history — both
+// are wrong. Serving it in full funds the next request. Refusing it
+// tells it exactly which request to change, and hands a scanner a
+// clean signal to tune against.
+//
+// A degraded client is served, correctly, slowly. There is nothing to
+// tune against and nothing to report as broken, and a crawl that cost
+// the scanner nothing now costs it the thing it has least of.
+//
+// Levels are tried in order and the first that admits the request
+// decides, so the narrowest goes first.
+type Degradation struct {
+	Levels []DegradeLevel `yaml:"levels"`
+}
+
+// DegradeLevel is one rule: who is degraded, and by how much.
+type DegradeLevel struct {
+	// Name identifies the level in the access log, the metrics and the
+	// management view.
+	Name string `yaml:"name"`
+	// Marked admits a client a honeypot route or a honeytoken marked.
+	Marked bool `yaml:"marked"`
+	// BotScoreAt admits a request whose bot_score filter scored it at
+	// or above this. 0 does not look at the score.
+	BotScoreAt int `yaml:"bot_score_at"`
+	// ClientCIDRs narrows the level to these client networks.
+	ClientCIDRs []string `yaml:"client_cidrs"`
+	// Routes narrows it to these route names.
+	Routes []string `yaml:"routes"`
+	// Methods narrows it to these methods.
+	Methods []string `yaml:"methods"`
+	// BytesPerSecond shapes the response body. 0 does not shape.
+	BytesPerSecond int64 `yaml:"bytes_per_second"`
+	// Delay holds the response for this long before it is written, in a
+	// tarpit slot rather than a request slot. At most 60s.
+	Delay Duration `yaml:"delay"`
+	// Close ends the connection after the response, so the client pays
+	// for a new one every time.
+	Close bool `yaml:"close"`
 }
 
 // Handshake decides who is refused before a TLS handshake completes.

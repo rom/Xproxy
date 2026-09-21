@@ -179,6 +179,9 @@ func (s *Server) Collect(e metrics.Collector) {
 	}
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
 	e.Counter("xproxy_tls_handshakes_refused_total", "TLS handshakes refused in the ClientHello.", nil, float64(sn.HandshakesRefused))
+	for _, d := range s.Degradation() {
+		e.Counter("xproxy_degraded_total", "Responses served on a degradation level.", L{"level": d.Name}, float64(d.Applied))
+	}
 	// Per token only: one series with a token label and one without
 	// would not sum, and the name of the plant that was found is the
 	// whole point of the counter.
