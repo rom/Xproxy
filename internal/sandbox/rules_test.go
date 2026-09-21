@@ -19,6 +19,7 @@ management: {socket: /run/xproxy/mgmt.sock, history_dir: /var/lib/xproxy/history
 logging:
   directory: /var/log/xproxy
 bans: {state_file: /var/lib/xproxy/bans.db}
+capture: {enabled: true, directory: /var/lib/xproxy/capture}
 waf:
   default_profile: p
   profiles:
@@ -71,6 +72,13 @@ func TestDerive(t *testing.T) {
 	if slices.Contains(r.Read, "/not") {
 		t.Fatal("a non path filter option produced a rule")
 	}
+	// `directory` is a write rule for logging and capture, but the ACME
+	// one of that name is a URL and must not produce a rule of any kind.
+	for _, p := range append(r.Read, r.Write...) {
+		if strings.Contains(p, "acme.example") || strings.HasPrefix(p, "https:") {
+			t.Fatalf("the ACME directory URL became a rule: %s", p)
+		}
+	}
 	wantRead := []string{"/etc/xproxy", "/etc/xproxy/conf.d", "/srv/certs", "/opt/crs", "/etc/xproxy/waf",
 		"/usr/share/GeoIP", "/opt/xproxy/filters", "/etc/pki/upstream", "/srv/www", "/opt/extra", "/etc/hosts", "/etc/ssl"}
 	for _, p := range wantRead {
@@ -78,8 +86,13 @@ func TestDerive(t *testing.T) {
 			t.Errorf("read rules lack %s: %v", p, r.Read)
 		}
 	}
+	// The capture directory is written to, not read: the proxy creates
+	// a file in it for every recording window. A read rule here means a
+	// capture that is configured, switched on, and silently writes
+	// nothing under the sandbox that is on by default.
 	wantWrite := []string{"/run/xproxy", "/var/lib/xproxy/history", "/var/log/xproxy",
-		"/var/lib/xproxy", "/var/lib/xproxy/acme", "/var/spool/xproxy"}
+		"/var/lib/xproxy", "/var/lib/xproxy/acme", "/var/spool/xproxy",
+		"/var/lib/xproxy/capture"}
 	for _, p := range wantWrite {
 		if !slices.Contains(r.Write, p) {
 			t.Errorf("write rules lack %s: %v", p, r.Write)

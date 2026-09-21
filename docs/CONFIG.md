@@ -2688,7 +2688,7 @@ and the management socket are open (docs/HARDENING.md section 1a,
 docs/HARDENING_MACOS.md on macOS). On by default; `GET /v1/sandbox` and
 `xproxyctl sandbox` show what was applied. The Landlock rules are derived
 from the configuration: the directory of every configured file is
-readable, the log, state, history and certificate directories are
+readable, the log, state, history, capture and certificate directories are
 writable, and nothing else is reachable. A reload that names a file
 outside those directories is refused with a message to restart.
 

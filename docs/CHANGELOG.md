@@ -497,6 +497,16 @@ WebAssembly module that reaches past its sandbox).
 
 ### Fixed (1.4)
 
+- The sandbox gave the capture directory a read rule rather than a
+  write one, because the Landlock rules are derived from the
+  configuration by key name and nothing knew about `capture.directory`.
+  A capture that was configured, enabled and switched on would then
+  write nothing on any Linux host with the sandbox on, which is the
+  default — the failure counter would climb and the directory stay
+  empty. `Derive` now grants the directory of an enabled capture
+  section, and `TestDerive` covers it along with the one other key of
+  that name, the ACME directory, which is a URL and must produce no
+  rule at all.
 - `internal/challenge` `TestFlow` asserted that the counter `1` fails a
   difficulty-10 proof. One nonce in a thousand is solved by it, so the
   test failed about that often for no reason. It now looks up a counter

@@ -1460,7 +1460,7 @@ start -duration 10m`. A capture that *was* on and stopped by itself hit
 | Counter climbing | What it means |
 |------------------|---------------|
 | `skipped` only | No rule matched the traffic, a rule that waits for the answer did not want it, sampling dropped it, or a rule is at its `max_flows`. The per-rule lines below the counters say which rule is taking anything at all |
-| `failed` | The file could not be written: the directory is gone, full, or not writable by the proxy user. The sandbox also has to allow it — a `directory` outside the paths Landlock was given is refused at reload, not at capture time |
+| `failed` | The file could not be written: the directory is gone, full, or not writable by the proxy user. The sandbox allows the configured `directory` because the rules are derived from the configuration, but a reload that moves it somewhere Landlock was not given is refused with a message to restart |
 | nothing at all | No exchange reached the capture. The hook runs after routing, so a request refused before a route is matched (a ban, a listener bound, TLS) never reaches it |
 
 **A rule matches nothing.** Every selector a rule names has to hold, and

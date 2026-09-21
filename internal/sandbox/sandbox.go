@@ -220,6 +220,13 @@ func Derive(cfg *config.Config, cfgPath string) Rules {
 	if d := cfg.Logging.Directory; d != "" {
 		addWrite(d, true)
 	}
+	// The capture directory is written to, not read: the proxy creates a
+	// file in it for each recording window. Without this rule a capture
+	// that is configured and switched on writes nothing under the
+	// sandbox, which is on by default.
+	if c := cfg.Capture; c != nil && c.Enabled {
+		addWrite(c.Directory, true)
+	}
 	if f := cfg.Fleet; f != nil && f.Applies() {
 		d := f.Dir
 		if d == "" {
