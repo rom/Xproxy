@@ -2475,6 +2475,71 @@ never enrolled is the one an attacker will use.
 `examples/mfa/second-factor.yaml` has both listeners and the filter
 chain.
 
+### YARA rules over streams and bodies
+
+```yaml
+server:
+  listeners:
+    - name: transfer
+      address: "0.0.0.0:2121"
+      kind: tcp
+      tcp:
+        default: files
+        yara:
+          rules_file: /etc/xproxy/rules/stream.yar
+          action: close
+          directions: [client, upstream]
+          max_bytes: 33554432
+
+filters:
+  - name: upload-scan
+    kind: yara
+    options:
+      rules_file: /etc/xproxy/rules/stream.yar
+      scan: [request]
+      action: block
+      content_types: ["application/octet-stream", "application/zip"]
+```
+
+The engine is a subset of the YARA language written in Go. That is a
+deliberate trade: linking libyara would mean `CGO_ENABLED=1` and a C
+parser in the data plane, and the proxy's build property is worth more
+than the last few features of the grammar. `docs/CONFIG.md` lists
+exactly what is supported — strings with `nocase`, `wide`, `fullword`,
+hex with `??` wildcards and bounded jumps, RE2 regular expressions, and
+conditions up to `N of ($a*)`, `#a` and `filesize`. Everything else is
+**refused at load with the line number**, because a rule that silently
+matched nothing would be worse than one that will not start.
+
+Two things differ from scanning a file, and rules should be written
+knowing them:
+
+- **A rule fires the first time its condition becomes true**, not at the
+  end. A decision that arrives after the last byte is a decision about a
+  transfer that already happened. Conditions that can be satisfied by a
+  prefix are the useful ones here.
+- **`filesize` is the bytes seen so far.** `filesize > 1MB` becomes true
+  partway through a large transfer; `filesize < 100` is only reliable
+  near the start.
+
+On a layer 4 listener nothing is held back waiting for a verdict: the
+bytes scanned are the bytes forwarded, because a stream cannot be paused
+without the peer noticing. What a match decides is whether the
+connection continues. In the filter a body is buffered to `max_bytes`
+first, so there a match can refuse the request; past the bound the body
+is forwarded and the access log marks it `yara_partial`, because holding
+an arbitrary upload in memory is a worse failure than an unscanned tail.
+
+Start with `action: log` (or `action: log` on the filter). A rule set
+decides nothing until it has been watched against real traffic for a
+while; `xproxy_yara_matches_total` and the `yara_match` security events
+are what that watching looks at.
+
+`examples/yara/rules.yar` has a starting set — executable headers,
+archives of executables, dropped shell scripts, leaked credentials, a
+planted internal marker, webshells — and `examples/yara/scanning.yaml`
+wires it into both places.
+
 ### Virtual security.txt
 
 A `security.txt` (RFC 9116) tells a finder where to report a

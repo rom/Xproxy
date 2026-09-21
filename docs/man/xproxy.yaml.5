@@ -422,9 +422,113 @@ T}	T{
 T}	T{
 End a QUIC flow with no datagrams either way;\: at most 1h
 T}
+T{
+\fByara\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Apply YARA rules to the bytes of each connection;\: see below
+T}
 .TE
 .PP
 Endpoints are picked with the upstream\(aqs balancer (hash on the client address for \fBhash\fR), dial failures try the next endpoint and feed outlier ejection; active health checks run as configured on the upstream. Every connection writes one \fBtcp\fR line to the access log with the name, upstream, endpoint, bytes and duration (\fBproto: quic\fR for QUIC flows). Counters: \fBtcp_connections\fR, \fBtcp_rejected\fR, \fBtcp_errors\fR, \fBtcp_bytes_in\fR, \fBtcp_bytes_out\fR, \fBquic_flows\fR, \fBquic_rejected\fR, \fBquic_flows_open\fR; \fBxproxy_tcp_*\fR and \fBxproxy_quic_*\fR metrics. QUIC flows are keyed by client address, so a client that migrates to a new address starts a new flow (its first packet is not an Initial and is dropped; the client falls back or retries); QUIC versions other than 1 are dropped. Changing a tcp listener needs a restart.
+.SS "server.listeners[].tcp.yara"
+.PP
+YARA rules over the bytes a layer 4 listener relays. The engine is a subset of the language implemented in Go \[u2014] this proxy links no C library into the data plane, and \fBCGO_ENABLED=0\fR is a property worth more here than the last few features of the grammar. What is supported:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBstrings\fR: text with \fBnocase\fR, \fBwide\fR, \fBascii\fR, \fBfullword\fR and \fBprivate\fR; hex with \fB??\fR and \fB4?\fR wildcards and \fB[n]\fR or \fB[n\-m]\fR jumps; regular expressions (RE2, with the \fBi\fR and \fBs\fR flags).
+.PP
+.ti -3n
+\(bu
+\fBconditions\fR: \fB$a\fR, \fBnot\fR, \fBand\fR, \fBor\fR, parentheses, \fBN of them\fR, \fBany of them\fR, \fBall of them\fR, \fBN of ($a*)\fR, \fB#a\fR and \fBfilesize\fR compared with a number, \fBtrue\fR, \fBfalse\fR.
+.PP
+.ti -3n
+\(bu
+\fBnot supported\fR: modules and \fBimport\fR, \fBat\fR, \fBin\fR, \fBfor\fR loops, \fBentrypoint\fR, unbounded jumps (\fB[2\-]\fR), alternation inside a hex string, string offsets and lengths (\fB@a\fR, \fB!a\fR), and the \fBxor\fR and \fBbase64\fR modifiers.
+.RE
+.PP
+.PP
+Anything outside that is \fBrefused at load\fR, with the line number. A rule that silently matched nothing would be worse than one that will not start.
+.PP
+Two things differ from scanning a file, and both are deliberate. A rule is reported the first time its condition becomes true, not at the end: a decision that arrives after the last byte is a decision about a transfer that already happened. And \fBfilesize\fR means the bytes seen so far, which is the only honest reading when there is no end yet.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.7i) lbw(1.0i) lbx
+lw(1.1i) lw(0.7i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrules_\:file\fR
+T}	T{
+path
+T}	T{
+one of these
+T}	T{
+One rule file,\: compiled at load
+T}
+T{
+\fBrules_\:dir\fR
+T}	T{
+path
+T}	T{
+one of these
+T}	T{
+Every \fB.\:yar\fR and \fB.\:yara\fR file in the directory,\: in name order,\: as one set. A file that does not compile fails the load
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBclose\fR,\: \fBlog\fR
+T}	T{
+\fBclose\fR
+T}	T{
+\fBclose\fR ends the connection and observes a \fByara\fR ban reason;\: \fBlog\fR records the match and lets the bytes through,\: which is how a rule set is tried out before it decides anything
+T}
+T{
+\fBdirections\fR
+T}	T{
+list
+T}	T{
+\fB[client,\: upstream]\fR
+T}	T{
+Which sides are scanned: what the client sends,\: what comes back
+T}
+T{
+\fBmax_\:window\fR
+T}	T{
+int
+T}	T{
+\fB262144\fR
+T}	T{
+The buffer one direction scans in,\: and the bound on the overlap carried between windows. The overlap is what lets a match straddling two reads still be found;\: a pattern wider than a quarter of the window cannot be matched reliably across reads
+T}
+T{
+\fBmax_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB33554432\fR
+T}	T{
+Stop scanning a direction after this many bytes;\: the connection carries on unscanned. \fB0\fR scans everything and warns,\: because a long transfer then costs arbitrarily much
+T}
+.TE
+.PP
+Nothing is held back waiting for a verdict: the bytes scanned are the bytes forwarded, because a stream cannot be paused without the peer noticing. What a match decides is whether the connection continues. QUIC flows on the same listener are not scanned and validation says so: they are encrypted, and a rule over ciphertext matches nothing.
+.PP
+Counters: \fByara_matches\fR, \fByara_scanned\fR; \fBxproxy_yara_matches_total\fR and \fBxproxy_yara_bytes_total\fR. A match is a \fByara_match\fR security event with the rules, their tags and the offset.
 .SS "server.listeners[].forward (kind: forward)"
 .PP
 A \fBkind: forward\fR listener is an explicit proxy that clients configure in their browser or \fBHTTPS_PROXY\fR. \fBCONNECT host:port\fR opens a tunnel (TLS stays end to end between the client and the destination; nothing is inspected) and absolute \fBhttp://\fR request lines are relayed with hop\-by\-hop headers removed and \fBVia: 1.1 xproxy\fR added. Requests that are neither (an ordinary origin\-form request, an \fBhttps://\fR URI) get 400. Every destination passes the policy below before a connection is made: the port must be listed, the name is resolved, the resolved addresses must not be private unless \fBallow_private\fR is set, \fBdeny\fR wins, and a non\-empty \fBallow\fR must match. The address that passed the check is the one dialled, so a name cannot rebind between check and connect. Refusals answer 403, are logged as security events (\fBforward_port\fR, \fBforward_private\fR, \fBforward_deny\fR, \fBforward_not_allowed\fR, \fBforward_resolve\fR) and count towards the \fBforward_denied\fR ban reason. A forward listener may terminate TLS from the client (\fBtls\fR), and with TLS may list \fBh2\fR so clients tunnel \fBCONNECT\fR over an HTTP/2 stream (the stream carries the tunnel, one per request, ending when the destination closes or the client resets); it takes no \fBtcp\fR, \fBredirect_to_https\fR, \fBh3\fR or \fBh2c\fR. Bans, the connection limits and the header timeouts apply as on every listener.
@@ -2215,7 +2319,7 @@ T}
 .TE
 .SS "server.listeners[].tls.key_exchange"
 .PP
-The accepted key agreement groups, in preference order: \fBX25519MLKEM768\fR, \fBX25519\fR, \fBP\-256\fR, \fBP\-384\fR, \fBP\-521\fR. The default leads with \fBX25519MLKEM768\fR, the hybrid that combines X25519 with the ML\-KEM lattice KEM (RFC 9370\(aqs hybrid design, as deployed by Chrome, Firefox and every major CDN).
+The accepted key agreement groups, in preference order: \fBX25519MLKEM768\fR, \fBX25519\fR, \fBP\-256\fR, \fBP\-384\fR, \fBP\-521\fR. The default leads with \fBX25519MLKEM768\fR, the hybrid that combines X25519 (RFC 7748) with the ML\-KEM lattice KEM of FIPS 203, as \fBdraft\-kwiatkowski\-tls\-ecdhe\-mlkem\fR defines it for TLS and as Chrome, Firefox and every major CDN deploy it.
 .PP
 Why it is a setting at all: Go chooses a good set by itself, but \fIonly\fR while the list is left unset, and naming any group replaces the whole list. A configuration written to prefer X25519 therefore drops the post\-quantum hybrid silently, and nothing in a handshake says so. Making the list explicit means the choice is validated, documented and visible in \fBxproxyctl tls\fR, rather than a side effect of a line nobody re\-read after a toolchain upgrade.
 .PP
@@ -5704,7 +5808,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -7288,6 +7392,182 @@ T}	T{
 A Rails secrets file with a database URL
 T}	T{
 \fB/\:config/\:secrets.\:yml\fR,\: \fB/\:config/\:database.\:yml\fR
+T}
+.TE
+.PP
+\fBMail, messaging and remote access\fR \[u2014] the surfaces the smtp, mqtt and ssh listeners put on the network have their own scanners, and their own habit of leaving configuration files where a web server can reach them:
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(1.7i) lbx
+lw(1.3i) lw(1.7i) lx.
+T{
+Decoy
+T}	T{
+Looks like
+T}	T{
+Typical bait path
+T}
+T{
+\fBroundcube\fR
+T}	T{
+A Roundcube webmail login with its version
+T}	T{
+\fB/\:roundcube/\fR,\: \fB/\:mail/\fR
+T}
+T{
+\fBpostfixadmin\fR
+T}	T{
+A PostfixAdmin login
+T}	T{
+\fB/\:postfixadmin/\:login.\:php\fR
+T}
+T{
+\fBsmtp\-\:config\fR
+T}	T{
+A Postfix \fBmain.\:cf\fR with a relay credential
+T}	T{
+\fB/\:main.\:cf\fR,\: \fB/\:etc/\:postfix/\:main.\:cf\fR
+T}
+T{
+\fBdovecot\-\:users\fR
+T}	T{
+A Dovecot passwd\-file with hashes
+T}	T{
+\fB/\:dovecot/\:users\fR,\: \fB/\:etc/\:dovecot/\:users\fR
+T}
+T{
+\fBmail\-\:queue\fR
+T}	T{
+A mail queue listing naming partners and deferrals
+T}	T{
+\fB/\:api/\:queue\fR,\: \fB/\:mailq.\:json\fR
+T}
+T{
+\fBemqx\-\:dashboard\fR
+T}	T{
+An EMQX broker dashboard login
+T}	T{
+\fB/\:dashboard/\fR,\: \fB/\:api/\:v5/\:login\fR
+T}
+T{
+\fBmosquitto\-\:conf\fR
+T}	T{
+A \fBmosquitto.\:conf\fR with a bridge password
+T}	T{
+\fB/\:mosquitto.\:conf\fR,\: \fB/\:config/\:mosquitto.\:conf\fR
+T}
+T{
+\fBmqtt\-\:clients\fR
+T}	T{
+A broker\(aqs connected\-client listing
+T}	T{
+\fB/\:api/\:v5/\:clients\fR,\: \fB/\:api/\:clients\fR
+T}
+T{
+\fBmqtt\-\:acl\fR
+T}	T{
+A broker ACL file naming the topic tree
+T}	T{
+\fB/\:aclfile\fR,\: \fB/\:etc/\:mosquitto/\:aclfile\fR
+T}
+T{
+\fBteleport\fR
+T}	T{
+A Teleport proxy page with its cluster name
+T}	T{
+\fB/\:web/\:login\fR,\: \fB/\:webapi/\:ping\fR
+T}
+T{
+\fBguacamole\fR
+T}	T{
+An Apache Guacamole login naming guacd
+T}	T{
+\fB/\:guacamole/\fR,\: \fB/\:guacamole/\:api/\:tokens\fR
+T}
+T{
+\fBauthorized\-\:keys\fR
+T}	T{
+An \fBauthorized_\:keys\fR file with forced commands
+T}	T{
+\fB/\:.\:ssh/\:authorized_\:keys\fR
+T}
+T{
+\fBknown\-\:hosts\fR
+T}	T{
+A \fBknown_\:hosts\fR file naming internal hosts
+T}	T{
+\fB/\:.\:ssh/\:known_\:hosts\fR
+T}
+T{
+\fBsshd\-\:config\fR
+T}	T{
+An \fBsshd_\:config\fR with an sftp chroot block
+T}	T{
+\fB/\:sshd_\:config\fR,\: \fB/\:etc/\:ssh/\:sshd_\:config\fR
+T}
+T{
+\fBsftp\-\:audit\fR
+T}	T{
+An SFTP server log showing transfers and paths
+T}	T{
+\fB/\:logs/\:sftp.\:log\fR,\: \fB/\:var/\:log/\:sftp.\:log\fR
+T}
+T{
+\fBopenvpn\-\:config\fR
+T}	T{
+A client \fB.\:ovpn\fR profile with inline blocks
+T}	T{
+\fB/\:client.\:ovpn\fR,\: \fB/\:vpn/\:config.\:ovpn\fR
+T}
+T{
+\fBwireguard\-\:conf\fR
+T}	T{
+A \fBwg0.\:conf\fR with peers
+T}	T{
+\fB/\:wg0.\:conf\fR,\: \fB/\:etc/\:wireguard/\:wg0.\:conf\fR
+T}
+T{
+\fBfilezilla\-\:sites\fR
+T}	T{
+A FileZilla site manager with saved logins
+T}	T{
+\fB/\:sitemanager.\:xml\fR,\: \fB/\:filezilla.\:xml\fR
+T}
+T{
+\fBwinscp\-\:ini\fR
+T}	T{
+A WinSCP session file with saved passwords
+T}	T{
+\fB/\:WinSCP.\:ini\fR,\: \fB/\:winscp.\:ini\fR
+T}
+T{
+\fBvsftpd\-\:conf\fR
+T}	T{
+A \fBvsftpd.\:conf\fR with passive ports and TLS paths
+T}	T{
+\fB/\:vsftpd.\:conf\fR,\: \fB/\:etc/\:vsftpd.\:conf\fR
+T}
+T{
+\fBrsync\-\:modules\fR
+T}	T{
+An \fBrsyncd.\:conf\fR naming backup modules
+T}	T{
+\fB/\:rsyncd.\:conf\fR,\: \fB/\:etc/\:rsyncd.\:conf\fR
+T}
+T{
+\fBwebmin\fR
+T}	T{
+A Webmin login naming the host
+T}	T{
+\fB/\:session_\:login.\:cgi\fR,\: \fB/\:webmin/\fR
+T}
+T{
+\fBcockpit\fR
+T}	T{
+A Cockpit login naming the host and distribution
+T}	T{
+\fB/\:cockpit/\:login\fR,\: \fB/\:cockpit/\fR
 T}
 .TE
 .PP
@@ -9721,6 +10001,89 @@ T}
 .TE
 .PP
 Every failure gets the same page: a wrong code, a replayed one, a locked account and a name that never enrolled are one answer. Counters: \fBmfa_verified\fR, \fBmfa_failed\fR; \fBxproxy_mfa_total\fR by outcome.
+.SS "Kind \fByara\fR"
+.PP
+The same engine as a tcp listener\(aqs \fByara\fR section, over request and response bodies. The supported subset and the reasons for it are described under \fBserver.listeners[].tcp.yara\fR.
+.PP
+The difference is that a body is buffered to \fBmax_bytes\fR before it is forwarded, so a match can refuse the request rather than only record it. A body larger than the bound is scanned to the bound and then streamed on \[u2014] holding an arbitrary upload in memory is a worse failure than an unscanned tail \[u2014] and the access log marks those with \fByara_partial\fR.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.7i) lbw(1.0i) lbx
+lw(0.9i) lw(0.7i) lw(1.0i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrules_\:file\fR
+T}	T{
+path
+T}	T{
+one of these
+T}	T{
+One rule file
+T}
+T{
+\fBrules_\:dir\fR
+T}	T{
+path
+T}	T{
+one of these
+T}	T{
+Every \fB.\:yar\fR and \fB.\:yara\fR file in the directory
+T}
+T{
+\fBscan\fR
+T}	T{
+list
+T}	T{
+\fB[request,\: response]\fR
+T}	T{
+Which bodies are scanned
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBblock\fR,\: \fBlog\fR
+T}	T{
+\fBblock\fR
+T}	T{
+\fBblock\fR refuses (403 on a request,\: 502 on a response,\: since a client did not ask for what the origin sent);\: \fBlog\fR records and forwards
+T}
+T{
+\fBmax_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB4194304\fR
+T}	T{
+Scanned and buffered per body;\: 4096..268435456
+T}
+T{
+\fBmax_\:window\fR
+T}	T{
+int
+T}	T{
+\fB262144\fR
+T}	T{
+The scanner\(aqs window
+T}
+T{
+\fBcontent_\:types\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (all)
+T}	T{
+Media types to scan,\: \fBtype/\:*\fR allowed. Empty scans everything,\: which is the honest default: the type is what the sender claims,\: not what the bytes are
+T}
+.TE
 .SS "Kind \fBldap_auth\fR"
 .PP
 HTTP Basic authentication against an LDAP or Active Directory server. Two modes: a \fBdirect bind\fR substitutes the username into \fBbind_dn_template\fR and binds with the password; a \fBsearch then bind\fR binds an optional service account (\fBbind_dn\fR), searches \fBbase_dn\fR with \fBuser_filter\fR for the user\(aqs entry, then binds as that entry, optionally requiring group membership. The username is escaped (RFC 4514 for a DN, RFC 4515 for a filter) so it cannot alter the query. \fBldaps://\fR and \fBstart_tls\fR verify the server certificate against the system roots or \fBca_file\fR. Verified credentials are cached by digest for \fBcache_ttl\fR; a directory or network error is never cached and denies the request.

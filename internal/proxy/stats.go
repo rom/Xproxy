@@ -118,6 +118,8 @@ type Stats struct {
 	SFTPRefused            atomic.Uint64
 	MFAVerified            atomic.Uint64
 	MFAFailed              atomic.Uint64
+	YARAMatches            atomic.Uint64
+	YARAScanned            atomic.Uint64
 	WSConnections          atomic.Uint64
 	WSMessages             atomic.Uint64
 	WSViolations           atomic.Uint64
@@ -298,6 +300,8 @@ type Snapshot struct {
 	SFTPRefused            uint64            `json:"sftp_refused"`
 	MFAVerified            uint64            `json:"mfa_verified"`
 	MFAFailed              uint64            `json:"mfa_failed"`
+	YARAMatches            uint64            `json:"yara_matches"`
+	YARAScanned            uint64            `json:"yara_scanned"`
 	WSConnections          uint64            `json:"websocket_connections"`
 	WSMessages             uint64            `json:"websocket_messages"`
 	WSViolations           uint64            `json:"websocket_violations"`
@@ -446,6 +450,8 @@ func (s *Stats) snapshot() Snapshot {
 		SFTPRefused:            s.SFTPRefused.Load(),
 		MFAVerified:            s.MFAVerified.Load(),
 		MFAFailed:              s.MFAFailed.Load(),
+		YARAMatches:            s.YARAMatches.Load(),
+		YARAScanned:            s.YARAScanned.Load(),
 		WSConnections:          s.WSConnections.Load(),
 		WSMessages:             s.WSMessages.Load(),
 		WSViolations:           s.WSViolations.Load(),

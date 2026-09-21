@@ -30,14 +30,23 @@ type tcpServer struct {
 	mu   sync.Mutex
 	once sync.Once
 	quic *quicRelay // when the listener relays QUIC too
+	yara *yaraGuard // when the listener scans the bytes it relays
 	cons map[net.Conn]struct{}
 	done chan struct{}
 }
 
 const helloPeekTimeout = 10 * time.Second
 
-func newTCPServer(s *Server, cfg config.Listener, ln net.Listener) *tcpServer {
-	return &tcpServer{s: s, cfg: cfg, ln: ln, cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
+func newTCPServer(s *Server, cfg config.Listener, ln net.Listener) (*tcpServer, error) {
+	t := &tcpServer{s: s, cfg: cfg, ln: ln, cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
+	if cfg.TCP != nil && cfg.TCP.YARA != nil {
+		g, err := newYARAGuard(cfg.TCP.YARA)
+		if err != nil {
+			return nil, err
+		}
+		t.yara = g
+	}
+	return t, nil
 }
 
 func (t *tcpServer) serve() {
@@ -241,7 +250,7 @@ func (t *tcpServer) handle(client net.Conn) {
 		t.finish(client, clientIP, start, sni, upName, ep.Address, "upstream_write", 0, 0)
 		return
 	}
-	in, out := splice(client, up, t.cfg.TCP.IdleTimeout.D())
+	in, out := t.spliceScanned(client, up, clientIP, sni)
 	pool.End(ep, false, 0)
 	s.stats.TCPBytesIn.Add(uint64(in + int64(len(buf)))) //nolint:gosec // non-negative
 	s.stats.TCPBytesOut.Add(uint64(out))                 //nolint:gosec // non-negative
@@ -264,18 +273,62 @@ func (t *tcpServer) finish(client net.Conn, ip netip.Addr, start time.Time, sni,
 	t.s.logs.Access.Info("tcp", attrs...)
 }
 
+// spliceScanned relays a connection, giving each direction to the YARA
+// scanner when one is configured. The bytes forwarded are the bytes
+// scanned: nothing is held back waiting for a verdict, because a stream
+// cannot be paused without the peer noticing, so what a match decides
+// is whether the connection continues.
+func (t *tcpServer) spliceScanned(client, up net.Conn, ip netip.Addr, sni string) (in, out int64) {
+	if t.yara == nil {
+		return splice(client, up, t.cfg.TCP.IdleTimeout.D())
+	}
+	toUpstream := t.yara.stream("client")
+	toClient := t.yara.stream("upstream")
+	var closed atomic.Bool
+	watch := func(s *yaraStream) func([]byte) bool {
+		if s == nil {
+			return nil
+		}
+		return func(b []byte) bool {
+			t.s.stats.YARAScanned.Add(uint64(len(b))) //nolint:gosec // non-negative
+			if !s.feed(b) {
+				return true
+			}
+			if !t.yaraReport(s, ip, sni) {
+				return true
+			}
+			if closed.CompareAndSwap(false, true) {
+				_ = client.Close()
+				_ = up.Close()
+			}
+			return false
+		}
+	}
+	return spliceWatch(client, up, t.cfg.TCP.IdleTimeout.D(), watch(toUpstream), watch(toClient))
+}
+
 // splice copies in both directions until one side ends or the idle
 // timeout passes with no bytes either way. It returns bytes client to
 // upstream and upstream to client.
 func splice(client, up net.Conn, idle time.Duration) (in, out int64) {
+	return spliceWatch(client, up, idle, nil, nil)
+}
+
+// spliceWatch is splice with an optional watcher per direction. A
+// watcher sees each read before it is written on and returns false to
+// end the copy.
+func spliceWatch(client, up net.Conn, idle time.Duration, toUpstream, toClient func([]byte) bool) (in, out int64) {
 	var wg sync.WaitGroup
-	copyDir := func(dst, src net.Conn, n *int64) {
+	copyDir := func(dst, src net.Conn, n *int64, watch func([]byte) bool) {
 		defer wg.Done()
 		buf := make([]byte, 32<<10)
 		for {
 			_ = src.SetReadDeadline(time.Now().Add(idle))
 			r, err := src.Read(buf)
 			if r > 0 {
+				if watch != nil && !watch(buf[:r]) {
+					break
+				}
 				// The write needs its own deadline. A peer that stops
 				// reading (a zero receive window) blocks this write for
 				// as long as it likes, and the idle timeout above only
@@ -301,8 +354,8 @@ func splice(client, up net.Conn, idle time.Duration) (in, out int64) {
 		}
 	}
 	wg.Add(2)
-	go copyDir(up, client, &in)
-	go copyDir(client, up, &out)
+	go copyDir(up, client, &in, toUpstream)
+	go copyDir(client, up, &out, toClient)
 	wg.Wait()
 	_ = client.Close()
 	_ = up.Close()

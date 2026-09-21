@@ -89,3 +89,46 @@ func TestDecoyReferenceComplete(t *testing.T) {
 		t.Errorf("the decoy tables hold %d rows for %d decoys", found, len(HoneypotDecoys))
 	}
 }
+
+// TestRFCReferenceIsWellFormed keeps docs/RFC.md honest about its own
+// shape: every row names an RFC number or a named specification and a
+// status the document defines, and every status word it defines is
+// used. A table that drifts into free text is a table nobody can check
+// a claim against.
+func TestRFCReferenceIsWellFormed(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/RFC.md")
+	if err != nil {
+		t.Skip("docs not available:", err)
+	}
+	text := string(doc)
+	statuses := map[string]int{"Full": 0, "Partial": 0, "Refused": 0}
+	row := regexp.MustCompile(`(?m)^\| ([0-9]{3,5}|[0-9]{3,5} / [0-9]{3,5}|` + "`[^`]+`" + `|[A-Za-z][^|]*) \| ([^|]*) \| (Full|Partial|Refused|See above)[^|]* \|`)
+	rows := row.FindAllStringSubmatch(text, -1)
+	if len(rows) < 80 {
+		t.Fatalf("docs/RFC.md has %d status rows; the document is a table of them", len(rows))
+	}
+	for _, m := range rows {
+		if n, ok := statuses[strings.TrimSpace(m[3])]; ok {
+			statuses[strings.TrimSpace(m[3])] = n + 1
+		}
+	}
+	for word, n := range statuses {
+		if n == 0 {
+			t.Errorf("docs/RFC.md defines the status %q and never uses it", word)
+		}
+	}
+	// The document promises a reason for every refusal, so a "Refused"
+	// row with an empty note is a promise it did not keep.
+	refused := regexp.MustCompile(`(?m)^\|[^|]*\|[^|]*\| Refused \|([^|]*)\|`)
+	for _, m := range refused.FindAllStringSubmatch(text, -1) {
+		if len(strings.TrimSpace(m[1])) < 20 {
+			t.Errorf("a Refused row gives no reason: %q", strings.TrimSpace(m[0]))
+		}
+	}
+	// Every heading in the contents list exists as a heading.
+	for _, m := range regexp.MustCompile(`(?m)^- \[([^\]]+)\]\(#([a-z0-9-]+)\)`).FindAllStringSubmatch(text, -1) {
+		if !strings.Contains(text, "\n## "+m[1]+"\n") {
+			t.Errorf("the contents name %q, which is not a heading", m[1])
+		}
+	}
+}

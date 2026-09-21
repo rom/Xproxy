@@ -1142,6 +1142,304 @@ production:
   smtp_password: decoy-not-a-real-password
   database_url: postgres://app:decoy-not-a-real-password@db.internal.example:5432/app
 `},
+
+	// Mail, messaging and remote access: the surfaces the SMTP, MQTT
+	// and SSH listeners put on the network, which have their own
+	// scanners and their own leaked-file habits.
+	"roundcube": {"text/html; charset=utf-8", `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Roundcube Webmail :: Welcome to Roundcube Webmail</title>
+<link rel="stylesheet" href="/skins/elastic/styles/styles.min.css"></head>
+<body class="task-login"><div id="layout"><form name="form" method="post" action="/?_task=login">
+<input type="hidden" name="_token" value="decoy0000000000000000000000000000">
+<p><label for="rcmloginuser">Username</label><input name="_user" id="rcmloginuser" type="text" autocomplete="username"></p>
+<p><label for="rcmloginpwd">Password</label><input name="_pass" id="rcmloginpwd" type="password" autocomplete="current-password"></p>
+<p><button type="submit" id="rcmloginsubmit">Login</button></p>
+</form><div id="login-footer">Roundcube Webmail 1.6.6</div></div></body></html>
+`},
+	"postfixadmin": {"text/html; charset=utf-8", `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Postfix Admin - Login</title></head>
+<body><div id="login"><h1>Postfix Admin</h1>
+<form method="post" action="/login.php">
+<input type="hidden" name="token" value="decoy1111111111111111111111111111">
+<p><label for="fUsername">Login (email)</label><input type="text" name="fUsername" id="fUsername"></p>
+<p><label for="fPassword">Password</label><input type="password" name="fPassword" id="fPassword"></p>
+<p><input type="submit" name="submit" value="Login"></p>
+</form><p class="footer">Postfix Admin 3.3.13 &mdash; mail.example.com</p></div></body></html>
+`},
+	"smtp-config": {"text/plain; charset=utf-8", `# Postfix main.cf
+myhostname = mail.example.com
+mydomain = example.com
+relayhost = [smtp.relay.example.com]:587
+smtp_sasl_auth_enable = yes
+smtp_sasl_password_maps = static:relay@example.com:decoy-not-a-real-password
+smtp_sasl_security_options = noanonymous
+smtp_tls_security_level = encrypt
+smtpd_tls_cert_file = /etc/ssl/certs/mail.example.com.pem
+smtpd_tls_key_file = /etc/ssl/private/mail.example.com.key
+smtpd_sasl_auth_enable = yes
+smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated reject_unauth_destination
+mynetworks = 127.0.0.0/8 10.0.0.0/24
+message_size_limit = 26214400
+`},
+	"dovecot-users": {"text/plain; charset=utf-8", `# dovecot passwd-file
+postmaster@example.com:{SHA512-CRYPT}$6$decoy$0000000000000000000000000000000000000000000000000000000000000000000000000000000000000:5000:5000::/srv/vmail/example.com/postmaster::
+noreply@example.com:{SHA512-CRYPT}$6$decoy$1111111111111111111111111111111111111111111111111111111111111111111111111111111111111:5000:5000::/srv/vmail/example.com/noreply::
+backups@example.com:{PLAIN}decoy-not-a-real-password:5000:5000::/srv/vmail/example.com/backups::
+`},
+	"emqx-dashboard": {"text/html; charset=utf-8", `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>EMQX Dashboard</title>
+<link rel="stylesheet" href="/static/css/app.css"></head>
+<body><div id="app"><div class="login-box"><h2>EMQX Dashboard</h2>
+<form method="post" action="/api/v5/login">
+<p><label for="username">Username</label><input id="username" name="username" type="text" placeholder="admin"></p>
+<p><label for="password">Password</label><input id="password" name="password" type="password"></p>
+<p><button type="submit">Log In</button></p>
+</form><p class="version">EMQX v5.4.1 &mdash; cluster mqtt@10.0.0.11</p></div></div></body></html>
+`},
+	"mosquitto-conf": {"text/plain; charset=utf-8", `# mosquitto.conf
+listener 1883 0.0.0.0
+protocol mqtt
+listener 8883 0.0.0.0
+protocol mqtt
+certfile /etc/mosquitto/certs/mqtt.example.com.pem
+keyfile /etc/mosquitto/certs/mqtt.example.com.key
+allow_anonymous false
+password_file /etc/mosquitto/passwd
+acl_file /etc/mosquitto/aclfile
+max_packet_size 262144
+persistence true
+persistence_location /var/lib/mosquitto/
+log_dest file /var/log/mosquitto/mosquitto.log
+connection bridge-01
+address mqtt-bridge.internal.example:8883
+remote_username bridge
+remote_password decoy-not-a-real-password
+topic sensors/# both 0
+`},
+	"mqtt-clients": {"application/json", `{"data":[{"clientid":"gateway-01","username":"gateway","connected":true,"ip_address":"10.0.0.31","proto_name":"MQTT","proto_ver":5,"keepalive":60,"subscriptions_cnt":4},
+{"clientid":"sensor-a17","username":"sensor","connected":true,"ip_address":"10.0.0.87","proto_name":"MQTT","proto_ver":4,"keepalive":30,"subscriptions_cnt":1},
+{"clientid":"grafana-bridge","username":"bridge","connected":false,"ip_address":"10.0.0.19","proto_name":"MQTT","proto_ver":5,"keepalive":120,"subscriptions_cnt":12}],
+"meta":{"count":3,"limit":100,"page":1}}
+`},
+	"teleport": {"text/html; charset=utf-8", `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Teleport</title>
+<link rel="stylesheet" href="/web/app/app.css"></head>
+<body><div id="app"></div>
+<script id="teleport-config" type="application/json">{"proxyCluster":"teleport.example.com","authType":"local","secondFactor":"otp","canJoinSessions":true}</script>
+<noscript>Teleport 14.3.0 requires JavaScript. Sign in at https://teleport.example.com/web/login</noscript>
+</body></html>
+`},
+	"guacamole": {"text/html; charset=utf-8", `<!DOCTYPE html>
+<html lang="en" ng-app="index"><head><meta charset="utf-8"><title>Apache Guacamole</title>
+<link rel="stylesheet" href="/guacamole/app.css"></head>
+<body><div class="login-ui"><form id="login-form" method="post" action="/guacamole/api/tokens">
+<p><label for="username">Username</label><input id="username" name="username" type="text" autocorrect="off" autocapitalize="off"></p>
+<p><label for="password">Password</label><input id="password" name="password" type="password"></p>
+<p><input type="submit" name="login" value="Login"></p>
+</form><div class="version">Apache Guacamole 1.5.4 &mdash; guacd 10.0.0.42:4822</div></div></body></html>
+`},
+	"authorized-keys": {"text/plain; charset=utf-8", `# /home/deploy/.ssh/authorized_keys
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGRlY295LWtleS1ub3QtcmVhbC0wMDAwMDAwMDAw deploy@build01.example.com
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGRlY295LWtleS1ub3QtcmVhbC0xMTExMTExMTEx ops@jump.example.com
+command="/usr/local/bin/backup-receive",no-pty,no-port-forwarding ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGRlY295LWtleS1ub3QtcmVhbC0yMjIyMjIyMjIy backup@nas.example.com
+`},
+	"known-hosts": {"text/plain; charset=utf-8", `# /home/deploy/.ssh/known_hosts
+jump.example.com,10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGRlY295LWhvc3Qta2V5LW5vdC1yZWFsLTAwMDAw
+build01.example.com,10.0.0.21 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGRlY295LWhvc3Qta2V5LW5vdC1yZWFsLTExMTEx
+db01.internal.example,10.0.0.55 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGRlY295LWhvc3Qta2V5LW5vdC1yZWFsLTIyMjIy
+git.example.com,203.0.113.7 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGRlY295LWhvc3Qta2V5LW5vdC1yZWFsLTMzMzMz
+`},
+	"sshd-config": {"text/plain; charset=utf-8", `# /etc/ssh/sshd_config
+Port 22
+ListenAddress 10.0.0.8
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication yes
+AuthenticationMethods publickey,keyboard-interactive
+AllowTcpForwarding yes
+PermitTunnel no
+X11Forwarding no
+ClientAliveInterval 300
+Subsystem sftp internal-sftp
+Match Group sftponly
+  ChrootDirectory /srv/sftp/%u
+  ForceCommand internal-sftp
+  AllowTcpForwarding no
+`},
+	"openvpn-config": {"text/plain; charset=utf-8", `client
+dev tun
+proto udp
+remote vpn.example.com 1194
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+cipher AES-256-GCM
+auth SHA256
+verb 3
+auth-user-pass
+<ca>
+-----BEGIN CERTIFICATE-----
+ZGVjb3kgY2VydGlmaWNhdGUsIG5vdCByZWFsLCBmb3IgYSBob25leXBvdCBvbmx5
+-----END CERTIFICATE-----
+</ca>
+<tls-crypt>
+-----BEGIN OpenVPN Static key V1-----
+6465636f79206b65792c206e6f74207265616c2c20666f72206120686f6e6579
+-----END OpenVPN Static key V1-----
+</tls-crypt>
+`},
+	"wireguard-conf": {"text/plain; charset=utf-8", `# /etc/wireguard/wg0.conf
+[Interface]
+Address = 10.0.0.1/24
+ListenPort = 51820
+PrivateKey = ZGVjb3kta2V5LW5vdC1yZWFsLWRvLW5vdC11c2UtMDAwMA=
+PostUp = iptables -A FORWARD -i wg0 -j ACCEPT
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT
+
+[Peer]
+# ops laptop
+PublicKey = ZGVjb3ktcHVibGljLW5vdC1yZWFsLTExMTExMTExMTExMTE=
+AllowedIPs = 10.0.0.11/32
+
+[Peer]
+# build runner
+PublicKey = ZGVjb3ktcHVibGljLW5vdC1yZWFsLTIyMjIyMjIyMjIyMjI=
+AllowedIPs = 10.0.0.12/32
+`},
+	"filezilla-sites": {"application/xml", `<?xml version="1.0" encoding="UTF-8"?>
+<FileZilla3 version="3.66.4" platform="linux">
+  <Servers>
+    <Server>
+      <Host>sftp.example.com</Host>
+      <Port>22</Port>
+      <Protocol>1</Protocol>
+      <Type>0</Type>
+      <User>deploy</User>
+      <Pass encoding="base64">ZGVjb3ktbm90LWEtcmVhbC1wYXNzd29yZA==</Pass>
+      <Logontype>1</Logontype>
+      <Name>production sftp</Name>
+    </Server>
+    <Server>
+      <Host>backup.internal.example</Host>
+      <Port>2222</Port>
+      <Protocol>1</Protocol>
+      <User>backup</User>
+      <Pass encoding="base64">ZGVjb3ktbm90LWEtcmVhbC1wYXNzd29yZA==</Pass>
+      <Logontype>1</Logontype>
+      <Name>backup</Name>
+    </Server>
+  </Servers>
+</FileZilla3>
+`},
+	"winscp-ini": {"text/plain; charset=utf-8", `[Configuration\Interface]
+PathInCaption=1
+
+[Sessions\deploy%40sftp.example.com]
+HostName=sftp.example.com
+PortNumber=22
+UserName=deploy
+Password=decoy-not-a-real-password
+FSProtocol=5
+RemoteDirectory=/srv/www
+
+[Sessions\backup%40backup.internal.example]
+HostName=backup.internal.example
+PortNumber=2222
+UserName=backup
+Password=decoy-not-a-real-password
+FSProtocol=5
+`},
+	"vsftpd-conf": {"text/plain; charset=utf-8", `# /etc/vsftpd.conf
+listen=YES
+listen_ipv6=NO
+anonymous_enable=NO
+local_enable=YES
+write_enable=YES
+chroot_local_user=YES
+allow_writeable_chroot=YES
+ssl_enable=YES
+force_local_data_ssl=YES
+force_local_logins_ssl=YES
+rsa_cert_file=/etc/ssl/certs/ftp.example.com.pem
+rsa_private_key_file=/etc/ssl/private/ftp.example.com.key
+pasv_min_port=40000
+pasv_max_port=40100
+pasv_address=203.0.113.20
+userlist_enable=YES
+userlist_file=/etc/vsftpd.userlist
+`},
+	"rsync-modules": {"text/plain; charset=utf-8", `# rsyncd.conf on backup.internal.example
+uid = rsync
+gid = rsync
+use chroot = yes
+max connections = 8
+log file = /var/log/rsyncd.log
+
+[backups]
+path = /srv/backups
+comment = nightly database dumps
+read only = no
+auth users = backup
+secrets file = /etc/rsyncd.secrets
+hosts allow = 10.0.0.0/24
+
+[releases]
+path = /srv/releases
+comment = build artefacts
+read only = yes
+list = yes
+`},
+	"webmin": {"text/html; charset=utf-8", `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Login to Webmin</title>
+<link rel="stylesheet" href="/unauthenticated/css/bundle.min.css"></head>
+<body class="session_login"><div class="login-container"><form action="/session_login.cgi" method="post">
+<input type="hidden" name="page" value="/">
+<h1>Login to Webmin</h1>
+<p>You must enter a username and password to login to the server on 10.0.0.9.</p>
+<p><label for="user">Username</label><input name="user" id="user" type="text"></p>
+<p><label for="pass">Password</label><input name="pass" id="pass" type="password"></p>
+<p><input type="submit" value="Sign in"></p>
+</form><div class="version">Webmin 2.021</div></div></body></html>
+`},
+	"cockpit": {"text/html; charset=utf-8", `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Cockpit</title>
+<link href="/cockpit/static/login.css" rel="stylesheet"></head>
+<body class="login-pf"><div id="login"><h1 id="brand">db01.internal.example</h1>
+<form id="login-form" action="/cockpit/login" method="post">
+<p><label for="login-user-input">User name</label><input id="login-user-input" name="user" type="text" autocomplete="username"></p>
+<p><label for="login-password-input">Password</label><input id="login-password-input" name="password" type="password" autocomplete="current-password"></p>
+<p><button id="login-button" type="submit">Log In</button></p>
+</form><div id="server-name">Cockpit 309 on Debian GNU/Linux 12</div></div></body></html>
+`},
+	"mail-queue": {"application/json", `{"queue":[{"queue_id":"4Zx8Kp1mN2z","sender":"noreply@example.com","recipients":["ops@example.com"],"size":8412,"arrival":"2026-03-04T08:11:02Z","status":"deferred","reason":"connect to mx.partner.example[203.0.113.44]:25: Connection timed out"},
+{"queue_id":"4Zx8Kp3rT9q","sender":"billing@example.com","recipients":["accounts@partner.example"],"size":51204,"arrival":"2026-03-04T08:19:44Z","status":"active","reason":""}],
+"summary":{"active":1,"deferred":1,"hold":0,"total_bytes":59616}}
+`},
+	"sftp-audit": {"text/plain; charset=utf-8", `2026-03-04T08:02:11Z sftp-server[41221]: session opened for local user deploy from [10.0.0.31]
+2026-03-04T08:02:11Z sftp-server[41221]: opendir "/srv/www/releases"
+2026-03-04T08:02:12Z sftp-server[41221]: open "/srv/www/releases/app-2026.03.1.tar.gz" flags READ mode 0666
+2026-03-04T08:02:19Z sftp-server[41221]: close "/srv/www/releases/app-2026.03.1.tar.gz" bytes read 48210433 written 0
+2026-03-04T08:02:19Z sftp-server[41221]: session closed for local user deploy from [10.0.0.31]
+2026-03-04T08:14:57Z sftp-server[41398]: session opened for local user backup from [10.0.0.55]
+2026-03-04T08:14:58Z sftp-server[41398]: open "/srv/backups/db-2026-03-04.sql.gz" flags WRITE,CREATE,TRUNCATE mode 0600
+`},
+	"mqtt-acl": {"text/plain; charset=utf-8", `# /etc/mosquitto/aclfile
+user gateway
+topic readwrite sensors/#
+topic read estate/announcements
+
+user sensor
+topic write sensors/%u/telemetry
+topic read sensors/%u/commands
+
+user bridge
+topic readwrite #
+
+pattern read $SYS/broker/clients/#
+`},
 }
 
 // readBounded reads a file of at most limit bytes.

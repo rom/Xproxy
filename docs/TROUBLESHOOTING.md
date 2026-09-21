@@ -2015,6 +2015,52 @@ use `xproxyctl rotate` so the old key stays in the ring.
 once in place of a code, at which point it is spent for good; re-enrol
 the user afterwards with `xproxyctl mfa enrol` and replace their line.
 
+## YARA scanning
+
+**The listener will not start and names a line in the rule file.** The
+engine is a subset of YARA (see `docs/CONFIG.md`), and anything outside
+it is refused rather than ignored. The usual causes are `import "pe"` or
+a module reference, `$a at 0`, a `for` loop, an unbounded jump `[2-]`,
+alternation inside a hex string, `@a` or `!a`, and the `xor` or
+`base64` modifiers. Rewrite the rule or drop it; a rule that loaded but
+matched nothing would be worse.
+
+**A rule that matches in `yara` on the command line does not match
+here.** Three likely reasons. The pattern needs something the subset
+does not have — check the rule against the list above. Or it straddles
+two reads and is wider than the overlap: `max_window` bounds the
+overlap, and a pattern wider than 4096 bytes cannot be matched reliably
+across reads (the scanner reports this internally as truncated). Or the
+match is past `max_bytes`, after which the stream carries on unscanned.
+
+**Nothing matches at all on a `kind: tcp` listener.** If the listener
+also has `quic: true`, remember that QUIC flows are not scanned:
+they are encrypted, and a rule over ciphertext matches nothing.
+Validation warns about this. The same applies to any TLS connection the
+listener passes through — a layer 4 listener does not terminate TLS, so
+what it sees is ciphertext. Put the rules where the bytes are plain:
+the `yara` filter, behind TLS termination.
+
+**A match closed a connection that was legitimate.** Switch to
+`action: log`, watch `xproxy_yara_matches_total` and the `yara_match`
+events for a while, then narrow the rule. The event carries the rule
+names, their tags and the offset the rule became true at.
+
+**The access log says `yara_partial`.** The body was larger than the
+filter's `max_bytes`; it was scanned to the bound and forwarded whole.
+Raise `max_bytes` if the traffic warrants the memory, and remember it is
+buffered.
+
+**`filesize` behaves oddly.** In a stream it means the bytes seen so
+far, not the size of the object; there is no end to measure against
+until there is one. A condition on it becomes true partway through.
+
+**Scanning is expensive.** `max_bytes` bounds the work per direction and
+`directions` halves it where only one side carries what the rules are
+about. The other lever is the rules themselves: a regular expression is
+scanned over every window and also widens the overlap to its cap, while
+a literal or hex pattern narrows both.
+
 ## Mirroring and shadowing
 
 **The mirror receives nothing.** The access line says which: `sent`,
@@ -2617,6 +2663,7 @@ innocent.
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
+| `yara` | A YARA rule fired on a layer 4 stream with `action: close` | yes |
 | `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
 
