@@ -90,6 +90,14 @@ type Node struct {
 	// bindNodeID requires a peer's announced id to be a name its
 	// certificate carries (cluster.tls.bind_node_id, default true).
 	bindNodeID bool
+	// local is a cluster of the daemons on one machine, over Unix
+	// sockets. There is no TLS on it: the peers are processes this
+	// kernel can identify, and the socket's permissions are what admits
+	// them.
+	local bool
+	// allowUIDs are the user ids a local peer may connect as, read from
+	// the socket. Empty leaves the decision to the file permissions.
+	allowUIDs map[int]bool
 }
 
 // maxPending bounds Take requests in flight.
@@ -122,6 +130,21 @@ func New(cfg *config.Cluster, rates RateSource, log *slog.Logger) (*Node, error)
 	}
 	n.bindNodeID = cfg.TLS.BindsNodeID()
 	n.eventQueue = make(chan Event, eventQueueSize)
+	if cfg.IsLocal() {
+		n.local = true
+		n.allowUIDs = map[int]bool{}
+		if cfg.Local != nil {
+			for _, uid := range cfg.Local.AllowUIDs {
+				n.allowUIDs[uid] = true
+			}
+		}
+		// Refusing at start beats admitting every peer silently on a
+		// platform that cannot answer the question.
+		if len(n.allowUIDs) > 0 && !peerCredAvailable {
+			return nil, errors.New("cluster.local.allow_uids: peer credentials are not available on this platform")
+		}
+		return n, nil
+	}
 	srv, cli, err := buildTLS(&cfg.TLS)
 	if err != nil {
 		return nil, err
@@ -438,6 +461,15 @@ func (p *peer) loop() {
 }
 
 func (p *peer) dial() (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if path, ok := config.UnixSocket(p.addr); ok {
+		// A local peer: no TLS, because the socket is the boundary. The
+		// dialler learns nothing about who answered, which is why the
+		// answering side checks who dialled.
+		d := &net.Dialer{Timeout: 5 * time.Second}
+		return d.DialContext(ctx, "unix", path)
+	}
 	host, _, err := net.SplitHostPort(p.addr)
 	if err != nil {
 		return nil, err
@@ -445,8 +477,6 @@ func (p *peer) dial() (net.Conn, error) {
 	tc := p.node.tlsCli.Clone()
 	tc.ServerName = host
 	d := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: tc}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	return d.DialContext(ctx, "tcp", p.addr)
 }
 
@@ -621,10 +651,21 @@ type inbound struct {
 	// certNames is every name the peer certificate carries (common name
 	// and DNS names); the node id it announces must be one of them.
 	certNames []string
-	nodeID    atomic.Pointer[string]
-	since     time.Time
-	lastSeen  atomic.Int64
-	in        atomic.Uint64
+	// local marks a peer that arrived on the Unix socket, and uid, gid
+	// and pid are the credentials the kernel attached to it, -1 where
+	// the platform does not answer. They are what a certificate is on a
+	// networked cluster: the part of a peer's identity it does not get
+	// to choose.
+	//
+	// local is a field of its own rather than a uid test, because the
+	// zero value of an int is a real user id and the zero value of a
+	// bool is not a real peer.
+	local         bool
+	uid, gid, pid int
+	nodeID        atomic.Pointer[string]
+	since         time.Time
+	lastSeen      atomic.Int64
+	in            atomic.Uint64
 	// wmu serialises the answers written back on this connection (the
 	// hello acknowledgement and exact decisions).
 	wmu sync.Mutex
@@ -665,6 +706,10 @@ func (n *Node) acceptLoop(ln net.Listener) {
 
 func (n *Node) serve(raw net.Conn) {
 	defer n.wg.Done()
+	if n.local {
+		n.serveLocal(raw)
+		return
+	}
 	tc := tls.Server(raw, n.tlsSrv)
 	_ = tc.SetDeadline(time.Now().Add(10 * time.Second))
 	hctx, hcancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -678,12 +723,53 @@ func (n *Node) serve(raw net.Conn) {
 	}
 	_ = tc.SetDeadline(time.Time{})
 	cs := tc.ConnectionState()
-	in := &inbound{conn: tc, remote: raw.RemoteAddr().String(), since: time.Now()}
+	in := &inbound{conn: tc, remote: raw.RemoteAddr().String(), since: time.Now(), uid: -1, gid: -1, pid: -1}
 	if len(cs.PeerCertificates) > 0 {
 		leaf := cs.PeerCertificates[0]
 		in.certName = leaf.Subject.CommonName
 		in.certNames = append(append([]string{}, leaf.DNSNames...), leaf.Subject.CommonName)
 	}
+	n.readLoop(in)
+}
+
+// serveLocal takes an inbound connection on the Unix socket. There is no
+// handshake to run: the peer is a process on this machine, and what
+// stands in for a certificate is the credential the kernel attached to
+// the connection when it was made.
+func (n *Node) serveLocal(raw net.Conn) {
+	uid, gid, pid, err := peerCred(raw)
+	if err != nil {
+		if len(n.allowUIDs) > 0 {
+			// allow_uids was configured and cannot be honoured, so the
+			// connection is refused rather than admitted unchecked.
+			n.rejected.Add(1)
+			n.log.Warn("cluster peer refused: its credentials could not be read", "err", err.Error())
+			_ = raw.Close()
+			return
+		}
+		uid, gid, pid = -1, -1, -1
+	} else if len(n.allowUIDs) > 0 && !n.allowUIDs[uid] {
+		n.rejected.Add(1)
+		n.log.Warn("cluster peer refused: uid not in allow_uids", "uid", uid, "gid", gid, "pid", pid)
+		_ = raw.Close()
+		return
+	}
+	in := &inbound{conn: raw, remote: localRemote(uid, pid), since: time.Now(), local: true, uid: uid, gid: gid, pid: pid}
+	n.readLoop(in)
+}
+
+// localRemote names a local peer the way the remote address names a
+// networked one: by what the kernel says it is.
+func localRemote(uid, pid int) string {
+	if uid < 0 {
+		return "unix"
+	}
+	return fmt.Sprintf("unix:uid=%d,pid=%d", uid, pid)
+}
+
+// readLoop is the message loop both transports share, from the point
+// where the peer has been admitted.
+func (n *Node) readLoop(in *inbound) {
 	in.lastSeen.Store(time.Now().UnixNano())
 	n.mu.Lock()
 	n.inbound[in] = struct{}{}
@@ -692,15 +778,15 @@ func (n *Node) serve(raw net.Conn) {
 		n.mu.Lock()
 		delete(n.inbound, in)
 		n.mu.Unlock()
-		_ = tc.Close()
+		_ = in.conn.Close()
 	}()
 
-	r := bufio.NewReaderSize(tc, 64<<10)
+	r := bufio.NewReaderSize(in.conn, 64<<10)
 	for {
 		n.mu.Lock()
 		stale := n.cfg.PeerStale.D()
 		n.mu.Unlock()
-		_ = tc.SetReadDeadline(time.Now().Add(stale + 5*time.Second))
+		_ = in.conn.SetReadDeadline(time.Now().Add(stale + 5*time.Second))
 		line, err := readLine(r, MaxMessageBytes)
 		if err != nil {
 			if !errors.Is(err, net.ErrClosed) && !n.stopped.Load() {
@@ -757,6 +843,12 @@ func (in *inbound) identity() string {
 	if in.certName != "" {
 		return in.certName
 	}
+	if in.local && in.uid >= 0 {
+		// A local peer: the kernel's answer, not the peer's. A sibling
+		// that announced another daemon's node id would still be
+		// recorded under the user it actually runs as.
+		return fmt.Sprintf("uid:%d", in.uid)
+	}
 	return deref(in.nodeID.Load())
 }
 
@@ -794,7 +886,7 @@ func (n *Node) handle(in *inbound, m *message) error {
 		// local limiter. It is also what a ban's source and a mark's
 		// origin are attributed to, so a free choice of id lets one node
 		// act as another in the audit trail.
-		if n.bindNodeID && !certNameMatches(in.certNames, m.Node) {
+		if n.bindNodeID && !n.local && !certNameMatches(in.certNames, m.Node) {
 			return fmt.Errorf("node id %q is not a name of the peer certificate %q", m.Node, in.certName)
 		}
 		// One hello per connection. A second one would rename a peer
@@ -805,7 +897,7 @@ func (n *Node) handle(in *inbound, m *message) error {
 		}
 		id := m.Node
 		in.nodeID.Store(&id)
-		n.log.Info("cluster peer joined", "remote", in.remote, "node", id, "cert", in.certName)
+		n.log.Info("cluster peer joined", "remote", in.remote, "node", id, "cert", in.certName, "identity", in.identity())
 		// Answer with our own hello so the dialler learns our id (older
 		// nodes ignore it).
 		_ = in.reply(&message{T: typeHello, Node: n.id, Ver: ProtocolVersion})
@@ -1088,6 +1180,7 @@ func (n *Node) Status() Status {
 		ExactDecided:   n.exactDecided.Load(),
 		ExactServed:    n.exactServed.Load(),
 		ExactFallbacks: n.exactFallbacks.Load(),
+		Local:          n.local,
 	}
 	st.Members = []string{n.id}
 	if n.ln != nil {
@@ -1106,10 +1199,15 @@ func (n *Node) Status() Status {
 	}
 	sort.Strings(st.Members)
 	for in := range n.inbound {
-		st.Inbound = append(st.Inbound, InboundStatus{
+		is := InboundStatus{
 			Remote: in.remote, NodeID: deref(in.nodeID.Load()), CertName: in.certName,
 			Since: in.since, LastSeen: time.Unix(0, in.lastSeen.Load()), MessagesIn: in.in.Load(),
-		})
+		}
+		if in.local && in.uid >= 0 {
+			uid, gid, pid := in.uid, in.gid, in.pid
+			is.UID, is.GID, is.PID = &uid, &gid, &pid
+		}
+		st.Inbound = append(st.Inbound, is)
 	}
 	return st
 }

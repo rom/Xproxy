@@ -30,6 +30,7 @@ import (
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/sandbox"
 	"github.com/rom/xproxy/internal/tracing"
+	"github.com/rom/xproxy/internal/unixsock"
 	"github.com/rom/xproxy/internal/version"
 )
 
@@ -373,27 +374,10 @@ func (s *Server) Start() error {
 	if err := os.MkdirAll(filepath.Dir(s.cfg.Socket), 0o750); err != nil {
 		return fmt.Errorf("management socket directory: %w", err)
 	}
-	if _, err := os.Stat(s.cfg.Socket); err == nil {
-		d := net.Dialer{Timeout: time.Second}
-		if c, err := d.DialContext(context.Background(), "unix", s.cfg.Socket); err == nil {
-			_ = c.Close()
-			return fmt.Errorf("management socket %s is already in use", s.cfg.Socket)
-		}
-		if err := os.Remove(s.cfg.Socket); err != nil {
-			return fmt.Errorf("remove stale management socket: %w", err)
-		}
-	}
 	mode, _ := strconv.ParseUint(s.cfg.SocketMode, 8, 32)
-	old := syscallUmask(0o077)
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "unix", s.cfg.Socket)
-	syscallUmask(old)
+	ln, err := unixsock.Listen(s.cfg.Socket, os.FileMode(mode))
 	if err != nil {
 		return fmt.Errorf("management socket: %w", err)
-	}
-	if err := os.Chmod(s.cfg.Socket, os.FileMode(mode)); err != nil {
-		_ = ln.Close()
-		return fmt.Errorf("chmod management socket: %w", err)
 	}
 	s.ln = ln
 	go func() {

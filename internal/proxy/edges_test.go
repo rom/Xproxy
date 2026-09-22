@@ -698,7 +698,7 @@ func TestListenerForPrefersActivatedSockets(t *testing.T) {
 	// Named sockets are matched by name and consumed, so a second
 	// listener of the same name binds its own rather than sharing one.
 	a := &activated{streams: map[string]net.Listener{"main": ln}, packets: map[string]net.PacketConn{"main-udp": pc}}
-	got, adopted, err := listenerFor(a, "main", "127.0.0.1:0")
+	got, adopted, err := listenerFor(a, "main", "127.0.0.1:0", 0)
 	if err != nil || !adopted || got != ln {
 		t.Fatalf("named listener = %v, %v, %v", got, adopted, err)
 	}
@@ -718,7 +718,7 @@ func TestListenerForPrefersActivatedSockets(t *testing.T) {
 	addr := ln.Addr().String()
 	_, port, _ := net.SplitHostPort(addr)
 	a2 := &activated{streams: map[string]net.Listener{"[::]:" + port: ln}, packets: map[string]net.PacketConn{"0.0.0.0:" + port: pc}}
-	if got, act, err := listenerFor(a2, "other", ":"+port); err != nil || !act || got != ln {
+	if got, act, err := listenerFor(a2, "other", ":"+port, 0); err != nil || !act || got != ln {
 		t.Errorf("address match = %v, %v, %v", got, act, err)
 	}
 	if got, act, err := packetFor(a2, "other", "0.0.0.0:"+port); err != nil || !act || got != pc {
@@ -728,7 +728,7 @@ func TestListenerForPrefersActivatedSockets(t *testing.T) {
 	// Nothing to adopt: a socket is bound, and the caller is told it is
 	// not an activated one so it closes it on shutdown.
 	empty := &activated{streams: map[string]net.Listener{}, packets: map[string]net.PacketConn{}}
-	fresh, act, err := listenerFor(empty, "main", "127.0.0.1:0")
+	fresh, act, err := listenerFor(empty, "main", "127.0.0.1:0", 0)
 	if err != nil || act {
 		t.Fatalf("a fresh listener = %v, %v", act, err)
 	}
@@ -739,7 +739,7 @@ func TestListenerForPrefersActivatedSockets(t *testing.T) {
 	}
 	_ = freshPC.Close()
 	// An address nothing can bind is an error, not a silent no-listener.
-	if _, _, err := listenerFor(empty, "main", "203.0.113.200:80"); err == nil {
+	if _, _, err := listenerFor(empty, "main", "203.0.113.200:80", 0); err == nil {
 		t.Error("an unbindable address was accepted")
 	}
 	if _, _, err := packetFor(empty, "main", "203.0.113.200:80"); err == nil {

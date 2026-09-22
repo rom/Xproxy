@@ -7,6 +7,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/unixsock"
 )
 
 // activated holds sockets passed by systemd.
@@ -97,7 +100,7 @@ func packetFor(a *activated, name, address string) (net.PacketConn, bool, error)
 
 // listenerFor returns an activated listener matching name or address, or
 // opens a new TCP listener.
-func listenerFor(a *activated, name, address string) (net.Listener, bool, error) {
+func listenerFor(a *activated, name, address string, mode uint32) (net.Listener, bool, error) {
 	if ln, ok := a.streams[name]; ok {
 		delete(a.streams, name)
 		return ln, true, nil
@@ -108,6 +111,10 @@ func listenerFor(a *activated, name, address string) (net.Listener, bool, error)
 			delete(a.streams, key)
 			return ln, true, nil
 		}
+	}
+	if path, ok := config.UnixSocket(address); ok {
+		ln, err := unixsock.Listen(path, os.FileMode(mode))
+		return ln, false, err
 	}
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(context.Background(), "tcp", address)

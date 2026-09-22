@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -512,17 +513,38 @@ func TestStartRefusesToStealASocket(t *testing.T) {
 		t.Fatalf("the live server stopped answering: %v", err)
 	}
 
-	// A stale file with nothing behind it is cleaned up and reused,
-	// which is what a crash leaves.
+	// A socket with nothing behind it is cleaned up and reused, which is
+	// what a killed process leaves: refusing would mean the daemon never
+	// starts again after one unclean stop.
 	stale := filepath.Join(dir, "stale.sock")
-	if err := os.WriteFile(stale, nil, 0o600); err != nil {
+	dead, err := net.Listen("unix", stale)
+	if err != nil {
 		t.Fatal(err)
 	}
+	dead.(*net.UnixListener).SetUnlinkOnClose(false)
+	_ = dead.Close()
 	third := New(config.Management{Socket: stale, SocketMode: "0600"}, p, logging.Discard(), Actions{})
 	if err := third.Start(); err != nil {
-		t.Fatalf("a stale socket file was not reused: %v", err)
+		t.Fatalf("a stale socket was not reused: %v", err)
 	}
 	_ = third.Shutdown(context.Background())
+
+	// Anything at the path that is not a socket is a configuration
+	// pointing somewhere it should not. It is reported and left where it
+	// is: deleting it would be this process destroying a file on the
+	// strength of a typing mistake.
+	notASocket := filepath.Join(dir, "important.key")
+	if err := os.WriteFile(notASocket, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fourth := New(config.Management{Socket: notASocket, SocketMode: "0600"}, p, logging.Discard(), Actions{})
+	if err := fourth.Start(); err == nil || !strings.Contains(err.Error(), "not a socket") {
+		_ = fourth.Shutdown(context.Background())
+		t.Fatalf("binding over a file: %v", err)
+	}
+	if b, err := os.ReadFile(notASocket); err != nil || string(b) != "secret" {
+		t.Fatalf("the file was destroyed: %q %v", b, err)
+	}
 
 	// No socket configured is not an error: the control plane is off.
 	off := New(config.Management{}, p, logging.Discard(), Actions{})

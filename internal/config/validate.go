@@ -2410,8 +2410,11 @@ func (v *validator) cluster(c *Cluster) {
 	if !nameRE.MatchString(c.NodeID) {
 		v.errf("cluster.node_id: %q is not a valid name", c.NodeID)
 	}
+	local := c.IsLocal()
 	if c.Listen == "" {
 		v.errf("cluster.listen: required")
+	} else if path, ok := UnixSocket(c.Listen); ok {
+		v.clusterSocket("cluster.listen", path)
 	} else if host, port, err := net.SplitHostPort(c.Listen); err != nil {
 		v.errf("cluster.listen: %q: %v", c.Listen, err)
 	} else if host == "" || host == "0.0.0.0" || host == "::" {
@@ -2421,27 +2424,50 @@ func (v *validator) cluster(c *Cluster) {
 	}
 	seen := map[string]bool{}
 	for i, p := range c.Peers {
-		if _, _, err := net.SplitHostPort(p); err != nil {
-			v.errf("cluster.peers[%d]: %q must be host:port", i, p)
-		} else if seen[p] {
+		path, isUnix := UnixSocket(p)
+		switch {
+		case isUnix != local:
+			// One cluster is one transport. A node that listened on a
+			// socket and dialled a host would be reachable by its
+			// siblings and not by the peers it dials, which is half a
+			// cluster that looks like a whole one.
+			v.errf("cluster.peers[%d]: %q and cluster.listen must both be Unix sockets or both be host:port", i, p)
+		case isUnix:
+			v.clusterSocket(fmt.Sprintf("cluster.peers[%d]", i), path)
+		default:
+			if _, _, err := net.SplitHostPort(p); err != nil {
+				v.errf("cluster.peers[%d]: %q must be host:port", i, p)
+			}
+		}
+		if seen[p] {
 			v.errf("cluster.peers[%d]: duplicate %q", i, p)
 		}
 		seen[p] = true
 	}
-	if len(c.TLS.AllowedNames) == 0 {
-		v.warnf("cluster.tls.allowed_names is empty, so any certificate the cluster CA issued may join: " +
-			"a cluster certificate is full trust inside the cluster, and the node id is all that distinguishes one holder from another")
+	if path, ok := UnixSocket(c.Listen); ok && seen[c.Listen] {
+		v.errf("cluster.peers: %q is this node's own socket", path)
 	}
-	if !c.TLS.BindsNodeID() {
-		v.warnf("cluster.tls.bind_node_id is off: a peer's announced node_id is not checked against its certificate, " +
-			"so it can choose which rate-limit keys it decides for every node")
-	}
-	if c.TLS.CertFile == "" || c.TLS.KeyFile == "" || c.TLS.CAFile == "" {
-		v.errf("cluster.tls: cert_file, key_file and ca_file are all required (mutual TLS is mandatory)")
+	if local {
+		v.clusterLocal(c)
 	} else {
-		v.file("cluster.tls.cert_file", c.TLS.CertFile)
-		v.file("cluster.tls.key_file", c.TLS.KeyFile)
-		v.file("cluster.tls.ca_file", c.TLS.CAFile)
+		if c.Local != nil {
+			v.errf("cluster.local: only for a Unix socket cluster; a networked one is authenticated by cluster.tls")
+		}
+		if len(c.TLS.AllowedNames) == 0 {
+			v.warnf("cluster.tls.allowed_names is empty, so any certificate the cluster CA issued may join: " +
+				"a cluster certificate is full trust inside the cluster, and the node id is all that distinguishes one holder from another")
+		}
+		if !c.TLS.BindsNodeID() {
+			v.warnf("cluster.tls.bind_node_id is off: a peer's announced node_id is not checked against its certificate, " +
+				"so it can choose which rate-limit keys it decides for every node")
+		}
+		if c.TLS.CertFile == "" || c.TLS.KeyFile == "" || c.TLS.CAFile == "" {
+			v.errf("cluster.tls: cert_file, key_file and ca_file are all required (mutual TLS is mandatory)")
+		} else {
+			v.file("cluster.tls.cert_file", c.TLS.CertFile)
+			v.file("cluster.tls.key_file", c.TLS.KeyFile)
+			v.file("cluster.tls.ca_file", c.TLS.CAFile)
+		}
 	}
 	if c.GossipInterval < Duration(100_000_000) || c.GossipInterval > Duration(60_000_000_000) {
 		v.errf("cluster.gossip_interval: must be between 100ms and 60s")
@@ -2454,6 +2480,56 @@ func (v *validator) cluster(c *Cluster) {
 	}
 	if c.MaxKeysPerReport < 1 || c.MaxKeysPerReport > 65536 {
 		v.errf("cluster.max_keys_per_report: must be 1..65536")
+	}
+}
+
+// clusterSocket checks one Unix cluster address. The path is absolute
+// because a relative one would depend on the working directory the
+// daemon happens to have, and bounded because the kernel's sockaddr_un
+// is.
+func (v *validator) clusterSocket(field, path string) {
+	switch {
+	case path == "":
+		v.errf("%s: %s needs a path", field, UnixSocketPrefix)
+	case !strings.HasPrefix(path, "/"):
+		v.errf("%s: %q must be an absolute path", field, path)
+	case len(path) > 100:
+		v.errf("%s: %q is longer than a Unix socket path may be", field, path)
+	}
+}
+
+// clusterLocal checks the authentication of a Unix socket cluster: the
+// permissions the socket is created with, and the user ids allowed to
+// speak on it.
+func (v *validator) clusterLocal(c *Cluster) {
+	if c.TLS.CertFile != "" || c.TLS.KeyFile != "" || c.TLS.CAFile != "" || len(c.TLS.AllowedNames) > 0 {
+		v.errf("cluster.tls: not used by a Unix socket cluster; the socket's permissions admit the peers")
+	}
+	if c.Local == nil {
+		v.warnf("cluster.local.allow_uids is unset, so any process that can open the socket joins the cluster: " +
+			"a peer places bans, decides rate limits and is named in the audit trail, so list the sibling daemons' user ids")
+		return
+	}
+	if m := c.Local.SocketMode; m != "" {
+		n, err := strconv.ParseUint(m, 8, 32)
+		switch {
+		case err != nil || len(m) > 4:
+			v.errf("cluster.local.socket_mode: %q is not an octal mode", m)
+		case n&0o007 != 0:
+			v.errf("cluster.local.socket_mode: %q grants access to every user on the machine", m)
+		}
+	}
+	for i, uid := range c.Local.AllowUIDs {
+		if uid < 0 {
+			v.errf("cluster.local.allow_uids[%d]: %d is not a user id", i, uid)
+		}
+		if uid == 0 {
+			v.warnf("cluster.local.allow_uids lists root: the daemons run as their own users, and root needs no cluster to reach them")
+		}
+	}
+	if len(c.Local.AllowUIDs) == 0 {
+		v.warnf("cluster.local.allow_uids is empty, so any process that can open the socket joins the cluster: " +
+			"a peer places bans, decides rate limits and is named in the audit trail, so list the sibling daemons' user ids")
 	}
 }
 

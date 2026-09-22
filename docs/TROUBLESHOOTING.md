@@ -1621,6 +1621,32 @@ be a name the peer's certificate carries. A cluster whose certificate
 names and node ids differ will not connect until they agree, which is
 the point.
 
+**A local peer never connects.** On a Unix socket cluster the questions
+are different, because the socket is the authentication:
+
+- `xproxyctl cluster` on the listening side shows `rejected_connections`
+  climbing and the error log says why. `uid not in allow_uids` means
+  `cluster.local.allow_uids` does not list the user the dialling daemon
+  runs as: check with `id -u xgate`, not with what the peer announces.
+- Nothing at all in the log, and the dialling side shows a `last_error`
+  of `permission denied`: the dialling daemon cannot open the socket.
+  Either the directory is not `0770 root:xproxy-cluster`, or the daemon
+  is not in that group (`id -nG xgate`), or its unit does not list
+  `/run/xproxy-cluster` in `ReadWritePaths`, or the in-process Landlock
+  rules do not cover it — `xproxyctl sandbox` lists them, and the rules
+  are derived from `cluster.listen` and `cluster.peers`, so a peer
+  added without a restart is a peer the sandbox has not heard of.
+- `is already in use` at start: another process is listening on that
+  path. Two daemons configured with one `listen` is the usual cause.
+- `exists and is not a socket`: `listen` points at a real file. The
+  daemon refuses rather than deleting it.
+
+**A local cluster is refused at validation.** `listen` and every `peers`
+entry must both be Unix paths or both be `host:port`; `cluster.tls` is
+refused on a local cluster and required on a networked one; a
+`socket_mode` granting anything to others is refused, because on this
+socket the permissions are the authentication.
+
 **`allowed_names` is empty.** Then any certificate the CA ever issued is
 a cluster peer, and a cluster certificate is full trust inside the
 cluster. Validation says this out loud. Use a CA that issues nothing

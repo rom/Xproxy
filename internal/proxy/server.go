@@ -629,7 +629,7 @@ func (s *Server) Start() error {
 		s.listeners = append(s.listeners, bl)
 	}
 	if node := s.cluster.Load(); node != nil {
-		ln, act, err := listenerFor(activated, "cluster", cfg.Cluster.Listen)
+		ln, act, err := listenerFor(activated, "cluster", cfg.Cluster.Listen, cfg.Cluster.LocalSocketMode())
 		if err != nil {
 			s.closeListenersLocked()
 			return fmt.Errorf("cluster listener: %w", err)
@@ -661,7 +661,7 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener, error) {
-	ln, act, err := listenerFor(activated, lc.Name, lc.Address)
+	ln, act, err := listenerFor(activated, lc.Name, lc.Address, 0)
 	if err != nil {
 		return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 	}
@@ -1140,6 +1140,13 @@ func clusterCompatible(old, new_ *config.Cluster) error {
 	}
 	if old.Listen != new_.Listen || old.NodeID != new_.NodeID || fmt.Sprint(old.TLS) != fmt.Sprint(new_.TLS) {
 		return errors.New("reload: cluster listen, node_id or tls changed; restart required")
+	}
+	// The socket's mode and the user ids allowed on it are settled when
+	// the socket is created and when a peer connects, so changing either
+	// in place would leave the running node admitting what the file no
+	// longer says it should.
+	if fmt.Sprint(old.Local) != fmt.Sprint(new_.Local) {
+		return errors.New("reload: cluster.local changed; restart required")
 	}
 	return nil
 }

@@ -366,6 +366,44 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A cluster over Unix sockets, for the daemons of one machine.** The
+  three daemons of the split need to share a ban list: an address the
+  bastion refuses at the SSH port should be refused at the edge too.
+  Doing that over the existing cluster meant issuing three certificates
+  from the estate's cluster CA to three processes on one host, and
+  rotating them, for a conversation that never leaves the machine.
+
+  `cluster.listen` and `cluster.peers` now take `unix:/path` as well as
+  `host:port`. On a Unix socket there is no TLS and none is wanted: the
+  peers are processes this kernel can name. What admits one is the
+  socket's own permissions — `/run/xproxy-cluster`, created `0770
+  root:xproxy-cluster` by a shipped `tmpfiles.d` entry, with the three
+  daemons in that group — and, second, `cluster.local.allow_uids`, read
+  from the connected socket with `SO_PEERCRED` rather than announced, so
+  a peer cannot talk its way past it. A local peer is recorded under
+  that user id (`uid:991`), never under the node id it sent, which is
+  the same rule `bind_node_id` enforces with a certificate.
+
+  A cluster is one transport or the other: `listen` and every peer must
+  be all sockets or all addresses. A node listening on a socket and
+  dialling a host would be reachable by its siblings and not by the
+  peers it dials, which is half a cluster that looks like a whole one.
+
+  `examples/estate/` is the shape: three daemon files, one shared
+  include, one local cluster, `share_rate_limits: false` because the
+  three serve different protocols on different ports.
+
+  Two things fell out of it. Binding a listening Unix socket is now one
+  implementation, `internal/unixsock`, used by both the management
+  socket and this one: refuse a path something still answers on, clear
+  one a killed process left, create under a umask that permits nothing
+  beyond the owner and widen afterwards so the socket never exists more
+  open than it will end up. And a path that is not a socket is now
+  reported and left alone rather than deleted — the old management
+  socket code would happily remove a regular file at the configured
+  path, so a typo in `management.socket` pointing at a key file deleted
+  the key.
+
 - **Three daemons instead of one: `xproxy`, `xgate` and `xrelay`.** A
   proxy that terminates ten protocols is a proxy that links ten
   protocol implementations into one address space, and a flaw in any

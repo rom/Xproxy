@@ -3247,18 +3247,41 @@ by side with a route policy.
 ## cluster
 
 Present means enabled. Nodes exchange rate limit consumption and ban
-changes over mutual TLS (AMR-009, AMR-021). Every node listens and dials
-every peer; there is no leader. Enabling or disabling the section, and
-changing `listen`, `node_id` or `tls`, require a restart. Peers, intervals
-and sharing flags reload.
+changes (AMR-009, AMR-021). Every node listens and dials every peer;
+there is no leader. Enabling or disabling the section, and changing
+`listen`, `node_id`, `tls` or `local`, require a restart. Peers,
+intervals and sharing flags reload.
+
+A cluster comes in two shapes, decided by the form of `listen`:
+
+- **Networked**, `host:port`. Peers are on other machines and are
+  authenticated by mutual TLS: `cluster.tls` is required.
+- **Local**, `unix:/path/to/socket`. Peers are the sibling daemons on
+  this machine — `xproxy`, `xgate` and `xrelay` — and are authenticated
+  by the socket's own permissions plus, optionally, the user id the
+  kernel reports for the connection. There is no certificate to issue
+  and none to rotate, and `cluster.tls` is refused.
+
+A cluster is one or the other: `listen` and every entry of `peers` must
+be all Unix paths or all `host:port`. A node that listened on a socket
+and dialled a host would be reachable by its siblings and not by the
+peers it dials, which is half a cluster that looks like a whole one. A
+host that needs both gives each daemon its own certificate and makes
+all three networked members.
+
+A local cluster is what the three daemons of one host use to share a ban
+list: an address the gate refuses at the SSH port is refused at the edge
+too, without the estate's cluster CA being involved.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `node_id` | name | host name | Identity announced to peers and used as the ban source (`peer:<node_id>`) |
-| `listen` | host:port | required | Cluster listener. Must be a specific internal address, not all interfaces |
-| `peers` | list of host:port | `[]` | Cluster addresses of the other nodes |
-| `tls.cert_file`, `tls.key_file` | path | required | This node's certificate, used for both directions |
-| `tls.ca_file` | path | required | Cluster CA; every peer must present a certificate from it |
+| `listen` | host:port or `unix:`path | required | Cluster listener. A `host:port` must be a specific internal address, not all interfaces; a `unix:` path must be absolute and at most 100 characters |
+| `peers` | list | `[]` | Cluster addresses of the other nodes, in the same form as `listen`. This node's own address is not one of them |
+| `local.socket_mode` | octal | `"0660"` | Permission mode of the listening socket on a local cluster. Any access for others is refused: on this socket the permissions are the authentication. The socket is created under a umask that permits nothing beyond the owner and then widened, so it never exists more open than this |
+| `local.allow_uids` | list of int | `[]` (any process that can open the socket) | User ids that may connect, read from the socket rather than announced by the peer. A cluster peer is trusted completely — it places bans, decides rate limits and is named in the audit trail — so validation advises listing the sibling daemons' user ids. A configuration that lists them on a platform with no peer credentials is refused at start rather than admitting everything |
+| `tls.cert_file`, `tls.key_file` | path | required (networked) | This node's certificate, used for both directions |
+| `tls.ca_file` | path | required (networked) | Cluster CA; every peer must present a certificate from it |
 | `tls.allowed_names` | list | `[]` (any name from the CA) | Restrict peers to these certificate common names or DNS SANs. Leaving it empty means any certificate the CA ever issued is a cluster peer, and a cluster certificate is full trust inside the cluster: validation says so out loud. Use a CA that issues nothing else, and list the names |
 | `tls.bind_node_id` | bool | `true` | Require a peer's announced `node_id` to be a name its certificate carries. The id is not only a label: key ownership for `distributed: exact` rate limits is a rendezvous hash over node ids, so a peer free to choose its id chooses which keys it decides for every node. Set it false only for an existing cluster whose certificate names and node ids differ, and fix the certificates: a cluster certificate is full trust inside the cluster. A peer's bans, marks and rate reports are attributed to its certificate common name either way, so the audit trail is not affected by this setting |
 | `gossip_interval` | duration | `1s` | How often consumption and ban batches are sent; 100ms to 60s |
