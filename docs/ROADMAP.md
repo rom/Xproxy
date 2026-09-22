@@ -321,6 +321,11 @@ of them is a flaw in front of all of them.
   `proxy.PlaneStatus`, with the WAF report moved to the leaf package
   `internal/waf/wafstatus` so Coraza stays out of the daemons that run
   no WAF. Stripped: `xproxy` 28.4 MiB, `xgate` 15.3, `xrelay` 14.9
+- The per-package coverage floor, which the split had left three
+  packages under: delivered (`internal/daemon` 14 % to 70 %,
+  `internal/kinds/ftp` 54 % to 70 %, `internal/kinds/dns` 58 % to
+  89 %), and `test/covergate` now excludes every `main` package by
+  where it lives rather than by a list that goes stale
 
 ## After 1.4 (candidates, unranked)
 

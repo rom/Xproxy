@@ -58,7 +58,13 @@ test-race:
 # Only packages with tests are run (a package without tests contributes
 # nothing and needs the covdata tool with -coverpkg, which some toolchain
 # installations lack).
-TESTPKGS = $$($(GO) list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
+#
+# internal/sandbox is left out of this run and only this one: its tests
+# apply Landlock and seccomp to a child process, which then cannot write
+# the coverage file the instrumented binary tries to emit on exit. That
+# is the same reason the package is outside the gate, and `make test`
+# and `make test-race` run it in full.
+TESTPKGS = $$($(GO) list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v '/internal/sandbox$$')
 cover:
 	$(GO) test -count=1 -race -coverpkg=./internal/... -coverprofile=coverage.out -covermode=atomic $(TESTPKGS)
 	$(GO) tool cover -func=coverage.out | tail -1

@@ -16,13 +16,20 @@ import (
 	"strings"
 )
 
-// Packages outside the gate: binaries (covered by the smoke procedures),
-// test helpers and fakes, generated or trivial packages.
+// Packages outside the gate: test helpers and fakes, generated or
+// trivial packages.
+//
+// Binaries are excluded by where they live rather than by name: every
+// main package in this repository is under a cmd directory, the
+// released ones under the top level cmd/ and the go:generate helpers
+// under a cmd/ beside the package they generate for. A main package is
+// a flag parse and an error print over a package that is gated on its
+// own, and listing each one is a list that goes stale silently — the
+// gate simply stops failing to mention the newest generator.
 var excluded = []string{
 	// The sandbox applies Landlock and seccomp to a confined child process
 	// in its tests; the profile of the parent cannot see that code run.
 	"github.com/rom/xproxy/internal/sandbox",
-	"github.com/rom/xproxy/cmd/",
 	"github.com/rom/xproxy/test/",
 	"github.com/rom/xproxy/internal/acme/acmetest",
 	"github.com/rom/xproxy/internal/icap/icaptest",
@@ -133,6 +140,10 @@ func run(profile string, minTotal, floor float64) int {
 }
 
 func isExcluded(pkg string) bool {
+	// A main package: cmd/ at the top level or beside what it generates.
+	if strings.HasPrefix(pkg, "github.com/rom/xproxy/cmd/") || strings.Contains(pkg, "/cmd/") {
+		return true
+	}
 	for _, e := range excluded {
 		if strings.HasSuffix(e, "/") {
 			if strings.HasPrefix(pkg, e) {

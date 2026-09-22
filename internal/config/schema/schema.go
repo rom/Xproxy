@@ -5,7 +5,7 @@ package schema
 
 import _ "embed"
 
-//go:generate go run ./gen -src ../config.go -out xproxy.schema.json
+//go:generate go run ./cmd/genschema -src ../config.go -out xproxy.schema.json
 
 // JSON is the schema document (JSON Schema draft 2020-12).
 //

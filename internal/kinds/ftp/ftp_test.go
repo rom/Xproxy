@@ -5,6 +5,7 @@ import (
 	"github.com/rom/xproxy/internal/proxytest"
 
 	"bufio"
+	"crypto/tls"
 	"fmt"
 	_ "github.com/rom/xproxy/internal/kinds/ftp"
 	"io"
@@ -26,15 +27,32 @@ type targetFTP struct {
 	content string
 	// stored is what the last STOR received.
 	stored string
+	// tls, when set, is what the target upgrades to on AUTH TLS.
+	tls *tls.Config
+	// expectProxy makes the target read a PROXY protocol v2 header
+	// before the session. The real thing does not sniff for one: a
+	// server that reads the header only when it sees it lets a client
+	// that was not meant to send one claim any address it likes.
+	expectProxy bool
+	// proxyHeader is the header the last connection opened with.
+	proxyHeader string
 }
 
-func startTargetFTP(t *testing.T) *targetFTP {
+func startTargetFTP(t *testing.T) *targetFTP { return startTargetFTPWith(t, nil) }
+
+// startTargetFTPWith configures the target before it accepts anything.
+// A field the accept loop reads cannot be set after it is running, so
+// the ones that change how a session is served are settled here.
+func startTargetFTPWith(t *testing.T, cfg func(*targetFTP)) *targetFTP {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	tg := &targetFTP{ln: ln, t: t, mu: make(chan struct{}, 1), content: "hello from the server\r\n"}
+	if cfg != nil {
+		cfg(tg)
+	}
 	tg.mu <- struct{}{}
 	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
@@ -64,6 +82,13 @@ func (tg *targetFTP) commands() []string {
 	return out
 }
 
+func (tg *targetFTP) lastProxyHeader() string {
+	<-tg.mu
+	out := tg.proxyHeader
+	tg.mu <- struct{}{}
+	return out
+}
+
 func (tg *targetFTP) lastStored() string {
 	<-tg.mu
 	out := tg.stored
@@ -77,6 +102,22 @@ func (tg *targetFTP) serve(c net.Conn) {
 	write := func(s string) bool {
 		_, err := io.WriteString(c, s)
 		return err == nil
+	}
+	// A PROXY protocol v2 header, when the proxy was told to send one,
+	// arrives before anything else.
+	if tg.expectProxy {
+		hdr := make([]byte, 16)
+		if _, err := io.ReadFull(br, hdr); err != nil {
+			return
+		}
+		n := int(hdr[14])<<8 | int(hdr[15])
+		rest := make([]byte, n)
+		if _, err := io.ReadFull(br, rest); err != nil {
+			return
+		}
+		<-tg.mu
+		tg.proxyHeader = string(hdr) + string(rest)
+		tg.mu <- struct{}{}
 	}
 	if !write("220 target ftpd 1.2.3 ready\r\n") {
 		return
@@ -176,6 +217,20 @@ func (tg *targetFTP) serve(c net.Conn) {
 			write("250 done\r\n")
 		case "SIZE":
 			write(fmt.Sprintf("213 %d\r\n", len(tg.content)))
+		case "AUTH":
+			if tg.tls == nil {
+				write("534 no TLS here\r\n")
+				continue
+			}
+			if !write("234 proceeding with TLS\r\n") {
+				return
+			}
+			tc := tls.Server(c, tg.tls)
+			if err := tc.Handshake(); err != nil {
+				return
+			}
+			c = tc
+			br = bufio.NewReader(tc)
 		case "QUIT":
 			write("221 bye\r\n")
 			return

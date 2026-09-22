@@ -1792,6 +1792,54 @@ Open findings of the earlier rounds:
 Security tests for the surfaces this release adds, written as an
 attacker would read them rather than as coverage.
 
+**The per-package coverage floor holds again after the split.** Three
+packages came out of it with code no test reached, and the gate had
+been failing on all three.
+
+`internal/daemon` (14 %) is the body of all three programs, and until
+now nothing ran it: `Run` installs a process-wide signal handler and
+then blocks, which a test binary cannot do to itself. The signal source
+and a hook called once the daemon is serving are now parameters of an
+unexported `run`, so a test drives a whole daemon — ready, answering
+the management socket, reopening its logs on SIGUSR1, reloading on
+SIGHUP, rolling back to the generation recorded at start, stopping on
+SIGTERM with the socket removed. The failure paths after the listeners
+are open are driven too, because a process left serving traffic with no
+way to control it is worse than one that did not start. The systemd
+protocol is checked over a real `unixgram` socket, including the
+monotonic stamp `Type=notify-reload` needs and the case where there is
+no service manager at all. Now 70 %.
+
+`internal/kinds/ftp` (54 %) had no test for any of the TLS: `AUTH TLS`
+on the client's leg, `require_tls`, the refusal of octets pipelined
+across the upgrade, a listener with no certificate, `upstream_tls_mode`
+and the 431 a target that will not protect the connection earns before
+the client is told its own is protected. Nor for who is let near the
+listener — `allow_clients`, `max_connections`, a target that is not
+there — nor for the PROXY header the target reads, `{user}` in
+`allow_paths`, or YARA over an upload. Now 70 %.
+
+`internal/kinds/dns` (58 %) had none for the three things a resolver
+answers about itself: the discovery records that let a client move
+itself off plaintext (RFC 9461), the SVCB and HTTPS records it owns
+(RFC 9460), and DNS over QUIC (RFC 9250). The records are now asked for
+over UDP on one listener and over QUIC on another and required to
+agree, and a record that cannot be encoded has to fail the
+configuration rather than every query for it. Now 89 %.
+
+The two `go:generate` helpers were 0 % `main` packages inside the gate.
+`test/covergate` excluded binaries by listing `cmd/`, which named the
+released programs and not these; it now excludes every `main` package
+by where it lives, and `internal/config/schema/gen` moved to
+`internal/config/schema/cmd/genschema` so that one rule covers both.
+
+And `make cover` could not finish at all: `internal/sandbox` applies
+Landlock and seccomp to a child process, which then cannot write the
+coverage file the instrumented binary emits on exit, so the run failed
+on the one package whose figure the gate already ignores. It is left
+out of the coverage run and only that one; `make test` and `make
+test-race` run it in full.
+
 Two ECH tests read the listener's counters the instant the client's
 `Dial` returned. In TLS 1.3 that is before the server has finished its
 own handshake, so the counters were a moment behind the connection the

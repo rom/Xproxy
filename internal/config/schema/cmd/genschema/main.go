@@ -1,4 +1,4 @@
-// Command gen writes the configuration JSON schema; see package
+// Command genschema writes the configuration JSON schema; see package
 // schemagen. Run through go generate in package schema.
 package main
 

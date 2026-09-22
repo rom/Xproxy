@@ -44,6 +44,24 @@ import (
 // Run is a daemon's main. role picks the listener kinds this binary
 // serves, and names it in messages and defaults.
 func Run(role listener.Role, args []string) int {
+	// Registered before anything is opened, so a SIGTERM that arrives
+	// during a slow start is acted on when the daemon reaches its loop
+	// rather than killing it half way through binding. A start that
+	// fails discards it and exits anyway; a start that hangs is the
+	// service manager's TimeoutStopSec to end, as it was before.
+	sigs := make(chan os.Signal, 4)
+	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigs)
+	return run(role, args, sigs, nil)
+}
+
+// run is Run with the two things a test cannot have it install for
+// itself: the signal source, because signal.Notify is process-wide and
+// a test binary is one process; and a hook called once the daemon is
+// serving, because everything a test wants to do next -- reload,
+// reopen the logs, ask the management socket, shut down -- has to
+// happen after READY and before the answer to it.
+func run(role listener.Role, args []string, sigs <-chan os.Signal, ready func()) int {
 	prog := role.Daemon()
 	fs := flag.NewFlagSet(prog, flag.ContinueOnError)
 	cfgPath := fs.String("config", paths.ConfigFileFor(prog), "configuration file")
@@ -339,9 +357,10 @@ func Run(role listener.Role, args []string) int {
 		return 1
 	}
 	sdNotify("READY=1")
+	if ready != nil {
+		ready()
+	}
 
-	sigs := make(chan os.Signal, 4)
-	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGTERM, syscall.SIGINT)
 	for sig := range sigs {
 		switch sig {
 		case syscall.SIGHUP:
