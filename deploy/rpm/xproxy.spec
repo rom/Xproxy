@@ -204,8 +204,8 @@ fi
 %{_sysctldir}/90-xproxy.conf
 %{_sysusersdir}/xproxy.conf
 %config(noreplace) %{_sysconfdir}/logrotate.d/xproxy
-%dir %attr(0750,root,xproxy) %{_sysconfdir}/xproxy
-%config(noreplace) %attr(0640,root,xproxy) %{_sysconfdir}/xproxy/xproxy.yaml
+%dir %attr(0750,root,xproxy-config) %{_sysconfdir}/xproxy
+%config(noreplace) %attr(0640,root,xproxy-config) %{_sysconfdir}/xproxy/xproxy.yaml
 %dir %attr(0750,xproxy,xproxy) %{_localstatedir}/log/xproxy
 %dir %attr(0700,xproxy,xproxy) %{_sharedstatedir}/xproxy
 

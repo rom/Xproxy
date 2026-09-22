@@ -157,16 +157,30 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		return nil, err
 	}
 	s.rt.Store(rt)
+	// unwind releases what New has built so far. Once the plane is
+	// committed it owns the JWKS refreshers, the ICAP pools and the
+	// filters, which rt.stop no longer covers: the engine runtime holds
+	// only the upstream pools since the data plane became a kind. A
+	// failure after that point returns no Server, so nothing else will
+	// ever call Shutdown to release them.
+	unwind := func() {
+		if pl := s.planeOrNil(); pl != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			pl.Stop(ctx)
+		}
+		rt.stop()
+		if bl := s.bans.Load(); bl != nil {
+			bl.Close()
+		}
+	}
 	// The data plane, where this binary linked one. It compiles its own
 	// generation against the pools just built, so a route naming an
 	// upstream that failed never reaches a listener.
 	if newPlane != nil {
 		pl, err := newPlane(s)
 		if err != nil {
-			rt.stop()
-			if bl := s.bans.Load(); bl != nil {
-				bl.Close()
-			}
+			unwind()
 			return nil, err
 		}
 		// No Retire: this is the first generation, so there is nothing
@@ -175,10 +189,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 			Config: cfg, Number: gen, Pools: rt.pools, Trusted: rt.trusted,
 		})
 		if err != nil {
-			rt.stop()
-			if bl := s.bans.Load(); bl != nil {
-				bl.Close()
-			}
+			unwind()
 			return nil, err
 		}
 		commit()
@@ -197,10 +208,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		if len(groups) > 0 {
 			m, err := acme.New(*cfg.ACME, groups, logs.Error)
 			if err != nil {
-				rt.stop()
-				if bl := s.bans.Load(); bl != nil {
-					bl.Close()
-				}
+				unwind()
 				return nil, err
 			}
 			m.OnChange(func() { s.logs.Audit.Info("acme certificates updated") })
@@ -210,10 +218,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	if cfg.Cluster != nil {
 		node, err := cluster.New(cfg.Cluster, rateSource{s: s}, logs.Error)
 		if err != nil {
-			rt.stop()
-			if bl := s.bans.Load(); bl != nil {
-				bl.Close()
-			}
+			unwind()
 			return nil, err
 		}
 		node.AttachBans(banStore(s.bans.Load()))

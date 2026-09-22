@@ -59,8 +59,9 @@ systemctl status xproxy.service
 ```
 
 The packages create the `xproxy` and `xproxy-admin` users through
-`sysusers.d`, own `/etc/xproxy`, `/var/log/xproxy` and `/var/lib/xproxy`
-with the right modes, apply the sysctl profile, and load the SELinux
+`sysusers.d`, own `/etc/xproxy` (as `root:xproxy-config`, the group the
+daemons share for the configuration they read in common),
+`/var/log/xproxy` and `/var/lib/xproxy` with the right modes, apply the sysctl profile, and load the SELinux
 module with `semodule` and relabel on install. Upgrades restart the
 service (`%systemd_postun_with_restart`); the socket stays open so no
 connection is refused. The version is `VERSION` plus a git suffix unless
@@ -142,6 +143,13 @@ under `/etc/xproxy/` and name them in each file's `includes`; keep
 names a socket, an address and a directory that only one process can
 own.
 
+Everything under `/etc/xproxy` -- the per-daemon files, the fragments
+and the certificates -- is `root:xproxy-config` and `0640`, or `0750`
+for a directory: that group is what admits all three daemons to a
+directory none of them owns. A file dropped in without it is a file the
+daemon cannot read, which `xproxyctl validate` reports as a permission
+error rather than a configuration one.
+
 Edit `/etc/xproxy/xproxy.yaml`. Listener names must match the
 `FileDescriptorName` in the socket units (`public-http` and `public` in the
 shipped files) or xproxy falls back to matching by address. Validate:
@@ -185,7 +193,7 @@ the configuration file so that operators can edit it from the browser:
 
 ```sh
 useradd --system --gid xproxy --home-dir /var/lib/xproxy --shell /usr/sbin/nologin xproxy-admin   # already exists with the RPM (sysusers)
-chown xproxy-admin:xproxy /etc/xproxy/xproxy.yaml && chmod 0640 /etc/xproxy/xproxy.yaml
+chown xproxy-admin:xproxy-config /etc/xproxy/xproxy.yaml && chmod 0640 /etc/xproxy/xproxy.yaml   # the GUI writes it; the daemons read it by group
 sudo -u xproxy-admin xproxy-admin user add admin -role operator
 systemctl enable --now xproxy-admin
 ssh -L 8443:127.0.0.1:8443 edge          # from the workstation
