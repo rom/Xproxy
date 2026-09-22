@@ -14,6 +14,7 @@ import (
 // a listener that never passes validation proves nothing about what a
 // daemon does with one that does.
 var sections = map[string]string{
+	"http":    "",
 	"tcp":     "tcp: {default: u}",
 	"forward": "forward: {ports: [443]}",
 	"dns":     `dns: {upstreams: ["127.0.0.1:53"]}`,
@@ -33,9 +34,6 @@ var sections = map[string]string{
 func TestUnlinkedKindRefused(t *testing.T) {
 	reached := 0
 	for _, kind := range listener.Kinds() {
-		if servedByHTTP(kind) {
-			continue
-		}
 		if _, linked := kindFor(kind); linked {
 			t.Fatalf("kind %q is linked into internal/proxy; the engine must not depend on a kind package", kind)
 		}

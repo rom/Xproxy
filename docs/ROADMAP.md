@@ -314,12 +314,13 @@ of them is a flaw in front of all of them.
 - DNS tunnelling and exfiltration detection: delivered
   (`dns.tunnel_detection`)
 - The fifth audit round, over every parser: delivered
-- Lifting the HTTP data plane itself into a kind, so that `xgate` and
-  `xrelay` stop linking it: **not done**. The three binaries are still
-  within a third of a megabyte of each other. It is blocked on the
-  shared compiled generation the http listeners use and on the
-  management status surface, whose types would keep `internal/waf` —
-  and therefore Coraza — linked into every binary.
+- The HTTP data plane itself as a kind, so that `xgate` and `xrelay`
+  stop linking it: delivered (`internal/kinds/http` and
+  `internal/kinds/forward`). The shared compiled generation became `proxy.Plane` with a
+  two-phase `Prepare`/`commit`; the management status surface became
+  `proxy.PlaneStatus`, with the WAF report moved to the leaf package
+  `internal/waf/wafstatus` so Coraza stays out of the daemons that run
+  no WAF. Stripped: `xproxy` 28.4 MiB, `xgate` 15.3, `xrelay` 14.9
 
 ## After 1.4 (candidates, unranked)
 

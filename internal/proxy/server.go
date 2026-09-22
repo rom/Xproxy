@@ -4,20 +4,11 @@ package proxy
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/rom/xproxy/internal/apiinv"
-	"github.com/rom/xproxy/internal/filters/accountguard"
-	"github.com/rom/xproxy/internal/filters/botscore"
-	"github.com/rom/xproxy/internal/filters/sensitive"
-	"log/slog"
 	"net"
-	"net/http"
 	"net/netip"
 	"reflect"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,77 +16,50 @@ import (
 
 	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/ban"
-	"github.com/rom/xproxy/internal/bodybudget"
 	"github.com/rom/xproxy/internal/bound"
-	"github.com/rom/xproxy/internal/cache"
 	"github.com/rom/xproxy/internal/capture"
-	"github.com/rom/xproxy/internal/challenge"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dns"
-	"github.com/rom/xproxy/internal/geoip"
-	"github.com/rom/xproxy/internal/h3"
-	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/safe"
-	"github.com/rom/xproxy/internal/shed"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/upstream"
-	"github.com/rom/xproxy/internal/waf"
 )
 
-// Server runs the data plane for one configuration and supports hot reload.
+// Server runs the listeners of one configuration and supports hot
+// reload. It is the engine: the accept path, the sockets and their
+// lifecycle, the state every listener kind shares, and the management
+// plane. What a protocol does with a connection belongs to a kind.
 type Server struct {
 	logs  *logging.Logs
 	stats *Stats
 
-	rt          atomic.Pointer[runtime]
-	generation  atomic.Uint64
-	maintenance atomic.Bool // runtime maintenance-mode toggle
+	rt         atomic.Pointer[runtime]
+	generation atomic.Uint64
 
-	concurrency *limits.Concurrency
-	tarpits     *limits.Concurrency // bound on requests held in a tarpit
-	// bodyBudget is the process-wide ceiling on request bodies held in
-	// memory at once; see server.limits.max_buffered_body_bytes.
-	bodyBudget bodybudget.Budget
-	marks      *marks // clients that hit a honeypot
+	// plane is the data plane this binary linked, or nil. It owns the
+	// compiled policy its listeners share; the engine holds it only to
+	// build a generation, take a snapshot and answer the management
+	// views.
+	plane atomic.Pointer[Plane]
+
 	// fingerprints holds the TLS fingerprint of every open TLS connection.
 	fingerprints *tlsconf.FingerprintTable
-	// cache is the response cache, kept across reloads; nil when the
-	// configuration has no cache section.
-	cache       atomic.Pointer[cache.Cache]
-	connLimiter *limits.ConnLimiter
-	bans        atomic.Pointer[ban.List]
-	cluster     atomic.Pointer[cluster.Node]
-	shedder     atomic.Pointer[shed.Shedder]
-	challenger  atomic.Pointer[challenge.Challenger]
-	tracer      atomic.Pointer[tracing.Tracer]
-	// traceRedactIP runs a span's client.address through the log
-	// redactor; see config.Tracing.RedactClientAddress.
-	traceRedactIP atomic.Bool
-	sampler       *metrics.Sampler
-	acme          *acme.Manager
-	// wafStats keeps per rule counters and learning across reloads.
-	wafStats *waf.Stats
-	// patches keeps virtual patch hit counters across generations.
-	patches patchCounters
-	// honeytokenHits keeps honeytoken counters across generations: a
-	// plant that has been found stays found across a reload.
-	honeytokenHits honeytokenCounters
+	connLimiter  *limits.ConnLimiter
+	bans         atomic.Pointer[ban.List]
+	cluster      atomic.Pointer[cluster.Node]
+	sampler      *metrics.Sampler
+	acme         *acme.Manager
 	// handshake refuses clients in the ClientHello. It is read from
 	// inside the TLS handshake, so it is swapped rather than locked.
 	handshake atomic.Pointer[handshakePolicy]
-	// degradation serves suspect clients slowly. Swapped on reload; the
-	// counters start again with the new levels.
-	degradation atomic.Pointer[degradation]
 	// capture writes exchanges as pcapng, kept across generations so a
 	// recording survives a reload.
 	capture atomic.Pointer[capture.Capturer]
-	// inventory is the API inventory, kept across generations.
-	inventory *apiinv.Table
 	// tickets manages shared session ticket keys; nil without the section.
 	tickets        *tlsconf.Tickets
 	ticketMismatch bound.Notice
@@ -117,13 +81,11 @@ type boundListener struct {
 	acc       *acceptor
 	front     *front
 	ln        net.Listener
-	httpSrv   *http.Server
 	tlsReload *tlsconf.Reloadable
 	activated bool
-	h3        *h3.Server
-	// inst is the data plane of a registered listener kind. The typed
-	// fields below are the status views' handles on the same object
-	// and go as each kind moves to its own package.
+	// inst is the data plane of a registered listener kind; dns is the
+	// status view's handle on the same object, for the one kind the
+	// management API asks about by listener rather than by protocol.
 	inst Instance
 	dns  *dns.Server // kind: dns listeners
 }
@@ -135,15 +97,9 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		stats: &Stats{StartedAt: time.Now(),
 			RequestDuration: metrics.NewHistogram(metrics.DurationBuckets),
 			UpstreamTTFB:    metrics.NewHistogram(metrics.DurationBuckets)},
-		concurrency:  limits.NewConcurrency(cfg.Server.Limits.MaxConcurrentRequests),
-		tarpits:      limits.NewConcurrency(cfg.Server.Limits.MaxTarpits),
-		marks:        newMarks(),
 		fingerprints: tlsconf.NewFingerprintTable(max(cfg.Server.Limits.MaxConnections, 1024)),
 		connLimiter:  limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
-		wafStats:     waf.NewStats(),
-		inventory:    apiinv.New(),
 	}
-	s.inventory.Configure(inventoryConfig(cfg), logs.Error)
 	// A contained panic is a bug in the proxy, not an event about the
 	// client, so it goes to the error log with its stack rather than to
 	// the security log. Set here because every deployment builds a
@@ -178,9 +134,6 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		}
 		s.bans.Store(bl)
 	}
-	if cfg.Shedding != nil {
-		s.shedder.Store(shed.New(cfg.Shedding, s.concurrency.InFlight, cfg.Server.Limits.MaxConcurrentRequests))
-	}
 	if cfg.Capture != nil {
 		cp, err := capture.New(cfg.Capture)
 		if err != nil {
@@ -190,24 +143,13 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 			s.capture.Store(cp)
 		}
 	}
-	if cfg.Challenge != nil {
-		ch, err := challenge.New(cfg.Challenge)
-		if err != nil {
-			if bl := s.bans.Load(); bl != nil {
-				bl.Close()
-			}
-			return nil, err
-		}
-		ch.SetRouteHosts(routeHosts(cfg))
-		s.challenger.Store(ch)
-	}
 	s.connLimiter.Banned = func(addr netip.Addr) bool {
 		bl := s.bans.Load()
 		return bl != nil && bl.DropsConnections() && bl.Banned(addr)
 	}
 	s.handshake.Store(newHandshakePolicy(cfg.Handshake))
-	s.degradation.Store(newDegradation(cfg.Degradation))
-	rt, err := newRuntime(cfg, s.generation.Add(1), logs.Error, newEventBus(s), s.wafStats, &s.patches, &s.honeytokenHits)
+	gen := s.generation.Add(1)
+	rt, err := newRuntime(cfg, gen, logs.Error)
 	if err != nil {
 		if bl := s.bans.Load(); bl != nil {
 			bl.Close()
@@ -215,8 +157,32 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		return nil, err
 	}
 	s.rt.Store(rt)
-	if cfg.Maintenance != nil {
-		s.maintenance.Store(cfg.Maintenance.Enabled)
+	// The data plane, where this binary linked one. It compiles its own
+	// generation against the pools just built, so a route naming an
+	// upstream that failed never reaches a listener.
+	if newPlane != nil {
+		pl, err := newPlane(s)
+		if err != nil {
+			rt.stop()
+			if bl := s.bans.Load(); bl != nil {
+				bl.Close()
+			}
+			return nil, err
+		}
+		// No Retire: this is the first generation, so there is nothing
+		// for the plane to hand back.
+		commit, _, err := pl.Prepare(Generation{
+			Config: cfg, Number: gen, Pools: rt.pools, Trusted: rt.trusted,
+		})
+		if err != nil {
+			rt.stop()
+			if bl := s.bans.Load(); bl != nil {
+				bl.Close()
+			}
+			return nil, err
+		}
+		commit()
+		s.plane.Store(&pl)
 	}
 	s.sampler = metrics.NewSampler(seriesCounters, seriesGauges, cfg.Metrics.SampleInterval.D(), cfg.Metrics.Retention.D(), s.sample)
 	if cfg.ACME != nil {
@@ -240,19 +206,6 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 			m.OnChange(func() { s.logs.Audit.Info("acme certificates updated") })
 			s.acme = m
 		}
-	}
-	if cfg.Cache != nil {
-		s.cache.Store(cache.New(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes))
-	}
-	s.traceRedactIP.Store(cfg.Tracing.RedactsClientAddress())
-	s.bodyBudget.SetLimit(cfg.Server.Limits.MaxBufferedBodyBytes)
-	if cfg.Tracing.IsEnabled() {
-		tr, err := newTracer(cfg.Tracing, logs.Error)
-		if err != nil {
-			rt.stop()
-			return nil, err
-		}
-		s.tracer.Store(tr)
 	}
 	if cfg.Cluster != nil {
 		node, err := cluster.New(cfg.Cluster, rateSource{s: s}, logs.Error)
@@ -292,9 +245,6 @@ func (s *Server) Stats() Snapshot {
 	snap := s.stats.snapshot()
 	snap.OpenConnections = s.connLimiter.Open()
 	snap.RejectedConns = s.connLimiter.Rejected.Load()
-	snap.InFlight = s.concurrency.InFlight()
-	snap.HoneypotMarked = len(s.marks.list(time.Now()))
-	snap.BufferedBody = s.bodyBudget.Stats()
 	s.mu.Lock()
 	for _, bl := range s.listeners {
 		if fc, ok := bl.inst.(FlowCounter); ok {
@@ -310,46 +260,19 @@ func (s *Server) Stats() Snapshot {
 		snap.ClusterPeers = len(node.Status().Peers)
 		snap.ClusterConnected = node.ConnectedPeers()
 	}
-	if sh := s.shedder.Load(); sh != nil {
-		ss := sh.Snapshot()
-		snap.LoadLevel = ss.Level
-		snap.UpstreamLatencyMS = ss.LatencyMS
-		snap.SheddingClasses = []string{}
-		if ss.SheddingLow {
-			snap.SheddingClasses = append(snap.SheddingClasses, "low")
-		}
-		if ss.SheddingNorm {
-			snap.SheddingClasses = append(snap.SheddingClasses, "normal")
-		}
-		if ss.SheddingHigh {
-			snap.SheddingClasses = append(snap.SheddingClasses, "high")
-		}
-	}
-	if ch := s.challenger.Load(); ch != nil {
-		snap.ChallengesIssued, snap.ChallengesPassed, snap.ChallengesFailed, snap.CaptchasPassed = ch.Stats()
-	}
-	for _, f := range sensitive.Snapshot().Findings {
-		snap.SensitiveFindings += f.Count
-	}
-	ac := accountguard.Status(0)
-	snap.AccountBlocks, snap.AccountCampaigns = ac.Counters.Blocks, ac.Counters.Campaigns
-	for _, g := range ac.Guards {
-		for _, ep := range g.Endpoints {
-			snap.AccountBlocksActive += ep.ActiveBlocks
-		}
+	if pl := s.planeOrNil(); pl != nil {
+		pl.Snapshot(&snap)
 	}
 	ls := s.logs.Stats()
 	snap.LogSyslogSent, snap.LogSyslogDropped, snap.LogJournalDropped, snap.LogRedaction = ls.SyslogSent, ls.SyslogDropped, ls.JournalDropped, ls.Redaction
 	snap.LogSIEMSent, snap.LogSIEMDropped = ls.SIEMSent, ls.SIEMDropped
 	snap.LogWriteErrors = ls.WriteErrors
-	snap.TarpitActive = s.tarpits.InFlight()
 	return snap
 }
 
 // ACME returns the certificate manager, or nil when not configured.
 func (s *Server) ACME() *acme.Manager { return s.acme }
 
-// ICAP returns the status of every configured ICAP service.
 // CertificateExpiry returns the earliest file certificate expiry per TLS
 // listener (listeners without file certificates are omitted).
 func (s *Server) CertificateExpiry() map[string]time.Time {
@@ -366,14 +289,14 @@ func (s *Server) CertificateExpiry() map[string]time.Time {
 	return out
 }
 
-// Tracing returns the tracer status, or nil when tracing is off.
+// Tracing returns the tracer status, or nil when tracing is off. It is
+// the data plane's: a daemon that terminates no requests emits no
+// spans.
 func (s *Server) Tracing() *tracing.Status {
-	tr := s.tracer.Load()
-	if tr == nil {
-		return nil
+	if pl := s.planeOrNil(); pl != nil {
+		return pl.Tracing()
 	}
-	st := tr.Status()
-	return &st
+	return nil
 }
 
 // Certificates lists the served certificates per TLS listener with their
@@ -444,38 +367,6 @@ func (s *Server) ECH() map[string]*tlsconf.ECHStatus {
 // Tickets returns the session ticket key status, nil without the section.
 func (s *Server) Tickets() *tlsconf.TicketStatus { return s.tickets.Status() }
 
-// Cache returns the response cache, or nil when none is configured.
-func (s *Server) Cache() *cache.Cache { return s.cache.Load() }
-
-// GeoIP returns the country database status, or nil when none is configured.
-func (s *Server) GeoIP() *geoip.Status {
-	rt := s.rt.Load()
-	if rt.geo == nil {
-		return nil
-	}
-	st := rt.geo.Status()
-	return &st
-}
-
-// Filters returns the configured middleware instances.
-func (s *Server) Filters() []FilterStatus { return s.rt.Load().filterStatus() }
-
-func (s *Server) ICAP() []icap.Status {
-	rt := s.rt.Load()
-	out := make([]icap.Status, 0, len(rt.icap))
-	for _, svc := range rt.icap {
-		out = append(out, svc.Status())
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
-}
-
-// Shedder returns the load shedder, or nil when shedding is not configured.
-func (s *Server) Shedder() *shed.Shedder { return s.shedder.Load() }
-
-// Challenger returns the challenge engine, or nil when not configured.
-func (s *Server) Challenger() *challenge.Challenger { return s.challenger.Load() }
-
 // Upstreams returns endpoint statistics per upstream.
 func (s *Server) Upstreams() map[string][]upstream.Stats {
 	rt := s.rt.Load()
@@ -498,108 +389,6 @@ func (s *Server) Pools() map[string]upstream.PoolStatus {
 
 // Generation returns the configuration generation counter.
 func (s *Server) Generation() uint64 { return s.rt.Load().generation }
-
-// WAFReport is the response of GET /v1/waf: the compiled profiles of the
-// active generation, the route assignments, and the process wide rule
-// statistics and learning proposals.
-type WAFReport struct {
-	Enabled  bool                `json:"enabled"`
-	Profiles []waf.ProfileStatus `json:"profiles"`
-	Routes   []WAFRoute          `json:"routes"`
-	waf.Report
-}
-
-// WAFRoute is one route's WAF assignment.
-type WAFRoute struct {
-	Route   string `json:"route"`
-	Profile string `json:"profile"`
-	Mode    string `json:"mode"`
-	// BlockPercent is the share of clients in block mode (100 unless
-	// the route rolls block mode out gradually); BlockCIDRs are the
-	// canary prefixes always in block mode.
-	BlockPercent int      `json:"block_percent"`
-	BlockCIDRs   []string `json:"block_cidrs,omitempty"`
-}
-
-// WAF builds the WAF report with at most top rules.
-func (s *Server) WAF(top int) WAFReport {
-	rt := s.rt.Load()
-	rep := WAFReport{Profiles: []waf.ProfileStatus{}, Routes: []WAFRoute{}}
-	if rt.waf != nil {
-		rep.Enabled = true
-		rep.Profiles = rt.waf.Profiles()
-	}
-	for _, cr := range rt.routes {
-		if cr.wafMode != "" && cr.wafMode != string(waf.ModeOff) {
-			p, _ := wafSelection(rt.cfg, cr.cfg)
-			wr := WAFRoute{Route: cr.cfg.Name, Profile: p, Mode: cr.wafMode, BlockPercent: 100}
-			if cr.wafMode == string(waf.ModeBlock) {
-				wr.BlockPercent = cr.cfg.WAF.Percent()
-				if cr.cfg.WAF != nil {
-					wr.BlockCIDRs = cr.cfg.WAF.BlockCIDRs
-				}
-			} else {
-				wr.BlockPercent = 0
-			}
-			rep.Routes = append(rep.Routes, wr)
-		}
-	}
-	rep.Report = s.wafStats.Report(top, rt.routePaths())
-	return rep
-}
-
-// inventoryConfig maps the configuration section to the table's setting.
-func inventoryConfig(cfg *config.Config) apiinv.Config {
-	a := cfg.APIInventory
-	if !a.IsEnabled() {
-		return apiinv.Config{}
-	}
-	return apiinv.Config{Enabled: true, MaxEndpoints: a.MaxEndpoints, ZombieAfter: a.ZombieAfter.D(), StateFile: a.StateFile, SaveInterval: a.SaveInterval.D()}
-}
-
-// APIInventory builds the inventory view: all, shadow, zombie, versions,
-// documented or undocumented, at most top items.
-// Accounts returns the live state of the account_guard filters with up to
-// top active blocks per endpoint.
-func (s *Server) Accounts(top int) accountguard.Report { return accountguard.Status(top) }
-
-// BotScore returns the learning-mode baselines and threshold suggestions of
-// every bot_score filter running with learn: true, up to top routes each.
-func (s *Server) BotScore(top int) botscore.Report { return botscore.Status(top) }
-
-func (s *Server) APIInventory(view string, top int) apiinv.Report {
-	rt := s.rt.Load()
-	docs := map[string][]apiinv.Operation{}
-	for _, cr := range rt.routes {
-		if !cr.inventory {
-			continue
-		}
-		for _, d := range cr.describers {
-			docs[cr.cfg.Name] = append(docs[cr.cfg.Name], d.Operations()...)
-		}
-	}
-	return s.inventory.Report(view, top, docs, time.Now())
-}
-
-// WAFExclusions renders the learning proposals as SecLang.
-func (s *Server) WAFExclusions() string { return s.wafStats.Exclusions(s.rt.Load().routePaths()) }
-
-// WAFReset clears the WAF statistics and learning table.
-func (s *Server) WAFReset() { s.wafStats.Reset() }
-
-// routePaths maps every route to its first path prefix, "" for regex
-// routes, for scoping exclusion proposals.
-func (rt *runtime) routePaths() map[string]string {
-	out := make(map[string]string, len(rt.routes))
-	for _, cr := range rt.routes {
-		if len(cr.cfg.PathRegex) == 0 && len(cr.cfg.Paths) > 0 {
-			out[cr.cfg.Name] = cr.cfg.Paths[0]
-		} else {
-			out[cr.cfg.Name] = ""
-		}
-	}
-	return out
-}
 
 // Start opens all listeners and begins serving. It returns once every
 // listener is bound; serving continues in the background until Shutdown.
@@ -646,15 +435,15 @@ func (s *Server) Start() error {
 		_ = pc.Close()
 	}
 	s.rt.Load().start()
+	if pl := s.planeOrNil(); pl != nil {
+		pl.Start()
+	}
 	s.sampler.Start()
 	if s.acme != nil {
 		s.acme.Start()
 	}
 	for _, bl := range s.listeners {
 		go s.serve(bl)
-		if bl.h3 != nil {
-			go s.serveH3(bl)
-		}
 	}
 	s.started = true
 	return nil
@@ -679,165 +468,64 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *activated) (*boundListener, error) {
 	ln := acc.raw
 	fr := acc.newFront()
-	lim := s.cfg().Server.Limits
 	bl := &boundListener{cfg: lc, acc: acc, front: fr, ln: s.connLimiter.Wrap(fr), activated: act}
 	k, linked := kindFor(lc.Kind)
-	if !linked && !servedByHTTP(lc.Kind) {
+	if !linked {
 		// The kind is one this project implements and this binary did
 		// not link. Refusing is the point of the split: a listener that
-		// quietly fell through to the HTTP data plane would answer the
-		// wrong protocol on the right port.
+		// quietly fell through to another kind would answer the wrong
+		// protocol on the right port.
 		_ = fr.Close()
 		return nil, fmt.Errorf("listener %s: kind %q is served by %s, not by this daemon", lc.Name, lc.Kind, daemonFor(lc.Kind))
 	}
-	if lc.ProxyProtocol && (!linked || k.ProxyHeader) {
+	if lc.ProxyProtocol && k.ProxyHeader {
 		bl.ln = &proxyListener{Listener: bl.ln,
 			trusted:  func() []netip.Prefix { return s.rt.Load().trusted },
 			onReject: s.connLimiter.Reject,
 		}
 	}
-	// A registered kind owns everything from here: the engine has
-	// prepared the socket and, where the kind asked for it, the TLS
-	// configuration, and the kind builds its own data plane.
-	if linked {
-		su := &Setup{Host: s, Config: lc, Net: bl.ln,
-			Packet: func(suffix string) (net.PacketConn, error) {
-				name := lc.Name
-				if suffix != "" {
-					name += "-" + suffix
-				}
-				addr := lc.Address
-				if strings.HasSuffix(lc.Address, ":0") {
-					addr = ln.Addr().String()
-				}
-				pc, _, err := packetFor(activated, name, addr)
-				return pc, err
-			}}
-		if k.TLS && lc.TLS != nil {
-			tc, rl, err := s.listenerTLS(lc)
-			if err != nil {
-				_ = fr.Close()
-				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+	// The kind owns everything from here: the engine has prepared the
+	// socket and, where the kind asked for it, the TLS configuration,
+	// and the kind builds its own data plane.
+	su := &Setup{Host: s, Config: lc, Net: bl.ln, Plane: s.planeOrNil(),
+		Packet: func(suffix string) (net.PacketConn, error) {
+			name := lc.Name
+			if suffix != "" {
+				name += "-" + suffix
 			}
-			bl.tlsReload = rl
-			su.TLS = tc
-		}
-		inst, err := k.New(su)
-		if err != nil {
-			_ = fr.Close()
-			if bl.tlsReload != nil {
-				bl.tlsReload.Close()
+			addr := lc.Address
+			if strings.HasSuffix(lc.Address, ":0") {
+				addr = ln.Addr().String()
 			}
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.inst = inst
-		bl.ln = su.Net // a kind may have wrapped the socket, as implicit TLS does
-		s.attachKind(bl, inst)
-		return bl, nil
-	}
-	h := &listenerHandler{srv: s, ln: &bl.cfg}
-	bl.httpSrv = &http.Server{
-		Handler:           h,
-		ReadHeaderTimeout: lim.ReadHeaderTimeout.D(),
-		ReadTimeout:       lim.ReadTimeout.D(),
-		WriteTimeout:      lim.WriteTimeout.D(),
-		IdleTimeout:       lim.IdleTimeout.D(),
-		MaxHeaderBytes:    lim.MaxHeaderBytes,
-		ErrorLog:          slog.NewLogLogger(s.logs.Error.Handler(), slog.LevelDebug),
-		// Disable automatic h2c and keep protocol choice to TLS ALPN.
-		TLSNextProto: nil,
-	}
-	if lc.H2C {
-		// HTTP/2 without TLS (prior knowledge and Upgrade) with the
-		// stream and frame bounds of the TLS listeners.
-		bl.httpSrv.Protocols = new(http.Protocols)
-		bl.httpSrv.Protocols.SetHTTP1(true)
-		bl.httpSrv.Protocols.SetUnencryptedHTTP2(true)
-		bl.httpSrv.HTTP2 = &http.HTTP2Config{MaxConcurrentStreams: 250, MaxReadFrameSize: 1 << 20}
-	}
-	if lc.TLS != nil {
-		tc, rl, err := tlsconf.Server(lc.TLS, lc.Protocols)
-		s.tickets.Attach(tc)
+			pc, _, err := packetFor(activated, name, addr)
+			return pc, err
+		}}
+	if k.TLS && lc.TLS != nil {
+		tc, rl, err := s.listenerTLS(lc)
 		if err != nil {
 			_ = fr.Close()
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 		}
-		if s.acme != nil && len(lc.TLS.ACME) > 0 {
-			rl.Managed = s.acme.Certificates
-			rl.Challenge = s.acme.TLSALPN01
-		}
-		rl.Fingerprints = s.fingerprints
-		rl.Refuse = s.refuseHandshake
-		for _, w := range rl.CTWarnings() {
-			s.logs.Security.Warn("certificate transparency", "listener", lc.Name, "issue", w)
-		}
-		rl.StartStapling(s.logs.Error)
-		bl.httpSrv.ConnState = func(c net.Conn, st http.ConnState) {
-			if st == http.StateClosed || st == http.StateHijacked {
-				s.fingerprints.Delete(c.RemoteAddr().String())
-			}
-		}
-		bl.httpSrv.TLSConfig = tc
 		bl.tlsReload = rl
-		if !hasProto(lc.Protocols, config.ProtocolH2) {
-			// Prevent the automatic HTTP/2 configuration.
-			bl.httpSrv.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){}
-		}
-		if hasProto(lc.Protocols, config.ProtocolH3) {
-			pc, act, err := packetFor(activated, lc.Name, lc.Address)
-			if err != nil {
-				_ = fr.Close()
-				return nil, fmt.Errorf("listener %s: h3: %w", lc.Name, err)
-			}
-			_, portStr, _ := net.SplitHostPort(pc.LocalAddr().String())
-			port, _ := strconv.Atoi(portStr)
-			h3srv, err := h3.New(h3.Options{
-				Conn: pc, Port: port, TLS: tc, Handler: h, Limits: lim, H3: *lc.H3, WebTransport: lc.H3.WebTransport,
-				Limiter: s.connLimiter, Log: s.logs.Error.With("listener", lc.Name, "proto", "h3"),
-			})
-			if err != nil {
-				_ = pc.Close()
-				_ = fr.Close()
-				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-			}
-			bl.h3 = h3srv
-			h.h3 = h3srv
-			s.logs.Error.Info("h3 listener bound", "listener", lc.Name, "address", pc.LocalAddr().String(), "socket_activated", act)
-		}
+		su.TLS = tc
 	}
+	inst, err := k.New(su)
+	if err != nil {
+		_ = fr.Close()
+		if bl.tlsReload != nil {
+			bl.tlsReload.Close()
+		}
+		return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+	}
+	bl.inst = inst
+	bl.ln = su.Net // a kind may have wrapped the socket, as implicit TLS does
+	s.attachKind(bl, inst)
 	return bl, nil
 }
 
-func (s *Server) serveH3(bl *boundListener) {
-	if err := bl.h3.Serve(); err != nil {
-		s.logs.Error.Error("h3 listener stopped", "listener", bl.cfg.Name, "err", err.Error())
-	}
-}
-
-func hasProto(ps []config.Protocol, p config.Protocol) bool {
-	for _, x := range ps {
-		if x == p {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *Server) serve(bl *boundListener) {
-	var err error
 	s.logs.Error.Info("listening", "listener", bl.cfg.Name, "address", bl.ln.Addr().String(), "tls", bl.cfg.TLS != nil, "kind", bl.cfg.Kind, "socket_activated", bl.activated)
-	if bl.inst != nil {
-		bl.inst.Serve()
-		return
-	}
-	if bl.cfg.TLS != nil {
-		err = bl.httpSrv.ServeTLS(bl.ln, "", "")
-	} else {
-		err = bl.httpSrv.Serve(bl.ln)
-	}
-	if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-		s.logs.Error.Error("listener stopped", "listener", bl.cfg.Name, "err", err.Error())
-	}
+	bl.inst.Serve()
 }
 
 // Addrs returns the bound addresses by listener name (useful for tests and
@@ -848,8 +536,13 @@ func (s *Server) Addrs() map[string]string {
 	out := make(map[string]string, len(s.listeners))
 	for _, bl := range s.listeners {
 		out[bl.cfg.Name] = bl.ln.Addr().String()
-		if bl.h3 != nil {
-			out[bl.cfg.Name+"/udp"] = bl.h3.Addr().String()
+		// A kind that listens on more than the engine's accept socket
+		// (an HTTP/3 endpoint, a second datagram port) says so, under
+		// its listener's name and the suffix it chose.
+		if a, ok := bl.inst.(ExtraAddrs); ok {
+			for suffix, addr := range a.Addrs() {
+				out[bl.cfg.Name+"/"+suffix] = addr
+			}
 		}
 	}
 	return out
@@ -877,18 +570,34 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.stats.ReloadFailures.Add(1)
 		return err
 	}
-	rt, err := newRuntime(cfg, s.generation.Add(1), s.logs.Error, newEventBus(s), s.wafStats, &s.patches, &s.honeytokenHits)
-	if err == nil {
-		s.inventory.Configure(inventoryConfig(cfg), s.logs.Error)
-	}
+	gen := s.generation.Add(1)
+	rt, err := newRuntime(cfg, gen, s.logs.Error)
 	if err != nil {
 		s.stats.ReloadFailures.Add(1)
 		return err
+	}
+	// The data plane compiles its own generation against the pools just
+	// built. Everything that can fail happens now; nothing is swapped
+	// until every listener is bound too.
+	commitPlane, discardPlane := func() {}, func() {}
+	planeRetires := false
+	if pl := s.planeOrNil(); pl != nil {
+		planeRetires = true
+		commitPlane, discardPlane, err = pl.Prepare(Generation{
+			Config: cfg, Number: gen, Pools: rt.pools, Trusted: rt.trusted,
+			Retire: func() { old.stop() },
+		})
+		if err != nil {
+			rt.stop()
+			s.stats.ReloadFailures.Add(1)
+			return err
+		}
 	}
 	// Capture: rebuild it from the new rules, and carry the recording
 	// state across so a reload during a reproduction does not silently
 	// stop the capture. A section that disappeared closes its file.
 	if err := s.reloadCapture(cfg); err != nil {
+		discardPlane()
 		rt.stop()
 		s.stats.ReloadFailures.Add(1)
 		return err
@@ -897,20 +606,6 @@ func (s *Server) Reload(cfg *config.Config) error {
 	// it is swapped whole; the refusal counter starts again with the
 	// new policy, which is the honest reading of a changed rule set.
 	s.handshake.Store(newHandshakePolicy(cfg.Handshake))
-	s.degradation.Store(newDegradation(cfg.Degradation))
-	// A challenge section that appears on this reload needs its key before
-	// the swap: routes in mode always would otherwise serve unchallenged
-	// until the next reload if the secret file were unreadable (fail open).
-	var newChallenger *challenge.Challenger
-	if cfg.Challenge != nil && s.challenger.Load() == nil {
-		nc, err := challenge.New(cfg.Challenge)
-		if err != nil {
-			rt.stop()
-			s.stats.ReloadFailures.Add(1)
-			return fmt.Errorf("challenge: %w", err)
-		}
-		newChallenger = nc
-	}
 	// Ban list: reconfigure in place so active bans survive; create or
 	// drop it when the section appears or disappears.
 	oldBans := s.bans.Load()
@@ -923,6 +618,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 		} else {
 			bl, err := ban.New(cfg.Bans, s.logs.Security)
 			if err != nil {
+				discardPlane()
 				rt.stop()
 				s.stats.ReloadFailures.Add(1)
 				return err
@@ -932,6 +628,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 	case cfg.Bans != nil:
 		bl, err := ban.New(cfg.Bans, s.logs.Security)
 		if err != nil {
+			discardPlane()
 			rt.stop()
 			s.stats.ReloadFailures.Add(1)
 			return err
@@ -946,6 +643,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 		for _, f := range fresh {
 			s.discard(f)
 		}
+		discardPlane()
 		rt.stop()
 		s.stats.ReloadFailures.Add(1)
 		return err
@@ -1015,17 +713,8 @@ func (s *Server) Reload(cfg *config.Config) error {
 			defer oldBans.Close()
 		}
 	}
-	switch ch := s.challenger.Load(); {
-	case cfg.Challenge != nil && ch != nil:
-		ch.Reconfigure(cfg.Challenge)
-		ch.SetRouteHosts(routeHosts(cfg))
-	case cfg.Challenge != nil:
-		newChallenger.SetRouteHosts(routeHosts(cfg))
-		s.challenger.Store(newChallenger) // built before the swap; nil never reaches here
-	case ch != nil:
-		s.challenger.Store(nil)
-	}
 	s.rt.Store(rt)
+	commitPlane()
 	// Switch the listener set: the new listeners start serving on the new
 	// generation, the replaced and removed ones stop accepting now and
 	// drain their connections in the background.
@@ -1045,9 +734,6 @@ func (s *Server) Reload(cfg *config.Config) error {
 	s.mu.Unlock()
 	for _, f := range fresh {
 		go s.serve(f.bl)
-		if f.bl.h3 != nil {
-			go s.serveH3(f.bl)
-		}
 	}
 	drain := cfg.Server.ShutdownTimeout.D()
 	for _, r := range plan.replace {
@@ -1062,67 +748,19 @@ func (s *Server) Reload(cfg *config.Config) error {
 			node.AttachBans(banStore(newBans))
 		}
 	}
-	switch sh := s.shedder.Load(); {
-	case cfg.Shedding != nil && sh != nil:
-		sh.Reconfigure(cfg.Shedding, cfg.Server.Limits.MaxConcurrentRequests)
-	case cfg.Shedding != nil:
-		s.shedder.Store(shed.New(cfg.Shedding, s.concurrency.InFlight, cfg.Server.Limits.MaxConcurrentRequests))
-	case sh != nil:
-		s.shedder.Store(nil)
-	}
-	// Tracing: rebuilt when its section changed, so a reload can move
-	// the collector or the sampling share.
-	s.traceRedactIP.Store(cfg.Tracing.RedactsClientAddress())
-	s.bodyBudget.SetLimit(cfg.Server.Limits.MaxBufferedBodyBytes)
-	// The concurrency and tarpit gates were sized at start only, so a
-	// reload that changed either setting was ignored until a restart.
-	s.concurrency.Resize(cfg.Server.Limits.MaxConcurrentRequests)
-	s.tarpits.Resize(cfg.Server.Limits.MaxTarpits)
-	if !sameTracing(old.cfg.Tracing, cfg.Tracing) {
-		var next *tracing.Tracer
-		if cfg.Tracing.IsEnabled() {
-			if tr, err := newTracer(cfg.Tracing, s.logs.Error); err == nil {
-				next = tr
-			} else {
-				s.logs.Error.Error("tracing exporter unavailable", "err", err.Error())
-			}
-		}
-		if prev := s.tracer.Swap(next); prev != nil {
-			go prev.Stop()
-		}
-	}
-	switch c := s.cache.Load(); {
-	case cfg.Cache != nil && c != nil:
-		c.Resize(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes)
-	case cfg.Cache != nil:
-		s.cache.Store(cache.New(cfg.Cache.MaxBytes, cfg.Cache.MaxObjectBytes))
-	case c != nil:
-		s.cache.Store(nil)
-	}
 	s.stats.Reloads.Add(1)
-	// The old generation stops probing at once (its health state is no
-	// longer consulted); in-flight requests on it get the drain period to
-	// finish before its pools are torn down.
-	go func(old *runtime) {
-		old.stopChecks()
-		// The old generation is torn down when its last request ends,
-		// not after a fixed wait: an exchange older than
-		// shutdown_timeout — a long upload, a gRPC or SSE stream —
-		// used to be cut or answered 500 although it was still making
-		// progress. The hard cap bounds one that never ends.
-		drain := cfg.Server.ShutdownTimeout.D()
-		time.Sleep(drain)
-		hard := max(10*drain, 5*time.Minute)
-		deadline := time.Now().Add(hard - drain)
-		for old.inFlight.Load() > 0 && time.Now().Before(deadline) {
-			time.Sleep(100 * time.Millisecond)
-		}
-		if n := old.inFlight.Load(); n > 0 {
-			s.logs.Error.Warn("previous configuration generation torn down with requests still in flight",
-				"generation", old.generation, "in_flight", n, "after", hard.String())
-		}
-		old.stop()
-	}(old)
+	// The old generation stops probing at once: its health state is no
+	// longer consulted. Its pools stay open until the data plane reports
+	// that the last request compiled against it has finished — a pool
+	// closed under a long upload or an SSE stream cuts it — or, in a
+	// daemon with no data plane, for the drain period.
+	old.stopChecks()
+	if !planeRetires {
+		go func(old *runtime) {
+			time.Sleep(cfg.Server.ShutdownTimeout.D())
+			old.stop()
+		}(old)
+	}
 	s.logs.Error.Info("configuration reloaded", "generation", rt.generation, "routes", len(cfg.Routes), "upstreams", len(cfg.Upstreams))
 	s.logs.Audit.Info("reload", "generation", rt.generation)
 	return nil
@@ -1251,12 +889,8 @@ func listenerInPlace(o, n config.Listener) bool {
 func (s *Server) retire(bl *boundListener, drain time.Duration, closeSocket bool, why string) {
 	ctx, cancel := context.WithTimeout(context.Background(), drain)
 	defer cancel()
-	err := s.stopListener(ctx, bl, closeSocket)
-	attrs := []any{"listener", bl.cfg.Name, "address", bl.ln.Addr().String(), "reason", why}
-	if err != nil {
-		attrs = append(attrs, "err", err.Error())
-	}
-	s.logs.Error.Info("listener retired", attrs...)
+	s.stopListener(ctx, bl, closeSocket)
+	s.logs.Error.Info("listener retired", "listener", bl.cfg.Name, "address", bl.ln.Addr().String(), "reason", why)
 }
 
 // discard releases a listener that was built for a reload that failed
@@ -1264,41 +898,28 @@ func (s *Server) retire(bl *boundListener, drain time.Duration, closeSocket bool
 func (s *Server) discard(f freshListener) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_ = s.stopListener(ctx, f.bl, f.owns)
+	s.stopListener(ctx, f.bl, f.owns)
 }
 
 // stopListener stops accepting, drains within ctx and releases the
 // listener's resources; with closeSocket the accept socket is closed too
 // (not when a replacement inherited it).
-func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocket bool) error {
-	var err error
+//
+// It reports nothing: a kind drains its own connections and says in the
+// log what it could not finish, because only the kind knows what an
+// unfinished session of its protocol means.
+func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocket bool) {
 	_ = bl.front.Close()
-	if bl.inst != nil {
-		bl.inst.Shutdown(ctx)
-		if c, ok := bl.inst.(Closer); ok {
-			c.Close()
-		}
-		if bl.tlsReload != nil {
-			bl.tlsReload.Close()
-		}
-		if closeSocket {
-			bl.acc.close()
-		}
-		return nil
+	bl.inst.Shutdown(ctx)
+	if c, ok := bl.inst.(Closer); ok {
+		c.Close()
 	}
-	err = bl.httpSrv.Shutdown(ctx)
 	if bl.tlsReload != nil {
 		bl.tlsReload.Close()
-	}
-	if bl.h3 != nil {
-		if err3 := bl.h3.Shutdown(ctx); err == nil {
-			err = err3
-		}
 	}
 	if closeSocket {
 		bl.acc.close()
 	}
-	return err
 }
 
 // ReloadCertificates re-reads listener certificates and upstream client
@@ -1362,11 +983,15 @@ func (s *Server) SetCapture(on bool, d time.Duration) (capture.Stats, error) {
 	return cp.Stats(), nil
 }
 
-// Shutdown drains connections gracefully within ctx, then closes listeners
-// and upstream pools.
+// Shutdown drains connections gracefully within ctx, then closes
+// listeners and upstream pools.
+//
+// It always returns nil today: a listener that could not finish
+// draining reports that itself, in the log of the kind that knows what
+// an unfinished session of its protocol means. The error is in the
+// signature because callers should keep checking one.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.tickets.Stop()
-	s.inventory.Stop()
 	// The capture file is flushed and closed here: a truncated pcapng is
 	// readable, but the last exchange in it would be the one that is
 	// missing, which is the one being investigated.
@@ -1376,22 +1001,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	lns := s.listeners
 	s.mu.Unlock()
-	var (
-		errMu    sync.Mutex
-		firstErr error
-		wg       sync.WaitGroup
-	)
+	var wg sync.WaitGroup
 	for _, bl := range lns {
 		wg.Add(1)
 		go func(bl *boundListener) {
 			defer wg.Done()
-			if err := s.stopListener(ctx, bl, true); err != nil {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				errMu.Unlock()
-			}
+			s.stopListener(ctx, bl, true)
 		}(bl)
 	}
 	wg.Wait()
@@ -1401,17 +1016,20 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			s.acme.Stop()
 		}
 	}
-	if tr := s.tracer.Load(); tr != nil {
-		tr.Stop()
-	}
 	if node := s.cluster.Load(); node != nil {
 		node.Stop()
+	}
+	// The data plane after the listeners: its generation is what they
+	// were serving from, and releasing it first would close a filter
+	// under a request still draining.
+	if pl := s.planeOrNil(); pl != nil {
+		pl.Stop(ctx)
 	}
 	s.rt.Load().stop()
 	if bl := s.bans.Load(); bl != nil {
 		bl.Close()
 	}
-	return firstErr
+	return nil
 }
 
 func (s *Server) closeListenersLocked() {
@@ -1420,15 +1038,4 @@ func (s *Server) closeListenersLocked() {
 		bl.acc.close()
 	}
 	s.listeners = nil
-}
-
-// routeHosts collects the host names the configuration's routes are
-// written for. The CAPTCHA hostname check uses them as its allowlist
-// when challenge.captcha.hostnames is not set.
-func routeHosts(cfg *config.Config) []string {
-	var out []string
-	for _, r := range cfg.Routes {
-		out = append(out, r.Hosts...)
-	}
-	return out
 }

@@ -26,9 +26,11 @@ plug in as new listener kinds without touching the request pipeline.
 (Envoy style). Rejected for 1.0: it doubles the abstraction cost before a
 single protocol is done well.
 
-**Consequences.** The request pipeline in `internal/proxy` is HTTP specific
-and can therefore use `net/http` directly, including its hardened parser and
-HTTP/2 implementation.
+**Consequences.** The request pipeline is HTTP specific and can therefore use
+`net/http` directly, including its hardened parser and HTTP/2 implementation.
+It became a listener kind of its own in `internal/kinds/http` (AMR-048,
+AMR-049); what this decision fixed is that it stayed one pipeline rather than
+becoming a protocol module in a generic core.
 
 **Status.** Accepted (interview, default accepted).
 
@@ -1545,12 +1547,78 @@ cluster (AMR-021 update). The engine may not import a kind, which is
 enforced by the direction of the `Host` interface and checked by a test
 per binary on the exact kind set it links.
 
-The benefit is bounded by what is still shared: `internal/proxy` carries
-the HTTP data plane, so the three binaries remain within a third of a
-megabyte of each other until that too becomes a kind. What the split
-buys today is that the SSH and SFTP implementation is absent from the
-edge, the resolver and the WAF are absent from the bastion, and adding a
-protocol costs the daemon that serves it and nothing else.
+The SSH and SFTP implementation is absent from the edge, the resolver
+and the WAF are absent from the bastion, and adding a protocol costs the
+daemon that serves it and nothing else. The HTTP data plane followed the
+other kinds out of the engine (AMR-049), which is what turned that into
+a difference in size: stripped, `xproxy` is 28.4 MiB against `xgate`'s
+15.3 and `xrelay`'s 14.9.
+
+## AMR-049: The HTTP data plane is a kind with a shared generation
+
+**Context.** AMR-048 made every listener kind separately linkable, and
+`http` was the one that could not follow: the other kinds build one
+instance per socket, while every http listener of a process reads one
+compiled generation — one route table, one WAF engine, one response
+cache, one set of rate limiters, one API inventory. A per-listener
+`Instance` has nowhere to keep that, so `internal/proxy` kept the whole
+request path and all three daemons linked it.
+
+Two things stood in the way. The reload swaps that generation under the
+same lock as the listener set, so splitting them across a package
+boundary risks a window in which the listeners serve one generation and
+the status views report another. And the management API is served by
+every daemon, so a type from `internal/waf` anywhere in its surface
+links Coraza and its rule sets into the SSH bastion and the mail relay.
+
+**Options.** (a) Leave it. (b) Give the kind a package-level singleton
+for the shared state. (c) Make the shared generation an explicit thing
+the engine holds and the kind implements.
+
+**Decision.** (c). `proxy.Plane` is an interface the http package
+registers a constructor for, beside its `Kind`; the engine builds it
+once, before the first listener binds, and hands each http listener a
+handle on it in `Setup.Plane`. The reload is two phases:
+
+```go
+Prepare(g Generation) (commit, discard func(), err error)
+```
+
+`Prepare` compiles everything that can fail against the pools the engine
+built for the same generation; the engine then binds its listeners; only
+when every one of them is bound does it call `commit`, which installs
+the new generation under the lock that swaps the listeners. Any failure
+on the way calls `discard`, and the old configuration is still running.
+`Generation.Retire` is the other direction: the engine owns the upstream
+pools but cannot see the requests still on them, so the plane hands them
+back when its last request on the superseded generation ends.
+
+For the status surface, `proxy.PlaneStatus` is a plain interface the
+engine's own `WAF`, `Filters`, `Quotas` and the rest delegate to,
+answering zero values where no plane is linked. Its types are the data
+plane's own, except the WAF report, which moved to the leaf package
+`internal/waf/wafstatus` and is aliased back into `internal/waf`.
+
+**Why not (b).** A package-level singleton is the same coupling with
+nothing written down: the lifetime, the reload ordering and the failure
+handling become conventions rather than a signature, and a second server
+in one process — which the tests build routinely — silently shares
+state with the first.
+
+**Why not (a).** The split's whole claim is that a host runs the code
+it serves and no more. A bastion carrying the WAF, the cache, the
+challenge engine and the whole HTTP request path does not meet it, and
+the difference is 13 MiB of parser per host.
+
+**Consequences.** The coupling between the engine and the data plane is
+now one file (`internal/proxy/plane.go`) rather than a package boundary
+that does not exist, and it is a short list: prepare, start, stop,
+snapshot, collect, peer event, rate source, status. A second data plane
+cannot be registered — `RegisterPlane` panics — because two things each
+compiling the routes and each believing they owned them is not a
+configuration anyone wants to debug. Nothing an operator sees changes:
+the configuration, the management API and its JSON, and the metric
+families are the same, and `kind: http` remains the default.
 
 ## Open items
 

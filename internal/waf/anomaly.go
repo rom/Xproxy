@@ -10,6 +10,7 @@ import (
 
 	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/waf/wafstatus"
 )
 
 // Behavioural anomaly detection looks at clients rather than requests.
@@ -353,50 +354,6 @@ func (a *anomaly) expire(now time.Time) {
 	})
 }
 
-// AnomalyReport is the management view of the detector.
-type AnomalyReport struct {
-	Enabled     bool    `json:"enabled"`
-	Window      string  `json:"window,omitempty"`
-	MinRequests int     `json:"min_requests,omitempty"`
-	Threshold   float64 `json:"threshold,omitempty"`
-	Action      string  `json:"action,omitempty"`
-	// Clients is the number tracked in the current window; Dropped counts
-	// clients the full table could not track.
-	Clients    int    `json:"clients"`
-	MaxClients int    `json:"max_clients,omitempty"`
-	Dropped    uint64 `json:"dropped,omitempty"`
-	// Windows counts closed windows; Scored is the number of clients the
-	// last closed window compared.
-	Windows uint64 `json:"windows"`
-	Scored  int    `json:"scored"`
-	// Flagged is the number of clients currently flagged; FlaggedTotal
-	// counts flags raised since the last reset and Acted the requests of
-	// flagged clients logged, challenged or blocked.
-	Flagged      int               `json:"flagged"`
-	FlaggedTotal uint64            `json:"flagged_total"`
-	Acted        uint64            `json:"acted"`
-	Baseline     []FeatureBaseline `json:"baseline,omitempty"`
-	Top          []ClientAnomaly   `json:"top"`
-}
-
-// FeatureBaseline is the population statistic of one feature.
-type FeatureBaseline struct {
-	Feature string  `json:"feature"`
-	Mean    float64 `json:"mean"`
-	StdDev  float64 `json:"stddev"`
-}
-
-// ClientAnomaly is one flagged client.
-type ClientAnomaly struct {
-	Client  string    `json:"client"`
-	Score   float64   `json:"score"`
-	Feature string    `json:"feature"`
-	Value   float64   `json:"value"`
-	Mean    float64   `json:"mean"`
-	Since   time.Time `json:"since"`
-	Expires time.Time `json:"expires"`
-}
-
 func (a *anomaly) report() *AnomalyReport {
 	c := a.config()
 	rep := &AnomalyReport{Enabled: c.enabled, Top: []ClientAnomaly{}}
@@ -438,3 +395,12 @@ func (a *anomaly) report() *AnomalyReport {
 }
 
 func round(f float64) float64 { return math.Round(f*1000) / 1000 }
+
+// The management view of the WAF is a leaf package, so a daemon can
+// serve it without linking the engine; these names stay here because
+// this is where the code that fills them in lives.
+type (
+	AnomalyReport   = wafstatus.AnomalyReport
+	FeatureBaseline = wafstatus.FeatureBaseline
+	ClientAnomaly   = wafstatus.ClientAnomaly
+)

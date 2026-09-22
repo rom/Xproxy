@@ -1,11 +1,11 @@
 package proxy
 
 import (
-	"github.com/rom/xproxy/internal/bodybudget"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/bodybudget"
 	"github.com/rom/xproxy/internal/metrics"
 )
 
@@ -543,7 +543,10 @@ func (s *Stats) snapshot() Snapshot {
 	}
 }
 
-func (s *Stats) countStatus(code int) {
+// CountStatus records a response's status class, for the exposition's
+// xproxy_responses_total. The data plane calls it for every response it
+// writes.
+func (s *Stats) CountStatus(code int) {
 	switch {
 	case code >= 500:
 		s.Responses5xx.Add(1)

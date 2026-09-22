@@ -90,9 +90,10 @@ internal/daemon     the body of all three daemons: flags, loading, sandbox,
                     management and metrics, fleet agent, signals, systemd notify
 internal/listener   the roster: every listener kind and the role that serves it
 internal/proxy      the engine: accept path, listener lifecycle and reload, the
-                    kind registry and Host interface, bans, pools, counters,
-                    TLS material -- plus the HTTP data plane, which has not yet
-                    moved out of it (section 3)
+                    kind registry, the Host and Plane interfaces, bans, pools,
+                    counters, TLS material. No protocol at all (section 3)
+internal/kinds/http    kind: http -- routing, filters, the WAF, the cache, the
+                       whole request path, as the process's data plane
 internal/kinds/tcp     kind: tcp -- layer 4 relay, SNI and QUIC routing, YARA
 internal/kinds/dns     kind: dns -- resolver, cache, block list, DoT/DoH/DoQ
 internal/kinds/forward kind: forward -- CONNECT, SOCKS5, MASQUE, interception
@@ -132,7 +133,8 @@ internal/smtp internal/mqtt internal/ftp internal/syslog internal/sftp
 internal/masque internal/mitm internal/grpcmsg internal/asciicast
                     the wire formats the kinds above are built on
 internal/ingress    Kubernetes ingress controller
-internal/waf        Coraza + OWASP CRS engine as a filter
+internal/waf        Coraza + OWASP CRS engine as a filter; its wafstatus
+                    subpackage is the report, as a leaf every daemon can serve
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits, bans and events: mutual TLS
                     between hosts, a Unix socket between the daemons of one
@@ -269,14 +271,20 @@ type Host interface {
 }
 ```
 
-Five methods, because that is all the kinds turned out to touch. A kind
-that wants more from the engine says so with an optional interface the
+Five methods for what every kind touches. `Host` carries a second group
+beside them — the fingerprint table, the connection limiter, the ACME
+manager, the packet capture, the cluster connection — for the
+process-wide facilities a kind may not build for itself, because a
+second one would be wrong rather than merely wasteful.
+
+A kind that wants more than that says so with an optional interface the
 engine type-asserts, never with a field the engine has to know about:
 `Applier` replaces a policy in place on reload, `Closer` releases what
-the socket held, `FlowCounter` reports open datagram flows for the
-snapshot, `DNSInstance` and `MasqueReporter` hand the management views a
-handle on something only that kind has. The engine names no kind, and
-`internal/proxy` imports no kind package.
+the socket held, `ExtraAddrs` names a second socket the kind opened
+(the HTTP/3 endpoint, DNS over QUIC), `FlowCounter` reports open
+datagram flows for the snapshot, `DNSInstance` and `MasqueReporter` hand
+the management views a handle on something only that kind has. The
+engine names no kind, and `internal/proxy` imports no kind package.
 
 ### The roster, and why it is static
 
@@ -326,17 +334,82 @@ process can own, so each daemon reads `/etc/xproxy/<daemon>.yaml` and
 pulls the common part — upstreams, routes, rate limits, filters — out of
 `includes` all three name. `examples/estate/` is a worked set.
 
-### What the split does not yet buy
+### The data plane is a kind too
 
-`internal/proxy` still carries the HTTP data plane, and all three
-daemons link it. The binaries are therefore within half a megabyte of
-each other: what the split has removed so far is the protocol
-implementations, not the engine. Lifting `http` into a kind of its own
-is the remaining work, and it is blocked on two things — the HTTP
-listeners share one compiled generation, which a per-listener kind has
-no place to keep, and the management status surface returns types that
-would keep `internal/waf`, and therefore Coraza, linked into every
-binary.
+`http` is a listener kind like the others, in `internal/kinds/http`, and
+only `xproxy` links it. That is where the routing, the WAF, the filters,
+the cache, the challenge engine and everything else that takes a request
+apart now live; `internal/proxy` is the engine around them — sockets,
+TLS, the reload, the counters, the cluster and the management surface.
+
+It needs one thing the other kinds do not. Every http listener of a
+process shares one compiled generation: one route table, one WAF engine,
+one response cache, one set of rate limiters. A per-listener `Instance`
+has nowhere to keep that, so the kind also registers a `Plane`:
+
+```go
+func init() {
+        proxy.Register(proxy.Kind{Name: "http", TLS: true, ProxyHeader: true, New: newListener})
+        proxy.RegisterPlane(newEngine)
+}
+```
+
+The engine builds the plane once, before any listener binds, and hands
+each `http` listener a handle on it in `Setup.Plane`. A reload is two
+phases so that one generation is swapped rather than two:
+
+```go
+Prepare(g Generation) (commit, discard func(), err error)
+```
+
+`Prepare` compiles everything that can fail — the routes, the rule sets,
+a challenge secret that has to be readable before a route in `mode:
+always` is served — against the pools the engine built for the same
+generation. The engine then binds its listeners. Only when every one of
+them is bound does it call `commit`, which installs the new generation
+under the same lock as the listener swap; any failure calls `discard`
+and the old configuration is still running, untouched.
+
+`Generation.Retire` is the other half of that handover. The engine owns
+the upstream pools but cannot see the requests still on them, so the
+plane calls it when the last request compiled against the superseded
+generation has finished — a pool closed under a long upload or an SSE
+stream cuts it.
+
+The management API is served by all three daemons, which decides how
+the plane's status crosses the boundary. `PlaneStatus` is a plain
+interface the engine's own `WAF`, `Filters`, `Quotas` and the rest
+delegate to, answering zero values where no plane is linked, so
+`xproxyctl waf` against the bastion reports a WAF that is not enabled —
+which is true — instead of failing in a way an operator has to look up.
+Its types are the data plane's own, except for the WAF report: that one
+lives in the leaf package `internal/waf/wafstatus`, because a Coraza
+type in the management surface would link the rule engine into the
+bastion and the mail relay. The types are aliased back into
+`internal/waf`, so nothing that reads the report had to change.
+
+### What the split buys, in bytes
+
+| Daemon | Before the split | After | After the data plane moved |
+|--------|-----------------|-------|----------------------------|
+| `xproxy` | 41.9 MB | 40.0 MB | 40.1 MB |
+| `xgate`  | 42.7 MB | 40.5 MB | **21.8 MB** |
+| `xrelay` | 42.2 MB | 40.0 MB | **21.2 MB** |
+
+(`CGO_ENABLED=0`, unstripped; `make build` strips to 28.4, 15.3 and
+14.9 MiB.) The spread is the number that matters, not the total. The
+bastion and the relay carry none of the HTTP request path: no route
+compiler, no Coraza and no rule sets, no load shedder, no challenge or
+CAPTCHA engine, no gRPC, WebSocket or WebTransport inspection, no
+response cache, no HTTP/3. A few small packages are still linked into
+all three because the management API they all serve speaks their status
+types — the cache, the GeoIP reader, the ICAP client, the API inventory
+— but with none of the code that fills them in reachable, the linker
+keeps little more than the structs.
+
+What the three still share is the engine, the configuration package, the
+TLS and logging machinery and the management API, which is the point:
+those are the parts all three are meant to agree on.
 
 ## 4. Process model
 
@@ -805,7 +878,7 @@ A `kind: dns` listener wraps this in
 events and the ban list; its policy is an immutable value swapped on
 reload while the cache survives.
 
-A `doh` route (`internal/proxy/doh.go`) decodes an RFC 8484 request on
+A `doh` route (`internal/kinds/http/doh.go`) decodes an RFC 8484 request on
 an http listener and hands the query to the named dns listener's
 `Handle`, so DNS over HTTPS clients get the same policy and cache as
 UDP clients plus the route's own admission pipeline.
@@ -935,7 +1008,7 @@ bookkeeping of a refusal.
 
 ### Static files
 
-A `static` route (`internal/proxy/static.go`) holds an `os.Root` opened
+A `static` route (`internal/kinds/http/static.go`) holds an `os.Root` opened
 at generation build (a missing directory fails the reload) and closed
 with the generation. Every open goes through the root, so the kernel
 refuses paths that escape it through symbolic links, and the request
@@ -951,7 +1024,7 @@ fallback is one more open inside the same root.
 When a route compresses and the client accepts one of the offered
 encodings (Brotli, zstd or gzip, negotiated by quality and then by the
 configured order), the handler slips a `compressWriter`
-(`internal/proxy/compress.go`) between the logging `responseWriter` and
+(`internal/kinds/http/compress.go`) between the logging `responseWriter` and
 the connection before the action runs, so every action writes through
 it. The writer decides when the header is
 committed (status, existing encoding, `no-transform`, media type,
@@ -996,7 +1069,7 @@ status from the response, so the standard health service works without
 a protobuf library. The upstream response's `grpc-status` is captured
 at end of body for the access log and a per code counter.
 
-gRPC-web (`internal/proxy/grpcweb.go`) is a translation at the edge of
+gRPC-web (`internal/kinds/http/grpcweb.go`) is a translation at the edge of
 the same pipeline: `isGRPCWeb` marks the request (it counts as gRPC for
 routing), the rewrite turns the content type into the gRPC one, adds
 `TE: trailers` and decodes a text body chunk by chunk (clients send one
@@ -1512,7 +1585,7 @@ Protocol version 2 (1.3) adds an `events` message: bounded facts with a
 kind, a key, an optional route and an expiry. The server publishes
 honeypot marks and unmarks and applies peers' marks to its own table;
 filters reach the channel through `filter.Env.Events`, a per generation
-bus (`internal/proxy/events.go`) whose subscriptions die with the
+bus (`internal/kinds/http/events.go`) whose subscriptions die with the
 generation, so a reload never leaves a stale filter listening. The OIDC
 filter shares session revocations under the kind `oidc_revoke/<filter
 name>`. Events queue without blocking and are dropped and counted when
@@ -1614,12 +1687,13 @@ full size and rest on these properties:
   endpoint list; the Prometheus exposition drops from 10.6 MiB to 229 KiB
   with `metrics.endpoint_series: false`, which is the setting above a few
   thousand endpoints.
-- The three daemons are 25.9, 26.2 and 25.9 MiB as `make build` produces
-  them. They are within a third of a megabyte of each other because they
-  still share the engine, which carries the HTTP data plane: what the
-  split has removed from each so far is the other daemons' protocol
-  implementations, not the engine (section 3). The number to watch as
-  that work lands is the spread between them, not the total.
+- The three daemons are 28.4, 15.3 and 14.9 MiB as `make build` produces
+  them (`xproxy`, `xgate`, `xrelay`). The spread is the number that
+  matters, not the total: the bastion and the relay carry neither the
+  other daemons' protocol implementations nor the HTTP data plane, which
+  is most of what `xproxy` is (section 3). What they still share is the
+  engine, the configuration package, TLS and logging, and the management
+  API.
 
 Throughput on the reference container (ASR-P2) is 10 000 req/s at p99
 under 10 ms with the load generator on the same four cores; the 8 core

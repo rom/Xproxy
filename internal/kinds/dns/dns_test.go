@@ -17,6 +17,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/dns"
 	_ "github.com/rom/xproxy/internal/kinds/dns"
+	_ "github.com/rom/xproxy/internal/kinds/http" // a DoH route is served by an http listener
 	"github.com/rom/xproxy/internal/proxytest"
 )
 

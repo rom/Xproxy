@@ -13,6 +13,7 @@ import (
 
 	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/waf/wafstatus"
 )
 
 // Stats collects per rule statistics and, when learning is enabled, the
@@ -82,23 +83,6 @@ type ruleCounter struct {
 	detects  atomic.Uint64
 	lastSeen atomic.Int64
 	lastURI  atomic.Pointer[string]
-}
-
-// RuleStat is one rule's counters as reported.
-type RuleStat struct {
-	ID       int    `json:"id"`
-	Message  string `json:"message,omitempty"`
-	Severity string `json:"severity,omitempty"`
-	// Tags keeps the attack- and paranoia-level tags of the rule.
-	Tags []string `json:"tags,omitempty"`
-	// Matches counts transactions in which the rule matched. Blocks counts
-	// those the WAF denied (block mode); Detects counts those detect mode
-	// would have denied.
-	Matches  uint64    `json:"matches"`
-	Blocks   uint64    `json:"blocks"`
-	Detects  uint64    `json:"detects"`
-	LastSeen time.Time `json:"last_seen"`
-	LastURI  string    `json:"last_uri,omitempty"`
 }
 
 // learnConfig is the learning setting of the active generation.
@@ -331,54 +315,6 @@ func (s *Stats) learn(cfg *learnConfig, m types.MatchedRule, in *instance, now t
 	}
 }
 
-// Report is the management view (GET /v1/waf).
-type Report struct {
-	Since    time.Time `json:"since"`
-	Requests uint64    `json:"requests"`
-	Blocked  uint64    `json:"blocked"`
-	Detected uint64    `json:"detected"`
-	// Rules lists the matched rules, most matched first, at most top
-	// entries; TotalRules is the number of distinct rules seen and
-	// RulesDropped how many matches of further rules the full table
-	// could not record.
-	Rules        []RuleStat      `json:"rules"`
-	TotalRules   int             `json:"total_rules"`
-	RulesDropped uint64          `json:"rules_dropped,omitempty"`
-	Learning     *LearningReport `json:"learning"`
-	// SchemaViolations counts request bodies that failed a profile's
-	// json_schemas (denied in block mode, logged in detect mode).
-	SchemaViolations uint64         `json:"schema_violations"`
-	Anomaly          *AnomalyReport `json:"anomaly"`
-}
-
-// LearningReport describes the learning table and its proposals.
-type LearningReport struct {
-	Enabled    bool       `json:"enabled"`
-	MinHits    int        `json:"min_hits"`
-	Entries    int        `json:"entries"`
-	MaxEntries int        `json:"max_entries"`
-	Dropped    uint64     `json:"dropped"`
-	Proposals  []Proposal `json:"proposals"`
-}
-
-// Proposal is one suggested exclusion: rule ID and target seen together at
-// least min_hits times on a route.
-type Proposal struct {
-	Rule    int    `json:"rule"`
-	Message string `json:"message,omitempty"`
-	Target  string `json:"target"`
-	Route   string `json:"route,omitempty"`
-	// Path is the route's path prefix when known, used to scope the
-	// generated exclusion; "" scopes it to the whole profile.
-	Path      string    `json:"path,omitempty"`
-	Hits      uint64    `json:"hits"`
-	Clients   int       `json:"clients"`
-	LastSeen  time.Time `json:"last_seen"`
-	LastURI   string    `json:"last_uri,omitempty"`
-	Sample    string    `json:"sample,omitempty"`
-	Directive string    `json:"directive"`
-}
-
 // Report builds the management view with at most top rules. paths maps
 // route names to path prefixes for scoping proposals.
 func (s *Stats) Report(top int, paths map[string]string) Report {
@@ -504,3 +440,13 @@ func orDash(s string) string {
 	}
 	return s
 }
+
+// The management view of the WAF is a leaf package, so a daemon can
+// serve it without linking the engine; these names stay here because
+// this is where the code that fills them in lives.
+type (
+	RuleStat       = wafstatus.RuleStat
+	Report         = wafstatus.Report
+	LearningReport = wafstatus.LearningReport
+	Proposal       = wafstatus.Proposal
+)

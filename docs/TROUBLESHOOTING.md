@@ -2667,6 +2667,17 @@ node. Use `-name-map` instead.
 the process running, and the socket's mode and group. `xproxyctl` needs
 read *and* write on the socket.
 
+**A view is empty, or says a subsystem is not enabled, on a daemon that
+serves it nowhere.** `xproxyctl waf`, `filters`, `cache`, `quotas`,
+`inventory`, `accounts` and the rest report on the HTTP data plane, and
+only `xproxy` links one. Against `xgate` or `xrelay` they answer an
+empty result rather than an error, because "this daemon runs no WAF" is
+true and is the answer you want when a script asks all three. Point
+`xproxyctl -socket` at the edge daemon's socket for those views.
+`origin-check` is the exception: it is an action rather than a view, so
+it says `this daemon serves no http listeners` instead of pretending to
+have probed.
+
 **The GUI refuses a login with 429.** Five failures lock that address
 and account pair for five minutes; a hundred failures from anywhere in
 the same window close the login page for everyone. Over a Unix socket or

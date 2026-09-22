@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/rom/xproxy/internal/apiinv"
 	"io"
 	"net"
 	"net/http"
@@ -22,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/apiinv"
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
@@ -304,7 +304,7 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	})
 	mux.HandleFunc("GET /v1/honeypot", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "marks_dropped": s.proxy.HoneypotMarksDropped(),
-			"decoys": proxy.DecoyNames(), "honeytokens": s.proxy.Honeytokens()})
+			"decoys": s.proxy.Decoys(), "honeytokens": s.proxy.Honeytokens()})
 	})
 	mux.HandleFunc("DELETE /v1/honeypot", func(w http.ResponseWriter, r *http.Request) {
 		ip, err := netip.ParseAddr(r.URL.Query().Get("ip"))
@@ -318,26 +318,25 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	})
 	mux.HandleFunc("GET /v1/icap", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.ICAP()) })
 	mux.HandleFunc("GET /v1/cache", func(w http.ResponseWriter, _ *http.Request) {
-		if c := s.proxy.Cache(); c != nil {
-			writeJSON(w, 200, c.Stats())
+		if st, ok := s.proxy.CacheStats(); ok {
+			writeJSON(w, 200, st)
 			return
 		}
 		writeJSON(w, 404, result{Error: "cache is not configured"})
 	})
 	mux.HandleFunc("DELETE /v1/cache", func(w http.ResponseWriter, r *http.Request) {
-		c := s.proxy.Cache()
-		if c == nil {
+		host, prefix := r.URL.Query().Get("host"), r.URL.Query().Get("path")
+		n, ok := s.proxy.PurgeCache(host, prefix)
+		if !ok {
 			writeJSON(w, 404, result{Error: "cache is not configured"})
 			return
 		}
-		host, prefix := r.URL.Query().Get("host"), r.URL.Query().Get("path")
-		n := c.Purge(host, prefix)
 		peer := peerFromContext(r.Context())
 		s.logs.Audit.Info("management action", "action", "cache-purge", "host", host, "path", prefix, "removed", n, "peer_uid", peer.UID, "peer_gid", peer.GID, "peer_pid", peer.PID, "peer_known", peer.OK)
 		writeJSON(w, 200, map[string]any{"ok": true, "removed": n})
 	})
 	mux.HandleFunc("GET /v1/geoip", func(w http.ResponseWriter, _ *http.Request) {
-		if st := s.proxy.GeoIP(); st != nil {
+		if st, ok := s.proxy.GeoIP(); ok {
 			writeJSON(w, 200, st)
 			return
 		}

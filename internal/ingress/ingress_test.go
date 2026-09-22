@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	_ "github.com/rom/xproxy/internal/kinds/http" // the translated ingress is served by http listeners
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/testutil"

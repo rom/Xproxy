@@ -345,7 +345,7 @@ Configuration, certificates and logs are left in place.
 
 ```sh
 make test-race
-go test -run TestProxyBasics -v ./internal/proxy/
+go test -run TestProxyBasics -v ./internal/kinds/http/
 ./bin/xproxy -config deploy/config/xproxy.yaml -validate    # fails on missing certs, by design
 ```
 

@@ -99,8 +99,8 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 
 | Requirement | Implemented in | Verified by |
 |-------------|----------------|-------------|
-| ASR-F1, F3, F4, F5, F8 | `internal/proxy`, `internal/upstream` | `internal/proxy/proxy_test.go`, `internal/upstream/upstream_test.go` |
-| ASR-S1, S2 | `internal/limits`, server timeouts in `internal/proxy/server.go` | `internal/limits/limits_test.go`, `TestConnectionLimits`, `TestSlowHeaderTimeout` |
+| ASR-F1, F3, F4, F5, F8 | `internal/kinds/http`, `internal/upstream` | `internal/kinds/http/proxy_test.go`, `internal/upstream/upstream_test.go` |
+| ASR-S1, S2 | `internal/limits`, listener timeouts in `internal/kinds/http/kind.go` | `internal/limits/limits_test.go`, `TestConnectionLimits`, `TestSlowHeaderTimeout` |
 | ASR-S5, O1 | `internal/config` | `internal/config/config_test.go`, `FuzzParse` |
 | ASR-S6, S7 | `internal/netutil` | `internal/netutil/netutil_test.go`, `TestProxyBasics` |
 | ASR-S8 | `deploy/systemd`, `deploy/selinux`, `deploy/rpm` | CI `package` job (policy compile, RPM build, rpmlint, install); AVC check on a Fedora host per the release checklist |
@@ -111,7 +111,7 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S2 (bans) | `internal/ban`, accept hook in `internal/limits` | `internal/ban/ban_test.go`, `TestBanIntegration`, `TestConnLimiterBanned` |
 | ASR-O5 | `internal/ban` persistence (bbolt) | `TestPersistence` |
 | ASR-S3 | `internal/cluster`, peer accounting in `internal/limits` | `internal/cluster/cluster_test.go`, `TestPeerRates`, `TestClusterSharesLimitsAndBans` |
-| ASR-F2 | `internal/h3`, listener wiring in `internal/proxy/server.go` | `TestHTTP3`, `TestHTTP3ConnectionLimit` |
+| ASR-F2 | `internal/h3`, listener wiring in `internal/kinds/http/kind.go` | `TestHTTP3`, `TestHTTP3ConnectionLimit` |
 | ASR-F9 (upstream) | `tlsconf.Client`, `Pool.ReloadClientCertificate` | `TestUpstreamMutualTLS`, `TestUpstreamSPKIPin` |
 | ASR-O2, ASR-S10 | `internal/logging` (redact.go, sinks.go, journald.go, syslog.go) | `internal/logging/sinks_test.go`, `TestRedactedAccessLog` |
 | ASR-F7 | `internal/icap` | `internal/icap/icap_test.go`, `TestICAPIntegration`, `TestICAPFailOpen` |
@@ -123,20 +123,20 @@ Decisions taken to satisfy these requirements are recorded in [AMR.md](AMR.md).
 | ASR-S2 (shedding, challenge) | `internal/shed`, `internal/challenge` | `internal/shed/shed_test.go`, `internal/challenge/challenge_test.go`, `TestAdaptiveShedding`, `TestChallengeGate` |
 | ASR-S9, O2 | `internal/logging`, `internal/mgmt` | `internal/logging/logging_test.go`, `internal/mgmt/mgmt_test.go` |
 | ASR-S11, P4 | `internal/tlsconf` | `internal/tlsconf/tlsconf_test.go`, `TestTLSAndRedirect` |
-| ASR-F12 (L4) | `internal/proxy/tcp.go`, `netutil.ClientHelloSNI` | `TestClientHelloSNI`, `TestTCPPassthrough`, `TestTCPProxyProtocol` |
-| ASR-F12 (forward) | `internal/proxy/forward.go`, `passwd.LoadUsers` | `TestForwardProxy`, `TestForwardPolicy`, `TestListenerKinds` |
-| ASR-F15 | `internal/cache`, `internal/proxy/cache.go` | `TestStoreAndBounds`, `TestVary`, `TestHelpers`, `TestResponseCache` |
+| ASR-F12 (L4) | `internal/kinds/tcp`, `netutil.ClientHelloSNI` | `TestClientHelloSNI`, `TestTCPPassthrough`, `TestTCPProxyProtocol` |
+| ASR-F12 (forward) | `internal/kinds/forward`, `passwd.LoadUsers` | `TestForwardProxy`, `TestForwardPolicy`, `TestListenerKinds` |
+| ASR-F15 | `internal/cache`, `internal/kinds/http/cache.go` | `TestStoreAndBounds`, `TestVary`, `TestHelpers`, `TestResponseCache` |
 | ASR-F14 | `tlsconf.Compute`, `internal/filters/botscore` | `TestFingerprint`, `TestSignals`, `TestBehaviour`, `TestBotScoreOverTLS` |
 | ASR-F13 | `internal/geoip`, `routes[].geo`, rate key `country` | `TestMMDB`, `TestCSVAndDB`, `TestGeoPolicy` |
-| ASR-F16 | `internal/proxy/honeypot.go`, `routes[].honeypot` | `TestHoneypot`, `TestHoneypotMarks` |
-| ASR-F17 | `internal/proxy/mirror.go`, `routes[].mirror` | `TestMirror`, `TestRouteActions` |
-| ASR-F18 | `internal/proxy/grpc.go`, `internal/upstream/grpchealth.go`, router gRPC rank | `TestGRPC`, `TestGRPCHelpers`, `TestMatchGRPC`, `TestGRPCHealthEncoding`, `TestGRPCConfig` |
+| ASR-F16 | `internal/kinds/http/honeypot.go`, `routes[].honeypot` | `TestHoneypot`, `TestHoneypotMarks` |
+| ASR-F17 | `internal/kinds/http/mirror.go`, `routes[].mirror` | `TestMirror`, `TestRouteActions` |
+| ASR-F18 | `internal/kinds/http/grpc.go`, `internal/upstream/grpchealth.go`, router gRPC rank | `TestGRPC`, `TestGRPCHelpers`, `TestMatchGRPC`, `TestGRPCHealthEncoding`, `TestGRPCConfig` |
 | ASR-F19 | `internal/filters/oidc`, `Verdict.Silent` | `TestOIDC`, `TestParse`, `TestSealOpen` |
-| ASR-F20 | `internal/dns`, `internal/proxy/dnslistener.go` | `TestMessages`, `TestBlockList`, `TestCache`, `TestServer`, `TestDNSListener` |
+| ASR-F20 | `internal/dns`, `internal/kinds/dns` | `TestMessages`, `TestBlockList`, `TestCache`, `TestServer`, `TestDNSListener` |
 | ASR-F21 | `internal/ingress`, `ingress` section, `deploy/kubernetes` | `TestTranslate`, `TestControllerAndProxy`, `TestIngressConfig` |
-| ASR-Q2 | `test/covergate`, `.gremlins.yaml`, `internal/proxy/chaos_test.go` | CI `test` job (`make cover-gate`), CI `mutate` job, `TestChaos*` |
+| ASR-Q2 | `test/covergate`, `.gremlins.yaml`, `internal/kinds/http/chaos_test.go` | CI `test` job (`make cover-gate`), CI `mutate` job, `TestChaos*` |
 | ASR-O6 | `internal/filter` registry, `internal/filters`, `internal/filters/wasm` | `TestRegistry`, `TestFilters`, `TestFiltersConfig`, `TestGuest`, `TestLoadErrors`, EXTENDING.md |
-| ASR-P1 | `internal/router`, `internal/upstream` health bounds, `internal/proxy` generations | `TestScale` (`make scale`), `BenchmarkMatch1000Hosts`, PERFORMANCE.md |
+| ASR-P1 | `internal/router`, `internal/upstream` health bounds, `internal/kinds/http` generations | `TestScale` (`make scale`), `BenchmarkMatch1000Hosts`, PERFORMANCE.md |
 | ASR-P2 | handler path, `test/load` | `make load` baseline in PERFORMANCE.md; 8 core reference run open |
 | ASR-P3 | `Server.Reload` | `TestReload` |
 | ASR-Q1 | `Fuzz*` functions | `make fuzz` |

@@ -366,10 +366,57 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **The HTTP data plane is a listener kind too, so the bastion and the
+  relay stop carrying it.** `http` and `forward` now live in
+  `internal/kinds/`, and only `xproxy` links them. `internal/proxy` is
+  the engine that is left: sockets, TLS, the reload, the counters, the
+  cluster and the management surface, and no protocol at all. Stripped,
+  `xgate` goes from 26.2 MiB to 15.3 and `xrelay` from 25.9 to 14.9,
+  against `xproxy`'s 28.4 — the bastion carries no route compiler, no
+  Coraza and no rule sets, no load shedder, no challenge or CAPTCHA
+  engine, no gRPC, WebSocket or WebTransport inspection, no response
+  cache and no HTTP/3.
+
+  Two things had to be answered first, and they are the interesting
+  part.
+
+  Every `http` listener of a process shares one compiled generation —
+  one route table, one WAF engine, one cache, one set of rate limiters
+  — which a per-listener `Instance` has nowhere to keep. So the kind
+  also registers a `Plane`, built once before any listener binds and
+  handed to each listener in `Setup.Plane`. A reload is two phases:
+  `Prepare` compiles everything that can fail against the pools the
+  engine built for the same generation, the engine then binds its
+  listeners, and only when every one of them is bound does `commit`
+  install the new generation under the same lock as the listener swap.
+  Any failure on the way calls `discard`, and the old configuration is
+  still running, untouched. The engine owns the upstream pools but
+  cannot see the requests still on them, so `Generation.Retire` hands
+  the superseded ones back when the plane's last request on them ends
+  — a pool closed under a long upload or an SSE stream cuts it.
+
+  The management API is served by all three daemons, so the plane's
+  status had to cross the boundary without dragging the plane with it.
+  `PlaneStatus` is an interface the engine's own `WAF`, `Filters`,
+  `Quotas` and the rest delegate to; where no plane is linked they
+  answer zero values, so `xproxyctl waf` against the bastion reports a
+  WAF that is not enabled — which is true — instead of failing in a way
+  an operator has to look up. The types are the data plane's own,
+  except the WAF report: that one moved to the leaf package
+  `internal/waf/wafstatus` and is aliased back into `internal/waf`, so
+  nothing that reads it changed and Coraza stays out of the two daemons
+  that run no WAF.
+
+  Nothing an operator sees changes. The configuration, the management
+  API and its JSON, the metric families and the counters are the same;
+  `kind: http` was already the default and is now a registered kind
+  like any other, refused by name in a daemon that did not link it
+  rather than being what every unknown kind fell through to.
+
 - **The architecture is written down.** `docs/ARCHITECTURE.md` gains a
   section on the split — the roles, the kind registry, the `Host`
   interface, why the roster is static rather than derived from what was
-  linked, the refusal, and what the split does not yet buy — plus
+  linked, the refusal, and what the split buys — plus
   sections on the gate and relay kinds, which had never had one.
   `AMR-048` is the decision record: why one repository and several
   binaries rather than a shared library or a bigger sandbox. The
@@ -455,10 +502,8 @@ Open findings of the earlier rounds:
   process can own; what the estate shares goes in `includes` all three
   pull in. `xproxyctl -socket` picks which daemon to talk to.
 
-  Not yet true of the split: the three binaries are still nearly the
-  same size, because the engine they share still carries the HTTP data
-  plane. Lifting `http` and `forward` into kinds of their own is what
-  makes `xgate` small, and it has not been done.
+  `http` and `forward` followed the others into kinds of their own (see
+  the entry above), which is what makes `xgate` and `xrelay` small.
 
 - **DNS tunnelling and exfiltration detection
   (`dns.tunnel_detection`).** A network can block every outbound port

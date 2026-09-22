@@ -13,7 +13,7 @@ import (
 // other. A stray blank import is the way that quietly stops being true,
 // and this is what catches one.
 func TestLinkedKinds(t *testing.T) {
-	want := []string{"dns", "forward", "tcp"}
+	want := []string{"dns", "forward", "http", "tcp"}
 	got := proxy.Registered()
 	if !slices.Equal(got, want) {
 		t.Fatalf("xproxy links %v, want %v", got, want)

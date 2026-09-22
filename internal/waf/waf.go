@@ -31,6 +31,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/waf/wafstatus"
 )
 
 // Mode is a WAF evaluation mode.
@@ -61,23 +62,6 @@ type profile struct {
 	rules   int
 	plugins []plugin
 	schemas []*bodySchema
-}
-
-// ProfileStatus describes one compiled profile (GET /v1/waf).
-type ProfileStatus struct {
-	Name  string   `json:"name"`
-	Modes []string `json:"modes"`
-	// CRS is "embedded", the rule set directory, or "" when the profile
-	// has no Core Rule Set.
-	CRS string `json:"crs,omitempty"`
-	// Version is the CRS setup version (for example "4250" for 4.25.0).
-	Version string `json:"version,omitempty"`
-	// RuleFiles counts the CRS rule files loaded.
-	RuleFiles int `json:"rule_files,omitempty"`
-	// Plugins names the CRS plugins loaded.
-	Plugins []string `json:"plugins,omitempty"`
-	// Schemas names the JSON body schemas enforced.
-	Schemas []string `json:"schemas,omitempty"`
 }
 
 // Profiles lists the compiled profiles in configuration order.
@@ -637,3 +621,10 @@ func (in *instance) End() []any {
 	_ = in.tx.Close()
 	return out
 }
+
+// The management view of the WAF is a leaf package, so a daemon can
+// serve it without linking the engine; these names stay here because
+// this is where the code that fills them in lives.
+type (
+	ProfileStatus = wafstatus.ProfileStatus
+)

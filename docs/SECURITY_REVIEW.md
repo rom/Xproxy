@@ -11,7 +11,7 @@ changelog.
 Reviewed, in order of exposure:
 
 1. The request path from accept to upstream and back:
-   `internal/proxy/handler.go` (admission pipeline, deny paths, tarpit,
+   `internal/kinds/http/handler.go` (admission pipeline, deny paths, tarpit,
    forwarding headers, error handling, access logging), `writer.go`,
    `transport.go`, `internal/netutil` (client address, host, path).
 2. Admission state: `internal/limits` (connection, concurrency and keyed
