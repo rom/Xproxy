@@ -239,3 +239,16 @@ func AddrOf(hostport string) netip.Addr {
 	}
 	return a.Unmap()
 }
+
+// PeerAddr is the address half of a net.Addr, or the zero Addr for a
+// nil one or a form that carries no address (a Unix socket). It is
+// AddrOf for callers holding the connection rather than a string.
+func PeerAddr(a net.Addr) netip.Addr {
+	if a == nil {
+		return netip.Addr{}
+	}
+	if ap, err := netip.ParseAddrPort(a.String()); err == nil {
+		return ap.Addr().Unmap()
+	}
+	return AddrOf(a.String())
+}

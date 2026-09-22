@@ -1,0 +1,19 @@
+/var/log/xgate/*.log {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    # The log directory belongs to the xgate user, which is also the user
+    # the SSH bastion runs as. Without su, logrotate would
+    # rename, create and compress inside it as root, and a compromised daemon
+    # could have root follow a symlink it planted there. su drops to
+    # the owning user for the whole stanza, the postrotate script included.
+    su xgate xgate
+    create 0640 xgate xgate
+    sharedscripts
+    postrotate
+        /usr/local/bin/xproxyctl -socket /run/xgate/mgmt.sock reopen-logs >/dev/null 2>&1 || true
+    endscript
+}

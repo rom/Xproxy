@@ -13,60 +13,8 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/tcp"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/proxytest"
+	"github.com/rom/xproxy/internal/testutil"
 )
-
-const testRules = `
-rule secret_marker : exfiltration {
-  meta:
-    description = "a marker that must not leave"
-  strings:
-    $a = "TOP-SECRET-MARKER"
-  condition:
-    $a
-}
-
-rule pe_header : malware {
-  strings:
-    $mz = { 4D 5A 90 00 }
-  condition:
-    $mz
-}
-`
-
-func rulesFile(t *testing.T) string {
-	t.Helper()
-	p := filepath.Join(t.TempDir(), "rules.yar")
-	if err := os.WriteFile(p, []byte(testRules), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-// echoServer answers whatever it is sent, and can also speak first.
-func echoServer(t *testing.T, greeting string) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer func() { _ = c.Close() }()
-				if greeting != "" {
-					_, _ = io.WriteString(c, greeting)
-				}
-				_, _ = io.Copy(c, c)
-			}()
-		}
-	}()
-	return ln.Addr().String()
-}
 
 func yaraListener(t *testing.T, backend, extra string) (*proxy.Server, string) {
 	t.Helper()
@@ -87,7 +35,7 @@ logging: {access: {enabled: false}}
 upstreams:
   - name: echo
     endpoints: [{address: %s}]
-`, rulesFile(t), extra, backend)
+`, testutil.YARARules(t), extra, backend)
 	s := proxytest.Start(t, yaml)
 	return s, proxytest.Addr(t, s, "l4")
 }
@@ -95,7 +43,7 @@ upstreams:
 // TestYARAClosesOnMatch: a stream carrying what a rule names is cut,
 // and the bytes after the match never reach the upstream.
 func TestYARAClosesOnMatch(t *testing.T) {
-	backend := echoServer(t, "")
+	backend := testutil.EchoServer(t, "")
 	s, addr := yaraListener(t, backend, "")
 
 	c, err := net.Dial("tcp", addr)
@@ -120,7 +68,7 @@ func TestYARAClosesOnMatch(t *testing.T) {
 
 // A stream with nothing a rule names goes through unchanged.
 func TestYARAPassesClean(t *testing.T) {
-	backend := echoServer(t, "")
+	backend := testutil.EchoServer(t, "")
 	s, addr := yaraListener(t, backend, "")
 
 	c, err := net.Dial("tcp", addr)
@@ -148,7 +96,7 @@ func TestYARAPassesClean(t *testing.T) {
 // The upstream direction is scanned too: what comes back is as much a
 // stream as what goes out.
 func TestYARAScansUpstream(t *testing.T) {
-	backend := echoServer(t, "here is a \x4d\x5a\x90\x00 header\n")
+	backend := testutil.EchoServer(t, "here is a \x4d\x5a\x90\x00 header\n")
 	s, addr := yaraListener(t, backend, "")
 
 	c, err := net.Dial("tcp", addr)
@@ -179,7 +127,7 @@ func TestYARAScansUpstream(t *testing.T) {
 
 // With action: log the match is recorded and the bytes go on.
 func TestYARALogOnly(t *testing.T) {
-	backend := echoServer(t, "")
+	backend := testutil.EchoServer(t, "")
 	s, addr := yaraListener(t, backend, "          action: log")
 
 	c, err := net.Dial("tcp", addr)
@@ -205,7 +153,7 @@ func TestYARALogOnly(t *testing.T) {
 // Scanning one direction only is a real halving of the work, so it has
 // to actually skip the other.
 func TestYARAOneDirection(t *testing.T) {
-	backend := echoServer(t, "a \x4d\x5a\x90\x00 header\n")
+	backend := testutil.EchoServer(t, "a \x4d\x5a\x90\x00 header\n")
 	s, addr := yaraListener(t, backend, "          directions: [client]")
 
 	c, err := net.Dial("tcp", addr)

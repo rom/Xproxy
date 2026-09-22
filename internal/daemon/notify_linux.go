@@ -1,4 +1,4 @@
-package main
+package daemon
 
 import "golang.org/x/sys/unix"
 

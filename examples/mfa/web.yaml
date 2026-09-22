@@ -1,0 +1,65 @@
+# One second factor, two protocols: the web half.
+#
+# The same TOTP enrolment file as bastion.yaml beside it, in front of a
+# web application. The filter order is the whole design -- mfa
+# challenges the identity that basic_auth established, and refuses a
+# request that has none.
+#
+# The two halves are two files because they are two daemons: the web
+# listener is xproxy's and the bastion is xgate's. What they share is
+# the enrolment file on disk, which is the thing that had to be shared.
+#
+# Validate: xproxy -config examples/mfa/web.yaml -validate
+version: 1
+server:
+  listeners:
+    # HTTPS: the password is the first factor and the same code is the
+    # second.
+    - name: web
+      address: "0.0.0.0:443"
+      kind: http
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/app.pem, key_file: /etc/xproxy/certs/app-key.pem}
+
+filters:
+  - name: staff
+    kind: basic_auth
+    options:
+      users_file: /etc/xproxy/staff.htpasswd
+      realm: staff
+      forward_user_header: X-Remote-User
+
+  - name: staff-mfa
+    kind: mfa
+    options:
+      file: /etc/xproxy/mfa
+      cookie_secret_file: /etc/xproxy/mfa.cookie
+      issuer: example.com
+      # How long a verified factor lasts before the code is asked for
+      # again. A working day is the usual answer; a shorter one for
+      # anything that administers the estate.
+      ttl: 12h
+      skew: 1
+      require_enrolment: true
+      identity: [basic]
+
+routes:
+  - name: app
+    paths: [/]
+    upstream: app
+    # Order matters: the identity has to exist before there is anything
+    # to ask for a second factor for.
+    filters: [staff, staff-mfa]
+
+  - name: admin
+    paths: [/admin/]
+    upstream: app
+    filters: [staff, staff-mfa]
+
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.40:8080"}]
+
+logging:
+  access: {enabled: true}

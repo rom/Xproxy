@@ -124,10 +124,8 @@ type boundListener struct {
 	// inst is the data plane of a registered listener kind. The typed
 	// fields below are the status views' handles on the same object
 	// and go as each kind moves to its own package.
-	inst    Instance
-	forward *forwardServer // kind: forward listeners
-	dns     *dns.Server    // kind: dns listeners
-	doq     *dns.DoQServer // DNS over QUIC on a dns listener
+	inst Instance
+	dns  *dns.Server // kind: dns listeners
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -738,23 +736,8 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		return bl, nil
 	}
 	h := &listenerHandler{srv: s, ln: &bl.cfg}
-	var handler http.Handler = h
-	if lc.Kind == "forward" {
-		fw, err := newForwardServer(s, lc)
-		if err != nil {
-			_ = fr.Close()
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.forward = fw
-		handler = fw
-		if fw.socksEnabled() {
-			// SOCKS greetings are taken off the accept path before the
-			// HTTP server sees them; everything else is handed on.
-			bl.ln = &socksListener{Listener: bl.ln, f: fw}
-		}
-	}
 	bl.httpSrv = &http.Server{
-		Handler:           handler,
+		Handler:           h,
 		ReadHeaderTimeout: lim.ReadHeaderTimeout.D(),
 		ReadTimeout:       lim.ReadTimeout.D(),
 		WriteTimeout:      lim.WriteTimeout.D(),
@@ -990,16 +973,6 @@ func (s *Server) Reload(cfg *config.Config) error {
 	}
 	s.mu.Lock()
 	for _, bl := range plan.keep {
-		if bl.forward != nil {
-			for i := range cfg.Server.Listeners {
-				if cfg.Server.Listeners[i].Name == bl.cfg.Name {
-					if err := bl.forward.apply(cfg.Server.Listeners[i].Forward); err != nil {
-						s.mu.Unlock()
-						return abort(fmt.Errorf("listener %s: %w", bl.cfg.Name, err))
-					}
-				}
-			}
-		}
 		// A kind whose policy can be replaced where it stands says so,
 		// and a reload does not have to rebind its socket or drop what
 		// is connected to it.
@@ -1309,9 +1282,6 @@ func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocke
 	err = bl.httpSrv.Shutdown(ctx)
 	if bl.tlsReload != nil {
 		bl.tlsReload.Close()
-	}
-	if bl.forward != nil {
-		bl.forward.shutdown(ctx)
 	}
 	if bl.h3 != nil {
 		if err3 := bl.h3.Shutdown(ctx); err == nil {

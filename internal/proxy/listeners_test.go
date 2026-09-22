@@ -167,7 +167,20 @@ func fresh(t *testing.T, url string) int {
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	defer c.CloseIdleConnections()
-	resp, err := c.Get(url) //nolint:noctx // a test request with the client's own timeout
+	// A rebuild keeps the accept socket and drains the old generation,
+	// so a connection can be accepted by the server that is closing and
+	// come back as EOF before the new one is serving. That is the
+	// handover working, not a failure, so a couple of attempts are
+	// allowed before it counts as one.
+	var resp *http.Response
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		resp, err = c.Get(url) //nolint:noctx // a test request with the client's own timeout
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatalf("get %s: %v", url, err)
 	}

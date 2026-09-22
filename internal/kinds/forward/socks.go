@@ -1,4 +1,4 @@
-package proxy
+package forward
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/relay"
 )
@@ -85,11 +86,11 @@ func socksIsGreeting(b byte) bool { return b == socksVersion || b == socks4 }
 // It owns the connection and closes it.
 func (f *forwardServer) serveSOCKS(c net.Conn) {
 	defer func() { _ = c.Close() }()
-	s := f.s
+	h := f.host
 	start := time.Now()
-	ip := remoteAddr(c.RemoteAddr())
-	s.stats.ForwardRequests.Add(1)
-	s.stats.ForwardSOCKS.Add(1)
+	ip := netutil.PeerAddr(c.RemoteAddr())
+	h.Counters().ForwardRequests.Add(1)
+	h.Counters().ForwardSOCKS.Add(1)
 	f.track(c, true)
 	f.wg.Add(1)
 	defer f.wg.Done()
@@ -101,7 +102,7 @@ func (f *forwardServer) serveSOCKS(c net.Conn) {
 	if err != nil {
 		// SOCKS4 and an unacceptable method both end here. There is no
 		// status line to send: the refusal is a byte and a close.
-		s.stats.ForwardAuthFailed.Add(1)
+		h.Counters().ForwardAuthFailed.Add(1)
 		f.logSOCKS(ip, "", "", 0, 0, start, err.Error())
 		return
 	}
@@ -121,7 +122,7 @@ func (f *forwardServer) serveSOCKS(c net.Conn) {
 		// inbound connection on the client's behalf, which is a
 		// listening socket opened on a client's say-so.
 		_ = socksReply(c, socksReplyCmdNotSupported, netip.AddrPort{})
-		s.stats.ForwardDenied.Add(1)
+		h.Counters().ForwardDenied.Add(1)
 		f.logSOCKS(ip, user, dest, 0, 0, start, "command")
 	}
 }
@@ -300,16 +301,16 @@ func (f *forwardServer) socksRequest(c net.Conn) (cmd byte, host string, port in
 
 // socksConnect applies the destination policy and splices.
 func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr, user, host string, port int, dest string, start time.Time) {
-	s := f.s
+	h := f.host
 	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.ConnectTimeout.D())
 	defer cancel()
 	ips, reason := f.check(ctx, p, host, port)
 	if reason != "" {
 		_ = socksReply(c, socksDenyCode(reason), netip.AddrPort{})
-		s.stats.ForwardDenied.Add(1)
-		s.logs.SecurityEvent(context.Background(), "deny", "forward_"+reason,
+		h.Counters().ForwardDenied.Add(1)
+		h.Logs().SecurityEvent(context.Background(), "deny", "forward_"+reason,
 			"listener", f.name, "protocol", "socks5", "client_ip", ip.String(), "user", user, "destination", dest)
-		if bl := s.bans.Load(); bl != nil {
+		if bl := h.Bans(); bl != nil {
 			bl.Observe(ip, "forward_denied")
 		}
 		f.logSOCKS(ip, user, dest, 0, 0, start, reason)
@@ -324,7 +325,7 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 	}
 	if f.open.Add(1) > int64(p.cfg.MaxTunnels) {
 		f.open.Add(-1)
-		s.stats.ForwardRejected.Add(1)
+		h.Counters().ForwardRejected.Add(1)
 		_ = socksReply(c, socksReplyGeneralFailure, netip.AddrPort{})
 		f.logSOCKS(ip, user, dest, 0, 0, start, "tunnel_limit")
 		return
@@ -333,7 +334,7 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 	dctx := context.WithValue(ctx, forwardDialKey{}, ips)
 	dst, err := f.dialChecked(dctx, "tcp", dest)
 	if err != nil {
-		s.stats.ForwardErrors.Add(1)
+		h.Counters().ForwardErrors.Add(1)
 		_ = socksReply(c, socksReplyHostUnreachable, netip.AddrPort{})
 		f.logSOCKS(ip, user, dest, 0, 0, start, "dial")
 		return
@@ -343,9 +344,9 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 	if err := socksReply(c, socksReplyOK, local); err != nil {
 		return
 	}
-	s.stats.ForwardTunnels.Add(1)
-	s.stats.ForwardTunnelsOpen.Add(1)
-	defer s.stats.ForwardTunnelsOpen.Add(-1)
+	h.Counters().ForwardTunnels.Add(1)
+	h.Counters().ForwardTunnelsOpen.Add(1)
+	defer h.Counters().ForwardTunnelsOpen.Add(-1)
 	// The handshake deadline must go before the relay, or a long lived
 	// tunnel dies at 30 seconds.
 	_ = c.SetDeadline(time.Time{})
@@ -354,14 +355,14 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 		// that escapes interception by asking for it in the other
 		// protocol on the same port is not a policy.
 		in, out, reason := f.intercept(c, dst, host, ip, user)
-		s.stats.ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
-		s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+		h.Counters().ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
+		h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 		f.logSOCKS(ip, user, dest, in, out, start, reason)
 		return
 	}
 	in, out := relay.Splice(c, dst, p.cfg.IdleTimeout.D())
-	s.stats.ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
-	s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+	h.Counters().ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
+	h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 	f.logSOCKS(ip, user, dest, in, out, start, "")
 }
 
@@ -411,7 +412,7 @@ func (f *forwardServer) logSOCKS(ip netip.Addr, user, dest string, in, out int64
 	if reason != "" {
 		attrs = append(attrs, "reason", reason)
 	}
-	f.s.logs.Access.Info("forward", attrs...)
+	f.host.Logs().Access.Info("forward", attrs...)
 }
 
 // socksListener splits SOCKS greetings off a forward listener before
@@ -485,7 +486,7 @@ func (f *forwardServer) socksEnabled() bool {
 // control connection dies the association must, or the socket becomes
 // an open reflector that anyone can aim.
 func (f *forwardServer) socksUDP(c net.Conn, p *forwardPolicy, ip netip.Addr, user string, start time.Time) {
-	s := f.s
+	h := f.host
 	if !p.cfg.SOCKSUDP {
 		_ = socksReply(c, socksReplyCmdNotSupported, netip.AddrPort{})
 		f.logSOCKS(ip, user, "", 0, 0, start, "udp_disabled")
@@ -493,7 +494,7 @@ func (f *forwardServer) socksUDP(c net.Conn, p *forwardPolicy, ip netip.Addr, us
 	}
 	if f.open.Add(1) > int64(p.cfg.MaxTunnels) {
 		f.open.Add(-1)
-		s.stats.ForwardRejected.Add(1)
+		h.Counters().ForwardRejected.Add(1)
 		_ = socksReply(c, socksReplyGeneralFailure, netip.AddrPort{})
 		f.logSOCKS(ip, user, "", 0, 0, start, "tunnel_limit")
 		return
@@ -510,7 +511,7 @@ func (f *forwardServer) socksUDP(c net.Conn, p *forwardPolicy, ip netip.Addr, us
 	var lc net.ListenConfig
 	pc, err := lc.ListenPacket(context.Background(), "udp", bindAddr)
 	if err != nil {
-		s.stats.ForwardErrors.Add(1)
+		h.Counters().ForwardErrors.Add(1)
 		_ = socksReply(c, socksReplyGeneralFailure, netip.AddrPort{})
 		f.logSOCKS(ip, user, "", 0, 0, start, "udp_bind")
 		return
@@ -523,9 +524,9 @@ func (f *forwardServer) socksUDP(c net.Conn, p *forwardPolicy, ip netip.Addr, us
 	if err := socksReply(c, socksReplyOK, reply); err != nil {
 		return
 	}
-	s.stats.ForwardUDPAssociations.Add(1)
-	s.stats.ForwardUDPOpen.Add(1)
-	defer s.stats.ForwardUDPOpen.Add(-1)
+	h.Counters().ForwardUDPAssociations.Add(1)
+	h.Counters().ForwardUDPOpen.Add(1)
+	defer h.Counters().ForwardUDPOpen.Add(-1)
 	_ = c.SetDeadline(time.Time{})
 
 	a := &socksAssoc{f: f, p: p, pc: pc, client: ip, user: user,
@@ -600,7 +601,7 @@ func (a *socksAssoc) relay(done <-chan struct{}) (in, out int64) {
 		// An answer from a destination: only from one this client
 		// actually sent to, and only once the client address is known.
 		if !a.knownPeer(src) {
-			a.f.s.stats.ForwardUDPDropped.Add(1)
+			a.f.host.Counters().ForwardUDPDropped.Add(1)
 			continue
 		}
 		msg := socksUDPHeader(src)
@@ -622,7 +623,7 @@ func (a *socksAssoc) fromClient(src netip.AddrPort) bool {
 	// The first datagram must come from the address that opened the
 	// control connection; its port is whatever the client chose.
 	if src.Addr().Unmap() != a.client {
-		a.f.s.stats.ForwardUDPDropped.Add(1)
+		a.f.host.Counters().ForwardUDPDropped.Add(1)
 		return false
 	}
 	a.clientAddr = src
@@ -651,19 +652,19 @@ func (a *socksAssoc) knownPeer(src netip.AddrPort) bool {
 func (a *socksAssoc) toDestination(msg []byte, _ netip.AddrPort) (int64, bool) {
 	host, port, payload, err := parseSOCKSUDP(msg)
 	if err != nil {
-		a.f.s.stats.ForwardUDPDropped.Add(1)
+		a.f.host.Counters().ForwardUDPDropped.Add(1)
 		return 0, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), a.p.cfg.ConnectTimeout.D())
 	defer cancel()
 	ips, reason := a.f.check(ctx, a.p, host, port)
 	if reason != "" {
-		a.f.s.stats.ForwardDenied.Add(1)
-		a.f.s.stats.ForwardUDPDropped.Add(1)
-		a.f.s.logs.SecurityEvent(ctx, "deny", "forward_"+reason,
+		a.f.host.Counters().ForwardDenied.Add(1)
+		a.f.host.Counters().ForwardUDPDropped.Add(1)
+		a.f.host.Logs().SecurityEvent(ctx, "deny", "forward_"+reason,
 			"listener", a.f.name, "protocol", "socks5-udp", "client_ip", a.client.String(),
 			"user", a.user, "destination", net.JoinHostPort(host, strconv.Itoa(port)))
-		if bl := a.f.s.bans.Load(); bl != nil {
+		if bl := a.f.host.Bans(); bl != nil {
 			bl.Observe(a.client, "forward_denied")
 		}
 		return 0, false
@@ -680,7 +681,7 @@ func (a *socksAssoc) toDestination(msg []byte, _ netip.AddrPort) (int64, bool) {
 		}
 		if len(a.peers) >= maxAssocPeers {
 			a.mu.Unlock()
-			a.f.s.stats.ForwardUDPDropped.Add(1)
+			a.f.host.Counters().ForwardUDPDropped.Add(1)
 			return 0, false
 		}
 	}

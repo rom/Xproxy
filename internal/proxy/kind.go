@@ -178,13 +178,20 @@ func (s *Server) Limits() config.Limits { return s.cfg().Server.Limits }
 // TLS wants all of it, which is why it is here rather than repeated
 // once per kind.
 func (s *Server) listenerTLS(lc config.Listener) (*tls.Config, *tlsconf.Reloadable, error) {
-	tc, rl, err := tlsconf.Server(lc.TLS, nil)
+	tc, rl, err := tlsconf.Server(lc.TLS, lc.Protocols)
 	if err != nil {
 		return nil, nil, err
 	}
 	s.tickets.Attach(tc)
+	if s.acme != nil && len(lc.TLS.ACME) > 0 {
+		rl.Managed = s.acme.Certificates
+		rl.Challenge = s.acme.TLSALPN01
+	}
 	rl.Fingerprints = s.fingerprints
 	rl.Refuse = s.refuseHandshake
+	for _, w := range rl.CTWarnings() {
+		s.logs.Security.Warn("certificate transparency", "listener", lc.Name, "issue", w)
+	}
 	rl.StartStapling(s.logs.Error)
 	return tc, rl, nil
 }
@@ -198,6 +205,46 @@ type DNSInstance interface{ DNSServer() *dns.Server }
 // are open, for the counter snapshot.
 type FlowCounter interface{ OpenFlows() int }
 
+// MasqueStatus is one listener's MASQUE state. The type lives here
+// rather than with the kind that fills it in, so the management view
+// can render it without linking the forward proxy.
+type MasqueStatus struct {
+	Listener    string `json:"listener"`
+	UDP         bool   `json:"udp"`
+	IP          bool   `json:"ip"`
+	Sessions    int64  `json:"sessions"`
+	MaxSessions int    `json:"max_sessions"`
+	UDPTotal    uint64 `json:"udp_total"`
+	IPTotal     uint64 `json:"ip_total"`
+	Refused     uint64 `json:"refused"`
+	// Device is the tunnel device CONNECT-IP forwards through, empty
+	// when none is configured.
+	Device string `json:"device,omitempty"`
+}
+
+// MasqueReporter is a kind that proxies UDP or IP over extended
+// CONNECT. It returns nil when the listener has no MASQUE section, so
+// the view lists only the listeners that have one.
+type MasqueReporter interface{ MasqueStatus() *MasqueStatus }
+
+// Masque reports the MASQUE state of every listener that has one.
+func (s *Server) Masque() []MasqueStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]MasqueStatus, 0, len(s.listeners))
+	for _, bl := range s.listeners {
+		r, ok := bl.inst.(MasqueReporter)
+		if !ok {
+			continue
+		}
+		if st := r.MasqueStatus(); st != nil {
+			st.Listener = bl.cfg.Name
+			out = append(out, *st)
+		}
+	}
+	return out
+}
+
 // attachKind gives the engine's status views a handle on a kind that
 // offers one. A kind that implements none of these is simply not in
 // them, which is the right answer for a kind with nothing to report.
@@ -207,16 +254,11 @@ func (s *Server) attachKind(bl *boundListener, inst Instance) {
 	}
 }
 
-// servedByHTTP reports the kinds the engine serves itself, without a
-// registered kind: the HTTP data plane and the forward proxy, which is
-// the HTTP data plane with CONNECT and SOCKS in front of it. They stay
-// in the engine because they are what the engine is.
+// servedByHTTP reports the kind the engine still serves itself: the
+// HTTP data plane, which is what the engine is until it too moves to a
+// package of its own.
 func servedByHTTP(kind string) bool {
-	switch kind {
-	case "", "http", "forward":
-		return true
-	}
-	return false
+	return kind == "" || kind == "http"
 }
 
 // daemonFor names the program that serves a kind, for the error a

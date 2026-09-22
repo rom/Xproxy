@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,20 +163,5 @@ func TestGRPCWebFrameBound(t *testing.T) {
 	ok.ingest(small)
 	if ok.failed || !bytes.Contains(ok.buf.Bytes(), []byte("AAAAAANhYmM=")) {
 		t.Fatalf("small frame not encoded: failed=%v buf=%q", ok.failed, ok.buf.String())
-	}
-}
-
-// TestPrivateAddrCoversTransitionRanges: the forward proxy's private-address
-// check includes the blocks that embed or alias internal addresses.
-func TestPrivateAddrCoversTransitionRanges(t *testing.T) {
-	for _, s := range []string{"100.64.1.1", "0.1.2.3", "192.0.0.9", "198.18.0.1", "240.0.0.1", "64:ff9b::a00:1", "2002:c0a8:101::1", "2001:0:53aa:64c:0:bfff:3f57:fefe", "10.1.1.1", "127.0.0.1", "::1"} {
-		if !privateAddr(netip.MustParseAddr(s)) {
-			t.Errorf("%s not treated as private", s)
-		}
-	}
-	for _, s := range []string{"8.8.8.8", "2606:4700::1111"} {
-		if privateAddr(netip.MustParseAddr(s)) {
-			t.Errorf("%s wrongly treated as private", s)
-		}
 	}
 }

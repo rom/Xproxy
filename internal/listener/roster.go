@@ -92,3 +92,11 @@ func KindsFor(r Role) []string {
 // Roles are the roles, in the order they are worth listing: the edge
 // faces the internet, the gate faces people, the relay faces machines.
 func Roles() []Role { return []Role{RoleEdge, RoleGate, RoleRelay} }
+
+// Serves reports whether a role serves a kind. A kind the roster does
+// not know belongs to no role, and is refused by validation long before
+// this is asked.
+func (r Role) Serves(kind string) bool {
+	owner, ok := RoleOf(kind)
+	return ok && owner == r
+}

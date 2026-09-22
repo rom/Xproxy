@@ -1,4 +1,4 @@
-package proxy
+package forward
 
 import (
 	"errors"
@@ -94,7 +94,7 @@ func (f *forwardServer) serveMasque(w http.ResponseWriter, r *http.Request, p *f
 	if m.sessions.Add(1) > int64(m.maxSessions) {
 		m.sessions.Add(-1)
 		m.refused.Add(1)
-		f.s.stats.ForwardRejected.Add(1)
+		f.host.Counters().ForwardRejected.Add(1)
 		f.deny(w, r, ip, user, http.StatusServiceUnavailable, "masque_session_limit", start)
 		return true
 	}
@@ -110,7 +110,7 @@ func (f *forwardServer) serveMasque(w http.ResponseWriter, r *http.Request, p *f
 
 // masqueUDP opens a UDP association for the client and relays capsules.
 func (f *forwardServer) masqueUDP(w http.ResponseWriter, r *http.Request, p *forwardPolicy, ip netip.Addr, user string, start time.Time) {
-	s := f.s
+	h := f.host
 	target, err := masque.ParseUDPTarget(r.URL.Path)
 	if err != nil {
 		f.deny(w, r, ip, user, http.StatusBadRequest, "masque_target", start)
@@ -125,7 +125,7 @@ func (f *forwardServer) masqueUDP(w http.ResponseWriter, r *http.Request, p *for
 	var lc net.ListenConfig
 	pc, err := lc.ListenPacket(r.Context(), "udp", udpBindFor(ips[0]))
 	if err != nil {
-		s.stats.ForwardErrors.Add(1)
+		h.Counters().ForwardErrors.Add(1)
 		f.deny(w, r, ip, user, http.StatusBadGateway, "masque_bind", start)
 		return
 	}
@@ -145,9 +145,9 @@ func (f *forwardServer) masqueUDP(w http.ResponseWriter, r *http.Request, p *for
 	_ = rc.SetWriteDeadline(time.Time{})
 
 	f.masque.udpTotal.Add(1)
-	s.stats.MasqueUDP.Add(1)
-	s.stats.MasqueOpen.Add(1)
-	defer s.stats.MasqueOpen.Add(-1)
+	h.Counters().MasqueUDP.Add(1)
+	h.Counters().MasqueOpen.Add(1)
+	defer h.Counters().MasqueOpen.Add(-1)
 
 	var in, out int64
 	done := make(chan struct{})
@@ -166,7 +166,7 @@ func (f *forwardServer) masqueUDP(w http.ResponseWriter, r *http.Request, p *for
 			// is somebody probing the port.
 			if fa, err := netip.ParseAddrPort(from.String()); err != nil ||
 				fa.Addr().Unmap() != ips[0] || int(fa.Port()) != target.Port {
-				s.stats.MasqueDropped.Add(1)
+				h.Counters().MasqueDropped.Add(1)
 				continue
 			}
 			if err := masque.WriteCapsule(w, masque.Datagram(0, buf[:n])); err != nil {
@@ -192,7 +192,7 @@ func (f *forwardServer) masqueUDP(w http.ResponseWriter, r *http.Request, p *for
 		if err != nil || ctx != 0 {
 			// Context 0 is the raw payload; a registered extension
 			// would use another, and this proxy registers none.
-			s.stats.MasqueDropped.Add(1)
+			h.Counters().MasqueDropped.Add(1)
 			continue
 		}
 		_ = pc.SetWriteDeadline(time.Now().Add(masqueUDPTimeout))
@@ -203,8 +203,8 @@ func (f *forwardServer) masqueUDP(w http.ResponseWriter, r *http.Request, p *for
 	}
 	_ = pc.Close()
 	<-done
-	s.stats.ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
-	s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+	h.Counters().ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
+	h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 	f.logMasque(ip, user, "connect-udp", dest, in, out, start, "")
 }
 
@@ -250,9 +250,9 @@ func (f *forwardServer) masqueIP(w http.ResponseWriter, r *http.Request, p *forw
 	_ = rc.SetReadDeadline(time.Time{})
 	_ = rc.SetWriteDeadline(time.Time{})
 	f.masque.ipTotal.Add(1)
-	f.s.stats.MasqueIP.Add(1)
-	f.s.stats.MasqueOpen.Add(1)
-	defer f.s.stats.MasqueOpen.Add(-1)
+	f.host.Counters().MasqueIP.Add(1)
+	f.host.Counters().MasqueOpen.Add(1)
+	defer f.host.Counters().MasqueOpen.Add(-1)
 
 	// The client needs a source address and the ranges it may reach
 	// before it can send a packet, so both capsules go out first.
@@ -290,14 +290,14 @@ func (f *forwardServer) masqueIP(w http.ResponseWriter, r *http.Request, p *forw
 		case masque.CapsuleDatagram:
 			ctx, payload, err := masque.SplitDatagram(c)
 			if err != nil || ctx != 0 || len(payload) < 20 {
-				f.s.stats.MasqueDropped.Add(1)
+				f.host.Counters().MasqueDropped.Add(1)
 				continue
 			}
 			if !dev.Allowed(payload) {
 				// A packet whose source is not the address this client
 				// was assigned, or whose destination is outside the
 				// advertised routes, is spoofing.
-				f.s.stats.MasqueDropped.Add(1)
+				f.host.Counters().MasqueDropped.Add(1)
 				continue
 			}
 			if _, err := dev.Write(payload); err != nil {
@@ -333,41 +333,7 @@ func (f *forwardServer) logMasque(ip netip.Addr, user, proto, dest string, in, o
 	if reason != "" {
 		attrs = append(attrs, "reason", reason)
 	}
-	f.s.logs.Access.Info("forward", attrs...)
-}
-
-// MasqueStatus is the management view.
-type MasqueStatus struct {
-	Listener    string `json:"listener"`
-	UDP         bool   `json:"udp"`
-	IP          bool   `json:"ip"`
-	Sessions    int64  `json:"sessions"`
-	MaxSessions int    `json:"max_sessions"`
-	UDPTotal    uint64 `json:"udp_total"`
-	IPTotal     uint64 `json:"ip_total"`
-	Refused     uint64 `json:"refused"`
-	// Device is the tunnel device CONNECT-IP forwards through, empty
-	// when none is configured.
-	Device string `json:"device,omitempty"`
-}
-
-// Masque reports the MASQUE state of every forward listener.
-func (s *Server) Masque() []MasqueStatus {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]MasqueStatus, 0, len(s.listeners))
-	for _, bl := range s.listeners {
-		f := bl.forward
-		if f == nil || f.masque == nil {
-			continue
-		}
-		m := f.masque
-		out = append(out, MasqueStatus{Listener: bl.cfg.Name, UDP: m.udp, IP: m.ip,
-			Sessions: m.sessions.Load(), MaxSessions: m.maxSessions,
-			UDPTotal: m.udpTotal.Load(), IPTotal: m.ipTotal.Load(),
-			Refused: m.refused.Load(), Device: f.masqueDeviceName()})
-	}
-	return out
+	f.host.Logs().Access.Info("forward", attrs...)
 }
 
 var errNoTunnel = errors.New("connect-ip needs a tunnel device; see forward.masque.ip_device")
@@ -392,7 +358,7 @@ func (f *forwardServer) masqueDevice() tunnel {
 	}
 	t, err := openTunnel(p.cfg.Masque.IPDevice, p.cfg.Masque.IPAssign, p.cfg.Masque.IPRoutes)
 	if err != nil {
-		f.s.logs.Error.Warn("connect-ip tunnel unavailable", "listener", f.name,
+		f.host.Logs().Error.Warn("connect-ip tunnel unavailable", "listener", f.name,
 			"device", p.cfg.Masque.IPDevice, "err", err.Error())
 		return nil
 	}

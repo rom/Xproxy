@@ -2,11 +2,11 @@ package proxy
 
 import (
 	"net"
-	"net/netip"
 	"strings"
 	"sync/atomic"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/tlsconf"
 )
 
@@ -94,7 +94,7 @@ func (s *Server) refuseHandshake(remote net.Addr, fp tlsconf.Fingerprint) string
 		reason = "fingerprint"
 	} else if p.refuseBanned {
 		if bl := s.bans.Load(); bl != nil {
-			ip := remoteAddr(remote)
+			ip := netutil.PeerAddr(remote)
 			if ip.IsValid() && bl.BannedClient(ip, fp.JA4) {
 				reason = "banned"
 			}
@@ -109,28 +109,9 @@ func (s *Server) refuseHandshake(remote net.Addr, fp tlsconf.Fingerprint) string
 		// There is no request to attach this to: the connection never
 		// became one, which is the point.
 		s.logs.Security.Info("deny", "event", "handshake", "reason", "handshake", "detail", reason,
-			"client_ip", remoteAddr(remote).String(), "ja3", fp.JA3, "ja4", fp.JA4)
+			"client_ip", netutil.PeerAddr(remote).String(), "ja3", fp.JA3, "ja4", fp.JA4)
 	}
 	return reason
-}
-
-// remoteAddr is the address half of a net.Addr, or the zero value.
-func remoteAddr(a net.Addr) netip.Addr {
-	if a == nil {
-		return netip.Addr{}
-	}
-	if ap, err := netip.ParseAddrPort(a.String()); err == nil {
-		return ap.Addr().Unmap()
-	}
-	host, _, err := net.SplitHostPort(a.String())
-	if err != nil {
-		return netip.Addr{}
-	}
-	ip, err := netip.ParseAddr(host)
-	if err != nil {
-		return netip.Addr{}
-	}
-	return ip.Unmap()
 }
 
 // HandshakeStatus is the management view of the pre-handshake policy.

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -37,8 +38,13 @@ func TestPagesCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pages) != 4 {
-		t.Fatalf("pages: %v", pages)
+	if len(pages) != 6 {
+		names := make([]string, 0, len(pages))
+		for n := range pages {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		t.Fatalf("pages: %v", names)
 	}
 	for name, want := range pages {
 		path := filepath.Join("../../docs/man", name)

@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/netutil"
 )
 
 // WebSocket message inspection.
@@ -504,7 +505,7 @@ func (c *wsConn) fail(v *wsViolation) error {
 		route = c.st.route
 	}
 	c.s.logs.SecurityEvent(nil, "websocket", "websocket", //nolint:staticcheck // no request context on a hijacked connection
-		"route", route, "client_ip", remoteAddr(c.Conn.RemoteAddr()).String(),
+		"route", route, "client_ip", netutil.PeerAddr(c.Conn.RemoteAddr()).String(),
 		"reason", v.reason, "detail", v.detail, "close_code", v.code)
 	if g.cfg.Action == "log" {
 		// Observation only: the connection continues and the frame is

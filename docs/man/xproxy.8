@@ -4,13 +4,15 @@
 .ad l
 .SH "NAME"
 .PP
-xproxy \- reverse proxy, web application firewall and load balancer
+xproxy \- edge data plane: reverse proxy, web application firewall and load balancer
 .SH "SYNOPSIS"
 .PP
 \fBxproxy\fR [\fB\-config\fR \fIFILE\fR] [\fB\-validate\fR] [\fB\-version\fR]
 .SH "DESCRIPTION"
 .PP
-\fBxproxy\fR is the data plane daemon. It reads one YAML configuration file (see \fBxproxy.yaml\fR(5)), binds the listeners it describes or takes them from systemd socket activation, and serves until stopped. Requests pass the listener limits, the ban list, rate limits, the web application firewall, the configured filters and the route action, then reach an upstream pool with health checks, retries and circuit breaking.
+\fBxproxy\fR is the edge data plane: the daemon that faces the internet. It reads one YAML configuration file (see \fBxproxy.yaml\fR(5)), binds the listeners it describes or takes them from systemd socket activation, and serves until stopped. Requests pass the listener limits, the ban list, rate limits, the web application firewall, the configured filters and the route action, then reach an upstream pool with health checks, retries and circuit breaking.
+.PP
+It serves the listener kinds of the edge role: \fBhttp\fR (the default), \fBforward\fR, \fBtcp\fR and \fBdns\fR. Its siblings \fBxgate\fR(8) and \fBxrelay\fR(8) serve the kinds people log into and the kinds machines talk to. A listener of another role in the same file is validated in full and left to its owner, which is what lets the three share a set of includes; a listener kind this binary did not link is never bound and never falls through to the HTTP data plane.
 .PP
 The process runs as the \fBxproxy\fR user under the shipped systemd unit and confines itself with Landlock, seccomp and a dropped capability set (see \fBdocs/HARDENING.md\fR). It is controlled at run time through the management socket by \fBxproxyctl\fR(8) and, when installed, the web GUI process \fBxproxy\-admin\fR.
 .SH "OPTIONS"
@@ -119,4 +121,4 @@ T}
 \fBLISTEN_FDS\fR, \fBLISTEN_PID\fR and \fBLISTEN_FDNAMES\fR are read for systemd socket activation. \fBNOTIFY_SOCKET\fR receives readiness and reload notifications. \fBNO_COLOR\fR is honoured by \fBxproxyctl tui\fR.
 .SH "SEE ALSO"
 .PP
-\fBxproxyctl\fR(8), \fBxproxy.yaml\fR(5), the documentation under \fB/usr/share/doc/xproxy/\fR (USAGE.md, CONFIG.md, HARDENING.md, ARCHITECTURE.md).
+\fBxgate\fR(8), \fBxrelay\fR(8), \fBxproxyctl\fR(8), \fBxproxy.yaml\fR(5), the documentation under \fB/usr/share/doc/xproxy/\fR (USAGE.md, CONFIG.md, HARDENING.md, ARCHITECTURE.md).

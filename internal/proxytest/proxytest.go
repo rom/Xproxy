@@ -9,6 +9,8 @@ package proxytest
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"testing"
 	"time"
 
@@ -50,4 +52,28 @@ func Addr(t *testing.T, s *proxy.Server, listener string) string {
 		t.Fatalf("listener %q did not bind", listener)
 	}
 	return a
+}
+
+// Get performs a GET that does not follow redirects, and returns the
+// response and its body. Optional pairs are added as headers; "Host"
+// sets the request host rather than a header, which is the one field
+// net/http will not take from the header map.
+func Get(t *testing.T, url string, hdr ...string) (*http.Response, string) {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	for i := 0; i+1 < len(hdr); i += 2 {
+		if hdr[i] == "Host" {
+			req.Host = hdr[i+1]
+		} else {
+			req.Header.Add(hdr[i], hdr[i+1])
+		}
+	}
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp, string(b)
 }

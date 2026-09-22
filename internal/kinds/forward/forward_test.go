@@ -1,4 +1,4 @@
-package proxy
+package forward
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/passwd"
+	"github.com/rom/xproxy/internal/proxytest"
 	"github.com/rom/xproxy/internal/testutil"
 )
 
@@ -116,7 +116,7 @@ upstreams:
 routes: []
 `
 	yaml = fmt.Sprintf(yaml, originPort, plainPort, originPort, users)
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	fwd := s.Addrs()["fwd"]
 	authed := s.Addrs()["authed"]
 	closed := s.Addrs()["closed"]
@@ -184,7 +184,7 @@ routes: []
 			}
 		}
 		// A request that is not proxy shaped.
-		resp, _ := get(t, "http://"+fwd+"/origin-form")
+		resp, _ := proxytest.Get(t, "http://"+fwd+"/origin-form")
 		if resp.StatusCode != 400 {
 			t.Fatalf("origin-form request: got %d", resp.StatusCode)
 		}
@@ -335,52 +335,6 @@ routes: []
 	}
 }
 
-// TestForwardPolicy covers the destination matcher and the private
-// address set without a network.
-func TestForwardPolicy(t *testing.T) {
-	rules, err := compileDestRules([]string{"example.test", "*.corp.test", "192.0.2.0/24", "2001:db8::1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ip := func(s string) []netip.Addr { return []netip.Addr{netip.MustParseAddr(s)} }
-	cases := []struct {
-		host string
-		ips  []netip.Addr
-		want bool
-	}{
-		{"example.test", ip("203.0.113.1"), true},
-		{"sub.example.test", ip("203.0.113.1"), false},
-		{"a.corp.test", ip("203.0.113.1"), true},
-		{"corp.test", ip("203.0.113.1"), false},
-		{"other.test", ip("192.0.2.77"), true},
-		{"other.test", ip("2001:db8::1"), true},
-		{"other.test", ip("2001:db8::2"), false},
-	}
-	for _, tc := range cases {
-		if got := anyRule(rules, tc.host, tc.ips); got != tc.want {
-			t.Errorf("%s %v: got %v", tc.host, tc.ips, got)
-		}
-	}
-	if _, err := compileDestRules([]string{""}); err == nil {
-		t.Fatal("empty rule accepted")
-	}
-	for _, a := range []string{"127.0.0.1", "10.1.1.1", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "fc00::1", "fe80::1", "0.0.0.0", "224.0.0.1", "::ffff:10.0.0.1"} {
-		if !privateAddr(netip.MustParseAddr(a)) {
-			t.Errorf("%s not private", a)
-		}
-	}
-	for _, a := range []string{"203.0.113.1", "8.8.8.8", "2001:db8::1"} {
-		if privateAddr(netip.MustParseAddr(a)) {
-			t.Errorf("%s private", a)
-		}
-	}
-	h := http.Header{"Connection": {"X-Custom, keep-alive"}, "X-Custom": {"1"}, "Keep-Alive": {"1"}, "Transfer-Encoding": {"chunked"}, "Accept": {"*/*"}}
-	stripHopByHop(h)
-	if len(h) != 1 || h.Get("Accept") == "" {
-		t.Fatalf("strip: %v", h)
-	}
-}
-
 // TestForwardConnectH2 tunnels a CONNECT request over an HTTP/2 stream
 // on a TLS forward listener: the stream carries a request to a plain
 // origin and its response back, and the tunnel is counted.
@@ -412,7 +366,7 @@ upstreams:
     endpoints: [{address: 127.0.0.1:1}]
 routes: []
 `
-	s, _ := startServer(t, fmt.Sprintf(yaml, cert, key, plainPort))
+	s := proxytest.Start(t, fmt.Sprintf(yaml, cert, key, plainPort))
 	pool := x509.NewCertPool()
 	pool.AddCert(ca.Cert)
 	tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "proxy.test", MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true}

@@ -1,6 +1,6 @@
 # Usage
 
-Day to day operation of xproxy: running the daemon, the control tool,
+Day to day operation of xproxy: running the daemons, the control tool,
 configuration patterns and reading the logs. Installation is covered in
 [SETUP.md](SETUP.md), the full configuration reference in
 [CONFIG.md](CONFIG.md) and diagnosing a misbehaving proxy in
@@ -10,19 +10,47 @@ configuration patterns and reading the logs. Installation is covered in
 
 | Binary | Purpose |
 |--------|---------|
-| `xproxy` | The data plane daemon |
-| `xproxyctl` | Control tool talking to the daemon's Unix socket |
+| `xproxy` | The edge data plane: `http`, `forward`, `tcp` and `dns` listeners |
+| `xgate` | The gate: `ssh` listeners — the bastion, its SFTP mediation and its session recording |
+| `xrelay` | The relay: `smtp`, `mqtt`, `ftp` and `syslog` listeners |
+| `xproxyctl` | Control tool talking to a daemon's Unix socket |
 | `xproxy-admin` | Web GUI: a separate process serving a browser interface over the same socket |
 
-### xproxy
+### The three daemons
+
+`xproxy`, `xgate` and `xrelay` are the same program with different
+protocol code linked into them, split by who is on the other end of the
+socket: the open internet, a person, or a machine. Run only the ones you
+need — a site with no bastion never installs `xgate`, and the SSH and
+SFTP implementation is then not present on the machine at all, rather
+than present and unconfigured.
+
+They take the same flags, read the same configuration format, and are
+controlled by the same `xproxyctl` over a socket each:
 
 ```
 xproxy -config /etc/xproxy/xproxy.yaml     # run
+xgate  -config /etc/xproxy/xgate.yaml
+xrelay -config /etc/xproxy/xrelay.yaml
+
 xproxy -config file.yaml -validate         # validate and exit 0/1
 xproxy -version
 ```
 
-The daemon refuses to start as uid 0. Privileged ports come from
+A daemon validates every listener in the file it is given, including
+kinds its siblings serve, and binds only its own; the rest are named in
+the error log at start under `listeners left to a sibling daemon`. A
+listener kind the binary did not link is never bound and never falls
+through to the HTTP data plane — it is an error naming the daemon that
+does serve it. That refusal is what makes the split worth having: a port
+answering the wrong protocol is worse than a port that does not answer.
+
+Keep what is common to the estate in `includes` and give each daemon a
+file of its own for `management`, `metrics` and `logging`. Those three
+name a socket, an address and a directory, and two processes cannot
+share any of them.
+
+The daemons refuse to start as uid 0. Privileged ports come from
 systemd socket activation (or a capability), and the shipped unit
 already runs as `User=xproxy`, so root buys nothing and costs every
 mitigation that a separate user provides. `-allow-root` starts anyway
@@ -44,7 +72,8 @@ Signals:
 | `SIGUSR1` | Reopen log files (after external rotation) |
 | `SIGTERM`, `SIGINT` | Drain within `server.shutdown_timeout`, then exit |
 
-Under systemd use `systemctl reload xproxy` and `systemctl restart xproxy`;
+Under systemd use `systemctl reload xproxy` and `systemctl restart xproxy`
+(likewise `xgate` and `xrelay`);
 on macOS `launchctl kill HUP system/com.sysctl.xproxy` and `launchctl
 kickstart -k system/com.sysctl.xproxy`. A reload that names a file
 outside the directories the sandbox admitted at start is refused with
@@ -57,6 +86,10 @@ listener changes (which reload refuses) cost only the drain time.
 ```
 xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-json] COMMAND
 ```
+
+One `xproxyctl` talks to all three daemons; `-socket` picks which.
+`/run/xgate/mgmt.sock` and `/run/xrelay/mgmt.sock` are where the shipped
+units put the other two.
 
 | Command | Description |
 |---------|-------------|
@@ -2879,8 +2912,9 @@ second factor rather than a second password:
 `require_enrolment: false` exists and warns, because the account that
 never enrolled is the one an attacker will use.
 
-`examples/mfa/second-factor.yaml` has both listeners and the filter
-chain.
+`examples/mfa/bastion.yaml` and `examples/mfa/web.yaml` are the two
+halves: the SSH listener xgate serves and the filter chain xproxy
+serves, against one enrolment file on disk.
 
 ### YARA rules over streams and bodies
 

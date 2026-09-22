@@ -1,4 +1,4 @@
-package proxy
+package forward
 
 import (
 	"crypto/x509"
@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/passwd"
+	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/proxytest"
 	"github.com/rom/xproxy/internal/testutil"
 )
 
@@ -98,7 +100,7 @@ func socksDial(t *testing.T, proxyAddr, host string, port int, user, pass string
 
 // socksProxy starts a forward listener with SOCKS5 on and returns its
 // address plus the helpers a test needs.
-func socksProxy(t *testing.T, ports string, extra string) (*Server, string) {
+func socksProxy(t *testing.T, ports string, extra string) (*proxy.Server, string) {
 	t.Helper()
 	yaml := `
 version: 1
@@ -123,7 +125,7 @@ routes: []
 `
 	yaml = strings.Replace(yaml, "PORTS", ports, 1)
 	yaml = strings.Replace(yaml, "EXTRA", extra, 1)
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	return s, s.Addrs()["fwd"]
 }
 
@@ -386,7 +388,7 @@ upstreams:
     endpoints: [{address: 127.0.0.1:1}]
 routes: []
 `
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	addr := s.Addrs()["fwd"]
 	c, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {

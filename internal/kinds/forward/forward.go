@@ -1,4 +1,4 @@
-package proxy
+package forward
 
 import (
 	"context"
@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/httpx"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/passwd"
+	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/relay"
 )
 
@@ -28,7 +30,7 @@ import (
 // destination is never terminated. The policy is compiled from the
 // listener configuration and replaced on reload.
 type forwardServer struct {
-	s      *Server
+	host   proxy.Host
 	name   string
 	policy atomic.Pointer[forwardPolicy]
 	tr     *http.Transport
@@ -80,8 +82,8 @@ const (
 
 type forwardDialKey struct{}
 
-func newForwardServer(s *Server, lc config.Listener) (*forwardServer, error) {
-	f := &forwardServer{s: s, name: lc.Name, cons: map[net.Conn]struct{}{}, done: make(chan struct{}),
+func newForwardServer(host proxy.Host, lc config.Listener) (*forwardServer, error) {
+	f := &forwardServer{host: host, name: lc.Name, cons: map[net.Conn]struct{}{}, done: make(chan struct{}),
 		authCache: map[[32]byte]time.Time{}, authSem: make(chan struct{}, 4)}
 	if err := f.apply(lc.Forward); err != nil {
 		return nil, err
@@ -93,7 +95,7 @@ func newForwardServer(s *Server, lc config.Listener) (*forwardServer, error) {
 			return nil, fmt.Errorf("forward intercept: %w", err)
 		}
 		f.mitm = mi
-		s.logs.Error.Warn("TLS interception is on: clients on this listener see certificates this proxy signs",
+		host.Logs().Error.Warn("TLS interception is on: clients on this listener see certificates this proxy signs",
 			"listener", lc.Name, "ca", mi.ca.Subject(), "ca_expires", mi.ca.NotAfter().Format(time.RFC3339))
 	}
 	f.tr = &http.Transport{
@@ -337,34 +339,17 @@ func (f *forwardServer) authenticate(p *forwardPolicy, r *http.Request) (string,
 	return user, true
 }
 
-// hopByHop are removed in both directions (RFC 9110 7.6.1) together
-// with the headers named by Connection.
-var hopByHop = []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "TE", "Trailer", "Transfer-Encoding", "Upgrade"}
-
-func stripHopByHop(h http.Header) {
-	for _, c := range h.Values("Connection") {
-		for _, name := range strings.Split(c, ",") {
-			if name = strings.TrimSpace(name); name != "" {
-				h.Del(name)
-			}
-		}
-	}
-	for _, name := range hopByHop {
-		h.Del(name)
-	}
-}
-
 func (f *forwardServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s := f.s
+	h := f.host
 	p := f.policy.Load()
 	start := time.Now()
 	ip := netutil.RemoteAddr(r)
-	s.stats.ForwardRequests.Add(1)
+	h.Counters().ForwardRequests.Add(1)
 	user := ""
 	if p.cfg.Auth != nil {
 		u, ok := f.authenticate(p, r)
 		if !ok {
-			s.stats.ForwardAuthFailed.Add(1)
+			h.Counters().ForwardAuthFailed.Add(1)
 			w.Header().Set("Proxy-Authenticate", `Basic realm="`+p.cfg.Auth.Realm+`", charset="UTF-8"`)
 			f.deny(w, r, ip, "", http.StatusProxyAuthRequired, "auth", start)
 			return
@@ -395,20 +380,20 @@ func (f *forwardServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // deny answers a refused request and records it. Policy refusals are
 // security events and count toward the forward_denied ban reason.
 func (f *forwardServer) deny(w http.ResponseWriter, r *http.Request, ip netip.Addr, user string, status int, reason string, start time.Time) {
-	s := f.s
+	h := f.host
 	dest := r.URL.Host
 	if r.Method == http.MethodConnect {
 		dest = r.Host
 	}
 	switch status {
 	case http.StatusForbidden:
-		s.stats.ForwardDenied.Add(1)
-		s.logs.SecurityEvent(r.Context(), "deny", "forward_"+reason, "listener", f.name, "client_ip", ip.String(), "user", user, "method", r.Method, "destination", dest)
-		if bl := s.bans.Load(); bl != nil {
+		h.Counters().ForwardDenied.Add(1)
+		h.Logs().SecurityEvent(r.Context(), "deny", "forward_"+reason, "listener", f.name, "client_ip", ip.String(), "user", user, "method", r.Method, "destination", dest)
+		if bl := h.Bans(); bl != nil {
 			bl.Observe(ip, "forward_denied")
 		}
 	case http.StatusProxyAuthRequired:
-		if bl := s.bans.Load(); bl != nil {
+		if bl := h.Bans(); bl != nil {
 			bl.Observe(ip, "forward_auth")
 		}
 	}
@@ -425,13 +410,13 @@ func (f *forwardServer) log(r *http.Request, ip netip.Addr, user, dest string, s
 	if reason != "" {
 		attrs = append(attrs, "reason", reason)
 	}
-	f.s.logs.Access.Info("forward", attrs...)
+	f.host.Logs().Access.Info("forward", attrs...)
 }
 
 // connect opens a tunnel: policy check, dial the checked address, then
 // splice the hijacked client connection with an idle timeout.
 func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwardPolicy, ip netip.Addr, user string, start time.Time) {
-	s := f.s
+	h := f.host
 	host, portStr, err := net.SplitHostPort(r.Host)
 	if err != nil {
 		f.deny(w, r, ip, user, http.StatusBadRequest, "authority", start)
@@ -455,7 +440,7 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 	}
 	if f.open.Add(1) > int64(p.cfg.MaxTunnels) {
 		f.open.Add(-1)
-		s.stats.ForwardRejected.Add(1)
+		h.Counters().ForwardRejected.Add(1)
 		f.deny(w, r, ip, user, http.StatusServiceUnavailable, "tunnel_limit", start)
 		return
 	}
@@ -463,7 +448,7 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 	ctx := context.WithValue(r.Context(), forwardDialKey{}, ips)
 	dst, err := f.dialChecked(ctx, "tcp", r.Host)
 	if err != nil {
-		s.stats.ForwardErrors.Add(1)
+		h.Counters().ForwardErrors.Add(1)
 		f.deny(w, r, ip, user, http.StatusBadGateway, "dial", start)
 		return
 	}
@@ -475,13 +460,13 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 	client, bufrw, err := rc.Hijack()
 	if err != nil {
 		_ = dst.Close()
-		s.stats.ForwardErrors.Add(1)
+		h.Counters().ForwardErrors.Add(1)
 		f.deny(w, r, ip, user, http.StatusInternalServerError, "hijack", start)
 		return
 	}
-	s.stats.ForwardTunnels.Add(1)
-	s.stats.ForwardTunnelsOpen.Add(1)
-	defer s.stats.ForwardTunnelsOpen.Add(-1)
+	h.Counters().ForwardTunnels.Add(1)
+	h.Counters().ForwardTunnelsOpen.Add(1)
+	defer h.Counters().ForwardTunnelsOpen.Add(-1)
 	f.track(client, true)
 	f.wg.Add(1)
 	defer f.wg.Done()
@@ -501,8 +486,8 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 		// handshake this is about to terminate, so it stays on the
 		// client's side rather than being sent on to the destination.
 		in, out, reason := f.intercept(bufferedConn(client, bufrw.Reader), dst, host, ip, user)
-		s.stats.ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
-		s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+		h.Counters().ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
+		h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 		f.log(r, ip, user, r.Host, http.StatusOK, in, out, start, reason)
 		return
 	}
@@ -519,8 +504,8 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 	}
 	in, out := relay.Splice(client, dst, p.cfg.IdleTimeout.D())
 	in += early
-	s.stats.ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
-	s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+	h.Counters().ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
+	h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 	f.log(r, ip, user, r.Host, http.StatusOK, in, out, start, "")
 }
 
@@ -530,11 +515,11 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 // the idle timeout on the destination side and by the client closing
 // its half.
 func (f *forwardServer) connectH2(w http.ResponseWriter, r *http.Request, p *forwardPolicy, dst net.Conn, ip netip.Addr, user string, start time.Time) {
-	s := f.s
+	h := f.host
 	rc := http.NewResponseController(w)
-	s.stats.ForwardTunnels.Add(1)
-	s.stats.ForwardTunnelsOpen.Add(1)
-	defer s.stats.ForwardTunnelsOpen.Add(-1)
+	h.Counters().ForwardTunnels.Add(1)
+	h.Counters().ForwardTunnelsOpen.Add(1)
+	defer h.Counters().ForwardTunnelsOpen.Add(-1)
 	f.track(dst, true)
 	f.wg.Add(1)
 	defer f.wg.Done()
@@ -590,15 +575,15 @@ func (f *forwardServer) connectH2(w http.ResponseWriter, r *http.Request, p *for
 	}
 	_ = dst.Close() // the destination is done: end the stream without waiting for the client's half
 	n := in.Load()
-	s.stats.ForwardBytesIn.Add(uint64(n))    //nolint:gosec // non-negative
-	s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+	h.Counters().ForwardBytesIn.Add(uint64(n))    //nolint:gosec // non-negative
+	h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 	f.log(r, ip, user, r.Host, http.StatusOK, n, out, start, "")
 }
 
 // plain relays an absolute-URI http request through the checked dialer
 // and copies the response back, bounded by max_response_bytes.
 func (f *forwardServer) plain(w http.ResponseWriter, r *http.Request, p *forwardPolicy, ip netip.Addr, user string, start time.Time) {
-	s := f.s
+	h := f.host
 	host := r.URL.Hostname()
 	port := 80
 	if ps := r.URL.Port(); ps != "" {
@@ -618,19 +603,19 @@ func (f *forwardServer) plain(w http.ResponseWriter, r *http.Request, p *forward
 	out := r.Clone(ctx)
 	out.RequestURI = ""
 	out.Host = r.URL.Host
-	stripHopByHop(out.Header)
+	httpx.StripHopByHop(out.Header)
 	out.Header.Add("Via", "1.1 xproxy")
 	if out.Header.Get("X-Forwarded-For") != "" {
 		out.Header.Del("X-Forwarded-For") // never relay a client supplied chain
 	}
 	resp, err := f.tr.RoundTrip(out)
 	if err != nil {
-		s.stats.ForwardErrors.Add(1)
+		h.Counters().ForwardErrors.Add(1)
 		f.deny(w, r, ip, user, http.StatusBadGateway, "upstream", start)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	stripHopByHop(resp.Header)
+	httpx.StripHopByHop(resp.Header)
 	for k, v := range resp.Header {
 		w.Header()[k] = v
 	}
@@ -642,14 +627,14 @@ func (f *forwardServer) plain(w http.ResponseWriter, r *http.Request, p *forward
 	}
 	n, _ := io.Copy(w, body)
 	if p.cfg.MaxResponseBytes > 0 && n > p.cfg.MaxResponseBytes {
-		s.stats.ForwardErrors.Add(1)
+		h.Counters().ForwardErrors.Add(1)
 		// Cut the connection so the client sees a truncated response
 		// rather than a complete looking one.
 		if c, _, err := http.NewResponseController(w).Hijack(); err == nil {
 			_ = c.Close()
 		}
 	}
-	s.stats.ForwardBytesOut.Add(uint64(n)) //nolint:gosec // non-negative
+	h.Counters().ForwardBytesOut.Add(uint64(n)) //nolint:gosec // non-negative
 	f.log(r, ip, user, r.URL.Host, resp.StatusCode, r.ContentLength, n, start, "")
 }
 

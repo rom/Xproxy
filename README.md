@@ -9,9 +9,15 @@ SSH bastion with SFTP inspection, DNS over UDP, TCP, TLS, HTTPS and
 QUIC, SOCKS5 and MASQUE on a forward proxy, and layer 4 passthrough
 where terminating would be wrong.
 
-It is one static Go binary with no cgo, runs unprivileged under a
-hardened systemd unit confined by SELinux, and is managed over a local
-socket from a CLI, a terminal UI and a web GUI.
+It is not one binary but three, split by who is on the other end of the
+socket: **xproxy** faces the internet, **xgate** faces people, **xrelay**
+faces machines. They share one repository, one configuration format and
+one control plane, and each links only the protocol code it serves — so
+a host with no bastion has no SSH implementation on it, rather than one
+sitting unconfigured. Each is a static Go binary with no cgo, runs
+unprivileged as its own user under a hardened systemd unit confined by
+SELinux, and is managed over a local socket from a CLI, a terminal UI
+and a web GUI.
 
 Status: 1.4 in development on top of the **1.0.0** release
 ([release notes](docs/RELEASE_NOTES_1.0.md), [how a release is
@@ -61,10 +67,23 @@ through a fixed admission pipeline and hands it to a route's action; the
 other listener kinds reuse the same accept limits, bans, logs and
 management plane for other protocols.
 
+A listener's `kind` also says which daemon serves it. Every daemon
+validates the whole configuration — so one set of includes describes the
+estate — and binds only the kinds of its own role:
+
+| Daemon | Faces | Listener kinds |
+|--------|-------|----------------|
+| `xproxy` | the open internet | `http`, `forward`, `tcp`, `dns` |
+| `xgate` | people | `ssh` |
+| `xrelay` | machines | `smtp`, `mqtt`, `ftp`, `syslog` |
+
+A kind a binary did not link is never bound and never falls through to
+the HTTP data plane: it is an error naming the daemon that serves it.
+
 ```
 client ──▶ listener (accept limits, bans) ──▶ admission pipeline ──▶ route action ──▶ upstream pool
        http | tcp | forward | dns | smtp        concurrency, host and       proxy, redirect,      balancer, health,
-                | mqtt | ssh                    path checks, route match,   respond, honeypot,    ejection, retries,
+         | mqtt | ftp | syslog | ssh            path checks, route match,   respond, honeypot,    ejection, retries,
                                                 country, ACL, challenge,    static files          affinity, mirror
                                                 shedding, rate limits,
                                                 body limit, filters

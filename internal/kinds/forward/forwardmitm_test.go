@@ -1,4 +1,4 @@
-package proxy
+package forward
 
 import (
 	"bufio"
@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rom/xproxy/internal/proxytest"
 	"github.com/rom/xproxy/internal/testutil"
 )
 
@@ -111,7 +112,7 @@ func TestForwardIntercept(t *testing.T) {
 	}()
 	_, selfPort, _ := net.SplitHostPort(selfLn.Addr().String())
 
-	echo := echoServer(t, "")
+	echo := testutil.EchoServer(t, "")
 	_, echoPort, _ := net.SplitHostPort(echo)
 
 	yaml := fmt.Sprintf(`
@@ -165,7 +166,7 @@ routes: []
 		originPort, proxyCA.Path, proxyKey, originCA.Path,
 		originPort, proxyCA.Path, proxyKey, originCA.Path)
 
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	mitmAddr := s.Addrs()["mitm"]
 	socksAddr := s.Addrs()["socks"]
 	bypassAddr := s.Addrs()["bypassed"]
@@ -197,7 +198,7 @@ routes: []
 		if err := leaf.VerifyHostname("localhost"); err != nil {
 			t.Fatalf("forged leaf does not carry the origin's name: %v", err)
 		}
-		if n := s.stats.Intercepted.Load(); n == 0 {
+		if n := s.Stats().Intercepted; n == 0 {
 			t.Fatal("intercepted counter did not move")
 		}
 	})
@@ -231,20 +232,20 @@ routes: []
 	})
 
 	t.Run("an origin that does not verify is refused, not forged", func(t *testing.T) {
-		before := s.stats.InterceptRefused.Load()
+		before := s.Stats().InterceptRefused
 		c := interceptClient(t, mitmAddr, proxyPool)
 		resp, err := c.Get("https://localhost:" + selfPort + "/")
 		if err == nil {
 			_ = resp.Body.Close()
 			t.Fatal("an unverifiable origin was reached through the proxy")
 		}
-		if s.stats.InterceptRefused.Load() == before {
+		if s.Stats().InterceptRefused == before {
 			t.Fatal("refusal counter did not move")
 		}
 	})
 
 	t.Run("a handshake for another name is refused", func(t *testing.T) {
-		before := s.stats.InterceptRefused.Load()
+		before := s.Stats().InterceptRefused
 		c := connectTunnel(t, mitmAddr, "localhost:"+originPort)
 		tc := tls.Client(c, &tls.Config{
 			ServerName: "elsewhere.test", RootCAs: proxyPool, MinVersion: tls.VersionTLS12,
@@ -253,7 +254,7 @@ routes: []
 		if err := tc.Handshake(); err == nil {
 			t.Fatal("a handshake naming a host the tunnel did not name was answered")
 		}
-		if s.stats.InterceptRefused.Load() == before {
+		if s.Stats().InterceptRefused == before {
 			t.Fatal("refusal counter did not move")
 		}
 	})
@@ -280,7 +281,7 @@ routes: []
 	})
 
 	t.Run("a tunnel that is not TLS is passed through", func(t *testing.T) {
-		before := s.stats.InterceptPassed.Load()
+		before := s.Stats().InterceptPassed
 		c := connectTunnel(t, mitmAddr, "localhost:"+echoPort)
 		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 		if _, err := io.WriteString(c, "SSH-2.0-not-tls\r\n"); err != nil {
@@ -293,7 +294,7 @@ routes: []
 		if string(buf) != "SSH-2.0-not-tls\r\n" {
 			t.Fatalf("echo %q", buf)
 		}
-		if s.stats.InterceptPassed.Load() == before {
+		if s.Stats().InterceptPassed == before {
 			t.Fatal("passed-through counter did not move")
 		}
 	})
@@ -335,9 +336,9 @@ upstreams:
   - name: unused
     endpoints: [{address: 127.0.0.1:1}]
 routes: []
-`, originPort, proxyCA.Path, proxyKey, originCA.Path, rulesFile(t))
+`, originPort, proxyCA.Path, proxyKey, originCA.Path, testutil.YARARules(t))
 
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	addr := s.Addrs()["mitm"]
 	pool := x509.NewCertPool()
 	pool.AddCert(proxyCA.Cert)
@@ -348,14 +349,14 @@ routes: []
 	} else {
 		_ = resp.Body.Close()
 	}
-	before := s.stats.YARAMatches.Load()
+	before := s.Stats().YARAMatches
 	resp, err := c.Post("https://localhost:"+originPort+"/upload", "text/plain",
 		strings.NewReader("here is the TOP-SECRET-MARKER leaving the estate"))
 	if err == nil {
 		_ = resp.Body.Close()
 		t.Fatal("a body a rule names went through")
 	}
-	if s.stats.YARAMatches.Load() == before {
+	if s.Stats().YARAMatches == before {
 		t.Fatal("no match was recorded over the decrypted stream")
 	}
 }

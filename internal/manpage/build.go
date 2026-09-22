@@ -11,7 +11,7 @@ import (
 const Source = "Xproxy"
 
 // Build renders the manual pages of the repository from the Markdown
-// under docsDir: xproxy.8 and xproxyctl.8 from docs/man/*.8.md and
+// under docsDir: the daemon and tool pages from docs/man/*.8.md and
 // xproxy.yaml.5 from docs/CONFIG.md. The result maps the file name to
 // its troff content.
 func Build(docsDir string) (map[string][]byte, error) {
@@ -22,6 +22,8 @@ func Build(docsDir string) (map[string][]byte, error) {
 		manual string
 	}{
 		{"xproxy", "man/xproxy.8.md", "System administration"},
+		{"xgate", "man/xgate.8.md", "System administration"},
+		{"xrelay", "man/xrelay.8.md", "System administration"},
 		{"xproxyctl", "man/xproxyctl.8.md", "System administration"},
 		{"xproxy-fleet", "man/xproxy-fleet.8.md", "System administration"},
 	} {
