@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/logging"
+	"math/rand/v2"
 )
 
 // scaleYAML generates a configuration with `hosts` virtual hosts spread

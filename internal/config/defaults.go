@@ -140,6 +140,21 @@ func applyDefaults(c *Config) {
 			if f.Auth != nil {
 				setStr(&f.Auth.Realm, "proxy")
 			}
+			if ic := f.Intercept; ic != nil {
+				if ic.VerifyUpstream == nil {
+					t := true
+					ic.VerifyUpstream = &t
+				}
+				setStr(&ic.MinVersion, "1.2")
+				setInt(&ic.MaxCache, 1024)
+				setDur(&ic.LeafTTL, 24*time.Hour)
+				if len(ic.ALPN) == 0 {
+					ic.ALPN = []string{"http/1.1"}
+				}
+				if ic.YARA != nil {
+					yaraDefaults(ic.YARA)
+				}
+			}
 		}
 		if d := s.Listeners[i].DNS; d != nil {
 			setDur(&d.Timeout, 2*time.Second)
@@ -160,6 +175,33 @@ func applyDefaults(c *Config) {
 				d.Cache.NegativeTTL = Duration(60 * time.Second)
 			}
 			setInt(&d.MaxInFlight, 1024)
+			if td := d.TunnelDetection; td != nil {
+				setDur(&td.Window, 5*time.Minute)
+				setInt(&td.MinQueries, 50)
+				setInt(&td.MinSignals, 2)
+				setFloat(&td.Entropy, 3.6)
+				setInt(&td.MinLabelLength, 12)
+				// These five may be switched off with an explicit 0, so
+				// only an absent key takes the default.
+				if td.EntropyShare == nil {
+					td.EntropyShare = ptr(0.5)
+				}
+				if td.TXTShare == nil {
+					td.TXTShare = ptr(0.5)
+				}
+				if td.NXDOMAINShare == nil {
+					td.NXDOMAINShare = ptr(0.5)
+				}
+				if td.DistinctSubdomains == nil {
+					td.DistinctSubdomains = ptr(50)
+				}
+				if td.PayloadBytes == nil {
+					td.PayloadBytes = ptr(int64(4096))
+				}
+				setStr(&td.Action, "log")
+				setDur(&td.Cooldown, 10*time.Minute)
+				setInt(&td.MaxTracked, 65536)
+			}
 			if d.RateLimit != nil {
 				if d.RateLimit.QPS == 0 {
 					d.RateLimit.QPS = 50
@@ -955,6 +997,20 @@ func setStr(p *string, v string) {
 		*p = v
 	}
 }
+
+// setFloat fills an unset fraction or threshold. Zero means unset here
+// as everywhere else; a signal an operator wants switched off is
+// switched off by its own share reaching zero through validation, not
+// by leaving the key out.
+func setFloat(p *float64, v float64) {
+	if *p == 0 {
+		*p = v
+	}
+}
+
+// ptr is the default for a setting whose zero value an operator may
+// mean: the pointer says whether the key was written at all.
+func ptr[T any](v T) *T { return &v }
 
 func tracingOTLP(t *Tracing) *OTLPExport {
 	if t == nil {

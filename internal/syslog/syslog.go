@@ -224,7 +224,7 @@ func splitStructured(s string) ([]SDElement, string, error) {
 		}
 		out = append(out, el)
 		s = rest
-		if len(out) > 32 {
+		if len(out) > maxSDElements {
 			return nil, "", fmt.Errorf("%w: too many structured data elements", ErrMalformed)
 		}
 	}
@@ -236,22 +236,39 @@ func splitStructured(s string) ([]SDElement, string, error) {
 // escaped, and nothing else is.
 func parseElement(s string) (SDElement, string, error) {
 	s = s[1:] // the opening bracket
-	id, rest, ok := cutAny(s, " ]")
-	if !ok || id == "" {
+	i := strings.IndexAny(s, " ]")
+	if i <= 0 {
 		return SDElement{}, "", fmt.Errorf("%w: structured data id", ErrMalformed)
 	}
-	el := SDElement{ID: id}
-	if strings.HasPrefix(rest, "]") {
-		return el, rest[1:], nil
+	el := SDElement{ID: s[:i]}
+	if !validSDName(el.ID) {
+		return SDElement{}, "", fmt.Errorf("%w: structured data id %q", ErrMalformed, clip(el.ID))
 	}
-	s = rest
+	// Which delimiter ended the id decides what follows, and reading it
+	// is not optional. Taking the id up to either and then looking for
+	// a "]" that has already been consumed makes "[id]" -- an element
+	// with no parameters, which section 6.3 allows and which this
+	// relay's own formatter writes -- unreadable, and sends the parser
+	// on into the next element's bytes to find a parameter there.
+	if s[i] == ']' {
+		return el, s[i+1:], nil
+	}
+	s = s[i+1:]
 	for {
 		if strings.HasPrefix(s, "]") {
 			return el, s[1:], nil
 		}
-		name, rest, ok := strings.Cut(s, "=")
-		if !ok {
+		// A name runs to its "=" and may contain none of what ends a
+		// name, a value or the element itself. Cutting at the first "="
+		// wherever it happens to be is how one element's parameters get
+		// read out of the next one's.
+		j := strings.IndexAny(s, "=]\" [")
+		if j <= 0 || s[j] != '=' {
 			return SDElement{}, "", fmt.Errorf("%w: structured data parameter", ErrMalformed)
+		}
+		name, rest := s[:j], s[j+1:]
+		if !validSDName(name) {
+			return SDElement{}, "", fmt.Errorf("%w: structured data name %q", ErrMalformed, clip(name))
 		}
 		if !strings.HasPrefix(rest, `"`) {
 			return SDElement{}, "", fmt.Errorf("%w: structured data value is not quoted", ErrMalformed)
@@ -278,20 +295,42 @@ func parseElement(s string) (SDElement, string, error) {
 			v.WriteByte(c)
 			i++
 		}
-		el.Params = append(el.Params, SDParam{Name: strings.TrimSpace(name), Value: v.String()})
-		if len(el.Params) > 64 {
+		el.Params = append(el.Params, SDParam{Name: name, Value: v.String()})
+		if len(el.Params) > maxSDParams {
 			return SDElement{}, "", fmt.Errorf("%w: too many structured data parameters", ErrMalformed)
 		}
 		s = strings.TrimPrefix(rest[i:], " ")
 	}
 }
 
-func cutAny(s, chars string) (string, string, bool) {
-	i := strings.IndexAny(s, chars)
-	if i < 0 {
-		return s, "", false
+const (
+	// maxSDParams and maxSDElements bound what one message may carry.
+	// The format has no bound of its own, and a relay that will read an
+	// unbounded number of either is one a sender can spend.
+	maxSDParams   = 64
+	maxSDElements = 32
+	// maxSDName is the length RFC 5424 section 6.3.3 gives SD-NAME.
+	maxSDName = 32
+)
+
+// validSDName reports whether a string is an SD-NAME: one to thirty-two
+// printable US-ASCII characters, none of them a space, "=", "]" or a
+// quote. Those four are what end a name, a value or the element, so a
+// name carrying one is a name that would be read back as something
+// else. "[" is refused too: nothing in the format puts one inside an
+// element, and a name that holds one is a sender reaching for the next
+// element's bytes.
+func validSDName(s string) bool {
+	if s == "" || len(s) > maxSDName {
+		return false
 	}
-	return s[:i], s[i+1:], true
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 33 || c > 126 || c == '=' || c == ']' || c == '"' || c == '[' {
+			return false
+		}
+	}
+	return true
 }
 
 // parse3164 reads the older format: an optional timestamp and host,

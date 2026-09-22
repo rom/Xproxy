@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"github.com/rom/xproxy/internal/netutil"
 	"sort"
 	"strings"
 )
@@ -291,7 +292,7 @@ func packNameCase(name string) ([]byte, error) { return packName(name) }
 
 // canonicalName lowercases a name (owner names are already lower case;
 // rdata names of the RFC 4034 section 6.2 types are lowered here).
-func canonicalName(name string) string { return strings.ToLower(name) }
+func canonicalName(name string) string { return netutil.ASCIILower(name) }
 
 // Names of the types above contain only name bytes and small integers;
 // lower casing binary counters (SOA serial, MX preference) could change
@@ -501,7 +502,7 @@ func canonicalCompare(a, b string) int {
 	la, lb := labelsOf(a), labelsOf(b)
 	for i := 0; i < len(la) && i < len(lb); i++ {
 		x, y := la[len(la)-1-i], lb[len(lb)-1-i]
-		if c := bytes.Compare([]byte(strings.ToLower(x)), []byte(strings.ToLower(y))); c != 0 {
+		if c := bytes.Compare([]byte(netutil.ASCIILower(x)), []byte(netutil.ASCIILower(y))); c != 0 {
 			return c
 		}
 	}

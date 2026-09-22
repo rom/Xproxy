@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/rom/xproxy/internal/netutil"
 	"math/big"
 	"strconv"
 	"strings"
@@ -84,7 +85,7 @@ func ParseTrustAnchor(line string) (TrustAnchor, error) {
 	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || len(digest) == 0 {
 		return TrustAnchor{}, fmt.Errorf("trust anchor %q: bad field", line)
 	}
-	zone := strings.ToLower(strings.TrimSuffix(f[0], "."))
+	zone := netutil.ASCIILower(strings.TrimSuffix(f[0], "."))
 	return TrustAnchor{Zone: zone, KeyTag: uint16(tag), Algorithm: uint8(alg), DigestType: uint8(dt), Digest: digest}, nil
 }
 
@@ -732,7 +733,7 @@ func parseRRSIG(data []byte) (*rrsig, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.signer = strings.ToLower(signer)
+	s.signer = netutil.ASCIILower(signer)
 	s.signature = data[n:]
 	s.prefix = data[:n]
 	return s, nil
@@ -1169,7 +1170,7 @@ func wildcardProven(authority []*RRset, name, zone string) bool {
 func commonAncestor(a, b string) string {
 	la, lb := labelsOf(a), labelsOf(b)
 	n := 0
-	for n < len(la) && n < len(lb) && strings.EqualFold(la[len(la)-1-n], lb[len(lb)-1-n]) {
+	for n < len(la) && n < len(lb) && netutil.ASCIIEqualFold(la[len(la)-1-n], lb[len(lb)-1-n]) {
 		n++
 	}
 	if n == 0 {
@@ -1219,7 +1220,7 @@ func nsec3Hash(name string, p *nsec3) []byte {
 	if p == nil || p.hashAlg != 1 || p.iterations > 150 {
 		return nil
 	}
-	wire, err := packName(strings.ToLower(name))
+	wire, err := packName(netutil.ASCIILower(name))
 	if err != nil {
 		return nil
 	}

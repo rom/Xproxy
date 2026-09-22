@@ -99,12 +99,10 @@ type Server struct {
 	// tickets manages shared session ticket keys; nil without the section.
 	tickets        *tlsconf.Tickets
 	ticketMismatch bound.Notice
-	// dnsUnverified aggregates DNS security events whose source address
-	// completed no round trip, and connRejected does the same for
-	// connections refused at accept: both are driven by a client at
-	// packet rate, so one record each would be a log-flood primitive.
-	dnsUnverified bound.Notice
-	connRejected  bound.Notice
+	// connRejected aggregates connections refused at accept. They are
+	// driven by a client at packet rate, so one record each would be a
+	// log-flood primitive. (The dns kind keeps its own, per listener.)
+	connRejected bound.Notice
 
 	mu        sync.Mutex
 	listeners []*boundListener
@@ -123,15 +121,13 @@ type boundListener struct {
 	tlsReload *tlsconf.Reloadable
 	activated bool
 	h3        *h3.Server
-	tcp       *tcpServer     // kind: tcp listeners
-	forward   *forwardServer // kind: forward listeners
-	dns       *dns.Server    // kind: dns listeners
-	doq       *dns.DoQServer // DNS over QUIC on a dns listener
-	smtp      *smtpServer    // kind: smtp listeners
-	mqtt      *mqttServer    // kind: mqtt listeners
-	ssh       *sshServer     // kind: ssh listeners
-	ftp       *ftpServer     // kind: ftp listeners
-	syslog    *syslogServer  // kind: syslog listeners
+	// inst is the data plane of a registered listener kind. The typed
+	// fields below are the status views' handles on the same object
+	// and go as each kind moves to its own package.
+	inst    Instance
+	forward *forwardServer // kind: forward listeners
+	dns     *dns.Server    // kind: dns listeners
+	doq     *dns.DoQServer // DNS over QUIC on a dns listener
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -303,8 +299,8 @@ func (s *Server) Stats() Snapshot {
 	snap.BufferedBody = s.bodyBudget.Stats()
 	s.mu.Lock()
 	for _, bl := range s.listeners {
-		if bl.tcp != nil && bl.tcp.quic != nil {
-			snap.QUICFlowsOpen += bl.tcp.quic.open()
+		if fc, ok := bl.inst.(FlowCounter); ok {
+			snap.QUICFlowsOpen += fc.OpenFlows()
 		}
 	}
 	s.mu.Unlock()
@@ -687,140 +683,48 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 	fr := acc.newFront()
 	lim := s.cfg().Server.Limits
 	bl := &boundListener{cfg: lc, acc: acc, front: fr, ln: s.connLimiter.Wrap(fr), activated: act}
-	if lc.ProxyProtocol && lc.Kind != "tcp" && lc.Kind != "dns" {
+	k, linked := kindFor(lc.Kind)
+	if !linked && !servedByHTTP(lc.Kind) {
+		// The kind is one this project implements and this binary did
+		// not link. Refusing is the point of the split: a listener that
+		// quietly fell through to the HTTP data plane would answer the
+		// wrong protocol on the right port.
+		_ = fr.Close()
+		return nil, fmt.Errorf("listener %s: kind %q is served by %s, not by this daemon", lc.Name, lc.Kind, daemonFor(lc.Kind))
+	}
+	if lc.ProxyProtocol && (!linked || k.ProxyHeader) {
 		bl.ln = &proxyListener{Listener: bl.ln,
 			trusted:  func() []netip.Prefix { return s.rt.Load().trusted },
 			onReject: s.connLimiter.Reject,
 		}
 	}
-	if lc.Kind == "tcp" {
-		tcp, err := newTCPServer(s, lc, bl.ln)
-		if err != nil {
-			_ = fr.Close()
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.tcp = tcp
-		if lc.TCP.QUIC {
-			udpAddr := lc.Address
-			if strings.HasSuffix(lc.Address, ":0") {
-				udpAddr = ln.Addr().String()
-			}
-			pc, _, err := packetFor(activated, lc.Name, udpAddr)
-			if err != nil {
-				_ = fr.Close()
-				return nil, fmt.Errorf("listener %s: quic: %w", lc.Name, err)
-			}
-			bl.tcp.quic = newQUICRelay(bl.tcp, pc)
-		}
-		return bl, nil
-	}
-	if lc.Kind == "ssh" {
-		// SSH carries its own transport security, so there is no TLS
-		// here and no listener wrapper: the bastion owns the handshake.
-		h, err := newSSHServer(s, lc, bl.ln)
-		if err != nil {
-			_ = fr.Close()
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.ssh = h
-		return bl, nil
-	}
-	if lc.Kind == "mqtt" {
-		// MQTT has no in-band upgrade, so implicit TLS is the only
-		// mode; the session still owns the handshake, which keeps its
-		// deadline and its logging with the rest of the session.
-		var tc *tls.Config
-		if lc.TLS != nil {
-			c, rl, err := tlsconf.Server(lc.TLS, nil)
-			if err != nil {
-				_ = fr.Close()
-				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-			}
-			s.tickets.Attach(c)
-			rl.Fingerprints = s.fingerprints
-			rl.Refuse = s.refuseHandshake
-			rl.StartStapling(s.logs.Error)
-			bl.tlsReload = rl
-			tc = c
-		}
-		q, err := newMQTTServer(s, lc, bl.ln, tc)
-		if err != nil {
-			_ = fr.Close()
-			if bl.tlsReload != nil {
-				bl.tlsReload.Close()
-			}
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.mqtt = q
-		return bl, nil
-	}
-	if lc.Kind == "syslog" {
-		// Streams and datagrams both, on the same address: most senders
-		// still use UDP, and a relay that takes only one of them is a
-		// relay half the estate goes around.
-		var tc *tls.Config
-		if lc.TLS != nil {
-			c, rl, err := tlsconf.Server(lc.TLS, nil)
-			if err != nil {
-				_ = fr.Close()
-				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-			}
-			s.tickets.Attach(c)
-			rl.Fingerprints = s.fingerprints
-			rl.Refuse = s.refuseHandshake
-			rl.StartStapling(s.logs.Error)
-			bl.tlsReload = rl
-			tc = c
-		}
-		var pc net.PacketConn
-		if lc.Syslog.UDP == nil || *lc.Syslog.UDP {
-			udpAddr := lc.Address
-			if strings.HasSuffix(lc.Address, ":0") {
-				udpAddr = ln.Addr().String()
-			}
-			p, _, err := packetFor(activated, lc.Name, udpAddr)
-			if err != nil {
-				_ = fr.Close()
-				if bl.tlsReload != nil {
-					bl.tlsReload.Close()
+	// A registered kind owns everything from here: the engine has
+	// prepared the socket and, where the kind asked for it, the TLS
+	// configuration, and the kind builds its own data plane.
+	if linked {
+		su := &Setup{Host: s, Config: lc, Net: bl.ln,
+			Packet: func(suffix string) (net.PacketConn, error) {
+				name := lc.Name
+				if suffix != "" {
+					name += "-" + suffix
 				}
-				return nil, fmt.Errorf("listener %s: udp: %w", lc.Name, err)
-			}
-			pc = p
-		}
-		g, err := newSyslogServer(s, lc, bl.ln, pc, tc)
-		if err != nil {
-			_ = fr.Close()
-			if pc != nil {
-				_ = pc.Close()
-			}
-			if bl.tlsReload != nil {
-				bl.tlsReload.Close()
-			}
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.syslog = g
-		return bl, nil
-	}
-	if lc.Kind == "ftp" {
-		// Like SMTP, the listener is not wrapped even for implicit
-		// mode: AUTH TLS has to read cleartext first, so the session
-		// owns the handshake and its deadline.
-		var tc *tls.Config
-		if lc.TLS != nil {
-			c, rl, err := tlsconf.Server(lc.TLS, nil)
+				addr := lc.Address
+				if strings.HasSuffix(lc.Address, ":0") {
+					addr = ln.Addr().String()
+				}
+				pc, _, err := packetFor(activated, name, addr)
+				return pc, err
+			}}
+		if k.TLS && lc.TLS != nil {
+			tc, rl, err := s.listenerTLS(lc)
 			if err != nil {
 				_ = fr.Close()
 				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 			}
-			s.tickets.Attach(c)
-			rl.Fingerprints = s.fingerprints
-			rl.Refuse = s.refuseHandshake
-			rl.StartStapling(s.logs.Error)
 			bl.tlsReload = rl
-			tc = c
+			su.TLS = tc
 		}
-		f, err := newFTPServer(s, lc, bl.ln, tc)
+		inst, err := k.New(su)
 		if err != nil {
 			_ = fr.Close()
 			if bl.tlsReload != nil {
@@ -828,106 +732,9 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 			}
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 		}
-		bl.ftp = f
-		return bl, nil
-	}
-	if lc.Kind == "smtp" {
-		// The listener is not wrapped in a TLS listener even for
-		// implicit mode: STARTTLS has to read cleartext first, so the
-		// session decides when the handshake happens.
-		var tc *tls.Config
-		if lc.TLS != nil {
-			c, rl, err := tlsconf.Server(lc.TLS, nil)
-			if err != nil {
-				_ = fr.Close()
-				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-			}
-			s.tickets.Attach(c)
-			rl.Fingerprints = s.fingerprints
-			rl.Refuse = s.refuseHandshake
-			rl.StartStapling(s.logs.Error)
-			bl.tlsReload = rl
-			tc = c
-		}
-		m, err := newSMTPServer(s, lc, bl.ln, tc)
-		if err != nil {
-			_ = fr.Close()
-			if bl.tlsReload != nil {
-				bl.tlsReload.Close()
-			}
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.smtp = m
-		return bl, nil
-	}
-	if lc.Kind == "dns" && lc.TLS != nil {
-		// Encrypted: DNS over TLS and DNS over HTTPS on the TCP port, no
-		// plain UDP.
-		tc, rl, err := tlsconf.Server(lc.TLS, nil)
-		s.tickets.Attach(tc)
-		if err != nil {
-			_ = fr.Close()
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		tc.NextProtos = []string{dns.ALPNDoT, dns.ALPNH2, dns.ALPNHTTP}
-		rl.Fingerprints = s.fingerprints
-		rl.Refuse = s.refuseHandshake
-		rl.StartStapling(s.logs.Error)
-		bl.tlsReload = rl
-		bl.ln = tls.NewListener(bl.ln, tc)
-		d, err := s.newDNSServer(lc, nil, bl.ln)
-		if err != nil {
-			_ = fr.Close()
-			rl.Close()
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		d.Encrypted = true
-		d.DoHPath = lc.DNS.DoHPath
-		bl.dns = d
-		if lc.DNS.DoQ {
-			// DNS over QUIC shares the listener's address and
-			// certificate; only the transport differs, and the ALPN is
-			// what separates it from HTTP/3 on the same port.
-			udpAddr := lc.Address
-			if strings.HasSuffix(lc.Address, ":0") {
-				udpAddr = ln.Addr().String()
-			}
-			pc, _, err := packetFor(activated, lc.Name+"-doq", udpAddr)
-			if err != nil {
-				_ = fr.Close()
-				rl.Close()
-				return nil, fmt.Errorf("listener %s: doq: %w", lc.Name, err)
-			}
-			q, err := dns.NewDoQ(d, pc, tc, lim.IdleTimeout.D(), lc.DNS.MaxInFlight)
-			if err != nil {
-				_ = fr.Close()
-				_ = pc.Close()
-				rl.Close()
-				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-			}
-			bl.doq = q
-		}
-		return bl, nil
-	}
-	if lc.Kind == "dns" {
-		// UDP on the same port as TCP, also when the port was chosen by
-		// the system (":0" in tests).
-		udpAddr := lc.Address
-		if strings.HasSuffix(lc.Address, ":0") {
-			udpAddr = ln.Addr().String()
-		}
-		pc, _, err := packetFor(activated, lc.Name, udpAddr)
-		if err != nil {
-			_ = fr.Close()
-			return nil, fmt.Errorf("listener %s: udp: %w", lc.Name, err)
-		}
-		d, err := s.newDNSServer(lc, pc, bl.ln)
-		if err != nil {
-			_ = fr.Close()
-			_ = pc.Close()
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.dns = d
+		bl.inst = inst
+		bl.ln = su.Net // a kind may have wrapped the socket, as implicit TLS does
+		s.attachKind(bl, inst)
 		return bl, nil
 	}
 	h := &listenerHandler{srv: s, ln: &bl.cfg}
@@ -1036,38 +843,8 @@ func hasProto(ps []config.Protocol, p config.Protocol) bool {
 func (s *Server) serve(bl *boundListener) {
 	var err error
 	s.logs.Error.Info("listening", "listener", bl.cfg.Name, "address", bl.ln.Addr().String(), "tls", bl.cfg.TLS != nil, "kind", bl.cfg.Kind, "socket_activated", bl.activated)
-	if bl.tcp != nil {
-		if bl.tcp.quic != nil {
-			go bl.tcp.quic.serve()
-		}
-		bl.tcp.serve()
-		return
-	}
-	if bl.dns != nil {
-		if bl.doq != nil {
-			bl.doq.Serve()
-		}
-		bl.dns.Serve()
-		return
-	}
-	if bl.smtp != nil {
-		bl.smtp.serve()
-		return
-	}
-	if bl.mqtt != nil {
-		bl.mqtt.serve()
-		return
-	}
-	if bl.ssh != nil {
-		bl.ssh.serve()
-		return
-	}
-	if bl.ftp != nil {
-		bl.ftp.serve()
-		return
-	}
-	if bl.syslog != nil {
-		bl.syslog.serve()
+	if bl.inst != nil {
+		bl.inst.Serve()
 		return
 	}
 	if bl.cfg.TLS != nil {
@@ -1223,15 +1000,16 @@ func (s *Server) Reload(cfg *config.Config) error {
 				}
 			}
 		}
-		if bl.dns != nil {
+		// A kind whose policy can be replaced where it stands says so,
+		// and a reload does not have to rebind its socket or drop what
+		// is connected to it.
+		if a, ok := bl.inst.(Applier); ok {
 			for i := range cfg.Server.Listeners {
-				if lc := cfg.Server.Listeners[i]; lc.Name == bl.cfg.Name && lc.DNS != nil {
-					p, err := dnsPolicy(lc.DNS)
-					if err != nil {
+				if lc := cfg.Server.Listeners[i]; lc.Name == bl.cfg.Name {
+					if err := a.Apply(lc); err != nil {
 						s.mu.Unlock()
 						return abort(fmt.Errorf("listener %s: %w", bl.cfg.Name, err))
 					}
-					bl.dns.Apply(p, lc.DNS.Cache.MaxEntries)
 				}
 			}
 		}
@@ -1515,52 +1293,29 @@ func (s *Server) discard(f freshListener) {
 func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocket bool) error {
 	var err error
 	_ = bl.front.Close()
-	switch {
-	case bl.tcp != nil:
-		bl.tcp.shutdown(ctx)
-	case bl.dns != nil:
-		if bl.doq != nil {
-			_ = bl.doq.Close()
+	if bl.inst != nil {
+		bl.inst.Shutdown(ctx)
+		if c, ok := bl.inst.(Closer); ok {
+			c.Close()
 		}
-		bl.dns.Shutdown(ctx)
-		bl.dns.Close()
 		if bl.tlsReload != nil {
 			bl.tlsReload.Close()
 		}
-	case bl.smtp != nil:
-		bl.smtp.shutdown(ctx)
-		if bl.tlsReload != nil {
-			bl.tlsReload.Close()
+		if closeSocket {
+			bl.acc.close()
 		}
-	case bl.mqtt != nil:
-		bl.mqtt.shutdown(ctx)
-		if bl.tlsReload != nil {
-			bl.tlsReload.Close()
-		}
-	case bl.ssh != nil:
-		bl.ssh.shutdown(ctx)
-	case bl.syslog != nil:
-		bl.syslog.shutdown(ctx)
-		if bl.tlsReload != nil {
-			bl.tlsReload.Close()
-		}
-	case bl.ftp != nil:
-		bl.ftp.shutdown(ctx)
-		if bl.tlsReload != nil {
-			bl.tlsReload.Close()
-		}
-	default:
-		err = bl.httpSrv.Shutdown(ctx)
-		if bl.tlsReload != nil {
-			bl.tlsReload.Close()
-		}
-		if bl.forward != nil {
-			bl.forward.shutdown(ctx)
-		}
-		if bl.h3 != nil {
-			if err3 := bl.h3.Shutdown(ctx); err == nil {
-				err = err3
-			}
+		return nil
+	}
+	err = bl.httpSrv.Shutdown(ctx)
+	if bl.tlsReload != nil {
+		bl.tlsReload.Close()
+	}
+	if bl.forward != nil {
+		bl.forward.shutdown(ctx)
+	}
+	if bl.h3 != nil {
+		if err3 := bl.h3.Shutdown(ctx); err == nil {
+			err = err3
 		}
 	}
 	if closeSocket {

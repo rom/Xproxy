@@ -53,7 +53,7 @@ type proxyConn struct {
 // untouched; a trusted peer must send a header or the connection fails.
 func (c *proxyConn) parse() {
 	c.once.Do(func() {
-		peer := addrOf(c.Conn.RemoteAddr().String())
+		peer := netutil.AddrOf(c.Conn.RemoteAddr().String())
 		if !netutil.Contains(c.l.trusted(), peer) {
 			return
 		}

@@ -321,7 +321,7 @@ bool
 T}	T{
 \fBfalse\fR
 T}	T{
-Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in \fBtrusted_\:proxies\fR: the client address it carries becomes the peer for limits,\: bans,\: ACLs,\: logs and forwarding headers,\: and the per address connection count moves to it. A trusted peer that sends no header,\: or a malformed one,\: is dropped without a response (\fBdrop_\:connection\fR with reason \fBproxy_\:protocol\fR,\: counted in \fBrejected_\:connections\fR);\: \fBLOCAL\fR headers keep the balancer\(aqs address;\: connections from other peers are served unchanged,\: so a client cannot choose its own address. Requires \fBtrusted_\:proxies\fR;\: not on \fBkind:\: tcp\fR (which forwards a header instead) or \fBdns\fR.
+Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in \fBtrusted_\:proxies\fR: the client address it carries becomes the peer for limits,\: bans,\: ACLs,\: logs and forwarding headers,\: and the per address connection count moves to it. A trusted peer that sends no header,\: or a malformed one,\: is dropped without a response (\fBdrop_\:connection\fR with reason \fBproxy_\:protocol\fR,\: counted in \fBrejected_\:connections\fR);\: \fBLOCAL\fR headers keep the balancer\(aqs address;\: connections from other peers are served unchanged,\: so a client cannot choose its own address. Requires \fBtrusted_\:proxies\fR;\: read on \fBkind:\fR \fBhttp\fR,\: \fBforward\fR,\: \fBssh\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR and \fBsyslog\fR,\: and not on \fBtcp\fR (which reads the first bytes itself to route by server name,\: and forwards a header instead) or \fBdns\fR.
 T}
 T{
 \fBkind\fR
@@ -672,7 +672,168 @@ none
 T}	T{
 UDP and IP proxying over extended CONNECT (RFC 9298,\: RFC 9484);\: see below
 T}
+T{
+\fBintercept\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Terminate TLS inside a CONNECT tunnel and read what passes through it;\: see below
+T}
 .TE
+.SS "TLS interception on a forward listener"
+.PP
+A CONNECT tunnel is opaque by design: the proxy sees a name and a byte count and nothing else, so a destination policy is the only policy it can apply. \fBintercept\fR changes that. The proxy answers the client\(aqs handshake with a certificate it signs itself, opens its own TLS connection to the destination, and relays the plaintext between the two \[u2014] which is what lets YARA rules, and everything else that reads bytes, see inside HTTPS.
+.PP
+This is the one feature here that makes a proxy \fIless\fR safe if it is built carelessly, because it replaces a connection the client verified end to end with two connections the client cannot see past. Three things follow from that, and none of them is optional.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.9i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBca_\:cert_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The signing certificate clients have to trust;\: it must be a CA with \fBkeyCertSign\fR and must not have expired
+T}
+T{
+\fBca_\:key_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Its private key;\: refused,\: at validation and at load,\: if anybody but its owner can read it
+T}
+T{
+\fBhosts\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (all)
+T}	T{
+Destinations to intercept: a name,\: \fB*.\:suffix\fR,\: an address or a CIDR;\: empty intercepts everything the listener allows,\: which warns
+T}
+T{
+\fBbypass_\:hosts\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Destinations never intercepted,\: whatever \fBhosts\fR says;\: checked first and wins
+T}
+T{
+\fBverify_\:upstream\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Verify the destination\(aqs own certificate with the ordinary rules;\: \fBfalse\fR warns loudly
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system store
+T}	T{
+Roots the destination is verified against
+T}
+T{
+\fBmin_\:version\fR
+T}	T{
+\fB1.\:2\fR|\:\fB1.\:3\fR
+T}	T{
+\fB1.\:2\fR
+T}	T{
+Lowest TLS version the proxy speaks to the destination
+T}
+T{
+\fBleaf_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB24h\fR
+T}	T{
+Validity of an issued certificate;\: at most 720h
+T}
+T{
+\fBmax_\:cache\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Issued certificates kept in memory;\: the oldest are dropped
+T}
+T{
+\fBalpn\fR
+T}	T{
+list
+T}	T{
+\fB["http/\:1.\:1"]\fR
+T}	T{
+Offered to the destination and accepted from the client;\: \fBh2\fR warns
+T}
+T{
+\fByara\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Rules over the decrypted stream,\: with the same keys as everywhere else
+T}
+.TE
+.PP
+\fBThe destination is verified first, and only then is a certificate forged.\fR A client never sees a forged certificate for a server whose own certificate did not verify \[u2014] it sees the handshake fail, which is what it would have seen with no proxy in the way. An interception proxy that gets this backwards turns every verified connection through it into an unverified one while leaving the padlock in place, which is worse than not intercepting at all. \fBverify_upstream: false\fR exists as a key so that turning it off is a decision somebody wrote down.
+.PP
+\fBThe signing key can impersonate every site to every client that trusts the CA.\fR It is refused if its mode allows anyone but its owner to read it, both by \fBxproxy check\fR and at startup.
+.PP
+\fBSome traffic must not be read at all\fR, whatever the estate\(aqs policy says: banking, health, anything carrying somebody\(aqs own credentials. \fBbypass_hosts\fR is where that is written, and it is consulted before anything is decrypted \[u2014] a rule that another rule can overtake is not that rule.
+.PP
+Two more things the proxy refuses rather than guesses. A tunnel whose first bytes are not a TLS ClientHello is spliced through untouched: CONNECT carries SSH, database protocols and anything else, and answering a handshake to something that was not offering one breaks it for no reason (\fBforward_intercept_passed\fR). And a handshake whose server name disagrees with the host in the CONNECT is refused (\fBforward_sni_mismatch\fR), because a tunnel opened to one name and a handshake for another is somebody reaching a destination the policy checked against a different one. A tunnel opened to an \fIaddress\fR is the exception and not a hole: there the policy checked the address, the bytes reach that address whatever the handshake says, and the name only picks a virtual host once they arrive.
+.PP
+The issued certificate carries the \fIreal\fR certificate\(aqs names \[u2014] its SANs, its IP addresses, its common name \[u2014] so a client that pins a name still works and one that pins a key still fails, as it should. The cache is keyed on the name and on the real certificate\(aqs fingerprint, so a destination that rotates its certificate gets a fresh forgery rather than a stale one. \fBalpn\fR defaults to \fBhttp/1.1\fR alone: a stream the proxy relays is one it has to be able to read, and offering \fBh2\fR without parsing HTTP/2 is how an interception proxy breaks a site.
+.PP
+\fBsocks5\fR tunnels on the same listener are intercepted by the same rules: a destination reachable in either protocol on one port under one policy is not a policy if one of the two walks past it.
+.PP
+An intercepted connection writes a \fBforward_intercept\fR access line with the client, user, destination, negotiated ALPN and the TLS version reached upstream. Counters: \fBforward_intercepted\fR, \fBforward_intercept_refused\fR, \fBforward_intercept_passed\fR and \fBforward_intercept_bytes\fR.
+.PP
+.RS 4
+.nf
+.ft CR
+\- name: egress
+  address: "0.0.0.0:3128"
+  kind: forward
+  forward:
+    ports: [80, 443]
+    auth: {users_file: /etc/xproxy/proxy.htpasswd}
+    intercept:
+      ca_cert_file: /etc/xproxy/mitm\-ca.pem
+      ca_key_file: /etc/xproxy/mitm\-ca\-key.pem
+      hosts: ["*.example.com", "*.cdn.test"]
+      bypass_hosts: ["*.bank.test", "*.health.test"]
+      yara: {rules_dir: /etc/xproxy/yara}
+.ft
+.fi
+.RE
 .SS "MASQUE on a forward listener"
 .PP
 HTTP \fBCONNECT\fR tunnels TCP, and that is all it tunnels. Everything else an estate sends \[u2014] DNS, QUIC, NTP, WireGuard, telemetry \[u2014] either leaves the network outside this policy or does not leave at all, and the first is the usual answer. CONNECT\-UDP (RFC 9298) is the same explicit proxy for datagrams, with the same destination rules, credentials, logs and bans; CONNECT\-IP (RFC 9484) carries IP packets, which is how a MASQUE VPN is built.
@@ -765,7 +926,7 @@ A policy refusal is answered with the closest SOCKS reply code rather than a bla
 .PP
 \fBUDP associations\fR (\fBsocks_udp: true\fR) are how DNS and QUIC travel through a SOCKS proxy. Each association binds its own socket, is fixed to the client address that opened it (the first datagram sets it), only relays answers from destinations that client has actually sent to, and dies with its TCP control connection \[u2014] which is what RFC 1928 requires and what keeps the socket from becoming an open reflector. Datagram headers are parsed with the same care as the handshake: fragments are dropped rather than reassembled, and the peer table is bounded. \fBforward_udp_associations\fR, \fBforward_udp_open\fR and \fBforward_udp_dropped\fR count the association and everything refused.
 .PP
-Each request writes one \fBforward\fR line to the access log with the client address, user, method, destination, status, bytes and duration. SOCKS connections write the same line with \fBprotocol: socks5\fR. Counters: \fBforward_requests\fR, \fBforward_tunnels\fR, \fBforward_tunnels_open\fR, \fBforward_denied\fR, \fBforward_auth_failed\fR, \fBforward_rejected\fR, \fBforward_errors\fR, \fBforward_bytes_in\fR, \fBforward_bytes_out\fR, \fBforward_socks\fR, \fBforward_udp_associations\fR, \fBforward_udp_open\fR, \fBforward_udp_dropped\fR; \fBxproxy_forward_*\fR metrics. The policy and the users file reload; the address and TLS settings need a restart like every listener.
+Each request writes one \fBforward\fR line to the access log with the client address, user, method, destination, status, bytes and duration. SOCKS connections write the same line with \fBprotocol: socks5\fR. Counters: \fBforward_requests\fR, \fBforward_tunnels\fR, \fBforward_tunnels_open\fR, \fBforward_denied\fR, \fBforward_auth_failed\fR, \fBforward_rejected\fR, \fBforward_errors\fR, \fBforward_bytes_in\fR, \fBforward_bytes_out\fR, \fBforward_socks\fR, \fBforward_udp_associations\fR, \fBforward_udp_open\fR, \fBforward_udp_dropped\fR, \fBforward_intercepted\fR, \fBforward_intercept_refused\fR, \fBforward_intercept_passed\fR, \fBforward_intercept_bytes\fR; \fBxproxy_forward_*\fR metrics. The policy and the users file reload; the address and TLS settings need a restart like every listener.
 .SS "server.listeners[].dns (kind: dns)"
 .PP
 A \fBkind: dns\fR listener is a forwarding DNS proxy on the listener address over UDP and TCP. Queries are answered from a bounded cache when they can be, refused or blocked by policy, and otherwise forwarded to the upstream resolvers with a fresh transaction id on a fresh socket (random source port) per query; the answer must echo the id and the question. A truncated UDP answer is retried over TCP to the upstream, and an answer larger than the client\(aqs UDP size (512 bytes or its EDNS advertisement, honoured up to 1232 bytes per RFC 9715 so a spoofed source cannot draw a large reply) is truncated so the client retries over TCP. Only one question per query and the QUERY opcode are handled (FORMERR and NOTIMP otherwise); responses arriving as queries and packets from banned clients are dropped. A dns listener takes \fBaddress\fR, \fBdns\fR and optionally \fBtls\fR; bans and the global connection limits apply to TCP clients as on every listener. The policy, upstreams and cache bounds reload (the cache is kept); the address needs a restart.
@@ -974,7 +1135,188 @@ none
 T}	T{
 Validate answers;\: see below
 T}
+T{
+\fBtunnel_\:detection\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Watch for data leaving inside the query names;\: see below
+T}
 .TE
+.SS "server.listeners[].dns.tunnel_detection"
+.PP
+DNS tunnelling is the oldest way out of a network that filters everything else, and it still works, because a resolver is usually the one thing every host may talk to. The payload goes up in the query name \[u2014] a few dozen encoded characters per label \[u2014] and comes back down in the answer, most often TXT. The tunnel\(aqs domain is delegated to the other end, so every query reaches them whatever this resolver forwards to: blocking the upstream does nothing, and a block list only helps if somebody already knew the name.
+.PP
+What gives it away is not any one query but the shape of a client\(aqs traffic under one registered domain: names carrying more information per character than words do, hundreds of distinct subdomains where a service has a handful, answers that are mostly TXT, and a high rate of NXDOMAIN from the probing and the encoding that produce names nothing resolves.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.1i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+The period the signals are measured over;\: 10s to 1h
+T}
+T{
+\fBmin_\:queries\fR
+T}	T{
+int
+T}	T{
+\fB50\fR
+T}	T{
+Queries a client must send under one domain before any judgement;\: below it there is not enough to be wrong about
+T}
+T{
+\fBmin_\:signals\fR
+T}	T{
+int
+T}	T{
+\fB2\fR
+T}	T{
+How many signals must fire together;\: \fB1\fR warns
+T}
+T{
+\fBentropy\fR
+T}	T{
+float
+T}	T{
+\fB3.\:6\fR
+T}	T{
+Bits per character at which a label counts as encoded rather than named;\: words sit below it,\: base32 and base64 run near 5 and 6
+T}
+T{
+\fBentropy_\:share\fR
+T}	T{
+float
+T}	T{
+\fB0.\:5\fR
+T}	T{
+Share of a domain\(aqs queries that must reach it;\: an explicit \fB0\fR switches the signal off
+T}
+T{
+\fBmin_\:label_\:length\fR
+T}	T{
+int
+T}	T{
+\fB12\fR
+T}	T{
+Shortest label measured;\: a short string\(aqs entropy is mostly noise
+T}
+T{
+\fBdistinct_\:subdomains\fR
+T}	T{
+int
+T}	T{
+\fB50\fR
+T}	T{
+Cardinality under one domain that belongs to a tunnel rather than a service;\: \fB0\fR switches the signal off
+T}
+T{
+\fBtxt_\:share\fR
+T}	T{
+float
+T}	T{
+\fB0.\:5\fR
+T}	T{
+Share asking for the types a tunnel returns data in (TXT,\: NULL,\: CNAME,\: MX,\: SRV);\: \fB0\fR switches the signal off
+T}
+T{
+\fBnxdomain_\:share\fR
+T}	T{
+float
+T}	T{
+\fB0.\:5\fR
+T}	T{
+Share answering NXDOMAIN;\: \fB0\fR switches the signal off
+T}
+T{
+\fBpayload_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+Encoded bytes below the domain in a window,\: counting each name once;\: \fB0\fR switches the signal off
+T}
+T{
+\fBallow_\:domains\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Never judged,\: in the same forms as \fBblock\fR
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBlog\fR|\:\fBblock\fR
+T}	T{
+\fBlog\fR
+T}	T{
+\fBblock\fR answers NXDOMAIN for the detected domain,\: for the client it was detected for,\: until the cooldown ends
+T}
+T{
+\fBcooldown\fR
+T}	T{
+duration
+T}	T{
+\fB10m\fR
+T}	T{
+How long that lasts,\: and how long before the same domain is reported again
+T}
+T{
+\fBmax_\:tracked\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Windows held;\: 64 to 10000000
+T}
+.TE
+.PP
+\fBNo single signal decides\fR, and that is the point of \fBmin_signals\fR. Each one alone has honest traffic behind it: a content delivery network\(aqs hostnames really are random, a reputation service really does encode a hash into a name and answer TXT, and a laptop waking up really does produce a burst of NXDOMAIN. What does not happen by accident is several of them at once, under one registered domain, from one client. Setting \fBmin_signals: 1\fR is allowed and warns, because it turns each of those into a false positive.
+.PP
+Any of the five can be switched off by writing \fB0\fR against it, and a \fB0\fR written there means off: the keys that take one are read through a pointer so that an explicit zero is not mistaken for an absent key and quietly given its default back. A policy that switches signals off and still asks for more agreement than it has left is refused at load rather than silently never firing.
+.PP
+Queries are grouped by the name somebody registered \[u2014] the last two labels, or three under a known registry suffix like \fBco.uk\fR \[u2014] so a thousand subdomains of one tunnel domain count together rather than as a thousand unrelated names. A query for the registered name itself is not measured: there is nothing below it to carry a payload.
+.PP
+\fBpayload_bytes\fR counts each name once per window. Asking for the same long name twice carries no second copy of anything \[u2014] it is a cache miss, not an export \[u2014] and counting it would turn any client that polls a long name into an exfiltration of megabytes. That is what keeps this signal independent of the entropy one rather than a second reading of it.
+.PP
+Every answered query is measured, whatever answered it: from the cache, refused, or failed upstream. A detector that only saw the queries reaching an upstream would be one a client could hide from by being noisy.
+.PP
+\fBmax_tracked\fR is not a tuning knob. The table is keyed on a client and a domain and both are chosen by whoever sends the queries, so the bound is what stops the detector being the denial of service it exists to catch. Windows that have gone quiet are dropped first; when every window is live, further queries go unmeasured and are counted as such (\fBdns_tunnel_tracked\fR, and the evictions in \fBxproxyctl dns\fR).
+.PP
+A detection is a \fBdns_tunnel\fR security event naming the domain, the signals that fired, the queries and the bytes \[u2014] and \fBdns_tunnel\fR is a ban reason, so a trigger can act on it. Counters: \fBdns_tunnels\fR, \fBdns_tunnel_blocked\fR, \fBdns_tunnel_tracked\fR; \fBxproxy_dns_tunnel*\fR metrics.
+.PP
+.RS 4
+.nf
+.ft CR
+dns:
+  upstreams: ["9.9.9.9:53"]
+  tunnel_detection:
+    action: log
+    allow_domains: ["*.avts.mcafee.com", "*.spamhaus.org", "*.sophosxl.net"]
+.ft
+.fi
+.RE
 .SS "server.listeners[].dns.doq"
 .PP
 DNS over QUIC. DoT and DoH both carry DNS over TCP, so they inherit its head\-of\-line blocking: one slow answer holds up every query behind it on the same connection, which is precisely the shape of a resolver\(aqs traffic. DoQ puts each query on its own QUIC stream, so the answers are independent, while keeping DoT\(aqs privacy properties \[u2014] the same certificate, the same server name, no HTTP layer.

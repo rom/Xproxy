@@ -217,10 +217,18 @@ an identifier from the access log to the upstream.
   associations pinned to the client that opened them, and **MASQUE**:
   CONNECT-UDP for datagram traffic and CONNECT-IP for packets through a
   tun device the operator owns, both under the same destination policy,
-  credentials, log and bans as a CONNECT tunnel
+  credentials, log and bans as a CONNECT tunnel. With `intercept` it
+  terminates the TLS inside a tunnel and relays the plaintext, so YARA
+  and everything else that reads bytes can see inside HTTPS — the
+  destination is verified before any certificate is forged, the signing
+  key is refused if anybody but its owner can read it, and
+  `bypass_hosts` names what is never decrypted at all
 - `kind: dns`: a DNS proxy over UDP, TCP, TLS, HTTPS and **QUIC** with
-  DNSSEC validation, a cache, block lists, sinkholes, client allow lists
-  and per client rate limits; it advertises its own encrypted endpoints
+  DNSSEC validation, a cache, block lists, sinkholes, client allow lists,
+  per client rate limits and **tunnelling detection** — query entropy,
+  subdomain cardinality, TXT share, NXDOMAIN rate and encoded bytes,
+  measured per client per registered domain, with several required to
+  agree before anything is called exfiltration; it advertises its own encrypted endpoints
   through RFC 9462 discovery so clients upgrade themselves, and answers
   the SVCB and HTTPS records for the names it fronts, which is the other
   half of Encrypted Client Hello

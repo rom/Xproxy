@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +26,13 @@ import (
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds
 	"github.com/rom/xproxy/internal/fleet"
 	"github.com/rom/xproxy/internal/ingress"
+	_ "github.com/rom/xproxy/internal/kinds/dns"    // listener kind: dns
+	_ "github.com/rom/xproxy/internal/kinds/ftp"    // listener kind: ftp
+	_ "github.com/rom/xproxy/internal/kinds/mqtt"   // listener kind: mqtt
+	_ "github.com/rom/xproxy/internal/kinds/smtp"   // listener kind: smtp
+	_ "github.com/rom/xproxy/internal/kinds/ssh"    // listener kind: ssh
+	_ "github.com/rom/xproxy/internal/kinds/syslog" // listener kind: syslog
+	_ "github.com/rom/xproxy/internal/kinds/tcp"    // listener kind: tcp
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/mgmt"
@@ -73,7 +81,8 @@ func run(args []string) int {
 	}
 	defer logs.Close()
 	slog.SetDefault(logs.Error)
-	logs.Error.Info("starting", "version", version.String(), "config", *cfgPath, "pid", os.Getpid(), "uid", os.Getuid())
+	logs.Error.Info("starting", "version", version.String(), "config", *cfgPath, "pid", os.Getpid(), "uid", os.Getuid(),
+		"kinds", strings.Join(proxy.Registered(), ","))
 	// A warning nobody reads is not a control. The shipped unit runs as
 	// User=xproxy with socket activation for the privileged ports, so
 	// root is a mistake rather than a requirement; an operator who means

@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"math/rand/v2"
 	"net/http"
 	"net/http/httputil"
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/upstream"
+	"math/rand/v2"
 )
 
 // mirror is the compiled routes[].mirror: the pool that receives copies

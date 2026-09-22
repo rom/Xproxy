@@ -1,0 +1,73 @@
+# A resolver that notices data leaving inside the query names.
+#
+# A network can block every outbound port and still leak, because the
+# resolver is the one thing every host may talk to. iodine, dnscat2 and
+# DNSExfiltrator put the payload in the name and take the answer back in
+# a TXT record; the domain is delegated to the other end, so the query
+# reaches them whatever "upstreams" says. Blocking the upstream does
+# nothing about it, and a block list only helps if somebody already knew
+# the name.
+#
+# Validate: xproxy -config examples/blocklists/dns-tunnel.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: resolver
+      address: "10.0.0.5:53"
+      kind: dns
+      dns:
+        upstreams: ["tls://dns.quad9.net:853", "9.9.9.9:53"]
+        allow_clients: ["10.0.0.0/8"]
+        cache: {max_entries: 50000}
+        rate_limit: {qps: 50, burst: 100}
+        tunnel_detection:
+          # Start here. Read the detections for a fortnight before
+          # letting this refuse anything: a false positive under
+          # "block" takes out every name under a registered domain for
+          # whoever tripped it.
+          action: log
+          # No single signal decides. Each one has honest traffic
+          # behind it -- a content delivery network's names really are
+          # random, a reputation service really does answer TXT, a
+          # waking laptop really does produce NXDOMAIN -- and what does
+          # not happen by accident is several at once under one domain
+          # from one client.
+          min_signals: 2
+          window: 5m
+          min_queries: 50
+          # Words sit below 3.6 bits per character; base32 and base64
+          # payloads run near 5 and 6.
+          entropy: 3.6
+          entropy_share: 0.5
+          min_label_length: 12
+          distinct_subdomains: 50
+          txt_share: 0.5
+          nxdomain_share: 0.5
+          payload_bytes: 4096
+          cooldown: 10m
+          # The services that legitimately look exactly like a tunnel,
+          # because they are one: a hash encoded into a name, answered
+          # with TXT. Naming them beats scoring them.
+          allow_domains:
+            - "*.avts.mcafee.com"
+            - "*.spamhaus.org"
+            - "*.sophosxl.net"
+            - "*.sophosupd.com"
+            - "*.senderbase.org"
+          # The table is keyed on a client and a domain, both chosen by
+          # whoever sends the queries. This is the bound that stops the
+          # detector being the attack.
+          max_tracked: 65536
+bans:
+  triggers:
+    # A detection is a strong enough signal to act on the client rather
+    # than the name, and the ban list already knows how to escalate.
+    - {name: dns-exfil, reasons: [dns_tunnel], threshold: 1, window: 1h, duration: 24h}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: unused
+    endpoints: [{address: "127.0.0.1:1"}]
+routes: []

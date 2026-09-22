@@ -290,6 +290,12 @@ func sanitise(s string) string {
 // somewhere in free text, and servers have put them in several
 // different sentences, so the numbers are found rather than the
 // sentence parsed.
+// The address in a passive reply is advisory and this proxy replaces
+// it with the address it is already connected to, so the leniency here
+// is deliberate: servers behind NAT really do advertise 0.0.0.0, and
+// refusing them would break transfers for no gain. Anything that acts
+// on an address parsed from the wire goes through peerAddress first --
+// ParsePORT and ParseEPRT do.
 func ParsePASV(text string) (netip.AddrPort, error) {
 	first := strings.IndexByte(text, '(')
 	last := strings.LastIndexByte(text, ')')
@@ -373,8 +379,38 @@ func ParseEPSV(text string) (int, error) {
 func FormatEPSV(port int) string { return fmt.Sprintf("(|||%d|)", port) }
 
 // ParsePORT reads the address a client announces for active mode.
+//
+// Unlike a passive reply, this address is acted on: it is where the
+// proxy will open a data connection. So it also has to be an address a
+// peer can have. The session checks it against the client's own on top
+// of this, and both checks exist because either alone is one caller
+// away from being forgotten.
 func ParsePORT(arg string) (netip.AddrPort, error) {
-	return ParsePASV(strings.TrimSpace(arg))
+	ap, err := ParsePASV(strings.TrimSpace(arg))
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	return peerAddress(ap)
+}
+
+// peerAddress refuses what cannot be the other end of a connection:
+// the unspecified address, a multicast group, and anything carrying an
+// interface zone, which names an interface on this host rather than a
+// place on the network. A parser that hands one of these back is a
+// parser whose next caller has a bug waiting.
+func peerAddress(ap netip.AddrPort) (netip.AddrPort, error) {
+	a := ap.Addr()
+	if a.Zone() != "" {
+		return netip.AddrPort{}, ErrBadAddress
+	}
+	u := a.Unmap()
+	if !u.IsValid() || u.IsUnspecified() || u.IsMulticast() || ap.Port() == 0 {
+		return netip.AddrPort{}, ErrBadAddress
+	}
+	if u.Is4() && u.As4() == [4]byte{255, 255, 255, 255} {
+		return netip.AddrPort{}, ErrBadAddress
+	}
+	return ap, nil
 }
 
 // FormatPORT writes a PORT argument.
@@ -412,7 +448,7 @@ func ParseEPRT(arg string) (netip.AddrPort, error) {
 	if err != nil || port < 1 || port > 65535 {
 		return netip.AddrPort{}, ErrBadAddress
 	}
-	return netip.AddrPortFrom(addr, uint16(port)), nil //nolint:gosec // bounded above
+	return peerAddress(netip.AddrPortFrom(addr, uint16(port))) //nolint:gosec // bounded above
 }
 
 // FormatEPRT writes an EPRT argument.

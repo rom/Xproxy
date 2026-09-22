@@ -2025,6 +2025,61 @@ zone with its own trust anchor adds a DS line to `trust_anchors`.
 Clients that set CD (debugging with `dig +cd`) get the raw answer.
 `xproxyctl dns` counts secure, insecure and bogus answers per listener.
 
+### Catching a DNS tunnel
+
+```yaml
+server:
+  listeners:
+    - name: resolver
+      address: "10.0.0.5:53"
+      kind: dns
+      dns:
+        upstreams: ["9.9.9.9:53"]
+        allow_clients: ["10.0.0.0/8"]
+        tunnel_detection:
+          action: log
+          allow_domains:
+            - "*.avts.mcafee.com"      # reputation lookups really do look like this
+            - "*.spamhaus.org"
+            - "*.sophosxl.net"
+bans:
+  triggers:
+    - {name: dns-exfil, reasons: [dns_tunnel], threshold: 1, window: 1h, duration: 24h}
+```
+
+A network can block every outbound port and still leak, because the
+resolver is the one thing every host may talk to. Tools like iodine,
+dnscat2 and DNSExfiltrator put the payload in the query name and take
+the answer back in a TXT record; the domain is delegated to the other
+end, so the query reaches them whatever `upstreams` says. Blocking the
+upstream does nothing about it, and a block list only helps if somebody
+already knew the name.
+
+The detector watches the shape of one client's traffic under one
+registered domain and needs several signals to agree — encoded-looking
+names, a new subdomain nearly every query, mostly TXT, mostly NXDOMAIN,
+and the bytes those names carry. Each signal on its own has honest
+traffic behind it, which is why `min_signals` defaults to 2 and why
+setting it to 1 warns.
+
+Start with `action: log` and read the detections:
+
+```sh
+xproxyctl status | grep tunnel
+#   dns resolver tunnel log detections 3 blocked 0 tracked 412 evicted 0
+```
+
+Each one is a `dns_tunnel` security event naming the domain, the signals
+that fired, the queries and the bytes, so it can be argued with rather
+than just believed. Put whatever turns out to be a reputation service or
+telemetry in `allow_domains`, and only then consider `action: block` —
+which answers NXDOMAIN for the whole registered domain, for that client,
+for the cooldown, so a false positive is an outage for them.
+
+The ban trigger above is often the better enforcement: a detection is a
+strong enough signal to act on the client rather than the name, and the
+ban list already knows how to escalate and expire.
+
 ### Encrypted DNS for clients (DoT and DoH)
 
 ```yaml
@@ -2085,6 +2140,84 @@ trigger above, ban a client that keeps probing. Keep the listener on an
 internal address or in front of `tls` with client certificates; a
 forward proxy reachable from the Internet without `auth` is an open
 relay.
+
+### Seeing inside HTTPS (TLS interception)
+
+```yaml
+server:
+  listeners:
+    - name: egress
+      address: "10.0.0.5:3128"
+      kind: forward
+      forward:
+        ports: [80, 443]
+        auth: {users_file: /etc/xproxy/egress.htpasswd}
+        intercept:
+          ca_cert_file: /etc/xproxy/mitm-ca.pem
+          ca_key_file: /etc/xproxy/mitm-ca-key.pem
+          hosts: ["*.example.com", "*.partner.test"]
+          bypass_hosts: ["*.bank.test", "*.nhs.test", "*.tax.test"]
+          yara: {rules_dir: /etc/xproxy/yara}
+```
+
+A `CONNECT` tunnel is opaque: the proxy knows a name, a port and a byte
+count, so the destination policy is the only policy it can apply. The
+rules an estate actually cares about — this file must not leave, that
+binary must not arrive — are written against bytes, and the bytes are
+inside TLS. `intercept` is how they get read: the proxy answers the
+client's handshake with a certificate it signs itself, opens its own
+TLS connection to the destination, and relays the plaintext between the
+two while the scanners see it.
+
+Make the CA and put the certificate — not the key — in the trust store
+of every machine whose traffic this covers:
+
+```sh
+openssl ecparam -name prime256v1 -genkey -noout -out /etc/xproxy/mitm-ca-key.pem
+openssl req -x509 -new -key /etc/xproxy/mitm-ca-key.pem -sha256 -days 825 \
+  -subj "/CN=Example Ltd proxy CA" -out /etc/xproxy/mitm-ca.pem
+chmod 600 /etc/xproxy/mitm-ca-key.pem   # refused otherwise, at check and at start
+```
+
+The order the proxy works in is the security property. It dials the
+destination and **verifies the destination's own certificate first**,
+and only then forges one for it. A client therefore never sees a
+trusted certificate for a server that did not verify — it sees the
+handshake fail, which is what it would have seen with no proxy in the
+way. `verify_upstream: false` turns that off and warns at validation,
+because a proxy that presents a trusted certificate for a server it did
+not check has taken the padlock away from every client behind it and
+left the picture of one.
+
+`bypass_hosts` is consulted before anything is decrypted and beats
+`hosts`. It is where the traffic an estate must not read goes —
+banking, health, tax, anything carrying somebody's own credentials —
+and the reason it is a separate list rather than an exception inside
+`hosts` is that a rule another rule can overtake is not the rule you
+wanted.
+
+Two things are refused rather than guessed at. A tunnel whose first
+bytes are not a TLS ClientHello is passed through untouched, because
+`CONNECT` carries SSH and database protocols too and answering a
+handshake to one of those breaks it for nothing. And a handshake whose
+server name disagrees with the host in the `CONNECT` is closed: a
+tunnel opened to one name and a handshake for another is somebody
+reaching a destination the policy checked against a different one.
+
+What the client ends up verifying carries the real certificate's names,
+so name pinning still works and key pinning still fails, as it should.
+The cache is keyed on the destination's real certificate, so a rotation
+upstream produces a fresh forgery rather than a stale one.
+
+```sh
+xproxyctl status | grep intercept
+# forward_intercepted 184  forward_intercept_refused 2  forward_intercept_passed 11
+```
+
+**Tell people.** Interception is lawful and sensible inside an estate
+that owns the machines and says so in writing; it is not something to
+switch on quietly. `hosts` empty means every destination the listener
+allows, and validation warns about exactly that.
 
 ### SOCKS5 on the same port
 

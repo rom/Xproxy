@@ -5,6 +5,8 @@ import (
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/ftp"
+	"github.com/rom/xproxy/internal/listener"
+	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/syslog"
 	"github.com/rom/xproxy/internal/tmpl"
 	"github.com/rom/xproxy/internal/yara"
@@ -622,7 +624,7 @@ func (v *validator) server(s *Server) {
 				v.syslogListener(p+".syslog", ln.Syslog, ln.TLS != nil)
 			}
 		default:
-			v.errf("%s.kind: must be http, tcp, forward, dns, smtp, mqtt, ssh, ftp or syslog", p)
+			v.errf("%s.kind: must be one of %s", p, strings.Join(listener.Kinds(), ", "))
 		}
 		if ln.Syslog != nil && ln.Kind != "syslog" {
 			v.errf("%s.syslog: set on a %s listener (kind: syslog)", p, ln.Kind)
@@ -1972,6 +1974,7 @@ var denyReasons = map[string]bool{
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
 	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
+	"forward_sni_mismatch": true, "dns_tunnel": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -3599,6 +3602,80 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 	}
 	v.dnsDiscovery(p, d)
 	v.dnsRecords(p, d)
+	v.dnsTunnel(p+".tunnel_detection", d.TunnelDetection)
+}
+
+// dnsTunnel checks the tunnelling detector. The bounds here are not
+// taste: a detector that fires on one signal is a false positive
+// generator, and a detector whose table has no ceiling is the denial of
+// service it exists to catch.
+func (v *validator) dnsTunnel(p string, t *DNSTunnel) {
+	if t == nil {
+		return
+	}
+	if t.Window < Duration(10*time.Second) || t.Window > Duration(time.Hour) {
+		v.errf("%s.window: must be between 10s and 1h", p)
+	}
+	if t.MinQueries < 5 || t.MinQueries > 1_000_000 {
+		v.errf("%s.min_queries: must be between 5 and 1000000", p)
+	}
+	if t.MinSignals < 1 || t.MinSignals > 5 {
+		v.errf("%s.min_signals: must be between 1 and 5", p)
+	}
+	if t.MinSignals == 1 {
+		v.warnf("%s.min_signals: 1 means any single signal is a detection, and each one has honest traffic behind it — a content delivery network's names are random, a reputation service answers TXT, a waking laptop produces NXDOMAIN; expect false positives and keep action: log", p)
+	}
+	if t.Entropy < 0 || t.Entropy > 8 {
+		v.errf("%s.entropy: must be between 0 and 8 bits per character", p)
+	}
+	for name, share := range map[string]float64{
+		"entropy_share": t.entropyShare(), "txt_share": t.txtShare(), "nxdomain_share": t.nxShare(),
+	} {
+		if share < 0 || share > 1 {
+			v.errf("%s.%s: must be a share between 0 and 1", p, name)
+		}
+	}
+	if t.MinLabelLength < 4 || t.MinLabelLength > 63 {
+		v.errf("%s.min_label_length: must be between 4 and 63", p)
+	}
+	if t.distinct() < 0 || t.distinct() > 1_000_000 {
+		v.errf("%s.distinct_subdomains: must be between 0 and 1000000", p)
+	}
+	if t.payloadBytes() < 0 {
+		v.errf("%s.payload_bytes: must not be negative", p)
+	}
+	// A signal switched off is a signal that can never be one of the
+	// min_signals, so a policy asking for more agreement than it has
+	// signals left is one that can never fire at all.
+	live := 0
+	for _, on := range []bool{t.entropyShare() > 0 && t.Entropy > 0, t.distinct() > 0,
+		t.txtShare() > 0, t.nxShare() > 0, t.payloadBytes() > 0} {
+		if on {
+			live++
+		}
+	}
+	if t.MinSignals > live {
+		v.errf("%s.min_signals: %d signals must agree but only %d are switched on, so nothing can ever be detected", p, t.MinSignals, live)
+	}
+	for _, dom := range t.AllowDomains {
+		name := strings.TrimPrefix(strings.TrimPrefix(dom, "*."), "=")
+		if !hostPatternOK(strings.ToLower(strings.TrimSuffix(name, "."))) {
+			v.errf("%s.allow_domains: %q is not a name, *.suffix or =name", p, dom)
+		}
+	}
+	switch t.Action {
+	case "log":
+	case "block":
+		v.warnf("%s.action: block answers NXDOMAIN for a whole registered domain once a client trips the detector, so a false positive takes out every name under it for that client; run it as log until the detections read true", p)
+	default:
+		v.errf("%s.action: must be log or block", p)
+	}
+	if t.Cooldown < Duration(time.Second) || t.Cooldown > Duration(24*time.Hour) {
+		v.errf("%s.cooldown: must be between 1s and 24h", p)
+	}
+	if t.MaxTracked < 64 || t.MaxTracked > 10_000_000 {
+		v.errf("%s.max_tracked: must be between 64 and 10000000", p)
+	}
 }
 
 // dnsDiscovery checks the designated resolver advertisement. Getting
@@ -3776,9 +3853,80 @@ func (v *validator) forwardListener(p string, f *ForwardListener) {
 		// side there is no header a middlebox will strip by accident.
 		v.warnf("%s.socks5: no auth is configured, so anyone who can reach this port can use the proxy; restrict the listener address, the destinations, or add auth", p)
 	}
+	v.forwardIntercept(p+".intercept", f.Intercept)
 	v.masque(p, f)
 	if f.SOCKSUDP {
 		v.warnf("%s.socks_udp: a UDP association relays datagrams for the client that opened it; it is bound to that client's address and dies with the control connection, but it is a wider exposure than a TCP tunnel", p)
+	}
+}
+
+// forwardIntercept checks the TLS interception section. Every check here
+// exists because the feature is the one that replaces a connection the
+// client verified with two connections it cannot see past: what is
+// refused is refused, and what is merely a decision is warned about so
+// it appears in the log somebody reads after the fact.
+func (v *validator) forwardIntercept(p string, ic *ForwardIntercept) {
+	if ic == nil {
+		return
+	}
+	if ic.CACertFile == "" {
+		v.errf("%s.ca_cert_file: required", p)
+	} else {
+		v.file(p+".ca_cert_file", ic.CACertFile)
+	}
+	if ic.CAKeyFile == "" {
+		v.errf("%s.ca_key_file: required", p)
+	} else {
+		v.file(p+".ca_key_file", ic.CAKeyFile)
+		v.privateFile(p+".ca_key_file", ic.CAKeyFile)
+	}
+	for _, d := range ic.Hosts {
+		if !destinationPatternOK(d) {
+			v.errf("%s.hosts: %q is not a name, *.suffix, address or CIDR", p, d)
+		}
+	}
+	for _, d := range ic.BypassHosts {
+		if !destinationPatternOK(d) {
+			v.errf("%s.bypass_hosts: %q is not a name, *.suffix, address or CIDR", p, d)
+		}
+	}
+	if len(ic.Hosts) == 0 {
+		v.warnf("%s.hosts: empty, so every destination this listener allows is decrypted; list the destinations the policy covers, and put what must not be read in bypass_hosts", p)
+	}
+	if ic.VerifyUpstream != nil && !*ic.VerifyUpstream {
+		v.warnf("%s.verify_upstream: false means the proxy does not check the destination's certificate while still presenting a trusted one to the client, which turns every verified connection through this listener into an unverified one with the padlock left in place", p)
+	}
+	if ic.CAFile != "" {
+		v.file(p+".ca_file", ic.CAFile)
+	}
+	switch ic.MinVersion {
+	case "1.2", "1.3":
+	default:
+		v.errf("%s.min_version: must be 1.2 or 1.3", p)
+	}
+	if ic.LeafTTL <= 0 || ic.LeafTTL > Duration(30*24*time.Hour) {
+		v.errf("%s.leaf_ttl: must be positive and at most 720h", p)
+	}
+	if ic.MaxCache < 1 || ic.MaxCache > 1_000_000 {
+		v.errf("%s.max_cache: must be 1..1000000", p)
+	}
+	seen := map[string]bool{}
+	for i, a := range ic.ALPN {
+		switch a {
+		case "http/1.1", "h2":
+		default:
+			v.errf("%s.alpn[%d]: must be http/1.1 or h2", p, i)
+		}
+		if seen[a] {
+			v.errf("%s.alpn[%d]: %q listed twice", p, i, a)
+		}
+		seen[a] = true
+	}
+	if seen["h2"] {
+		v.warnf("%s.alpn: h2 is offered, and the decrypted stream is relayed as a byte stream rather than parsed as HTTP/2; rules written for requests will not see framed messages", p)
+	}
+	if ic.YARA != nil {
+		v.yaraPolicy(p+".yara", ic.YARA)
 	}
 }
 
@@ -4286,28 +4434,33 @@ func (v *validator) file(p, path string) {
 	}
 }
 
+// privateFile refuses a key file anybody but its owner can read. A
+// signing key that can impersonate every site to every client that
+// trusts it is not a file to leave group- or world-readable, and the
+// check belongs here as well as at load: the operator finds out from
+// "xproxy check" rather than from a refused start.
+func (v *validator) privateFile(p, path string) {
+	if !v.fileCheck || !strings.HasPrefix(path, "/") {
+		return
+	}
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return // already reported by file
+	}
+	if st.Mode().Perm()&0o077 != 0 {
+		v.errf("%s: %s is readable by more than its owner (mode %04o); this key can impersonate every site to every client that trusts the CA", p, path, st.Mode().Perm())
+	}
+}
+
 // placeholderRE matches template placeholders, replaced by a token
 // before shape checks that templates would otherwise fail.
 var placeholderRE = regexp.MustCompile(`\$\{[^}]*\}`)
 
-// publicSuffixes lists the common two-label registry suffixes under which
-// anyone can register a name, so "https://*.co.uk" is refused like
-// "https://*.com". It is a safety net, not the public suffix list:
-// operators remain responsible for wildcards under rarer suffixes.
-var publicSuffixes = map[string]bool{
-	"co.uk": true, "org.uk": true, "ac.uk": true, "gov.uk": true, "me.uk": true, "ltd.uk": true, "plc.uk": true, "net.uk": true,
-	"com.au": true, "net.au": true, "org.au": true, "edu.au": true, "gov.au": true, "id.au": true,
-	"co.nz": true, "net.nz": true, "org.nz": true, "co.za": true, "org.za": true, "web.za": true,
-	"co.jp": true, "ne.jp": true, "or.jp": true, "ac.jp": true, "go.jp": true, "co.kr": true, "or.kr": true,
-	"com.cn": true, "net.cn": true, "org.cn": true, "com.hk": true, "com.tw": true, "com.sg": true, "com.my": true,
-	"co.in": true, "net.in": true, "org.in": true, "co.id": true, "com.ph": true, "com.vn": true, "co.th": true,
-	"com.br": true, "net.br": true, "org.br": true, "com.mx": true, "com.ar": true, "com.co": true, "com.pe": true,
-	"com.tr": true, "com.ua": true, "com.pl": true, "com.ru": true, "co.il": true, "com.eg": true, "com.sa": true,
-	"com.ng": true, "co.ke": true, "com.gh": true, "co.tz": true, "com.pk": true, "com.bd": true,
-	"github.io": true, "gitlab.io": true, "herokuapp.com": true, "azurewebsites.net": true, "cloudfront.net": true,
-	"appspot.com": true, "web.app": true, "firebaseapp.com": true, "vercel.app": true, "netlify.app": true, "pages.dev": true,
-	"workers.dev": true, "amazonaws.com": true, "blogspot.com": true, "wordpress.com": true,
-}
+// publicSuffixes is netutil's list, which DNS tunnel detection also
+// reads: a suffix under which anyone can register is a suffix a
+// wildcard origin must not cover, and a suffix a client's queries must
+// not be grouped under.
+var publicSuffixes = netutil.PublicSuffixes
 
 // redirectAuthorityRE matches the literal start a redirect target needs
 // before any placeholder: a scheme (or ${scheme}) and a literal host (or

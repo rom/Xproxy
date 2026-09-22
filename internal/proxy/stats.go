@@ -126,6 +126,10 @@ type Stats struct {
 	SyslogRedacted         atomic.Uint64
 	SyslogSendFailed       atomic.Uint64
 	SyslogConnections      atomic.Uint64
+	Intercepted            atomic.Uint64
+	InterceptRefused       atomic.Uint64
+	InterceptPassed        atomic.Uint64
+	InterceptBytes         atomic.Uint64
 	SSHRecorded            atomic.Uint64
 	SSHRejected            atomic.Uint64
 	SSHAuthFailed          atomic.Uint64
@@ -262,6 +266,9 @@ type Snapshot struct {
 	DNSRefused             uint64            `json:"dns_refused"`
 	DNSDropped             uint64            `json:"dns_dropped"`
 	DNSServFail            uint64            `json:"dns_servfail"`
+	DNSTunnels             uint64            `json:"dns_tunnels"`
+	DNSTunnelBlocked       uint64            `json:"dns_tunnel_blocked"`
+	DNSTunnelTracked       int               `json:"dns_tunnel_tracked"`
 	MirrorDropped          uint64            `json:"mirror_dropped"`
 	MirrorSkipped          uint64            `json:"mirror_skipped"`
 	MirrorFailed           uint64            `json:"mirror_failed"`
@@ -325,6 +332,10 @@ type Snapshot struct {
 	SyslogRedacted         uint64            `json:"syslog_redacted"`
 	SyslogSendFailed       uint64            `json:"syslog_send_failed"`
 	SyslogConnections      uint64            `json:"syslog_connections"`
+	Intercepted            uint64            `json:"forward_intercepted"`
+	InterceptRefused       uint64            `json:"forward_intercept_refused"`
+	InterceptPassed        uint64            `json:"forward_intercept_passed"`
+	InterceptBytes         uint64            `json:"forward_intercept_bytes"`
 	SSHRecorded            uint64            `json:"ssh_recorded"`
 	SSHRejected            uint64            `json:"ssh_rejected"`
 	SSHAuthFailed          uint64            `json:"ssh_auth_failed"`
@@ -492,6 +503,10 @@ func (s *Stats) snapshot() Snapshot {
 		SyslogRedacted:         s.SyslogRedacted.Load(),
 		SyslogSendFailed:       s.SyslogSendFailed.Load(),
 		SyslogConnections:      s.SyslogConnections.Load(),
+		Intercepted:            s.Intercepted.Load(),
+		InterceptRefused:       s.InterceptRefused.Load(),
+		InterceptPassed:        s.InterceptPassed.Load(),
+		InterceptBytes:         s.InterceptBytes.Load(),
 		SSHRecorded:            s.SSHRecorded.Load(),
 		SSHRejected:            s.SSHRejected.Load(),
 		SSHAuthFailed:          s.SSHAuthFailed.Load(),

@@ -1713,6 +1713,52 @@ serves; compare it with the `ech` value here. A mismatch means clients
 fall back to the public name on every attempt, which looks healthy and
 encrypts nothing.
 
+## DNS tunnel detection
+
+**Nothing is ever detected.** Check `tracked` in `xproxyctl status`: if
+it is zero the detector is seeing nothing, which usually means the
+clients resolve somewhere else. If it is climbing but `detections` stays
+at zero, the traffic is not agreeing on enough signals — lower
+`min_signals` to 1 *temporarily* to see which one fires on its own, then
+put it back. A real tunnel trips three or four.
+
+**Everything is detected.** Almost always `min_signals: 1`, or a
+threshold pulled down far enough that ordinary traffic clears it. The
+detection names the signals that fired; if the same one name keeps
+appearing and it is a reputation service, an antivirus lookup or a
+telemetry endpoint, that is what `allow_domains` is for. Those services
+genuinely do encode a hash into a name and answer TXT — they are DNS
+tunnels by design, just consensual ones.
+
+**A whole domain stopped resolving for one machine.** That is
+`action: block` doing what it says: a detection refuses every name under
+the registered domain, for the client it was detected for, until
+`cooldown` ends. Look for the `dns_tunnel` security event with that
+client and domain. If it was wrong, add the domain to `allow_domains`
+and go back to `action: log` while the thresholds are retuned.
+
+**`tracked` sits at `max_tracked` and `evicted` climbs fast.** The table
+is keyed on a client and a domain, both chosen by whoever sends the
+queries, so a client walking through random domains fills it on purpose.
+The bound is holding, which is the intended behaviour, but queries past
+it go unmeasured: raise `max_tracked` if the resolver has the memory, and
+look at which client is generating the cardinality — it is the one worth
+investigating.
+
+**Detections name a domain that is not the tunnel.** Queries are grouped
+by the registered name: the last two labels, or three under a known
+registry suffix. The suffix list is a safety net rather than the full
+public suffix list, so under an unusual registry the grouping can be one
+label too coarse. The client and the signals are still right even when
+the name is grouped high.
+
+**A tunnel over DoT, DoH or DoQ is not caught.** It is — every answered
+query on the listener is measured whatever transport carried it. But a
+client that resolves through a *different* encrypted resolver is not
+using this listener at all, which is a network policy question rather
+than a detector one: block outbound 853 and the known DoH endpoints, or
+serve the discovery records so clients upgrade to this resolver instead.
+
 ## Forward proxy, layer 4 and QUIC
 
 **`CONNECT` refused with `forward_denied`.** The destination is not in
@@ -1781,6 +1827,60 @@ within the pending-datagram bound, is dropped.
 **HTTP/3 clients fall back to HTTP/2.** Check that the UDP port is
 actually reachable (it is a different socket from TCP), and that
 `Alt-Svc` is being served.
+
+## TLS interception
+
+**Every intercepted site fails with a certificate error in the
+browser.** The client does not trust the interception CA. Install
+`ca_cert_file` — the certificate, never the key — in the trust store of
+the machine, and remember that Firefox, Java and Node each keep their
+own store separate from the system one. `forward_intercept_refused`
+climbs and the tunnel closes right after the CONNECT succeeds.
+
+**The proxy refuses to start: "readable by more than its owner".** The
+signing key can impersonate every site to every client that trusts the
+CA, so `ca_key_file` must be mode 0600 and owned by the user the proxy
+runs as. `xproxy check` says the same thing before a restart does.
+
+**One site fails while the rest work.** Look at the security log for
+`forward_upstream_tls`: the destination's own certificate did not
+verify against `ca_file` (or the system store), and the proxy refuses
+to forge a certificate for a server it could not check. That is the
+intended behaviour — it is the same failure the client would have had
+without the proxy. If the destination legitimately uses a private CA,
+add it to `ca_file`; do not reach for `verify_upstream: false`, which
+turns the check off for every destination at once.
+
+**A site works through the proxy but not when intercepted, and the
+error is about the protocol rather than the certificate.** `alpn`
+defaults to `http/1.1` alone on purpose. If you added `h2`, the
+decrypted stream is relayed as bytes and not parsed as HTTP/2, which
+some sites survive and some do not; validation warns about it.
+
+**Something that is not a browser stops working through the tunnel.**
+If it is not speaking TLS at all it is passed through untouched
+(`forward_intercept_passed` climbs) and interception is not the cause.
+If it is speaking TLS and pinning a key — mobile apps, some agents —
+then it is working exactly as designed and the destination belongs in
+`bypass_hosts`.
+
+**`forward_sni_mismatch` in the security log.** The handshake inside
+the tunnel named a different host from the `CONNECT`. Ordinary clients
+never do this; treat it as somebody trying to reach a destination the
+policy checked against another name. A `CONNECT` to a bare address is
+not subject to the check — the address is what the policy checked and
+where the bytes go, and the name only picks a virtual host there.
+
+**Nothing is intercepted at all.** Check `hosts` — a name there matches
+the host in the CONNECT, not the address behind it — and check that the
+destination is not also in `bypass_hosts`, which is consulted first and
+wins. `forward_intercepted` staying at zero while `forward_tunnels`
+climbs is that.
+
+**YARA rules do not fire on HTTPS.** They only see what is decrypted,
+so the destination has to be intercepted, and `directions` has to
+include the side the bytes are on: `client` for what leaves,
+`upstream` for what arrives.
 
 ## SMTP listener
 
@@ -2962,8 +3062,11 @@ innocent.
 | `shed` | Load shedding (`detail` is the class) | no |
 | `filter` | Any other filter (`detail` is the filter name) | no |
 | `forward_denied`, `forward_auth` | The forward proxy | yes |
+| `forward_sni_mismatch` | TLS interception: the handshake inside a tunnel named a host the `CONNECT` did not | yes |
+| `forward_upstream_tls` | TLS interception: the destination's own certificate did not verify, so nothing was forged for it | no (it is the destination's fault, not the client's) |
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
+| `dns_tunnel` | A client's queries under one domain agreed on enough tunnelling signals, or a query was refused during the cooldown after that | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
 | `yara` | A YARA rule fired on a layer 4 stream with `action: close` | yes |
 | `syslog_denied` | The syslog relay: a refused sender, a message it could not parse, one over the bound, or a stream whose framing could not be read | yes |

@@ -12,7 +12,75 @@ A fifth audit round over every parser the data plane runs — binary and
 wire formats, HTTP and text protocols, structured data — and the open
 findings of rounds one to four. All with regression tests.
 
+The round was extended over the parsers added since it began: the TLS
+ClientHello reader that feeds certificate issuance, RFC 5424 structured
+data, the FTP address negotiations, the gRPC framing and protobuf walk,
+and the DNS name handling the tunnel detector added a caller to. Each
+got a hostile test file, and the framing and text formats got fuzz
+targets with round-trip properties — several million executions each,
+which is where the first two below came from.
+
 Parsers:
+
+- **A ClientHello's server name was handed back exactly as the client
+  wrote it**, and TLS interception then put it in a certificate's
+  subject, its SAN, the server name of the upstream handshake and the
+  key of a cache. Nothing checked it was a name: 254 characters, a
+  space, a NUL, a newline, an empty label and bytes above ASCII all
+  came through. The mismatch check against the CONNECT authority hid
+  most of it, but not on a CONNECT to a bare address, where that check
+  does not apply — so one tunnel to an intercepted address was an
+  arbitrary string into all four (CWE-20). A name is now a name (at
+  most 253 bytes, labels at most 63, IA5 or an IP literal) or it is
+  not returned, and `Leaf` refuses to sign for anything else rather
+  than trusting its caller to have looked. The destination's own SANs
+  are filtered the same way before being copied: a server that puts a
+  space or three hundred characters in its certificate must not have
+  that copied into one this proxy signs.
+
+- **An RFC 5424 structured data element with no parameters could not be
+  read, and swallowed the element after it.** `[id]` is valid (section
+  6.3) and the relay's own formatter writes it, so two of these in a
+  chain dropped the record at the second — but the reason was worse
+  than the symptom: the id was taken up to either delimiter and the
+  closing bracket then looked for after it had already been consumed,
+  which sent the parser into the *next* element to find a parameter
+  there. `[a][b@2 k="v"]` became one element `a` with a parameter named
+  `[b@2 k`. Structured data is where provenance lives — including the
+  element this relay adds recording where a message really came from —
+  so a sender could merge that annotation into an element of its own
+  and make it unreadable downstream (CWE-115). The parser now reads
+  which delimiter ended the id, and ids and parameter names must be
+  SD-NAMEs: one to thirty-two printable characters, none of them a
+  space, `=`, `]`, `"` or `[`.
+
+- **FTP address parsing returned addresses that cannot be a peer**: the
+  unspecified address, multicast, broadcast, and addresses carrying an
+  interface zone. The session checks a client's `PORT` and `EPRT`
+  against the client's own address, so nothing was reachable through
+  it, but a parser that answers "0.0.0.0:1025 is a data connection" is
+  a bug waiting for its next caller. `ParsePORT` and `ParseEPRT` — the
+  two whose address is acted on — now refuse them. `ParsePASV` stays
+  lenient on purpose and says so: its address is advisory, the proxy
+  dials the server it is already connected to, and servers behind NAT
+  really do advertise `0.0.0.0`.
+
+- **DNS names were folded with `strings.ToLower`.** DNS case
+  insensitivity is ASCII only (RFC 4343) and a label may hold any byte
+  (RFC 1035 section 3.1), so Unicode folding is wrong twice: it maps
+  characters DNS treats as distinct onto one another — the Kelvin sign
+  lowers to `k` — and on bytes that are not valid UTF-8 it yields the
+  replacement character, so every such byte became the same three and
+  two different names folded to one string longer than either. That
+  string is the cache key, the block list comparison, the canonical
+  name a signature is verified over and the name an NSEC3 denial is
+  hashed from. Nothing reached it, because the label check refuses any
+  byte outside printable ASCII first — this is the hole that check was
+  covering, not a hole — but the check is in a different function from
+  every one of those uses, and the registrable-domain helper the tunnel
+  detector added is exported with no check in front of it at all. All
+  of them now fold in ASCII, and the gate has a test of its own so a
+  future loosening of it fails loudly.
 
 - The JSON Schema validator resolved `$ref` by writing a map on the
   request path. A validator is built once per route and shared by every
@@ -297,6 +365,122 @@ Open findings of the earlier rounds:
   against a real origin.
 
 ### Added (1.4)
+
+- **DNS tunnelling and exfiltration detection
+  (`dns.tunnel_detection`).** A network can block every outbound port
+  and still leak, because the resolver is the one thing every host may
+  talk to. iodine, dnscat2 and DNSExfiltrator put the payload in the
+  query name and take the answer back in a TXT record, and the domain
+  is delegated to the other end, so the query reaches them whatever
+  `upstreams` says: blocking the upstream does nothing, and a block
+  list only helps if somebody already knew the name.
+
+  What gives it away is the shape of one client's traffic under one
+  registered domain: names carrying more information per character than
+  words do, hundreds of distinct subdomains where a service has a
+  handful, answers that are mostly TXT, a high rate of NXDOMAIN, and
+  the bytes those names carry. All five are measured per client per
+  domain over a window, and `min_signals` (default 2) says how many
+  have to agree.
+
+  That setting is the whole design. Each signal alone has honest
+  traffic behind it — a content delivery network's hostnames really are
+  random, a reputation service really does encode a hash into a name
+  and answer TXT, a laptop waking up really does produce a burst of
+  NXDOMAIN — so a detector that fires on one is a false positive
+  generator. `min_signals: 1` is allowed and warns. The detection
+  records which signals fired rather than a score, because a number
+  nobody can decompose is a number nobody can argue with.
+
+  Two things keep the signals from being one signal counted twice. The
+  payload total counts each name once per window: asking for the same
+  long name again carries no second copy of anything, and counting it
+  would turn any client polling a long name into an exfiltration of
+  megabytes. And entropy is measured per label with the longest
+  deciding, because a tunnel hides its payload behind an ordinary
+  looking prefix as often as not and an average over the whole name
+  would let the prefix hide it.
+
+  Queries are grouped by the name somebody registered, so a thousand
+  subdomains of one tunnel domain count together. Every answered query
+  is measured whatever answered it — cache, refusal, upstream failure
+  — because a detector that only saw what reached an upstream is one a
+  client could hide from by being noisy. `allow_domains` names the
+  services that legitimately look exactly like this. The table is
+  keyed on a client and a domain, both chosen by whoever sends the
+  queries, so `max_tracked` is not a tuning knob but the thing that
+  stops the detector being the denial of service it exists to catch;
+  past it, queries go unmeasured and are counted as such rather than
+  evicting a detection in progress.
+
+  The five signals that can be switched off take a pointer, so a `0` an
+  operator wrote means off rather than being mistaken for an absent key
+  and given its default back — and a policy that switches signals off
+  while asking for more agreement than it has left is refused at load
+  instead of silently never firing. `action` is `log` by default;
+  `block` answers NXDOMAIN for the whole registered domain for that
+  client until the cooldown ends, and warns. `dns_tunnel` is a ban
+  reason, which is usually the better enforcement: a detection is a
+  strong enough signal to act on the client rather than the name.
+  `examples/blocklists/dns-tunnel.yaml`.
+
+- **TLS interception on the forward proxy
+  (`forward.intercept`).** A CONNECT tunnel is opaque by design: the
+  proxy knew a name, a port and a byte count, so the destination policy
+  was the only policy it could apply. Every rule an estate actually has
+  — this file must not leave, that binary must not arrive — is written
+  against bytes, and the bytes were inside TLS. The proxy now answers
+  the client's handshake with a certificate it signs itself, opens its
+  own TLS connection to the destination, and relays the plaintext
+  between the two, where the YARA rules and everything else that reads
+  bytes can see it in both directions.
+
+  This is the one feature here that makes a proxy less safe if it is
+  built carelessly, because it replaces a connection the client
+  verified end to end with two connections the client cannot see past.
+  Three things follow, and none of them is optional.
+
+  The destination is dialled and verified first, and only then is a
+  certificate forged for it. A client never sees a trusted certificate
+  for a server whose own certificate did not verify — it sees the
+  handshake fail, which is what it would have seen with no proxy in the
+  way. A proxy that gets this backwards takes the padlock away from
+  every client behind it and leaves the picture of one.
+  `verify_upstream: false` exists as a key so that turning it off is a
+  decision somebody wrote down, and it warns at validation.
+
+  The signing key can impersonate every site to every client that
+  trusts the CA, so it is refused — at `xproxy check` and again at
+  startup — if anybody but its owner can read it. The CA itself has to
+  be a CA, has to carry `keyCertSign`, and has to not have expired.
+
+  And some traffic must not be read at all, whatever the estate's
+  policy says: banking, health, anything carrying somebody's own
+  credentials. `bypass_hosts` is where that is written and it is
+  consulted before anything is decrypted, because a rule another rule
+  can overtake is not the rule you wanted.
+
+  Two things are refused rather than guessed at. A tunnel whose first
+  bytes are not a ClientHello is spliced through untouched — CONNECT
+  carries SSH and database protocols too, and answering a handshake to
+  one of those breaks it for nothing. And a handshake whose server name
+  disagrees with the host in the CONNECT is closed and counted as a ban
+  reason: a tunnel opened to one name and a handshake for another is
+  somebody reaching a destination the policy checked against a
+  different one. Reading that name meant reading the whole ClientHello
+  record rather than its first few bytes, which is where the extension
+  lives.
+
+  The issued certificate carries the real certificate's names — SANs,
+  IP addresses, common name — so a client pinning a name still works
+  and one pinning a key still fails, as it should; the bounded cache is
+  keyed on the destination's real certificate, so a rotation upstream
+  produces a fresh forgery rather than a stale one; and `alpn` defaults
+  to `http/1.1` alone, because a stream the proxy relays is one it has
+  to be able to read. `forward_intercepted`,
+  `forward_intercept_refused`, `forward_intercept_passed` and
+  `forward_intercept_bytes` count it, with a `forward_intercept` access
+  line per connection. `examples/forward/intercept.yaml`.
 
 - **Authorisation, as one policy rather than one per filter (`kind:
   authz`).** Every authenticating filter here answered "who":

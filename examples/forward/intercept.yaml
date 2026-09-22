@@ -1,0 +1,83 @@
+# An egress proxy that sees inside HTTPS.
+#
+# A CONNECT tunnel is opaque: the proxy knows a name, a port and a byte
+# count. The rules an estate actually cares about — this file must not
+# leave, that binary must not arrive — are written against bytes, and
+# the bytes are inside TLS. This configuration terminates that TLS,
+# scans the plaintext, and re-encrypts to the real destination.
+#
+# Before it works, every machine behind the proxy has to trust the CA
+# certificate (the certificate; never the key):
+#   openssl ecparam -name prime256v1 -genkey -noout -out /etc/xproxy/mitm-ca-key.pem
+#   openssl req -x509 -new -key /etc/xproxy/mitm-ca-key.pem -sha256 -days 825 \
+#     -subj "/CN=Example Ltd proxy CA" -out /etc/xproxy/mitm-ca.pem
+#   chmod 600 /etc/xproxy/mitm-ca-key.pem
+#
+# And before that, somebody has to have written down that this is
+# happening and told the people it happens to.
+#
+# Validate: xproxy -config examples/forward/intercept.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: egress
+      address: "10.0.0.5:3128"
+      kind: forward
+      forward:
+        ports: [80, 443]
+        auth: {users_file: /etc/xproxy/egress.htpasswd, realm: egress}
+        allow_private: false          # the SSRF guard: keep it off
+        connect_timeout: 10s
+        idle_timeout: 5m
+        max_tunnels: 2000
+        intercept:
+          # The signing identity. The key can impersonate every site to
+          # every client that trusts it, so the proxy refuses to start
+          # if anybody but its owner can read the file.
+          ca_cert_file: /etc/xproxy/mitm-ca.pem
+          ca_key_file: /etc/xproxy/mitm-ca-key.pem
+          # What is read. Listing it is the point: an empty list means
+          # everything the listener allows, and validation warns.
+          hosts:
+            - "*.example.com"
+            - "*.partner.test"
+            - "*.githubusercontent.com"
+          # What is never read, whatever the list above says. This is
+          # checked first and wins. Somebody's bank, their doctor and
+          # the tax office are not the estate's business.
+          bypass_hosts:
+            - "*.bank.test"
+            - "*.nhs.uk"
+            - "*.hmrc.gov.uk"
+            - "*.tax.test"
+          # The destination is verified before anything is forged, so a
+          # client never sees a trusted certificate for a server that
+          # did not verify. Turning this off would hand every client a
+          # padlock the proxy did not earn.
+          verify_upstream: true
+          min_version: "1.2"
+          # http/1.1 alone on purpose: a stream the proxy relays is one
+          # it has to be able to read.
+          alpn: ["http/1.1"]
+          leaf_ttl: 24h
+          max_cache: 4096
+          # The reason for decrypting at all.
+          yara:
+            rules_dir: /etc/xproxy/yara
+            action: close
+            directions: [client, upstream]
+bans:
+  triggers:
+    - {name: egress-probing, reasons: [forward_denied], threshold: 20, window: 5m, duration: 1h}
+    - {name: egress-auth, reasons: [forward_auth], threshold: 10, window: 5m, duration: 1h}
+    # A handshake inside a tunnel that names a different host from the
+    # CONNECT. No ordinary client does this.
+    - {name: egress-sni, reasons: [forward_sni_mismatch], threshold: 5, window: 5m, duration: 1h}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: unused
+    endpoints: [{address: "127.0.0.1:1"}]
+routes: []

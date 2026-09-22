@@ -1,9 +1,8 @@
 package proxy
 
 import (
-	"math/rand/v2"
-
 	"github.com/rom/xproxy/internal/config"
+	"math/rand/v2"
 )
 
 // accessLogPolicy holds the access-log sampling and field-selection

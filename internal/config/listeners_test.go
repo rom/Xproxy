@@ -73,7 +73,7 @@ routes:
 	cases := []struct {
 		name, snippet, want string
 	}{
-		{"unknown kind", "    - {name: x, address: \":1\", kind: udp}\n", "must be http, tcp, forward, dns, smtp, mqtt, ssh, ftp or syslog"},
+		{"unknown kind", "    - {name: x, address: \":1\", kind: udp}\n", "must be one of dns, forward, ftp, http, mqtt, smtp, ssh, syslog, tcp"},
 		{"tcp block on http", "    - {name: x, address: \":1\", tcp: {default: app}}\n", "set on an http listener"},
 		{"forward block on http", "    - {name: x, address: \":1\", forward: {}}\n", "set on an http listener"},
 		{"proxy protocol needs trusted proxies", "    - {name: x, address: \":1\", proxy_protocol: true}\n", "needs trusted_proxies"},

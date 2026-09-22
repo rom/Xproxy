@@ -932,6 +932,82 @@ type DNSListener struct {
 	// most usefully the ECH configuration of a name this proxy
 	// terminates.
 	Records []DNSRecord `yaml:"records"`
+	// TunnelDetection watches for data leaving inside the query names.
+	TunnelDetection *DNSTunnel `yaml:"tunnel_detection"`
+}
+
+// DNSTunnel configures detection of data leaving inside DNS queries.
+//
+// A tunnel puts its payload in the name — a few dozen encoded
+// characters per label — and takes the answer back in a TXT record.
+// The domain is delegated to the other end, so every query reaches
+// them whatever this resolver forwards to: blocking the upstream does
+// nothing, and a block list only helps if somebody already knew the
+// name.
+//
+// No single signal decides here, because each one has honest traffic
+// behind it. A content delivery network's names really are random. A
+// reputation service really does encode a hash into a name and answer
+// TXT. A laptop waking up really does produce a burst of NXDOMAIN.
+// What does not happen by accident is several of them at once, under
+// one registered domain, from one client — which is what min_signals
+// says out loud instead of burying it in a weighting nobody can read.
+type DNSTunnel struct {
+	// Window is the period the signals are measured over. Default 5m.
+	Window Duration `yaml:"window"`
+	// MinQueries is how many queries a client must send under one
+	// domain before any judgement is made. Default 50: below it there
+	// is not enough to be wrong about.
+	MinQueries int `yaml:"min_queries"`
+	// MinSignals is how many signals must fire together. Default 2.
+	// One is a false positive generator; this is the setting that
+	// decides whether this feature helps or cries wolf.
+	MinSignals int `yaml:"min_signals"`
+	// Entropy is the bits per character at which a label is counted as
+	// encoded rather than named. Default 3.6: words sit below it, and
+	// base32 and base64 payloads run near 5 and 6.
+	Entropy float64 `yaml:"entropy"`
+	// EntropyShare is the share of a domain's queries that must reach
+	// it. Default 0.5; an explicit 0 switches the signal off.
+	EntropyShare *float64 `yaml:"entropy_share"`
+	// MinLabelLength is the shortest label measured. Default 12: a
+	// short string cannot carry much and its entropy is mostly noise.
+	MinLabelLength int `yaml:"min_label_length"`
+	// DistinctSubdomains is the cardinality under one domain that
+	// belongs to a tunnel rather than a service. Default 50; an
+	// explicit 0 switches the signal off.
+	DistinctSubdomains *int `yaml:"distinct_subdomains"`
+	// TXTShare is the share of queries asking for the record types a
+	// tunnel returns data in (TXT, NULL, CNAME, MX, SRV). Default 0.5;
+	// an explicit 0 switches the signal off.
+	TXTShare *float64 `yaml:"txt_share"`
+	// NXDOMAINShare is the share answering NXDOMAIN. Default 0.5; an
+	// explicit 0 switches the signal off.
+	NXDOMAINShare *float64 `yaml:"nxdomain_share"`
+	// PayloadBytes is the encoded bytes below the domain in a window,
+	// counting each name once: the exfiltration itself rather than a
+	// proxy for it. Default 4096; an explicit 0 switches the signal off.
+	//
+	// These five are pointers so that a 0 an operator wrote means what
+	// it says. A plain zero value cannot be told apart from a key that
+	// was never set, and a signal silently switched back on is a
+	// detector doing something other than what its configuration reads.
+	PayloadBytes *int64 `yaml:"payload_bytes"`
+	// AllowDomains are never judged, in the forms the block list takes.
+	// Reputation services, antivirus lookups and telemetry that
+	// legitimately look exactly like this belong here.
+	AllowDomains []string `yaml:"allow_domains"`
+	// Action is log (default) or block. block answers NXDOMAIN for the
+	// detected domain, for the client it was detected for, until the
+	// cooldown runs out.
+	Action string `yaml:"action"`
+	// Cooldown is how long that lasts. Default 10m.
+	Cooldown Duration `yaml:"cooldown"`
+	// MaxTracked bounds the windows held. Default 65536. The key is a
+	// client and a domain and both are chosen by whoever sends the
+	// queries, so this is not a tuning knob but the thing that stops
+	// the detector being the attack.
+	MaxTracked int `yaml:"max_tracked"`
 }
 
 // DNSDesignated is one encrypted endpoint advertised by discovery.
@@ -1101,6 +1177,9 @@ type ForwardListener struct {
 	AllowPrivate bool `yaml:"allow_private"`
 	// Auth requires Proxy-Authorization Basic credentials.
 	Auth *ForwardAuth `yaml:"auth"`
+	// Intercept terminates TLS inside a CONNECT tunnel, so the proxy
+	// sees the requests rather than only the destination.
+	Intercept *ForwardIntercept `yaml:"intercept"`
 	// ConnectTimeout bounds the dial to the destination. Default 10s.
 	ConnectTimeout Duration `yaml:"connect_timeout"`
 	// IdleTimeout closes a tunnel with no bytes in either direction.
@@ -1147,6 +1226,70 @@ type Masque struct {
 	// IPRoutes are the ranges a client may send to; packets to
 	// anything else are dropped.
 	IPRoutes []string `yaml:"ip_routes"`
+}
+
+// ForwardIntercept terminates TLS inside a CONNECT tunnel: the proxy
+// answers the client's handshake with a certificate it signs itself,
+// opens its own TLS connection to the destination, and relays what
+// passes between them in clear.
+//
+// This is the one feature here that makes a proxy less safe if it is
+// built carelessly, because it replaces a connection the client
+// verified end to end with two connections the client cannot see past.
+// Three things follow, and none of them is optional:
+//
+// The proxy verifies the real server itself, with the ordinary rules,
+// and a client only ever sees a forged certificate for a server whose
+// own certificate verified. verify_upstream exists as a key so that
+// turning it off is a decision somebody wrote down; it warns loudly,
+// because an interception proxy that does not verify turns every
+// client's verified connection into an unverified one while leaving
+// the padlock in place.
+//
+// The signing key can impersonate every site to every client that
+// trusts the CA. It is refused if anybody but its owner can read it.
+//
+// And some traffic must not be read at all, whatever the estate's
+// policy is. bypass_hosts is where that is written, and it is checked
+// before anything is decrypted.
+type ForwardIntercept struct {
+	// CACertFile and CAKeyFile are the signing identity. Clients have
+	// to trust the certificate, which is what makes this visible to
+	// the people whose traffic it reads.
+	CACertFile string `yaml:"ca_cert_file"`
+	CAKeyFile  string `yaml:"ca_key_file"`
+	// Hosts are the destinations to intercept: a name, *.suffix, or a
+	// CIDR. Empty intercepts every destination the listener allows,
+	// which is a large decision to leave implicit — it warns.
+	Hosts []string `yaml:"hosts"`
+	// BypassHosts are never intercepted, whatever hosts says. This is
+	// where the traffic an estate must not read goes: banking, health,
+	// anything carrying somebody's own credentials.
+	BypassHosts []string `yaml:"bypass_hosts"`
+	// VerifyUpstream verifies the destination's certificate with the
+	// ordinary rules. Default true, and false warns.
+	VerifyUpstream *bool `yaml:"verify_upstream"`
+	// CAFile is the roots the destination is verified against. Empty
+	// uses the system store.
+	CAFile string `yaml:"ca_file"`
+	// MinVersion of the TLS the proxy speaks to the destination.
+	// Default 1.2.
+	MinVersion string `yaml:"min_version"`
+	// LeafTTL is how long an issued certificate is valid. Default 24h:
+	// a forged certificate that outlives the proxy that made it is one
+	// somebody else can still be holding.
+	LeafTTL Duration `yaml:"leaf_ttl"`
+	// MaxCache bounds the issued certificates kept in memory. Default
+	// 1024.
+	MaxCache int `yaml:"max_cache"`
+	// ALPN is what the proxy offers the destination and accepts from
+	// the client. Default ["http/1.1"]: a stream the proxy relays is
+	// one it has to be able to read, and offering h2 without reading
+	// h2 is how an interception proxy breaks a site.
+	ALPN []string `yaml:"alpn"`
+	// YARA scans the decrypted stream, which is the point of doing any
+	// of this.
+	YARA *YARAPolicy `yaml:"yara"`
 }
 
 // ForwardAuth is the credential source of a forward listener.
@@ -4012,4 +4155,32 @@ var DefaultSSHEnv = []string{"TERM", "LANG", "LC_*"}
 var SSHFileTransferCommands = map[string]bool{
 	"scp": true, "rsync": true, "sftp-server": true, "internal-sftp": true,
 	"lftp": true, "rclone": true,
+}
+
+// Effective values of the tunnel signals that may be switched off. A
+// nil pointer never reaches these -- defaults fill them in -- but they
+// hold anyway, so a configuration assembled another way cannot make the
+// detector read a nil.
+func (t *DNSTunnel) entropyShare() float64 { return derefFloat(t.EntropyShare) }
+func (t *DNSTunnel) txtShare() float64     { return derefFloat(t.TXTShare) }
+func (t *DNSTunnel) nxShare() float64      { return derefFloat(t.NXDOMAINShare) }
+func (t *DNSTunnel) distinct() int {
+	if t.DistinctSubdomains == nil {
+		return 0
+	}
+	return *t.DistinctSubdomains
+}
+
+func (t *DNSTunnel) payloadBytes() int64 {
+	if t.PayloadBytes == nil {
+		return 0
+	}
+	return *t.PayloadBytes
+}
+
+func derefFloat(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }

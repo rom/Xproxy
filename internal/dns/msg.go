@@ -9,6 +9,7 @@ package dns
 import (
 	"encoding/binary"
 	"errors"
+	"github.com/rom/xproxy/internal/netutil"
 	"strings"
 )
 
@@ -21,10 +22,13 @@ const (
 	TypePTR   = 12
 	TypeMX    = 15
 	TypeTXT   = 16
-	TypeAAAA  = 28
-	TypeOPT   = 41
-	TypeANY   = 255
-	ClassIN   = 1
+	// TypeNULL (RFC 1035) exists to carry anything at all and is used
+	// by nothing but tunnels, which is why it is named here.
+	TypeNULL = 10
+	TypeAAAA = 28
+	TypeOPT  = 41
+	TypeANY  = 255
+	ClassIN  = 1
 
 	RcodeNoError  = 0
 	RcodeFormErr  = 1
@@ -152,7 +156,7 @@ func readName(b []byte, off int) (string, int, error) {
 			if end < 0 {
 				end = off
 			}
-			return strings.ToLower(strings.Join(labels, ".")), end, nil
+			return netutil.ASCIILower(strings.Join(labels, ".")), end, nil
 		case l&0xc0 == 0xc0:
 			if off+1 >= len(b) {
 				return "", 0, ErrShort

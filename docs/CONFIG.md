@@ -65,7 +65,7 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
-| `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; not on `kind: tcp` (which forwards a header instead) or `dns`. |
+| `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `smtp`, `mqtt`, `ftp` and `syslog`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead) or `dns`. |
 | `kind` | `http`, `tcp`, `forward`, `dns`, `smtp`, `mqtt`, `ssh` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy and `ssh` an SSH bastion; see below |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 
@@ -190,6 +190,102 @@ connection limits and the header timeouts apply as on every listener.
 | `socks5` | bool | `false` | Also speak SOCKS5 (RFC 1928) on this port; see below |
 | `socks_udp` | bool | `false` | Allow SOCKS5 `UDP ASSOCIATE` (requires `socks5`) |
 | `masque` | object | none | UDP and IP proxying over extended CONNECT (RFC 9298, RFC 9484); see below |
+| `intercept` | object | none | Terminate TLS inside a CONNECT tunnel and read what passes through it; see below |
+
+#### TLS interception on a forward listener
+
+A CONNECT tunnel is opaque by design: the proxy sees a name and a byte
+count and nothing else, so a destination policy is the only policy it
+can apply. `intercept` changes that. The proxy answers the client's
+handshake with a certificate it signs itself, opens its own TLS
+connection to the destination, and relays the plaintext between the two
+— which is what lets YARA rules, and everything else that reads bytes,
+see inside HTTPS.
+
+This is the one feature here that makes a proxy *less* safe if it is
+built carelessly, because it replaces a connection the client verified
+end to end with two connections the client cannot see past. Three
+things follow from that, and none of them is optional.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ca_cert_file` | path | required | The signing certificate clients have to trust; it must be a CA with `keyCertSign` and must not have expired |
+| `ca_key_file` | path | required | Its private key; refused, at validation and at load, if anybody but its owner can read it |
+| `hosts` | list | `[]` (all) | Destinations to intercept: a name, `*.suffix`, an address or a CIDR; empty intercepts everything the listener allows, which warns |
+| `bypass_hosts` | list | `[]` | Destinations never intercepted, whatever `hosts` says; checked first and wins |
+| `verify_upstream` | bool | `true` | Verify the destination's own certificate with the ordinary rules; `false` warns loudly |
+| `ca_file` | path | system store | Roots the destination is verified against |
+| `min_version` | `1.2`\|`1.3` | `1.2` | Lowest TLS version the proxy speaks to the destination |
+| `leaf_ttl` | duration | `24h` | Validity of an issued certificate; at most 720h |
+| `max_cache` | int | `1024` | Issued certificates kept in memory; the oldest are dropped |
+| `alpn` | list | `["http/1.1"]` | Offered to the destination and accepted from the client; `h2` warns |
+| `yara` | object | none | Rules over the decrypted stream, with the same keys as everywhere else |
+
+**The destination is verified first, and only then is a certificate
+forged.** A client never sees a forged certificate for a server whose
+own certificate did not verify — it sees the handshake fail, which is
+what it would have seen with no proxy in the way. An interception proxy
+that gets this backwards turns every verified connection through it
+into an unverified one while leaving the padlock in place, which is
+worse than not intercepting at all. `verify_upstream: false` exists as
+a key so that turning it off is a decision somebody wrote down.
+
+**The signing key can impersonate every site to every client that
+trusts the CA.** It is refused if its mode allows anyone but its owner
+to read it, both by `xproxy check` and at startup.
+
+**Some traffic must not be read at all**, whatever the estate's policy
+says: banking, health, anything carrying somebody's own credentials.
+`bypass_hosts` is where that is written, and it is consulted before
+anything is decrypted — a rule that another rule can overtake is not
+that rule.
+
+Two more things the proxy refuses rather than guesses. A tunnel whose
+first bytes are not a TLS ClientHello is spliced through untouched:
+CONNECT carries SSH, database protocols and anything else, and
+answering a handshake to something that was not offering one breaks it
+for no reason (`forward_intercept_passed`). And a handshake whose
+server name disagrees with the host in the CONNECT is refused
+(`forward_sni_mismatch`), because a tunnel opened to one name and a
+handshake for another is somebody reaching a destination the policy
+checked against a different one. A tunnel opened to an *address* is the
+exception and not a hole: there the policy checked the address, the
+bytes reach that address whatever the handshake says, and the name only
+picks a virtual host once they arrive.
+
+The issued certificate carries the *real* certificate's names — its
+SANs, its IP addresses, its common name — so a client that pins a name
+still works and one that pins a key still fails, as it should. The
+cache is keyed on the name and on the real certificate's fingerprint,
+so a destination that rotates its certificate gets a fresh forgery
+rather than a stale one. `alpn` defaults to `http/1.1` alone: a stream
+the proxy relays is one it has to be able to read, and offering `h2`
+without parsing HTTP/2 is how an interception proxy breaks a site.
+
+`socks5` tunnels on the same listener are intercepted by the same
+rules: a destination reachable in either protocol on one port under one
+policy is not a policy if one of the two walks past it.
+
+An intercepted connection writes a `forward_intercept` access line with
+the client, user, destination, negotiated ALPN and the TLS version
+reached upstream. Counters: `forward_intercepted`,
+`forward_intercept_refused`, `forward_intercept_passed` and
+`forward_intercept_bytes`.
+
+```yaml
+- name: egress
+  address: "0.0.0.0:3128"
+  kind: forward
+  forward:
+    ports: [80, 443]
+    auth: {users_file: /etc/xproxy/proxy.htpasswd}
+    intercept:
+      ca_cert_file: /etc/xproxy/mitm-ca.pem
+      ca_key_file: /etc/xproxy/mitm-ca-key.pem
+      hosts: ["*.example.com", "*.cdn.test"]
+      bypass_hosts: ["*.bank.test", "*.health.test"]
+      yara: {rules_dir: /etc/xproxy/yara}
+```
 
 #### MASQUE on a forward listener
 
@@ -288,7 +384,9 @@ Counters: `forward_requests`, `forward_tunnels`, `forward_tunnels_open`,
 `forward_denied`, `forward_auth_failed`, `forward_rejected`,
 `forward_errors`, `forward_bytes_in`, `forward_bytes_out`,
 `forward_socks`, `forward_udp_associations`, `forward_udp_open`,
-`forward_udp_dropped`;
+`forward_udp_dropped`, `forward_intercepted`,
+`forward_intercept_refused`, `forward_intercept_passed`,
+`forward_intercept_bytes`;
 `xproxy_forward_*` metrics. The policy and the users file reload; the
 address and TLS settings need a restart like every listener.
 
@@ -343,6 +441,94 @@ browsers should use it) side by side.
 | `discovery` | list | `[]` | Advertise this resolver's encrypted endpoints at `_dns.resolver.arpa` (RFC 9462); see below |
 | `records` | list | `[]` | SVCB and HTTPS records this resolver answers itself; see below |
 | `dnssec` | object | none | Validate answers; see below |
+| `tunnel_detection` | object | none | Watch for data leaving inside the query names; see below |
+
+#### server.listeners[].dns.tunnel_detection
+
+DNS tunnelling is the oldest way out of a network that filters
+everything else, and it still works, because a resolver is usually the
+one thing every host may talk to. The payload goes up in the query name
+— a few dozen encoded characters per label — and comes back down in the
+answer, most often TXT. The tunnel's domain is delegated to the other
+end, so every query reaches them whatever this resolver forwards to:
+blocking the upstream does nothing, and a block list only helps if
+somebody already knew the name.
+
+What gives it away is not any one query but the shape of a client's
+traffic under one registered domain: names carrying more information per
+character than words do, hundreds of distinct subdomains where a service
+has a handful, answers that are mostly TXT, and a high rate of NXDOMAIN
+from the probing and the encoding that produce names nothing resolves.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `window` | duration | `5m` | The period the signals are measured over; 10s to 1h |
+| `min_queries` | int | `50` | Queries a client must send under one domain before any judgement; below it there is not enough to be wrong about |
+| `min_signals` | int | `2` | How many signals must fire together; `1` warns |
+| `entropy` | float | `3.6` | Bits per character at which a label counts as encoded rather than named; words sit below it, base32 and base64 run near 5 and 6 |
+| `entropy_share` | float | `0.5` | Share of a domain's queries that must reach it; an explicit `0` switches the signal off |
+| `min_label_length` | int | `12` | Shortest label measured; a short string's entropy is mostly noise |
+| `distinct_subdomains` | int | `50` | Cardinality under one domain that belongs to a tunnel rather than a service; `0` switches the signal off |
+| `txt_share` | float | `0.5` | Share asking for the types a tunnel returns data in (TXT, NULL, CNAME, MX, SRV); `0` switches the signal off |
+| `nxdomain_share` | float | `0.5` | Share answering NXDOMAIN; `0` switches the signal off |
+| `payload_bytes` | int | `4096` | Encoded bytes below the domain in a window, counting each name once; `0` switches the signal off |
+| `allow_domains` | list | `[]` | Never judged, in the same forms as `block` |
+| `action` | `log`\|`block` | `log` | `block` answers NXDOMAIN for the detected domain, for the client it was detected for, until the cooldown ends |
+| `cooldown` | duration | `10m` | How long that lasts, and how long before the same domain is reported again |
+| `max_tracked` | int | `65536` | Windows held; 64 to 10000000 |
+
+**No single signal decides**, and that is the point of `min_signals`.
+Each one alone has honest traffic behind it: a content delivery
+network's hostnames really are random, a reputation service really does
+encode a hash into a name and answer TXT, and a laptop waking up really
+does produce a burst of NXDOMAIN. What does not happen by accident is
+several of them at once, under one registered domain, from one client.
+Setting `min_signals: 1` is allowed and warns, because it turns each of
+those into a false positive.
+
+Any of the five can be switched off by writing `0` against it, and a
+`0` written there means off: the keys that take one are read through a
+pointer so that an explicit zero is not mistaken for an absent key and
+quietly given its default back. A policy that switches signals off and
+still asks for more agreement than it has left is refused at load rather
+than silently never firing.
+
+Queries are grouped by the name somebody registered — the last two
+labels, or three under a known registry suffix like `co.uk` — so a
+thousand subdomains of one tunnel domain count together rather than as a
+thousand unrelated names. A query for the registered name itself is not
+measured: there is nothing below it to carry a payload.
+
+`payload_bytes` counts each name once per window. Asking for the same
+long name twice carries no second copy of anything — it is a cache miss,
+not an export — and counting it would turn any client that polls a long
+name into an exfiltration of megabytes. That is what keeps this signal
+independent of the entropy one rather than a second reading of it.
+
+Every answered query is measured, whatever answered it: from the cache,
+refused, or failed upstream. A detector that only saw the queries
+reaching an upstream would be one a client could hide from by being
+noisy.
+
+`max_tracked` is not a tuning knob. The table is keyed on a client and a
+domain and both are chosen by whoever sends the queries, so the bound is
+what stops the detector being the denial of service it exists to catch.
+Windows that have gone quiet are dropped first; when every window is
+live, further queries go unmeasured and are counted as such
+(`dns_tunnel_tracked`, and the evictions in `xproxyctl dns`).
+
+A detection is a `dns_tunnel` security event naming the domain, the
+signals that fired, the queries and the bytes — and `dns_tunnel` is a
+ban reason, so a trigger can act on it. Counters: `dns_tunnels`,
+`dns_tunnel_blocked`, `dns_tunnel_tracked`; `xproxy_dns_tunnel*` metrics.
+
+```yaml
+dns:
+  upstreams: ["9.9.9.9:53"]
+  tunnel_detection:
+    action: log
+    allow_domains: ["*.avts.mcafee.com", "*.spamhaus.org", "*.sophosxl.net"]
+```
 
 #### server.listeners[].dns.doq
 

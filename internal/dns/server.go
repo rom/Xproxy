@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,6 +39,8 @@ type Policy struct {
 	// discovery name of RFC 9462, and any record an operator publishes
 	// here (an ECH configuration, most usefully).
 	Local *LocalRecords
+	// Tunnel watches for data leaving in the query names themselves.
+	Tunnel *Detector
 }
 
 // Hooks connect the server to the proxy's logs and ban list.
@@ -84,6 +87,9 @@ type Server struct {
 	UDP, TCP, DoT, DoH, DoQ atomic.Uint64
 	// Local counts answers served from the local record set.
 	Local atomic.Uint64
+	// Tunnels counts detections and TunnelBlocked the queries refused
+	// because of one.
+	Tunnels, TunnelBlocked atomic.Uint64
 	// dropNotice warns when queries are dropped for lack of workers.
 	dropNotice bound.Notice
 }
@@ -123,6 +129,17 @@ type Status struct {
 	// DoQ reports whether DNS over QUIC is served on this listener.
 	DoQ    bool          `json:"doq"`
 	DNSSEC *DNSSECStatus `json:"dnssec,omitempty"`
+	// Tunnel reports the tunnelling detector when one is configured.
+	Tunnel *TunnelStatus `json:"tunnel,omitempty"`
+}
+
+// TunnelStatus is the management view of the tunnelling detector.
+type TunnelStatus struct {
+	Action     string `json:"action"`
+	Detections uint64 `json:"detections"`
+	Blocked    uint64 `json:"blocked"`
+	Tracked    int    `json:"tracked"`
+	Evicted    uint64 `json:"evicted"`
 }
 
 // New creates a server on the given sockets (either may be nil) with a
@@ -180,6 +197,10 @@ func (s *Server) Status() Status {
 		if p.Resolver != nil {
 			st.Upstreams = p.Resolver.Servers()
 			st.UpstreamFail = p.Resolver.Failures.Load()
+		}
+		if t := p.Tunnel; t != nil {
+			ts := t.Snapshot()
+			st.Tunnel = &ts
 		}
 	}
 	return st
@@ -467,6 +488,19 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		}
 		return s.finish(query, qEnd, h, q, client, proto, start, "blocked", resp)
 	}
+	// A domain this client was caught tunnelling under stays refused
+	// for the cooldown. It is checked here rather than after the answer
+	// because the point of blocking is that the query does not reach
+	// the name server the tunnel is delegated to.
+	if dom, blocked := p.Tunnel.Blocks(client, q.Name, start); blocked {
+		s.TunnelBlocked.Add(1)
+		s.Blocked.Add(1)
+		if s.hooks.Event != nil {
+			s.hooks.Event(client, "dns_tunnel", proto != "udp", "listener", s.Name,
+				"domain", dom, "name", q.Name, "type", TypeName(q.Type), "proto", proto, "detail", "cooldown")
+		}
+		return s.finish(query, qEnd, h, q, client, proto, start, "tunnel", Reply(query, qEnd, h, RcodeNXDomain))
+	}
 	now := time.Now()
 	var qm *Message // parsed client query, only with validation on
 	if p.DNSSEC != nil {
@@ -580,11 +614,28 @@ func (s *Server) fit(query []byte, qEnd int, h Header, resp []byte, rEnd int, tc
 }
 
 func (s *Server) finish(_ []byte, _ int, _ Header, q Question, client netip.Addr, proto string, start time.Time, source string, resp []byte) []byte {
-	if p := s.policy.Load(); p != nil && p.LogQueries && s.hooks.Access != nil {
-		rcode := -1
-		if rh, err := ParseHeader(resp); err == nil {
-			rcode = rh.Rcode()
+	p := s.policy.Load()
+	rcode := -1
+	if rh, err := ParseHeader(resp); err == nil {
+		rcode = rh.Rcode()
+	}
+	// Every answered query is measured, whatever answered it: a tunnel
+	// whose names were cached, or refused, or failed upstream, is still
+	// a tunnel, and a detector that only saw the queries that reached an
+	// upstream would be one a client could hide from by being noisy.
+	// The two exceptions are the paths that produced no question to
+	// measure and the refusal this detector itself caused.
+	if p != nil && p.Tunnel != nil && source != "tunnel" && source != "formerr" {
+		if det, ok := p.Tunnel.Observe(client, q, rcode, start); ok {
+			s.Tunnels.Add(1)
+			if s.hooks.Event != nil {
+				s.hooks.Event(client, "dns_tunnel", proto != "udp", "listener", s.Name,
+					"domain", det.Domain, "signals", strings.Join(det.Reasons, ","),
+					"queries", det.Queries, "payload_bytes", det.Payload, "proto", proto)
+			}
 		}
+	}
+	if p != nil && p.LogQueries && s.hooks.Access != nil {
 		s.hooks.Access("listener", s.Name, "client_ip", client.String(), "proto", proto, "name", q.Name, "type", TypeName(q.Type),
 			"rcode", rcode, "source", source, "bytes", len(resp), "duration_ms", float64(time.Since(start).Microseconds())/1000)
 	}

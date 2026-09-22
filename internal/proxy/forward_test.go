@@ -22,6 +22,23 @@ import (
 	"github.com/rom/xproxy/internal/testutil"
 )
 
+// tlsOrigin is an HTTPS server for one name, answering its name.
+func tlsOrigin(t *testing.T, name string, ca *testutil.CA, dir string) *httptest.Server {
+	t.Helper()
+	cert, key := ca.Issue(t, dir, name)
+	pair, err := tls.LoadX509KeyPair(cert, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "%s:%s", name, r.URL.Path)
+	}))
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // forwardClient is an http.Client that uses the listener as its proxy.
 func forwardClient(t *testing.T, proxyAddr string, pool *x509.CertPool, user, pass string) *http.Client {
 	t.Helper()
