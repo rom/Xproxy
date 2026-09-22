@@ -1,14 +1,18 @@
-package proxy
+package dns_test
 
 import (
+	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/proxytest"
+
 	"encoding/binary"
 	"fmt"
+	_ "github.com/rom/xproxy/internal/kinds/dns"
 	"net"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/rom/xproxy/internal/dns"
+	wire "github.com/rom/xproxy/internal/dns"
 )
 
 // nxUpstream answers NXDOMAIN to everything, which is what the name
@@ -28,12 +32,12 @@ func nxUpstream(t *testing.T) string {
 			if err != nil {
 				return
 			}
-			h, herr := dns.ParseHeader(buf[:n])
-			_, qEnd, qerr := dns.ParseQuestion(buf[:n])
+			h, herr := wire.ParseHeader(buf[:n])
+			_, qEnd, qerr := wire.ParseQuestion(buf[:n])
 			if herr != nil || qerr != nil {
 				continue
 			}
-			_, _ = up.WriteTo(dns.Reply(buf[:n], qEnd, h, dns.RcodeNXDomain), addr)
+			_, _ = up.WriteTo(wire.Reply(buf[:n], qEnd, h, wire.RcodeNXDomain), addr)
 		}
 	}()
 	return up.LocalAddr().String()
@@ -57,7 +61,7 @@ func askDNS(t *testing.T, addr, name string, qtype uint16, id uint16) int {
 	if err != nil {
 		t.Fatalf("no answer for %s: %v", name, err)
 	}
-	h, err := dns.ParseHeader(buf[:n])
+	h, err := wire.ParseHeader(buf[:n])
 	if err != nil {
 		t.Fatalf("bad answer: %v", err)
 	}
@@ -80,7 +84,7 @@ func buildQuery(name string, qtype, id uint16) []byte {
 	return b
 }
 
-func tunnelListener(t *testing.T, action string) (*Server, string) {
+func tunnelListener(t *testing.T, action string) (*proxy.Server, string) {
 	t.Helper()
 	yaml := fmt.Sprintf(`
 version: 1
@@ -110,7 +114,7 @@ upstreams:
 routes:
   - {name: r, upstream: app}
 `, nxUpstream(t), action)
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	return s, s.Addrs()["resolver"]
 }
 
@@ -123,7 +127,7 @@ func sendTunnel(t *testing.T, addr, domain string, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
 		name := fmt.Sprintf("mfzwizltoq2gk3tfor4hi7dbnzsw4y3pnu%04x.%s", i, domain)
-		askDNS(t, addr, name, dns.TypeTXT, uint16(i+1)) //nolint:gosec // a test counter
+		askDNS(t, addr, name, wire.TypeTXT, uint16(i+1)) //nolint:gosec // a test counter
 	}
 }
 
@@ -163,7 +167,7 @@ func TestDNSTunnelBlocked(t *testing.T) {
 	}
 	// A name under an unrelated domain still resolves normally, which
 	// is the difference between a detector and an outage.
-	if rc := askDNS(t, addr, "www.ordinary.test", dns.TypeA, 9999); rc != dns.RcodeNXDomain {
+	if rc := askDNS(t, addr, "www.ordinary.test", wire.TypeA, 9999); rc != wire.RcodeNXDomain {
 		t.Fatalf("unrelated name got rcode %d", rc) // the upstream says NXDOMAIN to everything
 	}
 	if s.DNS()[0].Tunnel.Blocked == st.Tunnel.Blocked+1 {
@@ -189,7 +193,7 @@ func TestDNSOrdinaryTrafficIsQuiet(t *testing.T) {
 	names := []string{"www.example.test", "api.example.test", "mail.example.test",
 		"cdn.example.test", "login.example.test", "static.example.test"}
 	for i := 0; i < 200; i++ {
-		askDNS(t, addr, names[i%len(names)], dns.TypeA, uint16(i+1)) //nolint:gosec // a test counter
+		askDNS(t, addr, names[i%len(names)], wire.TypeA, uint16(i+1)) //nolint:gosec // a test counter
 	}
 	if st := s.DNS()[0]; st.Tunnel.Detections != 0 || st.Tunnel.Blocked != 0 {
 		t.Fatalf("ordinary lookups were called a tunnel: %+v", st.Tunnel)

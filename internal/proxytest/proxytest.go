@@ -36,7 +36,7 @@ func Start(t *testing.T, yaml string) *proxy.Server {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		s.Shutdown(ctx)
+		_ = s.Shutdown(ctx)
 	})
 	return s
 }

@@ -1,4 +1,4 @@
-package proxy
+package tcp
 
 import (
 	"context"
@@ -21,7 +21,7 @@ import (
 // that client address goes to the same endpoint (and back) until the
 // flow is idle. Nothing after the Initial is read.
 type quicRelay struct {
-	t  *tcpServer
+	t  *server
 	pc net.PacketConn
 
 	mu    sync.Mutex
@@ -67,7 +67,7 @@ func (f *quicFlow) idleFor(now time.Time) time.Duration {
 	return now.Sub(time.Unix(0, f.last.Load()))
 }
 
-func newQUICRelay(t *tcpServer, pc net.PacketConn) *quicRelay {
+func newQUICRelay(t *server, pc net.PacketConn) *quicRelay {
 	return &quicRelay{t: t, pc: pc, flows: map[netip.AddrPort]*quicFlow{}, done: make(chan struct{})}
 }
 
@@ -110,7 +110,7 @@ func (q *quicRelay) serve() {
 // panic, so nothing is left locked behind it.
 func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 	defer safe.Guard("quic datagram")
-	s := q.t.s
+	s := q.t.engine
 	now := time.Now()
 	q.mu.Lock()
 	f := q.flows[client]
@@ -126,7 +126,7 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 		}
 		return
 	}
-	if bl := s.bans.Load(); bl != nil && bl.Banned(client.Addr()) {
+	if bl := s.Bans(); bl != nil && bl.Banned(client.Addr()) {
 		return
 	}
 	frames, err := netutil.QUICCryptoData(b)
@@ -143,7 +143,7 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 		q.mu.Lock()
 		if len(q.flows) >= q.t.cfg.TCP.MaxConnections || q.incomplete >= min(maxIncompleteQUICFlows, q.t.cfg.TCP.MaxConnections) {
 			q.mu.Unlock()
-			s.stats.QUICRejected.Add(1)
+			s.Counters().QUICRejected.Add(1)
 			return
 		}
 		f = &quicFlow{client: client, start: now, hello: &netutil.QUICHelloAssembler{}}
@@ -168,11 +168,11 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 	f.sni.Store(&sni)
 	upName, ok := q.t.resolve(sni)
 	if !ok {
-		s.stats.QUICRejected.Add(1)
+		s.Counters().QUICRejected.Add(1)
 		q.drop(f, "no_route")
 		return
 	}
-	pool := s.rt.Load().pools[upName]
+	pool := s.Pool(upName)
 	if pool == nil {
 		q.drop(f, "no_pool")
 		return
@@ -200,7 +200,7 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 		pool.Begin(e)
 	}
 	if uc == nil {
-		s.stats.TCPErrors.Add(1)
+		s.Counters().TCPErrors.Add(1)
 		q.drop(f, "upstream_unavailable")
 		return
 	}
@@ -210,7 +210,7 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 		q.incomplete--
 	}
 	q.mu.Unlock()
-	s.stats.QUICFlows.Add(1)
+	s.Counters().QUICFlows.Add(1)
 	for _, d := range f.pending {
 		if n, err := uc.Write(d); err == nil {
 			f.in.Add(int64(n))
@@ -263,13 +263,13 @@ func (q *quicRelay) finish(f *quicFlow, reason string) {
 		q.incomplete--
 	}
 	q.mu.Unlock()
-	s := q.t.s
+	s := q.t.engine
 	in, out := f.in.Load(), f.out.Load()
 	if f.up != nil {
 		_ = f.up.Close()
 		f.pool.End(f.endpoint, false, 0)
-		s.stats.TCPBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
-		s.stats.TCPBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+		s.Counters().TCPBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
+		s.Counters().TCPBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 	}
 	ep := ""
 	if f.endpoint != nil {
@@ -280,13 +280,13 @@ func (q *quicRelay) finish(f *quicFlow, reason string) {
 	if reason != "" {
 		attrs = append(attrs, "closed", reason)
 		if reason == "no_route" {
-			s.logs.SecurityEvent(context.Background(), "deny", "tcp_no_route", attrs...)
-			if bl := s.bans.Load(); bl != nil {
+			s.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route", attrs...)
+			if bl := s.Bans(); bl != nil {
 				bl.Observe(f.client.Addr(), "tcp_no_route")
 			}
 		}
 	}
-	s.logs.Access.Info("tcp", attrs...)
+	s.Logs().Access.Info("tcp", attrs...)
 }
 
 // sweep ends idle flows and flows that never completed a ClientHello.

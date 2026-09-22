@@ -11,6 +11,7 @@ import (
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dns"
+	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
@@ -98,6 +99,14 @@ type Kind struct {
 	// TLS asks the engine to build a *tls.Config from the listener's
 	// tls section and put it in Setup.
 	TLS bool
+	// ProxyHeader asks the engine to read an inbound PROXY protocol
+	// header from every connection, where the listener configured one,
+	// and present the client address it carries as the peer.
+	//
+	// A kind that reads the first bytes of the connection itself — to
+	// route by server name, or because the protocol is not a stream at
+	// all — leaves this false and gets the connection as it arrived.
+	ProxyHeader bool
 	// New builds the instance. On error the engine releases the socket.
 	New func(*Setup) (Instance, error)
 }
@@ -187,7 +196,7 @@ type DNSInstance interface{ DNSServer() *dns.Server }
 
 // FlowCounter is a kind that relays datagram flows and can say how many
 // are open, for the counter snapshot.
-type FlowCounter interface{ OpenFlows() int64 }
+type FlowCounter interface{ OpenFlows() int }
 
 // attachKind gives the engine's status views a handle on a kind that
 // offers one. A kind that implements none of these is simply not in
@@ -196,4 +205,25 @@ func (s *Server) attachKind(bl *boundListener, inst Instance) {
 	if d, ok := inst.(DNSInstance); ok {
 		bl.dns = d.DNSServer()
 	}
+}
+
+// servedByHTTP reports the kinds the engine serves itself, without a
+// registered kind: the HTTP data plane and the forward proxy, which is
+// the HTTP data plane with CONNECT and SOCKS in front of it. They stay
+// in the engine because they are what the engine is.
+func servedByHTTP(kind string) bool {
+	switch kind {
+	case "", "http", "forward":
+		return true
+	}
+	return false
+}
+
+// daemonFor names the program that serves a kind, for the error a
+// daemon gives when it is handed a listener belonging to a sibling.
+func daemonFor(kind string) string {
+	if r, ok := listener.RoleOf(kind); ok {
+		return r.Daemon()
+	}
+	return "no daemon in this project"
 }

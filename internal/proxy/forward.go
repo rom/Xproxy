@@ -19,6 +19,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/passwd"
+	"github.com/rom/xproxy/internal/relay"
 )
 
 // forwardServer serves a kind: forward listener: an explicit proxy that
@@ -516,7 +517,7 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 		early = int64(n)
 		_, _ = bufrw.Discard(n)
 	}
-	in, out := splice(client, dst, p.cfg.IdleTimeout.D())
+	in, out := relay.Splice(client, dst, p.cfg.IdleTimeout.D())
 	in += early
 	s.stats.ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
 	s.stats.ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative

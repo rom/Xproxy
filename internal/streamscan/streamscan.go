@@ -78,7 +78,7 @@ func (g *Guard) Stream(direction string) *Stream {
 	return &Stream{g: g, scanner: g.rules.NewScanner(g.Cfg.MaxWindow), Direction: direction}
 }
 
-// feed gives bytes to the scanner and reports whether a rule fired.
+// Feed gives bytes to the scanner and reports whether a rule fired.
 func (s *Stream) Feed(b []byte) bool {
 	if s == nil || s.stopped || len(b) == 0 {
 		return false
@@ -106,7 +106,7 @@ func (s *Stream) Feed(b []byte) bool {
 	return true
 }
 
-// matches returns what fired, for the log and the security event.
+// Matches returns what fired, for the log and the security event.
 func (s *Stream) Matches() []yara.Match {
 	if s == nil {
 		return nil

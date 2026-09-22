@@ -1,11 +1,14 @@
-package proxy
+package tcp_test
 
 import (
+	"github.com/rom/xproxy/internal/proxytest"
+
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
 	"fmt"
+	_ "github.com/rom/xproxy/internal/kinds/tcp"
 	"io"
 	"net"
 	"net/http"
@@ -87,7 +90,7 @@ upstreams:
   - name: echo
     endpoints: [{address: %s}]
 `
-	s, _ := startServer(t, fmt.Sprintf(yaml, strings.TrimPrefix(a.URL, "https://"), strings.TrimPrefix(b.URL, "https://"), echoLn.Addr().String()))
+	s := proxytest.Start(t, fmt.Sprintf(yaml, strings.TrimPrefix(a.URL, "https://"), strings.TrimPrefix(b.URL, "https://"), echoLn.Addr().String()))
 	addr := s.Addrs()["l4"]
 	pool := x509.NewCertPool()
 	pool.AddCert(ca.Cert)
@@ -199,7 +202,7 @@ upstreams:
   - name: back
     endpoints: [{address: %s}]
 `
-	s, _ := startServer(t, fmt.Sprintf(yaml, ln.Addr().String()))
+	s := proxytest.Start(t, fmt.Sprintf(yaml, ln.Addr().String()))
 	c, err := net.Dial("tcp", s.Addrs()["l4"])
 	if err != nil {
 		t.Fatal(err)

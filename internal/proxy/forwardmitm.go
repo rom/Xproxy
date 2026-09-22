@@ -17,7 +17,9 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mitm"
+	"github.com/rom/xproxy/internal/relay"
 	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/streamscan"
 	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 )
@@ -41,7 +43,7 @@ type interceptor struct {
 	minTLS  uint16
 	alpn    []string
 	verify  bool
-	yara    *yaraGuard
+	yara    *streamscan.Guard
 	timeout time.Duration
 }
 
@@ -80,7 +82,7 @@ func newInterceptor(c *config.ForwardIntercept, connectTimeout time.Duration) (*
 		in.roots = pool
 	}
 	if c.YARA != nil {
-		g, err := newYARAGuard(c.YARA)
+		g, err := streamscan.New(c.YARA)
 		if err != nil {
 			return nil, err
 		}
@@ -263,7 +265,7 @@ func (in *interceptor) dialUpstream(dst net.Conn, name string) (*tls.Conn, error
 // in it.
 func (f *forwardServer) relayDecrypted(client, upstream net.Conn, in *interceptor,
 	ip netip.Addr, host string) (int64, int64, string) {
-	var out, back *yaraStream
+	var out, back *streamscan.Stream
 	if in.yara != nil {
 		out = in.yara.Stream("client")
 		back = in.yara.Stream("upstream")
@@ -300,7 +302,7 @@ func (f *forwardServer) relayDecrypted(client, upstream net.Conn, in *intercepto
 // copyScanned copies one direction, reading what goes past when there
 // are rules. A match ends the connection: the bytes cannot be unsent,
 // so the only thing left to decide is whether the rest follows them.
-func (f *forwardServer) copyScanned(dst io.Writer, src io.Reader, scan *yaraStream,
+func (f *forwardServer) copyScanned(dst io.Writer, src io.Reader, scan *streamscan.Stream,
 	in *interceptor, ip netip.Addr, host string) (int64, string) {
 	if scan == nil {
 		n, _ := io.Copy(dst, src)
@@ -352,7 +354,7 @@ func (f *forwardServer) spliceBuffered(br *bufio.Reader, client, dst net.Conn, i
 		}
 		early = int64(n)
 	}
-	in, out := splice(client, dst, idle)
+	in, out := relay.Splice(client, dst, idle)
 	return in + early, out, ""
 }
 

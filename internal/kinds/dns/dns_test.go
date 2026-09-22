@@ -1,4 +1,4 @@
-package proxy
+package dns_test
 
 import (
 	"bytes"
@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
-	"github.com/rom/xproxy/internal/dns"
+	wire "github.com/rom/xproxy/internal/dns"
+	_ "github.com/rom/xproxy/internal/kinds/dns"
+	"github.com/rom/xproxy/internal/proxytest"
 )
 
 // TestDNSListener runs a kind: dns listener against a fake upstream and
@@ -35,19 +37,19 @@ func TestDNSListener(t *testing.T) {
 			if err != nil {
 				return
 			}
-			h, _ := dns.ParseHeader(buf[:n])
-			q, qEnd, err := dns.ParseQuestion(buf[:n])
+			h, _ := wire.ParseHeader(buf[:n])
+			q, qEnd, err := wire.ParseQuestion(buf[:n])
 			if err != nil {
 				continue
 			}
 			var resp []byte
 			switch {
-			case q.Type == dns.TypeA && strings.HasSuffix(q.Name, ".test"):
-				resp = dns.AnswerA(buf[:n], qEnd, h, q, []byte{192, 0, 2, 7}, 120)
-			case q.Type == dns.TypeAAAA:
-				resp = dns.Reply(buf[:n], qEnd, h, dns.RcodeNoError)
+			case q.Type == wire.TypeA && strings.HasSuffix(q.Name, ".test"):
+				resp = wire.AnswerA(buf[:n], qEnd, h, q, []byte{192, 0, 2, 7}, 120)
+			case q.Type == wire.TypeAAAA:
+				resp = wire.Reply(buf[:n], qEnd, h, wire.RcodeNoError)
 			default:
-				resp = dns.Reply(buf[:n], qEnd, h, dns.RcodeNXDomain)
+				resp = wire.Reply(buf[:n], qEnd, h, wire.RcodeNXDomain)
 			}
 			_, _ = up.WriteTo(resp, addr)
 		}
@@ -82,7 +84,7 @@ upstreams:
 routes:
   - {name: r, upstream: app}
 `
-	s, _ := startServer(t, fmt.Sprintf(yaml, up.LocalAddr().String(), blockFile))
+	s := proxytest.Start(t, fmt.Sprintf(yaml, up.LocalAddr().String(), blockFile))
 	addr := s.Addrs()["resolver"]
 	for _, network := range []string{"udp", "tcp"} {
 		r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -158,12 +160,12 @@ func TestDoHRoute(t *testing.T) {
 			if err != nil {
 				return
 			}
-			h, _ := dns.ParseHeader(buf[:n])
-			q, qEnd, err := dns.ParseQuestion(buf[:n])
+			h, _ := wire.ParseHeader(buf[:n])
+			q, qEnd, err := wire.ParseQuestion(buf[:n])
 			if err != nil {
 				continue
 			}
-			_, _ = up.WriteTo(dns.AnswerA(buf[:n], qEnd, h, q, []byte{192, 0, 2, 9}, 90), addr)
+			_, _ = up.WriteTo(wire.AnswerA(buf[:n], qEnd, h, q, []byte{192, 0, 2, 9}, 90), addr)
 		}
 	}()
 	yaml := `
@@ -189,8 +191,9 @@ routes:
   - name: rest
     upstream: app
 `
-	s, base := startServer(t, fmt.Sprintf(yaml, up.LocalAddr().String()))
-	q, _ := dns.Query(7, "www.example.test", dns.TypeA)
+	s := proxytest.Start(t, fmt.Sprintf(yaml, up.LocalAddr().String()))
+	base := "http://" + proxytest.Addr(t, s, "main")
+	q, _ := wire.Query(7, "www.example.test", wire.TypeA)
 	resp, err := http.Get(base + "/dns-query?dns=" + base64.RawURLEncoding.EncodeToString(q))
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +203,7 @@ routes:
 	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "application/dns-message" || resp.Header.Get("Cache-Control") != "max-age=90" {
 		t.Fatalf("GET: %d %v", resp.StatusCode, resp.Header)
 	}
-	if h, _ := dns.ParseHeader(body); h.ID != 7 || h.Rcode() != dns.RcodeNoError || h.ANCount != 1 {
+	if h, _ := wire.ParseHeader(body); h.ID != 7 || h.Rcode() != wire.RcodeNoError || h.ANCount != 1 {
 		t.Fatalf("GET answer: %+v", h)
 	}
 	pr, err := http.Post(base+"/dns-query", "application/dns-message", bytes.NewReader(q))
@@ -212,14 +215,14 @@ routes:
 	if pr.StatusCode != 200 || len(pb) != len(body) || s.Stats().DNSCacheHits != 1 {
 		t.Fatalf("POST: %d len %d hits %d", pr.StatusCode, len(pb), s.Stats().DNSCacheHits)
 	}
-	bq, _ := dns.Query(8, "x.blocked.test", dns.TypeA)
+	bq, _ := wire.Query(8, "x.blocked.test", wire.TypeA)
 	resp, err = http.Get(base + "/dns-query?dns=" + base64.RawURLEncoding.EncodeToString(bq))
 	if err != nil {
 		t.Fatal(err)
 	}
 	body, _ = io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if h, _ := dns.ParseHeader(body); resp.StatusCode != 200 || h.Rcode() != dns.RcodeNXDomain || resp.Header.Get("Cache-Control") != "max-age=0" {
+	if h, _ := wire.ParseHeader(body); resp.StatusCode != 200 || h.Rcode() != wire.RcodeNXDomain || resp.Header.Get("Cache-Control") != "max-age=0" {
 		t.Fatalf("blocked over DoH: %d %+v %v", resp.StatusCode, h, resp.Header)
 	}
 	for _, tc := range []struct {

@@ -19,8 +19,9 @@ import (
 // plaintext datagrams, and what leaves here is RFC 5425 over TLS.
 func init() {
 	proxy.Register(proxy.Kind{
-		Name: "syslog",
-		TLS:  true,
+		Name:        "syslog",
+		TLS:         true,
+		ProxyHeader: true,
 		New: func(su *proxy.Setup) (proxy.Instance, error) {
 			var pc net.PacketConn
 			if u := su.Config.Syslog.UDP; u == nil || *u {

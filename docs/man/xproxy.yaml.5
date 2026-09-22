@@ -321,7 +321,7 @@ bool
 T}	T{
 \fBfalse\fR
 T}	T{
-Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in \fBtrusted_\:proxies\fR: the client address it carries becomes the peer for limits,\: bans,\: ACLs,\: logs and forwarding headers,\: and the per address connection count moves to it. A trusted peer that sends no header,\: or a malformed one,\: is dropped without a response (\fBdrop_\:connection\fR with reason \fBproxy_\:protocol\fR,\: counted in \fBrejected_\:connections\fR);\: \fBLOCAL\fR headers keep the balancer\(aqs address;\: connections from other peers are served unchanged,\: so a client cannot choose its own address. Requires \fBtrusted_\:proxies\fR;\: not on \fBkind:\: tcp\fR (which forwards a header instead) or \fBdns\fR.
+Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in \fBtrusted_\:proxies\fR: the client address it carries becomes the peer for limits,\: bans,\: ACLs,\: logs and forwarding headers,\: and the per address connection count moves to it. A trusted peer that sends no header,\: or a malformed one,\: is dropped without a response (\fBdrop_\:connection\fR with reason \fBproxy_\:protocol\fR,\: counted in \fBrejected_\:connections\fR);\: \fBLOCAL\fR headers keep the balancer\(aqs address;\: connections from other peers are served unchanged,\: so a client cannot choose its own address. Requires \fBtrusted_\:proxies\fR;\: read on \fBkind:\fR \fBhttp\fR,\: \fBforward\fR,\: \fBssh\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR and \fBsyslog\fR,\: and not on \fBtcp\fR (which reads the first bytes itself to route by server name,\: and forwards a header instead) or \fBdns\fR.
 T}
 T{
 \fBkind\fR

@@ -18,8 +18,9 @@ import (
 // told to go around it.
 func init() {
 	proxy.Register(proxy.Kind{
-		Name: "ftp",
-		TLS:  true,
+		Name:        "ftp",
+		TLS:         true,
+		ProxyHeader: true,
 		New: func(su *proxy.Setup) (proxy.Instance, error) {
 			return newServer(su.Host, su.Config, su.Net, su.TLS)
 		},

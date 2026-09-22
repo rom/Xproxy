@@ -1,4 +1,4 @@
-package proxy
+package tcp
 
 import (
 	"context"
@@ -12,34 +12,37 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/relay"
 	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/streamscan"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
-// tcpServer serves a kind: tcp listener: connections are routed by the
+// server serves a kind: tcp listener: connections are routed by the
 // server name of a peeked ClientHello and spliced to an upstream endpoint
 // without terminating TLS. Bans and connection limits apply at accept
 // through the shared limiter (the listener is wrapped like every other).
-type tcpServer struct {
-	s    *Server
-	cfg  config.Listener
-	ln   net.Listener
-	open atomic.Int64
-	wg   sync.WaitGroup
-	mu   sync.Mutex
-	once sync.Once
-	quic *quicRelay // when the listener relays QUIC too
-	yara *yaraGuard // when the listener scans the bytes it relays
-	cons map[net.Conn]struct{}
-	done chan struct{}
+type server struct {
+	engine proxy.Host
+	cfg    config.Listener
+	ln     net.Listener
+	open   atomic.Int64
+	wg     sync.WaitGroup
+	mu     sync.Mutex
+	once   sync.Once
+	quic   *quicRelay        // when the listener relays QUIC too
+	yara   *streamscan.Guard // when the listener scans the bytes it relays
+	cons   map[net.Conn]struct{}
+	done   chan struct{}
 }
 
 const helloPeekTimeout = 10 * time.Second
 
-func newTCPServer(s *Server, cfg config.Listener, ln net.Listener) (*tcpServer, error) {
-	t := &tcpServer{s: s, cfg: cfg, ln: ln, cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
+func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server, error) {
+	t := &server{engine: engine, cfg: cfg, ln: ln, cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
 	if cfg.TCP != nil && cfg.TCP.YARA != nil {
-		g, err := newYARAGuard(cfg.TCP.YARA)
+		g, err := streamscan.New(cfg.TCP.YARA)
 		if err != nil {
 			return nil, err
 		}
@@ -48,7 +51,7 @@ func newTCPServer(s *Server, cfg config.Listener, ln net.Listener) (*tcpServer, 
 	return t, nil
 }
 
-func (t *tcpServer) serve() {
+func (t *server) serve() {
 	for {
 		c, err := t.ln.Accept()
 		if err != nil {
@@ -70,7 +73,7 @@ func (t *tcpServer) serve() {
 		}
 		if t.open.Add(1) > int64(t.cfg.TCP.MaxConnections) {
 			t.open.Add(-1)
-			t.s.stats.TCPRejected.Add(1)
+			t.engine.Counters().TCPRejected.Add(1)
 			_ = c.Close()
 			continue
 		}
@@ -96,7 +99,7 @@ func (t *tcpServer) serve() {
 // admit registers a connection and its goroutine unless the server is
 // shutting down; the wait group is only added to under the same mutex
 // that closes done, so shutdown's Wait cannot race a late Add.
-func (t *tcpServer) admit(c net.Conn) bool {
+func (t *server) admit(c net.Conn) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	select {
@@ -109,7 +112,7 @@ func (t *tcpServer) admit(c net.Conn) bool {
 	return true
 }
 
-func (t *tcpServer) untrack(c net.Conn) {
+func (t *server) untrack(c net.Conn) {
 	t.mu.Lock()
 	delete(t.cons, c)
 	t.mu.Unlock()
@@ -117,7 +120,7 @@ func (t *tcpServer) untrack(c net.Conn) {
 
 // shutdown stops accepting, waits for connections up to ctx, then closes
 // the rest.
-func (t *tcpServer) shutdown(ctx context.Context) {
+func (t *server) shutdown(ctx context.Context) {
 	t.once.Do(func() {
 		t.mu.Lock()
 		close(t.done)
@@ -142,7 +145,7 @@ func (t *tcpServer) shutdown(ctx context.Context) {
 }
 
 // resolve picks the upstream for a server name.
-func (t *tcpServer) resolve(sni string) (string, bool) {
+func (t *server) resolve(sni string) (string, bool) {
 	tc := t.cfg.TCP
 	if sni != "" {
 		for _, r := range tc.Routes {
@@ -168,10 +171,10 @@ func matchSNI(pattern, name string) bool {
 	return pattern == name
 }
 
-func (t *tcpServer) handle(client net.Conn) {
-	s := t.s
+func (t *server) handle(client net.Conn) {
+	s := t.engine
 	start := time.Now()
-	s.stats.TCPConnections.Add(1)
+	s.Counters().TCPConnections.Add(1)
 	clientIP := addrOf(client.RemoteAddr().String())
 	// Peek the first record without terminating TLS. Non-TLS traffic and
 	// hellos without a name take the default route.
@@ -201,11 +204,11 @@ func (t *tcpServer) handle(client net.Conn) {
 	_ = client.SetReadDeadline(time.Time{})
 	upName, ok := t.resolve(sni)
 	if !ok {
-		s.stats.TCPRejected.Add(1)
+		s.Counters().TCPRejected.Add(1)
 		t.finish(client, clientIP, start, sni, "", "", "no_route", 0, 0)
 		return
 	}
-	pool := s.rt.Load().pools[upName]
+	pool := s.Pool(upName)
 	if pool == nil {
 		t.finish(client, clientIP, start, sni, upName, "", "no_pool", 0, 0)
 		return
@@ -224,14 +227,14 @@ func (t *tcpServer) handle(client net.Conn) {
 		pool.Begin(e)
 		if err != nil {
 			pool.End(e, true, 0)
-			s.logs.Error.Warn("tcp upstream dial failed", "listener", t.cfg.Name, "endpoint", e.Address, "err", err.Error())
+			s.Logs().Error.Warn("tcp upstream dial failed", "listener", t.cfg.Name, "endpoint", e.Address, "err", err.Error())
 			continue
 		}
 		ep, up = e, c
 		break
 	}
 	if up == nil {
-		s.stats.TCPErrors.Add(1)
+		s.Counters().TCPErrors.Add(1)
 		t.finish(client, clientIP, start, sni, upName, "", "upstream_unavailable", 0, 0)
 		return
 	}
@@ -251,25 +254,25 @@ func (t *tcpServer) handle(client net.Conn) {
 	}
 	in, out := t.spliceScanned(client, up, clientIP, sni)
 	pool.End(ep, false, 0)
-	s.stats.TCPBytesIn.Add(uint64(in + int64(len(buf)))) //nolint:gosec // non-negative
-	s.stats.TCPBytesOut.Add(uint64(out))                 //nolint:gosec // non-negative
+	s.Counters().TCPBytesIn.Add(uint64(in + int64(len(buf)))) //nolint:gosec // non-negative
+	s.Counters().TCPBytesOut.Add(uint64(out))                 //nolint:gosec // non-negative
 	t.finish(client, clientIP, start, sni, upName, ep.Address, "", in+int64(len(buf)), out)
 }
 
-func (t *tcpServer) finish(client net.Conn, ip netip.Addr, start time.Time, sni, up, endpoint, reason string, in, out int64) {
+func (t *server) finish(client net.Conn, ip netip.Addr, start time.Time, sni, up, endpoint, reason string, in, out int64) {
 	_ = client.Close()
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "sni", sni, "upstream", up, "endpoint", endpoint,
 		"bytes_in", in, "bytes_out", out, "duration_ms", float64(time.Since(start).Microseconds()) / 1000}
 	if reason != "" {
 		attrs = append(attrs, "closed", reason)
 		if reason == "no_route" {
-			t.s.logs.SecurityEvent(context.Background(), "deny", "tcp_no_route", append([]any{"proto", "tcp"}, attrs...)...)
-			if bl := t.s.bans.Load(); bl != nil {
+			t.engine.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route", append([]any{"proto", "tcp"}, attrs...)...)
+			if bl := t.engine.Bans(); bl != nil {
 				bl.Observe(ip, "tcp_no_route")
 			}
 		}
 	}
-	t.s.logs.Access.Info("tcp", attrs...)
+	t.engine.Logs().Access.Info("tcp", attrs...)
 }
 
 // spliceScanned relays a connection, giving each direction to the YARA
@@ -277,19 +280,19 @@ func (t *tcpServer) finish(client net.Conn, ip netip.Addr, start time.Time, sni,
 // scanned: nothing is held back waiting for a verdict, because a stream
 // cannot be paused without the peer noticing, so what a match decides
 // is whether the connection continues.
-func (t *tcpServer) spliceScanned(client, up net.Conn, ip netip.Addr, sni string) (in, out int64) {
+func (t *server) spliceScanned(client, up net.Conn, ip netip.Addr, sni string) (in, out int64) {
 	if t.yara == nil {
-		return splice(client, up, t.cfg.TCP.IdleTimeout.D())
+		return relay.Splice(client, up, t.cfg.TCP.IdleTimeout.D())
 	}
 	toUpstream := t.yara.Stream("client")
 	toClient := t.yara.Stream("upstream")
 	var closed atomic.Bool
-	watch := func(s *yaraStream) func([]byte) bool {
+	watch := func(s *streamscan.Stream) func([]byte) bool {
 		if s == nil {
 			return nil
 		}
 		return func(b []byte) bool {
-			t.s.stats.YARAScanned.Add(uint64(len(b))) //nolint:gosec // non-negative
+			t.engine.Counters().YARAScanned.Add(uint64(len(b))) //nolint:gosec // non-negative
 			if !s.Feed(b) {
 				return true
 			}
@@ -303,62 +306,7 @@ func (t *tcpServer) spliceScanned(client, up net.Conn, ip netip.Addr, sni string
 			return false
 		}
 	}
-	return spliceWatch(client, up, t.cfg.TCP.IdleTimeout.D(), watch(toUpstream), watch(toClient))
-}
-
-// splice copies in both directions until one side ends or the idle
-// timeout passes with no bytes either way. It returns bytes client to
-// upstream and upstream to client.
-func splice(client, up net.Conn, idle time.Duration) (in, out int64) {
-	return spliceWatch(client, up, idle, nil, nil)
-}
-
-// spliceWatch is splice with an optional watcher per direction. A
-// watcher sees each read before it is written on and returns false to
-// end the copy.
-func spliceWatch(client, up net.Conn, idle time.Duration, toUpstream, toClient func([]byte) bool) (in, out int64) {
-	var wg sync.WaitGroup
-	copyDir := func(dst, src net.Conn, n *int64, watch func([]byte) bool) {
-		defer wg.Done()
-		buf := make([]byte, 32<<10)
-		for {
-			_ = src.SetReadDeadline(time.Now().Add(idle))
-			r, err := src.Read(buf)
-			if r > 0 {
-				if watch != nil && !watch(buf[:r]) {
-					break
-				}
-				// The write needs its own deadline. A peer that stops
-				// reading (a zero receive window) blocks this write for
-				// as long as it likes, and the idle timeout above only
-				// covers the read: the flow would hold its goroutines,
-				// its sockets, its connection-limiter slot and its
-				// endpoint's active count until the process ended.
-				_ = dst.SetWriteDeadline(time.Now().Add(idle))
-				w, werr := dst.Write(buf[:r])
-				*n += int64(w)
-				if werr != nil {
-					break
-				}
-			}
-			if err != nil {
-				break
-			}
-		}
-		// Half close where possible so the other direction can drain.
-		if tc, ok := dst.(interface{ CloseWrite() error }); ok {
-			_ = tc.CloseWrite()
-		} else {
-			_ = dst.Close()
-		}
-	}
-	wg.Add(2)
-	go copyDir(up, client, &in, toUpstream)
-	go copyDir(client, up, &out, toClient)
-	wg.Wait()
-	_ = client.Close()
-	_ = up.Close()
-	return in, out
+	return relay.Watch(client, up, t.cfg.TCP.IdleTimeout.D(), watch(toUpstream), watch(toClient))
 }
 
 // proxyV2Header is netutil.ProxyV2Header under the name the engine has

@@ -1,4 +1,4 @@
-package proxy
+package dns_test
 
 import (
 	"bytes"
@@ -8,13 +8,15 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/rom/xproxy/internal/dns"
+	wire "github.com/rom/xproxy/internal/dns"
+	_ "github.com/rom/xproxy/internal/kinds/dns"
+	"github.com/rom/xproxy/internal/proxytest"
 	"github.com/rom/xproxy/internal/testutil"
 )
 
 func TestEncryptedDNSListener(t *testing.T) {
 	dir := t.TempDir()
-	cert, key := testutil.WriteCert(t, dir, "dns.test")
+	cert, key := testutil.WriteCert(t, dir, "wire.test")
 	// The upstream is a plain dns listener of the same proxy answering
 	// from a sinkhole block, so no external resolver is needed.
 	yaml := fmt.Sprintf(`
@@ -32,9 +34,9 @@ server:
       dns: {upstreams: ["127.0.0.1:1"], block: [blocked.test], block_action: sinkhole, sinkhole_ipv4: 10.9.9.9, timeout: 1s, doh_path: /q}
 logging: {access: {enabled: false}}
 `, cert, key)
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	addr := s.Addrs()["main"]
-	q, err := dns.Query(3, "blocked.test", dns.TypeA)
+	q, err := wire.Query(3, "blocked.test", wire.TypeA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,14 +45,14 @@ logging: {access: {enabled: false}}
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if err := dns.WriteTCP(c, q); err != nil {
+	if err := wire.WriteTCP(c, q); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := dns.ReadTCP(c, dns.MaxMessage)
+	resp, err := wire.ReadTCP(c, wire.MaxMessage)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h, _ := dns.ParseHeader(resp); h.ID != 3 || h.Rcode() != dns.RcodeNoError || h.ANCount != 1 || !bytes.Contains(resp, []byte{10, 9, 9, 9}) {
+	if h, _ := wire.ParseHeader(resp); h.ID != 3 || h.Rcode() != wire.RcodeNoError || h.ANCount != 1 || !bytes.Contains(resp, []byte{10, 9, 9, 9}) {
 		t.Fatalf("dot answer %v %x", h, resp)
 	}
 	h2 := &http.Client{Transport: &http.Transport{ForceAttemptHTTP2: true, TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // test
@@ -63,7 +65,7 @@ logging: {access: {enabled: false}}
 	if r.StatusCode != 200 || !bytes.Contains(body, []byte{10, 9, 9, 9}) {
 		t.Fatalf("doh: %d %x", r.StatusCode, body)
 	}
-	var enc *dns.Status
+	var enc *wire.Status
 	for _, st := range s.DNS() {
 		if st.Listener == "main" {
 			cp := st

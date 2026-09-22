@@ -1,4 +1,4 @@
-package proxy
+package tcp_test
 
 import (
 	"context"
@@ -13,6 +13,8 @@ import (
 
 	"github.com/quic-go/quic-go"
 
+	_ "github.com/rom/xproxy/internal/kinds/tcp"
+	"github.com/rom/xproxy/internal/proxytest"
 	"github.com/rom/xproxy/internal/testutil"
 )
 
@@ -84,7 +86,7 @@ upstreams:
   - name: q
     endpoints: [{address: %s}]
 `
-	s, _ := startServer(t, fmt.Sprintf(yaml, origin))
+	s := proxytest.Start(t, fmt.Sprintf(yaml, origin))
 	relay := s.Addrs()["l4"]
 	pool := x509.NewCertPool()
 	pool.AddCert(ca.Cert)

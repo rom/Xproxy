@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
-	"github.com/quic-go/webtransport-go"
 
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/webtransport-go"
 	"github.com/rom/xproxy/internal/h3"
 	"github.com/rom/xproxy/internal/testutil"
 )

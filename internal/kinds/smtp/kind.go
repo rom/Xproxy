@@ -11,8 +11,9 @@ import (
 // handshake happens and owns its deadline.
 func init() {
 	proxy.Register(proxy.Kind{
-		Name: "smtp",
-		TLS:  true,
+		Name:        "smtp",
+		TLS:         true,
+		ProxyHeader: true,
 		New: func(su *proxy.Setup) (proxy.Instance, error) {
 			return newServer(su.Host, su.Config, su.Net, su.TLS)
 		},
