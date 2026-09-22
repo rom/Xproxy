@@ -76,7 +76,7 @@ SystemCallErrorNumber=EPERM
 CapabilityBoundingSet=
 AmbientCapabilities=
 ReadOnlyPaths=/etc/xproxy
-ReadWritePaths=/var/log/xgate /run/xgate /var/lib/xgate
+ReadWritePaths=/var/log/xgate /run/xgate /var/lib/xgate /run/xproxy-cluster
 IPAddressDeny=
 DevicePolicy=closed
 # Binds after start are refused by Landlock inside the process; to have

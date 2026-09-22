@@ -17,19 +17,27 @@ import (
 
 var metricRE = regexp.MustCompile(`\bxproxy_[a-z0-9_]+`)
 
-// exported collects the metric families named in the exporter source.
+// exported collects the metric families named in the exporter sources:
+// the engine emits what every daemon has, the HTTP data plane what only
+// it can answer, and an asset may name either.
 func exported(t *testing.T) map[string]bool {
 	t.Helper()
-	src, err := os.ReadFile(filepath.Join("..", "..", "internal", "proxy", "metrics.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	emit := regexp.MustCompile(`e\.(?:Counter|Gauge|Histogram)\("(xproxy_[a-z0-9_]+)"`)
 	out := map[string]bool{}
-	for _, m := range regexp.MustCompile(`e\.(?:Counter|Gauge|Histogram)\("(xproxy_[a-z0-9_]+)"`).FindAllSubmatch(src, -1) {
-		out[string(m[1])] = true
+	for _, src := range [][]string{
+		{"..", "..", "internal", "proxy", "metrics.go"},
+		{"..", "..", "internal", "kinds", "http", "planemetrics.go"},
+	} {
+		b, err := os.ReadFile(filepath.Join(src...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range emit.FindAllSubmatch(b, -1) {
+			out[string(m[1])] = true
+		}
 	}
 	if len(out) < 50 {
-		t.Fatalf("only %d families found in metrics.go", len(out))
+		t.Fatalf("only %d families found in the exporters", len(out))
 	}
 	return out
 }

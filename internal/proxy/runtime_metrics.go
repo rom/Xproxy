@@ -37,6 +37,10 @@ func runtimeSample() runtimeStats {
 }
 
 // openFDs counts entries in /proc/self/fd; -1 when unavailable.
+// OpenFDs is the process's open descriptor count, for the gauge and
+// for a test that watches it grow.
+func OpenFDs() int { return openFDs() }
+
 func openFDs() int {
 	f, err := os.Open("/proc/self/fd")
 	if err != nil {

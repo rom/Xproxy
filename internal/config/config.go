@@ -15,6 +15,7 @@
 package config
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -3558,12 +3559,20 @@ func (r *RouteWAF) Gradual() bool {
 type Cluster struct {
 	// NodeID identifies this node to peers. Default: host name.
 	NodeID string `yaml:"node_id"`
-	// Listen is the address of the cluster listener (TCP, mTLS). Bind it to
-	// an internal interface.
+	// Listen is the address of the cluster listener. Either a host:port
+	// for a networked cluster (TCP with mutual TLS; bind it to an
+	// internal interface) or "unix:/path/to/socket" for a local one,
+	// where the peers are the sibling daemons on this machine.
 	Listen string `yaml:"listen"`
-	// Peers are the cluster addresses of the other nodes.
+	// Peers are the cluster addresses of the other nodes, in the same
+	// form as Listen. A cluster is one or the other: every address is a
+	// host:port or every address is a Unix socket.
 	Peers []string   `yaml:"peers"`
 	TLS   ClusterTLS `yaml:"tls"`
+	// Local configures a Unix socket cluster: who may open the socket,
+	// and which peers may speak on it. It is refused on a networked
+	// cluster, where the certificate answers both questions.
+	Local *ClusterLocal `yaml:"local"`
 	// GossipInterval is how often consumption reports are sent. Default 1s.
 	GossipInterval Duration `yaml:"gossip_interval"`
 	// PeerStale is how long a peer report keeps influencing local limits
@@ -3655,6 +3664,31 @@ type FleetTLS struct {
 // ClusterTLS holds the node certificate and the cluster CA. Every peer
 // must present a certificate from this CA; there is no other
 // authentication.
+// ClusterLocal is the authentication of a cluster that runs over Unix
+// sockets between the daemons of one machine.
+//
+// There is no certificate here and none is wanted: the peers are
+// processes on this host, and the kernel already knows exactly who they
+// are. What admits a peer is the socket's own permissions — the
+// directory it sits in and the mode it is created with — and what this
+// section adds is a second statement of the same thing that a
+// compromised directory cannot quietly change.
+type ClusterLocal struct {
+	// SocketMode is the octal permission mode of the listening socket.
+	// Default 0660: the owner and the group the siblings share, and
+	// nobody else. A mode granting anything to others is refused.
+	SocketMode string `yaml:"socket_mode"`
+	// AllowUIDs are the user ids that may connect, read from the
+	// connected socket itself rather than announced by the peer.
+	//
+	// Empty means any process that could open the socket, which leaves
+	// the whole decision to the file permissions. A cluster peer is
+	// trusted completely — it places bans, decides rate limits and is
+	// named in the audit trail — so listing the three daemons' uids
+	// here is worth the trouble.
+	AllowUIDs []int `yaml:"allow_uids"`
+}
+
 type ClusterTLS struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
@@ -3685,6 +3719,33 @@ type ClusterTLS struct {
 func (t ClusterTLS) BindsNodeID() bool { return t.BindNodeID == nil || *t.BindNodeID }
 
 // Sharing helpers with defaults applied.
+// UnixSocketPrefix marks a cluster address as a Unix socket path.
+const UnixSocketPrefix = "unix:"
+
+// UnixSocket returns the path of a "unix:" cluster address, and whether
+// the address was one.
+func UnixSocket(addr string) (string, bool) {
+	p, ok := strings.CutPrefix(addr, UnixSocketPrefix)
+	return p, ok
+}
+
+// IsLocal reports a cluster that runs over Unix sockets between the
+// daemons of one machine, rather than over TCP between hosts.
+func (c *Cluster) IsLocal() bool {
+	_, ok := UnixSocket(c.Listen)
+	return ok
+}
+
+// LocalSocketMode is the mode the listening socket is created with.
+func (c *Cluster) LocalSocketMode() uint32 {
+	if c.Local != nil && c.Local.SocketMode != "" {
+		if n, err := strconv.ParseUint(c.Local.SocketMode, 8, 32); err == nil {
+			return uint32(n)
+		}
+	}
+	return 0o660
+}
+
 func (c *Cluster) SharesRateLimits() bool { return c.ShareRateLimits == nil || *c.ShareRateLimits }
 
 // SharesBans reports whether bans are exchanged.

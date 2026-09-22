@@ -235,6 +235,19 @@ func Derive(cfg *config.Config, cfgPath string) Rules {
 		addWrite(d, true)
 	}
 	addWrite(cfg.Management.Socket, false)
+	// A local cluster binds its own socket and connects to its
+	// siblings', which are in the same directory: the whole directory
+	// has to be reachable, not only the one path this node creates.
+	if cl := cfg.Cluster; cl != nil && cl.IsLocal() {
+		if path, ok := config.UnixSocket(cl.Listen); ok {
+			addWrite(path, false)
+		}
+		for _, p := range cl.Peers {
+			if path, ok := config.UnixSocket(p); ok {
+				addWrite(path, false)
+			}
+		}
+	}
 	for _, p := range cfg.Sandbox.Landlock.ReadPaths {
 		addRead(p, true)
 	}

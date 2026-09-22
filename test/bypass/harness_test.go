@@ -24,6 +24,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	_ "github.com/rom/xproxy/internal/filters" // built-in kinds
 	"github.com/rom/xproxy/internal/filters/apikey"
+	_ "github.com/rom/xproxy/internal/kinds/http" // the data plane every case here attacks
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/proxy"
 )

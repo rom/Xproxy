@@ -1,0 +1,22 @@
+# What the three daemons of one estate agree on: the upstream the web
+# listeners reach, the routes in front of it, and the ban triggers that
+# should mean the same thing whichever daemon sees the behaviour.
+#
+# A fragment carries upstreams, routes, rate limits and filters and
+# nothing else, so the same file can be included by daemons that serve
+# entirely different protocols.
+upstreams:
+  - name: app
+    endpoints:
+      - {address: "10.20.0.40:8080"}
+      - {address: "10.20.0.41:8080"}
+
+routes:
+  - name: site
+    upstream: app
+
+rate_limits:
+  - name: per-ip
+    rate: 50
+    burst: 100
+    key: client_ip

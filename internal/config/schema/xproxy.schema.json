@@ -834,8 +834,16 @@
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
         "listen": {
-          "description": "Listen is the address of the cluster listener (TCP, mTLS). Bind it to an internal interface.",
+          "description": "Listen is the address of the cluster listener. Either a host:port for a networked cluster (TCP with mutual TLS; bind it to an internal interface) or \"unix:/path/to/socket\" for a local one, where the peers are the sibling daemons on this machine.",
           "type": "string"
+        },
+        "local": {
+          "description": "Local configures a Unix socket cluster: who may open the socket, and which peers may speak on it. It is refused on a networked cluster, where the certificate answers both questions.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ClusterLocal"
+            }
+          ]
         },
         "max_keys_per_report": {
           "description": "MaxKeysPerReport bounds one report. Default 4096.",
@@ -851,7 +859,7 @@
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
         "peers": {
-          "description": "Peers are the cluster addresses of the other nodes.",
+          "description": "Peers are the cluster addresses of the other nodes, in the same form as Listen. A cluster is one or the other: every address is a host:port or every address is a Unix socket.",
           "type": "array",
           "items": {
             "type": "string"
@@ -873,8 +881,25 @@
       },
       "additionalProperties": false
     },
+    "ClusterLocal": {
+      "description": "ClusterTLS holds the node certificate and the cluster CA. Every peer must present a certificate from this CA; there is no other authentication. ClusterLocal is the authentication of a cluster that runs over Unix sockets between the daemons of one machine. There is no certificate here and none is wanted: the peers are processes on this host, and the kernel already knows exactly who they are. What admits a peer is the socket's own permissions — the directory it sits in and the mode it is created with — and what this section adds is a second statement of the same thing that a compromised directory cannot quietly change.",
+      "type": "object",
+      "properties": {
+        "allow_uids": {
+          "description": "AllowUIDs are the user ids that may connect, read from the connected socket itself rather than announced by the peer. Empty means any process that could open the socket, which leaves the whole decision to the file permissions. A cluster peer is trusted completely — it places bans, decides rate limits and is named in the audit trail — so listing the three daemons' uids here is worth the trouble.",
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "socket_mode": {
+          "description": "SocketMode is the octal permission mode of the listening socket. Default 0660: the owner and the group the siblings share, and nobody else. A mode granting anything to others is refused.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "ClusterTLS": {
-      "description": "ClusterTLS holds the node certificate and the cluster CA. Every peer must present a certificate from this CA; there is no other authentication.",
       "type": "object",
       "properties": {
         "allowed_names": {

@@ -1517,6 +1517,53 @@ fingerprint ban.
 
 ### Cluster of proxies
 
+A cluster is either **local** — the three daemons of one machine, over
+Unix sockets — or **networked**, over mutual TLS between hosts. The form
+of `listen` decides which, and `listen` and every `peers` entry must
+agree.
+
+#### The three daemons of one machine
+
+`xproxy`, `xgate` and `xrelay` share a ban list, so an address the
+bastion refuses at the SSH port is refused at the edge too. There is no
+certificate: the peers are processes this kernel can name.
+
+```yaml
+# In each of the three files, with its own node_id and listen path.
+cluster:
+  node_id: xgate
+  listen: unix:/run/xproxy-cluster/xgate.sock
+  peers:
+    - unix:/run/xproxy-cluster/xproxy.sock
+    - unix:/run/xproxy-cluster/xrelay.sock
+  local:
+    socket_mode: "0660"
+    allow_uids: [990, 991, 992]   # id -u xproxy xgate xrelay
+  share_rate_limits: false        # different protocols, different ports
+  share_bans: true
+  share_events: true
+```
+
+Two things admit a peer, and both have to be wrong before something
+else gets in. The sockets live in `/run/xproxy-cluster`, which the
+shipped `tmpfiles.d` entry creates as `0770 root:xproxy-cluster`; the
+three daemons are in that group and nothing else is. And `allow_uids`
+lists the user ids they run as, read from the connected socket rather
+than announced, so a peer cannot talk its way past it. Leaving
+`allow_uids` out leaves the whole decision to the file permissions and
+validation says so.
+
+A cluster peer is trusted completely — it places bans, decides rate
+limits and is named in the audit trail — so a local peer is recorded
+under the user id the kernel reported (`uid:991`), never under the node
+id it announced. `xproxyctl -socket /run/xgate/mgmt.sock cluster` shows
+it.
+
+`examples/estate/` is the whole thing: three files, one shared include,
+one local cluster.
+
+#### Across hosts
+
 Issue one certificate per node from a private cluster CA, then on every
 node:
 

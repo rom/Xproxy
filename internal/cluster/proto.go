@@ -110,9 +110,16 @@ type PeerStatus struct {
 
 // InboundStatus describes one accepted peer connection.
 type InboundStatus struct {
-	Remote     string    `json:"remote"`
-	NodeID     string    `json:"node_id,omitempty"`
-	CertName   string    `json:"cert_name"`
+	Remote   string `json:"remote"`
+	NodeID   string `json:"node_id,omitempty"`
+	CertName string `json:"cert_name"`
+	// UID, GID and PID are a local peer's credentials as the kernel
+	// reported them, absent on a networked cluster. They are the
+	// identity the peer did not choose, so they are what an operator
+	// checks a surprising ban against.
+	UID        *int      `json:"uid,omitempty"`
+	GID        *int      `json:"gid,omitempty"`
+	PID        *int      `json:"pid,omitempty"`
 	Since      time.Time `json:"since"`
 	LastSeen   time.Time `json:"last_seen"`
 	MessagesIn uint64    `json:"messages_in"`
@@ -120,8 +127,12 @@ type InboundStatus struct {
 
 // Status is the management view of the cluster layer.
 type Status struct {
-	NodeID        string          `json:"node_id"`
-	Listen        string          `json:"listen"`
+	NodeID string `json:"node_id"`
+	Listen string `json:"listen"`
+	// Local marks a cluster of the daemons on one machine, over Unix
+	// sockets, where the peers are admitted by the socket's permissions
+	// rather than by a certificate.
+	Local         bool            `json:"local"`
 	Peers         []PeerStatus    `json:"peers"`
 	Inbound       []InboundStatus `json:"inbound"`
 	RatesSent     uint64          `json:"rates_sent"`

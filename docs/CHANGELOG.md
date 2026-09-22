@@ -366,6 +366,101 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **The HTTP data plane is a listener kind too, so the bastion and the
+  relay stop carrying it.** `http` and `forward` now live in
+  `internal/kinds/`, and only `xproxy` links them. `internal/proxy` is
+  the engine that is left: sockets, TLS, the reload, the counters, the
+  cluster and the management surface, and no protocol at all. Stripped,
+  `xgate` goes from 26.2 MiB to 15.3 and `xrelay` from 25.9 to 14.9,
+  against `xproxy`'s 28.4 — the bastion carries no route compiler, no
+  Coraza and no rule sets, no load shedder, no challenge or CAPTCHA
+  engine, no gRPC, WebSocket or WebTransport inspection, no response
+  cache and no HTTP/3.
+
+  Two things had to be answered first, and they are the interesting
+  part.
+
+  Every `http` listener of a process shares one compiled generation —
+  one route table, one WAF engine, one cache, one set of rate limiters
+  — which a per-listener `Instance` has nowhere to keep. So the kind
+  also registers a `Plane`, built once before any listener binds and
+  handed to each listener in `Setup.Plane`. A reload is two phases:
+  `Prepare` compiles everything that can fail against the pools the
+  engine built for the same generation, the engine then binds its
+  listeners, and only when every one of them is bound does `commit`
+  install the new generation under the same lock as the listener swap.
+  Any failure on the way calls `discard`, and the old configuration is
+  still running, untouched. The engine owns the upstream pools but
+  cannot see the requests still on them, so `Generation.Retire` hands
+  the superseded ones back when the plane's last request on them ends
+  — a pool closed under a long upload or an SSE stream cuts it.
+
+  The management API is served by all three daemons, so the plane's
+  status had to cross the boundary without dragging the plane with it.
+  `PlaneStatus` is an interface the engine's own `WAF`, `Filters`,
+  `Quotas` and the rest delegate to; where no plane is linked they
+  answer zero values, so `xproxyctl waf` against the bastion reports a
+  WAF that is not enabled — which is true — instead of failing in a way
+  an operator has to look up. The types are the data plane's own,
+  except the WAF report: that one moved to the leaf package
+  `internal/waf/wafstatus` and is aliased back into `internal/waf`, so
+  nothing that reads it changed and Coraza stays out of the two daemons
+  that run no WAF.
+
+  Nothing an operator sees changes. The configuration, the management
+  API and its JSON, the metric families and the counters are the same;
+  `kind: http` was already the default and is now a registered kind
+  like any other, refused by name in a daemon that did not link it
+  rather than being what every unknown kind fell through to.
+
+- **The architecture is written down.** `docs/ARCHITECTURE.md` gains a
+  section on the split — the roles, the kind registry, the `Host`
+  interface, why the roster is static rather than derived from what was
+  linked, the refusal, and what the split buys — plus
+  sections on the gate and relay kinds, which had never had one.
+  `AMR-048` is the decision record: why one repository and several
+  binaries rather than a shared library or a bigger sandbox. The
+  roadmap has a 1.4 section, and `docs/TESTS.md` names the three tests
+  that hold the split together.
+
+- **A cluster over Unix sockets, for the daemons of one machine.** The
+  three daemons of the split need to share a ban list: an address the
+  bastion refuses at the SSH port should be refused at the edge too.
+  Doing that over the existing cluster meant issuing three certificates
+  from the estate's cluster CA to three processes on one host, and
+  rotating them, for a conversation that never leaves the machine.
+
+  `cluster.listen` and `cluster.peers` now take `unix:/path` as well as
+  `host:port`. On a Unix socket there is no TLS and none is wanted: the
+  peers are processes this kernel can name. What admits one is the
+  socket's own permissions — `/run/xproxy-cluster`, created `0770
+  root:xproxy-cluster` by a shipped `tmpfiles.d` entry, with the three
+  daemons in that group — and, second, `cluster.local.allow_uids`, read
+  from the connected socket with `SO_PEERCRED` rather than announced, so
+  a peer cannot talk its way past it. A local peer is recorded under
+  that user id (`uid:991`), never under the node id it sent, which is
+  the same rule `bind_node_id` enforces with a certificate.
+
+  A cluster is one transport or the other: `listen` and every peer must
+  be all sockets or all addresses. A node listening on a socket and
+  dialling a host would be reachable by its siblings and not by the
+  peers it dials, which is half a cluster that looks like a whole one.
+
+  `examples/estate/` is the shape: three daemon files, one shared
+  include, one local cluster, `share_rate_limits: false` because the
+  three serve different protocols on different ports.
+
+  Two things fell out of it. Binding a listening Unix socket is now one
+  implementation, `internal/unixsock`, used by both the management
+  socket and this one: refuse a path something still answers on, clear
+  one a killed process left, create under a umask that permits nothing
+  beyond the owner and widen afterwards so the socket never exists more
+  open than it will end up. And a path that is not a socket is now
+  reported and left alone rather than deleted — the old management
+  socket code would happily remove a regular file at the configured
+  path, so a typo in `management.socket` pointing at a key file deleted
+  the key.
+
 - **Three daemons instead of one: `xproxy`, `xgate` and `xrelay`.** A
   proxy that terminates ten protocols is a proxy that links ten
   protocol implementations into one address space, and a flaw in any
@@ -407,10 +502,8 @@ Open findings of the earlier rounds:
   process can own; what the estate shares goes in `includes` all three
   pull in. `xproxyctl -socket` picks which daemon to talk to.
 
-  Not yet true of the split: the three binaries are still nearly the
-  same size, because the engine they share still carries the HTTP data
-  plane. Lifting `http` and `forward` into kinds of their own is what
-  makes `xgate` small, and it has not been done.
+  `http` and `forward` followed the others into kinds of their own (see
+  the entry above), which is what makes `xgate` and `xrelay` small.
 
 - **DNS tunnelling and exfiltration detection
   (`dns.tunnel_detection`).** A network can block every outbound port

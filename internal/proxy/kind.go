@@ -8,9 +8,13 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/ban"
+	"github.com/rom/xproxy/internal/capture"
+	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dns"
+	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/tlsconf"
@@ -19,11 +23,15 @@ import (
 
 // Host is what a listener kind needs from the server that hosts it.
 //
-// It is small on purpose. A kind reads counters, writes log records,
-// consults the ban list, finds its upstream pool and offers bytes to the
-// packet capture — and that is the whole of it. Everything else a kind
-// does is its own protocol's business, which is why a kind can live in
-// its own package and its own binary.
+// It is small on purpose. Most kinds use the first five: counters, log
+// records, the ban list, an upstream pool and the server-wide bounds.
+// Everything else a kind does is its own protocol's business, which is
+// why a kind can live in its own package and its own binary.
+//
+// The rest are the process-wide facilities a kind may not build for
+// itself, because a second one would be wrong rather than merely
+// wasteful: one fingerprint table, one connection limiter, one ACME
+// manager, one packet capture, one cluster connection.
 //
 // *Server implements it. Nothing else needs to, except a test that wants
 // a kind without a server around it.
@@ -38,6 +46,39 @@ type Host interface {
 	Pool(name string) *upstream.Pool
 	// Limits are the server-wide bounds a listener inherits.
 	Limits() config.Limits
+
+	// Fingerprints holds the TLS fingerprint of every open connection,
+	// keyed by remote address. A kind that terminates TLS removes its
+	// connections' entries as they close.
+	Fingerprints() *tlsconf.FingerprintTable
+	// ConnLimiter is the accept-path bound, for a transport that
+	// accepts outside the engine's own accept loop (QUIC).
+	ConnLimiter() *limits.ConnLimiter
+	// ACME is the certificate manager, or nil when none is configured.
+	ACME() *acme.Manager
+	// Capture is the pcapng recorder, or nil while nothing is
+	// recording.
+	Capture() *capture.Capturer
+	// PublishEvent shares a fact with the cluster peers, if any.
+	PublishEvent(cluster.Event)
+	// AttachTickets puts the shared session ticket keys on a TLS
+	// configuration a kind built itself.
+	AttachTickets(*tls.Config)
+	// RefuseHandshake is the ClientHello policy, for a kind that builds
+	// its own TLS configuration: the reason to refuse this client, or
+	// "" to carry on.
+	RefuseHandshake(remote net.Addr, fp tlsconf.Fingerprint) string
+	// DNSServer returns the resolver of a bound dns listener by name,
+	// or nil. One kind answers DNS over HTTPS on an http route with the
+	// policy and cache of a dns listener, and the engine holds the
+	// listener set, so the lookup is here rather than between the two
+	// kinds, which are not linked together in every daemon.
+	DNSServer(listener string) *dns.Server
+	// TakeRemote asks the cluster owner of a rate limit key to decide.
+	// decided is false without a cluster, without an owner or when the
+	// answer did not come in time, and the caller falls back to the
+	// local limiter.
+	TakeRemote(policy, key string, n float64) (allowed, decided bool)
 }
 
 // Instance is a listener kind's running data plane: one bound socket,
@@ -53,6 +94,12 @@ type Instance interface {
 
 // Closer is an instance with resources to release after it has drained.
 type Closer interface{ Close() }
+
+// ExtraAddrs is an instance listening on more than the accept socket
+// the engine bound: the HTTP/3 endpoint beside an http listener, and
+// DNS over QUIC beside DNS over TLS. The keys are suffixes, appended to
+// the listener's name in the address view.
+type ExtraAddrs interface{ Addrs() map[string]string }
 
 // Applier is an instance whose policy can be replaced where it stands,
 // so a reload does not have to rebind the socket and drop what is
@@ -80,6 +127,11 @@ type Setup struct {
 	// session has to read cleartext first and owns the deadline while
 	// it does. A kind whose TLS is implicit wraps Net with it.
 	TLS *tls.Config
+	// Plane is the process's data plane, for the one kind whose
+	// listeners share a compiled generation rather than each holding
+	// their own. It is nil for every other kind, and in a daemon that
+	// linked no plane.
+	Plane Plane
 	// Packet opens a datagram socket on this listener's address,
 	// honouring socket activation. suffix distinguishes a second
 	// socket on one listener (DNS over QUIC beside DNS over TLS).
@@ -254,13 +306,6 @@ func (s *Server) attachKind(bl *boundListener, inst Instance) {
 	}
 }
 
-// servedByHTTP reports the kind the engine still serves itself: the
-// HTTP data plane, which is what the engine is until it too moves to a
-// package of its own.
-func servedByHTTP(kind string) bool {
-	return kind == "" || kind == "http"
-}
-
 // daemonFor names the program that serves a kind, for the error a
 // daemon gives when it is handed a listener belonging to a sibling.
 func daemonFor(kind string) string {
@@ -268,4 +313,40 @@ func daemonFor(kind string) string {
 		return r.Daemon()
 	}
 	return "no daemon in this project"
+}
+
+// Fingerprints implements Host.
+func (s *Server) Fingerprints() *tlsconf.FingerprintTable { return s.fingerprints }
+
+// ConnLimiter implements Host.
+func (s *Server) ConnLimiter() *limits.ConnLimiter { return s.connLimiter }
+
+// AttachTickets implements Host: the shared keys, where a keyring is
+// configured, on a TLS configuration the kind built.
+func (s *Server) AttachTickets(tc *tls.Config) { s.tickets.Attach(tc) }
+
+// RefuseHandshake implements Host.
+func (s *Server) RefuseHandshake(remote net.Addr, fp tlsconf.Fingerprint) string {
+	return s.refuseHandshake(remote, fp)
+}
+
+// DNSServer implements Host.
+func (s *Server) DNSServer(listener string) *dns.Server {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, bl := range s.listeners {
+		if bl.dns != nil && bl.cfg.Name == listener {
+			return bl.dns
+		}
+	}
+	return nil
+}
+
+// TakeRemote implements Host.
+func (s *Server) TakeRemote(policy, key string, n float64) (allowed, decided bool) {
+	node := s.cluster.Load()
+	if node == nil {
+		return false, false
+	}
+	return node.Take(policy, key, n)
 }

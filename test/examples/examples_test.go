@@ -83,6 +83,7 @@ func TestYAMLDocuments(t *testing.T) {
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/mfa", mfaFile(t)))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/rules/stream.yar", filepath.Join(dir, "yara", "rules.yar")))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/yara", filepath.Join(dir, "yara")))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/estate.d", filepath.Join(dir, "estate", "estate.d")))
 			// A recording directory has to exist at load: the proxy
 			// does not create one, because where those files live is a
 			// decision rather than a default.

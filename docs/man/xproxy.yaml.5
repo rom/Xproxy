@@ -10161,12 +10161,29 @@ T}
 Hand\-written SecLang in \fBwaf.profiles[].directive_files\fR remains the tool for patches that need the rule engine\(aqs transformations or scoring; \fBexamples/security/positive\-model.yaml\fR shows both kinds side by side with a route policy.
 .SH "cluster"
 .PP
-Present means enabled. Nodes exchange rate limit consumption and ban changes over mutual TLS (AMR\-009, AMR\-021). Every node listens and dials every peer; there is no leader. Enabling or disabling the section, and changing \fBlisten\fR, \fBnode_id\fR or \fBtls\fR, require a restart. Peers, intervals and sharing flags reload.
+Present means enabled. Nodes exchange rate limit consumption and ban changes (AMR\-009, AMR\-021). Every node listens and dials every peer; there is no leader. Enabling or disabling the section, and changing \fBlisten\fR, \fBnode_id\fR, \fBtls\fR or \fBlocal\fR, require a restart. Peers, intervals and sharing flags reload.
+.PP
+A cluster comes in two shapes, decided by the form of \fBlisten\fR:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBNetworked\fR, \fBhost:port\fR. Peers are on other machines and are authenticated by mutual TLS: \fBcluster.tls\fR is required.
+.PP
+.ti -3n
+\(bu
+\fBLocal\fR, \fBunix:/path/to/socket\fR. Peers are the sibling daemons on this machine \[u2014] \fBxproxy\fR, \fBxgate\fR and \fBxrelay\fR \[u2014] and are authenticated by the socket\(aqs own permissions plus, optionally, the user id the kernel reports for the connection. There is no certificate to issue and none to rotate, and \fBcluster.tls\fR is refused.
+.RE
+.PP
+.PP
+A cluster is one or the other: \fBlisten\fR and every entry of \fBpeers\fR must be all Unix paths or all \fBhost:port\fR. A node that listened on a socket and dialled a host would be reachable by its siblings and not by the peers it dials, which is half a cluster that looks like a whole one. A host that needs both gives each daemon its own certificate and makes all three networked members.
+.PP
+A local cluster is what the three daemons of one host use to share a ban list: an address the gate refuses at the SSH port is refused at the edge too, without the estate\(aqs cluster CA being involved.
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(1.0i) lbw(0.9i) lbx
-lw(0.9i) lw(1.0i) lw(0.9i) lx.
+lbw(0.9i) lbw(1.0i) lbw(1.2i) lbx
+lw(0.9i) lw(1.0i) lw(1.2i) lx.
 T{
 Key
 T}	T{
@@ -10188,27 +10205,45 @@ T}
 T{
 \fBlisten\fR
 T}	T{
-host:port
+host:port or \fBunix:\fRpath
 T}	T{
 required
 T}	T{
-Cluster listener. Must be a specific internal address,\: not all interfaces
+Cluster listener. A \fBhost:\:port\fR must be a specific internal address,\: not all interfaces;\: a \fBunix:\fR path must be absolute and at most 100 characters
 T}
 T{
 \fBpeers\fR
 T}	T{
-list of host:port
+list
 T}	T{
 \fB[]\fR
 T}	T{
-Cluster addresses of the other nodes
+Cluster addresses of the other nodes,\: in the same form as \fBlisten\fR. This node\(aqs own address is not one of them
+T}
+T{
+\fBlocal.\:socket_\:mode\fR
+T}	T{
+octal
+T}	T{
+\fB"0660"\fR
+T}	T{
+Permission mode of the listening socket on a local cluster. Any access for others is refused: on this socket the permissions are the authentication. The socket is created under a umask that permits nothing beyond the owner and then widened,\: so it never exists more open than this
+T}
+T{
+\fBlocal.\:allow_\:uids\fR
+T}	T{
+list of int
+T}	T{
+\fB[]\fR (any process that can open the socket)
+T}	T{
+User ids that may connect,\: read from the socket rather than announced by the peer. A cluster peer is trusted completely \[u2014] it places bans,\: decides rate limits and is named in the audit trail \[u2014] so validation advises listing the sibling daemons\(aq user ids. A configuration that lists them on a platform with no peer credentials is refused at start rather than admitting everything
 T}
 T{
 \fBtls.\:cert_\:file\fR,\: \fBtls.\:key_\:file\fR
 T}	T{
 path
 T}	T{
-required
+required (networked)
 T}	T{
 This node\(aqs certificate,\: used for both directions
 T}
@@ -10217,7 +10252,7 @@ T{
 T}	T{
 path
 T}	T{
-required
+required (networked)
 T}	T{
 Cluster CA;\: every peer must present a certificate from it
 T}

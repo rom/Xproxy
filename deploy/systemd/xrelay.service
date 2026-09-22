@@ -76,7 +76,7 @@ SystemCallErrorNumber=EPERM
 CapabilityBoundingSet=
 AmbientCapabilities=
 ReadOnlyPaths=/etc/xproxy
-ReadWritePaths=/var/log/xrelay /run/xrelay /var/lib/xrelay
+ReadWritePaths=/var/log/xrelay /run/xrelay /var/lib/xrelay /run/xproxy-cluster
 IPAddressDeny=
 DevicePolicy=closed
 # Binds after start are refused by Landlock inside the process; to have

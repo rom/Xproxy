@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	_ "github.com/rom/xproxy/internal/kinds/http" // the views under test report on the http data plane
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/proxy"

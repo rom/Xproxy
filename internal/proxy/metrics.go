@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/rom/xproxy/internal/filters/accountguard"
-	"github.com/rom/xproxy/internal/filters/sensitive"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/upstream"
@@ -78,23 +76,6 @@ func (s *Server) Collect(e metrics.Collector) {
 	for _, d := range denied {
 		e.Counter("xproxy_denied_total", "Requests refused by the proxy, by reason.", L{"reason": d.reason}, float64(d.v))
 	}
-	sens := sensitive.Snapshot()
-	for _, f := range sens.Findings {
-		e.Counter("xproxy_sensitive_findings_total", "Sensitive data findings by detector kind, both directions.", L{"kind": f.Kind}, float64(f.Count))
-	}
-	for _, a := range sens.Actions {
-		e.Counter("xproxy_sensitive_messages_total", "Messages with sensitive data by direction and outcome.", L{"direction": a.Direction, "outcome": a.Outcome}, float64(a.Count))
-	}
-	acc := accountguard.Snapshot()
-	for _, a := range acc.Actions {
-		e.Counter("xproxy_account_actions_total", "Account guard actions by endpoint class.", L{"class": a.Class, "action": a.Action}, float64(a.Count))
-	}
-	e.Counter("xproxy_account_events_total", "Failed attempts or requests the account guard counted.", nil, float64(acc.Events))
-	e.Counter("xproxy_account_blocks_total", "Blocks the account guard placed.", nil, float64(acc.Blocks))
-	e.Counter("xproxy_account_campaigns_total", "Distributed campaigns the account guard declared.", nil, float64(acc.Campaigns))
-	e.Counter("xproxy_account_disposable_total", "Registrations with a disposable e-mail domain.", nil, float64(acc.Disposable))
-	e.Counter("xproxy_account_automation_total", "Requests whose challenge cookie carried automation markers on an endpoint acting on them.", nil, float64(acc.Automation))
-	e.Gauge("xproxy_account_blocks_active", "Account guard blocks in force.", nil, float64(sn.AccountBlocksActive))
 	e.Counter("xproxy_waf_detected_total", "Requests the WAF flagged in detect mode.", nil, float64(sn.WAFDetected))
 	e.Counter("xproxy_upstream_errors_total", "Upstream connection failures.", nil, float64(sn.UpstreamErrors))
 	e.Counter("xproxy_upstream_retries_total", "Attempts repeated on another endpoint.", L{"reason": "connect"}, float64(sn.UpstreamRetries-sn.UpstreamStatusRetries))
@@ -121,7 +102,7 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Gauge("xproxy_connections_open", "Open client connections (TCP and QUIC).", nil, float64(sn.OpenConnections))
 	e.Gauge("xproxy_requests_in_flight", "Requests currently admitted.", nil, float64(sn.InFlight))
 	e.Gauge("xproxy_bans_active", "Active bans.", nil, float64(sn.BansActive))
-	if s.shedder.Load() != nil {
+	if sn.SheddingClasses != nil {
 		e.Gauge("xproxy_load_level", "Load level used for shedding (0 to 1).", nil, sn.LoadLevel)
 		e.Gauge("xproxy_upstream_latency_seconds", "Average upstream time to first byte over the shedding window.", nil, sn.UpstreamLatencyMS/1000)
 		for _, class := range []string{"low", "normal", "high"} {
@@ -174,9 +155,6 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_quic_rejected_total", "QUIC flows without a route or over the listener bound.", nil, float64(sn.QUICRejected))
 	e.Gauge("xproxy_quic_flows_open", "Open QUIC flows.", nil, float64(sn.QUICFlowsOpen))
 	e.Counter("xproxy_honeypot_hits_total", "Requests answered by a honeypot route.", nil, float64(sn.HoneypotHits))
-	for _, vp := range rt.patches {
-		e.Counter("xproxy_virtual_patch_hits_total", "Requests matched by a virtual patch.", L{"patch": vp.cfg.ID}, float64(vp.hits.Load()))
-	}
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
 	e.Counter("xproxy_tls_handshakes_refused_total", "TLS handshakes refused in the ClientHello.", nil, float64(sn.HandshakesRefused))
 	// Per group, so a post-quantum rollout is measured on real traffic:
@@ -185,12 +163,6 @@ func (s *Server) Collect(e metrics.Collector) {
 	// changes.
 	for g, n := range sn.KeyExchange {
 		e.Counter("xproxy_tls_key_exchange_total", "Completed handshakes by key agreement group.", L{"group": g}, float64(n))
-	}
-	for _, g := range s.WebSocketGuards() {
-		e.Counter("xproxy_websocket_connections_total", "Upgraded connections inspected by a websocket guard.", L{"route": g.Route}, float64(g.Connections))
-		e.Counter("xproxy_websocket_messages_total", "WebSocket messages seen by a guard.", L{"route": g.Route}, float64(g.Messages))
-		e.Counter("xproxy_websocket_violations_total", "WebSocket frames or messages that broke the route's policy.", L{"route": g.Route}, float64(g.Violations))
-		e.Counter("xproxy_websocket_closed_total", "Connections closed by a websocket guard.", L{"route": g.Route}, float64(g.Closed))
 	}
 	e.Counter("xproxy_masque_sessions_total", "MASQUE sessions accepted, by protocol.", L{"protocol": "connect-udp"}, float64(sn.MasqueUDP))
 	e.Counter("xproxy_masque_sessions_total", "MASQUE sessions accepted, by protocol.", L{"protocol": "connect-ip"}, float64(sn.MasqueIP))
@@ -310,24 +282,6 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_forward_errors_total", "Forward requests whose destination failed (dial, response, size).", nil, float64(sn.ForwardErrors))
 	e.Counter("xproxy_forward_bytes_total", "Bytes relayed by forward listeners.", L{"direction": "in"}, float64(sn.ForwardBytesIn))
 	e.Counter("xproxy_forward_bytes_total", "Bytes relayed by forward listeners.", L{"direction": "out"}, float64(sn.ForwardBytesOut))
-	if c := s.cache.Load(); c != nil {
-		cs := c.Stats()
-		e.Counter("xproxy_cache_hits_total", "Responses served from the cache.", nil, float64(cs.Hits))
-		e.Counter("xproxy_cache_misses_total", "Cacheable requests not found in the cache.", nil, float64(cs.Misses))
-		e.Counter("xproxy_cache_stores_total", "Responses stored.", nil, float64(cs.Stores))
-		e.Counter("xproxy_cache_evictions_total", "Entries evicted for space.", nil, float64(cs.Evictions))
-		e.Gauge("xproxy_cache_entries", "Entries in the cache.", nil, float64(cs.Entries))
-		e.Gauge("xproxy_cache_bytes", "Bytes held by the cache.", nil, float64(cs.Bytes))
-	}
-	if rt.geo != nil {
-		gs := rt.geo.Status()
-		e.Counter("xproxy_geoip_lookups_total", "Country lookups.", nil, float64(gs.Lookups))
-		e.Counter("xproxy_geoip_unknown_total", "Country lookups without a result.", nil, float64(gs.Unknown))
-	}
-	for _, fs := range rt.filterStatus() {
-		e.Counter("xproxy_filter_denied_total", "Requests denied by a configured filter.", L{"filter": fs.Name, "kind": fs.Kind}, float64(fs.Denied))
-	}
-
 	// Process and Go runtime, for capacity planning and soak tests.
 	rm := runtimeSample()
 	e.Gauge("go_goroutines", "Goroutines.", nil, rm.goroutines)
@@ -384,84 +338,18 @@ func (s *Server) Collect(e metrics.Collector) {
 		}
 	}
 
-	// Per route counters (bounded by the number of routes).
-	// Each family is emitted contiguously (the exposition declares a
-	// family once), so the routes are walked once per family.
-	if rt.cfg.Metrics.PerRouteEnabled() {
-		labels := func(cr *compiledRoute, extra ...string) L {
-			l := L{"route": cr.cfg.Name}
-			if cr.cfg.Tenant != "" {
-				l["tenant"] = cr.cfg.Tenant
-			}
-			for i := 0; i+1 < len(extra); i += 2 {
-				l[extra[i]] = extra[i+1]
-			}
-			return l
-		}
-		for _, cr := range rt.routes {
-			for i, class := range routeClasses {
-				if v := cr.counts[i].Load(); v > 0 || i == 0 {
-					e.Counter("xproxy_route_requests_total", "Requests per route and outcome.", labels(cr, "outcome", class), float64(v))
-				}
-			}
-		}
-		for _, cr := range rt.routes {
-			e.Counter("xproxy_route_bytes_total", "Bytes per route and direction.", labels(cr, "direction", "in"), float64(cr.bytesIn.Load()))
-			e.Counter("xproxy_route_bytes_total", "Bytes per route and direction.", labels(cr, "direction", "out"), float64(cr.bytesOut.Load()))
-		}
-		for _, cr := range rt.routes {
-			if v := cr.rateLimited.Load(); v > 0 {
-				e.Counter("xproxy_route_rate_limited_total", "Requests refused by a rate limit per route.", labels(cr), float64(v))
-			}
-		}
-		for _, cr := range rt.routes {
-			if snap := cr.hist.Snapshot(); snap.Count > 0 {
-				e.Histogram("xproxy_route_request_duration_seconds", "Time from request start to response end per route.", labels(cr), snap)
-			}
-		}
-		names := make([]string, 0, len(rt.rateLimits))
-		for name := range rt.rateLimits {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			rl := rt.rateLimits[name]
-			e.Counter("xproxy_rate_limit_decisions_total", "Rate limit decisions per policy.", L{"policy": name, "outcome": "allowed"}, float64(rl.allowed.Load()))
-			e.Counter("xproxy_rate_limit_decisions_total", "Rate limit decisions per policy.", L{"policy": name, "outcome": "denied"}, float64(rl.denied.Load()))
-		}
-		for _, name := range names {
-			e.Gauge("xproxy_rate_limit_keys", "Keys tracked per policy.", L{"policy": name}, float64(rt.rateLimits[name].lim.Len()))
-		}
+	// The families of whatever data plane this binary linked: per route
+	// counters, the WAF, the filters, the cache. A daemon that serves no
+	// http listener simply does not emit them, which is the honest
+	// exposition for a process that has none.
+	if pl := s.plane.Load(); pl != nil {
+		(*pl).Collect(e)
 	}
 }
-
-var routeClasses = [...]string{"2xx", "3xx", "4xx", "5xx", "denied"}
 
 func b2f(b bool) float64 {
 	if b {
 		return 1
 	}
 	return 0
-}
-
-// observeRoute records the outcome and the bytes of a request on its route.
-func (cr *compiledRoute) observe(status int, denied bool, bytesIn, bytesOut int64) {
-	if bytesIn > 0 {
-		cr.bytesIn.Add(uint64(bytesIn)) //nolint:gosec // positive
-	}
-	if bytesOut > 0 {
-		cr.bytesOut.Add(uint64(bytesOut)) //nolint:gosec // positive
-	}
-	switch {
-	case denied:
-		cr.counts[4].Add(1)
-	case status >= 500:
-		cr.counts[3].Add(1)
-	case status >= 400:
-		cr.counts[2].Add(1)
-	case status >= 300:
-		cr.counts[1].Add(1)
-	default:
-		cr.counts[0].Add(1)
-	}
 }

@@ -75,6 +75,11 @@ useradd --system --home-dir /var/lib/xproxy --shell /usr/sbin/nologin --user-gro
 # Only for the daemons you will run:
 useradd --system --home-dir /var/lib/xgate  --shell /usr/sbin/nologin --user-group xgate
 useradd --system --home-dir /var/lib/xrelay --shell /usr/sbin/nologin --user-group xrelay
+# Only if the daemons will share a ban list over a local cluster:
+groupadd --system xproxy-cluster
+usermod -aG xproxy-cluster xproxy
+usermod -aG xproxy-cluster xgate
+usermod -aG xproxy-cluster xrelay
 make install        # binaries, units, sysctl, logrotate, example config
 sysctl --system
 ```
@@ -90,6 +95,7 @@ sysctl --system
 | `/etc/systemd/system/xproxy.socket`, `xproxy-https.socket`, `xproxy-h3.socket` | listening sockets on TCP 80, TCP 443 and UDP 443 |
 | `/etc/systemd/system/xgate.service`, `xgate.socket` | the gate daemon and its socket on TCP 22 (disabled until you enable it; read the note in the socket unit first) |
 | `/etc/systemd/system/xrelay.service`, `xrelay.socket` | the relay daemon and its socket on TCP 25 (disabled until you enable it) |
+| `/usr/lib/tmpfiles.d/xproxy-cluster.conf` | `/run/xproxy-cluster`, `0770 root:xproxy-cluster`, where the daemons' local cluster sockets live |
 | `/etc/sysctl.d/90-xproxy.conf` | kernel profile |
 | `/etc/logrotate.d/xproxy`, `xgate`, `xrelay` | rotation calling `xproxyctl reopen-logs` on each daemon's socket |
 | `/etc/xproxy/xproxy.yaml` | example configuration (existing file backed up) |
@@ -153,6 +159,11 @@ systemctl start xproxy.service
 systemctl status xproxy.service
 xproxyctl status
 ```
+
+To have the three share a ban list, give each a `cluster` section over
+Unix sockets — `examples/estate/` is a worked set — and check it with
+`xproxyctl -socket /run/xgate/mgmt.sock cluster`, which should show two
+connected peers and no rejections.
 
 For the other two, the same three steps with their own units and
 sockets, and `xproxyctl -socket /run/xgate/mgmt.sock status` to check
@@ -334,7 +345,7 @@ Configuration, certificates and logs are left in place.
 
 ```sh
 make test-race
-go test -run TestProxyBasics -v ./internal/proxy/
+go test -run TestProxyBasics -v ./internal/kinds/http/
 ./bin/xproxy -config deploy/config/xproxy.yaml -validate    # fails on missing certs, by design
 ```
 
