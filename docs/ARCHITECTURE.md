@@ -1,130 +1,352 @@
 # Architecture
 
-xproxy is a single static Go binary that terminates HTTP at the edge, applies
-security policy and forwards to upstream pools, plus a control binary that
-manages it over a local socket. This document describes the components, the
-request path, the data flows and the reasoning behind the shape. Decision
-records are in [AMR.md](AMR.md); requirements in [ASR.md](ASR.md).
+xproxy terminates protocols, applies security policy and forwards to
+upstream pools. It is not one program but three, split by who is on the
+other end of the socket — **xproxy** faces the internet, **xgate** faces
+people, **xrelay** faces machines — plus a control binary that manages
+any of them over a local socket. This document describes the split, the
+components, the request path, the data flows and the reasoning behind
+the shape. Decision records are in [AMR.md](AMR.md); requirements in
+[ASR.md](ASR.md).
 
 ## 1. System context
 
 ```
-                     internet
-                        |
-            +-----------v-----------+
-            |  kernel: nftables,    |   sysctl profile, SYN cookies,
-            |  conntrack, SYN queue |   optional per-source connection rate
-            +-----------+-----------+
-                        | accept (systemd owned sockets)
-            +-----------v-----------+        +-------------------+
-            |        xproxy         |<-------| xproxyctl (CLI,   |
-            |  data plane process   | unix   |  TUI), xproxy-    |
-            |  user: xproxy         | socket |  admin (web GUI)  |
-            +--+------+------+------+        +-------------------+
-               |      |      |
-        access | err  | sec  | audit      -> files, journald, syslog
-               v      v      v
-            +--------------------------+
-            | upstream pools           |  http / https, health checks,
-            | app-1 app-2 ... api-n    |  affinity, ejection
-            +--------------------------+
+        internet                 operators              devices, services
+            |                        |                          |
+ +----------v----------+  +----------v----------+  +------------v----------+
+ | kernel: nftables,   |  | kernel              |  | kernel                |
+ | conntrack, SYN queue|  |                     |  |                       |
+ +----------+----------+  +----------+----------+  +------------+----------+
+            | accept                 | accept                   | accept
+ +----------v----------+  +----------v----------+  +------------v----------+
+ |       xproxy        |  |        xgate        |  |        xrelay         |
+ |  http tcp forward   |  |        ssh          |  | smtp mqtt ftp syslog  |
+ |        dns          |  |                     |  |                       |
+ |  user: xproxy       |  |  user: xgate        |  |  user: xrelay         |
+ +--+---------------+--+  +--+---------------+--+  +--+----------------+---+
+    |               |        |               |        |                |
+    | mgmt socket   |        | mgmt socket   |        | mgmt socket    |
+    v               |        v               |        v                |
+ +------------------|--------+---------------|--------+------+         |
+ | xproxyctl (CLI, TUI), xproxy-admin (web GUI)              |         |
+ +-----------------------------------------------------------+         |
+                    |                        |                         |
+                    +-----> /run/xproxy-cluster <---------------------- +
+                       local cluster: bans, marks, revocations
+                    |                        |                         |
+                    v                        v                         v
+ +---------------------------------------------------------------------+
+ | upstream pools: applications, bastion targets, mail, brokers        |
+ +---------------------------------------------------------------------+
 ```
+
+The three are the same engine with different protocol code linked into
+them (section 3). Each runs as its own user, under its own systemd unit
+and its own sandbox, reads its own configuration file, and is reached on
+its own management socket. They share a ban list over a Unix socket
+cluster, so an address one of them refuses is refused by all three.
 
 Trust boundaries:
 
-1. Internet to xproxy: hostile. Everything read from a client connection is
-   attacker controlled, including TLS ClientHello, headers, body and timing.
-2. xproxy to upstream: semi-trusted. Upstreams may be compromised; response
-   headers and bodies are not executed but are size and time bounded.
-3. Operator to management socket: trusted, authenticated by the kernel
+1. Internet to xproxy: hostile. Everything read from a client connection
+   is attacker controlled, including TLS ClientHello, headers, body and
+   timing.
+2. People to xgate: authenticated but not trusted. A session belongs to a
+   named principal and is recorded, and what it may do inside SSH is a
+   policy rather than a destination list.
+3. Machines to xrelay: semi-trusted and unattended. Credentials are
+   long-lived and often shared, so the policy is written in each
+   protocol's own terms and the traffic is bounded rather than believed.
+4. Any daemon to its upstream: semi-trusted. Upstreams may be
+   compromised; responses are not executed but are size and time
+   bounded.
+5. Operator to a management socket: trusted, authenticated by the kernel
    (Unix socket permissions and `SO_PEERCRED`), audited.
-4. Configuration and certificate files: trusted, must be root or `xproxy`
-   owned and not world writable (the loader refuses world writable
-   configuration).
+6. Daemon to sibling daemon, over the local cluster socket: trusted
+   completely — a peer places bans and is named in the audit trail —
+   and admitted by the socket's permissions plus the user id the kernel
+   reports, never by anything the peer announces.
+7. Configuration and certificate files: trusted, must be root or the
+   daemon's user owned and not world writable (the loader refuses world
+   writable configuration).
+
+A compromise of one daemon is a compromise of that daemon: it does not
+carry the others' protocol implementations, it cannot read their files,
+and the one thing it can do to them is place a ban, which is the
+authority a cluster peer has by design.
 
 ## 2. Repository layout
 
 ```
-cmd/xproxy          data plane daemon (flags, signals, systemd notify)
-cmd/xproxyctl       management CLI and TUI
+cmd/xproxy          edge daemon: links the http, forward, tcp and dns kinds
+cmd/xgate           gate daemon: links the ssh kind
+cmd/xrelay          relay daemon: links the smtp, mqtt, ftp and syslog kinds
+cmd/xproxyctl       management CLI and TUI (talks to any of the three)
 cmd/xproxy-admin    web GUI process (users, sessions, embedded assets)
+cmd/xproxy-fleet    fleet controller
+
+internal/daemon     the body of all three daemons: flags, loading, sandbox,
+                    management and metrics, fleet agent, signals, systemd notify
+internal/listener   the roster: every listener kind and the role that serves it
+internal/proxy      the engine: accept path, listener lifecycle and reload, the
+                    kind registry and Host interface, bans, pools, counters,
+                    TLS material -- plus the HTTP data plane, which has not yet
+                    moved out of it (section 3)
+internal/kinds/tcp     kind: tcp -- layer 4 relay, SNI and QUIC routing, YARA
+internal/kinds/dns     kind: dns -- resolver, cache, block list, DoT/DoH/DoQ
+internal/kinds/forward kind: forward -- CONNECT, SOCKS5, MASQUE, interception
+internal/kinds/ssh     kind: ssh -- bastion, policy, SFTP mediation, recording
+internal/kinds/smtp    kind: smtp -- mail and submission with STARTTLS
+internal/kinds/mqtt    kind: mqtt -- broker front end with a topic policy
+internal/kinds/ftp     kind: ftp -- control and data channel mediation
+internal/kinds/syslog  kind: syslog -- RFC 5424 and RFC 3164 relay
+
 internal/config     schema, defaults, loader, validation
 internal/router     host and path matching
 internal/netutil    client IP derivation, path cleaning, host normalisation
+internal/httpx      the HTTP message rules more than one kind needs
+internal/relay      the byte copy between two connections, with deadlines
+internal/streamscan YARA over a stream, shared by the kinds that scan one
+internal/textsafe   bounding and de-controlling text that came from a peer
+internal/unixsock   binding a listening Unix socket, safely, in one place
 internal/limits     token buckets, connection limiter, concurrency limiter
 internal/tlsconf    hardened tls.Config construction and certificate reload
 internal/upstream   endpoints, balancers, health checks, affinity, ejection
-internal/proxy      server, listeners, handler pipeline, transport, stats
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
-internal/filter     middleware interface, kind registry, options decoding; filtertest harness
-internal/filters    built-in kinds (header_guard, basic_auth, api_key, openapi, graphql, upload_guard, sensitive_data, account_guard, body_rewrite, bot_score, form_guard, oidc, wasm) and the registration list
-internal/jsonschema JSON Schema evaluator shared by the openapi filter and the WAF body schemas
-internal/apiinv     API inventory: endpoints discovered from traffic, shadow, zombie and superseded detection
-internal/filters/wasm  WebAssembly ABI v1 on wazero (the only package importing wazero)
+internal/filter     middleware interface, kind registry, options decoding
+internal/filters    built-in filter kinds and the registration list
+internal/jsonschema JSON Schema evaluator (openapi filter, WAF body schemas)
+internal/apiinv     API inventory: discovery, shadow, zombie, superseded
+internal/filters/wasm  WebAssembly ABI v1 on wazero (the only wazero importer)
 internal/passwd     PBKDF2 password hashing shared by basic_auth and the GUI
-internal/secret     keyring files for the symmetric secrets, rotation with retained keys
-internal/otlp       OTLP/HTTP JSON client shared by the metrics, trace and log exporters
-internal/tracing    W3C trace context, spans and the OTLP trace exporter
-internal/geoip      MaxMind DB reader and CSV prefix table for country lookups
+internal/secret     keyring files for the symmetric secrets, rotation
+internal/otlp       OTLP/HTTP JSON client for metrics, traces and logs
+internal/tracing    W3C trace context, spans, OTLP trace export
+internal/geoip      MaxMind DB reader and CSV prefix table
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
-internal/proxy/tcp.go  kind: tcp listeners (SNI routing, PROXY v2, splice)
-internal/proxy/forward.go  kind: forward listeners (CONNECT tunnels, plain relay, destination policy)
-internal/dns        DNS proxy: message framing, cache, block list, resolver, UDP and TCP server
-internal/ingress    Kubernetes ingress controller: API client, translation, merge, polling
-internal/proxy/dnslistener.go  kind: dns listeners bound to the proxy's logs and bans
-internal/proxy/static.go  routes[].static: files through os.Root, index, listing, fallback
+internal/dns        DNS wire codec, cache, block list, resolver, servers
+internal/smtp internal/mqtt internal/ftp internal/syslog internal/sftp
+                    the wire codecs of the relay and gate protocols
+internal/masque internal/mitm internal/grpcmsg internal/asciicast
+                    the wire formats the kinds above are built on
+internal/ingress    Kubernetes ingress controller
 internal/waf        Coraza + OWASP CRS engine as a filter
 internal/ban        ban list with triggers, escalation and persistence
-internal/cluster    peer sharing of limits and bans over mutual TLS
-internal/fleet      fleet bundles, the node agent and the controller (xproxy-fleet)
+internal/cluster    peer sharing of limits, bans and events: mutual TLS
+                    between hosts, a Unix socket between the daemons of one
+internal/fleet      fleet bundles, the node agent and the controller
 internal/shed       adaptive load shedding by priority class
 internal/challenge  browser proof-of-work challenge
 internal/h3         HTTP/3 over QUIC (the only package importing quic-go)
 internal/jwt        JSON Web Token validation on the standard library
 internal/icap       ICAP client (RFC 3507) as a filter; icaptest fake server
 internal/metrics    Prometheus text encoder, histogram, sampled series
-internal/tui        terminal UI of xproxyctl (pure renderer plus a raw-mode loop)
-internal/admin      web GUI server: users file, sessions, API over the management client, static/ assets
+internal/sandbox    Landlock, seccomp, capabilities; Seatbelt on macOS
+internal/tui        terminal UI of xproxyctl
+internal/admin      web GUI server
+internal/paths      platform default locations, per daemon
 internal/version    build information
-internal/expr       condition language of routes[].when and header when (lexer, parser, evaluator)
-internal/config/schema  JSON schema of the configuration, generated from the types (schemagen) and embedded
-internal/manpage    Markdown to troff renderer and the generation of docs/man from docs/man/*.md and CONFIG.md
-docs/man/           manual pages (sources *.md, generated xproxy.8, xproxyctl.8, xproxy.yaml.5)
-deploy/             systemd units, sysusers, sysctl, SELinux policy, polkit, logrotate, RPM spec, example config
+internal/expr       condition language of routes[].when and header when
+internal/proxytest  starting a server from YAML, for the kinds' tests
+internal/testutil   certificates, echo servers and rule sets the tests share
+internal/config/schema  JSON schema of the configuration, generated
+internal/manpage    Markdown to troff renderer and the generation of docs/man
+docs/man/           manual pages (sources *.md, generated *.8 and *.5)
+deploy/             systemd units, sysusers, tmpfiles, sysctl, SELinux, polkit,
+                    logrotate, RPM spec, example configuration
 docs/               this documentation
-test/               cross package and binary level tests (grows in 1.0)
+examples/           configuration fragments, one per feature, all test-validated
+test/               cross package and binary level tests
 ```
 
-Packages under `internal/` cannot be imported from outside the module, which
-keeps the API surface at exactly three binaries.
+Packages under `internal/` cannot be imported from outside the module,
+which keeps the API surface at exactly the binaries.
 
 Dependency direction (arrows point at the importer's dependency):
 
 ```
-cmd/xproxy -> mgmt -> proxy -> {router, upstream, limits, netutil, tlsconf, logging, config, filter, waf, ban, cluster, shed, challenge, h3, jwt, metrics, icap}
-                       icap     -> {filter, config}
-                       metrics  -> (standard library only)
-                       jwt      -> {filter, config}
-                       h3       -> {limits, config}
-                       cluster  -> {ban, limits, config}
-                       waf      -> {filter, config}
-                       ban      -> {netutil, config}
-                       upstream -> {tlsconf, config}
-                       router   -> config
-                       logging  -> config
+cmd/xproxy ─┐
+cmd/xgate  ─┼─> daemon -> {proxy, mgmt, config, logging, sandbox, fleet,
+cmd/xrelay ─┘             metrics, ingress, listener, paths, version}
+    │
+    └─ blank imports of its own kinds, and nothing else:
+         kinds/{tcp,dns,forward} | kinds/ssh | kinds/{smtp,mqtt,ftp,syslog}
+
+kinds/<k> -> {proxy, config, listener, and that protocol's wire package}
+proxy     -> {listener, router, upstream, limits, netutil, tlsconf, logging,
+              config, filter, waf, ban, cluster, shed, challenge, h3, jwt,
+              metrics, icap, cache, geoip, apiinv, capture, httpx, relay,
+              streamscan, unixsock}
+mgmt      -> {proxy, config, logging, unixsock}
+cluster   -> {ban, limits, config}
+listener  -> (standard library only)
+config    -> {filter, listener}
+filter    -> (nothing from the module)
 ```
 
-No package imports `proxy` except `mgmt` and the commands. `config` imports
-only `filter` (to validate `filters[].options` against the registry);
-`filter` imports nothing from the module. `admin` imports only `mgmt` (the client), `config`
-(validation of edited files) and `tlsconf`; it never links the data plane.
+Two directions are load-bearing. A kind imports the engine and the
+engine imports no kind: everything the engine needs back from one is an
+interface (section 3), so linking a kind is the only thing that puts its
+code in a binary. And `internal/listener` imports nothing at all, which
+is what lets `internal/config` validate a `kind:` value that this binary
+does not implement.
 
-## 3. Process model
+`admin` imports only `mgmt` (the client), `config` (validation of edited
+files) and `tlsconf`; it never links a data plane.
+## 3. Three daemons, one engine
 
-One process, one user, no capabilities. systemd passes the listening sockets
-(`LISTEN_FDS`), the process matches them to configured listeners by name or
-address and binds any listener that was not passed. Datagram sockets are
+A proxy that terminates ten protocols is a process that links ten
+protocol implementations, and a flaw in any one of them is a flaw in
+front of all of them. An SSH bastion has no business carrying an MQTT
+parser; a mail relay has no business carrying a WebAssembly runtime.
+
+So the binary is split by who is on the other end of the socket:
+
+| Daemon | Faces | Listener kinds |
+|--------|-------|----------------|
+| `xproxy` | the open internet | `http`, `forward`, `tcp`, `dns` |
+| `xgate` | people | `ssh` |
+| `xrelay` | machines | `smtp`, `mqtt`, `ftp`, `syslog` |
+
+One repository, one module, one version and one configuration format;
+three programs, three users, three systemd units, three sandboxes, three
+management sockets. A host that is not a bastion does not have the SSH
+and SFTP implementation on it, rather than having it present and
+unconfigured.
+
+### The kind registry
+
+A listener kind is a package that registers itself:
+
+```go
+// internal/kinds/ssh/kind.go
+func init() {
+        proxy.Register(proxy.Kind{
+                Name:        "ssh",
+                ProxyHeader: true,
+                New:         build,
+        })
+}
+```
+
+and a daemon is a package doc, a role and the blank imports of its own
+kinds:
+
+```go
+// cmd/xgate/main.go
+import (
+        "github.com/rom/xproxy/internal/daemon"
+        _ "github.com/rom/xproxy/internal/kinds/ssh" // listener kind: ssh
+        "github.com/rom/xproxy/internal/listener"
+)
+
+func main() { os.Exit(daemon.Run(listener.RoleGate, os.Args[1:])) }
+```
+
+That import line is the whole of the mechanism that decides what code is
+in which binary. `cmd/*/main_test.go` asserts the exact set each one
+links, because a stray blank import is how that quietly stops being
+true.
+
+### What the engine asks of a kind, and the other way round
+
+The engine gives a kind a `Setup`: the bound socket, the listener's
+configuration, a `*tls.Config` where the kind asked for one, and a way
+to open a datagram socket on the same address. The kind returns an
+`Instance` with `Serve` and `Shutdown`.
+
+Everything a kind needs back from the engine is one small interface:
+
+```go
+type Host interface {
+        Logs() *logging.Logs          // access, security, audit, error
+        Counters() *Stats             // the shared counter set
+        Bans() *ban.List              // observe and consult
+        Pool(name string) *upstream.Pool
+        Limits() config.Limits
+}
+```
+
+Five methods, because that is all the kinds turned out to touch. A kind
+that wants more from the engine says so with an optional interface the
+engine type-asserts, never with a field the engine has to know about:
+`Applier` replaces a policy in place on reload, `Closer` releases what
+the socket held, `FlowCounter` reports open datagram flows for the
+snapshot, `DNSInstance` and `MasqueReporter` hand the management views a
+handle on something only that kind has. The engine names no kind, and
+`internal/proxy` imports no kind package.
+
+### The roster, and why it is static
+
+`internal/listener` holds a table of every kind this project implements
+and the role that serves it. It is deliberately a table rather than a
+view of the registry.
+
+A daemon has to tell "that listener is not mine" from "that is not a
+listener kind at all". It cannot do that from a registry holding only
+what it linked: every foreign kind would read as a typing mistake, and a
+configuration the estate shares would fail to load on two daemons out of
+three. So every binary knows every kind's name and owner, which costs a
+few hundred bytes, and links only the implementations it serves, which
+is the part that carries the code, the dependencies and the risk.
+
+Configuration validation reads the roster, so `kind: ssh` is a valid
+value in every daemon's file. Building a listener reads the registry.
+
+### The refusal
+
+A listener whose kind this binary did not link is refused by name, with
+the daemon that does serve it:
+
+```
+listener bastion: kind "ssh" is served by xgate, not by this daemon
+```
+
+This is the point of the split rather than a detail of it. Before the
+kinds were separable, an unknown `kind:` fell through to the HTTP data
+plane, and a port meant to speak SSH answered HTTP — a port answering
+the wrong protocol is worse than a port that does not answer.
+`TestUnlinkedKindRefused` holds it for every kind in the roster, driven
+through a valid configuration so the refusal is reached in the engine
+rather than short of it in validation.
+
+### One estate, three files
+
+Every daemon validates the whole configuration it is given, including
+the listeners its siblings serve — a mistake in the gate's SSH policy is
+caught by whichever daemon reloads first — and binds only the listeners
+of its own role, naming the rest in the error log under `listeners left
+to a sibling daemon`.
+
+What the three cannot share is a file. `management.socket`,
+`metrics.listen` and `logging.directory` each name something only one
+process can own, so each daemon reads `/etc/xproxy/<daemon>.yaml` and
+pulls the common part — upstreams, routes, rate limits, filters — out of
+`includes` all three name. `examples/estate/` is a worked set.
+
+### What the split does not yet buy
+
+`internal/proxy` still carries the HTTP data plane, and all three
+daemons link it. The binaries are therefore within half a megabyte of
+each other: what the split has removed so far is the protocol
+implementations, not the engine. Lifting `http` into a kind of its own
+is the remaining work, and it is blocked on two things — the HTTP
+listeners share one compiled generation, which a per-listener kind has
+no place to keep, and the management status surface returns types that
+would keep `internal/waf`, and therefore Coraza, linked into every
+binary.
+
+## 4. Process model
+
+One daemon is one process, one user, no capabilities; a host runs one,
+two or three of them side by side, and nothing about this section
+differs between them — it is all `internal/daemon`, so how a daemon
+starts is one implementation rather than three. systemd passes the
+listening sockets (`LISTEN_FDS`), the process matches them to
+configured listeners by name or address and binds any listener that was
+not passed. Datagram sockets are
 matched the same way (name `<listener>-udp` or address) for HTTP/3. The process sends
 `READY=1`, `RELOADING=1` (with `MONOTONIC_USEC`, as `Type=notify-reload`
 requires) and `STOPPING=1` over `NOTIFY_SOCKET`.
@@ -145,8 +367,15 @@ unavailable, failed or disabled; `strict` turns unavailable into a
 failed start. Because Landlock cannot be widened, the reload path checks
 a candidate configuration against the rules in force and refuses one
 that names a path outside them with "restart to apply". Tests never
-apply the sandbox: it lives in `cmd/xproxy`, and the package's own test
-confines a child process instead.
+apply the sandbox: it is applied from `internal/daemon`, and the
+package's own test confines a child process instead.
+
+The Landlock rules follow the configuration, so they differ per daemon:
+xgate writes session recordings under its state directory and xproxy
+does not, and a local cluster adds the directory its socket and its
+peers' sockets sit in. A peer added to `cluster.peers` without a restart
+is a peer the sandbox has not heard of, which is why the reload path
+checks a candidate against the rules in force.
 
 Signals: `SIGHUP` reloads the configuration, `SIGUSR1` reopens log files,
 `SIGTERM` and `SIGINT` drain and stop within `server.shutdown_timeout`.
@@ -156,7 +385,7 @@ endpoint with an active health check, one per HTTP/2 stream. There is no
 worker pool and no unbounded queue; back-pressure is applied by refusing
 work (AMR-007).
 
-## 4. Configuration generations
+## 5. Configuration generations
 
 ```
    config file --Load--> *config.Config --newRuntime--> *runtime
@@ -181,7 +410,9 @@ connections over an unbuffered channel to the current `front`, the
 `net.Listener` a listener generation serves from; closing a front stops
 that generation without touching the socket. `Reload` plans the listener
 set by name, then by address for renames: unchanged listeners keep
-running (certificate files, forward and dns policies apply in place),
+running (certificate files apply in place, and so does a kind's own
+policy where the kind implements `Applier` -- the forward proxy's
+destination rules, the resolver's block list),
 added ones are bound, and changed ones are rebuilt, on the old acceptor
 when the address is the same so a systemd owned or privileged socket is
 never re-bound and no connection is refused. Every bind and build
@@ -193,9 +424,12 @@ when no replacement inherited it. A listener with a UDP socket cannot be
 rebuilt on the same address because the old socket stays bound until
 the drain ends, so that change still needs a restart.
 
-## 5. Request path
+## 6. Request path
 
-Every request passes through the following stages in order. The stage that
+This is the HTTP data plane, which `xproxy` serves; the other kinds have
+their own paths, under "Layer 4 passthrough", "DNS proxy", "Forward
+proxy", "The gate" and "The relay" below. Every
+request passes through the following stages in order. The stage that
 rejects a request writes a security log entry and the access log records
 the `denied` reason.
 
@@ -307,7 +541,7 @@ The response body is wrapped so that the in-flight counter is decremented
 exactly once when the body is closed, which keeps `least_conn` accurate for
 streaming responses.
 
-## 6. Upstream pools
+## 7. Upstream pools
 
 ```
 Pool
@@ -396,7 +630,7 @@ weighted and least connection balancers scale the weight by the ramp,
 round robin and hash keep a ramping pick with the ramp's probability
 and otherwise pick again among the others.
 
-## 7. Limits
+## 8. Limits
 
 - `KeyedLimiter`: 64 shards, each a map of lazily refilled token buckets.
   Keys per shard are capped; on a full shard, buckets that have fully
@@ -438,7 +672,7 @@ count since the previous warning, and the count is exposed where the
 subsystem has a status view. Configured limits that cannot be satisfied
 (a file too large, a value out of range) fail validation instead.
 
-## 8. TLS
+## 9. TLS
 
 `tlsconf.Server` produces a `tls.Config` with TLS 1.2 minimum (or 1.3),
 X25519 first, AEAD forward secret suites only, renegotiation disabled and
@@ -484,7 +718,7 @@ notice.
 
 ### Layer 4 passthrough
 
-A `kind: tcp` listener (`internal/proxy/tcp.go`) accepts through the same
+A `kind: tcp` listener (`internal/kinds/tcp`) accepts through the same
 limiter as every listener (bans, per address and global connection
 limits), peeks the first record with `netutil.ClientHelloSNI` (a
 defensive parser that never copies and checks every length), resolves
@@ -567,7 +801,7 @@ id and the question; `tls://` upstreams keep a small pool of DNS over
 TLS connections per server and `https://` upstreams post
 `application/dns-message` through one HTTP client with the pinned CA.
 A `kind: dns` listener wraps this in
-`internal/proxy/dnslistener.go`, binding the access log, security
+`internal/kinds/dns`, binding the access log, security
 events and the ban list; its policy is an immutable value swapped on
 reload while the cache survives.
 
@@ -601,7 +835,7 @@ without DO.
 
 ### Forward proxy
 
-A `kind: forward` listener (`internal/proxy/forward.go`) is an
+A `kind: forward` listener (`internal/kinds/forward`) is an
 `http.Server` on the same accept limiter whose handler is the forward
 server instead of the request pipeline. The policy (ports, allow and
 deny rules compiled to name matchers and prefixes, users) is an
@@ -619,6 +853,54 @@ shutdown exceeds its context. Plain requests go through one
 `http.Transport` per listener with the checked dialer, hop-by-hop
 headers removed both ways and the response body bounded. Refusals are
 security events with a `forward_` reason and feed the ban list.
+
+### The gate: SSH
+
+A `kind: ssh` listener (`internal/kinds/ssh`) is an SSH server to the
+client and an SSH client to the target, not a jump host that forwards a
+stream. That is the whole reason it exists: a proxy that forwards the
+stream cannot see which channel is a shell and which is a port forward,
+so the only policy it can hold is "may connect", and the target sees the
+client's key. Here every channel and every request inside the session is
+a decision, and the target is reached with a credential no client holds.
+
+A session is matched to a principal by its key fingerprint or its
+certificate's principals, and the principal's policy — allowed channels,
+requests, subsystems, command patterns, environment variables, forward
+destinations — is compiled once and applied per request. `exec` is
+checked for file transfer helpers as well as against the command
+patterns, because `scp` and `rsync` never open the SFTP subsystem and
+would otherwise walk past every path rule it has. SFTP itself is
+mediated packet by packet (`internal/sftp`), with per-user path
+templating, an operation policy and YARA over what is written. Sessions
+are recorded to asciicast files (`internal/asciicast`) bounded by count
+and size, and a second factor can be demanded after the key.
+
+### The relay: SMTP, MQTT, FTP, syslog
+
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog}`) share a shape:
+each parses its protocol rather than forwarding bytes, holds a policy in
+that protocol's own terms, and bounds what a peer may say.
+
+- `smtp` takes the session to the client and opens its own to the mail
+  server: STARTTLS on 587 or implicit TLS on 465, `require_tls` before
+  AUTH or MAIL, a replaced banner, recipient, message and error bounds,
+  and XCLIENT so the server still sees the real client. Deciding the
+  framing once is the point — SMTP smuggling is two readings of where a
+  message ends.
+- `mqtt` fronts a broker with a topic policy: which topics a client id
+  may publish and subscribe to, whether `$SYS` is reachable, whether
+  retained messages are allowed, and a pattern the client id must match.
+- `ftp` mediates the control channel and brokers the data one, so no
+  client learns a data address of its own: passive and active transfers
+  are both set up by the proxy, and the command and path policy applies
+  to each.
+- `syslog` parses RFC 5424 and the RFC 3164 records most estates still
+  send, over UDP, TCP and TLS, with bounds on every field and a policy
+  over the facilities and severities a sender may claim.
+
+All four reach the engine through `Host` alone, which is why they link
+into `xrelay` and nowhere else.
 
 ### WebAssembly filters
 
@@ -791,7 +1073,7 @@ without rebuilding the transport, and optional SPKI pins checked in
 `VerifyConnection` on top of chain verification. Verification can only be
 disabled with two flags (`insecure_skip_verify` and `allow_insecure`).
 
-## 9. Logging
+## 10. Logging
 
 Four `slog` loggers with a `stream` attribute. Each stream is a handler
 chain (the access stream swaps the JSON handler for `textHandler` when a
@@ -827,14 +1109,24 @@ severity from the status class, the action or the level, and emit the
 rest under their own names. The syslog sink uses the same renderers
 for its `cef` and `leef` formats.
 
-## 10. Management plane
+## 11. Management plane
 
-`internal/mgmt` serves a JSON API on a Unix socket created with umask `077`
-and then chmodded to `socket_mode` (default `0660`, `other` bits refused by
-validation). `ConnContext` captures `SO_PEERCRED`; every mutating call logs
-`peer_uid`, `peer_gid`, `peer_pid` to the audit stream. The API has no
-authentication of its own by design: the kernel enforces who may connect,
-and adding a token would only add a secret to manage.
+`internal/mgmt` serves a JSON API on a Unix socket, bound by
+`internal/unixsock`: created under a umask that permits nothing beyond
+the owner and then widened to `socket_mode` (default `0660`, `other`
+bits refused by validation), so it never exists in the file system more
+open than it will end up. `ConnContext` captures `SO_PEERCRED`; every
+mutating call logs `peer_uid`, `peer_gid`, `peer_pid` to the audit
+stream. The API has no authentication of its own by design: the kernel
+enforces who may connect, and adding a token would only add a secret to
+manage.
+
+Each daemon serves its own socket — `/run/xproxy/mgmt.sock`,
+`/run/xgate/mgmt.sock`, `/run/xrelay/mgmt.sock` — and one `xproxyctl`
+talks to any of them with `-socket`. The endpoints are the same set;
+what differs is which of them have anything to report, since a daemon
+that serves no HTTP listener has no routes, no WAF and no API
+inventory.
 
 Endpoints:
 
@@ -973,7 +1265,7 @@ snapshot every `sample_interval`, turns counters into per-second rates and
 stores a fixed set of series in a ring buffer sized by `retention`; the
 TUI and GUI graph from it without external storage (AMR-026).
 
-## 11. Filters (middleware)
+## 12. Filters (middleware)
 
 `internal/filter` defines the per-route middleware interface:
 
@@ -1135,31 +1427,66 @@ addresses and a small slice for CIDRs; both are bounded and purged every
 minute. With `state_file` set, every ban and unban is written to bbolt and
 live entries are loaded on start.
 
-## 12. Cluster
+## 13. Cluster
 
 ```
  node A                                   node B
  +-----------------------------+          +-----------------------------+
- | limiters  --Flush--> gossip |--mTLS--> | accept -> Report -> limiters|
+ | limiters  --Flush--> gossip |--------> | accept -> Report -> limiters|
  | ban list  --OnChange-> queue|  (A->B)  |          Apply  -> ban list |
  |                             |          |                             |
- | accept <-Report/Apply       | <--mTLS--| gossip <--Flush/OnChange    |
+ | accept <-Report/Apply       | <--------| gossip <--Flush/OnChange    |
  +-----------------------------+  (B->A)  +-----------------------------+
 ```
 
 Each node dials every configured peer and sends on that connection; it
-receives on the connections peers dialled to it. Both directions are TLS
-1.3 with client certificates from the cluster CA, optionally restricted to
-`allowed_names`. Messages are newline-delimited JSON, at most 1 MiB, with
-bounded counts of keys and bans per message and a read deadline of
-`peer_stale` plus five seconds; a silent peer is disconnected and
-redialled with back-off.
+receives on the connections peers dialled to it. Messages are
+newline-delimited JSON, at most 1 MiB, with bounded counts of keys and
+bans per message and a read deadline of `peer_stale` plus five seconds;
+a silent peer is disconnected and redialled with back-off.
+
+A cluster is one transport or the other, decided by the form of
+`cluster.listen`, and every peer address must agree with it. A node
+listening on a socket and dialling a host would be reachable by its
+siblings and not by the peers it dials, which is half a cluster that
+looks like a whole one.
+
+**Networked**, `host:port`. Both directions are TLS 1.3 with client
+certificates from the cluster CA, optionally restricted to
+`allowed_names`. A peer's actions are recorded under its certificate
+common name, never under the node id it announces, and with
+`bind_node_id` (the default) the announced id must be a name that
+certificate carries — the id is not a label, since key ownership for
+`distributed: exact` is a rendezvous hash over node ids.
+
+**Local**, `unix:/path`. The peers are the daemons of this machine, and
+there is no TLS: a certificate would authenticate processes the kernel
+can already name, and it would have to be issued and rotated for a
+conversation that never leaves the host. Two things admit a peer
+instead. The sockets live in a directory the shipped `tmpfiles.d` entry
+creates `0770 root:xproxy-cluster`, with the three daemons in that
+group and nothing else; and `cluster.local.allow_uids` lists the user
+ids, read from the connected socket with `SO_PEERCRED` rather than
+announced. A local peer is then recorded under that user id
+(`uid:991`), which is the same rule `bind_node_id` enforces with a
+certificate, reached the way a Unix socket reaches it. `internal/
+unixsock` binds the socket: refuse a path something still answers on,
+clear one a killed process left, create it under a umask that permits
+nothing beyond the owner and widen it afterwards, so it never exists in
+the file system more open than it will end up.
+
+A local cluster is what the split uses to keep one ban list across three
+daemons: an address xgate refuses at the SSH port is refused by xproxy
+at :443 within a gossip interval, and by xrelay at :587. Rate limits are
+usually left unshared there (`share_rate_limits: false`), because the
+three serve different protocols on different ports and a shared count
+would only add noise.
 
 Every `gossip_interval` the node flushes consumption from all limiters of
 the live generation (policy, key, tokens) and sends one `rates` message
 carrying the measured interval; the receiver converts counts to rates and
 calls `ReportPeer` on the matching policy. Buckets refill at the configured
-rate minus the sum of fresh peer rates (section 7), which makes the
+rate minus the sum of fresh peer rates (section 8), which makes the
 configured rate approximately cluster wide. Ban changes originating locally
 (manual or trigger) are queued by the ban list's change hook and sent in
 the same cycle; peers apply them with source `peer:<node>` and never
@@ -1198,10 +1525,13 @@ during a rolling upgrade.
 
 The node is owned by the `Server` like the ban list and reads limiters
 through the live runtime pointer, so reloads neither detach it nor lose
-peer state. Listen address, node identity and TLS material need a restart;
-peers and intervals reload in place.
+peer state. Listen address, node identity, TLS material and the `local`
+section need a restart — the socket's mode and the user ids allowed on
+it are settled when the socket is created and when a peer connects, so
+changing either in place would leave the running node admitting what the
+file no longer says it should. Peers and intervals reload.
 
-## 13. Load shedding and challenge
+## 14. Load shedding and challenge
 
 `shed.Shedder` keeps a ring of 20 latency buckets covering `window`; the
 latency level is derived from the average of buckets still inside the
@@ -1223,7 +1553,7 @@ sanitised original path. The gate runs after routing (it needs the route's
 mode) and before shedding, so under load unverified clients are turned
 away cheaply and verified browsers compete only with each other.
 
-## 14. HTTP/3
+## 15. HTTP/3
 
 A listener whose protocols include `h3` gets a QUIC endpoint on UDP at
 the same port, served by `internal/h3` with the same `listenerHandler`,
@@ -1259,7 +1589,7 @@ the route's header operations), then the client's is accepted with
 unidirectional streams and datagrams both ways, mirroring closes and
 resets with their codes, until either session ends.
 
-## 15. Scale properties (measured, see PERFORMANCE.md)
+## 16. Scale properties (measured, see PERFORMANCE.md)
 
 1000 hosts and 10 000 endpoints (ASR-P1) are validated by `TestScale` at
 full size and rest on these properties:
@@ -1284,6 +1614,12 @@ full size and rest on these properties:
   endpoint list; the Prometheus exposition drops from 10.6 MiB to 229 KiB
   with `metrics.endpoint_series: false`, which is the setting above a few
   thousand endpoints.
+- The three daemons are 25.9, 26.2 and 25.9 MiB as `make build` produces
+  them. They are within a third of a megabyte of each other because they
+  still share the engine, which carries the HTTP data plane: what the
+  split has removed from each so far is the other daemons' protocol
+  implementations, not the engine (section 3). The number to watch as
+  that work lands is the spread between them, not the total.
 
 Throughput on the reference container (ASR-P2) is 10 000 req/s at p99
 under 10 ms with the load generator on the same four cores; the 8 core

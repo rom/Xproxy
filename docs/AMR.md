@@ -1496,6 +1496,62 @@ has fewer members than nodes.
 
 ---
 
+## AMR-048: One repository, three daemons, split by who is on the other end
+
+**Context.** The product grew from an HTTP reverse proxy into something
+that terminates HTTP, TLS passthrough, DNS, a forward proxy with
+interception, SMTP, MQTT, FTP, syslog and SSH with SFTP. Every one of
+those is a parser of hostile input, and all of them were linked into one
+process. A flaw in the MQTT topic reader was a flaw in the process
+serving :443; a host that ran only a bastion still carried a Coraza
+engine, a WebAssembly runtime and a QUIC stack it never used. Operators
+asked for the protocols without the one binary that holds them all.
+
+**Options.** (a) Keep one binary and rely on the in-process sandbox.
+(b) Separate repositories and a shared library. (c) One repository and
+module, several binaries differing only in what they link.
+
+**Decision.** (c). The split is by *who is on the other end of the
+socket*, because that is what the trust decisions actually differ by:
+`xproxy` faces the internet, `xgate` faces people, `xrelay` faces
+machines. Each listener kind is a package that registers itself with
+`proxy.Register` and reaches the engine through a five-method
+`proxy.Host`; a daemon is a role plus the blank imports of its own
+kinds, and `internal/daemon` holds everything else once.
+
+`internal/listener` carries a static roster of every kind and its owner,
+deliberately not a view of the registry: a daemon must be able to tell
+"not mine" from "not a kind", or a shared configuration fails to load on
+two daemons out of three. Validation reads the roster; building a
+listener reads the registry; a kind this binary did not link is refused
+by name, with the daemon that serves it.
+
+**Why not (b).** A shared library across repositories turns every
+internal helper into a public API with a compatibility promise, and
+turns "upgrade the estate" into a version matrix. The value wanted here
+is what is *linked*, which is a build-time property; nothing about it
+needs a module boundary.
+
+**Why not (a).** The sandbox narrows what a compromised process may do
+afterwards. It does not remove the parser that got compromised, and it
+cannot: seccomp does not know which `read` came from the MQTT reader.
+
+**Consequences.** Three users, three units, three sandboxes, three
+management sockets, and a configuration file per daemon, because
+`management.socket`, `metrics.listen` and `logging.directory` each name
+something only one process can own; what the estate shares goes in
+includes all three pull in. The daemons share a ban list over a local
+cluster (AMR-021 update). The engine may not import a kind, which is
+enforced by the direction of the `Host` interface and checked by a test
+per binary on the exact kind set it links.
+
+The benefit is bounded by what is still shared: `internal/proxy` carries
+the HTTP data plane, so the three binaries remain within a third of a
+megabyte of each other until that too becomes a kind. What the split
+buys today is that the SSH and SFTP implementation is absent from the
+edge, the resolver and the WAF are absent from the bastion, and adding a
+protocol costs the daemon that serves it and nothing else.
+
 ## Open items
 
 | Item | Owner | Needed by |

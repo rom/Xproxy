@@ -217,6 +217,8 @@ procedure is in RELEASING.md.
   delivered
 - Cluster sharing of honeypot marks and OIDC revocations (protocol
   version 2, `filter.Env.Events`): delivered (AMR-021 update)
+- gRPC-web translation for browsers (`routes[].grpc.web`): delivered
+  (AMR-039 update)
 - Static file serving (`routes[].static`): delivered
 - Response compression (`compression`, `routes[].compress`): delivered
 - Regular expression, header and cookie routing (`path_regex`,
@@ -286,10 +288,50 @@ procedure is in RELEASING.md.
 - Every management endpoint visible in the CLI, the TUI (nine screens)
   and the GUI (twelve pages): delivered
 
-## After 1.3 (candidates, unranked)
+## 1.4 (in progress)
 
-- gRPC-web translation for browsers and a `grpc_method` rate limit key
-  (AMR-039)
+The theme is the split: one binary that terminates ten protocols is a
+process that links ten protocol implementations, and a flaw in any one
+of them is a flaw in front of all of them.
+
+- Listener kinds as separately linkable packages: delivered
+  (`internal/kinds/*`, the `proxy.Kind` registry, the five-method
+  `proxy.Host`, and `internal/listener` as the static roster)
+- A listener whose kind this binary did not link is refused by name
+  rather than falling through to the HTTP data plane: delivered
+  (`TestUnlinkedKindRefused`)
+- Three daemons — `xproxy` (edge: http, forward, tcp, dns), `xgate`
+  (gate: ssh), `xrelay` (relay: smtp, mqtt, ftp, syslog) — sharing one
+  module, one configuration format and one control plane, with the
+  common body in `internal/daemon`: delivered
+- Each daemon validates the whole configuration and binds only its own
+  role's listeners, so an estate shares a set of includes: delivered
+- A cluster over Unix sockets for the daemons of one machine, with no
+  certificate and `SO_PEERCRED` in place of one: delivered
+  (`cluster.listen: unix:`, `cluster.local`, AMR-021 update)
+- TLS interception on the forward proxy: delivered
+  (`forward.intercept`)
+- DNS tunnelling and exfiltration detection: delivered
+  (`dns.tunnel_detection`)
+- The fifth audit round, over every parser: delivered
+- Lifting the HTTP data plane itself into a kind, so that `xgate` and
+  `xrelay` stop linking it: **not done**. The three binaries are still
+  within a third of a megabyte of each other. It is blocked on the
+  shared compiled generation the http listeners use and on the
+  management status surface, whose types would keep `internal/waf` —
+  and therefore Coraza — linked into every binary.
+
+## After 1.4 (candidates, unranked)
+
+- The remote access protocols (VNC, RDP, Telnet, Citrix ICA, PCoIP,
+  NX) as gate kinds, and the operational technology ones (Modbus/TCP,
+  OPC UA) as relay kinds. The split exists so that adding them costs
+  the daemon that serves them and nothing else.
+- WinRM and WS-Management as HTTP filters rather than a kind: they are
+  SOAP over HTTP, so the edge already terminates them.
+- WireGuard and IPSec are not planned here. MASQUE already is the TLS
+  VPN this product offers; a kernel-datapath VPN is a different
+  product, not a listener kind.
 - A request replay tool from the access log, if the log policy ever
   admits bodies (AMR-038)
 

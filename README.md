@@ -388,9 +388,10 @@ curl -i http://127.0.0.1:8080/
 [docs/SETUP.md](docs/SETUP.md) covers the RPM, the systemd units, SELinux
 and the web GUI; [docs/USAGE.md](docs/USAGE.md) has a worked example for
 every feature above, and [examples/](examples/) has complete
-configurations — a submission proxy, an MQTT fleet, an SSH bastion, an
-encrypted resolver, an egress proxy with SOCKS5 and MASQUE, YARA rules,
-honeypots — each one validated by a test that runs on every build.
+configurations — a three daemon estate with a shared ban list, a
+submission proxy, an MQTT fleet, an SSH bastion, an encrypted resolver,
+an egress proxy with SOCKS5 and MASQUE, YARA rules, honeypots — each one
+validated by a test that runs on every build.
 
 ## Documentation
 
@@ -405,7 +406,7 @@ honeypots — each one validated by a test that runs on every build.
 | [docs/SETUP_MACOS.md](docs/SETUP_MACOS.md) | Installation on macOS |
 | [examples/](examples/) | WAF rules, block lists, filters, a WebAssembly module, rewriting and routing examples, all validated by tests |
 | [docs/HARDENING_MACOS.md](docs/HARDENING_MACOS.md) | Host hardening on macOS |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, request path, data flows |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The split into three daemons, the kind registry and the roster, components, request path, data flows |
 | [docs/SECURITY.md](docs/SECURITY.md) | Security posture, controls, secure development, reporting |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | STRIDE analysis per trust boundary |
 | [docs/HARDENING.md](docs/HARDENING.md) | Host hardening checklist |

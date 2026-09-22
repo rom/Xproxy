@@ -366,6 +366,16 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **The architecture is written down.** `docs/ARCHITECTURE.md` gains a
+  section on the split — the roles, the kind registry, the `Host`
+  interface, why the roster is static rather than derived from what was
+  linked, the refusal, and what the split does not yet buy — plus
+  sections on the gate and relay kinds, which had never had one.
+  `AMR-048` is the decision record: why one repository and several
+  binaries rather than a shared library or a bigger sandbox. The
+  roadmap has a 1.4 section, and `docs/TESTS.md` names the three tests
+  that hold the split together.
+
 - **A cluster over Unix sockets, for the daemons of one machine.** The
   three daemons of the split need to share a ban list: an address the
   bastion refuses at the SSH port should be refused at the edge too.

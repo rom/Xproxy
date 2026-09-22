@@ -159,10 +159,24 @@ server.
 | `internal/challenge` | `TestFlow`, `TestVerifyInputs`, `TestPersistentKey`, `TestKeyRotation`, `TestProofDefinition`, `TestScriptSHA256MatchesGo`, `TestTiersAndDevice`, `TestCaptcha` | Page and headers, proof verification, wrong proof and wrong address refused, replay refused, cookie bound to address, expiry and tampering, exemptions, method and input validation, expired nonces, open redirect neutralised, key persistence and rotation, proof definition and form fields shared with the script; proof, captcha, legacy and device-less cookies read back with their tier and device, a forged tier refused, device parsing, the posted device landing in the cookie, devices off; against a fake provider: escalation and always modes, widget, script and policy origins per provider, rejected token, low score, unreachable provider, a pass with the secret, token and address sent, nonce single use, proofs alongside, statistics, missing and empty secrets, hostname binding refusing a token solved for another host, an allowlist overriding the request host and the check turned off |
 | `internal/waf` | `TestBlockSQLi`, `TestDetectMode`, `TestCleanRequestPasses`, `TestBodyInspectionAndReplay`, `TestBodyLimitReject`, `TestResponseInspection`, `TestCustomDirectivesAndBadRules`, `TestOnlyNeededModesCompiled`, `TestRuleStatistics`, `TestLearningProposals`, `TestLearningTableBound`, `TestQuoteTarget`, `TestCRSDirectory`, `TestCRSDirectoryErrors`, `TestProfilesWithoutCRS`, `TestCRSPlugins`, `TestJSONSchemaBlock`, `TestJSONSchemaRequired`, `TestAnomalyDetection`, `TestAnomalyTrackerBound` | CRS blocks injection in query and body, detect mode logs without denying, clean traffic produces no attributes, inspected bodies are replayed intact, 413 above the body limit, response leakage blocked and clean or oversize responses pass intact, custom SecLang rules, compile errors surface, lazy compilation per mode; per rule counters with severity, tags, ordering, top bound and reset; learning proposals below and at `min_hits` with clients, path scoping, unique ids and a global form, the rendered file, and the proposed directives compiled into a new engine stop the same request without leaking outside the path; the entry bound and dropped count; target quoting; a copy of the embedded CRS loaded from a directory blocks injection, reports its source and version, picks up an added rule file and a preferred `crs-setup.conf`, fails on a broken file; missing, file, no setup and no rules directories refused; profiles without the CRS report and learn from custom rules; plugins as loose files and as a checked out repository with a before rule reading a data file and an after rule, selection by name, a missing name and an empty directory refused; JSON body schemas: a valid body replayed, a violation denied with a problem body and attributes, malformed JSON, 413 over the limit, other paths, methods and media types untouched, detect mode logging, the violation counter, `required` refusing a missing body and a wrong media type, a missing schema file; anomaly detection over synthetic windows: baseline built from normal clients, a scanner flagged with its feature and score, block, challenge and log actions, flag expiry, reset and the disabled report; the tracker bound with dropped clients counted |
 
-### Integration tests (in `internal/proxy`)
+### Integration tests (in `internal/proxy` and the kind packages)
 
 These start a full `Server` on loopback with real `httptest` backends and
 drive it with `net/http` and raw TCP.
+
+A listener kind's tests live with the kind, in `internal/kinds/<kind>`,
+and start the same server through `internal/proxytest` — a kind is
+tested the way it is deployed, through a real engine over a real
+socket, not through a constructor of its own. `internal/proxy` keeps
+the tests of the engine and the HTTP data plane.
+
+Three tests exist for the split itself:
+
+| Test | Covers |
+|------|--------|
+| `cmd/*/main_test.go: TestLinkedKinds` | Each binary links exactly its own role's kinds and no others. A stray blank import is how that quietly stops being true |
+| `internal/proxy: TestUnlinkedKindRefused` | Every kind in the roster, configured validly, is refused by a binary that did not link it — with the daemon that does serve it named. Before the split an unknown kind fell through to the HTTP data plane |
+| `internal/daemon: TestOwnTakesOnlyItsShare` | The three roles take disjoint parts of one estate configuration and between them take all of it, and `own` does not modify the configuration it was given |
 
 | Test | Covers |
 |------|--------|
@@ -170,6 +184,7 @@ drive it with `net/http` and raw TCP.
 | `TestRetryOnDeadEndpoint` | Retry to a second endpoint, outlier ejection of the dead one, no replay of POST |
 | `TestReload` | Generation swap changes routing, listener change refused, reload counters |
 | `TestTLSAndRedirect` | HTTP to HTTPS 308 preserving path and query, TLS 1.3 with HTTP/2 negotiated, `X-Forwarded-Proto`, TLS 1.2 refused when the minimum is 1.3 |
+| `TestLocalClusterSharesBans` | Two nodes over Unix sockets, no certificate: a ban placed on one reaches the other, the peer is reported under the uid the kernel gave rather than the node id it announced, and an unlisted uid is refused and its bans are not applied |
 | `TestTCPPassthrough` | Two HTTPS origins with their own certificates behind a `kind: tcp` listener: routed by server name end to end (the client verifies the origin's certificate; a wildcard route to the wrong origin fails the client's check, proving no termination), non-TLS bytes to the default echo upstream, unknown name closed on a listener without default, counters and pool accounting, idle timeout |
 | `TestQUICPassthrough` | A quic-go echo server behind a `kind: tcp` listener with `quic: true`: streams echo end to end with the origin's certificate verified by the client, flow counters, an unknown name never reaches an endpoint and is counted, the flow ends after the idle timeout with bytes accounted |
 | `TestTCPProxyProtocol` | The upstream receives a PROXY v2 header (signature, command, family, client port) followed by the client's bytes |
