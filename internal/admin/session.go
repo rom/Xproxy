@@ -101,9 +101,8 @@ func (s *sessions) drop(tok string) {
 	s.mu.Unlock()
 }
 
-// loginLimiter counts failed logins per source and locks the source out
-// after `limit` failures inside `window`.
-// loginLimiter counts failed logins per source and account.
+// loginLimiter counts failed logins per source and account, inside
+// `window`.
 //
 // Keying on the source alone locked every operator out for the window
 // after five bad logins from one place, and a client over the Unix

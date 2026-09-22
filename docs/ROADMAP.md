@@ -314,6 +314,13 @@ of them is a flaw in front of all of them.
 - DNS tunnelling and exfiltration detection: delivered
   (`dns.tunnel_detection`)
 - The fifth audit round, over every parser: delivered
+- Every open finding carried out of rounds one to four: delivered, each
+  with a regression test. Four of them changed a default rather than
+  adding a setting -- `cluster.tls.bind_node_id` and
+  `tracing.redact_client_address` are on, compression leaves an
+  authenticated response alone unless
+  `compression.compress_authenticated` says otherwise, and a daemon
+  refuses to start as uid 0 without `-allow-root`
 - The HTTP data plane itself as a kind, so that `xgate` and `xrelay`
   stop linking it: delivered (`internal/kinds/http` and
   `internal/kinds/forward`). The shared compiled generation became `proxy.Plane` with a
@@ -321,6 +328,11 @@ of them is a flaw in front of all of them.
   `proxy.PlaneStatus`, with the WAF report moved to the leaf package
   `internal/waf/wafstatus` so Coraza stays out of the daemons that run
   no WAF. Stripped: `xproxy` 28.4 MiB, `xgate` 15.3, `xrelay` 14.9
+- The per-package coverage floor, which the split had left three
+  packages under: delivered (`internal/daemon` 14 % to 70 %,
+  `internal/kinds/ftp` 54 % to 70 %, `internal/kinds/dns` 58 % to
+  89 %), and `test/covergate` now excludes every `main` package by
+  where it lives rather than by a list that goes stale
 
 ## After 1.4 (candidates, unranked)
 

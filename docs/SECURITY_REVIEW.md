@@ -74,14 +74,13 @@ listener with header and idle timeouts.
 
 - A slow client can hold a request for up to the upstream `total`
   timeout (5 minutes by default) while sending its body; the concurrency
-  ceiling bounds the damage. Lowering `timeouts.total` on routes that
-  accept uploads from the Internet is the operator's lever.
+  ceiling bounds how many, and `server.limits.max_buffered_body_bytes`
+  bounds the heap they can hold between them. Lowering `timeouts.total`
+  on routes that accept uploads from the Internet is the operator's
+  lever.
 - A consistent hash keyed on a header or cookie lets a client choose its
   endpoint and therefore concentrate load on one backend. Use `client_ip`
   hashing on routes exposed to untrusted clients.
-- The GUI's login lockout is per source address; behind an SSH tunnel
-  every operator is `127.0.0.1`, so five wrong passwords from one lock
-  everyone out for five minutes. The audit log names the session.
 - Group members can read logs, which carry client addresses unless
   redaction is on; that is the documented purpose of the group.
 - The proxy does not itself refuse to serve an expired certificate;
@@ -90,6 +89,21 @@ listener with header and idle timeouts.
   review environment (outbound policy); the CI `security` job runs it
   against every push. The dependency set was reviewed by hand against
   the versions in `go.mod` (AMR-004) at the time of the review.
+
+## Later rounds
+
+Four more audit rounds followed this one, each in disciplines the
+previous ones did not cover, and a fifth over every parser the data
+plane runs. Their findings and resolutions are in the changelog rather
+than here; this document is the phase 3 review and stays what it was.
+
+Every open finding carried out of rounds one to four is closed. Where a
+resolution changed a default rather than only adding a setting, the
+default is the one this document and the threat model now describe:
+`cluster.tls.bind_node_id` is on, `tracing.redact_client_address` is on,
+compression no longer touches an authenticated response unless
+`compression.compress_authenticated` says so, and the daemon refuses to
+start as uid 0 without `-allow-root`.
 
 ## What the review did not cover
 

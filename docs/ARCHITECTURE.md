@@ -462,20 +462,43 @@ work (AMR-007).
 
 ```
    config file --Load--> *config.Config --newRuntime--> *runtime
-                          (validated,                     router
-                           defaulted,                     pools (transports, health)
-                           immutable)                     rate limiters
-                                                          trusted prefixes
-                                                          compiled routes
+                          (validated,                     pools (transports, health)
+                           defaulted,                     trusted prefixes
+                           immutable)                |
+                                                     | proxy.Generation
+                                                     v
+                                              Plane.Prepare --> plane runtime
+                                                                  router
+                                                                  rate limiters
+                                                                  compiled routes
 
-   Server.rt : atomic.Pointer[runtime]
+   Server.rt : atomic.Pointer[runtime]     engine (every daemon)
+   engine.rt : atomic.Pointer[runtime]     http plane (xproxy only)
 ```
 
-`Server.Reload` builds a complete new runtime, reloads certificates, then
-swaps the pointer. In-flight requests hold the runtime they started with.
-The old runtime's pools are stopped after `shutdown_timeout`. Any failure
-before the swap leaves the old generation active and increments
-`reload_failures`.
+A generation is compiled in two halves. The engine owns what every
+daemon has -- the upstream pools and the trusted prefix set -- and hands
+them to the data plane as a `proxy.Generation`; the plane compiles the
+router, the rate limiters and the routes against those pools. A daemon
+that links no plane (xgate, xrelay) stops after the first half.
+
+`Server.Reload` builds a complete new runtime, asks the plane to prepare
+its half, reloads certificates, then swaps the pointers. Preparing is
+two phase: `Prepare` returns a `commit` and a `discard`, so a listener
+that fails to bind after the plane is ready throws the plane's
+generation away without either half having been swapped. In-flight
+requests hold the generation they started with. Any failure before the
+swap leaves the old generation active and increments `reload_failures`.
+
+The old generation stops health checking at the swap, but its pools stay
+open until the plane reports that the last request compiled against it
+has finished (`Generation.Retire`) -- a pool closed under a long upload
+or an SSE stream cuts it. The plane waits `shutdown_timeout`, then polls
+until the generation is idle, under a hard cap of ten times that (at
+least five minutes) so a request that never ends cannot hold a
+generation forever. In a daemon with no plane the pools are stopped
+after `shutdown_timeout`, because nothing there holds a request across
+the swap.
 
 Listeners are part of the reload. Each accept socket is owned by an
 `acceptor` (`internal/proxy/acceptor.go`) whose goroutine hands

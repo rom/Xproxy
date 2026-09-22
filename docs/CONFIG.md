@@ -59,7 +59,7 @@ on the first line of the file to enable it.
 | `server_header` | string | `""` | Value of the `Server` response header. Empty removes it. |
 | `error_pages` | object | none | Replace the proxy's plain status bodies (denials, unknown routes, upstream failures, static misses) with documents; see "server.error_pages" below |
 | `session_tickets` | object | none (keys per process, rotated by the Go runtime) | Derive the TLS session ticket keys of every TLS listener from a shared secret file so that a ticket issued by one node resumes on every node; see "server.session_tickets" below. Changing the section needs a restart |
-| `shutdown_timeout` | duration | `30s` | Drain time on stop and for old generations after reload |
+| `shutdown_timeout` | duration | `30s` | Drain time on stop, and the minimum an old generation is kept for after a reload. A generation still serving a request when it expires is kept until that request ends, so a long upload or an SSE stream is not cut; a hard cap of ten times this (at least five minutes) bounds one that never ends |
 
 ### server.session_tickets
 

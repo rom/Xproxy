@@ -210,7 +210,7 @@ duration
 T}	T{
 \fB30s\fR
 T}	T{
-Drain time on stop and for old generations after reload
+Drain time on stop,\: and the minimum an old generation is kept for after a reload. A generation still serving a request when it expires is kept until that request ends,\: so a long upload or an SSE stream is not cut;\: a hard cap of ten times this (at least five minutes) bounds one that never ends
 T}
 .TE
 .SS "server.session_tickets"

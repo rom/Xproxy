@@ -12,11 +12,12 @@ import (
 	"github.com/rom/xproxy/internal/secret"
 )
 
-// affinity issues and verifies signed session cookies. The cookie value is
-// base64url(index:uint16 || expiry:int64 || hmac-sha256[:16]). The backend
-// address is never exposed; only an index that is meaningless without the
-// configuration, and the signature stops a client from steering itself to
-// a chosen backend.
+// affinity issues and verifies signed session cookies. The cookie value
+// is base64url(index:uint32 || expiry:int64 || hmac-sha256[:16]); the
+// uint16 layout it replaced is still verified, never issued, so both
+// stay valid across an upgrade. The backend address is never exposed;
+// only an index that is meaningless without the configuration, and the
+// signature stops a client from steering itself to a chosen backend.
 type affinity struct {
 	keys   [][]byte // primary first; every key verifies
 	ttl    time.Duration
