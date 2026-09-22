@@ -77,9 +77,10 @@ type shard struct {
 // NewKeyedLimiter creates a limiter allowing rate tokens per second with the
 // given burst. maxKeys bounds the number of tracked keys per shard; when the
 // bound is reached, stale buckets are evicted and if none are stale the
-// request is allowed through with a full bucket (fail-open on the memory
-// bound, fail-closed on the rate). This keeps memory bounded at
-// 64*maxKeys buckets.
+// decision moves to a coarser key (see AllowFallback) or, with nothing
+// coarser left, the request is refused. This keeps memory bounded at
+// 64*maxKeys buckets without making the bound itself the way past the
+// limit.
 func NewKeyedLimiter(rate float64, burst int, maxKeys int) *KeyedLimiter {
 	if maxKeys <= 0 {
 		maxKeys = 4096
@@ -125,12 +126,13 @@ func (l *KeyedLimiter) AllowN(key string, n float64) bool {
 	return l.AllowFallback(key, nil, n)
 }
 
-// AllowFallback consumes n tokens for key. When key is not tracked and its
-// shard is full of active keys, the decision is made on fallback instead
-// (the client address for a header keyed limit), so that a client rotating
-// key values cannot obtain a fresh burst per value once the table is full.
-// With no fallback the request is allowed untracked, bounded by burst; the
-// per-connection and concurrency limits still hold.
+// AllowFallback consumes n tokens for key. When key is not tracked and
+// its shard is full of active keys, the decision is made on the first
+// usable fallback instead — the client address for a header keyed
+// limit, then its network — so that a client rotating key values cannot
+// obtain a fresh burst per value once the table is full. With nothing
+// coarser left the request is refused: admitting it untracked made the
+// bound itself the way past the limit.
 func (l *KeyedLimiter) AllowFallback(key string, fallbacks []string, n float64) bool {
 	now := l.now()
 	var b *bucket

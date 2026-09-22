@@ -171,11 +171,18 @@ accept socket, so a systemd owned socket is never re-bound.
 (ASR-S5).
 
 **Decision.** Every derived object (router, pools, limiters, parsed CIDRs) is
-built into a `runtime` struct from a validated configuration. The handler
-reads the current runtime through an atomic pointer at the start of each
-request. A reload builds a complete new generation first and only then swaps
-the pointer; the previous generation keeps serving in-flight requests and is
-stopped after `shutdown_timeout`.
+built from a validated configuration into a `runtime` struct, in two halves
+since the daemons were split: the engine's, which holds what every daemon has
+(upstream pools, trusted prefixes), and the data plane's, which holds the
+router, the limiters and the compiled routes it builds against those pools.
+The handler reads the current runtime through an atomic pointer at the start
+of each request. A reload builds a complete new generation first -- both
+halves, each able to refuse -- and only then swaps the pointers; the previous
+generation keeps serving in-flight requests and is stopped when the last of
+them ends, `shutdown_timeout` being the minimum it is kept for rather than
+the maximum. A generation that never goes idle is stopped at a hard cap; a
+daemon with no data plane, where nothing holds a request across the swap,
+stops the old pools after `shutdown_timeout`.
 
 **Consequences.** Rate limiter buckets reset on reload. Documented; a future
 record may add bucket migration if it matters in practice.
@@ -193,8 +200,12 @@ possible point: connections beyond the limit are closed right after accept;
 requests beyond the concurrency ceiling get 503 before routing; rate limited
 requests get 429 or a tarpit that is bounded by the client context. Tables
 that attackers can grow (rate limit keys, per-IP connection counts) have hard
-caps with eviction; on a full table the limiter fails open for the rate
-dimension while the connection and concurrency dimensions still hold.
+caps with eviction; a full rate limit table does not admit the keys it can no
+longer track, because that would make the bound itself the way past the limit
+-- a client rotating key values until the table fills would buy a fresh burst
+per value, which is cheap over IPv6. The decision moves to the first usable
+coarser key instead (the client address for a header keyed limit, then its
+network), and with nothing coarser left the request is refused.
 
 **Alternatives.** Queueing with admission control: rejected because a queue is
 the resource a flood attacker fills.

@@ -178,7 +178,10 @@ type Server struct {
 	// without a restart. Without the section each process uses random
 	// keys that rotate every 24 hours and are never shared.
 	SessionTickets *SessionTickets `yaml:"session_tickets"`
-	// ShutdownTimeout bounds graceful drain on stop or reload.
+	// ShutdownTimeout bounds graceful drain on stop. On a reload it is
+	// the minimum the superseded generation is kept for: one still
+	// serving a request when it expires is kept until that request
+	// ends, under a hard cap, so a long upload or a stream is not cut.
 	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
 }
 
