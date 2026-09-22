@@ -28,6 +28,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/ftp"    // listener kind: ftp
 	_ "github.com/rom/xproxy/internal/kinds/mqtt"   // listener kind: mqtt
 	_ "github.com/rom/xproxy/internal/kinds/smtp"   // listener kind: smtp
+	_ "github.com/rom/xproxy/internal/kinds/ssh"    // listener kind: ssh
 	_ "github.com/rom/xproxy/internal/kinds/syslog" // listener kind: syslog
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"

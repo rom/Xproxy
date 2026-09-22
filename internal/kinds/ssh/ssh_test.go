@@ -1,12 +1,16 @@
-package proxy
+package ssh_test
 
 import (
+	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/proxytest"
+
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	_ "github.com/rom/xproxy/internal/kinds/ssh"
 	"io"
 	"net"
 	"os"
@@ -16,20 +20,20 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/ssh"
+	cssh "golang.org/x/crypto/ssh"
 
 	"github.com/rom/xproxy/internal/mfa"
 )
 
 // sshKey writes a fresh ed25519 key pair and returns the private key
 // file, the signer and the authorized_keys line.
-func sshKey(t *testing.T, dir, name string) (string, ssh.Signer, string) {
+func sshKey(t *testing.T, dir, name string) (string, cssh.Signer, string) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	der, err := ssh.MarshalPrivateKey(priv, "")
+	der, err := cssh.MarshalPrivateKey(priv, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,15 +41,15 @@ func sshKey(t *testing.T, dir, name string) (string, ssh.Signer, string) {
 	if err := os.WriteFile(path, pem.EncodeToMemory(der), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	signer, err := ssh.NewSignerFromKey(priv)
+	signer, err := cssh.NewSignerFromKey(priv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sshPub, err := ssh.NewPublicKey(pub)
+	sshPub, err := cssh.NewPublicKey(pub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return path, signer, string(ssh.MarshalAuthorizedKey(sshPub))
+	return path, signer, string(cssh.MarshalAuthorizedKey(sshPub))
 }
 
 // targetSSH is a minimal SSH server standing in for a real host: it
@@ -53,7 +57,7 @@ func sshKey(t *testing.T, dir, name string) (string, ssh.Signer, string) {
 // asked to do.
 type targetSSH struct {
 	ln   net.Listener
-	cfg  *ssh.ServerConfig
+	cfg  *cssh.ServerConfig
 	mu   sync.Mutex
 	reqs []string
 	// echo answers exec and shell by echoing what it read.
@@ -62,14 +66,14 @@ type targetSSH struct {
 	handles int
 }
 
-func startTargetSSH(t *testing.T, hostKey ssh.Signer) *targetSSH {
+func startTargetSSH(t *testing.T, hostKey cssh.Signer) *targetSSH {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &ssh.ServerConfig{
-		PublicKeyCallback: func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error) { return nil, nil },
+	cfg := &cssh.ServerConfig{
+		PublicKeyCallback: func(cssh.ConnMetadata, cssh.PublicKey) (*cssh.Permissions, error) { return nil, nil },
 	}
 	cfg.AddHostKey(hostKey)
 	tg := &targetSSH{ln: ln, cfg: cfg, sftpFiles: map[string][]byte{}}
@@ -102,12 +106,12 @@ func (tg *targetSSH) record(s string) {
 
 func (tg *targetSSH) serve(c net.Conn) {
 	defer func() { _ = c.Close() }()
-	conn, chans, reqs, err := ssh.NewServerConn(c, tg.cfg)
+	conn, chans, reqs, err := cssh.NewServerConn(c, tg.cfg)
 	if err != nil {
 		return
 	}
 	defer func() { _ = conn.Close() }()
-	go ssh.DiscardRequests(reqs)
+	go cssh.DiscardRequests(reqs)
 	for nc := range chans {
 		tg.record("channel:" + nc.ChannelType())
 		switch nc.ChannelType() {
@@ -127,12 +131,12 @@ func (tg *targetSSH) serve(c net.Conn) {
 				_ = ch.Close()
 			}()
 		default:
-			_ = nc.Reject(ssh.UnknownChannelType, "no")
+			_ = nc.Reject(cssh.UnknownChannelType, "no")
 		}
 	}
 }
 
-func (tg *targetSSH) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
+func (tg *targetSSH) session(ch cssh.Channel, reqs <-chan *cssh.Request) {
 	defer func() { _ = ch.Close() }()
 	for r := range reqs {
 		payload := ""
@@ -177,7 +181,7 @@ func (tg *targetSSH) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 
 // sftp answers enough of SFTP version 3 for the proxy's policy to be
 // exercised end to end: a version exchange and a status per request.
-func (tg *targetSSH) sftp(ch ssh.Channel) {
+func (tg *targetSSH) sftp(ch cssh.Channel) {
 	for {
 		var hdr [4]byte
 		if _, err := io.ReadFull(ch, hdr[:]); err != nil {
@@ -232,7 +236,7 @@ func (tg *targetSSH) sftp(ch ssh.Channel) {
 
 // bastion builds a proxy in front of a target, returning its address
 // and the client key that may use it.
-func bastion(t *testing.T, extra string) (*Server, string, ssh.Signer, *targetSSH) {
+func bastion(t *testing.T, extra string) (*proxy.Server, string, cssh.Signer, *targetSSH) {
 	t.Helper()
 	dir := t.TempDir()
 	hostKeyPath, hostSigner, _ := sshKey(t, dir, "host")
@@ -248,7 +252,7 @@ func bastion(t *testing.T, extra string) (*Server, string, ssh.Signer, *targetSS
 		t.Fatal(err)
 	}
 	known := filepath.Join(dir, "known_hosts")
-	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(ssh.MarshalAuthorizedKey(targetHostSigner.PublicKey()))))
+	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(cssh.MarshalAuthorizedKey(targetHostSigner.PublicKey()))))
 	if err := os.WriteFile(known, []byte(line+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -274,16 +278,16 @@ upstreams:
   - name: hosts
     endpoints: [{address: %s}]
 `, hostKeyPath, authorized, upKeyPath, known, extra, tg.addr())
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	return s, s.Addrs()["bastion"], clientSigner, tg
 }
 
-func dialBastion(t *testing.T, addr string, signer ssh.Signer) *ssh.Client {
+func dialBastion(t *testing.T, addr string, signer cssh.Signer) *cssh.Client {
 	t.Helper()
-	c, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+	c, err := cssh.Dial("tcp", addr, &cssh.ClientConfig{
 		User:            "alice",
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Auth:            []cssh.AuthMethod{cssh.PublicKeys(signer)},
+		HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
 		Timeout:         5 * time.Second,
 	})
 	if err != nil {
@@ -314,7 +318,7 @@ func TestSSHExec(t *testing.T) {
 	if !strings.Contains(seen, "exec:uptime") {
 		t.Fatalf("the target did not see the command: %s", seen)
 	}
-	sn := s.stats.snapshot()
+	sn := s.Stats()
 	if sn.SSHSessions != 1 || sn.SSHChannels != 1 {
 		t.Fatalf("counters: sessions %d channels %d", sn.SSHSessions, sn.SSHChannels)
 	}
@@ -325,10 +329,10 @@ func TestSSHUnknownKey(t *testing.T) {
 	s, addr, _, tg := bastion(t, "")
 	dir := t.TempDir()
 	_, other, _ := sshKey(t, dir, "intruder")
-	_, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+	_, err := cssh.Dial("tcp", addr, &cssh.ClientConfig{
 		User:            "alice",
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(other)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Auth:            []cssh.AuthMethod{cssh.PublicKeys(other)},
+		HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
 		Timeout:         5 * time.Second,
 	})
 	if err == nil {
@@ -337,7 +341,7 @@ func TestSSHUnknownKey(t *testing.T) {
 	if len(tg.seen()) != 0 {
 		t.Fatal("an unauthenticated client reached the target")
 	}
-	if sn := s.stats.snapshot(); sn.SSHAuthFailed == 0 {
+	if sn := s.Stats(); sn.SSHAuthFailed == 0 {
 		t.Fatal("the failure was not counted")
 	}
 }
@@ -359,7 +363,7 @@ func TestSSHExecRefused(t *testing.T) {
 			t.Fatalf("the refused command reached the target: %s", r)
 		}
 	}
-	if sn := s.stats.snapshot(); sn.SSHRefused == 0 {
+	if sn := s.Stats(); sn.SSHRefused == 0 {
 		t.Fatal("the refusal was not counted")
 	}
 }
@@ -450,13 +454,13 @@ func TestSSHSubsystemPolicy(t *testing.T) {
 }
 
 // sftpSession opens an sftp subsystem channel and returns it.
-func sftpSession(t *testing.T, c *ssh.Client) ssh.Channel {
+func sftpSession(t *testing.T, c *cssh.Client) cssh.Channel {
 	t.Helper()
 	ch, reqs, err := c.OpenChannel("session", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	go ssh.DiscardRequests(reqs)
+	go cssh.DiscardRequests(reqs)
 	ok, err := ch.SendRequest("subsystem", true, sshStringBytes("sftp"))
 	if err != nil || !ok {
 		t.Fatalf("subsystem: %v", err)
@@ -479,7 +483,7 @@ func sftpStr(s string) []byte {
 	return append(binary.BigEndian.AppendUint32(nil, uint32(len(s))), s...)
 }
 
-func readSFTP(t *testing.T, ch ssh.Channel) (byte, []byte) {
+func readSFTP(t *testing.T, ch cssh.Channel) (byte, []byte) {
 	t.Helper()
 	var hdr [4]byte
 	if _, err := io.ReadFull(ch, hdr[:]); err != nil {
@@ -552,7 +556,7 @@ func TestSFTPReadOnly(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("the target saw %d opens, want 1", n)
 	}
-	if sn := s.stats.snapshot(); sn.SFTPRefused < 2 {
+	if sn := s.Stats(); sn.SFTPRefused < 2 {
 		t.Fatalf("refusals counted: %d", sn.SFTPRefused)
 	}
 }
@@ -588,10 +592,10 @@ func TestSFTPRelativeEscape(t *testing.T) {
 // A client outside allow_clients never gets to authenticate.
 func TestSSHAllowClients(t *testing.T) {
 	s, addr, key, tg := bastion(t, "        allow_clients: [\"192.0.2.0/24\"]")
-	_, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+	_, err := cssh.Dial("tcp", addr, &cssh.ClientConfig{
 		User:            "alice",
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(key)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Auth:            []cssh.AuthMethod{cssh.PublicKeys(key)},
+		HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
 		Timeout:         5 * time.Second,
 	})
 	if err == nil {
@@ -600,7 +604,7 @@ func TestSSHAllowClients(t *testing.T) {
 	if len(tg.seen()) != 0 {
 		t.Fatal("a denied client reached the target")
 	}
-	if sn := s.stats.snapshot(); sn.SSHRejected == 0 {
+	if sn := s.Stats(); sn.SSHRejected == 0 {
 		t.Fatal("the refusal was not counted")
 	}
 }
@@ -622,7 +626,7 @@ func TestSSHUnknownHostKey(t *testing.T) {
 	}
 	// known_hosts names a different key for this address.
 	known := filepath.Join(dir, "known_hosts")
-	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(ssh.MarshalAuthorizedKey(otherSigner.PublicKey()))))
+	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(cssh.MarshalAuthorizedKey(otherSigner.PublicKey()))))
 	if err := os.WriteFile(known, []byte(line+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -644,11 +648,11 @@ upstreams:
   - name: hosts
     endpoints: [{address: %s}]
 `, hostKeyPath, authorized, upKeyPath, known, tg.addr())
-	s, _ := startServer(t, yaml)
-	c, err := ssh.Dial("tcp", s.Addrs()["bastion"], &ssh.ClientConfig{
+	s := proxytest.Start(t, yaml)
+	c, err := cssh.Dial("tcp", s.Addrs()["bastion"], &cssh.ClientConfig{
 		User:            "alice",
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(clientSigner)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Auth:            []cssh.AuthMethod{cssh.PublicKeys(clientSigner)},
+		HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
 		Timeout:         5 * time.Second,
 	})
 	if err != nil {
@@ -698,13 +702,13 @@ func TestSSHMFA(t *testing.T) {
 	answer := func(string, string, []string, []bool) ([]string, error) {
 		return []string{code()}, nil
 	}
-	c, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+	c, err := cssh.Dial("tcp", addr, &cssh.ClientConfig{
 		User: "alice",
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(key),
-			ssh.KeyboardInteractive(answer),
+		Auth: []cssh.AuthMethod{
+			cssh.PublicKeys(key),
+			cssh.KeyboardInteractive(answer),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
 		Timeout:         5 * time.Second,
 	})
 	if err != nil {
@@ -721,7 +725,7 @@ func TestSSHMFA(t *testing.T) {
 	if len(tg.seen()) == 0 {
 		t.Fatal("nothing reached the target")
 	}
-	if sn := s.stats.snapshot(); sn.MFAVerified != 1 {
+	if sn := s.Stats(); sn.MFAVerified != 1 {
 		t.Fatalf("verified: %d", sn.MFAVerified)
 	}
 }
@@ -732,15 +736,15 @@ func TestSSHMFAWrongCode(t *testing.T) {
 	mfaFile, _ := enrolMFA(t, dir, "alice")
 	s, addr, key, tg := bastion(t, "        mfa: {file: "+mfaFile+"}")
 
-	_, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+	_, err := cssh.Dial("tcp", addr, &cssh.ClientConfig{
 		User: "alice",
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(key),
-			ssh.KeyboardInteractive(func(string, string, []string, []bool) ([]string, error) {
+		Auth: []cssh.AuthMethod{
+			cssh.PublicKeys(key),
+			cssh.KeyboardInteractive(func(string, string, []string, []bool) ([]string, error) {
 				return []string{"000000"}, nil
 			}),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
 		Timeout:         5 * time.Second,
 	})
 	if err == nil {
@@ -749,7 +753,7 @@ func TestSSHMFAWrongCode(t *testing.T) {
 	if len(tg.seen()) != 0 {
 		t.Fatal("a half-authenticated client reached the target")
 	}
-	if sn := s.stats.snapshot(); sn.MFAFailed == 0 {
+	if sn := s.Stats(); sn.MFAFailed == 0 {
 		t.Fatal("the failure was not counted")
 	}
 }
@@ -761,10 +765,10 @@ func TestSSHMFAKeyAlone(t *testing.T) {
 	mfaFile, _ := enrolMFA(t, dir, "alice")
 	_, addr, key, tg := bastion(t, "        mfa: {file: "+mfaFile+"}")
 
-	_, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+	_, err := cssh.Dial("tcp", addr, &cssh.ClientConfig{
 		User:            "alice",
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(key)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Auth:            []cssh.AuthMethod{cssh.PublicKeys(key)},
+		HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
 		Timeout:         5 * time.Second,
 	})
 	if err == nil {
@@ -786,15 +790,15 @@ func TestSSHMFAReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	dial := func() error {
-		c, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+		c, err := cssh.Dial("tcp", addr, &cssh.ClientConfig{
 			User: "alice",
-			Auth: []ssh.AuthMethod{
-				ssh.PublicKeys(key),
-				ssh.KeyboardInteractive(func(string, string, []string, []bool) ([]string, error) {
+			Auth: []cssh.AuthMethod{
+				cssh.PublicKeys(key),
+				cssh.KeyboardInteractive(func(string, string, []string, []bool) ([]string, error) {
 					return []string{code}, nil
 				}),
 			},
-			HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+			HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
 			Timeout:         5 * time.Second,
 		})
 		if err == nil {
@@ -818,16 +822,16 @@ func TestSSHMFANotEnrolled(t *testing.T) {
 	_, addr, key, _ := bastion(t, "        mfa: {file: "+mfaFile+"}")
 
 	asked := false
-	_, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+	_, err := cssh.Dial("tcp", addr, &cssh.ClientConfig{
 		User: "alice",
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(key),
-			ssh.KeyboardInteractive(func(string, string, []string, []bool) ([]string, error) {
+		Auth: []cssh.AuthMethod{
+			cssh.PublicKeys(key),
+			cssh.KeyboardInteractive(func(string, string, []string, []bool) ([]string, error) {
 				asked = true
 				return []string{"000000"}, nil
 			}),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
 		Timeout:         5 * time.Second,
 	})
 	if err == nil {
@@ -873,7 +877,7 @@ func TestSSHFileTransferHole(t *testing.T) {
 			t.Fatalf("a file transfer command reached the target: %s", r)
 		}
 	}
-	if sn := s.stats.snapshot(); sn.SSHRefused == 0 {
+	if sn := s.Stats(); sn.SSHRefused == 0 {
 		t.Fatal("the refusals were not counted")
 	}
 	// An ordinary command still runs: the check names transfer helpers,
@@ -985,7 +989,7 @@ func TestSSHPrincipals(t *testing.T) {
 		t.Fatal(err)
 	}
 	known := filepath.Join(dir, "known_hosts")
-	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(ssh.MarshalAuthorizedKey(targetHostSigner.PublicKey()))))
+	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(cssh.MarshalAuthorizedKey(targetHostSigner.PublicKey()))))
 	if err := os.WriteFile(known, []byte(line+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1017,9 +1021,9 @@ upstreams:
   - name: hosts
     endpoints: [{address: %s}]
 `, hostKeyPath, authorized, upKeyPath, known,
-		ssh.FingerprintSHA256(opsSigner.PublicKey()),
-		ssh.FingerprintSHA256(botSigner.PublicKey()), tg.addr())
-	s, _ := startServer(t, yaml)
+		cssh.FingerprintSHA256(opsSigner.PublicKey()),
+		cssh.FingerprintSHA256(botSigner.PublicKey()), tg.addr())
+	s := proxytest.Start(t, yaml)
 	addr := s.Addrs()["bastion"]
 
 	// ops gets the listener's command policy, which is everything.
@@ -1052,10 +1056,10 @@ upstreams:
 	// A key in authorized_keys that no entry covers is refused: the
 	// list is the policy, so falling back would be the opposite of
 	// what it says.
-	if _, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+	if _, err := cssh.Dial("tcp", addr, &cssh.ClientConfig{
 		User:            "alice",
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(straySigner)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Auth:            []cssh.AuthMethod{cssh.PublicKeys(straySigner)},
+		HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
 		Timeout:         5 * time.Second,
 	}); err == nil {
 		t.Fatal("a key no principal covers was accepted")
@@ -1076,7 +1080,7 @@ func TestSSHPrincipalDeny(t *testing.T) {
 		t.Fatal(err)
 	}
 	known := filepath.Join(dir, "known_hosts")
-	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(ssh.MarshalAuthorizedKey(targetHostSigner.PublicKey()))))
+	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(cssh.MarshalAuthorizedKey(targetHostSigner.PublicKey()))))
 	if err := os.WriteFile(known, []byte(line+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1101,12 +1105,12 @@ logging: {access: {enabled: false}}
 upstreams:
   - name: hosts
     endpoints: [{address: %s}]
-`, hostKeyPath, authorized, upKeyPath, known, ssh.FingerprintSHA256(signer.PublicKey()), tg.addr())
-	s, _ := startServer(t, yaml)
-	if _, err := ssh.Dial("tcp", s.Addrs()["bastion"], &ssh.ClientConfig{
+`, hostKeyPath, authorized, upKeyPath, known, cssh.FingerprintSHA256(signer.PublicKey()), tg.addr())
+	s := proxytest.Start(t, yaml)
+	if _, err := cssh.Dial("tcp", s.Addrs()["bastion"], &cssh.ClientConfig{
 		User:            "alice",
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Auth:            []cssh.AuthMethod{cssh.PublicKeys(signer)},
+		HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
 		Timeout:         5 * time.Second,
 	}); err == nil {
 		t.Fatal("a denied principal connected")
@@ -1118,7 +1122,7 @@ upstreams:
 
 // sftpOpen writes an OPEN request and returns nothing; the caller reads
 // the reply.
-func sftpOpen(t *testing.T, ch ssh.Channel, id uint32, path string, flags uint32) {
+func sftpOpen(t *testing.T, ch cssh.Channel, id uint32, path string, flags uint32) {
 	t.Helper()
 	body := binary.BigEndian.AppendUint32(nil, id)
 	body = append(body, sftpStr(path)...)
@@ -1130,7 +1134,7 @@ func sftpOpen(t *testing.T, ch ssh.Channel, id uint32, path string, flags uint32
 }
 
 // sftpWriteReq writes a WRITE request on a handle.
-func sftpWriteReq(t *testing.T, ch ssh.Channel, id uint32, handle string, offset uint64, data []byte) {
+func sftpWriteReq(t *testing.T, ch cssh.Channel, id uint32, handle string, offset uint64, data []byte) {
 	t.Helper()
 	body := binary.BigEndian.AppendUint32(nil, id)
 	body = append(body, sftpStr(handle)...)
@@ -1144,7 +1148,7 @@ func sftpWriteReq(t *testing.T, ch ssh.Channel, id uint32, handle string, offset
 
 // sftpInit does the version exchange and returns once the server has
 // answered.
-func sftpInit(t *testing.T, ch ssh.Channel) {
+func sftpInit(t *testing.T, ch cssh.Channel) {
 	t.Helper()
 	if _, err := ch.Write(sftpPacket(1, binary.BigEndian.AppendUint32(nil, 3))); err != nil {
 		t.Fatal(err)
@@ -1155,7 +1159,7 @@ func sftpInit(t *testing.T, ch ssh.Channel) {
 }
 
 // sftpOpenHandle opens a path and returns the handle the server gave.
-func sftpOpenHandle(t *testing.T, ch ssh.Channel, id uint32, path string, flags uint32) string {
+func sftpOpenHandle(t *testing.T, ch cssh.Channel, id uint32, path string, flags uint32) string {
 	t.Helper()
 	sftpOpen(t, ch, id, path, flags)
 	typ, payload := readSFTP(t, ch)
@@ -1168,7 +1172,7 @@ func sftpOpenHandle(t *testing.T, ch ssh.Channel, id uint32, path string, flags 
 
 // sftpDenied reports whether the next reply is a permission-denied
 // status.
-func sftpDenied(t *testing.T, ch ssh.Channel) bool {
+func sftpDenied(t *testing.T, ch cssh.Channel) bool {
 	t.Helper()
 	typ, payload := readSFTP(t, ch)
 	return typ == 101 && binary.BigEndian.Uint32(payload[4:]) == 3
@@ -1176,12 +1180,12 @@ func sftpDenied(t *testing.T, ch ssh.Channel) bool {
 
 // dialBastionAs connects under a chosen login name, which is what a
 // path template stands in.
-func dialBastionAs(t *testing.T, addr, user string, signer ssh.Signer) (*ssh.Client, error) {
+func dialBastionAs(t *testing.T, addr, user string, signer cssh.Signer) (*cssh.Client, error) {
 	t.Helper()
-	c, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+	c, err := cssh.Dial("tcp", addr, &cssh.ClientConfig{
 		User:            user,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Auth:            []cssh.AuthMethod{cssh.PublicKeys(signer)},
+		HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
 		Timeout:         5 * time.Second,
 	})
 	if err == nil {
@@ -1232,7 +1236,7 @@ func TestSFTPTemplateNameRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go ssh.DiscardRequests(reqs)
+	go cssh.DiscardRequests(reqs)
 	ok, err := ch.SendRequest("subsystem", true, sshStringBytes("sftp"))
 	if err == nil && ok {
 		t.Fatal("a name that cannot stand in a pattern opened an sftp session")
@@ -1303,7 +1307,7 @@ func TestSFTPMaxFileBytes(t *testing.T) {
 	if !sftpDenied(t, ch) {
 		t.Fatal("a one byte write at a megabyte made a file past the bound")
 	}
-	if sn := s.stats.snapshot(); sn.SFTPRefused < 2 {
+	if sn := s.Stats(); sn.SFTPRefused < 2 {
 		t.Fatalf("refusals counted: %d", sn.SFTPRefused)
 	}
 }
@@ -1364,7 +1368,7 @@ func TestSFTPYARAWrite(t *testing.T) {
 	if writes != 2 {
 		t.Fatalf("the target saw %d writes, want 2", writes)
 	}
-	if sn := s.stats.snapshot(); sn.YARAMatches == 0 {
+	if sn := s.Stats(); sn.YARAMatches == 0 {
 		t.Fatal("the match was not counted")
 	}
 }
@@ -1392,15 +1396,15 @@ func TestSSHExecReplyNotLost(t *testing.T) {
 // recorded waits for the listener to finish and close a recording. The
 // file is written as the session runs and closed when the channel ends,
 // which is after the client's own connection has gone.
-func recorded(t *testing.T, s *Server, want uint64) {
+func recorded(t *testing.T, s *proxy.Server, want uint64) {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-		if s.stats.snapshot().SSHRecorded >= want {
+		if s.Stats().SSHRecorded >= want {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("only %d recordings were closed, want %d", s.stats.snapshot().SSHRecorded, want)
+	t.Fatalf("only %d recordings were closed, want %d", s.Stats().SSHRecorded, want)
 }
 
 // readCast reads the one recording in a directory and returns its
@@ -1577,7 +1581,7 @@ func TestSSHRecordingPerPrincipal(t *testing.T) {
 		t.Fatal(err)
 	}
 	known := filepath.Join(testDir, "known_hosts")
-	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(ssh.MarshalAuthorizedKey(targetHostSigner.PublicKey()))))
+	line := fmt.Sprintf("%s %s", tg.addr(), strings.TrimSpace(string(cssh.MarshalAuthorizedKey(targetHostSigner.PublicKey()))))
 	if err := os.WriteFile(known, []byte(line+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1607,12 +1611,12 @@ upstreams:
   - name: hosts
     endpoints: [{address: %s}]
 `, hostKeyPath, authorized, upKeyPath, known, dir,
-		ssh.FingerprintSHA256(sparedSigner.PublicKey()),
-		ssh.FingerprintSHA256(watchedSigner.PublicKey()), tg.addr())
-	s, _ := startServer(t, yaml)
+		cssh.FingerprintSHA256(sparedSigner.PublicKey()),
+		cssh.FingerprintSHA256(watchedSigner.PublicKey()), tg.addr())
+	s := proxytest.Start(t, yaml)
 	addr := s.Addrs()["bastion"]
 
-	for _, signer := range []ssh.Signer{sparedSigner, watchedSigner} {
+	for _, signer := range []cssh.Signer{sparedSigner, watchedSigner} {
 		c := dialBastion(t, addr, signer)
 		sess, err := c.NewSession()
 		if err != nil {
@@ -1630,4 +1634,32 @@ upstreams:
 	if entries, err := os.ReadDir(quiet); err != nil || len(entries) != 0 {
 		t.Errorf("the spared principal wrote something: %v %v", entries, err)
 	}
+}
+
+// A YARA rule set for the SFTP write tests.
+const testRules = `
+rule secret_marker : exfiltration {
+  meta:
+    description = "a marker that must not leave"
+  strings:
+    $a = "TOP-SECRET-MARKER"
+  condition:
+    $a
+}
+
+rule pe_header : malware {
+  strings:
+    $mz = { 4D 5A 90 00 }
+  condition:
+    $mz
+}
+`
+
+func rulesFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "rules.yar")
+	if err := os.WriteFile(p, []byte(testRules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }

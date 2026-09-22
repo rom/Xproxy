@@ -18,6 +18,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mitm"
 	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 )
 
@@ -169,7 +170,7 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string,
 	if addrErr != nil && !strings.EqualFold(name, host) {
 		f.s.stats.InterceptRefused.Add(1)
 		f.s.logs.SecurityEvent(context.Background(), "deny", "forward_sni_mismatch",
-			"listener", f.name, "client_ip", ip.String(), "connect", host, "sni", sftpClip(name))
+			"listener", f.name, "client_ip", ip.String(), "connect", host, "sni", textsafe.Clip256(name))
 		if bl := f.s.bans.Load(); bl != nil && ip.IsValid() {
 			bl.Observe(ip, "forward_sni_mismatch")
 		}
@@ -214,7 +215,7 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string,
 	}
 	f.s.stats.Intercepted.Add(1)
 	f.s.logs.Access.Info("forward_intercept", "listener", f.name, "client_ip", ip.String(),
-		"user", trimUser(user), "dest", host, "sni", name,
+		"user", textsafe.Clip64(user), "dest", host, "sni", name,
 		"alpn", srv.ConnectionState().NegotiatedProtocol,
 		"upstream_tls", tlsconf.VersionName(state.Version))
 	return f.relayDecrypted(srv, upstream, in, ip, host)

@@ -131,7 +131,6 @@ type boundListener struct {
 	forward *forwardServer // kind: forward listeners
 	dns     *dns.Server    // kind: dns listeners
 	doq     *dns.DoQServer // DNS over QUIC on a dns listener
-	ssh     *sshServer     // kind: ssh listeners
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -753,17 +752,6 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		}
 		return bl, nil
 	}
-	if lc.Kind == "ssh" {
-		// SSH carries its own transport security, so there is no TLS
-		// here and no listener wrapper: the bastion owns the handshake.
-		h, err := newSSHServer(s, lc, bl.ln)
-		if err != nil {
-			_ = fr.Close()
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.ssh = h
-		return bl, nil
-	}
 	if lc.Kind == "dns" && lc.TLS != nil {
 		// Encrypted: DNS over TLS and DNS over HTTPS on the TCP port, no
 		// plain UDP.
@@ -956,10 +944,6 @@ func (s *Server) serve(bl *boundListener) {
 			bl.doq.Serve()
 		}
 		bl.dns.Serve()
-		return
-	}
-	if bl.ssh != nil {
-		bl.ssh.serve()
 		return
 	}
 	if bl.cfg.TLS != nil {
@@ -1432,8 +1416,6 @@ func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocke
 		if bl.tlsReload != nil {
 			bl.tlsReload.Close()
 		}
-	case bl.ssh != nil:
-		bl.ssh.shutdown(ctx)
 	default:
 		err = bl.httpSrv.Shutdown(ctx)
 		if bl.tlsReload != nil {

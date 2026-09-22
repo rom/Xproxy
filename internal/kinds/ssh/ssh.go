@@ -1,4 +1,4 @@
-package proxy
+package ssh
 
 import (
 	"context"
@@ -15,17 +15,19 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/crypto/ssh"
+	cssh "golang.org/x/crypto/ssh"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
+	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/passwd"
+	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
-// sshServer serves a kind: ssh listener: an SSH bastion that terminates
+// server serves a kind: ssh listener: an SSH bastion that terminates
 // the client's session and opens its own to the target.
 //
 // A jump host that forwards the stream cannot see which channel is a
@@ -34,15 +36,15 @@ import (
 // session is a decision, and the target never sees the client's key:
 // the client authenticates to the proxy, the proxy authenticates to the
 // target with a credential the client never holds.
-type sshServer struct {
-	s    *Server
-	cfg  config.Listener
-	h    *config.SSHListener
-	ln   net.Listener
-	scfg *ssh.ServerConfig
+type server struct {
+	engine proxy.Host
+	cfg    config.Listener
+	h      *config.SSHListener
+	ln     net.Listener
+	scfg   *cssh.ServerConfig
 
-	upstreamAuth ssh.AuthMethod
-	hostKeyCheck ssh.HostKeyCallback
+	upstreamAuth cssh.AuthMethod
+	hostKeyCheck cssh.HostKeyCallback
 	allow        []netip.Prefix
 	// base is the listener's own policy, used by a session that no
 	// principal entry refined.
@@ -81,9 +83,9 @@ type sshForward struct {
 	port     int // 0 is any
 }
 
-func newSSHServer(s *Server, cfg config.Listener, ln net.Listener) (*sshServer, error) {
+func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server, error) {
 	h := cfg.SSH
-	t := &sshServer{s: s, cfg: cfg, h: h, ln: ln,
+	t := &server{engine: engine, cfg: cfg, h: h, ln: ln,
 		keys: map[string]bool{}, caKeys: map[string]bool{},
 		cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
 	base, err := compileSSHPolicy(&config.SSHPolicy{
@@ -159,7 +161,7 @@ func newSSHServer(s *Server, cfg config.Listener, ln net.Listener) (*sshServer, 
 
 // loadCredentials reads the keys the listener accepts and the key it
 // presents onwards.
-func (t *sshServer) loadCredentials() error {
+func (t *server) loadCredentials() error {
 	h := t.h
 	if h.AuthorizedKeys != "" {
 		raw, err := os.ReadFile(h.AuthorizedKeys) //nolint:gosec // a path from the configuration
@@ -167,7 +169,7 @@ func (t *sshServer) loadCredentials() error {
 			return fmt.Errorf("ssh authorized_keys: %w", err)
 		}
 		for len(raw) > 0 {
-			key, _, _, rest, err := ssh.ParseAuthorizedKey(raw)
+			key, _, _, rest, err := cssh.ParseAuthorizedKey(raw)
 			if err != nil {
 				// One unreadable line must not silently shorten the
 				// list: a key that was meant to be accepted and is not
@@ -188,7 +190,7 @@ func (t *sshServer) loadCredentials() error {
 			return fmt.Errorf("ssh trusted_user_ca_keys: %w", err)
 		}
 		for len(raw) > 0 {
-			key, _, _, rest, err := ssh.ParseAuthorizedKey(raw)
+			key, _, _, rest, err := cssh.ParseAuthorizedKey(raw)
 			if err != nil {
 				return fmt.Errorf("ssh trusted_user_ca_keys: %w", err)
 			}
@@ -210,11 +212,11 @@ func (t *sshServer) loadCredentials() error {
 	if err != nil {
 		return fmt.Errorf("ssh upstream_key_file: %w", err)
 	}
-	signer, err := ssh.ParsePrivateKey(raw)
+	signer, err := cssh.ParsePrivateKey(raw)
 	if err != nil {
 		return fmt.Errorf("ssh upstream_key_file: %w", err)
 	}
-	t.upstreamAuth = ssh.PublicKeys(signer)
+	t.upstreamAuth = cssh.PublicKeys(signer)
 	if h.UpstreamKnownHosts != "" {
 		cb, err := knownHostsCallback(h.UpstreamKnownHosts)
 		if err != nil {
@@ -222,14 +224,14 @@ func (t *sshServer) loadCredentials() error {
 		}
 		t.hostKeyCheck = cb
 	} else {
-		t.hostKeyCheck = ssh.InsecureIgnoreHostKey() //nolint:gosec // refused by validation unless allow_insecure
+		t.hostKeyCheck = cssh.InsecureIgnoreHostKey() //nolint:gosec // refused by validation unless allow_insecure
 	}
 	return nil
 }
 
-func (t *sshServer) buildServerConfig() error {
+func (t *server) buildServerConfig() error {
 	h := t.h
-	cfg := &ssh.ServerConfig{
+	cfg := &cssh.ServerConfig{
 		ServerVersion: h.ServerVersion,
 		MaxAuthTries:  h.MaxAuthTries,
 	}
@@ -238,10 +240,10 @@ func (t *sshServer) buildServerConfig() error {
 		if !strings.HasSuffix(banner, "\n") {
 			banner += "\n"
 		}
-		cfg.BannerCallback = func(ssh.ConnMetadata) string { return banner }
+		cfg.BannerCallback = func(cssh.ConnMetadata) string { return banner }
 	}
 	if len(t.keys) > 0 || len(t.caKeys) > 0 {
-		cfg.PublicKeyCallback = func(c ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+		cfg.PublicKeyCallback = func(c cssh.ConnMetadata, key cssh.PublicKey) (*cssh.Permissions, error) {
 			kind, err := t.acceptKey(c, key)
 			if err != nil {
 				return nil, err
@@ -258,7 +260,7 @@ func (t *sshServer) buildServerConfig() error {
 			}
 			ext := map[string]string{
 				"auth":        kind,
-				"fingerprint": ssh.FingerprintSHA256(key),
+				"fingerprint": cssh.FingerprintSHA256(key),
 			}
 			if pr != nil {
 				ext["principal"] = pr.name
@@ -269,11 +271,11 @@ func (t *sshServer) buildServerConfig() error {
 				// told which method comes next.
 				return nil, t.secondFactor(kind, ext)
 			}
-			return &ssh.Permissions{Extensions: ext}, nil
+			return &cssh.Permissions{Extensions: ext}, nil
 		}
 	}
 	if len(t.users) > 0 {
-		cfg.PasswordCallback = func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+		cfg.PasswordCallback = func(c cssh.ConnMetadata, pass []byte) (*cssh.Permissions, error) {
 			hash, ok := t.users[c.User()]
 			if !ok {
 				// The same work is done for an unknown user as for a
@@ -287,23 +289,23 @@ func (t *sshServer) buildServerConfig() error {
 			if t.mfaGuard != nil {
 				return nil, t.secondFactor("password", map[string]string{"auth": "password"})
 			}
-			return &ssh.Permissions{Extensions: map[string]string{"auth": "password"}}, nil
+			return &cssh.Permissions{Extensions: map[string]string{"auth": "password"}}, nil
 		}
 	}
-	cfg.AuthLogCallback = func(c ssh.ConnMetadata, method string, err error) {
+	cfg.AuthLogCallback = func(c cssh.ConnMetadata, method string, err error) {
 		if err == nil || method == "none" {
 			return
 		}
-		t.s.stats.SSHAuthFailed.Add(1)
-		ip := addrOf(c.RemoteAddr().String())
-		t.deny(ip, "auth_failed", method+" for "+trimUser(c.User()))
+		t.engine.Counters().SSHAuthFailed.Add(1)
+		ip := netutil.AddrOf(c.RemoteAddr().String())
+		t.deny(ip, "auth_failed", method+" for "+textsafe.Clip64(c.User()))
 	}
 	for i, path := range h.HostKeys {
 		raw, err := os.ReadFile(path) //nolint:gosec // a path from the configuration
 		if err != nil {
 			return fmt.Errorf("ssh host_keys[%d]: %w", i, err)
 		}
-		signer, err := ssh.ParsePrivateKey(raw)
+		signer, err := cssh.ParsePrivateKey(raw)
 		if err != nil {
 			return fmt.Errorf("ssh host_keys[%d]: %w", i, err)
 		}
@@ -313,11 +315,7 @@ func (t *sshServer) buildServerConfig() error {
 	return nil
 }
 
-// trimUser bounds what a name contributes to a log line, and keeps
-// control characters out of it.
-func trimUser(u string) string { return textsafe.Clip(u, 64) }
-
-func (t *sshServer) serve() {
+func (t *server) serve() {
 	for {
 		c, err := t.ln.Accept()
 		if err != nil {
@@ -339,7 +337,7 @@ func (t *sshServer) serve() {
 		}
 		if t.open.Add(1) > int64(t.h.MaxSessions) {
 			t.open.Add(-1)
-			t.s.stats.SSHRejected.Add(1)
+			t.engine.Counters().SSHRejected.Add(1)
 			_ = c.Close()
 			continue
 		}
@@ -358,7 +356,7 @@ func (t *sshServer) serve() {
 	}
 }
 
-func (t *sshServer) admit(c net.Conn) bool {
+func (t *server) admit(c net.Conn) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	select {
@@ -371,13 +369,13 @@ func (t *sshServer) admit(c net.Conn) bool {
 	return true
 }
 
-func (t *sshServer) untrack(c net.Conn) {
+func (t *server) untrack(c net.Conn) {
 	t.mu.Lock()
 	delete(t.cons, c)
 	t.mu.Unlock()
 }
 
-func (t *sshServer) shutdown(ctx context.Context) {
+func (t *server) shutdown(ctx context.Context) {
 	t.once.Do(func() {
 		t.mu.Lock()
 		close(t.done)
@@ -398,7 +396,7 @@ func (t *sshServer) shutdown(ctx context.Context) {
 	}
 }
 
-func (t *sshServer) allowed(ip netip.Addr) bool {
+func (t *server) allowed(ip netip.Addr) bool {
 	if len(t.allow) == 0 {
 		return true
 	}
@@ -413,23 +411,23 @@ func (t *sshServer) allowed(ip netip.Addr) bool {
 	return false
 }
 
-func (t *sshServer) deny(ip netip.Addr, what, detail string) {
+func (t *server) deny(ip netip.Addr, what, detail string) {
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "ssh"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
 	}
-	t.s.logs.SecurityEvent(context.Background(), "deny", "ssh_"+what, attrs...)
-	if bl := t.s.bans.Load(); bl != nil && ip.IsValid() {
+	t.engine.Logs().SecurityEvent(context.Background(), "deny", "ssh_"+what, attrs...)
+	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "ssh_denied")
 	}
 }
 
-// sshSession is one client connection and the target connection behind
+// session is one client connection and the target connection behind
 // it.
-type sshSession struct {
-	t      *sshServer
-	sconn  *ssh.ServerConn
-	client *ssh.Client
+type session struct {
+	t      *server
+	sconn  *cssh.ServerConn
+	client *cssh.Client
 	ip     netip.Addr
 	user   string
 	auth   string
@@ -445,18 +443,18 @@ type sshSession struct {
 	wg       sync.WaitGroup
 }
 
-func (t *sshServer) handle(raw net.Conn) {
-	s := t.s
+func (t *server) handle(raw net.Conn) {
+	s := t.engine
 	start := time.Now()
-	s.stats.SSHSessions.Add(1)
-	s.stats.SSHSessionsOpen.Add(1)
-	defer s.stats.SSHSessionsOpen.Add(-1)
-	ip := addrOf(raw.RemoteAddr().String())
-	se := &sshSession{t: t, ip: ip}
+	s.Counters().SSHSessions.Add(1)
+	s.Counters().SSHSessionsOpen.Add(1)
+	defer s.Counters().SSHSessionsOpen.Add(-1)
+	ip := netutil.AddrOf(raw.RemoteAddr().String())
+	se := &session{t: t, ip: ip}
 	defer func() { _ = raw.Close() }()
 
 	if !t.allowed(ip) {
-		s.stats.SSHRejected.Add(1)
+		s.Counters().SSHRejected.Add(1)
 		t.deny(ip, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
 		return
@@ -465,7 +463,7 @@ func (t *sshServer) handle(raw net.Conn) {
 	// session is up the idle timeout takes over, applied by the
 	// connection wrapper below.
 	_ = raw.SetDeadline(time.Now().Add(t.h.HandshakeTimeout.D()))
-	sconn, chans, reqs, err := ssh.NewServerConn(raw, t.scfg)
+	sconn, chans, reqs, err := cssh.NewServerConn(raw, t.scfg)
 	if err != nil {
 		t.log(se, start, "handshake")
 		return
@@ -493,7 +491,7 @@ func (t *sshServer) handle(raw net.Conn) {
 	}
 
 	if err := se.connect(); err != nil {
-		s.logs.Error.Warn("ssh target unavailable", "listener", t.cfg.Name, "user", trimUser(se.user), "err", err.Error())
+		s.Logs().Error.Warn("ssh target unavailable", "listener", t.cfg.Name, "user", textsafe.Clip64(se.user), "err", err.Error())
 		t.log(se, start, "upstream_unavailable")
 		return
 	}
@@ -502,13 +500,13 @@ func (t *sshServer) handle(raw net.Conn) {
 	go se.globalRequests(reqs)
 	for nc := range chans {
 		if se.channels.Load() >= int64(t.h.MaxChannels) {
-			_ = nc.Reject(ssh.ResourceShortage, "too many channels")
+			_ = nc.Reject(cssh.ResourceShortage, "too many channels")
 			se.refused.Add(1)
 			continue
 		}
 		se.channels.Add(1)
 		se.wg.Add(1)
-		go func(nc ssh.NewChannel) {
+		go func(nc cssh.NewChannel) {
 			defer se.wg.Done()
 			defer se.channels.Add(-1)
 			defer safe.Guard("ssh channel")
@@ -519,23 +517,23 @@ func (t *sshServer) handle(raw net.Conn) {
 	t.log(se, start, "")
 }
 
-func (t *sshServer) log(se *sshSession, start time.Time, reason string) {
+func (t *server) log(se *session, start time.Time, reason string) {
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(),
-		"user", trimUser(se.user), "auth", se.auth, "principal", se.principal, "target", se.target,
+		"user", textsafe.Clip64(se.user), "auth", se.auth, "principal", se.principal, "target", se.target,
 		"channels", se.opened.Load(), "refused", se.refused.Load(),
 		"duration_ms", float64(time.Since(start).Microseconds()) / 1000}
 	if reason != "" {
 		attrs = append(attrs, "closed", reason)
 	}
-	t.s.logs.Access.Info("ssh", attrs...)
+	t.engine.Logs().Access.Info("ssh", attrs...)
 }
 
 // connect opens the target session. The user the proxy authenticates as
 // is the configured one, or the name the client authenticated with when
 // none is configured.
-func (se *sshSession) connect() error {
+func (se *session) connect() error {
 	t := se.t
-	pool := t.s.rt.Load().pools[t.h.Upstream]
+	pool := t.engine.Pool(t.h.Upstream)
 	if pool == nil {
 		return fmt.Errorf("upstream %q has no pool", t.h.Upstream)
 	}
@@ -560,7 +558,7 @@ func (se *sshSession) connect() error {
 			continue
 		}
 		if t.h.ProxyProtocol {
-			if _, err := conn.Write(proxyV2Header(se.sconn.RemoteAddr(), se.sconn.LocalAddr())); err != nil {
+			if _, err := conn.Write(netutil.ProxyV2Header(se.sconn.RemoteAddr(), se.sconn.LocalAddr())); err != nil {
 				pool.End(e, true, 0)
 				_ = conn.Close()
 				lastErr = err
@@ -568,23 +566,23 @@ func (se *sshSession) connect() error {
 			}
 		}
 		_ = conn.SetDeadline(time.Now().Add(t.h.HandshakeTimeout.D()))
-		cc := &ssh.ClientConfig{
+		cc := &cssh.ClientConfig{
 			User:            user,
-			Auth:            []ssh.AuthMethod{t.upstreamAuth},
+			Auth:            []cssh.AuthMethod{t.upstreamAuth},
 			HostKeyCallback: t.hostKeyCheck,
 			Timeout:         t.h.HandshakeTimeout.D(),
 		}
-		nc, nchans, nreqs, err := ssh.NewClientConn(conn, e.Address, cc)
+		nc, nchans, nreqs, err := cssh.NewClientConn(conn, e.Address, cc)
 		if err != nil {
 			pool.End(e, true, 0)
 			_ = conn.Close()
 			lastErr = err
-			t.s.logs.Error.Warn("ssh target handshake failed", "listener", t.cfg.Name, "endpoint", e.Address, "err", err.Error())
+			t.engine.Logs().Error.Warn("ssh target handshake failed", "listener", t.cfg.Name, "endpoint", e.Address, "err", err.Error())
 			continue
 		}
 		_ = conn.SetDeadline(time.Time{})
 		pool.End(e, false, 0)
-		se.client = ssh.NewClient(nc, nchans, nreqs)
+		se.client = cssh.NewClient(nc, nchans, nreqs)
 		se.target = e.Address
 		return nil
 	}
@@ -597,7 +595,7 @@ func (se *sshSession) connect() error {
 // globalRequests answers the connection-wide requests. tcpip-forward is
 // the one that matters: it asks the target to listen on the client's
 // behalf, which turns an outbound session into an inbound path.
-func (se *sshSession) globalRequests(reqs <-chan *ssh.Request) {
+func (se *session) globalRequests(reqs <-chan *cssh.Request) {
 	defer safe.Guard("ssh global requests")
 	for r := range reqs {
 		switch {
@@ -613,7 +611,7 @@ func (se *sshSession) globalRequests(reqs <-chan *ssh.Request) {
 		default:
 			if r.Type == "tcpip-forward" {
 				se.refused.Add(1)
-				se.t.s.stats.SSHRefused.Add(1)
+				se.t.engine.Counters().SSHRefused.Add(1)
 				se.t.deny(se.ip, "remote_forward_refused", "")
 			}
 			_ = r.Reply(false, nil)
@@ -623,22 +621,22 @@ func (se *sshSession) globalRequests(reqs <-chan *ssh.Request) {
 
 // channel decides on one channel the client asked to open, and relays
 // it when the policy allows.
-func (se *sshSession) channel(nc ssh.NewChannel) {
+func (se *session) channel(nc cssh.NewChannel) {
 	t := se.t
 	kind := nc.ChannelType()
 	if !se.policy.channels[kind] {
-		se.refuse(nc, "channel_refused", kind, ssh.Prohibited, "channel type not allowed")
+		se.refuse(nc, "channel_refused", kind, cssh.Prohibited, "channel type not allowed")
 		return
 	}
 	extra := nc.ExtraData()
 	if kind == "direct-tcpip" {
 		host, port, err := parseDirectTCPIP(extra)
 		if err != nil {
-			se.refuse(nc, "malformed_channel", kind, ssh.ConnectionFailed, "malformed channel request")
+			se.refuse(nc, "malformed_channel", kind, cssh.ConnectionFailed, "malformed channel request")
 			return
 		}
 		if !se.policy.forwardAllowed(host, port) {
-			se.refuse(nc, "forward_refused", net.JoinHostPort(host, strconv.Itoa(port)), ssh.Prohibited, "destination not allowed")
+			se.refuse(nc, "forward_refused", net.JoinHostPort(host, strconv.Itoa(port)), cssh.Prohibited, "destination not allowed")
 			return
 		}
 	}
@@ -647,11 +645,11 @@ func (se *sshSession) channel(nc ssh.NewChannel) {
 	// and the target's own refusal is the truthful answer.
 	upCh, upReqs, err := se.client.OpenChannel(kind, extra)
 	if err != nil {
-		var oce *ssh.OpenChannelError
+		var oce *cssh.OpenChannelError
 		if errors.As(err, &oce) {
 			_ = nc.Reject(oce.Reason, oce.Message)
 		} else {
-			_ = nc.Reject(ssh.ConnectionFailed, "target refused the channel")
+			_ = nc.Reject(cssh.ConnectionFailed, "target refused the channel")
 		}
 		return
 	}
@@ -661,7 +659,7 @@ func (se *sshSession) channel(nc ssh.NewChannel) {
 		return
 	}
 	se.opened.Add(1)
-	t.s.stats.SSHChannels.Add(1)
+	t.engine.Counters().SSHChannels.Add(1)
 
 	// answering is held while a client request is being decided, from
 	// the moment it is read to the moment its answer has been written.
@@ -778,9 +776,9 @@ type sshChannel struct {
 	rec        *sshRecording
 }
 
-func (se *sshSession) refuse(nc ssh.NewChannel, what, detail string, reason ssh.RejectionReason, msg string) {
+func (se *session) refuse(nc cssh.NewChannel, what, detail string, reason cssh.RejectionReason, msg string) {
 	se.refused.Add(1)
-	se.t.s.stats.SSHRefused.Add(1)
+	se.t.engine.Counters().SSHRefused.Add(1)
 	se.t.deny(se.ip, what, detail)
 	_ = nc.Reject(reason, msg)
 }
@@ -789,7 +787,7 @@ func (se *sshSession) refuse(nc ssh.NewChannel, what, detail string, reason ssh.
 // startPump is called once the request that begins the data flow has
 // been forwarded, so an inspected sftp channel is never also copied
 // blindly.
-func (se *sshSession) clientRequests(clientCh, upCh ssh.Channel, reqs <-chan *ssh.Request, startPump func(), answering *sync.Mutex, st *sshChannel) {
+func (se *session) clientRequests(clientCh, upCh cssh.Channel, reqs <-chan *cssh.Request, startPump func(), answering *sync.Mutex, st *sshChannel) {
 	for r := range reqs {
 		if !se.answerRequest(clientCh, upCh, r, startPump, answering, st) {
 			return
@@ -800,7 +798,7 @@ func (se *sshSession) clientRequests(clientCh, upCh ssh.Channel, reqs <-chan *ss
 // answerRequest decides one request and answers it, holding answering
 // for as long as the client is owed a reply. It reports whether the
 // loop goes on.
-func (se *sshSession) answerRequest(clientCh, upCh ssh.Channel, r *ssh.Request, startPump func(), answering *sync.Mutex, st *sshChannel) bool {
+func (se *session) answerRequest(clientCh, upCh cssh.Channel, r *cssh.Request, startPump func(), answering *sync.Mutex, st *sshChannel) bool {
 	t := se.t
 	answering.Lock()
 	defer answering.Unlock()
@@ -855,16 +853,16 @@ func (se *sshSession) answerRequest(clientCh, upCh ssh.Channel, r *ssh.Request, 
 			// sftp subsystem, so every path and operation rule
 			// there is simply not on their path. Refusing them is
 			// what makes an sftp policy mean anything.
-			se.refuseRequest(r, "file_transfer_refused", sftpClip(cmd))
+			se.refuseRequest(r, "file_transfer_refused", textsafe.Clip256(cmd))
 			return true
 		}
 		if !se.commandAllowed(cmd) {
-			se.refuseRequest(r, "command_refused", sftpClip(cmd))
+			se.refuseRequest(r, "command_refused", textsafe.Clip256(cmd))
 			return true
 		}
-		t.s.logs.SecurityEvent(context.Background(), "allow", "ssh_exec",
-			"listener", t.cfg.Name, "client_ip", se.ip.String(), "user", trimUser(se.user),
-			"target", se.target, "command", sftpClip(cmd))
+		t.engine.Logs().SecurityEvent(context.Background(), "allow", "ssh_exec",
+			"listener", t.cfg.Name, "client_ip", se.ip.String(), "user", textsafe.Clip64(se.user),
+			"target", se.target, "command", textsafe.Clip256(cmd))
 	}
 	switch r.Type {
 	case "pty-req":
@@ -898,14 +896,14 @@ func (se *sshSession) answerRequest(clientCh, upCh ssh.Channel, r *ssh.Request, 
 	return true
 }
 
-func (se *sshSession) refuseRequest(r *ssh.Request, what, detail string) {
+func (se *session) refuseRequest(r *cssh.Request, what, detail string) {
 	se.refused.Add(1)
-	se.t.s.stats.SSHRefused.Add(1)
+	se.t.engine.Counters().SSHRefused.Add(1)
 	se.t.deny(se.ip, what, detail)
 	_ = r.Reply(false, nil)
 }
 
-func (se *sshSession) commandAllowed(cmd string) bool {
+func (se *session) commandAllowed(cmd string) bool {
 	if len(se.policy.commands) == 0 {
 		return true
 	}
@@ -919,7 +917,7 @@ func (se *sshSession) commandAllowed(cmd string) bool {
 
 // startRecording opens this channel's recording, if the policy asks for
 // one. It runs before the pump, because the pump is what feeds it.
-func (se *sshSession) startRecording(st *sshChannel, r *ssh.Request) {
+func (se *session) startRecording(st *sshChannel, r *cssh.Request) {
 	rec := se.policy.recorder
 	if rec == nil || st.rec != nil {
 		return
@@ -932,7 +930,7 @@ func (se *sshSession) startRecording(st *sshChannel, r *ssh.Request) {
 	}
 	command := ""
 	if r.Type == "exec" {
-		command = sftpClip(sshStringPayload(r.Payload))
+		command = textsafe.Clip256(sshStringPayload(r.Payload))
 	}
 	if !rec.records(r.Type == "exec") {
 		return
@@ -947,7 +945,7 @@ func (se *sshSession) startRecording(st *sshChannel, r *ssh.Request) {
 
 // pipe copies a channel's data and its extended (stderr) data both
 // ways, and half-closes so the far side sees the end of input.
-func (se *sshSession) pipe(clientCh, upCh ssh.Channel, rec *sshRecording) {
+func (se *session) pipe(clientCh, upCh cssh.Channel, rec *sshRecording) {
 	// The client to target direction is not waited for. A client that
 	// runs a command without closing its input never sends EOF, so
 	// waiting for it would mean waiting for the client rather than for
@@ -959,7 +957,7 @@ func (se *sshSession) pipe(clientCh, upCh ssh.Channel, rec *sshRecording) {
 	go func() {
 		defer safe.Guard("ssh data to target")
 		n, _ := copyBounded(toTarget, clientCh)
-		se.t.s.stats.SSHBytesIn.Add(uint64(n)) //nolint:gosec // non-negative
+		se.t.engine.Counters().SSHBytesIn.Add(uint64(n)) //nolint:gosec // non-negative
 		_ = upCh.CloseWrite()
 	}()
 	var wg sync.WaitGroup
@@ -976,7 +974,7 @@ func (se *sshSession) pipe(clientCh, upCh ssh.Channel, rec *sshRecording) {
 		defer wg.Done()
 		defer safe.Guard("ssh data to client")
 		n, _ := copyBounded(toClient, upCh)
-		se.t.s.stats.SSHBytesOut.Add(uint64(n)) //nolint:gosec // non-negative
+		se.t.engine.Counters().SSHBytesOut.Add(uint64(n)) //nolint:gosec // non-negative
 		_ = clientCh.CloseWrite()
 	}()
 	go func() {
@@ -1085,9 +1083,9 @@ func sshStringPayload(b []byte) string {
 // secondFactor builds the partial success that asks for a one-time
 // code. The first factor has already been verified; nothing about the
 // session is authorised until the code is too.
-func (t *sshServer) secondFactor(first string, ext map[string]string) error {
-	return &ssh.PartialSuccessError{Next: ssh.ServerAuthCallbacks{
-		KeyboardInteractiveCallback: func(c ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
+func (t *server) secondFactor(first string, ext map[string]string) error {
+	return &cssh.PartialSuccessError{Next: cssh.ServerAuthCallbacks{
+		KeyboardInteractiveCallback: func(c cssh.ConnMetadata, challenge cssh.KeyboardInteractiveChallenge) (*cssh.Permissions, error) {
 			return t.verifyCode(c, challenge, first, ext)
 		},
 	}}
@@ -1098,16 +1096,16 @@ func (t *sshServer) secondFactor(first string, ext map[string]string) error {
 // never enrolled, a wrong code, a replayed one and a locked account are
 // one answer, because telling them apart is how an attacker learns
 // which accounts are worth attacking.
-func (t *sshServer) verifyCode(c ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge, first string, ext map[string]string) (*ssh.Permissions, error) {
-	ip := addrOf(c.RemoteAddr().String())
+func (t *server) verifyCode(c cssh.ConnMetadata, challenge cssh.KeyboardInteractiveChallenge, first string, ext map[string]string) (*cssh.Permissions, error) {
+	ip := netutil.AddrOf(c.RemoteAddr().String())
 	user := c.User()
 	m := t.h.MFA
 	if !t.mfaGuard.Enrolled(user) && (m.RequireEnrolment == nil || *m.RequireEnrolment) {
 		// The prompt is still shown. A client that is refused before
 		// being asked has learned that this name is not enrolled.
 		_, _ = challenge(user, "", []string{m.Prompt}, []bool{true})
-		t.s.stats.MFAFailed.Add(1)
-		t.deny(ip, "mfa_not_enrolled", trimUser(user))
+		t.engine.Counters().MFAFailed.Add(1)
+		t.deny(ip, "mfa_not_enrolled", textsafe.Clip64(user))
 		return nil, errors.New("authentication failed")
 	}
 	answers, err := challenge(user, "", []string{m.Prompt}, []bool{true})
@@ -1118,15 +1116,15 @@ func (t *sshServer) verifyCode(c ssh.ConnMetadata, challenge ssh.KeyboardInterac
 		return nil, errors.New("authentication failed")
 	}
 	if err := t.mfaGuard.Verify(user, strings.TrimSpace(answers[0]), time.Now()); err != nil {
-		t.s.stats.MFAFailed.Add(1)
+		t.engine.Counters().MFAFailed.Add(1)
 		t.deny(ip, "mfa_failed", err.Error())
 		return nil, errors.New("authentication failed")
 	}
-	t.s.stats.MFAVerified.Add(1)
+	t.engine.Counters().MFAVerified.Add(1)
 	out := map[string]string{}
 	for k, v := range ext {
 		out[k] = v
 	}
 	out["auth"] = first + "+mfa"
-	return &ssh.Permissions{Extensions: out}, nil
+	return &cssh.Permissions{Extensions: out}, nil
 }

@@ -1,4 +1,4 @@
-package proxy
+package ssh
 
 import (
 	"bufio"
@@ -13,11 +13,12 @@ import (
 	"strings"
 	"sync"
 
-	"golang.org/x/crypto/ssh"
+	cssh "golang.org/x/crypto/ssh"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/safe"
-	"github.com/rom/xproxy/internal/sftp"
+	sftpwire "github.com/rom/xproxy/internal/sftp"
+	"github.com/rom/xproxy/internal/streamscan"
 	"github.com/rom/xproxy/internal/textsafe"
 )
 
@@ -32,7 +33,7 @@ type sftpPolicy struct {
 	maxFile    int64
 	maxOpen    int
 	maxPacket  int
-	yara       *yaraGuard
+	yara       *streamscan.Guard
 	// vars are the substitutions the path lists actually carry. Only
 	// these are resolved, and only these have to be a name that can
 	// stand in a pattern: a listener with no principals has no
@@ -70,7 +71,7 @@ func newSFTPPolicy(c *config.SFTPPolicy) (*sftpPolicy, error) {
 		}
 	}
 	if c.YARA != nil {
-		g, err := newYARAGuard(c.YARA)
+		g, err := streamscan.New(c.YARA)
 		if err != nil {
 			return nil, err
 		}
@@ -94,8 +95,8 @@ func (p *sftpPolicy) forSession(user, principal string) (*sftpPolicy, error) {
 		return p, nil
 	}
 	for _, v := range []struct{ name, value string }{{"user", user}, {"principal", principal}} {
-		if p.vars[v.name] && !sftpNameSafe(v.value) {
-			return nil, fmt.Errorf("{%s}: %q cannot stand in a path pattern", v.name, sftpClip(v.value))
+		if p.vars[v.name] && !textsafe.Component(v.value) {
+			return nil, fmt.Errorf("{%s}: %q cannot stand in a path pattern", v.name, textsafe.Clip256(v.value))
 		}
 	}
 	r := strings.NewReplacer("{user}", user, "{principal}", principal)
@@ -110,11 +111,6 @@ func (p *sftpPolicy) forSession(user, principal string) (*sftpPolicy, error) {
 	}
 	return &out, nil
 }
-
-// sftpNameSafe reports whether a name may be substituted into a path
-// pattern: letters, digits, and the three punctuation marks a login
-// name really uses.
-func sftpNameSafe(s string) bool { return textsafe.Component(s) }
 
 // extensionAllowed applies the extension lists to one name. Every
 // extension a name carries is read, not only the last: "invoice.pdf.exe"
@@ -149,13 +145,13 @@ func (p *sftpPolicy) extensionAllowed(name string) bool {
 
 // check decides one SFTP request. It returns the reason it was refused,
 // empty when the request may go on.
-func (p *sftpPolicy) check(r sftp.Request) string {
-	op := sftp.TypeName(r.Type)
-	if r.Type == sftp.INIT {
+func (p *sftpPolicy) check(r sftpwire.Request) string {
+	op := sftpwire.TypeName(r.Type)
+	if r.Type == sftpwire.INIT {
 		// Only version 3 is parsed here. A client that negotiates
 		// higher would send packets this cannot be trusted to read, and
 		// guessing at them is how a policy stops holding.
-		if r.Flags > sftp.Version {
+		if r.Flags > sftpwire.Version {
 			return "version"
 		}
 		return ""
@@ -170,7 +166,7 @@ func (p *sftpPolicy) check(r sftp.Request) string {
 		if name == "" {
 			continue
 		}
-		clean, ok := sftp.CleanPath(name)
+		clean, ok := sftpwire.CleanPath(name)
 		if !ok {
 			// A path that climbs above its own root means whatever the
 			// server's working directory makes it mean, which the proxy
@@ -178,12 +174,12 @@ func (p *sftpPolicy) check(r sftp.Request) string {
 			return "relative_path"
 		}
 		for _, d := range p.denyPaths {
-			if sftp.MatchPath(d, clean) {
+			if sftpwire.MatchPath(d, clean) {
 				return "path_denied"
 			}
 		}
 		switch r.Type {
-		case sftp.OPEN, sftp.RENAME, sftp.SYMLINK:
+		case sftpwire.OPEN, sftpwire.RENAME, sftpwire.SYMLINK:
 			// The requests that decide what a file is called. A stat or
 			// a remove is not: refusing to delete a file because of
 			// what it is called leaves it there.
@@ -196,7 +192,7 @@ func (p *sftpPolicy) check(r sftp.Request) string {
 		}
 		allowed := false
 		for _, a := range p.allowPaths {
-			if sftp.MatchPath(a, clean) {
+			if sftpwire.MatchPath(a, clean) {
 				allowed = true
 				break
 			}
@@ -214,7 +210,7 @@ func (p *sftpPolicy) check(r sftp.Request) string {
 type sftpFile struct {
 	path    string
 	written int64
-	yara    *yaraStream
+	yara    *streamscan.Stream
 }
 
 // sftpFiles is the handle table of one session. The two relay
@@ -248,7 +244,7 @@ func (f *sftpFiles) expect(id uint32, path string) {
 }
 
 // bind connects a handle to the path its OPEN named.
-func (f *sftpFiles) bind(id uint32, handle string, g *yaraGuard) {
+func (f *sftpFiles) bind(id uint32, handle string, g *streamscan.Guard) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	path, ok := f.pending[id]
@@ -286,11 +282,11 @@ func (f *sftpFiles) close(handle string) {
 // it a WRITE names something the proxy cannot connect to a path, and a
 // size bound or a rule set over what is written would be a bound on
 // nothing.
-func (se *sshSession) relaySFTP(clientCh, upCh ssh.Channel, p *sftpPolicy) {
+func (se *session) relaySFTP(clientCh, upCh cssh.Channel, p *sftpPolicy) {
 	t := se.t
 	files := newSFTPFiles(p.maxOpen)
 	var mu sync.Mutex
-	write := func(dst io.Writer, pkt sftp.Packet) error {
+	write := func(dst io.Writer, pkt sftpwire.Packet) error {
 		mu.Lock()
 		defer mu.Unlock()
 		_, err := dst.Write(pkt.Encode())
@@ -303,12 +299,12 @@ func (se *sshSession) relaySFTP(clientCh, upCh ssh.Channel, p *sftpPolicy) {
 		defer safe.Guard("sftp to client")
 		br := bufio.NewReaderSize(upCh, 32<<10)
 		for {
-			pkt, err := sftp.ReadPacket(br, p.maxPacket)
+			pkt, err := sftpwire.ReadPacket(br, p.maxPacket)
 			if err != nil {
 				return
 			}
-			if pkt.Type == sftp.HANDLE {
-				if id, handle, err := sftp.ParseHandleReply(pkt); err == nil {
+			if pkt.Type == sftpwire.HANDLE {
+				if id, handle, err := sftpwire.ParseHandleReply(pkt); err == nil {
 					files.bind(id, handle, p.yara)
 				}
 			}
@@ -322,18 +318,18 @@ func (se *sshSession) relaySFTP(clientCh, upCh ssh.Channel, p *sftpPolicy) {
 		defer safe.Guard("sftp to target")
 		br := bufio.NewReaderSize(clientCh, 32<<10)
 		for {
-			pkt, err := sftp.ReadPacket(br, p.maxPacket)
+			pkt, err := sftpwire.ReadPacket(br, p.maxPacket)
 			if err != nil {
-				if errors.Is(err, sftp.ErrTooLarge) || errors.Is(err, sftp.ErrMalformed) {
-					t.s.stats.SFTPRefused.Add(1)
+				if errors.Is(err, sftpwire.ErrTooLarge) || errors.Is(err, sftpwire.ErrMalformed) {
+					t.engine.Counters().SFTPRefused.Add(1)
 					t.deny(se.ip, "sftp_malformed", err.Error())
 				}
 				_ = upCh.CloseWrite()
 				return
 			}
-			req, err := sftp.ParseRequest(pkt)
+			req, err := sftpwire.ParseRequest(pkt)
 			if err != nil {
-				t.s.stats.SFTPRefused.Add(1)
+				t.engine.Counters().SFTPRefused.Add(1)
 				t.deny(se.ip, "sftp_malformed", err.Error())
 				_ = upCh.CloseWrite()
 				return
@@ -344,15 +340,15 @@ func (se *sshSession) relaySFTP(clientCh, upCh ssh.Channel, p *sftpPolicy) {
 			}
 			if reason != "" {
 				se.refused.Add(1)
-				t.s.stats.SFTPRefused.Add(1)
-				t.deny(se.ip, "sftp_refused", sftp.TypeName(req.Type)+" "+reason+" "+sftpClip(se.sftpName(files, req)))
-				if req.Type == sftp.INIT {
+				t.engine.Counters().SFTPRefused.Add(1)
+				t.deny(se.ip, "sftp_refused", sftpwire.TypeName(req.Type)+" "+reason+" "+textsafe.Clip256(se.sftpName(files, req)))
+				if req.Type == sftpwire.INIT {
 					// There is no status packet before the version
 					// exchange, so the only answer is to end it.
 					_ = upCh.CloseWrite()
 					return
 				}
-				_ = write(clientCh, sftp.StatusPacket(req.ID, sftp.StatusPermissionDenied, "refused by policy"))
+				_ = write(clientCh, sftpwire.StatusPacket(req.ID, sftpwire.StatusPermissionDenied, "refused by policy"))
 				if reason == "yara" && p.yara != nil && p.yara.Cfg.Action == "close" {
 					// The rules said close, and on a file transfer the
 					// thing to close is the transfer: the refusal above
@@ -364,15 +360,15 @@ func (se *sshSession) relaySFTP(clientCh, upCh ssh.Channel, p *sftpPolicy) {
 				continue
 			}
 			switch req.Type {
-			case sftp.OPEN, sftp.OPENDIR:
+			case sftpwire.OPEN, sftpwire.OPENDIR:
 				files.expect(req.ID, req.Path)
-			case sftp.CLOSE:
+			case sftpwire.CLOSE:
 				files.close(req.Handle)
 			}
-			t.s.stats.SFTPRequests.Add(1)
-			t.s.logs.Access.Info("sftp", "listener", t.cfg.Name, "client_ip", se.ip.String(),
-				"user", trimUser(se.user), "principal", se.principal, "target", se.target,
-				"op", sftp.TypeName(req.Type), "path", sftpClip(se.sftpName(files, req)))
+			t.engine.Counters().SFTPRequests.Add(1)
+			t.engine.Logs().Access.Info("sftp", "listener", t.cfg.Name, "client_ip", se.ip.String(),
+				"user", textsafe.Clip64(se.user), "principal", se.principal, "target", se.target,
+				"op", sftpwire.TypeName(req.Type), "path", textsafe.Clip256(se.sftpName(files, req)))
 			if write(upCh, pkt) != nil {
 				return
 			}
@@ -383,7 +379,7 @@ func (se *sshSession) relaySFTP(clientCh, upCh ssh.Channel, p *sftpPolicy) {
 
 // sftpName is the path a request concerns, for the log: its own, or the
 // one the handle it names was opened on.
-func (se *sshSession) sftpName(files *sftpFiles, r sftp.Request) string {
+func (se *session) sftpName(files *sftpFiles, r sftpwire.Request) string {
 	if r.Path != "" || r.Handle == "" {
 		return r.Path
 	}
@@ -396,8 +392,8 @@ func (se *sshSession) sftpName(files *sftpFiles, r sftp.Request) string {
 // sftpWrite applies what only a write can be judged on: how much of a
 // file it makes, and what is in it. It returns the reason to refuse, or
 // empty.
-func (se *sshSession) sftpWrite(p *sftpPolicy, files *sftpFiles, r sftp.Request) string {
-	if r.Type != sftp.WRITE {
+func (se *session) sftpWrite(p *sftpPolicy, files *sftpFiles, r sftpwire.Request) string {
+	if r.Type != sftpwire.WRITE {
 		return ""
 	}
 	if p.maxFile <= 0 && p.yara == nil {
@@ -431,7 +427,7 @@ func (se *sshSession) sftpWrite(p *sftpPolicy, files *sftpFiles, r sftp.Request)
 }
 
 // sftpYARAReport records a match on one file.
-func (se *sshSession) sftpYARAReport(f *sftpFile) {
+func (se *session) sftpYARAReport(f *sftpFile) {
 	t := se.t
 	ms := f.yara.Matches()
 	names := make([]string, 0, len(ms))
@@ -447,25 +443,21 @@ func (se *sshSession) sftpYARAReport(f *sftpFile) {
 		tagList = append(tagList, tag)
 	}
 	sort.Strings(tagList)
-	t.s.stats.YARAMatches.Add(1)
-	t.s.logs.SecurityEvent(context.Background(), f.yara.Policy().Action, "yara_match",
+	t.engine.Counters().YARAMatches.Add(1)
+	t.engine.Logs().SecurityEvent(context.Background(), f.yara.Policy().Action, "yara_match",
 		"listener", t.cfg.Name, "client_ip", se.ip.String(), "proto", "sftp",
-		"user", trimUser(se.user), "principal", se.principal, "path", sftpClip(f.path),
+		"user", textsafe.Clip64(se.user), "principal", se.principal, "path", textsafe.Clip256(f.path),
 		"rules", strings.Join(names, ","), "tags", strings.Join(tagList, ","))
-	if bl := t.s.bans.Load(); bl != nil && se.ip.IsValid() {
+	if bl := t.engine.Bans(); bl != nil && se.ip.IsValid() {
 		bl.Observe(se.ip, "yara")
 	}
 }
-
-// sftpClip bounds what a path or command contributes to a log line and
-// keeps control characters out of it.
-func sftpClip(s string) string { return textsafe.Clip(s, 256) }
 
 // knownHostsCallback verifies a target's host key against an OpenSSH
 // known_hosts file. The file is read once, at build time: a bastion
 // that re-reads it per connection would accept a key added between two
 // connections of the same session.
-func knownHostsCallback(path string) (ssh.HostKeyCallback, error) {
+func knownHostsCallback(path string) (cssh.HostKeyCallback, error) {
 	raw, err := os.ReadFile(path) //nolint:gosec // a path from the configuration
 	if err != nil {
 		return nil, err
@@ -476,7 +468,7 @@ func knownHostsCallback(path string) (ssh.HostKeyCallback, error) {
 	}
 	var entries []entry
 	for len(raw) > 0 {
-		marker, hosts, key, _, rest, err := ssh.ParseKnownHosts(raw)
+		marker, hosts, key, _, rest, err := cssh.ParseKnownHosts(raw)
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -496,7 +488,7 @@ func knownHostsCallback(path string) (ssh.HostKeyCallback, error) {
 	if len(entries) == 0 {
 		return nil, errors.New("no host keys in the file")
 	}
-	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+	return func(hostname string, remote net.Addr, key cssh.PublicKey) error {
 		want := string(key.Marshal())
 		addr := remote.String()
 		for _, e := range entries {
@@ -509,7 +501,7 @@ func knownHostsCallback(path string) (ssh.HostKeyCallback, error) {
 				}
 			}
 		}
-		return fmt.Errorf("host key for %s is not in known_hosts (%s)", hostname, ssh.FingerprintSHA256(key))
+		return fmt.Errorf("host key for %s is not in known_hosts (%s)", hostname, cssh.FingerprintSHA256(key))
 	}, nil
 }
 

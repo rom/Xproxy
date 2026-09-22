@@ -1,4 +1,4 @@
-package proxy
+package ssh
 
 import (
 	"fmt"
@@ -6,12 +6,14 @@ import (
 	"regexp"
 	"strings"
 
-	"golang.org/x/crypto/ssh"
+	cssh "golang.org/x/crypto/ssh"
 
 	"github.com/rom/xproxy/internal/config"
 )
 
-// sshPolicy is what one session may do: the compiled form of a
+// sshPolicy is the compiled form of a listener's policy, or of a
+// principal's override of it.
+//
 // listener's policy, or of a principal's override of it.
 type sshPolicy struct {
 	upstreamUser  string
@@ -222,16 +224,16 @@ func fileTransferCommand(cmd string) bool {
 // it under. A certificate is matched by its principals, a plain key by
 // its fingerprint. With no entries configured the listener's own policy
 // applies to everyone.
-func (t *sshServer) principalFor(user string, key ssh.PublicKey) (*sshPrincipal, bool) {
+func (t *server) principalFor(user string, key cssh.PublicKey) (*sshPrincipal, bool) {
 	if len(t.principals) == 0 {
 		return nil, true
 	}
-	fp := ssh.FingerprintSHA256(key)
+	fp := cssh.FingerprintSHA256(key)
 	var certNames []string
-	if cert, ok := key.(*ssh.Certificate); ok {
+	if cert, ok := key.(*cssh.Certificate); ok {
 		certNames = cert.ValidPrincipals
 		// A certificate is also a key; both are offered to the match.
-		fp = ssh.FingerprintSHA256(cert.Key)
+		fp = cssh.FingerprintSHA256(cert.Key)
 	}
 	for _, pr := range t.principals {
 		if len(pr.users) > 0 && !pr.users[user] {
@@ -256,8 +258,8 @@ func (t *sshServer) principalFor(user string, key ssh.PublicKey) (*sshPrincipal,
 // question of policy: it is in authorized_keys, or it is a certificate
 // signed by a trusted user CA that is valid now and names the login the
 // client is connecting as.
-func (t *sshServer) acceptKey(c ssh.ConnMetadata, key ssh.PublicKey) (string, error) {
-	cert, isCert := key.(*ssh.Certificate)
+func (t *server) acceptKey(c cssh.ConnMetadata, key cssh.PublicKey) (string, error) {
+	cert, isCert := key.(*cssh.Certificate)
 	if !isCert {
 		if t.keys[string(key.Marshal())] {
 			return "publickey", nil
@@ -267,8 +269,8 @@ func (t *sshServer) acceptKey(c ssh.ConnMetadata, key ssh.PublicKey) (string, er
 	if len(t.caKeys) == 0 {
 		return "", fmt.Errorf("a certificate was offered for %q and no user CA is configured", c.User())
 	}
-	checker := &ssh.CertChecker{
-		IsUserAuthority: func(auth ssh.PublicKey) bool { return t.caKeys[string(auth.Marshal())] },
+	checker := &cssh.CertChecker{
+		IsUserAuthority: func(auth cssh.PublicKey) bool { return t.caKeys[string(auth.Marshal())] },
 	}
 	// CheckCert verifies the signature, the validity window, the
 	// critical options and that the principal list covers this login.

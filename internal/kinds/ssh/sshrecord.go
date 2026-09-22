@@ -1,4 +1,4 @@
-package proxy
+package ssh
 
 import (
 	"bufio"
@@ -13,6 +13,7 @@ import (
 
 	"github.com/rom/xproxy/internal/asciicast"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/textsafe"
 )
 
 // sshRecorder is a recording policy and the directory it writes to. One
@@ -63,7 +64,7 @@ type sshRecording struct {
 // terminal size, because a player that does not know the geometry
 // draws the session at the wrong width and every line that wrapped
 // wraps somewhere else.
-func (r *sshRecorder) open(se *sshSession, cols, rows int, term, command string) (*sshRecording, error) {
+func (r *sshRecorder) open(se *session, cols, rows int, term, command string) (*sshRecording, error) {
 	if r == nil {
 		return nil, nil
 	}
@@ -111,8 +112,8 @@ func (r *sshRecorder) pruneLocked() {
 
 // sshRecordTitle names the session in the header, so a file found on
 // its own says whose it is.
-func sshRecordTitle(se *sshSession) string {
-	who := trimUser(se.user)
+func sshRecordTitle(se *session) string {
+	who := textsafe.Clip64(se.user)
 	if se.principal != "" {
 		who += " (" + se.principal + ")"
 	}
@@ -123,9 +124,9 @@ func sshRecordTitle(se *sshSession) string {
 // is built from values the client chooses, so it is reduced to what is
 // safe in a file name rather than trusted: a login of "../../etc/x"
 // must not decide where the proxy writes.
-func sshFileTag(se *sshSession) string {
+func sshFileTag(se *session) string {
 	out := make([]rune, 0, 32)
-	for _, r := range trimUser(se.user) {
+	for _, r := range textsafe.Clip64(se.user) {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
 			out = append(out, r)
@@ -201,7 +202,7 @@ func (rec *sshRecording) failLocked(err error) {
 }
 
 // close flushes and closes the file, and reports the name written.
-func (rec *sshRecording) close(se *sshSession) {
+func (rec *sshRecording) close(se *session) {
 	if rec == nil {
 		return
 	}
@@ -215,16 +216,16 @@ func (rec *sshRecording) close(se *sshSession) {
 	_ = rec.f.Close()
 	rec.f = nil
 	t := se.t
-	t.s.stats.SSHRecorded.Add(1)
-	t.s.logs.Access.Info("ssh_recording", "listener", t.cfg.Name, "client_ip", se.ip.String(),
-		"user", trimUser(se.user), "principal", se.principal, "target", se.target,
+	t.engine.Counters().SSHRecorded.Add(1)
+	t.engine.Logs().Access.Info("ssh_recording", "listener", t.cfg.Name, "client_ip", se.ip.String(),
+		"user", textsafe.Clip64(se.user), "principal", se.principal, "target", se.target,
 		"file", rec.name, "bytes", rec.written, "truncated", rec.truncated)
 	if rec.truncated {
 		attrs := []any{"listener", t.cfg.Name, "file", rec.name}
 		if rec.err != nil {
 			attrs = append(attrs, "err", rec.err.Error())
 		}
-		t.s.logs.Error.Warn("ssh recording is short of the session", attrs...)
+		t.engine.Logs().Error.Warn("ssh recording is short of the session", attrs...)
 	}
 }
 
@@ -273,9 +274,9 @@ func sshWindowChange(payload []byte) (cols, rows int, ok bool) {
 // sshRecordFailed reports a file that could not be created. Recording
 // is a control an operator asked for, so failing to write one is worth
 // an error rather than a silent session.
-func (se *sshSession) sshRecordFailed(err error) {
-	se.t.s.logs.Error.Warn("ssh session recording could not be opened",
-		"listener", se.t.cfg.Name, "user", trimUser(se.user), "err", err.Error())
-	se.t.s.logs.SecurityEvent(context.Background(), "allow", "ssh_recording_failed",
-		"listener", se.t.cfg.Name, "client_ip", se.ip.String(), "user", trimUser(se.user))
+func (se *session) sshRecordFailed(err error) {
+	se.t.engine.Logs().Error.Warn("ssh session recording could not be opened",
+		"listener", se.t.cfg.Name, "user", textsafe.Clip64(se.user), "err", err.Error())
+	se.t.engine.Logs().SecurityEvent(context.Background(), "allow", "ssh_recording_failed",
+		"listener", se.t.cfg.Name, "client_ip", se.ip.String(), "user", textsafe.Clip64(se.user))
 }
