@@ -1,4 +1,4 @@
-package proxy
+package forward
 
 import (
 	"bufio"
@@ -153,7 +153,7 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string,
 		// handshake to something that was speaking SSH or a database
 		// protocol breaks it for no reason, so what cannot be read is
 		// passed through as it is.
-		f.s.stats.InterceptPassed.Add(1)
+		f.host.Counters().InterceptPassed.Add(1)
 		return f.spliceBuffered(br, client, dst, in.timeout)
 	}
 	if name == "" {
@@ -170,10 +170,10 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string,
 	// virtual host once they arrive.
 	_, addrErr := netip.ParseAddr(host)
 	if addrErr != nil && !strings.EqualFold(name, host) {
-		f.s.stats.InterceptRefused.Add(1)
-		f.s.logs.SecurityEvent(context.Background(), "deny", "forward_sni_mismatch",
+		f.host.Counters().InterceptRefused.Add(1)
+		f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_sni_mismatch",
 			"listener", f.name, "client_ip", ip.String(), "connect", host, "sni", textsafe.Clip256(name))
-		if bl := f.s.bans.Load(); bl != nil && ip.IsValid() {
+		if bl := f.host.Bans(); bl != nil && ip.IsValid() {
 			bl.Observe(ip, "forward_sni_mismatch")
 		}
 		return 0, 0, "sni_mismatch"
@@ -184,8 +184,8 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string,
 		// The destination did not verify. The client is not given a
 		// forged certificate for it: the tunnel ends here, which is
 		// what would have happened without a proxy in the way.
-		f.s.stats.InterceptRefused.Add(1)
-		f.s.logs.SecurityEvent(context.Background(), "deny", "forward_upstream_tls",
+		f.host.Counters().InterceptRefused.Add(1)
+		f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_upstream_tls",
 			"listener", f.name, "client_ip", ip.String(), "dest", host, "err", err.Error())
 		return 0, 0, "upstream_tls"
 	}
@@ -198,7 +198,7 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string,
 	}
 	leaf, err := in.ca.Leaf(name, real)
 	if err != nil {
-		f.s.logs.Error.Warn("intercept: could not issue a certificate",
+		f.host.Logs().Error.Warn("intercept: could not issue a certificate",
 			"listener", f.name, "host", name, "err", err.Error())
 		return 0, 0, "issue"
 	}
@@ -212,11 +212,11 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string,
 	if err := srv.HandshakeContext(ctx); err != nil {
 		// Usually the client does not trust the CA, which is the
 		// client behaving correctly.
-		f.s.stats.InterceptRefused.Add(1)
+		f.host.Counters().InterceptRefused.Add(1)
 		return 0, 0, "client_tls"
 	}
-	f.s.stats.Intercepted.Add(1)
-	f.s.logs.Access.Info("forward_intercept", "listener", f.name, "client_ip", ip.String(),
+	f.host.Counters().Intercepted.Add(1)
+	f.host.Logs().Access.Info("forward_intercept", "listener", f.name, "client_ip", ip.String(),
 		"user", textsafe.Clip64(user), "dest", host, "sni", name,
 		"alpn", srv.ConnectionState().NegotiatedProtocol,
 		"upstream_tls", tlsconf.VersionName(state.Version))
@@ -295,7 +295,7 @@ func (f *forwardServer) relayDecrypted(client, upstream net.Conn, in *intercepto
 	if reason == "" {
 		reason = second.reason
 	}
-	f.s.stats.InterceptBytes.Add(uint64(first.n + second.n)) //nolint:gosec // non-negative
+	f.host.Counters().InterceptBytes.Add(uint64(first.n + second.n)) //nolint:gosec // non-negative
 	return first.n, second.n, reason
 }
 
@@ -314,15 +314,15 @@ func (f *forwardServer) copyScanned(dst io.Writer, src io.Reader, scan *streamsc
 		n, err := src.Read(buf)
 		if n > 0 {
 			if scan.Feed(buf[:n]) {
-				f.s.stats.YARAMatches.Add(1)
+				f.host.Counters().YARAMatches.Add(1)
 				names := make([]string, 0, 4)
 				for _, m := range scan.Matches() {
 					names = append(names, m.Rule)
 				}
-				f.s.logs.SecurityEvent(context.Background(), in.yara.Cfg.Action, "yara_match",
+				f.host.Logs().SecurityEvent(context.Background(), in.yara.Cfg.Action, "yara_match",
 					"listener", f.name, "client_ip", ip.String(), "proto", "forward_intercept",
 					"dest", host, "rules", strings.Join(names, ","))
-				if bl := f.s.bans.Load(); bl != nil && ip.IsValid() {
+				if bl := f.host.Bans(); bl != nil && ip.IsValid() {
 					bl.Observe(ip, "yara")
 				}
 				if in.yara.Cfg.Action == "close" {

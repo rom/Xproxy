@@ -1,4 +1,4 @@
-package proxy
+package forward
 
 import (
 	"fmt"
@@ -12,11 +12,13 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/masque"
+	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/proxytest"
 )
 
 // masqueProxy starts a forward listener with MASQUE on, in front of a
 // UDP echo server, and returns the server and the echo port.
-func masqueProxy(t *testing.T, extra string) (*Server, int) {
+func masqueProxy(t *testing.T, extra string) (*proxy.Server, *forwardServer, int) {
 	t.Helper()
 	echo, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -54,8 +56,8 @@ upstreams:
     endpoints: [{address: 127.0.0.1:1}]
 routes: []
 `, port, extra)
-	s, _ := startServer(t, yaml)
-	return s, port
+	s := proxytest.Start(t, yaml)
+	return s, forwardOf(t, s), port
 }
 
 // masqueWriter is the ResponseWriter half of a MASQUE session: a
@@ -108,15 +110,14 @@ func (m *masqueWriter) close() {
 // forward server and returns the writer half of the client's stream,
 // the reader half of the proxy's, and the response status once the
 // handler has set it.
-func connectUDP(t *testing.T, s *Server, host string, port int) (io.WriteCloser, *io.PipeReader, func() int) {
+func connectUDP(t *testing.T, f *forwardServer, host string, port int) (io.WriteCloser, *io.PipeReader, func() int) {
 	t.Helper()
-	return connectMasque(t, s, "connect-udp",
+	return connectMasque(t, f, "connect-udp",
 		fmt.Sprintf("%s%s/%d/", masque.UDPPrefix, url.PathEscape(host), port))
 }
 
-func connectMasque(t *testing.T, s *Server, protocol, path string) (io.WriteCloser, *io.PipeReader, func() int) {
+func connectMasque(t *testing.T, f *forwardServer, protocol, path string) (io.WriteCloser, *io.PipeReader, func() int) {
 	t.Helper()
-	f := forwardOf(t, s)
 	reqR, reqW := io.Pipe()
 	respR, respW := io.Pipe()
 	w := &masqueWriter{hdr: http.Header{}, w: respW}
@@ -151,15 +152,26 @@ func connectMasque(t *testing.T, s *Server, protocol, path string) (io.WriteClos
 	return reqW, respR, status
 }
 
-// forwardOf reaches the listener's forward server.
-func forwardOf(t *testing.T, s *Server) *forwardServer {
+// forwardOf builds the forward server of the running configuration's
+// forward listener, against the same host the bound one has.
+//
+// These tests drive the handler rather than a socket: net/http's client
+// refuses to send the ":protocol" pseudo-header a MASQUE session needs,
+// so the HTTP/2 plumbing is Go's and what is exercised here is the
+// protocol this proxy implements on top of it. A second engine over the
+// same policy and the same counters is the honest way to reach it from
+// outside the accept path.
+func forwardOf(t *testing.T, s *proxy.Server) *forwardServer {
 	t.Helper()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, bl := range s.listeners {
-		if bl.forward != nil {
-			return bl.forward
+	for _, lc := range s.Config().Server.Listeners {
+		if lc.Kind != "forward" {
+			continue
 		}
+		f, err := newForwardServer(s, lc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
 	}
 	t.Fatal("no forward listener")
 	return nil
@@ -168,8 +180,8 @@ func forwardOf(t *testing.T, s *Server) *forwardServer {
 // TestMasqueUDP is the end to end case: datagrams through an HTTP proxy
 // that until now could only carry TCP.
 func TestMasqueUDP(t *testing.T) {
-	s, port := masqueProxy(t, "")
-	pw, body, status := connectUDP(t, s, "127.0.0.1", port)
+	_, f, port := masqueProxy(t, "")
+	pw, body, status := connectUDP(t, f, "127.0.0.1", port)
 	defer func() { _ = body.Close() }()
 	if code := status(); code != http.StatusOK {
 		t.Fatalf("status %d", code)
@@ -222,15 +234,15 @@ func TestMasqueUDP(t *testing.T) {
 // TestMasqueUDPPolicy: the destination policy is the forward
 // listener's, so what it refuses over CONNECT it refuses here.
 func TestMasqueUDPPolicy(t *testing.T) {
-	s, port := masqueProxy(t, "        deny: [\"127.0.0.1\"]\n")
-	pw, body, status := connectUDP(t, s, "127.0.0.1", port)
+	_, f, port := masqueProxy(t, "        deny: [\"127.0.0.1\"]\n")
+	pw, body, status := connectUDP(t, f, "127.0.0.1", port)
 	_ = pw.Close()
 	if code := status(); code != http.StatusForbidden {
 		t.Fatalf("a denied destination gave %d", code)
 	}
 	_ = body.Close()
 	// A port outside the list.
-	pw2, body2, status2 := connectUDP(t, s, "127.0.0.1", 9)
+	pw2, body2, status2 := connectUDP(t, f, "127.0.0.1", 9)
 	_ = pw2.Close()
 	if code := status2(); code != http.StatusForbidden {
 		t.Fatalf("an unlisted port gave %d", code)
@@ -241,7 +253,7 @@ func TestMasqueUDPPolicy(t *testing.T) {
 // TestMasqueBadTarget: the path carries the destination, so it is
 // attacker-controlled input parsed before anything else happens.
 func TestMasqueBadTarget(t *testing.T) {
-	s, _ := masqueProxy(t, "")
+	_, f, _ := masqueProxy(t, "")
 	for _, path := range []string{
 		"/.well-known/masque/udp/",
 		"/.well-known/masque/udp/host/",
@@ -250,7 +262,7 @@ func TestMasqueBadTarget(t *testing.T) {
 		"/.well-known/masque/udp/host/53/extra/",
 		"/somewhere/else/",
 	} {
-		pw, body, status := connectMasque(t, s, "connect-udp", path)
+		pw, body, status := connectMasque(t, f, "connect-udp", path)
 		_ = pw.Close()
 		if code := status(); code != http.StatusBadRequest {
 			t.Errorf("%s gave %d, want 400", path, code)
@@ -263,8 +275,8 @@ func TestMasqueBadTarget(t *testing.T) {
 // unsupported protocol is refused with 501 rather than quietly turning
 // into something else.
 func TestMasqueDisabled(t *testing.T) {
-	s, _ := masqueProxy(t, "")
-	pw, body, status := connectMasque(t, s, "connect-ip", "/.well-known/masque/ip/127.0.0.1/17/")
+	_, f, _ := masqueProxy(t, "")
+	pw, body, status := connectMasque(t, f, "connect-ip", "/.well-known/masque/ip/127.0.0.1/17/")
 	_ = pw.Close()
 	if code := status(); code != http.StatusNotImplemented {
 		t.Fatalf("connect-ip with ip disabled gave %d, want 501", code)
@@ -272,7 +284,7 @@ func TestMasqueDisabled(t *testing.T) {
 	_ = body.Close()
 	// An unknown :protocol is refused the same way rather than falling
 	// through to an ordinary CONNECT.
-	pw2, body2, status2 := connectMasque(t, s, "connect-carrier-pigeon", "/whatever/")
+	pw2, body2, status2 := connectMasque(t, f, "connect-carrier-pigeon", "/whatever/")
 	_ = pw2.Close()
 	if code := status2(); code != http.StatusNotImplemented {
 		t.Fatalf("an unknown protocol gave %d", code)
@@ -282,8 +294,8 @@ func TestMasqueDisabled(t *testing.T) {
 
 // TestMasqueStatus reports what the listener is doing.
 func TestMasqueStatus(t *testing.T) {
-	s, port := masqueProxy(t, "")
-	pw, body, status := connectUDP(t, s, "127.0.0.1", port)
+	s, f, port := masqueProxy(t, "")
+	pw, body, status := connectUDP(t, f, "127.0.0.1", port)
 	if code := status(); code != http.StatusOK {
 		t.Fatalf("status %d", code)
 	}
@@ -296,9 +308,16 @@ func TestMasqueStatus(t *testing.T) {
 	if sn := s.Stats(); sn.MasqueUDP != 1 || sn.MasqueOpen != 1 {
 		t.Fatalf("counters: udp %d open %d", sn.MasqueUDP, sn.MasqueOpen)
 	}
+	// What this engine is doing, which is where the session lives.
+	own := (&instance{f: f}).MasqueStatus()
+	if own == nil || !own.UDP || own.IP || own.UDPTotal != 1 || own.Sessions != 1 {
+		t.Fatalf("engine status = %+v", own)
+	}
+	// And the wiring: the bound listener reaches the same view through
+	// the registry, named, with the section it was configured from.
 	st := s.Masque()
-	if len(st) != 1 || !st[0].UDP || st[0].IP || st[0].UDPTotal != 1 || st[0].Sessions != 1 {
-		t.Fatalf("status = %+v", st)
+	if len(st) != 1 || st[0].Listener != "fwd" || !st[0].UDP || st[0].IP || st[0].MaxSessions != own.MaxSessions {
+		t.Fatalf("listener status = %+v", st)
 	}
 	_ = pw.Close()
 	_ = body.Close()

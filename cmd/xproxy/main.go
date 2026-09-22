@@ -21,8 +21,9 @@ import (
 	"os"
 
 	"github.com/rom/xproxy/internal/daemon"
-	_ "github.com/rom/xproxy/internal/kinds/dns" // listener kind: dns
-	_ "github.com/rom/xproxy/internal/kinds/tcp" // listener kind: tcp
+	_ "github.com/rom/xproxy/internal/kinds/dns"     // listener kind: dns
+	_ "github.com/rom/xproxy/internal/kinds/forward" // listener kind: forward
+	_ "github.com/rom/xproxy/internal/kinds/tcp"     // listener kind: tcp
 	"github.com/rom/xproxy/internal/listener"
 )
 

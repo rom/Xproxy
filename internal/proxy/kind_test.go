@@ -14,13 +14,14 @@ import (
 // a listener that never passes validation proves nothing about what a
 // daemon does with one that does.
 var sections = map[string]string{
-	"tcp":    "tcp: {default: u}",
-	"dns":    `dns: {upstreams: ["127.0.0.1:53"]}`,
-	"ssh":    "ssh: {upstream: u, host_keys: [/dev/null], authorized_keys: /dev/null, upstream_key_file: /dev/null, upstream_known_hosts: /dev/null}",
-	"smtp":   "smtp: {upstream: u}",
-	"mqtt":   "mqtt: {upstream: u}",
-	"ftp":    "ftp: {upstream: u}",
-	"syslog": "syslog: {upstream: u}",
+	"tcp":     "tcp: {default: u}",
+	"forward": "forward: {ports: [443]}",
+	"dns":     `dns: {upstreams: ["127.0.0.1:53"]}`,
+	"ssh":     "ssh: {upstream: u, host_keys: [/dev/null], authorized_keys: /dev/null, upstream_key_file: /dev/null, upstream_known_hosts: /dev/null}",
+	"smtp":    "smtp: {upstream: u}",
+	"mqtt":    "mqtt: {upstream: u}",
+	"ftp":     "ftp: {upstream: u}",
+	"syslog":  "syslog: {upstream: u}",
 }
 
 // TestUnlinkedKindRefused is the guarantee the three-binary split rests

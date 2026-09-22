@@ -1,6 +1,6 @@
 //go:build !linux
 
-package proxy
+package forward
 
 // openTunnel is Linux only: the tun device CONNECT-IP forwards through
 // has no portable equivalent, and a platform without one refuses the

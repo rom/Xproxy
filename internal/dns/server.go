@@ -72,9 +72,14 @@ type Server struct {
 	sem    chan struct{}
 	// Encrypted marks a TLS listener; DoHPath is the RFC 8484 path.
 	Encrypted bool
-	DoHPath   string
-	doh       *chanListener
-	dohSrv    *http.Server
+	// QUIC marks a listener that also answers DNS over QUIC beside the
+	// TLS port. It is reported rather than used: the DoQ server is a
+	// separate object, and this is how the status view says one exists
+	// without holding it.
+	QUIC    bool
+	DoHPath string
+	doh     *chanListener
+	dohSrv  *http.Server
 
 	mu   sync.Mutex
 	cons map[net.Conn]struct{}
@@ -175,7 +180,7 @@ func (s *Server) Status() Status {
 	p := s.policy.Load()
 	st := Status{Listener: s.Name, Queries: s.Queries.Load(), CacheHits: s.Hits.Load(), CacheEntries: s.cache.Len(),
 		Blocked: s.Blocked.Load(), Refused: s.Refused.Load(), Dropped: s.Dropped.Load(), ServFail: s.ServFail.Load(),
-		Truncated: s.Truncated.Load(), FormErr: s.FormErr.Load(), Encrypted: s.Encrypted,
+		Truncated: s.Truncated.Load(), FormErr: s.FormErr.Load(), Encrypted: s.Encrypted, DoQ: s.QUIC,
 		QueriesUDP: s.UDP.Load(), QueriesTCP: s.TCP.Load(), QueriesDoT: s.DoT.Load(), QueriesDoH: s.DoH.Load(), QueriesDoQ: s.DoQ.Load(), QueriesLocal: s.Local.Load()}
 	if p != nil {
 		st.LocalNames = p.Local.Names()

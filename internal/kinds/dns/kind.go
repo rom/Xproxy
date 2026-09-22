@@ -68,6 +68,7 @@ func build(su *proxy.Setup) (proxy.Instance, error) {
 			return nil, err
 		}
 		in.doq = q
+		d.QUIC = true
 	}
 	return in, nil
 }

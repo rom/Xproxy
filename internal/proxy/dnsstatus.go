@@ -11,11 +11,7 @@ func (s *Server) DNS() []dns.Status {
 	var out []dns.Status
 	for _, bl := range s.listeners {
 		if bl.dns != nil {
-			st := bl.dns.Status()
-			if bl.doq != nil {
-				st.DoQ = true
-			}
-			out = append(out, st)
+			out = append(out, bl.dns.Status())
 		}
 	}
 	return out

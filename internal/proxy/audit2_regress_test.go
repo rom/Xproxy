@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/httpx"
 )
 
 // Regression tests for the second security audit round.
@@ -206,7 +207,7 @@ func (s stubResolver) Resolve(string, string) (string, bool) { return s.v, true 
 // ReverseProxy, so connection-scoped headers are removed by hand.
 func TestMirrorDropsHopByHopHeaders(t *testing.T) {
 	h := http.Header{"Connection": {"close, X-Hop"}, "X-Hop": {"1"}, "Keep-Alive": {"timeout=5"}, "Proxy-Authorization": {"Basic x"}, "TE": {"trailers"}, "X-Keep": {"y"}}
-	stripHopByHop(h)
+	httpx.StripHopByHop(h)
 	for _, gone := range []string{"Connection", "X-Hop", "Keep-Alive", "Proxy-Authorization", "TE"} {
 		if h.Get(gone) != "" {
 			t.Errorf("%s survived", gone)
