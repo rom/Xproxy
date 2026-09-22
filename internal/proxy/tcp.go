@@ -391,14 +391,6 @@ func proxyV2Header(remote, local net.Addr) []byte {
 }
 
 // addrOf parses the host part of a host:port string.
-func addrOf(hostport string) netip.Addr {
-	host, _, err := net.SplitHostPort(hostport)
-	if err != nil {
-		host = hostport
-	}
-	a, err := netip.ParseAddr(host)
-	if err != nil {
-		return netip.Addr{}
-	}
-	return a.Unmap()
-}
+// addrOf is netutil.AddrOf under the name the engine has always used
+// for it.
+func addrOf(hostport string) netip.Addr { return netutil.AddrOf(hostport) }

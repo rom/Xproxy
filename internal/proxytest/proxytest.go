@@ -1,0 +1,53 @@
+// Package proxytest starts a server from a configuration for tests that
+// live outside internal/proxy.
+//
+// A listener kind in its own package is tested the way it is deployed:
+// through a real server, over a real socket. That needs the same three
+// lines every such test would otherwise repeat, and it needs them
+// exported, which is the whole of this package.
+package proxytest
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/logging"
+	"github.com/rom/xproxy/internal/proxy"
+)
+
+// Start parses a configuration, starts a server from it and stops it
+// when the test ends. The logs are discarded; a test that wants to read
+// them builds its own.
+func Start(t *testing.T, yaml string) *proxy.Server {
+	t.Helper()
+	cfg, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	s, err := proxy.New(cfg, logging.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		s.Shutdown(ctx)
+	})
+	return s
+}
+
+// Addr is a started server's bound address for a listener, which is how
+// a test finds the port when the configuration asked for ":0".
+func Addr(t *testing.T, s *proxy.Server, listener string) string {
+	t.Helper()
+	a, ok := s.Addrs()[listener]
+	if !ok {
+		t.Fatalf("listener %q did not bind", listener)
+	}
+	return a
+}

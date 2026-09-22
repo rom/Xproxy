@@ -52,3 +52,30 @@ func TestRegistrableGroupsATunnel(t *testing.T) {
 		t.Fatal("unrelated names group together")
 	}
 }
+
+// TestAddrOf pins the two things listener kinds depend on when they key
+// a ban, a rate limit or a policy decision on a peer address: the
+// v4-mapped form is the address it maps to, and a zone is not dropped.
+// Dropping it would put fe80::1%eth0 and fe80::1%eth1 — two clients on
+// two interfaces — in one bucket.
+func TestAddrOf(t *testing.T) {
+	for in, want := range map[string]string{
+		"198.51.100.9:443":          "198.51.100.9",
+		"198.51.100.9":              "198.51.100.9",
+		"[2001:db8::1]:443":         "2001:db8::1",
+		"[::ffff:198.51.100.9]:443": "198.51.100.9",
+		"fe80::1%eth0":              "fe80::1%eth0",
+	} {
+		if got := AddrOf(in); got.String() != want {
+			t.Errorf("AddrOf(%q) = %v, want %v", in, got, want)
+		}
+	}
+	for _, in := range []string{"", "host.test:443", "host.test", "999.1.1.1:1", ":443", "[2001:db8::1", "\x00"} {
+		if got := AddrOf(in); got.IsValid() {
+			t.Errorf("AddrOf(%q) = %v, want the zero address", in, got)
+		}
+	}
+	if AddrOf("fe80::1%eth0") == AddrOf("fe80::1%eth1") {
+		t.Error("two interfaces compare equal")
+	}
+}

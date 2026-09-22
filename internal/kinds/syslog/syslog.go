@@ -1,4 +1,4 @@
-package proxy
+package syslog
 
 import (
 	"context"
@@ -14,13 +14,15 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
-	"github.com/rom/xproxy/internal/syslog"
+	wire "github.com/rom/xproxy/internal/syslog"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
-// syslogServer serves a kind: syslog listener: a relay that reads what
+// server serves a kind: syslog listener: a relay that reads what
 // it forwards.
 //
 // Reading it is the point. Almost every field is written by the sender
@@ -28,8 +30,8 @@ import (
 // say what a record actually came from — and the one place that can
 // stop a message whose text carries a newline from becoming two records
 // downstream.
-type syslogServer struct {
-	s      *Server
+type server struct {
+	host   proxy.Host
 	cfg    config.Listener
 	l      *config.SyslogListener
 	ln     net.Listener
@@ -37,17 +39,17 @@ type syslogServer struct {
 	tlsCfg *tls.Config
 	upTLS  *tls.Config
 
-	framing   syslog.Framing
-	upFraming syslog.Framing
+	framing   wire.Framing
+	upFraming wire.Framing
 	allow     []netip.Prefix
 	facOK     map[int]bool
 	facDeny   map[int]bool
 	minSev    int
 	deny      []*regexp.Regexp
-	redact    []syslogRedaction
-	limiter   *syslogLimiter
+	redact    []redaction
+	limiter   *limiter
 
-	queue chan *syslogRecord
+	queue chan *record
 	open  atomic.Int64
 	wg    sync.WaitGroup
 	mu    sync.Mutex
@@ -56,47 +58,47 @@ type syslogServer struct {
 	done  chan struct{}
 }
 
-type syslogRedaction struct {
+type redaction struct {
 	name string
 	re   *regexp.Regexp
 	with string
 }
 
-// syslogRecord is a parsed message and where it came from.
-type syslogRecord struct {
-	msg  syslog.Message
+// record is a parsed message and where it came from.
+type record struct {
+	msg  wire.Message
 	from netip.Addr
 }
 
-func newSyslogServer(s *Server, cfg config.Listener, ln net.Listener, pc net.PacketConn, tc *tls.Config) (*syslogServer, error) {
+func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, pc net.PacketConn, tc *tls.Config) (*server, error) {
 	l := cfg.Syslog
-	t := &syslogServer{s: s, cfg: cfg, l: l, ln: ln, pc: pc, tlsCfg: tc,
+	t := &server{host: host, cfg: cfg, l: l, ln: ln, pc: pc, tlsCfg: tc,
 		facOK: map[int]bool{}, facDeny: map[int]bool{}, minSev: 7,
 		cons: map[net.Conn]struct{}{}, done: make(chan struct{}),
-		queue: make(chan *syslogRecord, l.Queue)}
+		queue: make(chan *record, l.Queue)}
 	var err error
-	if t.framing, err = syslogFraming(l.Framing); err != nil {
+	if t.framing, err = framingOf(l.Framing); err != nil {
 		return nil, err
 	}
-	if t.upFraming, err = syslogFraming(l.UpstreamFraming); err != nil {
+	if t.upFraming, err = framingOf(l.UpstreamFraming); err != nil {
 		return nil, err
 	}
 	for _, f := range l.AllowFacilities {
-		n, ok := syslog.FacilityNumber(f)
+		n, ok := wire.FacilityNumber(f)
 		if !ok {
 			return nil, fmt.Errorf("syslog allow_facilities: %q", f)
 		}
 		t.facOK[n] = true
 	}
 	for _, f := range l.DenyFacilities {
-		n, ok := syslog.FacilityNumber(f)
+		n, ok := wire.FacilityNumber(f)
 		if !ok {
 			return nil, fmt.Errorf("syslog deny_facilities: %q", f)
 		}
 		t.facDeny[n] = true
 	}
 	if l.MinSeverity != "" {
-		n, ok := syslog.SeverityNumber(l.MinSeverity)
+		n, ok := wire.SeverityNumber(l.MinSeverity)
 		if !ok {
 			return nil, fmt.Errorf("syslog min_severity: %q", l.MinSeverity)
 		}
@@ -125,7 +127,7 @@ func newSyslogServer(s *Server, cfg config.Listener, ln net.Listener, pc net.Pac
 		if with == "" {
 			with = "[redacted]"
 		}
-		t.redact = append(t.redact, syslogRedaction{name: r.Name, re: re, with: with})
+		t.redact = append(t.redact, redaction{name: r.Name, re: re, with: with})
 	}
 	if l.RateLimit > 0 {
 		t.limiter = newSyslogLimiter(l.RateLimit, l.RateBurst, l.MaxSenders)
@@ -140,19 +142,19 @@ func newSyslogServer(s *Server, cfg config.Listener, ln net.Listener, pc net.Pac
 	return t, nil
 }
 
-func syslogFraming(s string) (syslog.Framing, error) {
+func framingOf(s string) (wire.Framing, error) {
 	switch s {
 	case "octet_counting":
-		return syslog.OctetCounting, nil
+		return wire.OctetCounting, nil
 	case "non_transparent":
-		return syslog.NonTransparent, nil
+		return wire.NonTransparent, nil
 	case "auto":
-		return syslog.Auto, nil
+		return wire.Auto, nil
 	}
 	return 0, fmt.Errorf("syslog framing: %q", s)
 }
 
-func (t *syslogServer) serve() {
+func (t *server) serve() {
 	t.wg.Add(1)
 	go func() {
 		defer t.wg.Done()
@@ -188,7 +190,7 @@ func (t *syslogServer) serve() {
 		}
 		if t.open.Add(1) > int64(t.l.MaxConnections) {
 			t.open.Add(-1)
-			t.s.stats.SyslogRejected.Add(1)
+			t.host.Counters().SyslogRejected.Add(1)
 			_ = c.Close()
 			continue
 		}
@@ -207,7 +209,7 @@ func (t *syslogServer) serve() {
 	}
 }
 
-func (t *syslogServer) admit(c net.Conn) bool {
+func (t *server) admit(c net.Conn) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	select {
@@ -220,13 +222,13 @@ func (t *syslogServer) admit(c net.Conn) bool {
 	return true
 }
 
-func (t *syslogServer) untrack(c net.Conn) {
+func (t *server) untrack(c net.Conn) {
 	t.mu.Lock()
 	delete(t.cons, c)
 	t.mu.Unlock()
 }
 
-func (t *syslogServer) shutdown(ctx context.Context) {
+func (t *server) shutdown(ctx context.Context) {
 	t.once.Do(func() {
 		t.mu.Lock()
 		close(t.done)
@@ -253,7 +255,7 @@ func (t *syslogServer) shutdown(ctx context.Context) {
 // serveUDP reads datagrams. On UDP the sender's address is the only
 // thing about a message that is not simply asserted, and even that is
 // forgeable; allow_senders is the whole of the authentication there is.
-func (t *syslogServer) serveUDP() {
+func (t *server) serveUDP() {
 	buf := make([]byte, t.l.MaxMessageBytes+16)
 	for {
 		n, addr, err := t.pc.ReadFrom(buf)
@@ -284,9 +286,9 @@ func (t *syslogServer) serveUDP() {
 }
 
 // handleStream reads framed messages from one connection.
-func (t *syslogServer) handleStream(c net.Conn) {
+func (t *server) handleStream(c net.Conn) {
 	defer func() { _ = c.Close() }()
-	ip := addrOf(c.RemoteAddr().String())
+	ip := netutil.AddrOf(c.RemoteAddr().String())
 	if !t.senderAllowed(ip) {
 		t.refuse(ip, "sender_refused", "")
 		return
@@ -298,8 +300,8 @@ func (t *syslogServer) handleStream(c net.Conn) {
 		}
 		c = tc
 	}
-	t.s.stats.SyslogConnections.Add(1)
-	r := syslog.NewReader(c, t.l.MaxMessageBytes, t.framing)
+	t.host.Counters().SyslogConnections.Add(1)
+	r := wire.NewReader(c, t.l.MaxMessageBytes, t.framing)
 	for {
 		if t.l.IdleTimeout > 0 {
 			_ = c.SetReadDeadline(time.Now().Add(t.l.IdleTimeout.D()))
@@ -307,13 +309,13 @@ func (t *syslogServer) handleStream(c net.Conn) {
 		raw, err := r.ReadMessage()
 		if err != nil {
 			switch {
-			case errors.Is(err, syslog.ErrOversizeSkipped):
+			case errors.Is(err, wire.ErrOversizeSkipped):
 				// The reader skipped to the next line ending and is at
 				// a boundary again. One sender writing one long line
 				// should not cost every record behind it.
 				t.refuse(ip, "too_large", "")
 				continue
-			case errors.Is(err, syslog.ErrTooLarge), errors.Is(err, syslog.ErrMalformed):
+			case errors.Is(err, wire.ErrTooLarge), errors.Is(err, wire.ErrMalformed):
 				// A counted frame that cannot be read leaves the stream
 				// at an offset nobody knows; there is nothing honest to
 				// do but end it.
@@ -325,7 +327,7 @@ func (t *syslogServer) handleStream(c net.Conn) {
 	}
 }
 
-func (t *syslogServer) senderAllowed(ip netip.Addr) bool {
+func (t *server) senderAllowed(ip netip.Addr) bool {
 	if len(t.allow) == 0 {
 		return true
 	}
@@ -338,17 +340,17 @@ func (t *syslogServer) senderAllowed(ip netip.Addr) bool {
 }
 
 // take parses one message and applies the policy to it.
-func (t *syslogServer) take(raw []byte, from netip.Addr) {
-	t.s.stats.SyslogReceived.Add(1)
+func (t *server) take(raw []byte, from netip.Addr) {
+	t.host.Counters().SyslogReceived.Add(1)
 	if !t.senderAllowed(from) {
 		t.refuse(from, "sender_refused", "")
 		return
 	}
 	if t.limiter != nil && !t.limiter.allow(from) {
-		t.s.stats.SyslogRateLimited.Add(1)
+		t.host.Counters().SyslogRateLimited.Add(1)
 		return
 	}
-	m, err := syslog.Parse(raw)
+	m, err := wire.Parse(raw)
 	if err != nil {
 		// A message the relay could not read is a message whose
 		// facility, severity and host are unknown, which is every field
@@ -357,23 +359,23 @@ func (t *syslogServer) take(raw []byte, from netip.Addr) {
 		return
 	}
 	if reason := t.filter(m); reason != "" {
-		t.s.stats.SyslogDropped.Add(1)
+		t.host.Counters().SyslogDropped.Add(1)
 		return
 	}
 	t.rewrite(&m, from)
 	select {
-	case t.queue <- &syslogRecord{msg: m, from: from}:
+	case t.queue <- &record{msg: m, from: from}:
 	default:
 		// The collector is behind. Dropping here keeps one slow
 		// collector from blocking every sender, and it is counted so
 		// the gap is visible rather than guessed at.
-		t.s.stats.SyslogQueueDropped.Add(1)
+		t.host.Counters().SyslogQueueDropped.Add(1)
 	}
 }
 
 // filter applies what a message claims to be. It returns the reason it
 // was dropped, or empty.
-func (t *syslogServer) filter(m syslog.Message) string {
+func (t *server) filter(m wire.Message) string {
 	if len(t.facOK) > 0 && !t.facOK[m.Facility] {
 		return "facility"
 	}
@@ -392,15 +394,15 @@ func (t *syslogServer) filter(m syslog.Message) string {
 }
 
 // rewrite applies what the relay knows that the sender did not say.
-func (t *syslogServer) rewrite(m *syslog.Message, from netip.Addr) {
+func (t *server) rewrite(m *wire.Message, from netip.Addr) {
 	for _, r := range t.redact {
 		if r.re.MatchString(m.Message) {
 			m.Message = r.re.ReplaceAllString(m.Message, r.with)
-			m.Structured = append(m.Structured, syslog.SDElement{
+			m.Structured = append(m.Structured, wire.SDElement{
 				ID:     "xproxyRedaction@0",
-				Params: []syslog.SDParam{{Name: "rule", Value: r.name}},
+				Params: []wire.SDParam{{Name: "rule", Value: r.name}},
 			})
-			t.s.stats.SyslogRedacted.Add(1)
+			t.host.Counters().SyslogRedacted.Add(1)
 		}
 	}
 	switch t.l.Hostname {
@@ -409,9 +411,9 @@ func (t *syslogServer) rewrite(m *syslog.Message, from netip.Addr) {
 	case "annotate":
 		// The sender's name is often the useful one and is never the
 		// true one, so both are kept and which is which is stated.
-		m.Structured = append(m.Structured, syslog.SDElement{
+		m.Structured = append(m.Structured, wire.SDElement{
 			ID: "xproxyOrigin@0",
-			Params: []syslog.SDParam{
+			Params: []wire.SDParam{
 				{Name: "ip", Value: from.String()},
 				{Name: "listener", Value: t.cfg.Name},
 				{Name: "claimed", Value: m.Hostname},
@@ -429,14 +431,14 @@ func (t *syslogServer) rewrite(m *syslog.Message, from netip.Addr) {
 	}
 }
 
-func (t *syslogServer) refuse(ip netip.Addr, what, detail string) {
-	t.s.stats.SyslogRefused.Add(1)
+func (t *server) refuse(ip netip.Addr, what, detail string) {
+	t.host.Counters().SyslogRefused.Add(1)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "syslog"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
 	}
-	t.s.logs.SecurityEvent(context.Background(), "deny", "syslog_"+what, attrs...)
-	if bl := t.s.bans.Load(); bl != nil && ip.IsValid() {
+	t.host.Logs().SecurityEvent(context.Background(), "deny", "syslog_"+what, attrs...)
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "syslog_denied")
 	}
 }
@@ -446,7 +448,7 @@ func (t *syslogServer) refuse(ip netip.Addr, what, detail string) {
 // is RFC 5424 in one framing, whatever arrived: one dialect out is what
 // makes the record the collector stores the record this relay decided
 // about.
-func (t *syslogServer) forward() {
+func (t *server) forward() {
 	var conn net.Conn
 	var ep *upstream.Endpoint
 	var pool *upstream.Pool
@@ -459,19 +461,19 @@ func (t *syslogServer) forward() {
 		}
 	}()
 	for {
-		var rec *syslogRecord
+		var rec *record
 		select {
 		case <-t.done:
 			return
 		case rec = <-t.queue:
 		}
-		out := syslog.Frame(rec.msg.Format(), t.upFraming)
+		out := wire.Frame(rec.msg.Format(), t.upFraming)
 		for attempt := 0; attempt < 2; attempt++ {
 			if conn == nil {
 				c, e, p, err := t.dialCollector()
 				if err != nil {
-					t.s.stats.SyslogSendFailed.Add(1)
-					t.s.logs.Error.Warn("syslog collector unavailable",
+					t.host.Counters().SyslogSendFailed.Add(1)
+					t.host.Logs().Error.Warn("syslog collector unavailable",
 						"listener", t.cfg.Name, "err", err.Error())
 					break
 				}
@@ -486,14 +488,14 @@ func (t *syslogServer) forward() {
 				conn, ep, pool = nil, nil, nil
 				continue
 			}
-			t.s.stats.SyslogForwarded.Add(1)
+			t.host.Counters().SyslogForwarded.Add(1)
 			break
 		}
 	}
 }
 
-func (t *syslogServer) dialCollector() (net.Conn, *upstream.Endpoint, *upstream.Pool, error) {
-	pool := t.s.rt.Load().pools[t.l.Upstream]
+func (t *server) dialCollector() (net.Conn, *upstream.Endpoint, *upstream.Pool, error) {
+	pool := t.host.Pool(t.l.Upstream)
 	if pool == nil {
 		return nil, nil, nil, fmt.Errorf("upstream %q has no pool", t.l.Upstream)
 	}
@@ -531,7 +533,7 @@ func (t *syslogServer) dialCollector() (net.Conn, *upstream.Endpoint, *upstream.
 	return nil, nil, nil, lastErr
 }
 
-func (t *syslogServer) collectorTLS(ep *upstream.Endpoint) *tls.Config {
+func (t *server) collectorTLS(ep *upstream.Endpoint) *tls.Config {
 	tc := t.upTLS.Clone()
 	if tc.ServerName == "" {
 		if host, _, err := net.SplitHostPort(ep.Address); err == nil {
@@ -541,11 +543,11 @@ func (t *syslogServer) collectorTLS(ep *upstream.Endpoint) *tls.Config {
 	return tc
 }
 
-// syslogLimiter bounds what one sender may send. A log flood is a
+// limiter bounds what one sender may send. A log flood is a
 // denial of service on the collector and a way to push older records
 // out of whatever window it keeps, so the bound is per sender rather
 // than per listener.
-type syslogLimiter struct {
+type limiter struct {
 	rate  float64
 	burst float64
 	max   int
@@ -559,18 +561,18 @@ type syslogBucket struct {
 	last   time.Time
 }
 
-func newSyslogLimiter(rate, burst, max int) *syslogLimiter {
+func newSyslogLimiter(rate, burst, max int) *limiter {
 	if burst <= 0 {
 		burst = rate
 	}
 	if max <= 0 {
 		max = 65536
 	}
-	return &syslogLimiter{rate: float64(rate), burst: float64(burst), max: max,
+	return &limiter{rate: float64(rate), burst: float64(burst), max: max,
 		buckets: map[netip.Addr]*syslogBucket{}}
 }
 
-func (l *syslogLimiter) allow(ip netip.Addr) bool {
+func (l *limiter) allow(ip netip.Addr) bool {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()

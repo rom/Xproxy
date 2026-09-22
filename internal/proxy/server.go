@@ -123,15 +123,18 @@ type boundListener struct {
 	tlsReload *tlsconf.Reloadable
 	activated bool
 	h3        *h3.Server
-	tcp       *tcpServer     // kind: tcp listeners
-	forward   *forwardServer // kind: forward listeners
-	dns       *dns.Server    // kind: dns listeners
-	doq       *dns.DoQServer // DNS over QUIC on a dns listener
-	smtp      *smtpServer    // kind: smtp listeners
-	mqtt      *mqttServer    // kind: mqtt listeners
-	ssh       *sshServer     // kind: ssh listeners
-	ftp       *ftpServer     // kind: ftp listeners
-	syslog    *syslogServer  // kind: syslog listeners
+	// inst is the data plane of a registered listener kind. The typed
+	// fields below are the status views' handles on the same object
+	// and go as each kind moves to its own package.
+	inst    Instance
+	tcp     *tcpServer     // kind: tcp listeners
+	forward *forwardServer // kind: forward listeners
+	dns     *dns.Server    // kind: dns listeners
+	doq     *dns.DoQServer // DNS over QUIC on a dns listener
+	smtp    *smtpServer    // kind: smtp listeners
+	mqtt    *mqttServer    // kind: mqtt listeners
+	ssh     *sshServer     // kind: ssh listeners
+	ftp     *ftpServer     // kind: ftp listeners
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -693,6 +696,45 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 			onReject: s.connLimiter.Reject,
 		}
 	}
+	// A registered kind owns everything from here: the engine has
+	// prepared the socket and, where the kind asked for it, the TLS
+	// configuration, and the kind builds its own data plane.
+	if k, ok := kindFor(lc.Kind); ok {
+		su := &Setup{Host: s, Config: lc, Net: bl.ln,
+			Packet: func(suffix string) (net.PacketConn, error) {
+				name := lc.Name
+				if suffix != "" {
+					name += "-" + suffix
+				}
+				addr := lc.Address
+				if strings.HasSuffix(lc.Address, ":0") {
+					addr = ln.Addr().String()
+				}
+				pc, _, err := packetFor(activated, name, addr)
+				return pc, err
+			}}
+		if k.TLS && lc.TLS != nil {
+			tc, rl, err := s.listenerTLS(lc)
+			if err != nil {
+				_ = fr.Close()
+				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+			}
+			bl.tlsReload = rl
+			su.TLS = tc
+		}
+		inst, err := k.New(su)
+		if err != nil {
+			_ = fr.Close()
+			if bl.tlsReload != nil {
+				bl.tlsReload.Close()
+			}
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		bl.inst = inst
+		bl.ln = su.Net // a kind may have wrapped the socket, as implicit TLS does
+		s.attachKind(bl, inst)
+		return bl, nil
+	}
 	if lc.Kind == "tcp" {
 		tcp, err := newTCPServer(s, lc, bl.ln)
 		if err != nil {
@@ -752,54 +794,6 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 		}
 		bl.mqtt = q
-		return bl, nil
-	}
-	if lc.Kind == "syslog" {
-		// Streams and datagrams both, on the same address: most senders
-		// still use UDP, and a relay that takes only one of them is a
-		// relay half the estate goes around.
-		var tc *tls.Config
-		if lc.TLS != nil {
-			c, rl, err := tlsconf.Server(lc.TLS, nil)
-			if err != nil {
-				_ = fr.Close()
-				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-			}
-			s.tickets.Attach(c)
-			rl.Fingerprints = s.fingerprints
-			rl.Refuse = s.refuseHandshake
-			rl.StartStapling(s.logs.Error)
-			bl.tlsReload = rl
-			tc = c
-		}
-		var pc net.PacketConn
-		if lc.Syslog.UDP == nil || *lc.Syslog.UDP {
-			udpAddr := lc.Address
-			if strings.HasSuffix(lc.Address, ":0") {
-				udpAddr = ln.Addr().String()
-			}
-			p, _, err := packetFor(activated, lc.Name, udpAddr)
-			if err != nil {
-				_ = fr.Close()
-				if bl.tlsReload != nil {
-					bl.tlsReload.Close()
-				}
-				return nil, fmt.Errorf("listener %s: udp: %w", lc.Name, err)
-			}
-			pc = p
-		}
-		g, err := newSyslogServer(s, lc, bl.ln, pc, tc)
-		if err != nil {
-			_ = fr.Close()
-			if pc != nil {
-				_ = pc.Close()
-			}
-			if bl.tlsReload != nil {
-				bl.tlsReload.Close()
-			}
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.syslog = g
 		return bl, nil
 	}
 	if lc.Kind == "ftp" {
@@ -1036,6 +1030,10 @@ func hasProto(ps []config.Protocol, p config.Protocol) bool {
 func (s *Server) serve(bl *boundListener) {
 	var err error
 	s.logs.Error.Info("listening", "listener", bl.cfg.Name, "address", bl.ln.Addr().String(), "tls", bl.cfg.TLS != nil, "kind", bl.cfg.Kind, "socket_activated", bl.activated)
+	if bl.inst != nil {
+		bl.inst.Serve()
+		return
+	}
 	if bl.tcp != nil {
 		if bl.tcp.quic != nil {
 			go bl.tcp.quic.serve()
@@ -1064,10 +1062,6 @@ func (s *Server) serve(bl *boundListener) {
 	}
 	if bl.ftp != nil {
 		bl.ftp.serve()
-		return
-	}
-	if bl.syslog != nil {
-		bl.syslog.serve()
 		return
 	}
 	if bl.cfg.TLS != nil {
@@ -1515,6 +1509,19 @@ func (s *Server) discard(f freshListener) {
 func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocket bool) error {
 	var err error
 	_ = bl.front.Close()
+	if bl.inst != nil {
+		bl.inst.Shutdown(ctx)
+		if c, ok := bl.inst.(Closer); ok {
+			c.Close()
+		}
+		if bl.tlsReload != nil {
+			bl.tlsReload.Close()
+		}
+		if closeSocket {
+			bl.acc.close()
+		}
+		return nil
+	}
 	switch {
 	case bl.tcp != nil:
 		bl.tcp.shutdown(ctx)
@@ -1539,11 +1546,6 @@ func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocke
 		}
 	case bl.ssh != nil:
 		bl.ssh.shutdown(ctx)
-	case bl.syslog != nil:
-		bl.syslog.shutdown(ctx)
-		if bl.tlsReload != nil {
-			bl.tlsReload.Close()
-		}
 	case bl.ftp != nil:
 		bl.ftp.shutdown(ctx)
 		if bl.tlsReload != nil {

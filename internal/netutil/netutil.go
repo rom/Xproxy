@@ -218,3 +218,24 @@ func MediaType(value string) string {
 	}
 	return strings.ToLower(strings.TrimSpace(strings.SplitN(value, ";", 2)[0]))
 }
+
+// AddrOf is the address part of a "host:port", or the zero Addr when
+// there is not one. Listener kinds key bans, rate limits and policy on
+// it, so a value that fails to parse has to be invalid rather than
+// something that compares equal to another client's.
+//
+// The v4-mapped form is unmapped, so ::ffff:198.51.100.9 and
+// 198.51.100.9 are the one client they are. A zone is kept: fe80::1%eth0
+// and fe80::1%eth1 are different interfaces, and dropping the zone would
+// put two clients in one bucket.
+func AddrOf(hostport string) netip.Addr {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = hostport
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return a.Unmap()
+}

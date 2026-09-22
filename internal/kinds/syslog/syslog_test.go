@@ -1,4 +1,4 @@
-package proxy
+package syslog_test
 
 import (
 	"bufio"
@@ -12,7 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/proxytest"
 	"github.com/rom/xproxy/internal/testutil"
+
+	_ "github.com/rom/xproxy/internal/kinds/syslog"
 )
 
 // collector is a stand-in for a syslog collector: it reads
@@ -97,7 +101,7 @@ func (c *collector) waitFor(t *testing.T, n int) []string {
 	return nil
 }
 
-func syslogRelay(t *testing.T, extra string) (*Server, string, *collector) {
+func syslogRelay(t *testing.T, extra string) (*proxy.Server, string, *collector) {
 	t.Helper()
 	col := startCollector(t)
 	yaml := fmt.Sprintf(`
@@ -116,7 +120,7 @@ upstreams:
   - name: collectors
     endpoints: [{address: %s}]
 `, extra, col.addr())
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	return s, s.Addrs()["logs"], col
 }
 
@@ -233,7 +237,7 @@ func TestSyslogFilters(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("%d records arrived, want 2: %v", len(got), got)
 	}
-	if sn := s.stats.snapshot(); sn.SyslogDropped != 2 {
+	if sn := s.Stats(); sn.SyslogDropped != 2 {
 		t.Errorf("dropped counted: %d", sn.SyslogDropped)
 	}
 }
@@ -252,7 +256,7 @@ func TestSyslogRefusesMalformed(t *testing.T) {
 	if got := col.seen(); len(got) != 1 || !strings.Contains(got[0], "fine") {
 		t.Fatalf("records: %v", got)
 	}
-	if sn := s.stats.snapshot(); sn.SyslogRefused < 2 {
+	if sn := s.Stats(); sn.SyslogRefused < 2 {
 		t.Errorf("refusals counted: %d", sn.SyslogRefused)
 	}
 }
@@ -283,7 +287,7 @@ func TestSyslogSenderPolicy(t *testing.T) {
 	if got := col.seen(); len(got) != 0 {
 		t.Fatalf("a refused sender's records arrived: %v", got)
 	}
-	if sn := s.stats.snapshot(); sn.SyslogRefused == 0 {
+	if sn := s.Stats(); sn.SyslogRefused == 0 {
 		t.Error("the refusal was not counted")
 	}
 }
@@ -300,7 +304,7 @@ func TestSyslogOversize(t *testing.T) {
 	if len(got) != 1 || !strings.Contains(got[0], "after the long one") {
 		t.Fatalf("records: %v", got)
 	}
-	if sn := s.stats.snapshot(); sn.SyslogRefused == 0 {
+	if sn := s.Stats(); sn.SyslogRefused == 0 {
 		t.Error("the oversize message was not counted")
 	}
 }
@@ -320,7 +324,7 @@ func TestSyslogRateLimit(t *testing.T) {
 	if got := col.seen(); len(got) > 12 {
 		t.Fatalf("%d records got through a limit of 5 a second", len(got))
 	}
-	if sn := s.stats.snapshot(); sn.SyslogRateLimited == 0 {
+	if sn := s.Stats(); sn.SyslogRateLimited == 0 {
 		t.Error("nothing was rate limited")
 	}
 }
@@ -383,7 +387,7 @@ upstreams:
   - name: collectors
     endpoints: [{address: %s}]
 `, ca.Path, col.addr())
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	addr := s.Addrs()["upgrade"]
 
 	// A plain TCP sender, RFC 3164, the oldest thing in the estate.
@@ -418,7 +422,7 @@ upstreams:
 	if !sawUDP {
 		t.Error("the UDP sender's record did not arrive")
 	}
-	if sn := s.stats.snapshot(); sn.SyslogForwarded < 2 {
+	if sn := s.Stats(); sn.SyslogForwarded < 2 {
 		t.Errorf("forwarded: %d", sn.SyslogForwarded)
 	}
 }
@@ -443,7 +447,7 @@ upstreams:
   - name: collectors
     endpoints: [{address: %s}]
 `, col.addr())
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	uc, err := net.Dial("udp", s.Addrs()["logs"])
 	if err != nil {
 		t.Fatal(err)
@@ -456,7 +460,7 @@ upstreams:
 	if got := col.seen(); len(got) != 0 {
 		t.Fatalf("a refused sender's datagram arrived: %v", got)
 	}
-	if sn := s.stats.snapshot(); sn.SyslogRefused == 0 {
+	if sn := s.Stats(); sn.SyslogRefused == 0 {
 		t.Error("the refusal was not counted")
 	}
 }

@@ -25,6 +25,7 @@ import (
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds
 	"github.com/rom/xproxy/internal/fleet"
 	"github.com/rom/xproxy/internal/ingress"
+	_ "github.com/rom/xproxy/internal/kinds/syslog" // listener kind: syslog
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/mgmt"

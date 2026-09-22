@@ -5,6 +5,7 @@ import (
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/ftp"
+	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/syslog"
 	"github.com/rom/xproxy/internal/tmpl"
@@ -623,7 +624,7 @@ func (v *validator) server(s *Server) {
 				v.syslogListener(p+".syslog", ln.Syslog, ln.TLS != nil)
 			}
 		default:
-			v.errf("%s.kind: must be http, tcp, forward, dns, smtp, mqtt, ssh, ftp or syslog", p)
+			v.errf("%s.kind: must be one of %s", p, strings.Join(listener.Kinds(), ", "))
 		}
 		if ln.Syslog != nil && ln.Kind != "syslog" {
 			v.errf("%s.syslog: set on a %s listener (kind: syslog)", p, ln.Kind)
