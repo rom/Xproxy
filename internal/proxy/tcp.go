@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"net"
 	"net/netip"
@@ -282,8 +281,8 @@ func (t *tcpServer) spliceScanned(client, up net.Conn, ip netip.Addr, sni string
 	if t.yara == nil {
 		return splice(client, up, t.cfg.TCP.IdleTimeout.D())
 	}
-	toUpstream := t.yara.stream("client")
-	toClient := t.yara.stream("upstream")
+	toUpstream := t.yara.Stream("client")
+	toClient := t.yara.Stream("upstream")
 	var closed atomic.Bool
 	watch := func(s *yaraStream) func([]byte) bool {
 		if s == nil {
@@ -291,7 +290,7 @@ func (t *tcpServer) spliceScanned(client, up net.Conn, ip netip.Addr, sni string
 		}
 		return func(b []byte) bool {
 			t.s.stats.YARAScanned.Add(uint64(len(b))) //nolint:gosec // non-negative
-			if !s.feed(b) {
+			if !s.Feed(b) {
 				return true
 			}
 			if !t.yaraReport(s, ip, sni) {
@@ -362,32 +361,10 @@ func spliceWatch(client, up net.Conn, idle time.Duration, toUpstream, toClient f
 	return in, out
 }
 
-// proxyV2Header builds a PROXY protocol version 2 header for a TCP
-// connection (client and proxy side addresses).
+// proxyV2Header is netutil.ProxyV2Header under the name the engine has
+// always used for it.
 func proxyV2Header(remote, local net.Addr) []byte {
-	sig := []byte{0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a}
-	r, rok := remote.(*net.TCPAddr)
-	l, lok := local.(*net.TCPAddr)
-	if !rok || !lok {
-		return append(sig, 0x20, 0x00, 0x00, 0x00) // LOCAL command, unspecified
-	}
-	hdr := append([]byte{}, sig...)
-	hdr = append(hdr, 0x21) // version 2, PROXY command
-	rip, lip := r.IP.To4(), l.IP.To4()
-	if rip != nil && lip != nil {
-		hdr = append(hdr, 0x11) // TCP over IPv4
-		hdr = binary.BigEndian.AppendUint16(hdr, 12)
-		hdr = append(hdr, rip...)
-		hdr = append(hdr, lip...)
-	} else {
-		hdr = append(hdr, 0x21) // TCP over IPv6
-		hdr = binary.BigEndian.AppendUint16(hdr, 36)
-		hdr = append(hdr, r.IP.To16()...)
-		hdr = append(hdr, l.IP.To16()...)
-	}
-	hdr = binary.BigEndian.AppendUint16(hdr, uint16(r.Port)) //nolint:gosec // port range
-	hdr = binary.BigEndian.AppendUint16(hdr, uint16(l.Port)) //nolint:gosec // port range
-	return hdr
+	return netutil.ProxyV2Header(remote, local)
 }
 
 // addrOf parses the host part of a host:port string.

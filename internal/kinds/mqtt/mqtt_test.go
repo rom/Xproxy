@@ -1,11 +1,15 @@
-package proxy
+package mqtt_test
 
 import (
+	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/proxytest"
+
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	_ "github.com/rom/xproxy/internal/kinds/mqtt"
 	"io"
 	"net"
 	"sync"
@@ -251,9 +255,9 @@ upstreams:
     endpoints: [{address: %s}]
 `
 
-func mqttServerFor(t *testing.T, b *fakeBroker, extra string) (*Server, string) {
+func mqttServerFor(t *testing.T, b *fakeBroker, extra string) (*proxy.Server, string) {
 	t.Helper()
-	s, _ := startServer(t, fmt.Sprintf(mqttYAML, extra, b.addr()))
+	s := proxytest.Start(t, fmt.Sprintf(mqttYAML, extra, b.addr()))
 	return s, s.Addrs()["iot"]
 }
 
@@ -287,7 +291,7 @@ func TestMQTTRelay(t *testing.T) {
 	if !bytes.Contains(pub.Body, []byte("21.5C")) {
 		t.Fatalf("the payload was rewritten: %q", pub.Body)
 	}
-	sn := s.stats.snapshot()
+	sn := s.Stats()
 	if sn.MQTTSessions != 1 || sn.MQTTPublished != 1 || sn.MQTTSubscribed != 1 {
 		t.Fatalf("counters: %+v", struct{ S, P, Sub uint64 }{sn.MQTTSessions, sn.MQTTPublished, sn.MQTTSubscribed})
 	}
@@ -507,7 +511,7 @@ func TestMQTTMalformed(t *testing.T) {
 	if _, ok := b.saw(mqtt.PUBLISH); ok {
 		t.Fatal("the malformed packet reached the broker")
 	}
-	if sn := s.stats.snapshot(); sn.MQTTProtocolErrors == 0 {
+	if sn := s.Stats(); sn.MQTTProtocolErrors == 0 {
 		t.Fatal("the violation was not counted")
 	}
 }
@@ -525,7 +529,7 @@ func TestMQTTBrokerGarbage(t *testing.T) {
 		// Any close is fine; what matters is that nothing was relayed.
 		_ = err
 	}
-	if sn := s.stats.snapshot(); sn.MQTTProtocolErrors == 0 {
+	if sn := s.Stats(); sn.MQTTProtocolErrors == 0 {
 		t.Fatal("the violation was not counted")
 	}
 }
@@ -540,7 +544,7 @@ func TestMQTTAllowClients(t *testing.T) {
 	if len(b.packets()) != 0 {
 		t.Fatal("a denied client reached the broker")
 	}
-	if sn := s.stats.snapshot(); sn.MQTTRejected == 0 {
+	if sn := s.Stats(); sn.MQTTRejected == 0 {
 		t.Fatal("the refusal was not counted")
 	}
 }
@@ -591,7 +595,7 @@ upstreams:
   - name: broker
     endpoints: [{address: %s}]
 `, cert, key, ca.Path, ln.Addr().String())
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 
 	pool := x509.NewCertPool()
 	pool.AddCert(ca.Cert)

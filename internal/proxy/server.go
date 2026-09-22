@@ -131,10 +131,7 @@ type boundListener struct {
 	forward *forwardServer // kind: forward listeners
 	dns     *dns.Server    // kind: dns listeners
 	doq     *dns.DoQServer // DNS over QUIC on a dns listener
-	smtp    *smtpServer    // kind: smtp listeners
-	mqtt    *mqttServer    // kind: mqtt listeners
 	ssh     *sshServer     // kind: ssh listeners
-	ftp     *ftpServer     // kind: ftp listeners
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -767,93 +764,6 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 		bl.ssh = h
 		return bl, nil
 	}
-	if lc.Kind == "mqtt" {
-		// MQTT has no in-band upgrade, so implicit TLS is the only
-		// mode; the session still owns the handshake, which keeps its
-		// deadline and its logging with the rest of the session.
-		var tc *tls.Config
-		if lc.TLS != nil {
-			c, rl, err := tlsconf.Server(lc.TLS, nil)
-			if err != nil {
-				_ = fr.Close()
-				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-			}
-			s.tickets.Attach(c)
-			rl.Fingerprints = s.fingerprints
-			rl.Refuse = s.refuseHandshake
-			rl.StartStapling(s.logs.Error)
-			bl.tlsReload = rl
-			tc = c
-		}
-		q, err := newMQTTServer(s, lc, bl.ln, tc)
-		if err != nil {
-			_ = fr.Close()
-			if bl.tlsReload != nil {
-				bl.tlsReload.Close()
-			}
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.mqtt = q
-		return bl, nil
-	}
-	if lc.Kind == "ftp" {
-		// Like SMTP, the listener is not wrapped even for implicit
-		// mode: AUTH TLS has to read cleartext first, so the session
-		// owns the handshake and its deadline.
-		var tc *tls.Config
-		if lc.TLS != nil {
-			c, rl, err := tlsconf.Server(lc.TLS, nil)
-			if err != nil {
-				_ = fr.Close()
-				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-			}
-			s.tickets.Attach(c)
-			rl.Fingerprints = s.fingerprints
-			rl.Refuse = s.refuseHandshake
-			rl.StartStapling(s.logs.Error)
-			bl.tlsReload = rl
-			tc = c
-		}
-		f, err := newFTPServer(s, lc, bl.ln, tc)
-		if err != nil {
-			_ = fr.Close()
-			if bl.tlsReload != nil {
-				bl.tlsReload.Close()
-			}
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.ftp = f
-		return bl, nil
-	}
-	if lc.Kind == "smtp" {
-		// The listener is not wrapped in a TLS listener even for
-		// implicit mode: STARTTLS has to read cleartext first, so the
-		// session decides when the handshake happens.
-		var tc *tls.Config
-		if lc.TLS != nil {
-			c, rl, err := tlsconf.Server(lc.TLS, nil)
-			if err != nil {
-				_ = fr.Close()
-				return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-			}
-			s.tickets.Attach(c)
-			rl.Fingerprints = s.fingerprints
-			rl.Refuse = s.refuseHandshake
-			rl.StartStapling(s.logs.Error)
-			bl.tlsReload = rl
-			tc = c
-		}
-		m, err := newSMTPServer(s, lc, bl.ln, tc)
-		if err != nil {
-			_ = fr.Close()
-			if bl.tlsReload != nil {
-				bl.tlsReload.Close()
-			}
-			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-		}
-		bl.smtp = m
-		return bl, nil
-	}
 	if lc.Kind == "dns" && lc.TLS != nil {
 		// Encrypted: DNS over TLS and DNS over HTTPS on the TCP port, no
 		// plain UDP.
@@ -1048,20 +958,8 @@ func (s *Server) serve(bl *boundListener) {
 		bl.dns.Serve()
 		return
 	}
-	if bl.smtp != nil {
-		bl.smtp.serve()
-		return
-	}
-	if bl.mqtt != nil {
-		bl.mqtt.serve()
-		return
-	}
 	if bl.ssh != nil {
 		bl.ssh.serve()
-		return
-	}
-	if bl.ftp != nil {
-		bl.ftp.serve()
 		return
 	}
 	if bl.cfg.TLS != nil {
@@ -1534,23 +1432,8 @@ func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocke
 		if bl.tlsReload != nil {
 			bl.tlsReload.Close()
 		}
-	case bl.smtp != nil:
-		bl.smtp.shutdown(ctx)
-		if bl.tlsReload != nil {
-			bl.tlsReload.Close()
-		}
-	case bl.mqtt != nil:
-		bl.mqtt.shutdown(ctx)
-		if bl.tlsReload != nil {
-			bl.tlsReload.Close()
-		}
 	case bl.ssh != nil:
 		bl.ssh.shutdown(ctx)
-	case bl.ftp != nil:
-		bl.ftp.shutdown(ctx)
-		if bl.tlsReload != nil {
-			bl.tlsReload.Close()
-		}
 	default:
 		err = bl.httpSrv.Shutdown(ctx)
 		if bl.tlsReload != nil {

@@ -1,4 +1,4 @@
-package proxy
+package smtp
 
 import (
 	"context"
@@ -14,18 +14,20 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
-	"github.com/rom/xproxy/internal/smtp"
+	wire "github.com/rom/xproxy/internal/smtp"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
-// smtpServer serves a kind: smtp listener. It speaks one SMTP session to
+// server serves a kind: smtp listener. It speaks one SMTP session to
 // the client and a second one to the upstream, and decides for itself
 // where every command and every message ends, so the two ends can never
 // disagree about it.
-type smtpServer struct {
-	s      *Server
+type server struct {
+	engine proxy.Host
 	cfg    config.Listener
 	m      *config.SMTPListener
 	ln     net.Listener
@@ -44,12 +46,12 @@ type smtpServer struct {
 	done chan struct{}
 }
 
-// newSMTPServer builds the listener's static policy. The TLS
+// newServer builds the listener's static policy. The TLS
 // configuration is the listener's own, so certificates reload with
 // everything else.
-func newSMTPServer(s *Server, cfg config.Listener, ln net.Listener, tc *tls.Config) (*smtpServer, error) {
+func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Config) (*server, error) {
 	m := cfg.SMTP
-	t := &smtpServer{s: s, cfg: cfg, m: m, ln: ln, tlsCfg: tc,
+	t := &server{engine: engine, cfg: cfg, m: m, ln: ln, tlsCfg: tc,
 		verbs: map[string]bool{}, hidden: map[string]bool{},
 		cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
 	for _, c := range m.Commands {
@@ -86,7 +88,7 @@ func newSMTPServer(s *Server, cfg config.Listener, ln net.Listener, tc *tls.Conf
 	return t, nil
 }
 
-func (t *smtpServer) serve() {
+func (t *server) serve() {
 	for {
 		c, err := t.ln.Accept()
 		if err != nil {
@@ -108,7 +110,7 @@ func (t *smtpServer) serve() {
 		}
 		if t.open.Add(1) > int64(t.m.MaxConnections) {
 			t.open.Add(-1)
-			t.s.stats.SMTPRejected.Add(1)
+			t.engine.Counters().SMTPRejected.Add(1)
 			// 421 is the one refusal a mail client retries later
 			// instead of bouncing the message.
 			_, _ = c.Write([]byte("421 4.3.2 too many connections, try again later\r\n"))
@@ -130,7 +132,7 @@ func (t *smtpServer) serve() {
 	}
 }
 
-func (t *smtpServer) admit(c net.Conn) bool {
+func (t *server) admit(c net.Conn) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	select {
@@ -143,13 +145,13 @@ func (t *smtpServer) admit(c net.Conn) bool {
 	return true
 }
 
-func (t *smtpServer) untrack(c net.Conn) {
+func (t *server) untrack(c net.Conn) {
 	t.mu.Lock()
 	delete(t.cons, c)
 	t.mu.Unlock()
 }
 
-func (t *smtpServer) shutdown(ctx context.Context) {
+func (t *server) shutdown(ctx context.Context) {
 	t.once.Do(func() {
 		t.mu.Lock()
 		close(t.done)
@@ -170,14 +172,14 @@ func (t *smtpServer) shutdown(ctx context.Context) {
 	}
 }
 
-// smtpSession is one client connection and the upstream connection that
+// session is one client connection and the upstream connection that
 // serves it.
-type smtpSession struct {
-	t      *smtpServer
+type session struct {
+	t      *server
 	client net.Conn
-	cr     *smtp.Reader
+	cr     *wire.Reader
 	up     net.Conn
-	ur     *smtp.Reader
+	ur     *wire.Reader
 	pool   *upstream.Pool
 	ep     *upstream.Endpoint
 
@@ -195,14 +197,14 @@ type smtpSession struct {
 	closeSess bool // end the session after the current reply
 }
 
-func (t *smtpServer) handle(client net.Conn) {
-	s := t.s
+func (t *server) handle(client net.Conn) {
+	s := t.engine
 	start := time.Now()
-	s.stats.SMTPSessions.Add(1)
-	s.stats.SMTPSessionsOpen.Add(1)
-	defer s.stats.SMTPSessionsOpen.Add(-1)
-	ip := addrOf(client.RemoteAddr().String())
-	se := &smtpSession{t: t, client: client, ip: ip, deadline: start.Add(t.m.SessionTimeout.D())}
+	s.Counters().SMTPSessions.Add(1)
+	s.Counters().SMTPSessionsOpen.Add(1)
+	defer s.Counters().SMTPSessionsOpen.Add(-1)
+	ip := netutil.AddrOf(client.RemoteAddr().String())
+	se := &session{t: t, client: client, ip: ip, deadline: start.Add(t.m.SessionTimeout.D())}
 	defer func() {
 		if se.up != nil {
 			_ = se.up.Close()
@@ -214,7 +216,7 @@ func (t *smtpServer) handle(client net.Conn) {
 	}()
 
 	if !t.allowed(ip) {
-		s.stats.SMTPRejected.Add(1)
+		s.Counters().SMTPRejected.Add(1)
 		_, _ = client.Write([]byte("554 5.7.1 access denied\r\n"))
 		t.deny(ip, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
@@ -231,33 +233,33 @@ func (t *smtpServer) handle(client net.Conn) {
 		se.client = tc
 		se.secure = true
 	}
-	se.cr = smtp.NewReader(se.client, t.m.MaxCommandLine)
+	se.cr = wire.NewReader(se.client, t.m.MaxCommandLine)
 	se.cr.AllowBareLF = t.m.BareNewlines == "convert"
 
 	greeting, err := se.connect()
 	if err != nil {
-		s.stats.SMTPRefused.Add(1)
+		s.Counters().SMTPRefused.Add(1)
 		_, _ = se.client.Write([]byte("421 4.4.1 upstream unavailable\r\n"))
-		s.logs.Error.Warn("smtp upstream unavailable", "listener", t.cfg.Name, "err", err.Error())
+		s.Logs().Error.Warn("smtp upstream unavailable", "listener", t.cfg.Name, "err", err.Error())
 		t.log(se, start, "upstream_unavailable")
 		return
 	}
 	if t.m.Banner != "" {
-		greeting = smtp.Reply{Code: 220, Lines: []string{t.m.Banner}}
+		greeting = wire.Reply{Code: 220, Lines: []string{t.m.Banner}}
 	}
 	if err := se.toClient(greeting); err != nil {
 		t.log(se, start, "write_error")
 		return
 	}
 	reason := se.loop()
-	s.stats.SMTPBytesIn.Add(uint64(se.bytesIn)) //nolint:gosec // non-negative
+	s.Counters().SMTPBytesIn.Add(uint64(se.bytesIn)) //nolint:gosec // non-negative
 	t.log(se, start, reason)
 }
 
 // allowed applies allow_clients. An empty list allows everything, which
 // is what an inbound mail listener wants and what a submission listener
 // should not have.
-func (t *smtpServer) allowed(ip netip.Addr) bool {
+func (t *server) allowed(ip netip.Addr) bool {
 	if len(t.allow) == 0 {
 		return true
 	}
@@ -272,18 +274,18 @@ func (t *smtpServer) allowed(ip netip.Addr) bool {
 	return false
 }
 
-func (t *smtpServer) deny(ip netip.Addr, what, detail string) {
+func (t *server) deny(ip netip.Addr, what, detail string) {
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "smtp"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
 	}
-	t.s.logs.SecurityEvent(context.Background(), "deny", "smtp_"+what, attrs...)
-	if bl := t.s.bans.Load(); bl != nil && ip.IsValid() {
+	t.engine.Logs().SecurityEvent(context.Background(), "deny", "smtp_"+what, attrs...)
+	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "smtp_denied")
 	}
 }
 
-func (t *smtpServer) log(se *smtpSession, start time.Time, reason string) {
+func (t *server) log(se *session, start time.Time, reason string) {
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "tls", se.secure,
 		"messages", se.messages, "bytes_in", se.bytesIn, "refused", se.errors,
 		"duration_ms", float64(time.Since(start).Microseconds()) / 1000}
@@ -293,15 +295,15 @@ func (t *smtpServer) log(se *smtpSession, start time.Time, reason string) {
 	if reason != "" {
 		attrs = append(attrs, "closed", reason)
 	}
-	t.s.logs.Access.Info("smtp", attrs...)
+	t.engine.Logs().Access.Info("smtp", attrs...)
 }
 
 // connect opens the upstream session and returns its greeting.
-func (se *smtpSession) connect() (smtp.Reply, error) {
+func (se *session) connect() (wire.Reply, error) {
 	t := se.t
-	pool := t.s.rt.Load().pools[t.m.Upstream]
+	pool := t.engine.Pool(t.m.Upstream)
 	if pool == nil {
-		return smtp.Reply{}, fmt.Errorf("upstream %q has no pool", t.m.Upstream)
+		return wire.Reply{}, fmt.Errorf("upstream %q has no pool", t.m.Upstream)
 	}
 	se.pool = pool
 	tried := map[*upstream.Endpoint]bool{}
@@ -318,58 +320,58 @@ func (se *smtpSession) connect() (smtp.Reply, error) {
 		pool.Begin(e)
 		if err != nil {
 			pool.End(e, true, 0)
-			t.s.logs.Error.Warn("smtp upstream dial failed", "listener", t.cfg.Name, "endpoint", e.Address, "err", err.Error())
+			t.engine.Logs().Error.Warn("smtp upstream dial failed", "listener", t.cfg.Name, "endpoint", e.Address, "err", err.Error())
 			continue
 		}
 		conn, ep = c, e
 		break
 	}
 	if conn == nil {
-		return smtp.Reply{}, errors.New("no reachable endpoint")
+		return wire.Reply{}, errors.New("no reachable endpoint")
 	}
 	se.up, se.ep = conn, ep
 	// Anything that goes wrong from here until the upstream session is
 	// up is the endpoint's to answer for.
 	se.upFailed = true
 	if t.m.ProxyProtocol {
-		if _, err := se.up.Write(proxyV2Header(se.client.RemoteAddr(), se.client.LocalAddr())); err != nil {
-			return smtp.Reply{}, err
+		if _, err := se.up.Write(netutil.ProxyV2Header(se.client.RemoteAddr(), se.client.LocalAddr())); err != nil {
+			return wire.Reply{}, err
 		}
 	}
 	if t.m.UpstreamTLSMode == "implicit" {
 		tc := tls.Client(se.up, se.upstreamTLS(ep))
 		if err := tc.HandshakeContext(context.Background()); err != nil {
-			return smtp.Reply{}, err
+			return wire.Reply{}, err
 		}
 		se.up = tc
 	}
-	se.ur = smtp.NewReader(se.up, t.m.MaxCommandLine)
+	se.ur = wire.NewReader(se.up, t.m.MaxCommandLine)
 	greeting, err := se.readUp()
 	if err != nil {
-		return smtp.Reply{}, err
+		return wire.Reply{}, err
 	}
 	if greeting.Code != 220 {
-		return smtp.Reply{}, fmt.Errorf("upstream greeting was %d", greeting.Code)
+		return wire.Reply{}, fmt.Errorf("upstream greeting was %d", greeting.Code)
 	}
 	caps, err := se.upEHLO()
 	if err != nil {
-		return smtp.Reply{}, err
+		return wire.Reply{}, err
 	}
 	if t.m.UpstreamTLSMode == "starttls" {
-		if _, ok := smtp.Capability(caps, "STARTTLS"); !ok {
-			return smtp.Reply{}, errors.New("upstream does not offer STARTTLS and upstream_tls_mode is starttls")
+		if _, ok := wire.Capability(caps, "STARTTLS"); !ok {
+			return wire.Reply{}, errors.New("upstream does not offer STARTTLS and upstream_tls_mode is starttls")
 		}
 		if err := se.upstreamSTARTTLS(ep); err != nil {
-			return smtp.Reply{}, err
+			return wire.Reply{}, err
 		}
 		if caps, err = se.upEHLO(); err != nil {
-			return smtp.Reply{}, err
+			return wire.Reply{}, err
 		}
 	}
 	if t.m.XClient {
-		if _, ok := smtp.Capability(caps, "XCLIENT"); ok {
+		if _, ok := wire.Capability(caps, "XCLIENT"); ok {
 			if err := se.sendXClient(); err != nil {
-				return smtp.Reply{}, err
+				return wire.Reply{}, err
 			}
 		}
 	}
@@ -380,7 +382,7 @@ func (se *smtpSession) connect() (smtp.Reply, error) {
 // upstreamTLS fills in the server name from the endpoint when the
 // configuration does not pin one, so verification has something to
 // check against.
-func (se *smtpSession) upstreamTLS(ep *upstream.Endpoint) *tls.Config {
+func (se *session) upstreamTLS(ep *upstream.Endpoint) *tls.Config {
 	c := se.t.upTLS.Clone()
 	if c.ServerName == "" && !c.InsecureSkipVerify {
 		host, _, err := net.SplitHostPort(ep.Address)
@@ -398,7 +400,7 @@ func (se *smtpSession) upstreamTLS(ep *upstream.Endpoint) *tls.Config {
 // handshake was coming, and treating them as part of the TLS stream is
 // how a plaintext command gets smuggled into an encrypted session
 // (the STARTTLS injection of CVE-2011-0411).
-func (se *smtpSession) upstreamSTARTTLS(ep *upstream.Endpoint) error {
+func (se *session) upstreamSTARTTLS(ep *upstream.Endpoint) error {
 	if err := se.writeUp("STARTTLS"); err != nil {
 		return err
 	}
@@ -417,13 +419,13 @@ func (se *smtpSession) upstreamSTARTTLS(ep *upstream.Endpoint) error {
 		return err
 	}
 	se.up = tc
-	se.ur = smtp.NewReader(se.up, se.t.m.MaxCommandLine)
+	se.ur = wire.NewReader(se.up, se.t.m.MaxCommandLine)
 	return nil
 }
 
 // sendXClient tells the upstream which client this session is for, so
 // its own logs and policies see the real address instead of the proxy's.
-func (se *smtpSession) sendXClient() error {
+func (se *session) sendXClient() error {
 	port := 0
 	if a, ok := se.client.RemoteAddr().(*net.TCPAddr); ok {
 		port = a.Port
@@ -448,35 +450,35 @@ func (se *smtpSession) sendXClient() error {
 	return nil
 }
 
-func (se *smtpSession) upEHLO() (smtp.Reply, error) {
+func (se *session) upEHLO() (wire.Reply, error) {
 	if err := se.writeUp("EHLO " + se.t.host); err != nil {
-		return smtp.Reply{}, err
+		return wire.Reply{}, err
 	}
 	rep, err := se.readUp()
 	if err != nil {
-		return smtp.Reply{}, err
+		return wire.Reply{}, err
 	}
 	if rep.Code != 250 {
-		return smtp.Reply{}, fmt.Errorf("upstream refused EHLO with %d", rep.Code)
+		return wire.Reply{}, fmt.Errorf("upstream refused EHLO with %d", rep.Code)
 	}
 	return rep, nil
 }
 
-func (se *smtpSession) writeUp(line string) error {
+func (se *session) writeUp(line string) error {
 	_ = se.up.SetWriteDeadline(time.Now().Add(se.t.m.ReadTimeout.D()))
 	_, err := se.up.Write([]byte(line + "\r\n"))
 	return err
 }
 
-func (se *smtpSession) readUp() (smtp.Reply, error) {
+func (se *session) readUp() (wire.Reply, error) {
 	_ = se.up.SetReadDeadline(se.readBy())
-	return smtp.ReadReply(se.ur)
+	return wire.ReadReply(se.ur)
 }
 
 // readBy is the earlier of the per-command timeout and what is left of
 // the session timeout, so a client that sends one legal command every
 // few minutes still ends.
-func (se *smtpSession) readBy() time.Time {
+func (se *session) readBy() time.Time {
 	d := time.Now().Add(se.t.m.ReadTimeout.D())
 	if d.After(se.deadline) {
 		return se.deadline
@@ -484,7 +486,7 @@ func (se *smtpSession) readBy() time.Time {
 	return d
 }
 
-func (se *smtpSession) toClient(rep smtp.Reply) error {
+func (se *session) toClient(rep wire.Reply) error {
 	_ = se.client.SetWriteDeadline(time.Now().Add(se.t.m.ReadTimeout.D()))
 	_, err := se.client.Write(rep.Format())
 	return err
@@ -492,49 +494,49 @@ func (se *smtpSession) toClient(rep smtp.Reply) error {
 
 // refuse answers the client without asking the upstream, and counts
 // towards max_errors.
-func (se *smtpSession) refuse(code int, text string) error {
+func (se *session) refuse(code int, text string) error {
 	se.errors++
-	se.t.s.stats.SMTPRefused.Add(1)
+	se.t.engine.Counters().SMTPRefused.Add(1)
 	if se.errors >= se.t.m.MaxErrors {
 		se.closeSess = true
-		_ = se.toClient(smtp.Reply{Code: code, Lines: []string{text}})
-		return se.toClient(smtp.Reply{Code: 421, Lines: []string{"4.7.0 too many errors, closing connection"}})
+		_ = se.toClient(wire.Reply{Code: code, Lines: []string{text}})
+		return se.toClient(wire.Reply{Code: 421, Lines: []string{"4.7.0 too many errors, closing connection"}})
 	}
-	return se.toClient(smtp.Reply{Code: code, Lines: []string{text}})
+	return se.toClient(wire.Reply{Code: code, Lines: []string{text}})
 }
 
 // loop reads client commands until the session ends, and returns the
 // reason for the access log.
-func (se *smtpSession) loop() string {
+func (se *session) loop() string {
 	t := se.t
 	for {
 		if time.Now().After(se.deadline) {
-			_ = se.toClient(smtp.Reply{Code: 421, Lines: []string{"4.4.2 session timed out"}})
+			_ = se.toClient(wire.Reply{Code: 421, Lines: []string{"4.4.2 session timed out"}})
 			return "session_timeout"
 		}
 		_ = se.client.SetReadDeadline(se.readBy())
 		line, err := se.cr.ReadLine()
 		if err != nil {
 			switch {
-			case errors.Is(err, smtp.ErrLineTooLong):
-				t.s.stats.SMTPProtocolErrors.Add(1)
-				_ = se.toClient(smtp.Reply{Code: 500, Lines: []string{"5.5.6 line too long"}})
+			case errors.Is(err, wire.ErrLineTooLong):
+				t.engine.Counters().SMTPProtocolErrors.Add(1)
+				_ = se.toClient(wire.Reply{Code: 500, Lines: []string{"5.5.6 line too long"}})
 				t.deny(se.ip, "line_too_long", "")
 				return "line_too_long"
-			case errors.Is(err, smtp.ErrBareNewline), errors.Is(err, smtp.ErrBareCR):
+			case errors.Is(err, wire.ErrBareNewline), errors.Is(err, wire.ErrBareCR):
 				// A line that ends differently for the proxy than for
 				// the next hop is the whole of SMTP smuggling. The
 				// session ends rather than guessing which reading the
 				// sender meant.
-				t.s.stats.SMTPProtocolErrors.Add(1)
-				_ = se.toClient(smtp.Reply{Code: 500, Lines: []string{"5.5.2 line must end with CRLF"}})
+				t.engine.Counters().SMTPProtocolErrors.Add(1)
+				_ = se.toClient(wire.Reply{Code: 500, Lines: []string{"5.5.2 line must end with CRLF"}})
 				t.deny(se.ip, "bare_newline", err.Error())
 				return "bare_newline"
 			default:
 				return "client_closed"
 			}
 		}
-		cmd, perr := smtp.ParseCommand(line)
+		cmd, perr := wire.ParseCommand(line)
 		if perr != nil {
 			if err := se.refuse(500, "5.5.2 command not recognised"); err != nil {
 				return "write_error"
@@ -559,7 +561,7 @@ func (se *smtpSession) loop() string {
 
 // command handles one client command. A non-empty reason ends the
 // session; an error means the client or upstream connection broke.
-func (se *smtpSession) command(cmd smtp.Command) (string, error) {
+func (se *session) command(cmd wire.Command) (string, error) {
 	t := se.t
 	if !t.verbs[cmd.Verb] {
 		return "", se.refuse(502, "5.5.1 command not available here")
@@ -569,7 +571,7 @@ func (se *smtpSession) command(cmd smtp.Command) (string, error) {
 		// Answered by the proxy: the upstream is told separately so it
 		// ends its own session cleanly.
 		_ = se.writeUp("QUIT")
-		_ = se.toClient(smtp.Reply{Code: 221, Lines: []string{"2.0.0 closing connection"}})
+		_ = se.toClient(wire.Reply{Code: 221, Lines: []string{"2.0.0 closing connection"}})
 		return "quit", nil
 	case "STARTTLS":
 		return se.startTLS(cmd)
@@ -592,7 +594,7 @@ func (se *smtpSession) command(cmd smtp.Command) (string, error) {
 }
 
 // relay passes a command to the upstream and its reply back, unchanged.
-func (se *smtpSession) relay(cmd smtp.Command) (string, error) {
+func (se *session) relay(cmd wire.Command) (string, error) {
 	if err := se.writeUp(cmd.Raw); err != nil {
 		return "upstream_write", nil
 	}
@@ -607,23 +609,23 @@ func (se *smtpSession) relay(cmd smtp.Command) (string, error) {
 // temporary failure for the client. A reply the proxy cannot parse is
 // never passed through: it is exactly the case where the client would
 // read something the proxy did not.
-func (se *smtpSession) upstreamFailure(err error) (string, error) {
+func (se *session) upstreamFailure(err error) (string, error) {
 	reason := "upstream_closed"
-	if errors.Is(err, smtp.ErrBadReply) || errors.Is(err, smtp.ErrTooManyReplyLines) ||
-		errors.Is(err, smtp.ErrLineTooLong) || errors.Is(err, smtp.ErrBareNewline) || errors.Is(err, smtp.ErrBareCR) {
-		se.t.s.stats.SMTPProtocolErrors.Add(1)
-		se.t.s.logs.Error.Warn("smtp upstream reply refused", "listener", se.t.cfg.Name, "err", err.Error())
+	if errors.Is(err, wire.ErrBadReply) || errors.Is(err, wire.ErrTooManyReplyLines) ||
+		errors.Is(err, wire.ErrLineTooLong) || errors.Is(err, wire.ErrBareNewline) || errors.Is(err, wire.ErrBareCR) {
+		se.t.engine.Counters().SMTPProtocolErrors.Add(1)
+		se.t.engine.Logs().Error.Warn("smtp upstream reply refused", "listener", se.t.cfg.Name, "err", err.Error())
 		reason = "upstream_protocol"
 	}
 	se.upFailed = true
-	_ = se.toClient(smtp.Reply{Code: 421, Lines: []string{"4.3.0 upstream failure"}})
+	_ = se.toClient(wire.Reply{Code: 421, Lines: []string{"4.3.0 upstream failure"}})
 	return reason, nil
 }
 
 // hello relays the greeting and rewrites the capability list: what the
 // client is told is what this proxy will actually do, not what the
 // upstream would do for somebody talking to it directly.
-func (se *smtpSession) hello(cmd smtp.Command) (string, error) {
+func (se *session) hello(cmd wire.Command) (string, error) {
 	t := se.t
 	if err := se.writeUp(cmd.Raw); err != nil {
 		return "upstream_write", nil
@@ -646,7 +648,7 @@ func (se *smtpSession) hello(cmd smtp.Command) (string, error) {
 	if t.m.MaxMessageSize > 0 {
 		add = append(add, "SIZE "+strconv.FormatInt(t.m.MaxMessageSize, 10))
 	}
-	out := smtp.FilterEHLO(rep, func(kw string) bool {
+	out := wire.FilterEHLO(rep, func(kw string) bool {
 		if t.hidden[kw] {
 			return false
 		}
@@ -663,7 +665,7 @@ func (se *smtpSession) hello(cmd smtp.Command) (string, error) {
 // before the handshake is discarded (RFC 3207 section 4.2): the
 // plaintext greeting and any authentication carry no weight inside the
 // encrypted session that follows.
-func (se *smtpSession) startTLS(smtp.Command) (string, error) {
+func (se *session) startTLS(wire.Command) (string, error) {
 	t := se.t
 	if se.secure {
 		return "", se.refuse(503, "5.5.1 TLS is already active")
@@ -676,12 +678,12 @@ func (se *smtpSession) startTLS(smtp.Command) (string, error) {
 	// and as ciphertext by the other. That is the STARTTLS injection,
 	// and the session ends on it.
 	if n := se.cr.Buffered(); n > 0 {
-		t.s.stats.SMTPProtocolErrors.Add(1)
-		_ = se.toClient(smtp.Reply{Code: 554, Lines: []string{"5.7.0 data pipelined across STARTTLS"}})
+		t.engine.Counters().SMTPProtocolErrors.Add(1)
+		_ = se.toClient(wire.Reply{Code: 554, Lines: []string{"5.7.0 data pipelined across STARTTLS"}})
 		t.deny(se.ip, "starttls_injection", strconv.Itoa(n)+" octets")
 		return "starttls_injection", nil
 	}
-	if err := se.toClient(smtp.Reply{Code: 220, Lines: []string{"2.0.0 ready to start TLS"}}); err != nil {
+	if err := se.toClient(wire.Reply{Code: 220, Lines: []string{"2.0.0 ready to start TLS"}}); err != nil {
 		return "", err
 	}
 	tc := tls.Server(se.client, t.tlsCfg)
@@ -693,9 +695,9 @@ func (se *smtpSession) startTLS(smtp.Command) (string, error) {
 	se.client = tc
 	se.secure = true
 	se.greeted, se.authed, se.inMail, se.rcpts = false, false, false, 0
-	se.cr = smtp.NewReader(se.client, t.m.MaxCommandLine)
+	se.cr = wire.NewReader(se.client, t.m.MaxCommandLine)
 	se.cr.AllowBareLF = t.m.BareNewlines == "convert"
-	t.s.stats.SMTPTLSUpgrades.Add(1)
+	t.engine.Counters().SMTPTLSUpgrades.Add(1)
 	// The upstream session is reset too, so its state cannot outlive the
 	// client state that was just discarded.
 	if err := se.writeUp("RSET"); err != nil {
@@ -710,7 +712,7 @@ func (se *smtpSession) startTLS(smtp.Command) (string, error) {
 // auth relays an authentication exchange, including its challenge and
 // response lines. Nothing from those lines is logged: they carry the
 // password.
-func (se *smtpSession) auth(cmd smtp.Command) (string, error) {
+func (se *session) auth(cmd wire.Command) (string, error) {
 	t := se.t
 	if !se.greeted {
 		return "", se.refuse(503, "5.5.1 send EHLO first")
@@ -748,11 +750,11 @@ func (se *smtpSession) auth(cmd smtp.Command) (string, error) {
 		}
 	}
 	// A server that keeps challenging is not going to stop.
-	_ = se.toClient(smtp.Reply{Code: 454, Lines: []string{"4.7.0 authentication exchange too long"}})
+	_ = se.toClient(wire.Reply{Code: 454, Lines: []string{"4.7.0 authentication exchange too long"}})
 	return "auth_loop", nil
 }
 
-func (se *smtpSession) mail(cmd smtp.Command) (string, error) {
+func (se *session) mail(cmd wire.Command) (string, error) {
 	t := se.t
 	if !se.greeted {
 		return "", se.refuse(503, "5.5.1 send EHLO first")
@@ -767,7 +769,7 @@ func (se *smtpSession) mail(cmd smtp.Command) (string, error) {
 		return "", se.refuse(503, "5.5.1 a transaction is already open")
 	}
 	if se.messages >= t.m.MaxMessages {
-		_ = se.toClient(smtp.Reply{Code: 421, Lines: []string{"4.7.0 too many messages on one connection"}})
+		_ = se.toClient(wire.Reply{Code: 421, Lines: []string{"4.7.0 too many messages on one connection"}})
 		return "max_messages", nil
 	}
 	if size, ok := smtpSizeParam(cmd.Arg); ok && t.m.MaxMessageSize > 0 && size > t.m.MaxMessageSize {
@@ -782,7 +784,7 @@ func (se *smtpSession) mail(cmd smtp.Command) (string, error) {
 	return reason, err
 }
 
-func (se *smtpSession) rcpt(cmd smtp.Command) (string, error) {
+func (se *session) rcpt(cmd wire.Command) (string, error) {
 	if !se.inMail {
 		return "", se.refuse(503, "5.5.1 send MAIL first")
 	}
@@ -799,7 +801,7 @@ func (se *smtpSession) rcpt(cmd smtp.Command) (string, error) {
 // data relays one message. The proxy reads the body itself and writes
 // every line out again, so the terminator it acted on is the terminator
 // the upstream sees.
-func (se *smtpSession) data() (string, error) {
+func (se *session) data() (string, error) {
 	t := se.t
 	if !se.inMail || se.rcpts == 0 {
 		return "", se.refuse(503, "5.5.1 send MAIL and RCPT first")
@@ -820,7 +822,7 @@ func (se *smtpSession) data() (string, error) {
 	}
 	_ = se.client.SetReadDeadline(se.deadline)
 	_ = se.up.SetWriteDeadline(se.deadline)
-	n, cerr := smtp.CopyData(se.up, se.cr, t.m.MaxTextLine, t.m.MaxMessageSize)
+	n, cerr := wire.CopyData(se.up, se.cr, t.m.MaxTextLine, t.m.MaxMessageSize)
 	se.bytesIn += n
 	se.inMail, se.rcpts = false, 0
 	if cerr != nil {
@@ -832,7 +834,7 @@ func (se *smtpSession) data() (string, error) {
 	}
 	if final.Code >= 200 && final.Code < 300 {
 		se.messages++
-		t.s.stats.SMTPMessages.Add(1)
+		t.engine.Counters().SMTPMessages.Add(1)
 	}
 	return "", se.toClient(final)
 }
@@ -842,22 +844,22 @@ func (se *smtpSession) data() (string, error) {
 // message is never delivered as a whole one: there is no way to take
 // back the lines already written, and a truncated message accepted by
 // the next hop would be worse than a refused one.
-func (se *smtpSession) dataFailed(cerr error) (string, error) {
+func (se *session) dataFailed(cerr error) (string, error) {
 	t := se.t
 	_ = se.up.Close()
 	switch {
-	case errors.Is(cerr, smtp.ErrMessageTooLarge):
-		t.s.stats.SMTPRefused.Add(1)
-		_ = se.toClient(smtp.Reply{Code: 552, Lines: []string{"5.3.4 message size exceeds " + strconv.FormatInt(t.m.MaxMessageSize, 10)}})
+	case errors.Is(cerr, wire.ErrMessageTooLarge):
+		t.engine.Counters().SMTPRefused.Add(1)
+		_ = se.toClient(wire.Reply{Code: 552, Lines: []string{"5.3.4 message size exceeds " + strconv.FormatInt(t.m.MaxMessageSize, 10)}})
 		return "message_too_large", nil
-	case errors.Is(cerr, smtp.ErrLineTooLong):
-		t.s.stats.SMTPProtocolErrors.Add(1)
-		_ = se.toClient(smtp.Reply{Code: 500, Lines: []string{"5.5.6 message line too long"}})
+	case errors.Is(cerr, wire.ErrLineTooLong):
+		t.engine.Counters().SMTPProtocolErrors.Add(1)
+		_ = se.toClient(wire.Reply{Code: 500, Lines: []string{"5.5.6 message line too long"}})
 		t.deny(se.ip, "line_too_long", "in DATA")
 		return "line_too_long", nil
-	case errors.Is(cerr, smtp.ErrBareNewline), errors.Is(cerr, smtp.ErrBareCR):
-		t.s.stats.SMTPProtocolErrors.Add(1)
-		_ = se.toClient(smtp.Reply{Code: 500, Lines: []string{"5.5.2 message line must end with CRLF"}})
+	case errors.Is(cerr, wire.ErrBareNewline), errors.Is(cerr, wire.ErrBareCR):
+		t.engine.Counters().SMTPProtocolErrors.Add(1)
+		_ = se.toClient(wire.Reply{Code: 500, Lines: []string{"5.5.2 message line must end with CRLF"}})
 		t.deny(se.ip, "smuggling", cerr.Error())
 		return "smuggling", nil
 	default:

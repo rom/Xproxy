@@ -264,8 +264,8 @@ func (f *forwardServer) relayDecrypted(client, upstream net.Conn, in *intercepto
 	ip netip.Addr, host string) (int64, int64, string) {
 	var out, back *yaraStream
 	if in.yara != nil {
-		out = in.yara.stream("client")
-		back = in.yara.stream("upstream")
+		out = in.yara.Stream("client")
+		back = in.yara.Stream("upstream")
 	}
 	type result struct {
 		n      int64
@@ -310,19 +310,19 @@ func (f *forwardServer) copyScanned(dst io.Writer, src io.Reader, scan *yaraStre
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
-			if scan.feed(buf[:n]) {
+			if scan.Feed(buf[:n]) {
 				f.s.stats.YARAMatches.Add(1)
 				names := make([]string, 0, 4)
-				for _, m := range scan.matches() {
+				for _, m := range scan.Matches() {
 					names = append(names, m.Rule)
 				}
-				f.s.logs.SecurityEvent(context.Background(), in.yara.cfg.Action, "yara_match",
+				f.s.logs.SecurityEvent(context.Background(), in.yara.Cfg.Action, "yara_match",
 					"listener", f.name, "client_ip", ip.String(), "proto", "forward_intercept",
 					"dest", host, "rules", strings.Join(names, ","))
 				if bl := f.s.bans.Load(); bl != nil && ip.IsValid() {
 					bl.Observe(ip, "yara")
 				}
-				if in.yara.cfg.Action == "close" {
+				if in.yara.Cfg.Action == "close" {
 					return total, "yara"
 				}
 			}

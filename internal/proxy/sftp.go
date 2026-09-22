@@ -18,6 +18,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sftp"
+	"github.com/rom/xproxy/internal/textsafe"
 )
 
 // sftpPolicy is the compiled form of an ssh listener's sftp section.
@@ -113,22 +114,7 @@ func (p *sftpPolicy) forSession(user, principal string) (*sftpPolicy, error) {
 // sftpNameSafe reports whether a name may be substituted into a path
 // pattern: letters, digits, and the three punctuation marks a login
 // name really uses.
-func sftpNameSafe(s string) bool {
-	if s == "" || len(s) > 64 {
-		return false
-	}
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == '-' || r == '_' || r == '.':
-		default:
-			return false
-		}
-	}
-	// A name that is only dots is "." or "..", which a pattern would
-	// read as a directory rather than as a name.
-	return strings.Trim(s, ".") != ""
-}
+func sftpNameSafe(s string) bool { return textsafe.Component(s) }
 
 // extensionAllowed applies the extension lists to one name. Every
 // extension a name carries is read, not only the last: "invoice.pdf.exe"
@@ -273,7 +259,7 @@ func (f *sftpFiles) bind(id uint32, handle string, g *yaraGuard) {
 	if len(f.open) >= f.max {
 		return
 	}
-	f.open[handle] = &sftpFile{path: path, yara: g.stream("client")}
+	f.open[handle] = &sftpFile{path: path, yara: g.Stream("client")}
 }
 
 // file returns the record for a handle, or nil when the proxy never saw
@@ -367,7 +353,7 @@ func (se *sshSession) relaySFTP(clientCh, upCh ssh.Channel, p *sftpPolicy) {
 					return
 				}
 				_ = write(clientCh, sftp.StatusPacket(req.ID, sftp.StatusPermissionDenied, "refused by policy"))
-				if reason == "yara" && p.yara != nil && p.yara.cfg.Action == "close" {
+				if reason == "yara" && p.yara != nil && p.yara.Cfg.Action == "close" {
 					// The rules said close, and on a file transfer the
 					// thing to close is the transfer: the refusal above
 					// is what the client is told, and this is what stops
@@ -437,7 +423,7 @@ func (se *sshSession) sftpWrite(p *sftpPolicy, files *sftpFiles, r sftp.Request)
 			return "max_file_bytes"
 		}
 	}
-	if f.yara != nil && f.yara.feed(r.Data) {
+	if f.yara != nil && f.yara.Feed(r.Data) {
 		se.sftpYARAReport(f)
 		return "yara"
 	}
@@ -447,7 +433,7 @@ func (se *sshSession) sftpWrite(p *sftpPolicy, files *sftpFiles, r sftp.Request)
 // sftpYARAReport records a match on one file.
 func (se *sshSession) sftpYARAReport(f *sftpFile) {
 	t := se.t
-	ms := f.yara.matches()
+	ms := f.yara.Matches()
 	names := make([]string, 0, len(ms))
 	tags := map[string]bool{}
 	for _, m := range ms {
@@ -462,7 +448,7 @@ func (se *sshSession) sftpYARAReport(f *sftpFile) {
 	}
 	sort.Strings(tagList)
 	t.s.stats.YARAMatches.Add(1)
-	t.s.logs.SecurityEvent(context.Background(), f.yara.g.cfg.Action, "yara_match",
+	t.s.logs.SecurityEvent(context.Background(), f.yara.Policy().Action, "yara_match",
 		"listener", t.cfg.Name, "client_ip", se.ip.String(), "proto", "sftp",
 		"user", trimUser(se.user), "principal", se.principal, "path", sftpClip(f.path),
 		"rules", strings.Join(names, ","), "tags", strings.Join(tagList, ","))
@@ -473,18 +459,7 @@ func (se *sshSession) sftpYARAReport(f *sftpFile) {
 
 // sftpClip bounds what a path or command contributes to a log line and
 // keeps control characters out of it.
-func sftpClip(s string) string {
-	s = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return '?'
-		}
-		return r
-	}, s)
-	if len(s) > 256 {
-		return s[:256] + "..."
-	}
-	return s
-}
+func sftpClip(s string) string { return textsafe.Clip(s, 256) }
 
 // knownHostsCallback verifies a target's host key against an OpenSSH
 // known_hosts file. The file is read once, at build time: a bastion

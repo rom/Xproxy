@@ -21,6 +21,7 @@ import (
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
@@ -314,18 +315,7 @@ func (t *sshServer) buildServerConfig() error {
 
 // trimUser bounds what a name contributes to a log line, and keeps
 // control characters out of it.
-func trimUser(u string) string {
-	u = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return '?'
-		}
-		return r
-	}, u)
-	if len(u) > 64 {
-		return u[:64] + "..."
-	}
-	return u
-}
+func trimUser(u string) string { return textsafe.Clip(u, 64) }
 
 func (t *sshServer) serve() {
 	for {

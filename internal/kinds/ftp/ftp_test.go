@@ -1,8 +1,12 @@
-package proxy
+package ftp_test
 
 import (
+	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/proxytest"
+
 	"bufio"
 	"fmt"
+	_ "github.com/rom/xproxy/internal/kinds/ftp"
 	"io"
 	"net"
 	"strings"
@@ -299,7 +303,7 @@ func (c *ftpClient) passive() string {
 
 // ftpBastion starts a proxy in front of a target FTP server, with extra
 // configuration lines indented under the ftp section.
-func ftpBastion(t *testing.T, extra string) (*Server, string, *targetFTP) {
+func ftpBastion(t *testing.T, extra string) (*proxy.Server, string, *targetFTP) {
 	t.Helper()
 	tg := startTargetFTP(t)
 	yaml := fmt.Sprintf(`
@@ -317,7 +321,7 @@ upstreams:
   - name: servers
     endpoints: [{address: %s}]
 `, extra, tg.addr())
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	return s, s.Addrs()["files"], tg
 }
 
@@ -363,7 +367,7 @@ func TestFTPPassiveIsMediated(t *testing.T) {
 	if code, _ := c.reply(); code != 226 {
 		t.Fatalf("completion was %d", code)
 	}
-	if sn := s.stats.snapshot(); sn.FTPTransfers != 1 {
+	if sn := s.Stats(); sn.FTPTransfers != 1 {
 		t.Fatalf("transfers counted: %d", sn.FTPTransfers)
 	}
 }

@@ -1,4 +1,4 @@
-package proxy
+package mqtt
 
 import (
 	"context"
@@ -16,13 +16,15 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
-	"github.com/rom/xproxy/internal/mqtt"
+	wire "github.com/rom/xproxy/internal/mqtt"
+	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
-// mqttServer serves a kind: mqtt listener: every control packet is read
+// server serves a kind: mqtt listener: every control packet is read
 // and the ones carrying a policy question are decided before they reach
 // the broker.
 //
@@ -30,8 +32,8 @@ import (
 // authorisation is per topic, and a topic is a string inside a packet.
 // Without reading the packets there is nowhere to say that a device may
 // publish its own telemetry and nothing else.
-type mqttServer struct {
-	s        *Server
+type server struct {
+	host     proxy.Host
 	cfg      config.Listener
 	m        *config.MQTTListener
 	ln       net.Listener
@@ -49,16 +51,16 @@ type mqttServer struct {
 	done chan struct{}
 }
 
-func newMQTTServer(s *Server, cfg config.Listener, ln net.Listener, tc *tls.Config) (*mqttServer, error) {
+func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Config) (*server, error) {
 	m := cfg.MQTT
-	t := &mqttServer{s: s, cfg: cfg, m: m, ln: ln, tlsCfg: tc,
+	t := &server{host: host, cfg: cfg, m: m, ln: ln, tlsCfg: tc,
 		versions: map[byte]bool{}, cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
 	for _, v := range m.Versions {
 		switch v {
 		case "3.1.1":
-			t.versions[mqtt.V311] = true
+			t.versions[wire.V311] = true
 		case "5.0":
-			t.versions[mqtt.V5] = true
+			t.versions[wire.V5] = true
 		}
 	}
 	for _, c := range m.AllowClients {
@@ -85,7 +87,7 @@ func newMQTTServer(s *Server, cfg config.Listener, ln net.Listener, tc *tls.Conf
 	return t, nil
 }
 
-func (t *mqttServer) serve() {
+func (t *server) serve() {
 	for {
 		c, err := t.ln.Accept()
 		if err != nil {
@@ -107,7 +109,7 @@ func (t *mqttServer) serve() {
 		}
 		if t.open.Add(1) > int64(t.m.MaxConnections) {
 			t.open.Add(-1)
-			t.s.stats.MQTTRejected.Add(1)
+			t.host.Counters().MQTTRejected.Add(1)
 			// MQTT has no reply before CONNECT, so the only honest
 			// answer to a connection over the bound is to close it.
 			_ = c.Close()
@@ -128,7 +130,7 @@ func (t *mqttServer) serve() {
 	}
 }
 
-func (t *mqttServer) admit(c net.Conn) bool {
+func (t *server) admit(c net.Conn) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	select {
@@ -141,13 +143,13 @@ func (t *mqttServer) admit(c net.Conn) bool {
 	return true
 }
 
-func (t *mqttServer) untrack(c net.Conn) {
+func (t *server) untrack(c net.Conn) {
 	t.mu.Lock()
 	delete(t.cons, c)
 	t.mu.Unlock()
 }
 
-func (t *mqttServer) shutdown(ctx context.Context) {
+func (t *server) shutdown(ctx context.Context) {
 	t.once.Do(func() {
 		t.mu.Lock()
 		close(t.done)
@@ -168,10 +170,10 @@ func (t *mqttServer) shutdown(ctx context.Context) {
 	}
 }
 
-// mqttSession is one client connection and the broker connection that
+// session is one client connection and the broker connection that
 // serves it.
-type mqttSession struct {
-	t      *mqttServer
+type session struct {
+	t      *server
 	client net.Conn
 	up     net.Conn
 	pool   *upstream.Pool
@@ -194,14 +196,14 @@ type mqttSession struct {
 	upFailed  bool
 }
 
-func (t *mqttServer) handle(client net.Conn) {
-	s := t.s
+func (t *server) handle(client net.Conn) {
+	s := t.host
 	start := time.Now()
-	s.stats.MQTTSessions.Add(1)
-	s.stats.MQTTSessionsOpen.Add(1)
-	defer s.stats.MQTTSessionsOpen.Add(-1)
-	ip := addrOf(client.RemoteAddr().String())
-	se := &mqttSession{t: t, client: client, ip: ip,
+	s.Counters().MQTTSessions.Add(1)
+	s.Counters().MQTTSessionsOpen.Add(1)
+	defer s.Counters().MQTTSessionsOpen.Add(-1)
+	ip := netutil.AddrOf(client.RemoteAddr().String())
+	se := &session{t: t, client: client, ip: ip,
 		subs: map[string]bool{}, refusedQoS2: map[uint16]bool{}}
 	defer func() {
 		if se.up != nil {
@@ -214,7 +216,7 @@ func (t *mqttServer) handle(client net.Conn) {
 	}()
 
 	if !t.allowed(ip) {
-		s.stats.MQTTRejected.Add(1)
+		s.Counters().MQTTRejected.Add(1)
 		t.deny(ip, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
 		return
@@ -234,7 +236,7 @@ func (t *mqttServer) handle(client net.Conn) {
 	t.log(se, start, reason)
 }
 
-func (t *mqttServer) allowed(ip netip.Addr) bool {
+func (t *server) allowed(ip netip.Addr) bool {
 	if len(t.allow) == 0 {
 		return true
 	}
@@ -249,18 +251,18 @@ func (t *mqttServer) allowed(ip netip.Addr) bool {
 	return false
 }
 
-func (t *mqttServer) deny(ip netip.Addr, what, detail string) {
+func (t *server) deny(ip netip.Addr, what, detail string) {
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "mqtt"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
 	}
-	t.s.logs.SecurityEvent(context.Background(), "deny", "mqtt_"+what, attrs...)
-	if bl := t.s.bans.Load(); bl != nil && ip.IsValid() {
+	t.host.Logs().SecurityEvent(context.Background(), "deny", "mqtt_"+what, attrs...)
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "mqtt_denied")
 	}
 }
 
-func (t *mqttServer) log(se *mqttSession, start time.Time, reason string) {
+func (t *server) log(se *session, start time.Time, reason string) {
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "tls", se.secure,
 		"client_id", se.clientID, "username", se.username, "version", mqttVersionName(se.version),
 		"subscriptions", len(se.subs), "published", se.published.Load(),
@@ -271,14 +273,14 @@ func (t *mqttServer) log(se *mqttSession, start time.Time, reason string) {
 	if reason != "" {
 		attrs = append(attrs, "closed", reason)
 	}
-	t.s.logs.Access.Info("mqtt", attrs...)
+	t.host.Logs().Access.Info("mqtt", attrs...)
 }
 
 func mqttVersionName(v byte) string {
 	switch v {
-	case mqtt.V311:
+	case wire.V311:
 		return "3.1.1"
-	case mqtt.V5:
+	case wire.V5:
 		return "5.0"
 	case 0:
 		return ""
@@ -289,21 +291,21 @@ func mqttVersionName(v byte) string {
 
 // run reads the CONNECT, decides on it, opens the broker session and
 // then relays in both directions.
-func (se *mqttSession) run(time.Time) string {
+func (se *session) run(time.Time) string {
 	t := se.t
 	_ = se.client.SetReadDeadline(time.Now().Add(t.m.ConnectTimeout.D()))
-	first, err := mqtt.ReadPacket(se.client, t.m.MaxPacketSize)
+	first, err := wire.ReadPacket(se.client, t.m.MaxPacketSize)
 	if err != nil {
 		return se.badPacket(err, "connect")
 	}
-	if first.Type != mqtt.CONNECT {
+	if first.Type != wire.CONNECT {
 		// Every session begins with CONNECT (3.1.1 section 3.1). A
 		// first packet of any other type is either a confused client
 		// or an attempt to reach the broker without one.
 		t.deny(se.ip, "not_connect", first.Name())
 		return "not_connect"
 	}
-	c, err := mqtt.ParseConnect(first)
+	c, err := wire.ParseConnect(first)
 	if err != nil {
 		return se.badPacket(err, "connect")
 	}
@@ -314,7 +316,7 @@ func (se *mqttSession) run(time.Time) string {
 		return reason
 	}
 	if err := se.connect(); err != nil {
-		t.s.logs.Error.Warn("mqtt broker unavailable", "listener", t.cfg.Name, "err", err.Error())
+		t.host.Logs().Error.Warn("mqtt broker unavailable", "listener", t.cfg.Name, "err", err.Error())
 		se.refuseConnect(mqttServerUnavailable(c.Version))
 		return "upstream_unavailable"
 	}
@@ -327,7 +329,7 @@ func (se *mqttSession) run(time.Time) string {
 
 // checkConnect applies the policy that can be decided from the CONNECT
 // alone. It returns a log reason and the CONNACK code to answer with.
-func (se *mqttSession) checkConnect(c mqtt.Connect) (string, byte) {
+func (se *session) checkConnect(c wire.Connect) (string, byte) {
 	m := se.t.m
 	if !se.t.versions[c.Version] {
 		return "version_refused", mqttBadVersion(c.Version)
@@ -363,16 +365,16 @@ func (se *mqttSession) checkConnect(c mqtt.Connect) (string, byte) {
 }
 
 // topicAllowed applies the publish policy to a concrete topic name.
-func (se *mqttSession) topicAllowed(topic string) bool {
+func (se *session) topicAllowed(topic string) bool {
 	m := se.t.m
-	if err := mqtt.ValidTopic(topic); err != nil {
+	if err := wire.ValidTopic(topic); err != nil {
 		return false
 	}
-	if len(topic) > m.MaxTopicLength || mqtt.Levels(topic) > m.MaxTopicLevels {
+	if len(topic) > m.MaxTopicLength || wire.Levels(topic) > m.MaxTopicLevels {
 		return false
 	}
 	for _, f := range m.PublishDeny {
-		if mqtt.Match(f, topic) {
+		if wire.Match(f, topic) {
 			return false
 		}
 	}
@@ -380,7 +382,7 @@ func (se *mqttSession) topicAllowed(topic string) bool {
 		return true
 	}
 	for _, f := range m.PublishAllow {
-		if mqtt.Match(f, topic) {
+		if wire.Match(f, topic) {
 			return true
 		}
 	}
@@ -390,19 +392,19 @@ func (se *mqttSession) topicAllowed(topic string) bool {
 // filterAllowed applies the subscribe policy to a filter. A filter is
 // not a topic: the allow list must cover everything the filter could
 // deliver, and the deny list refuses anything it could reach.
-func (se *mqttSession) filterAllowed(filter string) bool {
+func (se *session) filterAllowed(filter string) bool {
 	m := se.t.m
-	if err := mqtt.ValidFilter(filter); err != nil {
+	if err := wire.ValidFilter(filter); err != nil {
 		return false
 	}
-	if len(filter) > m.MaxTopicLength || mqtt.Levels(filter) > m.MaxTopicLevels {
+	if len(filter) > m.MaxTopicLength || wire.Levels(filter) > m.MaxTopicLevels {
 		return false
 	}
 	if m.AllowWildcardSubscribe != nil && !*m.AllowWildcardSubscribe && strings.ContainsAny(filter, "+#") {
 		return false
 	}
 	for _, f := range m.SubscribeDeny {
-		if mqtt.Overlaps(f, filter) {
+		if wire.Overlaps(f, filter) {
 			return false
 		}
 	}
@@ -410,7 +412,7 @@ func (se *mqttSession) filterAllowed(filter string) bool {
 		return true
 	}
 	for _, f := range m.SubscribeAllow {
-		if mqtt.Subsumes(f, filter) {
+		if wire.Subsumes(f, filter) {
 			return true
 		}
 	}
@@ -418,9 +420,9 @@ func (se *mqttSession) filterAllowed(filter string) bool {
 }
 
 // connect opens the broker connection.
-func (se *mqttSession) connect() error {
+func (se *session) connect() error {
 	t := se.t
-	pool := t.s.rt.Load().pools[t.m.Upstream]
+	pool := t.host.Pool(t.m.Upstream)
 	if pool == nil {
 		return fmt.Errorf("upstream %q has no pool", t.m.Upstream)
 	}
@@ -437,7 +439,7 @@ func (se *mqttSession) connect() error {
 		pool.Begin(e)
 		if err != nil {
 			pool.End(e, true, 0)
-			t.s.logs.Error.Warn("mqtt broker dial failed", "listener", t.cfg.Name, "endpoint", e.Address, "err", err.Error())
+			t.host.Logs().Error.Warn("mqtt broker dial failed", "listener", t.cfg.Name, "endpoint", e.Address, "err", err.Error())
 			continue
 		}
 		se.up, se.ep = c, e
@@ -448,7 +450,7 @@ func (se *mqttSession) connect() error {
 	}
 	se.upFailed = true
 	if t.m.ProxyProtocol {
-		if _, err := se.up.Write(proxyV2Header(se.client.RemoteAddr(), se.client.LocalAddr())); err != nil {
+		if _, err := se.up.Write(netutil.ProxyV2Header(se.client.RemoteAddr(), se.client.LocalAddr())); err != nil {
 			return err
 		}
 	}
@@ -475,7 +477,7 @@ func (se *mqttSession) connect() error {
 // and decided on; the broker side is read packet by packet too, because
 // a packet that does not parse is one the client and the proxy would
 // read differently, and its framing decides where the next one starts.
-func (se *mqttSession) relay() string {
+func (se *session) relay() string {
 	reasons := make(chan string, 2)
 	var once sync.Once
 	stop := func() {
@@ -499,11 +501,11 @@ func (se *mqttSession) relay() string {
 	return first
 }
 
-func (se *mqttSession) fromClient() string {
+func (se *session) fromClient() string {
 	t := se.t
 	for {
 		_ = se.client.SetReadDeadline(time.Now().Add(t.m.IdleTimeout.D()))
-		p, err := mqtt.ReadPacket(se.client, t.m.MaxPacketSize)
+		p, err := wire.ReadPacket(se.client, t.m.MaxPacketSize)
 		if err != nil {
 			return se.badPacket(err, "client")
 		}
@@ -524,26 +526,26 @@ func (se *mqttSession) fromClient() string {
 
 // decide applies the policy to one client packet. It returns a reason
 // when the session must end, and whether the packet is forwarded.
-func (se *mqttSession) decide(p mqtt.Packet) (string, bool) {
+func (se *session) decide(p wire.Packet) (string, bool) {
 	t := se.t
 	switch p.Type {
-	case mqtt.CONNECT:
+	case wire.CONNECT:
 		// A second CONNECT on one session is a protocol error in both
 		// versions, and a broker that accepted it would be taking a new
 		// identity from a session already authorised as another.
 		t.deny(se.ip, "second_connect", "")
 		return "second_connect", false
-	case mqtt.PUBLISH:
+	case wire.PUBLISH:
 		return se.decidePublish(p)
-	case mqtt.SUBSCRIBE, mqtt.UNSUBSCRIBE:
+	case wire.SUBSCRIBE, wire.UNSUBSCRIBE:
 		return se.decideSubscribe(p)
-	case mqtt.PUBREL:
+	case wire.PUBREL:
 		// A PUBREL for a publication this proxy refused is answered
 		// here: the broker never saw the PUBLISH, so it has no state to
 		// complete and would treat the id as unknown.
 		if id, ok := mqttPacketID(p); ok && se.refusedQoS2[id] {
 			delete(se.refusedQoS2, id)
-			_ = se.writeClient(mqtt.Packet{Type: mqtt.PUBCOMP, Body: mqttIDBody(id, se.version, 0x92)})
+			_ = se.writeClient(wire.Packet{Type: wire.PUBCOMP, Body: mqttIDBody(id, se.version, 0x92)})
 			return "", false
 		}
 		return "", true
@@ -552,9 +554,9 @@ func (se *mqttSession) decide(p mqtt.Packet) (string, bool) {
 	}
 }
 
-func (se *mqttSession) decidePublish(p mqtt.Packet) (string, bool) {
+func (se *session) decidePublish(p wire.Packet) (string, bool) {
 	t := se.t
-	pub, err := mqtt.ParsePublish(p)
+	pub, err := wire.ParsePublish(p)
 	if err != nil {
 		return se.badPacket(err, "publish"), false
 	}
@@ -567,10 +569,10 @@ func (se *mqttSession) decidePublish(p mqtt.Packet) (string, bool) {
 	}
 	if bad == "" {
 		se.published.Add(1)
-		t.s.stats.MQTTPublished.Add(1)
+		t.host.Counters().MQTTPublished.Add(1)
 		return "", true
 	}
-	t.s.stats.MQTTRefused.Add(1)
+	t.host.Counters().MQTTRefused.Add(1)
 	t.deny(se.ip, bad, mqttClipTopic(pub.Topic))
 	if t.m.Action == "disconnect" {
 		se.disconnectClient(mqttNotAuthorized(se.version))
@@ -581,23 +583,23 @@ func (se *mqttSession) decidePublish(p mqtt.Packet) (string, bool) {
 	// the same message until it gives up.
 	switch pub.QoS {
 	case 1:
-		_ = se.writeClient(mqtt.Packet{Type: mqtt.PUBACK, Body: mqttIDBody(pub.PacketID, se.version, 0x87)})
+		_ = se.writeClient(wire.Packet{Type: wire.PUBACK, Body: mqttIDBody(pub.PacketID, se.version, 0x87)})
 	case 2:
 		if len(se.refusedQoS2) < t.m.MaxSubscriptions {
 			se.refusedQoS2[pub.PacketID] = true
 		}
-		_ = se.writeClient(mqtt.Packet{Type: mqtt.PUBREC, Body: mqttIDBody(pub.PacketID, se.version, 0x87)})
+		_ = se.writeClient(wire.Packet{Type: wire.PUBREC, Body: mqttIDBody(pub.PacketID, se.version, 0x87)})
 	}
 	return "", false
 }
 
-func (se *mqttSession) decideSubscribe(p mqtt.Packet) (string, bool) {
+func (se *session) decideSubscribe(p wire.Packet) (string, bool) {
 	t := se.t
-	sub, err := mqtt.ParseSubscribe(p, se.version)
+	sub, err := wire.ParseSubscribe(p, se.version)
 	if err != nil {
 		return se.badPacket(err, "subscribe"), false
 	}
-	if p.Type == mqtt.UNSUBSCRIBE {
+	if p.Type == wire.UNSUBSCRIBE {
 		for _, f := range sub.Filters {
 			delete(se.subs, f.Filter)
 		}
@@ -617,10 +619,10 @@ func (se *mqttSession) decideSubscribe(p mqtt.Packet) (string, bool) {
 		for _, f := range sub.Filters {
 			se.subs[f.Filter] = true
 		}
-		t.s.stats.MQTTSubscribed.Add(1)
+		t.host.Counters().MQTTSubscribed.Add(1)
 		return "", true
 	}
-	t.s.stats.MQTTRefused.Add(1)
+	t.host.Counters().MQTTRefused.Add(1)
 	t.deny(se.ip, "subscribe_refused", mqttClipTopic(refused))
 	if t.m.Action == "disconnect" {
 		se.disconnectClient(mqttNotAuthorized(se.version))
@@ -632,25 +634,25 @@ func (se *mqttSession) decideSubscribe(p mqtt.Packet) (string, bool) {
 	// proxy's idea of the session and the broker's out of step.
 	body := make([]byte, 2, 2+len(sub.Filters)+1)
 	binary.BigEndian.PutUint16(body, sub.PacketID)
-	if se.version >= mqtt.V5 {
+	if se.version >= wire.V5 {
 		body = append(body, 0) // empty property block
 	}
 	for range sub.Filters {
 		body = append(body, 0x80) // unspecified failure in both versions
 	}
-	_ = se.writeClient(mqtt.Packet{Type: mqtt.SUBACK, Body: body})
+	_ = se.writeClient(wire.Packet{Type: wire.SUBACK, Body: body})
 	return "", false
 }
 
-func (se *mqttSession) fromBroker() string {
+func (se *session) fromBroker() string {
 	t := se.t
 	for {
 		_ = se.up.SetReadDeadline(time.Now().Add(t.m.IdleTimeout.D()))
-		p, err := mqtt.ReadPacket(se.up, t.m.MaxPacketSize)
+		p, err := wire.ReadPacket(se.up, t.m.MaxPacketSize)
 		if err != nil {
-			if errors.Is(err, mqtt.ErrMalformed) || errors.Is(err, mqtt.ErrPacketTooLarge) || errors.Is(err, mqtt.ErrVarintTooLong) {
-				t.s.stats.MQTTProtocolErrors.Add(1)
-				t.s.logs.Error.Warn("mqtt broker packet refused", "listener", t.cfg.Name, "err", err.Error())
+			if errors.Is(err, wire.ErrMalformed) || errors.Is(err, wire.ErrPacketTooLarge) || errors.Is(err, wire.ErrVarintTooLong) {
+				t.host.Counters().MQTTProtocolErrors.Add(1)
+				t.host.Logs().Error.Warn("mqtt broker packet refused", "listener", t.cfg.Name, "err", err.Error())
 				se.upFailed = true
 				return "upstream_protocol"
 			}
@@ -663,7 +665,7 @@ func (se *mqttSession) fromBroker() string {
 	}
 }
 
-func (se *mqttSession) writeClient(p mqtt.Packet) error {
+func (se *session) writeClient(p wire.Packet) error {
 	_ = se.client.SetWriteDeadline(time.Now().Add(se.t.m.IdleTimeout.D()))
 	_, err := se.client.Write(p.Encode())
 	return err
@@ -673,17 +675,17 @@ func (se *mqttSession) writeClient(p mqtt.Packet) error {
 // forwarded: a packet the proxy could not read is one whose length it
 // cannot trust, and every packet after it would start in the wrong
 // place.
-func (se *mqttSession) badPacket(err error, where string) string {
+func (se *session) badPacket(err error, where string) string {
 	t := se.t
 	switch {
-	case errors.Is(err, mqtt.ErrPacketTooLarge):
-		t.s.stats.MQTTRefused.Add(1)
+	case errors.Is(err, wire.ErrPacketTooLarge):
+		t.host.Counters().MQTTRefused.Add(1)
 		t.deny(se.ip, "packet_too_large", where)
 		se.disconnectClient(0x95)
 		return "packet_too_large"
-	case errors.Is(err, mqtt.ErrMalformed), errors.Is(err, mqtt.ErrVarintTooLong),
-		errors.Is(err, mqtt.ErrBadTopic), errors.Is(err, mqtt.ErrBadFilter):
-		t.s.stats.MQTTProtocolErrors.Add(1)
+	case errors.Is(err, wire.ErrMalformed), errors.Is(err, wire.ErrVarintTooLong),
+		errors.Is(err, wire.ErrBadTopic), errors.Is(err, wire.ErrBadFilter):
+		t.host.Counters().MQTTProtocolErrors.Add(1)
 		t.deny(se.ip, "malformed", where+": "+err.Error())
 		se.disconnectClient(0x81)
 		return "malformed"
@@ -695,47 +697,47 @@ func (se *mqttSession) badPacket(err error, where string) string {
 // disconnectClient says why before closing, where the protocol has a
 // way to. 3.1.1 has no server DISCONNECT and no reason codes, so there
 // the close is the whole message.
-func (se *mqttSession) disconnectClient(reason byte) {
-	if se.version >= mqtt.V5 {
-		_ = se.writeClient(mqtt.Packet{Type: mqtt.DISCONNECT, Body: []byte{reason, 0}})
+func (se *session) disconnectClient(reason byte) {
+	if se.version >= wire.V5 {
+		_ = se.writeClient(wire.Packet{Type: wire.DISCONNECT, Body: []byte{reason, 0}})
 	}
 }
 
 // refuseConnect answers a CONNECT the policy refused. The session flag
 // is 0: nothing was resumed, because nothing was accepted.
-func (se *mqttSession) refuseConnect(code byte) {
+func (se *session) refuseConnect(code byte) {
 	body := []byte{0, code}
-	if se.version >= mqtt.V5 {
+	if se.version >= wire.V5 {
 		body = append(body, 0) // empty property block
 	}
-	_ = se.writeClient(mqtt.Packet{Type: mqtt.CONNACK, Body: body})
+	_ = se.writeClient(wire.Packet{Type: wire.CONNACK, Body: body})
 }
 
 // The CONNACK codes differ between the versions: 3.1.1 has a short list
 // of its own (section 3.2.2.3) and 5.0 uses the shared reason codes.
 func mqttBadVersion(v byte) byte {
-	if v >= mqtt.V5 {
+	if v >= wire.V5 {
 		return 0x84
 	}
 	return 0x01
 }
 
 func mqttBadClientID(v byte) byte {
-	if v >= mqtt.V5 {
+	if v >= wire.V5 {
 		return 0x85
 	}
 	return 0x02
 }
 
 func mqttNotAuthorized(v byte) byte {
-	if v >= mqtt.V5 {
+	if v >= wire.V5 {
 		return 0x87
 	}
 	return 0x05
 }
 
 func mqttServerUnavailable(v byte) byte {
-	if v >= mqtt.V5 {
+	if v >= wire.V5 {
 		return 0x88
 	}
 	return 0x03
@@ -746,14 +748,14 @@ func mqttServerUnavailable(v byte) byte {
 func mqttIDBody(id uint16, version, reason byte) []byte {
 	b := make([]byte, 2, 4)
 	binary.BigEndian.PutUint16(b, id)
-	if version >= mqtt.V5 {
+	if version >= wire.V5 {
 		b = append(b, reason, 0)
 	}
 	return b
 }
 
 // mqttPacketID reads the leading packet id of an acknowledgement.
-func mqttPacketID(p mqtt.Packet) (uint16, bool) {
+func mqttPacketID(p wire.Packet) (uint16, bool) {
 	if len(p.Body) < 2 {
 		return 0, false
 	}

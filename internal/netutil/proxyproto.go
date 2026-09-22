@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"errors"
+	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -139,4 +140,32 @@ func readFull(br *bufio.Reader, b []byte) error {
 		}
 	}
 	return nil
+}
+
+// ProxyV2Header builds a PROXY protocol version 2 header for a TCP
+// connection (client and proxy side addresses).
+func ProxyV2Header(remote, local net.Addr) []byte {
+	sig := []byte{0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a}
+	r, rok := remote.(*net.TCPAddr)
+	l, lok := local.(*net.TCPAddr)
+	if !rok || !lok {
+		return append(sig, 0x20, 0x00, 0x00, 0x00) // LOCAL command, unspecified
+	}
+	hdr := append([]byte{}, sig...)
+	hdr = append(hdr, 0x21) // version 2, PROXY command
+	rip, lip := r.IP.To4(), l.IP.To4()
+	if rip != nil && lip != nil {
+		hdr = append(hdr, 0x11) // TCP over IPv4
+		hdr = binary.BigEndian.AppendUint16(hdr, 12)
+		hdr = append(hdr, rip...)
+		hdr = append(hdr, lip...)
+	} else {
+		hdr = append(hdr, 0x21) // TCP over IPv6
+		hdr = binary.BigEndian.AppendUint16(hdr, 36)
+		hdr = append(hdr, r.IP.To16()...)
+		hdr = append(hdr, l.IP.To16()...)
+	}
+	hdr = binary.BigEndian.AppendUint16(hdr, uint16(r.Port)) //nolint:gosec // port range
+	hdr = binary.BigEndian.AppendUint16(hdr, uint16(l.Port)) //nolint:gosec // port range
+	return hdr
 }

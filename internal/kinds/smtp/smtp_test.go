@@ -1,10 +1,14 @@
-package proxy
+package smtp_test
 
 import (
+	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/proxytest"
+
 	"bufio"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	_ "github.com/rom/xproxy/internal/kinds/smtp"
 	"io"
 	"net"
 	"strings"
@@ -250,13 +254,13 @@ upstreams:
     endpoints: [{address: %s}]
 `
 
-func smtpServerFor(t *testing.T, m *fakeMTA, extra string) (*Server, string, *x509.CertPool) {
+func smtpServerFor(t *testing.T, m *fakeMTA, extra string) (*proxy.Server, string, *x509.CertPool) {
 	t.Helper()
 	dir := t.TempDir()
 	ca := testutil.WriteCA(t, dir)
 	cert, key := ca.Issue(t, dir, "mail.test")
 	yaml := fmt.Sprintf(smtpYAML, cert, key, extra, m.addr())
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	pool := x509.NewCertPool()
 	pool.AddCert(ca.Cert)
 	return s, s.Addrs()["mail"], pool
@@ -320,7 +324,7 @@ func TestSMTPRelay(t *testing.T) {
 	if want := "Subject: hello\r\n\r\n..dot stuffed\r\nbody\r\n"; msgs[0] != want {
 		t.Fatalf("message was rewritten:\n got %q\nwant %q", msgs[0], want)
 	}
-	sn := s.stats.snapshot()
+	sn := s.Stats()
 	if sn.SMTPMessages != 1 || sn.SMTPTLSUpgrades != 1 || sn.SMTPSessions != 1 {
 		t.Fatalf("counters: %+v", struct{ M, T, S uint64 }{sn.SMTPMessages, sn.SMTPTLSUpgrades, sn.SMTPSessions})
 	}
@@ -345,7 +349,7 @@ func TestSMTPStartTLSInjection(t *testing.T) {
 	if _, err := c.br.ReadString('\n'); err == nil {
 		t.Fatal("the session should have ended")
 	}
-	if sn := s.stats.snapshot(); sn.SMTPProtocolErrors == 0 {
+	if sn := s.Stats(); sn.SMTPProtocolErrors == 0 {
 		t.Fatal("the injection was not counted")
 	}
 	cmds, _ := m.got()
@@ -449,7 +453,7 @@ func TestSMTPAllowClients(t *testing.T) {
 	if _, err := c.br.ReadString('\n'); err == nil {
 		t.Fatal("the session should have ended")
 	}
-	if sn := s.stats.snapshot(); sn.SMTPRejected == 0 {
+	if sn := s.Stats(); sn.SMTPRejected == 0 {
 		t.Fatal("the refusal was not counted")
 	}
 	if cmds, _ := m.got(); len(cmds) != 0 {
@@ -517,7 +521,7 @@ upstreams:
   - name: mta
     endpoints: [{address: %s}]
 `, lcert, lkey, ca.Path, m.addr())
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 
 	c := dialSMTP(t, s.Addrs()["mail"])
 	c.expect(220, "greeting")
@@ -559,7 +563,7 @@ upstreams:
   - name: mta
     endpoints: [{address: %s}]
 `, lcert, lkey, m.addr())
-	s, _ := startServer(t, yaml)
+	s := proxytest.Start(t, yaml)
 	c := dialSMTP(t, s.Addrs()["mail"])
 	c.expect(421, "no upstream tls")
 }
