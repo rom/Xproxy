@@ -72,6 +72,9 @@ As root:
 
 ```sh
 useradd --system --home-dir /var/lib/xproxy --shell /usr/sbin/nologin --user-group xproxy
+# Only for the daemons you will run:
+useradd --system --home-dir /var/lib/xgate  --shell /usr/sbin/nologin --user-group xgate
+useradd --system --home-dir /var/lib/xrelay --shell /usr/sbin/nologin --user-group xrelay
 make install        # binaries, units, sysctl, logrotate, example config
 sysctl --system
 ```
@@ -80,20 +83,28 @@ sysctl --system
 
 | Path | Content |
 |------|---------|
-| `/usr/local/bin/xproxy`, `/usr/local/bin/xproxyctl`, `/usr/local/bin/xproxy-admin`, `/usr/local/bin/xproxy-fleet` | binaries |
+| `/usr/local/bin/xproxy`, `/usr/local/bin/xgate`, `/usr/local/bin/xrelay`, `/usr/local/bin/xproxyctl`, `/usr/local/bin/xproxy-admin`, `/usr/local/bin/xproxy-fleet` | binaries |
 | `/etc/systemd/system/xproxy-fleet.service` | fleet controller service (disabled until you enable it on a management host) |
 | `/etc/systemd/system/xproxy.service` | hardened service |
 | `/etc/systemd/system/xproxy-admin.service`, `/etc/polkit-1/rules.d/50-xproxy-admin.rules` | web GUI service (disabled until you enable it) and the polkit rule that lets it restart the data plane |
 | `/etc/systemd/system/xproxy.socket`, `xproxy-https.socket`, `xproxy-h3.socket` | listening sockets on TCP 80, TCP 443 and UDP 443 |
+| `/etc/systemd/system/xgate.service`, `xgate.socket` | the gate daemon and its socket on TCP 22 (disabled until you enable it; read the note in the socket unit first) |
+| `/etc/systemd/system/xrelay.service`, `xrelay.socket` | the relay daemon and its socket on TCP 25 (disabled until you enable it) |
 | `/etc/sysctl.d/90-xproxy.conf` | kernel profile |
-| `/etc/logrotate.d/xproxy` | rotation calling `xproxyctl reopen-logs` |
+| `/etc/logrotate.d/xproxy`, `xgate`, `xrelay` | rotation calling `xproxyctl reopen-logs` on each daemon's socket |
 | `/etc/xproxy/xproxy.yaml` | example configuration (existing file backed up) |
-| `/usr/local/share/man/man8/xproxy.8`, `xproxyctl.8`, `/usr/local/share/man/man5/xproxy.yaml.5` | manual pages |
+| `/usr/local/share/man/man8/xproxy.8`, `xgate.8`, `xrelay.8`, `xproxyctl.8`, `/usr/local/share/man/man5/xproxy.yaml.5` | manual pages |
 | `/usr/local/share/xproxy/xproxy.schema.json` | JSON schema of the configuration for editors |
 | `/usr/local/share/bash-completion/completions/xproxyctl`, `zsh/site-functions/_xproxyctl`, `fish/vendor_completions.d/xproxyctl.fish` | shell completion |
 
 systemd creates `/etc/xproxy`, `/var/log/xproxy`, `/run/xproxy` and
-`/var/lib/xproxy` with the right owner on first start.
+`/var/lib/xproxy` with the right owner on first start, and the
+corresponding `xgate` and `xrelay` directories when those units start.
+
+Install the binaries you will actually run. `make install` puts all
+three down because it does not know which you want; a host that will
+never be a bastion is better off with `/usr/local/bin/xgate` deleted
+than with it present, unconfigured and executable.
 
 ## Certificates
 
@@ -117,6 +128,14 @@ it only redirects.
 
 ## Configure
 
+Each daemon reads a file of its own: `/etc/xproxy/xproxy.yaml`,
+`/etc/xproxy/xgate.yaml`, `/etc/xproxy/xrelay.yaml`. Put whatever the
+estate shares — upstreams, routes, rate limits, filters — in fragments
+under `/etc/xproxy/` and name them in each file's `includes`; keep
+`management`, `metrics` and `logging` in the per-daemon file, since each
+names a socket, an address and a directory that only one process can
+own.
+
 Edit `/etc/xproxy/xproxy.yaml`. Listener names must match the
 `FileDescriptorName` in the socket units (`public-http` and `public` in the
 shipped files) or xproxy falls back to matching by address. Validate:
@@ -133,6 +152,15 @@ systemctl enable --now xproxy.socket xproxy-https.socket xproxy-h3.socket   # om
 systemctl start xproxy.service
 systemctl status xproxy.service
 xproxyctl status
+```
+
+For the other two, the same three steps with their own units and
+sockets, and `xproxyctl -socket /run/xgate/mgmt.sock status` to check
+them:
+
+```sh
+xgate -config /etc/xproxy/xgate.yaml -validate
+systemctl enable --now xgate.socket && systemctl start xgate.service
 ```
 
 The service is `Type=notify`; `systemctl start` returns when the proxy is

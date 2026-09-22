@@ -1,0 +1,114 @@
+.\" Generated from Markdown by internal/manpage; do not edit.
+.TH XGATE 8 "" "Xproxy" "System administration"
+.nh
+.ad l
+.SH "NAME"
+.PP
+xgate \- gate daemon: SSH bastion with session recording and SFTP mediation
+.SH "SYNOPSIS"
+.PP
+\fBxgate\fR [\fB\-config\fR \fIFILE\fR] [\fB\-validate\fR] [\fB\-version\fR]
+.SH "DESCRIPTION"
+.PP
+\fBxgate\fR is the gate: the daemon people log into. It reads one YAML configuration file (see \fBxproxy.yaml\fR(5)), binds the listeners it describes or takes them from systemd socket activation, and serves until stopped.
+.PP
+It serves the listener kinds of the gate role, which today is \fBssh\fR: the bastion, its per\-principal policy, its SFTP mediation and its session recording. A session belongs to a named principal, is recorded to an asciicast file, can be made to carry a second factor, and is bounded by a policy written in SSH\(aqs own terms \[u2014] which channels, requests, subsystems, commands, environment variables and forwards are allowed \[u2014] rather than by a destination list.
+.PP
+The internet\-facing HTTP machinery its sibling \fBxproxy\fR(8) runs is a separate program and a separate process with a separate user. A listener of another role in the same file is validated in full and left to its owner, which is what lets the three share a set of includes; a listener kind this binary did not link is never bound.
+.PP
+The process runs as the \fBxgate\fR user under the shipped systemd unit and confines itself with Landlock, seccomp and a dropped capability set (see \fBdocs/HARDENING.md\fR). It is controlled at run time through its own management socket by \fBxproxyctl\fR(8).
+.SH "OPTIONS"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbx
+lw(0.9i) lx.
+T{
+Option
+T}	T{
+Description
+T}
+T{
+\fB\-\:config\fR \fIFILE\fR
+T}	T{
+Configuration file. Default \fB/\:etc/\:xproxy/\:xgate.\:yaml\fR (\fB/\:usr/\:local/\:etc/\:xproxy/\:xgate.\:yaml\fR on macOS).
+T}
+T{
+\fB\-\:validate\fR
+T}	T{
+Load and validate the configuration,\: report every problem,\: and exit with status 0 when it is valid and 1 otherwise. Nothing is bound. The whole file is checked,\: siblings\(aq listeners included,\: and the summary says how many of them this daemon would serve.
+T}
+T{
+\fB\-\:version\fR
+T}	T{
+Print the version,\: commit and build date,\: and exit.
+T}
+.TE
+.SH "SIGNALS"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbx
+lw(0.9i) lx.
+T{
+Signal
+T}	T{
+Effect
+T}
+T{
+\fBSIGHUP\fR
+T}	T{
+Reload the configuration. A new generation is built and validated first;\: on error the running one stays active.
+T}
+T{
+\fBSIGUSR1\fR
+T}	T{
+Reopen the log files (used by logrotate).
+T}
+T{
+\fBSIGTERM\fR,\: \fBSIGINT\fR
+T}	T{
+Stop: listeners close,\: live sessions get \fBserver.\:shutdown_\:timeout\fR to finish,\: then the process exits.
+T}
+.TE
+.SH "FILES"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbx
+lw(0.8i) lx.
+T{
+Path
+T}	T{
+Purpose
+T}
+T{
+\fB/\:etc/\:xproxy/\:xgate.\:yaml\fR
+T}	T{
+Configuration,\: mode \fB0640\fR,\: owner \fBroot:\:xgate\fR.
+T}
+T{
+\fB/\:run/\:xgate/\:mgmt.\:sock\fR
+T}	T{
+Management socket,\: mode \fB0660\fR;\: \fBxproxyctl \-\:socket\fR connects here.
+T}
+T{
+\fB/\:var/\:log/\:xgate/\fR
+T}	T{
+The access,\: error,\: security and audit logs when file sinks are configured.
+T}
+T{
+\fB/\:var/\:lib/\:xgate/\fR
+T}	T{
+State: ban list,\: configuration history,\: session recordings.
+T}
+.TE
+.SH "EXIT STATUS"
+.PP
+0 after a clean stop or a successful \fB\-validate\fR; 1 when the configuration does not load, a listener cannot be bound or validation fails; 2 on a usage error.
+.SH "ENVIRONMENT"
+.PP
+\fBLISTEN_FDS\fR, \fBLISTEN_PID\fR and \fBLISTEN_FDNAMES\fR are read for systemd socket activation. \fBNOTIFY_SOCKET\fR receives readiness and reload notifications.
+.SH "SEE ALSO"
+.PP
+\fBxproxy\fR(8), \fBxrelay\fR(8), \fBxproxyctl\fR(8), \fBxproxy.yaml\fR(5), the documentation under \fB/usr/share/doc/xproxy/\fR (USAGE.md, CONFIG.md, HARDENING.md, ARCHITECTURE.md).

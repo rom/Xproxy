@@ -366,6 +366,52 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Three daemons instead of one: `xproxy`, `xgate` and `xrelay`.** A
+  proxy that terminates ten protocols is a proxy that links ten
+  protocol implementations into one address space, and a flaw in any
+  one of them is a flaw in front of all of them. The binary is now
+  split by who is on the other end of the socket:
+
+  | Daemon | Faces | Listener kinds |
+  |--------|-------|----------------|
+  | `xproxy` | the open internet | `http`, `forward`, `tcp`, `dns` |
+  | `xgate` | people | `ssh` |
+  | `xrelay` | machines | `smtp`, `mqtt`, `ftp`, `syslog` |
+
+  One repository, one module, one version and one configuration
+  format; three programs, three users, three systemd units, three
+  sandboxes. A host that is not a bastion does not have the SSH and
+  SFTP implementation on it at all, rather than having it present and
+  unconfigured.
+
+  A listener kind is now something a binary chooses to link. Each kind
+  lives in its own package under `internal/kinds/` and registers itself
+  from `init`; the engine reaches it through a five-method `Host`
+  interface (logs, counters, bans, upstream pools, limits) and never
+  names a kind. `internal/listener` holds a static roster of every kind
+  and its owner — static rather than derived from what was linked, so a
+  daemon can tell "not mine" from "not a kind at all" and a shared
+  configuration loads everywhere.
+
+  Every daemon validates the whole file, including the kinds its
+  siblings serve, and binds only its own, naming the rest in the log.
+  A listener whose kind this binary did not link is refused by name,
+  with the daemon that does serve it — it used to fall through to the
+  HTTP data plane and answer the wrong protocol on the right port,
+  which is the failure this split exists to prevent, and
+  `TestUnlinkedKindRefused` holds it for every kind in the roster.
+
+  Each daemon reads a file of its own (`/etc/xproxy/xproxy.yaml`,
+  `xgate.yaml`, `xrelay.yaml`), because `management.socket`,
+  `metrics.listen` and `logging.directory` each name something only one
+  process can own; what the estate shares goes in `includes` all three
+  pull in. `xproxyctl -socket` picks which daemon to talk to.
+
+  Not yet true of the split: the three binaries are still nearly the
+  same size, because the engine they share still carries the HTTP data
+  plane. Lifting `http` and `forward` into kinds of their own is what
+  makes `xgate` small, and it has not been done.
+
 - **DNS tunnelling and exfiltration detection
   (`dns.tunnel_detection`).** A network can block every outbound port
   and still leak, because the resolver is the one thing every host may

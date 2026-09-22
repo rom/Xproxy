@@ -10,9 +10,13 @@ xproxy.yaml \- configuration of xproxy
 \fB/etc/xproxy/xproxy.yaml\fR
 .SH "DESCRIPTION"
 .PP
-xproxy reads one YAML document. Unknown keys are errors. Every omitted value takes the default listed here; a zero duration or count means "default", never "disabled". Paths must be absolute. Durations use Go syntax: \fB500ms\fR, \fB10s\fR, \fB5m\fR, \fB1h\fR. Names match \fB[A\-Za\-z0\-9][A\-Za\-z0\-9_.\-]{0,63}\fR.
+Three daemons read this format: \fBxproxy\fR (the edge: \fBhttp\fR, \fBforward\fR, \fBtcp\fR, \fBdns\fR), \fBxgate\fR (the gate: \fBssh\fR) and \fBxrelay\fR (the relay: \fBsmtp\fR, \fBmqtt\fR, \fBftp\fR, \fBsyslog\fR). Every one of them validates the whole file \[u2014] a listener kind a sibling serves is checked as carefully here as at home \[u2014] and binds only the listeners of its own role, saying in the log which it left to whom. That is what lets an estate keep its common parts in \fBincludes\fR that all three pull in.
 .PP
-Validate with \fBxproxy \-config FILE \-validate\fR; all problems are reported at once. The example in \fBdeploy/config/xproxy.yaml\fR exercises most keys.
+What the three cannot share is a file: \fBmanagement.socket\fR, \fBmetrics.listen\fR and \fBlogging.directory\fR each name something only one process can own. So each daemon reads a file of its own \[u2014] \fB/etc/xproxy/xproxy.yaml\fR, \fB/etc/xproxy/xgate.yaml\fR, \fB/etc/xproxy/xrelay.yaml\fR \[u2014] carrying those three sections and pulling the rest in with \fBincludes\fR. Nothing stops you pointing two daemons at one file; they will then fight over the socket, and the second to start will lose.
+.PP
+Each of them reads one YAML document. Unknown keys are errors. Every omitted value takes the default listed here; a zero duration or count means "default", never "disabled". Paths must be absolute. Durations use Go syntax: \fB500ms\fR, \fB10s\fR, \fB5m\fR, \fB1h\fR. Names match \fB[A\-Za\-z0\-9][A\-Za\-z0\-9_.\-]{0,63}\fR.
+.PP
+Validate with \fBxproxy \-config FILE \-validate\fR (or \fBxgate\fR/\fBxrelay\fR, which check the same file and additionally report how much of it they would serve); all problems are reported at once. The example in \fBdeploy/config/xproxy.yaml\fR exercises most keys.
 .PP
 This reference is also installed as the manual page \fBxproxy.yaml(5)\fR, and a JSON schema generated from the same types (\fB/usr/share/xproxy/xproxy.schema.json\fR, \fBxproxyctl schema\fR) gives editors completion and inline documentation; put \fB# yaml\-language\-server: $schema=/usr/share/xproxy/xproxy.schema.json\fR on the first line of the file to enable it.
 .SH "Top level"
@@ -326,11 +330,11 @@ T}
 T{
 \fBkind\fR
 T}	T{
-\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBssh\fR
+\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR,\: \fBssh\fR
 T}	T{
 \fBhttp\fR
 T}	T{
-\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy,\: \fBmqtt\fR an MQTT proxy and \fBssh\fR an SSH bastion;\: see below
+\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy,\: \fBmqtt\fR an MQTT proxy,\: \fBftp\fR an FTP proxy,\: \fBsyslog\fR a syslog relay and \fBssh\fR an SSH bastion;\: see below. The kind also decides which daemon serves the listener: \fBhttp\fR,\: \fBforward\fR,\: \fBtcp\fR and \fBdns\fR are xproxy\(aqs,\: \fBssh\fR is xgate\(aqs,\: and \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR and \fBsyslog\fR are xrelay\(aqs. A daemon handed a listener of another kind validates it and leaves it alone;\: it is never served by the wrong data plane
 T}
 T{
 \fBredirect_\:to_\:https\fR

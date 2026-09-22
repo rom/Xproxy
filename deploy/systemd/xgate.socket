@@ -1,0 +1,19 @@
+# Listening sockets for xgate. The names in FileDescriptorName must match
+# the listener names in xgate.yaml; xgate also matches by address.
+#
+# Port 22 belongs to the host's own sshd on most machines. Put the host
+# sshd somewhere else, or give the bastion a port of its own, before
+# enabling this: two services cannot both own the port, and finding that
+# out by locking yourself out of the machine is the wrong way.
+[Unit]
+Description=xgate listening sockets
+
+[Socket]
+ListenStream=0.0.0.0:22
+ListenStream=[::]:22
+FileDescriptorName=bastion
+Backlog=256
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

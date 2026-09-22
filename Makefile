@@ -41,6 +41,8 @@ build: export CGO_ENABLED = 0
 build:
 	mkdir -p $(BIN)
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy ./cmd/xproxy
+	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xgate ./cmd/xgate
+	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xrelay ./cmd/xrelay
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxyctl ./cmd/xproxyctl
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-admin ./cmd/xproxy-admin
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-fleet ./cmd/xproxy-fleet
@@ -199,6 +201,8 @@ clean:
 PREFIX ?= /usr/local
 install: build
 	install -D -m 0755 $(BIN)/xproxy $(DESTDIR)$(PREFIX)/bin/xproxy
+	install -D -m 0755 $(BIN)/xgate $(DESTDIR)$(PREFIX)/bin/xgate
+	install -D -m 0755 $(BIN)/xrelay $(DESTDIR)$(PREFIX)/bin/xrelay
 	install -D -m 0755 $(BIN)/xproxyctl $(DESTDIR)$(PREFIX)/bin/xproxyctl
 	install -D -m 0755 $(BIN)/xproxy-admin $(DESTDIR)$(PREFIX)/bin/xproxy-admin
 	install -D -m 0755 $(BIN)/xproxy-fleet $(DESTDIR)$(PREFIX)/bin/xproxy-fleet
@@ -210,11 +214,19 @@ install: build
 	install -D -m 0644 deploy/systemd/xproxy.socket $(DESTDIR)/etc/systemd/system/xproxy.socket
 	install -D -m 0644 deploy/systemd/xproxy-https.socket $(DESTDIR)/etc/systemd/system/xproxy-https.socket
 	install -D -m 0644 deploy/systemd/xproxy-h3.socket $(DESTDIR)/etc/systemd/system/xproxy-h3.socket
+	install -D -m 0644 deploy/systemd/xgate.service $(DESTDIR)/etc/systemd/system/xgate.service
+	install -D -m 0644 deploy/systemd/xgate.socket $(DESTDIR)/etc/systemd/system/xgate.socket
+	install -D -m 0644 deploy/systemd/xrelay.service $(DESTDIR)/etc/systemd/system/xrelay.service
+	install -D -m 0644 deploy/systemd/xrelay.socket $(DESTDIR)/etc/systemd/system/xrelay.socket
 	install -D -m 0644 deploy/sysctl/90-xproxy.conf $(DESTDIR)/etc/sysctl.d/90-xproxy.conf
 	install -D -m 0644 deploy/logrotate/xproxy $(DESTDIR)/etc/logrotate.d/xproxy
+	install -D -m 0644 deploy/logrotate/xgate $(DESTDIR)/etc/logrotate.d/xgate
+	install -D -m 0644 deploy/logrotate/xrelay $(DESTDIR)/etc/logrotate.d/xrelay
 	install -D -m 0640 -b deploy/config/xproxy.yaml $(DESTDIR)/etc/xproxy/xproxy.yaml
 	install -D -m 0644 deploy/sysusers/xproxy.conf $(DESTDIR)/usr/lib/sysusers.d/xproxy.conf
 	install -D -m 0644 docs/man/xproxy.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxy.8
+	install -D -m 0644 docs/man/xgate.8 $(DESTDIR)$(PREFIX)/share/man/man8/xgate.8
+	install -D -m 0644 docs/man/xrelay.8 $(DESTDIR)$(PREFIX)/share/man/man8/xrelay.8
 	install -D -m 0644 docs/man/xproxyctl.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxyctl.8
 	install -D -m 0644 docs/man/xproxy.yaml.5 $(DESTDIR)$(PREFIX)/share/man/man5/xproxy.yaml.5
 	install -D -m 0644 internal/config/schema/xproxy.schema.json $(DESTDIR)$(PREFIX)/share/xproxy/xproxy.schema.json

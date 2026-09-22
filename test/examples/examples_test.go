@@ -29,6 +29,7 @@ import (
 	_ "github.com/rom/xproxy/internal/filters" // built-in kinds
 	"github.com/rom/xproxy/internal/filters/apikey"
 	"github.com/rom/xproxy/internal/fleet"
+	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/waf"
@@ -87,9 +88,11 @@ func TestYAMLDocuments(t *testing.T) {
 			// decision rather than a default.
 			data = []byte(strings.ReplaceAll(string(data), "/var/log/xproxy/sessions", t.TempDir()))
 			if strings.Contains(string(data), "\nversion: 1\n") || strings.HasPrefix(string(data), "version: 1\n") {
-				if _, err := config.ParseWith(data, false); err != nil {
+				cfg, err := config.ParseWith(data, false)
+				if err != nil {
 					t.Fatalf("complete document: %v", err)
 				}
+				checkOneDaemon(t, cfg)
 				return
 			}
 			// A fragment: include it from a minimal main file.
@@ -1118,5 +1121,29 @@ func TestWAFProtocolSurfaceRules(t *testing.T) {
 		if v := wafRequest(t, e, c.r); v.Deny {
 			t.Errorf("%s was denied: %+v", c.name, v)
 		}
+	}
+}
+
+// checkOneDaemon holds the examples to the shape an operator can
+// actually deploy: one file, one daemon. An example whose listeners
+// span two of them would be a file nobody can run as written, and the
+// daemon column in examples/README.md would be a guess rather than a
+// fact.
+//
+// The one exception is a file with no listeners at all -- a fragment of
+// routes, filters or rules -- which belongs to whichever daemon
+// includes it.
+func checkOneDaemon(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	owners := map[string][]string{}
+	for _, lc := range cfg.Server.Listeners {
+		role, ok := listener.RoleOf(lc.Kind)
+		if !ok {
+			t.Fatalf("listener %q has kind %q, which no daemon serves", lc.Name, lc.Kind)
+		}
+		owners[role.Daemon()] = append(owners[role.Daemon()], lc.Name)
+	}
+	if len(owners) > 1 {
+		t.Errorf("listeners span %d daemons and cannot be one file: %v", len(owners), owners)
 	}
 }

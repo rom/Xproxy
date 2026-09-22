@@ -1,0 +1,91 @@
+# xgate, the gate daemon: the SSH bastion and its SFTP mediation. Pairs
+# with xgate.socket for socket activation so the service never needs root
+# or CAP_NET_BIND_SERVICE.
+#
+# Install:  cp xgate.service xgate.socket /etc/systemd/system/
+#           systemctl daemon-reload && systemctl enable --now xgate.socket
+[Unit]
+Description=xgate SSH bastion
+Documentation=https://github.com/rom/xproxy/tree/main/docs
+After=network-online.target
+Wants=network-online.target
+Requires=xgate.socket
+
+[Service]
+# notify-reload: systemctl reload sends ReloadSignal and waits for the
+# RELOADING/READY notifications, so no helper binary runs in the sandbox.
+Type=notify-reload
+ReloadSignal=SIGHUP
+User=xgate
+Group=xgate
+ExecStart=/usr/local/bin/xgate -config /etc/xproxy/xgate.yaml
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+LimitNOFILE=1048576
+UMask=0027
+
+# Directories managed by systemd (created with the right owner and label).
+ConfigurationDirectory=xproxy
+ConfigurationDirectoryMode=0750
+LogsDirectory=xgate
+LogsDirectoryMode=0750
+RuntimeDirectory=xgate
+RuntimeDirectoryMode=0750
+StateDirectory=xgate
+StateDirectoryMode=0700
+
+# Sandboxing. Every directive here is verified by `systemd-analyze security`.
+# The process adds its own layer after start (Landlock rules derived from
+# the configuration, a seccomp deny list, capability clearing, non
+# dumpable; see the sandbox section of docs/CONFIG.md), so the two are
+# defence in depth: a directive missing here is still enforced there.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+PrivateMounts=yes
+# The binary is static: nothing else may be mapped executable.
+NoExecPaths=/
+ExecPaths=/usr/local/bin/xgate
+# Only ordinary file systems (ignored where the BPF LSM is unavailable).
+RestrictFileSystems=@basic-api @common-block tmpfs
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @cpu-emulation @debug @module @raw-io @clock @keyring @pkey
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/etc/xproxy
+ReadWritePaths=/var/log/xgate /run/xgate /var/lib/xgate
+IPAddressDeny=
+DevicePolicy=closed
+# Binds after start are refused by Landlock inside the process; to have
+# systemd enforce the same for a fixed port set, install a socket-bind
+# drop-in next to this unit and list the ports it needs.
+#
+# The gate writes session recordings under its state directory, so
+# /var/lib/xgate is where they land unless the configuration says
+# otherwise; it is 0700 and nothing else should be able to read it.
+
+[Install]
+WantedBy=multi-user.target

@@ -1,12 +1,30 @@
 # Configuration reference
 
-xproxy reads one YAML document. Unknown keys are errors. Every omitted value
+Three daemons read this format: **xproxy** (the edge: `http`, `forward`,
+`tcp`, `dns`), **xgate** (the gate: `ssh`) and **xrelay** (the relay:
+`smtp`, `mqtt`, `ftp`, `syslog`). Every one of them validates the whole
+file — a listener kind a sibling serves is checked as carefully here as
+at home — and binds only the listeners of its own role, saying in the
+log which it left to whom. That is what lets an estate keep its common
+parts in `includes` that all three pull in.
+
+What the three cannot share is a file: `management.socket`,
+`metrics.listen` and `logging.directory` each name something only one
+process can own. So each daemon reads a file of its own —
+`/etc/xproxy/xproxy.yaml`, `/etc/xproxy/xgate.yaml`,
+`/etc/xproxy/xrelay.yaml` — carrying those three sections and pulling
+the rest in with `includes`. Nothing stops you pointing two daemons at
+one file; they will then fight over the socket, and the second to start
+will lose.
+
+Each of them reads one YAML document. Unknown keys are errors. Every omitted value
 takes the default listed here; a zero duration or count means "default",
 never "disabled". Paths must be absolute. Durations use Go syntax: `500ms`,
 `10s`, `5m`, `1h`. Names match `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`.
 
-Validate with `xproxy -config FILE -validate`; all problems are reported at
-once. The example in `deploy/config/xproxy.yaml` exercises most keys.
+Validate with `xproxy -config FILE -validate` (or `xgate`/`xrelay`, which
+check the same file and additionally report how much of it they would
+serve); all problems are reported at once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 
 This reference is also installed as the manual page `xproxy.yaml(5)`,
 and a JSON schema generated from the same types
@@ -66,7 +84,7 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `smtp`, `mqtt`, `ftp` and `syslog`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead) or `dns`. |
-| `kind` | `http`, `tcp`, `forward`, `dns`, `smtp`, `mqtt`, `ssh` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy and `ssh` an SSH bastion; see below |
+| `kind` | `http`, `tcp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `ssh` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay and `ssh` an SSH bastion; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp` and `dns` are xproxy's, `ssh` is xgate's, and `smtp`, `mqtt`, `ftp` and `syslog` are xrelay's. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 
 ### server.listeners[].tcp (kind: tcp)

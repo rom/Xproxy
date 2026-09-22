@@ -1,0 +1,91 @@
+# xrelay, the relay daemon: SMTP and submission, MQTT, FTP and syslog.
+# Pairs with xrelay.socket for socket activation so the service never
+# needs root or CAP_NET_BIND_SERVICE.
+#
+# Install:  cp xrelay.service xrelay.socket /etc/systemd/system/
+#           systemctl daemon-reload && systemctl enable --now xrelay.socket
+[Unit]
+Description=xrelay machine-to-machine relay
+Documentation=https://github.com/rom/xproxy/tree/main/docs
+After=network-online.target
+Wants=network-online.target
+Requires=xrelay.socket
+
+[Service]
+# notify-reload: systemctl reload sends ReloadSignal and waits for the
+# RELOADING/READY notifications, so no helper binary runs in the sandbox.
+Type=notify-reload
+ReloadSignal=SIGHUP
+User=xrelay
+Group=xrelay
+ExecStart=/usr/local/bin/xrelay -config /etc/xproxy/xrelay.yaml
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+LimitNOFILE=1048576
+UMask=0027
+
+# Directories managed by systemd (created with the right owner and label).
+ConfigurationDirectory=xproxy
+ConfigurationDirectoryMode=0750
+LogsDirectory=xrelay
+LogsDirectoryMode=0750
+RuntimeDirectory=xrelay
+RuntimeDirectoryMode=0750
+StateDirectory=xrelay
+StateDirectoryMode=0700
+
+# Sandboxing. Every directive here is verified by `systemd-analyze security`.
+# The process adds its own layer after start (Landlock rules derived from
+# the configuration, a seccomp deny list, capability clearing, non
+# dumpable; see the sandbox section of docs/CONFIG.md), so the two are
+# defence in depth: a directive missing here is still enforced there.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+PrivateMounts=yes
+# The binary is static: nothing else may be mapped executable.
+NoExecPaths=/
+ExecPaths=/usr/local/bin/xrelay
+# Only ordinary file systems (ignored where the BPF LSM is unavailable).
+RestrictFileSystems=@basic-api @common-block tmpfs
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @cpu-emulation @debug @module @raw-io @clock @keyring @pkey
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/etc/xproxy
+ReadWritePaths=/var/log/xrelay /run/xrelay /var/lib/xrelay
+IPAddressDeny=
+DevicePolicy=closed
+# Binds after start are refused by Landlock inside the process; to have
+# systemd enforce the same for a fixed port set, install a socket-bind
+# drop-in next to this unit and list the ports it needs.
+#
+# Add a ListenStream (or ListenDatagram, for syslog over UDP) per
+# listener to xrelay.socket, each with its own FileDescriptorName
+# matching the listener name in the configuration.
+
+[Install]
+WantedBy=multi-user.target

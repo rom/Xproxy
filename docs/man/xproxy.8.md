@@ -2,7 +2,7 @@
 
 ## NAME
 
-xproxy - reverse proxy, web application firewall and load balancer
+xproxy - edge data plane: reverse proxy, web application firewall and load balancer
 
 ## SYNOPSIS
 
@@ -10,12 +10,21 @@ xproxy - reverse proxy, web application firewall and load balancer
 
 ## DESCRIPTION
 
-`xproxy` is the data plane daemon. It reads one YAML configuration file
-(see `xproxy.yaml`(5)), binds the listeners it describes or takes them
-from systemd socket activation, and serves until stopped. Requests pass
-the listener limits, the ban list, rate limits, the web application
-firewall, the configured filters and the route action, then reach an
-upstream pool with health checks, retries and circuit breaking.
+`xproxy` is the edge data plane: the daemon that faces the internet. It
+reads one YAML configuration file (see `xproxy.yaml`(5)), binds the
+listeners it describes or takes them from systemd socket activation, and
+serves until stopped. Requests pass the listener limits, the ban list,
+rate limits, the web application firewall, the configured filters and the
+route action, then reach an upstream pool with health checks, retries and
+circuit breaking.
+
+It serves the listener kinds of the edge role: `http` (the default),
+`forward`, `tcp` and `dns`. Its siblings `xgate`(8) and `xrelay`(8) serve
+the kinds people log into and the kinds machines talk to. A listener of
+another role in the same file is validated in full and left to its owner,
+which is what lets the three share a set of includes; a listener kind
+this binary did not link is never bound and never falls through to the
+HTTP data plane.
 
 The process runs as the `xproxy` user under the shipped systemd unit and
 confines itself with Landlock, seccomp and a dropped capability set (see
@@ -68,6 +77,6 @@ notifications. `NO_COLOR` is honoured by `xproxyctl tui`.
 
 ## SEE ALSO
 
-`xproxyctl`(8), `xproxy.yaml`(5), the documentation under
+`xgate`(8), `xrelay`(8), `xproxyctl`(8), `xproxy.yaml`(5), the documentation under
 `/usr/share/doc/xproxy/` (USAGE.md, CONFIG.md, HARDENING.md,
 ARCHITECTURE.md).
