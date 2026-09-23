@@ -278,6 +278,27 @@ func TestUDPSessionBoundEndsItExactlyOnce(t *testing.T) {
 	}
 }
 
+// The byte bounds are per direction, the same two names a kind: tcp
+// listener uses: what a session relays from the client, and what it
+// relays back. The echo answers more than it is sent, so a bound on the
+// way back is reached first.
+func TestUDPByteBoundsArePerDirection(t *testing.T) {
+	e := startEchoUDP(t, "echo:")
+	s, addr := relay(t, e, "        max_bytes_out: 8")
+	c := dialUDP(t, addr)
+	// "echo:ping" is nine bytes back for four sent, so the answer
+	// reaches an eight byte bound and the four byte one is untouched.
+	if got := exchange(t, c, "ping"); got != "echo:ping" {
+		t.Fatalf("answer %q", got)
+	}
+	eventually(t, 5*time.Second, "the outbound bound to end the session", func() bool {
+		return s.Stats().UDPSessionsOpen == 0
+	})
+	if sn := s.Stats(); sn.UDPBytesIn != 4 {
+		t.Errorf("inbound bytes %d, want 4: the bound that ended this was the other direction's", sn.UDPBytesIn)
+	}
+}
+
 // A rate limit bounds one source's datagrams. The burst is served and
 // what is over it is dropped, not answered.
 func TestUDPRateLimit(t *testing.T) {

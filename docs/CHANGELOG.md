@@ -442,6 +442,20 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A session policy for the relays with no parser in the path.** A
+  `kind: tcp` listener had an idle timeout and nothing else: no bound on
+  how long a connection could last however active, and none on what it
+  could move. Those are the only two things a relay can bound, because
+  nothing in it knows what the connection is doing, so it should at
+  least have both. `session_timeout`, `max_bytes_in` and `max_bytes_out`
+  end a connection past their bound and count it in `tcp_bounded`, with
+  the bound named in the access log's `closed` field. The connection is
+  **closed** rather than quietly stopped: a relay that kept the socket
+  open and stopped forwarding would look to both peers like a network
+  that had gone quiet, which is the hardest failure there is to
+  diagnose. `kind: udp` gained the same two byte bounds in place of its
+  single `max_bytes`, so one spelling covers both relays.
+
 - **Layer 4 health checks: `type: tcp` and `type: udp`.** A pool behind
   a `kind: tcp` or `kind: udp` listener has no request to make, so
   active checking used to mean nothing for it.
@@ -916,6 +930,30 @@ Open findings of the earlier rounds:
   `recording:` key and every field under it are untouched.
 
 ### Fixed (1.4)
+
+- **A layer 4 listener deadlocked against a server that speaks first.**
+  A `kind: tcp` listener peeks for a ClientHello before it dials, and
+  plenty of what such a listener carries is server-first: SSH sends its
+  banner before the client says anything, and so do SMTP, FTP, MySQL and
+  PostgreSQL. The client waited for a greeting the proxy had not gone to
+  fetch while the proxy waited for a hello the client would never send,
+  until the peek's ten second bound turned the whole thing into a read
+  error. Silence is an answer now: a connection that has sent nothing
+  after about a second is relayed on the default route with nothing
+  peeked. A connection that has started sending still gets the full
+  bound, because a ClientHello split across packets is ordinary.
+
+- **The idle timeout was a property of one direction, not of the
+  connection.** Each direction carried its own read deadline, so a
+  connection whose server side speaks rarely while the client is busy --
+  a database session, a mail session holding IDLE, an interactive
+  session carried at layer 4 -- had its return path half closed while it
+  was working. The busy side went on sending into a path with nothing
+  coming back and nothing telling it, which is worse than a close. A
+  read deadline that expires while the other direction has been active
+  is no longer an idle connection. Both found while adding the bounds
+  above, and both in `internal/relay`, so every kind that relays bytes
+  gets the fix.
 
 - **Two sessions for one person in the same millisecond lost one
   recording.** The file name carries the time only to the millisecond

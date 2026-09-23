@@ -388,7 +388,34 @@ duration
 T}	T{
 \fB10m\fR
 T}	T{
-Close after no bytes in either direction;\: at most 24h
+Close after no bytes in either direction;\: at most 24h. It is a property of the connection,\: not of one direction: a connection whose server side speaks rarely while the client is busy is not idle
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Close after this long however active;\: at most 168h,\: and not shorter than \fBidle_\:timeout\fR
+T}
+T{
+\fBmax_\:bytes_\:in\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Bytes one connection may relay from the client;\: \fB0\fR is no bound
+T}
+T{
+\fBmax_\:bytes_\:out\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Bytes it may relay back;\: \fB0\fR is no bound. Past either the connection is closed,\: not truncated: a relay that kept the socket open and stopped forwarding would look to both peers like a network that had gone quiet
 T}
 T{
 \fBproxy_\:protocol\fR
@@ -437,7 +464,9 @@ Apply YARA rules to the bytes of each connection;\: see below
 T}
 .TE
 .PP
-Endpoints are picked with the upstream\(aqs balancer (hash on the client address for \fBhash\fR), dial failures try the next endpoint and feed outlier ejection; active health checks run as configured on the upstream. Every connection writes one \fBtcp\fR line to the access log with the name, upstream, endpoint, bytes and duration (\fBproto: quic\fR for QUIC flows). Counters: \fBtcp_connections\fR, \fBtcp_rejected\fR, \fBtcp_errors\fR, \fBtcp_bytes_in\fR, \fBtcp_bytes_out\fR, \fBquic_flows\fR, \fBquic_rejected\fR, \fBquic_flows_open\fR; \fBxproxy_tcp_*\fR and \fBxproxy_quic_*\fR metrics. QUIC flows are keyed by client address, so a client that migrates to a new address starts a new flow (its first packet is not an Initial and is dropped; the client falls back or retries); QUIC versions other than 1 are dropped. Changing a tcp listener needs a restart.
+Endpoints are picked with the upstream\(aqs balancer (hash on the client address for \fBhash\fR), dial failures try the next endpoint and feed outlier ejection; active health checks run as configured on the upstream \[u2014] for a pool with no HTTP behind it, \fBhealth_check.type: tcp\fR is the probe that fits.
+.PP
+\fBA server that speaks first is relayed.\fR The listener waits about a second for a ClientHello before deciding there is not one, so SSH, SMTP, FTP, MySQL and PostgreSQL \[u2014] all of which greet the client before it says anything \[u2014] reach their client rather than deadlocking against a peek that is waiting for bytes the client is waiting to be greeted before sending. Every connection writes one \fBtcp\fR line to the access log with the name, upstream, endpoint, bytes and duration (\fBproto: quic\fR for QUIC flows). Counters: \fBtcp_connections\fR, \fBtcp_rejected\fR, \fBtcp_errors\fR, \fBtcp_bounded\fR (ended by \fBsession_timeout\fR or a byte bound rather than by a peer; the access log\(aqs \fBclosed\fR field says which), \fBtcp_bytes_in\fR, \fBtcp_bytes_out\fR, \fBquic_flows\fR, \fBquic_rejected\fR, \fBquic_flows_open\fR; \fBxproxy_tcp_*\fR and \fBxproxy_quic_*\fR metrics. QUIC flows are keyed by client address, so a client that migrates to a new address starts a new flow (its first packet is not an Initial and is dropped; the client falls back or retries); QUIC versions other than 1 are dropped. Changing a tcp listener needs a restart.
 .SS "server.listeners[].tcp.yara"
 .PP
 YARA rules over the bytes a layer 4 listener relays. The engine is a subset of the language implemented in Go \[u2014] this proxy links no C library into the data plane, and \fBCGO_ENABLED=0\fR is a property worth more here than the last few features of the grammar. What is supported:
@@ -633,13 +662,22 @@ T}	T{
 Datagrams in one session,\: both directions;\: \fB0\fR is no bound
 T}
 T{
-\fBmax_\:bytes\fR
+\fBmax_\:bytes_\:in\fR
 T}	T{
 int
 T}	T{
 \fB0\fR
 T}	T{
-Bytes in one session,\: both directions;\: \fB0\fR is no bound
+Bytes one session relays from the client;\: \fB0\fR is no bound
+T}
+T{
+\fBmax_\:bytes_\:out\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Bytes it relays back;\: \fB0\fR is no bound
 T}
 T{
 \fBrate_\:limit.\:pps\fR

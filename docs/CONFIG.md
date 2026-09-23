@@ -102,7 +102,10 @@ accept as on every listener.
 |-----|------|---------|-------------|
 | `routes` | list of `{sni: [names], upstream}` | | Names are exact or `*.suffix`; first match wins |
 | `default` | upstream | none | Upstream for unmatched and non-TLS connections; without it they are closed and logged as `tcp_no_route` (a ban category) |
-| `idle_timeout` | duration | `10m` | Close after no bytes in either direction; at most 24h |
+| `idle_timeout` | duration | `10m` | Close after no bytes in either direction; at most 24h. It is a property of the connection, not of one direction: a connection whose server side speaks rarely while the client is busy is not idle |
+| `session_timeout` | duration | `0` | Close after this long however active; at most 168h, and not shorter than `idle_timeout` |
+| `max_bytes_in` | int | `0` | Bytes one connection may relay from the client; `0` is no bound |
+| `max_bytes_out` | int | `0` | Bytes it may relay back; `0` is no bound. Past either the connection is closed, not truncated: a relay that kept the socket open and stopped forwarding would look to both peers like a network that had gone quiet |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the upstream |
 | `max_connections` | int | `10000` | Open connections on this listener; also bounds QUIC flows |
 | `quic` | bool | `false` | Also relay QUIC: UDP on the same address, the ClientHello read from the version 1 Initial packet (decrypted with the Initial keys every observer can derive), the flow routed by server name to the same upstreams and every later datagram of that client address forwarded unread; not with `proxy_protocol` |
@@ -111,12 +114,23 @@ accept as on every listener.
 
 Endpoints are picked with the upstream's balancer (hash on the client
 address for `hash`), dial failures try the next endpoint and feed outlier
-ejection; active health checks run as configured on the upstream. Every
+ejection; active health checks run as configured on the upstream — for a
+pool with no HTTP behind it, `health_check.type: tcp` is the probe that
+fits.
+
+**A server that speaks first is relayed.** The listener waits about a
+second for a ClientHello before deciding there is not one, so SSH, SMTP,
+FTP, MySQL and PostgreSQL — all of which greet the client before it says
+anything — reach their client rather than deadlocking against a peek
+that is waiting for bytes the client is waiting to be greeted before
+sending. Every
 connection writes one `tcp` line to the access log with the name,
 upstream, endpoint, bytes and duration (`proto: quic` for QUIC flows).
 Counters: `tcp_connections`, `tcp_rejected`, `tcp_errors`,
-`tcp_bytes_in`, `tcp_bytes_out`, `quic_flows`, `quic_rejected`,
-`quic_flows_open`; `xproxy_tcp_*` and `xproxy_quic_*` metrics. QUIC
+`tcp_bounded` (ended by `session_timeout` or a byte bound rather than by
+a peer; the access log's `closed` field says which), `tcp_bytes_in`,
+`tcp_bytes_out`, `quic_flows`, `quic_rejected`, `quic_flows_open`;
+`xproxy_tcp_*` and `xproxy_quic_*` metrics. QUIC
 flows are keyed by client address, so a client that migrates to a new
 address starts a new flow (its first packet is not an Initial and is
 dropped; the client falls back or retries); QUIC versions other than 1
@@ -227,7 +241,8 @@ that owns a UDP socket.
 | `max_sessions_per_ip` | int | `64` | Sessions from one address; `0` removes the bound. This is what keeps one source, or one forged source, from filling the table |
 | `max_datagram_bytes` | int | `65535` | The largest datagram relayed either way. A larger one is dropped whole rather than truncated, because half a datagram is not a shorter datagram |
 | `max_datagrams` | int | `0` | Datagrams in one session, both directions; `0` is no bound |
-| `max_bytes` | int | `0` | Bytes in one session, both directions; `0` is no bound |
+| `max_bytes_in` | int | `0` | Bytes one session relays from the client; `0` is no bound |
+| `max_bytes_out` | int | `0` | Bytes it relays back; `0` is no bound |
 | `rate_limit.pps` | float | none | Datagrams per second from one source address |
 | `rate_limit.burst` | int | `pps` rounded up | How many may arrive at once |
 | `allow_clients` | list | `[]` (any) | CIDRs a client must come from |

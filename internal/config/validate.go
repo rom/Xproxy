@@ -2842,6 +2842,15 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	if t.MaxConnections < 1 {
 		v.errf("%s.max_connections: must be positive", p)
 	}
+	if t.SessionTimeout < 0 || t.SessionTimeout > Duration(7*24*time.Hour) {
+		v.errf("%s.session_timeout: must not be negative and at most 168h", p)
+	}
+	if t.SessionTimeout > 0 && t.SessionTimeout < t.IdleTimeout {
+		v.errf("%s.session_timeout: must not be shorter than idle_timeout, which would end every connection at the same moment", p)
+	}
+	if t.MaxBytesIn < 0 || t.MaxBytesOut < 0 {
+		v.errf("%s: max_bytes_in and max_bytes_out must not be negative", p)
+	}
 	if t.QUICIdleTimeout <= 0 || t.QUICIdleTimeout > Duration(time.Hour) {
 		v.errf("%s.quic_idle_timeout: must be positive and at most 1h", p)
 	}
@@ -2885,8 +2894,8 @@ func (v *validator) udpListener(p string, u *UDPListener, address string) {
 	if u.MaxDatagrams < 0 {
 		v.errf("%s.max_datagrams: must not be negative", p)
 	}
-	if u.MaxBytes < 0 {
-		v.errf("%s.max_bytes: must not be negative", p)
+	if u.MaxBytesIn < 0 || u.MaxBytesOut < 0 {
+		v.errf("%s: max_bytes_in and max_bytes_out must not be negative", p)
 	}
 	if u.RateLimit != nil {
 		if u.RateLimit.PPS <= 0 {

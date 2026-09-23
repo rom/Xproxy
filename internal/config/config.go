@@ -1686,6 +1686,18 @@ type TCPListener struct {
 	// IdleTimeout closes a connection with no bytes in either direction.
 	// Default 10m.
 	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole connection however active. Default
+	// 0, no bound. A listener with no parser in the path has only time
+	// and bytes to bound a session with, because nothing here can say
+	// what the connection is doing.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// MaxBytesIn bounds what one connection relays from the client and
+	// MaxBytesOut what it relays back. Past either the connection is
+	// closed, rather than the stream being truncated: a relay that
+	// silently stopped forwarding would look to both peers like a
+	// network that had gone quiet. Both default 0, no bound.
+	MaxBytesIn  int64 `yaml:"max_bytes_in"`
+	MaxBytesOut int64 `yaml:"max_bytes_out"`
 	// ProxyProtocol sends a PROXY protocol v2 header to the upstream with
 	// the client address.
 	ProxyProtocol bool `yaml:"proxy_protocol"`
@@ -1749,10 +1761,14 @@ type UDPListener struct {
 	// carries. A larger one is dropped and counted rather than
 	// truncated, because half a datagram is not a shorter datagram.
 	MaxDatagramBytes int `yaml:"max_datagram_bytes"`
-	// MaxDatagrams and MaxBytes bound one session. Past either the
-	// session is ended and counted. Both default 0, no bound.
+	// MaxDatagrams bounds the datagrams of one session, both directions
+	// together. MaxBytesIn bounds what the session relays from the
+	// client and MaxBytesOut what it relays back, the same two names a
+	// kind: tcp listener uses. Past any of them the session ends and is
+	// counted. All default 0, no bound.
 	MaxDatagrams int64 `yaml:"max_datagrams"`
-	MaxBytes     int64 `yaml:"max_bytes"`
+	MaxBytesIn   int64 `yaml:"max_bytes_in"`
+	MaxBytesOut  int64 `yaml:"max_bytes_out"`
 	// RateLimit bounds datagrams per second from one source address.
 	// Without it a single source can drive the whole relay.
 	RateLimit *UDPRateLimit `yaml:"rate_limit"`

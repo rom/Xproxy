@@ -5598,6 +5598,13 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "max_bytes_in": {
+          "description": "MaxBytesIn bounds what one connection relays from the client and MaxBytesOut what it relays back. Past either the connection is closed, rather than the stream being truncated: a relay that silently stopped forwarding would look to both peers like a network that had gone quiet. Both default 0, no bound.",
+          "type": "integer"
+        },
+        "max_bytes_out": {
+          "type": "integer"
+        },
         "max_connections": {
           "description": "MaxConnections bounds open connections on this listener (in addition to the global limits). Default 10000.",
           "type": "integer"
@@ -5620,6 +5627,11 @@
           "items": {
             "$ref": "#/$defs/TCPRoute"
           }
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
         "yara": {
           "description": "YARA applies rules to the bytes of each connection. It does not apply to QUIC flows: those are encrypted, and a rule over ciphertext matches nothing.",
@@ -5907,7 +5919,10 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
-        "max_bytes": {
+        "max_bytes_in": {
+          "type": "integer"
+        },
+        "max_bytes_out": {
           "type": "integer"
         },
         "max_datagram_bytes": {
@@ -5915,7 +5930,7 @@
           "type": "integer"
         },
         "max_datagrams": {
-          "description": "MaxDatagrams and MaxBytes bound one session. Past either the session is ended and counted. Both default 0, no bound.",
+          "description": "MaxDatagrams bounds the datagrams of one session, both directions together. MaxBytesIn bounds what the session relays from the client and MaxBytesOut what it relays back, the same two names a kind: tcp listener uses. Past any of them the session ends and is counted. All default 0, no bound.",
           "type": "integer"
         },
         "max_sessions": {

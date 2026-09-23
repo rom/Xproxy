@@ -73,10 +73,14 @@ type Stats struct {
 	TCPConnections   atomic.Uint64
 	TCPRejected      atomic.Uint64
 	TCPErrors        atomic.Uint64
-	TCPBytesIn       atomic.Uint64
-	TCPBytesOut      atomic.Uint64
-	QUICFlows        atomic.Uint64
-	QUICRejected     atomic.Uint64
+	// TCPBounded counts connections a listener bound ended rather than
+	// a peer: the session lifetime or a byte bound. The access log's
+	// closed field says which.
+	TCPBounded   atomic.Uint64
+	TCPBytesIn   atomic.Uint64
+	TCPBytesOut  atomic.Uint64
+	QUICFlows    atomic.Uint64
+	QUICRejected atomic.Uint64
 	// The generic datagram relay. Dropped counts datagrams the relay
 	// would not forward and could not refuse -- there is nothing to
 	// refuse a datagram with -- with the reason in the security log.
@@ -325,6 +329,7 @@ type Snapshot struct {
 	TCPConnections         uint64            `json:"tcp_connections"`
 	TCPRejected            uint64            `json:"tcp_rejected"`
 	TCPErrors              uint64            `json:"tcp_errors"`
+	TCPBounded             uint64            `json:"tcp_bounded"`
 	TCPBytesIn             uint64            `json:"tcp_bytes_in"`
 	TCPBytesOut            uint64            `json:"tcp_bytes_out"`
 	QUICFlows              uint64            `json:"quic_flows"`
@@ -539,6 +544,7 @@ func (s *Stats) snapshot() Snapshot {
 		TCPConnections:         s.TCPConnections.Load(),
 		TCPRejected:            s.TCPRejected.Load(),
 		TCPErrors:              s.TCPErrors.Load(),
+		TCPBounded:             s.TCPBounded.Load(),
 		TCPBytesIn:             s.TCPBytesIn.Load(),
 		TCPBytesOut:            s.TCPBytesOut.Load(),
 		QUICFlows:              s.QUICFlows.Load(),

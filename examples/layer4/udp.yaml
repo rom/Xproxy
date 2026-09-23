@@ -56,7 +56,8 @@ server:
         # address and nothing more. Past either bound the session ends
         # and the client starts a new one.
         max_datagrams: 2000000
-        max_bytes: 2147483648
+        max_bytes_in: 1073741824
+        max_bytes_out: 2147483648
 
         # A public listener with no client list needs this: it is the
         # only thing between the relay and being used as an amplifier.

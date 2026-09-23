@@ -311,8 +311,10 @@ func (s *server) checkBounds(se *session) bool {
 	switch {
 	case u.MaxDatagrams > 0 && se.dgramsIn.Load()+se.dgramsOut.Load() >= u.MaxDatagrams:
 		s.finish(se, "max_datagrams")
-	case u.MaxBytes > 0 && se.in.Load()+se.out.Load() >= u.MaxBytes:
-		s.finish(se, "max_bytes")
+	case u.MaxBytesIn > 0 && se.in.Load() >= u.MaxBytesIn:
+		s.finish(se, "max_bytes_in")
+	case u.MaxBytesOut > 0 && se.out.Load() >= u.MaxBytesOut:
+		s.finish(se, "max_bytes_out")
 	case u.SessionTimeout > 0 && time.Since(se.start) >= u.SessionTimeout.D():
 		s.finish(se, "session_timeout")
 	default:
