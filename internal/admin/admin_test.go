@@ -110,7 +110,7 @@ func startFakeMgmt(t *testing.T) *fakeMgmt {
 			_, _ = io.WriteString(w, answer)
 		}
 	}
-	mux.HandleFunc("POST /v1/mfa/enrol", mfa(`{"ok":true,"secret":"JBSWY3DPEHPK3PXPJBSWY3DPEH","uri":"otpauth://totp/xproxy:alice?secret=JBSWY3DPEHPK3PXPJBSWY3DPEH","recovery":["abcde-fghij-klmno"],"show_once":true}`))
+	mux.HandleFunc("POST /v1/mfa/enrol", mfa(`{"ok":true,"secret":"JBSWY3DPEHPK3PXPJBSWY3DPEH","uri":"otpauth://totp/xproxy:alice?secret=JBSWY3DPEHPK3PXPJBSWY3DPEH","qr":"data:image/png;base64,iVBORw0KGgo=","recovery":["abcde-fghij-klmno"],"show_once":true}`))
 	mux.HandleFunc("POST /v1/mfa/recovery", mfa(`{"ok":true,"recovery":["pqrst-uvwxy-23456"],"show_once":true}`))
 	mux.HandleFunc("POST /v1/mfa/remove", mfa(`{"ok":true}`))
 	mux.HandleFunc("POST /v1/mfa/unlock", mfa(`{"ok":true}`))

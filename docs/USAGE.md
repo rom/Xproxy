@@ -2986,6 +2986,13 @@ nothing. In `xproxyctl tui`, the MFA screen shows the same list; `u`
 unlocks the selected person and `x` removes their second factor, each
 after a confirmation.
 
+The GUI's enrolment shows a QR code of the `otpauth://` URI beside it:
+point the authenticator at the screen rather than typing twenty-six
+characters into a telephone, which is where enrolments go wrong. The
+symbol is drawn by the daemon and arrives as an image in the answer, so
+nothing is fetched from anywhere and the URI is there to read either
+way.
+
 Enrolling is only in the GUI and in `xproxyctl mfa enrol`, because the
 secret, the `otpauth://` URI and the recovery codes exist in exactly one
 answer and are never stored: the file keeps what checks a code and

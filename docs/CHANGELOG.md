@@ -344,11 +344,23 @@ Open findings of the earlier rounds:
     kind implements, so the enrolments stay where the listener's own
     skew and lockout settings are and nothing had to move into the
     engine.
+  - **A QR code of the enrolment URI** (`internal/qr`), because the
+    alternative is typing a twenty-six character secret into a
+    telephone. The encoder is a small one — byte mode, error
+    correction level M, every version from 1 to 40 — written here
+    rather than pulled in, since the symbol has to be drawn under a
+    content security policy that fetches nothing and runs no library.
+    The daemon draws it and the answer carries it as a PNG `data:`
+    URI. A QR encoder is the kind of code that runs and is wrong, so
+    the test compares 640 symbols — every version, every mask, two
+    payload sizes — against an implementation that has nothing to do
+    with this one, and pins the error correction to the worked example
+    in ISO/IEC 18004.
   - **The GUI has an MFA page.** A viewer sees who is enrolled and who
     is locked out, which holds no secret; an operator enrols, replaces
     recovery codes, removes and unlocks. What an enrolment answers with
-    -- the secret, the `otpauth://` URI and the recovery codes -- is
-    passed through as it arrived and shown once, in a panel that stays
+    -- the secret, the `otpauth://` URI, the QR code and the recovery
+    codes -- is passed through as it arrived and shown once, in a panel that stays
     until it is dismissed, which is why that page is the one with no
     refresh timer: a timer would wipe it while it was still being
     written down.

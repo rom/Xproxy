@@ -1264,7 +1264,7 @@ Endpoints:
 | POST | `/v1/logs/reopen` | reopen log files |
 | GET | `/v1/bans`, POST `/v1/bans`, DELETE `/v1/bans?target=` | ban list |
 | GET | `/v1/mfa` | every listener that asks for a second factor: its kind, its enrolment file, and who is enrolled with the parameters, recovery codes left, failures and lockout this process remembers |
-| POST | `/v1/mfa/enrol` | enrol `user` on `listener`, optionally with `issuer`, `digits`, `period_seconds` and `algo`; answers with the secret, the `otpauth://` URI and the recovery codes, which exist only in that answer (audited) |
+| POST | `/v1/mfa/enrol` | enrol `user` on `listener`, optionally with `issuer`, `digits`, `period_seconds` and `algo`; answers with the secret, the `otpauth://` URI, that URI drawn as a QR code (a PNG `data:` URI) and the recovery codes, which exist only in that answer (audited) |
 | POST | `/v1/mfa/recovery` | replace a person's recovery codes and return the new ones (audited) |
 | POST | `/v1/mfa/remove` | take a person's second factor away (audited) |
 | POST | `/v1/mfa/unlock` | let a person try again after too many wrong codes; a spent code stays spent (audited) |
@@ -1319,10 +1319,13 @@ enrolments of every listener (readable by a viewer: it holds no secret)
 and posts enrolments, recovery code replacements, removals and unlocks
 to the socket's audited endpoints, adding an audit line of its own for
 the operator who asked, since the socket sees only the GUI process. What
-an enrolment answers with — the secret, the `otpauth://` URI and the
-recovery codes — is passed through as it arrived and shown once, in a
-panel that stays until it is dismissed; the page has no refresh timer
-for that reason. And the two things the socket does not offer, editing
+an enrolment answers with — the secret, the `otpauth://` URI, that URI
+drawn as a QR code and the recovery codes — is passed through as it
+arrived and shown once, in a panel that stays until it is dismissed;
+the page has no refresh timer for that reason. The symbol is drawn by
+the daemon (`internal/qr`, byte mode at error correction level M) and
+travels as a PNG `data:` URI, so the page needs neither an image host
+nor a script library under a policy that permits neither. And the two things the socket does not offer, editing
 the configuration file and following log files, are done by the GUI process itself on files
 it owns or may read. Configuration edits go through the full validator
 with file checks before anything is written; writes are atomic with a

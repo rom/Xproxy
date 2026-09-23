@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/mfa"
+	"github.com/rom/xproxy/internal/qr"
 )
 
 // The second factor as the control plane changes it. Enrolling and
@@ -55,6 +56,12 @@ type MFAEnrolled struct {
 	// an authenticator reads from a QR code.
 	Secret string `json:"secret"`
 	URI    string `json:"uri"`
+	// QR is the URI again as a PNG `data:` URI, because typing a
+	// twenty-six character secret into a telephone by hand is how
+	// enrolments go wrong. It is empty when the URI is too long for a
+	// symbol, which nothing this makes comes near; a caller that has
+	// the URI needs nothing from it.
+	QR string `json:"qr,omitempty"`
 	// Recovery are the single-use codes. The file keeps only hashes of
 	// them, so this is the one time they can be read.
 	Recovery []string `json:"recovery"`
@@ -116,7 +123,7 @@ func (s *Server) mfaEnrol(w http.ResponseWriter, r *http.Request) {
 	}
 	secret, uri, recovery, err := s.proxy.MFAEnrol(m.Listener, m.User, m.Issuer, m.params())
 	s.auditMFA(w, r, "mfa_enrol", m, err, func() any {
-		return MFAEnrolled{OK: true, Secret: secret, URI: uri, Recovery: recovery, ShowOnce: true}
+		return MFAEnrolled{OK: true, Secret: secret, URI: uri, QR: qrOf(uri), Recovery: recovery, ShowOnce: true}
 	})
 }
 
@@ -130,6 +137,27 @@ func (s *Server) mfaRecovery(w http.ResponseWriter, r *http.Request) {
 	s.auditMFA(w, r, "mfa_recovery", m, err, func() any {
 		return MFAEnrolled{OK: true, Recovery: codes, ShowOnce: true}
 	})
+}
+
+// qrOf draws the URI as a symbol an authenticator can be pointed at.
+// A failure is not one: the URI is in the same answer, and an operator
+// reading out a secret is worse off without a picture but not stuck.
+func qrOf(uri string) string {
+	if uri == "" {
+		return ""
+	}
+	code, err := qr.Encode(uri)
+	if err != nil {
+		return ""
+	}
+	// Four modules of quiet zone is what the standard asks for, and
+	// four pixels a module keeps a telephone camera happy at arm's
+	// length without making the answer large.
+	data, err := code.DataURI(4, 4)
+	if err != nil {
+		return ""
+	}
+	return data
 }
 
 // auditMFA writes the audit line and the answer. The line names the
