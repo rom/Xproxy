@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"net"
 
+	"github.com/rom/xproxy/internal/ntlm"
 	"github.com/rom/xproxy/internal/rdp"
 )
 
@@ -168,12 +169,27 @@ func (se *session) upstreamTLSFor(base *tls.Config) *tls.Config {
 	return tc
 }
 
-// upstreamNLA would prove a credential to a desktop that insists on
-// network level authentication. Validation refuses that setting for
-// now, so this is unreachable; it is here so the protocol switch above
-// names every case rather than falling through one silently.
-func (se *session) upstreamNLA(_ *tls.Conn) string {
-	se.t.engine.Logs().Error.Warn("rdp network level authentication towards a desktop is not implemented",
-		"listener", se.t.cfg.Name, "target", se.target)
-	return "upstream_nla_unsupported"
+// upstreamNLA proves a credential to a desktop that insists on network
+// level authentication, which is what a current Windows install does
+// by default.
+//
+// The credential is the gateway's own, named by upstream_user, and
+// validation requires it: the exchange happens inside the tunnel
+// before the connection sequence starts, which is before the person at
+// the other end has sent anything at all. That ordering is the whole
+// reason network level authentication exists, and it is also why a
+// gateway cannot pass a person's own credential through it.
+func (se *session) upstreamNLA(conn *tls.Conn) string {
+	t := se.t
+	err := rdp.Authenticate(context.Background(), conn, ntlm.Credential{
+		Domain: t.upDomain, User: t.upUser, Password: t.upPassword,
+		Workstation: t.cfg.Name,
+	})
+	if err != nil {
+		t.engine.Logs().Error.Warn("rdp network level authentication to the desktop failed",
+			"listener", t.cfg.Name, "target", se.target,
+			"user", t.upUser, "err", err.Error())
+		return "upstream_nla_failed"
+	}
+	return ""
 }

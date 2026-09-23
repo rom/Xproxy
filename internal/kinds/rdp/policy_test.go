@@ -343,7 +343,7 @@ func TestTheRecordingHoldsTheStream(t *testing.T) {
 func TestTheConfigurationIsChecked(t *testing.T) {
 	cases := []struct{ name, rdp, want string }{
 		{"nla towards a client", `{upstream: farm, security: [nla]}`, "own password"},
-		{"nla towards a desktop", `{upstream: farm, upstream_security: nla}`, "not implemented"},
+		{"nla with no credential to prove", `{upstream: farm, upstream_security: nla}`, "upstream_user"},
 		{"the legacy protocol towards a client", `{upstream: farm, security: [rdp]}`, "not implemented"},
 		{"the legacy protocol towards a desktop", `{upstream: farm, upstream_security: rdp}`, "not implemented"},
 		{"devices without their channel", `{upstream: farm, devices: {allow: [drive]}}`, "could announce"},

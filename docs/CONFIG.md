@@ -1197,7 +1197,7 @@ documented.
 | Protocol | Towards a client | Towards a desktop |
 |----------|------------------|-------------------|
 | TLS (`tls`, `PROTOCOL_SSL`) | Supported, the default | Supported, the default |
-| Network level authentication (`nla`, `PROTOCOL_HYBRID`) | **Not offered, and cannot be** — see below | Not implemented yet |
+| Network level authentication (`nla`, `PROTOCOL_HYBRID`) | **Not offered, and cannot be** — see below | Supported: CredSSP over NTLMv2 |
 | The protocol's own encryption (`rdp`, `PROTOCOL_RDP`) | Not implemented yet | Not implemented yet |
 
 **A client that asks for network level authentication is answered with
@@ -1214,6 +1214,32 @@ the client and the gateway, authentication happens after the connection
 is established rather than before it, so the gateway itself must be
 reachable only by the people who should reach it (`allow_clients`, and
 a network that agrees).
+
+**Network level authentication towards a desktop** (`upstream_security:
+nla`) is what a current Windows install requires by default. The
+gateway proves a credential with CredSSP (MS-CSSP) carrying NTLM
+version 2 (MS-NLMP) inside the TLS tunnel, before the connection
+sequence starts.
+
+- It needs `upstream_user` and `upstream_password_file`, and validation
+  says so. There is no way to pass the person's own credential through
+  it: the exchange happens before the person has sent anything at all,
+  which is the whole reason network level authentication exists.
+- The exchange is **bound to the tunnel it runs in**. Each end proves
+  it saw the same certificate, from CredSSP version 5 onwards as a hash
+  over a fresh nonce, so tokens relayed into another connection fail.
+  A desktop whose binding does not match gets no credential.
+- The gateway insists on **extended session security** and a key
+  exchange. A server offering neither is refused rather than fallen
+  back to: the credential's protection rests on those session keys.
+- Only the client half is implemented — this proves a credential, it
+  never checks one. Checking would mean the gateway holding a password
+  hash for whoever connects, which is the thing it exists to avoid.
+
+The NTLM key derivation is tested against the worked example of MS-NLMP
+§4.2.4, and the whole exchange against a stand-in for the Windows side.
+It has **not** been verified against a real Windows desktop in this
+repository's tests.
 
 **What the gateway does not decode**: the graphics, input, clipboard
 contents, audio, licensing and capability exchange. Those are relayed
@@ -1276,7 +1302,7 @@ policy that quietly did not apply is worse than a session that stops.
 |-----|------|---------|-------------|
 | `upstream` | string | required | The pool of desktops |
 | `security` | list | `[tls]` | What a client may use. Only `tls` for now; see the table above |
-| `upstream_security` | string | `tls` | What this proxy uses towards the desktop |
+| `upstream_security` | string | `tls` | What this proxy uses towards the desktop: `tls`, or `nla` with a credential to prove |
 | `upstream_tls` | object | none | CA and name for the desktop's leg |
 | `upstream_user` | string | none | The login this proxy opens the desktop with. With it, the person's own credential never reaches the desktop |
 | `upstream_domain` | string | none | The domain that goes with `upstream_user` |

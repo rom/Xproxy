@@ -5982,10 +5982,13 @@ func (v *validator) rdpListener(p string, c *RDPListener, hasTLS bool) {
 	switch strings.ToLower(strings.TrimSpace(c.UpstreamSecurity)) {
 	case "tls":
 	case "nla":
-		// Proving a credential during the handshake is CredSSP over
-		// NTLM, which is a separate piece of work: it is refused at
-		// load rather than failing at the first session.
-		v.errf("%s.upstream_security: nla towards a desktop is not implemented yet; use tls, which every Windows desktop accepts unless network level authentication is required of it", p)
+		if c.UpstreamUser == "" || c.UpstreamPasswordFile == "" {
+			// The exchange happens inside the tunnel before the
+			// connection sequence starts, which is before the person
+			// at the other end has sent anything: there is no
+			// credential to pass through, only one to configure.
+			v.errf("%s.upstream_security: nla towards a desktop needs upstream_user and upstream_password_file, since the credential is proved before the person's own has been sent", p)
+		}
 	case "rdp":
 		v.errf("%s.upstream_security: rdp, the protocol's own encryption, is not implemented yet; use tls", p)
 	default:
