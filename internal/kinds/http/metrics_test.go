@@ -31,11 +31,20 @@ routes:
 	get(t, url+"/", "Host", "nf.test")
 	get(t, url+"/", "Host", "nowhere.test") // routes to web (catch-all) -> 200
 
-	var buf bytes.Buffer
-	if err := s.WriteMetrics(&buf); err != nil {
-		t.Fatal(err)
-	}
-	out := buf.String()
+	// The response counters are written by logAccess, after the client
+	// already has the body, so wait for them to catch up rather than
+	// reading the exposition the instant the last get returns.
+	var out string
+	eventually(t, 10*time.Second, "the response counters to catch up with the five requests", func() bool {
+		var buf bytes.Buffer
+		if err := s.WriteMetrics(&buf); err != nil {
+			t.Fatal(err)
+		}
+		out = buf.String()
+		return strings.Contains(out, `xproxy_responses_total{class="2xx"} 4`) &&
+			strings.Contains(out, `xproxy_responses_total{class="4xx"} 1`) &&
+			strings.Contains(out, `xproxy_request_duration_seconds_count 5`)
+	})
 	for _, want := range []string{
 		"# TYPE xproxy_requests_total counter\nxproxy_requests_total 5\n",
 		`xproxy_responses_total{class="2xx"} 4`,
@@ -55,7 +64,7 @@ routes:
 		`xproxy_config_generation 1`,
 	} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("missing %q in exposition:\n%s", want, out)
+			t.Errorf("missing %q in exposition:\n%s", want, out)
 		}
 	}
 	// Every family declared once; no duplicate TYPE lines.

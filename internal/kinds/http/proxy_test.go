@@ -95,6 +95,26 @@ func get(t *testing.T, url string, hdr ...string) (*http.Response, string) {
 	return resp, string(b)
 }
 
+// eventually retries ok until it holds or d passes. The counters, the
+// access log and the capture file are all written after the client has
+// its response -- logAccess, which calls CountStatus, runs once the body
+// has gone out -- so a test that reads them the instant a request
+// returns is racing the goroutine that records them. On an idle machine
+// it wins that race; under load it does not, which is what a flake is.
+func eventually(t *testing.T, d time.Duration, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for {
+		if ok() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("waited %s for %s and it did not happen", d, what)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 const baseYAML = `
 version: 1
 server:

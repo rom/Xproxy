@@ -326,6 +326,20 @@ Open findings of the earlier rounds:
   defaults. A request that does not fit is refused with 503 before it
   is read.
 
+### Fixed (1.4, tests)
+
+- **Two tests raced the goroutine that records what they assert on.**
+  `CountStatus` is called from `logAccess`, which runs once the response
+  body has gone out, so a client can have its whole response before the
+  counter moves; the capture file is likewise written after the exchange
+  is counted. `TestWriteMetrics` and
+  `TestCaptureWritesTheDecryptedExchange` read both the instant the
+  request returned, won that race on an idle machine and lost it under
+  load — one run in six with the suite contending for four cores. They
+  wait for the value now, through a shared `eventually` helper. The
+  behaviour they were testing is correct: metrics and captures are
+  eventually consistent with respect to the client by design.
+
 ### Fixed (1.4)
 
 Three regressions the split introduced, found by re-reading the carve
