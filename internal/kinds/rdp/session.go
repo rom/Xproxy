@@ -117,8 +117,14 @@ func (se *session) pumpToClient() string {
 		if err != nil {
 			return endReason(err)
 		}
-		se.rec.Out(pdu.Raw)
-		if _, err := se.client.Write(pdu.Raw); err != nil {
+		out, reason := se.fromTarget(pdu)
+		if reason != "" {
+			return reason
+		}
+		// The recording is of the session, so it holds what the
+		// desktop showed rather than the ciphertext it showed it in.
+		se.rec.Out(out)
+		if _, err := se.client.Write(out); err != nil {
 			return "write"
 		}
 	}
@@ -148,13 +154,60 @@ func (se *session) pumpToTarget() string {
 	}
 }
 
+// fromTarget turns one unit from the desktop into what the client's
+// leg should carry. With TLS on both legs that is the unit itself;
+// with the protocol's own encryption towards the desktop it is the
+// same unit decrypted, because the client's leg is not encrypted that
+// way and because a recording of ciphertext is of no use to anybody.
+func (se *session) fromTarget(pdu rdp.PDU) ([]byte, string) {
+	if se.legacy == nil {
+		return pdu.Raw, ""
+	}
+	if pdu.FastPath {
+		out, err := se.legacy.openFast(pdu.Raw)
+		if err != nil {
+			se.t.engine.Logs().Error.Warn("rdp legacy fast path unit from the desktop could not be read",
+				"listener", se.t.cfg.Name, "target", se.target, "err", err.Error())
+			return nil, "upstream_encryption"
+		}
+		return out, ""
+	}
+	payload, err := rdp.X224Payload(pdu.Body)
+	if err != nil {
+		return pdu.Raw, "" // not a data unit: the conference layer's own
+	}
+	data, ok, err := rdp.ParseSendData(payload)
+	if err != nil || !ok {
+		return pdu.Raw, ""
+	}
+	plain, err := se.legacy.open(data.Payload)
+	if err != nil {
+		se.t.engine.Logs().Error.Warn("rdp legacy unit from the desktop could not be read",
+			"listener", se.t.cfg.Name, "target", se.target, "err", err.Error())
+		return nil, "upstream_encryption"
+	}
+	out, err := rewrap(data, plain)
+	if err != nil {
+		return nil, "upstream_encryption"
+	}
+	return out, ""
+}
+
 // decide says what to do with one unit from the client: forward it as
 // it arrived, forward something else, or drop it.
 func (se *session) decide(pdu rdp.PDU) (out []byte, drop bool, reason string) {
 	// Fast path carries input events and nothing else, so there is
 	// nothing in it to decide.
 	if pdu.FastPath {
-		return pdu.Raw, false, ""
+		if se.legacy == nil {
+			return pdu.Raw, false, ""
+		}
+		sealed, err := se.legacy.sealFast(pdu.Raw)
+		if err != nil {
+			se.t.deny(se.ip, "rdp_fast_path", err.Error())
+			return nil, false, "client_protocol"
+		}
+		return sealed, false, ""
 	}
 	payload, err := rdp.X224Payload(pdu.Body)
 	if err != nil {
@@ -182,7 +235,7 @@ func (se *session) decide(pdu rdp.PDU) (out []byte, drop bool, reason string) {
 	case rdp.EqualNames(se.channelName[data.Channel], rdp.ChannelDeviceRedirection):
 		return se.decideDevices(data)
 	}
-	return pdu.Raw, false, ""
+	return se.toTarget(data, data.Payload)
 }
 
 // endReason names why a copy stopped.
@@ -198,4 +251,24 @@ func endReason(err error) string {
 func rewrap(data rdp.SendData, payload []byte) ([]byte, error) {
 	data.Payload = payload
 	return rdp.DataPDU(data.Encode())
+}
+
+// toTarget is the one seam every unit bound for the desktop passes
+// through, so that the encryption on that leg is applied in one place
+// rather than at each of the points that rewrite a payload.
+func (se *session) toTarget(data rdp.SendData, payload []byte) ([]byte, bool, string) {
+	if se.legacy == nil {
+		out, err := rewrap(data, payload)
+		if err != nil {
+			return nil, false, "client_protocol"
+		}
+		return out, false, ""
+	}
+	out, err := se.legacy.seal(data, payload)
+	if err != nil {
+		se.t.engine.Logs().Error.Warn("rdp legacy unit for the desktop could not be sealed",
+			"listener", se.t.cfg.Name, "target", se.target, "err", err.Error())
+		return nil, false, "upstream_encryption"
+	}
+	return out, false, ""
 }

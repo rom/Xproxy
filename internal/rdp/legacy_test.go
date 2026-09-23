@@ -344,3 +344,160 @@ func TestSecurityExchangeShape(t *testing.T) {
 		t.Error("the sealed random did not survive")
 	}
 }
+
+// TestAPacketSurvivesTheRoundTrip: what one end seals the other opens,
+// with the header's own flags kept and the encryption flag added.
+func TestAPacketSurvivesTheRoundTrip(t *testing.T) {
+	client, server := pair(t, Encryption128Bit)
+	payload := []byte("the client info packet, or anything else")
+	sealed, err := client.Seal(SecInfoPkt, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, rest, err := ParseSecurityHeader(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.Flags != SecInfoPkt|SecEncrypt {
+		t.Fatalf("flags %#x", head.Flags)
+	}
+	if bytes.Contains(sealed, payload) {
+		t.Fatal("the payload travelled in clear inside the sealed packet")
+	}
+	plain, err := server.Open(rest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(plain, payload) {
+		t.Fatalf("round trip gave %q", plain)
+	}
+}
+
+// TestATamperedPacketIsRefused: the signature is what says the packet
+// arrived as it left, and a gateway that shrugged at a bad one would
+// be forwarding whatever somebody on the path put there.
+func TestATamperedPacketIsRefused(t *testing.T) {
+	for _, flip := range []int{0, 3, 8, 20} {
+		client, server := pair(t, Encryption128Bit)
+		sealed, err := client.Seal(0, []byte("0123456789abcdefghij"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, rest, err := ParseSecurityHeader(sealed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if flip >= len(rest) {
+			continue
+		}
+		rest[flip] ^= 0x01
+		if _, err := server.Open(rest); err == nil {
+			t.Fatalf("a packet with byte %d flipped was accepted", flip)
+		}
+	}
+}
+
+// TestAShortEncryptedPacketIsRefused: everything after the header is
+// the peer's to choose, including its length.
+func TestAShortEncryptedPacketIsRefused(t *testing.T) {
+	_, server := pair(t, Encryption128Bit)
+	for n := 0; n < 8; n++ {
+		if _, err := server.Open(make([]byte, n)); err == nil {
+			t.Fatalf("an encrypted payload of %d bytes was accepted", n)
+		}
+	}
+}
+
+// TestFastPathSurvivesTheRoundTrip: the other framing, where the
+// header says whether the rest is encrypted and the length has to be
+// rewritten because the signature changes the size.
+func TestFastPathSurvivesTheRoundTrip(t *testing.T) {
+	for _, size := range []int{1, 100, 118, 119, 120, 200, 4000} {
+		client, server := pair(t, Encryption128Bit)
+		body := bytes.Repeat([]byte{0xAB}, size)
+		raw := fastPathUnit(body)
+		if FastPathEncrypted(raw) {
+			t.Fatal("a plain unit says it is encrypted")
+		}
+		sealed, err := client.FastPathSeal(raw)
+		if err != nil {
+			t.Fatalf("%d bytes: %v", size, err)
+		}
+		if !FastPathEncrypted(sealed) {
+			t.Fatalf("%d bytes: the sealed unit does not say so", size)
+		}
+		if n := fastPathLength(t, sealed); n != len(sealed) {
+			t.Fatalf("%d bytes: the header says %d and the unit is %d", size, n, len(sealed))
+		}
+		back, err := server.FastPathOpen(sealed)
+		if err != nil {
+			t.Fatalf("%d bytes: %v", size, err)
+		}
+		if FastPathEncrypted(back) {
+			t.Fatalf("%d bytes: the opened unit still says it is encrypted", size)
+		}
+		if n := fastPathLength(t, back); n != len(back) {
+			t.Fatalf("%d bytes: the opened header says %d and the unit is %d", size, n, len(back))
+		}
+		if _, got, err := splitFastPath(back); err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("%d bytes: round trip gave %x (%v)", size, got, err)
+		}
+	}
+}
+
+func TestFastPathRefusesWhatIsNotOne(t *testing.T) {
+	client, _ := pair(t, Encryption128Bit)
+	for _, raw := range [][]byte{{}, {0x00}, {0x00, 0x80}} {
+		if _, err := client.FastPathSeal(raw); err == nil {
+			t.Fatalf("a unit of %d bytes was sealed", len(raw))
+		}
+	}
+	if FastPathEncrypted(nil) {
+		t.Fatal("nothing says it is encrypted")
+	}
+}
+
+// pair builds the two ends of a session, each with the other's view of
+// the two keys.
+func pair(t *testing.T, method uint32) (client, server *Crypt) {
+	t.Helper()
+	clientRandom, serverRandom := make([]byte, RandomSize), make([]byte, RandomSize)
+	for i := range clientRandom {
+		clientRandom[i], serverRandom[i] = byte(i), byte(255-i)
+	}
+	keys, err := DeriveKeys(method, clientRandom, serverRandom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client, err = NewCrypt(keys, keys.Encrypt, method); err != nil {
+		t.Fatal(err)
+	}
+	if server, err = NewCrypt(keys, keys.Encrypt, method); err != nil {
+		t.Fatal(err)
+	}
+	return client, server
+}
+
+// fastPathUnit wraps a body in the framing, choosing the one or two
+// byte length the way a peer would.
+func fastPathUnit(body []byte) []byte {
+	if n := len(body) + 2; n < 0x80 {
+		return append([]byte{0x00, byte(n)}, body...)
+	}
+	n := len(body) + 3
+	return append([]byte{0x00, byte(0x80 | n>>8), byte(n)}, body...)
+}
+
+func fastPathLength(t *testing.T, raw []byte) int {
+	t.Helper()
+	if len(raw) < 2 {
+		t.Fatal("not a fast path unit")
+	}
+	if raw[1]&0x80 == 0 {
+		return int(raw[1])
+	}
+	if len(raw) < 3 {
+		t.Fatal("a two byte length with one byte there")
+	}
+	return int(raw[1]&0x7F)<<8 | int(raw[2])
+}

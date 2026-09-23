@@ -109,7 +109,8 @@ internal/kinds/rdp     kind: rdp -- connection sequence mediation, channel
 internal/rfb           the RFB wire format the vnc kind reads and writes
 internal/rdp           the RDP wire format the rdp kind reads and writes:
                        the negotiation, the channel list, the credential,
-                       and CredSSP for network level authentication
+                       CredSSP for network level authentication, and the
+                       protocol's own RC4 encryption for old desktops
 internal/ntlm          NTLM version 2, client half only, which CredSSP
                        carries
 internal/eax           AES-EAX, which RealVNC's rsa-aes types need and the

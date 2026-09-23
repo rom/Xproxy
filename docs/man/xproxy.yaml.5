@@ -2841,8 +2841,8 @@ The channel list is the important part. Every redirection RDP has \[u2014] drive
 .PP
 .TS
 allbox;
-lbw(1.5i) lbw(1.2i) lbx
-lw(1.5i) lw(1.2i) lx.
+lbw(1.5i) lbw(1.1i) lbx
+lw(1.5i) lw(1.1i) lx.
 T{
 Protocol
 T}	T{
@@ -2867,9 +2867,9 @@ T}
 T{
 The protocol\(aqs own encryption (\fBrdp\fR,\: \fBPROTOCOL_\:RDP\fR)
 T}	T{
-Not implemented \[u2014] see below
+Refused: it needs a signing key this build does not carry \[u2014] see below
 T}	T{
-Not wired up yet \[u2014] see below
+Supported,\: and worth what the section below says it is
 T}
 .TE
 .PP
@@ -2903,15 +2903,21 @@ The NTLM key derivation is tested against the worked example of MS\-NLMP \[u00A7
 .PP
 .ti -3n
 \(bu
-\fBTowards a desktop\fR, the cryptography is implemented and tested (\fBinternal/rdp\fR): the certificate is walked to its key, the random is sealed, the session keys are derived and the packets are signed, encrypted and re\-keyed. It is not yet wired into the session, because the session\(aqs own updates travel on the fast path with their own encryption flags, and that half is still to do. Setting it is refused at load rather than failing at the first connection.
+\fBTowards a desktop\fR (\fBupstream_security: rdp\fR) it works. The desktop\(aqs certificate is walked to its key, this end\(aqs random is sealed under it and sent as the security exchange, the session keys are derived, and from there everything the client sends is signed and encrypted on the way out while everything the desktop sends is decrypted on the way in \[u2014] on both framings, the connection sequence\(aqs data units and the fast path the session itself runs on. The key rolls over every 4096 packets as the protocol requires. Setting it logs a warning at load, because it is a downgrade an operator should have meant.
 .PP
 .ti -3n
 \(bu
-\fBTowards a client\fR it is not implemented at all, and there is a reason to say out loud rather than to work around: presenting the protocol\(aqs own certificate means signing it with a private key Microsoft published years ago. That is not a secret this project should ship on its own initiative, so the decision is left to whoever needs it.
+\fBTowards a client\fR it is refused at load. Offering it means presenting the protocol\(aqs own certificate, and a client checks that certificate\(aqs signature against a public key built into it \[u2014] the private half of which is the Terminal Services signing key published in MS\-RDPBCGR \[u00A7]5.3.3.1.1. This build carries no signing key, so a certificate it made would be refused by every client; refusing the setting at load says so before a connection does.
 .RE
 .PP
 .PP
-What it is worth either way is nothing, against anyone on the path: MD5 and SHA\-1 derivation, RC4, and a certificate a client has no way to check because the protocol never had anywhere to check it against. It would be here for equipment that speaks nothing else \[u2014] reached through a gateway that records the session and holds the policy, which is better than reached directly, and not because the connection is protected.
+Three things follow from the gateway being \fIinside\fR that encryption rather than outside it, and they are the reason to be there: the channel and device policy still applies, the second factor is still checked, and the recording holds the session rather than ciphertext.
+.PP
+What the encryption itself is worth is nothing, against anyone on the path: MD5 and SHA\-1 derivation, RC4 \[u2014] 40, 56 or 128 bit, whichever the desktop asks for \[u2014] and a certificate a client has no way to check, because the protocol never had anywhere to check it against. This gateway reads the key out of that certificate without checking it, which is the same position every client is in. FIPS mode (3DES with a different derivation and a different packet layout) is not implemented: a desktop that insists on it is refused rather than downgraded.
+.PP
+So it is here for equipment that speaks nothing else \[u2014] an appliance, an embedded console, a Windows install too old to offer TLS. Such a desktop reached through this gateway is better off than reached directly, because of the three things above. It is not better off because the connection is protected.
+.PP
+A desktop that asks for no encryption at all (\fBENCRYPTION_LEVEL_NONE\fR) is served, and the gateway writes a warning naming it, because a session nobody encrypts looks exactly like one everybody does.
 .PP
 \fBWhat the gateway does not decode\fR: the graphics, input, clipboard contents, audio, licensing and capability exchange. Those are relayed byte for byte. A recording is therefore the protocol stream, not a video \[u2014] see below.
 .SS "The channel policy"
@@ -3007,7 +3013,7 @@ list
 T}	T{
 \fB[tls]\fR
 T}	T{
-What a client may use. Only \fBtls\fR for now;\: see the table above
+What a client may use. Only \fBtls\fR;\: see the table above
 T}
 T{
 \fBupstream_\:security\fR
@@ -3016,7 +3022,7 @@ string
 T}	T{
 \fBtls\fR
 T}	T{
-What this proxy uses towards the desktop: \fBtls\fR,\: or \fBnla\fR with a credential to prove
+What this proxy uses towards the desktop: \fBtls\fR,\: \fBnla\fR with a credential to prove,\: or \fBrdp\fR for equipment that speaks nothing else
 T}
 T{
 \fBupstream_\:tls\fR
@@ -3169,7 +3175,7 @@ The file holds the desktop\-to\-client stream \[u2014] what was on the screen \[
 .PP
 \fBIt is not a video.\fR The event data is the protocol stream, so replaying it needs a player that speaks RDP rather than a terminal. That is the deliberate choice: decoding at capture time would mean implementing every graphics encoding a desktop might choose \[u2014] and silently losing whatever was not implemented \[u2014] while a decoder written against this file later loses nothing.
 .PP
-Counters: \fBrdp_sessions\fR, \fBrdp_sessions_open\fR, \fBrdp_rejected\fR, \fBrdp_refused\fR, \fBrdp_recorded\fR, \fBrdp_mfa_ok\fR, \fBrdp_mfa_failed\fR, \fBrdp_channels_refused\fR, \fBrdp_devices_refused\fR. Every session writes one \fBrdp\fR access line with both security protocols, the routing token, the user and domain, the channels asked for and granted, and how it ended. Refusals are \fBrdp_denied\fR deny events, so bans apply.
+Counters: \fBrdp_sessions\fR, \fBrdp_sessions_open\fR, \fBrdp_rejected\fR, \fBrdp_refused\fR, \fBrdp_recorded\fR, \fBrdp_mfa_ok\fR, \fBrdp_mfa_failed\fR, \fBrdp_channels_refused\fR, \fBrdp_devices_refused\fR, \fBrdp_legacy_sessions\fR (desktop legs opened with the protocol\(aqs own encryption). Every session writes one \fBrdp\fR access line with both security protocols, the routing token, the user and domain, the channels asked for and granted, and how it ended. Refusals are \fBrdp_denied\fR deny events, so bans apply.
 .SS "server.listeners[].telnet (kind: telnet)"
 .PP
 A \fBkind: telnet\fR listener is a telnet gateway: the proxy is a telnet server to the client and a telnet client to the target, reading the NVT protocol of RFC 854 in both directions.

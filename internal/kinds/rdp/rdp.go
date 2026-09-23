@@ -273,9 +273,12 @@ type session struct {
 	// pending collects a virtual channel message across its chunks,
 	// since a gateway cannot filter half of one.
 	pending []byte
-	rec     *sessionrec.Recording
-	pool    *upstream.Pool
-	ep      *upstream.Endpoint
+	// legacy is the desktop's leg when it uses the protocol's own
+	// encryption rather than TLS, and nil when it does not.
+	legacy *legacyLeg
+	rec    *sessionrec.Recording
+	pool   *upstream.Pool
+	ep     *upstream.Endpoint
 }
 
 func (t *server) handle(client net.Conn) {

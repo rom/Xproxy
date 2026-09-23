@@ -5961,12 +5961,16 @@ func (v *validator) rdpListener(p string, c *RDPListener, hasTLS bool) {
 		case "tls":
 			wantsTLS = true
 		case "rdp":
-			// The protocol's own encryption is RC4 under keys from an
-			// exchange this gateway does not yet perform, so a session
-			// using it would reach the point where the credential
-			// arrives and stop. It is refused at load until that is
-			// written rather than failing at the first connection.
-			v.errf("%s.security: rdp, the protocol's own encryption, is not implemented yet; use tls", p)
+			// Towards a desktop this gateway speaks the protocol's own
+			// encryption; towards a client it cannot. Offering it
+			// means presenting a certificate signed with the private
+			// key Microsoft published in MS-RDPBCGR 5.3.3.1.1, which
+			// every client checks against the public half built into
+			// it. Without that key a client refuses the certificate,
+			// so this is refused at load rather than failing at the
+			// first connection. `upstream_security: rdp` is the
+			// direction that works.
+			v.errf("%s.security: rdp cannot be offered to clients by this gateway: a client checks the server certificate against a key built into it, and this build carries no signing key for one. Use tls towards clients; upstream_security: rdp reaches a desktop that speaks nothing else", p)
 		case "nla":
 			v.errf("%s.security: nla cannot be offered to clients by this gateway: checking a client's network level authentication needs that person's own password, which is the one credential a gateway should not hold. A client that asks for it is answered with tls, which is the arrangement every remote desktop gateway uses; see docs/CONFIG.md", p)
 		default:
@@ -5990,7 +5994,11 @@ func (v *validator) rdpListener(p string, c *RDPListener, hasTLS bool) {
 			v.errf("%s.upstream_security: nla towards a desktop needs upstream_user and upstream_password_file, since the credential is proved before the person's own has been sent", p)
 		}
 	case "rdp":
-		v.errf("%s.upstream_security: rdp, the protocol's own encryption, is not implemented yet; use tls", p)
+		// The protocol's own encryption: RC4 under keys from an
+		// exchange this gateway performs itself. It protects the
+		// session against very little -- see docs/CONFIG.md -- and it
+		// is here for desktops that speak nothing else.
+		v.warnf("%s.upstream_security: rdp is the protocol's own encryption, which is RC4 under MD5 and SHA-1 with a key from a certificate nothing can check. Use tls or nla where the desktop offers one; this is for equipment that does not", p)
 	default:
 		v.errf("%s.upstream_security: must be tls, nla or rdp", p)
 	}
