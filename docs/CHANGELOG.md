@@ -697,6 +697,14 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4, tests)
 
+- **An eighth, which slept fifty milliseconds and hoped.**
+  `TestUpstreamQueue` (`internal/kinds/http`) started a second request,
+  slept, and asserted that the pool showed one request waiting. Two
+  ways to lose that under a loaded machine: the goroutine had not yet
+  reached the queue, or it had and the two hundred millisecond queue
+  timeout had already taken it out again. It now waits for the state it
+  asserts, and the queue timeout is a second, so the window in which
+  that state exists is wide rather than a guess.
 - **A seventh, which tampered with a cookie into itself.** `TestFlow`
   checks that a changed challenge cookie is refused, and changed it by
   replacing its last two base64 characters with "AA" -- so a cookie

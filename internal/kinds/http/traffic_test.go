@@ -90,7 +90,7 @@ logging: {access: {enabled: false}}
 upstreams:
   - name: o
     max_concurrent: 1
-    queue: {size: 1, timeout: 200ms}
+    queue: {size: 1, timeout: 1s}
     endpoints: [{address: %q}]
 routes:
   - name: r
@@ -106,10 +106,14 @@ routes:
 	}
 	second := make(chan int)
 	go func() { resp, _ := get(t, url+"/b"); second <- resp.StatusCode }()
-	time.Sleep(50 * time.Millisecond) // the second request is waiting
-	if q := s.Pools()["o"].Queue; q.Waiting != 1 {
-		t.Fatalf("waiting %+v", q)
-	}
+	// The second request reaches the queue when its goroutine gets to
+	// run, which is not a fixed number of milliseconds away; and it
+	// stays there only until the queue timeout, so the window to see it
+	// is that timeout wide. Wait for it rather than sleeping a guess,
+	// and keep the timeout comfortably longer than the wait.
+	eventually(t, 3*time.Second, "the second request to be queued", func() bool {
+		return s.Pools()["o"].Queue.Waiting == 1
+	})
 	// The third finds the queue full and is refused at once.
 	if resp, _ := get(t, url+"/c"); resp.StatusCode != 503 || resp.Header.Get("Retry-After") != "1" {
 		t.Fatalf("queue full: %d %v", resp.StatusCode, resp.Header)
