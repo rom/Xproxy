@@ -200,11 +200,20 @@ func (se *session) applyChannelPolicy(conn *rdp.Connect) string {
 
 // readServerChannels learns which identifier carries what, which is
 // what the relay needs in order to drop the right traffic.
+//
+// The identifiers are the desktop's to choose, including the one the
+// session itself runs on -- and every decision this gateway makes about
+// the credential is made on that one. So a response that does not name
+// it ends the session. Without that, an identifier of zero matched
+// nothing the client ever sends, the credential packet went past
+// unread, and the second factor was not checked: a desktop could turn
+// the check off by leaving a block out of its answer.
 func (se *session) readServerChannels(resp *rdp.Connect) string {
 	blocks, err := resp.Walk()
 	if err != nil {
 		return "upstream_conference"
 	}
+	seen := false
 	for _, b := range blocks {
 		if b.Type != rdp.BlockServerNetwork {
 			continue
@@ -213,6 +222,7 @@ func (se *session) readServerChannels(resp *rdp.Connect) string {
 		if err != nil {
 			return "upstream_conference"
 		}
+		seen = true
 		se.ioChannel = sc.IOChannel
 		for i, id := range sc.IDs {
 			if i < len(se.wanted) && se.wanted[i] != "" {
@@ -223,6 +233,13 @@ func (se *session) readServerChannels(resp *rdp.Connect) string {
 				se.inert[id] = true
 			}
 		}
+	}
+	if !seen || se.ioChannel == 0 {
+		se.t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_no_io_channel",
+			"listener", se.t.cfg.Name, "client_ip", se.ip.String(), "target", se.target,
+			"detail", "the desktop's conference response did not name the channel the session runs on")
+		se.t.engine.Counters().RDPRefused.Add(1)
+		return "upstream_no_io_channel"
 	}
 	return ""
 }

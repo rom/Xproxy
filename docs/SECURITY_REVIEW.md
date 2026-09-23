@@ -93,9 +93,13 @@ listener with header and idle timeouts.
 ## Later rounds
 
 Four more audit rounds followed this one, each in disciplines the
-previous ones did not cover, and a fifth over every parser the data
-plane runs. Their findings and resolutions are in the changelog rather
-than here; this document is the phase 3 review and stays what it was.
+previous ones did not cover, a fifth over every parser the data plane
+runs, and a sixth over the parsers added after that — the RDP
+connection sequence and its two encryption layers, the RFB handshake
+with the vendors’ own security types, NTLM and CredSSP, the QR
+encoder, and the second factors the control plane can now change. Their
+findings and resolutions are in the changelog rather than here; this
+document is the phase 3 review and stays what it was.
 
 Every open finding carried out of rounds one to four is closed. Where a
 resolution changed a default rather than only adding a setting, the

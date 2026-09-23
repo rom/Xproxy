@@ -241,3 +241,40 @@ func TestEveryMaskIsSelectable(t *testing.T) {
 		t.Fatalf("only masks %v were ever chosen", seen)
 	}
 }
+
+// FuzzEncode is the sixth audit round's target here. The text is not a
+// peer's, but it is not the gateway's either: it is built from an
+// issuer and a user name an operator typed, and it reaches this
+// encoder inside a request the management API answers. So the
+// questions are the usual ones -- no panic on anything, and a symbol
+// that comes back is a symbol.
+func FuzzEncode(f *testing.F) {
+	f.Add("otpauth://totp/xproxy:alice?secret=JBSWY3DPEHPK3PXPJBSWY3DPEH")
+	f.Add("")
+	f.Add("\x00\xff\xfe")
+	f.Fuzz(func(t *testing.T, s string) {
+		c, err := Encode(s)
+		if err != nil {
+			return
+		}
+		if c.Version < 1 || c.Version > maxVersion {
+			t.Fatalf("version %d", c.Version)
+		}
+		if c.Size != 4*c.Version+17 || len(c.dark) != c.Size*c.Size {
+			t.Fatalf("a symbol of %d modules at version %d with %d in it", c.Size, c.Version, len(c.dark))
+		}
+		// The three finders are what a reader looks for. A symbol
+		// without them is not one, whatever else is true of it.
+		for _, p := range [][2]int{{0, 0}, {c.Size - 7, 0}, {0, c.Size - 7}} {
+			// The centre of a finder is dark and the ring two out from
+			// it is light, which is the ratio a reader locks onto.
+			if !c.Dark(p[0]+3, p[1]+3) || c.Dark(p[0]+1, p[1]+3) {
+				t.Fatalf("the finder at %v is not one", p)
+			}
+		}
+		// And it has to draw, at the size the management API asks for.
+		if _, err := c.DataURI(4, 4); err != nil {
+			t.Fatalf("a symbol that does not draw: %v", err)
+		}
+	})
+}

@@ -8,6 +8,81 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ### Security (1.4)
 
+A **sixth audit round**, over the parsers and the credential paths added
+after the fifth: the RDP connection sequence and both of its encryption
+layers, the RFB handshake including the vendors' own security types,
+NTLM and CredSSP, the QR encoder, and the second factors the control
+plane can now change. Fuzz targets for each, around five million
+executions apiece, with fixes and regression tests.
+
+- **An X.224 length indicator shorter than its own header was a panic,
+  not an error.** The indicator counts the octets after itself, so the
+  unit is one longer than it says; the check was against the far end
+  only. An indicator below six made the options slice one whose start
+  was past its end. It is the first packet of a connection, from a peer
+  that has proved nothing -- eight bytes to a listening port -- and the
+  same shape was in the parser that reads a desktop's answer, where a
+  hostile or merely broken upstream could do it too. The session
+  goroutine's recover kept it to one connection and a stack trace, which
+  the earlier rounds already wrote down as not good enough. Both now go
+  through one helper that checks both ends.
+
+- **A desktop could turn the second factor off by leaving a block out
+  of its answer.** The channel the credential travels on is named by
+  the desktop, in the server network block of its conference response.
+  A response without that block left the identifier at zero, so the
+  credential -- which arrives on the real one -- matched nothing the
+  gateway was watching, and went through with no factor checked, no
+  credential substituted and nothing in the log to say so. A session
+  whose answer does not name that channel is now refused, and the
+  refusal is a security event.
+
+- **A recovery code could not be used on FTP or RDP.** Those are the two
+  protocols that carry the code inside the password field, because
+  neither has anywhere to ask a question. A recovery code is seventeen
+  characters with its separators and both would only split off sixteen,
+  so it was never seen as a code: it went to the far end as part of the
+  password and the refusal was byte for byte the one a wrong code gets.
+  The worst shape a bug can have here -- the recovery path is for
+  somebody already locked out and in a hurry, and it failed looking
+  exactly like them mistyping. The length is now a constant in
+  `internal/mfa` that both callers use, pinned to what the generator
+  makes.
+
+- **A wrong code cost a second of processor time, and only for names
+  that were enrolled.** Every attempt was compared against each of the
+  ten recovery hashes, at a password's PBKDF2 iteration count. So a
+  wrong six digit code against an enrolled name took about one second
+  and against an unenrolled one about twenty microseconds: four and a
+  half orders of magnitude, which is not a side channel so much as an
+  announcement. Anybody who could reach the prompt could enumerate who
+  was enrolled, and the same arithmetic was a denial of service -- one
+  packet bought a second of a core, as often as a client cared to send.
+  Three changes: recovery codes are hashed at a low iteration count,
+  because seventy four random bits do not need stretching and
+  stretching them cost this; every attempt does the same number of
+  comparisons whatever the enrolment holds, padded with a hash nothing
+  matches, so how many codes a person has and how many they have spent
+  are not on the clock either; and a name with no enrolment spends what
+  a name with one spends. A wrong code is now about two milliseconds,
+  the same either way. **Existing files keep the old cost until their
+  codes are replaced** -- the iteration count lives in each stored hash
+  -- so regenerate recovery codes on an upgrade (the GUI's *New codes*,
+  or `/v1/mfa/recovery`).
+
+- **A downgrade only the error log knew about.** A desktop answering
+  that it encrypts nothing, on a leg an operator asked to encrypt, was
+  noted in the error log. It is a security event now, which is the log
+  an estate exports and alerts on.
+
+Two things the fuzzing flagged that were not bugs, recorded because the
+bound is worth pinning: the credential packet's strings and NTLM's
+target name can be longer than the bytes they arrived in, because wide
+text decodes to UTF-8 where a two byte unit becomes three. The
+expansion is bounded at half again and the lengths are checked, so the
+targets assert that bound rather than the naive one — an unbounded
+decoder would be an amplifier.
+
 A fifth audit round over every parser the data plane runs — binary and
 wire formats, HTTP and text protocols, structured data — and the open
 findings of rounds one to four. All with regression tests.

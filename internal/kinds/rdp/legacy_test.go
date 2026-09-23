@@ -7,12 +7,15 @@ import (
 	"encoding/binary"
 	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/rdp"
 )
 
@@ -887,4 +890,220 @@ upstreams:
 	if _, err := config.Parse([]byte(yaml)); err != nil {
 		t.Fatalf("a legacy-only listener was refused: %v", err)
 	}
+}
+
+// ---- what a desktop's answer can make the gateway skip ----
+
+// noNetworkDesktop answers the conference exchange without a server
+// network block, which is the block that names the channel the session
+// itself runs on.
+type noNetworkDesktop struct{ *desktop }
+
+func startNoNetworkDesktop(t *testing.T) *noNetworkDesktop {
+	t.Helper()
+	d := &noNetworkDesktop{desktop: &desktop{protocol: rdp.ProtocolRDP}}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.ln = &ln
+	d.ioChannel = 1003
+	d.got = map[uint16][]byte{}
+	d.shown = []byte("DESKTOP-UPDATE")
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go d.serveWithoutNetwork(c)
+		}
+	}()
+	return d
+}
+
+func (d *noNetworkDesktop) serveWithoutNetwork(c net.Conn) {
+	defer func() { _ = c.Close() }()
+	pdu, err := rdp.ReadPDU(c)
+	if err != nil {
+		return
+	}
+	if _, err := rdp.ParseConnectionRequest(pdu.Body); err != nil {
+		return
+	}
+	out, err := rdp.ConnectionConfirm{}.Encode()
+	if err != nil {
+		return
+	}
+	if _, err := c.Write(out); err != nil {
+		return
+	}
+	if _, err := rdp.ReadPDU(c); err != nil {
+		return
+	}
+	// The response with the network block taken out of it entirely --
+	// not emptied, which the gateway already refuses, but absent.
+	resp, err := rdp.ParseConnect(mustPayload(buildResponse(nil)))
+	if err != nil {
+		return
+	}
+	blocks, err := resp.Walk()
+	if err != nil {
+		return
+	}
+	var kept []byte
+	for _, b := range blocks {
+		if b.Type == rdp.BlockServerNetwork {
+			continue
+		}
+		head := make([]byte, 4)
+		binary.LittleEndian.PutUint16(head[0:2], b.Type)
+		binary.LittleEndian.PutUint16(head[2:4], uint16(len(b.Data)+4))
+		kept = append(append(kept, head...), b.Data...)
+	}
+	resp.Blocks = kept
+	answer, err := resp.Encode()
+	if err != nil {
+		return
+	}
+	if _, err := c.Write(answer); err != nil {
+		return
+	}
+	for {
+		pdu, err := rdp.ReadPDU(c)
+		if err != nil {
+			return
+		}
+		payload, err := rdp.X224Payload(pdu.Body)
+		if err != nil {
+			continue
+		}
+		data, ok, err := rdp.ParseSendData(payload)
+		if err != nil || !ok {
+			continue
+		}
+		d.mu.Lock()
+		d.got[data.Channel] = append(d.got[data.Channel], data.Payload...)
+		d.mu.Unlock()
+		d.inspect(data)
+	}
+}
+
+// TestADesktopCannotMakeTheGatewaySkipTheCredential is the second
+// finding of the sixth round. The channel the credential travels on is
+// named by the *desktop*, in the server network block of its
+// conference response. A response with no such block left that
+// identifier at zero -- so the credential, which arrives on the real
+// one, matched nothing the gateway was watching for and went straight
+// through: no second factor checked, no credential substituted, and
+// nothing in the log to say either had been skipped.
+//
+// It needs a hostile or simply broken desktop, which is exactly the
+// peer this gateway is between somebody and.
+func TestADesktopCannotMakeTheGatewaySkipTheCredential(t *testing.T) {
+	d := startNoNetworkDesktop(t)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "mfa")
+	secret := "JBSWY3DPEHPK3PXPJBSWY3DPEH"
+	if err := os.WriteFile(file, []byte("alice:"+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cert, key, pool := certs(t)
+	_, addr := gateway(t, d.desktop, "        upstream_security: rdp\n"+
+		"        mfa: {file: "+file+"}\n"+
+		"      tls: {certificates: [{cert_file: "+cert+", key_file: "+key+"}]}")
+
+	cl := dial(t, addr)
+	cl.negotiate(rdp.ProtocolSSL, pool)
+	// The conference exchange must not leave the gateway watching
+	// channel zero: either it refuses the session here, or the
+	// credential below reaches nothing.
+	_ = cl.c.SetDeadline(time.Now().Add(5 * time.Second))
+	// The exchange either fails here or leaves the gateway watching
+	// nothing; both are checked by what does not reach the desktop
+	// afterwards, so a failure to read the answer is not a failure of
+	// the test.
+	cl.write(buildInitial(mustChannels(t)))
+	if _, err := rdp.ReadPDU(cl.c); err != nil {
+		// The gateway refused the exchange, which is the right answer.
+		return
+	}
+	// It answered. So the credential goes out on the channel a real
+	// desktop uses, which the gateway has no mapping for: if nothing
+	// stops it, it arrives with no factor checked.
+	cl.io = 1003
+	cl.sendInfo("", "alice", "no-code-here")
+	time.Sleep(300 * time.Millisecond)
+	d.mu.Lock()
+	info := d.info
+	d.mu.Unlock()
+	if info != nil {
+		t.Fatalf("a credential reached the desktop with no factor checked: %+v", info)
+	}
+}
+
+// mustChannels is an empty channel list for a client that wants none.
+func mustChannels(t *testing.T) []byte {
+	t.Helper()
+	data, err := rdp.EncodeChannels(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// TestARecoveryCodeOpensTheDesktop is the regression for the third
+// finding of the sixth round: a recovery code is seventeen characters
+// and the gateway would only take a code of sixteen off the password,
+// so the recovery path did not work on this protocol at all -- and
+// failed looking exactly like a mistyped code.
+//
+// It is driven through a real enrolment written by the control plane,
+// so the code under test is the one an operator would be handed.
+func TestARecoveryCodeOpensTheDesktop(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "mfa")
+	if err := os.WriteFile(file, []byte("# empty\nplaceholder:JBSWY3DPEHPK3PXPJBSWY3DPEH\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := mfa.Load(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, codes, err := store.Enrol("alice", mfa.Params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(codes) == 0 {
+		t.Fatal("no recovery codes")
+	}
+
+	cert, key, pool := certs(t)
+	d := startDesktop(t, &desktop{protocol: rdp.ProtocolSSL, tlsCfg: serverTLS(t, cert, key)})
+	s, addr := gateway(t, d, "        upstream_security: tls\n"+
+		"        upstream_tls: {ca_file: "+cert+", server_name: gate.test}\n"+
+		"        mfa: {file: "+file+"}\n"+
+		"      tls: {certificates: [{cert_file: "+cert+", key_file: "+key+"}]}")
+
+	cl := dial(t, addr)
+	cl.negotiate(rdp.ProtocolSSL, pool)
+	cl.conference()
+	cl.update()
+	cl.sendInfo("LAB", "alice", "her-password,"+codes[0])
+	waitFor(t, "the credential to arrive", func() bool { return d.credential() != nil })
+	info := d.credential()
+	if info.Password != "her-password" {
+		t.Fatalf("the desktop was given %q; the recovery code was not taken off", info.Password)
+	}
+	if n := s.Stats().RDPMFAOK; n != 1 {
+		t.Fatalf("rdp_mfa_ok %d", n)
+	}
+	// And it is single use: the same code again is refused.
+	cl2 := dial(t, addr)
+	cl2.negotiate(rdp.ProtocolSSL, pool)
+	cl2.conference()
+	cl2.update()
+	cl2.sendInfo("LAB", "alice", "her-password,"+codes[0])
+	waitFor(t, "the replay to be refused", func() bool { return s.Stats().RDPMFAFailed >= 1 })
 }
