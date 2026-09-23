@@ -915,6 +915,8 @@ session recordable:
 | 2 | `vncauth` | The DES challenge of RFC 6143 §7.2.2 | Mediated |
 | 19 | `vencrypt` | The open TLS and X.509 negotiation | Mediated |
 | 18 | `tls` | Anonymous-TLS, VeNCrypt's predecessor | Mediated, warned about |
+| 16 | `tight` | TightVNC's capability negotiation | Reimplemented, warned about |
+| 30 | `ard` | Apple Remote Desktop | Reimplemented, warned about |
 | 113 | `mslogon2` | UltraVNC's MS-Logon II | Reimplemented, warned about |
 | 129 | `rsa-aes` | RealVNC's RSA with AES-128-EAX | Reimplemented, warned about |
 | 130 | `rsa-aes-ne` | The same handshake, session in clear | Reimplemented, warned about |
@@ -959,6 +961,37 @@ which most of RFB does not:
   `upstream_security: mslogon2` — refused at load rather than at the
   first session.
 
+**TightVNC's type 16** is the easiest of these to be confident about,
+because it is not a cipher at all. It is a negotiation: the server
+offers a list of *tunnels* and a list of *authentications*, each named
+by a capability record, and the two ends pick one of each. What
+actually protects anything is whichever authentication it settles on.
+
+- This gateway **offers no tunnels**, and refuses a target that offers
+  only tunnels. A tunnel is another protocol wrapped around this one,
+  which would be a session the gateway can neither read nor record.
+- It offers `NOAUTH__` and, where `password_file` is set, `VNCAUTH_` —
+  the same DES challenge as the `vncauth` type, checked against the
+  gateway's own password. An authentication outside the list it
+  offered is refused, as with any other type.
+- Tight sends one more block **after `ServerInit`**, listing the
+  message types and encodings the server has beyond the standard ones.
+  A target's is read and dropped, and a Tight client is told there are
+  none. That is deliberate rather than a gap: what is advertised there
+  is TightVNC's extensions, including **file transfer**, and a gateway
+  that cannot see inside them has no business passing them through.
+
+**Apple Remote Desktop's type 30** is Diffie-Hellman over a prime the
+server chooses, MD5 of the shared secret as an AES-128 key, and a
+fixed credential blob encrypted under it in ECB. Apple's own servers
+offer a **512-bit** prime, the key derivation is MD5 and the mode is
+ECB, so the credential is protected against very little; the warning
+at load says so. In the server role this gateway generates a 1024-bit
+prime instead — the length is on the wire and a client reads it, but a
+client that assumes 512 would not interoperate. Its credential carries
+a name, so `mfa` works with it and `upstream_user` is required to use
+it towards a target.
+
 **RealVNC's RSA-AES**, types 129, 130 and 133, is reimplemented on the
 same terms and with a different balance of risk. Each end sends an RSA
 public key, each seals a random under the other's key, the session
@@ -997,9 +1030,7 @@ published specification to write against and none reimplemented here:
 | Type | Name | Vendor |
 |------|------|--------|
 | 5, 6 | `ra2`, `ra2ne` | RealVNC |
-| 16 | `tight` | TightVNC |
 | 17 | `ultra` | UltraVNC |
-| 30 | `ard` | Apple |
 | 20, 21, 22 | `sasl`, `md5`, `xvp` | others |
 
 Naming one in `security_types` is a configuration error rather than a
@@ -1028,7 +1059,7 @@ proxy does not hold.
 | `vencrypt_subtypes` | list | `[x509-vnc, x509-none]` | The subtypes offered when `vencrypt` is in use |
 | `password_file` | string | none | The password this gateway answers its own `vncauth` challenge with. Required if `vncauth` is offered, and refused if anyone but the proxy user can read it |
 | `upstream_password_file` | string | none | The password this gateway uses towards the target |
-| `upstream_user` | string | none | The login this gateway presents to a target whose security type carries a name (`mslogon2`, `rsa-aes*`). Required with those |
+| `upstream_user` | string | none | The login this gateway presents to a target whose security type carries a name (`mslogon2`, `ard`, `rsa-aes*`). Required with those |
 | `rsa_key_file` | string | none | This listener's own RSA key for the `rsa-aes` types, PEM, at least 2048 bits. Required with any of them, and refused if anyone but the proxy user can read it |
 | `upstream_rsa_fingerprint` | string | none | Pins the target's `rsa-aes` public key. Required with `upstream_security: rsa-aes*`; the key a target offers is printed in the log |
 | `upstream_security` | string | strongest available | The type to use towards the target, by name |
@@ -1093,9 +1124,9 @@ so the recording and the policy still apply.
 validation refuses the section without one. The reason is in the
 protocol: a DES challenge proves knowledge of one shared desktop
 password and says nothing about who is holding it, so there is nothing
-to look an enrolment up by. Three things carry a name — a VeNCrypt
-**plain** subtype, `mslogon2`, and the `rsa-aes` types — and any of
-them satisfies it. The name
+to look an enrolment up by. Four things carry a name — a VeNCrypt
+**plain** subtype, `mslogon2`, `ard`, and the `rsa-aes` types — and any
+of them satisfies it. The name
 identifies the person and the password field carries their one-time
 code; with a plain subtype both are inside the TLS tunnel, which is the
 arrangement to prefer.

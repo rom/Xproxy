@@ -248,6 +248,14 @@ type session struct {
 	// carried: the name the enrolment is looked up by, and the code.
 	factorUser string
 	factorCode string
+	// clientTightAuth is what a Tight client settled on, and upTight
+	// whether the target's leg negotiated Tight: that type sends a
+	// block after ServerInit which only that leg expects.
+	clientTightAuth uint32
+	upTight         bool
+	// upNoResult records a target that sends no security result, which
+	// Tight does when it asks for no authentication at all.
+	upNoResult bool
 	// factorDone records that the factor was checked during the
 	// client's authentication, which is the only place it can be:
 	// there is nowhere later in RFB to ask a question.

@@ -199,6 +199,7 @@ var Mediated = map[uint8]bool{
 // the documentation does not make the second one.
 var Reimplemented = map[uint8]bool{
 	SecMSLogon2: true, SecRSAAES: true, SecRSAAESne: true, SecRSAAES256: true,
+	SecTight: true, SecARD: true,
 }
 
 // NamesAUser are the types whose credential carries a user name. It
@@ -209,6 +210,7 @@ var Reimplemented = map[uint8]bool{
 // and they are subtypes rather than types, so they are not here.
 var NamesAUser = map[uint8]bool{
 	SecMSLogon2: true, SecRSAAES: true, SecRSAAESne: true, SecRSAAES256: true,
+	SecARD: true,
 }
 
 // Proprietary are the types defined by a vendor rather than by a
@@ -218,8 +220,8 @@ var NamesAUser = map[uint8]bool{
 // looking -- which is a session that cannot be recorded, and is a
 // decision for an operator rather than for this package.
 var Proprietary = map[uint8]bool{
-	SecRA2: true, SecRA2ne: true, SecTight: true, SecUltra: true,
-	SecARD: true, SecSASL: true, SecMD5: true, SecXvp: true,
+	SecRA2: true, SecRA2ne: true, SecUltra: true,
+	SecSASL: true, SecMD5: true, SecXvp: true,
 }
 
 // MaxSecurityTypes bounds a security list. A server offering more than

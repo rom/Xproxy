@@ -45,6 +45,12 @@ type target struct {
 	// rsaKey is the key this target presents when it offers one of the
 	// rsa-aes types.
 	rsaKey *rsa.PrivateKey
+	// tightAuth makes a Tight target ask for the DES challenge, and
+	// tightTunnel makes it offer only tunnels the gateway refuses.
+	tightAuth, tightTunnel bool
+	// ardDegenerate makes an ARD target send parameters that fix the
+	// shared secret.
+	ardDegenerate bool
 
 	mu   sync.Mutex
 	got  []byte
@@ -97,6 +103,7 @@ func (tg *target) session(c net.Conn) {
 		return
 	}
 	var chosen uint8
+	skipResult := false
 	if tg.version.AtLeast(rfb.V37) {
 		if _, err := c.Write(rfb.SecurityList(tg.security)); err != nil {
 			return
@@ -134,8 +141,20 @@ func (tg *target) session(c net.Conn) {
 			return
 		}
 		c = inner
+	case rfb.SecTight:
+		ok, noResult := tg.tight(c)
+		if !ok {
+			return
+		}
+		// Tight with no authentication sends no security result
+		// either, by its own rules.
+		skipResult = noResult
+	case rfb.SecARD:
+		if !tg.ard(c) {
+			return
+		}
 	}
-	if rfb.SendsResult(tg.version, chosen) {
+	if rfb.SendsResult(tg.version, chosen) && !skipResult {
 		if _, err := c.Write(rfb.SecurityResult(tg.version, true, "")); err != nil {
 			return
 		}
@@ -151,6 +170,13 @@ func (tg *target) session(c net.Conn) {
 	si.PixelFormat[0] = 32
 	if _, err := c.Write(si.Encode()); err != nil {
 		return
+	}
+	if chosen == rfb.SecTight {
+		// A Tight server says what it has beyond the standard
+		// protocol, which here is nothing.
+		if _, err := c.Write(rfb.NoTightInteraction()); err != nil {
+			return
+		}
 	}
 	if _, err := c.Write(tg.shown); err != nil {
 		return
@@ -206,6 +232,82 @@ func (tg *target) msLogon(c net.Conn) bool {
 		return false
 	}
 	user, pass, err := rfb.ReadMSLogonCredential(c, shared)
+	if err != nil {
+		return false
+	}
+	tg.mu.Lock()
+	tg.gotUser, tg.gotPass = user, pass
+	tg.mu.Unlock()
+	if tg.password != "" && pass != tg.password {
+		_, _ = c.Write(rfb.SecurityResult(tg.version, false, "bad credential"))
+		return false
+	}
+	return true
+}
+
+// tight plays the Tight server: the tunnel list, then the
+// authentication list, then whatever was picked.
+func (tg *target) tight(c net.Conn) (ok, noResult bool) {
+	tunnels := []rfb.TightCapability(nil)
+	if tg.tightTunnel {
+		// A tunnel type the gateway has no name for, which is the
+		// case it must refuse rather than guess at.
+		tunnels = []rfb.TightCapability{{Code: 1, Vendor: "TGHT", Signature: "SSLTUNNL"}}
+	}
+	if _, err := c.Write(rfb.TightCapabilities(tunnels)); err != nil {
+		return false, false
+	}
+	if len(tunnels) > 0 {
+		// The gateway should never get past a tunnel list with
+		// nothing in it that it can take.
+		return false, false
+	}
+	auths := []rfb.TightCapability(nil)
+	if tg.tightAuth {
+		auths = []rfb.TightCapability{rfb.TightAuthVNC}
+	}
+	if _, err := c.Write(rfb.TightCapabilities(auths)); err != nil {
+		return false, false
+	}
+	if len(auths) == 0 {
+		// No authentication and, by this type's rules, no security
+		// result either.
+		return true, true
+	}
+	if _, err := rfb.ReadTightChoice(c); err != nil {
+		return false, false
+	}
+	return tg.vncAuth(c), false
+}
+
+// ard plays the ARD server.
+func (tg *target) ard(c net.Conn) bool {
+	params, priv, err := rfb.NewARDParams()
+	if err != nil {
+		return false
+	}
+	if tg.ardDegenerate {
+		// A public value of 1 fixes the shared secret whatever the
+		// other end's private value is.
+		params.Pub = make([]byte, len(params.Prime))
+		params.Pub[len(params.Pub)-1] = 1
+	}
+	if _, err := c.Write(params.Encode()); err != nil {
+		return false
+	}
+	blob := make([]byte, rfb.ARDCredentialSize)
+	if _, err := io.ReadFull(c, blob); err != nil {
+		return false
+	}
+	pub := make([]byte, len(params.Prime))
+	if _, err := io.ReadFull(c, pub); err != nil {
+		return false
+	}
+	key, err := rfb.ARDKey(pub, params.Prime, priv)
+	if err != nil {
+		return false
+	}
+	user, pass, err := rfb.ARDOpen(key, blob)
 	if err != nil {
 		return false
 	}
@@ -538,7 +640,7 @@ func TestASecurityTypeThatWasNotOfferedIsRefused(t *testing.T) {
 // A vendor's own security type cannot be mediated, so a listener that
 // names one does not start at all.
 func TestAProprietaryTypeIsRefusedAtLoad(t *testing.T) {
-	for _, name := range []string{"ultra", "tight", "ard", "ra2"} {
+	for _, name := range []string{"ultra", "ra2", "ra2ne", "sasl", "xvp"} {
 		t.Run(name, func(t *testing.T) {
 			yaml := fmt.Sprintf(`
 version: 1

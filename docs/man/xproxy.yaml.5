@@ -2357,6 +2357,24 @@ T}	T{
 Mediated,\: warned about
 T}
 T{
+16
+T}	T{
+\fBtight\fR
+T}	T{
+TightVNC\(aqs capability negotiation
+T}	T{
+Reimplemented,\: warned about
+T}
+T{
+30
+T}	T{
+\fBard\fR
+T}	T{
+Apple Remote Desktop
+T}	T{
+Reimplemented,\: warned about
+T}
+T{
 113
 T}	T{
 \fBmslogon2\fR
@@ -2415,6 +2433,25 @@ Towards a target it needs both halves of a credential, so \fBupstream_user\fR an
 .RE
 .PP
 .PP
+\fBTightVNC\(aqs type 16\fR is the easiest of these to be confident about, because it is not a cipher at all. It is a negotiation: the server offers a list of \fItunnels\fR and a list of \fIauthentications\fR, each named by a capability record, and the two ends pick one of each. What actually protects anything is whichever authentication it settles on.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+This gateway \fBoffers no tunnels\fR, and refuses a target that offers only tunnels. A tunnel is another protocol wrapped around this one, which would be a session the gateway can neither read nor record.
+.PP
+.ti -3n
+\(bu
+It offers \fBNOAUTH__\fR and, where \fBpassword_file\fR is set, \fBVNCAUTH_\fR \[u2014] the same DES challenge as the \fBvncauth\fR type, checked against the gateway\(aqs own password. An authentication outside the list it offered is refused, as with any other type.
+.PP
+.ti -3n
+\(bu
+Tight sends one more block \fBafter \fBServerInit\fR\fR, listing the message types and encodings the server has beyond the standard ones. A target\(aqs is read and dropped, and a Tight client is told there are none. That is deliberate rather than a gap: what is advertised there is TightVNC\(aqs extensions, including \fBfile transfer\fR, and a gateway that cannot see inside them has no business passing them through.
+.RE
+.PP
+.PP
+\fBApple Remote Desktop\(aqs type 30\fR is Diffie\-Hellman over a prime the server chooses, MD5 of the shared secret as an AES\-128 key, and a fixed credential blob encrypted under it in ECB. Apple\(aqs own servers offer a \fB512\-bit\fR prime, the key derivation is MD5 and the mode is ECB, so the credential is protected against very little; the warning at load says so. In the server role this gateway generates a 1024\-bit prime instead \[u2014] the length is on the wire and a client reads it, but a client that assumes 512 would not interoperate. Its credential carries a name, so \fBmfa\fR works with it and \fBupstream_user\fR is required to use it towards a target.
+.PP
 \fBRealVNC\(aqs RSA\-AES\fR, types 129, 130 and 133, is reimplemented on the same terms and with a different balance of risk. Each end sends an RSA public key, each seals a random under the other\(aqs key, the session keys are hashed out of the two randoms, and everything after that travels in AES\-EAX boxes with a counter for a nonce.
 .RS 3n
 .PP
@@ -2461,25 +2498,11 @@ T}	T{
 RealVNC
 T}
 T{
-16
-T}	T{
-\fBtight\fR
-T}	T{
-TightVNC
-T}
-T{
 17
 T}	T{
 \fBultra\fR
 T}	T{
 UltraVNC
-T}
-T{
-30
-T}	T{
-\fBard\fR
-T}	T{
-Apple
 T}
 T{
 20,\: 21,\: 22
@@ -2560,7 +2583,7 @@ string
 T}	T{
 none
 T}	T{
-The login this gateway presents to a target whose security type carries a name (\fBmslogon2\fR,\: \fBrsa\-\:aes*\fR). Required with those
+The login this gateway presents to a target whose security type carries a name (\fBmslogon2\fR,\: \fBard\fR,\: \fBrsa\-\:aes*\fR). Required with those
 T}
 T{
 \fBrsa_\:key_\:file\fR
@@ -2791,7 +2814,7 @@ T}
 An operator who prefers to tunnel themselves still can: \fBssh \-L\fR to the \fBkind: ssh\fR bastion and point the viewer at the forwarded port. That needs nothing here. The \fBssh\fR section is for doing it once, centrally, so the recording and the policy still apply.
 .SS "The second factor"
 .PP
-\fBmfa\fR needs a security type whose credential carries a user name, and validation refuses the section without one. The reason is in the protocol: a DES challenge proves knowledge of one shared desktop password and says nothing about who is holding it, so there is nothing to look an enrolment up by. Three things carry a name \[u2014] a VeNCrypt \fBplain\fR subtype, \fBmslogon2\fR, and the \fBrsa\-aes\fR types \[u2014] and any of them satisfies it. The name identifies the person and the password field carries their one\-time code; with a plain subtype both are inside the TLS tunnel, which is the arrangement to prefer.
+\fBmfa\fR needs a security type whose credential carries a user name, and validation refuses the section without one. The reason is in the protocol: a DES challenge proves knowledge of one shared desktop password and says nothing about who is holding it, so there is nothing to look an enrolment up by. Four things carry a name \[u2014] a VeNCrypt \fBplain\fR subtype, \fBmslogon2\fR, \fBard\fR, and the \fBrsa\-aes\fR types \[u2014] and any of them satisfies it. The name identifies the person and the password field carries their one\-time code; with a plain subtype both are inside the TLS tunnel, which is the arrangement to prefer.
 .PP
 \fBx509\-plain\fR is added to \fBvencrypt_subtypes\fR automatically when \fBmfa\fR is configured and no plain subtype is listed.
 .PP

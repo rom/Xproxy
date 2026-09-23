@@ -5923,6 +5923,8 @@ var reimplementedNote = map[uint8]string{
 	rfb.SecRSAAES:    "the cryptography is RSA with AES-128 in EAX and SHA-1, which is sound as far as it goes -- what is reconstructed here is the framing rather than the cipher",
 	rfb.SecRSAAESne:  "the handshake is RSA with AES-128 in EAX, and the session after it is in clear. rsa-aes or rsa-aes-256 is the one to use unless something in the estate cannot",
 	rfb.SecRSAAES256: "the cryptography is RSA with AES-256 in EAX and SHA-256 -- what is reconstructed here is the framing rather than the cipher",
+	rfb.SecTight:     "the type is a negotiation rather than a cipher: it settles on one of the ordinary authentications, which is what actually protects anything, and this gateway refuses its tunnels and passes none of its extensions through",
+	rfb.SecARD:       "Apple's own servers offer a 512 bit prime, the key is MD5 of the shared secret and the credential is encrypted in ECB, so the credential is protected against very little. Put a tls_mode: wrap or ssh leg around it",
 }
 
 // wantsUpstreamName says whether the target's leg may use a security
