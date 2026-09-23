@@ -2649,6 +2649,14 @@
           "description": "ProxyProtocol enables PROXY protocol v1/v2 parsing on accepted connections. Only enable behind a trusted L4 balancer.",
           "type": "boolean"
         },
+        "rdp": {
+          "description": "RDP configures a kind: rdp listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RDPListener"
+            }
+          ]
+        },
         "redirect_to_https": {
           "description": "RedirectToHTTPS makes a plaintext listener answer every request with a 308 redirect to https. Useful for the :80 listener.",
           "type": "boolean"
@@ -3504,6 +3512,136 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "RDPChannelPolicy": {
+      "description": "RDPChannelPolicy decides which static virtual channels a session has. A channel that is not allowed is taken out of the list the desktop is asked for, so the desktop never learns it was wanted.",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Allow names the channels a client may have. The default is none: a session that can see the desktop and nothing else.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "RDPDevicePolicy": {
+      "description": "RDPDevicePolicy decides which kinds of redirected device a session has, among the ones the rdpdr channel carries: drive, printer, serial, parallel, smartcard. It applies only where rdpdr is an allowed channel, since without the channel there is nothing to announce a device on.",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Allow names the device kinds a client may redirect. The default is none, so allowing the rdpdr channel without naming a device kind gives a session no redirection at all.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "RDPListener": {
+      "description": "RDPListener is a Remote Desktop gateway: the proxy terminates the connection sequence on both legs, which is what lets it decide the security protocol, rewrite the virtual channel list, check a second factor against the credential in flight, substitute the credential that opens the desktop, and record what the session showed. The channel list is the important one. Every redirection RDP has -- drives, printers, serial and parallel ports, smart cards, the clipboard, audio -- rides a virtual channel, and nothing can be used that was not both announced and granted. A gateway that rewrites the list decides what a session is able to do, before it does it.",
+      "type": "object",
+      "properties": {
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "channels": {
+          "description": "Channels is the static virtual channel policy.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RDPChannelPolicy"
+            }
+          ]
+        },
+        "devices": {
+          "description": "Devices is the redirected device policy, which is what decides whether a session can move a file or reach a port.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RDPDevicePolicy"
+            }
+          ]
+        },
+        "handshake_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds sessions on this listener. Default 200.",
+          "type": "integer"
+        },
+        "mfa": {
+          "description": "MFA asks for a one-time code, carried with the password since RDP has nowhere to ask a question.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MFAPolicy"
+            }
+          ]
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header to the desktop.",
+          "type": "boolean"
+        },
+        "recording": {
+          "description": "Recording writes the session stream to a file.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SessionRecording"
+            }
+          ]
+        },
+        "security": {
+          "description": "Security is what a client may use, by name: tls or rdp. Default tls. nla is not offered to clients and cannot be: checking it would need every person's password, which is the one thing a gateway should not hold. See docs/CONFIG.md.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "upstream": {
+          "description": "Upstream is the pool of desktops. Required.",
+          "type": "string"
+        },
+        "upstream_domain": {
+          "type": "string"
+        },
+        "upstream_password_file": {
+          "type": "string"
+        },
+        "upstream_security": {
+          "description": "UpstreamSecurity is what this proxy uses towards the desktop, by name: tls, nla or rdp. Default tls.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS pins the CA and name for the desktop's leg.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_user": {
+          "description": "UpstreamUser and UpstreamPasswordFile are the credential this proxy opens the desktop with, where an operator would rather the person's own never reached it. Without them the person's credential is forwarded as it arrived.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -6022,6 +6160,10 @@
             }
           ]
         },
+        "rsa_key_file": {
+          "description": "RSAKeyFile is the RSA private key this proxy presents in the rsa-aes security types. Required with any of them, in PEM, PKCS#1 or PKCS#8, and at least 2048 bits.",
+          "type": "string"
+        },
         "security_types": {
           "description": "SecurityTypes are the RFB security types a client may use, by name. Default is the ones this proxy mediates: none, vncauth and vencrypt. A type not listed is refused.",
           "type": "array",
@@ -6054,6 +6196,10 @@
           "description": "UpstreamPasswordFile is the password this proxy uses towards the target, when the target asks for vncauth.",
           "type": "string"
         },
+        "upstream_rsa_fingerprint": {
+          "description": "UpstreamRSAFingerprint pins the target's rsa-aes public key. Required to use rsa-aes towards a target: nothing else authenticates the far end of that exchange, and there is nobody at a proxy to show a fingerprint to. The log prints the key a target offered, which is how this gets filled in.",
+          "type": "string"
+        },
         "upstream_security": {
           "description": "UpstreamSecurity is the security type to prefer towards the target, by name. Default is the strongest the target offers among the ones this proxy mediates.",
           "type": "string"
@@ -6068,6 +6214,10 @@
         },
         "upstream_tls_mode": {
           "description": "UpstreamTLSMode is none or vencrypt. Default none.",
+          "type": "string"
+        },
+        "upstream_user": {
+          "description": "UpstreamUser is the login this proxy presents to a target whose security type carries a name, which among the types here means MS-Logon II. Its password is UpstreamPasswordFile.",
           "type": "string"
         },
         "vencrypt_subtypes": {

@@ -12,6 +12,7 @@ package vnc
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -54,6 +55,8 @@ type server struct {
 	recorder   *sessionrec.Policy
 	mfaGuard   *mfa.Guard
 	ssh        *sshDialer
+	// rsaKey is this listener's own key for the rsa-aes types.
+	rsaKey *rsa.PrivateKey
 
 	wg   sync.WaitGroup
 	mu   sync.Mutex
@@ -100,6 +103,11 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 	if c.SSH != nil {
 		if t.ssh, err = newSSHDialer(c.SSH); err != nil {
 			return nil, fmt.Errorf("vnc ssh: %w", err)
+		}
+	}
+	if c.RSAKeyFile != "" {
+		if t.rsaKey, err = rfb.LoadRSAKey(c.RSAKeyFile); err != nil {
+			return nil, fmt.Errorf("vnc rsa_key_file: %w", err)
 		}
 	}
 	t.recorder = sessionrec.New(c.Recording)
@@ -240,6 +248,14 @@ type session struct {
 	// carried: the name the enrolment is looked up by, and the code.
 	factorUser string
 	factorCode string
+	// clientTightAuth is what a Tight client settled on, and upTight
+	// whether the target's leg negotiated Tight: that type sends a
+	// block after ServerInit which only that leg expects.
+	clientTightAuth uint32
+	upTight         bool
+	// upNoResult records a target that sends no security result, which
+	// Tight does when it asks for no authentication at all.
+	upNoResult bool
 	// factorDone records that the factor was checked during the
 	// client's authentication, which is the only place it can be:
 	// there is nowhere later in RFB to ask a question.
@@ -306,6 +322,13 @@ func (se *session) run(start time.Time) string {
 	if reason := se.clientHandshake(); reason != "" {
 		return reason
 	}
+	// rsa-aes-ne authenticates inside its channel and hands the
+	// session back to a cleartext socket once the result is in.
+	client, err := leaveChannel(se.client, se.clientSec)
+	if err != nil {
+		return "client_auth"
+	}
+	se.client = client
 	if t.mfaGuard != nil && !se.factorDone {
 		// The client authenticated with a type that carries no name,
 		// so there was nothing to look an enrolment up by. Validation

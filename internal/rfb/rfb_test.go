@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"math/big"
 	"strings"
 	"testing"
 )
@@ -351,5 +352,131 @@ func TestStringRoundTrip(t *testing.T) {
 	got, err := ReadString(bytes.NewReader(b), MaxReason)
 	if err != nil || got != "no route to that desktop" {
 		t.Errorf("read %q (%v)", got, err)
+	}
+}
+
+func TestTightCapabilitiesRoundTrip(t *testing.T) {
+	want := []TightCapability{TightAuthVNC, TightAuthNone}
+	got, err := ReadTightCapabilities(bytes.NewReader(TightCapabilities(want)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("read %+v", got)
+	}
+	if !TightHasCapability(got, TightAuthNone.Code) || TightHasCapability(got, 129) {
+		t.Error("a capability list answered the wrong question")
+	}
+	// An empty list is four bytes and no records.
+	if b := TightCapabilities(nil); len(b) != 4 {
+		t.Errorf("an empty list is %d bytes", len(b))
+	}
+	if got, err := ReadTightCapabilities(bytes.NewReader(TightCapabilities(nil))); err != nil || len(got) != 0 {
+		t.Errorf("read %+v (%v)", got, err)
+	}
+}
+
+func TestTightListsAreBounded(t *testing.T) {
+	// A count of four billion, which must be refused before anything
+	// is allocated for it.
+	head := []byte{0xff, 0xff, 0xff, 0xff}
+	if _, err := ReadTightCapabilities(bytes.NewReader(head)); err == nil {
+		t.Error("an unbounded capability list was accepted")
+	}
+	inter := []byte{0xff, 0xff, 0, 0, 0, 0, 0, 0}
+	if _, err := ReadTightInteraction(bytes.NewReader(inter)); err == nil {
+		t.Error("an unbounded interaction list was accepted")
+	}
+	// The block this gateway sends is the header and nothing else.
+	got, err := ReadTightInteraction(bytes.NewReader(NoTightInteraction()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Server)+len(got.Client)+len(got.Encodings) != 0 {
+		t.Errorf("the empty interaction block is not empty: %+v", got)
+	}
+}
+
+func TestARDExchangeAndCredential(t *testing.T) {
+	params, serverPriv, err := NewARDParams()
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientPub, clientPriv, err := ARDPublic(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientKey, err := ARDKey(params.Pub, params.Prime, clientPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverKey, err := ARDKey(clientPub, params.Prime, serverPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(clientKey, serverKey) {
+		t.Fatal("the two ends derived different keys")
+	}
+	blob, err := ARDSeal(clientKey, "alice", "hunter2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blob) != ARDCredentialSize {
+		t.Fatalf("%d bytes, want %d", len(blob), ARDCredentialSize)
+	}
+	if bytes.Contains(blob, []byte("alice")) || bytes.Contains(blob, []byte("hunter2")) {
+		t.Error("the credential went out unencrypted")
+	}
+	user, pass, err := ARDOpen(serverKey, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user != "alice" || pass != "hunter2" {
+		t.Errorf("opened %q and %q", user, pass)
+	}
+	if _, err := ARDSeal(clientKey, strings.Repeat("a", ARDCredentialField), "x"); err == nil {
+		t.Error("a credential over its field was accepted")
+	}
+}
+
+func TestARDRefusesDegenerateParameters(t *testing.T) {
+	good, _, err := NewARDParams()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		make func() ARDParams
+	}{
+		{"generator of one", func() ARDParams { p := good; p.Gen = 1; return p }},
+		{"public value of one", func() ARDParams {
+			p := good
+			p.Pub = make([]byte, len(good.Prime))
+			p.Pub[len(p.Pub)-1] = 1
+			return p
+		}},
+		{"public value at the modulus", func() ARDParams { p := good; p.Pub = p.Prime; return p }},
+		{"even modulus", func() ARDParams {
+			p := good
+			p.Prime = append([]byte(nil), good.Prime...)
+			p.Prime[len(p.Prime)-1] &^= 1
+			return p
+		}},
+	}
+	for _, c := range cases {
+		if _, err := ReadARDParams(bytes.NewReader(c.make().Encode())); !errors.Is(err, ErrARD) {
+			t.Errorf("%s was accepted (%v)", c.name, err)
+		}
+	}
+	// A prime smaller than Apple's own is not an exchange.
+	short := []byte{0, 2, 0, 8, 1, 2, 3, 4, 5, 6, 7, 9, 0, 0, 0, 0, 0, 0, 0, 3}
+	if _, err := ReadARDParams(bytes.NewReader(short)); !errors.Is(err, ErrARD) {
+		t.Error("a 64 bit prime was accepted")
+	}
+	// And a shared secret that comes out fixed is refused.
+	one := make([]byte, len(good.Prime))
+	one[len(one)-1] = 1
+	if _, err := ARDKey(one, good.Prime, big.NewInt(7)); !errors.Is(err, ErrARD) {
+		t.Error("a public value of one was accepted")
 	}
 }

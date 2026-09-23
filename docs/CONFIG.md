@@ -915,6 +915,12 @@ session recordable:
 | 2 | `vncauth` | The DES challenge of RFC 6143 §7.2.2 | Mediated |
 | 19 | `vencrypt` | The open TLS and X.509 negotiation | Mediated |
 | 18 | `tls` | Anonymous-TLS, VeNCrypt's predecessor | Mediated, warned about |
+| 16 | `tight` | TightVNC's capability negotiation | Reimplemented, warned about |
+| 30 | `ard` | Apple Remote Desktop | Reimplemented, warned about |
+| 113 | `mslogon2` | UltraVNC's MS-Logon II | Reimplemented, warned about |
+| 129 | `rsa-aes` | RealVNC's RSA with AES-128-EAX | Reimplemented, warned about |
+| 130 | `rsa-aes-ne` | The same handshake, session in clear | Reimplemented, warned about |
+| 133 | `rsa-aes-256` | RealVNC's RSA with AES-256-EAX | Reimplemented, warned about |
 
 `tls` is warned about because it is anonymous Diffie-Hellman with no
 certificate to check: it stops a reader and not an active attacker.
@@ -925,23 +931,115 @@ certificate to check: it stops a reader and not an active attacker.
 for the same reason. The bare `plain` subtype (no TLS at all) is
 refused: it would send the credential in clear.
 
+**Reimplemented, which is not the same as supported.** `mslogon2` is
+UltraVNC's own type. There is no specification for it; what is
+implemented here follows the shape of UltraVNC's `vncauth.cpp` and
+`DH.cpp` and the public reimplementations that agree with them, and
+**interoperability against a real UltraVNC server is not verified by
+this project's tests**. Enabling it produces a warning at load that
+says so.
+
+What it is worth is worth stating plainly, because the name sounds
+like security: MS-Logon II is Diffie-Hellman over **64 bits** with the
+shared secret used as a **DES** key. Both have been breakable for
+decades, and anyone who records the exchange can recover the Windows
+credential inside it. It is here because the desktops exist — reaching
+them through a gateway that records the session, asks for a factor and
+holds the policy is better than reaching them directly — and not
+because the type protects anything. Put a TLS-wrapped or SSH-tunnelled
+leg around it (`tls_mode: wrap`, or `ssh`) if the credential matters,
+which it does.
+
+Two things follow from it carrying a **name** as well as a password,
+which most of RFB does not:
+
+- It can carry a second factor without a certificate, which is the one
+  practical advantage it has over VeNCrypt's plain subtype: `mfa` is
+  allowed with `mslogon2` in `security_types`.
+- Towards a target it needs both halves of a credential, so
+  `upstream_user` and `upstream_password_file` are required when
+  `upstream_security: mslogon2` — refused at load rather than at the
+  first session.
+
+**TightVNC's type 16** is the easiest of these to be confident about,
+because it is not a cipher at all. It is a negotiation: the server
+offers a list of *tunnels* and a list of *authentications*, each named
+by a capability record, and the two ends pick one of each. What
+actually protects anything is whichever authentication it settles on.
+
+- This gateway **offers no tunnels**, and refuses a target that offers
+  only tunnels. A tunnel is another protocol wrapped around this one,
+  which would be a session the gateway can neither read nor record.
+- It offers `NOAUTH__` and, where `password_file` is set, `VNCAUTH_` —
+  the same DES challenge as the `vncauth` type, checked against the
+  gateway's own password. An authentication outside the list it
+  offered is refused, as with any other type.
+- Tight sends one more block **after `ServerInit`**, listing the
+  message types and encodings the server has beyond the standard ones.
+  A target's is read and dropped, and a Tight client is told there are
+  none. That is deliberate rather than a gap: what is advertised there
+  is TightVNC's extensions, including **file transfer**, and a gateway
+  that cannot see inside them has no business passing them through.
+
+**Apple Remote Desktop's type 30** is Diffie-Hellman over a prime the
+server chooses, MD5 of the shared secret as an AES-128 key, and a
+fixed credential blob encrypted under it in ECB. Apple's own servers
+offer a **512-bit** prime, the key derivation is MD5 and the mode is
+ECB, so the credential is protected against very little; the warning
+at load says so. In the server role this gateway generates a 1024-bit
+prime instead — the length is on the wire and a client reads it, but a
+client that assumes 512 would not interoperate. Its credential carries
+a name, so `mfa` works with it and `upstream_user` is required to use
+it towards a target.
+
+**RealVNC's RSA-AES**, types 129, 130 and 133, is reimplemented on the
+same terms and with a different balance of risk. Each end sends an RSA
+public key, each seals a random under the other's key, the session
+keys are hashed out of the two randoms, and everything after that
+travels in AES-EAX boxes with a counter for a nonce.
+
+- The **cryptography is not guessed at**: RSA and the hashes are Go's
+  standard library, and EAX is implemented in `internal/eax` against
+  the published vectors of the EAX paper and NIST SP 800-38B, which
+  the tests run. What is reconstructed is the **order and framing of
+  the messages**, from TigerVNC's implementation and its `rfbproto`.
+  Getting that wrong shows up as a handshake that does not complete
+  and a log line naming the step — not as a session that looks
+  encrypted and is not.
+- `rsa-aes` is AES-128 with SHA-1, `rsa-aes-256` is AES-256 with
+  SHA-256, and **`rsa-aes-ne` protects the handshake only: the session
+  after it is in clear.** That is the one thing about this family
+  easiest to get wrong, so validation warns about it and the access
+  log names the security type of both legs.
+- **The listener needs an RSA key of its own** (`rsa_key_file`, PEM,
+  PKCS#1 or PKCS#8, at least 2048 bits, not readable by anyone else),
+  because each end is identified by a key.
+- **Towards a target the key is pinned** (`upstream_rsa_fingerprint`),
+  and validation requires it. Nothing else authenticates the far end of
+  that exchange, and unlike a viewer there is nobody at a proxy to show
+  a fingerprint to and ask. The fingerprint is this project's own
+  spelling — the SHA-256 of the key as the protocol encodes it — and
+  the gateway logs the one a target offered, which is where the setting
+  is copied from.
+- Its credential carries a name, so `mfa` works with it and
+  `upstream_user` is required to use it towards a target.
+
 **What is not supported, and why.** These are the vendors' own, with no
-published specification to write against:
+published specification to write against and none reimplemented here:
 
 | Type | Name | Vendor |
 |------|------|--------|
 | 5, 6 | `ra2`, `ra2ne` | RealVNC |
-| 129, 130, 133 | `rsa-aes`, `rsa-aes-ne`, `rsa-aes-256` | RealVNC |
-| 16 | `tight` | TightVNC |
-| 17, 113 | `ultra`, `mslogon2` | UltraVNC |
-| 30 | `ard` | Apple |
+| 17 | `ultra` | UltraVNC |
 | 20, 21, 22 | `sasl`, `md5`, `xvp` | others |
 
 Naming one in `security_types` is a configuration error rather than a
 setting that quietly does nothing. A gateway cannot sit in the middle
 of a handshake it cannot complete, and reimplementing a cipher from
 guesswork is worse than not having it: it would look like support while
-being wrong.
+being wrong. Where a public description exists that is good enough to
+write against — as for `mslogon2` above — the type moves into the table
+before this one and carries a warning instead.
 
 **UltraVNC's DSM plugin encryption is a separate case.** It is not a
 security type at all — the plugin wraps the whole connection before RFB
@@ -961,6 +1059,9 @@ proxy does not hold.
 | `vencrypt_subtypes` | list | `[x509-vnc, x509-none]` | The subtypes offered when `vencrypt` is in use |
 | `password_file` | string | none | The password this gateway answers its own `vncauth` challenge with. Required if `vncauth` is offered, and refused if anyone but the proxy user can read it |
 | `upstream_password_file` | string | none | The password this gateway uses towards the target |
+| `upstream_user` | string | none | The login this gateway presents to a target whose security type carries a name (`mslogon2`, `ard`, `rsa-aes*`). Required with those |
+| `rsa_key_file` | string | none | This listener's own RSA key for the `rsa-aes` types, PEM, at least 2048 bits. Required with any of them, and refused if anyone but the proxy user can read it |
+| `upstream_rsa_fingerprint` | string | none | Pins the target's `rsa-aes` public key. Required with `upstream_security: rsa-aes*`; the key a target offers is printed in the log |
 | `upstream_security` | string | strongest available | The type to use towards the target, by name |
 | `tls_mode` | string | `negotiated` | What the listener's `tls` section is for: `negotiated` presents the certificate inside RFB, `wrap` makes the socket itself TLS. See below |
 | `upstream_tls_mode` | string | `none` | `none` or `vencrypt` |
@@ -1019,13 +1120,16 @@ so the recording and the policy still apply.
 
 #### The second factor
 
-`mfa` needs a VeNCrypt **plain** subtype, and validation refuses the
-section without one. The reason is in the protocol: a DES challenge
-proves knowledge of one shared desktop password and says nothing about
-who is holding it, so there is nothing to look an enrolment up by. The
-plain subtypes are the only place RFB carries a user name. The name
+`mfa` needs a security type whose credential carries a user name, and
+validation refuses the section without one. The reason is in the
+protocol: a DES challenge proves knowledge of one shared desktop
+password and says nothing about who is holding it, so there is nothing
+to look an enrolment up by. Four things carry a name — a VeNCrypt
+**plain** subtype, `mslogon2`, `ard`, and the `rsa-aes` types — and any
+of them satisfies it. The name
 identifies the person and the password field carries their one-time
-code, both inside the TLS tunnel.
+code; with a plain subtype both are inside the TLS tunnel, which is the
+arrangement to prefer.
 
 `x509-plain` is added to `vencrypt_subtypes` automatically when `mfa`
 is configured and no plain subtype is listed.
@@ -1058,6 +1162,243 @@ Counters: `vnc_sessions`, `vnc_sessions_open`, `vnc_rejected`,
 session writes one `vnc` access line with both versions, both security
 types, the desktop name and size, and how it ended. Refusals are
 `vnc_denied` deny events, so bans apply.
+
+### server.listeners[].rdp (kind: rdp)
+
+A `kind: rdp` listener is a Remote Desktop gateway: the proxy
+terminates the connection sequence of MS-RDPBCGR on both legs, so it
+is an RDP server to the client and an RDP client to the desktop.
+
+**Why this is not a `tcp` listener.** Everything worth deciding about
+an RDP session is settled in the connection sequence, before a single
+pixel moves: which security protocol is used, which virtual channels
+exist, who is connecting and with what credential. A relay that does
+not sit in that sequence decides none of it and can record none of
+what follows.
+
+The channel list is the important part. Every redirection RDP has —
+drives, printers, serial and parallel ports, smart cards, the
+clipboard, audio — rides a virtual channel, and nothing can be used
+that was not both announced and granted. A gateway that rewrites that
+list decides what a session is able to do before it does it.
+
+#### What is supported
+
+**Protocol versions.** All of them. This gateway does not decode
+graphics, input, capability sets or any of the session's own traffic —
+it relays those as they arrive — so an RDP 4 client and a Windows
+Server 2025 desktop work the same way. What it decodes is the
+connection sequence, the channel list, the device announcement and the
+credential packet, and those have been stable since the protocol was
+documented.
+
+**Security protocols**, which are negotiated at the very start:
+
+| Protocol | Towards a client | Towards a desktop |
+|----------|------------------|-------------------|
+| TLS (`tls`, `PROTOCOL_SSL`) | Supported, the default | Supported, the default |
+| Network level authentication (`nla`, `PROTOCOL_HYBRID`) | **Not offered, and cannot be** — see below | Supported: CredSSP over NTLMv2 |
+| The protocol's own encryption (`rdp`, `PROTOCOL_RDP`) | Not implemented — see below | Not wired up yet — see below |
+
+**A client that asks for network level authentication is answered with
+TLS.** That is not a gap, it is how the gateway works at all, and it is
+what every remote desktop gateway does. Network level authentication
+proves the person's Windows credential to the server *before* the RDP
+connection sequence starts, using CredSSP. For a gateway to accept that
+from a client it would have to verify that credential itself, which
+means holding every person's Windows password — the one credential a
+gateway should never hold. Answering with TLS moves the credential into
+the connection sequence, where the gateway can check a second factor
+against it and substitute its own. The cost is stated plainly: between
+the client and the gateway, authentication happens after the connection
+is established rather than before it, so the gateway itself must be
+reachable only by the people who should reach it (`allow_clients`, and
+a network that agrees).
+
+**Network level authentication towards a desktop** (`upstream_security:
+nla`) is what a current Windows install requires by default. The
+gateway proves a credential with CredSSP (MS-CSSP) carrying NTLM
+version 2 (MS-NLMP) inside the TLS tunnel, before the connection
+sequence starts.
+
+- It needs `upstream_user` and `upstream_password_file`, and validation
+  says so. There is no way to pass the person's own credential through
+  it: the exchange happens before the person has sent anything at all,
+  which is the whole reason network level authentication exists.
+- The exchange is **bound to the tunnel it runs in**. Each end proves
+  it saw the same certificate, from CredSSP version 5 onwards as a hash
+  over a fresh nonce, so tokens relayed into another connection fail.
+  A desktop whose binding does not match gets no credential.
+- The gateway insists on **extended session security** and a key
+  exchange. A server offering neither is refused rather than fallen
+  back to: the credential's protection rests on those session keys.
+- Only the client half is implemented — this proves a credential, it
+  never checks one. Checking would mean the gateway holding a password
+  hash for whoever connects, which is the thing it exists to avoid.
+
+The NTLM key derivation is tested against the worked example of MS-NLMP
+§4.2.4, and the whole exchange against a stand-in for the Windows side.
+It has **not** been verified against a real Windows desktop in this
+repository's tests.
+
+**The protocol's own encryption** — RC4 under keys derived from two
+random values, one of them sent under an RSA key the server puts in the
+connection sequence — is where the two directions differ.
+
+- **Towards a desktop**, the cryptography is implemented and tested
+  (`internal/rdp`): the certificate is walked to its key, the random is
+  sealed, the session keys are derived and the packets are signed,
+  encrypted and re-keyed. It is not yet wired into the session, because
+  the session's own updates travel on the fast path with their own
+  encryption flags, and that half is still to do. Setting it is
+  refused at load rather than failing at the first connection.
+- **Towards a client** it is not implemented at all, and there is a
+  reason to say out loud rather than to work around: presenting the
+  protocol's own certificate means signing it with a private key
+  Microsoft published years ago. That is not a secret this project
+  should ship on its own initiative, so the decision is left to
+  whoever needs it.
+
+What it is worth either way is nothing, against anyone on the path: MD5
+and SHA-1 derivation, RC4, and a certificate a client has no way to
+check because the protocol never had anywhere to check it against. It
+would be here for equipment that speaks nothing else — reached through
+a gateway that records the session and holds the policy, which is
+better than reached directly, and not because the connection is
+protected.
+
+**What the gateway does not decode**: the graphics, input, clipboard
+contents, audio, licensing and capability exchange. Those are relayed
+byte for byte. A recording is therefore the protocol stream, not a
+video — see below.
+
+#### The channel policy
+
+`channels.allow` names the static virtual channels a session may have,
+and **the default is none**: a session that can see the desktop and
+drive it, and nothing else. The usual names are `rdpdr` (device
+redirection), `cliprdr` (clipboard, including file copy), `rdpsnd`
+(audio out), `audin` (microphone), `drdynvc` (dynamic channels) and
+`rail` (seamless applications).
+
+A refused channel is **not removed from the list**, and the reason is
+worth knowing: the desktop answers with one identifier per channel the
+client asked for, in the order it asked, and a client that gets back a
+different number of identifiers does not recover. So the gateway
+replaces the *name* of a refused channel with one nothing speaks —
+the name field is a fixed eight bytes, so the lengths do not move. The
+desktop registers a channel no software has a handler for, the
+identifiers still line up, and the gateway drops whatever the client
+sends on it. The desktop never registers the real channel, which is the
+property that matters.
+
+`drdynvc` is warned about: dynamic channels carry more redirection
+inside them, and what rides one is decided by the two ends rather than
+by this list.
+
+#### File transfer and ports
+
+Both are device redirection, which rides `rdpdr`, and both are decided
+by `devices.allow`:
+
+| Name | What it is | What allowing it means |
+|------|-----------|------------------------|
+| `drive` | Filesystem redirection | **File upload and download between the client and the desktop** |
+| `printer` | Printer redirection | Printing from the desktop to the client's printers |
+| `serial` | Serial port redirection | The desktop reaches the client's COM ports |
+| `parallel` | Parallel port redirection | The desktop reaches the client's LPT ports |
+| `smartcard` | Smart card redirection | The desktop uses the client's smart card reader |
+
+The default is none, so `channels.allow: [rdpdr]` on its own gives a
+session the channel and no redirection on it. The policy is applied to
+the **device announcement**: nothing can be redirected that was not
+announced, so filtering that one message decides the whole of it
+without the gateway having to understand the traffic that follows. A
+refused device is taken out of the announcement, counted, written to
+the security log and marked in the recording. Refusing all of them
+leaves a valid announcement of no devices rather than a broken channel.
+
+A device announcement the gateway cannot read — a compressed one —
+ends the session rather than passing through, because a redirection
+policy that quietly did not apply is worse than a session that stops.
+
+#### Options
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The pool of desktops |
+| `security` | list | `[tls]` | What a client may use. Only `tls` for now; see the table above |
+| `upstream_security` | string | `tls` | What this proxy uses towards the desktop: `tls`, or `nla` with a credential to prove |
+| `upstream_tls` | object | none | CA and name for the desktop's leg |
+| `upstream_user` | string | none | The login this proxy opens the desktop with. With it, the person's own credential never reaches the desktop |
+| `upstream_domain` | string | none | The domain that goes with `upstream_user` |
+| `upstream_password_file` | string | none | Its password, refused if anyone but the proxy user can read it |
+| `channels.allow` | list | `[]` (none) | The static virtual channels a session may have |
+| `devices.allow` | list | `[]` (none) | The redirected device kinds, where `rdpdr` is allowed |
+| `recording` | object | none | As `server.listeners[].ssh.recording`; see below for the format |
+| `mfa` | object | none | See below |
+| `idle_timeout` | duration | `5m` | No traffic in either direction |
+| `session_timeout` | duration | `0` | Bound on a whole session however active |
+| `handshake_timeout` | duration | `30s` | Bound on the connection sequence |
+| `max_connections` | int | `200` | Sessions on this listener |
+| `proxy_protocol` | bool | `false` | PROXY protocol v2 header to the desktop |
+| `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+
+#### The two credentials
+
+With `upstream_user`, `upstream_domain` and `upstream_password_file`,
+the desktop is opened with the gateway's own account and the person's
+credential stops at the gateway. Without them, what the person typed is
+forwarded as it arrived, which is what an estate that wants its own
+accounts audited on the desktop needs. Either way the gateway sees the
+credential, which is the price of being able to check anything about
+it — and the reason the listener should be reachable only over a
+network you trust.
+
+#### The second factor
+
+`mfa` checks a one-time code **before the credential reaches the
+desktop**. RDP has nowhere to ask a question — there is no prompt in
+the protocol and the client is waiting for a desktop rather than a
+dialogue — so the code travels with the password, after a comma:
+
+```
+Password: hunter2,492013
+```
+
+The same arrangement the FTP relay uses, and one that works with every
+client because it asks nothing of the client. The code is taken off
+before the password goes anywhere, so the desktop never sees it.
+
+One honest difference from the other gateways here: the factor is
+checked before the **credential** reaches the desktop, not before the
+desktop is dialled. RDP's connection sequence requires the desktop to
+answer before the client sends its credential, so the TCP connection is
+already open by then. What the desktop never receives without a
+verified factor is the credential.
+
+#### The recording
+
+The file holds the desktop-to-client stream — what was on the screen —
+with the timing of it, in the asciicast v2 container the other
+recordings use, named `*.rdp.cast`. Its header carries
+`XPROXY_PROTOCOL: rdp` and the security protocol of the desktop's leg,
+the first mark names the session and the channels it was granted, and
+every refused device is marked where it happened.
+
+**It is not a video.** The event data is the protocol stream, so
+replaying it needs a player that speaks RDP rather than a terminal.
+That is the deliberate choice: decoding at capture time would mean
+implementing every graphics encoding a desktop might choose — and
+silently losing whatever was not implemented — while a decoder written
+against this file later loses nothing.
+
+Counters: `rdp_sessions`, `rdp_sessions_open`, `rdp_rejected`,
+`rdp_refused`, `rdp_recorded`, `rdp_mfa_ok`, `rdp_mfa_failed`,
+`rdp_channels_refused`, `rdp_devices_refused`. Every session writes one
+`rdp` access line with both security protocols, the routing token, the
+user and domain, the channels asked for and granted, and how it ended.
+Refusals are `rdp_denied` deny events, so bans apply.
 
 ### server.listeners[].telnet (kind: telnet)
 

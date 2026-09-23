@@ -2356,18 +2356,133 @@ Anonymous\-TLS,\: VeNCrypt\(aqs predecessor
 T}	T{
 Mediated,\: warned about
 T}
+T{
+16
+T}	T{
+\fBtight\fR
+T}	T{
+TightVNC\(aqs capability negotiation
+T}	T{
+Reimplemented,\: warned about
+T}
+T{
+30
+T}	T{
+\fBard\fR
+T}	T{
+Apple Remote Desktop
+T}	T{
+Reimplemented,\: warned about
+T}
+T{
+113
+T}	T{
+\fBmslogon2\fR
+T}	T{
+UltraVNC\(aqs MS\-Logon II
+T}	T{
+Reimplemented,\: warned about
+T}
+T{
+129
+T}	T{
+\fBrsa\-\:aes\fR
+T}	T{
+RealVNC\(aqs RSA with AES\-128\-EAX
+T}	T{
+Reimplemented,\: warned about
+T}
+T{
+130
+T}	T{
+\fBrsa\-\:aes\-\:ne\fR
+T}	T{
+The same handshake,\: session in clear
+T}	T{
+Reimplemented,\: warned about
+T}
+T{
+133
+T}	T{
+\fBrsa\-\:aes\-\:256\fR
+T}	T{
+RealVNC\(aqs RSA with AES\-256\-EAX
+T}	T{
+Reimplemented,\: warned about
+T}
 .TE
 .PP
 \fBtls\fR is warned about because it is anonymous Diffie\-Hellman with no certificate to check: it stops a reader and not an active attacker. \fBvencrypt\fR with an X.509 subtype is the one to use.
 .PP
 \fBVeNCrypt subtypes\fR: \fBx509\-none\fR, \fBx509\-vnc\fR, \fBx509\-plain\fR, \fBtls\-none\fR, \fBtls\-vnc\fR, \fBtls\-plain\fR. The \fBtls\-*\fR ones are warned about for the same reason. The bare \fBplain\fR subtype (no TLS at all) is refused: it would send the credential in clear.
 .PP
-\fBWhat is not supported, and why.\fR These are the vendors\(aq own, with no published specification to write against:
+\fBReimplemented, which is not the same as supported.\fR \fBmslogon2\fR is UltraVNC\(aqs own type. There is no specification for it; what is implemented here follows the shape of UltraVNC\(aqs \fBvncauth.cpp\fR and \fBDH.cpp\fR and the public reimplementations that agree with them, and \fBinteroperability against a real UltraVNC server is not verified by this project\(aqs tests\fR. Enabling it produces a warning at load that says so.
+.PP
+What it is worth is worth stating plainly, because the name sounds like security: MS\-Logon II is Diffie\-Hellman over \fB64 bits\fR with the shared secret used as a \fBDES\fR key. Both have been breakable for decades, and anyone who records the exchange can recover the Windows credential inside it. It is here because the desktops exist \[u2014] reaching them through a gateway that records the session, asks for a factor and holds the policy is better than reaching them directly \[u2014] and not because the type protects anything. Put a TLS\-wrapped or SSH\-tunnelled leg around it (\fBtls_mode: wrap\fR, or \fBssh\fR) if the credential matters, which it does.
+.PP
+Two things follow from it carrying a \fBname\fR as well as a password, which most of RFB does not:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+It can carry a second factor without a certificate, which is the one practical advantage it has over VeNCrypt\(aqs plain subtype: \fBmfa\fR is allowed with \fBmslogon2\fR in \fBsecurity_types\fR.
+.PP
+.ti -3n
+\(bu
+Towards a target it needs both halves of a credential, so \fBupstream_user\fR and \fBupstream_password_file\fR are required when \fBupstream_security: mslogon2\fR \[u2014] refused at load rather than at the first session.
+.RE
+.PP
+.PP
+\fBTightVNC\(aqs type 16\fR is the easiest of these to be confident about, because it is not a cipher at all. It is a negotiation: the server offers a list of \fItunnels\fR and a list of \fIauthentications\fR, each named by a capability record, and the two ends pick one of each. What actually protects anything is whichever authentication it settles on.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+This gateway \fBoffers no tunnels\fR, and refuses a target that offers only tunnels. A tunnel is another protocol wrapped around this one, which would be a session the gateway can neither read nor record.
+.PP
+.ti -3n
+\(bu
+It offers \fBNOAUTH__\fR and, where \fBpassword_file\fR is set, \fBVNCAUTH_\fR \[u2014] the same DES challenge as the \fBvncauth\fR type, checked against the gateway\(aqs own password. An authentication outside the list it offered is refused, as with any other type.
+.PP
+.ti -3n
+\(bu
+Tight sends one more block \fBafter \fBServerInit\fR\fR, listing the message types and encodings the server has beyond the standard ones. A target\(aqs is read and dropped, and a Tight client is told there are none. That is deliberate rather than a gap: what is advertised there is TightVNC\(aqs extensions, including \fBfile transfer\fR, and a gateway that cannot see inside them has no business passing them through.
+.RE
+.PP
+.PP
+\fBApple Remote Desktop\(aqs type 30\fR is Diffie\-Hellman over a prime the server chooses, MD5 of the shared secret as an AES\-128 key, and a fixed credential blob encrypted under it in ECB. Apple\(aqs own servers offer a \fB512\-bit\fR prime, the key derivation is MD5 and the mode is ECB, so the credential is protected against very little; the warning at load says so. In the server role this gateway generates a 1024\-bit prime instead \[u2014] the length is on the wire and a client reads it, but a client that assumes 512 would not interoperate. Its credential carries a name, so \fBmfa\fR works with it and \fBupstream_user\fR is required to use it towards a target.
+.PP
+\fBRealVNC\(aqs RSA\-AES\fR, types 129, 130 and 133, is reimplemented on the same terms and with a different balance of risk. Each end sends an RSA public key, each seals a random under the other\(aqs key, the session keys are hashed out of the two randoms, and everything after that travels in AES\-EAX boxes with a counter for a nonce.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+The \fBcryptography is not guessed at\fR: RSA and the hashes are Go\(aqs standard library, and EAX is implemented in \fBinternal/eax\fR against the published vectors of the EAX paper and NIST SP 800\-38B, which the tests run. What is reconstructed is the \fBorder and framing of the messages\fR, from TigerVNC\(aqs implementation and its \fBrfbproto\fR. Getting that wrong shows up as a handshake that does not complete and a log line naming the step \[u2014] not as a session that looks encrypted and is not.
+.PP
+.ti -3n
+\(bu
+\fBrsa\-aes\fR is AES\-128 with SHA\-1, \fBrsa\-aes\-256\fR is AES\-256 with SHA\-256, and \fB\fBrsa\-aes\-ne\fR protects the handshake only: the session after it is in clear.\fR That is the one thing about this family easiest to get wrong, so validation warns about it and the access log names the security type of both legs.
+.PP
+.ti -3n
+\(bu
+\fBThe listener needs an RSA key of its own\fR (\fBrsa_key_file\fR, PEM, PKCS#1 or PKCS#8, at least 2048 bits, not readable by anyone else), because each end is identified by a key.
+.PP
+.ti -3n
+\(bu
+\fBTowards a target the key is pinned\fR (\fBupstream_rsa_fingerprint\fR), and validation requires it. Nothing else authenticates the far end of that exchange, and unlike a viewer there is nobody at a proxy to show a fingerprint to and ask. The fingerprint is this project\(aqs own spelling \[u2014] the SHA\-256 of the key as the protocol encodes it \[u2014] and the gateway logs the one a target offered, which is where the setting is copied from.
+.PP
+.ti -3n
+\(bu
+Its credential carries a name, so \fBmfa\fR works with it and \fBupstream_user\fR is required to use it towards a target.
+.RE
+.PP
+.PP
+\fBWhat is not supported, and why.\fR These are the vendors\(aq own, with no published specification to write against and none reimplemented here:
 .PP
 .TS
 allbox;
-lbw(0.6i) lbw(0.9i) lbx
-lw(0.6i) lw(0.9i) lx.
+lbw(0.6i) lbw(0.6i) lbx
+lw(0.6i) lw(0.6i) lx.
 T{
 Type
 T}	T{
@@ -2383,32 +2498,11 @@ T}	T{
 RealVNC
 T}
 T{
-129,\: 130,\: 133
+17
 T}	T{
-\fBrsa\-\:aes\fR,\: \fBrsa\-\:aes\-\:ne\fR,\: \fBrsa\-\:aes\-\:256\fR
-T}	T{
-RealVNC
-T}
-T{
-16
-T}	T{
-\fBtight\fR
-T}	T{
-TightVNC
-T}
-T{
-17,\: 113
-T}	T{
-\fBultra\fR,\: \fBmslogon2\fR
+\fBultra\fR
 T}	T{
 UltraVNC
-T}
-T{
-30
-T}	T{
-\fBard\fR
-T}	T{
-Apple
 T}
 T{
 20,\: 21,\: 22
@@ -2419,7 +2513,7 @@ others
 T}
 .TE
 .PP
-Naming one in \fBsecurity_types\fR is a configuration error rather than a setting that quietly does nothing. A gateway cannot sit in the middle of a handshake it cannot complete, and reimplementing a cipher from guesswork is worse than not having it: it would look like support while being wrong.
+Naming one in \fBsecurity_types\fR is a configuration error rather than a setting that quietly does nothing. A gateway cannot sit in the middle of a handshake it cannot complete, and reimplementing a cipher from guesswork is worse than not having it: it would look like support while being wrong. Where a public description exists that is good enough to write against \[u2014] as for \fBmslogon2\fR above \[u2014] the type moves into the table before this one and carries a warning instead.
 .PP
 \fBUltraVNC\(aqs DSM plugin encryption is a separate case.\fR It is not a security type at all \[u2014] the plugin wraps the whole connection before RFB begins, so this listener cannot even read the version string. There is nothing to configure here. An estate that needs it uses a \fBkind: tcp\fR listener, which relays the bytes without looking at them: the connection works, the access log records who reached which target, and there is no recording, because the stream is encrypted with keys this proxy does not hold.
 .SS "Options"
@@ -2481,6 +2575,33 @@ T}	T{
 none
 T}	T{
 The password this gateway uses towards the target
+T}
+T{
+\fBupstream_\:user\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The login this gateway presents to a target whose security type carries a name (\fBmslogon2\fR,\: \fBard\fR,\: \fBrsa\-\:aes*\fR). Required with those
+T}
+T{
+\fBrsa_\:key_\:file\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+This listener\(aqs own RSA key for the \fBrsa\-\:aes\fR types,\: PEM,\: at least 2048 bits. Required with any of them,\: and refused if anyone but the proxy user can read it
+T}
+T{
+\fBupstream_\:rsa_\:fingerprint\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Pins the target\(aqs \fBrsa\-\:aes\fR public key. Required with \fBupstream_\:security:\: rsa\-\:aes*\fR;\: the key a target offers is printed in the log
 T}
 T{
 \fBupstream_\:security\fR
@@ -2693,7 +2814,7 @@ T}
 An operator who prefers to tunnel themselves still can: \fBssh \-L\fR to the \fBkind: ssh\fR bastion and point the viewer at the forwarded port. That needs nothing here. The \fBssh\fR section is for doing it once, centrally, so the recording and the policy still apply.
 .SS "The second factor"
 .PP
-\fBmfa\fR needs a VeNCrypt \fBplain\fR subtype, and validation refuses the section without one. The reason is in the protocol: a DES challenge proves knowledge of one shared desktop password and says nothing about who is holding it, so there is nothing to look an enrolment up by. The plain subtypes are the only place RFB carries a user name. The name identifies the person and the password field carries their one\-time code, both inside the TLS tunnel.
+\fBmfa\fR needs a security type whose credential carries a user name, and validation refuses the section without one. The reason is in the protocol: a DES challenge proves knowledge of one shared desktop password and says nothing about who is holding it, so there is nothing to look an enrolment up by. Four things carry a name \[u2014] a VeNCrypt \fBplain\fR subtype, \fBmslogon2\fR, \fBard\fR, and the \fBrsa\-aes\fR types \[u2014] and any of them satisfies it. The name identifies the person and the password field carries their one\-time code; with a plain subtype both are inside the TLS tunnel, which is the arrangement to prefer.
 .PP
 \fBx509\-plain\fR is added to \fBvencrypt_subtypes\fR automatically when \fBmfa\fR is configured and no plain subtype is listed.
 .PP
@@ -2705,6 +2826,350 @@ The file holds the server\-to\-client RFB stream \[u2014] what was on the screen
 \fBIt is not a video.\fR The event data is the protocol stream, so replaying it needs a player that speaks RFB rather than a terminal. Recording the stream is what keeps the cost bounded and loses nothing: a decoder can be written against this file afterwards, and one that decoded at capture time would have to understand every encoding a server might choose and would silently lose whatever it did not.
 .PP
 Counters: \fBvnc_sessions\fR, \fBvnc_sessions_open\fR, \fBvnc_rejected\fR, \fBvnc_refused\fR, \fBvnc_recorded\fR, \fBvnc_mfa_ok\fR, \fBvnc_mfa_failed\fR. Every session writes one \fBvnc\fR access line with both versions, both security types, the desktop name and size, and how it ended. Refusals are \fBvnc_denied\fR deny events, so bans apply.
+.SS "server.listeners[].rdp (kind: rdp)"
+.PP
+A \fBkind: rdp\fR listener is a Remote Desktop gateway: the proxy terminates the connection sequence of MS\-RDPBCGR on both legs, so it is an RDP server to the client and an RDP client to the desktop.
+.PP
+\fBWhy this is not a \fBtcp\fR listener.\fR Everything worth deciding about an RDP session is settled in the connection sequence, before a single pixel moves: which security protocol is used, which virtual channels exist, who is connecting and with what credential. A relay that does not sit in that sequence decides none of it and can record none of what follows.
+.PP
+The channel list is the important part. Every redirection RDP has \[u2014] drives, printers, serial and parallel ports, smart cards, the clipboard, audio \[u2014] rides a virtual channel, and nothing can be used that was not both announced and granted. A gateway that rewrites that list decides what a session is able to do before it does it.
+.SS "What is supported"
+.PP
+\fBProtocol versions.\fR All of them. This gateway does not decode graphics, input, capability sets or any of the session\(aqs own traffic \[u2014] it relays those as they arrive \[u2014] so an RDP 4 client and a Windows Server 2025 desktop work the same way. What it decodes is the connection sequence, the channel list, the device announcement and the credential packet, and those have been stable since the protocol was documented.
+.PP
+\fBSecurity protocols\fR, which are negotiated at the very start:
+.PP
+.TS
+allbox;
+lbw(1.5i) lbw(1.2i) lbx
+lw(1.5i) lw(1.2i) lx.
+T{
+Protocol
+T}	T{
+Towards a client
+T}	T{
+Towards a desktop
+T}
+T{
+TLS (\fBtls\fR,\: \fBPROTOCOL_\:SSL\fR)
+T}	T{
+Supported,\: the default
+T}	T{
+Supported,\: the default
+T}
+T{
+Network level authentication (\fBnla\fR,\: \fBPROTOCOL_\:HYBRID\fR)
+T}	T{
+\fBNot offered,\: and cannot be\fR \[u2014] see below
+T}	T{
+Supported: CredSSP over NTLMv2
+T}
+T{
+The protocol\(aqs own encryption (\fBrdp\fR,\: \fBPROTOCOL_\:RDP\fR)
+T}	T{
+Not implemented \[u2014] see below
+T}	T{
+Not wired up yet \[u2014] see below
+T}
+.TE
+.PP
+\fBA client that asks for network level authentication is answered with TLS.\fR That is not a gap, it is how the gateway works at all, and it is what every remote desktop gateway does. Network level authentication proves the person\(aqs Windows credential to the server \fIbefore\fR the RDP connection sequence starts, using CredSSP. For a gateway to accept that from a client it would have to verify that credential itself, which means holding every person\(aqs Windows password \[u2014] the one credential a gateway should never hold. Answering with TLS moves the credential into the connection sequence, where the gateway can check a second factor against it and substitute its own. The cost is stated plainly: between the client and the gateway, authentication happens after the connection is established rather than before it, so the gateway itself must be reachable only by the people who should reach it (\fBallow_clients\fR, and a network that agrees).
+.PP
+\fBNetwork level authentication towards a desktop\fR (\fBupstream_security: nla\fR) is what a current Windows install requires by default. The gateway proves a credential with CredSSP (MS\-CSSP) carrying NTLM version 2 (MS\-NLMP) inside the TLS tunnel, before the connection sequence starts.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+It needs \fBupstream_user\fR and \fBupstream_password_file\fR, and validation says so. There is no way to pass the person\(aqs own credential through it: the exchange happens before the person has sent anything at all, which is the whole reason network level authentication exists.
+.PP
+.ti -3n
+\(bu
+The exchange is \fBbound to the tunnel it runs in\fR. Each end proves it saw the same certificate, from CredSSP version 5 onwards as a hash over a fresh nonce, so tokens relayed into another connection fail. A desktop whose binding does not match gets no credential.
+.PP
+.ti -3n
+\(bu
+The gateway insists on \fBextended session security\fR and a key exchange. A server offering neither is refused rather than fallen back to: the credential\(aqs protection rests on those session keys.
+.PP
+.ti -3n
+\(bu
+Only the client half is implemented \[u2014] this proves a credential, it never checks one. Checking would mean the gateway holding a password hash for whoever connects, which is the thing it exists to avoid.
+.RE
+.PP
+.PP
+The NTLM key derivation is tested against the worked example of MS\-NLMP \[u00A7]4.2.4, and the whole exchange against a stand\-in for the Windows side. It has \fBnot\fR been verified against a real Windows desktop in this repository\(aqs tests.
+.PP
+\fBThe protocol\(aqs own encryption\fR \[u2014] RC4 under keys derived from two random values, one of them sent under an RSA key the server puts in the connection sequence \[u2014] is where the two directions differ.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBTowards a desktop\fR, the cryptography is implemented and tested (\fBinternal/rdp\fR): the certificate is walked to its key, the random is sealed, the session keys are derived and the packets are signed, encrypted and re\-keyed. It is not yet wired into the session, because the session\(aqs own updates travel on the fast path with their own encryption flags, and that half is still to do. Setting it is refused at load rather than failing at the first connection.
+.PP
+.ti -3n
+\(bu
+\fBTowards a client\fR it is not implemented at all, and there is a reason to say out loud rather than to work around: presenting the protocol\(aqs own certificate means signing it with a private key Microsoft published years ago. That is not a secret this project should ship on its own initiative, so the decision is left to whoever needs it.
+.RE
+.PP
+.PP
+What it is worth either way is nothing, against anyone on the path: MD5 and SHA\-1 derivation, RC4, and a certificate a client has no way to check because the protocol never had anywhere to check it against. It would be here for equipment that speaks nothing else \[u2014] reached through a gateway that records the session and holds the policy, which is better than reached directly, and not because the connection is protected.
+.PP
+\fBWhat the gateway does not decode\fR: the graphics, input, clipboard contents, audio, licensing and capability exchange. Those are relayed byte for byte. A recording is therefore the protocol stream, not a video \[u2014] see below.
+.SS "The channel policy"
+.PP
+\fBchannels.allow\fR names the static virtual channels a session may have, and \fBthe default is none\fR: a session that can see the desktop and drive it, and nothing else. The usual names are \fBrdpdr\fR (device redirection), \fBcliprdr\fR (clipboard, including file copy), \fBrdpsnd\fR (audio out), \fBaudin\fR (microphone), \fBdrdynvc\fR (dynamic channels) and \fBrail\fR (seamless applications).
+.PP
+A refused channel is \fBnot removed from the list\fR, and the reason is worth knowing: the desktop answers with one identifier per channel the client asked for, in the order it asked, and a client that gets back a different number of identifiers does not recover. So the gateway replaces the \fIname\fR of a refused channel with one nothing speaks \[u2014] the name field is a fixed eight bytes, so the lengths do not move. The desktop registers a channel no software has a handler for, the identifiers still line up, and the gateway drops whatever the client sends on it. The desktop never registers the real channel, which is the property that matters.
+.PP
+\fBdrdynvc\fR is warned about: dynamic channels carry more redirection inside them, and what rides one is decided by the two ends rather than by this list.
+.SS "File transfer and ports"
+.PP
+Both are device redirection, which rides \fBrdpdr\fR, and both are decided by \fBdevices.allow\fR:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.2i) lbx
+lw(1.0i) lw(1.2i) lx.
+T{
+Name
+T}	T{
+What it is
+T}	T{
+What allowing it means
+T}
+T{
+\fBdrive\fR
+T}	T{
+Filesystem redirection
+T}	T{
+\fBFile upload and download between the client and the desktop\fR
+T}
+T{
+\fBprinter\fR
+T}	T{
+Printer redirection
+T}	T{
+Printing from the desktop to the client\(aqs printers
+T}
+T{
+\fBserial\fR
+T}	T{
+Serial port redirection
+T}	T{
+The desktop reaches the client\(aqs COM ports
+T}
+T{
+\fBparallel\fR
+T}	T{
+Parallel port redirection
+T}	T{
+The desktop reaches the client\(aqs LPT ports
+T}
+T{
+\fBsmartcard\fR
+T}	T{
+Smart card redirection
+T}	T{
+The desktop uses the client\(aqs smart card reader
+T}
+.TE
+.PP
+The default is none, so \fBchannels.allow: [rdpdr]\fR on its own gives a session the channel and no redirection on it. The policy is applied to the \fBdevice announcement\fR: nothing can be redirected that was not announced, so filtering that one message decides the whole of it without the gateway having to understand the traffic that follows. A refused device is taken out of the announcement, counted, written to the security log and marked in the recording. Refusing all of them leaves a valid announcement of no devices rather than a broken channel.
+.PP
+A device announcement the gateway cannot read \[u2014] a compressed one \[u2014] ends the session rather than passing through, because a redirection policy that quietly did not apply is worse than a session that stops.
+.SS "Options"
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.2i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The pool of desktops
+T}
+T{
+\fBsecurity\fR
+T}	T{
+list
+T}	T{
+\fB[tls]\fR
+T}	T{
+What a client may use. Only \fBtls\fR for now;\: see the table above
+T}
+T{
+\fBupstream_\:security\fR
+T}	T{
+string
+T}	T{
+\fBtls\fR
+T}	T{
+What this proxy uses towards the desktop: \fBtls\fR,\: or \fBnla\fR with a credential to prove
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+CA and name for the desktop\(aqs leg
+T}
+T{
+\fBupstream_\:user\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The login this proxy opens the desktop with. With it,\: the person\(aqs own credential never reaches the desktop
+T}
+T{
+\fBupstream_\:domain\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The domain that goes with \fBupstream_\:user\fR
+T}
+T{
+\fBupstream_\:password_\:file\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Its password,\: refused if anyone but the proxy user can read it
+T}
+T{
+\fBchannels.\:allow\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (none)
+T}	T{
+The static virtual channels a session may have
+T}
+T{
+\fBdevices.\:allow\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (none)
+T}	T{
+The redirected device kinds,\: where \fBrdpdr\fR is allowed
+T}
+T{
+\fBrecording\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+As \fBserver.\:listeners[].\:ssh.\:recording\fR;\: see below for the format
+T}
+T{
+\fBmfa\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+See below
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+No traffic in either direction
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Bound on a whole session however active
+T}
+T{
+\fBhandshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Bound on the connection sequence
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB200\fR
+T}	T{
+Sessions on this listener
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+PROXY protocol v2 header to the desktop
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+CIDRs a client must come from
+T}
+.TE
+.SS "The two credentials"
+.PP
+With \fBupstream_user\fR, \fBupstream_domain\fR and \fBupstream_password_file\fR, the desktop is opened with the gateway\(aqs own account and the person\(aqs credential stops at the gateway. Without them, what the person typed is forwarded as it arrived, which is what an estate that wants its own accounts audited on the desktop needs. Either way the gateway sees the credential, which is the price of being able to check anything about it \[u2014] and the reason the listener should be reachable only over a network you trust.
+.SS "The second factor"
+.PP
+\fBmfa\fR checks a one\-time code \fBbefore the credential reaches the desktop\fR. RDP has nowhere to ask a question \[u2014] there is no prompt in the protocol and the client is waiting for a desktop rather than a dialogue \[u2014] so the code travels with the password, after a comma:
+.PP
+.RS 4
+.nf
+.ft CR
+Password: hunter2,492013
+.ft
+.fi
+.RE
+.PP
+The same arrangement the FTP relay uses, and one that works with every client because it asks nothing of the client. The code is taken off before the password goes anywhere, so the desktop never sees it.
+.PP
+One honest difference from the other gateways here: the factor is checked before the \fBcredential\fR reaches the desktop, not before the desktop is dialled. RDP\(aqs connection sequence requires the desktop to answer before the client sends its credential, so the TCP connection is already open by then. What the desktop never receives without a verified factor is the credential.
+.SS "The recording"
+.PP
+The file holds the desktop\-to\-client stream \[u2014] what was on the screen \[u2014] with the timing of it, in the asciicast v2 container the other recordings use, named \fB*.rdp.cast\fR. Its header carries \fBXPROXY_PROTOCOL: rdp\fR and the security protocol of the desktop\(aqs leg, the first mark names the session and the channels it was granted, and every refused device is marked where it happened.
+.PP
+\fBIt is not a video.\fR The event data is the protocol stream, so replaying it needs a player that speaks RDP rather than a terminal. That is the deliberate choice: decoding at capture time would mean implementing every graphics encoding a desktop might choose \[u2014] and silently losing whatever was not implemented \[u2014] while a decoder written against this file later loses nothing.
+.PP
+Counters: \fBrdp_sessions\fR, \fBrdp_sessions_open\fR, \fBrdp_rejected\fR, \fBrdp_refused\fR, \fBrdp_recorded\fR, \fBrdp_mfa_ok\fR, \fBrdp_mfa_failed\fR, \fBrdp_channels_refused\fR, \fBrdp_devices_refused\fR. Every session writes one \fBrdp\fR access line with both security protocols, the routing token, the user and domain, the channels asked for and granted, and how it ended. Refusals are \fBrdp_denied\fR deny events, so bans apply.
 .SS "server.listeners[].telnet (kind: telnet)"
 .PP
 A \fBkind: telnet\fR listener is a telnet gateway: the proxy is a telnet server to the client and a telnet client to the target, reading the NVT protocol of RFC 854 in both directions.

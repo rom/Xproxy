@@ -328,6 +328,88 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A Remote Desktop gateway** (`kind: rdp`, in xgate). The proxy
+  terminates the connection sequence of MS-RDPBCGR on both legs, which
+  is what makes any of the rest possible: everything worth deciding
+  about an RDP session -- the security protocol, the virtual channels,
+  who is connecting and with what -- is settled before a pixel moves,
+  and a relay that does not sit in that sequence decides none of it.
+  - **A channel policy, which is where file transfer lives.** Every
+    redirection RDP has rides a virtual channel, and nothing can be
+    used that was not granted, so `channels.allow` decides what a
+    session can do -- defaulting to none. A refused channel is not
+    removed from the list, because the desktop answers with one
+    identifier per channel asked for and a client that gets back a
+    different number does not recover; its *name* is replaced with one
+    nothing speaks, which is the same number of bytes. The desktop
+    registers a channel no software has a handler for, the identifiers
+    line up, and what the client sends on it is dropped.
+  - **A device policy**, which is the enable and disable for file
+    uploads and for ports: `devices.allow` names drive, printer,
+    serial, parallel and smartcard, and is applied to the device
+    announcement, since nothing can be redirected that was not
+    announced. Refusing every kind leaves a valid announcement of none
+    rather than a broken channel; an announcement the gateway cannot
+    read, because it arrived compressed, ends the session rather than
+    passing through unfiltered.
+  - **A second factor**, carried with the password after a comma --
+    RDP has nowhere to ask a question -- and taken off before the
+    password goes anywhere. One honest difference from the other
+    gateways: the factor is checked before the *credential* reaches
+    the desktop, not before the desktop is dialled, because RDP's own
+    sequence requires the desktop to answer before the client sends a
+    credential at all. CONFIG.md says so.
+  - **Two credentials kept apart.** With `upstream_user` the desktop
+    is opened with the gateway's own account and the person's stops at
+    the gateway; without it, what the person typed is forwarded as it
+    arrived, for estates that want their own accounts audited on the
+    desktop.
+  - **A session recording** of the desktop-to-client stream as
+    asciicast v2, named `*.rdp.cast`, with every refused device marked
+    where it happened. It is not a video, for the same reason the VNC
+    recording is not.
+  - **Network level authentication towards a desktop**
+    (`upstream_security: nla`), which is what a current Windows install
+    requires by default: CredSSP over NTLM version 2, inside the TLS
+    tunnel, proving the credential an operator configured. It cannot
+    carry the person's own -- the exchange happens before the person
+    has sent anything, which is the point of the protocol -- so
+    validation requires `upstream_user` and `upstream_password_file`.
+    The exchange is bound to the tunnel it runs in, so tokens relayed
+    into another connection fail and a desktop whose binding does not
+    match gets no credential; extended session security and a key
+    exchange are insisted on rather than fallen back from. Only the
+    client half exists, in `internal/ntlm`: this proves a credential
+    and never checks one, because checking would mean the gateway
+    holding a password hash for everyone who connects. The key
+    derivation is tested against the worked example of MS-NLMP
+    section 4.2.4 and the exchange against a stand-in for the Windows
+    side; it is not verified against a real desktop here, and
+    CONFIG.md says so.
+  - **The protocol's own encryption**, RC4 under keys from two
+    randoms, has its cryptography implemented and tested in
+    `internal/rdp` -- walking the certificate to its key, sealing the
+    random, deriving the session keys, signing and re-keying -- but is
+    not yet wired into the session: the session's updates travel on
+    the fast path with encryption flags of their own, and that half is
+    still to do. Setting it is refused at load rather than failing at
+    the first connection. Towards a *client* it is not implemented at
+    all, for a reason worth saying plainly: presenting the protocol's
+    own certificate means signing it with a private key Microsoft
+    published, and shipping that is a decision for whoever needs it
+    rather than one to make quietly. CONFIG.md says both, and says
+    that what the scheme is worth is nothing against anyone on the
+    path.
+  - **A client asking for network level authentication is answered
+    with TLS**, which is what every remote desktop gateway does and
+    the only reason a second factor can be checked at all: accepting
+    NLA from a client would mean holding every person's Windows
+    password. The cost -- authentication after the connection rather
+    than before it, on the client's leg -- is stated in CONFIG.md
+    rather than left to be discovered. The protocol's own RC4
+    encryption is refused at load for now, with a message saying it is
+    not implemented yet rather than failing at the first session.
+
 - **A VNC gateway** (`kind: vnc`, in xgate), speaking RFB on both legs.
   The proxy is an RFB server to the viewer and an RFB client to the
   desktop, terminating the handshake of RFC 6143 on each -- which is
@@ -387,6 +469,87 @@ Open findings of the earlier rounds:
     understanding every encoding a server might pick and silently
     losing whatever it did not, while a decoder written against this
     file later loses nothing.
+
+- **TightVNC's security type 16 and Apple Remote Desktop's type 30**,
+  on both legs, which with the two above covers the vendors' types
+  that have a public description good enough to write against.
+  - **Tight is a negotiation rather than a cipher**: a list of tunnels
+    and a list of authentications, of which the two ends pick one
+    each. This gateway offers no tunnels and refuses a target that
+    offers only tunnels, because a tunnel is another protocol wrapped
+    around this one -- a session it could neither read nor record. It
+    offers no-auth and, with a `password_file`, the DES challenge.
+    Tight's block after `ServerInit` is read and dropped from a
+    target's leg and sent empty to a Tight client: what is advertised
+    there is TightVNC's extensions, file transfer among them, and a
+    gateway that cannot see inside them has no business passing them
+    through. The one case where a Tight target sends no security
+    result at all -- when it asks for no authentication -- is handled
+    rather than waited on.
+  - **ARD** is Diffie-Hellman over a prime the server chooses, MD5 of
+    the shared secret as an AES-128 key, and a credential blob in ECB.
+    Apple's own servers use a 512 bit prime, so the warning says what
+    that is worth; in the server role this gateway generates 1024 bits
+    instead. Its credential carries a name, so it carries a factor.
+    Parameters that fix the shared secret -- a generator or public
+    value of 1, a public value at or above the modulus, an even
+    modulus, a prime shorter than Apple's own -- are refused on both
+    legs rather than turned into a key.
+
+- **RealVNC's RSA-AES, security types 129, 130 and 133**, on both legs
+  of the VNC gateway. Each end sends an RSA public key, each seals a
+  random under the other's, the session keys are hashed out of the two
+  randoms, and everything after that travels in AES-EAX boxes with a
+  counter for a nonce and the message's own length as its associated
+  data.
+  - **The cryptography is not guessed at.** RSA and the hashes are the
+    standard library's, and EAX -- which Go does not have -- is
+    implemented in `internal/eax` against the published vectors of the
+    EAX paper and of NIST SP 800-38B for the CMAC underneath it, both
+    run by its tests. What is reconstructed from TigerVNC's
+    implementation is the **order and framing of the messages**. That
+    is the failure mode to prefer: getting it wrong is a handshake
+    that does not complete and a log line naming the step, not a
+    session that looks encrypted and is not. Interoperability with
+    RealVNC's own software is not verified here, and the load warning
+    and CONFIG.md say so.
+  - **`rsa-aes-ne` protects the handshake only and leaves the session
+    in clear.** That is the thing about this family easiest to get
+    wrong, so it has a warning of its own, the access log names the
+    security type of both legs, and a test holds that the channel is
+    left after the security result and not before.
+  - **Each end is identified by a key**, so the listener needs one
+    (`rsa_key_file`, PEM, at least 2048 bits, not readable by anyone
+    else) and a target's is **pinned** (`upstream_rsa_fingerprint`,
+    required): nothing else authenticates the far end of that
+    exchange, and unlike a viewer there is nobody at a proxy to show a
+    fingerprint to and ask. The gateway logs the key a target offered,
+    which is where the setting is copied from.
+  - The transcript hash each end sends is over both public keys in its
+    own order, so a third party that swapped them is refused and one
+    end's hash cannot be replayed as the other's. A peer key outside
+    2048 to 8192 bits, one whose stated length disagrees with the
+    modulus it carries, and an even exponent are all refused before any
+    arithmetic is done on them.
+
+- **MS-Logon II, UltraVNC's security type 113**, on both legs of the
+  VNC gateway (`security_types: [mslogon2]`, `upstream_security:
+  mslogon2`). It is reimplemented from the shape of UltraVNC's own
+  source and the public reimplementations that agree with it, since
+  there is no specification: the load warning and `docs/CONFIG.md`
+  both say that interoperability with a real UltraVNC server is not
+  verified here, and say what the type is worth -- Diffie-Hellman over
+  64 bits with the shared secret as a DES key, which protects the
+  Windows credential inside it against nobody. It is here because the
+  desktops exist, and reaching them through a gateway that records the
+  session and holds the policy beats reaching them directly. Two
+  things follow from its credential carrying a name, which most of RFB
+  does not: it can carry a second factor with no certificate involved,
+  and towards a target it needs `upstream_user` as well as
+  `upstream_password_file`, refused at load rather than at the first
+  session. Degenerate Diffie-Hellman parameters -- the ones that fix
+  the shared secret without breaking anything -- are refused on both
+  legs.
 
 - **A telnet gateway** (`kind: telnet`, in xgate), for the equipment
   that speaks nothing else. The proxy is a telnet server to the client
@@ -490,6 +653,30 @@ Open findings of the earlier rounds:
   recording landed.
 
 ### Fixed (1.4, tests)
+
+- **A seventh, which tampered with a cookie into itself.** `TestFlow`
+  checks that a changed challenge cookie is refused, and changed it by
+  replacing its last two base64 characters with "AA" -- so a cookie
+  that already ended that way was "tampered with" into exactly itself
+  and was, correctly, accepted. About one run in four thousand, which
+  is how often it was seen. It now changes the first character, to one
+  it was not already, and asserts the value actually moved: base64's
+  final character carries padding bits, so several spellings of it
+  decode to the same bytes and a tamper there is sometimes no tamper
+  at all.
+
+- **A sixth flaky test, of a different shape: `TestExport` set the
+  batch size and the flush interval against each other.** The trace
+  exporter flushes when the batch is full *or* when the interval
+  fires, and the test asked for a batch of two spans with a 50ms
+  interval, then asserted that exactly one push happened carrying
+  both. The two spans are finished microseconds apart, so almost
+  always they filled the batch first -- but a ticker that fired
+  between them pushed the first span alone, and the assertion on the
+  push count failed. It now sets an interval long enough that the
+  batch is the only thing that flushes, which is what the test is
+  about; the interval path was never what it was checking, and the
+  flush on `Stop` it also exercises is unaffected.
 
 - **Five tests raced the goroutine that records what they assert on.**
   `CountStatus` is called from `logAccess`, which runs once the response

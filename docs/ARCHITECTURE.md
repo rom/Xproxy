@@ -104,7 +104,16 @@ internal/kinds/ftp     kind: ftp -- control and data channel mediation
 internal/kinds/syslog  kind: syslog -- RFC 5424 and RFC 3164 relay
 internal/kinds/telnet  kind: telnet -- NVT option policy, recording, MFA
 internal/kinds/vnc     kind: vnc -- RFB handshake mediation, recording, MFA
+internal/kinds/rdp     kind: rdp -- connection sequence mediation, channel
+                       and device policy, recording, MFA
 internal/rfb           the RFB wire format the vnc kind reads and writes
+internal/rdp           the RDP wire format the rdp kind reads and writes:
+                       the negotiation, the channel list, the credential,
+                       and CredSSP for network level authentication
+internal/ntlm          NTLM version 2, client half only, which CredSSP
+                       carries
+internal/eax           AES-EAX, which RealVNC's rsa-aes types need and the
+                       standard library does not have
 
 internal/config     schema, defaults, loader, validation
 internal/router     host and path matching

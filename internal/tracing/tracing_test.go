@@ -99,7 +99,11 @@ func TestExport(t *testing.T) {
 	t.Cleanup(collector.Close)
 	tr, err := New(Config{SamplePercent: 100, Propagate: true,
 		Export: &otlp.Config{Endpoint: collector.URL, Timeout: 2 * time.Second, Headers: map[string]string{"Authorization": "Bearer t"}, ServiceName: "edge", Attributes: map[string]string{"env": "test"}, Version: "9"},
-		Batch:  2, Interval: 50 * time.Millisecond, Queue: 10}, nolog)
+		// The batch size is what flushes here, not the interval: with
+		// a short interval the ticker can fire between the two spans
+		// and push the first on its own, which is a second push this
+		// test then asserts did not happen.
+		Batch: 2, Interval: time.Hour, Queue: 10}, nolog)
 	if err != nil {
 		t.Fatal(err)
 	}

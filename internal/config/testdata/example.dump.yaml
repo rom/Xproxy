@@ -20,6 +20,7 @@ server:
           ssh: null
           telnet: null
           vnc: null
+          rdp: null
           ftp: null
           syslog: null
         - name: public
@@ -61,6 +62,7 @@ server:
           ssh: null
           telnet: null
           vnc: null
+          rdp: null
           ftp: null
           syslog: null
     limits:

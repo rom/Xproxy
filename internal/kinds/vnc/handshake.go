@@ -111,6 +111,24 @@ func (se *session) offerable() []uint8 {
 			if t.tlsCfg == nil {
 				continue
 			}
+		case rfb.SecMSLogon2:
+			// The credential is a name and a password. Without a
+			// password to check it against or a factor to check
+			// instead, there is nothing to decide on.
+			if t.password == "" && t.mfaGuard == nil {
+				continue
+			}
+		case rfb.SecRSAAES, rfb.SecRSAAESne, rfb.SecRSAAES256:
+			// The same, and a key of this gateway's own to be
+			// identified by.
+			if t.rsaKey == nil || (t.password == "" && t.mfaGuard == nil) {
+				continue
+			}
+		case rfb.SecARD:
+			// A name and a password, like the two above.
+			if t.password == "" && t.mfaGuard == nil {
+				continue
+			}
 		}
 		out = append(out, s)
 	}
@@ -129,6 +147,14 @@ func (se *session) clientAuth() string {
 		return se.clientVeNCrypt()
 	case rfb.SecTLS:
 		return se.clientAnonTLS()
+	case rfb.SecMSLogon2:
+		return se.clientMSLogon()
+	case rfb.SecRSAAES, rfb.SecRSAAESne, rfb.SecRSAAES256:
+		return se.clientRSAAES()
+	case rfb.SecTight:
+		return se.clientTight()
+	case rfb.SecARD:
+		return se.clientARD()
 	}
 	se.refuseClient("that security type is not mediated by this gateway")
 	return "security_unsupported"
@@ -228,11 +254,19 @@ func (se *session) clientVeNCrypt() string {
 // by. With plain there is: the username is the person, and the
 // password field carries their one-time code.
 func (se *session) clientPlain() string {
-	t := se.t
 	user, secret, err := rfb.ReadPlain(se.client, maxCredential)
 	if err != nil {
 		return "client_auth"
 	}
+	return se.namedCredential(user, secret)
+}
+
+// namedCredential decides on a credential that carries a name: the
+// factor where one is configured, and the gateway's own password
+// otherwise. VeNCrypt's plain subtype and MS-Logon II both arrive
+// here, because both carry the same two fields.
+func (se *session) namedCredential(user, secret string) string {
+	t := se.t
 	se.factorUser, se.factorCode = user, secret
 	if t.mfaGuard != nil {
 		// The factor is checked here rather than after the handshake,
@@ -362,7 +396,7 @@ func (se *session) upstreamHandshake(ci rfb.ClientInit) string {
 	// The same rule in the other direction: a pre-3.8 target that
 	// asked for nothing sends no result, and waiting for one would
 	// hang the session.
-	if rfb.SendsResult(v, pick) {
+	if rfb.SendsResult(v, pick) && !se.upNoResult {
 		good, why, err := rfb.ReadSecurityResult(se.up, v)
 		if err != nil {
 			return "upstream_security"
@@ -373,6 +407,13 @@ func (se *session) upstreamHandshake(ci rfb.ClientInit) string {
 			return "upstream_auth_failed"
 		}
 	}
+	// The "ne" type authenticates inside its channel and hands the
+	// session back to a cleartext socket once the result is in.
+	up, err := leaveChannel(se.up, se.upSec)
+	if err != nil {
+		return "upstream_auth"
+	}
+	se.up = up
 	// The client's ClientInit, held until now, and the target's answer.
 	if _, err := se.up.Write(ci.Encode()); err != nil {
 		return "upstream_write"
@@ -385,7 +426,9 @@ func (se *session) upstreamHandshake(ci rfb.ClientInit) string {
 	if _, err := se.client.Write(si.Encode()); err != nil {
 		return "write"
 	}
-	return ""
+	// Tight puts one more block after ServerInit, on whichever legs
+	// negotiated it.
+	return se.tightInteraction()
 }
 
 // pickUpstream chooses the security type to use towards the target:
@@ -400,7 +443,9 @@ func (se *session) pickUpstream(offered []uint8) (uint8, bool) {
 	}
 	// Strongest first: an encrypted negotiation beats a bare password,
 	// and a password beats nothing at all.
-	for _, want := range []uint8{rfb.SecVeNCrypt, rfb.SecVNCAuth, rfb.SecNone} {
+	for _, want := range []uint8{rfb.SecRSAAES256, rfb.SecRSAAES, rfb.SecVeNCrypt,
+		rfb.SecVNCAuth, rfb.SecRSAAESne, rfb.SecARD, rfb.SecMSLogon2,
+		rfb.SecTight, rfb.SecNone} {
 		if !slices.Contains(offered, want) {
 			continue
 		}
@@ -408,6 +453,22 @@ func (se *session) pickUpstream(offered []uint8) (uint8, bool) {
 			continue
 		}
 		if want == rfb.SecVeNCrypt && t.v.UpstreamTLSMode != "vencrypt" {
+			continue
+		}
+		// MS-Logon II sends a name as well as a password, so it is
+		// only usable where an operator gave both.
+		if want == rfb.SecMSLogon2 && (t.v.UpstreamUser == "" || t.upPassword == "") {
+			continue
+		}
+		// ARD sends a name as well, like MS-Logon II.
+		if want == rfb.SecARD && (t.v.UpstreamUser == "" || t.upPassword == "") {
+			continue
+		}
+		// rsa-aes needs a key of this gateway's own, a credential, and
+		// the target's key pinned: nothing else authenticates the far
+		// end of that exchange.
+		if rfb.RSAAESFamily[want] &&
+			(t.rsaKey == nil || t.upPassword == "" || t.v.UpstreamRSAFingerprint == "") {
 			continue
 		}
 		return want, true
@@ -421,20 +482,17 @@ func (se *session) upstreamAuth() string {
 	case rfb.SecNone:
 		return ""
 	case rfb.SecVNCAuth:
-		challenge := make([]byte, rfb.ChallengeSize)
-		if _, err := io.ReadFull(se.up, challenge); err != nil {
-			return "upstream_auth"
-		}
-		resp, err := rfb.VNCAuthResponse(challenge, se.t.upPassword)
-		if err != nil {
-			return "upstream_auth"
-		}
-		if _, err := se.up.Write(resp); err != nil {
-			return "upstream_write"
-		}
-		return ""
+		return se.upstreamVNCChallenge()
 	case rfb.SecVeNCrypt:
 		return se.upstreamVeNCrypt()
+	case rfb.SecMSLogon2:
+		return se.upstreamMSLogon()
+	case rfb.SecRSAAES, rfb.SecRSAAESne, rfb.SecRSAAES256:
+		return se.upstreamRSAAES()
+	case rfb.SecTight:
+		return se.upstreamTight()
+	case rfb.SecARD:
+		return se.upstreamARD()
 	}
 	return "upstream_security_unusable"
 }

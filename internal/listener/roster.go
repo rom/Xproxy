@@ -55,6 +55,7 @@ var roster = map[string]Role{
 	"ssh":     RoleGate,
 	"telnet":  RoleGate,
 	"vnc":     RoleGate,
+	"rdp":     RoleGate,
 	"smtp":    RoleRelay,
 	"mqtt":    RoleRelay,
 	"ftp":     RoleRelay,

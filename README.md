@@ -318,6 +318,21 @@ an identifier from the access log to the upstream.
   the host key pinned; MFA carried in VeNCrypt's plain credential,
   which is the only place RFB names a person
 
+- `kind: rdp`: a Remote Desktop gateway that terminates the connection
+  sequence on both legs, because everything worth deciding about an RDP
+  session is settled there before a pixel moves. **Which virtual
+  channels exist** is the gateway's decision, and since every
+  redirection RDP has rides one, that is where file transfer and port
+  redirection are switched on and off — by channel, and inside the
+  redirection channel by device kind, applied to the announcement that
+  nothing can be redirected without. **Whose credential opens the
+  desktop** is a separate decision from who proved themselves to the
+  gateway. A second factor rides the password field, since RDP has
+  nowhere to ask, and is taken off before the password travels on. A
+  client asking for network level authentication is answered with TLS
+  — the downgrade every remote desktop gateway performs, and the only
+  way a gateway can check anything at all about a credential
+
 **Extensibility and platforms**
 
 - **Authorisation as one policy**: every authenticating filter answers

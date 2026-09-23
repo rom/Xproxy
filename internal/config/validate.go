@@ -7,6 +7,7 @@ import (
 	"github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/rfb"
 	"github.com/rom/xproxy/internal/syslog"
 	"github.com/rom/xproxy/internal/telnet"
@@ -667,6 +668,15 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.vnc: required for kind vnc", p)
 			} else {
 				v.vncListener(p+".vnc", ln.VNC, ln.TLS != nil)
+			}
+		case "rdp":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an rdp listener takes only address, rdp and tls", p)
+			}
+			if ln.RDP == nil {
+				v.errf("%s.rdp: required for kind rdp", p)
+			} else {
+				v.rdpListener(p+".rdp", ln.RDP, ln.TLS != nil)
 			}
 		case "telnet":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
@@ -5459,6 +5469,7 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 		v.errf("%s.upstream: required", p)
 	}
 	mediated, wantsTLS, wantsPassword := false, false, false
+	namesUser, wantsRSA := false, false
 	for _, name := range c.SecurityTypes {
 		n := strings.ToLower(strings.TrimSpace(name))
 		t, ok := rfb.SecurityByName(n)
@@ -5475,10 +5486,19 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 			if t == rfb.SecVNCAuth {
 				wantsPassword = true
 			}
+		case rfb.Reimplemented[t]:
+			mediated = true
+			if rfb.RSAAESFamily[t] {
+				wantsRSA = true
+			}
+			v.warnf("%s.security_types: %s is a vendor's own type, reimplemented here from published reverse engineering rather than from a specification, so interoperability with the vendor's own software is not guaranteed: %s. See docs/CONFIG.md", p, n, reimplementedNote[t])
 		case rfb.Proprietary[t]:
-			v.errf("%s.security_types: %q is a vendor's own type with no published specification, so this gateway cannot sit in the middle of it; see docs/CONFIG.md for what to do instead", p, n)
+			v.errf("%s.security_types: %q is a vendor's own type with no published specification and none reimplemented here, so this gateway cannot sit in the middle of it; see docs/CONFIG.md for what to do instead", p, n)
 		default:
 			v.errf("%s.security_types: %q is not mediated by this gateway", p, n)
+		}
+		if rfb.NamesAUser[t] {
+			namesUser = true
 		}
 		if n == "tls" {
 			v.warnf("%s.security_types: the tls type is anonymous Diffie-Hellman with no certificate to check, so it stops a reader and not an active attacker; vencrypt with an x509 subtype is the one to use", p)
@@ -5529,7 +5549,7 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 	}
 	if c.UpstreamSecurity != "" {
 		t, ok := rfb.SecurityByName(strings.ToLower(strings.TrimSpace(c.UpstreamSecurity)))
-		if !ok || !rfb.Mediated[t] {
+		if !ok || (!rfb.Mediated[t] && !rfb.Reimplemented[t]) {
 			v.errf("%s.upstream_security: %q is not a type this gateway can use towards a target", p, c.UpstreamSecurity)
 		}
 	}
@@ -5541,9 +5561,30 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 	if c.MFA != nil {
 		v.mfaPolicy(p+".mfa", c.MFA)
 		// A factor needs a name to look an enrolment up by, and RFB
-		// carries one in exactly one place.
-		if !hasPlain(c.VeNCryptSubtypes) {
-			v.errf("%s.mfa: needs a plain VeNCrypt subtype (x509-plain), which is the only place RFB carries a user name; a DES challenge proves a shared desktop password and says nothing about who holds it", p)
+		// carries one in only two places.
+		if !hasPlain(c.VeNCryptSubtypes) && !namesUser {
+			v.errf("%s.mfa: needs a security type whose credential carries a user name -- a plain VeNCrypt subtype (x509-plain), or mslogon2 -- since a DES challenge proves a shared desktop password and says nothing about who holds it", p)
+		}
+	}
+	if up, ok := rfb.SecurityByName(strings.ToLower(strings.TrimSpace(c.UpstreamSecurity))); ok && rfb.RSAAESFamily[up] {
+		wantsRSA = true
+		if c.UpstreamRSAFingerprint == "" {
+			v.errf("%s.upstream_rsa_fingerprint: required to use rsa-aes towards a target: nothing else authenticates the far end of that exchange, and there is nobody at a proxy to show a fingerprint to. The key a target offers is printed in the log, which is where this comes from", p)
+		}
+	}
+	if wantsRSA && c.RSAKeyFile == "" {
+		v.errf("%s.rsa_key_file: required with the rsa-aes security types, which identify each end by an RSA key of its own", p)
+	}
+	if c.RSAKeyFile != "" {
+		v.file(p+".rsa_key_file", c.RSAKeyFile)
+	}
+	// A named credential towards the target needs both halves of one.
+	if wantsUpstreamName(c) {
+		if c.UpstreamUser == "" {
+			v.errf("%s.upstream_user: required to use %s towards a target, which sends a name as well as a password", p, c.UpstreamSecurity)
+		}
+		if c.UpstreamPasswordFile == "" {
+			v.errf("%s.upstream_password_file: required to use %s towards a target", p, c.UpstreamSecurity)
 		}
 	}
 	if c.SSH != nil {
@@ -5881,5 +5922,125 @@ func (v *validator) syslogListener(p string, g *SyslogListener, hasTLS bool) {
 	}
 	if g.Queue < 1 || g.Queue > 1<<20 {
 		v.errf("%s.queue: must be 1..1048576", p)
+	}
+}
+
+// reimplementedNote says what one of the reimplemented types is
+// actually worth, which is the part an operator needs and the name
+// does not say.
+var reimplementedNote = map[uint8]string{
+	rfb.SecMSLogon2:  "the type is Diffie-Hellman over 64 bits with the shared secret used directly as a DES key, so the credential inside it is protected against nobody. Put a tls_mode: wrap or ssh leg around it",
+	rfb.SecRSAAES:    "the cryptography is RSA with AES-128 in EAX and SHA-1, which is sound as far as it goes -- what is reconstructed here is the framing rather than the cipher",
+	rfb.SecRSAAESne:  "the handshake is RSA with AES-128 in EAX, and the session after it is in clear. rsa-aes or rsa-aes-256 is the one to use unless something in the estate cannot",
+	rfb.SecRSAAES256: "the cryptography is RSA with AES-256 in EAX and SHA-256 -- what is reconstructed here is the framing rather than the cipher",
+	rfb.SecTight:     "the type is a negotiation rather than a cipher: it settles on one of the ordinary authentications, which is what actually protects anything, and this gateway refuses its tunnels and passes none of its extensions through",
+	rfb.SecARD:       "Apple's own servers offer a 512 bit prime, the key is MD5 of the shared secret and the credential is encrypted in ECB, so the credential is protected against very little. Put a tls_mode: wrap or ssh leg around it",
+}
+
+// wantsUpstreamName says whether the target's leg may use a security
+// type that sends a user name as well as a password, which is what
+// makes upstream_user necessary.
+func wantsUpstreamName(c *VNCListener) bool {
+	n := strings.ToLower(strings.TrimSpace(c.UpstreamSecurity))
+	if n == "" {
+		return false
+	}
+	t, ok := rfb.SecurityByName(n)
+	return ok && rfb.NamesAUser[t]
+}
+
+// rdpListener checks a Remote Desktop gateway.
+func (v *validator) rdpListener(p string, c *RDPListener, hasTLS bool) {
+	if c.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	wantsTLS := false
+	for _, name := range c.Security {
+		n := strings.ToLower(strings.TrimSpace(name))
+		switch n {
+		case "tls":
+			wantsTLS = true
+		case "rdp":
+			// The protocol's own encryption is RC4 under keys from an
+			// exchange this gateway does not yet perform, so a session
+			// using it would reach the point where the credential
+			// arrives and stop. It is refused at load until that is
+			// written rather than failing at the first connection.
+			v.errf("%s.security: rdp, the protocol's own encryption, is not implemented yet; use tls", p)
+		case "nla":
+			v.errf("%s.security: nla cannot be offered to clients by this gateway: checking a client's network level authentication needs that person's own password, which is the one credential a gateway should not hold. A client that asks for it is answered with tls, which is the arrangement every remote desktop gateway uses; see docs/CONFIG.md", p)
+		default:
+			v.errf("%s.security: %q is not a security protocol this gateway offers; use tls or rdp", p, name)
+		}
+	}
+	if !wantsTLS {
+		v.errf("%s.security: no protocol left that a client could use", p)
+	}
+	if wantsTLS && !hasTLS {
+		v.errf("%s.security: tls needs the listener's tls section, since there is no certificate to present without one", p)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.UpstreamSecurity)) {
+	case "tls":
+	case "nla":
+		if c.UpstreamUser == "" || c.UpstreamPasswordFile == "" {
+			// The exchange happens inside the tunnel before the
+			// connection sequence starts, which is before the person
+			// at the other end has sent anything: there is no
+			// credential to pass through, only one to configure.
+			v.errf("%s.upstream_security: nla towards a desktop needs upstream_user and upstream_password_file, since the credential is proved before the person's own has been sent", p)
+		}
+	case "rdp":
+		v.errf("%s.upstream_security: rdp, the protocol's own encryption, is not implemented yet; use tls", p)
+	default:
+		v.errf("%s.upstream_security: must be tls, nla or rdp", p)
+	}
+	if c.UpstreamPasswordFile != "" {
+		v.file(p+".upstream_password_file", c.UpstreamPasswordFile)
+	}
+	if (c.UpstreamUser == "") != (c.UpstreamPasswordFile == "") {
+		v.errf("%s.upstream_user: name it with upstream_password_file or with neither; half a credential opens nothing", p)
+	}
+	hasRDPDR := false
+	if c.Channels != nil {
+		for _, name := range c.Channels.Allow {
+			n := strings.ToLower(strings.TrimSpace(name))
+			if n == "" {
+				v.errf("%s.channels.allow: an empty channel name", p)
+				continue
+			}
+			if len(n) >= rdp.ChannelNameLen {
+				v.errf("%s.channels.allow: %q is over %d characters, which is more than a channel name can be", p, name, rdp.ChannelNameLen-1)
+			}
+			if n == rdp.ChannelDeviceRedirection {
+				hasRDPDR = true
+			}
+			if n == rdp.ChannelDynamic {
+				v.warnf("%s.channels.allow: %s carries dynamic channels, whose contents this gateway does not decide -- audio, cameras, and on some clients redirection that the devices policy would otherwise have refused. Allow it only where something needs it", p, rdp.ChannelDynamic)
+			}
+		}
+	}
+	if c.Devices != nil {
+		for _, name := range c.Devices.Allow {
+			if _, ok := rdp.DeviceTypeByName(name); !ok {
+				v.errf("%s.devices.allow: %q is not a device kind; use drive, printer, serial, parallel or smartcard", p, name)
+			}
+		}
+		if len(c.Devices.Allow) > 0 && !hasRDPDR {
+			v.errf("%s.devices.allow: names device kinds while the %s channel is not allowed, so nothing could announce one. Allow the channel or drop this section", p, rdp.ChannelDeviceRedirection)
+		}
+	}
+	if c.Recording != nil {
+		v.sessionRecording(p+".recording", c.Recording, nil)
+	}
+	if c.MFA != nil {
+		v.mfaPolicy(p+".mfa", c.MFA)
+	}
+	if c.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be positive", p)
+	}
+	for i, cidr := range c.AllowClients {
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, cidr, err)
+		}
 	}
 }
