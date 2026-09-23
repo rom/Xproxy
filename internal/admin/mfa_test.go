@@ -61,7 +61,8 @@ func TestMFAEnrolmentIsPassedOnUntouched(t *testing.T) {
 	}
 	// The secret and the codes exist once; the GUI hands them on as
 	// they arrived rather than keeping or reshaping them.
-	for _, want := range []string{`"secret":"JBSWY3DPEHPK3PXPJBSWY3DPEH"`, `"otpauth://totp/`, `"show_once":true`, `"recovery":["abcde-fghij-klmno"]`} {
+	for _, want := range []string{`"secret":"JBSWY3DPEHPK3PXPJBSWY3DPEH"`, `"otpauth://totp/`, `"show_once":true`,
+		`"recovery":["abcde-fghij-klmno"]`, `"qr":"data:image/png;base64,`} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("answer missing %s: %s", want, body)
 		}

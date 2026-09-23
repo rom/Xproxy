@@ -1,6 +1,7 @@
 package rdp
 
 import (
+	"crypto/hmac"
 	"crypto/md5" //nolint:gosec // the protocol specifies MD5
 	"crypto/rand"
 	"crypto/rc4" //nolint:gosec // the protocol specifies RC4
@@ -30,9 +31,11 @@ import (
 //
 // Only the client half is implemented -- this proxy can open an old
 // desktop, it cannot pretend to be one. The server half needs a
-// certificate signed with a private key Microsoft published, and
-// shipping that in this repository is a decision for an operator to
-// ask for rather than one to make quietly.
+// certificate signed with the private key Microsoft published in
+// MS-RDPBCGR 5.3.3.1.1, which a client checks against the public half
+// built into it; without that key a certificate this gateway made is
+// refused by every client, so the client-facing half is refused at
+// load instead of failing at the first connection.
 
 // ErrLegacy is a failure in the legacy exchange.
 var ErrLegacy = errors.New("rdp: legacy encryption")
@@ -46,11 +49,34 @@ const (
 )
 
 // The encryption levels, which say how much of the session is
-// encrypted rather than how strongly.
+// encrypted rather than how strongly. Low encrypts what the client
+// sends and nothing of what the desktop sends; the rest encrypt both
+// directions. Nothing here branches on the level to decide what to
+// decrypt -- each packet says whether it is encrypted, and that is
+// what is acted on, so a desktop that encrypts more than its level
+// promised is read correctly anyway.
 const (
-	EncryptionLevelNone = 0
-	EncryptionLevelLow  = 1
+	EncryptionLevelNone             = 0
+	EncryptionLevelLow              = 1
+	EncryptionLevelClientCompatible = 2
+	EncryptionLevelHigh             = 3
+	EncryptionLevelFIPS             = 4
 )
+
+// EncodeClientSecurity renders the block a client sends to say what it
+// can encrypt with (MS-RDPBCGR 2.2.1.3.3). The second word is the
+// French locale's extra method, which this gateway never asks for.
+func EncodeClientSecurity(methods uint32) []byte {
+	out := binary.LittleEndian.AppendUint32(nil, methods)
+	return binary.LittleEndian.AppendUint32(out, 0)
+}
+
+// ClientMethods is what this gateway offers a desktop: the three RC4
+// widths, strongest first by the desktop's own choice. FIPS is left
+// out because it is 3DES with a different derivation and a different
+// packet layout, and a gateway that claimed it would fail after the
+// exchange rather than before it.
+const ClientMethods = Encryption128Bit | Encryption56Bit | Encryption40Bit
 
 // RandomSize is the length of each end's random value.
 const RandomSize = 32
@@ -419,4 +445,190 @@ func (c *Crypt) rekey() error {
 	}
 	c.current = out
 	return c.reset()
+}
+
+// ---- packets, once the keys exist ----
+
+// signatureSize is the eight bytes that travel in front of an
+// encrypted payload.
+const signatureSize = 8
+
+// Seal renders the security header, signature and encrypted payload
+// that a packet carries once the session is encrypted. The signature is
+// taken over the plaintext, which is why it is computed first.
+//
+// The flags the caller passes are the packet's own -- what kind of
+// packet it is -- and SEC_ENCRYPT is added here, because whether the
+// packet is encrypted is this function's business rather than the
+// caller's.
+func (c *Crypt) Seal(flags uint16, payload []byte) ([]byte, error) {
+	body := append([]byte(nil), payload...)
+	sig := c.Sign(body)
+	if err := c.Apply(body); err != nil {
+		return nil, err
+	}
+	out := SecurityHeader{Flags: flags | SecEncrypt}.Encode()
+	out = append(out, sig...)
+	return append(out, body...), nil
+}
+
+// Open reverses Seal: it takes the payload of a data unit whose
+// security header says it is encrypted, decrypts it and checks the
+// signature.
+//
+// A signature that does not match is the end of the session. There is
+// nothing to salvage: either the key schedule has diverged, in which
+// case every packet after this is nonsense, or somebody on the path
+// changed the packet.
+func (c *Crypt) Open(b []byte) ([]byte, error) {
+	if len(b) < signatureSize {
+		return nil, fmt.Errorf("%w: an encrypted payload of %d bytes", ErrLegacy, len(b))
+	}
+	sig := b[:signatureSize]
+	body := append([]byte(nil), b[signatureSize:]...)
+	if err := c.Apply(body); err != nil {
+		return nil, err
+	}
+	if !hmac.Equal(sig, c.Sign(body)) {
+		return nil, fmt.Errorf("%w: a packet whose signature does not match its contents", ErrLegacy)
+	}
+	return body, nil
+}
+
+// The fast path headers of MS-RDPBCGR 2.2.9.1.2 and 2.2.8.1.2. Bits
+// six and seven of the first byte say whether the rest is encrypted,
+// and a value of two there means it is.
+const (
+	fastPathEncryptedShift = 6
+	fastPathEncrypted      = 2
+)
+
+// FastPathEncrypted says whether a fast path PDU's header claims the
+// rest of it is encrypted. It takes the PDU as it arrived.
+func FastPathEncrypted(raw []byte) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	return raw[0]>>fastPathEncryptedShift&3 == fastPathEncrypted
+}
+
+// FastPathOpen decrypts a fast path PDU whose header says it is
+// encrypted, and returns the PDU with the plaintext in place of the
+// signature and ciphertext, its header no longer claiming encryption.
+// A gateway forwards that onwards: the leg it is going out on is a
+// different one, with encryption of its own or none.
+func (c *Crypt) FastPathOpen(raw []byte) ([]byte, error) {
+	head, body, err := splitFastPath(raw)
+	if err != nil {
+		return nil, err
+	}
+	plain, err := c.Open(body)
+	if err != nil {
+		return nil, err
+	}
+	out := append([]byte(nil), head...)
+	out[0] &^= 3 << fastPathEncryptedShift
+	out = append(out, plain...)
+	return setFastPathLength(out, len(head))
+}
+
+// FastPathSeal is the other direction: a plaintext fast path PDU
+// becomes an encrypted one, with the signature in front of the body
+// and the header saying so.
+func (c *Crypt) FastPathSeal(raw []byte) ([]byte, error) {
+	head, body, err := splitFastPath(raw)
+	if err != nil {
+		return nil, err
+	}
+	sealed := append([]byte(nil), body...)
+	sig := c.Sign(sealed)
+	if err := c.Apply(sealed); err != nil {
+		return nil, err
+	}
+	out := append([]byte(nil), head...)
+	out[0] = out[0]&^(3<<fastPathEncryptedShift) | fastPathEncrypted<<fastPathEncryptedShift
+	out = append(out, sig...)
+	out = append(out, sealed...)
+	return setFastPathLength(out, len(head))
+}
+
+// splitFastPath separates a fast path PDU's header from its body. The
+// header is one byte of action and flags plus a length of one or two
+// bytes, and which of those it is depends on the top bit of the first
+// length byte.
+func splitFastPath(raw []byte) (head, body []byte, err error) {
+	if len(raw) < 2 {
+		return nil, nil, fmt.Errorf("%w: a fast path pdu of %d bytes", ErrLegacy, len(raw))
+	}
+	n := 2
+	if raw[1]&0x80 != 0 {
+		n = 3
+	}
+	if len(raw) < n {
+		return nil, nil, fmt.Errorf("%w: a fast path header of %d bytes", ErrLegacy, len(raw))
+	}
+	return raw[:n], raw[n:], nil
+}
+
+// setFastPathLength writes the new total length into a rewritten PDU's
+// header. The header keeps the width it had, so a PDU that grew or
+// shrank by the signature has to still fit that width.
+func setFastPathLength(out []byte, headLen int) ([]byte, error) {
+	switch headLen {
+	case 2:
+		if len(out) > 0x7F {
+			// One byte of length cannot say more than 127, so the
+			// header has to grow -- and growing it moves the body,
+			// which is what the two byte form is for.
+			grown := append([]byte{out[0], 0, 0}, out[2:]...)
+			return setFastPathLength(grown, 3)
+		}
+		out[1] = byte(len(out))
+	case 3:
+		if len(out) > 0x7FFF {
+			return nil, fmt.Errorf("%w: a fast path pdu of %d bytes", ErrLegacy, len(out))
+		}
+		out[1] = byte(len(out)>>8) | 0x80
+		out[2] = byte(len(out))
+	default:
+		return nil, fmt.Errorf("%w: a fast path header of %d bytes", ErrLegacy, headLen)
+	}
+	return out, nil
+}
+
+// EncryptionMethodName names a method for a log line.
+func EncryptionMethodName(m uint32) string {
+	switch m {
+	case 0:
+		return "none"
+	case Encryption40Bit:
+		return "rc4-40"
+	case Encryption56Bit:
+		return "rc4-56"
+	case Encryption128Bit:
+		return "rc4-128"
+	case EncryptionFIPS:
+		return "fips"
+	default:
+		return fmt.Sprintf("%#x", m)
+	}
+}
+
+// EncryptionLevelName names a level for a log line. The level says how
+// much of the session is encrypted, not how strongly.
+func EncryptionLevelName(l uint32) string {
+	switch l {
+	case EncryptionLevelNone:
+		return "none"
+	case EncryptionLevelLow:
+		return "low"
+	case EncryptionLevelClientCompatible:
+		return "client-compatible"
+	case EncryptionLevelHigh:
+		return "high"
+	case EncryptionLevelFIPS:
+		return "fips"
+	default:
+		return fmt.Sprintf("%#x", l)
+	}
 }

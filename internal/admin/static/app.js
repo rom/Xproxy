@@ -630,8 +630,10 @@ function mfaSecretCard(s) {
     h('h2', null, 'Shown once: ' + s.user + ' on ' + s.listener),
     h('p', { class: 'warn' }, 'None of this can be read again. The file keeps only hashes; if it is lost, enrol the person again.'));
   if (s.secret) card.append(h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Secret'), h('code', null, groupsOf(s.secret, 4)), copyButton(s.secret, 'Copy secret')));
-  if (s.uri) card.append(h('div', { class: 'row' }, h('span', { class: 'muted' }, 'otpauth URI'), h('code', { class: 'wrap' }, s.uri), copyButton(s.uri, 'Copy URI')),
-    h('p', { class: 'muted' }, 'Enter the secret in the authenticator by hand, or paste the URI into one that reads them.'));
+  if (s.qr) card.append(h('div', { class: 'row' },
+    h('img', { class: 'qr', src: s.qr, alt: 'QR code of the enrolment URI', width: 212, height: 212 }),
+    h('p', { class: 'muted' }, 'Point the authenticator at this. Typing the secret by hand works too \u2014 it is the same enrolment.')));
+  if (s.uri) card.append(h('div', { class: 'row' }, h('span', { class: 'muted' }, 'otpauth URI'), h('code', { class: 'wrap' }, s.uri), copyButton(s.uri, 'Copy URI')));
   const codes = s.recovery || [];
   if (codes.length) card.append(h('p', { class: 'muted mt-s' }, 'Recovery codes, one use each:'),
     h('ul', { class: 'codes' }, codes.map(c => h('li', null, c))),

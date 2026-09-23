@@ -50,6 +50,14 @@ func (se *session) conference() string {
 	if reason := se.applyChannelPolicy(conn); reason != "" {
 		return reason
 	}
+	if t.wantsLegacy() {
+		// What the client said it can encrypt with is not what
+		// matters on that leg any more: this gateway holds the keys
+		// there, so it says what it can do itself.
+		if reason := se.legacyClientSecurity(conn); reason != "" {
+			return reason
+		}
+	}
 	out, err := conn.Encode()
 	if err != nil {
 		return "client_conference"
@@ -74,7 +82,19 @@ func (se *session) conference() string {
 	if reason := se.readServerChannels(resp); reason != "" {
 		return reason
 	}
-	if _, err := se.client.Write(pdu.Raw); err != nil {
+	answer := pdu.Raw
+	if t.wantsLegacy() {
+		// The key exchange with the desktop starts here, and the
+		// block the client sees is rewritten, so this half is
+		// re-encoded rather than forwarded.
+		if reason := se.legacyServerSecurity(resp); reason != "" {
+			return reason
+		}
+		if answer, err = resp.Encode(); err != nil {
+			return "upstream_conference"
+		}
+	}
+	if _, err := se.client.Write(answer); err != nil {
 		return "write"
 	}
 	return ""

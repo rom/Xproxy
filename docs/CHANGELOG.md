@@ -328,6 +328,36 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **The protocol's own encryption towards a desktop** (`kind: rdp`,
+  `upstream_security: rdp`). The cryptography was already there and
+  tested; what was missing was the session. Now the desktop's security
+  block is read out of the conference response, this end's random is
+  sealed under the key in its certificate and sent as the security
+  exchange -- in front of the first thing the client sends, which is
+  where the sequence puts it -- and from there every unit bound for
+  the desktop is signed and encrypted and every unit from it is
+  decrypted, on both framings, with the key rolling over every 4096
+  packets as the protocol requires.
+  - Being *inside* that encryption is the whole point: the channel and
+    device policy still applies, the second factor is still checked,
+    and the recording holds the session rather than ciphertext. The
+    encryption itself is worth nothing against anyone on the path --
+    RC4 under MD5 and SHA-1, with a certificate nothing can check --
+    and the documentation says so rather than implying otherwise. It
+    is for equipment that speaks nothing else, and setting it warns at
+    load so it is a downgrade somebody meant.
+  - A desktop that asks for no encryption at all is served, with a
+    warning naming it: a session nobody encrypts looks exactly like
+    one everybody does. FIPS mode is refused rather than downgraded.
+  - **Towards a client it is still refused**, and the message now says
+    why rather than calling it unimplemented: offering it means
+    presenting a certificate signed with the Terminal Services key
+    published in MS-RDPBCGR 5.3.3.1.1, and a client checks that
+    signature against the public half built into it. This build
+    carries no signing key, so the setting is refused at load instead
+    of failing at the first connection.
+  - New counter `rdp_legacy_sessions`.
+
 - **Second factors an operator can change while the proxy runs**, in
   the management API, the GUI and the TUI. The enrolment file was read
   once, at load, so adding somebody meant a reload and removing
@@ -344,11 +374,23 @@ Open findings of the earlier rounds:
     kind implements, so the enrolments stay where the listener's own
     skew and lockout settings are and nothing had to move into the
     engine.
+  - **A QR code of the enrolment URI** (`internal/qr`), because the
+    alternative is typing a twenty-six character secret into a
+    telephone. The encoder is a small one — byte mode, error
+    correction level M, every version from 1 to 40 — written here
+    rather than pulled in, since the symbol has to be drawn under a
+    content security policy that fetches nothing and runs no library.
+    The daemon draws it and the answer carries it as a PNG `data:`
+    URI. A QR encoder is the kind of code that runs and is wrong, so
+    the test compares 640 symbols — every version, every mask, two
+    payload sizes — against an implementation that has nothing to do
+    with this one, and pins the error correction to the worked example
+    in ISO/IEC 18004.
   - **The GUI has an MFA page.** A viewer sees who is enrolled and who
     is locked out, which holds no secret; an operator enrols, replaces
     recovery codes, removes and unlocks. What an enrolment answers with
-    -- the secret, the `otpauth://` URI and the recovery codes -- is
-    passed through as it arrived and shown once, in a panel that stays
+    -- the secret, the `otpauth://` URI, the QR code and the recovery
+    codes -- is passed through as it arrived and shown once, in a panel that stays
     until it is dismissed, which is why that page is the one with no
     refresh timer: a timer would wipe it while it was still being
     written down.

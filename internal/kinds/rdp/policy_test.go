@@ -344,8 +344,7 @@ func TestTheConfigurationIsChecked(t *testing.T) {
 	cases := []struct{ name, rdp, want string }{
 		{"nla towards a client", `{upstream: farm, security: [nla]}`, "own password"},
 		{"nla with no credential to prove", `{upstream: farm, upstream_security: nla}`, "upstream_user"},
-		{"the legacy protocol towards a client", `{upstream: farm, security: [rdp]}`, "not implemented"},
-		{"the legacy protocol towards a desktop", `{upstream: farm, upstream_security: rdp}`, "not implemented"},
+		{"the legacy protocol towards a client", `{upstream: farm, security: [rdp]}`, "no signing key"},
 		{"devices without their channel", `{upstream: farm, devices: {allow: [drive]}}`, "could announce"},
 		{"a device kind that is not one", `{upstream: farm, channels: {allow: [rdpdr]}, devices: {allow: [webcam]}}`, "not a device kind"},
 		{"half a credential", `{upstream: farm, upstream_user: svc}`, "half a credential"},

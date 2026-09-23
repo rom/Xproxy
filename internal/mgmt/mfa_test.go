@@ -3,7 +3,9 @@ package mgmt
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"image/png"
 	"io"
 	"net"
 	"net/http"
@@ -18,6 +20,7 @@ import (
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/qr"
 )
 
 // mfaServer starts a proxy with one telnet listener that asks for a
@@ -111,6 +114,7 @@ func TestEnrolThroughTheSocketWorksImmediately(t *testing.T) {
 	var out struct {
 		Secret   string   `json:"secret"`
 		URI      string   `json:"uri"`
+		QR       string   `json:"qr"`
 		Recovery []string `json:"recovery"`
 		ShowOnce bool     `json:"show_once"`
 	}
@@ -122,6 +126,38 @@ func TestEnrolThroughTheSocketWorksImmediately(t *testing.T) {
 	}
 	if !strings.HasPrefix(out.URI, "otpauth://totp/") || !strings.Contains(out.URI, "Lab") {
 		t.Errorf("uri %q", out.URI)
+	}
+	// The symbol beside the URI is a picture of that URI and not of
+	// something else, which is the only way it can be wrong quietly:
+	// an authenticator that reads a stale one enrols against a secret
+	// nothing will check.
+	raw, ok := strings.CutPrefix(out.QR, "data:image/png;base64,")
+	if !ok {
+		t.Fatalf("qr %q", out.QR[:min(40, len(out.QR))])
+	}
+	pngBytes, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		t.Fatalf("qr is not base64: %v", err)
+	}
+	img, err := png.Decode(bytes.NewReader(pngBytes))
+	if err != nil {
+		t.Fatalf("qr is not a png: %v", err)
+	}
+	want, err := qr.Encode(out.URI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const scale, quiet = 4, 4
+	if side := (want.Size + 2*quiet) * scale; img.Bounds().Dx() != side {
+		t.Fatalf("qr is %v, want %d square", img.Bounds(), side)
+	}
+	for y := 0; y < want.Size; y++ {
+		for x := 0; x < want.Size; x++ {
+			r, _, _, _ := img.At((x+quiet)*scale, (y+quiet)*scale).RGBA()
+			if (r == 0) != want.Dark(x, y) {
+				t.Fatalf("the symbol does not match the uri at %d,%d", x, y)
+			}
+		}
 	}
 
 	// The listener verifies a code made with it, with no reload.
@@ -140,15 +176,15 @@ func TestEnrolThroughTheSocketWorksImmediately(t *testing.T) {
 	}
 
 	// And the file on disk holds the secret rather than the codes.
-	raw, err := os.ReadFile(file)
+	onDisk, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), "alice:") {
-		t.Errorf("the file has no line for alice:\n%s", raw)
+	if !strings.Contains(string(onDisk), "alice:") {
+		t.Errorf("the file has no line for alice:\n%s", onDisk)
 	}
 	for _, c := range out.Recovery {
-		if strings.Contains(string(raw), c) {
+		if strings.Contains(string(onDisk), c) {
 			t.Fatal("a recovery code is in the file in clear")
 		}
 	}

@@ -112,9 +112,9 @@ func (se *session) sendMessage(data rdp.SendData, msg []byte) ([]byte, bool, str
 			Total: uint32(len(msg)), //nolint:gosec // bounded by maxChannelMessage
 			Flags: flags, Data: msg[off : off+n],
 		}
-		pdu, err := rewrap(data, chunk.Encode())
-		if err != nil {
-			return nil, false, "client_protocol"
+		pdu, _, reason := se.toTarget(data, chunk.Encode())
+		if reason != "" {
+			return nil, false, reason
 		}
 		out = append(out, pdu...)
 		off += n
@@ -133,10 +133,10 @@ func (se *session) decideIO(data rdp.SendData) ([]byte, bool, string) {
 	if err != nil {
 		// Too short to be a packet with a security header: not the one
 		// this gateway is looking for.
-		return rewrapOrRaw(data)
+		return se.rewrapOrRaw(data)
 	}
 	if head.Flags&rdp.SecInfoPkt == 0 {
-		return rewrapOrRaw(data)
+		return se.rewrapOrRaw(data)
 	}
 	if head.Flags&rdp.SecEncrypt != 0 {
 		// Encrypted under the protocol's own scheme, which this
@@ -160,21 +160,18 @@ func (se *session) decideIO(data rdp.SendData) ([]byte, bool, string) {
 	return se.sendMessage2(data, append(head.Encode(), body...))
 }
 
-// rewrapOrRaw forwards a data unit unchanged.
-func rewrapOrRaw(data rdp.SendData) ([]byte, bool, string) {
-	out, err := rdp.DataPDU(data.Encode())
-	if err != nil {
-		return nil, false, "client_protocol"
-	}
-	return out, false, ""
+// rewrapOrRaw forwards a data unit with nothing of its own changed,
+// which on a leg that encrypts still means encrypting it.
+func (se *session) rewrapOrRaw(data rdp.SendData) ([]byte, bool, string) {
+	return se.toTarget(data, data.Payload)
 }
 
 // sendMessage2 wraps one payload, which the session channel's packets
 // do not chunk.
 func (se *session) sendMessage2(data rdp.SendData, payload []byte) ([]byte, bool, string) {
-	out, err := rewrap(data, payload)
-	if err != nil {
-		return nil, false, "client_protocol"
+	out, _, reason := se.toTarget(data, payload)
+	if reason != "" {
+		return nil, false, reason
 	}
 	return out, false, ""
 }
