@@ -105,6 +105,8 @@ internal/kinds/syslog  kind: syslog -- RFC 5424 and RFC 3164 relay
 internal/kinds/telnet  kind: telnet -- NVT option policy, recording, MFA
 internal/kinds/vnc     kind: vnc -- RFB handshake mediation, recording, MFA
 internal/rfb           the RFB wire format the vnc kind reads and writes
+internal/rdp           the RDP wire format the rdp kind reads and writes:
+                       the negotiation, the channel list, the credential
 internal/eax           AES-EAX, which RealVNC's rsa-aes types need and the
                        standard library does not have
 
