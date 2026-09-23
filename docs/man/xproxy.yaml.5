@@ -2365,6 +2365,33 @@ UltraVNC\(aqs MS\-Logon II
 T}	T{
 Reimplemented,\: warned about
 T}
+T{
+129
+T}	T{
+\fBrsa\-\:aes\fR
+T}	T{
+RealVNC\(aqs RSA with AES\-128\-EAX
+T}	T{
+Reimplemented,\: warned about
+T}
+T{
+130
+T}	T{
+\fBrsa\-\:aes\-\:ne\fR
+T}	T{
+The same handshake,\: session in clear
+T}	T{
+Reimplemented,\: warned about
+T}
+T{
+133
+T}	T{
+\fBrsa\-\:aes\-\:256\fR
+T}	T{
+RealVNC\(aqs RSA with AES\-256\-EAX
+T}	T{
+Reimplemented,\: warned about
+T}
 .TE
 .PP
 \fBtls\fR is warned about because it is anonymous Diffie\-Hellman with no certificate to check: it stops a reader and not an active attacker. \fBvencrypt\fR with an X.509 subtype is the one to use.
@@ -2388,6 +2415,31 @@ Towards a target it needs both halves of a credential, so \fBupstream_user\fR an
 .RE
 .PP
 .PP
+\fBRealVNC\(aqs RSA\-AES\fR, types 129, 130 and 133, is reimplemented on the same terms and with a different balance of risk. Each end sends an RSA public key, each seals a random under the other\(aqs key, the session keys are hashed out of the two randoms, and everything after that travels in AES\-EAX boxes with a counter for a nonce.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+The \fBcryptography is not guessed at\fR: RSA and the hashes are Go\(aqs standard library, and EAX is implemented in \fBinternal/eax\fR against the published vectors of the EAX paper and NIST SP 800\-38B, which the tests run. What is reconstructed is the \fBorder and framing of the messages\fR, from TigerVNC\(aqs implementation and its \fBrfbproto\fR. Getting that wrong shows up as a handshake that does not complete and a log line naming the step \[u2014] not as a session that looks encrypted and is not.
+.PP
+.ti -3n
+\(bu
+\fBrsa\-aes\fR is AES\-128 with SHA\-1, \fBrsa\-aes\-256\fR is AES\-256 with SHA\-256, and \fB\fBrsa\-aes\-ne\fR protects the handshake only: the session after it is in clear.\fR That is the one thing about this family easiest to get wrong, so validation warns about it and the access log names the security type of both legs.
+.PP
+.ti -3n
+\(bu
+\fBThe listener needs an RSA key of its own\fR (\fBrsa_key_file\fR, PEM, PKCS#1 or PKCS#8, at least 2048 bits, not readable by anyone else), because each end is identified by a key.
+.PP
+.ti -3n
+\(bu
+\fBTowards a target the key is pinned\fR (\fBupstream_rsa_fingerprint\fR), and validation requires it. Nothing else authenticates the far end of that exchange, and unlike a viewer there is nobody at a proxy to show a fingerprint to and ask. The fingerprint is this project\(aqs own spelling \[u2014] the SHA\-256 of the key as the protocol encodes it \[u2014] and the gateway logs the one a target offered, which is where the setting is copied from.
+.PP
+.ti -3n
+\(bu
+Its credential carries a name, so \fBmfa\fR works with it and \fBupstream_user\fR is required to use it towards a target.
+.RE
+.PP
+.PP
 \fBWhat is not supported, and why.\fR These are the vendors\(aq own, with no published specification to write against and none reimplemented here:
 .PP
 .TS
@@ -2405,13 +2457,6 @@ T{
 5,\: 6
 T}	T{
 \fBra2\fR,\: \fBra2ne\fR
-T}	T{
-RealVNC
-T}
-T{
-129,\: 130,\: 133
-T}	T{
-\fBrsa\-\:aes\fR,\: \fBrsa\-\:aes\-\:ne\fR,\: \fBrsa\-\:aes\-\:256\fR
 T}	T{
 RealVNC
 T}
@@ -2515,7 +2560,25 @@ string
 T}	T{
 none
 T}	T{
-The login this gateway presents to a target whose security type carries a name (\fBmslogon2\fR). Required with \fBupstream_\:security:\: mslogon2\fR
+The login this gateway presents to a target whose security type carries a name (\fBmslogon2\fR,\: \fBrsa\-\:aes*\fR). Required with those
+T}
+T{
+\fBrsa_\:key_\:file\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+This listener\(aqs own RSA key for the \fBrsa\-\:aes\fR types,\: PEM,\: at least 2048 bits. Required with any of them,\: and refused if anyone but the proxy user can read it
+T}
+T{
+\fBupstream_\:rsa_\:fingerprint\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Pins the target\(aqs \fBrsa\-\:aes\fR public key. Required with \fBupstream_\:security:\: rsa\-\:aes*\fR;\: the key a target offers is printed in the log
 T}
 T{
 \fBupstream_\:security\fR
@@ -2728,7 +2791,7 @@ T}
 An operator who prefers to tunnel themselves still can: \fBssh \-L\fR to the \fBkind: ssh\fR bastion and point the viewer at the forwarded port. That needs nothing here. The \fBssh\fR section is for doing it once, centrally, so the recording and the policy still apply.
 .SS "The second factor"
 .PP
-\fBmfa\fR needs a security type whose credential carries a user name, and validation refuses the section without one. The reason is in the protocol: a DES challenge proves knowledge of one shared desktop password and says nothing about who is holding it, so there is nothing to look an enrolment up by. Two things carry a name \[u2014] a VeNCrypt \fBplain\fR subtype, and \fBmslogon2\fR \[u2014] and either satisfies it. The name identifies the person and the password field carries their one\-time code; with a plain subtype both are inside the TLS tunnel, which is the arrangement to prefer.
+\fBmfa\fR needs a security type whose credential carries a user name, and validation refuses the section without one. The reason is in the protocol: a DES challenge proves knowledge of one shared desktop password and says nothing about who is holding it, so there is nothing to look an enrolment up by. Three things carry a name \[u2014] a VeNCrypt \fBplain\fR subtype, \fBmslogon2\fR, and the \fBrsa\-aes\fR types \[u2014] and any of them satisfies it. The name identifies the person and the password field carries their one\-time code; with a plain subtype both are inside the TLS tunnel, which is the arrangement to prefer.
 .PP
 \fBx509\-plain\fR is added to \fBvencrypt_subtypes\fR automatically when \fBmfa\fR is configured and no plain subtype is listed.
 .PP

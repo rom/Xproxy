@@ -198,7 +198,7 @@ var Mediated = map[uint8]bool{
 // directly. That is a different claim from the type being secure, and
 // the documentation does not make the second one.
 var Reimplemented = map[uint8]bool{
-	SecMSLogon2: true,
+	SecMSLogon2: true, SecRSAAES: true, SecRSAAESne: true, SecRSAAES256: true,
 }
 
 // NamesAUser are the types whose credential carries a user name. It
@@ -208,7 +208,7 @@ var Reimplemented = map[uint8]bool{
 // it. VeNCrypt's plain subtypes are the other place a name appears,
 // and they are subtypes rather than types, so they are not here.
 var NamesAUser = map[uint8]bool{
-	SecMSLogon2: true,
+	SecMSLogon2: true, SecRSAAES: true, SecRSAAESne: true, SecRSAAES256: true,
 }
 
 // Proprietary are the types defined by a vendor rather than by a
@@ -219,7 +219,6 @@ var NamesAUser = map[uint8]bool{
 // decision for an operator rather than for this package.
 var Proprietary = map[uint8]bool{
 	SecRA2: true, SecRA2ne: true, SecTight: true, SecUltra: true,
-	SecRSAAES: true, SecRSAAESne: true, SecRSAAES256: true,
 	SecARD: true, SecSASL: true, SecMD5: true, SecXvp: true,
 }
 

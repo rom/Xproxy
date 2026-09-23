@@ -5459,7 +5459,7 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 		v.errf("%s.upstream: required", p)
 	}
 	mediated, wantsTLS, wantsPassword := false, false, false
-	namesUser := false
+	namesUser, wantsRSA := false, false
 	for _, name := range c.SecurityTypes {
 		n := strings.ToLower(strings.TrimSpace(name))
 		t, ok := rfb.SecurityByName(n)
@@ -5478,7 +5478,10 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 			}
 		case rfb.Reimplemented[t]:
 			mediated = true
-			v.warnf("%s.security_types: %s is a vendor's own type, reimplemented here from published reverse engineering: interoperability is not guaranteed and the type protects the credential with a 64 bit key exchange and DES, which is to say with nothing. Use it to reach desktops that speak nothing else, through a gateway that records the session -- not as a way to keep the credential secret; see docs/CONFIG.md", p, n)
+			if rfb.RSAAESFamily[t] {
+				wantsRSA = true
+			}
+			v.warnf("%s.security_types: %s is a vendor's own type, reimplemented here from published reverse engineering rather than from a specification, so interoperability with the vendor's own software is not guaranteed: %s. See docs/CONFIG.md", p, n, reimplementedNote[t])
 		case rfb.Proprietary[t]:
 			v.errf("%s.security_types: %q is a vendor's own type with no published specification and none reimplemented here, so this gateway cannot sit in the middle of it; see docs/CONFIG.md for what to do instead", p, n)
 		default:
@@ -5553,13 +5556,25 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 			v.errf("%s.mfa: needs a security type whose credential carries a user name -- a plain VeNCrypt subtype (x509-plain), or mslogon2 -- since a DES challenge proves a shared desktop password and says nothing about who holds it", p)
 		}
 	}
+	if up, ok := rfb.SecurityByName(strings.ToLower(strings.TrimSpace(c.UpstreamSecurity))); ok && rfb.RSAAESFamily[up] {
+		wantsRSA = true
+		if c.UpstreamRSAFingerprint == "" {
+			v.errf("%s.upstream_rsa_fingerprint: required to use rsa-aes towards a target: nothing else authenticates the far end of that exchange, and there is nobody at a proxy to show a fingerprint to. The key a target offers is printed in the log, which is where this comes from", p)
+		}
+	}
+	if wantsRSA && c.RSAKeyFile == "" {
+		v.errf("%s.rsa_key_file: required with the rsa-aes security types, which identify each end by an RSA key of its own", p)
+	}
+	if c.RSAKeyFile != "" {
+		v.file(p+".rsa_key_file", c.RSAKeyFile)
+	}
 	// A named credential towards the target needs both halves of one.
 	if wantsUpstreamName(c) {
 		if c.UpstreamUser == "" {
-			v.errf("%s.upstream_user: required to use mslogon2 towards a target, which sends a name as well as a password", p)
+			v.errf("%s.upstream_user: required to use %s towards a target, which sends a name as well as a password", p, c.UpstreamSecurity)
 		}
 		if c.UpstreamPasswordFile == "" {
-			v.errf("%s.upstream_password_file: required to use mslogon2 towards a target", p)
+			v.errf("%s.upstream_password_file: required to use %s towards a target", p, c.UpstreamSecurity)
 		}
 	}
 	if c.SSH != nil {
@@ -5898,6 +5913,16 @@ func (v *validator) syslogListener(p string, g *SyslogListener, hasTLS bool) {
 	if g.Queue < 1 || g.Queue > 1<<20 {
 		v.errf("%s.queue: must be 1..1048576", p)
 	}
+}
+
+// reimplementedNote says what one of the reimplemented types is
+// actually worth, which is the part an operator needs and the name
+// does not say.
+var reimplementedNote = map[uint8]string{
+	rfb.SecMSLogon2:  "the type is Diffie-Hellman over 64 bits with the shared secret used directly as a DES key, so the credential inside it is protected against nobody. Put a tls_mode: wrap or ssh leg around it",
+	rfb.SecRSAAES:    "the cryptography is RSA with AES-128 in EAX and SHA-1, which is sound as far as it goes -- what is reconstructed here is the framing rather than the cipher",
+	rfb.SecRSAAESne:  "the handshake is RSA with AES-128 in EAX, and the session after it is in clear. rsa-aes or rsa-aes-256 is the one to use unless something in the estate cannot",
+	rfb.SecRSAAES256: "the cryptography is RSA with AES-256 in EAX and SHA-256 -- what is reconstructed here is the framing rather than the cipher",
 }
 
 // wantsUpstreamName says whether the target's leg may use a security

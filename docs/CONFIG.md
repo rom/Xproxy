@@ -916,6 +916,9 @@ session recordable:
 | 19 | `vencrypt` | The open TLS and X.509 negotiation | Mediated |
 | 18 | `tls` | Anonymous-TLS, VeNCrypt's predecessor | Mediated, warned about |
 | 113 | `mslogon2` | UltraVNC's MS-Logon II | Reimplemented, warned about |
+| 129 | `rsa-aes` | RealVNC's RSA with AES-128-EAX | Reimplemented, warned about |
+| 130 | `rsa-aes-ne` | The same handshake, session in clear | Reimplemented, warned about |
+| 133 | `rsa-aes-256` | RealVNC's RSA with AES-256-EAX | Reimplemented, warned about |
 
 `tls` is warned about because it is anonymous Diffie-Hellman with no
 certificate to check: it stops a reader and not an active attacker.
@@ -956,13 +959,44 @@ which most of RFB does not:
   `upstream_security: mslogon2` — refused at load rather than at the
   first session.
 
+**RealVNC's RSA-AES**, types 129, 130 and 133, is reimplemented on the
+same terms and with a different balance of risk. Each end sends an RSA
+public key, each seals a random under the other's key, the session
+keys are hashed out of the two randoms, and everything after that
+travels in AES-EAX boxes with a counter for a nonce.
+
+- The **cryptography is not guessed at**: RSA and the hashes are Go's
+  standard library, and EAX is implemented in `internal/eax` against
+  the published vectors of the EAX paper and NIST SP 800-38B, which
+  the tests run. What is reconstructed is the **order and framing of
+  the messages**, from TigerVNC's implementation and its `rfbproto`.
+  Getting that wrong shows up as a handshake that does not complete
+  and a log line naming the step — not as a session that looks
+  encrypted and is not.
+- `rsa-aes` is AES-128 with SHA-1, `rsa-aes-256` is AES-256 with
+  SHA-256, and **`rsa-aes-ne` protects the handshake only: the session
+  after it is in clear.** That is the one thing about this family
+  easiest to get wrong, so validation warns about it and the access
+  log names the security type of both legs.
+- **The listener needs an RSA key of its own** (`rsa_key_file`, PEM,
+  PKCS#1 or PKCS#8, at least 2048 bits, not readable by anyone else),
+  because each end is identified by a key.
+- **Towards a target the key is pinned** (`upstream_rsa_fingerprint`),
+  and validation requires it. Nothing else authenticates the far end of
+  that exchange, and unlike a viewer there is nobody at a proxy to show
+  a fingerprint to and ask. The fingerprint is this project's own
+  spelling — the SHA-256 of the key as the protocol encodes it — and
+  the gateway logs the one a target offered, which is where the setting
+  is copied from.
+- Its credential carries a name, so `mfa` works with it and
+  `upstream_user` is required to use it towards a target.
+
 **What is not supported, and why.** These are the vendors' own, with no
 published specification to write against and none reimplemented here:
 
 | Type | Name | Vendor |
 |------|------|--------|
 | 5, 6 | `ra2`, `ra2ne` | RealVNC |
-| 129, 130, 133 | `rsa-aes`, `rsa-aes-ne`, `rsa-aes-256` | RealVNC |
 | 16 | `tight` | TightVNC |
 | 17 | `ultra` | UltraVNC |
 | 30 | `ard` | Apple |
@@ -994,7 +1028,9 @@ proxy does not hold.
 | `vencrypt_subtypes` | list | `[x509-vnc, x509-none]` | The subtypes offered when `vencrypt` is in use |
 | `password_file` | string | none | The password this gateway answers its own `vncauth` challenge with. Required if `vncauth` is offered, and refused if anyone but the proxy user can read it |
 | `upstream_password_file` | string | none | The password this gateway uses towards the target |
-| `upstream_user` | string | none | The login this gateway presents to a target whose security type carries a name (`mslogon2`). Required with `upstream_security: mslogon2` |
+| `upstream_user` | string | none | The login this gateway presents to a target whose security type carries a name (`mslogon2`, `rsa-aes*`). Required with those |
+| `rsa_key_file` | string | none | This listener's own RSA key for the `rsa-aes` types, PEM, at least 2048 bits. Required with any of them, and refused if anyone but the proxy user can read it |
+| `upstream_rsa_fingerprint` | string | none | Pins the target's `rsa-aes` public key. Required with `upstream_security: rsa-aes*`; the key a target offers is printed in the log |
 | `upstream_security` | string | strongest available | The type to use towards the target, by name |
 | `tls_mode` | string | `negotiated` | What the listener's `tls` section is for: `negotiated` presents the certificate inside RFB, `wrap` makes the socket itself TLS. See below |
 | `upstream_tls_mode` | string | `none` | `none` or `vencrypt` |
@@ -1057,8 +1093,9 @@ so the recording and the policy still apply.
 validation refuses the section without one. The reason is in the
 protocol: a DES challenge proves knowledge of one shared desktop
 password and says nothing about who is holding it, so there is nothing
-to look an enrolment up by. Two things carry a name — a VeNCrypt
-**plain** subtype, and `mslogon2` — and either satisfies it. The name
+to look an enrolment up by. Three things carry a name — a VeNCrypt
+**plain** subtype, `mslogon2`, and the `rsa-aes` types — and any of
+them satisfies it. The name
 identifies the person and the password field carries their one-time
 code; with a plain subtype both are inside the TLS tunnel, which is the
 arrangement to prefer.

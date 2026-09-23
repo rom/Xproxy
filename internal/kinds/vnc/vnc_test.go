@@ -2,6 +2,7 @@ package vnc_test
 
 import (
 	"bytes"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
@@ -41,6 +42,9 @@ type target struct {
 	// serverTLS is the certificate this target presents when it offers
 	// VeNCrypt, which is how the gateway's own leg gets encrypted.
 	serverTLS *tls.Config
+	// rsaKey is the key this target presents when it offers one of the
+	// rsa-aes types.
+	rsaKey *rsa.PrivateKey
 
 	mu   sync.Mutex
 	got  []byte
@@ -124,6 +128,12 @@ func (tg *target) session(c net.Conn) {
 		if !tg.msLogon(c) {
 			return
 		}
+	case rfb.SecRSAAES, rfb.SecRSAAESne, rfb.SecRSAAES256:
+		inner, ok := tg.rsaAES(c, chosen)
+		if !ok {
+			return
+		}
+		c = inner
 	}
 	if rfb.SendsResult(tg.version, chosen) {
 		if _, err := c.Write(rfb.SecurityResult(tg.version, true, "")); err != nil {
@@ -207,6 +217,65 @@ func (tg *target) msLogon(c net.Conn) bool {
 		return false
 	}
 	return true
+}
+
+// rsaAES plays the RSA-AES server and returns the channel the rest of
+// the handshake runs inside.
+func (tg *target) rsaAES(c net.Conn, sec uint8) (net.Conn, bool) {
+	own, err := rfb.OwnRSAAESKey(&tg.rsaKey.PublicKey)
+	if err != nil {
+		return nil, false
+	}
+	if _, err := c.Write(own.Encode()); err != nil {
+		return nil, false
+	}
+	peer, peerPub, err := rfb.ReadRSAAESKey(c)
+	if err != nil {
+		return nil, false
+	}
+	clientRandom, err := rfb.OpenRSAAESRandom(c, tg.rsaKey, sec)
+	if err != nil {
+		return nil, false
+	}
+	serverRandom, err := rfb.RSAAESRandom(sec)
+	if err != nil {
+		return nil, false
+	}
+	sealed, err := rfb.SealRSAAESRandom(peerPub, serverRandom)
+	if err != nil {
+		return nil, false
+	}
+	if _, err := c.Write(sealed); err != nil {
+		return nil, false
+	}
+	clientKey, serverKey := rfb.RSAAESSessionKeys(sec, clientRandom, serverRandom)
+	ch, err := rfb.NewAESConn(c, serverKey, clientKey)
+	if err != nil {
+		return nil, false
+	}
+	if _, err := ch.Write(rfb.RSAAESTranscript(sec, own, peer)); err != nil {
+		return nil, false
+	}
+	want := rfb.RSAAESTranscript(sec, peer, own)
+	got, err := ch.ReadFull(len(want))
+	if err != nil || !rfb.RSAAESTranscriptMatches(got, want) {
+		return nil, false
+	}
+	if _, err := ch.Write([]byte{rfb.RSAAESSubtypeUserPassword}); err != nil {
+		return nil, false
+	}
+	user, pass, err := rfb.ReadRSAAESCredential(ch)
+	if err != nil {
+		return nil, false
+	}
+	tg.mu.Lock()
+	tg.gotUser, tg.gotPass = user, pass
+	tg.mu.Unlock()
+	if tg.password != "" && pass != tg.password {
+		_, _ = ch.Write(rfb.SecurityResult(tg.version, false, "bad credential"))
+		return nil, false
+	}
+	return ch, true
 }
 
 // credential is what the target was given, once it has one.
@@ -469,7 +538,7 @@ func TestASecurityTypeThatWasNotOfferedIsRefused(t *testing.T) {
 // A vendor's own security type cannot be mediated, so a listener that
 // names one does not start at all.
 func TestAProprietaryTypeIsRefusedAtLoad(t *testing.T) {
-	for _, name := range []string{"ultra", "rsa-aes", "ard", "ra2"} {
+	for _, name := range []string{"ultra", "tight", "ard", "ra2"} {
 		t.Run(name, func(t *testing.T) {
 			yaml := fmt.Sprintf(`
 version: 1

@@ -594,6 +594,16 @@ type VNCListener struct {
 	// A port is one or the other and cannot be both: the first byte a
 	// client sends is either a TLS record or "RFB 003.008".
 	TLSMode string `yaml:"tls_mode"`
+	// RSAKeyFile is the RSA private key this proxy presents in the
+	// rsa-aes security types. Required with any of them, in PEM,
+	// PKCS#1 or PKCS#8, and at least 2048 bits.
+	RSAKeyFile string `yaml:"rsa_key_file"`
+	// UpstreamRSAFingerprint pins the target's rsa-aes public key.
+	// Required to use rsa-aes towards a target: nothing else
+	// authenticates the far end of that exchange, and there is nobody
+	// at a proxy to show a fingerprint to. The log prints the key a
+	// target offered, which is how this gets filled in.
+	UpstreamRSAFingerprint string `yaml:"upstream_rsa_fingerprint"`
 	// UpstreamUser is the login this proxy presents to a target whose
 	// security type carries a name, which among the types here means
 	// MS-Logon II. Its password is UpstreamPasswordFile.

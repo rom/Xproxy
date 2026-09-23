@@ -388,6 +388,42 @@ Open findings of the earlier rounds:
     losing whatever it did not, while a decoder written against this
     file later loses nothing.
 
+- **RealVNC's RSA-AES, security types 129, 130 and 133**, on both legs
+  of the VNC gateway. Each end sends an RSA public key, each seals a
+  random under the other's, the session keys are hashed out of the two
+  randoms, and everything after that travels in AES-EAX boxes with a
+  counter for a nonce and the message's own length as its associated
+  data.
+  - **The cryptography is not guessed at.** RSA and the hashes are the
+    standard library's, and EAX -- which Go does not have -- is
+    implemented in `internal/eax` against the published vectors of the
+    EAX paper and of NIST SP 800-38B for the CMAC underneath it, both
+    run by its tests. What is reconstructed from TigerVNC's
+    implementation is the **order and framing of the messages**. That
+    is the failure mode to prefer: getting it wrong is a handshake
+    that does not complete and a log line naming the step, not a
+    session that looks encrypted and is not. Interoperability with
+    RealVNC's own software is not verified here, and the load warning
+    and CONFIG.md say so.
+  - **`rsa-aes-ne` protects the handshake only and leaves the session
+    in clear.** That is the thing about this family easiest to get
+    wrong, so it has a warning of its own, the access log names the
+    security type of both legs, and a test holds that the channel is
+    left after the security result and not before.
+  - **Each end is identified by a key**, so the listener needs one
+    (`rsa_key_file`, PEM, at least 2048 bits, not readable by anyone
+    else) and a target's is **pinned** (`upstream_rsa_fingerprint`,
+    required): nothing else authenticates the far end of that
+    exchange, and unlike a viewer there is nobody at a proxy to show a
+    fingerprint to and ask. The gateway logs the key a target offered,
+    which is where the setting is copied from.
+  - The transcript hash each end sends is over both public keys in its
+    own order, so a third party that swapped them is refused and one
+    end's hash cannot be replayed as the other's. A peer key outside
+    2048 to 8192 bits, one whose stated length disagrees with the
+    modulus it carries, and an even exponent are all refused before any
+    arithmetic is done on them.
+
 - **MS-Logon II, UltraVNC's security type 113**, on both legs of the
   VNC gateway (`security_types: [mslogon2]`, `upstream_security:
   mslogon2`). It is reimplemented from the shape of UltraVNC's own

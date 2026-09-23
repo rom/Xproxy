@@ -6022,6 +6022,10 @@
             }
           ]
         },
+        "rsa_key_file": {
+          "description": "RSAKeyFile is the RSA private key this proxy presents in the rsa-aes security types. Required with any of them, in PEM, PKCS#1 or PKCS#8, and at least 2048 bits.",
+          "type": "string"
+        },
         "security_types": {
           "description": "SecurityTypes are the RFB security types a client may use, by name. Default is the ones this proxy mediates: none, vncauth and vencrypt. A type not listed is refused.",
           "type": "array",
@@ -6052,6 +6056,10 @@
         },
         "upstream_password_file": {
           "description": "UpstreamPasswordFile is the password this proxy uses towards the target, when the target asks for vncauth.",
+          "type": "string"
+        },
+        "upstream_rsa_fingerprint": {
+          "description": "UpstreamRSAFingerprint pins the target's rsa-aes public key. Required to use rsa-aes towards a target: nothing else authenticates the far end of that exchange, and there is nobody at a proxy to show a fingerprint to. The log prints the key a target offered, which is how this gets filled in.",
           "type": "string"
         },
         "upstream_security": {

@@ -118,6 +118,12 @@ func (se *session) offerable() []uint8 {
 			if t.password == "" && t.mfaGuard == nil {
 				continue
 			}
+		case rfb.SecRSAAES, rfb.SecRSAAESne, rfb.SecRSAAES256:
+			// The same, and a key of this gateway's own to be
+			// identified by.
+			if t.rsaKey == nil || (t.password == "" && t.mfaGuard == nil) {
+				continue
+			}
 		}
 		out = append(out, s)
 	}
@@ -138,6 +144,8 @@ func (se *session) clientAuth() string {
 		return se.clientAnonTLS()
 	case rfb.SecMSLogon2:
 		return se.clientMSLogon()
+	case rfb.SecRSAAES, rfb.SecRSAAESne, rfb.SecRSAAES256:
+		return se.clientRSAAES()
 	}
 	se.refuseClient("that security type is not mediated by this gateway")
 	return "security_unsupported"
@@ -390,6 +398,13 @@ func (se *session) upstreamHandshake(ci rfb.ClientInit) string {
 			return "upstream_auth_failed"
 		}
 	}
+	// The "ne" type authenticates inside its channel and hands the
+	// session back to a cleartext socket once the result is in.
+	up, err := leaveChannel(se.up, se.upSec)
+	if err != nil {
+		return "upstream_auth"
+	}
+	se.up = up
 	// The client's ClientInit, held until now, and the target's answer.
 	if _, err := se.up.Write(ci.Encode()); err != nil {
 		return "upstream_write"
@@ -417,7 +432,8 @@ func (se *session) pickUpstream(offered []uint8) (uint8, bool) {
 	}
 	// Strongest first: an encrypted negotiation beats a bare password,
 	// and a password beats nothing at all.
-	for _, want := range []uint8{rfb.SecVeNCrypt, rfb.SecVNCAuth, rfb.SecMSLogon2, rfb.SecNone} {
+	for _, want := range []uint8{rfb.SecRSAAES256, rfb.SecRSAAES, rfb.SecVeNCrypt,
+		rfb.SecVNCAuth, rfb.SecRSAAESne, rfb.SecMSLogon2, rfb.SecNone} {
 		if !slices.Contains(offered, want) {
 			continue
 		}
@@ -430,6 +446,13 @@ func (se *session) pickUpstream(offered []uint8) (uint8, bool) {
 		// MS-Logon II sends a name as well as a password, so it is
 		// only usable where an operator gave both.
 		if want == rfb.SecMSLogon2 && (t.v.UpstreamUser == "" || t.upPassword == "") {
+			continue
+		}
+		// rsa-aes needs a key of this gateway's own, a credential, and
+		// the target's key pinned: nothing else authenticates the far
+		// end of that exchange.
+		if rfb.RSAAESFamily[want] &&
+			(t.rsaKey == nil || t.upPassword == "" || t.v.UpstreamRSAFingerprint == "") {
 			continue
 		}
 		return want, true
@@ -459,6 +482,8 @@ func (se *session) upstreamAuth() string {
 		return se.upstreamVeNCrypt()
 	case rfb.SecMSLogon2:
 		return se.upstreamMSLogon()
+	case rfb.SecRSAAES, rfb.SecRSAAESne, rfb.SecRSAAES256:
+		return se.upstreamRSAAES()
 	}
 	return "upstream_security_unusable"
 }

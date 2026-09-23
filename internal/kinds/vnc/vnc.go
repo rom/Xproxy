@@ -12,6 +12,7 @@ package vnc
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -54,6 +55,8 @@ type server struct {
 	recorder   *sessionrec.Policy
 	mfaGuard   *mfa.Guard
 	ssh        *sshDialer
+	// rsaKey is this listener's own key for the rsa-aes types.
+	rsaKey *rsa.PrivateKey
 
 	wg   sync.WaitGroup
 	mu   sync.Mutex
@@ -100,6 +103,11 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 	if c.SSH != nil {
 		if t.ssh, err = newSSHDialer(c.SSH); err != nil {
 			return nil, fmt.Errorf("vnc ssh: %w", err)
+		}
+	}
+	if c.RSAKeyFile != "" {
+		if t.rsaKey, err = rfb.LoadRSAKey(c.RSAKeyFile); err != nil {
+			return nil, fmt.Errorf("vnc rsa_key_file: %w", err)
 		}
 	}
 	t.recorder = sessionrec.New(c.Recording)
@@ -306,6 +314,13 @@ func (se *session) run(start time.Time) string {
 	if reason := se.clientHandshake(); reason != "" {
 		return reason
 	}
+	// rsa-aes-ne authenticates inside its channel and hands the
+	// session back to a cleartext socket once the result is in.
+	client, err := leaveChannel(se.client, se.clientSec)
+	if err != nil {
+		return "client_auth"
+	}
+	se.client = client
 	if t.mfaGuard != nil && !se.factorDone {
 		// The client authenticated with a type that carries no name,
 		// so there was nothing to look an enrolment up by. Validation
