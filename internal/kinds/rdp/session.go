@@ -85,16 +85,25 @@ func (se *session) relay() string {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	reason := make(chan string, 2)
+	// ended lets one direction stop the other from waiting on
+	// something the session no longer has: a copy that is blocked for
+	// a key exchange the client will never send would otherwise hold
+	// the session open for the whole of the handshake bound.
+	se.ended = make(chan struct{})
+	var once sync.Once
+	finish := func() { once.Do(func() { close(se.ended) }) }
 	go func() {
 		defer wg.Done()
 		defer safe.Guard("rdp to desktop")
 		reason <- se.pumpToTarget()
+		finish()
 		_ = se.up.Close()
 	}()
 	go func() {
 		defer wg.Done()
 		defer safe.Guard("rdp to client")
 		reason <- se.pumpToClient()
+		finish()
 		_ = se.client.Close()
 	}()
 	wg.Wait()
@@ -122,8 +131,13 @@ func (se *session) pumpToClient() string {
 			return reason
 		}
 		// The recording is of the session, so it holds what the
-		// desktop showed rather than the ciphertext it showed it in.
+		// desktop showed rather than the ciphertext it showed it in --
+		// and it is taken before the client's own encryption goes on.
 		se.rec.Out(out)
+		out, reason = se.toClient(out)
+		if reason != "" {
+			return reason
+		}
 		if _, err := se.client.Write(out); err != nil {
 			return "write"
 		}
@@ -141,6 +155,21 @@ func (se *session) pumpToTarget() string {
 		if err != nil {
 			return endReason(err)
 		}
+		// A client whose own leg is encrypted is decrypted first, so
+		// everything after this point -- the policy, the credential,
+		// the recording -- sees the session rather than ciphertext.
+		plain, consumed, reason := se.fromClient(pdu)
+		if reason != "" {
+			return reason
+		}
+		if consumed {
+			// The key exchange, which this gateway answered itself.
+			continue
+		}
+		if !pdu.FastPath && len(plain) >= 4 {
+			pdu.Body = plain[4:]
+		}
+		pdu.Raw = plain
 		out, drop, reason := se.decide(pdu)
 		if reason != "" {
 			return reason

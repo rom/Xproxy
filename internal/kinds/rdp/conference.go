@@ -50,6 +50,12 @@ func (se *session) conference() string {
 	if reason := se.applyChannelPolicy(conn); reason != "" {
 		return reason
 	}
+	// What the client said it can encrypt with, which the client's own
+	// leg needs before the desktop's block is rewritten over it.
+	clientMethods, reason := se.readClientMethods(conn)
+	if reason != "" {
+		return reason
+	}
 	if t.wantsLegacy() {
 		// What the client said it can encrypt with is not what
 		// matters on that leg any more: this gateway holds the keys
@@ -83,6 +89,7 @@ func (se *session) conference() string {
 		return reason
 	}
 	answer := pdu.Raw
+	rewrite := false
 	if t.wantsLegacy() {
 		// The key exchange with the desktop starts here, and the
 		// block the client sees is rewritten, so this half is
@@ -90,6 +97,17 @@ func (se *session) conference() string {
 		if reason := se.legacyServerSecurity(resp); reason != "" {
 			return reason
 		}
+		rewrite = true
+	}
+	if se.clientProtocol == rdp.ProtocolRDP {
+		// The client's leg has its own encryption, its own keys and its
+		// own certificate, none of which the desktop knows about.
+		if reason := se.clientLegacySecurity(resp, clientMethods); reason != "" {
+			return reason
+		}
+		rewrite = true
+	}
+	if rewrite {
 		if answer, err = resp.Encode(); err != nil {
 			return "upstream_conference"
 		}
@@ -98,6 +116,29 @@ func (se *session) conference() string {
 		return "write"
 	}
 	return ""
+}
+
+// readClientMethods takes what the client said it can encrypt with out
+// of its half of the exchange. A client that sent no security block at
+// all is one that cannot use the protocol's own encryption, which only
+// matters when its leg is going to.
+func (se *session) readClientMethods(conn *rdp.Connect) (uint32, string) {
+	blocks, err := conn.Walk()
+	if err != nil {
+		return 0, "client_conference"
+	}
+	for _, b := range blocks {
+		if b.Type != rdp.BlockClientSecurity {
+			continue
+		}
+		methods, err := rdp.ParseClientSecurity(b.Data)
+		if err != nil {
+			se.t.deny(se.ip, "rdp_client_security", err.Error())
+			return 0, "client_conference"
+		}
+		return methods, ""
+	}
+	return 0, ""
 }
 
 // applyChannelPolicy reads the client's channel list and renames the

@@ -1,6 +1,7 @@
 package rdp_test
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/binary"
@@ -9,7 +10,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/rdp"
 )
 
@@ -522,4 +525,366 @@ func (d *legacyDesktop) inputSeen() []byte {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return append([]byte(nil), d.input...)
+}
+
+// ---- a client on the protocol's own encryption ----
+
+// legacyClient is enough of an old client to drive the gateway's
+// server half: it reads the certificate, checks the signature the way
+// a real client does, seals its random under the key it found and then
+// speaks encrypted.
+type legacyClient struct {
+	*client
+	method uint32
+	// out encrypts towards the gateway and in decrypts what comes
+	// back.
+	out, in *rdp.Crypt
+}
+
+// negotiateLegacy asks for the legacy protocol, which a client does by
+// naming no other.
+func (cl *legacyClient) negotiateLegacy() uint32 {
+	cl.t.Helper()
+	req, err := rdp.ConnectionRequest{HasNegotiation: true, Cookie: "Cookie: mstshash=old"}.Encode()
+	if err != nil {
+		cl.t.Fatal(err)
+	}
+	cl.write(req)
+	pdu, err := rdp.ReadPDU(cl.c)
+	if err != nil {
+		cl.t.Fatalf("negotiation: %v", err)
+	}
+	cc, err := rdp.ParseConnectionConfirm(pdu.Body)
+	if err != nil {
+		cl.t.Fatal(err)
+	}
+	if cc.Failure != 0 {
+		return 0
+	}
+	if !cc.HasNegotiation {
+		return rdp.ProtocolRDP
+	}
+	return cc.Protocol
+}
+
+// conferenceLegacy runs the client's half of the exchange, reads the
+// gateway's certificate, verifies it and performs the key exchange.
+func (cl *legacyClient) conferenceLegacy(methods uint32) {
+	cl.t.Helper()
+	data, err := rdp.EncodeChannels(nil)
+	if err != nil {
+		cl.t.Fatal(err)
+	}
+	cl.write(buildInitialWithSecurity(data, methods))
+
+	pdu, err := rdp.ReadPDU(cl.c)
+	if err != nil {
+		cl.t.Fatalf("conference: %v", err)
+	}
+	payload, err := rdp.X224Payload(pdu.Body)
+	if err != nil {
+		cl.t.Fatal(err)
+	}
+	conn, err := rdp.ParseConnect(payload)
+	if err != nil {
+		cl.t.Fatal(err)
+	}
+	blocks, err := conn.Walk()
+	if err != nil {
+		cl.t.Fatal(err)
+	}
+	var secBlock []byte
+	for _, b := range blocks {
+		switch b.Type {
+		case rdp.BlockServerNetwork:
+			sc, err := rdp.ParseServerChannels(b.Data)
+			if err != nil {
+				cl.t.Fatal(err)
+			}
+			cl.io, cl.ids = sc.IOChannel, sc.IDs
+		case rdp.BlockServerSecurity:
+			secBlock = b.Data
+		}
+	}
+	if secBlock == nil {
+		cl.t.Fatal("the gateway sent no security block")
+	}
+	sec, err := rdp.ParseServerSecurity(secBlock)
+	if err != nil {
+		cl.t.Fatalf("the security block: %v", err)
+	}
+	if sec.PublicKey == nil || !sec.Proprietary {
+		cl.t.Fatalf("no proprietary certificate: %+v", sec)
+	}
+	// What a real client checks, and the only thing it can: the
+	// signature over the certificate's first six fields.
+	cert := certificateFrom(cl.t, secBlock)
+	blobLen := int(binary.LittleEndian.Uint16(cert[14:16]))
+	if !rdp.VerifyProprietary(cert[:16+blobLen], cert[16+blobLen+4:]) {
+		cl.t.Fatal("a real client would refuse the gateway's certificate")
+	}
+	cl.method = sec.Method
+
+	random, err := rdp.NewRandom()
+	if err != nil {
+		cl.t.Fatal(err)
+	}
+	keys, err := rdp.DeriveKeys(sec.Method, random, sec.Random)
+	if err != nil {
+		cl.t.Fatal(err)
+	}
+	if cl.out, err = rdp.NewCrypt(keys, keys.Encrypt, sec.Method); err != nil {
+		cl.t.Fatal(err)
+	}
+	if cl.in, err = rdp.NewCrypt(keys, keys.Decrypt, sec.Method); err != nil {
+		cl.t.Fatal(err)
+	}
+	sealed, err := rdp.SealClientRandom(sec.PublicKey, random)
+	if err != nil {
+		cl.t.Fatal(err)
+	}
+	cl.send(cl.io, rdp.SecurityExchange(sealed))
+}
+
+// certificateFrom pulls the certificate out of a security block.
+func certificateFrom(t *testing.T, block []byte) []byte {
+	t.Helper()
+	randomLen := int(binary.LittleEndian.Uint32(block[8:12]))
+	certLen := int(binary.LittleEndian.Uint32(block[12:16]))
+	return block[16+randomLen : 16+randomLen+certLen]
+}
+
+// sendInfoEncrypted puts a credential on the session channel the way a
+// client does once the exchange is done.
+func (cl *legacyClient) sendInfoEncrypted(domain, user, pass string) {
+	cl.t.Helper()
+	info := &rdp.ClientInfo{CodePage: 0x409, Domain: domain, Username: user, Password: pass,
+		Extra: bytes.Repeat([]byte{0xCD}, 20)}
+	info.SetUnicode(true)
+	body, err := info.Encode()
+	if err != nil {
+		cl.t.Fatal(err)
+	}
+	sealed, err := cl.out.Seal(rdp.SecInfoPkt, body)
+	if err != nil {
+		cl.t.Fatal(err)
+	}
+	cl.send(cl.io, sealed)
+}
+
+// updateDecrypted reads one unit from the gateway and decrypts it.
+func (cl *legacyClient) updateDecrypted() []byte {
+	cl.t.Helper()
+	pdu, err := rdp.ReadPDU(cl.c)
+	if err != nil {
+		cl.t.Fatalf("update: %v", err)
+	}
+	if !pdu.FastPath {
+		return pdu.Body
+	}
+	if !rdp.FastPathEncrypted(pdu.Raw) {
+		cl.t.Fatal("the gateway sent an unencrypted update after the key exchange")
+	}
+	plain, err := cl.in.FastPathOpen(pdu.Raw)
+	if err != nil {
+		cl.t.Fatalf("the gateway's update did not decrypt: %v", err)
+	}
+	return plain
+}
+
+// buildInitialWithSecurity is the client's half of the conference
+// exchange with a security block saying what it can encrypt with.
+func buildInitialWithSecurity(chans []byte, methods uint32) []byte {
+	base := buildInitial(chans)
+	payload, err := rdp.X224Payload(base[4:])
+	if err != nil {
+		panic(err)
+	}
+	conn, err := rdp.ParseConnect(payload)
+	if err != nil {
+		panic(err)
+	}
+	if err := conn.Replace(rdp.BlockClientSecurity, rdp.EncodeClientSecurity(methods)); err != nil {
+		panic(err)
+	}
+	out, err := conn.Encode()
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
+
+// TestALegacyClientIsServed drives the whole of the server half: an
+// old client that speaks nothing but the protocol's own encryption
+// reaches a desktop on TLS, and everything in between still applies.
+func TestALegacyClientIsServed(t *testing.T) {
+	cert, key, _ := certs(t)
+	d := startDesktop(t, &desktop{protocol: rdp.ProtocolSSL, tlsCfg: serverTLS(t, cert, key)})
+	s, addr := gateway(t, d, "        security: [rdp, tls]\n"+
+		"        upstream_security: tls\n"+
+		"        upstream_tls: {ca_file: "+cert+", server_name: gate.test}\n"+
+		"      tls: {certificates: [{cert_file: "+cert+", key_file: "+key+"}]}")
+
+	cl := &legacyClient{client: dial(t, addr)}
+	if got := cl.negotiateLegacy(); got != rdp.ProtocolRDP {
+		t.Fatalf("the gateway chose %s", rdp.ProtocolName(got))
+	}
+	cl.conferenceLegacy(rdp.Encryption128Bit | rdp.Encryption56Bit | rdp.Encryption40Bit)
+	if cl.method != rdp.Encryption128Bit {
+		t.Fatalf("the gateway chose %s", rdp.EncryptionMethodName(cl.method))
+	}
+	cl.sendInfoEncrypted("EXAMPLE", "alice", "secret")
+
+	// What the desktop shows comes back encrypted under the keys this
+	// client just agreed.
+	if got := string(cl.updateDecrypted()); !strings.Contains(got, "DESKTOP-UPDATE") {
+		t.Fatalf("the desktop's update did not arrive: %q", got)
+	}
+	// And the credential reached the desktop in the clear, because the
+	// gateway decrypted it, read it and forwarded it on a TLS leg.
+	waitFor(t, "the credential", func() bool { return d.credential() != nil })
+	info := d.credential()
+	if info.Username != "alice" || info.Password != "secret" || info.Domain != "EXAMPLE" {
+		t.Fatalf("credential %+v", info)
+	}
+	if n := s.Stats().RDPLegacyClients; n != 1 {
+		t.Fatalf("rdp_legacy_clients %d", n)
+	}
+}
+
+// TestALegacyClientWithNoMethodIsRefused: a client that offers only
+// FIPS mode, which this gateway does not implement, is refused rather
+// than answered with a method it cannot use.
+func TestALegacyClientWithNoMethodIsRefused(t *testing.T) {
+	cert, key, _ := certs(t)
+	d := startDesktop(t, &desktop{protocol: rdp.ProtocolSSL, tlsCfg: serverTLS(t, cert, key)})
+	_, addr := gateway(t, d, "        security: [rdp, tls]\n"+
+		"        upstream_security: tls\n"+
+		"        upstream_tls: {ca_file: "+cert+", server_name: gate.test}\n"+
+		"      tls: {certificates: [{cert_file: "+cert+", key_file: "+key+"}]}")
+	cl := &legacyClient{client: dial(t, addr)}
+	if got := cl.negotiateLegacy(); got != rdp.ProtocolRDP {
+		t.Fatalf("the gateway chose %s", rdp.ProtocolName(got))
+	}
+	data, err := rdp.EncodeChannels(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl.write(buildInitialWithSecurity(data, rdp.EncryptionFIPS))
+	// The session ends rather than continuing without encryption.
+	_ = cl.c.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := rdp.ReadPDU(cl.c); err == nil {
+		t.Fatal("the gateway answered a client it has no method for")
+	}
+}
+
+// TestAnEncryptedPacketBeforeTheExchangeIsRefused: the order of the
+// connection sequence is not the client's to choose.
+func TestAnEncryptedPacketBeforeTheExchangeIsRefused(t *testing.T) {
+	cert, key, _ := certs(t)
+	d := startDesktop(t, &desktop{protocol: rdp.ProtocolSSL, tlsCfg: serverTLS(t, cert, key)})
+	_, addr := gateway(t, d, "        security: [rdp, tls]\n"+
+		"        upstream_security: tls\n"+
+		"        upstream_tls: {ca_file: "+cert+", server_name: gate.test}\n"+
+		"      tls: {certificates: [{cert_file: "+cert+", key_file: "+key+"}]}")
+	cl := &legacyClient{client: dial(t, addr)}
+	cl.negotiateLegacy()
+	data, err := rdp.EncodeChannels(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl.write(buildInitialWithSecurity(data, rdp.Encryption128Bit))
+	pdu, err := rdp.ReadPDU(cl.c)
+	if err != nil {
+		t.Fatalf("conference: %v", err)
+	}
+	payload, err := rdp.X224Payload(pdu.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := rdp.ParseConnect(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := conn.Walk()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range blocks {
+		if b.Type == rdp.BlockServerNetwork {
+			sc, err := rdp.ParseServerChannels(b.Data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cl.io = sc.IOChannel
+		}
+	}
+	// A packet claiming to be encrypted, without the exchange that
+	// would have made a key for it.
+	head := rdp.SecurityHeader{Flags: rdp.SecInfoPkt | rdp.SecEncrypt}
+	cl.send(cl.io, append(head.Encode(), bytes.Repeat([]byte{0xAA}, 40)...))
+	_ = cl.c.SetDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 1)
+	if _, err := cl.c.Read(buf); err == nil {
+		t.Fatal("the gateway kept talking to a client that skipped the key exchange")
+	}
+}
+
+// TestBothLegsOnTheProtocolsOwnEncryption is the composition: an old
+// client and an old desktop, each with its own keys, and the gateway
+// decrypting one side and encrypting the other in between. Nothing is
+// forwarded from one key schedule to the other, which is what makes
+// the policy and the recording possible at all.
+func TestBothLegsOnTheProtocolsOwnEncryption(t *testing.T) {
+	d := startLegacyDesktop(t, rdp.Encryption128Bit, rdp.EncryptionLevelClientCompatible)
+	s, addr := gateway(t, d.desktop, "        security: [rdp]\n"+
+		"        upstream_security: rdp")
+
+	cl := &legacyClient{client: dial(t, addr)}
+	if got := cl.negotiateLegacy(); got != rdp.ProtocolRDP {
+		t.Fatalf("the gateway chose %s", rdp.ProtocolName(got))
+	}
+	cl.conferenceLegacy(rdp.Encryption128Bit)
+	cl.sendInfoEncrypted("", "dave", "pw")
+
+	waitFor(t, "the credential", func() bool { return d.credentialSeen() != nil })
+	if info := d.credentialSeen(); info.Username != "dave" || info.Password != "pw" {
+		t.Fatalf("credential %+v", info)
+	}
+	if !d.exchangeDone() {
+		t.Fatal("the desktop's key exchange never happened")
+	}
+	if n := d.clearPackets(); n != 0 {
+		t.Fatalf("%d packets reached the desktop unencrypted", n)
+	}
+	// The desktop's update comes back under the client's keys, which
+	// are not the desktop's.
+	if got := string(cl.updateDecrypted()); !strings.Contains(got, "DESKTOP-UPDATE") {
+		t.Fatalf("the desktop's update did not arrive: %q", got)
+	}
+	st := s.Stats()
+	if st.RDPLegacyClients != 1 || st.RDPLegacySessions != 1 {
+		t.Fatalf("counters: clients %d sessions %d", st.RDPLegacyClients, st.RDPLegacySessions)
+	}
+}
+
+// TestALegacyOnlyListenerNeedsNoCertificate: a listener that offers
+// only the protocol's own encryption has no TLS section, and that is a
+// valid configuration rather than an oversight.
+func TestALegacyOnlyListenerNeedsNoCertificate(t *testing.T) {
+	yaml := `
+version: 1
+server:
+  listeners:
+    - name: desks
+      address: "127.0.0.1:0"
+      kind: rdp
+      rdp: {upstream: farm, security: [rdp], upstream_security: rdp}
+upstreams:
+  - name: farm
+    endpoints: [{address: 127.0.0.1:3389}]
+`
+	if _, err := config.Parse([]byte(yaml)); err != nil {
+		t.Fatalf("a legacy-only listener was refused: %v", err)
+	}
 }

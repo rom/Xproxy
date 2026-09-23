@@ -1198,7 +1198,7 @@ documented.
 |----------|------------------|-------------------|
 | TLS (`tls`, `PROTOCOL_SSL`) | Supported, the default | Supported, the default |
 | Network level authentication (`nla`, `PROTOCOL_HYBRID`) | **Not offered, and cannot be** — see below | Supported: CredSSP over NTLMv2 |
-| The protocol's own encryption (`rdp`, `PROTOCOL_RDP`) | Refused: it needs a signing key this build does not carry — see below | Supported, and worth what the section below says it is |
+| The protocol's own encryption (`rdp`, `PROTOCOL_RDP`) | Supported, and it authenticates nothing — see below | Supported, and worth what the section below says it is |
 
 **A client that asks for network level authentication is answered with
 TLS.** That is not a gap, it is how the gateway works at all, and it is
@@ -1255,18 +1255,46 @@ connection sequence — is where the two directions differ.
   The key rolls over every 4096 packets as the protocol requires.
   Setting it logs a warning at load, because it is a downgrade an
   operator should have meant.
-- **Towards a client** it is refused at load. Offering it means
-  presenting the protocol's own certificate, and a client checks that
-  certificate's signature against a public key built into it — the
-  private half of which is the Terminal Services signing key published
-  in MS-RDPBCGR §5.3.3.1.1. This build carries no signing key, so a
-  certificate it made would be refused by every client; refusing the
-  setting at load says so before a connection does.
+- **Towards a client** (`security: [rdp]`) it works too. The listener
+  draws a 512-bit RSA key at start — the size the protocol carries, not
+  a choice — puts it in a proprietary certificate, and signs that
+  certificate with the **Terminal Services signing key published in
+  MS-RDPBCGR §5.3.3.1.1**. The strongest method the client offered is
+  chosen, at encryption level *client compatible*, so both directions
+  are encrypted. The client's random arrives sealed under the
+  listener's key, the session keys follow, and from there the gateway
+  decrypts what the client sends before the policy sees it and encrypts
+  what it sends back.
+
+  **That signature authenticates nothing.** Microsoft published the
+  private key, which is what lets any implementation sign one — so a
+  client verifying it has learned that the other end read the
+  specification, and nothing about who it is talking to. There is no
+  server authentication on such a leg, and no way to add any: the
+  protocol has nowhere to put it. A listener offering this is protected
+  by the network it sits on, `allow_clients`, and nothing else.
+
+  Setting it warns at load. A client that can use TLS should be made to
+  (`security: [rdp, tls]` offers both and TLS is preferred whenever the
+  client asks for it), and a listener that offers only `rdp` needs no
+  `tls` section at all.
 
 Three things follow from the gateway being *inside* that encryption
 rather than outside it, and they are the reason to be there: the
 channel and device policy still applies, the second factor is still
 checked, and the recording holds the session rather than ciphertext.
+
+The two legs are independent. An old client and an old desktop each
+get their own key exchange, their own method and their own key
+schedule; nothing is forwarded from one to the other. A client on the
+protocol's own encryption can reach a desktop on TLS or on network
+level authentication, and the other way round.
+
+Session traffic towards a legacy client **waits** for that client's key
+exchange rather than going out in the clear: a client that agreed to
+encryption cannot read an unencrypted packet, so sending one early
+would end the session rather than degrade it. The wait is bounded by
+`handshake_timeout`.
 
 What the encryption itself is worth is nothing, against anyone on the
 path: MD5 and SHA-1 derivation, RC4 — 40, 56 or 128 bit, whichever the
@@ -1347,7 +1375,7 @@ policy that quietly did not apply is worse than a session that stops.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `upstream` | string | required | The pool of desktops |
-| `security` | list | `[tls]` | What a client may use. Only `tls`; see the table above |
+| `security` | list | `[tls]` | What a client may use: `tls`, `rdp`, or both. See the table above; `rdp` warns at load |
 | `upstream_security` | string | `tls` | What this proxy uses towards the desktop: `tls`, `nla` with a credential to prove, or `rdp` for equipment that speaks nothing else |
 | `upstream_tls` | object | none | CA and name for the desktop's leg |
 | `upstream_user` | string | none | The login this proxy opens the desktop with. With it, the person's own credential never reaches the desktop |
@@ -1416,7 +1444,8 @@ against this file later loses nothing.
 Counters: `rdp_sessions`, `rdp_sessions_open`, `rdp_rejected`,
 `rdp_refused`, `rdp_recorded`, `rdp_mfa_ok`, `rdp_mfa_failed`,
 `rdp_channels_refused`, `rdp_devices_refused`, `rdp_legacy_sessions`
-(desktop legs opened with the protocol's own encryption). Every session writes one
+(desktop legs opened with the protocol's own encryption),
+`rdp_legacy_clients` (client legs served with it). Every session writes one
 `rdp` access line with both security protocols, the routing token, the
 user and domain, the channels asked for and granted, and how it ended.
 Refusals are `rdp_denied` deny events, so bans apply.

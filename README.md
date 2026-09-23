@@ -331,12 +331,14 @@ an identifier from the access log to the upstream.
   nowhere to ask, and is taken off before the password travels on. A
   client asking for network level authentication is answered with TLS
   — the downgrade every remote desktop gateway performs, and the only
-  way a gateway can check anything at all about a credential. Towards
-  the desktop the gateway speaks TLS, network level authentication, or
-  the protocol's own RC4 encryption for equipment that speaks nothing
-  else — and being inside that last one is the point: the policy still
-  applies, the factor is still checked and the recording holds the
-  session rather than ciphertext
+  way a gateway can check anything at all about a credential. Each leg
+  can be TLS, network level authentication towards the desktop, or the
+  protocol's own RC4 encryption for equipment too old for either, in
+  which case the gateway signs its certificate with the key Microsoft
+  published — which authenticates nothing, and is documented as
+  authenticating nothing. Being inside that encryption is the point:
+  the policy still applies, the factor is still checked and the
+  recording holds the session rather than ciphertext
 
 **Extensibility and platforms**
 

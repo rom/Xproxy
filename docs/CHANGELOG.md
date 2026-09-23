@@ -328,6 +328,33 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **The protocol's own encryption towards a client** (`kind: rdp`,
+  `security: [rdp]`), for clients too old to offer TLS. The listener
+  draws a 512-bit key at start -- the size the protocol carries -- puts
+  it in a proprietary certificate and signs that certificate with the
+  Terminal Services signing key Microsoft published in MS-RDPBCGR
+  5.3.3.1.1, which is the only thing a client can check. The client's
+  random arrives sealed under the listener's key, the strongest method
+  the client offered is chosen at encryption level client compatible,
+  and from there the client's leg is encrypted in both directions.
+  - **That signature authenticates nothing**, and the documentation
+    says so in those words: the private key is public, so verifying it
+    proves the other end read the specification. Such a listener is
+    protected by its network and `allow_clients`, not by the protocol.
+    It warns at load.
+  - The two legs are independent -- their own exchange, method and key
+    schedule each -- so an old client can reach a desktop on TLS or on
+    network level authentication, and the other way round. A listener
+    that offers only `rdp` needs no `tls` section.
+  - Traffic towards a legacy client waits for that client's key
+    exchange rather than going out in the clear, bounded by
+    `handshake_timeout`: a client that agreed to encryption cannot read
+    an unencrypted packet, so sending one early ends the session rather
+    than degrading it. One direction of the relay ending now unblocks
+    the other, which is what keeps that wait from holding a dead
+    session open.
+  - New counter `rdp_legacy_clients`.
+
 - **The protocol's own encryption towards a desktop** (`kind: rdp`,
   `upstream_security: rdp`). The cryptography was already there and
   tested; what was missing was the session. Now the desktop's security
@@ -349,13 +376,6 @@ Open findings of the earlier rounds:
   - A desktop that asks for no encryption at all is served, with a
     warning naming it: a session nobody encrypts looks exactly like
     one everybody does. FIPS mode is refused rather than downgraded.
-  - **Towards a client it is still refused**, and the message now says
-    why rather than calling it unimplemented: offering it means
-    presenting a certificate signed with the Terminal Services key
-    published in MS-RDPBCGR 5.3.3.1.1, and a client checks that
-    signature against the public half built into it. This build
-    carries no signing key, so the setting is refused at load instead
-    of failing at the first connection.
   - New counter `rdp_legacy_sessions`.
 
 - **Second factors an operator can change while the proxy runs**, in
