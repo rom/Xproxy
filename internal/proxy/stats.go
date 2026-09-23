@@ -148,6 +148,15 @@ type Stats struct {
 	VNCRecorded            atomic.Uint64
 	VNCMFAOK               atomic.Uint64
 	VNCMFAFailed           atomic.Uint64
+	RDPSessions            atomic.Uint64
+	RDPSessionsOpen        atomic.Int64
+	RDPRejected            atomic.Uint64
+	RDPRefused             atomic.Uint64
+	RDPRecorded            atomic.Uint64
+	RDPMFAOK               atomic.Uint64
+	RDPMFAFailed           atomic.Uint64
+	RDPChannelsRefused     atomic.Uint64
+	RDPDevicesRefused      atomic.Uint64
 	TelnetSessions         atomic.Uint64
 	TelnetSessionsOpen     atomic.Int64
 	TelnetRejected         atomic.Uint64
@@ -376,6 +385,15 @@ type Snapshot struct {
 	VNCRecorded            uint64            `json:"vnc_recorded"`
 	VNCMFAOK               uint64            `json:"vnc_mfa_ok"`
 	VNCMFAFailed           uint64            `json:"vnc_mfa_failed"`
+	RDPSessions            uint64            `json:"rdp_sessions"`
+	RDPSessionsOpen        int64             `json:"rdp_sessions_open"`
+	RDPRejected            uint64            `json:"rdp_rejected"`
+	RDPRefused             uint64            `json:"rdp_refused"`
+	RDPRecorded            uint64            `json:"rdp_recorded"`
+	RDPMFAOK               uint64            `json:"rdp_mfa_ok"`
+	RDPMFAFailed           uint64            `json:"rdp_mfa_failed"`
+	RDPChannelsRefused     uint64            `json:"rdp_channels_refused"`
+	RDPDevicesRefused      uint64            `json:"rdp_devices_refused"`
 	TelnetSessions         uint64            `json:"telnet_sessions"`
 	TelnetSessionsOpen     int64             `json:"telnet_sessions_open"`
 	TelnetRejected         uint64            `json:"telnet_rejected"`
@@ -569,6 +587,15 @@ func (s *Stats) snapshot() Snapshot {
 		VNCRecorded:            s.VNCRecorded.Load(),
 		VNCMFAOK:               s.VNCMFAOK.Load(),
 		VNCMFAFailed:           s.VNCMFAFailed.Load(),
+		RDPSessions:            s.RDPSessions.Load(),
+		RDPSessionsOpen:        s.RDPSessionsOpen.Load(),
+		RDPRejected:            s.RDPRejected.Load(),
+		RDPRefused:             s.RDPRefused.Load(),
+		RDPRecorded:            s.RDPRecorded.Load(),
+		RDPMFAOK:               s.RDPMFAOK.Load(),
+		RDPMFAFailed:           s.RDPMFAFailed.Load(),
+		RDPChannelsRefused:     s.RDPChannelsRefused.Load(),
+		RDPDevicesRefused:      s.RDPDevicesRefused.Load(),
 		TelnetSessions:         s.TelnetSessions.Load(),
 		TelnetSessionsOpen:     s.TelnetSessionsOpen.Load(),
 		TelnetRejected:         s.TelnetRejected.Load(),

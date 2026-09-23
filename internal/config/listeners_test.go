@@ -73,7 +73,9 @@ routes:
 	cases := []struct {
 		name, snippet, want string
 	}{
-		{"unknown kind", "    - {name: x, address: \":1\", kind: udp}\n", "must be one of dns, forward, ftp, http, mqtt, smtp, ssh, syslog, tcp"},
+		// The list itself grows with the roster, so the expectation is
+		// the part of the message that does not.
+		{"unknown kind", "    - {name: x, address: \":1\", kind: udp}\n", "kind: must be one of"},
 		{"tcp block on http", "    - {name: x, address: \":1\", tcp: {default: app}}\n", "set on an http listener"},
 		{"forward block on http", "    - {name: x, address: \":1\", forward: {}}\n", "set on an http listener"},
 		{"proxy protocol needs trusted proxies", "    - {name: x, address: \":1\", proxy_protocol: true}\n", "needs trusted_proxies"},

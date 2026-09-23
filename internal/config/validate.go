@@ -7,6 +7,7 @@ import (
 	"github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/rfb"
 	"github.com/rom/xproxy/internal/syslog"
 	"github.com/rom/xproxy/internal/telnet"
@@ -667,6 +668,15 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.vnc: required for kind vnc", p)
 			} else {
 				v.vncListener(p+".vnc", ln.VNC, ln.TLS != nil)
+			}
+		case "rdp":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an rdp listener takes only address, rdp and tls", p)
+			}
+			if ln.RDP == nil {
+				v.errf("%s.rdp: required for kind rdp", p)
+			} else {
+				v.rdpListener(p+".rdp", ln.RDP, ln.TLS != nil)
 			}
 		case "telnet":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
@@ -5937,4 +5947,97 @@ func wantsUpstreamName(c *VNCListener) bool {
 	}
 	t, ok := rfb.SecurityByName(n)
 	return ok && rfb.NamesAUser[t]
+}
+
+// rdpListener checks a Remote Desktop gateway.
+func (v *validator) rdpListener(p string, c *RDPListener, hasTLS bool) {
+	if c.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	wantsTLS := false
+	for _, name := range c.Security {
+		n := strings.ToLower(strings.TrimSpace(name))
+		switch n {
+		case "tls":
+			wantsTLS = true
+		case "rdp":
+			// The protocol's own encryption is RC4 under keys from an
+			// exchange this gateway does not yet perform, so a session
+			// using it would reach the point where the credential
+			// arrives and stop. It is refused at load until that is
+			// written rather than failing at the first connection.
+			v.errf("%s.security: rdp, the protocol's own encryption, is not implemented yet; use tls", p)
+		case "nla":
+			v.errf("%s.security: nla cannot be offered to clients by this gateway: checking a client's network level authentication needs that person's own password, which is the one credential a gateway should not hold. A client that asks for it is answered with tls, which is the arrangement every remote desktop gateway uses; see docs/CONFIG.md", p)
+		default:
+			v.errf("%s.security: %q is not a security protocol this gateway offers; use tls or rdp", p, name)
+		}
+	}
+	if !wantsTLS {
+		v.errf("%s.security: no protocol left that a client could use", p)
+	}
+	if wantsTLS && !hasTLS {
+		v.errf("%s.security: tls needs the listener's tls section, since there is no certificate to present without one", p)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.UpstreamSecurity)) {
+	case "tls":
+	case "nla":
+		// Proving a credential during the handshake is CredSSP over
+		// NTLM, which is a separate piece of work: it is refused at
+		// load rather than failing at the first session.
+		v.errf("%s.upstream_security: nla towards a desktop is not implemented yet; use tls, which every Windows desktop accepts unless network level authentication is required of it", p)
+	case "rdp":
+		v.errf("%s.upstream_security: rdp, the protocol's own encryption, is not implemented yet; use tls", p)
+	default:
+		v.errf("%s.upstream_security: must be tls, nla or rdp", p)
+	}
+	if c.UpstreamPasswordFile != "" {
+		v.file(p+".upstream_password_file", c.UpstreamPasswordFile)
+	}
+	if (c.UpstreamUser == "") != (c.UpstreamPasswordFile == "") {
+		v.errf("%s.upstream_user: name it with upstream_password_file or with neither; half a credential opens nothing", p)
+	}
+	hasRDPDR := false
+	if c.Channels != nil {
+		for _, name := range c.Channels.Allow {
+			n := strings.ToLower(strings.TrimSpace(name))
+			if n == "" {
+				v.errf("%s.channels.allow: an empty channel name", p)
+				continue
+			}
+			if len(n) >= rdp.ChannelNameLen {
+				v.errf("%s.channels.allow: %q is over %d characters, which is more than a channel name can be", p, name, rdp.ChannelNameLen-1)
+			}
+			if n == rdp.ChannelDeviceRedirection {
+				hasRDPDR = true
+			}
+			if n == rdp.ChannelDynamic {
+				v.warnf("%s.channels.allow: %s carries dynamic channels, whose contents this gateway does not decide -- audio, cameras, and on some clients redirection that the devices policy would otherwise have refused. Allow it only where something needs it", p, rdp.ChannelDynamic)
+			}
+		}
+	}
+	if c.Devices != nil {
+		for _, name := range c.Devices.Allow {
+			if _, ok := rdp.DeviceTypeByName(name); !ok {
+				v.errf("%s.devices.allow: %q is not a device kind; use drive, printer, serial, parallel or smartcard", p, name)
+			}
+		}
+		if len(c.Devices.Allow) > 0 && !hasRDPDR {
+			v.errf("%s.devices.allow: names device kinds while the %s channel is not allowed, so nothing could announce one. Allow the channel or drop this section", p, rdp.ChannelDeviceRedirection)
+		}
+	}
+	if c.Recording != nil {
+		v.sessionRecording(p+".recording", c.Recording, nil)
+	}
+	if c.MFA != nil {
+		v.mfaPolicy(p+".mfa", c.MFA)
+	}
+	if c.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be positive", p)
+	}
+	for i, cidr := range c.AllowClients {
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, cidr, err)
+		}
+	}
 }

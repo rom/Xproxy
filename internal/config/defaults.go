@@ -378,6 +378,24 @@ func applyDefaults(c *Config) {
 				}
 			}
 		}
+		if c := s.Listeners[i].RDP; c != nil {
+			if len(c.Security) == 0 {
+				c.Security = []string{"tls"}
+			}
+			setStr(&c.UpstreamSecurity, "tls")
+			if c.UpstreamTLS != nil {
+				setStr(&c.UpstreamTLS.MinVersion, "1.2")
+			}
+			setInt(&c.MaxConnections, 200)
+			setDur(&c.IdleTimeout, 5*time.Minute)
+			setDur(&c.HandshakeTimeout, 30*time.Second)
+			if c.Recording != nil {
+				sessionRecordingDefaults(c.Recording)
+			}
+			if c.MFA != nil {
+				mfaDefaults(c.MFA)
+			}
+		}
 		if n := s.Listeners[i].Telnet; n != nil {
 			if len(n.AllowOptions) == 0 {
 				n.AllowOptions = append([]string(nil), DefaultTelnetOptions...)

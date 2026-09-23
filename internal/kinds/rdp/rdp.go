@@ -1,0 +1,403 @@
+// Package rdp is the Remote Desktop gateway listener kind.
+//
+// The proxy terminates the connection sequence on both legs: it is an
+// RDP server to the client and an RDP client to the desktop. That is
+// what makes every control here possible. The security protocol is
+// decided rather than observed; the virtual channel list is rewritten,
+// so a session cannot carry a file the policy did not allow; a second
+// factor is checked before the person's credential reaches the
+// desktop; the credential that opens the desktop can be the gateway's
+// rather than the person's; and what the session showed is recorded.
+package rdp
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/mfa"
+	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/rdp"
+	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/sessionrec"
+	"github.com/rom/xproxy/internal/textsafe"
+	"github.com/rom/xproxy/internal/tlsconf"
+	"github.com/rom/xproxy/internal/upstream"
+)
+
+type server struct {
+	engine proxy.Host
+	cfg    config.Listener
+	v      *config.RDPListener
+	ln     net.Listener
+	tlsCfg *tls.Config
+	upTLS  *tls.Config
+	allow  []netip.Prefix
+	// offered is the set of security protocols a client may use.
+	offered uint32
+	// upstreamProtocol is what this proxy asks a desktop for.
+	upstreamProtocol uint32
+	// channels is the set of static channel names a session may have,
+	// and devices the redirection kinds, both lower case.
+	channels map[string]bool
+	devices  map[uint32]bool
+	// upUser, upDomain and upPassword are the credential this proxy
+	// opens a desktop with, where an operator gave one.
+	upUser, upDomain, upPassword string
+	recorder                     *sessionrec.Policy
+	mfaGuard                     *mfa.Guard
+
+	wg   sync.WaitGroup
+	mu   sync.Mutex
+	once sync.Once
+	cons map[net.Conn]struct{}
+	done chan struct{}
+}
+
+func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Config) (*server, error) {
+	c := cfg.RDP
+	t := &server{engine: engine, cfg: cfg, v: c, ln: ln, tlsCfg: tc,
+		channels: map[string]bool{}, devices: map[uint32]bool{},
+		cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
+	for _, name := range c.Security {
+		if p, ok := rdp.ProtocolByName(strings.ToLower(strings.TrimSpace(name))); ok {
+			t.offered |= protocolBit(p)
+		}
+	}
+	if p, ok := rdp.ProtocolByName(strings.ToLower(strings.TrimSpace(c.UpstreamSecurity))); ok {
+		t.upstreamProtocol = p
+	}
+	if c.Channels != nil {
+		for _, name := range c.Channels.Allow {
+			t.channels[strings.ToLower(strings.TrimSpace(name))] = true
+		}
+	}
+	if c.Devices != nil {
+		for _, name := range c.Devices.Allow {
+			if d, ok := rdp.DeviceTypeByName(name); ok {
+				t.devices[d] = true
+			}
+		}
+	}
+	for _, p := range c.AllowClients {
+		pre, err := netip.ParsePrefix(p)
+		if err != nil {
+			return nil, fmt.Errorf("rdp allow_clients: %w", err)
+		}
+		t.allow = append(t.allow, pre)
+	}
+	var err error
+	if t.upPassword, err = readSecret(c.UpstreamPasswordFile); err != nil {
+		return nil, fmt.Errorf("rdp upstream_password_file: %w", err)
+	}
+	t.upUser, t.upDomain = c.UpstreamUser, c.UpstreamDomain
+	if t.upstreamProtocol == rdp.ProtocolSSL || t.upstreamProtocol == rdp.ProtocolHybrid {
+		uc, _, err := tlsconf.Client(c.UpstreamTLS)
+		if err != nil {
+			return nil, fmt.Errorf("rdp upstream_tls: %w", err)
+		}
+		t.upTLS = uc
+	}
+	t.recorder = sessionrec.New(c.Recording)
+	if c.MFA != nil {
+		store, err := mfa.Load(c.MFA.File)
+		if err != nil {
+			return nil, fmt.Errorf("rdp mfa: %w", err)
+		}
+		t.mfaGuard = mfa.NewGuard(store, c.MFA.Skew, mfa.Lockout{
+			MaxFailures: c.MFA.MaxFailures, Window: c.MFA.Window.D(),
+			Duration: c.MFA.Duration.D(), MaxUsers: c.MFA.MaxUsers,
+		})
+	}
+	return t, nil
+}
+
+// protocolBit turns a protocol into the flag a client sets for it. The
+// legacy protocol is zero on the wire, so it needs a bit of its own
+// here to be a set member.
+func protocolBit(p uint32) uint32 {
+	if p == rdp.ProtocolRDP {
+		return legacyBit
+	}
+	return p
+}
+
+// legacyBit stands for the legacy protocol inside this package, where
+// the protocol's own value of zero cannot.
+const legacyBit = 0x8000_0000
+
+// readSecret reads a password file, refusing one anybody else can
+// read.
+func readSecret(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("%s is mode %04o; it must not be readable by anyone else", path, fi.Mode().Perm())
+	}
+	b, err := os.ReadFile(path) //nolint:gosec // an operator named this path
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(b), "\r\n"), nil
+}
+
+func (t *server) serve() {
+	for {
+		c, err := t.ln.Accept()
+		if err != nil {
+			return
+		}
+		if !t.admit(c) {
+			_ = c.Close()
+			continue
+		}
+		t.wg.Add(1)
+		go func() {
+			defer t.wg.Done()
+			defer safe.Guard("rdp session")
+			defer t.untrack(c)
+			t.handle(c)
+		}()
+	}
+}
+
+func (t *server) admit(c net.Conn) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	select {
+	case <-t.done:
+		return false
+	default:
+	}
+	if len(t.cons) >= t.v.MaxConnections {
+		t.engine.Counters().RDPRejected.Add(1)
+		return false
+	}
+	t.cons[c] = struct{}{}
+	return true
+}
+
+func (t *server) untrack(c net.Conn) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.cons, c)
+}
+
+func (t *server) shutdown(ctx context.Context) {
+	t.once.Do(func() { close(t.done) })
+	t.mu.Lock()
+	for c := range t.cons {
+		_ = c.SetDeadline(time.Now())
+	}
+	t.mu.Unlock()
+	done := make(chan struct{})
+	go func() { t.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.mu.Lock()
+		for c := range t.cons {
+			_ = c.Close()
+		}
+		t.mu.Unlock()
+	}
+}
+
+func (t *server) deny(ip netip.Addr, what, detail string) {
+	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "rdp_denied")
+	}
+	t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_denied",
+		"listener", t.cfg.Name, "client_ip", ip.String(), "what", what,
+		"detail", textsafe.Clip256(detail))
+}
+
+func (t *server) clientAllowed(ip netip.Addr) bool {
+	if len(t.allow) == 0 {
+		return true
+	}
+	for _, p := range t.allow {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// session is one client, the desktop it reached, and what was agreed
+// with each.
+type session struct {
+	t      *server
+	client net.Conn
+	up     net.Conn
+	ip     netip.Addr
+	target string
+	// cookie is the routing token the client put in front of its
+	// negotiation, which is the only identity available that early.
+	cookie string
+	// clientProtocol and upProtocol are what was settled on each leg.
+	// They need not agree: a client on TLS can reach a desktop that
+	// insists on network level authentication, and that is the point
+	// of terminating both.
+	clientProtocol uint32
+	upProtocol     uint32
+	// user and domain are who the credential said was connecting.
+	user, domain string
+	// asked and granted are the channels the client wanted and the
+	// ones the policy let through, for the log. wanted is the same
+	// length as the client's list with a name where the channel was
+	// granted and an empty string where it was refused, which is what
+	// lines the desktop's identifiers up with it.
+	asked, granted, wanted []string
+	// ioChannel is the channel the session itself runs on, and
+	// channelName maps an identifier to what it carries.
+	ioChannel   uint16
+	channelName map[uint16]string
+	// inert are the channel identifiers the gateway answered itself,
+	// standing in for channels the desktop was never asked for.
+	inert map[uint16]bool
+	// pending collects a virtual channel message across its chunks,
+	// since a gateway cannot filter half of one.
+	pending []byte
+	rec     *sessionrec.Recording
+	pool    *upstream.Pool
+	ep      *upstream.Endpoint
+}
+
+func (t *server) handle(client net.Conn) {
+	s := t.engine
+	start := time.Now()
+	se := &session{t: t, client: client, ip: netutil.AddrOf(client.RemoteAddr().String()),
+		channelName: map[uint16]string{}, inert: map[uint16]bool{}}
+	s.Counters().RDPSessions.Add(1)
+	s.Counters().RDPSessionsOpen.Add(1)
+	defer s.Counters().RDPSessionsOpen.Add(-1)
+	defer func() { se.closeRecording() }()
+
+	if !t.clientAllowed(se.ip) {
+		s.Counters().RDPRejected.Add(1)
+		t.deny(se.ip, "client_refused", "")
+		_ = client.Close()
+		return
+	}
+	if bl := s.Bans(); bl != nil && se.ip.IsValid() && bl.Banned(se.ip) {
+		s.Counters().RDPRejected.Add(1)
+		_ = client.Close()
+		return
+	}
+	defer func() { _ = se.client.Close() }()
+	if t.v.SessionTimeout > 0 {
+		timer := time.AfterFunc(t.v.SessionTimeout.D(), func() { _ = se.client.Close() })
+		defer timer.Stop()
+	}
+	_ = se.client.SetDeadline(time.Now().Add(t.v.HandshakeTimeout.D()))
+
+	reason := se.run(start)
+	t.log(se, start, reason)
+}
+
+// run does the whole session: the negotiation on each leg, the
+// conference exchange with the channel policy applied, and the relay.
+func (se *session) run(start time.Time) string {
+	t := se.t
+	// The client's negotiation, answered rather than forwarded: what
+	// is agreed here decides what the gateway can see afterwards.
+	if reason := se.clientNegotiate(); reason != "" {
+		return reason
+	}
+	if err := se.connect(); err != nil {
+		t.engine.Logs().Error.Warn("rdp desktop unavailable", "listener", t.cfg.Name, "err", err.Error())
+		return "upstream_unavailable"
+	}
+	defer func() {
+		_ = se.up.Close()
+		if se.ep != nil {
+			se.pool.End(se.ep, false, time.Since(start))
+		}
+	}()
+	if reason := se.upstreamNegotiate(); reason != "" {
+		return reason
+	}
+	if reason := se.conference(); reason != "" {
+		return reason
+	}
+	// Past the connection sequence the deadlines are the session's.
+	_ = se.client.SetDeadline(time.Time{})
+	_ = se.up.SetDeadline(time.Time{})
+	se.openRecording()
+	return se.relay()
+}
+
+func (t *server) log(se *session, start time.Time, reason string) {
+	t.engine.Logs().Access.Info("rdp", "listener", t.cfg.Name, "client_ip", se.ip.String(),
+		"user", textsafe.Clip64(se.user), "domain", textsafe.Clip64(se.domain),
+		"cookie", textsafe.Clip64(se.cookie), "target", se.target,
+		"client_security", rdp.ProtocolName(se.clientProtocol),
+		"upstream_security", rdp.ProtocolName(se.upProtocol),
+		"channels_asked", strings.Join(se.asked, ","),
+		"channels_granted", strings.Join(se.granted, ","),
+		"reason", reason, "duration_ms", time.Since(start).Milliseconds())
+}
+
+// connect dials the desktop.
+func (se *session) connect() error {
+	t := se.t
+	pool := t.engine.Pool(t.v.Upstream)
+	if pool == nil {
+		return fmt.Errorf("upstream %q has no pool", t.v.Upstream)
+	}
+	se.pool = pool
+	tried := map[*upstream.Endpoint]bool{}
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		ep, _ := pool.Pick(se.ip.String(), "", tried, upstream.CanaryAny)
+		if ep == nil {
+			break
+		}
+		tried[ep] = true
+		conn, err := se.dial(ep)
+		pool.Begin(ep)
+		if err != nil {
+			pool.End(ep, true, 0)
+			lastErr = err
+			continue
+		}
+		se.up, se.ep, se.target = conn, ep, ep.Address
+		_ = conn.SetDeadline(time.Now().Add(t.v.HandshakeTimeout.D()))
+		return nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no endpoint available")
+	}
+	return lastErr
+}
+
+func (se *session) dial(ep *upstream.Endpoint) (net.Conn, error) {
+	t := se.t
+	d := net.Dialer{Timeout: se.pool.Cfg.Timeouts.Connect.D()}
+	conn, err := d.DialContext(context.Background(), "tcp", ep.Address)
+	if err != nil {
+		return nil, err
+	}
+	if t.v.ProxyProtocol {
+		if _, err := conn.Write(netutil.ProxyV2Header(se.client.RemoteAddr(), se.client.LocalAddr())); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+	}
+	return conn, nil
+}

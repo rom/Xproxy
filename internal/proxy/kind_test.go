@@ -21,6 +21,7 @@ var sections = map[string]string{
 	"ssh":     "ssh: {upstream: u, host_keys: [/dev/null], authorized_keys: /dev/null, upstream_key_file: /dev/null, upstream_known_hosts: /dev/null}",
 	"telnet":  "telnet: {upstream: u}",
 	"vnc":     "vnc: {upstream: u, security_types: [none]}",
+	"rdp":     "rdp: {upstream: u}\n      tls: {certificates: [{cert_file: /dev/null, key_file: /dev/null}]}",
 	"smtp":    "smtp: {upstream: u}",
 	"mqtt":    "mqtt: {upstream: u}",
 	"ftp":     "ftp: {upstream: u}",

@@ -1163,6 +1163,191 @@ session writes one `vnc` access line with both versions, both security
 types, the desktop name and size, and how it ended. Refusals are
 `vnc_denied` deny events, so bans apply.
 
+### server.listeners[].rdp (kind: rdp)
+
+A `kind: rdp` listener is a Remote Desktop gateway: the proxy
+terminates the connection sequence of MS-RDPBCGR on both legs, so it
+is an RDP server to the client and an RDP client to the desktop.
+
+**Why this is not a `tcp` listener.** Everything worth deciding about
+an RDP session is settled in the connection sequence, before a single
+pixel moves: which security protocol is used, which virtual channels
+exist, who is connecting and with what credential. A relay that does
+not sit in that sequence decides none of it and can record none of
+what follows.
+
+The channel list is the important part. Every redirection RDP has —
+drives, printers, serial and parallel ports, smart cards, the
+clipboard, audio — rides a virtual channel, and nothing can be used
+that was not both announced and granted. A gateway that rewrites that
+list decides what a session is able to do before it does it.
+
+#### What is supported
+
+**Protocol versions.** All of them. This gateway does not decode
+graphics, input, capability sets or any of the session's own traffic —
+it relays those as they arrive — so an RDP 4 client and a Windows
+Server 2025 desktop work the same way. What it decodes is the
+connection sequence, the channel list, the device announcement and the
+credential packet, and those have been stable since the protocol was
+documented.
+
+**Security protocols**, which are negotiated at the very start:
+
+| Protocol | Towards a client | Towards a desktop |
+|----------|------------------|-------------------|
+| TLS (`tls`, `PROTOCOL_SSL`) | Supported, the default | Supported, the default |
+| Network level authentication (`nla`, `PROTOCOL_HYBRID`) | **Not offered, and cannot be** — see below | Not implemented yet |
+| The protocol's own encryption (`rdp`, `PROTOCOL_RDP`) | Not implemented yet | Not implemented yet |
+
+**A client that asks for network level authentication is answered with
+TLS.** That is not a gap, it is how the gateway works at all, and it is
+what every remote desktop gateway does. Network level authentication
+proves the person's Windows credential to the server *before* the RDP
+connection sequence starts, using CredSSP. For a gateway to accept that
+from a client it would have to verify that credential itself, which
+means holding every person's Windows password — the one credential a
+gateway should never hold. Answering with TLS moves the credential into
+the connection sequence, where the gateway can check a second factor
+against it and substitute its own. The cost is stated plainly: between
+the client and the gateway, authentication happens after the connection
+is established rather than before it, so the gateway itself must be
+reachable only by the people who should reach it (`allow_clients`, and
+a network that agrees).
+
+**What the gateway does not decode**: the graphics, input, clipboard
+contents, audio, licensing and capability exchange. Those are relayed
+byte for byte. A recording is therefore the protocol stream, not a
+video — see below.
+
+#### The channel policy
+
+`channels.allow` names the static virtual channels a session may have,
+and **the default is none**: a session that can see the desktop and
+drive it, and nothing else. The usual names are `rdpdr` (device
+redirection), `cliprdr` (clipboard, including file copy), `rdpsnd`
+(audio out), `audin` (microphone), `drdynvc` (dynamic channels) and
+`rail` (seamless applications).
+
+A refused channel is **not removed from the list**, and the reason is
+worth knowing: the desktop answers with one identifier per channel the
+client asked for, in the order it asked, and a client that gets back a
+different number of identifiers does not recover. So the gateway
+replaces the *name* of a refused channel with one nothing speaks —
+the name field is a fixed eight bytes, so the lengths do not move. The
+desktop registers a channel no software has a handler for, the
+identifiers still line up, and the gateway drops whatever the client
+sends on it. The desktop never registers the real channel, which is the
+property that matters.
+
+`drdynvc` is warned about: dynamic channels carry more redirection
+inside them, and what rides one is decided by the two ends rather than
+by this list.
+
+#### File transfer and ports
+
+Both are device redirection, which rides `rdpdr`, and both are decided
+by `devices.allow`:
+
+| Name | What it is | What allowing it means |
+|------|-----------|------------------------|
+| `drive` | Filesystem redirection | **File upload and download between the client and the desktop** |
+| `printer` | Printer redirection | Printing from the desktop to the client's printers |
+| `serial` | Serial port redirection | The desktop reaches the client's COM ports |
+| `parallel` | Parallel port redirection | The desktop reaches the client's LPT ports |
+| `smartcard` | Smart card redirection | The desktop uses the client's smart card reader |
+
+The default is none, so `channels.allow: [rdpdr]` on its own gives a
+session the channel and no redirection on it. The policy is applied to
+the **device announcement**: nothing can be redirected that was not
+announced, so filtering that one message decides the whole of it
+without the gateway having to understand the traffic that follows. A
+refused device is taken out of the announcement, counted, written to
+the security log and marked in the recording. Refusing all of them
+leaves a valid announcement of no devices rather than a broken channel.
+
+A device announcement the gateway cannot read — a compressed one —
+ends the session rather than passing through, because a redirection
+policy that quietly did not apply is worse than a session that stops.
+
+#### Options
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The pool of desktops |
+| `security` | list | `[tls]` | What a client may use. Only `tls` for now; see the table above |
+| `upstream_security` | string | `tls` | What this proxy uses towards the desktop |
+| `upstream_tls` | object | none | CA and name for the desktop's leg |
+| `upstream_user` | string | none | The login this proxy opens the desktop with. With it, the person's own credential never reaches the desktop |
+| `upstream_domain` | string | none | The domain that goes with `upstream_user` |
+| `upstream_password_file` | string | none | Its password, refused if anyone but the proxy user can read it |
+| `channels.allow` | list | `[]` (none) | The static virtual channels a session may have |
+| `devices.allow` | list | `[]` (none) | The redirected device kinds, where `rdpdr` is allowed |
+| `recording` | object | none | As `server.listeners[].ssh.recording`; see below for the format |
+| `mfa` | object | none | See below |
+| `idle_timeout` | duration | `5m` | No traffic in either direction |
+| `session_timeout` | duration | `0` | Bound on a whole session however active |
+| `handshake_timeout` | duration | `30s` | Bound on the connection sequence |
+| `max_connections` | int | `200` | Sessions on this listener |
+| `proxy_protocol` | bool | `false` | PROXY protocol v2 header to the desktop |
+| `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+
+#### The two credentials
+
+With `upstream_user`, `upstream_domain` and `upstream_password_file`,
+the desktop is opened with the gateway's own account and the person's
+credential stops at the gateway. Without them, what the person typed is
+forwarded as it arrived, which is what an estate that wants its own
+accounts audited on the desktop needs. Either way the gateway sees the
+credential, which is the price of being able to check anything about
+it — and the reason the listener should be reachable only over a
+network you trust.
+
+#### The second factor
+
+`mfa` checks a one-time code **before the credential reaches the
+desktop**. RDP has nowhere to ask a question — there is no prompt in
+the protocol and the client is waiting for a desktop rather than a
+dialogue — so the code travels with the password, after a comma:
+
+```
+Password: hunter2,492013
+```
+
+The same arrangement the FTP relay uses, and one that works with every
+client because it asks nothing of the client. The code is taken off
+before the password goes anywhere, so the desktop never sees it.
+
+One honest difference from the other gateways here: the factor is
+checked before the **credential** reaches the desktop, not before the
+desktop is dialled. RDP's connection sequence requires the desktop to
+answer before the client sends its credential, so the TCP connection is
+already open by then. What the desktop never receives without a
+verified factor is the credential.
+
+#### The recording
+
+The file holds the desktop-to-client stream — what was on the screen —
+with the timing of it, in the asciicast v2 container the other
+recordings use, named `*.rdp.cast`. Its header carries
+`XPROXY_PROTOCOL: rdp` and the security protocol of the desktop's leg,
+the first mark names the session and the channels it was granted, and
+every refused device is marked where it happened.
+
+**It is not a video.** The event data is the protocol stream, so
+replaying it needs a player that speaks RDP rather than a terminal.
+That is the deliberate choice: decoding at capture time would mean
+implementing every graphics encoding a desktop might choose — and
+silently losing whatever was not implemented — while a decoder written
+against this file later loses nothing.
+
+Counters: `rdp_sessions`, `rdp_sessions_open`, `rdp_rejected`,
+`rdp_refused`, `rdp_recorded`, `rdp_mfa_ok`, `rdp_mfa_failed`,
+`rdp_channels_refused`, `rdp_devices_refused`. Every session writes one
+`rdp` access line with both security protocols, the routing token, the
+user and domain, the channels asked for and granted, and how it ended.
+Refusals are `rdp_denied` deny events, so bans apply.
+
 ### server.listeners[].telnet (kind: telnet)
 
 A `kind: telnet` listener is a telnet gateway: the proxy is a telnet

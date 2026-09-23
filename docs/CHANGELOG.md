@@ -328,6 +328,57 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A Remote Desktop gateway** (`kind: rdp`, in xgate). The proxy
+  terminates the connection sequence of MS-RDPBCGR on both legs, which
+  is what makes any of the rest possible: everything worth deciding
+  about an RDP session -- the security protocol, the virtual channels,
+  who is connecting and with what -- is settled before a pixel moves,
+  and a relay that does not sit in that sequence decides none of it.
+  - **A channel policy, which is where file transfer lives.** Every
+    redirection RDP has rides a virtual channel, and nothing can be
+    used that was not granted, so `channels.allow` decides what a
+    session can do -- defaulting to none. A refused channel is not
+    removed from the list, because the desktop answers with one
+    identifier per channel asked for and a client that gets back a
+    different number does not recover; its *name* is replaced with one
+    nothing speaks, which is the same number of bytes. The desktop
+    registers a channel no software has a handler for, the identifiers
+    line up, and what the client sends on it is dropped.
+  - **A device policy**, which is the enable and disable for file
+    uploads and for ports: `devices.allow` names drive, printer,
+    serial, parallel and smartcard, and is applied to the device
+    announcement, since nothing can be redirected that was not
+    announced. Refusing every kind leaves a valid announcement of none
+    rather than a broken channel; an announcement the gateway cannot
+    read, because it arrived compressed, ends the session rather than
+    passing through unfiltered.
+  - **A second factor**, carried with the password after a comma --
+    RDP has nowhere to ask a question -- and taken off before the
+    password goes anywhere. One honest difference from the other
+    gateways: the factor is checked before the *credential* reaches
+    the desktop, not before the desktop is dialled, because RDP's own
+    sequence requires the desktop to answer before the client sends a
+    credential at all. CONFIG.md says so.
+  - **Two credentials kept apart.** With `upstream_user` the desktop
+    is opened with the gateway's own account and the person's stops at
+    the gateway; without it, what the person typed is forwarded as it
+    arrived, for estates that want their own accounts audited on the
+    desktop.
+  - **A session recording** of the desktop-to-client stream as
+    asciicast v2, named `*.rdp.cast`, with every refused device marked
+    where it happened. It is not a video, for the same reason the VNC
+    recording is not.
+  - **A client asking for network level authentication is answered
+    with TLS**, which is what every remote desktop gateway does and
+    the only reason a second factor can be checked at all: accepting
+    NLA from a client would mean holding every person's Windows
+    password. The cost -- authentication after the connection rather
+    than before it, on the client's leg -- is stated in CONFIG.md
+    rather than left to be discovered. The protocol's own RC4
+    encryption and NLA towards a desktop are refused at load for now,
+    with a message saying they are not implemented yet rather than
+    failing at the first session.
+
 - **A VNC gateway** (`kind: vnc`, in xgate), speaking RFB on both legs.
   The proxy is an RFB server to the viewer and an RFB client to the
   desktop, terminating the handshake of RFC 6143 on each -- which is

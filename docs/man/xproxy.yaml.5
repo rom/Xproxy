@@ -2826,6 +2826,312 @@ The file holds the server\-to\-client RFB stream \[u2014] what was on the screen
 \fBIt is not a video.\fR The event data is the protocol stream, so replaying it needs a player that speaks RFB rather than a terminal. Recording the stream is what keeps the cost bounded and loses nothing: a decoder can be written against this file afterwards, and one that decoded at capture time would have to understand every encoding a server might choose and would silently lose whatever it did not.
 .PP
 Counters: \fBvnc_sessions\fR, \fBvnc_sessions_open\fR, \fBvnc_rejected\fR, \fBvnc_refused\fR, \fBvnc_recorded\fR, \fBvnc_mfa_ok\fR, \fBvnc_mfa_failed\fR. Every session writes one \fBvnc\fR access line with both versions, both security types, the desktop name and size, and how it ended. Refusals are \fBvnc_denied\fR deny events, so bans apply.
+.SS "server.listeners[].rdp (kind: rdp)"
+.PP
+A \fBkind: rdp\fR listener is a Remote Desktop gateway: the proxy terminates the connection sequence of MS\-RDPBCGR on both legs, so it is an RDP server to the client and an RDP client to the desktop.
+.PP
+\fBWhy this is not a \fBtcp\fR listener.\fR Everything worth deciding about an RDP session is settled in the connection sequence, before a single pixel moves: which security protocol is used, which virtual channels exist, who is connecting and with what credential. A relay that does not sit in that sequence decides none of it and can record none of what follows.
+.PP
+The channel list is the important part. Every redirection RDP has \[u2014] drives, printers, serial and parallel ports, smart cards, the clipboard, audio \[u2014] rides a virtual channel, and nothing can be used that was not both announced and granted. A gateway that rewrites that list decides what a session is able to do before it does it.
+.SS "What is supported"
+.PP
+\fBProtocol versions.\fR All of them. This gateway does not decode graphics, input, capability sets or any of the session\(aqs own traffic \[u2014] it relays those as they arrive \[u2014] so an RDP 4 client and a Windows Server 2025 desktop work the same way. What it decodes is the connection sequence, the channel list, the device announcement and the credential packet, and those have been stable since the protocol was documented.
+.PP
+\fBSecurity protocols\fR, which are negotiated at the very start:
+.PP
+.TS
+allbox;
+lbw(1.5i) lbw(1.2i) lbx
+lw(1.5i) lw(1.2i) lx.
+T{
+Protocol
+T}	T{
+Towards a client
+T}	T{
+Towards a desktop
+T}
+T{
+TLS (\fBtls\fR,\: \fBPROTOCOL_\:SSL\fR)
+T}	T{
+Supported,\: the default
+T}	T{
+Supported,\: the default
+T}
+T{
+Network level authentication (\fBnla\fR,\: \fBPROTOCOL_\:HYBRID\fR)
+T}	T{
+\fBNot offered,\: and cannot be\fR \[u2014] see below
+T}	T{
+Not implemented yet
+T}
+T{
+The protocol\(aqs own encryption (\fBrdp\fR,\: \fBPROTOCOL_\:RDP\fR)
+T}	T{
+Not implemented yet
+T}	T{
+Not implemented yet
+T}
+.TE
+.PP
+\fBA client that asks for network level authentication is answered with TLS.\fR That is not a gap, it is how the gateway works at all, and it is what every remote desktop gateway does. Network level authentication proves the person\(aqs Windows credential to the server \fIbefore\fR the RDP connection sequence starts, using CredSSP. For a gateway to accept that from a client it would have to verify that credential itself, which means holding every person\(aqs Windows password \[u2014] the one credential a gateway should never hold. Answering with TLS moves the credential into the connection sequence, where the gateway can check a second factor against it and substitute its own. The cost is stated plainly: between the client and the gateway, authentication happens after the connection is established rather than before it, so the gateway itself must be reachable only by the people who should reach it (\fBallow_clients\fR, and a network that agrees).
+.PP
+\fBWhat the gateway does not decode\fR: the graphics, input, clipboard contents, audio, licensing and capability exchange. Those are relayed byte for byte. A recording is therefore the protocol stream, not a video \[u2014] see below.
+.SS "The channel policy"
+.PP
+\fBchannels.allow\fR names the static virtual channels a session may have, and \fBthe default is none\fR: a session that can see the desktop and drive it, and nothing else. The usual names are \fBrdpdr\fR (device redirection), \fBcliprdr\fR (clipboard, including file copy), \fBrdpsnd\fR (audio out), \fBaudin\fR (microphone), \fBdrdynvc\fR (dynamic channels) and \fBrail\fR (seamless applications).
+.PP
+A refused channel is \fBnot removed from the list\fR, and the reason is worth knowing: the desktop answers with one identifier per channel the client asked for, in the order it asked, and a client that gets back a different number of identifiers does not recover. So the gateway replaces the \fIname\fR of a refused channel with one nothing speaks \[u2014] the name field is a fixed eight bytes, so the lengths do not move. The desktop registers a channel no software has a handler for, the identifiers still line up, and the gateway drops whatever the client sends on it. The desktop never registers the real channel, which is the property that matters.
+.PP
+\fBdrdynvc\fR is warned about: dynamic channels carry more redirection inside them, and what rides one is decided by the two ends rather than by this list.
+.SS "File transfer and ports"
+.PP
+Both are device redirection, which rides \fBrdpdr\fR, and both are decided by \fBdevices.allow\fR:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.2i) lbx
+lw(1.0i) lw(1.2i) lx.
+T{
+Name
+T}	T{
+What it is
+T}	T{
+What allowing it means
+T}
+T{
+\fBdrive\fR
+T}	T{
+Filesystem redirection
+T}	T{
+\fBFile upload and download between the client and the desktop\fR
+T}
+T{
+\fBprinter\fR
+T}	T{
+Printer redirection
+T}	T{
+Printing from the desktop to the client\(aqs printers
+T}
+T{
+\fBserial\fR
+T}	T{
+Serial port redirection
+T}	T{
+The desktop reaches the client\(aqs COM ports
+T}
+T{
+\fBparallel\fR
+T}	T{
+Parallel port redirection
+T}	T{
+The desktop reaches the client\(aqs LPT ports
+T}
+T{
+\fBsmartcard\fR
+T}	T{
+Smart card redirection
+T}	T{
+The desktop uses the client\(aqs smart card reader
+T}
+.TE
+.PP
+The default is none, so \fBchannels.allow: [rdpdr]\fR on its own gives a session the channel and no redirection on it. The policy is applied to the \fBdevice announcement\fR: nothing can be redirected that was not announced, so filtering that one message decides the whole of it without the gateway having to understand the traffic that follows. A refused device is taken out of the announcement, counted, written to the security log and marked in the recording. Refusing all of them leaves a valid announcement of no devices rather than a broken channel.
+.PP
+A device announcement the gateway cannot read \[u2014] a compressed one \[u2014] ends the session rather than passing through, because a redirection policy that quietly did not apply is worse than a session that stops.
+.SS "Options"
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.2i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The pool of desktops
+T}
+T{
+\fBsecurity\fR
+T}	T{
+list
+T}	T{
+\fB[tls]\fR
+T}	T{
+What a client may use. Only \fBtls\fR for now;\: see the table above
+T}
+T{
+\fBupstream_\:security\fR
+T}	T{
+string
+T}	T{
+\fBtls\fR
+T}	T{
+What this proxy uses towards the desktop
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+CA and name for the desktop\(aqs leg
+T}
+T{
+\fBupstream_\:user\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The login this proxy opens the desktop with. With it,\: the person\(aqs own credential never reaches the desktop
+T}
+T{
+\fBupstream_\:domain\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The domain that goes with \fBupstream_\:user\fR
+T}
+T{
+\fBupstream_\:password_\:file\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Its password,\: refused if anyone but the proxy user can read it
+T}
+T{
+\fBchannels.\:allow\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (none)
+T}	T{
+The static virtual channels a session may have
+T}
+T{
+\fBdevices.\:allow\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (none)
+T}	T{
+The redirected device kinds,\: where \fBrdpdr\fR is allowed
+T}
+T{
+\fBrecording\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+As \fBserver.\:listeners[].\:ssh.\:recording\fR;\: see below for the format
+T}
+T{
+\fBmfa\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+See below
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+No traffic in either direction
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Bound on a whole session however active
+T}
+T{
+\fBhandshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Bound on the connection sequence
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB200\fR
+T}	T{
+Sessions on this listener
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+PROXY protocol v2 header to the desktop
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+CIDRs a client must come from
+T}
+.TE
+.SS "The two credentials"
+.PP
+With \fBupstream_user\fR, \fBupstream_domain\fR and \fBupstream_password_file\fR, the desktop is opened with the gateway\(aqs own account and the person\(aqs credential stops at the gateway. Without them, what the person typed is forwarded as it arrived, which is what an estate that wants its own accounts audited on the desktop needs. Either way the gateway sees the credential, which is the price of being able to check anything about it \[u2014] and the reason the listener should be reachable only over a network you trust.
+.SS "The second factor"
+.PP
+\fBmfa\fR checks a one\-time code \fBbefore the credential reaches the desktop\fR. RDP has nowhere to ask a question \[u2014] there is no prompt in the protocol and the client is waiting for a desktop rather than a dialogue \[u2014] so the code travels with the password, after a comma:
+.PP
+.RS 4
+.nf
+.ft CR
+Password: hunter2,492013
+.ft
+.fi
+.RE
+.PP
+The same arrangement the FTP relay uses, and one that works with every client because it asks nothing of the client. The code is taken off before the password goes anywhere, so the desktop never sees it.
+.PP
+One honest difference from the other gateways here: the factor is checked before the \fBcredential\fR reaches the desktop, not before the desktop is dialled. RDP\(aqs connection sequence requires the desktop to answer before the client sends its credential, so the TCP connection is already open by then. What the desktop never receives without a verified factor is the credential.
+.SS "The recording"
+.PP
+The file holds the desktop\-to\-client stream \[u2014] what was on the screen \[u2014] with the timing of it, in the asciicast v2 container the other recordings use, named \fB*.rdp.cast\fR. Its header carries \fBXPROXY_PROTOCOL: rdp\fR and the security protocol of the desktop\(aqs leg, the first mark names the session and the channels it was granted, and every refused device is marked where it happened.
+.PP
+\fBIt is not a video.\fR The event data is the protocol stream, so replaying it needs a player that speaks RDP rather than a terminal. That is the deliberate choice: decoding at capture time would mean implementing every graphics encoding a desktop might choose \[u2014] and silently losing whatever was not implemented \[u2014] while a decoder written against this file later loses nothing.
+.PP
+Counters: \fBrdp_sessions\fR, \fBrdp_sessions_open\fR, \fBrdp_rejected\fR, \fBrdp_refused\fR, \fBrdp_recorded\fR, \fBrdp_mfa_ok\fR, \fBrdp_mfa_failed\fR, \fBrdp_channels_refused\fR, \fBrdp_devices_refused\fR. Every session writes one \fBrdp\fR access line with both security protocols, the routing token, the user and domain, the channels asked for and granted, and how it ended. Refusals are \fBrdp_denied\fR deny events, so bans apply.
 .SS "server.listeners[].telnet (kind: telnet)"
 .PP
 A \fBkind: telnet\fR listener is a telnet gateway: the proxy is a telnet server to the client and a telnet client to the target, reading the NVT protocol of RFC 854 in both directions.

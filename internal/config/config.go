@@ -240,6 +240,8 @@ type Listener struct {
 	Telnet *TelnetListener `yaml:"telnet"`
 	// VNC configures a kind: vnc listener.
 	VNC *VNCListener `yaml:"vnc"`
+	// RDP configures a kind: rdp listener.
+	RDP *RDPListener `yaml:"rdp"`
 	// FTP configures a kind: ftp listener.
 	FTP *FTPListener `yaml:"ftp"`
 	// Syslog configures a kind: syslog listener.
@@ -674,6 +676,83 @@ var DefaultVNCSecurityTypes = []string{"none", "vncauth", "vencrypt"}
 // The anonymous ones encrypt without authenticating, which stops a
 // reader and not an active attacker.
 var DefaultVeNCryptSubtypes = []string{"x509-vnc", "x509-none"}
+
+// RDPListener is a Remote Desktop gateway: the proxy terminates the
+// connection sequence on both legs, which is what lets it decide the
+// security protocol, rewrite the virtual channel list, check a second
+// factor against the credential in flight, substitute the credential
+// that opens the desktop, and record what the session showed.
+//
+// The channel list is the important one. Every redirection RDP has --
+// drives, printers, serial and parallel ports, smart cards, the
+// clipboard, audio -- rides a virtual channel, and nothing can be used
+// that was not both announced and granted. A gateway that rewrites the
+// list decides what a session is able to do, before it does it.
+type RDPListener struct {
+	// Upstream is the pool of desktops. Required.
+	Upstream string `yaml:"upstream"`
+	// Security is what a client may use, by name: tls or rdp. Default
+	// tls. nla is not offered to clients and cannot be: checking it
+	// would need every person's password, which is the one thing a
+	// gateway should not hold. See docs/CONFIG.md.
+	Security []string `yaml:"security"`
+	// UpstreamSecurity is what this proxy uses towards the desktop, by
+	// name: tls, nla or rdp. Default tls.
+	UpstreamSecurity string `yaml:"upstream_security"`
+	// UpstreamTLS pins the CA and name for the desktop's leg.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// UpstreamUser and UpstreamPasswordFile are the credential this
+	// proxy opens the desktop with, where an operator would rather the
+	// person's own never reached it. Without them the person's
+	// credential is forwarded as it arrived.
+	UpstreamUser         string `yaml:"upstream_user"`
+	UpstreamDomain       string `yaml:"upstream_domain"`
+	UpstreamPasswordFile string `yaml:"upstream_password_file"`
+	// Channels is the static virtual channel policy.
+	Channels *RDPChannelPolicy `yaml:"channels"`
+	// Devices is the redirected device policy, which is what decides
+	// whether a session can move a file or reach a port.
+	Devices *RDPDevicePolicy `yaml:"devices"`
+	// Recording writes the session stream to a file.
+	Recording *SessionRecording `yaml:"recording"`
+	// MFA asks for a one-time code, carried with the password since
+	// RDP has nowhere to ask a question.
+	MFA *MFAPolicy `yaml:"mfa"`
+	// IdleTimeout is no traffic in either direction. Default 5m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole session however active. Default 0.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// HandshakeTimeout bounds the connection sequence before the
+	// session begins. Default 30s.
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+	// MaxConnections bounds sessions on this listener. Default 200.
+	MaxConnections int `yaml:"max_connections"`
+	// ProxyProtocol sends a PROXY protocol v2 header to the desktop.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs.
+	AllowClients []string `yaml:"allow_clients"`
+}
+
+// RDPChannelPolicy decides which static virtual channels a session
+// has. A channel that is not allowed is taken out of the list the
+// desktop is asked for, so the desktop never learns it was wanted.
+type RDPChannelPolicy struct {
+	// Allow names the channels a client may have. The default is
+	// none: a session that can see the desktop and nothing else.
+	Allow []string `yaml:"allow"`
+}
+
+// RDPDevicePolicy decides which kinds of redirected device a session
+// has, among the ones the rdpdr channel carries: drive, printer,
+// serial, parallel, smartcard. It applies only where rdpdr is an
+// allowed channel, since without the channel there is nothing to
+// announce a device on.
+type RDPDevicePolicy struct {
+	// Allow names the device kinds a client may redirect. The default
+	// is none, so allowing the rdpdr channel without naming a device
+	// kind gives a session no redirection at all.
+	Allow []string `yaml:"allow"`
+}
 
 // SSHListener is an SSH bastion: the proxy is an SSH server to the
 // client and an SSH client to the target, with its own host key, its
