@@ -27,8 +27,10 @@ LimitNOFILE=1048576
 UMask=0027
 
 # Directories managed by systemd (created with the right owner and label).
-ConfigurationDirectory=xproxy
-ConfigurationDirectoryMode=0750
+# /etc/xproxy is deliberately NOT a ConfigurationDirectory: all three
+# daemons read it, systemd chowns a ConfigurationDirectory to the unit's
+# own user on every start, and at 0750 that locks the other two out.
+# It is created by tmpfiles.d as root:xproxy-config instead.
 LogsDirectory=xgate
 LogsDirectoryMode=0750
 RuntimeDirectory=xgate

@@ -328,6 +328,50 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4)
 
+Three regressions the split introduced, found by re-reading the carve
+against what it moved. Each is what a move costs when a guard, an
+interface or an owner is left behind rather than carried across.
+
+- **A forward listener logged an error on every clean stop and every
+  reload.** A listener is stopped by closing its front and then
+  shutting the HTTP server down, so `Serve` ends with `net.ErrClosed`
+  from the accept or with `http.ErrServerClosed` from the shutdown,
+  whichever goroutine wins. The engine's own `serve()` ignored both;
+  the forward proxy kept only the second when it became a kind of its
+  own. An operator who sees ERROR on every reload learns to ignore the
+  error log, which is the real damage.
+
+- **Open CONNECT tunnels were counted as open QUIC flows.** The forward
+  instance implemented `proxy.FlowCounter` with its tunnel counter, and
+  the engine folds every `FlowCounter` into `quic_flows_open` — which
+  before the carve counted a `tcp` listener's QUIC flows and nothing
+  else. `xproxy_quic_flows_open` therefore reported tunnels that
+  `xproxy_forward_tunnels_open` was already reporting correctly, so a
+  dashboard or alert keyed on QUIC flows fired on forward traffic.
+
+- **A failure late in `New` left the data plane running.** The engine's
+  runtime holds only the upstream pools since the data plane became a
+  kind; the plane holds the JWKS refreshers, the ICAP pools and the
+  filters. `New` commits the plane before it builds ACME and the
+  cluster node, and those error paths released only the engine runtime,
+  as they could when one runtime held everything. They return no
+  `Server`, so nothing would ever have called `Shutdown`: a
+  misconfigured ACME section or cluster certificate left the
+  refreshers running for the life of the process.
+
+- **The three daemons took `/etc/xproxy` from each other on every
+  start.** All three units declared `ConfigurationDirectory=xproxy`,
+  which systemd creates and chowns to the unit's own `User=` and
+  `Group=` every time the unit starts. Three units doing that in turn
+  is three daemons taking the shared configuration directory from one
+  another, and at `0750` the two that did not start last cannot read
+  their configuration at all — so the estate worked until the second
+  daemon was restarted, and then did not. The directory is created by
+  `tmpfiles.d` now, `0750 root:xproxy-config`, with the three daemons
+  and the GUI in that group; it grants that directory and nothing else,
+  as `xproxy-cluster` grants the cluster sockets and nothing else. The
+  units keep `ReadOnlyPaths=/etc/xproxy`, so the sandbox is unchanged.
+
 - **A command line one or two octets over the bound swallowed the next
   command.** The reader's buffer is the bound plus two, so a line that
   overshoots by one or two arrives whole rather than filling the buffer.

@@ -3,6 +3,7 @@ package forward
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -70,9 +71,22 @@ type instance struct {
 
 // Serve implements proxy.Instance.
 func (i *instance) Serve() {
-	if err := i.srv.Serve(i.ln); err != nil && err != http.ErrServerClosed {
+	if err := serveError(i.srv.Serve(i.ln)); err != nil {
 		i.f.host.Logs().Error.Error("forward listener stopped", "listener", i.f.name, "err", err.Error())
 	}
+}
+
+// serveError is the error Serve should report, or nil for the two ways
+// a listener ends on purpose. A stop closes the front before the HTTP
+// server is shut down, so whether Serve sees net.ErrClosed from the
+// accept or http.ErrServerClosed from the shutdown is a race between
+// two goroutines; neither is a failure, and an operator who sees ERROR
+// on every reload stops reading the log.
+func serveError(err error) error {
+	if err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 // Shutdown implements proxy.Instance: the HTTP server drains, then the
@@ -92,9 +106,6 @@ func (i *instance) Apply(lc config.Listener) error {
 	}
 	return i.f.apply(lc.Forward)
 }
-
-// OpenFlows implements proxy.FlowCounter.
-func (i *instance) OpenFlows() int { return int(i.f.open.Load()) }
 
 // MasqueStatus implements proxy.MasqueReporter, which is how the
 // management view reaches a forward listener without the engine

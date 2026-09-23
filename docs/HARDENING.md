@@ -148,12 +148,21 @@ from a lab address.
 
 | Path | Owner | Mode |
 |------|-------|------|
-| `/etc/xproxy` | `root:xproxy` | `0750` |
-| `/etc/xproxy/xproxy.yaml` | `root:xproxy` | `0640` |
-| `/etc/xproxy/certs/*` | `root:xproxy` | `0640` |
+| `/etc/xproxy` | `root:xproxy-config` | `0750` |
+| `/etc/xproxy/*.yaml` | `root:xproxy-config` | `0640` |
+| `/etc/xproxy/certs/*` | `root:xproxy-config` | `0640` |
 | `/var/log/xproxy` | `xproxy:xproxy` | `0750` |
 | `/var/lib/xproxy` | `xproxy:xproxy` | `0700` |
 | `/run/xproxy/mgmt.sock` | `xproxy:xproxy` | `0660` |
+
+`xproxy-config` is the group the three daemons share for this directory
+and nothing else: each reads its own file there and they share the
+includes beside it, so no one of them can own it. It is created by
+`tmpfiles.d`, deliberately not by `ConfigurationDirectory=`, which
+systemd chowns to the unit's own user on every start -- three units
+declaring it is three daemons taking the directory from each other, and
+at `0750` the two that did not start last cannot read their
+configuration at all.
 
 xproxy refuses a world writable configuration file. Nothing under
 `/etc/xproxy` should be writable by the service user; the unit mounts it
