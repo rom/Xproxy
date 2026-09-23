@@ -915,6 +915,7 @@ session recordable:
 | 2 | `vncauth` | The DES challenge of RFC 6143 §7.2.2 | Mediated |
 | 19 | `vencrypt` | The open TLS and X.509 negotiation | Mediated |
 | 18 | `tls` | Anonymous-TLS, VeNCrypt's predecessor | Mediated, warned about |
+| 113 | `mslogon2` | UltraVNC's MS-Logon II | Reimplemented, warned about |
 
 `tls` is warned about because it is anonymous Diffie-Hellman with no
 certificate to check: it stops a reader and not an active attacker.
@@ -925,15 +926,45 @@ certificate to check: it stops a reader and not an active attacker.
 for the same reason. The bare `plain` subtype (no TLS at all) is
 refused: it would send the credential in clear.
 
+**Reimplemented, which is not the same as supported.** `mslogon2` is
+UltraVNC's own type. There is no specification for it; what is
+implemented here follows the shape of UltraVNC's `vncauth.cpp` and
+`DH.cpp` and the public reimplementations that agree with them, and
+**interoperability against a real UltraVNC server is not verified by
+this project's tests**. Enabling it produces a warning at load that
+says so.
+
+What it is worth is worth stating plainly, because the name sounds
+like security: MS-Logon II is Diffie-Hellman over **64 bits** with the
+shared secret used as a **DES** key. Both have been breakable for
+decades, and anyone who records the exchange can recover the Windows
+credential inside it. It is here because the desktops exist — reaching
+them through a gateway that records the session, asks for a factor and
+holds the policy is better than reaching them directly — and not
+because the type protects anything. Put a TLS-wrapped or SSH-tunnelled
+leg around it (`tls_mode: wrap`, or `ssh`) if the credential matters,
+which it does.
+
+Two things follow from it carrying a **name** as well as a password,
+which most of RFB does not:
+
+- It can carry a second factor without a certificate, which is the one
+  practical advantage it has over VeNCrypt's plain subtype: `mfa` is
+  allowed with `mslogon2` in `security_types`.
+- Towards a target it needs both halves of a credential, so
+  `upstream_user` and `upstream_password_file` are required when
+  `upstream_security: mslogon2` — refused at load rather than at the
+  first session.
+
 **What is not supported, and why.** These are the vendors' own, with no
-published specification to write against:
+published specification to write against and none reimplemented here:
 
 | Type | Name | Vendor |
 |------|------|--------|
 | 5, 6 | `ra2`, `ra2ne` | RealVNC |
 | 129, 130, 133 | `rsa-aes`, `rsa-aes-ne`, `rsa-aes-256` | RealVNC |
 | 16 | `tight` | TightVNC |
-| 17, 113 | `ultra`, `mslogon2` | UltraVNC |
+| 17 | `ultra` | UltraVNC |
 | 30 | `ard` | Apple |
 | 20, 21, 22 | `sasl`, `md5`, `xvp` | others |
 
@@ -941,7 +972,9 @@ Naming one in `security_types` is a configuration error rather than a
 setting that quietly does nothing. A gateway cannot sit in the middle
 of a handshake it cannot complete, and reimplementing a cipher from
 guesswork is worse than not having it: it would look like support while
-being wrong.
+being wrong. Where a public description exists that is good enough to
+write against — as for `mslogon2` above — the type moves into the table
+before this one and carries a warning instead.
 
 **UltraVNC's DSM plugin encryption is a separate case.** It is not a
 security type at all — the plugin wraps the whole connection before RFB
@@ -961,6 +994,7 @@ proxy does not hold.
 | `vencrypt_subtypes` | list | `[x509-vnc, x509-none]` | The subtypes offered when `vencrypt` is in use |
 | `password_file` | string | none | The password this gateway answers its own `vncauth` challenge with. Required if `vncauth` is offered, and refused if anyone but the proxy user can read it |
 | `upstream_password_file` | string | none | The password this gateway uses towards the target |
+| `upstream_user` | string | none | The login this gateway presents to a target whose security type carries a name (`mslogon2`). Required with `upstream_security: mslogon2` |
 | `upstream_security` | string | strongest available | The type to use towards the target, by name |
 | `tls_mode` | string | `negotiated` | What the listener's `tls` section is for: `negotiated` presents the certificate inside RFB, `wrap` makes the socket itself TLS. See below |
 | `upstream_tls_mode` | string | `none` | `none` or `vencrypt` |
@@ -1019,13 +1053,15 @@ so the recording and the policy still apply.
 
 #### The second factor
 
-`mfa` needs a VeNCrypt **plain** subtype, and validation refuses the
-section without one. The reason is in the protocol: a DES challenge
-proves knowledge of one shared desktop password and says nothing about
-who is holding it, so there is nothing to look an enrolment up by. The
-plain subtypes are the only place RFB carries a user name. The name
+`mfa` needs a security type whose credential carries a user name, and
+validation refuses the section without one. The reason is in the
+protocol: a DES challenge proves knowledge of one shared desktop
+password and says nothing about who is holding it, so there is nothing
+to look an enrolment up by. Two things carry a name — a VeNCrypt
+**plain** subtype, and `mslogon2` — and either satisfies it. The name
 identifies the person and the password field carries their one-time
-code, both inside the TLS tunnel.
+code; with a plain subtype both are inside the TLS tunnel, which is the
+arrangement to prefer.
 
 `x509-plain` is added to `vencrypt_subtypes` automatically when `mfa`
 is configured and no plain subtype is listed.

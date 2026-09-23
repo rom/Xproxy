@@ -5459,6 +5459,7 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 		v.errf("%s.upstream: required", p)
 	}
 	mediated, wantsTLS, wantsPassword := false, false, false
+	namesUser := false
 	for _, name := range c.SecurityTypes {
 		n := strings.ToLower(strings.TrimSpace(name))
 		t, ok := rfb.SecurityByName(n)
@@ -5475,10 +5476,16 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 			if t == rfb.SecVNCAuth {
 				wantsPassword = true
 			}
+		case rfb.Reimplemented[t]:
+			mediated = true
+			v.warnf("%s.security_types: %s is a vendor's own type, reimplemented here from published reverse engineering: interoperability is not guaranteed and the type protects the credential with a 64 bit key exchange and DES, which is to say with nothing. Use it to reach desktops that speak nothing else, through a gateway that records the session -- not as a way to keep the credential secret; see docs/CONFIG.md", p, n)
 		case rfb.Proprietary[t]:
-			v.errf("%s.security_types: %q is a vendor's own type with no published specification, so this gateway cannot sit in the middle of it; see docs/CONFIG.md for what to do instead", p, n)
+			v.errf("%s.security_types: %q is a vendor's own type with no published specification and none reimplemented here, so this gateway cannot sit in the middle of it; see docs/CONFIG.md for what to do instead", p, n)
 		default:
 			v.errf("%s.security_types: %q is not mediated by this gateway", p, n)
+		}
+		if rfb.NamesAUser[t] {
+			namesUser = true
 		}
 		if n == "tls" {
 			v.warnf("%s.security_types: the tls type is anonymous Diffie-Hellman with no certificate to check, so it stops a reader and not an active attacker; vencrypt with an x509 subtype is the one to use", p)
@@ -5529,7 +5536,7 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 	}
 	if c.UpstreamSecurity != "" {
 		t, ok := rfb.SecurityByName(strings.ToLower(strings.TrimSpace(c.UpstreamSecurity)))
-		if !ok || !rfb.Mediated[t] {
+		if !ok || (!rfb.Mediated[t] && !rfb.Reimplemented[t]) {
 			v.errf("%s.upstream_security: %q is not a type this gateway can use towards a target", p, c.UpstreamSecurity)
 		}
 	}
@@ -5541,9 +5548,18 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 	if c.MFA != nil {
 		v.mfaPolicy(p+".mfa", c.MFA)
 		// A factor needs a name to look an enrolment up by, and RFB
-		// carries one in exactly one place.
-		if !hasPlain(c.VeNCryptSubtypes) {
-			v.errf("%s.mfa: needs a plain VeNCrypt subtype (x509-plain), which is the only place RFB carries a user name; a DES challenge proves a shared desktop password and says nothing about who holds it", p)
+		// carries one in only two places.
+		if !hasPlain(c.VeNCryptSubtypes) && !namesUser {
+			v.errf("%s.mfa: needs a security type whose credential carries a user name -- a plain VeNCrypt subtype (x509-plain), or mslogon2 -- since a DES challenge proves a shared desktop password and says nothing about who holds it", p)
+		}
+	}
+	// A named credential towards the target needs both halves of one.
+	if wantsUpstreamName(c) {
+		if c.UpstreamUser == "" {
+			v.errf("%s.upstream_user: required to use mslogon2 towards a target, which sends a name as well as a password", p)
+		}
+		if c.UpstreamPasswordFile == "" {
+			v.errf("%s.upstream_password_file: required to use mslogon2 towards a target", p)
 		}
 	}
 	if c.SSH != nil {
@@ -5882,4 +5898,16 @@ func (v *validator) syslogListener(p string, g *SyslogListener, hasTLS bool) {
 	if g.Queue < 1 || g.Queue > 1<<20 {
 		v.errf("%s.queue: must be 1..1048576", p)
 	}
+}
+
+// wantsUpstreamName says whether the target's leg may use a security
+// type that sends a user name as well as a password, which is what
+// makes upstream_user necessary.
+func wantsUpstreamName(c *VNCListener) bool {
+	n := strings.ToLower(strings.TrimSpace(c.UpstreamSecurity))
+	if n == "" {
+		return false
+	}
+	t, ok := rfb.SecurityByName(n)
+	return ok && rfb.NamesAUser[t]
 }

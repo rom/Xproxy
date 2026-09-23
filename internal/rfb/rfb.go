@@ -186,15 +186,40 @@ var Mediated = map[uint8]bool{
 	SecNone: true, SecVNCAuth: true, SecVeNCrypt: true, SecTLS: true,
 }
 
+// Reimplemented are the vendors' types this package completes anyway,
+// written against published reverse engineering rather than against a
+// specification the vendor stands behind. They are opt-in, each one is
+// warned about where it is configured, and each says in its own file
+// where its details come from and what it is actually worth.
+//
+// The reason to have them at all is that the desktops exist: an estate
+// whose machines speak only one of these is better reached through a
+// gateway that records the session and holds the policy than reached
+// directly. That is a different claim from the type being secure, and
+// the documentation does not make the second one.
+var Reimplemented = map[uint8]bool{
+	SecMSLogon2: true,
+}
+
+// NamesAUser are the types whose credential carries a user name. It
+// matters because a second factor needs something to look an enrolment
+// up by, and most of RFB carries nothing of the sort: a DES challenge
+// proves a shared desktop password and says nothing about who holds
+// it. VeNCrypt's plain subtypes are the other place a name appears,
+// and they are subtypes rather than types, so they are not here.
+var NamesAUser = map[uint8]bool{
+	SecMSLogon2: true,
+}
+
 // Proprietary are the types defined by a vendor rather than by a
-// specification. A proxy cannot mediate one without reimplementing a
-// cipher whose details are not published, so the only honest choices
-// are to refuse it or to relay it without looking -- which is a
-// session that cannot be recorded, and is a decision for an operator
-// rather than for this package.
+// specification and not reimplemented here. A proxy cannot mediate one
+// without reimplementing a cipher whose details are not published, so
+// the only honest choices are to refuse it or to relay it without
+// looking -- which is a session that cannot be recorded, and is a
+// decision for an operator rather than for this package.
 var Proprietary = map[uint8]bool{
 	SecRA2: true, SecRA2ne: true, SecTight: true, SecUltra: true,
-	SecMSLogon2: true, SecRSAAES: true, SecRSAAESne: true, SecRSAAES256: true,
+	SecRSAAES: true, SecRSAAESne: true, SecRSAAES256: true,
 	SecARD: true, SecSASL: true, SecMD5: true, SecXvp: true,
 }
 

@@ -2356,18 +2356,44 @@ Anonymous\-TLS,\: VeNCrypt\(aqs predecessor
 T}	T{
 Mediated,\: warned about
 T}
+T{
+113
+T}	T{
+\fBmslogon2\fR
+T}	T{
+UltraVNC\(aqs MS\-Logon II
+T}	T{
+Reimplemented,\: warned about
+T}
 .TE
 .PP
 \fBtls\fR is warned about because it is anonymous Diffie\-Hellman with no certificate to check: it stops a reader and not an active attacker. \fBvencrypt\fR with an X.509 subtype is the one to use.
 .PP
 \fBVeNCrypt subtypes\fR: \fBx509\-none\fR, \fBx509\-vnc\fR, \fBx509\-plain\fR, \fBtls\-none\fR, \fBtls\-vnc\fR, \fBtls\-plain\fR. The \fBtls\-*\fR ones are warned about for the same reason. The bare \fBplain\fR subtype (no TLS at all) is refused: it would send the credential in clear.
 .PP
-\fBWhat is not supported, and why.\fR These are the vendors\(aq own, with no published specification to write against:
+\fBReimplemented, which is not the same as supported.\fR \fBmslogon2\fR is UltraVNC\(aqs own type. There is no specification for it; what is implemented here follows the shape of UltraVNC\(aqs \fBvncauth.cpp\fR and \fBDH.cpp\fR and the public reimplementations that agree with them, and \fBinteroperability against a real UltraVNC server is not verified by this project\(aqs tests\fR. Enabling it produces a warning at load that says so.
+.PP
+What it is worth is worth stating plainly, because the name sounds like security: MS\-Logon II is Diffie\-Hellman over \fB64 bits\fR with the shared secret used as a \fBDES\fR key. Both have been breakable for decades, and anyone who records the exchange can recover the Windows credential inside it. It is here because the desktops exist \[u2014] reaching them through a gateway that records the session, asks for a factor and holds the policy is better than reaching them directly \[u2014] and not because the type protects anything. Put a TLS\-wrapped or SSH\-tunnelled leg around it (\fBtls_mode: wrap\fR, or \fBssh\fR) if the credential matters, which it does.
+.PP
+Two things follow from it carrying a \fBname\fR as well as a password, which most of RFB does not:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+It can carry a second factor without a certificate, which is the one practical advantage it has over VeNCrypt\(aqs plain subtype: \fBmfa\fR is allowed with \fBmslogon2\fR in \fBsecurity_types\fR.
+.PP
+.ti -3n
+\(bu
+Towards a target it needs both halves of a credential, so \fBupstream_user\fR and \fBupstream_password_file\fR are required when \fBupstream_security: mslogon2\fR \[u2014] refused at load rather than at the first session.
+.RE
+.PP
+.PP
+\fBWhat is not supported, and why.\fR These are the vendors\(aq own, with no published specification to write against and none reimplemented here:
 .PP
 .TS
 allbox;
-lbw(0.6i) lbw(0.9i) lbx
-lw(0.6i) lw(0.9i) lx.
+lbw(0.6i) lbw(0.6i) lbx
+lw(0.6i) lw(0.6i) lx.
 T{
 Type
 T}	T{
@@ -2397,9 +2423,9 @@ T}	T{
 TightVNC
 T}
 T{
-17,\: 113
+17
 T}	T{
-\fBultra\fR,\: \fBmslogon2\fR
+\fBultra\fR
 T}	T{
 UltraVNC
 T}
@@ -2419,7 +2445,7 @@ others
 T}
 .TE
 .PP
-Naming one in \fBsecurity_types\fR is a configuration error rather than a setting that quietly does nothing. A gateway cannot sit in the middle of a handshake it cannot complete, and reimplementing a cipher from guesswork is worse than not having it: it would look like support while being wrong.
+Naming one in \fBsecurity_types\fR is a configuration error rather than a setting that quietly does nothing. A gateway cannot sit in the middle of a handshake it cannot complete, and reimplementing a cipher from guesswork is worse than not having it: it would look like support while being wrong. Where a public description exists that is good enough to write against \[u2014] as for \fBmslogon2\fR above \[u2014] the type moves into the table before this one and carries a warning instead.
 .PP
 \fBUltraVNC\(aqs DSM plugin encryption is a separate case.\fR It is not a security type at all \[u2014] the plugin wraps the whole connection before RFB begins, so this listener cannot even read the version string. There is nothing to configure here. An estate that needs it uses a \fBkind: tcp\fR listener, which relays the bytes without looking at them: the connection works, the access log records who reached which target, and there is no recording, because the stream is encrypted with keys this proxy does not hold.
 .SS "Options"
@@ -2481,6 +2507,15 @@ T}	T{
 none
 T}	T{
 The password this gateway uses towards the target
+T}
+T{
+\fBupstream_\:user\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The login this gateway presents to a target whose security type carries a name (\fBmslogon2\fR). Required with \fBupstream_\:security:\: mslogon2\fR
 T}
 T{
 \fBupstream_\:security\fR
@@ -2693,7 +2728,7 @@ T}
 An operator who prefers to tunnel themselves still can: \fBssh \-L\fR to the \fBkind: ssh\fR bastion and point the viewer at the forwarded port. That needs nothing here. The \fBssh\fR section is for doing it once, centrally, so the recording and the policy still apply.
 .SS "The second factor"
 .PP
-\fBmfa\fR needs a VeNCrypt \fBplain\fR subtype, and validation refuses the section without one. The reason is in the protocol: a DES challenge proves knowledge of one shared desktop password and says nothing about who is holding it, so there is nothing to look an enrolment up by. The plain subtypes are the only place RFB carries a user name. The name identifies the person and the password field carries their one\-time code, both inside the TLS tunnel.
+\fBmfa\fR needs a security type whose credential carries a user name, and validation refuses the section without one. The reason is in the protocol: a DES challenge proves knowledge of one shared desktop password and says nothing about who is holding it, so there is nothing to look an enrolment up by. Two things carry a name \[u2014] a VeNCrypt \fBplain\fR subtype, and \fBmslogon2\fR \[u2014] and either satisfies it. The name identifies the person and the password field carries their one\-time code; with a plain subtype both are inside the TLS tunnel, which is the arrangement to prefer.
 .PP
 \fBx509\-plain\fR is added to \fBvencrypt_subtypes\fR automatically when \fBmfa\fR is configured and no plain subtype is listed.
 .PP

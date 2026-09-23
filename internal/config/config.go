@@ -594,6 +594,10 @@ type VNCListener struct {
 	// A port is one or the other and cannot be both: the first byte a
 	// client sends is either a TLS record or "RFB 003.008".
 	TLSMode string `yaml:"tls_mode"`
+	// UpstreamUser is the login this proxy presents to a target whose
+	// security type carries a name, which among the types here means
+	// MS-Logon II. Its password is UpstreamPasswordFile.
+	UpstreamUser string `yaml:"upstream_user"`
 	// UpstreamSecurity is the security type to prefer towards the
 	// target, by name. Default is the strongest the target offers
 	// among the ones this proxy mediates.

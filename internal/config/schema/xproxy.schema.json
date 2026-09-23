@@ -6070,6 +6070,10 @@
           "description": "UpstreamTLSMode is none or vencrypt. Default none.",
           "type": "string"
         },
+        "upstream_user": {
+          "description": "UpstreamUser is the login this proxy presents to a target whose security type carries a name, which among the types here means MS-Logon II. Its password is UpstreamPasswordFile.",
+          "type": "string"
+        },
         "vencrypt_subtypes": {
           "description": "VeNCryptSubtypes are the VeNCrypt subtypes offered when vencrypt is in SecurityTypes. Default x509-vnc and x509-none, which are the ones with a certificate to check.",
           "type": "array",

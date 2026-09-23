@@ -45,6 +45,9 @@ type target struct {
 	mu   sync.Mutex
 	got  []byte
 	init rfb.ClientInit
+	// gotUser and gotPass are the credential a named security type
+	// delivered, so a test can check whose it was.
+	gotUser, gotPass string
 }
 
 func startTarget(t *testing.T, tg *target) *target {
@@ -117,6 +120,10 @@ func (tg *target) session(c net.Conn) {
 		}
 		// Everything after the subtype is inside the tunnel.
 		c = inner
+	case rfb.SecMSLogon2:
+		if !tg.msLogon(c) {
+			return
+		}
 	}
 	if rfb.SendsResult(tg.version, chosen) {
 		if _, err := c.Write(rfb.SecurityResult(tg.version, true, "")); err != nil {
@@ -168,6 +175,45 @@ func (tg *target) vncAuth(c net.Conn) bool {
 		return false
 	}
 	return true
+}
+
+// msLogon plays the MS-Logon II server and keeps the credential it was
+// given, so a test can see whose it was.
+func (tg *target) msLogon(c net.Conn) bool {
+	params, priv, err := rfb.NewMSLogonParams()
+	if err != nil {
+		return false
+	}
+	if _, err := c.Write(params.Encode()); err != nil {
+		return false
+	}
+	var pub [rfb.MSLogonDHSize]byte
+	if _, err := io.ReadFull(c, pub[:]); err != nil {
+		return false
+	}
+	shared, err := rfb.MSLogonShared(binary.BigEndian.Uint64(pub[:]), priv, params.Mod)
+	if err != nil {
+		return false
+	}
+	user, pass, err := rfb.ReadMSLogonCredential(c, shared)
+	if err != nil {
+		return false
+	}
+	tg.mu.Lock()
+	tg.gotUser, tg.gotPass = user, pass
+	tg.mu.Unlock()
+	if tg.password != "" && pass != tg.password {
+		_, _ = c.Write(rfb.SecurityResult(tg.version, false, "bad credential"))
+		return false
+	}
+	return true
+}
+
+// credential is what the target was given, once it has one.
+func (tg *target) credential() (string, string) {
+	tg.mu.Lock()
+	defer tg.mu.Unlock()
+	return tg.gotUser, tg.gotPass
 }
 
 // vencrypt plays the VeNCrypt server, and returns the connection the
@@ -423,7 +469,7 @@ func TestASecurityTypeThatWasNotOfferedIsRefused(t *testing.T) {
 // A vendor's own security type cannot be mediated, so a listener that
 // names one does not start at all.
 func TestAProprietaryTypeIsRefusedAtLoad(t *testing.T) {
-	for _, name := range []string{"ultra", "rsa-aes", "ard", "mslogon2"} {
+	for _, name := range []string{"ultra", "rsa-aes", "ard", "ra2"} {
 		t.Run(name, func(t *testing.T) {
 			yaml := fmt.Sprintf(`
 version: 1

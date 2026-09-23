@@ -388,6 +388,25 @@ Open findings of the earlier rounds:
     losing whatever it did not, while a decoder written against this
     file later loses nothing.
 
+- **MS-Logon II, UltraVNC's security type 113**, on both legs of the
+  VNC gateway (`security_types: [mslogon2]`, `upstream_security:
+  mslogon2`). It is reimplemented from the shape of UltraVNC's own
+  source and the public reimplementations that agree with it, since
+  there is no specification: the load warning and `docs/CONFIG.md`
+  both say that interoperability with a real UltraVNC server is not
+  verified here, and say what the type is worth -- Diffie-Hellman over
+  64 bits with the shared secret as a DES key, which protects the
+  Windows credential inside it against nobody. It is here because the
+  desktops exist, and reaching them through a gateway that records the
+  session and holds the policy beats reaching them directly. Two
+  things follow from its credential carrying a name, which most of RFB
+  does not: it can carry a second factor with no certificate involved,
+  and towards a target it needs `upstream_user` as well as
+  `upstream_password_file`, refused at load rather than at the first
+  session. Degenerate Diffie-Hellman parameters -- the ones that fix
+  the shared secret without breaking anything -- are refused on both
+  legs.
+
 - **A telnet gateway** (`kind: telnet`, in xgate), for the equipment
   that speaks nothing else. The proxy is a telnet server to the client
   and a telnet client to the target, reading the NVT protocol of RFC
