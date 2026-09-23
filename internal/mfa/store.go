@@ -28,14 +28,32 @@ type Enrolment struct {
 // Store is the enrolment file, read once. The format is one user per
 // line:
 //
-//	alice:JBSWY3DPEHPK3PXP
-//	bob:JBSWY3DPEHPK3PXP:digits=6,period=30,algo=SHA1
-//	carol:JBSWY3DPEHPK3PXP::pbkdf2$...,pbkdf2$...
+//	alice:JBSWY3DPEHPK3PXPJBSWY3DPEH
+//	bob:JBSWY3DPEHPK3PXPJBSWY3DPEH:digits=6,period=30,algo=SHA1
+//	carol:JBSWY3DPEHPK3PXPJBSWY3DPEH::pbkdf2$...,pbkdf2$...
+//
+// The secret is base32 and at least 128 bits, which is what RFC 4226
+// asks for and what the example above is: a shorter one is refused
+// rather than accepted and quietly weaker.
 //
 // Fields after the secret are optional: parameters, then recovery code
 // hashes. Blank lines and lines beginning with # are ignored.
 type Store struct {
-	byUser map[string]*Enrolment
+	// path is the file, and empty for a store built in memory.
+	path string
+	mu   sync.RWMutex
+	// writeMu serialises changes: a read-modify-write of the file that
+	// two callers interleaved would lose one of them.
+	writeMu sync.Mutex
+	byUser  map[string]*Enrolment
+	// stat is what the file looked like when byUser was read from it,
+	// and checked when that was last confirmed.
+	stat    fileStamp
+	checked time.Time
+	// Warn receives a re-read that failed. What is in memory stays in
+	// force in that case, so a half-written file does not enrol or
+	// un-enrol anybody. It is set once before serving.
+	Warn func(error)
 }
 
 // Load reads an enrolment file. A line that does not parse fails the
@@ -43,15 +61,32 @@ type Store struct {
 // door left open, and one who was meant to be removed and is not is
 // worse.
 func Load(path string) (*Store, error) {
-	f, err := os.Open(path) //nolint:gosec // a path from the configuration
+	byUser, stamp, err := readFile(path, false)
 	if err != nil {
 		return nil, err
 	}
+	return &Store{path: path, byUser: byUser, stat: stamp, checked: time.Now()}, nil
+}
+
+// readFile parses the file. allowEmpty is false for the first read and
+// true for every one after it: a configuration pointing at an empty
+// file is almost certainly the wrong file, while a file that has become
+// empty while the proxy runs is an operator who removed the last
+// enrolment -- and refusing to notice that would leave the person
+// enrolled, which is the failure this package exists to avoid.
+func readFile(path string, allowEmpty bool) (map[string]*Enrolment, fileStamp, error) {
+	// The stamp is taken before the read, so a file rewritten during it
+	// is re-read next time rather than remembered as current.
+	stamp := stampOf(path)
+	f, err := os.Open(path) //nolint:gosec // a path from the configuration
+	if err != nil {
+		return nil, stamp, err
+	}
 	defer func() { _ = f.Close() }()
 	if st, err := f.Stat(); err == nil && st.Mode().Perm()&0o004 != 0 {
-		return nil, fmt.Errorf("%s must not be world readable: it holds every second factor", path)
+		return nil, stamp, fmt.Errorf("%s must not be world readable: it holds every second factor", path)
 	}
-	s := &Store{byUser: map[string]*Enrolment{}}
+	byUser := map[string]*Enrolment{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 4096), 1<<20)
 	line := 0
@@ -63,20 +98,20 @@ func Load(path string) (*Store, error) {
 		}
 		e, err := parseLine(text)
 		if err != nil {
-			return nil, fmt.Errorf("%s:%d: %w", path, line, err)
+			return nil, stamp, fmt.Errorf("%s:%d: %w", path, line, err)
 		}
-		if _, dup := s.byUser[e.User]; dup {
-			return nil, fmt.Errorf("%s:%d: %q is enrolled twice", path, line, e.User)
+		if _, dup := byUser[e.User]; dup {
+			return nil, stamp, fmt.Errorf("%s:%d: %q is enrolled twice", path, line, e.User)
 		}
-		s.byUser[e.User] = e
+		byUser[e.User] = e
 	}
 	if err := sc.Err(); err != nil {
-		return nil, err
+		return nil, stamp, err
 	}
-	if len(s.byUser) == 0 {
-		return nil, errors.New("no enrolments in the file")
+	if len(byUser) == 0 && !allowEmpty {
+		return nil, stamp, errors.New("no enrolments in the file")
 	}
-	return s, nil
+	return byUser, stamp, nil
 }
 
 func parseLine(text string) (*Enrolment, error) {
@@ -147,11 +182,15 @@ func parseParams(s string) (Params, error) {
 	return p, nil
 }
 
-// Get returns a user's enrolment.
+// Get returns a user's enrolment, re-reading the file first if it has
+// changed.
 func (s *Store) Get(user string) (*Enrolment, bool) {
 	if s == nil {
 		return nil, false
 	}
+	s.refresh()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	e, ok := s.byUser[user]
 	return e, ok
 }
@@ -161,6 +200,9 @@ func (s *Store) Users() []string {
 	if s == nil {
 		return nil
 	}
+	s.refresh()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make([]string, 0, len(s.byUser))
 	for u := range s.byUser {
 		out = append(out, u)
@@ -348,4 +390,75 @@ func (g *Guard) Locked(user string, now time.Time) bool {
 	defer g.mu.Unlock()
 	st, ok := g.users[user]
 	return ok && now.Before(st.lockUntil)
+}
+
+// Unlock clears a user's lockout and their recent failures, which is
+// what an operator does for somebody whose authenticator was out of
+// step. It does not clear the replay memory: a code that was spent
+// stays spent, because unlocking is forgiveness for guessing wrong and
+// not permission to reuse one.
+func (g *Guard) Unlock(user string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st, ok := g.users[user]
+	if !ok {
+		return false
+	}
+	was := !st.lockUntil.IsZero() || len(st.failures) > 0
+	st.lockUntil, st.failures = time.Time{}, nil
+	return was
+}
+
+// Store is the enrolment file behind the guard, which is what a control
+// plane changes.
+func (g *Guard) Store() *Store {
+	if g == nil {
+		return nil
+	}
+	return g.store
+}
+
+// GuardStatus is one user as a status view sees them.
+type GuardStatus struct {
+	Status
+	// Locked says the user cannot try again yet, and LockedUntil when
+	// that ends.
+	Locked      bool      `json:"locked"`
+	LockedUntil time.Time `json:"locked_until,omitzero"`
+	// Failures is how many recent wrong codes are remembered, and Spent
+	// how many recovery codes this process has seen used.
+	Failures int `json:"failures"`
+	Spent    int `json:"recovery_spent"`
+}
+
+// List describes every enrolment with what this process remembers
+// about it. The secret is never in it.
+func (g *Guard) List(now time.Time) []GuardStatus {
+	if g == nil {
+		return nil
+	}
+	enrolled := g.store.List()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]GuardStatus, 0, len(enrolled))
+	for _, e := range enrolled {
+		gs := GuardStatus{Status: e}
+		if st, ok := g.users[e.User]; ok {
+			gs.Failures, gs.Spent = len(st.failures), len(st.spent)
+			if now.Before(st.lockUntil) {
+				gs.Locked, gs.LockedUntil = true, st.lockUntil
+			}
+		}
+		out = append(out, gs)
+	}
+	return out
+}
+
+// Forget drops what this process remembers about a user, which is what
+// removing an enrolment should also do: leaving the state behind would
+// lock out the next person enrolled under the same name.
+func (g *Guard) Forget(user string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.users, user)
 }
