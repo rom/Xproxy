@@ -873,6 +873,95 @@ Counters: `syslog_received`, `syslog_forwarded`, `syslog_dropped`,
 `syslog_queue_dropped`, `syslog_send_failed`, `syslog_connections`,
 `syslog_rejected`. Refusals are `syslog_denied` for the ban triggers.
 
+### server.listeners[].telnet (kind: telnet)
+
+A `kind: telnet` listener is a telnet gateway: the proxy is a telnet
+server to the client and a telnet client to the target, reading the NVT
+protocol of RFC 854 in both directions.
+
+**Telnet carries everything in clear.** The session, every password
+typed into the target's own login, and the one-time code if this
+listener asks for one all cross the network as plain bytes. Wrapping
+the listener in TLS (a `tls` section, which is what `telnets` on 992
+is) is the only thing that changes that, and validation warns every
+time it is left off. This listener exists because the equipment that
+speaks only telnet exists, not because telnet is acceptable.
+
+**Why this is not a `tcp` listener.** Telnet's options are commands
+escaped into the byte stream: `IAC` (255) begins one, `IAC IAC` is a
+literal 255, and everything else is data. A proxy that does not parse
+that cannot tell a window-size negotiation from the characters a person
+typed — which it has to, to record the session as it was seen, to
+decide which options a client may turn on, and to write a prompt of its
+own into the stream before the target is dialled.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The pool of targets |
+| `banner` | string | none | What the proxy says before the target is dialled. A banner naming the equipment is one that saves an attacker a question |
+| `allow_options` | list | see below | The telnet options a session may negotiate, by name |
+| `deny_options` | list | `[]` | Removed from `allow_options`, for changing one thing without restating the list |
+| `max_subnegotiation` | int | `4096` | Bound on one subnegotiation; 64..1048576. A peer that sends `IAC SB` and never sends `IAC SE` is cut off here rather than allowed to grow a buffer |
+| `recording` | object | none | As `server.listeners[].ssh.recording` |
+| `mfa` | object | none | As `server.listeners[].ssh.mfa`; see below for how the code is asked for |
+| `idle_timeout` | duration | `5m` | No traffic in either direction |
+| `session_timeout` | duration | `0` | Bound on a whole session however active; 0 is no bound |
+| `max_connections` | int | `1000` | Sessions on this listener |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
+| `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+
+**Options.** The default list is what an interactive session needs and
+nothing else: `echo`, `suppress-go-ahead`, `binary`, `terminal-type`,
+`naws`, `terminal-speed`, `end-of-record`, `timing-mark`, `status`.
+
+The others this proxy can name, none of them on by default:
+
+| Option | Why it is not default |
+|--------|-----------------------|
+| `environ`, `new-environ` | Carry variables of the client's choosing to the target, which is how a login shell is given a different `PATH`. Validation warns when either is allowed |
+| `x-display` | Names an X display the target will try to reach, which is a connection back out of the estate |
+| `authentication` | Negotiated differently by every implementation that has it; the proxy would relay it without understanding it |
+| `encryption` | Would encrypt the session end to end — a session this proxy can no longer record or hold to a policy |
+| `linemode`, `flow-control` | Accepted if you name them; left out because the default is character-at-a-time, which is what a recording wants |
+
+An option this proxy has no name for is always refused, whatever the
+lists say: one whose effect it cannot name is one it cannot hold to a
+policy. A refusal is answered to the side that asked (`WILL` and `WONT`
+are declined with `DONT`, `DO` and `DONT` with `WONT`) rather than
+dropped, because a refusal the asker never hears is a negotiation that
+repeats forever. Each one writes a `telnet_option_refused` line and a
+mark in the recording, so an operator asked why a terminal behaves
+oddly can see that the proxy is why.
+
+**The second factor.** Telnet has no authentication for a proxy to
+read, so `mfa` is a prompt the proxy writes into the stream and an
+answer it reads back, before the target is dialled at all — a client
+that cannot answer never reaches the equipment. It asks for a login
+name, then for a code, with the code not echoed. The name is only what
+the enrolment is looked up by: the target's own login happens
+afterwards and is untouched, and whether the two names agree is the
+target's business rather than this proxy's. A name with no enrolment is
+refused where `require_enrolment` is on.
+
+While the proxy is asking its own questions it agrees to no options:
+anything the client negotiates then is declined, since the only thing
+at the far end so far is the proxy.
+
+**The recording** is the asciicast v2 format the ssh bastion writes, so
+the same player replays it. `naws` gives it the window size, and a
+resize during the session is recorded as one. `input: true` records
+what was typed as well as what was shown, and on telnet that means
+every password typed into the target's own login — which the proxy does
+not otherwise see. The warning that applies to the bastion applies here
+more strongly.
+
+Counters: `telnet_sessions`, `telnet_sessions_open`, `telnet_rejected`,
+`telnet_refused`, `telnet_options_refused`, `telnet_recorded`,
+`telnet_mfa_ok`, `telnet_mfa_failed`. Every session writes one `telnet`
+access line with the client, the name the factor was checked against,
+the target, how it ended and how many options were refused. Refusals
+are `telnet_denied` deny events, so bans apply.
+
 ### server.listeners[].ftp (kind: ftp)
 
 A `kind: ftp` listener is a protocol-aware FTP proxy: the proxy is an

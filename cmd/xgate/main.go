@@ -20,7 +20,8 @@ import (
 	"os"
 
 	"github.com/rom/xproxy/internal/daemon"
-	_ "github.com/rom/xproxy/internal/kinds/ssh" // listener kind: ssh
+	_ "github.com/rom/xproxy/internal/kinds/ssh"    // listener kind: ssh
+	_ "github.com/rom/xproxy/internal/kinds/telnet" // listener kind: telnet
 	"github.com/rom/xproxy/internal/listener"
 )
 

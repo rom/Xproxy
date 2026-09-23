@@ -18,6 +18,7 @@ server:
           smtp: null
           mqtt: null
           ssh: null
+          telnet: null
           ftp: null
           syslog: null
         - name: public
@@ -57,6 +58,7 @@ server:
           smtp: null
           mqtt: null
           ssh: null
+          telnet: null
           ftp: null
           syslog: null
     limits:

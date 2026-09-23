@@ -328,6 +328,37 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A telnet gateway** (`kind: telnet`, in xgate), for the equipment
+  that speaks nothing else. The proxy is a telnet server to the client
+  and a telnet client to the target, reading the NVT protocol of RFC
+  854 in both directions — which it has to, because telnet's options
+  are commands escaped into the byte stream, so a proxy that does not
+  parse them cannot tell a window size from the characters a person
+  typed.
+  - **An option policy.** A session may negotiate the options named in
+    `allow_options`, defaulting to what an interactive session needs
+    and nothing else. An option the proxy has no name for is always
+    refused, whatever the list says. A refusal is answered to the side
+    that asked, because one the asker never hears is a negotiation that
+    repeats forever, and it writes a log line and a mark in the
+    recording so an operator asked why a terminal behaves oddly can see
+    that the proxy is why. Validation warns about the options that
+    carry something to the target rather than describing the terminal:
+    `environ` and `new-environ` hand it variables, `x-display` names a
+    connection back out of the estate, `encryption` would make the
+    session one the proxy can no longer record.
+  - **A session recording**, in the same asciicast v2 the bastion
+    writes, sized from `naws` and resized when the window is.
+  - **A second factor before the target is dialled.** Telnet has no
+    authentication for a proxy to read, so this is a prompt the proxy
+    writes into the stream and an answer it reads back: a login name,
+    then a code that is not echoed. A client that cannot answer never
+    reaches the equipment. The name is only what the enrolment is
+    looked up by; the target's own login happens afterwards, untouched.
+  - Telnet carries all of this in clear, so validation warns every time
+    the listener has no `tls` section. The listener exists because the
+    equipment does, not because telnet is acceptable.
+
 - **The ftp relay records, scans and can ask for a second factor.**
   Three sections, each the same shape as its equivalent elsewhere, so
   an operator who has configured the bastion has configured this:
@@ -400,7 +431,7 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4, tests)
 
-- **Four tests raced the goroutine that records what they assert on.**
+- **Five tests raced the goroutine that records what they assert on.**
   `CountStatus` is called from `logAccess`, which runs once the response
   body has gone out, so a client can have its whole response before the
   counter moves; the capture file is likewise written after the exchange
@@ -417,9 +448,12 @@ Open findings of the earlier rounds:
   `Applied` inside `apply` and the loop counts the failure once `apply`
   has returned the error, so a status carrying the failed digest is not
   yet a status with the failure counted, and the test waited for the
-  first and asserted the second. The behaviour all four were testing is
-  correct: metrics, captures, the history and the failure count are
-  written after the thing they describe has happened, by design.
+  first and asserted the second. `TestURLSpec` was the fifth: `install`
+  counts a reload and `fetch` writes the cache file after it, so a
+  refresh that has been counted has not yet reached the disk. The
+  behaviour all five were testing is correct: metrics, captures, the
+  history, the failure count and the cache are written after the thing
+  they describe has happened, by design.
 
 ### Packaging (1.4)
 

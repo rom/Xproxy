@@ -2685,6 +2685,14 @@
             }
           ]
         },
+        "telnet": {
+          "description": "Telnet configures a kind: telnet listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TelnetListener"
+            }
+          ]
+        },
         "tls": {
           "$ref": "#/$defs/TLS"
         }
@@ -5547,6 +5555,80 @@
               "$ref": "#/$defs/OCSPStapling"
             }
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TelnetListener": {
+      "description": "TelnetListener is a telnet gateway: the proxy is a telnet server to the client and a telnet client to the target, reading the NVT protocol of RFC 854 in both directions. The reason it is not a tcp listener: telnet's options are commands escaped into the byte stream, so a proxy that does not parse them cannot tell a window size from the characters a person typed. Every control this listener has needs that parse -- a session recording that holds what was seen rather than what was negotiated, an option policy, and a second factor asked for before the target is dialled at all. Telnet carries everything in clear. Wrapping the listener in TLS (the tls section, as telnets does on 992) is the only thing that changes that, and validation says so when it is left off.",
+      "type": "object",
+      "properties": {
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_options": {
+          "description": "AllowOptions are the telnet options a session may negotiate, by the names in docs/CONFIG.md. Default is the set an interactive session needs and nothing else. An option this proxy has no name for is always refused: one whose effect it cannot name is one it cannot hold to a policy.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "banner": {
+          "description": "Banner replaces what the proxy says before the target is dialled. A banner naming the equipment is a banner that saves an attacker a question.",
+          "type": "string"
+        },
+        "deny_options": {
+          "description": "DenyOptions removes from AllowOptions, for changing one thing without restating the list.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds sessions on this listener. Default 1000.",
+          "type": "integer"
+        },
+        "max_subnegotiation": {
+          "description": "MaxSubnegotiation bounds one subnegotiation. Default 4096.",
+          "type": "integer"
+        },
+        "mfa": {
+          "description": "MFA asks for a login name and a one-time code before the target is dialled. Telnet has no authentication of its own for a proxy to read, so this is a prompt the proxy writes and reads itself; the target's own login happens afterwards, unchanged.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MFAPolicy"
+            }
+          ]
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the target.",
+          "type": "boolean"
+        },
+        "recording": {
+          "description": "Recording writes the session -- what the target showed, and optionally what was typed -- to a file.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SessionRecording"
+            }
+          ]
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "upstream": {
+          "description": "Upstream is the pool of targets. Required.",
+          "type": "string"
         }
       },
       "additionalProperties": false

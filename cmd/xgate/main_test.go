@@ -13,7 +13,12 @@ import (
 // other. A stray blank import is the way that quietly stops being true,
 // and this is what catches one.
 func TestLinkedKinds(t *testing.T) {
-	want := []string{"ssh"}
+	// The roster is the one place that says which kinds this
+	// daemon serves, so it is what this compares against: a list
+	// written out again here would be one more thing to remember
+	// when a kind is added, and forgetting it is how the check
+	// stops checking.
+	want := listener.KindsFor(listener.RoleGate)
 	got := proxy.Registered()
 	if !slices.Equal(got, want) {
 		t.Fatalf("xgate links %v, want %v", got, want)

@@ -348,6 +348,20 @@ func applyDefaults(c *Config) {
 				mfaDefaults(f.MFA)
 			}
 		}
+		if n := s.Listeners[i].Telnet; n != nil {
+			if len(n.AllowOptions) == 0 {
+				n.AllowOptions = append([]string(nil), DefaultTelnetOptions...)
+			}
+			setInt(&n.MaxSubnegotiation, 4096)
+			setInt(&n.MaxConnections, 1000)
+			setDur(&n.IdleTimeout, 5*time.Minute)
+			if n.Recording != nil {
+				sessionRecordingDefaults(n.Recording)
+			}
+			if n.MFA != nil {
+				mfaDefaults(n.MFA)
+			}
+		}
 		if g := s.Listeners[i].Syslog; g != nil {
 			if g.UDP == nil {
 				t := true
@@ -380,11 +394,16 @@ func applyDefaults(c *Config) {
 			}
 		}
 		ln := &s.Listeners[i]
-		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ssh" || ln.Kind == "ftp" || ln.Kind == "syslog" {
-			// No HTTP protocol defaults on a non-HTTP listener; a dns,
-			// smtp or mqtt listener with TLS still gets the TLS
-			// defaults.
-			if (ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ftp" || ln.Kind == "syslog") && ln.TLS != nil {
+		// Only the two kinds that speak HTTP take the HTTP protocol
+		// defaults. This is written as what does rather than as what
+		// does not, because the list of kinds that do not grows every
+		// time one is added and a kind left off it silently acquires
+		// h1 and h2 it cannot serve.
+		if ln.Kind != "" && ln.Kind != "http" && ln.Kind != "forward" {
+			// A kind whose TLS is the engine's to terminate still
+			// takes the TLS defaults. ssh carries its own transport
+			// security and has no tls section at all.
+			if ln.TLS != nil {
 				setStr(&ln.TLS.MinVersion, "1.2")
 				setStr(&ln.TLS.ClientAuth, "none")
 			}

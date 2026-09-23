@@ -141,6 +141,14 @@ type Stats struct {
 	SSHBytesIn             atomic.Uint64
 	SSHBytesOut            atomic.Uint64
 	SFTPRequests           atomic.Uint64
+	TelnetSessions         atomic.Uint64
+	TelnetSessionsOpen     atomic.Int64
+	TelnetRejected         atomic.Uint64
+	TelnetRefused          atomic.Uint64
+	TelnetOptionsRefused   atomic.Uint64
+	TelnetRecorded         atomic.Uint64
+	TelnetMFAOK            atomic.Uint64
+	TelnetMFAFailed        atomic.Uint64
 	SFTPRefused            atomic.Uint64
 	SFTPScanned            atomic.Uint64
 	SFTPScanBlocked        atomic.Uint64
@@ -354,6 +362,14 @@ type Snapshot struct {
 	SSHBytesIn             uint64            `json:"ssh_bytes_in"`
 	SSHBytesOut            uint64            `json:"ssh_bytes_out"`
 	SFTPRequests           uint64            `json:"sftp_requests"`
+	TelnetSessions         uint64            `json:"telnet_sessions"`
+	TelnetSessionsOpen     int64             `json:"telnet_sessions_open"`
+	TelnetRejected         uint64            `json:"telnet_rejected"`
+	TelnetRefused          uint64            `json:"telnet_refused"`
+	TelnetOptionsRefused   uint64            `json:"telnet_options_refused"`
+	TelnetRecorded         uint64            `json:"telnet_recorded"`
+	TelnetMFAOK            uint64            `json:"telnet_mfa_ok"`
+	TelnetMFAFailed        uint64            `json:"telnet_mfa_failed"`
 	SFTPRefused            uint64            `json:"sftp_refused"`
 	SFTPScanned            uint64            `json:"sftp_scanned"`
 	SFTPScanBlocked        uint64            `json:"sftp_scan_blocked"`
@@ -532,6 +548,14 @@ func (s *Stats) snapshot() Snapshot {
 		SSHBytesIn:             s.SSHBytesIn.Load(),
 		SSHBytesOut:            s.SSHBytesOut.Load(),
 		SFTPRequests:           s.SFTPRequests.Load(),
+		TelnetSessions:         s.TelnetSessions.Load(),
+		TelnetSessionsOpen:     s.TelnetSessionsOpen.Load(),
+		TelnetRejected:         s.TelnetRejected.Load(),
+		TelnetRefused:          s.TelnetRefused.Load(),
+		TelnetOptionsRefused:   s.TelnetOptionsRefused.Load(),
+		TelnetRecorded:         s.TelnetRecorded.Load(),
+		TelnetMFAOK:            s.TelnetMFAOK.Load(),
+		TelnetMFAFailed:        s.TelnetMFAFailed.Load(),
 		SFTPRefused:            s.SFTPRefused.Load(),
 		SFTPScanned:            s.SFTPScanned.Load(),
 		SFTPScanBlocked:        s.SFTPScanBlocked.Load(),

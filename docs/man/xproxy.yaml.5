@@ -2292,6 +2292,186 @@ A message the relay cannot parse is refused, not forwarded: its facility, severi
 On a delimited stream a message over the bound is dropped and the connection carries on \[u2014] the reader skips to the next line ending, so one long line does not cost every record behind it. On a counted stream it ends the connection, because refusing to read the octets a frame declared leaves the reader at an offset nobody knows.
 .PP
 Counters: \fBsyslog_received\fR, \fBsyslog_forwarded\fR, \fBsyslog_dropped\fR, \fBsyslog_refused\fR, \fBsyslog_rate_limited\fR, \fBsyslog_redacted\fR, \fBsyslog_queue_dropped\fR, \fBsyslog_send_failed\fR, \fBsyslog_connections\fR, \fBsyslog_rejected\fR. Refusals are \fBsyslog_denied\fR for the ban triggers.
+.SS "server.listeners[].telnet (kind: telnet)"
+.PP
+A \fBkind: telnet\fR listener is a telnet gateway: the proxy is a telnet server to the client and a telnet client to the target, reading the NVT protocol of RFC 854 in both directions.
+.PP
+\fBTelnet carries everything in clear.\fR The session, every password typed into the target\(aqs own login, and the one\-time code if this listener asks for one all cross the network as plain bytes. Wrapping the listener in TLS (a \fBtls\fR section, which is what \fBtelnets\fR on 992 is) is the only thing that changes that, and validation warns every time it is left off. This listener exists because the equipment that speaks only telnet exists, not because telnet is acceptable.
+.PP
+\fBWhy this is not a \fBtcp\fR listener.\fR Telnet\(aqs options are commands escaped into the byte stream: \fBIAC\fR (255) begins one, \fBIAC IAC\fR is a literal 255, and everything else is data. A proxy that does not parse that cannot tell a window\-size negotiation from the characters a person typed \[u2014] which it has to, to record the session as it was seen, to decide which options a client may turn on, and to write a prompt of its own into the stream before the target is dialled.
+.PP
+.TS
+allbox;
+lbw(1.5i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.5i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The pool of targets
+T}
+T{
+\fBbanner\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+What the proxy says before the target is dialled. A banner naming the equipment is one that saves an attacker a question
+T}
+T{
+\fBallow_\:options\fR
+T}	T{
+list
+T}	T{
+see below
+T}	T{
+The telnet options a session may negotiate,\: by name
+T}
+T{
+\fBdeny_\:options\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Removed from \fBallow_\:options\fR,\: for changing one thing without restating the list
+T}
+T{
+\fBmax_\:subnegotiation\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+Bound on one subnegotiation;\: 64..1048576. A peer that sends \fBIAC SB\fR and never sends \fBIAC SE\fR is cut off here rather than allowed to grow a buffer
+T}
+T{
+\fBrecording\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+As \fBserver.\:listeners[].\:ssh.\:recording\fR
+T}
+T{
+\fBmfa\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+As \fBserver.\:listeners[].\:ssh.\:mfa\fR;\: see below for how the code is asked for
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+No traffic in either direction
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Bound on a whole session however active;\: 0 is no bound
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Sessions on this listener
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header with the client address to the target
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+CIDRs a client must come from
+T}
+.TE
+.PP
+\fBOptions.\fR The default list is what an interactive session needs and nothing else: \fBecho\fR, \fBsuppress\-go\-ahead\fR, \fBbinary\fR, \fBterminal\-type\fR, \fBnaws\fR, \fBterminal\-speed\fR, \fBend\-of\-record\fR, \fBtiming\-mark\fR, \fBstatus\fR.
+.PP
+The others this proxy can name, none of them on by default:
+.PP
+.TS
+allbox;
+lbw(1.5i) lbx
+lw(1.5i) lx.
+T{
+Option
+T}	T{
+Why it is not default
+T}
+T{
+\fBenviron\fR,\: \fBnew\-\:environ\fR
+T}	T{
+Carry variables of the client\(aqs choosing to the target,\: which is how a login shell is given a different \fBPATH\fR. Validation warns when either is allowed
+T}
+T{
+\fBx\-\:display\fR
+T}	T{
+Names an X display the target will try to reach,\: which is a connection back out of the estate
+T}
+T{
+\fBauthentication\fR
+T}	T{
+Negotiated differently by every implementation that has it;\: the proxy would relay it without understanding it
+T}
+T{
+\fBencryption\fR
+T}	T{
+Would encrypt the session end to end \[u2014] a session this proxy can no longer record or hold to a policy
+T}
+T{
+\fBlinemode\fR,\: \fBflow\-\:control\fR
+T}	T{
+Accepted if you name them;\: left out because the default is character\-at\-a\-time,\: which is what a recording wants
+T}
+.TE
+.PP
+An option this proxy has no name for is always refused, whatever the lists say: one whose effect it cannot name is one it cannot hold to a policy. A refusal is answered to the side that asked (\fBWILL\fR and \fBWONT\fR are declined with \fBDONT\fR, \fBDO\fR and \fBDONT\fR with \fBWONT\fR) rather than dropped, because a refusal the asker never hears is a negotiation that repeats forever. Each one writes a \fBtelnet_option_refused\fR line and a mark in the recording, so an operator asked why a terminal behaves oddly can see that the proxy is why.
+.PP
+\fBThe second factor.\fR Telnet has no authentication for a proxy to read, so \fBmfa\fR is a prompt the proxy writes into the stream and an answer it reads back, before the target is dialled at all \[u2014] a client that cannot answer never reaches the equipment. It asks for a login name, then for a code, with the code not echoed. The name is only what the enrolment is looked up by: the target\(aqs own login happens afterwards and is untouched, and whether the two names agree is the target\(aqs business rather than this proxy\(aqs. A name with no enrolment is refused where \fBrequire_enrolment\fR is on.
+.PP
+While the proxy is asking its own questions it agrees to no options: anything the client negotiates then is declined, since the only thing at the far end so far is the proxy.
+.PP
+\fBThe recording\fR is the asciicast v2 format the ssh bastion writes, so the same player replays it. \fBnaws\fR gives it the window size, and a resize during the session is recorded as one. \fBinput: true\fR records what was typed as well as what was shown, and on telnet that means every password typed into the target\(aqs own login \[u2014] which the proxy does not otherwise see. The warning that applies to the bastion applies here more strongly.
+.PP
+Counters: \fBtelnet_sessions\fR, \fBtelnet_sessions_open\fR, \fBtelnet_rejected\fR, \fBtelnet_refused\fR, \fBtelnet_options_refused\fR, \fBtelnet_recorded\fR, \fBtelnet_mfa_ok\fR, \fBtelnet_mfa_failed\fR. Every session writes one \fBtelnet\fR access line with the client, the name the factor was checked against, the target, how it ended and how many options were refused. Refusals are \fBtelnet_denied\fR deny events, so bans apply.
 .SS "server.listeners[].ftp (kind: ftp)"
 .PP
 A \fBkind: ftp\fR listener is a protocol\-aware FTP proxy: the proxy is an FTP server to the client and an FTP client to the target, and it is one end of every data connection as well.

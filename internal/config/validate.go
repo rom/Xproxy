@@ -8,6 +8,7 @@ import (
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/syslog"
+	"github.com/rom/xproxy/internal/telnet"
 	"github.com/rom/xproxy/internal/tmpl"
 	"github.com/rom/xproxy/internal/yara"
 	"mime"
@@ -656,6 +657,15 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.ssh: required for kind ssh", p)
 			} else {
 				v.sshListener(p+".ssh", ln.SSH)
+			}
+		case "telnet":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a telnet listener takes only address, telnet and tls", p)
+			}
+			if ln.Telnet == nil {
+				v.errf("%s.telnet: required for kind telnet", p)
+			} else {
+				v.telnetListener(p+".telnet", ln.Telnet, ln.TLS != nil)
 			}
 		case "ftp":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
@@ -5433,6 +5443,72 @@ func (v *validator) when(p, src string, r *Route) {
 }
 
 // ftpListener validates a kind: ftp listener.
+// telnetListener checks a telnet gateway.
+func (v *validator) telnetListener(p string, c *TelnetListener, hasTLS bool) {
+	if c.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	if !hasTLS {
+		v.warnf("%s: telnet carries the session, every password typed into the target's own login, and the second factor if one is asked for, in clear; add a tls section (telnets) or keep this listener off any network a stranger can reach", p)
+	}
+	seen := map[string]bool{}
+	for _, list := range [][]string{c.AllowOptions, c.DenyOptions} {
+		for i, name := range list {
+			n := strings.ToLower(strings.TrimSpace(name))
+			if _, ok := telnet.OptionByName(n); !ok {
+				v.errf("%s: %q is not an option this proxy can name, so no policy can be written about it; see docs/CONFIG.md for the list", p, name)
+				continue
+			}
+			if seen[n] && i >= 0 {
+				continue
+			}
+			seen[n] = true
+		}
+	}
+	// The options that carry something to the target rather than
+	// describing the terminal are worth saying out loud.
+	for _, risky := range []struct{ name, why string }{
+		{"environ", "carries variables of the client's choosing to the target, which is how a login shell is given a different PATH"},
+		{"new-environ", "carries variables of the client's choosing to the target, which is how a login shell is given a different PATH"},
+		{"x-display", "names an X display the target will try to reach, which is a connection back out of the estate"},
+		{"authentication", "is negotiated differently by every implementation that has it, and this proxy relays it without understanding it"},
+		{"encryption", "would encrypt the session end to end, which is a session this proxy can no longer record or hold to a policy"},
+	} {
+		for _, name := range c.AllowOptions {
+			if strings.EqualFold(strings.TrimSpace(name), risky.name) && !hasDeny(c.DenyOptions, risky.name) {
+				v.warnf("%s.allow_options: %s %s", p, risky.name, risky.why)
+			}
+		}
+	}
+	if c.MaxSubnegotiation < 64 || c.MaxSubnegotiation > 1<<20 {
+		v.errf("%s.max_subnegotiation: must be 64..1048576", p)
+	}
+	if c.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be positive", p)
+	}
+	if c.Recording != nil {
+		v.sessionRecording(p+".recording", c.Recording, nil)
+	}
+	if c.MFA != nil {
+		v.mfaPolicy(p+".mfa", c.MFA)
+	}
+	for i, cidr := range c.AllowClients {
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, cidr, err)
+		}
+	}
+}
+
+// hasDeny reports whether a name is in the deny list.
+func hasDeny(deny []string, name string) bool {
+	for _, d := range deny {
+		if strings.EqualFold(strings.TrimSpace(d), name) {
+			return true
+		}
+	}
+	return false
+}
+
 func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 	if f.Upstream == "" {
 		v.errf("%s.upstream: required", p)

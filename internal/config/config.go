@@ -236,6 +236,8 @@ type Listener struct {
 	MQTT *MQTTListener `yaml:"mqtt"`
 	// SSH configures a kind: ssh listener.
 	SSH *SSHListener `yaml:"ssh"`
+	// Telnet configures a kind: telnet listener.
+	Telnet *TelnetListener `yaml:"telnet"`
 	// FTP configures a kind: ftp listener.
 	FTP *FTPListener `yaml:"ftp"`
 	// Syslog configures a kind: syslog listener.
@@ -482,6 +484,73 @@ func (f *TransferICAP) ScansUploads() bool { return f != nil && (f.Uploads == ni
 
 // ScansDownloads reports whether what a client fetches is scanned.
 func (f *TransferICAP) ScansDownloads() bool { return f != nil && f.Downloads }
+
+// TelnetListener is a telnet gateway: the proxy is a telnet server to
+// the client and a telnet client to the target, reading the NVT
+// protocol of RFC 854 in both directions.
+//
+// The reason it is not a tcp listener: telnet's options are commands
+// escaped into the byte stream, so a proxy that does not parse them
+// cannot tell a window size from the characters a person typed. Every
+// control this listener has needs that parse -- a session recording
+// that holds what was seen rather than what was negotiated, an option
+// policy, and a second factor asked for before the target is dialled
+// at all.
+//
+// Telnet carries everything in clear. Wrapping the listener in TLS
+// (the tls section, as telnets does on 992) is the only thing that
+// changes that, and validation says so when it is left off.
+type TelnetListener struct {
+	// Upstream is the pool of targets. Required.
+	Upstream string `yaml:"upstream"`
+	// Banner replaces what the proxy says before the target is
+	// dialled. A banner naming the equipment is a banner that saves an
+	// attacker a question.
+	Banner string `yaml:"banner"`
+	// AllowOptions are the telnet options a session may negotiate, by
+	// the names in docs/CONFIG.md. Default is the set an interactive
+	// session needs and nothing else. An option this proxy has no name
+	// for is always refused: one whose effect it cannot name is one it
+	// cannot hold to a policy.
+	AllowOptions []string `yaml:"allow_options"`
+	// DenyOptions removes from AllowOptions, for changing one thing
+	// without restating the list.
+	DenyOptions []string `yaml:"deny_options"`
+	// MaxSubnegotiation bounds one subnegotiation. Default 4096.
+	MaxSubnegotiation int `yaml:"max_subnegotiation"`
+	// Recording writes the session -- what the target showed, and
+	// optionally what was typed -- to a file.
+	Recording *SessionRecording `yaml:"recording"`
+	// MFA asks for a login name and a one-time code before the target
+	// is dialled. Telnet has no authentication of its own for a proxy
+	// to read, so this is a prompt the proxy writes and reads itself;
+	// the target's own login happens afterwards, unchanged.
+	MFA *MFAPolicy `yaml:"mfa"`
+	// IdleTimeout is no traffic in either direction. Default 5m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole session however active. Default 0,
+	// no bound.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// MaxConnections bounds sessions on this listener. Default 1000.
+	MaxConnections int `yaml:"max_connections"`
+	// ProxyProtocol sends a PROXY protocol v2 header with the client
+	// address to the target.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs.
+	AllowClients []string `yaml:"allow_clients"`
+}
+
+// DefaultTelnetOptions are what an interactive session needs: the
+// echo and go-ahead negotiation every client does, the terminal type
+// and size a full screen program reads, and end-of-record for the line
+// mode equipment that uses it. Everything else -- the environment
+// options that carry variables to the target, the authentication and
+// encryption options nothing implements the same way twice, X display
+// forwarding -- is left out, and can be added by name.
+var DefaultTelnetOptions = []string{
+	"echo", "suppress-go-ahead", "binary", "terminal-type", "naws",
+	"terminal-speed", "end-of-record", "timing-mark", "status",
+}
 
 // SSHListener is an SSH bastion: the proxy is an SSH server to the
 // client and an SSH client to the target, with its own host key, its
