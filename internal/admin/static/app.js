@@ -534,3 +534,123 @@ function rollbackButton(id) {
   });
   return b;
 }
+
+// ---- second factors ----
+// The enrolment file is the authority and every listener re-reads it,
+// so what is done here takes effect on the next connection without a
+// reload. An enrolment hands back a secret and recovery codes that
+// exist nowhere else: they stay on the page until they are dismissed,
+// which is also why this view does not refresh itself — a timer would
+// wipe them while they were still being written down.
+let mfaShown = null;
+
+views.mfa = { async render() {
+  const listeners = await get('/api/mfa');
+  clear(view);
+  view.append(h('div', { class: 'row' },
+    h('button', { class: 'secondary', onclick: () => route() }, 'Refresh'),
+    h('span', { class: 'muted' }, 'Enrolments are read from the file as connections arrive: a change here applies at once, without a reload.')));
+  if (mfaShown) view.append(mfaSecretCard(mfaShown));
+  if (!listeners.length) {
+    view.append(h('p', { class: 'muted' }, 'No listener asks for a second factor. Set mfa.file on an ssh, sftp, ftp, telnet, vnc or rdp listener.'));
+    return;
+  }
+  for (const l of listeners) {
+    const users = l.users || [];
+    const rows = users.map(u => [u.user, u.digits, u.period_seconds + 's', u.algo,
+      (u.recovery - u.recovery_spent) + ' / ' + u.recovery, mfaState(u),
+      operator() ? h('div', { class: 'row tight' },
+        mfaAction('New codes', '/api/mfa/recovery', l.listener, u.user, null, 'Replace the recovery codes of ' + u.user + '? The old ones stop working.', true),
+        u.locked || u.failures ? mfaAction('Unlock', '/api/mfa/unlock', l.listener, u.user) : null,
+        mfaAction('Remove', '/api/mfa/remove', l.listener, u.user, 'danger', 'Take the second factor away from ' + u.user + '? They keep their password.')) : '']);
+    view.append(h('div', { class: 'card' },
+      h('h2', null, l.listener + ' (' + l.kind + ')'),
+      h('p', { class: 'muted' }, 'file ' + l.file + ' — every listener reading this file shares these enrolments; a lockout is counted per listener.'),
+      rows.length ? table(['User', { label: 'Digits', num: true }, { label: 'Period', num: true }, 'Algorithm', { label: 'Recovery left', num: true }, 'State', ''], rows)
+        : h('p', { class: 'muted' }, 'nobody is enrolled'),
+      operator() ? mfaEnrolForm(l.listener) : null));
+  }
+}};
+
+function mfaState(u) {
+  if (u.locked) return h('span', { class: 'bad' }, 'locked until ' + fmtTime(u.locked_until));
+  if (u.failures) return h('span', { class: 'warn' }, u.failures + ' wrong code(s)');
+  return h('span', { class: 'ok' }, 'ok');
+}
+
+// mfaAction runs one of the three per-person changes. What comes back
+// from a recovery reset is shown once, like an enrolment.
+function mfaAction(label, path, listener, user, cls, confirmText, show) {
+  const b = h('button', { class: cls || 'secondary' }, label);
+  b.addEventListener('click', async () => {
+    if (confirmText && !confirm(confirmText)) return;
+    b.disabled = true;
+    try {
+      const r = await post(path, { listener, user });
+      mfaShown = show ? Object.assign({ listener, user }, r) : mfaShown;
+      flash(label + ': ' + user + ' on ' + listener, 'ok');
+      route();
+    } catch (e) { flash(e.message, 'bad'); b.disabled = false; }
+  });
+  return b;
+}
+
+function mfaEnrolForm(listener) {
+  const user = h('input', { placeholder: 'user name', size: 18 });
+  const issuer = h('input', { placeholder: 'issuer (optional)', size: 14 });
+  const digits = h('select', null, h('option', { value: '' }, '6 digits'), h('option', { value: '8' }, '8 digits'));
+  const period = h('select', null, h('option', { value: '' }, '30 s'), h('option', { value: '60' }, '60 s'));
+  const algo = h('select', null, h('option', { value: '' }, 'SHA1'), h('option', { value: 'SHA256' }, 'SHA256'), h('option', { value: 'SHA512' }, 'SHA512'));
+  const b = h('button', null, 'Enrol');
+  b.addEventListener('click', async () => {
+    const name = user.value.trim();
+    if (!name) { flash('a user name is required', 'bad'); return; }
+    b.disabled = true;
+    try {
+      const req = { listener, user: name };
+      if (issuer.value.trim()) req.issuer = issuer.value.trim();
+      if (digits.value) req.digits = Number(digits.value);
+      if (period.value) req.period_seconds = Number(period.value);
+      if (algo.value) req.algo = algo.value;
+      const r = await post('/api/mfa/enrol', req);
+      mfaShown = Object.assign({ listener, user: name }, r);
+      flash('enrolled ' + name + ' on ' + listener, 'ok');
+      route();
+    } catch (e) { flash(e.message, 'bad'); b.disabled = false; }
+  });
+  // Authenticators that only take the defaults are the common case, so
+  // the parameters are the last thing on the row, not the first.
+  return h('div', { class: 'row mt-s' }, h('span', { class: 'muted' }, 'Enrol'), user, issuer, digits, period, algo, b);
+}
+
+// mfaSecretCard shows what cannot be read again. It stays until it is
+// dismissed by hand.
+function mfaSecretCard(s) {
+  const card = h('div', { class: 'card shown-once' },
+    h('h2', null, 'Shown once: ' + s.user + ' on ' + s.listener),
+    h('p', { class: 'warn' }, 'None of this can be read again. The file keeps only hashes; if it is lost, enrol the person again.'));
+  if (s.secret) card.append(h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Secret'), h('code', null, groupsOf(s.secret, 4)), copyButton(s.secret, 'Copy secret')));
+  if (s.uri) card.append(h('div', { class: 'row' }, h('span', { class: 'muted' }, 'otpauth URI'), h('code', { class: 'wrap' }, s.uri), copyButton(s.uri, 'Copy URI')),
+    h('p', { class: 'muted' }, 'Enter the secret in the authenticator by hand, or paste the URI into one that reads them.'));
+  const codes = s.recovery || [];
+  if (codes.length) card.append(h('p', { class: 'muted mt-s' }, 'Recovery codes, one use each:'),
+    h('ul', { class: 'codes' }, codes.map(c => h('li', null, c))),
+    copyButton(codes.join('\n'), 'Copy codes'));
+  card.append(h('div', { class: 'row mt-s' }, h('button', { class: 'secondary', onclick: () => { mfaShown = null; route(); } }, 'Dismiss')));
+  return card;
+}
+
+function groupsOf(s, n) {
+  const out = [];
+  for (let i = 0; i < s.length; i += n) out.push(s.slice(i, i + n));
+  return out.join(' ');
+}
+
+function copyButton(text, label) {
+  const b = h('button', { class: 'secondary' }, label || 'Copy');
+  b.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(text); flash('copied', 'ok'); }
+    catch (e) { flash('the browser refused the clipboard; select the text instead', 'bad'); }
+  });
+  return b;
+}
