@@ -4,10 +4,16 @@
 #   make rpm            # builds SRPM and RPMs under ./rpmbuild
 #
 # Packages:
-#   xproxy          data plane, xproxyctl, units, sysctl profile, logrotate,
-#                   sysusers, example configuration
+#   xproxy          edge data plane, xproxyctl, units, sysctl profile,
+#                   logrotate, sysusers, tmpfiles, example configuration
+#   xproxy-xgate    gate daemon (interactive access by people)
+#   xproxy-xrelay   relay daemon (the protocols machines speak)
 #   xproxy-admin    web GUI, its unit and polkit rule
 #   xproxy-selinux  SELinux policy module (noarch)
+#
+# The three daemons share one module, one configuration format and
+# /etc/xproxy, which belongs to the xproxy-config group because no one
+# of them can own what all three read.
 
 %global selinuxtype targeted
 %global modulename  xproxy
@@ -40,6 +46,30 @@ web application firewall written in Go for Fedora Linux. It runs
 unprivileged under a hardened systemd unit with socket activation, is
 confined by SELinux, and is managed over a local Unix socket by xproxyctl
 (command line and terminal UI) and xproxy-admin (web GUI).
+
+%package        xgate
+Summary:        Gate daemon for xproxy: interactive access by people
+Requires:       %{name} = %{version}-%{release}
+%{?systemd_requires}
+
+%description    xgate
+xgate serves the protocols people use to reach a machine directly -- the
+SSH and SFTP bastion -- with per-principal policy, session recording and
+an optional second factor. It runs as its own user under its own
+hardened unit, reads its own file in /etc/xproxy, and shares the
+estate's upstreams, bans and rate limits with its siblings over a local
+cluster socket.
+
+%package        xrelay
+Summary:        Relay daemon for xproxy: machine to machine protocols
+Requires:       %{name} = %{version}-%{release}
+%{?systemd_requires}
+
+%description    xrelay
+xrelay serves the protocols machines speak to each other -- SMTP and
+submission, MQTT, FTP and syslog -- with the same policy, logging and
+management surface as its siblings. It runs as its own user under its
+own hardened unit and reads its own file in /etc/xproxy.
 
 %package        admin
 Summary:        Web GUI for xproxy
@@ -87,6 +117,8 @@ make build GOMODFLAG=-mod=vendor VERSION=%{version}-%{release} COMMIT=%{gitcommi
 
 %install
 install -D -m 0755 bin/xproxy        %{buildroot}%{_bindir}/xproxy
+install -D -m 0755 bin/xgate         %{buildroot}%{_bindir}/xgate
+install -D -m 0755 bin/xrelay        %{buildroot}%{_bindir}/xrelay
 install -D -m 0755 bin/xproxyctl     %{buildroot}%{_bindir}/xproxyctl
 install -D -m 0755 bin/xproxy-admin  %{buildroot}%{_bindir}/xproxy-admin
 install -D -m 0755 bin/xproxy-fleet  %{buildroot}%{_bindir}/xproxy-fleet
@@ -94,14 +126,20 @@ install -d -m 0750 %{buildroot}%{_sharedstatedir}/xproxy-fleet
 
 # Units, sysctl, logrotate, sysusers, polkit. The shipped files reference
 # /usr/local/bin for source installs; rewrite for the packaged layout.
-for u in xproxy.service xproxy.socket xproxy-https.socket xproxy-h3.socket xproxy-admin.service xproxy-fleet.service; do
+for u in xproxy.service xproxy.socket xproxy-https.socket xproxy-h3.socket \
+         xgate.service xgate.socket xrelay.service xrelay.socket \
+         xproxy-admin.service xproxy-fleet.service; do
   sed 's|/usr/local/bin|%{_bindir}|g' deploy/systemd/$u > $u.tmp
   install -D -m 0644 $u.tmp %{buildroot}%{_unitdir}/$u
 done
-sed 's|/usr/local/bin|%{_bindir}|g' deploy/logrotate/xproxy > logrotate.tmp
-install -D -m 0644 logrotate.tmp           %{buildroot}%{_sysconfdir}/logrotate.d/xproxy
+for l in xproxy xgate xrelay; do
+  sed 's|/usr/local/bin|%{_bindir}|g' deploy/logrotate/$l > logrotate.$l.tmp
+  install -D -m 0644 logrotate.$l.tmp      %{buildroot}%{_sysconfdir}/logrotate.d/$l
+done
 install -D -m 0644 deploy/sysctl/90-xproxy.conf  %{buildroot}%{_sysctldir}/90-xproxy.conf
 install -D -m 0644 deploy/sysusers/xproxy.conf   %{buildroot}%{_sysusersdir}/xproxy.conf
+install -D -m 0644 deploy/tmpfiles/xproxy-config.conf  %{buildroot}%{_tmpfilesdir}/xproxy-config.conf
+install -D -m 0644 deploy/tmpfiles/xproxy-cluster.conf %{buildroot}%{_tmpfilesdir}/xproxy-cluster.conf
 install -D -m 0644 deploy/polkit/50-xproxy-admin.rules %{buildroot}%{_datadir}/polkit-1/rules.d/50-xproxy-admin.rules
 
 # Configuration and directories. systemd also creates the runtime, log and
@@ -109,13 +147,19 @@ install -D -m 0644 deploy/polkit/50-xproxy-admin.rules %{buildroot}%{_datadir}/p
 # labels at install time.
 install -d -m 0750 %{buildroot}%{_sysconfdir}/xproxy
 install -D -m 0640 deploy/config/xproxy.yaml %{buildroot}%{_sysconfdir}/xproxy/xproxy.yaml
-install -d -m 0750 %{buildroot}%{_localstatedir}/log/xproxy
-install -d -m 0700 %{buildroot}%{_sharedstatedir}/xproxy
+install -D -m 0640 deploy/config/xgate.yaml  %{buildroot}%{_sysconfdir}/xproxy/xgate.yaml
+install -D -m 0640 deploy/config/xrelay.yaml %{buildroot}%{_sysconfdir}/xproxy/xrelay.yaml
+for d in xproxy xgate xrelay; do
+  install -d -m 0750 %{buildroot}%{_localstatedir}/log/$d
+  install -d -m 0700 %{buildroot}%{_sharedstatedir}/$d
+done
 
 # Documentation, manual pages, configuration schema and shell completion.
 install -d -m 0755 %{buildroot}%{_docdir}/%{name}
 install -m 0644 README.md docs/*.md %{buildroot}%{_docdir}/%{name}/
 install -D -m 0644 docs/man/xproxy.8      %{buildroot}%{_mandir}/man8/xproxy.8
+install -D -m 0644 docs/man/xgate.8      %{buildroot}%{_mandir}/man8/xgate.8
+install -D -m 0644 docs/man/xrelay.8     %{buildroot}%{_mandir}/man8/xrelay.8
 install -D -m 0644 docs/man/xproxyctl.8   %{buildroot}%{_mandir}/man8/xproxyctl.8
 install -D -m 0644 docs/man/xproxy-fleet.8 %{buildroot}%{_mandir}/man8/xproxy-fleet.8
 install -D -m 0644 docs/man/xproxy.yaml.5 %{buildroot}%{_mandir}/man5/xproxy.yaml.5
@@ -149,6 +193,24 @@ sysctl -q -p %{_sysctldir}/90-xproxy.conf >/dev/null 2>&1 || :
 
 %postun
 %systemd_postun_with_restart xproxy.service
+
+%post xgate
+%systemd_post xgate.service xgate.socket
+
+%preun xgate
+%systemd_preun xgate.service xgate.socket
+
+%postun xgate
+%systemd_postun_with_restart xgate.service
+
+%post xrelay
+%systemd_post xrelay.service xrelay.socket
+
+%preun xrelay
+%systemd_preun xrelay.service xrelay.socket
+
+%postun xrelay
+%systemd_postun_with_restart xrelay.service
 
 %post admin
 %systemd_post xproxy-admin.service
@@ -203,11 +265,33 @@ fi
 %{_unitdir}/xproxy-h3.socket
 %{_sysctldir}/90-xproxy.conf
 %{_sysusersdir}/xproxy.conf
+%{_tmpfilesdir}/xproxy-config.conf
+%{_tmpfilesdir}/xproxy-cluster.conf
 %config(noreplace) %{_sysconfdir}/logrotate.d/xproxy
 %dir %attr(0750,root,xproxy-config) %{_sysconfdir}/xproxy
 %config(noreplace) %attr(0640,root,xproxy-config) %{_sysconfdir}/xproxy/xproxy.yaml
 %dir %attr(0750,xproxy,xproxy) %{_localstatedir}/log/xproxy
 %dir %attr(0700,xproxy,xproxy) %{_sharedstatedir}/xproxy
+
+%files xgate
+%{_bindir}/xgate
+%{_mandir}/man8/xgate.8*
+%{_unitdir}/xgate.service
+%{_unitdir}/xgate.socket
+%config(noreplace) %{_sysconfdir}/logrotate.d/xgate
+%config(noreplace) %attr(0640,root,xproxy-config) %{_sysconfdir}/xproxy/xgate.yaml
+%dir %attr(0750,xgate,xgate) %{_localstatedir}/log/xgate
+%dir %attr(0700,xgate,xgate) %{_sharedstatedir}/xgate
+
+%files xrelay
+%{_bindir}/xrelay
+%{_mandir}/man8/xrelay.8*
+%{_unitdir}/xrelay.service
+%{_unitdir}/xrelay.socket
+%config(noreplace) %{_sysconfdir}/logrotate.d/xrelay
+%config(noreplace) %attr(0640,root,xproxy-config) %{_sysconfdir}/xproxy/xrelay.yaml
+%dir %attr(0750,xrelay,xrelay) %{_localstatedir}/log/xrelay
+%dir %attr(0700,xrelay,xrelay) %{_sharedstatedir}/xrelay
 
 %files admin
 %{_bindir}/xproxy-admin

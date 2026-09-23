@@ -39,14 +39,24 @@ make rpm            # rpmbuild/RPMS/{x86_64,noarch}/xproxy-*.rpm, offline from a
 make rpmlint
 ```
 
-Four packages come out:
+Six packages come out, one per thing you can choose to run:
 
 | Package | Content |
 |---------|---------|
-| `xproxy` | `xproxy`, `xproxyctl`, the four units, sysctl profile, logrotate, sysusers, example configuration, documentation, Grafana dashboards and alert rules |
+| `xproxy` | the edge daemon and `xproxyctl`, its four units, sysctl profile, logrotate, sysusers, the two tmpfiles entries, example configuration, documentation, Grafana dashboards and alert rules |
+| `xproxy-xgate` | `xgate`, its unit and socket, logrotate, example configuration, log and state directories |
+| `xproxy-xrelay` | `xrelay`, its unit and socket, logrotate, example configuration, log and state directories |
 | `xproxy-admin` | `xproxy-admin`, its unit and the polkit rule |
 | `xproxy-fleet` | `xproxy-fleet`, its unit and state directory (for the management host of a fleet) |
 | `xproxy-selinux` | the policy module (loaded on install, relabels the paths) and the interface file for other policies |
+
+The gate and relay packages depend on the base one, which owns
+`/etc/xproxy` and the sysusers and tmpfiles entries that create the
+users and the two directories the daemons share. Installing only
+`xproxy` gives an edge-only host, which is the common case; a bastion
+host takes `xproxy-xgate` as well, and so on. Each daemon reads its own
+file in `/etc/xproxy` and binds only its own role's listeners, so the
+same set of shared includes serves all three.
 
 Install and start:
 
@@ -76,14 +86,25 @@ useradd --system --home-dir /var/lib/xproxy --shell /usr/sbin/nologin --user-gro
 # Only for the daemons you will run:
 useradd --system --home-dir /var/lib/xgate  --shell /usr/sbin/nologin --user-group xgate
 useradd --system --home-dir /var/lib/xrelay --shell /usr/sbin/nologin --user-group xrelay
+# The group that owns /etc/xproxy, which all three read and none owns:
+groupadd --system xproxy-config
+for d in xproxy xgate xrelay; do usermod -aG xproxy-config $d; done
 # Only if the daemons will share a ban list over a local cluster:
 groupadd --system xproxy-cluster
 usermod -aG xproxy-cluster xproxy
 usermod -aG xproxy-cluster xgate
 usermod -aG xproxy-cluster xrelay
-make install        # binaries, units, sysctl, logrotate, example config
+make install        # binaries, units, sysctl, logrotate, tmpfiles, example configs
+systemd-tmpfiles --create   # creates /etc/xproxy and the cluster socket directory
+chgrp xproxy-config /etc/xproxy/*.yaml && chmod 0640 /etc/xproxy/*.yaml
 sysctl --system
 ```
+
+The `chgrp` is the one step `make install` cannot do for you: it writes
+the example files as root before the group exists, and a configuration
+file the daemon's group cannot read is a daemon that will not start.
+The RPM does it with `%attr`, so this applies to the source install
+only.
 
 `make install` puts:
 

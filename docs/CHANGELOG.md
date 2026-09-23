@@ -340,6 +340,22 @@ Open findings of the earlier rounds:
   behaviour they were testing is correct: metrics and captures are
   eventually consistent with respect to the client by design.
 
+### Packaging (1.4)
+
+- **The RPM ships all three daemons.** The spec predates the split and
+  packaged only `xproxy`, so the packaged path had no way to run a
+  bastion or a relay at all: `xproxy-xgate` and `xproxy-xrelay` are new
+  subpackages, each with its binary, unit and socket, logrotate entry,
+  manual page, example configuration and its own log and state
+  directories. Both depend on the base package, which owns `/etc/xproxy`
+  and the users. The two `tmpfiles.d` entries the source install has
+  always shipped are packaged too — without them a packaged host has
+  neither the configuration directory the three share nor the cluster
+  socket directory.
+- `deploy/config/xgate.yaml` and `deploy/config/xrelay.yaml` are new:
+  the units have always named those paths, and nothing created them.
+  `make install` lays them down beside `xproxy.yaml`.
+
 ### Fixed (1.4)
 
 Three regressions the split introduced, found by re-reading the carve

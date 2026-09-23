@@ -1,0 +1,46 @@
+# Example xgate configuration: the gate daemon, interactive access by
+# people. Every omitted value takes a conservative default; see
+# docs/CONFIG.md for the full reference.
+#
+# Validate before starting: xgate -config /etc/xproxy/xgate.yaml -validate
+version: 1
+
+# Whatever the estate shares -- upstreams, ban policy, rate limits --
+# belongs in fragments the three daemons include in common. Keep
+# management, metrics and logging here: each names a socket, an address
+# and a directory only one process can own.
+# includes: [/etc/xproxy/estate.d/*.yaml]
+
+server:
+  listeners:
+    - name: bastion
+      address: "0.0.0.0:22"
+      kind: ssh
+      ssh:
+        upstream: hosts
+        host_keys: [/etc/xproxy/ssh/host_ed25519]
+        authorized_keys: /etc/xproxy/ssh/authorized_keys
+        upstream_user: operator
+        upstream_key_file: /etc/xproxy/ssh/bastion_id_ed25519
+        upstream_known_hosts: /etc/xproxy/ssh/known_hosts
+        # What was actually run, kept for the people who ask afterwards.
+        recording:
+          directory: /var/lib/xgate/sessions
+        # A second factor, per user, from an enrolment file.
+        # mfa:
+        #   file: /etc/xproxy/ssh/mfa
+        #   issuer: xgate
+
+management:
+  socket: /run/xgate/mgmt.sock
+  socket_mode: "0660"
+  history_dir: /var/lib/xgate/history
+metrics:
+  listen: "127.0.0.1:9101"
+logging:
+  directory: /var/log/xgate
+  access: {enabled: true}
+
+upstreams:
+  - name: hosts
+    endpoints: [{address: "10.20.1.10:22"}]
