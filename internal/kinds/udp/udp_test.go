@@ -350,12 +350,44 @@ upstreams:
 // A kind: udp listener binds no TCP port. That is the whole reason the
 // engine treats it as a datagram kind: a port nothing accepts on would
 // hang a client that connected to it.
+//
+// The assertion is positive rather than "a dial fails", because a dial
+// to an ephemeral port number can reach something else entirely on a
+// busy machine, which is a flake waiting to happen. Instead the test
+// holds the TCP port itself and gives the listener the same number: if
+// the engine bound a stream socket, it could not start.
 func TestUDPListenerBindsNoStreamPort(t *testing.T) {
-	e := startEchoUDP(t, "echo:")
-	_, addr := relay(t, e, "")
-	c, err := net.DialTimeout("tcp", addr, time.Second)
-	if err == nil {
-		_ = c.Close()
-		t.Fatalf("a TCP connection to %s succeeded; the udp kind must bind no stream socket", addr)
+	hold, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer func() { _ = hold.Close() }()
+	port := hold.Addr().(*net.TCPAddr).Port
+
+	e := startEchoUDP(t, "echo:")
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: games
+      address: "127.0.0.1:%d"
+      kind: udp
+      udp: {upstream: backends}
+logging: {access: {enabled: false}}
+upstreams:
+  - name: backends
+    endpoints: [{address: %s}]
+`, port, e.addr())
+	// This start is the test: the TCP port is taken, so a listener that
+	// wanted one could not come up.
+	s := proxytest.Start(t, yaml)
+	c := dialUDP(t, fmt.Sprintf("127.0.0.1:%d", port))
+	if got := exchange(t, c, "ping"); got != "echo:ping" {
+		t.Fatalf("answer %q", got)
+	}
+	// And the socket the test is holding is still the test's: nothing
+	// accepted on it.
+	eventually(t, 5*time.Second, "the session to be counted", func() bool {
+		return s.Stats().UDPSessions == 1
+	})
 }

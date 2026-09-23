@@ -442,6 +442,33 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A connection rate, per listener and per source network.** The
+  process had `max_connections` and `max_connections_per_ip`, which
+  bound how many connections are open at once and say nothing about
+  churn — and churn is what most attacks look like. A client that
+  connects, makes the server do the expensive half of a handshake and
+  disconnects never holds two connections and can still spend a core.
+  It is also what an accidental flood looks like: a client fleet
+  restarting in lock-step.
+
+  `connection_rate` and `connection_rate_per_source` in
+  `server.limits`, or on one listener, close what arrives too fast
+  immediately after accept, before a byte is read. The per source bound
+  is keyed by a **network** rather than an address, because an attacker
+  with a /64 of IPv6 has more addresses than any table could hold — a
+  per address bound would be no bound at all, and the per address table
+  would be the thing that filled up. The defaults are a /32 and a /64,
+  and above /96 validation warns.
+
+  It matters most where the handshake is dearest and happens before the
+  proxy knows who is calling — an SSH key exchange, a TLS handshake, an
+  RDP connection sequence — so the four bastion examples now carry one.
+  Refusals are in `rate_refused_connections` and
+  `xproxy_connections_rate_refused_total`, aggregated in the error log
+  like the other accept refusals. A listener's own sections replace the
+  process's rather than adding to them, and a rate change on reload
+  rebinds no socket.
+
 - **A session policy for the relays with no parser in the path.** A
   `kind: tcp` listener had an idle timeout and nothing else: no bound on
   how long a connection could last however active, and none on what it
@@ -965,6 +992,18 @@ Open findings of the earlier rounds:
   recording landed.
 
 ### Fixed (1.4, tests)
+
+- **An eleventh and a twelfth, both the same eventual consistency
+  again.** `TestUpstreamQueue` asserted the pool's final state the
+  instant the last body arrived, and the concurrency slot is released by
+  the proxy after the response has gone out, so the client can hold its
+  status code before the pool shows the request finished. (This is the
+  same test as the eighth below, on a different assertion: the earlier
+  fix waited for the queue to fill and then still asserted the emptying
+  immediately.) `TestAcceptRateWrapClosesRefusedConnections`, new with
+  the connection rate, read the refusal count as soon as its dials
+  returned, and the gate refuses on the accept loop's own schedule. Both
+  wait for the state now.
 
 - **A ninth and a tenth, of the shape that fails as the wrong test.**
   `TestForwardProxy` (`internal/kinds/forward`) has a subtest about a

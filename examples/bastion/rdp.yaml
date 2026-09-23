@@ -28,6 +28,10 @@ server:
     - name: desktops
       address: "0.0.0.0:3389"
       kind: rdp
+      # The connection sequence and its TLS handshake are paid for
+      # before the gateway knows who is calling.
+      connection_rate: {per_second: 20, burst: 40}
+      connection_rate_per_source: {per_second: 2, burst: 5}
       # The certificate the client checks. It is the only server
       # authentication on that leg, so it is a certificate a client
       # can actually verify, not a self-signed one nobody looks at.

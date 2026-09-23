@@ -87,6 +87,7 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_upstream_queue_refused_total", "Requests refused by a pool's queue.", L{"reason": "timeout"}, float64(sn.UpstreamQueueTimeouts))
 	e.Counter("xproxy_client_aborts_total", "Requests abandoned by the client.", nil, float64(sn.ClientAborts))
 	e.Counter("xproxy_connections_rejected_total", "Connections closed at accept by limits or bans.", nil, float64(sn.RejectedConns))
+	e.Counter("xproxy_connections_rate_refused_total", "Connections closed at accept for arriving faster than the configured rate.", nil, float64(sn.RateRefusedConns))
 	e.Counter("xproxy_reloads_total", "Configuration reloads.", L{"result": "ok"}, float64(sn.Reloads))
 	e.Counter("xproxy_reloads_total", "Configuration reloads.", L{"result": "failed"}, float64(sn.ReloadFailures))
 	e.Counter("xproxy_bans_total", "Bans applied.", nil, float64(sn.BansTotal))

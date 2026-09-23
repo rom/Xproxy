@@ -86,6 +86,8 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `smtp`, `mqtt`, `ftp` and `syslog`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead) or `dns`. |
 | `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's, `ssh`, `telnet`, `vnc` and `rdp` are xgate's, and `smtp`, `mqtt`, `ftp` and `syslog` are xrelay's. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
+| `connection_rate` | object | none | `{per_second, burst}`: how fast this listener accepts, replacing `server.limits.connection_rate` for it. See below |
+| `connection_rate_per_source` | object | none | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: how fast one source network may connect to this listener |
 
 ### server.listeners[].tcp (kind: tcp)
 
@@ -2285,6 +2287,55 @@ public CA).
 | `max_concurrent_requests` | int | `16384` | positive | In-flight requests; 503 above |
 | `max_tarpits` | int | `1024` | 1 to 1000000 | Requests held in a tarpit at once. A tarpitted request releases its concurrency slot; above this bound it is rejected with 429 immediately (`tarpit_overflow` counts those) |
 | `max_buffered_body_bytes` | bytes | `536870912` | 0 (unbounded) or 1 MiB to 64 GiB | Ceiling on request bodies held in memory at once across the process; a request on a route that inspects bodies and does not fit is refused with `503` and reason `body_budget` |
+| `connection_rate` | object | none | | `{per_second, burst}`: accepts per second across every listener. See below |
+| `connection_rate_per_source` | object | none | | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: accepts per second from one source network |
+
+#### Connection rate: the bound `max_connections` does not give
+
+`max_connections` and `max_connections_per_ip` say how many connections
+may be **open at once**. They say nothing about churn, and churn is what
+most attacks on a service look like: a client that connects, makes the
+server do the expensive half of a handshake and disconnects never holds
+two connections and can still spend a core. It is also what an
+accidental flood looks like — a restarting client fleet reconnecting in
+lock-step.
+
+That matters most exactly where the handshake is dearest and happens
+**before** the proxy knows who is calling: an SSH key exchange, a TLS
+handshake, an RDP connection sequence. Those listeners should have a
+rate.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `connection_rate.per_second` | float | required | Sustained accepts per second |
+| `connection_rate.burst` | int | `per_second` rounded up | How many may arrive at once |
+| `connection_rate_per_source.per_second` | float | required | Sustained accepts per second from one source network |
+| `connection_rate_per_source.burst` | int | `per_second` rounded up | |
+| `connection_rate_per_source.ipv4_prefix` | int | `32` | The network the rate is counted over; 8 to 32 |
+| `connection_rate_per_source.ipv6_prefix` | int | `64` | 16 to 128, and a warning above /96 |
+| `connection_rate_per_source.max_sources` | int | `65536` | Networks tracked at once; 1 to 4194304 |
+
+Two bounds, because they answer different attackers. The **total** rate
+protects the accept path itself whatever the traffic is spread across.
+The **per source** rate protects everyone else from one source, and it
+is keyed by a **network rather than an address** on purpose: an attacker
+with a /64 of IPv6 has more addresses than any table could hold, so a
+per address bound would be no bound at all while the per address table
+would itself be the thing that filled up. The default /64 is the
+smallest block an operator is normally given; above /96 validation warns,
+because counting single addresses costs memory and stops nothing.
+
+A refused connection is **closed immediately after accept, before a byte
+is read**, which is all a listener can do about a connection the kernel
+has already handed it, and it is cheap. Refusals are counted in
+`rate_refused_connections` and `xproxy_connections_rate_refused_total`,
+and reported in the error log through the same aggregation as the other
+accept refusals — a client looping connections must not make each
+refusal cost a synchronous log write.
+
+A listener's own `connection_rate` sections **replace** these for that
+listener rather than adding to them, so one number is the answer to
+"what bounds this port". A rate change on reload rebinds no socket.
 
 `max_buffered_body_bytes` covers every feature that materialises a
 whole request body: `upload_guard`, `sensitive_data`, `account_guard`,

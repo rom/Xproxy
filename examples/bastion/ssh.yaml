@@ -20,6 +20,12 @@ server:
     - name: bastion
       address: "0.0.0.0:22"
       kind: ssh
+      # A key exchange is expensive and happens before the bastion
+      # knows who is calling, so a client that connects and drops costs
+      # more than one that stays. max_sessions bounds how many are open;
+      # this bounds how fast they arrive, which is the other half.
+      connection_rate: {per_second: 20, burst: 40}
+      connection_rate_per_source: {per_second: 2, burst: 5}
       ssh:
         upstream: hosts
 

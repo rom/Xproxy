@@ -253,8 +253,8 @@ The key set\(aqs fingerprint is shown by \fBxproxyctl tls tickets\fR and \fBGET 
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(1.0i) lbw(1.0i) lbx
-lw(1.0i) lw(1.0i) lw(1.0i) lx.
+lbw(1.2i) lbw(1.0i) lbw(1.0i) lbx
+lw(1.2i) lw(1.0i) lw(1.0i) lx.
 T{
 Key
 T}	T{
@@ -344,6 +344,24 @@ T}	T{
 \fBfalse\fR
 T}	T{
 Answer every request with 308 to \fBhttps:\:/\:/\:host/\:path?query\fR. Plaintext listeners only.
+T}
+T{
+\fBconnection_\:rate\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+\fB{per_\:second,\: burst}\fR: how fast this listener accepts,\: replacing \fBserver.\:limits.\:connection_\:rate\fR for it. See below
+T}
+T{
+\fBconnection_\:rate_\:per_\:source\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+\fB{per_\:second,\: burst,\: ipv4_\:prefix,\: ipv6_\:prefix,\: max_\:sources}\fR: how fast one source network may connect to this listener
 T}
 .TE
 .SS "server.listeners[].tcp (kind: tcp)"
@@ -5151,7 +5169,118 @@ T}	T{
 T}	T{
 Ceiling on request bodies held in memory at once across the process;\: a request on a route that inspects bodies and does not fit is refused with \fB503\fR and reason \fBbody_\:budget\fR
 T}
+T{
+\fBconnection_\:rate\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+
+T}	T{
+\fB{per_\:second,\: burst}\fR: accepts per second across every listener. See below
+T}
+T{
+\fBconnection_\:rate_\:per_\:source\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+
+T}	T{
+\fB{per_\:second,\: burst,\: ipv4_\:prefix,\: ipv6_\:prefix,\: max_\:sources}\fR: accepts per second from one source network
+T}
 .TE
+.SS "Connection rate: the bound \fBmax_connections\fR does not give"
+.PP
+\fBmax_connections\fR and \fBmax_connections_per_ip\fR say how many connections may be \fBopen at once\fR. They say nothing about churn, and churn is what most attacks on a service look like: a client that connects, makes the server do the expensive half of a handshake and disconnects never holds two connections and can still spend a core. It is also what an accidental flood looks like \[u2014] a restarting client fleet reconnecting in lock\-step.
+.PP
+That matters most exactly where the handshake is dearest and happens \fBbefore\fR the proxy knows who is calling: an SSH key exchange, a TLS handshake, an RDP connection sequence. Those listeners should have a rate.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.6i) lbw(0.9i) lbx
+lw(1.2i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBconnection_\:rate.\:per_\:second\fR
+T}	T{
+float
+T}	T{
+required
+T}	T{
+Sustained accepts per second
+T}
+T{
+\fBconnection_\:rate.\:burst\fR
+T}	T{
+int
+T}	T{
+\fBper_\:second\fR rounded up
+T}	T{
+How many may arrive at once
+T}
+T{
+\fBconnection_\:rate_\:per_\:source.\:per_\:second\fR
+T}	T{
+float
+T}	T{
+required
+T}	T{
+Sustained accepts per second from one source network
+T}
+T{
+\fBconnection_\:rate_\:per_\:source.\:burst\fR
+T}	T{
+int
+T}	T{
+\fBper_\:second\fR rounded up
+T}	T{
+
+T}
+T{
+\fBconnection_\:rate_\:per_\:source.\:ipv4_\:prefix\fR
+T}	T{
+int
+T}	T{
+\fB32\fR
+T}	T{
+The network the rate is counted over;\: 8 to 32
+T}
+T{
+\fBconnection_\:rate_\:per_\:source.\:ipv6_\:prefix\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+16 to 128,\: and a warning above /\:96
+T}
+T{
+\fBconnection_\:rate_\:per_\:source.\:max_\:sources\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Networks tracked at once;\: 1 to 4194304
+T}
+.TE
+.PP
+Two bounds, because they answer different attackers. The \fBtotal\fR rate protects the accept path itself whatever the traffic is spread across. The \fBper source\fR rate protects everyone else from one source, and it is keyed by a \fBnetwork rather than an address\fR on purpose: an attacker with a /64 of IPv6 has more addresses than any table could hold, so a per address bound would be no bound at all while the per address table would itself be the thing that filled up. The default /64 is the smallest block an operator is normally given; above /96 validation warns, because counting single addresses costs memory and stops nothing.
+.PP
+A refused connection is \fBclosed immediately after accept, before a byte is read\fR, which is all a listener can do about a connection the kernel has already handed it, and it is cheap. Refusals are counted in \fBrate_refused_connections\fR and \fBxproxy_connections_rate_refused_total\fR, and reported in the error log through the same aggregation as the other accept refusals \[u2014] a client looping connections must not make each refusal cost a synchronous log write.
+.PP
+A listener\(aqs own \fBconnection_rate\fR sections \fBreplace\fR these for that listener rather than adding to them, so one number is the answer to "what bounds this port". A rate change on reload rebinds no socket.
 .PP
 \fBmax_buffered_body_bytes\fR covers every feature that materialises a whole request body: \fBupload_guard\fR, \fBsensitive_data\fR, \fBaccount_guard\fR, \fBopenapi\fR, \fBgraphql\fR, \fBbody_rewrite\fR, \fBwasm\fR, the WAF\(aqs body inspection, ICAP, a virtual patch\(aqs body pattern and a mirrored request. Each of those is bounded per request, and the product was the real ceiling: \fBmax_connections_per_ip\fR (256) times \fBmax_body_bytes\fR (10 MiB) is about 2.5 GiB of heap from one address, sent slowly enough to stay inside \fBread_timeout\fR. A request whose body cannot be charged is refused before it is read; \fBxproxyctl stats\fR shows what is held, the high\-water mark and the refusals.
 .SS "server.normalization"

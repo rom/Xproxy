@@ -721,6 +721,7 @@ func (v *validator) server(s *Server) {
 		default:
 			v.errf("%s.kind: must be one of %s", p, strings.Join(listener.Kinds(), ", "))
 		}
+		v.connectionRate(p, ln.ConnectionRate, ln.ConnectionRatePerSource)
 		if ln.UDP != nil && ln.Kind != "udp" {
 			v.errf("%s.udp: set on a %s listener (kind: udp)", p, ln.Kind)
 		}
@@ -816,6 +817,7 @@ func (v *validator) server(s *Server) {
 	if b := l.MaxBufferedBodyBytes; b > 0 && b < l.MaxBodyBytes {
 		v.warnf("server.limits.max_buffered_body_bytes (%d) is below max_body_bytes (%d): a single request on a route that inspects bodies cannot fit the budget and is refused", b, l.MaxBodyBytes)
 	}
+	v.connectionRate("server.limits", l.ConnectionRate, l.ConnectionRatePerSource)
 }
 
 func (v *validator) tls(p string, t *TLS) {
@@ -2862,6 +2864,45 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	}
 	if t.QUIC && t.ProxyProtocol {
 		v.errf("%s.quic: the PROXY protocol header cannot be sent on a datagram flow; disable proxy_protocol or quic", p)
+	}
+}
+
+// connectionRate validates an accept rate wherever one is set: on
+// server.limits, or on one listener.
+func (v *validator) connectionRate(p string, r *ConnectionRate, sr *SourceRate) {
+	if r != nil {
+		if r.PerSecond <= 0 {
+			v.errf("%s.connection_rate.per_second: must be positive", p)
+		}
+		if r.Burst < 1 {
+			v.errf("%s.connection_rate.burst: must be positive", p)
+		}
+	}
+	if sr == nil {
+		return
+	}
+	q := p + ".connection_rate_per_source"
+	if sr.PerSecond <= 0 {
+		v.errf("%s.per_second: must be positive", q)
+	}
+	if sr.Burst < 1 {
+		v.errf("%s.burst: must be positive", q)
+	}
+	if sr.IPv4Prefix < 8 || sr.IPv4Prefix > 32 {
+		v.errf("%s.ipv4_prefix: must be 8..32", q)
+	}
+	if sr.IPv6Prefix < 16 || sr.IPv6Prefix > 128 {
+		v.errf("%s.ipv6_prefix: must be 16..128", q)
+	}
+	if sr.MaxSources < 1 || sr.MaxSources > 1<<22 {
+		v.errf("%s.max_sources: must be 1..4194304", q)
+	}
+	// A /128 counts one address, and an attacker with a /64 has more of
+	// those than any table can hold: the bound then costs memory and
+	// stops nothing.
+	if sr.IPv6Prefix > 96 {
+		v.warnf("%s.ipv6_prefix: /%d counts single addresses, and a single attacker is normally given a /64 or more, "+
+			"so this bounds nothing while filling the table", q, sr.IPv6Prefix)
 	}
 }
 

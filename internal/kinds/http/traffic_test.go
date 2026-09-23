@@ -130,6 +130,13 @@ routes:
 	if st.UpstreamQueueFull != 1 || st.UpstreamQueueTimeouts != 1 {
 		t.Fatalf("counters %+v", st)
 	}
+	// The slot is released by the proxy after the response has gone out,
+	// so the client can hold its status code before the pool shows the
+	// request finished: wait for the state rather than assert it the
+	// instant the last body arrives.
+	eventually(t, 3*time.Second, "the first request's slot to be released", func() bool {
+		return s.Pools()["o"].Queue.InFlight == 0
+	})
 	if q := s.Pools()["o"].Queue; q.InFlight != 0 || q.Waiting != 0 || q.Queued != 1 || q.Timeouts != 1 || q.Full != 1 {
 		t.Fatalf("final queue %+v", q)
 	}

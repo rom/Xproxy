@@ -975,6 +975,21 @@
       },
       "additionalProperties": false
     },
+    "ConnectionRate": {
+      "description": "ConnectionRate bounds accepts per second.",
+      "type": "object",
+      "properties": {
+        "burst": {
+          "description": "Burst is how many may arrive at once. Default is PerSecond rounded up, which is one second's worth.",
+          "type": "integer"
+        },
+        "per_second": {
+          "description": "PerSecond is the sustained rate. Required when the section is set.",
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
     "DNSCache": {
       "description": "DNSCache bounds the cache of a dns listener.",
       "type": "object",
@@ -2530,6 +2545,17 @@
       "description": "Limits are the global resource protections of the data plane. Every limit has a conservative default and can only be raised deliberately.",
       "type": "object",
       "properties": {
+        "connection_rate": {
+          "description": "ConnectionRate bounds how fast connections are accepted across every listener, and ConnectionRatePerSource how fast from one source network. Both are off by default. They are the bound max_connections does not give. A concurrency limit says how many connections may be open at once and nothing about churn: a client that connects, makes the server do the expensive half of a handshake and disconnects never holds two connections and can still cost a core. A listener sets its own in its connection_rate sections, which replace these for it.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ConnectionRate"
+            }
+          ]
+        },
+        "connection_rate_per_source": {
+          "$ref": "#/$defs/SourceRate"
+        },
         "idle_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
@@ -2589,6 +2615,17 @@
       "properties": {
         "address": {
           "type": "string"
+        },
+        "connection_rate": {
+          "description": "ConnectionRate and ConnectionRatePerSource bound how fast this listener accepts, replacing server.limits' own for it. See server.limits.connection_rate: it is the bound max_connections does not give, and it matters most on the listeners that do expensive work before they know who is calling -- a key exchange, a TLS handshake -- which is every access gateway.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ConnectionRate"
+            }
+          ]
+        },
+        "connection_rate_per_source": {
+          "$ref": "#/$defs/SourceRate"
         },
         "dns": {
           "description": "DNS configures a kind: dns listener.",
@@ -5405,6 +5442,30 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SourceRate": {
+      "description": "SourceRate bounds accepts per second from one source network. The key is a network rather than an address on purpose: an attacker with a /64 of IPv6 has more addresses than any table could hold, so a per address bound is no bound at all, while a per address table is itself the thing that fills up.",
+      "type": "object",
+      "properties": {
+        "burst": {
+          "type": "integer"
+        },
+        "ipv4_prefix": {
+          "description": "IPv4Prefix and IPv6Prefix are the network sizes the rate is counted over. Defaults 32 and 64: one IPv4 address, and the smallest IPv6 block an operator is normally given.",
+          "type": "integer"
+        },
+        "ipv6_prefix": {
+          "type": "integer"
+        },
+        "max_sources": {
+          "description": "MaxSources bounds the table of tracked networks. Default 65536.",
+          "type": "integer"
+        },
+        "per_second": {
+          "type": "number"
         }
       },
       "additionalProperties": false

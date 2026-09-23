@@ -224,6 +224,14 @@ type Listener struct {
 	// URI requests to destinations the policy allows), dns (a DNS
 	// proxy) or smtp (a protocol-aware SMTP and submission proxy).
 	Kind string `yaml:"kind"`
+	// ConnectionRate and ConnectionRatePerSource bound how fast this
+	// listener accepts, replacing server.limits' own for it. See
+	// server.limits.connection_rate: it is the bound max_connections
+	// does not give, and it matters most on the listeners that do
+	// expensive work before they know who is calling -- a key exchange,
+	// a TLS handshake -- which is every access gateway.
+	ConnectionRate          *ConnectionRate `yaml:"connection_rate"`
+	ConnectionRatePerSource *SourceRate     `yaml:"connection_rate_per_source"`
 	// TCP configures a kind: tcp listener.
 	TCP *TCPListener `yaml:"tcp"`
 	// UDP configures a kind: udp listener.
@@ -2052,6 +2060,45 @@ type Limits struct {
 	// enough to stay inside read_timeout. A request that does not fit
 	// the budget is refused with 503 rather than buffered.
 	MaxBufferedBodyBytes int64 `yaml:"max_buffered_body_bytes"`
+	// ConnectionRate bounds how fast connections are accepted across
+	// every listener, and ConnectionRatePerSource how fast from one
+	// source network. Both are off by default.
+	//
+	// They are the bound max_connections does not give. A concurrency
+	// limit says how many connections may be open at once and nothing
+	// about churn: a client that connects, makes the server do the
+	// expensive half of a handshake and disconnects never holds two
+	// connections and can still cost a core. A listener sets its own in
+	// its connection_rate sections, which replace these for it.
+	ConnectionRate          *ConnectionRate `yaml:"connection_rate"`
+	ConnectionRatePerSource *SourceRate     `yaml:"connection_rate_per_source"`
+}
+
+// ConnectionRate bounds accepts per second.
+type ConnectionRate struct {
+	// PerSecond is the sustained rate. Required when the section is set.
+	PerSecond float64 `yaml:"per_second"`
+	// Burst is how many may arrive at once. Default is PerSecond
+	// rounded up, which is one second's worth.
+	Burst int `yaml:"burst"`
+}
+
+// SourceRate bounds accepts per second from one source network.
+//
+// The key is a network rather than an address on purpose: an attacker
+// with a /64 of IPv6 has more addresses than any table could hold, so a
+// per address bound is no bound at all, while a per address table is
+// itself the thing that fills up.
+type SourceRate struct {
+	PerSecond float64 `yaml:"per_second"`
+	Burst     int     `yaml:"burst"`
+	// IPv4Prefix and IPv6Prefix are the network sizes the rate is
+	// counted over. Defaults 32 and 64: one IPv4 address, and the
+	// smallest IPv6 block an operator is normally given.
+	IPv4Prefix int `yaml:"ipv4_prefix"`
+	IPv6Prefix int `yaml:"ipv6_prefix"`
+	// MaxSources bounds the table of tracked networks. Default 65536.
+	MaxSources int `yaml:"max_sources"`
 }
 
 // Management configures the control plane listener used by xproxyctl.

@@ -12,6 +12,8 @@ server:
           h3: null
           h2c: false
           kind: http
+          connection_rate: null
+          connection_rate_per_source: null
           tcp: null
           udp: null
           forward: null
@@ -55,6 +57,8 @@ server:
             webtransport: false
           h2c: false
           kind: http
+          connection_rate: null
+          connection_rate_per_source: null
           tcp: null
           udp: null
           forward: null
@@ -80,6 +84,8 @@ server:
         max_concurrent_requests: 16384
         max_tarpits: 1024
         max_buffered_body_bytes: 536870912
+        connection_rate: null
+        connection_rate_per_source: null
     normalization:
         reject_control_chars: null
         reject_invalid_utf8: null

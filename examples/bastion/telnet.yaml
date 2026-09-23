@@ -26,6 +26,10 @@ server:
     - name: equipment
       address: "0.0.0.0:992"
       kind: telnet
+      # Little equipment reconnects in a hurry, and nothing legitimate
+      # here connects twice a second.
+      connection_rate: {per_second: 10, burst: 20}
+      connection_rate_per_source: {per_second: 1, burst: 3}
       # telnets. Without it the code this listener asks for travels in
       # clear to anyone on the path, which makes the factor theatre.
       tls:

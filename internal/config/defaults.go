@@ -118,9 +118,11 @@ func applyDefaults(c *Config) {
 	setInt(&l.MaxTarpits, DefaultMaxTarpits)
 	setInt64(&l.MaxBufferedBodyBytes, DefaultMaxBufferedBody)
 	setStr(&c.Server.Normalization.Unicode, "off")
+	connectionRateDefaults(l.ConnectionRate, l.ConnectionRatePerSource)
 
 	for i := range s.Listeners {
 		setStr(&s.Listeners[i].Kind, "http")
+		connectionRateDefaults(s.Listeners[i].ConnectionRate, s.Listeners[i].ConnectionRatePerSource)
 		if t := s.Listeners[i].TCP; t != nil {
 			setDur(&t.IdleTimeout, 10*time.Minute)
 			setInt(&t.MaxConnections, 10000)
@@ -1214,5 +1216,28 @@ func yaraDefaults(y *YARAPolicy) {
 	}
 	if len(y.Directions) == 0 {
 		y.Directions = []string{"client", "upstream"}
+	}
+}
+
+// connectionRateDefaults fills in the burst and the network sizes of an
+// accept rate, wherever one is set.
+func connectionRateDefaults(r *ConnectionRate, sr *SourceRate) {
+	if r != nil && r.Burst == 0 {
+		r.Burst = int(math.Ceil(r.PerSecond))
+	}
+	if sr == nil {
+		return
+	}
+	if sr.Burst == 0 {
+		sr.Burst = int(math.Ceil(sr.PerSecond))
+	}
+	if sr.IPv4Prefix == 0 {
+		sr.IPv4Prefix = 32
+	}
+	if sr.IPv6Prefix == 0 {
+		sr.IPv6Prefix = 64
+	}
+	if sr.MaxSources == 0 {
+		sr.MaxSources = 65536
 	}
 }

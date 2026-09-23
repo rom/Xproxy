@@ -50,10 +50,16 @@ type Server struct {
 	// fingerprints holds the TLS fingerprint of every open TLS connection.
 	fingerprints *tlsconf.FingerprintTable
 	connLimiter  *limits.ConnLimiter
-	bans         atomic.Pointer[ban.List]
-	cluster      atomic.Pointer[cluster.Node]
-	sampler      *metrics.Sampler
-	acme         *acme.Manager
+	// acceptRate is the process-wide accept rate from server.limits,
+	// replaced wholesale on reload. A listener with its own
+	// connection_rate section replaces it for that listener rather than
+	// adding to it, so one number is the answer to "what bounds this
+	// port".
+	acceptRate atomic.Pointer[limits.AcceptRate]
+	bans       atomic.Pointer[ban.List]
+	cluster    atomic.Pointer[cluster.Node]
+	sampler    *metrics.Sampler
+	acme       *acme.Manager
 	// handshake refuses clients in the ClientHello. It is read from
 	// inside the TLS handshake, so it is swapped rather than locked.
 	handshake atomic.Pointer[handshakePolicy]
@@ -88,6 +94,52 @@ type boundListener struct {
 	// management API asks about by listener rather than by protocol.
 	inst Instance
 	dns  *dns.Server // kind: dns listeners
+	// rate is the accept rate applied to this listener, the process's
+	// own or this listener's replacement for it.
+	rate *limits.AcceptRate
+}
+
+// rate is the process's current accept gate.
+func (s *Server) rate() *limits.AcceptRate { return s.acceptRate.Load() }
+
+// setAcceptRate installs the gate from a configuration. A reload
+// replaces it, and listeners look it up per connection, so a rate
+// change rebinds no socket.
+func (s *Server) setAcceptRate(cfg *config.Config, logs *logging.Logs) {
+	a := acceptRateFor(cfg.Server.Limits.ConnectionRate, cfg.Server.Limits.ConnectionRatePerSource)
+	a.OnReject = s.rejectAccept(logs)
+	// The count is carried across so the counter does not go backwards
+	// on a reload, which a monotonic counter must never do.
+	if old := s.acceptRate.Load(); old != nil {
+		a.Rejected.Store(old.Rejected.Load())
+	}
+	s.acceptRate.Store(a)
+}
+
+// rejectAccept reports a connection the rate gate closed. It is
+// aggregated for the same reason the limiter's own refusals are: this
+// runs on the accept loop, and a client looping connections must not
+// make each refusal cost a synchronous log write.
+func (s *Server) rejectAccept(logs *logging.Logs) func(netip.Addr, string) {
+	return func(addr netip.Addr, reason string) {
+		s.connRejected.Hit(logs.Error, "connections refused at accept are aggregated",
+			"reason", reason, "client_ip", addr.String())
+	}
+}
+
+// acceptRateFor builds the gate for one accept rate configuration. It
+// always returns a gate, inactive where nothing is configured, so no
+// caller has to test for nil.
+func acceptRateFor(r *config.ConnectionRate, sr *config.SourceRate) *limits.AcceptRate {
+	var perSecond float64
+	var burst int
+	if r != nil {
+		perSecond, burst = r.PerSecond, r.Burst
+	}
+	if sr == nil {
+		return limits.NewAcceptRate(perSecond, burst, 0, 0, 0, 0, 0)
+	}
+	return limits.NewAcceptRate(perSecond, burst, sr.PerSecond, sr.Burst, sr.IPv4Prefix, sr.IPv6Prefix, sr.MaxSources)
 }
 
 // New creates a server for cfg. Listeners are not opened until Start.
@@ -117,6 +169,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		}
 		s.tickets = tk
 	}
+	s.setAcceptRate(cfg, logs)
 	s.connLimiter.OnReject = func(addr netip.Addr, reason string) {
 		// This runs on the listener's accept loop and the file sink is a
 		// locked write, so a banned client looping connections would pay
@@ -250,6 +303,14 @@ func (s *Server) Stats() Snapshot {
 	snap := s.stats.snapshot()
 	snap.OpenConnections = s.connLimiter.Open()
 	snap.RejectedConns = s.connLimiter.Rejected.Load()
+	snap.RateRefusedConns = s.rate().Rejected.Load()
+	s.mu.Lock()
+	for _, bl := range s.listeners {
+		if bl.rate != nil {
+			snap.RateRefusedConns += bl.rate.Rejected.Load()
+		}
+	}
+	s.mu.Unlock()
 	s.mu.Lock()
 	for _, bl := range s.listeners {
 		if fc, ok := bl.inst.(FlowCounter); ok {
@@ -497,7 +558,18 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 func (s *Server) buildWith(lc config.Listener, acc *acceptor, act bool, activated *activated, pre net.PacketConn) (*boundListener, error) {
 	ln := acc.raw
 	fr := acc.newFront()
-	bl := &boundListener{cfg: lc, acc: acc, front: fr, ln: s.connLimiter.Wrap(fr), activated: act}
+	// The rate gate is the inner wrapper, so it decides first: a
+	// connection refused for arriving too fast should never have taken
+	// a limiter slot, and the cheapest refusal is the earliest one.
+	var own *limits.AcceptRate
+	gate := func() *limits.AcceptRate { return s.rate() }
+	if lc.ConnectionRate != nil || lc.ConnectionRatePerSource != nil {
+		own = acceptRateFor(lc.ConnectionRate, lc.ConnectionRatePerSource)
+		own.OnReject = s.rejectAccept(s.logs)
+		gate = func() *limits.AcceptRate { return own }
+	}
+	bl := &boundListener{cfg: lc, acc: acc, front: fr,
+		ln: s.connLimiter.Wrap(limits.WrapRate(fr, gate)), activated: act, rate: own}
 	k, linked := kindFor(lc.Kind)
 	if !linked {
 		// The kind is one this project implements and this binary did
@@ -734,6 +806,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 	s.mu.Unlock()
 	rt.start()
 	s.connLimiter.SetLimits(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP)
+	s.setAcceptRate(cfg, s.logs)
 	// Enforcement first, then the routes. Both gates are skipped when
 	// their pointer is nil, so installing the new routes before the ban
 	// list and the challenger leaves a window in which a route the

@@ -482,6 +482,7 @@ type Snapshot struct {
 	ReloadFailures         uint64            `json:"reload_failures"`
 	OpenConnections        int64             `json:"open_connections"`
 	RejectedConns          uint64            `json:"rejected_connections"`
+	RateRefusedConns       uint64            `json:"rate_refused_connections"`
 	InFlight               int64             `json:"in_flight"`
 }
 
