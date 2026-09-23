@@ -2704,6 +2704,14 @@
         "tls": {
           "$ref": "#/$defs/TLS"
         },
+        "udp": {
+          "description": "UDP configures a kind: udp listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UDPListener"
+            }
+          ]
+        },
         "vnc": {
           "description": "VNC configures a kind: vnc listener.",
           "allOf": [
@@ -5865,6 +5873,76 @@
         "uploads": {
           "description": "Uploads scans the files a client sends through REQMOD. Default true: a file arriving on a server is the direction that matters most.",
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "UDPListener": {
+      "description": "UDPListener is a generic datagram relay: the symmetric primitive to kind: tcp for services whose protocol this proxy does not parse. A datagram has no connection, so the relay keeps a session table instead. The first datagram from a client address picks an endpoint through the pool's balancer and opens a connected socket towards it; every later datagram from that address goes to the same endpoint, and what the endpoint sends back goes to that address. The session ends when it has been idle, when it hits a bound, or at shutdown. Nothing in the payload is read: a kind: udp listener is a router and a set of bounds, not a parser. The thing to get right about a UDP relay is that it is a reflector. Anyone can put anybody's address in a datagram's source, so an open relay answers a victim with traffic the victim never asked for, at whatever gain the service behind it provides. That is why allow_clients and rate_limit exist here and why validation insists on one of them for a listener on a public address. The session table is bounded for the same reason: spoofed sources must not be able to fill it, which is what max_sessions_per_ip is for.",
+      "type": "object",
+      "properties": {
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs. On a public address this or rate_limit is what stops the listener being somebody else's amplifier.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_bytes": {
+          "type": "integer"
+        },
+        "max_datagram_bytes": {
+          "description": "MaxDatagramBytes is the largest datagram relayed in either direction. Default 65535, which is the largest a UDP socket carries. A larger one is dropped and counted rather than truncated, because half a datagram is not a shorter datagram.",
+          "type": "integer"
+        },
+        "max_datagrams": {
+          "description": "MaxDatagrams and MaxBytes bound one session. Past either the session is ended and counted. Both default 0, no bound.",
+          "type": "integer"
+        },
+        "max_sessions": {
+          "description": "MaxSessions bounds the session table. Default 10000. A datagram from a new client when the table is full is dropped and counted: there is no way to refuse a datagram, because a refusal would be a datagram to an address that may not have sent anything.",
+          "type": "integer"
+        },
+        "max_sessions_per_ip": {
+          "description": "MaxSessionsPerIP bounds sessions from one address, which is what keeps a single source -- or a single forged source -- from filling the table. Default 64; 0 removes the bound.",
+          "type": "integer"
+        },
+        "rate_limit": {
+          "description": "RateLimit bounds datagrams per second from one source address. Without it a single source can drive the whole relay.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UDPRateLimit"
+            }
+          ]
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "upstream": {
+          "description": "Upstream is the pool of endpoints. Required.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "UDPRateLimit": {
+      "description": "UDPRateLimit bounds datagrams per second from one source address.",
+      "type": "object",
+      "properties": {
+        "burst": {
+          "description": "Burst is how many may arrive at once. Default is PPS rounded up.",
+          "type": "integer"
+        },
+        "pps": {
+          "description": "PPS is datagrams per second. Required when the section is set.",
+          "type": "number"
         }
       },
       "additionalProperties": false

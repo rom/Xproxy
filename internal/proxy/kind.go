@@ -166,6 +166,18 @@ type Kind struct {
 	// route by server name, or because the protocol is not a stream at
 	// all — leaves this false and gets the connection as it arrived.
 	ProxyHeader bool
+	// Datagram says the kind's only socket is a datagram one, so the
+	// engine binds no accept socket for it and opens the packet socket
+	// itself, handing it to the first Setup.Packet("") call. Without
+	// this the engine would hold a TCP port nothing ever accepts on,
+	// where a client that connected would hang instead of being
+	// refused.
+	//
+	// Nothing that applies to accepted connections applies to such a
+	// listener -- the shared connection limiter, the inbound PROXY
+	// header, the TLS configuration -- because there are no
+	// connections. Its own bounds are its whole admission policy.
+	Datagram bool
 	// New builds the instance. On error the engine releases the socket.
 	New func(*Setup) (Instance, error)
 }

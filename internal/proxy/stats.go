@@ -66,17 +66,29 @@ type Stats struct {
 	MirrorSkipped       atomic.Uint64
 	MirrorFailed        atomic.Uint64
 	// Mirror shadow diff outcomes.
-	MirrorDiffMatch        atomic.Uint64
-	MirrorDiffStatus       atomic.Uint64
-	MirrorDiffHeader       atomic.Uint64
-	MirrorDiffBody         atomic.Uint64
-	TCPConnections         atomic.Uint64
-	TCPRejected            atomic.Uint64
-	TCPErrors              atomic.Uint64
-	TCPBytesIn             atomic.Uint64
-	TCPBytesOut            atomic.Uint64
-	QUICFlows              atomic.Uint64
-	QUICRejected           atomic.Uint64
+	MirrorDiffMatch  atomic.Uint64
+	MirrorDiffStatus atomic.Uint64
+	MirrorDiffHeader atomic.Uint64
+	MirrorDiffBody   atomic.Uint64
+	TCPConnections   atomic.Uint64
+	TCPRejected      atomic.Uint64
+	TCPErrors        atomic.Uint64
+	TCPBytesIn       atomic.Uint64
+	TCPBytesOut      atomic.Uint64
+	QUICFlows        atomic.Uint64
+	QUICRejected     atomic.Uint64
+	// The generic datagram relay. Dropped counts datagrams the relay
+	// would not forward and could not refuse -- there is nothing to
+	// refuse a datagram with -- with the reason in the security log.
+	UDPSessions            atomic.Uint64
+	UDPSessionsOpen        atomic.Int64
+	UDPDatagramsIn         atomic.Uint64
+	UDPDatagramsOut        atomic.Uint64
+	UDPBytesIn             atomic.Uint64
+	UDPBytesOut            atomic.Uint64
+	UDPDropped             atomic.Uint64
+	UDPRejected            atomic.Uint64
+	UDPErrors              atomic.Uint64
 	ForwardRequests        atomic.Uint64
 	ForwardTunnels         atomic.Uint64
 	ForwardTunnelsOpen     atomic.Int64
@@ -318,6 +330,15 @@ type Snapshot struct {
 	QUICFlows              uint64            `json:"quic_flows"`
 	QUICRejected           uint64            `json:"quic_rejected"`
 	QUICFlowsOpen          int               `json:"quic_flows_open"`
+	UDPSessions            uint64            `json:"udp_sessions"`
+	UDPSessionsOpen        int64             `json:"udp_sessions_open"`
+	UDPDatagramsIn         uint64            `json:"udp_datagrams_in"`
+	UDPDatagramsOut        uint64            `json:"udp_datagrams_out"`
+	UDPBytesIn             uint64            `json:"udp_bytes_in"`
+	UDPBytesOut            uint64            `json:"udp_bytes_out"`
+	UDPDropped             uint64            `json:"udp_dropped"`
+	UDPRejected            uint64            `json:"udp_rejected"`
+	UDPErrors              uint64            `json:"udp_errors"`
 	ForwardRequests        uint64            `json:"forward_requests"`
 	ForwardTunnels         uint64            `json:"forward_tunnels"`
 	ForwardTunnelsOpen     int64             `json:"forward_tunnels_open"`
@@ -521,6 +542,15 @@ func (s *Stats) snapshot() Snapshot {
 		TCPBytesIn:             s.TCPBytesIn.Load(),
 		TCPBytesOut:            s.TCPBytesOut.Load(),
 		QUICFlows:              s.QUICFlows.Load(),
+		UDPSessions:            s.UDPSessions.Load(),
+		UDPSessionsOpen:        s.UDPSessionsOpen.Load(),
+		UDPDatagramsIn:         s.UDPDatagramsIn.Load(),
+		UDPDatagramsOut:        s.UDPDatagramsOut.Load(),
+		UDPBytesIn:             s.UDPBytesIn.Load(),
+		UDPBytesOut:            s.UDPBytesOut.Load(),
+		UDPDropped:             s.UDPDropped.Load(),
+		UDPRejected:            s.UDPRejected.Load(),
+		UDPErrors:              s.UDPErrors.Load(),
 		QUICRejected:           s.QUICRejected.Load(),
 		ForwardRequests:        s.ForwardRequests.Load(),
 		ForwardTunnels:         s.ForwardTunnels.Load(),

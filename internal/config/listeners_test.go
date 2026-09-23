@@ -75,7 +75,18 @@ routes:
 	}{
 		// The list itself grows with the roster, so the expectation is
 		// the part of the message that does not.
-		{"unknown kind", "    - {name: x, address: \":1\", kind: udp}\n", "kind: must be one of"},
+		{"unknown kind", "    - {name: x, address: \":1\", kind: sctp}\n", "kind: must be one of"},
+		{"udp needs its section", "    - {name: x, address: \":1\", kind: udp}\n", "udp: required for kind udp"},
+		{"udp takes no tls", "    - {name: x, address: \":1\", kind: udp, udp: {upstream: u}, tls: {certificates: [{cert_file: /c, key_file: /k}]}}\n", "a udp listener takes only"},
+		{"udp upstream", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {}}\n", "udp.upstream: required"},
+		{"udp idle", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {upstream: u, idle_timeout: 2h}}\n", "udp.idle_timeout"},
+		{"udp session bound", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {upstream: u, idle_timeout: 30s, session_timeout: 5s}}\n", "session_timeout: must not be shorter"},
+		{"udp datagram bound", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {upstream: u, max_datagram_bytes: 70000}}\n", "max_datagram_bytes"},
+		{"udp per ip bound", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {upstream: u, max_sessions: 4, max_sessions_per_ip: 8}}\n", "max_sessions_per_ip"},
+		{"udp rate", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {upstream: u, rate_limit: {pps: 0}}}\n", "rate_limit.pps"},
+		{"udp allow clients", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {upstream: u, allow_clients: [nope]}}\n", "allow_clients[0]"},
+		{"udp proxy protocol", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, proxy_protocol: true, udp: {upstream: u}}\n", "proxy_protocol: a PROXY protocol header cannot"},
+		{"udp section elsewhere", "    - {name: x, address: \":1\", kind: http, udp: {upstream: u}}\n", "udp: set on a http listener"},
 		{"tcp block on http", "    - {name: x, address: \":1\", tcp: {default: app}}\n", "set on an http listener"},
 		{"forward block on http", "    - {name: x, address: \":1\", forward: {}}\n", "set on an http listener"},
 		{"proxy protocol needs trusted proxies", "    - {name: x, address: \":1\", proxy_protocol: true}\n", "needs trusted_proxies"},

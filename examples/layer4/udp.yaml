@@ -1,0 +1,109 @@
+# A generic datagram relay: kind: udp, the symmetric primitive to
+# kind: tcp for services whose protocol this proxy does not parse.
+#
+# Nothing in the payload is read. What the listener gives a UDP service
+# is what a reverse proxy gives an HTTP one -- an endpoint pool with a
+# balancer and health checks, bounds on what one client can cost, an
+# access log and counters -- without pretending to understand the
+# protocol.
+#
+# The thing to hold on to about UDP is that a source address is whatever
+# the sender wrote. There is no handshake to prove the sender is there,
+# so an open relay answers a victim with traffic the victim never asked
+# for, amplified by whatever is behind it. That is why every listener
+# here has allow_clients or rate_limit, and why the session table is
+# bounded per source as well as in total: a few forged datagrams a
+# second must not be able to fill it.
+#
+# For the same reason a datagram is never refused, only dropped: a
+# refusal sent to a forged source is a weapon pointed at whoever was
+# named. Every drop is a udp_denied deny event with the reason, so the
+# ban ladder still applies.
+#
+# Validate: xproxy -config examples/layer4/udp.yaml -validate
+version: 1
+server:
+  listeners:
+    # A game server fleet: many small datagrams, sessions that last as
+    # long as somebody is playing, and clients from anywhere.
+    - name: game
+      address: "0.0.0.0:27015"
+      kind: udp
+      udp:
+        upstream: game-servers
+
+        # A session is a client address, and it ends when it goes quiet.
+        # Thirty seconds is long enough that a player walking away and
+        # coming back keeps their place, and short enough that the table
+        # empties after an attack.
+        idle_timeout: 30s
+        # Nobody's session needs to outlive a working day, and an
+        # absolute bound is what stops one that somehow never idles.
+        session_timeout: 8h
+
+        # The table, and the share of it one address may hold. The
+        # second number is the one that matters under attack: without
+        # it, forged sources fill the first.
+        max_sessions: 20000
+        max_sessions_per_ip: 8
+
+        # This protocol's datagrams are small. A bound near the real
+        # size means an oversize one is dropped here rather than
+        # forwarded to find out what the server does with it.
+        max_datagram_bytes: 1400
+
+        # What one client may cost, in a protocol where a client is an
+        # address and nothing more. Past either bound the session ends
+        # and the client starts a new one.
+        max_datagrams: 2000000
+        max_bytes: 2147483648
+
+        # A public listener with no client list needs this: it is the
+        # only thing between the relay and being used as an amplifier.
+        rate_limit: {pps: 200, burst: 400}
+
+    # A syslog-shaped collector reached only from the estate, and an
+    # NTP pool beside it. Both are inside, so the client list does the
+    # work and the rate limit can be generous.
+    - name: telemetry
+      address: "10.0.0.10:2055"
+      kind: udp
+      udp:
+        upstream: collectors
+        allow_clients: ["10.0.0.0/8", "192.168.0.0/16"]
+        idle_timeout: 60s
+        max_sessions: 50000
+        max_sessions_per_ip: 64
+        max_datagram_bytes: 9000
+        rate_limit: {pps: 5000}
+
+upstreams:
+  - name: game-servers
+    endpoints:
+      - {address: "10.60.1.10:27015"}
+      - {address: "10.60.1.11:27015"}
+    # Least connections reads as fewest sessions here, which is the
+    # closest thing a datagram relay has to load.
+    balancer: least_conn
+    timeouts: {connect: 2s}
+  - name: collectors
+    endpoints:
+      - {address: "10.60.2.10:2055"}
+      - {address: "10.60.2.11:2055"}
+    balancer: round_robin
+
+bans:
+  triggers:
+    # Every drop -- a client outside the list, a datagram over the
+    # bound, the rate limit, a table that is full -- is udp_denied. On a
+    # protocol with no handshake the ladder is most of the answer, so
+    # the threshold is not tight: a client that is merely too fast is
+    # already being shaped by rate_limit.
+    - name: udp-abuse
+      reasons: [udp_denied]
+      threshold: 50
+      window: 5m
+      duration: 1h
+
+logging:
+  access: {enabled: true}

@@ -330,11 +330,11 @@ T}
 T{
 \fBkind\fR
 T}	T{
-\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR,\: \fBssh\fR
+\fBhttp\fR,\: \fBtcp\fR,\: \fBudp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR,\: \fBrdp\fR
 T}	T{
 \fBhttp\fR
 T}	T{
-\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy,\: \fBmqtt\fR an MQTT proxy,\: \fBftp\fR an FTP proxy,\: \fBsyslog\fR a syslog relay and \fBssh\fR an SSH bastion;\: see below. The kind also decides which daemon serves the listener: \fBhttp\fR,\: \fBforward\fR,\: \fBtcp\fR and \fBdns\fR are xproxy\(aqs,\: \fBssh\fR is xgate\(aqs,\: and \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR and \fBsyslog\fR are xrelay\(aqs. A daemon handed a listener of another kind validates it and leaves it alone;\: it is never served by the wrong data plane
+\fBtcp\fR is a layer 4 stream listener and \fBudp\fR its datagram counterpart,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy,\: \fBmqtt\fR an MQTT proxy,\: \fBftp\fR an FTP proxy,\: \fBsyslog\fR a syslog relay,\: and \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR and \fBrdp\fR the access gateways;\: see below. The kind also decides which daemon serves the listener: \fBhttp\fR,\: \fBforward\fR,\: \fBtcp\fR,\: \fBudp\fR and \fBdns\fR are xproxy\(aqs,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR and \fBrdp\fR are xgate\(aqs,\: and \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR and \fBsyslog\fR are xrelay\(aqs. A daemon handed a listener of another kind validates it and leaves it alone;\: it is never served by the wrong data plane
 T}
 T{
 \fBredirect_\:to_\:https\fR
@@ -533,6 +533,144 @@ T}
 Nothing is held back waiting for a verdict: the bytes scanned are the bytes forwarded, because a stream cannot be paused without the peer noticing. What a match decides is whether the connection continues. QUIC flows on the same listener are not scanned and validation says so: they are encrypted, and a rule over ciphertext matches nothing.
 .PP
 Counters: \fByara_matches\fR, \fByara_scanned\fR; \fBxproxy_yara_matches_total\fR and \fBxproxy_yara_bytes_total\fR. A match is a \fByara_match\fR security event with the rules, their tags and the offset.
+.SS "server.listeners[].udp (kind: udp)"
+.PP
+A \fBkind: udp\fR listener is a generic datagram relay: the symmetric primitive to \fBkind: tcp\fR for services this proxy has no parser for. Nothing in the payload is read. What it provides is an endpoint pool with a balancer and health checks in front of a UDP service, a set of bounds, and the telemetry the rest of the proxy has.
+.PP
+\fBThere is no connection, so there is a session table.\fR The first datagram from a client address picks an endpoint through the pool\(aqs balancer and opens a connected socket towards it; every later datagram from that address takes the same path, and what the endpoint answers goes back to that address. A session ends when it has been idle for \fBidle_timeout\fR, when it reaches one of its bounds, or at shutdown. The socket towards the endpoint is \fIconnected\fR, so the kernel drops anything arriving from another address: an answer forged by a third party never reaches the client.
+.PP
+\fBA datagram cannot be refused.\fR There is no reply that means "no", and an error sent to a source address that did not really send anything is itself an attack on whoever owns that address. So everything this relay will not forward is \fBdropped\fR, counted in \fBudp_dropped\fR and written to the security log as \fBudp_denied\fR with the reason in \fBdetail\fR \[u2014] which means bans apply to it. That is the whole difference in feel from \fBkind: tcp\fR, where a refusal is a closed connection the client sees.
+.PP
+\fBA source address is whatever the sender wrote\fR, which is why this listener needs an admission policy more than a stream one does:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBallow_clients\fR, or \fBrate_limit\fR, or both. Validation \fBwarns\fR when a listener on a non\-loopback address has neither, because an open datagram relay is somebody else\(aqs amplifier: it answers a victim with traffic the victim never asked for, at whatever gain the service behind it provides.
+.PP
+.ti -3n
+\(bu
+\fBmax_sessions_per_ip\fR as well as \fBmax_sessions\fR. Without the per source bound, a few forged datagrams a second fill the table and the service stops for every client that is real.
+.RE
+.PP
+.PP
+\fBNo accept socket at all.\fR This is the one kind that binds only a datagram socket, so nothing holds the matching TCP port and a client that connects to it is refused by the kernel rather than left hanging. Everything that applies to accepted connections therefore does not apply here \[u2014] the shared connection limiter, \fBproxy_protocol\fR (which has no datagram form and is refused at load), a \fBtls\fR section (there is no handshake on a datagram to secure) \[u2014] and the bounds below are the whole of the admission policy. Any change to such a listener restarts the daemon rather than being applied in place, as it does for every listener that owns a UDP socket.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The pool of endpoints
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+No datagram in either direction ends the session. It stands in for a connection close,\: since nothing in the protocol says a client has finished
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Bound on a whole session however active. Must not be shorter than \fBidle_\:timeout\fR
+T}
+T{
+\fBmax_\:sessions\fR
+T}	T{
+int
+T}	T{
+\fB10000\fR
+T}	T{
+The session table. A datagram from a new client when it is full is dropped and counted in \fBudp_\:rejected\fR
+T}
+T{
+\fBmax_\:sessions_\:per_\:ip\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+Sessions from one address;\: \fB0\fR removes the bound. This is what keeps one source,\: or one forged source,\: from filling the table
+T}
+T{
+\fBmax_\:datagram_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65535\fR
+T}	T{
+The largest datagram relayed either way. A larger one is dropped whole rather than truncated,\: because half a datagram is not a shorter datagram
+T}
+T{
+\fBmax_\:datagrams\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Datagrams in one session,\: both directions;\: \fB0\fR is no bound
+T}
+T{
+\fBmax_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Bytes in one session,\: both directions;\: \fB0\fR is no bound
+T}
+T{
+\fBrate_\:limit.\:pps\fR
+T}	T{
+float
+T}	T{
+none
+T}	T{
+Datagrams per second from one source address
+T}
+T{
+\fBrate_\:limit.\:burst\fR
+T}	T{
+int
+T}	T{
+\fBpps\fR rounded up
+T}	T{
+How many may arrive at once
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+CIDRs a client must come from
+T}
+.TE
+.PP
+Counters: \fBudp_sessions\fR, \fBudp_sessions_open\fR, \fBudp_datagrams_in\fR, \fBudp_datagrams_out\fR, \fBudp_bytes_in\fR, \fBudp_bytes_out\fR, \fBudp_dropped\fR (a datagram the policy would not relay), \fBudp_rejected\fR (a new client the table bounds refused) and \fBudp_errors\fR (a session that found no reachable endpoint); the matching \fBxproxy_udp_*\fR metrics. Every session writes one \fBudp\fR access line with the client, the endpoint, the datagrams and bytes each way and how it ended. Refusals are \fBudp_denied\fR deny events, so bans apply.
 .SS "server.listeners[].forward (kind: forward)"
 .PP
 A \fBkind: forward\fR listener is an explicit proxy that clients configure in their browser or \fBHTTPS_PROXY\fR. \fBCONNECT host:port\fR opens a tunnel (TLS stays end to end between the client and the destination; nothing is inspected) and absolute \fBhttp://\fR request lines are relayed with hop\-by\-hop headers removed and \fBVia: 1.1 xproxy\fR added. Requests that are neither (an ordinary origin\-form request, an \fBhttps://\fR URI) get 400. Every destination passes the policy below before a connection is made: the port must be listed, the name is resolved, the resolved addresses must not be private unless \fBallow_private\fR is set, \fBdeny\fR wins, and a non\-empty \fBallow\fR must match. The address that passed the check is the one dialled, so a name cannot rebind between check and connect. Refusals answer 403, are logged as security events (\fBforward_port\fR, \fBforward_private\fR, \fBforward_deny\fR, \fBforward_not_allowed\fR, \fBforward_resolve\fR) and count towards the \fBforward_denied\fR ban reason. A forward listener may terminate TLS from the client (\fBtls\fR), and with TLS may list \fBh2\fR so clients tunnel \fBCONNECT\fR over an HTTP/2 stream (the stream carries the tunnel, one per request, ending when the destination closes or the client resets); it takes no \fBtcp\fR, \fBredirect_to_https\fR, \fBh3\fR or \fBh2c\fR. Bans, the connection limits and the header timeouts apply as on every listener.
@@ -8137,7 +8275,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBsftp_\:icap\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

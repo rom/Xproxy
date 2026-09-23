@@ -331,12 +331,15 @@ func listenerChange(from, to *Config, name string) listenerChangeKind {
 	return listenerRebuild
 }
 
-// ListenerHasUDP reports whether the listener binds a UDP socket besides
-// its TCP one: HTTP/3, the QUIC relay of a tcp listener or plain dns.
+// ListenerHasUDP reports whether the listener binds a UDP socket at all:
+// HTTP/3, the QUIC relay of a tcp listener, plain dns, or a kind: udp
+// listener, whose only socket is a datagram one.
 func ListenerHasUDP(lc Listener) bool {
 	switch lc.Kind {
 	case "tcp":
 		return lc.TCP != nil && lc.TCP.QUIC
+	case "udp":
+		return true // its only socket is the datagram one
 	case "dns":
 		return lc.TLS == nil
 	}

@@ -3102,6 +3102,7 @@ innocent.
 | `forward_sni_mismatch` | TLS interception: the handshake inside a tunnel named a host the `CONNECT` did not | yes |
 | `forward_upstream_tls` | TLS interception: the destination's own certificate did not verify, so nothing was forged for it | no (it is the destination's fault, not the client's) |
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
+| `udp_denied` | The datagram relay: a client outside `allow_clients`, a datagram over `max_datagram_bytes`, the rate limit, or a session table that is full (`detail` says which). A datagram is dropped rather than answered, because a reply to a forged source is traffic aimed at whoever was named | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
 | `dns_tunnel` | A client's queries under one domain agreed on enough tunnelling signals, or a query was refused during the cooldown after that | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |

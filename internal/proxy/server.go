@@ -455,6 +455,23 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener, error) {
+	// A datagram kind gets no accept socket: the engine opens its
+	// packet socket here so the listener still has an address to be
+	// named and logged by, and hands it to the kind.
+	if k, linked := kindFor(lc.Kind); linked && k.Datagram {
+		pc, act, err := packetFor(activated, lc.Name, lc.Address)
+		if err != nil {
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		acc := newAcceptor(newDatagramListener(pc.LocalAddr()))
+		bl, err := s.buildWith(lc, acc, act, activated, pc)
+		if err != nil {
+			acc.close()
+			_ = pc.Close()
+			return nil, err
+		}
+		return bl, nil
+	}
 	ln, act, err := listenerFor(activated, lc.Name, lc.Address, 0)
 	if err != nil {
 		return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
@@ -471,6 +488,13 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 // build assembles a listener around an accept socket. On error the
 // resources created here are released; the socket stays with the caller.
 func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *activated) (*boundListener, error) {
+	return s.buildWith(lc, acc, act, activated, nil)
+}
+
+// buildWith is build with a datagram socket the caller already opened,
+// which the kind's first Packet("") call is handed instead of opening a
+// second one on an address that is already taken.
+func (s *Server) buildWith(lc config.Listener, acc *acceptor, act bool, activated *activated, pre net.PacketConn) (*boundListener, error) {
 	ln := acc.raw
 	fr := acc.newFront()
 	bl := &boundListener{cfg: lc, acc: acc, front: fr, ln: s.connLimiter.Wrap(fr), activated: act}
@@ -494,6 +518,11 @@ func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *a
 	// and the kind builds its own data plane.
 	su := &Setup{Host: s, Config: lc, Net: bl.ln, Plane: s.planeOrNil(),
 		Packet: func(suffix string) (net.PacketConn, error) {
+			if suffix == "" && pre != nil {
+				pc := pre
+				pre = nil
+				return pc, nil
+			}
 			name := lc.Name
 			if suffix != "" {
 				name += "-" + suffix

@@ -2,10 +2,12 @@ package config
 
 import (
 	"fmt"
-	"github.com/rom/xproxy/internal/paths"
+	"math"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/rom/xproxy/internal/paths"
 )
 
 // Default values. They are deliberately conservative: an operator has to
@@ -125,6 +127,17 @@ func applyDefaults(c *Config) {
 			setDur(&t.QUICIdleTimeout, 30*time.Second)
 			if t.YARA != nil {
 				yaraDefaults(t.YARA)
+			}
+		}
+		if u := s.Listeners[i].UDP; u != nil {
+			setDur(&u.IdleTimeout, 30*time.Second)
+			setInt(&u.MaxSessions, 10000)
+			if u.MaxSessionsPerIP == 0 {
+				u.MaxSessionsPerIP = 64
+			}
+			setInt(&u.MaxDatagramBytes, 65535)
+			if u.RateLimit != nil && u.RateLimit.Burst == 0 {
+				u.RateLimit.Burst = int(math.Ceil(u.RateLimit.PPS))
 			}
 		}
 		if f := s.Listeners[i].Forward; f != nil {

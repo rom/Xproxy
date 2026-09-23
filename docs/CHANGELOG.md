@@ -442,6 +442,41 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: udp`, a generic datagram relay.** The symmetric primitive to
+  `kind: tcp`, for the services whose protocol this proxy has no parser
+  for: an endpoint pool with a balancer and health checks in front of a
+  UDP service, bounds on what one client can cost, an access log and
+  counters, and nothing read from the payload.
+
+  A datagram has no connection, so there is a session table keyed by the
+  client's address instead: the first datagram picks an endpoint, every
+  later one from that address takes the same path, and the session ends
+  when it is idle, when it hits a bound, or at shutdown. The socket
+  towards the endpoint is connected, so the kernel drops anything
+  arriving from another address and an answer forged by a third party
+  never reaches the client.
+
+  Two properties of UDP shape the rest. **A datagram cannot be refused**
+  — there is no reply that means "no", and an error sent to a source that
+  did not really send anything is itself an attack on whoever owns that
+  address — so everything the relay will not forward is dropped,
+  counted, and written to the security log as `udp_denied` with the
+  reason, which is what makes the ban ladder apply to it. **A source
+  address is whatever the sender wrote**, so the session table is
+  bounded per source (`max_sessions_per_ip`, default 64) as well as in
+  total, and validation warns about a listener on a public address with
+  neither `allow_clients` nor `rate_limit`: an open datagram relay is
+  somebody else's amplifier.
+
+  It is also the first kind with **no accept socket**. `proxy.Kind` grew
+  a `Datagram` flag that tells the engine to bind only the packet socket
+  and hand it to the kind, because a TCP port nothing accepts on is
+  worse than no port at all: a client that connected would hang rather
+  than be refused. Nothing that belongs to accepted connections applies
+  to such a listener — the shared connection limiter, the inbound PROXY
+  header, a `tls` section — and `proxy_protocol` on one is refused at
+  load, since there is no datagram form of it.
+
 - **The protocol's own encryption towards a client** (`kind: rdp`,
   `security: [rdp]`), for clients too old to offer TLS. The listener
   draws a 512-bit key at start -- the size the protocol carries -- puts

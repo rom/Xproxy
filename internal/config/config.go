@@ -226,6 +226,8 @@ type Listener struct {
 	Kind string `yaml:"kind"`
 	// TCP configures a kind: tcp listener.
 	TCP *TCPListener `yaml:"tcp"`
+	// UDP configures a kind: udp listener.
+	UDP *UDPListener `yaml:"udp"`
 	// Forward configures a kind: forward listener.
 	Forward *ForwardListener `yaml:"forward"`
 	// DNS configures a kind: dns listener.
@@ -1701,6 +1703,71 @@ type TCPListener struct {
 	// apply to QUIC flows: those are encrypted, and a rule over
 	// ciphertext matches nothing.
 	YARA *YARAPolicy `yaml:"yara"`
+}
+
+// UDPListener is a generic datagram relay: the symmetric primitive to
+// kind: tcp for services whose protocol this proxy does not parse.
+//
+// A datagram has no connection, so the relay keeps a session table
+// instead. The first datagram from a client address picks an endpoint
+// through the pool's balancer and opens a connected socket towards it;
+// every later datagram from that address goes to the same endpoint, and
+// what the endpoint sends back goes to that address. The session ends
+// when it has been idle, when it hits a bound, or at shutdown. Nothing
+// in the payload is read: a kind: udp listener is a router and a set of
+// bounds, not a parser.
+//
+// The thing to get right about a UDP relay is that it is a reflector.
+// Anyone can put anybody's address in a datagram's source, so an open
+// relay answers a victim with traffic the victim never asked for, at
+// whatever gain the service behind it provides. That is why
+// allow_clients and rate_limit exist here and why validation insists on
+// one of them for a listener on a public address. The session table is
+// bounded for the same reason: spoofed sources must not be able to fill
+// it, which is what max_sessions_per_ip is for.
+type UDPListener struct {
+	// Upstream is the pool of endpoints. Required.
+	Upstream string `yaml:"upstream"`
+	// IdleTimeout ends a session with no datagram in either direction.
+	// Default 30s. It is what stands in for a connection close, since
+	// nothing in the protocol says a client has finished.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole session however active. Default 0,
+	// no bound.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// MaxSessions bounds the session table. Default 10000. A datagram
+	// from a new client when the table is full is dropped and counted:
+	// there is no way to refuse a datagram, because a refusal would be
+	// a datagram to an address that may not have sent anything.
+	MaxSessions int `yaml:"max_sessions"`
+	// MaxSessionsPerIP bounds sessions from one address, which is what
+	// keeps a single source -- or a single forged source -- from
+	// filling the table. Default 64; 0 removes the bound.
+	MaxSessionsPerIP int `yaml:"max_sessions_per_ip"`
+	// MaxDatagramBytes is the largest datagram relayed in either
+	// direction. Default 65535, which is the largest a UDP socket
+	// carries. A larger one is dropped and counted rather than
+	// truncated, because half a datagram is not a shorter datagram.
+	MaxDatagramBytes int `yaml:"max_datagram_bytes"`
+	// MaxDatagrams and MaxBytes bound one session. Past either the
+	// session is ended and counted. Both default 0, no bound.
+	MaxDatagrams int64 `yaml:"max_datagrams"`
+	MaxBytes     int64 `yaml:"max_bytes"`
+	// RateLimit bounds datagrams per second from one source address.
+	// Without it a single source can drive the whole relay.
+	RateLimit *UDPRateLimit `yaml:"rate_limit"`
+	// AllowClients restricts clients to these CIDRs. On a public
+	// address this or rate_limit is what stops the listener being
+	// somebody else's amplifier.
+	AllowClients []string `yaml:"allow_clients"`
+}
+
+// UDPRateLimit bounds datagrams per second from one source address.
+type UDPRateLimit struct {
+	// PPS is datagrams per second. Required when the section is set.
+	PPS float64 `yaml:"pps"`
+	// Burst is how many may arrive at once. Default is PPS rounded up.
+	Burst int `yaml:"burst"`
 }
 
 // YARAPolicy applies YARA rules to a stream. The engine is a subset of

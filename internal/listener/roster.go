@@ -21,7 +21,8 @@ type Role string
 
 const (
 	// RoleEdge is xproxy: the internet-facing data plane. HTTP and
-	// TLS, the forward proxy and its interception, MASQUE, DNS.
+	// TLS, the forward proxy and its interception, MASQUE, DNS, and the
+	// two generic layer 4 relays.
 	RoleEdge Role = "edge"
 	// RoleGate is xgate: interactive access by people. SSH, SFTP, and
 	// the remote desktop protocols. Sessions here are recorded, carry
@@ -50,6 +51,7 @@ func (r Role) Daemon() string {
 var roster = map[string]Role{
 	"http":    RoleEdge,
 	"tcp":     RoleEdge,
+	"udp":     RoleEdge,
 	"forward": RoleEdge,
 	"dns":     RoleEdge,
 	"ssh":     RoleGate,

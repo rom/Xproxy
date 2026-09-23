@@ -600,6 +600,18 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.tcpListener(p+".tcp", ln.TCP)
 			}
+		case "udp":
+			if ln.TLS != nil || len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.H2C {
+				v.errf("%s: a udp listener takes only address and udp (there is no handshake on a datagram to secure or a protocol to negotiate)", p)
+			}
+			if ln.ProxyProtocol {
+				v.errf("%s.proxy_protocol: a PROXY protocol header cannot be sent on a datagram flow", p)
+			}
+			if ln.UDP == nil {
+				v.errf("%s.udp: required for kind udp", p)
+			} else {
+				v.udpListener(p+".udp", ln.UDP, ln.Address)
+			}
 		case "dns":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.H2C {
 				v.errf("%s: a dns listener takes only address, dns and tls", p)
@@ -707,6 +719,9 @@ func (v *validator) server(s *Server) {
 			}
 		default:
 			v.errf("%s.kind: must be one of %s", p, strings.Join(listener.Kinds(), ", "))
+		}
+		if ln.UDP != nil && ln.Kind != "udp" {
+			v.errf("%s.udp: set on a %s listener (kind: udp)", p, ln.Kind)
 		}
 		if ln.Syslog != nil && ln.Kind != "syslog" {
 			v.errf("%s.syslog: set on a %s listener (kind: syslog)", p, ln.Kind)
@@ -2057,7 +2072,7 @@ var denyReasons = map[string]bool{
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
 	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true,
-	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true,
+	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -2799,6 +2814,61 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	}
 	if t.QUIC && t.ProxyProtocol {
 		v.errf("%s.quic: the PROXY protocol header cannot be sent on a datagram flow; disable proxy_protocol or quic", p)
+	}
+}
+
+// udpListener validates a generic datagram relay.
+func (v *validator) udpListener(p string, u *UDPListener, address string) {
+	if u.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	if u.IdleTimeout <= 0 || u.IdleTimeout > Duration(time.Hour) {
+		v.errf("%s.idle_timeout: must be positive and at most 1h", p)
+	}
+	if u.SessionTimeout < 0 || u.SessionTimeout > Duration(24*time.Hour) {
+		v.errf("%s.session_timeout: must not be negative and at most 24h", p)
+	}
+	if u.SessionTimeout > 0 && u.SessionTimeout < u.IdleTimeout {
+		v.errf("%s.session_timeout: must not be shorter than idle_timeout, which would end every session at the same moment", p)
+	}
+	if u.MaxSessions < 1 {
+		v.errf("%s.max_sessions: must be positive", p)
+	}
+	if u.MaxSessionsPerIP < 0 {
+		v.errf("%s.max_sessions_per_ip: must not be negative", p)
+	}
+	if u.MaxSessionsPerIP > u.MaxSessions {
+		v.errf("%s.max_sessions_per_ip: %d is above max_sessions (%d), so it bounds nothing", p, u.MaxSessionsPerIP, u.MaxSessions)
+	}
+	if u.MaxDatagramBytes < 1 || u.MaxDatagramBytes > 65535 {
+		v.errf("%s.max_datagram_bytes: must be 1..65535", p)
+	}
+	if u.MaxDatagrams < 0 {
+		v.errf("%s.max_datagrams: must not be negative", p)
+	}
+	if u.MaxBytes < 0 {
+		v.errf("%s.max_bytes: must not be negative", p)
+	}
+	if u.RateLimit != nil {
+		if u.RateLimit.PPS <= 0 {
+			v.errf("%s.rate_limit.pps: must be positive", p)
+		}
+		if u.RateLimit.Burst < 1 {
+			v.errf("%s.rate_limit.burst: must be positive", p)
+		}
+	}
+	for i, c := range u.AllowClients {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+	// A datagram relay answers whatever address the datagram claimed to
+	// come from, so an open one reflects traffic at a victim who never
+	// asked for it, amplified by whatever is behind it. Neither control
+	// removes spoofing; each bounds who can make this node do it.
+	if !loopbackListen(address) && len(u.AllowClients) == 0 && u.RateLimit == nil {
+		v.warnf("%s: a udp listener on a non-loopback address with neither allow_clients nor rate_limit relays for anyone "+
+			"who can reach it, and a datagram's source can be forged, which makes this node an amplifier", p)
 	}
 }
 

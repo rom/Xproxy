@@ -84,7 +84,7 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `smtp`, `mqtt`, `ftp` and `syslog`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead) or `dns`. |
-| `kind` | `http`, `tcp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `ssh` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay and `ssh` an SSH bastion; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp` and `dns` are xproxy's, `ssh` is xgate's, and `smtp`, `mqtt`, `ftp` and `syslog` are xrelay's. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
+| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's, `ssh`, `telnet`, `vnc` and `rdp` are xgate's, and `smtp`, `mqtt`, `ftp` and `syslog` are xrelay's. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 
 ### server.listeners[].tcp (kind: tcp)
@@ -168,6 +168,78 @@ they are encrypted, and a rule over ciphertext matches nothing.
 Counters: `yara_matches`, `yara_scanned`; `xproxy_yara_matches_total`
 and `xproxy_yara_bytes_total`. A match is a `yara_match` security event
 with the rules, their tags and the offset.
+
+### server.listeners[].udp (kind: udp)
+
+A `kind: udp` listener is a generic datagram relay: the symmetric
+primitive to `kind: tcp` for services this proxy has no parser for.
+Nothing in the payload is read. What it provides is an endpoint pool
+with a balancer and health checks in front of a UDP service, a set of
+bounds, and the telemetry the rest of the proxy has.
+
+**There is no connection, so there is a session table.** The first
+datagram from a client address picks an endpoint through the pool's
+balancer and opens a connected socket towards it; every later datagram
+from that address takes the same path, and what the endpoint answers
+goes back to that address. A session ends when it has been idle for
+`idle_timeout`, when it reaches one of its bounds, or at shutdown. The
+socket towards the endpoint is *connected*, so the kernel drops anything
+arriving from another address: an answer forged by a third party never
+reaches the client.
+
+**A datagram cannot be refused.** There is no reply that means "no", and
+an error sent to a source address that did not really send anything is
+itself an attack on whoever owns that address. So everything this relay
+will not forward is **dropped**, counted in `udp_dropped` and written to
+the security log as `udp_denied` with the reason in `detail` — which
+means bans apply to it. That is the whole difference in feel from
+`kind: tcp`, where a refusal is a closed connection the client sees.
+
+**A source address is whatever the sender wrote**, which is why this
+listener needs an admission policy more than a stream one does:
+
+- `allow_clients`, or `rate_limit`, or both. Validation **warns** when a
+  listener on a non-loopback address has neither, because an open
+  datagram relay is somebody else's amplifier: it answers a victim with
+  traffic the victim never asked for, at whatever gain the service
+  behind it provides.
+- `max_sessions_per_ip` as well as `max_sessions`. Without the per
+  source bound, a few forged datagrams a second fill the table and the
+  service stops for every client that is real.
+
+**No accept socket at all.** This is the one kind that binds only a
+datagram socket, so nothing holds the matching TCP port and a client
+that connects to it is refused by the kernel rather than left hanging.
+Everything that applies to accepted connections therefore does not apply
+here — the shared connection limiter, `proxy_protocol` (which has no
+datagram form and is refused at load), a `tls` section (there is no
+handshake on a datagram to secure) — and the bounds below are the whole
+of the admission policy. Any change to such a listener restarts the
+daemon rather than being applied in place, as it does for every listener
+that owns a UDP socket.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The pool of endpoints |
+| `idle_timeout` | duration | `30s` | No datagram in either direction ends the session. It stands in for a connection close, since nothing in the protocol says a client has finished |
+| `session_timeout` | duration | `0` | Bound on a whole session however active. Must not be shorter than `idle_timeout` |
+| `max_sessions` | int | `10000` | The session table. A datagram from a new client when it is full is dropped and counted in `udp_rejected` |
+| `max_sessions_per_ip` | int | `64` | Sessions from one address; `0` removes the bound. This is what keeps one source, or one forged source, from filling the table |
+| `max_datagram_bytes` | int | `65535` | The largest datagram relayed either way. A larger one is dropped whole rather than truncated, because half a datagram is not a shorter datagram |
+| `max_datagrams` | int | `0` | Datagrams in one session, both directions; `0` is no bound |
+| `max_bytes` | int | `0` | Bytes in one session, both directions; `0` is no bound |
+| `rate_limit.pps` | float | none | Datagrams per second from one source address |
+| `rate_limit.burst` | int | `pps` rounded up | How many may arrive at once |
+| `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+
+Counters: `udp_sessions`, `udp_sessions_open`, `udp_datagrams_in`,
+`udp_datagrams_out`, `udp_bytes_in`, `udp_bytes_out`, `udp_dropped`
+(a datagram the policy would not relay), `udp_rejected` (a new client
+the table bounds refused) and `udp_errors` (a session that found no
+reachable endpoint); the matching `xproxy_udp_*` metrics. Every session
+writes one `udp` access line with the client, the endpoint, the
+datagrams and bytes each way and how it ended. Refusals are
+`udp_denied` deny events, so bans apply.
 
 ### server.listeners[].forward (kind: forward)
 
@@ -3023,7 +3095,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `sftp_icap`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `sftp_icap`, `udp_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
