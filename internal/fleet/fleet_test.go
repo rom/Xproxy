@@ -284,7 +284,14 @@ func TestAgentAppliesAndReports(t *testing.T) {
 	mu.Unlock()
 	write(t, filepath.Join(h.ctrl.Dir(), "nodes", "edge1", "xproxy.yaml"), nodeConfig+"# v3\n")
 	h.ctrl.Scan()
-	waitFor(t, "failed apply", func() bool { s := ag.Status(); return !s.Applied.OK && s.Applied.Digest != second })
+	// Applied is written inside apply, and Failures is incremented by
+	// the loop once apply has returned the error, so a status with the
+	// failed digest is not yet a status with the failure counted. Wait
+	// for both, since both are asserted below.
+	waitFor(t, "failed apply", func() bool {
+		s := ag.Status()
+		return !s.Applied.OK && s.Applied.Digest != second && s.Failures > 0
+	})
 	got, _ = os.ReadFile(cfgPath)
 	if !strings.HasSuffix(string(got), "# v2\n") {
 		t.Fatalf("not restored after failed reload: %q", got)

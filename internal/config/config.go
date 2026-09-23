@@ -444,7 +444,7 @@ type FTPListener struct {
 	// is a second copy of the data to look after.
 	Recording *SessionRecording `yaml:"recording"`
 	// ICAP hands transferred files to a scanning service.
-	ICAP *FTPICAP `yaml:"icap"`
+	ICAP *TransferICAP `yaml:"icap"`
 	// MFA asks for a second factor after the password is accepted, on
 	// the control channel, before any other command is allowed. An FTP
 	// client has no prompt of its own, so the code is taken the only
@@ -453,28 +453,35 @@ type FTPListener struct {
 	MFA *MFAPolicy `yaml:"mfa"`
 }
 
-// FTPICAP scans what an ftp session moves (RFC 3507). A transfer is
-// not an HTTP message, so the file is wrapped in the request or the
-// response a scanner expects, which is what every ICAP scanner is
-// built to read; the URL it sees is the ftp one, so a log at the
-// scanner names the real file.
-type FTPICAP struct {
+// TransferICAP scans the files a session moves (RFC 3507), for the
+// kinds that move files rather than requests: ftp and sftp.
+//
+// A transfer is not an HTTP message, so the file is wrapped in the
+// request or the response a scanner expects, which is what every ICAP
+// scanner is built to read; the URL it sees names the real file, so a
+// log at the scanner points at something an operator can find.
+//
+// Scanning holds the file: a verdict that arrives after the bytes is
+// not a control. What that costs differs by protocol, and is written
+// down under each listener.
+type TransferICAP struct {
 	// Service names an entry in icap.services. Required.
 	Service string `yaml:"service"`
-	// Uploads scans STOR, STOU and APPE through REQMOD. Default true:
-	// a file arriving on a server is the direction that matters most.
+	// Uploads scans the files a client sends through REQMOD. Default
+	// true: a file arriving on a server is the direction that matters
+	// most.
 	Uploads *bool `yaml:"uploads"`
-	// Downloads scans RETR through RESPMOD. Default false, because a
-	// download doubles the bytes on the wire and most deployments
-	// trust what their own server already holds.
+	// Downloads scans the files a client fetches through RESPMOD.
+	// Default false, because a download doubles the bytes on the wire
+	// and most deployments trust what their own server already holds.
 	Downloads bool `yaml:"downloads"`
 }
 
-// ScansUploads reports whether STOR and its relatives are scanned.
-func (f *FTPICAP) ScansUploads() bool { return f != nil && (f.Uploads == nil || *f.Uploads) }
+// ScansUploads reports whether what a client sends is scanned.
+func (f *TransferICAP) ScansUploads() bool { return f != nil && (f.Uploads == nil || *f.Uploads) }
 
-// ScansDownloads reports whether RETR is scanned.
-func (f *FTPICAP) ScansDownloads() bool { return f != nil && f.Downloads }
+// ScansDownloads reports whether what a client fetches is scanned.
+func (f *TransferICAP) ScansDownloads() bool { return f != nil && f.Downloads }
 
 // SSHListener is an SSH bastion: the proxy is an SSH server to the
 // client and an SSH client to the target, with its own host key, its
@@ -726,6 +733,17 @@ type SFTPPolicy struct {
 	// MaxPacketSize bounds one SFTP packet. Default 262144, a little
 	// over the 32 KiB read and write sizes clients use.
 	MaxPacketSize int `yaml:"max_packet_size"`
+	// ICAP hands written files to a scanning service.
+	//
+	// SFTP has no whole-file transfer: a file is a handle, a run of
+	// writes at offsets, and a close. So the proxy holds the writes
+	// rather than forwarding them, answers the client itself, scans
+	// what the file turned out to be when the handle is closed, and
+	// only then replays the writes to the server. A file the scanner
+	// refuses never reaches it, at the cost of holding it in memory
+	// until the close -- bounded by the service's max_body, past which
+	// body_limit_action decides.
+	ICAP *TransferICAP `yaml:"icap"`
 }
 
 // MQTTListener is a protocol-aware MQTT proxy for 3.1.1 and 5.0. It

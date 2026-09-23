@@ -354,6 +354,21 @@ Open findings of the earlier rounds:
     appended to the password after a comma for clients that have no
     `ACCT` of their own. Until it is verified the session is not logged
     in. The code never reaches the target.
+- **The sftp bastion scans what is written.** `sftp.icap` names a
+  service, and a scanned upload is held rather than forwarded: SFTP has
+  no whole-file transfer to hand a scanner — a file is an `open`, a run
+  of `write`s at offsets and a `close` — so the proxy answers each
+  write itself, assembles the file, asks the service at the close, and
+  only then replays the writes to the server in the order the client
+  made them. A file the scanner refuses never reaches the server; the
+  close is answered with a failure instead. The cost is written down
+  rather than discovered: the file is in memory until the close under
+  the service's `max_body`, the write statuses a client sees are the
+  proxy's rather than the server's, and the `open` that was already
+  forwarded can leave an empty file behind. Downloads are refused as a
+  configuration error, not silently ignored: a download in SFTP is a
+  run of reads with no packet that means the file is finished, so there
+  is no point to scan at.
 - **ICAP services belong to the engine rather than to the HTTP data
   plane.** The kinds that hand a file to a scanner are not all in the
   daemon that has a plane -- ftp is in xrelay, sftp in xgate -- so one
@@ -385,7 +400,7 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4, tests)
 
-- **Three tests raced the goroutine that records what they assert on.**
+- **Four tests raced the goroutine that records what they assert on.**
   `CountStatus` is called from `logAccess`, which runs once the response
   body has gone out, so a client can have its whole response before the
   counter moves; the capture file is likewise written after the exchange
@@ -397,9 +412,14 @@ Open findings of the earlier rounds:
   `TestRunStartsReloadsAndStops` was the same shape a level up: `apply`
   reloads the server and then records what it applied, so a reload that
   has taken effect is not yet a reload that is in the history, and the
-  test read the history the moment the generation moved. The behaviour
-  all three were testing is correct: metrics, captures and the history
-  are written after the thing they describe has happened, by design.
+  test read the history the moment the generation moved.
+  `TestAgentAppliesAndReports` was the fourth: the fleet agent writes
+  `Applied` inside `apply` and the loop counts the failure once `apply`
+  has returned the error, so a status carrying the failed digest is not
+  yet a status with the failure counted, and the test waited for the
+  first and asserted the second. The behaviour all four were testing is
+  correct: metrics, captures, the history and the failure count are
+  written after the thing they describe has happened, by design.
 
 ### Packaging (1.4)
 

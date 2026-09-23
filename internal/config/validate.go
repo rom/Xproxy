@@ -70,6 +70,28 @@ type validator struct {
 	icapNames map[string]bool
 }
 
+// transferICAP checks a scanning section on a kind that moves files.
+// downloads says whether this kind can scan them at all: sftp cannot,
+// because a download there is a run of reads at offsets with no end to
+// scan at.
+func (v *validator) transferICAP(p string, c *TransferICAP, readOnly, downloads bool) {
+	if c.Service == "" {
+		v.errf("%s.service: required", p)
+	} else {
+		v.icapRef(p+".service", c.Service)
+	}
+	if !downloads && c.Downloads {
+		v.errf("%s.downloads: not available here; a download is a run of reads at offsets with no end to scan at", p)
+	}
+	scansDown := downloads && c.ScansDownloads()
+	if !c.ScansUploads() && !scansDown {
+		v.errf("%s: nothing is scanned, so the service would never be asked", p)
+	}
+	if readOnly && c.ScansUploads() && !scansDown {
+		v.warnf("%s: read_only is set, so there are no uploads to scan", p)
+	}
+}
+
 // icapRef checks that a section names a service that exists. A name
 // that does not is a scanner nobody notices is missing until a file
 // goes past unscanned, or a session fails, depending on which way the
@@ -3234,6 +3256,9 @@ func (v *validator) sftpPolicy(p string, s *SFTPPolicy, subsystemAllowed, hasPri
 			v.warnf("%s.yara: read_only already refuses every write, so nothing reaches these rules", p)
 		}
 	}
+	if s.ICAP != nil {
+		v.transferICAP(p+".icap", s.ICAP, s.ReadOnly, false)
+	}
 }
 
 // sftpTemplateOK checks the {user} and {principal} substitutions in a
@@ -5531,17 +5556,7 @@ func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 		}
 	}
 	if f.ICAP != nil {
-		if f.ICAP.Service == "" {
-			v.errf("%s.icap.service: required", p)
-		} else {
-			v.icapRef(p+".icap.service", f.ICAP.Service)
-		}
-		if !f.ICAP.ScansUploads() && !f.ICAP.ScansDownloads() {
-			v.errf("%s.icap: neither uploads nor downloads is scanned, so the service would never be asked", p)
-		}
-		if f.ReadOnly && !f.ICAP.ScansDownloads() {
-			v.warnf("%s.icap: the listener is read_only, so there are no uploads to scan; set downloads: true or drop the section", p)
-		}
+		v.transferICAP(p+".icap", f.ICAP, f.ReadOnly, true)
 	}
 }
 

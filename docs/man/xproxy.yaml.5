@@ -3344,7 +3344,74 @@ T}
 .PP
 A path that climbs above its own root after cleaning (\fB../../etc/shadow\fR) is refused rather than matched: what it means depends on a working directory the proxy cannot see, and a check on a path whose meaning is unknown is not a check. Absolute paths always work, so nothing legitimate needs the other form.
 .PP
-Every session writes one \fBssh\fR line to the access log (client, user, authentication method, principal, target, channels, refusals, duration) and each inspected SFTP request writes one \fBsftp\fR line with the operation and the path. Counters: \fBssh_sessions\fR, \fBssh_sessions_open\fR, \fBssh_channels\fR, \fBssh_refused\fR, \fBssh_rejected\fR, \fBssh_auth_failed\fR, \fBssh_bytes_in\fR, \fBssh_bytes_out\fR, \fBsftp_requests\fR, \fBsftp_refused\fR; the matching \fBxproxy_ssh_*\fR and \fBxproxy_sftp_*\fR metrics. Refusals and failed authentication are \fBssh_denied\fR deny events, so bans apply.
+##### server.listeners[].ssh.sftp.icap
+.PP
+Hands written files to a scanning service (RFC 3507) named in \fBicap.services\fR.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(0.9i) lbx
+lw(1.0i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBservice\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The name of an entry in \fBicap.\:services\fR. Validation refuses a name that is not there
+T}
+T{
+\fBuploads\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Scan what the client writes
+T}
+T{
+\fBdownloads\fR
+T}	T{
+bool
+T}	T{
+refused here
+T}	T{
+See below: SFTP has nothing to scan a download at
+T}
+.TE
+.PP
+\fBA scanned upload is held, not forwarded.\fR SFTP has no whole\-file transfer: a file is an \fBopen\fR, a run of \fBwrite\fRs at offsets, and a \fBclose\fR. A scanner wants the file. So the proxy answers each \fBwrite\fR itself with a success status, keeps the packets, assembles what the file turns out to be, and asks the service only when the handle is closed. A clean file\(aqs writes are then replayed to the server in the order the client made them, and the \fBclose\fR is forwarded; a refused file\(aqs writes are dropped and the \fBclose\fR is answered with a failure. The file never reaches the server.
+.PP
+Three consequences worth knowing before turning it on:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+The file is in memory until the \fBclose\fR, bounded by the service\(aqs \fBmax_body\fR. Past that, \fBbody_limit_action\fR decides: \fBreject\fR refuses the write, \fBbypass\fR releases what was held and stops holding, with a warning in the security log naming the path.
+.PP
+.ti -3n
+\(bu
+The success a client sees for a \fBwrite\fR is the proxy\(aqs, not the server\(aqs. A server that would have refused the write for its own reasons \[u2014] no space, no permission \[u2014] says so at the \fBclose\fR instead, which is where a client that checks only the final status will see it anyway.
+.PP
+.ti -3n
+\(bu
+The \fBopen\fR is forwarded when it happens, so a refused file can leave an empty file behind. The proxy does not remove it: that would be a write it was never asked to make.
+.RE
+.PP
+.PP
+\fBDownloads are not scanned here, and the section refuses to pretend otherwise.\fR A download in SFTP is a run of \fBread\fRs at offsets that the client stops making when it has what it wants; there is no packet that means "the file is finished", so there is no point to scan at. Scanning one would mean the proxy fetching the whole file itself and serving the client\(aqs reads from that copy, which is a different feature with different costs. \fBdownloads: true\fR is a configuration error here rather than a setting that quietly does nothing. The \fBftp\fR listener, where a \fBRETR\fR is one whole\-file transfer, does scan downloads.
+.PP
+Every session writes one \fBssh\fR line to the access log (client, user, authentication method, principal, target, channels, refusals, duration) and each inspected SFTP request writes one \fBsftp\fR line with the operation and the path; the \fBclose\fR of a scanned file carries a \fBscan\fR field saying how many bytes were released or why they were blocked. Counters: \fBssh_sessions\fR, \fBssh_sessions_open\fR, \fBssh_channels\fR, \fBssh_refused\fR, \fBssh_rejected\fR, \fBssh_auth_failed\fR, \fBssh_bytes_in\fR, \fBssh_bytes_out\fR, \fBsftp_requests\fR, \fBsftp_refused\fR, \fBsftp_scanned\fR, \fBsftp_scan_blocked\fR; the matching \fBxproxy_ssh_*\fR and \fBxproxy_sftp_*\fR metrics. Refusals and failed authentication are \fBssh_denied\fR deny events, so bans apply, and a file the scanner refuses is an \fBsftp_icap\fR observation on the ban ladder.
 .SS "server.listeners[].h3"
 .PP
 .TS

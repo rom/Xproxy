@@ -1281,14 +1281,64 @@ directory the proxy cannot see, and a check on a path whose meaning is
 unknown is not a check. Absolute paths always work, so nothing legitimate
 needs the other form.
 
+##### server.listeners[].ssh.sftp.icap
+
+Hands written files to a scanning service (RFC 3507) named in
+`icap.services`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `service` | string | required | The name of an entry in `icap.services`. Validation refuses a name that is not there |
+| `uploads` | bool | `true` | Scan what the client writes |
+| `downloads` | bool | refused here | See below: SFTP has nothing to scan a download at |
+
+**A scanned upload is held, not forwarded.** SFTP has no whole-file
+transfer: a file is an `open`, a run of `write`s at offsets, and a
+`close`. A scanner wants the file. So the proxy answers each `write`
+itself with a success status, keeps the packets, assembles what the
+file turns out to be, and asks the service only when the handle is
+closed. A clean file's writes are then replayed to the server in the
+order the client made them, and the `close` is forwarded; a refused
+file's writes are dropped and the `close` is answered with a failure.
+The file never reaches the server.
+
+Three consequences worth knowing before turning it on:
+
+- The file is in memory until the `close`, bounded by the service's
+  `max_body`. Past that, `body_limit_action` decides: `reject` refuses
+  the write, `bypass` releases what was held and stops holding, with a
+  warning in the security log naming the path.
+- The success a client sees for a `write` is the proxy's, not the
+  server's. A server that would have refused the write for its own
+  reasons — no space, no permission — says so at the `close` instead,
+  which is where a client that checks only the final status will see it
+  anyway.
+- The `open` is forwarded when it happens, so a refused file can leave
+  an empty file behind. The proxy does not remove it: that would be a
+  write it was never asked to make.
+
+**Downloads are not scanned here, and the section refuses to pretend
+otherwise.** A download in SFTP is a run of `read`s at offsets that the
+client stops making when it has what it wants; there is no packet that
+means "the file is finished", so there is no point to scan at. Scanning
+one would mean the proxy fetching the whole file itself and serving the
+client's reads from that copy, which is a different feature with
+different costs. `downloads: true` is a configuration error here rather
+than a setting that quietly does nothing. The `ftp` listener, where a
+`RETR` is one whole-file transfer, does scan downloads.
+
 Every session writes one `ssh` line to the access log (client, user,
 authentication method, principal, target, channels, refusals, duration) and each
 inspected SFTP request writes one `sftp` line with the operation and the
-path. Counters: `ssh_sessions`, `ssh_sessions_open`, `ssh_channels`,
-`ssh_refused`, `ssh_rejected`, `ssh_auth_failed`, `ssh_bytes_in`,
-`ssh_bytes_out`, `sftp_requests`, `sftp_refused`; the matching
-`xproxy_ssh_*` and `xproxy_sftp_*` metrics. Refusals and failed
-authentication are `ssh_denied` deny events, so bans apply.
+path; the `close` of a scanned file carries a `scan` field saying how
+many bytes were released or why they were blocked. Counters:
+`ssh_sessions`, `ssh_sessions_open`, `ssh_channels`, `ssh_refused`,
+`ssh_rejected`, `ssh_auth_failed`, `ssh_bytes_in`, `ssh_bytes_out`,
+`sftp_requests`, `sftp_refused`, `sftp_scanned`, `sftp_scan_blocked`;
+the matching `xproxy_ssh_*` and `xproxy_sftp_*` metrics. Refusals and
+failed authentication are `ssh_denied` deny events, so bans apply, and
+a file the scanner refuses is an `sftp_icap` observation on the ban
+ladder.
 
 ### server.listeners[].h3
 

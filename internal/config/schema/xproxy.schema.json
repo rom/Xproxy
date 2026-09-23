@@ -1559,25 +1559,6 @@
       },
       "additionalProperties": false
     },
-    "FTPICAP": {
-      "description": "FTPICAP scans what an ftp session moves (RFC 3507). A transfer is not an HTTP message, so the file is wrapped in the request or the response a scanner expects, which is what every ICAP scanner is built to read; the URL it sees is the ftp one, so a log at the scanner names the real file.",
-      "type": "object",
-      "properties": {
-        "downloads": {
-          "description": "Downloads scans RETR through RESPMOD. Default false, because a download doubles the bytes on the wire and most deployments trust what their own server already holds.",
-          "type": "boolean"
-        },
-        "service": {
-          "description": "Service names an entry in icap.services. Required.",
-          "type": "string"
-        },
-        "uploads": {
-          "description": "Uploads scans STOR, STOU and APPE through REQMOD. Default true: a file arriving on a server is the direction that matters most.",
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": false
-    },
     "FTPListener": {
       "description": "FTPListener is a protocol-aware FTP proxy. The proxy is an FTP server to the client and an FTP client to the target, and it mediates the data connection as well as the control one. The data connection is the reason this cannot be a layer 4 listener. Every transfer happens on a second connection whose address one side announces to the other, in the body of a reply. A proxy that forwards that reply has told the client to go round it: the file then travels between the client and the target with nothing in the middle, and the control connection it did read is a list of instructions for a transfer it never saw. So the addresses are rewritten, and the proxy is one end of both connections. The other reason is that FTP is old enough to have an attack named after it. A client can name any address in PORT, and a proxy that obeys is a port scanner and a relay for anyone who can log in — the bounce attack of CERT CA-1997-27. Active mode is therefore off by default, and when it is on the announced address has to be the client's own.",
       "type": "object",
@@ -1648,7 +1629,7 @@
           "description": "ICAP hands transferred files to a scanning service.",
           "allOf": [
             {
-              "$ref": "#/$defs/FTPICAP"
+              "$ref": "#/$defs/TransferICAP"
             }
           ]
         },
@@ -4381,6 +4362,14 @@
             "type": "string"
           }
         },
+        "icap": {
+          "description": "ICAP hands written files to a scanning service. SFTP has no whole-file transfer: a file is a handle, a run of writes at offsets, and a close. So the proxy holds the writes rather than forwarding them, answers the client itself, scans what the file turned out to be when the handle is closed, and only then replays the writes to the server. A file the scanner refuses never reaches it, at the cost of holding it in memory until the close -- bounded by the service's max_body, past which body_limit_action decides.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TransferICAP"
+            }
+          ]
+        },
         "max_file_bytes": {
           "description": "MaxFileBytes bounds what one open file may be written. 0 is no bound. It is counted per handle, from the highest offset a write reaches, so a client cannot walk past it by writing out of order.",
           "type": "integer"
@@ -5628,6 +5617,25 @@
         },
         "trust_incoming": {
           "description": "TrustIncoming honours the sampled flag of an incoming traceparent. Off (the default) the incoming trace id is continued for correlation but the sampling decision stays local, so a client cannot force every request into the exporter.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TransferICAP": {
+      "description": "TransferICAP scans the files a session moves (RFC 3507), for the kinds that move files rather than requests: ftp and sftp. A transfer is not an HTTP message, so the file is wrapped in the request or the response a scanner expects, which is what every ICAP scanner is built to read; the URL it sees names the real file, so a log at the scanner points at something an operator can find. Scanning holds the file: a verdict that arrives after the bytes is not a control. What that costs differs by protocol, and is written down under each listener.",
+      "type": "object",
+      "properties": {
+        "downloads": {
+          "description": "Downloads scans the files a client fetches through RESPMOD. Default false, because a download doubles the bytes on the wire and most deployments trust what their own server already holds.",
+          "type": "boolean"
+        },
+        "service": {
+          "description": "Service names an entry in icap.services. Required.",
+          "type": "string"
+        },
+        "uploads": {
+          "description": "Uploads scans the files a client sends through REQMOD. Default true: a file arriving on a server is the direction that matters most.",
           "type": "boolean"
         }
       },
