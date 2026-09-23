@@ -341,6 +341,12 @@ func applyDefaults(c *Config) {
 				yaraDefaults(f.YARA)
 				f.YARA.Directions = []string{"client"}
 			}
+			if f.Recording != nil {
+				sessionRecordingDefaults(f.Recording)
+			}
+			if f.MFA != nil {
+				mfaDefaults(f.MFA)
+			}
 		}
 		if g := s.Listeners[i].Syslog; g != nil {
 			if g.UDP == nil {
@@ -1072,7 +1078,6 @@ func mfaDefaults(m *MFAPolicy) {
 	setInt(&m.MaxUsers, 10000)
 }
 
-// yaraDefaults fills a YARA policy wherever it is used.
 // sessionRecordingDefaults fills one recording section, the listener's or a
 // principal's.
 func sessionRecordingDefaults(r *SessionRecording) {

@@ -2545,8 +2545,82 @@ T}
 A control line that is not exactly CRLF\-terminated is refused, and so is one carrying a telnet \fBIAC\fR. Each of them is a way for the proxy and the target to disagree about where a command ends, which is how one command becomes two: the proxy reads \fBNOOP\fR and the target reads \fBNOOP\fR and the \fBDELE\fR hidden after a bare newline.
 .PP
 Only the side that arranged a data connection may use it: a passive connection has to come from the client\(aqs own address, an active one from the target\(aqs. \fBPROT P\fR is terminated on both sides rather than tunnelled, so a protected transfer is still a transfer this proxy can hold to \fBmax_file_bytes\fR and to its rules. \fBCCC\fR is refused: clearing the control channel after \fBAUTH TLS\fR puts the rest of the session, including every path, back in clear on the wire.
+.SS "server.listeners[].ftp.recording"
 .PP
-Counters: \fBftp_sessions\fR, \fBftp_sessions_open\fR, \fBftp_transfers\fR, \fBftp_refused\fR, \fBftp_rejected\fR, \fBftp_auth_failed\fR. Every session writes an \fBftp\fR access line and every transfer an \fBftp_transfer\fR line with the command, the path, the octets and whether it was cut. Refusals are \fBftp_denied\fR for the ban triggers.
+Writes the control channel \-\- every command and every reply \-\- to one file per session, in the asciicast v2 format the ssh bastion uses, so the same player replays it. The fields are the ones documented under \fBserver.listeners[].ssh.recording\fR: \fBenabled\fR, \fBdirectory\fR, \fBfile_prefix\fR, \fBmax_file_bytes\fR, \fBmax_files\fR. (\fBinput\fR and \fBcommands\fR are ssh\(aqs and are ignored here: an ftp dialogue has one stream, and the proxy already sees both halves of it.)
+.PP
+The file is opened when the login is accepted, so a connection that never authenticates writes none. \fBPASS\fR and \fBACCT\fR arguments are written as \fB<redacted>\fR: a recording an operator cannot safely keep is one that gets turned off. The transferred bytes are not in the file either \-\- each transfer leaves a one\-line mark saying what moved, how much and how it ended \-\- because a copy of every file that crossed the proxy is a second copy of the data to look after.
+.SS "server.listeners[].ftp.icap"
+.PP
+Hands transferred files to a scanning service (RFC 3507) named in \fBicap.services\fR.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(0.9i) lbx
+lw(1.0i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBservice\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The name of an entry in \fBicap.\:services\fR. Validation refuses a name that is not there
+T}
+T{
+\fBuploads\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Scan \fBSTOR\fR,\: \fBSTOU\fR and \fBAPPE\fR through REQMOD
+T}
+T{
+\fBdownloads\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Scan \fBRETR\fR through RESPMOD. Off by default because it doubles the bytes on the wire and most deployments trust what their own server already holds
+T}
+.TE
+.PP
+A transfer is not an HTTP message, so the file is wrapped in the one a scanner expects: a \fBPUT\fR for an upload, a \fBGET\fR and its response for a download, with the \fBftp://\fR URL of the real file so the scanner\(aqs own log names something findable, the client address in \fBX\-Client\-IP\fR and the login in \fBX\-Authenticated\-User\fR. Directory listings are not sent: they are not files.
+.PP
+Scanning means holding the file until the service answers, because a verdict that arrives after the bytes have gone is not a control. The service\(aqs own \fBmax_body\fR, \fBbody_limit_action\fR and \fBfail\fR apply exactly as they do to an HTTP body: a file past \fBmax_body\fR is refused, or passed unscanned with a warning in the security log where \fBbody_limit_action: bypass\fR says so; a service that cannot be reached refuses the transfer unless \fBfail: open\fR, which also logs. A blocked transfer is cut and the client gets \fB426\fR naming the reason.
+.SS "server.listeners[].ftp.mfa"
+.PP
+Asks for a second factor after the target accepts the password, on the control channel, before any other command is allowed. The fields are the ones documented under \fBserver.listeners[].ssh.mfa\fR.
+.PP
+FTP has no prompt of its own, so the code is taken the only two ways the protocol allows:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fB\fBACCT\fR\fR, which RFC 959 defines for exactly this. The proxy answers the accepted password with \fB332\fR and takes the code as the argument of the \fBACCT\fR that follows. \fBACCT\fR is added to the relayed commands automatically when this section is present.
+.PP
+.ti -3n
+\(bu
+\fBAppended to the password\fR, after a comma: \fBPASS secret,123456\fR. The proxy takes the code off and the target sees only the password. This needs nothing of the client at all, which is what most one\-time\-password FTP deployments rely on.
+.RE
+.PP
+.PP
+Until the factor is verified the session is not logged in: every command but \fBACCT\fR, \fBQUIT\fR, \fBNOOP\fR, \fBFEAT\fR, \fBHELP\fR, \fBSTAT\fR, \fBSYST\fR and \fBREIN\fR is refused with \fB530\fR. A user with no enrolment is refused where \fBrequire_enrolment\fR is on, because an optional second factor is one an attacker can decline by using an account that never enrolled. Wrong codes count against \fBmax_errors\fR and feed the ban triggers, since a client working through codes is doing what one working through passwords does.
+.PP
+Validation warns when \fBmfa\fR is set with \fBtls_mode: none\fR: the code then crosses the network in clear beside the password it is meant to back up.
+.PP
+Counters: \fBftp_sessions\fR, \fBftp_sessions_open\fR, \fBftp_transfers\fR, \fBftp_refused\fR, \fBftp_rejected\fR, \fBftp_auth_failed\fR, \fBftp_scanned\fR, \fBftp_scan_blocked\fR, \fBftp_recorded\fR, \fBftp_mfa_ok\fR, \fBftp_mfa_failed\fR. Every session writes an \fBftp\fR access line and every transfer an \fBftp_transfer\fR line with the command, the path, the octets and whether it was cut; a finished recording writes \fBftp_recording\fR with the file and its size. Refusals are \fBftp_denied\fR for the ban triggers, and a refused factor is \fBftp_mfa_failed\fR.
 .SS "server.listeners[].ssh (kind: ssh)"
 .PP
 A \fBkind: ssh\fR listener is an SSH bastion: the proxy is an SSH server to the client and an SSH client to the target, with its own host key, its own authentication and its own credential onwards.

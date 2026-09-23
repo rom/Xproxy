@@ -18,9 +18,11 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/ftp"
+	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/sessionrec"
 	"github.com/rom/xproxy/internal/sftp"
 	"github.com/rom/xproxy/internal/streamscan"
 	"github.com/rom/xproxy/internal/textsafe"
@@ -48,6 +50,11 @@ type server struct {
 	loPort   int
 	hiPort   int
 
+	// recorder writes what a session did, when one is configured.
+	recorder *sessionrec.Policy
+	// mfaGuard holds the second factor's enrolments and its lockout.
+	mfaGuard *mfa.Guard
+
 	open atomic.Int64
 	wg   sync.WaitGroup
 	mu   sync.Mutex
@@ -74,6 +81,22 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 		verbs: map[string]bool{}, cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
 	for _, c := range f.Commands {
 		t.verbs[strings.ToUpper(strings.TrimSpace(c))] = true
+	}
+	t.recorder = sessionrec.New(f.Recording)
+	if f.MFA != nil {
+		store, err := mfa.Load(f.MFA.File)
+		if err != nil {
+			return nil, fmt.Errorf("ftp mfa: %w", err)
+		}
+		t.mfaGuard = mfa.NewGuard(store, f.MFA.Skew, mfa.Lockout{
+			MaxFailures: f.MFA.MaxFailures,
+			Window:      f.MFA.Window.D(),
+			Duration:    f.MFA.Duration.D(),
+			MaxUsers:    f.MFA.MaxUsers,
+		})
+		// ACCT carries the code, so it has to be a verb this listener
+		// relays even where the operator did not list it.
+		t.verbs["ACCT"] = true
 	}
 	for _, c := range f.AllowClients {
 		p, err := netip.ParsePrefix(c)
@@ -280,6 +303,17 @@ type session struct {
 	data *dataConn
 	// policy is the session's, with {user} resolved.
 	policy *ftpPolicy
+	// rec is this session's recording, when one is configured.
+	rec *sessionrec.Recording
+	// mfa is where the second factor has got to.
+	mfa mfaState
+	// pending is a code taken off a PASS argument, waiting for the
+	// target to accept the password it came with.
+	pending string
+	// preLogin holds the dialogue until there is a login to name the
+	// recording after; preLoginDropped counts what did not fit.
+	preLogin        []preLoginEvent
+	preLoginDropped int
 }
 
 func (t *server) handle(client net.Conn) {
@@ -291,6 +325,9 @@ func (t *server) handle(client net.Conn) {
 	s.Counters().FTPSessionsOpen.Add(1)
 	defer s.Counters().FTPSessionsOpen.Add(-1)
 	defer func() { se.closeData() }()
+	// The recording is opened at login and closed here, so a session
+	// that ends any way at all still leaves a complete file.
+	defer func() { se.closeRecording() }()
 
 	if !t.clientAllowed(se.ip) {
 		s.Counters().FTPRejected.Add(1)
@@ -441,6 +478,7 @@ func (se *session) upstreamTLS(ep *upstream.Endpoint) *tls.Config {
 }
 
 func (se *session) toClient(b []byte) error {
+	se.recordLine(b)
 	if _, err := se.cw.Write(b); err != nil {
 		return err
 	}
@@ -506,6 +544,7 @@ func (se *session) loop() string {
 			}
 			continue
 		}
+		se.recordCommand(cmd)
 		done, reason := se.command(cmd)
 		if done {
 			return reason
@@ -527,6 +566,29 @@ func (se *session) command(c wire.Command) (bool, string) {
 	case !t.verbs[c.Verb]:
 		if !se.refuse(502, "command not allowed", "command_refused", c.Verb) {
 			return true, "too_many_errors"
+		}
+		return false, ""
+	}
+	// Between the password and the second factor the session is not
+	// logged in. Only the command that carries the code, and the ones
+	// that end or describe the session, are allowed through.
+	if se.mfa == mfaWanted && !mfaPreAuth[c.Verb] {
+		if !se.refuse(530, "a one-time code is required first", "mfa_required", c.Verb) {
+			return true, "too_many_errors"
+		}
+		return false, ""
+	}
+	if c.Verb == "ACCT" && se.mfa == mfaWanted {
+		if err := se.toClient(se.verifyFactor(strings.TrimSpace(c.Arg))); err != nil {
+			return true, "write"
+		}
+		if se.mfa == mfaWanted {
+			// Still owed: a wrong code counts against max_errors like
+			// any other refusal.
+			se.errors++
+			if se.errors >= t.f.MaxErrors {
+				return true, "too_many_errors"
+			}
 		}
 		return false, ""
 	}
@@ -571,6 +633,14 @@ func (se *session) command(c wire.Command) (bool, string) {
 	if wire.Transfers[c.Verb] {
 		return se.transfer(c)
 	}
+	if c.Verb == "PASS" && se.t.mfaGuard != nil {
+		// A client with no ACCT of its own appends the code to the
+		// password. The target must not see it, so it is taken off
+		// here and checked once the password itself is accepted.
+		pass, code := splitCode(c.Arg)
+		se.pending = code
+		c.Arg = pass
+	}
 	return se.relay(c)
 }
 
@@ -596,6 +666,21 @@ func (se *session) relay(c wire.Command) (bool, string) {
 		return true, "upstream_read"
 	}
 	se.follow(c, rep)
+	if se.mfa == mfaWanted && (c.Verb == "PASS" || c.Verb == "ACCT") {
+		// A code appended to the password is checked now; otherwise
+		// the client is asked for one with the 332 RFC 959 defines for
+		// exactly this.
+		out := wire.Line(332, se.factorPrompt())
+		if se.pending != "" {
+			code := se.pending
+			se.pending = ""
+			out = se.verifyFactor(code)
+		}
+		if err := se.toClient(out); err != nil {
+			return true, "write"
+		}
+		return false, ""
+	}
 	if err := se.toClient(rep.Format()); err != nil {
 		return true, "write"
 	}
@@ -614,6 +699,12 @@ func (se *session) follow(c wire.Command, rep wire.Reply) {
 		if rep.Code >= 200 && rep.Code < 300 {
 			se.authed = true
 			se.resolvePolicy()
+			se.openRecording()
+			if se.mfa == mfaNotNeeded && se.wantsFactor() {
+				// The password was right; the session is not logged in
+				// until the factor is too.
+				se.mfa = mfaWanted
+			}
 			se.t.engine.Logs().SecurityEvent(context.Background(), "allow", "ftp_login",
 				"listener", se.t.cfg.Name, "client_ip", se.ip.String(),
 				"user", textsafe.Clip64(se.user), "target", se.target, "tls", se.secure)
@@ -1067,6 +1158,7 @@ func (se *session) transfer(c wire.Command) (bool, string) {
 	se.t.engine.Logs().Access.Info("ftp_transfer", "listener", se.t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "target", se.target, "command", c.Verb,
 		"path", textsafe.Clip256(se.resolve(c.Arg)), "bytes", n, "cut", cut)
+	se.recordTransfer(c.Verb, se.resolve(c.Arg), n, cut)
 
 	// The target's own completion reply follows the transfer.
 	fin, err := wire.ReadReply(se.ur)
@@ -1147,6 +1239,16 @@ func (se *session) moveData(d *dataConn, c wire.Command, upload bool) (int64, st
 	var scan *streamscan.Stream
 	if upload && se.policy.yara != nil {
 		scan = se.policy.yara.Stream("client")
+	}
+	// A listing is not a file; only the transfers that carry one are
+	// worth a scanner's time.
+	if svc := se.t.icapFor(upload); svc != nil && wire.Uploads[c.Verb] == upload && c.Verb != "LIST" && c.Verb != "NLST" && c.Verb != "MLSD" {
+		n, reason := se.scanned(svc, dst, src, c, upload, scan)
+		if reason != "" {
+			se.t.engine.Counters().FTPRefused.Add(1)
+			se.t.deny(se.ip, "transfer_cut", reason+" "+textsafe.Clip256(se.resolve(c.Arg)))
+		}
+		return n, reason
 	}
 	n, reason := se.copyData(dst, src, scan)
 	if reason != "" {

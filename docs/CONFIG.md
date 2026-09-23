@@ -943,11 +943,90 @@ so a protected transfer is still a transfer this proxy can hold to
 control channel after `AUTH TLS` puts the rest of the session, including
 every path, back in clear on the wire.
 
+#### server.listeners[].ftp.recording
+
+Writes the control channel -- every command and every reply -- to one
+file per session, in the asciicast v2 format the ssh bastion uses, so
+the same player replays it. The fields are the ones documented under
+`server.listeners[].ssh.recording`: `enabled`, `directory`,
+`file_prefix`, `max_file_bytes`, `max_files`. (`input` and `commands`
+are ssh's and are ignored here: an ftp dialogue has one stream, and the
+proxy already sees both halves of it.)
+
+The file is opened when the login is accepted, so a connection that
+never authenticates writes none. `PASS` and `ACCT` arguments are
+written as `<redacted>`: a recording an operator cannot safely keep is
+one that gets turned off. The transferred bytes are not in the file
+either -- each transfer leaves a one-line mark saying what moved, how
+much and how it ended -- because a copy of every file that crossed the
+proxy is a second copy of the data to look after.
+
+#### server.listeners[].ftp.icap
+
+Hands transferred files to a scanning service (RFC 3507) named in
+`icap.services`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `service` | string | required | The name of an entry in `icap.services`. Validation refuses a name that is not there |
+| `uploads` | bool | `true` | Scan `STOR`, `STOU` and `APPE` through REQMOD |
+| `downloads` | bool | `false` | Scan `RETR` through RESPMOD. Off by default because it doubles the bytes on the wire and most deployments trust what their own server already holds |
+
+A transfer is not an HTTP message, so the file is wrapped in the one a
+scanner expects: a `PUT` for an upload, a `GET` and its response for a
+download, with the `ftp://` URL of the real file so the scanner's own
+log names something findable, the client address in `X-Client-IP` and
+the login in `X-Authenticated-User`. Directory listings are not sent:
+they are not files.
+
+Scanning means holding the file until the service answers, because a
+verdict that arrives after the bytes have gone is not a control. The
+service's own `max_body`, `body_limit_action` and `fail` apply exactly
+as they do to an HTTP body: a file past `max_body` is refused, or
+passed unscanned with a warning in the security log where
+`body_limit_action: bypass` says so; a service that cannot be reached
+refuses the transfer unless `fail: open`, which also logs. A blocked
+transfer is cut and the client gets `426` naming the reason.
+
+#### server.listeners[].ftp.mfa
+
+Asks for a second factor after the target accepts the password, on the
+control channel, before any other command is allowed. The fields are
+the ones documented under `server.listeners[].ssh.mfa`.
+
+FTP has no prompt of its own, so the code is taken the only two ways
+the protocol allows:
+
+- **`ACCT`**, which RFC 959 defines for exactly this. The proxy answers
+  the accepted password with `332` and takes the code as the argument
+  of the `ACCT` that follows. `ACCT` is added to the relayed commands
+  automatically when this section is present.
+- **Appended to the password**, after a comma: `PASS secret,123456`.
+  The proxy takes the code off and the target sees only the password.
+  This needs nothing of the client at all, which is what most
+  one-time-password FTP deployments rely on.
+
+Until the factor is verified the session is not logged in: every
+command but `ACCT`, `QUIT`, `NOOP`, `FEAT`, `HELP`, `STAT`, `SYST` and
+`REIN` is refused with `530`. A user with no enrolment is refused where
+`require_enrolment` is on, because an optional second factor is one an
+attacker can decline by using an account that never enrolled. Wrong
+codes count against `max_errors` and feed the ban triggers, since a
+client working through codes is doing what one working through
+passwords does.
+
+Validation warns when `mfa` is set with `tls_mode: none`: the code then
+crosses the network in clear beside the password it is meant to back
+up.
+
 Counters: `ftp_sessions`, `ftp_sessions_open`, `ftp_transfers`,
-`ftp_refused`, `ftp_rejected`, `ftp_auth_failed`. Every session writes
-an `ftp` access line and every transfer an `ftp_transfer` line with the
-command, the path, the octets and whether it was cut. Refusals are
-`ftp_denied` for the ban triggers.
+`ftp_refused`, `ftp_rejected`, `ftp_auth_failed`, `ftp_scanned`,
+`ftp_scan_blocked`, `ftp_recorded`, `ftp_mfa_ok`, `ftp_mfa_failed`.
+Every session writes an `ftp` access line and every transfer an
+`ftp_transfer` line with the command, the path, the octets and whether
+it was cut; a finished recording writes `ftp_recording` with the file
+and its size. Refusals are `ftp_denied` for the ban triggers, and a
+refused factor is `ftp_mfa_failed`.
 
 ### server.listeners[].ssh (kind: ssh)
 

@@ -186,7 +186,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		// No Retire: this is the first generation, so there is nothing
 		// for the plane to hand back.
 		commit, _, err := pl.Prepare(Generation{
-			Config: cfg, Number: gen, Pools: rt.pools, Trusted: rt.trusted,
+			Config: cfg, Number: gen, Pools: rt.pools, Trusted: rt.trusted, ICAP: rt.icap,
 		})
 		if err != nil {
 			unwind()
@@ -589,7 +589,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 	if pl := s.planeOrNil(); pl != nil {
 		planeRetires = true
 		commitPlane, discardPlane, err = pl.Prepare(Generation{
-			Config: cfg, Number: gen, Pools: rt.pools, Trusted: rt.trusted,
+			Config: cfg, Number: gen, Pools: rt.pools, Trusted: rt.trusted, ICAP: rt.icap,
 			Retire: func() { old.stop() },
 		})
 		if err != nil {

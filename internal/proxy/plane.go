@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"github.com/rom/xproxy/internal/icap"
 	"net/netip"
 
 	"github.com/rom/xproxy/internal/apiinv"
@@ -11,7 +12,6 @@ import (
 	"github.com/rom/xproxy/internal/filters/accountguard"
 	"github.com/rom/xproxy/internal/filters/botscore"
 	"github.com/rom/xproxy/internal/geoip"
-	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/tracing"
@@ -62,6 +62,9 @@ type Generation struct {
 	Number  uint64
 	Pools   map[string]*upstream.Pool
 	Trusted []netip.Prefix
+	// ICAP is the scanning services of this generation, by name. The
+	// engine builds them because kinds outside the plane use them too.
+	ICAP map[string]*icap.Service
 
 	// Retire releases the generation this one supersedes — its upstream
 	// pools and the transports they hold. The plane calls it once the
@@ -82,7 +85,6 @@ type PlaneStatus interface {
 	WAFExclusions() string
 	WAFReset()
 	Filters() []FilterStatus
-	ICAP() []icap.Status
 	GeoIP() (geoip.Status, bool)
 	CacheStats() (cache.Stats, bool)
 	PurgeCache(host, prefix string) (int, bool)

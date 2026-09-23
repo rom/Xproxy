@@ -144,6 +144,12 @@ func NewService(cfg config.ICAPService) (*Service, error) {
 // Name returns the service name.
 func (s *Service) Name() string { return s.cfg.Name }
 
+// Config is the section this service was built from. A caller outside
+// the HTTP data plane -- an ftp or sftp transfer -- needs the same
+// bounds and the same fail direction that a route gets, and this is
+// where they are written down.
+func (s *Service) Config() config.ICAPService { return s.cfg }
+
 // Status is the management view of a service.
 type Status struct {
 	Name         string `json:"name"`

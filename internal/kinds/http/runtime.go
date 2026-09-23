@@ -247,11 +247,13 @@ func wafSelection(cfg *config.Config, r *config.Route) (profile string, mode waf
 }
 
 func newRuntime(cfg *config.Config, generation uint64, pools map[string]*upstream.Pool, trusted []netip.Prefix,
+	services map[string]*icap.Service,
 	log *slog.Logger, events *eventBus, wafStats *waf.Stats,
 	patches *patchCounters, tokens *honeytokenCounters) (*runtime, error) {
 	rt := &runtime{
 		cfg:        cfg,
 		generation: generation,
+		icap:       services,
 		patches:    compilePatches(cfg.VirtualPatches, patches),
 		router:     router.New(cfg.Routes),
 		pools:      pools,
@@ -333,21 +335,6 @@ func newRuntime(cfg *config.Config, generation uint64, pools map[string]*upstrea
 				return nil, err
 			}
 			rt.jwt[pc.Name] = p
-		}
-	}
-	if cfg.ICAP != nil {
-		rt.icap = make(map[string]*icap.Service, len(cfg.ICAP.Services))
-		for i := range cfg.ICAP.Services {
-			sc := cfg.ICAP.Services[i]
-			svc, err := icap.NewService(sc)
-			if err != nil {
-				rt.stop()
-				return nil, err
-			}
-			if !svc.Status().Reachable {
-				log.Warn("icap service unreachable at load", "service", sc.Name, "url", sc.URL, "fail", sc.Fail)
-			}
-			rt.icap[sc.Name] = svc
 		}
 	}
 	if cfg.GeoIP != nil {
@@ -689,9 +676,6 @@ func (rt *runtime) stopChecks() {
 func (rt *runtime) stop() {
 	for _, p := range rt.jwt {
 		p.Stop()
-	}
-	for _, s := range rt.icap {
-		s.Close()
 	}
 	for _, cf := range rt.filters {
 		if c, ok := cf.f.(filter.Closer); ok {

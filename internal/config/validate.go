@@ -12,6 +12,7 @@ import (
 	"github.com/rom/xproxy/internal/yara"
 	"mime"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"crypto/tls"
@@ -63,6 +64,30 @@ type validator struct {
 	// fileCheck is true when file existence should be verified. Tests turn
 	// this off.
 	fileCheck bool
+	// icapNames is every service icap.services defines, so a section
+	// that names one is told at load rather than at the first file it
+	// tries to scan.
+	icapNames map[string]bool
+}
+
+// icapRef checks that a section names a service that exists. A name
+// that does not is a scanner nobody notices is missing until a file
+// goes past unscanned, or a session fails, depending on which way the
+// service was told to fail.
+func (v *validator) icapRef(p, name string) {
+	if v.icapNames[name] {
+		return
+	}
+	if len(v.icapNames) == 0 {
+		v.errf("%s: %q, but no icap.services are configured", p, name)
+		return
+	}
+	have := make([]string, 0, len(v.icapNames))
+	for n := range v.icapNames {
+		have = append(have, n)
+	}
+	sort.Strings(have)
+	v.errf("%s: no icap service named %q; configured: %s", p, name, strings.Join(have, ", "))
 }
 
 func (v *validator) errf(format string, args ...interface{}) {
@@ -88,7 +113,12 @@ func ValidateNoFiles(c *Config) error {
 }
 
 func validate(c *Config, files bool) error {
-	v := &validator{fileCheck: files}
+	v := &validator{fileCheck: files, icapNames: map[string]bool{}}
+	if c.ICAP != nil {
+		for i := range c.ICAP.Services {
+			v.icapNames[c.ICAP.Services[i].Name] = true
+		}
+	}
 	v.config(c)
 	c.advice = v.advice
 	if len(v.problems) == 0 {
@@ -3260,6 +3290,13 @@ func (v *validator) sessionRecording(p string, r *SessionRecording, reqs map[str
 	if r.Input {
 		v.warnf("%s.input: the input stream carries what the screen never showed, including every password typed into a sudo or su prompt", p)
 	}
+	// reqs is the ssh request policy, and nil for a kind whose sessions
+	// are not made of ssh channel requests: an ftp control channel is
+	// always recordable, so there is nothing here that could make the
+	// section write nothing.
+	if reqs == nil {
+		return
+	}
 	recordsShell := reqs["shell"]
 	recordsExec := reqs["exec"] && (r.Commands == nil || *r.Commands)
 	if !recordsShell && !recordsExec {
@@ -5482,6 +5519,28 @@ func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 	for i, c := range f.AllowClients {
 		if _, err := netip.ParsePrefix(c); err != nil {
 			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+	if f.Recording != nil {
+		v.sessionRecording(p+".recording", f.Recording, nil)
+	}
+	if f.MFA != nil {
+		v.mfaPolicy(p+".mfa", f.MFA)
+		if f.TLSMode == "none" {
+			v.warnf("%s.mfa: without tls_mode the code crosses the network in clear beside the password it is meant to back up", p)
+		}
+	}
+	if f.ICAP != nil {
+		if f.ICAP.Service == "" {
+			v.errf("%s.icap.service: required", p)
+		} else {
+			v.icapRef(p+".icap.service", f.ICAP.Service)
+		}
+		if !f.ICAP.ScansUploads() && !f.ICAP.ScansDownloads() {
+			v.errf("%s.icap: neither uploads nor downloads is scanned, so the service would never be asked", p)
+		}
+		if f.ReadOnly && !f.ICAP.ScansDownloads() {
+			v.warnf("%s.icap: the listener is read_only, so there are no uploads to scan; set downloads: true or drop the section", p)
 		}
 	}
 }

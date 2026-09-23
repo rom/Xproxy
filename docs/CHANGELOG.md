@@ -326,6 +326,42 @@ Open findings of the earlier rounds:
   defaults. A request that does not fit is refused with 503 before it
   is read.
 
+### Added (1.4)
+
+- **The ftp relay records, scans and can ask for a second factor.**
+  Three sections, each the same shape as its equivalent elsewhere, so
+  an operator who has configured the bastion has configured this:
+  - `ftp.recording` writes the control channel -- every command, every
+    reply, a mark per transfer -- as asciicast v2, replayable in the
+    same player as an ssh session. `PASS` and `ACCT` arguments are
+    redacted and the transferred bytes stay out: a recording an
+    operator cannot safely keep is one that gets turned off, and a copy
+    of every file that crossed the proxy is a second copy of the data
+    to look after. The login exchange is held in memory until the
+    login succeeds and then written into the file, so the file names
+    the person and a connection that never authenticates writes none.
+  - `ftp.icap` hands `STOR`, `STOU` and `APPE` to a scanner through
+    REQMOD, and `RETR` through RESPMOD where `downloads: true`. The
+    file is wrapped in the HTTP message a scanner expects, with the
+    `ftp://` URL of the real file so the scanner's log names something
+    findable. The transfer is held until the verdict arrives, because
+    one that comes after the bytes is not a control; the service's own
+    `max_body`, `body_limit_action` and `fail` apply as they do to an
+    HTTP body, and both of the ways a file can go unscanned say so in
+    the log. Listings are not sent: they are not files.
+  - `ftp.mfa` asks for a code after the password, by the two routes the
+    protocol allows -- as the argument of `ACCT` after a `332`, or
+    appended to the password after a comma for clients that have no
+    `ACCT` of their own. Until it is verified the session is not logged
+    in. The code never reaches the target.
+- **ICAP services belong to the engine rather than to the HTTP data
+  plane.** The kinds that hand a file to a scanner are not all in the
+  daemon that has a plane -- ftp is in xrelay, sftp in xgate -- so one
+  `icap.services` list now serves whichever daemon reads it, through
+  `Host.ICAPService`. `/v1/icap` reports them in every daemon. A
+  section naming a service that does not exist is refused at load
+  rather than at the first file it tries to scan.
+
 ### Changed (1.4)
 
 - **Session recording is a package of its own** (`internal/sessionrec`),

@@ -437,7 +437,44 @@ type FTPListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+	// Recording writes the control channel -- every command and every
+	// reply -- to a file per session, with a note where each transfer
+	// happened. The transferred bytes are not in it: a recording is
+	// what was done, and a copy of every file moved through the proxy
+	// is a second copy of the data to look after.
+	Recording *SessionRecording `yaml:"recording"`
+	// ICAP hands transferred files to a scanning service.
+	ICAP *FTPICAP `yaml:"icap"`
+	// MFA asks for a second factor after the password is accepted, on
+	// the control channel, before any other command is allowed. An FTP
+	// client has no prompt of its own, so the code is taken the only
+	// way the protocol allows: as the argument of ACCT, or appended to
+	// the password.
+	MFA *MFAPolicy `yaml:"mfa"`
 }
+
+// FTPICAP scans what an ftp session moves (RFC 3507). A transfer is
+// not an HTTP message, so the file is wrapped in the request or the
+// response a scanner expects, which is what every ICAP scanner is
+// built to read; the URL it sees is the ftp one, so a log at the
+// scanner names the real file.
+type FTPICAP struct {
+	// Service names an entry in icap.services. Required.
+	Service string `yaml:"service"`
+	// Uploads scans STOR, STOU and APPE through REQMOD. Default true:
+	// a file arriving on a server is the direction that matters most.
+	Uploads *bool `yaml:"uploads"`
+	// Downloads scans RETR through RESPMOD. Default false, because a
+	// download doubles the bytes on the wire and most deployments
+	// trust what their own server already holds.
+	Downloads bool `yaml:"downloads"`
+}
+
+// ScansUploads reports whether STOR and its relatives are scanned.
+func (f *FTPICAP) ScansUploads() bool { return f != nil && (f.Uploads == nil || *f.Uploads) }
+
+// ScansDownloads reports whether RETR is scanned.
+func (f *FTPICAP) ScansDownloads() bool { return f != nil && f.Downloads }
 
 // SSHListener is an SSH bastion: the proxy is an SSH server to the
 // client and an SSH client to the target, with its own host key, its

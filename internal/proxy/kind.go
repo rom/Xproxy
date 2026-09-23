@@ -14,6 +14,7 @@ import (
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dns"
+	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/logging"
@@ -44,6 +45,11 @@ type Host interface {
 	Bans() *ban.List
 	// Pool returns a configured upstream pool by name, or nil.
 	Pool(name string) *upstream.Pool
+	// ICAPService returns a scanning service from icap.services by
+	// name, or nil. The engine owns these rather than the data plane,
+	// because the kinds that hand a file to a scanner are not all in
+	// the daemon that has a plane: ftp is in xrelay, sftp in xgate.
+	ICAPService(name string) *icap.Service
 	// Limits are the server-wide bounds a listener inherits.
 	Limits() config.Limits
 

@@ -116,6 +116,11 @@ type Stats struct {
 	FTPRejected            atomic.Uint64
 	FTPAuthFailed          atomic.Uint64
 	FTPTransfers           atomic.Uint64
+	FTPScanned             atomic.Uint64
+	FTPScanBlocked         atomic.Uint64
+	FTPRecorded            atomic.Uint64
+	FTPMFAOK               atomic.Uint64
+	FTPMFAFailed           atomic.Uint64
 	SyslogReceived         atomic.Uint64
 	SyslogForwarded        atomic.Uint64
 	SyslogDropped          atomic.Uint64
@@ -322,6 +327,11 @@ type Snapshot struct {
 	FTPRejected            uint64            `json:"ftp_rejected"`
 	FTPAuthFailed          uint64            `json:"ftp_auth_failed"`
 	FTPTransfers           uint64            `json:"ftp_transfers"`
+	FTPScanned             uint64            `json:"ftp_scanned"`
+	FTPScanBlocked         uint64            `json:"ftp_scan_blocked"`
+	FTPRecorded            uint64            `json:"ftp_recorded"`
+	FTPMFAOK               uint64            `json:"ftp_mfa_ok"`
+	FTPMFAFailed           uint64            `json:"ftp_mfa_failed"`
 	SyslogReceived         uint64            `json:"syslog_received"`
 	SyslogForwarded        uint64            `json:"syslog_forwarded"`
 	SyslogDropped          uint64            `json:"syslog_dropped"`
@@ -493,6 +503,11 @@ func (s *Stats) snapshot() Snapshot {
 		FTPRejected:            s.FTPRejected.Load(),
 		FTPAuthFailed:          s.FTPAuthFailed.Load(),
 		FTPTransfers:           s.FTPTransfers.Load(),
+		FTPScanned:             s.FTPScanned.Load(),
+		FTPScanBlocked:         s.FTPScanBlocked.Load(),
+		FTPRecorded:            s.FTPRecorded.Load(),
+		FTPMFAOK:               s.FTPMFAOK.Load(),
+		FTPMFAFailed:           s.FTPMFAFailed.Load(),
 		SyslogReceived:         s.SyslogReceived.Load(),
 		SyslogForwarded:        s.SyslogForwarded.Load(),
 		SyslogDropped:          s.SyslogDropped.Load(),
