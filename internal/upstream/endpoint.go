@@ -29,7 +29,15 @@ type Endpoint struct {
 	// cancel stops the endpoint's health loop when discovery removes it.
 	cancel context.CancelFunc
 
-	healthy   atomic.Bool  // active health check result
+	healthy atomic.Bool // active health check result
+	// draining is an operator's decision to stop sending new work here
+	// while what is already running finishes. It is not a health
+	// result and is never set by a probe; see drain.go.
+	draining atomic.Bool
+	// maxActive bounds the requests or connections in flight here at
+	// once; 0 is no bound. Set when the endpoint is built and not
+	// changed afterwards, so it needs no atomic.
+	maxActive int64
 	ejectedNS atomic.Int64 // passive ejection expiry, unix nanos; 0 = none
 	active    atomic.Int64 // in-flight requests
 	failures  atomic.Int64 // consecutive passive failures
@@ -48,6 +56,12 @@ type Endpoint struct {
 
 // Available reports whether the endpoint may receive traffic now.
 func (e *Endpoint) Available(now time.Time) bool {
+	// Draining is checked first because it is a decision rather than a
+	// measurement: a healthy endpoint somebody is about to patch must
+	// not be picked because it is still answering.
+	if e.draining.Load() {
+		return false
+	}
 	if !e.healthy.Load() {
 		return false
 	}
@@ -103,11 +117,16 @@ func (e *Endpoint) Active() int64 { return e.active.Load() }
 
 // Stats is a snapshot of an endpoint for the management API.
 type Stats struct {
-	Address   string `json:"address"`
-	Weight    int    `json:"weight"`
-	Canary    bool   `json:"canary,omitempty"`
-	Healthy   bool   `json:"healthy"`
-	Ejected   bool   `json:"ejected"`
+	Address string `json:"address"`
+	Weight  int    `json:"weight"`
+	Canary  bool   `json:"canary,omitempty"`
+	Healthy bool   `json:"healthy"`
+	Ejected bool   `json:"ejected"`
+	// Draining is an operator's decision, not a health result: no new
+	// work, and what is running finishes.
+	Draining bool `json:"draining,omitempty"`
+	// MaxActive is the endpoint's own concurrency bound, 0 for none.
+	MaxActive int64  `json:"max_active,omitempty"`
 	Active    int64  `json:"active"`
 	Requests  uint64 `json:"requests"`
 	Errors    uint64 `json:"errors"`
@@ -158,6 +177,8 @@ func (e *Endpoint) stats(now time.Time) Stats {
 		Discovered:       e.Discovered,
 		Ramp:             e.ramp(now),
 		Healthy:          e.healthy.Load(),
+		Draining:         e.draining.Load(),
+		MaxActive:        e.maxActive,
 		Ejected:          e.ejectedNS.Load() > now.UnixNano(),
 		Active:           e.active.Load(),
 		Requests:         e.requests.Load(),

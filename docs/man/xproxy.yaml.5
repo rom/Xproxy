@@ -6574,8 +6574,8 @@ Memory: at most 64 x 8192 buckets per policy.
 .PP
 .TS
 allbox;
-lbw(1.1i) lbw(1.0i) lbw(1.2i) lbx
-lw(1.1i) lw(1.0i) lw(1.2i) lx.
+lbw(1.3i) lbw(1.0i) lbw(1.2i) lbx
+lw(1.3i) lw(1.0i) lw(1.2i) lx.
 T{
 Key
 T}	T{
@@ -6619,7 +6619,34 @@ list
 T}	T{
 required,\: at least one
 T}	T{
-\fB{address:\: host:\:port,\: weight:\: 1.\:.\:1000,\: canary:\: bool}\fR;\: \fBcanary\fR marks the endpoints the \fBcanary\fR policy selects. An address may instead be \fBunix:\:/\:path/\:to/\:socket\fR \[u2014] see below
+\fB{address:\: host:\:port,\: weight:\: 1.\:.\:1000,\: canary:\: bool,\: drain:\: bool,\: max_\:connections:\: int}\fR;\: \fBcanary\fR marks the endpoints the \fBcanary\fR policy selects,\: \fBdrain\fR takes one out of rotation and \fBmax_\:connections\fR bounds what is in flight to it. An address may instead be \fBunix:\:/\:path/\:to/\:socket\fR \[u2014] see below
+T}
+T{
+\fBmax_\:connections_\:per_\:endpoint\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+Default for every endpoint\(aqs own \fBmax_\:connections\fR
+T}
+T{
+\fBmax_\:connection_\:age\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (none)
+T}	T{
+How long one upstream connection is kept;\: at least 1s,\: at most 24h. See below
+T}
+T{
+\fBmaintenance\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Take the whole pool out of rotation: it offers no endpoint,\: so a route over it answers as it does when everything is unhealthy
 T}
 T{
 \fBcanary\fR
@@ -6856,6 +6883,39 @@ T}	T{
 Sends staggered copies of a slow idempotent request to other endpoints and keeps the first usable answer;\: see below
 T}
 .TE
+.SS "Taking something out of rotation: drain and maintenance"
+.PP
+Draining is \fBnot\fR the same as unhealthy, and the difference is the point. An unhealthy endpoint is one the proxy found broken; a drained one is one a person decided to stop sending work to. So it is set from outside \[u2014] \fBxproxyctl drain POOL [ADDRESS]\fR, \fBPOST /v1/drain\fR, the GUI \[u2014] and it \fBsurvives a reload\fR, because a reload builds new pools and an operator who drained a machine to patch it did not mean "until the next configuration change".
+.PP
+Nothing is closed. New work stops; the requests, sessions and connections already there run to their own end. That is what makes it usable for a rolling restart, and it is why draining is a separate idea from the connection bounds, which do end things.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBAn endpoint\fR: \fBendpoints[].drain: true\fR, or \fBxproxyctl drain POOL ADDRESS\fR. It is passed over by every balancer and shows as \fBdraining\fR in \fBxproxyctl upstreams\fR, still \fBhealthy\fR, so the two stay distinguishable.
+.PP
+.ti -3n
+\(bu
+\fBA pool\fR: \fBmaintenance: true\fR, or \fBxproxyctl drain POOL\fR. The pool offers nothing at all.
+.PP
+.ti -3n
+\(bu
+\fBBack in\fR: \fBxproxyctl drain \-restore POOL [ADDRESS]\fR.
+.RE
+.PP
+.PP
+A decision made through the API \fBoverrides the file\fR until the daemon restarts, because the person who made it knew something the file did not. \fBxproxyctl drain\fR with no argument lists what has been decided, including an explicit restore of something the file drains.
+.PP
+A decision about a pool or an address that is not there is recorded rather than refused, and the answer says so: an endpoint may be about to arrive from discovery.
+.SS "Bounding one endpoint, and the age of a connection"
+.PP
+\fBendpoints[].max_connections\fR (or \fBmax_connections_per_endpoint\fR for a whole pool) bounds what is in flight to one endpoint. Past it the endpoint is \fBpassed over\fR rather than queued behind: the pool has others, and holding work for one while they are idle is the opposite of balancing. When every endpoint is at its bound the pool offers nothing, which is what its own \fBqueue\fR and \fBcircuit_breaker\fR are there to answer. It is for the endpoint that cannot take what the pool can give it \[u2014] a small instance beside large ones, a service with a database connection pool of its own, a machine that answers slowly under load rather than refusing.
+.PP
+\fBmax_connection_age\fR bounds how long one upstream connection is kept, so a pool\(aqs traffic follows its endpoints instead of sticking to whichever ones were there when the connections were made: a keep\-alive connection can outlive a deploy, a scale\-out and an endpoint\(aqs whole useful life, and every request on it goes where that connection goes.
+.PP
+\fBIt does not close anything mid\-exchange.\fR Closing a connection at its age would cut a request that has done nothing wrong, and from inside a socket there is no way to tell an exchange in progress from an idle connection \[u2014] both are a blocked read. So the age marks the connection, and the layer that does know where an exchange ends closes it once that exchange is over. The connection is never reused past its age and nothing in flight is disturbed; \fBxproxyctl upstreams\fR counts the retirements.
+.PP
+That end only exists for \fBHTTP/1.1\fR, where a connection carries one exchange at a time. An HTTP/2 or HTTP/3 connection carries many streams and is never between exchanges, so the bound does not apply to one: \fBh2c\fR and \fBh3\fR refuse it at load, and an \fBhttps\fR pool (which may negotiate HTTP/2) warns.
 .SS "A Unix domain socket as an endpoint"
 .PP
 \fBaddress: unix:/run/app.sock\fR reaches a service that lives beside the proxy rather than across a network: an application server on the same host, a local scanner, a sidecar. A socket is the better way to reach one \[u2014] there is no port for anything else on the machine to connect to, file permissions decide who may open it, and nothing about it is routable.

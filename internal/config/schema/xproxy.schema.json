@@ -1536,6 +1536,14 @@
           "description": "Canary marks the endpoint as the pool's canary: it receives the requests the pool's canary policy selects and no others.",
           "type": "boolean"
         },
+        "drain": {
+          "description": "Drain takes the endpoint out of rotation while leaving it in the pool: no new work, and what is already running finishes. It is the declarative form of what the management API sets, for a machine that is out of service for long enough to be written down. A decision made through the API overrides this one until the daemon restarts, because the person who made it knew something the file did not.",
+          "type": "boolean"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds the requests or connections in flight to this endpoint at once. Past it the endpoint is passed over as if it were unavailable, and the pool's other endpoints take the work; when every endpoint is at its bound the caller sees what it sees when every endpoint is unhealthy. It is for the endpoint that cannot take what the pool can give it: a small instance beside large ones, a database-bound service with a connection pool of its own, a machine that answers slowly under load rather than refusing. 0 is no bound, and upstreams[].max_connections_per_endpoint sets it for a whole pool at once.",
+          "type": "integer"
+        },
         "weight": {
           "type": "integer"
         }
@@ -6119,8 +6127,21 @@
             }
           ]
         },
+        "maintenance": {
+          "description": "Maintenance takes the whole pool out of rotation: it offers no endpoint, so a route over it answers as it does when everything is unhealthy. For the planned outage of a whole service, where draining each endpoint would be a list to keep in step with the pool. As with an endpoint's drain, the management API overrides this until the daemon restarts.",
+          "type": "boolean"
+        },
         "max_concurrent": {
           "description": "MaxConcurrent bounds requests in flight to the pool; 0 is unbounded.",
+          "type": "integer"
+        },
+        "max_connection_age": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_connections_per_endpoint": {
+          "description": "MaxConnectionsPerEndpoint is the default for every endpoint's own max_connections. An endpoint that names one uses that instead.",
           "type": "integer"
         },
         "max_idle_conns_per_host": {

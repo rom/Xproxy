@@ -223,10 +223,17 @@ upstreams:
         - address: 10.0.1.10:8080
           weight: 1
           canary: false
+          max_connections: 0
+          drain: false
         - address: 10.0.1.11:8080
           weight: 1
           canary: false
+          max_connections: 0
+          drain: false
       discovery: null
+      max_connection_age: 0s
+      max_connections_per_endpoint: 0
+      maintenance: false
       origin_signature: null
       slow_start: 0s
       scheme: http
@@ -284,10 +291,17 @@ upstreams:
         - address: 10.0.2.10:8443
           weight: 1
           canary: false
+          max_connections: 0
+          drain: false
         - address: 10.0.2.11:8443
           weight: 1
           canary: false
+          max_connections: 0
+          drain: false
       discovery: null
+      max_connection_age: 0s
+      max_connections_per_endpoint: 0
+      maintenance: false
       origin_signature: null
       slow_start: 0s
       scheme: https

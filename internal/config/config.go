@@ -2415,6 +2415,33 @@ type Upstream struct {
 	// endpoints and discovered ones coexist; a pool needs at least one
 	// of the two.
 	Discovery *Discovery `yaml:"discovery"`
+	// MaxConnectionAge bounds how long one upstream connection is kept,
+	// so that a pool's traffic follows its endpoints rather than
+	// sticking to whichever ones were there when the connections were
+	// made: a keep-alive connection can outlive a deploy, a scale-out
+	// and an endpoint's whole useful life, and every request on it goes
+	// where that connection goes.
+	//
+	// It does not close anything mid-exchange. A connection past the
+	// age is closed at the end of the exchange that found it, so it is
+	// never reused and nothing in flight is cut.
+	//
+	// That end only exists for HTTP/1.1, where a connection carries one
+	// exchange at a time; an HTTP/2 or HTTP/3 connection carries many
+	// streams at once and is never between exchanges, so the bound does
+	// not apply to one and validation warns where it would be ignored.
+	// 0 is no bound.
+	MaxConnectionAge Duration `yaml:"max_connection_age"`
+	// MaxConnectionsPerEndpoint is the default for every endpoint's own
+	// max_connections. An endpoint that names one uses that instead.
+	MaxConnectionsPerEndpoint int `yaml:"max_connections_per_endpoint"`
+	// Maintenance takes the whole pool out of rotation: it offers no
+	// endpoint, so a route over it answers as it does when everything
+	// is unhealthy. For the planned outage of a whole service, where
+	// draining each endpoint would be a list to keep in step with the
+	// pool. As with an endpoint's drain, the management API overrides
+	// this until the daemon restarts.
+	Maintenance bool `yaml:"maintenance"`
 	// OriginSignature signs every forwarded request with a key shared
 	// with the origin, so the origin can refuse traffic that did not pass
 	// through the proxy.
@@ -2510,6 +2537,27 @@ type Endpoint struct {
 	// Canary marks the endpoint as the pool's canary: it receives the
 	// requests the pool's canary policy selects and no others.
 	Canary bool `yaml:"canary"`
+	// MaxConnections bounds the requests or connections in flight to
+	// this endpoint at once. Past it the endpoint is passed over as if
+	// it were unavailable, and the pool's other endpoints take the
+	// work; when every endpoint is at its bound the caller sees what it
+	// sees when every endpoint is unhealthy.
+	//
+	// It is for the endpoint that cannot take what the pool can give
+	// it: a small instance beside large ones, a database-bound service
+	// with a connection pool of its own, a machine that answers slowly
+	// under load rather than refusing. 0 is no bound, and
+	// upstreams[].max_connections_per_endpoint sets it for a whole pool
+	// at once.
+	MaxConnections int `yaml:"max_connections"`
+	// Drain takes the endpoint out of rotation while leaving it in the
+	// pool: no new work, and what is already running finishes. It is
+	// the declarative form of what the management API sets, for a
+	// machine that is out of service for long enough to be written
+	// down. A decision made through the API overrides this one until
+	// the daemon restarts, because the person who made it knew
+	// something the file did not.
+	Drain bool `yaml:"drain"`
 }
 
 // Discovery resolves a pool's endpoints from DNS or an HTTP registry.

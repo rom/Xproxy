@@ -21,6 +21,19 @@ import (
 
 // Pool is a named, load balanced set of endpoints with a shared transport.
 type Pool struct {
+	// Retired counts connections closed for outliving
+	// max_connection_age.
+	Retired atomic.Uint64
+
+	// maintenance takes the whole pool out of rotation: no endpoint is
+	// offered at all, so a route over it answers as it does when
+	// everything is unhealthy. Set from the configuration and from the
+	// management API; see drain.go.
+	maintenance atomic.Bool
+	// drains is the registry of operator decisions this pool follows,
+	// nil where nothing set one (tests).
+	drains *Drains
+
 	Name      string
 	Cfg       *config.Upstream
 	Transport *http.Transport
@@ -173,6 +186,11 @@ func (p *Pool) setDiscovered(specs []endpointSpec) (added, removed int) {
 		}
 		c.count = n
 	}
+	// An endpoint discovery just produced may be one an operator already
+	// drained by address -- a machine taken out of service that the
+	// registry has not caught up with -- so the decisions are applied to
+	// the new set rather than only at attach.
+	p.drains.apply(p)
 	return added, removed
 }
 
@@ -208,9 +226,13 @@ func (p *Pool) Status() PoolStatus {
 	if p.disc != nil {
 		st.Discovery = p.disc.status()
 	}
+	st.Maintenance = p.maintenance.Load()
 	for _, e := range eps {
 		if e.Available(now) {
 			st.Available++
+		}
+		if e.draining.Load() {
+			st.Draining++
 		}
 		st.Active += e.active.Load()
 	}
@@ -296,11 +318,24 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 	}
 	dial := dialer.DialContext
 	if len(sockets) > 0 {
+		inner := dial
 		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
 			if path, ok := sockets[address]; ok {
-				return dialer.DialContext(ctx, "unix", path)
+				return inner(ctx, "unix", path)
 			}
-			return dialer.DialContext(ctx, network, address)
+			return inner(ctx, network, address)
+		}
+	}
+	if age := cfg.MaxConnectionAge.D(); age > 0 {
+		// Every connection remembers when it was made. Nothing closes it
+		// here: see connage.go for why the round trip does that instead.
+		inner := dial
+		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			c, err := inner(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			return &agedConn{Conn: c, born: p.now(), age: age}, nil
 		}
 	}
 	p.Transport = &http.Transport{
@@ -342,6 +377,17 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 	}
 	return p, nil
 }
+
+// UseDrains makes the pool follow a registry of operator decisions, and
+// applies whatever it already holds. A generation calls this once, after
+// the pool is built and before it serves.
+func (p *Pool) UseDrains(d *Drains) {
+	p.drains = d
+	d.Attach(p)
+}
+
+// Maintenance reports whether the whole pool is out of rotation.
+func (p *Pool) Maintenance() bool { return p.maintenance.Load() }
 
 // Start launches active health checking and discovery if configured.
 // With discovery the first resolution runs synchronously (bounded by the
@@ -388,6 +434,7 @@ func (p *Pool) StopChecks() {
 // when a reload retired the generation that built the pool, while the
 // TCP transports beside it dropped only what was unused.
 func (p *Pool) Stop() {
+	p.drains.Detach(p)
 	p.StopChecks()
 	p.Transport.CloseIdleConnections()
 	if p.h2c != nil {
@@ -484,6 +531,12 @@ func (p *Pool) AffinityCookie() string {
 // The second result is a fresh cookie value to set on the response, or
 // "" when none is needed.
 func (p *Pool) Pick(hashKey, cookie string, exclude map[*Endpoint]bool, mode CanaryMode) (*Endpoint, string) {
+	if p.maintenance.Load() {
+		// A pool in maintenance offers nothing. The caller sees what it
+		// sees when every endpoint is unhealthy, which is the honest
+		// answer: there is nowhere to send this.
+		return nil, ""
+	}
 	now := p.now()
 	eps := p.endpoints()
 	if p.aff != nil && cookie != "" {

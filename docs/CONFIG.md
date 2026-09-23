@@ -2678,7 +2678,10 @@ Memory: at most 64 x 8192 buckets per policy.
 | `name` | name | required, unique | |
 | `balancer` | `round_robin`, `weighted`, `least_conn`, `hash` | `round_robin` | |
 | `hash_on` | `client_ip`, `header:<Name>`, `cookie:<Name>` | `client_ip` | For `hash`; missing input falls back to the client address |
-| `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000, canary: bool}`; `canary` marks the endpoints the `canary` policy selects. An address may instead be `unix:/path/to/socket` — see below |
+| `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000, canary: bool, drain: bool, max_connections: int}`; `canary` marks the endpoints the `canary` policy selects, `drain` takes one out of rotation and `max_connections` bounds what is in flight to it. An address may instead be `unix:/path/to/socket` — see below |
+| `max_connections_per_endpoint` | int | `0` (none) | Default for every endpoint's own `max_connections` |
+| `max_connection_age` | duration | `0` (none) | How long one upstream connection is kept; at least 1s, at most 24h. See below |
+| `maintenance` | bool | `false` | Take the whole pool out of rotation: it offers no endpoint, so a route over it answers as it does when everything is unhealthy |
 | `canary` | object | none | Route selected requests to the canary endpoints; see below |
 | `scheme` | `http`, `https` | `http` | |
 | `h2c` | bool | `false` | Speak HTTP/2 without TLS to `http` endpoints (gRPC backends); `https` negotiates HTTP/2 with ALPN on its own |
@@ -2705,6 +2708,72 @@ Memory: at most 64 x 8192 buckets per policy.
 | `retry_on` | list | `[]` | Response statuses treated as a failed attempt: `5xx`, `500`, `502`, `503`, `504`, `429`. The response is discarded, the endpoint marked as failed for outlier ejection, and the next endpoint tried within the `retries` budget; the last attempt's response is returned as it is. Needs `retries` above 0 |
 | `retry_budget` | object | none | Caps retries (and hedged copies) against live traffic so a struggling pool is not buried under a retry storm; see below. Without it, every retry `retries` allows is sent |
 | `hedge` | object | none | Sends staggered copies of a slow idempotent request to other endpoints and keeps the first usable answer; see below |
+
+#### Taking something out of rotation: drain and maintenance
+
+Draining is **not** the same as unhealthy, and the difference is the
+point. An unhealthy endpoint is one the proxy found broken; a drained one
+is one a person decided to stop sending work to. So it is set from
+outside — `xproxyctl drain POOL [ADDRESS]`, `POST /v1/drain`, the GUI —
+and it **survives a reload**, because a reload builds new pools and an
+operator who drained a machine to patch it did not mean "until the next
+configuration change".
+
+Nothing is closed. New work stops; the requests, sessions and
+connections already there run to their own end. That is what makes it
+usable for a rolling restart, and it is why draining is a separate idea
+from the connection bounds, which do end things.
+
+- **An endpoint**: `endpoints[].drain: true`, or
+  `xproxyctl drain POOL ADDRESS`. It is passed over by every balancer
+  and shows as `draining` in `xproxyctl upstreams`, still `healthy`, so
+  the two stay distinguishable.
+- **A pool**: `maintenance: true`, or `xproxyctl drain POOL`. The pool
+  offers nothing at all.
+- **Back in**: `xproxyctl drain -restore POOL [ADDRESS]`.
+
+A decision made through the API **overrides the file** until the daemon
+restarts, because the person who made it knew something the file did
+not. `xproxyctl drain` with no argument lists what has been decided,
+including an explicit restore of something the file drains.
+
+A decision about a pool or an address that is not there is recorded
+rather than refused, and the answer says so: an endpoint may be about to
+arrive from discovery.
+
+#### Bounding one endpoint, and the age of a connection
+
+`endpoints[].max_connections` (or `max_connections_per_endpoint` for a
+whole pool) bounds what is in flight to one endpoint. Past it the
+endpoint is **passed over** rather than queued behind: the pool has
+others, and holding work for one while they are idle is the opposite of
+balancing. When every endpoint is at its bound the pool offers nothing,
+which is what its own `queue` and `circuit_breaker` are there to answer.
+It is for the endpoint that cannot take what the pool can give it — a
+small instance beside large ones, a service with a database connection
+pool of its own, a machine that answers slowly under load rather than
+refusing.
+
+`max_connection_age` bounds how long one upstream connection is kept, so
+a pool's traffic follows its endpoints instead of sticking to whichever
+ones were there when the connections were made: a keep-alive connection
+can outlive a deploy, a scale-out and an endpoint's whole useful life,
+and every request on it goes where that connection goes.
+
+**It does not close anything mid-exchange.** Closing a connection at its
+age would cut a request that has done nothing wrong, and from inside a
+socket there is no way to tell an exchange in progress from an idle
+connection — both are a blocked read. So the age marks the connection,
+and the layer that does know where an exchange ends closes it once that
+exchange is over. The connection is never reused past its age and
+nothing in flight is disturbed; `xproxyctl upstreams` counts the
+retirements.
+
+That end only exists for **HTTP/1.1**, where a connection carries one
+exchange at a time. An HTTP/2 or HTTP/3 connection carries many streams
+and is never between exchanges, so the bound does not apply to one:
+`h2c` and `h3` refuse it at load, and an `https` pool (which may
+negotiate HTTP/2) warns.
 
 #### A Unix domain socket as an endpoint
 

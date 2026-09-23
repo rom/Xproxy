@@ -186,7 +186,7 @@ func run(args []string, out, errOut io.Writer) int {
 			_ = json.Unmarshal(pb, &pools)
 		}
 		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tCANARY\tHEALTHY\tEJECTED\tACTIVE\tREQUESTS\tERRORS\tRAMP\tLATENCY-MS\tSOURCE")
+		_, _ = fmt.Fprintln(tw, "UPSTREAM\tENDPOINT\tWEIGHT\tCANARY\tHEALTHY\tEJECTED\tDRAINING\tACTIVE\tMAX\tREQUESTS\tERRORS\tRAMP\tLATENCY-MS\tSOURCE")
 		names := make([]string, 0, len(ups))
 		for n := range ups {
 			names = append(names, n)
@@ -198,7 +198,12 @@ func run(args []string, out, errOut io.Writer) int {
 				if e.Discovered {
 					src = "dns"
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%v\t%d\t%d\t%d\t%.0f%%\t%g\t%s\n", n, e.Address, e.Weight, e.Canary, e.Healthy, e.Ejected, e.Active, e.Requests, e.Errors, e.Ramp*100, e.LatencyMS, src)
+				maxActive := "-"
+				if e.MaxActive > 0 {
+					maxActive = strconv.FormatInt(e.MaxActive, 10)
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%v\t%v\t%v\t%v\t%d\t%s\t%d\t%d\t%.0f%%\t%g\t%s\n",
+					n, e.Address, e.Weight, e.Canary, e.Healthy, e.Ejected, e.Draining, e.Active, maxActive, e.Requests, e.Errors, e.Ramp*100, e.LatencyMS, src)
 			}
 		}
 		_ = tw.Flush()
@@ -1269,6 +1274,49 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_, _ = fmt.Fprintf(out, "banned %s until %s\n", e.Target, e.Until.Format(time.RFC3339))
 		return 0
+	case "drain":
+		df := flag.NewFlagSet("drain", flag.ContinueOnError)
+		df.SetOutput(errOut)
+		restore := df.Bool("restore", false, "put back into rotation instead of taking out")
+		if err := df.Parse(fs.Args()[1:]); err != nil || df.NArg() > 2 {
+			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl drain [-restore] [POOL [ADDRESS]]")
+			return 2
+		}
+		if df.NArg() == 0 {
+			d, err := c.Drains()
+			if err != nil {
+				return fail(err)
+			}
+			tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+			_, _ = fmt.Fprintln(tw, "POOL\tENDPOINT\tSTATE")
+			for _, name := range sortedKeys(d.Pools) {
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", name, "(whole pool)", state(d.Pools[name], "maintenance"))
+			}
+			for _, name := range sortedKeys(d.Endpoints) {
+				for _, addr := range sortedKeys(d.Endpoints[name]) {
+					_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", name, addr, state(d.Endpoints[name][addr], "draining"))
+				}
+			}
+			_ = tw.Flush()
+			return 0
+		}
+		note, err := c.Drain(df.Arg(0), df.Arg(1), !*restore)
+		if err != nil {
+			return fail(err)
+		}
+		what := df.Arg(0)
+		if df.NArg() == 2 {
+			what += " " + df.Arg(1)
+		}
+		verb := "draining"
+		if *restore {
+			verb = "back in rotation"
+		}
+		_, _ = fmt.Fprintf(out, "%s: %s\n", what, verb)
+		if note != "" {
+			_, _ = fmt.Fprintf(out, "note: %s\n", note)
+		}
+		return 0
 	case "unban":
 		if fs.NArg() != 2 {
 			_, _ = fmt.Fprintln(errOut, "usage: xproxyctl unban ADDRESS|CIDR")
@@ -1791,6 +1839,17 @@ func timeOrNever(t time.Time) string {
 }
 
 // sortedKeys returns a map's keys in order, for stable output.
+// state names a recorded decision for the drain listing: "on" is the
+// decision itself, and "off" is the explicit restore that overrides a
+// configuration which asks for the opposite -- which is why a restored
+// entry is worth showing rather than removing.
+func state(on bool, name string) string {
+	if on {
+		return name
+	}
+	return "in rotation (explicit)"
+}
+
 func sortedKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

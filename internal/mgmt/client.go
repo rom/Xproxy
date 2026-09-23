@@ -204,6 +204,22 @@ func (c *Client) Upstreams() (map[string][]upstream.Stats, error) {
 	return out, c.do("GET", "/v1/upstreams", &out)
 }
 
+// Drains fetches the recorded drain and maintenance decisions.
+func (c *Client) Drains() (upstream.Decisions, error) {
+	var out upstream.Decisions
+	return out, c.do("GET", "/v1/drain", &out)
+}
+
+// Drain records a decision to stop sending new work to one endpoint of a
+// pool, or with an empty address to the whole pool. Nothing is closed.
+func (c *Client) Drain(pool, address string, draining bool) (string, error) {
+	var res struct {
+		Note string `json:"note"`
+	}
+	err := c.doBody("POST", "/v1/drain", DrainRequest{Pool: pool, Address: address, Drain: draining}, &res)
+	return res.Note, err
+}
+
 // ACME fetches managed certificate status.
 func (c *Client) ACME() ([]acme.CertStatus, error) {
 	var out []acme.CertStatus

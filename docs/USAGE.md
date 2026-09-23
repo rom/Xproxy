@@ -990,6 +990,51 @@ and gets ejected after a few such answers. Only replayable requests
 when every endpoint fails the last answer is passed through unchanged.
 `upstream_retries` and `upstream_status_retries` count the attempts.
 
+### Taking a backend out of service without dropping anything
+
+A machine has to be patched, restarted or removed. The thing you do not
+want is to take it out by stopping it and letting the proxy discover
+that: the requests in flight on it are lost, and the ones that arrive in
+the second before the health check notices are lost too.
+
+Drain it first:
+
+```console
+$ xproxyctl drain app 10.0.1.12:8080     # no new work here
+$ xproxyctl upstreams | grep 10.0.1.12   # watch ACTIVE fall to 0
+$ # ... patch, restart, whatever ...
+$ xproxyctl drain -restore app 10.0.1.12:8080
+```
+
+Draining stops new work and ends nothing: what is already on the endpoint
+runs to its own end, which is why `ACTIVE` falling to zero is the signal
+that the machine is yours. The endpoint stays `healthy` in the listing
+and shows `draining`, so nobody reading the status confuses "somebody
+took this out" with "the proxy found this broken".
+
+For a whole service, name only the pool:
+
+```console
+$ xproxyctl drain reports                # the pool offers nothing
+$ xproxyctl drain                        # what is currently out
+POOL     ENDPOINT       STATE
+reports  (whole pool)   maintenance
+app      10.0.1.12:8080 draining
+```
+
+The decision survives a reload, on purpose: a reload builds new pools,
+and somebody who drained a machine to patch it did not mean "until the
+next configuration change". The declarative forms —
+`endpoints[].drain: true` and a pool's `maintenance: true` — are for an
+outage long enough to write down; an API decision overrides the file
+until the daemon restarts.
+
+**A rolling restart, then, is:** drain one endpoint, wait for its
+`ACTIVE` to reach zero, do the work, restore it, move to the next. No
+request is refused at any point as long as the rest of the pool can
+carry the load — which is what `max_connections` on an endpoint is for if
+one of them cannot.
+
 ### Protecting a slow upstream: concurrency, queue and circuit breaker
 
 ```yaml

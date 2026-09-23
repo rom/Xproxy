@@ -50,6 +50,12 @@ type Server struct {
 	// fingerprints holds the TLS fingerprint of every open TLS connection.
 	fingerprints *tlsconf.FingerprintTable
 	connLimiter  *limits.ConnLimiter
+	// drains records which endpoints and pools an operator has taken out
+	// of rotation. It belongs to the process rather than to a
+	// configuration generation, because a reload builds new pools and
+	// must not undo somebody's decision to stop sending work to a
+	// machine.
+	drains *upstream.Drains
 	// acceptRate is the process-wide accept rate from server.limits,
 	// replaced wholesale on reload. A listener with its own
 	// connection_rate section replaces it for that listener rather than
@@ -151,6 +157,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 			UpstreamTTFB:    metrics.NewHistogram(metrics.DurationBuckets)},
 		fingerprints: tlsconf.NewFingerprintTable(max(cfg.Server.Limits.MaxConnections, 1024)),
 		connLimiter:  limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
+		drains:       upstream.NewDrains(),
 	}
 	// A contained panic is a bug in the proxy, not an event about the
 	// client, so it goes to the error log with its stack rather than to
@@ -202,7 +209,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	}
 	s.handshake.Store(newHandshakePolicy(cfg.Handshake))
 	gen := s.generation.Add(1)
-	rt, err := newRuntime(cfg, gen, logs.Error)
+	rt, err := newRuntime(cfg, gen, logs.Error, s.drains)
 	if err != nil {
 		if bl := s.bans.Load(); bl != nil {
 			bl.Close()
@@ -443,6 +450,21 @@ func (s *Server) Upstreams() map[string][]upstream.Stats {
 	return out
 }
 
+// Drains reports the operator decisions this process holds: the pools in
+// maintenance and the endpoints taken out of rotation.
+func (s *Server) Drains() upstream.Decisions { return s.drains.Decisions() }
+
+// SetDrain records a decision to stop sending new work to one endpoint
+// of a pool, or with no address to the whole pool, and reports whether a
+// live pool or endpoint of that name was found. Nothing is closed: what
+// is running finishes.
+func (s *Server) SetDrain(pool, address string, draining bool) bool {
+	if address == "" {
+		return s.drains.SetPool(pool, draining)
+	}
+	return s.drains.SetEndpoint(pool, address, draining)
+}
+
 // Pools returns the pool level status (circuit breaker, queue) by name.
 func (s *Server) Pools() map[string]upstream.PoolStatus {
 	rt := s.rt.Load()
@@ -677,7 +699,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 		return err
 	}
 	gen := s.generation.Add(1)
-	rt, err := newRuntime(cfg, gen, s.logs.Error)
+	rt, err := newRuntime(cfg, gen, s.logs.Error, s.drains)
 	if err != nil {
 		s.stats.ReloadFailures.Add(1)
 		return err

@@ -1477,6 +1477,29 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			v.errf("%s.canary: set without a canary section", dp)
 		}
 	}
+	if u.MaxConnectionAge < 0 || u.MaxConnectionAge > Duration(24*time.Hour) {
+		v.errf("%s.max_connection_age: must not be negative and at most 24h", p)
+	}
+	if u.MaxConnectionAge > 0 {
+		if u.MaxConnectionAge < Duration(time.Second) {
+			v.errf("%s.max_connection_age: must be at least 1s; below that a connection is retired before it is useful", p)
+		}
+		// An HTTP/2 or HTTP/3 connection carries many streams at once, so
+		// it is never between exchanges and there is no safe moment to
+		// retire it. Saying so beats a setting that quietly does nothing.
+		switch {
+		case u.H3:
+			v.errf("%s.max_connection_age: not with h3; an HTTP/3 connection carries many streams and is never between exchanges", p)
+		case u.H2C:
+			v.errf("%s.max_connection_age: not with h2c; an HTTP/2 connection carries many streams and is never between exchanges", p)
+		case u.Scheme == "https":
+			v.warnf("%s.max_connection_age: an https pool may negotiate HTTP/2, and the age applies only to HTTP/1.1 connections, "+
+				"which carry one exchange at a time; on a connection carrying many streams it is ignored", p)
+		}
+	}
+	if u.MaxConnectionsPerEndpoint < 0 {
+		v.errf("%s.max_connections_per_endpoint: must not be negative", p)
+	}
 	if u.SlowStart < 0 || u.SlowStart > Duration(time.Hour) {
 		v.errf("%s.slow_start: must be between 0 and 1h", p)
 	}
@@ -1514,6 +1537,9 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		addrs[e.Address] = true
 		if e.Weight < 1 || e.Weight > 1000 {
 			v.errf("%s.weight: must be between 1 and 1000", ep)
+		}
+		if e.MaxConnections < 0 {
+			v.errf("%s.max_connections: must not be negative", ep)
 		}
 	}
 	if sockets > 0 {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"sync"
 	"time"
@@ -231,6 +232,17 @@ func (t *poolTransport) oneAttempt(req *http.Request, e *upstream.Endpoint) (*ht
 	// A socket endpoint wears a synthetic authority here; the pool's
 	// dialler is what turns it back into a path.
 	out.URL.Host = e.URLHost()
+	// With max_connection_age set, the connection this request is given
+	// is remembered so that an aged one can be closed when the exchange
+	// on it is over. The trace is the only way to learn which
+	// connection a request got, and the end of the response body is the
+	// only point at which closing it disturbs nothing.
+	var got net.Conn
+	if t.pool.Cfg.MaxConnectionAge > 0 {
+		out = out.WithContext(httptrace.WithClientTrace(out.Context(), &httptrace.ClientTrace{
+			GotConn: func(i httptrace.GotConnInfo) { got = i.Conn },
+		}))
+	}
 	t.pool.Begin(e)
 	t0 := time.Now()
 	resp, err := t.pool.RoundTripper().RoundTrip(out)
@@ -242,7 +254,28 @@ func (t *poolTransport) oneAttempt(req *http.Request, e *upstream.Endpoint) (*ht
 			resp, err = t.pool.TCPRoundTripper().RoundTrip(retry)
 		}
 	}
+	if resp != nil && got != nil && resp.ProtoMajor == 1 && t.pool.AgedOut(got) {
+		// One exchange at a time on this connection, so the body's close
+		// is the moment it is between exchanges.
+		resp.Body = &retireOnClose{ReadCloser: resp.Body, pool: t.pool, conn: got}
+	}
 	return resp, time.Since(t0), err
+}
+
+// retireOnClose closes an upstream connection that has outlived
+// max_connection_age once the response on it has been read. Closing at
+// the age itself would cut whatever exchange was running; closing here
+// means the connection is simply not reused.
+type retireOnClose struct {
+	io.ReadCloser
+	pool *upstream.Pool
+	conn net.Conn
+}
+
+func (r *retireOnClose) Close() error {
+	err := r.ReadCloser.Close()
+	r.pool.Retire(r.conn)
+	return err
 }
 
 // hasAlternative reports whether another endpoint could take the retry;

@@ -442,6 +442,48 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Drain an endpoint, or put a whole pool in maintenance.** Taking a
+  backend out of service meant stopping it and letting the proxy find
+  out, which loses the requests in flight on it and the ones that arrive
+  before the health check notices.
+
+  `xproxyctl drain POOL [ADDRESS]` (and `POST /v1/drain`,
+  `endpoints[].drain`, a pool's `maintenance`) stops new work and **ends
+  nothing**: what is already there runs to its own end, so `ACTIVE`
+  falling to zero is the signal that the machine is yours. That makes a
+  rolling restart a sequence of drains rather than a series of small
+  outages.
+
+  Draining is deliberately **not** a health result. An unhealthy endpoint
+  is one the proxy found broken; a drained one is one a person decided
+  about. So it stays `healthy` in the status with `draining` beside it,
+  and it **survives a reload** — a reload builds new pools, and somebody
+  who drained a machine to patch it did not mean "until the next
+  configuration change". A decision made through the API overrides the
+  file until the daemon restarts, because the person who made it knew
+  something the file did not.
+
+- **A bound per endpoint, and an age for an upstream connection.**
+  `endpoints[].max_connections` (or `max_connections_per_endpoint`)
+  bounds what is in flight to one endpoint, for the one that cannot take
+  what the pool can give it: a small instance beside large ones, a
+  service with a database pool of its own. Past the bound the endpoint is
+  passed over rather than queued behind, because holding work for one
+  endpoint while the others are idle is the opposite of balancing.
+
+  `max_connection_age` bounds how long one upstream connection is kept,
+  so a pool's traffic follows its endpoints rather than sticking to
+  whichever ones existed when the connections were made. It does not
+  close anything mid-exchange: closing at the age would cut a request
+  that has done nothing wrong, and from inside a socket an exchange in
+  progress and an idle connection are both a blocked read. The age marks
+  the connection and the round trip — which does know where an exchange
+  ends — closes it once that exchange is over, so it is never reused past
+  its age and nothing in flight is disturbed. That end only exists for
+  HTTP/1.1; an HTTP/2 or HTTP/3 connection carries many streams and is
+  never between exchanges, so `h2c` and `h3` refuse the setting and an
+  `https` pool warns rather than letting it quietly do nothing.
+
 - **A Unix domain socket as an upstream endpoint**
   (`address: unix:/run/app.sock`), for the services that live beside the
   proxy rather than across a network: an application server on the same

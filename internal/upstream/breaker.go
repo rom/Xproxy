@@ -237,4 +237,8 @@ type PoolStatus struct {
 	// without a discovery section.
 	SlowStart string           `json:"slow_start,omitempty"`
 	Discovery *DiscoveryStatus `json:"discovery,omitempty"`
+	// Maintenance is an operator's decision to take the whole pool out
+	// of rotation; Draining counts the endpoints taken out one by one.
+	Maintenance bool `json:"maintenance,omitempty"`
+	Draining    int  `json:"draining,omitempty"`
 }
