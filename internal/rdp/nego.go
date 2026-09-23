@@ -98,16 +98,15 @@ func ParseConnectionRequest(body []byte) (ConnectionRequest, error) {
 	if len(body) < 7 {
 		return cr, fmt.Errorf("%w: connection request of %d bytes", ErrFraming, len(body))
 	}
-	li := int(body[0])
 	if body[1] != x224CR {
 		return cr, fmt.Errorf("%w: x.224 type %#02x is not a connection request", ErrFraming, body[1])
 	}
-	if li+1 > len(body) {
-		return cr, fmt.Errorf("%w: x.224 length indicator %d past the unit", ErrFraming, li)
-	}
 	// Past the fixed header: destination and source references, the
 	// class, then whatever the client added.
-	rest := body[7 : li+1]
+	rest, err := x224Options(body)
+	if err != nil {
+		return cr, err
+	}
 	if i := bytes.Index(rest, []byte("\r\n")); i >= 0 {
 		if i > maxCookie {
 			return cr, fmt.Errorf("%w: routing token of %d bytes", ErrFraming, i)
@@ -175,14 +174,13 @@ func ParseConnectionConfirm(body []byte) (ConnectionConfirm, error) {
 	if len(body) < 7 {
 		return cc, fmt.Errorf("%w: connection confirm of %d bytes", ErrFraming, len(body))
 	}
-	li := int(body[0])
 	if body[1] != x224CC {
 		return cc, fmt.Errorf("%w: x.224 type %#02x is not a connection confirm", ErrFraming, body[1])
 	}
-	if li+1 > len(body) {
-		return cc, fmt.Errorf("%w: x.224 length indicator %d past the unit", ErrFraming, li)
+	rest, err := x224Options(body)
+	if err != nil {
+		return cc, err
 	}
-	rest := body[7 : li+1]
 	if len(rest) < 8 {
 		return cc, nil
 	}

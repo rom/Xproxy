@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/textsafe"
 )
@@ -107,7 +108,7 @@ func splitCode(arg string) (pass, code string) {
 		return arg, ""
 	}
 	code = strings.TrimSpace(arg[i+1:])
-	if code == "" || len(code) > 16 {
+	if code == "" || len(code) > mfa.MaxCode {
 		return arg, ""
 	}
 	// A code is digits, or the letters and digits of a recovery code.

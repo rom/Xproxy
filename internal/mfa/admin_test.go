@@ -361,3 +361,118 @@ func TestForgettingAUserClearsTheState(t *testing.T) {
 		t.Error("the lockout survived being forgotten")
 	}
 }
+
+// TestARecoveryCodeFitsWhereACodeGoes is the third finding of the
+// sixth round. A recovery code is seventeen characters with its
+// separators, and the two protocols that carry a code inside the
+// password field -- FTP and RDP, neither of which has anywhere to ask a
+// question -- would only split off sixteen. So a recovery code was
+// never seen as a code on either of them: it went to the desktop as
+// part of the password, the factor check saw nothing, and the refusal
+// was byte for byte the one a wrong code gets.
+//
+// That is the worst shape a bug can have here. The recovery path exists
+// for the person who has lost their authenticator, so it is used when
+// somebody is already locked out and in a hurry, and it failed in a way
+// that looks exactly like them mistyping.
+func TestARecoveryCodeFitsWhereACodeGoes(t *testing.T) {
+	if RecoveryCodeLength != 17 {
+		t.Fatalf("a recovery code is %d characters; the callers' bound has to be at least that", RecoveryCodeLength)
+	}
+	if MaxCode < RecoveryCodeLength {
+		t.Fatalf("MaxCode is %d and a recovery code is %d", MaxCode, RecoveryCodeLength)
+	}
+	if MaxCode < MaxDigits {
+		t.Fatalf("MaxCode is %d and a time based code can be %d digits", MaxCode, MaxDigits)
+	}
+	// And the codes the generator makes are that length, so the
+	// constant cannot drift away from the thing it describes.
+	codes, _, err := newRecovery(RecoveryCodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range codes {
+		if len(c) != RecoveryCodeLength {
+			t.Fatalf("the generator made a %d character code: %q", len(c), c)
+		}
+	}
+}
+
+// TestAWrongCodeCostsTheSameWhoeverItIsFor is the fourth finding of
+// the sixth round, and the one with the widest consequences.
+//
+// A wrong code was verified against every recovery code the enrolment
+// held, each a PBKDF2 hash at a password's iteration count. So a wrong
+// six digit code against an enrolled name cost about a second of
+// processor time, and against a name with no enrolment cost twenty
+// microseconds: four and a half orders of magnitude, which is not a
+// side channel so much as an announcement. Anybody who could reach the
+// prompt could enumerate who was enrolled, and the documentation's
+// claim that a wrong code and an unenrolled name look alike was true
+// of the reply and false of the clock.
+//
+// The same arithmetic was a denial of service: one packet bought a
+// second of a core, repeatable as fast as a client could send.
+//
+// Three changes, and this test is what holds them. Recovery codes are
+// hashed at a low iteration count, because a code of seventy four
+// random bits does not need stretching and stretching it cost this.
+// They are only compared when what arrived is shaped like one, so a
+// wrong digit code touches none of them. And a name with no enrolment
+// spends what a name with one spends.
+func TestAWrongCodeCostsTheSameWhoeverItIsFor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mfa")
+	if err := os.WriteFile(path, []byte("seed:JBSWY3DPEHPK3PXPJBSWY3DPEH\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, codes, err := store.Enrol("alice", Params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := NewGuard(store, 1, Lockout{MaxFailures: 1 << 20, Window: time.Hour, Duration: time.Hour, MaxUsers: 100})
+
+	// The codes the generator makes still work, which is the thing all
+	// of this must not have broken.
+	if err := g.Verify("alice", codes[0], time.Now()); err != nil {
+		t.Fatalf("a recovery code from the generator: %v", err)
+	}
+
+	// A wrong code must not cost a password's worth of hashing. Before
+	// the fix this was a second; the bound is generous enough to
+	// survive a loaded machine and still fail if the cost comes back.
+	if d := best(func() { _ = g.Verify("alice", "000000", time.Now()) }); d > 100*time.Millisecond {
+		t.Fatalf("a wrong code against an enrolled name took %v", d)
+	}
+
+	// And a wrong code costs about the same whether the name is
+	// enrolled or not, whatever shape it has. The bound is a factor of
+	// eight either way: the difference it is there to catch was forty
+	// five thousand.
+	for _, code := range []string{"000000", "abcde-fghjk-mnpqr", "something-else-entirely"} {
+		known := best(func() { _ = g.Verify("alice", code, time.Now()) })
+		unknown := best(func() { _ = g.Verify("nobody-at-all", code, time.Now()) })
+		ratio := float64(known) / float64(unknown)
+		if ratio > 8 || ratio < 0.125 {
+			t.Errorf("code %q: enrolled %v, unknown %v (%.1fx apart)", code, known, unknown, ratio)
+		}
+	}
+}
+
+// best runs f a few times and returns the fastest, which is the
+// measurement least disturbed by whatever else the machine is doing.
+func best(f func()) time.Duration {
+	out := time.Duration(1 << 62)
+	for i := 0; i < 5; i++ {
+		start := time.Now()
+		f()
+		if d := time.Since(start); d < out {
+			out = d
+		}
+	}
+	return out
+}

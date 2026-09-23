@@ -278,6 +278,10 @@ func (g *Guard) Enrolled(user string) bool {
 func (g *Guard) Verify(user, code string, now time.Time) error {
 	e, ok := g.store.Get(user)
 	if !ok {
+		// A name with no enrolment costs what one with an enrolment
+		// costs. The reply already refuses to say which it was; timing
+		// must not answer it either.
+		equaliseVerify(code, g.skew)
 		return ErrUnknownUser
 	}
 	g.mu.Lock()
@@ -305,18 +309,65 @@ func (g *Guard) Verify(user, code string, now time.Time) error {
 		return nil
 	}
 	// Recovery codes are tried only when the time-based code failed, so
-	// a working authenticator never spends one.
-	for i, h := range e.Recovery {
-		if spent[i] {
-			continue
+	// a working authenticator never spends one -- and only when what
+	// arrived is shaped like one. A code of digits is not a recovery
+	// code, and comparing it against every stored hash is work a
+	// client could ask for by sending anything.
+	// Every attempt does the same number of comparisons, whatever the
+	// enrolment holds: the codes it has, padded with a hash nothing
+	// matches. Spent codes are compared too, and the first unspent
+	// match wins. So neither how many codes a person has, nor how many
+	// they have spent, can be read off a clock -- and nor, with the
+	// same work done for a name that has no enrolment at all, can
+	// whether they are enrolled.
+	matched := -1
+	for i := 0; i < max(RecoveryCodes, len(e.Recovery)); i++ {
+		h := dummyRecovery
+		if i < len(e.Recovery) {
+			h = e.Recovery[i]
 		}
-		if passwd.Verify(h, code) {
-			g.succeed(user, now, lastStep, i)
-			return nil
+		if passwd.Verify(h, code) && i < len(e.Recovery) && !spent[i] && matched < 0 {
+			matched = i
 		}
+	}
+	if matched >= 0 {
+		g.succeed(user, now, lastStep, matched)
+		return nil
 	}
 	g.fail(user, now)
 	return ErrBadCode
+}
+
+// dummySecret is a secret that verifies nothing, used to spend on an
+// unknown name what a known one costs.
+var dummySecret = []byte{
+	0x78, 0x70, 0x72, 0x6f, 0x78, 0x79, 0x2d, 0x64,
+	0x75, 0x6d, 0x6d, 0x79, 0x2d, 0x6d, 0x66, 0x61,
+}
+
+// dummyRecovery is a hash nothing will match, at what a real one
+// costs. The password package has a dummy of its own, but it is a
+// password's hash: using it here made an unknown name cost six hundred
+// times what a known one did, which is the same oracle upside down.
+var dummyRecovery = func() string {
+	h, err := passwd.HashWithIterations("xproxy: no such recovery code", recoveryIterations)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}()
+
+// equaliseVerify does the work a real verification does, and throws it
+// away. It is the same arrangement the password checks use: the point
+// is not that the answer is useful, it is that the two paths cost the
+// same.
+func equaliseVerify(code string, skew int) {
+	_, _ = Check(dummySecret, code, time.Now(), Params{}, skew)
+	// As many comparisons as an enrolment's worth of codes, since that
+	// is what the real path does.
+	for i := 0; i < RecoveryCodes; i++ {
+		_ = passwd.Verify(dummyRecovery, code)
+	}
 }
 
 // state returns the user's entry, making one and evicting if needed.

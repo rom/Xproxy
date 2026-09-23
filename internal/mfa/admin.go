@@ -316,6 +316,34 @@ const (
 	recoveryGroupLen   = 5
 )
 
+// recoveryIterations is how much a recovery code's hash is stretched,
+// and it is deliberately far below a password's.
+//
+// Stretching exists because a password is guessable and a stolen hash
+// is worth grinding. A recovery code is fifteen characters drawn
+// uniformly from an alphabet of thirty one -- about seventy four bits
+// -- so no amount of grinding finds one, and stretching it buys
+// nothing at all. What it cost was real: at a password's iteration
+// count, checking a code against ten stored hashes took a second of
+// processor time, which a client could ask for by sending anything at
+// all, and which told anybody who timed it whether a name was
+// enrolled.
+const recoveryIterations = 1000
+
+// RecoveryCodeLength is how long one is, separators and all. It is
+// exported because the protocols that carry a code inside a password
+// have to leave room for it: a bound below this one silently turns the
+// recovery path off, and the refusal looks exactly like a wrong code.
+const RecoveryCodeLength = recoveryCodeGroups*recoveryGroupLen + recoveryCodeGroups - 1
+
+// MaxDigits is the longest time-based code the parser accepts.
+const MaxDigits = 10
+
+// MaxCode is the longest thing a caller should treat as a code before
+// handing it to a guard: a time-based code at its longest, or a
+// recovery code, whichever is more.
+const MaxCode = max(MaxDigits, RecoveryCodeLength)
+
 // recoveryCode draws one single-use code.
 func recoveryCode() (string, error) {
 	groups := make([]string, 0, recoveryCodeGroups)
@@ -342,7 +370,7 @@ func newRecovery(n int) (codes, hashes []string, err error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		h, err := passwd.Hash(c)
+		h, err := passwd.HashWithIterations(c, recoveryIterations)
 		if err != nil {
 			return nil, nil, err
 		}

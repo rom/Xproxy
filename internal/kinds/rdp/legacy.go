@@ -1,6 +1,7 @@
 package rdp
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -202,9 +203,16 @@ func (se *session) startLegacy(sec *rdp.ServerSecurity) string {
 		// place to overrule it -- but it is the place to say so,
 		// because a session nobody encrypts looks exactly like one
 		// everybody does.
-		t.engine.Logs().Error.Warn("rdp desktop asked for no encryption at all on a legacy leg",
-			"listener", t.cfg.Name, "target", se.target,
-			"method", sec.Method, "level", sec.Level)
+		//
+		// It goes in the security log rather than the error log: it is
+		// a downgrade of what the operator asked for, decided by the
+		// far end, and that is the log an estate exports and alerts
+		// on.
+		t.engine.Logs().SecurityEvent(context.Background(), "allow", "rdp_no_upstream_encryption",
+			"listener", t.cfg.Name, "client_ip", se.ip.String(), "target", se.target,
+			"method", rdp.EncryptionMethodName(sec.Method),
+			"level", rdp.EncryptionLevelName(sec.Level),
+			"detail", "the desktop answered that it encrypts nothing; the session runs in the clear on that leg")
 		return ""
 	}
 	clientRandom, err := rdp.NewRandom()
