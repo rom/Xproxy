@@ -70,10 +70,11 @@ locally; everything else goes through the socket.
 | `telemetry` | Every OpenTelemetry exporter with sent, dropped, pushes, failures, queue depth and last error |
 | `htpasswd` *FILE* *NAME* | Add or replace a `basic_auth` user; the password is read from standard input |
 | `apikey` `add`\|`rotate`\|`revoke`\|`remove`\|`list` [*ID*] [`-file` *PATH*] [`-scopes` *A,B*] [`-expires` *90d*] [`-note` *TEXT*] [`-grace` *24h*] | Manage the keys file of `api_key` filters: `add` prints the plaintext once, `rotate` issues a new secret and keeps the old one for the grace period, `revoke` and `remove` retire a key, `list` shows the file |
+| `mfa` `enrol`\|`verify`\|`list` [`-user` *NAME*] [`-file` *PATH*] [`-issuer` *NAME*] [`-digits` *N*] [`-period` *N*] [`-algo` *A*] [`-recovery` *N*] [`-code` *CODE*] [`-skew` *N*] | Second factors in the enrolment file: `enrol` prints the line, the `otpauth://` URI and the recovery codes once, `verify` checks a code, `list` shows who is enrolled. Listeners re-read the file, so a change applies without a reload |
 | `spki` *CERT.pem* | Print the `spki_pins` value of a certificate |
 | `metrics` | Print the Prometheus exposition |
 | `series` [`-since` *D*] [`-last` *N*] | Print sampled series |
-| `tui` [`-refresh` *D*] [`-no-color`] | Full-screen live view (`NO_COLOR` also disables colours) |
+| `tui` [`-refresh` *D*] [`-no-color`] | Full-screen live view (`NO_COLOR` also disables colours). Ten screens, selected with `1`-`9` and `0` or with tab; on the bans screen `j`/`k` select, `u` unbans and `b` bans, on the MFA screen `j`/`k` select, `u` unlocks a person who guessed wrong too often and `x` removes their second factor |
 | `schema` | Print the JSON schema of the configuration (also installed at `/usr/share/xproxy/xproxy.schema.json`) |
 | `completion` `bash`\|`zsh`\|`fish` | Print a completion script for `xproxyctl` and `xproxy` |
 | `help` | List the commands with a summary |

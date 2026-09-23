@@ -260,6 +260,11 @@ T}	T{
 Manage the keys file of \fBapi_\:key\fR filters: \fBadd\fR prints the plaintext once,\: \fBrotate\fR issues a new secret and keeps the old one for the grace period,\: \fBrevoke\fR and \fBremove\fR retire a key,\: \fBlist\fR shows the file
 T}
 T{
+\fBmfa\fR \fBenrol\fR|\:\fBverify\fR|\:\fBlist\fR [\fB\-\:user\fR \fINAME\fR] [\fB\-\:file\fR \fIPATH\fR] [\fB\-\:issuer\fR \fINAME\fR] [\fB\-\:digits\fR \fIN\fR] [\fB\-\:period\fR \fIN\fR] [\fB\-\:algo\fR \fIA\fR] [\fB\-\:recovery\fR \fIN\fR] [\fB\-\:code\fR \fICODE\fR] [\fB\-\:skew\fR \fIN\fR]
+T}	T{
+Second factors in the enrolment file: \fBenrol\fR prints the line,\: the \fBotpauth:\:/\:/\fR URI and the recovery codes once,\: \fBverify\fR checks a code,\: \fBlist\fR shows who is enrolled. Listeners re\-read the file,\: so a change applies without a reload
+T}
+T{
 \fBspki\fR \fICERT.pem\fR
 T}	T{
 Print the \fBspki_\:pins\fR value of a certificate
@@ -277,7 +282,7 @@ T}
 T{
 \fBtui\fR [\fB\-\:refresh\fR \fID\fR] [\fB\-\:no\-\:color\fR]
 T}	T{
-Full\-screen live view (\fBNO_\:COLOR\fR also disables colours)
+Full\-screen live view (\fBNO_\:COLOR\fR also disables colours). Ten screens,\: selected with \fB1\fR\-\fB9\fR and \fB0\fR or with tab;\: on the bans screen \fBj\fR/\:\fBk\fR select,\: \fBu\fR unbans and \fBb\fR bans,\: on the MFA screen \fBj\fR/\:\fBk\fR select,\: \fBu\fR unlocks a person who guessed wrong too often and \fBx\fR removes their second factor
 T}
 T{
 \fBschema\fR

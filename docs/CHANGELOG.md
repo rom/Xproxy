@@ -328,6 +328,49 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Second factors an operator can change while the proxy runs**, in
+  the management API, the GUI and the TUI. The enrolment file was read
+  once, at load, so adding somebody meant a reload and removing
+  somebody meant a reload too -- and until it happened, the person was
+  still enrolled while everybody believed they were not. The file is
+  now the authority: every listener re-reads it when it changes on
+  disk, at most once a second, and a change takes effect on the next
+  connection.
+  - **The socket gained `/v1/mfa`** -- the listeners that ask for a
+    factor, who is enrolled on each with the parameters, the recovery
+    codes left, the recent failures and the lockout -- and four audited
+    changes beside it: `enrol`, `recovery`, `remove` and `unlock`. The
+    engine reaches a listener's guard through an optional interface a
+    kind implements, so the enrolments stay where the listener's own
+    skew and lockout settings are and nothing had to move into the
+    engine.
+  - **The GUI has an MFA page.** A viewer sees who is enrolled and who
+    is locked out, which holds no secret; an operator enrols, replaces
+    recovery codes, removes and unlocks. What an enrolment answers with
+    -- the secret, the `otpauth://` URI and the recovery codes -- is
+    passed through as it arrived and shown once, in a panel that stays
+    until it is dismissed, which is why that page is the one with no
+    refresh timer: a timer would wipe it while it was still being
+    written down.
+  - **The TUI has an MFA screen**, the tenth, reached with `0`. It
+    shows the same list; `u` unlocks somebody who guessed wrong too
+    often and `x` removes their factor, each after a confirmation and
+    resolved against the row the cursor is on at that moment, because
+    the list refreshes underneath. Enrolling is not there: a secret and
+    ten recovery codes need somewhere that can hold them, which is the
+    GUI or `xproxyctl mfa enrol`.
+  - Two facts about scope are on the screen rather than in a footnote,
+    because both surprise: an enrolment belongs to the *file*, so
+    enrolling through one listener enrols the person on every listener
+    reading it; a lockout belongs to the *process* that counted the
+    wrong codes, so unlocking is per listener, and per node in a
+    cluster. Unlocking forgives guessing wrong without forgiving
+    replay -- a code spent before the lockout is still spent.
+  - Every change is audited twice when it comes through the GUI: by
+    the daemon with the caller's kernel-reported credentials, and by
+    the GUI with the operator's account. Neither line carries what was
+    handed out, only who changed whose factor on which listener.
+
 - **A Remote Desktop gateway** (`kind: rdp`, in xgate). The proxy
   terminates the connection sequence of MS-RDPBCGR on both legs, which
   is what makes any of the rest possible: everything worth deciding
@@ -654,6 +697,14 @@ Open findings of the earlier rounds:
 
 ### Fixed (1.4, tests)
 
+- **An eighth, which slept fifty milliseconds and hoped.**
+  `TestUpstreamQueue` (`internal/kinds/http`) started a second request,
+  slept, and asserted that the pool showed one request waiting. Two
+  ways to lose that under a loaded machine: the goroutine had not yet
+  reached the queue, or it had and the two hundred millisecond queue
+  timeout had already taken it out again. It now waits for the state it
+  asserts, and the queue timeout is a second, so the window in which
+  that state exists is wide rather than a guess.
 - **A seventh, which tampered with a cookie into itself.** `TestFlow`
   checks that a changed challenge cookie is refused, and changed it by
   replacing its last two base64 characters with "AA" -- so a cookie

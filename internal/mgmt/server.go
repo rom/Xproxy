@@ -125,6 +125,7 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 		}
 		writeJSON(w, 404, result{Error: "sandbox status not available"})
 	})
+	s.mfaRoutes(mux)
 	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("POST /v1/reload", s.reload)
 	mux.HandleFunc("GET /v1/history", func(w http.ResponseWriter, _ *http.Request) {

@@ -264,3 +264,40 @@ func (c *Client) Ban(target, duration, reason string) (*ban.Entry, error) {
 func (c *Client) Unban(target string) error {
 	return c.do("DELETE", "/v1/bans?target="+url.QueryEscape(target), nil)
 }
+
+// MFA lists every listener that asks for a second factor, with who is
+// enrolled and what this process remembers about them.
+func (c *Client) MFA() ([]proxy.MFAListener, error) {
+	var out []proxy.MFAListener
+	return out, c.do("GET", "/v1/mfa", &out)
+}
+
+// MFAEnrol gives a person a second factor on a listener. What comes
+// back can be shown once and never again: the secret, the URI an
+// authenticator reads, and the recovery codes.
+func (c *Client) MFAEnrol(listener, user, issuer string, digits, period int, algo string) (*MFAEnrolled, error) {
+	var out MFAEnrolled
+	req := mfaRequest{Listener: listener, User: user, Issuer: issuer,
+		Digits: digits, Period: period, Algo: algo}
+	return &out, c.doBody("POST", "/v1/mfa/enrol", req, &out)
+}
+
+// MFARecovery replaces a person's recovery codes and returns the new
+// ones, which is the other thing shown once.
+func (c *Client) MFARecovery(listener, user string) (*MFAEnrolled, error) {
+	var out MFAEnrolled
+	return &out, c.doBody("POST", "/v1/mfa/recovery",
+		mfaRequest{Listener: listener, User: user}, &out)
+}
+
+// MFARemove takes a person's second factor away.
+func (c *Client) MFARemove(listener, user string) error {
+	return c.doBody("POST", "/v1/mfa/remove",
+		mfaRequest{Listener: listener, User: user}, nil)
+}
+
+// MFAUnlock lets a person try again after too many wrong codes.
+func (c *Client) MFAUnlock(listener, user string) error {
+	return c.doBody("POST", "/v1/mfa/unlock",
+		mfaRequest{Listener: listener, User: user}, nil)
+}

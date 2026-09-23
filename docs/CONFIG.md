@@ -1819,7 +1819,7 @@ weakest door decides.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `file` | path | required | The enrolment file (`xproxyctl mfa enrol` writes the lines). Refused if world readable: it holds every second factor |
+| `file` | path | required | The enrolment file (`xproxyctl mfa enrol` writes the lines). Refused if world readable: it holds every second factor. Re-read when it changes on disk, at most once a second, so enrolling and removing take effect without a reload |
 | `issuer` | name | `xproxy` | The name an authenticator application shows |
 | `prompt` | string | `One-time code: ` | What the user is asked |
 | `skew` | int | `1` | Steps either side of now that are accepted, for a clock that is a little off. Each step is a window an observed code can be replayed in, so above 2 it warns |
@@ -1838,6 +1838,13 @@ What the client is told never distinguishes a wrong code from a replayed
 one, from a locked account, or from a name that never enrolled. The
 prompt is shown even to a user with no enrolment, because refusing
 before asking says the name is not enrolled.
+
+The file can also be changed while the proxy runs, through the
+management API (`/v1/mfa*`), the GUI's MFA page or the TUI's MFA
+screen — enrol, replace recovery codes, remove, unlock. An enrolment is
+shared by every listener reading the same file; a lockout is not, since
+it lives in the process that counted the wrong codes. See
+`docs/USAGE.md`.
 
 #### server.listeners[].ssh.sftp
 

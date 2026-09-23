@@ -41,7 +41,9 @@ type Data struct {
 	TLS       map[string][]tlsconf.CertInfo
 	Telemetry *mgmt.TelemetryView
 	DNS       []dns.Status
-	Errors    map[string]string
+	// Added in 1.4: who has a second factor on which listener.
+	MFA    []proxy.MFAListener
+	Errors map[string]string
 }
 
 // Source fetches Data.
@@ -117,6 +119,13 @@ func (s *clientSource) Fetch(ctx context.Context) Data {
 		ups, err := s.c.Upstreams()
 		if err == nil {
 			set(func() { d.Upstreams = ups })
+		}
+		return err
+	})
+	run("mfa", func() error {
+		ms, err := s.c.MFA()
+		if err == nil {
+			set(func() { d.MFA = ms })
 		}
 		return err
 	})

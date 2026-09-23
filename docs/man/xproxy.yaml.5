@@ -4206,7 +4206,7 @@ path
 T}	T{
 required
 T}	T{
-The enrolment file (\fBxproxyctl mfa enrol\fR writes the lines). Refused if world readable: it holds every second factor
+The enrolment file (\fBxproxyctl mfa enrol\fR writes the lines). Refused if world readable: it holds every second factor. Re\-read when it changes on disk,\: at most once a second,\: so enrolling and removing take effect without a reload
 T}
 T{
 \fBissuer\fR
@@ -4285,6 +4285,8 @@ T}
 A code is spent when it is used: a later attempt at the same step, or at an earlier one, is refused even though it verifies. The memory is per process, so in a cluster a code can be replayed once per node \[u2014] put the listener behind one node where that matters, or keep \fBskew\fR at 0.
 .PP
 What the client is told never distinguishes a wrong code from a replayed one, from a locked account, or from a name that never enrolled. The prompt is shown even to a user with no enrolment, because refusing before asking says the name is not enrolled.
+.PP
+The file can also be changed while the proxy runs, through the management API (\fB/v1/mfa*\fR), the GUI\(aqs MFA page or the TUI\(aqs MFA screen \[u2014] enrol, replace recovery codes, remove, unlock. An enrolment is shared by every listener reading the same file; a lockout is not, since it lives in the process that counted the wrong codes. See \fBdocs/USAGE.md\fR.
 .SS "server.listeners[].ssh.sftp"
 .PP
 Without this section the proxy can say only that a session may use \fBsftp\fR. That is the difference between reading a file and deleting a tree: the whole of it happens inside the channel. With it, each SFTP request is decided, and a refusal is answered with a permission\-denied status, so the session continues and the client is told which operation was refused rather than losing its connection.

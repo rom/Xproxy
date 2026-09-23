@@ -8,6 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/sandbox"
 )
 
@@ -25,10 +26,11 @@ const (
 	ViewRoutes
 	ViewWAF
 	ViewTLS
+	ViewMFA
 	viewCount
 )
 
-var viewNames = [...]string{"Overview", "Upstreams", "Bans", "Cluster", "Graphs", "Log", "Routes", "WAF", "TLS"}
+var viewNames = [...]string{"Overview", "Upstreams", "Bans", "Cluster", "Graphs", "Log", "Routes", "WAF", "TLS", "MFA"}
 
 // Style holds ANSI sequences; Plain has none (NO_COLOR, tests).
 type Style struct {
@@ -84,6 +86,8 @@ func Render(d Data, st State, sty Style) []string {
 		content = renderWAF(d, sty)
 	case ViewTLS:
 		content = renderTLS(d, sty)
+	case ViewMFA:
+		content = renderMFA(d, st, sty)
 	default:
 		content = renderOverview(d, sty, w)
 	}
@@ -100,7 +104,7 @@ func Render(d Data, st State, sty Style) []string {
 	// Scroll long list views so the selection stays visible.
 	if len(content) > body {
 		off := 0
-		if st.View == ViewBans && st.Selected+2 >= body {
+		if (st.View == ViewBans || st.View == ViewMFA) && st.Selected+2 >= body {
 			off = st.Selected + 3 - body
 		}
 		if off > len(content)-body {
@@ -188,9 +192,12 @@ func header(d Data, st State, sty Style, w int) string {
 }
 
 func footer(st State, sty Style, w int) string {
-	keys := "1-9/tab views  r refresh  p pause  +/- interval  q quit"
-	if st.View == ViewBans {
+	keys := "1-0/tab views  r refresh  p pause  +/- interval  q quit"
+	switch st.View {
+	case ViewBans:
 		keys = "j/k select  u unban  b ban  " + keys
+	case ViewMFA:
+		keys = "j/k select  u unlock  x remove  " + keys
 	}
 	return sty.Dim + clip(keys, w) + sty.Reset
 }
@@ -469,6 +476,60 @@ func renderTLS(d Data, sty Style) []string {
 				ct = fmt.Sprintf("%d scts", c.CT.Embedded)
 			}
 			out = append(out, fmt.Sprintf("  %-12s %-30s %-20s %s%-12s%s %-6s %-10s %s", clip(n, 12), clip(strings.Join(c.Names, ","), 30), clip(orDash(c.Issuer), 20), col, days, sty.Reset, src, clip(ocsp, 10), ct))
+		}
+	}
+	return out
+}
+
+// renderMFA lists who has a second factor on which listener, and what
+// this process remembers about them. The secret is never here: it
+// exists once, at enrolment, and the file keeps only what can check a
+// code.
+func renderMFA(d Data, st State, sty Style) []string {
+	if d.MFA == nil {
+		return []string{"no second factor data"}
+	}
+	out := []string{sty.Bold + fmt.Sprintf("  %-14s %-8s %-24s %5s %5s %-9s %s",
+		"LISTENER", "KIND", "USER", "DIGITS", "REC", "STATE", "FILE") + sty.Reset}
+	rows := mfaRows(d)
+	if len(rows) == 0 {
+		return append(out, "  no listener asks for a second factor")
+	}
+	for i, r := range rows {
+		mark := "  "
+		if i == st.Selected {
+			mark = sty.Inverse + "> "
+		}
+		state, col := "ok", sty.Green
+		if r.user.Locked {
+			state, col = "locked", sty.Red
+		} else if r.user.Failures > 0 {
+			state, col = fmt.Sprintf("%d fails", r.user.Failures), sty.Yellow
+		}
+		line := fmt.Sprintf("%s%-14s %-8s %-24s %5d %5d %s%-9s%s %s",
+			mark, clip(r.listener, 14), clip(r.kind, 8), clip(r.user.User, 24),
+			r.user.Digits, r.user.Recovery-r.user.Spent, col, state, sty.Reset, clip(r.file, 40))
+		if i == st.Selected {
+			line += sty.Reset
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// mfaRow is one enrolment on one listener, which is what the view
+// scrolls through and what a key press acts on.
+type mfaRow struct {
+	listener, kind, file string
+	user                 mfa.GuardStatus
+}
+
+// mfaRows flattens the listeners into the rows the view shows.
+func mfaRows(d Data) []mfaRow {
+	var out []mfaRow
+	for _, l := range d.MFA {
+		for _, u := range l.Users {
+			out = append(out, mfaRow{listener: l.Listener, kind: l.Kind, file: l.File, user: u})
 		}
 	}
 	return out

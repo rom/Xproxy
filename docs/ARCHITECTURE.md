@@ -1263,6 +1263,11 @@ Endpoints:
 | POST | `/v1/reload-certs` | re-read certificates |
 | POST | `/v1/logs/reopen` | reopen log files |
 | GET | `/v1/bans`, POST `/v1/bans`, DELETE `/v1/bans?target=` | ban list |
+| GET | `/v1/mfa` | every listener that asks for a second factor: its kind, its enrolment file, and who is enrolled with the parameters, recovery codes left, failures and lockout this process remembers |
+| POST | `/v1/mfa/enrol` | enrol `user` on `listener`, optionally with `issuer`, `digits`, `period_seconds` and `algo`; answers with the secret, the `otpauth://` URI and the recovery codes, which exist only in that answer (audited) |
+| POST | `/v1/mfa/recovery` | replace a person's recovery codes and return the new ones (audited) |
+| POST | `/v1/mfa/remove` | take a person's second factor away (audited) |
+| POST | `/v1/mfa/unlock` | let a person try again after too many wrong codes; a spent code stays spent (audited) |
 | GET | `/v1/cluster` | cluster peers and counters |
 | GET | `/v1/deceive` | the routes that answer distrusted clients with a plausible response, and how often |
 | GET | `/v1/degradation` | the slow-lane levels and how often each applied |
@@ -1276,11 +1281,19 @@ The TUI is a mode of `xproxyctl`: a pure renderer (`tui.Render`, data and
 terminal size in, lines out, tested without a terminal) driven by a raw
 mode loop on `golang.org/x/term` that fetches all views concurrently with
 a deadline each refresh and reads keys from stdin. It uses the same client
-and therefore the same audited API for bans. Nine screens cover the
-management API: overview (with sandbox, telemetry and dns lines),
-upstreams with pool state, bans, cluster, graphs, the security log,
-routes (the quota report), WAF statistics and served certificates; a
-fetch that fails leaves its screen empty and names the error.
+and therefore the same audited API for bans and for second factors. Ten
+screens cover the management API: overview (with sandbox, telemetry and
+dns lines), upstreams with pool state, bans, cluster, graphs, the
+security log, routes (the quota report), WAF statistics, served
+certificates and the enrolments of every listener that asks for a second
+factor; a fetch that fails leaves its screen empty and names the error.
+Two screens act as well as show: bans (`b`, `u`) and MFA, where `u`
+unlocks somebody who guessed wrong too often and `x` removes their
+second factor, each behind a confirmation and resolved against the row
+the cursor is on at that moment rather than when the key was pressed,
+because the list refreshes underneath. Enrolment is not among them: it
+hands back a secret and ten recovery codes that exist once, which needs
+a surface that can hold them.
 
 An optional TCP listener (`metrics.listen`) serves `/metrics` only, with a
 source allow list and optional TLS with client certificates; it never
@@ -1301,8 +1314,16 @@ download, certificates, telemetry, sandbox, dns, history, diff and every
 subsystem status), actions post to the same audited endpoints (reload,
 certificates, logs, ACME renewal, WAF reset, rollback by id; a dry run
 posts to the reload endpoint without applying),
-and the two things the socket does not offer, editing the configuration
-file and following log files, are done by the GUI process itself on files
+the MFA page lists the
+enrolments of every listener (readable by a viewer: it holds no secret)
+and posts enrolments, recovery code replacements, removals and unlocks
+to the socket's audited endpoints, adding an audit line of its own for
+the operator who asked, since the socket sees only the GUI process. What
+an enrolment answers with — the secret, the `otpauth://` URI and the
+recovery codes — is passed through as it arrived and shown once, in a
+panel that stays until it is dismissed; the page has no refresh timer
+for that reason. And the two things the socket does not offer, editing
+the configuration file and following log files, are done by the GUI process itself on files
 it owns or may read. Configuration edits go through the full validator
 with file checks before anything is written; writes are atomic with a
 `.bak` of the previous content and an entity tag so two operators cannot

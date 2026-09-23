@@ -601,8 +601,10 @@ func run(args []string, out, errOut io.Writer) int {
 		cfg, _ := config.Load(*cfgPath) // optional: only for the log path
 		src := tui.NewSource(c, cfg)
 		act := tui.Actions{
-			Ban:   func(target, dur, reason string) error { _, err := c.Ban(target, dur, reason); return err },
-			Unban: c.Unban,
+			Ban:       func(target, dur, reason string) error { _, err := c.Ban(target, dur, reason); return err },
+			Unban:     c.Unban,
+			MFAUnlock: c.MFAUnlock,
+			MFARemove: c.MFARemove,
 		}
 		if err := tui.Run(src, act, tui.Options{Refresh: *refresh, Color: !*noColor}); err != nil {
 			return fail(err)

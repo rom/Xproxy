@@ -20,6 +20,13 @@ type mgmtSeries = mgmt.SeriesResponse
 type Actions struct {
 	Ban   func(target, duration, reason string) error
 	Unban func(target string) error
+	// MFAUnlock lets a person who ran out of tries start again, and
+	// MFARemove takes their second factor away. Enrolment is not here:
+	// it hands back a secret and ten recovery codes that exist once,
+	// which belongs on a page that can hold them (the GUI) or in
+	// `xproxyctl mfa enrol`, not in a status line.
+	MFAUnlock func(listener, user string) error
+	MFARemove func(listener, user string) error
 }
 
 // Options configure Run.
@@ -156,12 +163,17 @@ func handleKey(st *State, k []byte, d *Data, act Actions) (quit, refresh bool) {
 	case "q", "\x03":
 		return true, false
 	case "\t", "\x1b[C", "l":
-		st.View = (st.View + 1) % viewCount
+		st.show((st.View + 1) % viewCount)
 	case "\x1b[Z", "\x1b[D", "h":
-		st.View = (st.View + viewCount - 1) % viewCount
+		st.show((st.View + viewCount - 1) % viewCount)
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		if v := View(s[0] - '1'); v < viewCount {
-			st.View = v
+			st.show(v)
+		}
+	case "0":
+		// The tenth view, by the usual convention of a row of digits.
+		if viewCount > 9 {
+			st.show(9)
 		}
 	case "r":
 		return false, true
@@ -174,23 +186,66 @@ func handleKey(st *State, k []byte, d *Data, act Actions) (quit, refresh bool) {
 		st.Refresh = max(st.Refresh/2, 500*time.Millisecond)
 		return false, true
 	case "j", "\x1b[B":
-		if st.View == ViewBans && st.Selected < len(d.Bans)-1 {
+		if st.Selected < rowCount(st, d)-1 {
 			st.Selected++
 		}
 	case "k", "\x1b[A":
-		if st.View == ViewBans && st.Selected > 0 {
+		if st.Selected > 0 {
 			st.Selected--
 		}
 	case "u":
-		if st.View == ViewBans && st.Selected < len(d.Bans) {
+		switch {
+		case st.View == ViewBans && st.Selected < len(d.Bans):
 			st.Prompt = "unban " + d.Bans[st.Selected].Target + "? (y/N)"
+		case st.View == ViewMFA:
+			if r, ok := selectedMFA(st, d); ok {
+				st.Prompt = "unlock " + r.user.User + " on " + r.listener + "? (y/N)"
+			}
 		}
 	case "b":
 		if st.View == ViewBans {
 			st.Prompt = "ban <address|cidr> [duration] [reason]:"
 		}
+	case "x":
+		if st.View == ViewMFA {
+			if r, ok := selectedMFA(st, d); ok {
+				st.Prompt = "remove the second factor of " + r.user.User + " on " + r.listener + "? (y/N)"
+			}
+		}
 	}
 	return false, false
+}
+
+// show moves to a view, putting the cursor back at the top. Two views
+// select through lists of different things, so an index carried over
+// from the other one would point at somebody unrelated.
+func (st *State) show(v View) {
+	if st.View != v {
+		st.Selected = 0
+	}
+	st.View = v
+}
+
+// rowCount is how many rows the current view can select through, which
+// is what bounds the cursor.
+func rowCount(st *State, d *Data) int {
+	switch st.View {
+	case ViewBans:
+		return len(d.Bans)
+	case ViewMFA:
+		return len(mfaRows(*d))
+	default:
+		return 0
+	}
+}
+
+// selectedMFA is the enrolment the cursor is on, if there is one.
+func selectedMFA(st *State, d *Data) (mfaRow, bool) {
+	rows := mfaRows(*d)
+	if st.Selected < 0 || st.Selected >= len(rows) {
+		return mfaRow{}, false
+	}
+	return rows[st.Selected], true
 }
 
 // submit executes the active prompt.
@@ -208,6 +263,10 @@ func (st *State) submit(d *Data, act Actions) string {
 			return "unban failed: " + err.Error()
 		}
 		return "unbanned " + target
+	case strings.HasPrefix(st.Prompt, "unlock "):
+		return st.mfaSubmit(d, act.MFAUnlock, "unlock", "unlocked")
+	case strings.HasPrefix(st.Prompt, "remove the second factor "):
+		return st.mfaSubmit(d, act.MFARemove, "remove", "removed the second factor of")
 	case strings.HasPrefix(st.Prompt, "ban "):
 		f := strings.Fields(st.Input)
 		if len(f) == 0 {
@@ -229,4 +288,25 @@ func (st *State) submit(d *Data, act Actions) string {
 		return "banned " + f[0] + " for " + dur
 	}
 	return ""
+}
+
+// mfaSubmit answers a yes-or-no prompt about the selected enrolment.
+// It resolves the row again at this point rather than remembering it
+// from the key press: the view refreshes while the prompt is up, and
+// acting on a stale row would name one person and change another.
+func (st *State) mfaSubmit(d *Data, fn func(listener, user string) error, verb, done string) string {
+	if strings.ToLower(strings.TrimSpace(st.Input)) != "y" {
+		return "cancelled"
+	}
+	r, ok := selectedMFA(st, d)
+	if !ok {
+		return verb + ": nothing selected"
+	}
+	if fn == nil {
+		return verb + " not available"
+	}
+	if err := fn(r.listener, r.user.User); err != nil {
+		return verb + " failed: " + err.Error()
+	}
+	return done + " " + r.user.User + " on " + r.listener
 }

@@ -27,6 +27,8 @@ type fakeMgmt struct {
 	bans      atomic.Int64
 	wafResets atomic.Int64
 	rollbacks atomic.Value
+	mfaLast   atomic.Value // the last body one of the /v1/mfa calls received
+	mfaCalls  atomic.Int64
 }
 
 func startFakeMgmt(t *testing.T) *fakeMgmt {
@@ -87,6 +89,31 @@ func startFakeMgmt(t *testing.T) *fakeMgmt {
 		f.wafResets.Add(1)
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	})
+	// Second factors: one listener, one person enrolled and one locked out.
+	mux.HandleFunc("GET /v1/mfa", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `[{"listener":"gate","kind":"ssh","file":"/etc/xproxy/mfa","users":[`+
+			`{"user":"alice","recovery":10,"digits":6,"period_seconds":30,"algo":"SHA1","locked":false,"failures":0,"recovery_spent":2},`+
+			`{"user":"bob","recovery":10,"digits":8,"period_seconds":60,"algo":"SHA256","locked":true,"locked_until":"2030-01-01T00:00:00Z","failures":6,"recovery_spent":0}]}]`)
+	})
+	mfa := func(answer string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			f.mfaLast.Store(string(body))
+			f.mfaCalls.Add(1)
+			var req map[string]any
+			_ = json.Unmarshal(body, &req)
+			if req["user"] == "nobody" {
+				w.WriteHeader(409)
+				_, _ = io.WriteString(w, `{"error":"mfa: no such enrolment"}`)
+				return
+			}
+			_, _ = io.WriteString(w, answer)
+		}
+	}
+	mux.HandleFunc("POST /v1/mfa/enrol", mfa(`{"ok":true,"secret":"JBSWY3DPEHPK3PXPJBSWY3DPEH","uri":"otpauth://totp/xproxy:alice?secret=JBSWY3DPEHPK3PXPJBSWY3DPEH","recovery":["abcde-fghij-klmno"],"show_once":true}`))
+	mux.HandleFunc("POST /v1/mfa/recovery", mfa(`{"ok":true,"recovery":["pqrst-uvwxy-23456"],"show_once":true}`))
+	mux.HandleFunc("POST /v1/mfa/remove", mfa(`{"ok":true}`))
+	mux.HandleFunc("POST /v1/mfa/unlock", mfa(`{"ok":true}`))
 	mux.HandleFunc("POST /v1/rollback", func(w http.ResponseWriter, r *http.Request) {
 		f.rollbacks.Store(r.URL.Query().Get("id"))
 		_, _ = io.WriteString(w, `{"ok":true}`)

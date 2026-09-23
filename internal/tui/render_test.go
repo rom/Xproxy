@@ -11,6 +11,7 @@ import (
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/limits"
+	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/sandbox"
@@ -52,7 +53,13 @@ func sample() Data {
 			OCSP: tlsconf.OCSPStatus{Status: "good"}, CT: tlsconf.CTStatus{Required: 2, Verified: 2, Logs: 2, OK: true}}}},
 		Telemetry: &mgmt.TelemetryView{Traces: &tracing.Status{Enabled: true, Sampled: 10, Sent: 9, Failed: 1}},
 		DNS:       []dns.Status{{Listener: "dns", Queries: 100, QueriesUDP: 80, QueriesTCP: 20, CacheHits: 60, Blocked: 5, DNSSEC: &dns.DNSSECStatus{Enabled: true, Secure: 40, Bogus: 1}}},
-		Errors:    map[string]string{},
+		MFA: []proxy.MFAListener{
+			{Listener: "gate", Kind: "ssh", File: "/etc/xproxy/mfa", Users: []mfa.GuardStatus{
+				{Status: mfa.Status{User: "alice", Recovery: 10, Digits: 6, Period: 30, Algo: "SHA1"}, Spent: 2},
+				{Status: mfa.Status{User: "bob", Recovery: 10, Digits: 8, Period: 60, Algo: "SHA256"}, Locked: true, LockedUntil: now.Add(5 * time.Minute), Failures: 6}}},
+			{Listener: "desktops", Kind: "rdp", File: "/etc/xproxy/mfa", Users: []mfa.GuardStatus{
+				{Status: mfa.Status{User: "carol", Recovery: 10, Digits: 6, Period: 30, Algo: "SHA1"}, Failures: 2}}}},
+		Errors: map[string]string{},
 	}
 }
 
@@ -249,5 +256,89 @@ func TestRunRequiresTerminal(t *testing.T) {
 	defer w.Close()
 	if err := Run(fakeSource{sample()}, Actions{}, Options{In: r}); err == nil {
 		t.Fatal("expected an error without a terminal")
+	}
+}
+
+func TestMFAViewAndKeys(t *testing.T) {
+	d := sample()
+	st := State{View: ViewMFA, Width: 120, Height: 24, Refresh: time.Second}
+	lines := strings.Join(Render(d, st, Plain), "\n")
+	for _, want := range []string{"alice", "bob", "carol", "locked", "2 fails", "/etc/xproxy/mfa", "u unlock", "x remove"} {
+		if !strings.Contains(lines, want) {
+			t.Fatalf("the view does not mention %q:\n%s", want, lines)
+		}
+	}
+	// Nothing that could authenticate a person may be on the screen.
+	if strings.Contains(lines, "secret") || strings.Contains(strings.ToLower(lines), "otpauth") {
+		t.Fatalf("a secret reached the view:\n%s", lines)
+	}
+	// The tenth view has no digit of its own, so zero reaches it.
+	nav := State{Refresh: time.Second}
+	handleKey(&nav, []byte("0"), &d, Actions{})
+	if nav.View != ViewMFA {
+		t.Fatalf("zero went to %v", nav.View)
+	}
+	var unlocked, removed string
+	act := Actions{
+		MFAUnlock: func(listener, user string) error { unlocked = listener + "/" + user; return nil },
+		MFARemove: func(listener, user string) error {
+			removed = listener + "/" + user
+			return errors.New("no such enrolment")
+		},
+	}
+	// The cursor starts on alice; unlocking asks first.
+	handleKey(&st, []byte("u"), &d, act)
+	if !strings.Contains(st.Prompt, "alice") {
+		t.Fatalf("prompt: %q", st.Prompt)
+	}
+	handleKey(&st, []byte("n"), &d, act)
+	handleKey(&st, []byte("\r"), &d, act)
+	if unlocked != "" || st.Message != "cancelled" {
+		t.Fatalf("a no unlocked somebody: %q %q", unlocked, st.Message)
+	}
+	handleKey(&st, []byte("j"), &d, act)
+	handleKey(&st, []byte("u"), &d, act)
+	handleKey(&st, []byte("y"), &d, act)
+	handleKey(&st, []byte("\r"), &d, act)
+	if unlocked != "gate/bob" || st.Message != "unlocked bob on gate" {
+		t.Fatalf("unlock: %q %q", unlocked, st.Message)
+	}
+	// A refusal from the data plane is reported rather than swallowed.
+	handleKey(&st, []byte("x"), &d, act)
+	handleKey(&st, []byte("y"), &d, act)
+	handleKey(&st, []byte("\r"), &d, act)
+	if removed != "gate/bob" || !strings.HasPrefix(st.Message, "remove failed") {
+		t.Fatalf("remove: %q %q", removed, st.Message)
+	}
+	// The cursor does not run past the last row, and moving to another
+	// view puts it back at the top so a key press cannot act on the row
+	// that index happens to point at there.
+	for range 5 {
+		handleKey(&st, []byte("j"), &d, act)
+	}
+	if st.Selected != 2 {
+		t.Fatalf("cursor ran off the end: %d", st.Selected)
+	}
+	handleKey(&st, []byte("3"), &d, act)
+	if st.View != ViewBans || st.Selected != 0 {
+		t.Fatalf("view change: %v %d", st.View, st.Selected)
+	}
+	// Without the actions wired up the keys say so instead of panicking.
+	st.View, st.Selected = ViewMFA, 0
+	handleKey(&st, []byte("x"), &d, Actions{})
+	handleKey(&st, []byte("y"), &d, Actions{})
+	handleKey(&st, []byte("\r"), &d, Actions{})
+	if st.Message != "remove not available" {
+		t.Fatalf("no action: %q", st.Message)
+	}
+	// An empty listing leaves the keys inert.
+	empty := Data{MFA: []proxy.MFAListener{}, Errors: map[string]string{}}
+	est := State{View: ViewMFA, Width: 80, Height: 12, Refresh: time.Second}
+	if out := strings.Join(Render(empty, est, Plain), "\n"); !strings.Contains(out, "no listener asks") {
+		t.Fatalf("empty view:\n%s", out)
+	}
+	handleKey(&est, []byte("u"), &empty, act)
+	if est.Prompt != "" {
+		t.Fatalf("a prompt with nothing to act on: %q", est.Prompt)
 	}
 }

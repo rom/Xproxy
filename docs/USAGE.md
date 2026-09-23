@@ -2963,6 +2963,50 @@ never enrolled is the one an attacker will use.
 halves: the SSH listener xgate serves and the filter chain xproxy
 serves, against one enrolment file on disk.
 
+### Administering enrolments
+
+The enrolment file is the authority and every listener re-reads it when
+it changes on disk, at most once a second. So a change takes effect on
+the next connection: no reload, and — the half that matters — removing
+somebody actually removes them, instead of leaving them enrolled until
+whoever remembers runs a reload.
+
+Three ways to make one, all writing the same file:
+
+```sh
+xproxyctl mfa enrol -user alice -issuer example.com -recovery 5
+xproxyctl mfa list -file /etc/xproxy/mfa
+```
+
+In the GUI, the **MFA** page lists every listener that asks for a second
+factor with who is enrolled, how many recovery codes are left and who is
+locked out, and an operator can enrol, replace somebody's recovery
+codes, remove them or unlock them. A viewer sees the list and can change
+nothing. In `xproxyctl tui`, the MFA screen shows the same list; `u`
+unlocks the selected person and `x` removes their second factor, each
+after a confirmation.
+
+Enrolling is only in the GUI and in `xproxyctl mfa enrol`, because the
+secret, the `otpauth://` URI and the recovery codes exist in exactly one
+answer and are never stored: the file keeps what checks a code and
+hashes of the recovery codes, nothing that can produce one. Hand them
+over then, or enrol the person again.
+
+Two things about scope are worth reading twice, and both are on the
+screen:
+
+- **An enrolment belongs to the file, not to the listener.** Enrolling
+  through one listener enrols the person on every listener that reads
+  the same file, which is usually what one file is for.
+- **A lockout belongs to the listener, not to the file.** It lives in
+  the process that counted the wrong codes, so unlocking is per
+  listener, and in a cluster per node.
+
+Every change is audited twice over: by the daemon with the calling
+process's kernel-reported credentials, and, when it came through the
+GUI, by the GUI with the operator's account. Neither line ever carries
+what was handed out — only who changed whose factor on which listener.
+
 ### YARA rules over streams and bodies
 
 ```yaml

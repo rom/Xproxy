@@ -18,6 +18,7 @@ import (
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/logging"
+	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -262,6 +263,17 @@ type DNSInstance interface{ DNSServer() *dns.Server }
 // FlowCounter is a kind that relays datagram flows and can say how many
 // are open, for the counter snapshot.
 type FlowCounter interface{ OpenFlows() int }
+
+// MFAHolder is a kind whose listener asks for a second factor. The
+// control plane lists and changes enrolments through it, so that
+// adding or removing one is a thing an operator does rather than a
+// file they have to find, and so that the state this process keeps --
+// who is locked out -- can be seen and cleared.
+//
+// It is an optional interface for the same reason FlowCounter is: the
+// engine asks its listeners rather than knowing which kinds have a
+// factor, and keeps no import of a kind's package.
+type MFAHolder interface{ MFAGuard() *mfa.Guard }
 
 // MasqueStatus is one listener's MASQUE state. The type lives here
 // rather than with the kind that fills it in, so the management view

@@ -285,6 +285,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/metrics", s.passthrough("/metrics", "text/plain; version=0.0.4; charset=utf-8"))
 	m.HandleFunc("GET /api/series", s.series)
 	m.HandleFunc("GET /api/users", s.listUsers)
+	m.HandleFunc("GET /api/mfa", s.passthrough("/v1/mfa", "application/json"))
 
 	// Actions.
 	m.HandleFunc("POST /api/bans", s.addBan)
@@ -297,6 +298,12 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/rollback", s.rollback)
 	m.HandleFunc("POST /api/reload/dry-run", s.dryRun)
 	m.HandleFunc("POST /api/restart", s.restart)
+
+	// Second factors. The middleware above limits these to operators.
+	m.HandleFunc("POST /api/mfa/enrol", s.mfaForward("mfa-enrol", "/v1/mfa/enrol"))
+	m.HandleFunc("POST /api/mfa/recovery", s.mfaForward("mfa-recovery", "/v1/mfa/recovery"))
+	m.HandleFunc("POST /api/mfa/remove", s.mfaForward("mfa-remove", "/v1/mfa/remove"))
+	m.HandleFunc("POST /api/mfa/unlock", s.mfaForward("mfa-unlock", "/v1/mfa/unlock"))
 
 	// Configuration file.
 	m.HandleFunc("GET /api/config/file", s.getConfigFile)

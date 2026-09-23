@@ -3,6 +3,7 @@ package telnet
 import (
 	"context"
 
+	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/proxy"
 )
 
@@ -32,3 +33,7 @@ func (t *server) Serve() { t.serve() }
 
 // Shutdown implements proxy.Instance.
 func (t *server) Shutdown(ctx context.Context) { t.shutdown(ctx) }
+
+// MFAGuard implements proxy.MFAHolder, so the control plane can list
+// and change the enrolments this listener asks for.
+func (t *server) MFAGuard() *mfa.Guard { return t.mfaGuard }
