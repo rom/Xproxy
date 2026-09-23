@@ -119,6 +119,32 @@ func DataPDU(body []byte) ([]byte, error) {
 	return TPKT(append(append([]byte(nil), x224Data...), body...))
 }
 
+// x224FixedHeader is the length indicator, the type, the destination
+// and source references and the class: the part of a connection
+// request or confirm that is there before anything the peer chose.
+const x224FixedHeader = 7
+
+// x224Options returns what a connection request or confirm carries
+// past that fixed header.
+//
+// The length indicator counts the octets after itself, so the unit is
+// one more than it says. Both ends of that have to be checked and only
+// one of them is obvious: a length past what arrived is the bound
+// everybody remembers, and a length *shorter than the fixed header* is
+// the one that is a slice whose start is past its end -- which is a
+// panic rather than an error, on the first packet of a connection,
+// from a peer that has proved nothing.
+func x224Options(body []byte) ([]byte, error) {
+	if len(body) < x224FixedHeader {
+		return nil, fmt.Errorf("%w: x.224 unit of %d bytes", ErrFraming, len(body))
+	}
+	li := int(body[0])
+	if li+1 < x224FixedHeader || li+1 > len(body) {
+		return nil, fmt.Errorf("%w: x.224 length indicator %d in a unit of %d bytes", ErrFraming, li, len(body))
+	}
+	return body[x224FixedHeader : li+1], nil
+}
+
 // X224Payload returns what a slow path PDU carries past the X.224
 // header, or an error if it is not a data unit.
 func X224Payload(body []byte) ([]byte, error) {
