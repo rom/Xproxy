@@ -386,6 +386,20 @@ Open findings of the earlier rounds:
     section 4.2.4 and the exchange against a stand-in for the Windows
     side; it is not verified against a real desktop here, and
     CONFIG.md says so.
+  - **The protocol's own encryption**, RC4 under keys from two
+    randoms, has its cryptography implemented and tested in
+    `internal/rdp` -- walking the certificate to its key, sealing the
+    random, deriving the session keys, signing and re-keying -- but is
+    not yet wired into the session: the session's updates travel on
+    the fast path with encryption flags of their own, and that half is
+    still to do. Setting it is refused at load rather than failing at
+    the first connection. Towards a *client* it is not implemented at
+    all, for a reason worth saying plainly: presenting the protocol's
+    own certificate means signing it with a private key Microsoft
+    published, and shipping that is a decision for whoever needs it
+    rather than one to make quietly. CONFIG.md says both, and says
+    that what the scheme is worth is nothing against anyone on the
+    path.
   - **A client asking for network level authentication is answered
     with TLS**, which is what every remote desktop gateway does and
     the only reason a second factor can be checked at all: accepting

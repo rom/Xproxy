@@ -2867,9 +2867,9 @@ T}
 T{
 The protocol\(aqs own encryption (\fBrdp\fR,\: \fBPROTOCOL_\:RDP\fR)
 T}	T{
-Not implemented yet
+Not implemented \[u2014] see below
 T}	T{
-Not implemented yet
+Not wired up yet \[u2014] see below
 T}
 .TE
 .PP
@@ -2897,6 +2897,21 @@ Only the client half is implemented \[u2014] this proves a credential, it never 
 .PP
 .PP
 The NTLM key derivation is tested against the worked example of MS\-NLMP \[u00A7]4.2.4, and the whole exchange against a stand\-in for the Windows side. It has \fBnot\fR been verified against a real Windows desktop in this repository\(aqs tests.
+.PP
+\fBThe protocol\(aqs own encryption\fR \[u2014] RC4 under keys derived from two random values, one of them sent under an RSA key the server puts in the connection sequence \[u2014] is where the two directions differ.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBTowards a desktop\fR, the cryptography is implemented and tested (\fBinternal/rdp\fR): the certificate is walked to its key, the random is sealed, the session keys are derived and the packets are signed, encrypted and re\-keyed. It is not yet wired into the session, because the session\(aqs own updates travel on the fast path with their own encryption flags, and that half is still to do. Setting it is refused at load rather than failing at the first connection.
+.PP
+.ti -3n
+\(bu
+\fBTowards a client\fR it is not implemented at all, and there is a reason to say out loud rather than to work around: presenting the protocol\(aqs own certificate means signing it with a private key Microsoft published years ago. That is not a secret this project should ship on its own initiative, so the decision is left to whoever needs it.
+.RE
+.PP
+.PP
+What it is worth either way is nothing, against anyone on the path: MD5 and SHA\-1 derivation, RC4, and a certificate a client has no way to check because the protocol never had anywhere to check it against. It would be here for equipment that speaks nothing else \[u2014] reached through a gateway that records the session and holds the policy, which is better than reached directly, and not because the connection is protected.
 .PP
 \fBWhat the gateway does not decode\fR: the graphics, input, clipboard contents, audio, licensing and capability exchange. Those are relayed byte for byte. A recording is therefore the protocol stream, not a video \[u2014] see below.
 .SS "The channel policy"

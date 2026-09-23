@@ -1198,7 +1198,7 @@ documented.
 |----------|------------------|-------------------|
 | TLS (`tls`, `PROTOCOL_SSL`) | Supported, the default | Supported, the default |
 | Network level authentication (`nla`, `PROTOCOL_HYBRID`) | **Not offered, and cannot be** — see below | Supported: CredSSP over NTLMv2 |
-| The protocol's own encryption (`rdp`, `PROTOCOL_RDP`) | Not implemented yet | Not implemented yet |
+| The protocol's own encryption (`rdp`, `PROTOCOL_RDP`) | Not implemented — see below | Not wired up yet — see below |
 
 **A client that asks for network level authentication is answered with
 TLS.** That is not a gap, it is how the gateway works at all, and it is
@@ -1240,6 +1240,32 @@ The NTLM key derivation is tested against the worked example of MS-NLMP
 §4.2.4, and the whole exchange against a stand-in for the Windows side.
 It has **not** been verified against a real Windows desktop in this
 repository's tests.
+
+**The protocol's own encryption** — RC4 under keys derived from two
+random values, one of them sent under an RSA key the server puts in the
+connection sequence — is where the two directions differ.
+
+- **Towards a desktop**, the cryptography is implemented and tested
+  (`internal/rdp`): the certificate is walked to its key, the random is
+  sealed, the session keys are derived and the packets are signed,
+  encrypted and re-keyed. It is not yet wired into the session, because
+  the session's own updates travel on the fast path with their own
+  encryption flags, and that half is still to do. Setting it is
+  refused at load rather than failing at the first connection.
+- **Towards a client** it is not implemented at all, and there is a
+  reason to say out loud rather than to work around: presenting the
+  protocol's own certificate means signing it with a private key
+  Microsoft published years ago. That is not a secret this project
+  should ship on its own initiative, so the decision is left to
+  whoever needs it.
+
+What it is worth either way is nothing, against anyone on the path: MD5
+and SHA-1 derivation, RC4, and a certificate a client has no way to
+check because the protocol never had anywhere to check it against. It
+would be here for equipment that speaks nothing else — reached through
+a gateway that records the session and holds the policy, which is
+better than reached directly, and not because the connection is
+protected.
 
 **What the gateway does not decode**: the graphics, input, clipboard
 contents, audio, licensing and capability exchange. Those are relayed
