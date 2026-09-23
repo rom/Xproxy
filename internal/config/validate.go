@@ -1481,14 +1481,31 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		v.errf("%s.slow_start: must be between 0 and 1h", p)
 	}
 	addrs := map[string]bool{}
+	sockets := 0
 	for j, e := range u.Endpoints {
 		ep := fmt.Sprintf("%s.endpoints[%d]", p, j)
+		if path, ok := UnixSocket(e.Address); ok {
+			sockets++
+			switch {
+			case path == "":
+				v.errf("%s.address: %q names no socket path", ep, e.Address)
+			case !strings.HasPrefix(path, "/"):
+				v.errf("%s.address: the socket path %q must be absolute", ep, path)
+			case addrs[e.Address]:
+				v.errf("%s.address: duplicate %q", ep, e.Address)
+			}
+			addrs[e.Address] = true
+			if e.Weight < 1 || e.Weight > 1000 {
+				v.errf("%s.weight: must be between 1 and 1000", ep)
+			}
+			continue
+		}
 		host, port, err := net.SplitHostPort(e.Address)
 		pn, perr := strconv.Atoi(port)
 		switch {
 		case !v.hostPortOK(ep+".address", e.Address):
 		case err != nil || host == "" || port == "":
-			v.errf("%s.address: %q must be host:port", ep, e.Address)
+			v.errf("%s.address: %q must be host:port, or unix:/path for a socket", ep, e.Address)
 		case addrs[e.Address]:
 			v.errf("%s.address: duplicate %q", ep, e.Address)
 		case perr != nil || pn < 1 || pn > 65535:
@@ -1497,6 +1514,24 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		addrs[e.Address] = true
 		if e.Weight < 1 || e.Weight > 1000 {
 			v.errf("%s.weight: must be between 1 and 1000", ep)
+		}
+	}
+	if sockets > 0 {
+		// A socket endpoint's URL carries a synthetic authority, so
+		// there is no name in it for TLS to verify and nothing sensible
+		// for the handshake to ask for.
+		if u.Scheme == "https" && (u.TLS == nil || u.TLS.ServerName == "") {
+			v.errf("%s: a unix: endpoint with scheme https needs tls.server_name, because a socket has no name for the certificate to match", p)
+		}
+		if u.H3 {
+			v.errf("%s.h3: HTTP/3 needs UDP to a host; a unix: endpoint has neither", p)
+		}
+		if u.Discovery != nil {
+			v.errf("%s.discovery: discovery produces host:port endpoints and cannot produce a socket path", p)
+		}
+		if hc := u.HealthCheck; hc != nil && hc.Type == "grpc" {
+			v.warnf("%s.health_check: a grpc check over a socket works, but the authority it sends is the synthetic one, "+
+				"so a server that routes on :authority may not answer it", p)
 		}
 	}
 	if u.Timeouts.Connect <= 0 || u.Timeouts.ResponseHeader <= 0 || u.Timeouts.Total <= 0 {

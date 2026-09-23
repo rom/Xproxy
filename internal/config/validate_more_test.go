@@ -160,6 +160,11 @@ func TestValidationBranches(t *testing.T) {
 		{"tls on http", rep("scheme: https", "scheme: http"), "set only when scheme is https"},
 		{"weight", rep("weight: 2", "weight: 1001"), "weight"},
 		{"duplicate endpoint", rep("127.0.0.1:9001", "127.0.0.1:9000"), "duplicate"},
+		{"socket path relative", rep("127.0.0.1:9001", "unix:run/app.sock"), "must be absolute"},
+		{"socket path empty", rep("127.0.0.1:9001", "unix:"), "names no socket path"},
+		// The rich fixture's pool is https with no tls.server_name, so
+		// replacing one endpoint with a socket is the whole case.
+		{"socket with https", rep("127.0.0.1:9001", "unix:/run/a.sock"), "needs tls.server_name"},
 		{"endpoint port", rep("127.0.0.1:9001", "127.0.0.1:99999"), "bad port"},
 		{"retries", rep("retries: 2", "retries: 9"), "retries"},
 		{"idle conns", rep("retries: 2", "retries: 2\n    max_idle_conns_per_host: -1"), "max_idle_conns_per_host"},

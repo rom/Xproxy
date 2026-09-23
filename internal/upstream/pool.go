@@ -98,6 +98,9 @@ func (p *Pool) newBalancer(eps []*Endpoint) balancer {
 // epMu.
 func (p *Pool) newEndpoint(address string, weight int, canary, discovered bool) *Endpoint {
 	ep := &Endpoint{Address: address, Weight: weight, Canary: canary, Discovered: discovered, index: p.nextIndex, slowStart: p.Cfg.SlowStart.D()}
+	if path, ok := SocketPath(address); ok {
+		ep.socket, ep.urlHost = path, urlAuthority(path)
+	}
 	p.nextIndex++
 	// Without active checks every endpoint starts healthy. With checks,
 	// endpoints start healthy too so that a restart does not drop all
@@ -281,9 +284,28 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 		}
 	}
 	dialer := &net.Dialer{Timeout: cfg.Timeouts.Connect.D(), KeepAlive: 30 * time.Second}
+	// A socket endpoint's URL carries a synthetic authority, so the
+	// dialler is the one place that knows a request is going to a path
+	// rather than to a host. Anything that is not a known authority is
+	// dialled as it arrives, which is every ordinary endpoint.
+	sockets := map[string]string{}
+	for _, e := range cfg.Endpoints {
+		if path, ok := SocketPath(e.Address); ok {
+			sockets[urlAuthority(path)] = path
+		}
+	}
+	dial := dialer.DialContext
+	if len(sockets) > 0 {
+		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			if path, ok := sockets[address]; ok {
+				return dialer.DialContext(ctx, "unix", path)
+			}
+			return dialer.DialContext(ctx, network, address)
+		}
+	}
 	p.Transport = &http.Transport{
 		Proxy:                  nil, // never honour HTTP_PROXY from the environment
-		DialContext:            dialer.DialContext,
+		DialContext:            dial,
 		TLSClientConfig:        tc,
 		ForceAttemptHTTP2:      cfg.Scheme == "https",
 		MaxIdleConns:           cfg.MaxIdleConnsPerHost * max(len(cfg.Endpoints), 1),

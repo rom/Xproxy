@@ -6619,7 +6619,7 @@ list
 T}	T{
 required,\: at least one
 T}	T{
-\fB{address:\: host:\:port,\: weight:\: 1.\:.\:1000,\: canary:\: bool}\fR;\: \fBcanary\fR marks the endpoints the \fBcanary\fR policy selects
+\fB{address:\: host:\:port,\: weight:\: 1.\:.\:1000,\: canary:\: bool}\fR;\: \fBcanary\fR marks the endpoints the \fBcanary\fR policy selects. An address may instead be \fBunix:\:/\:path/\:to/\:socket\fR \[u2014] see below
 T}
 T{
 \fBcanary\fR
@@ -6856,6 +6856,26 @@ T}	T{
 Sends staggered copies of a slow idempotent request to other endpoints and keeps the first usable answer;\: see below
 T}
 .TE
+.SS "A Unix domain socket as an endpoint"
+.PP
+\fBaddress: unix:/run/app.sock\fR reaches a service that lives beside the proxy rather than across a network: an application server on the same host, a local scanner, a sidecar. A socket is the better way to reach one \[u2014] there is no port for anything else on the machine to connect to, file permissions decide who may open it, and nothing about it is routable.
+.PP
+The path must be absolute. Socket and \fBhost:port\fR endpoints mix in one pool, which is what a service moving from a port to a socket needs, and everything else about a pool applies unchanged: the balancer, weights, canaries, affinity, outlier ejection, and the \fBtcp\fR health check (which connects to the socket, because a probe to a port would be proving something about a path nothing uses).
+.PP
+Two things do not work with one, and are refused at load rather than discovered later:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fB\fBscheme: https\fR without \fBtls.server_name\fR.\fR A URL has a host and a socket has a path, so the proxy gives a socket endpoint a synthetic authority for the URL \[u2014] which is not a name a certificate can match. Naming the one the backend presents makes it verifiable again.
+.PP
+.ti -3n
+\(bu
+\fB\fBh3\fR, and \fBdiscovery\fR.\fR HTTP/3 needs UDP to a host, and discovery produces \fBhost:port\fR records; neither has anything to say about a path.
+.RE
+.PP
+.PP
+The synthetic authority ends in \fB.socket.invalid\fR, a name that must never resolve, so a dialler that somehow ignored the socket fails immediately instead of reaching a machine on the network. It is never sent to the backend: the \fBHost\fR header is the client\(aqs own, as with any other endpoint, so a service that routes on it keeps working.
 .SS "upstreams[].retry_budget"
 .PP
 A retry (or a hedged copy) is only sent while the retries in flight to the pool stay below \fBpercent\fR of the requests in flight, with \fBmin_concurrency\fR always allowed so a low\-traffic pool can still retry. As live traffic falls the allowance falls with it, so retries cannot amplify an outage.

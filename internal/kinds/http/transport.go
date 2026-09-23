@@ -228,7 +228,9 @@ func (t *poolTransport) roundTrip(req *http.Request, pi *pickInfo) (*http.Respon
 func (t *poolTransport) oneAttempt(req *http.Request, e *upstream.Endpoint) (*http.Response, time.Duration, error) {
 	out := req.Clone(req.Context())
 	out.URL.Scheme = t.pool.Scheme
-	out.URL.Host = e.Address
+	// A socket endpoint wears a synthetic authority here; the pool's
+	// dialler is what turns it back into a path.
+	out.URL.Host = e.URLHost()
 	t.pool.Begin(e)
 	t0 := time.Now()
 	resp, err := t.pool.RoundTripper().RoundTrip(out)

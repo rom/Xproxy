@@ -2678,7 +2678,7 @@ Memory: at most 64 x 8192 buckets per policy.
 | `name` | name | required, unique | |
 | `balancer` | `round_robin`, `weighted`, `least_conn`, `hash` | `round_robin` | |
 | `hash_on` | `client_ip`, `header:<Name>`, `cookie:<Name>` | `client_ip` | For `hash`; missing input falls back to the client address |
-| `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000, canary: bool}`; `canary` marks the endpoints the `canary` policy selects |
+| `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000, canary: bool}`; `canary` marks the endpoints the `canary` policy selects. An address may instead be `unix:/path/to/socket` — see below |
 | `canary` | object | none | Route selected requests to the canary endpoints; see below |
 | `scheme` | `http`, `https` | `http` | |
 | `h2c` | bool | `false` | Speak HTTP/2 without TLS to `http` endpoints (gRPC backends); `https` negotiates HTTP/2 with ALPN on its own |
@@ -2705,6 +2705,38 @@ Memory: at most 64 x 8192 buckets per policy.
 | `retry_on` | list | `[]` | Response statuses treated as a failed attempt: `5xx`, `500`, `502`, `503`, `504`, `429`. The response is discarded, the endpoint marked as failed for outlier ejection, and the next endpoint tried within the `retries` budget; the last attempt's response is returned as it is. Needs `retries` above 0 |
 | `retry_budget` | object | none | Caps retries (and hedged copies) against live traffic so a struggling pool is not buried under a retry storm; see below. Without it, every retry `retries` allows is sent |
 | `hedge` | object | none | Sends staggered copies of a slow idempotent request to other endpoints and keeps the first usable answer; see below |
+
+#### A Unix domain socket as an endpoint
+
+`address: unix:/run/app.sock` reaches a service that lives beside the
+proxy rather than across a network: an application server on the same
+host, a local scanner, a sidecar. A socket is the better way to reach
+one — there is no port for anything else on the machine to connect to,
+file permissions decide who may open it, and nothing about it is
+routable.
+
+The path must be absolute. Socket and `host:port` endpoints mix in one
+pool, which is what a service moving from a port to a socket needs, and
+everything else about a pool applies unchanged: the balancer, weights,
+canaries, affinity, outlier ejection, and the `tcp` health check (which
+connects to the socket, because a probe to a port would be proving
+something about a path nothing uses).
+
+Two things do not work with one, and are refused at load rather than
+discovered later:
+
+- **`scheme: https` without `tls.server_name`.** A URL has a host and a
+  socket has a path, so the proxy gives a socket endpoint a synthetic
+  authority for the URL — which is not a name a certificate can match.
+  Naming the one the backend presents makes it verifiable again.
+- **`h3`, and `discovery`.** HTTP/3 needs UDP to a host, and discovery
+  produces `host:port` records; neither has anything to say about a path.
+
+The synthetic authority ends in `.socket.invalid`, a name that must never
+resolve, so a dialler that somehow ignored the socket fails immediately
+instead of reaching a machine on the network. It is never sent to the
+backend: the `Host` header is the client's own, as with any other
+endpoint, so a service that routes on it keeps working.
 
 ### upstreams[].retry_budget
 

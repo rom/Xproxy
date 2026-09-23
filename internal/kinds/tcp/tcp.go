@@ -254,7 +254,8 @@ func (t *server) handle(client net.Conn) {
 		}
 		tried[e] = true
 		d := net.Dialer{Timeout: pool.Cfg.Timeouts.Connect.D()}
-		c, err := d.DialContext(context.Background(), "tcp", e.Address)
+		network, address := e.Dial()
+		c, err := d.DialContext(context.Background(), network, address)
 		pool.Begin(e)
 		if err != nil {
 			pool.End(e, true, 0)

@@ -16,7 +16,12 @@ type Endpoint struct {
 	Canary  bool
 	// Discovered marks an endpoint that came from DNS discovery.
 	Discovered bool
-	index      int
+	// socket is the Unix domain socket path this endpoint dials, and
+	// urlHost the synthetic authority it wears in a URL; both empty for
+	// an ordinary network endpoint. See unixsocket.go.
+	socket  string
+	urlHost string
+	index   int
 	// slowStart is the pool's ramp; readyNS is when the current ramp
 	// started (0: at full share).
 	slowStart time.Duration

@@ -24,10 +24,13 @@ import (
 //     the probe sends a question the service answers, and silence is the
 //     failure.
 
-// probeTCP dials the endpoint and closes it.
-func (p *Pool) probeTCP(ctx context.Context, address string) bool {
+// probeTCP connects to the endpoint and closes it. A socket endpoint is
+// connected to as a socket: the probe has to be the same connection the
+// traffic makes, or it proves something about a path nothing uses.
+func (p *Pool) probeTCP(ctx context.Context, e *Endpoint) bool {
+	network, address := e.Dial()
 	d := net.Dialer{Timeout: p.Cfg.HealthCheck.Timeout.D()}
-	c, err := d.DialContext(ctx, "tcp", address)
+	c, err := d.DialContext(ctx, network, address)
 	if err != nil {
 		return false
 	}
@@ -37,14 +40,17 @@ func (p *Pool) probeTCP(ctx context.Context, address string) bool {
 
 // probeUDP sends the configured datagram and waits for an answer,
 // requiring what expect says of it.
-func (p *Pool) probeUDP(ctx context.Context, address string) bool {
+func (p *Pool) probeUDP(ctx context.Context, e *Endpoint) bool {
 	hc := p.Cfg.HealthCheck
-	ra, err := net.ResolveUDPAddr("udp", address)
-	if err != nil {
-		return false
+	network, address := "udp", e.Address
+	if e.Socket() != "" {
+		// A datagram socket on the filesystem. unixgram is a different
+		// network from unix, and a service behind a stream socket does
+		// not answer datagrams, so this is only for the ones that do.
+		network, address = "unixgram", e.Socket()
 	}
 	d := net.Dialer{Timeout: hc.Timeout.D()}
-	conn, err := d.DialContext(ctx, "udp", ra.String())
+	conn, err := d.DialContext(ctx, network, address)
 	if err != nil {
 		return false
 	}

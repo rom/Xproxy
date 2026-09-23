@@ -442,6 +442,32 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A Unix domain socket as an upstream endpoint**
+  (`address: unix:/run/app.sock`), for the services that live beside the
+  proxy rather than across a network: an application server on the same
+  host, a local scanner, a sidecar. A socket is the better way to reach
+  one — no port for anything else on the machine to connect to, file
+  permissions deciding who may open it, and nothing routable.
+
+  The difficulty is that a URL has a **host** and a socket has a
+  **path**, and net/http keys its idle connection pool by the former. So
+  an endpoint keeps three things apart: the configured spelling, for logs
+  and status; the path, for the dialler; and a synthetic authority for
+  the URL, derived from the path so it is stable and distinct, and ending
+  in `.socket.invalid` — a name that must never resolve, so a dialler
+  that somehow ignored the socket fails immediately rather than reaching
+  a machine on the network. It never reaches the backend: the `Host`
+  header is the client's own, as for any endpoint, so a service that
+  routes on it keeps working.
+
+  Socket and `host:port` endpoints mix in one pool, which is what a
+  service moving from one to the other needs, and the balancer, weights,
+  canaries, affinity, ejection and the `tcp` health check all apply
+  unchanged. Three combinations are refused at load instead of failing
+  later: `scheme: https` without `tls.server_name` (a synthetic
+  authority is not a name a certificate can match), `h3` (HTTP/3 needs
+  UDP to a host) and `discovery` (which produces `host:port` records).
+
 - **A connection rate, per listener and per source network.** The
   process had `max_connections` and `max_connections_per_ip`, which
   bound how many connections are open at once and say nothing about
