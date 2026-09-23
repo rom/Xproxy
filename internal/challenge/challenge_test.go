@@ -115,9 +115,19 @@ func TestFlow(t *testing.T) {
 		t.Fatal("expired cookie accepted")
 	}
 	c.now = time.Now
-	// Tampered cookie.
+	// Tampered cookie. The first character is changed rather than the
+	// last, and to one it was not already: base64's final character
+	// carries padding bits, so several spellings of it decode to the
+	// same bytes and a tamper there is sometimes no tamper at all.
 	bad := *cookie
-	bad.Value = bad.Value[:len(bad.Value)-2] + "AA"
+	repl := "A"
+	if strings.HasPrefix(bad.Value, "A") {
+		repl = "B"
+	}
+	bad.Value = repl + bad.Value[1:]
+	if bad.Value == cookie.Value {
+		t.Fatal("the tampered cookie is the cookie")
+	}
 	req2 := httptest.NewRequest("GET", "http://example.com/", nil)
 	req2.AddCookie(&bad)
 	if c.Verified(req2, ip) {

@@ -368,6 +368,24 @@ Open findings of the earlier rounds:
     asciicast v2, named `*.rdp.cast`, with every refused device marked
     where it happened. It is not a video, for the same reason the VNC
     recording is not.
+  - **Network level authentication towards a desktop**
+    (`upstream_security: nla`), which is what a current Windows install
+    requires by default: CredSSP over NTLM version 2, inside the TLS
+    tunnel, proving the credential an operator configured. It cannot
+    carry the person's own -- the exchange happens before the person
+    has sent anything, which is the point of the protocol -- so
+    validation requires `upstream_user` and `upstream_password_file`.
+    The exchange is bound to the tunnel it runs in, so tokens relayed
+    into another connection fail and a desktop whose binding does not
+    match gets no credential; extended session security and a key
+    exchange are insisted on rather than fallen back from. Only the
+    client half exists, in `internal/ntlm`: this proves a credential
+    and never checks one, because checking would mean the gateway
+    holding a password hash for everyone who connects. The key
+    derivation is tested against the worked example of MS-NLMP
+    section 4.2.4 and the exchange against a stand-in for the Windows
+    side; it is not verified against a real desktop here, and
+    CONFIG.md says so.
   - **A client asking for network level authentication is answered
     with TLS**, which is what every remote desktop gateway does and
     the only reason a second factor can be checked at all: accepting
@@ -375,9 +393,8 @@ Open findings of the earlier rounds:
     password. The cost -- authentication after the connection rather
     than before it, on the client's leg -- is stated in CONFIG.md
     rather than left to be discovered. The protocol's own RC4
-    encryption and NLA towards a desktop are refused at load for now,
-    with a message saying they are not implemented yet rather than
-    failing at the first session.
+    encryption is refused at load for now, with a message saying it is
+    not implemented yet rather than failing at the first session.
 
 - **A VNC gateway** (`kind: vnc`, in xgate), speaking RFB on both legs.
   The proxy is an RFB server to the viewer and an RFB client to the
@@ -622,6 +639,17 @@ Open findings of the earlier rounds:
   recording landed.
 
 ### Fixed (1.4, tests)
+
+- **A seventh, which tampered with a cookie into itself.** `TestFlow`
+  checks that a changed challenge cookie is refused, and changed it by
+  replacing its last two base64 characters with "AA" -- so a cookie
+  that already ended that way was "tampered with" into exactly itself
+  and was, correctly, accepted. About one run in four thousand, which
+  is how often it was seen. It now changes the first character, to one
+  it was not already, and asserts the value actually moved: base64's
+  final character carries padding bits, so several spellings of it
+  decode to the same bytes and a tamper there is sometimes no tamper
+  at all.
 
 - **A sixth flaky test, of a different shape: `TestExport` set the
   batch size and the flush interval against each other.** The trace
