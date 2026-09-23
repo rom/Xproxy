@@ -326,9 +326,30 @@ Open findings of the earlier rounds:
   defaults. A request that does not fit is refused with 503 before it
   is read.
 
+### Changed (1.4)
+
+- **Session recording is a package of its own** (`internal/sessionrec`),
+  lifted out of the ssh bastion: the policy, the file, the byte bound,
+  the prune and the truncation mark are the same wherever a session is
+  recorded, and only what a session is made of differs. `ssh` runs on
+  it unchanged; `ftp`, `telnet` and the graphical gates use it too.
+  `config.SSHRecording` is `config.SessionRecording` accordingly — the
+  `recording:` key and every field under it are untouched.
+
+### Fixed (1.4)
+
+- **Two sessions for one person in the same millisecond lost one
+  recording.** The file name carries the time only to the millisecond
+  and the person, and the file is created with `O_EXCL`, so the second
+  session's `open` failed and it ran unrecorded — on a busy bastion,
+  which is exactly when the recording is wanted. A suffix is added for
+  as long as the name is taken. Found by testing the recorder on its
+  own once it was a package; it had been in the ssh recorder since
+  recording landed.
+
 ### Fixed (1.4, tests)
 
-- **Two tests raced the goroutine that records what they assert on.**
+- **Three tests raced the goroutine that records what they assert on.**
   `CountStatus` is called from `logAccess`, which runs once the response
   body has gone out, so a client can have its whole response before the
   counter moves; the capture file is likewise written after the exchange
@@ -336,9 +357,13 @@ Open findings of the earlier rounds:
   `TestCaptureWritesTheDecryptedExchange` read both the instant the
   request returned, won that race on an idle machine and lost it under
   load — one run in six with the suite contending for four cores. They
-  wait for the value now, through a shared `eventually` helper. The
-  behaviour they were testing is correct: metrics and captures are
-  eventually consistent with respect to the client by design.
+  wait for the value now, through a shared `eventually` helper.
+  `TestRunStartsReloadsAndStops` was the same shape a level up: `apply`
+  reloads the server and then records what it applied, so a reload that
+  has taken effect is not yet a reload that is in the history, and the
+  test read the history the moment the generation moved. The behaviour
+  all three were testing is correct: metrics, captures and the history
+  are written after the thing they describe has happened, by design.
 
 ### Packaging (1.4)
 

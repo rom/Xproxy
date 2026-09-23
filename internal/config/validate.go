@@ -3127,7 +3127,7 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 		v.sftpPolicy(p+".sftp", h.SFTP, reqs["subsystem"], len(h.Principals) > 0)
 	}
 	if h.Recording != nil {
-		v.sshRecording(p+".recording", h.Recording, reqs)
+		v.sessionRecording(p+".recording", h.Recording, reqs)
 	}
 	for i, c := range h.AllowClients {
 		if _, err := netip.ParsePrefix(c); err != nil {
@@ -3233,10 +3233,10 @@ func sftpTemplateOK(pattern string) error {
 	}
 }
 
-// sshRecording validates a session recording section. reqs is what the
+// sessionRecording validates a session recording section. reqs is what the
 // session may ask for, because a recording of requests nobody may make
 // is a directory that stays empty.
-func (v *validator) sshRecording(p string, r *SSHRecording, reqs map[string]bool) {
+func (v *validator) sessionRecording(p string, r *SessionRecording, reqs map[string]bool) {
 	if r.Enabled != nil && !*r.Enabled {
 		// Turned off here. Nothing is written, so nothing else in the
 		// section has to make sense, and saying more would be telling
@@ -3355,7 +3355,7 @@ func (v *validator) sshPolicy(p string, s *SSHPolicy, h *SSHListener) {
 		for rt := range reqs {
 			merged[rt] = true
 		}
-		v.sshRecording(p+".recording", s.Recording, merged)
+		v.sessionRecording(p+".recording", s.Recording, merged)
 	}
 	if s.SFTP != nil && h.SFTP == nil && h.AllowFileTransferCommands != nil && *h.AllowFileTransferCommands {
 		v.warnf("%s.sftp: the listener's allow_file_transfer_commands is true, so scp and rsync move files past every path and operation rule set here", p)

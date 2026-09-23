@@ -9,6 +9,7 @@ import (
 	cssh "golang.org/x/crypto/ssh"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/sessionrec"
 )
 
 // sshPolicy is the compiled form of a listener's policy, or of a
@@ -26,7 +27,7 @@ type sshPolicy struct {
 	remoteForward bool
 	sftp          *sftpPolicy
 	// recorder writes what a session shows, when one is configured.
-	recorder *sshRecorder
+	recorder *sessionrec.Policy
 	// transfers reports whether exec may run a file transfer helper.
 	transfers bool
 }

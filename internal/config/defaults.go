@@ -288,14 +288,14 @@ func applyDefaults(c *Config) {
 				h.AllowSubsystems = append([]string(nil), DefaultSSHSubsystems...)
 			}
 			sftpDefaults(h.SFTP)
-			sshRecordingDefaults(h.Recording)
+			sessionRecordingDefaults(h.Recording)
 			// A principal's own sftp section is the same section and
 			// gets the same defaults; without this it would fail
 			// validation on a packet size nobody wrote.
 			for j := range h.Principals {
 				if pp := h.Principals[j].Policy; pp != nil {
 					sftpDefaults(pp.SFTP)
-					sshRecordingDefaults(pp.Recording)
+					sessionRecordingDefaults(pp.Recording)
 				}
 			}
 			if h.MFA != nil {
@@ -1073,9 +1073,9 @@ func mfaDefaults(m *MFAPolicy) {
 }
 
 // yaraDefaults fills a YARA policy wherever it is used.
-// sshRecordingDefaults fills one recording section, the listener's or a
+// sessionRecordingDefaults fills one recording section, the listener's or a
 // principal's.
-func sshRecordingDefaults(r *SSHRecording) {
+func sessionRecordingDefaults(r *SessionRecording) {
 	if r == nil {
 		return
 	}

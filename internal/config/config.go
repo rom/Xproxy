@@ -571,7 +571,7 @@ type SSHListener struct {
 	AllowFileTransferCommands *bool `yaml:"allow_file_transfer_commands"`
 	// Recording writes what a session showed, and optionally what was
 	// typed into it, to a file per channel.
-	Recording *SSHRecording `yaml:"recording"`
+	Recording *SessionRecording `yaml:"recording"`
 	// MFA requires a second factor after the key or the password: the
 	// client is told authentication partially succeeded and must then
 	// answer a keyboard-interactive prompt with a one-time code.
@@ -587,7 +587,7 @@ type SSHListener struct {
 	AllowClients []string `yaml:"allow_clients"`
 }
 
-// SSHRecording records an interactive session to a file that can be
+// SessionRecording records an interactive session to a file that can be
 // replayed.
 //
 // A bastion's access log says a session happened; it cannot say what
@@ -602,7 +602,7 @@ type SSHListener struct {
 // the capture files are — the proxy user's alone, in a directory the
 // operator names — and they are a reason to keep that directory as
 // carefully as the credentials it will end up holding.
-type SSHRecording struct {
+type SessionRecording struct {
 	// Enabled is how a principal turns off a listener's recording; it
 	// defaults to true wherever the section is present.
 	Enabled *bool `yaml:"enabled"`
@@ -4175,7 +4175,7 @@ type SSHPolicy struct {
 	// Recording replaces the listener's, which is how one entry is
 	// recorded and another is not. A principal that should not be
 	// recorded where the listener is sets enabled: false.
-	Recording *SSHRecording `yaml:"recording"`
+	Recording *SessionRecording `yaml:"recording"`
 	// Deny refuses this principal outright, which is how a key stays in
 	// authorized_keys while the person it belongs to is off.
 	Deny bool `yaml:"deny"`
