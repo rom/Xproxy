@@ -2057,6 +2057,7 @@ var denyReasons = map[string]bool{
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
 	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true,
+	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116

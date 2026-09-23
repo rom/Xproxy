@@ -3110,6 +3110,10 @@ innocent.
 | `ftp_denied` | The FTP proxy: a refused command, path, extension or address, a failed login, a malformed control line, a bounce attempt, or a transfer cut by a bound or a rule (`detail` says which) | yes |
 | `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command, environment variable, file transfer helper or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
+| `telnet_denied` | The telnet gateway: a client outside `allow_clients`, a refused option, a failed factor, or a session it could not open (`detail` says which) | yes |
+| `vnc_denied` | The VNC gateway: a security type outside the policy, a failed VNC authentication or factor, a target that offered nothing mediable, or a client outside `allow_clients` (`detail` says which) | yes |
+| `rdp_denied` | The RDP gateway: a refused channel or device, a failed factor, a connection sequence it could not read, or a client outside `allow_clients` (`detail` says which) | yes |
+| `sftp_icap` | The SFTP scanner refused a file. The security event beside it is `sftp_icap_blocked`; the ban trigger names the observation | yes |
 
 A trigger naming a reason that is not in the Ban column fails
 validation with the list of the ones that are, so this is not something

@@ -8,6 +8,45 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ### Security (1.4)
 
+A **seventh round**, sweeping the sixth's two finding classes across
+the gate kinds beside the one they were found on, and one finding of
+its own.
+
+- **Four listener kinds reported a refusal nobody could ban on.** The
+  telnet, VNC and RDP gateways each hand the ban list a reason of their
+  own (`telnet_denied`, `vnc_denied`, `rdp_denied`), as does the SFTP
+  scanner when it refuses a file (`sftp_icap`). All four are documented
+  as the reason a trigger names -- "Refusals are `rdp_denied` deny
+  events, so bans apply" -- and none of them was in the table a trigger
+  is validated against, so the configuration the documentation
+  describes did not load. The ladder that answers a credential attack
+  was, on the four newest protocols, not reachable. All four are
+  nameable now, and a test reads the source for every reason a listener
+  hands the ban list rather than keeping a second list beside the
+  first: a kind added tomorrow fails it until its reason can be named.
+
+- **The sixth round's two classes, swept.** *A peer's answer deciding
+  what the gateway inspects* is RDP's alone: VNC checks the factor on
+  the client's leg and gates the session on it afterwards, FTP takes
+  the requirement from the target's own success reply and refuses every
+  command until the code verifies, and telnet and SSH ask from the
+  gateway before the target is dialled at all. *A bound that silently
+  disables a credential path* was the two callers already fixed; VNC's
+  credential bound and telnet's prompt line both have room for a
+  recovery code. The FTP half of the recovery fix now has the
+  regression test the RDP half already had, driven through an enrolment
+  the control plane wrote.
+
+- **An example for each of the three gate kinds that had none**:
+  `examples/bastion/rdp.yaml`, `vnc.yaml` and `telnet.yaml`, alongside
+  the ssh bastion already there. Each is a deployable file with the
+  policy that makes the kind worth putting in the path -- the channel
+  and device lists that decide whether an RDP session can move a file,
+  the security types and the named credential a VNC factor can be
+  looked up by, the telnet options an interactive session needs and no
+  others -- and each carries a ban trigger on the reason its kind
+  reports, which is what the finding above makes loadable.
+
 A **sixth audit round**, over the parsers and the credential paths added
 after the fifth: the RDP connection sequence and both of its encryption
 layers, the RFB handshake including the vendors' own security types,
@@ -833,6 +872,17 @@ Open findings of the earlier rounds:
   recording landed.
 
 ### Fixed (1.4, tests)
+
+- **A ninth and a tenth, of the shape that fails as the wrong test.**
+  `TestForwardProxy` (`internal/kinds/forward`) has a subtest about a
+  two-tunnel bound, which can only mean anything once the earlier
+  subtests' tunnels have wound down; it waited two seconds for that and
+  then carried on regardless. Under the whole suite's load the bound
+  was sometimes already spent, so the subtest's own first tunnel was
+  refused and the failure named the wrong thing. `TestMirror`
+  (`internal/kinds/http`) waited a second for a counter that lands on
+  another goroutine. Both now wait for the condition, with a message
+  saying what was waited for.
 
 - **An eighth, which slept fifty milliseconds and hoped.**
   `TestUpstreamQueue` (`internal/kinds/http`) started a second request,
