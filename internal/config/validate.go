@@ -5954,30 +5954,29 @@ func (v *validator) rdpListener(p string, c *RDPListener, hasTLS bool) {
 	if c.Upstream == "" {
 		v.errf("%s.upstream: required", p)
 	}
-	wantsTLS := false
+	wantsTLS, wantsLegacy := false, false
 	for _, name := range c.Security {
 		n := strings.ToLower(strings.TrimSpace(name))
 		switch n {
 		case "tls":
 			wantsTLS = true
 		case "rdp":
-			// Towards a desktop this gateway speaks the protocol's own
-			// encryption; towards a client it cannot. Offering it
-			// means presenting a certificate signed with the private
+			// The protocol's own encryption, offered to clients that
+			// speak nothing else. The certificate is signed with the
 			// key Microsoft published in MS-RDPBCGR 5.3.3.1.1, which
-			// every client checks against the public half built into
-			// it. Without that key a client refuses the certificate,
-			// so this is refused at load rather than failing at the
-			// first connection. `upstream_security: rdp` is the
-			// direction that works.
-			v.errf("%s.security: rdp cannot be offered to clients by this gateway: a client checks the server certificate against a key built into it, and this build carries no signing key for one. Use tls towards clients; upstream_security: rdp reaches a desktop that speaks nothing else", p)
+			// is the only thing a client can check -- and since that
+			// key is public, the check proves nothing. So a session
+			// on this leg is protected by the network it runs over
+			// and not by the protocol.
+			wantsLegacy = true
+			v.warnf("%s.security: rdp is the protocol's own encryption, which authenticates nothing to a client -- the key the certificate is signed with was published by Microsoft -- and is RC4 under MD5 and SHA-1. Offer tls to any client that can use it, and keep this listener on a network you trust", p)
 		case "nla":
 			v.errf("%s.security: nla cannot be offered to clients by this gateway: checking a client's network level authentication needs that person's own password, which is the one credential a gateway should not hold. A client that asks for it is answered with tls, which is the arrangement every remote desktop gateway uses; see docs/CONFIG.md", p)
 		default:
 			v.errf("%s.security: %q is not a security protocol this gateway offers; use tls or rdp", p, name)
 		}
 	}
-	if !wantsTLS {
+	if !wantsTLS && !wantsLegacy {
 		v.errf("%s.security: no protocol left that a client could use", p)
 	}
 	if wantsTLS && !hasTLS {

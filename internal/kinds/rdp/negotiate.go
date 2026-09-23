@@ -75,7 +75,7 @@ func (se *session) pickClientProtocol(cr rdp.ConnectionRequest) (uint32, bool) {
 	if !cr.HasNegotiation {
 		// A client old enough to send no negotiation speaks the legacy
 		// protocol and nothing else.
-		if t.offered&legacyBit != 0 {
+		if t.offersLegacy() {
 			return rdp.ProtocolRDP, true
 		}
 		return 0, false
@@ -86,7 +86,7 @@ func (se *session) pickClientProtocol(cr rdp.ConnectionRequest) (uint32, bool) {
 	}
 	// The legacy protocol is what is left, and a client asks for it by
 	// naming no other.
-	if t.offered&legacyBit != 0 {
+	if t.offersLegacy() {
 		return rdp.ProtocolRDP, true
 	}
 	return 0, false

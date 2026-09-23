@@ -2841,8 +2841,8 @@ The channel list is the important part. Every redirection RDP has \[u2014] drive
 .PP
 .TS
 allbox;
-lbw(1.5i) lbw(1.1i) lbx
-lw(1.5i) lw(1.1i) lx.
+lbw(1.5i) lbw(1.4i) lbx
+lw(1.5i) lw(1.4i) lx.
 T{
 Protocol
 T}	T{
@@ -2867,7 +2867,7 @@ T}
 T{
 The protocol\(aqs own encryption (\fBrdp\fR,\: \fBPROTOCOL_\:RDP\fR)
 T}	T{
-Refused: it needs a signing key this build does not carry \[u2014] see below
+Supported,\: and it authenticates nothing \[u2014] see below
 T}	T{
 Supported,\: and worth what the section below says it is
 T}
@@ -2907,11 +2907,19 @@ The NTLM key derivation is tested against the worked example of MS\-NLMP \[u00A7
 .PP
 .ti -3n
 \(bu
-\fBTowards a client\fR it is refused at load. Offering it means presenting the protocol\(aqs own certificate, and a client checks that certificate\(aqs signature against a public key built into it \[u2014] the private half of which is the Terminal Services signing key published in MS\-RDPBCGR \[u00A7]5.3.3.1.1. This build carries no signing key, so a certificate it made would be refused by every client; refusing the setting at load says so before a connection does.
+\fBTowards a client\fR (\fBsecurity: [rdp]\fR) it works too. The listener draws a 512\-bit RSA key at start \[u2014] the size the protocol carries, not a choice \[u2014] puts it in a proprietary certificate, and signs that certificate with the \fBTerminal Services signing key published in MS\-RDPBCGR \[u00A7]5.3.3.1.1\fR. The strongest method the client offered is chosen, at encryption level \fIclient compatible\fR, so both directions are encrypted. The client\(aqs random arrives sealed under the listener\(aqs key, the session keys follow, and from there the gateway decrypts what the client sends before the policy sees it and encrypts what it sends back.
+.PP
+\fBThat signature authenticates nothing.\fR Microsoft published the private key, which is what lets any implementation sign one \[u2014] so a client verifying it has learned that the other end read the specification, and nothing about who it is talking to. There is no server authentication on such a leg, and no way to add any: the protocol has nowhere to put it. A listener offering this is protected by the network it sits on, \fBallow_clients\fR, and nothing else.
+.PP
+Setting it warns at load. A client that can use TLS should be made to (\fBsecurity: [rdp, tls]\fR offers both and TLS is preferred whenever the client asks for it), and a listener that offers only \fBrdp\fR needs no \fBtls\fR section at all.
 .RE
 .PP
 .PP
 Three things follow from the gateway being \fIinside\fR that encryption rather than outside it, and they are the reason to be there: the channel and device policy still applies, the second factor is still checked, and the recording holds the session rather than ciphertext.
+.PP
+The two legs are independent. An old client and an old desktop each get their own key exchange, their own method and their own key schedule; nothing is forwarded from one to the other. A client on the protocol\(aqs own encryption can reach a desktop on TLS or on network level authentication, and the other way round.
+.PP
+Session traffic towards a legacy client \fBwaits\fR for that client\(aqs key exchange rather than going out in the clear: a client that agreed to encryption cannot read an unencrypted packet, so sending one early would end the session rather than degrade it. The wait is bounded by \fBhandshake_timeout\fR.
 .PP
 What the encryption itself is worth is nothing, against anyone on the path: MD5 and SHA\-1 derivation, RC4 \[u2014] 40, 56 or 128 bit, whichever the desktop asks for \[u2014] and a certificate a client has no way to check, because the protocol never had anywhere to check it against. This gateway reads the key out of that certificate without checking it, which is the same position every client is in. FIPS mode (3DES with a different derivation and a different packet layout) is not implemented: a desktop that insists on it is refused rather than downgraded.
 .PP
@@ -3013,7 +3021,7 @@ list
 T}	T{
 \fB[tls]\fR
 T}	T{
-What a client may use. Only \fBtls\fR;\: see the table above
+What a client may use: \fBtls\fR,\: \fBrdp\fR,\: or both. See the table above;\: \fBrdp\fR warns at load
 T}
 T{
 \fBupstream_\:security\fR
@@ -3175,7 +3183,7 @@ The file holds the desktop\-to\-client stream \[u2014] what was on the screen \[
 .PP
 \fBIt is not a video.\fR The event data is the protocol stream, so replaying it needs a player that speaks RDP rather than a terminal. That is the deliberate choice: decoding at capture time would mean implementing every graphics encoding a desktop might choose \[u2014] and silently losing whatever was not implemented \[u2014] while a decoder written against this file later loses nothing.
 .PP
-Counters: \fBrdp_sessions\fR, \fBrdp_sessions_open\fR, \fBrdp_rejected\fR, \fBrdp_refused\fR, \fBrdp_recorded\fR, \fBrdp_mfa_ok\fR, \fBrdp_mfa_failed\fR, \fBrdp_channels_refused\fR, \fBrdp_devices_refused\fR, \fBrdp_legacy_sessions\fR (desktop legs opened with the protocol\(aqs own encryption). Every session writes one \fBrdp\fR access line with both security protocols, the routing token, the user and domain, the channels asked for and granted, and how it ended. Refusals are \fBrdp_denied\fR deny events, so bans apply.
+Counters: \fBrdp_sessions\fR, \fBrdp_sessions_open\fR, \fBrdp_rejected\fR, \fBrdp_refused\fR, \fBrdp_recorded\fR, \fBrdp_mfa_ok\fR, \fBrdp_mfa_failed\fR, \fBrdp_channels_refused\fR, \fBrdp_devices_refused\fR, \fBrdp_legacy_sessions\fR (desktop legs opened with the protocol\(aqs own encryption), \fBrdp_legacy_clients\fR (client legs served with it). Every session writes one \fBrdp\fR access line with both security protocols, the routing token, the user and domain, the channels asked for and granted, and how it ended. Refusals are \fBrdp_denied\fR deny events, so bans apply.
 .SS "server.listeners[].telnet (kind: telnet)"
 .PP
 A \fBkind: telnet\fR listener is a telnet gateway: the proxy is a telnet server to the client and a telnet client to the target, reading the NVT protocol of RFC 854 in both directions.

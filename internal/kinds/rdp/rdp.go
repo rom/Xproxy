@@ -12,6 +12,7 @@ package rdp
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -55,6 +56,11 @@ type server struct {
 	upUser, upDomain, upPassword string
 	recorder                     *sessionrec.Policy
 	mfaGuard                     *mfa.Guard
+	// legacyKey is what a client on the protocol's own encryption is
+	// given in a certificate. One per listener rather than one per
+	// session: a real server does the same, and drawing a key is the
+	// one expensive thing in that exchange.
+	legacyKey *rsa.PrivateKey
 
 	wg   sync.WaitGroup
 	mu   sync.Mutex
@@ -106,6 +112,11 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 			return nil, fmt.Errorf("rdp upstream_tls: %w", err)
 		}
 		t.upTLS = uc
+	}
+	if t.offered&legacyBit != 0 {
+		if t.legacyKey, err = rdp.NewLegacyKey(); err != nil {
+			return nil, fmt.Errorf("rdp legacy key: %w", err)
+		}
 	}
 	t.recorder = sessionrec.New(c.Recording)
 	if c.MFA != nil {
@@ -276,9 +287,14 @@ type session struct {
 	// legacy is the desktop's leg when it uses the protocol's own
 	// encryption rather than TLS, and nil when it does not.
 	legacy *legacyLeg
-	rec    *sessionrec.Recording
-	pool   *upstream.Pool
-	ep     *upstream.Endpoint
+	// clientLegacy is the same for the client's leg, where this
+	// gateway is the server and holds the key.
+	clientLegacy *legacyLeg
+	// ended is closed when either direction of the relay stops.
+	ended chan struct{}
+	rec   *sessionrec.Recording
+	pool  *upstream.Pool
+	ep    *upstream.Endpoint
 }
 
 func (t *server) handle(client net.Conn) {

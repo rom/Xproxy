@@ -158,6 +158,7 @@ type Stats struct {
 	RDPChannelsRefused     atomic.Uint64
 	RDPDevicesRefused      atomic.Uint64
 	RDPLegacySessions      atomic.Uint64
+	RDPLegacyClients       atomic.Uint64
 	TelnetSessions         atomic.Uint64
 	TelnetSessionsOpen     atomic.Int64
 	TelnetRejected         atomic.Uint64
@@ -396,6 +397,7 @@ type Snapshot struct {
 	RDPChannelsRefused     uint64            `json:"rdp_channels_refused"`
 	RDPDevicesRefused      uint64            `json:"rdp_devices_refused"`
 	RDPLegacySessions      uint64            `json:"rdp_legacy_sessions"`
+	RDPLegacyClients       uint64            `json:"rdp_legacy_clients"`
 	TelnetSessions         uint64            `json:"telnet_sessions"`
 	TelnetSessionsOpen     int64             `json:"telnet_sessions_open"`
 	TelnetRejected         uint64            `json:"telnet_rejected"`
@@ -599,6 +601,7 @@ func (s *Stats) snapshot() Snapshot {
 		RDPChannelsRefused:     s.RDPChannelsRefused.Load(),
 		RDPDevicesRefused:      s.RDPDevicesRefused.Load(),
 		RDPLegacySessions:      s.RDPLegacySessions.Load(),
+		RDPLegacyClients:       s.RDPLegacyClients.Load(),
 		TelnetSessions:         s.TelnetSessions.Load(),
 		TelnetSessionsOpen:     s.TelnetSessionsOpen.Load(),
 		TelnetRejected:         s.TelnetRejected.Load(),
