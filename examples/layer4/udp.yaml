@@ -86,11 +86,29 @@ upstreams:
     # closest thing a datagram relay has to load.
     balancer: least_conn
     timeouts: {connect: 2s}
+    # A UDP socket accepts nothing, so there is no connect to succeed
+    # and no ICMP unreachable to rely on -- it may be filtered anywhere
+    # on the path, and it says nothing about a server that is bound but
+    # wedged, which is the failure that keeps taking traffic. So the
+    # check asks the question this protocol answers, and silence is the
+    # failure.
+    health_check:
+      type: udp
+      send: "\xff\xff\xff\xffTSource Engine Query\x00"
+      expect: "\xff\xff\xff\xff"
+      interval: 10s
+      timeout: 2s
+      healthy_threshold: 2
+      unhealthy_threshold: 3
   - name: collectors
     endpoints:
       - {address: "10.60.2.10:2055"}
       - {address: "10.60.2.11:2055"}
     balancer: round_robin
+    # A collector that answers nothing has nothing to ask, so this one
+    # is checked on the port its API listens on instead: a tcp check
+    # proves something accepted, which is narrower and honest about it.
+    health_check: {type: tcp, interval: 10s, timeout: 2s}
 
 bans:
   triggers:

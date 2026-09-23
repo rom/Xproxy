@@ -64,9 +64,14 @@ func (p *Pool) healthLoop(ctx context.Context, e *Endpoint) {
 			return
 		}
 		var healthy bool
-		if hc.Type == "grpc" {
+		switch hc.Type {
+		case "grpc":
 			healthy = p.probeGRPC(ctx, client, url)
-		} else {
+		case "tcp":
+			healthy = p.probeTCP(ctx, e.Address)
+		case "udp":
+			healthy = p.probeUDP(ctx, e.Address)
+		default:
 			healthy = p.probe(ctx, client, url)
 		}
 		<-globalProbes

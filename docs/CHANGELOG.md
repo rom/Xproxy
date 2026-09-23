@@ -442,6 +442,26 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Layer 4 health checks: `type: tcp` and `type: udp`.** A pool behind
+  a `kind: tcp` or `kind: udp` listener has no request to make, so
+  active checking used to mean nothing for it.
+
+  `tcp` connects and closes. It proves something accepted and nothing
+  about what, which for a protocol this proxy does not speak is usually
+  all there is to know without speaking it.
+
+  `udp` has to prove more, because a UDP socket accepts nothing: there
+  is no connect to succeed, and the ICMP port unreachable a dead port
+  produces may never reach the sender, may be filtered on the path, and
+  says nothing at all about a process that is bound but wedged — which
+  is the failure that matters, because it is the one that keeps taking
+  traffic. So a `udp` check sends a question the service answers
+  (`send`, or `send_hex` for the services whose smallest question is not
+  text) and requires an answer, optionally one containing `expect` or
+  `expect_hex`. Silence is the failure. The probe socket is connected,
+  so an answer from any address but the endpoint's is dropped by the
+  kernel and a third party cannot vouch for a backend.
+
 - **`kind: udp`, a generic datagram relay.** The symmetric primitive to
   `kind: tcp`, for the services whose protocol this proxy has no parser
   for: an endpoint pool with a balancer and health checks in front of a

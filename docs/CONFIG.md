@@ -2699,7 +2699,7 @@ beyond the first is gated by `retry_budget` when one is set.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `type` | `http`, `grpc` | `http` | `grpc` calls the standard `grpc.health.v1.Health/Check` over HTTP/2 and needs `h2c` or `scheme: https`; `path` and `expected_status` are not used |
+| `type` | `http`, `grpc`, `tcp`, `udp` | `http` | `grpc` calls the standard `grpc.health.v1.Health/Check` over HTTP/2 and needs `h2c` or `scheme: https`; `path` and `expected_status` are not used. `tcp` and `udp` are the layer 4 probes, for the pools a `kind: tcp` or `kind: udp` listener uses, where there is no request to make — see below |
 | `grpc_service` | string | `""` | Service asked in a grpc check; empty asks about the server as a whole |
 | `path` | path | `/` | GET target |
 | `interval` | duration | `5s` | At least 500ms; start is jittered |
@@ -2711,6 +2711,49 @@ beyond the first is gated by `retry_budget` when one is set.
 | `keep_alive` | bool | `false` | Reuse pooled connections for probes. Off opens a fresh connection per probe (verifies the whole connect path, no descriptor held between probes); on saves the handshake at the cost of one idle connection per endpoint |
 | `body_contains` | string | none | The first 64 KiB of the probe response must contain this text (type `http`); a status in `expected_status` alone is not enough |
 | `body_regex` | RE2 | none | The first 64 KiB must match this pattern anywhere (anchor with `^` and `$`); may be combined with `body_contains`, both must hold. At most 4096 bytes each |
+| `send` | string | none | What a `udp` probe sends. Exactly one of `send` or `send_hex` is required for that type |
+| `send_hex` | hex | none | The same as hexadecimal, for a service whose smallest question is not text |
+| `expect` | string | none | The answer must contain this text. Empty accepts any answer |
+| `expect_hex` | hex | none | The same as hexadecimal; exclusive with `expect` |
+
+#### The layer 4 probes
+
+`type: http` and `type: grpc` make a request and read a reply, which is
+how an HTTP backend proves it is working rather than merely running.
+A pool behind a `kind: tcp` or `kind: udp` listener has no request to
+make, so there are two narrower probes — and they are not equally
+narrow, which is the thing to understand before choosing one.
+
+**`type: tcp` connects and closes.** It proves that something accepted,
+and nothing about what. For a protocol this proxy does not speak that is
+usually all there is to know without speaking it, and it is a real
+signal: a process that has died, a host that has gone, a port that was
+never opened are all found.
+
+**`type: udp` has to prove more, because a UDP socket accepts nothing.**
+There is no connect to succeed. A datagram sent to a port with no
+listener produces an ICMP port unreachable that the sender may or may
+not be told about, that anything on the path may filter, and that says
+nothing at all about a process which is bound but wedged — which is the
+failure that matters most, because it is the one that keeps taking
+traffic. So a `udp` check **sends a question the service answers**, and
+silence is the failure:
+
+```yaml
+health_check:
+  type: udp
+  send_hex: "abcd0100000100000000000000"   # a DNS query header
+  expect_hex: "abcd8180"                   # the same id, answered
+  interval: 5s
+  timeout: 1s
+```
+
+The probe socket is *connected*, so the kernel drops an answer from any
+address but the endpoint's: a third party cannot vouch for a backend.
+With no `expect` any answer is accepted, which is still far more than
+silence proves; with one, the answer has to contain it, so a service
+that has started listening but is still loading fails the check instead
+of taking traffic.
 
 ### upstreams[].outlier_ejection
 

@@ -6982,11 +6982,11 @@ T}
 T{
 \fBtype\fR
 T}	T{
-\fBhttp\fR,\: \fBgrpc\fR
+\fBhttp\fR,\: \fBgrpc\fR,\: \fBtcp\fR,\: \fBudp\fR
 T}	T{
 \fBhttp\fR
 T}	T{
-\fBgrpc\fR calls the standard \fBgrpc.\:health.\:v1.\:Health/\:Check\fR over HTTP/\:2 and needs \fBh2c\fR or \fBscheme:\: https\fR;\: \fBpath\fR and \fBexpected_\:status\fR are not used
+\fBgrpc\fR calls the standard \fBgrpc.\:health.\:v1.\:Health/\:Check\fR over HTTP/\:2 and needs \fBh2c\fR or \fBscheme:\: https\fR;\: \fBpath\fR and \fBexpected_\:status\fR are not used. \fBtcp\fR and \fBudp\fR are the layer 4 probes,\: for the pools a \fBkind:\: tcp\fR or \fBkind:\: udp\fR listener uses,\: where there is no request to make \[u2014] see below
 T}
 T{
 \fBgrpc_\:service\fR
@@ -7087,7 +7087,65 @@ none
 T}	T{
 The first 64 KiB must match this pattern anywhere (anchor with \fB^\fR and \fB$\fR);\: may be combined with \fBbody_\:contains\fR,\: both must hold. At most 4096 bytes each
 T}
+T{
+\fBsend\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+What a \fBudp\fR probe sends. Exactly one of \fBsend\fR or \fBsend_\:hex\fR is required for that type
+T}
+T{
+\fBsend_\:hex\fR
+T}	T{
+hex
+T}	T{
+none
+T}	T{
+The same as hexadecimal,\: for a service whose smallest question is not text
+T}
+T{
+\fBexpect\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The answer must contain this text. Empty accepts any answer
+T}
+T{
+\fBexpect_\:hex\fR
+T}	T{
+hex
+T}	T{
+none
+T}	T{
+The same as hexadecimal;\: exclusive with \fBexpect\fR
+T}
 .TE
+.SS "The layer 4 probes"
+.PP
+\fBtype: http\fR and \fBtype: grpc\fR make a request and read a reply, which is how an HTTP backend proves it is working rather than merely running. A pool behind a \fBkind: tcp\fR or \fBkind: udp\fR listener has no request to make, so there are two narrower probes \[u2014] and they are not equally narrow, which is the thing to understand before choosing one.
+.PP
+\fB\fBtype: tcp\fR connects and closes.\fR It proves that something accepted, and nothing about what. For a protocol this proxy does not speak that is usually all there is to know without speaking it, and it is a real signal: a process that has died, a host that has gone, a port that was never opened are all found.
+.PP
+\fB\fBtype: udp\fR has to prove more, because a UDP socket accepts nothing.\fR There is no connect to succeed. A datagram sent to a port with no listener produces an ICMP port unreachable that the sender may or may not be told about, that anything on the path may filter, and that says nothing at all about a process which is bound but wedged \[u2014] which is the failure that matters most, because it is the one that keeps taking traffic. So a \fBudp\fR check \fBsends a question the service answers\fR, and silence is the failure:
+.PP
+.RS 4
+.nf
+.ft CR
+health_check:
+  type: udp
+  send_hex: "abcd0100000100000000000000"   # a DNS query header
+  expect_hex: "abcd8180"                   # the same id, answered
+  interval: 5s
+  timeout: 1s
+.ft
+.fi
+.RE
+.PP
+The probe socket is \fIconnected\fR, so the kernel drops an answer from any address but the endpoint\(aqs: a third party cannot vouch for a backend. With no \fBexpect\fR any answer is accepted, which is still far more than silence proves; with one, the answer has to contain it, so a service that has started listening but is still loading fails the check instead of taking traffic.
 .SS "upstreams[].outlier_ejection"
 .PP
 .TS

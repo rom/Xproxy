@@ -242,6 +242,10 @@ upstreams:
         keep_alive: false
         body_contains: ""
         body_regex: ""
+        send: ""
+        send_hex: ""
+        expect: ""
+        expect_hex: ""
       timeouts:
         connect: 5s
         response_header: 30s

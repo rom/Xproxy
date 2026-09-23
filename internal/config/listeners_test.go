@@ -185,7 +185,15 @@ routes:
 		{"grpc check path", "", "h2c: true\n    health_check: {type: grpc, path: /x}", "not used by type grpc"},
 		{"grpc service on http check", "", "health_check: {grpc_service: a}", "only for type grpc"},
 		{"bad grpc service", "", "h2c: true\n    health_check: {type: grpc, grpc_service: \"a b\"}", "not a service name"},
-		{"check type", "", "health_check: {type: tcp}", "must be http or grpc"},
+		{"check type", "", "health_check: {type: sctp}", "must be http, grpc, tcp or udp"},
+		{"udp check needs a question", "", "health_check: {type: udp}", "needs exactly one of send or send_hex"},
+		{"udp check one spelling", "", "health_check: {type: udp, send: PING, send_hex: 4142}", "needs exactly one of send or send_hex"},
+		{"udp check bad hex", "", "health_check: {type: udp, send_hex: nothex}", "send_hex"},
+		{"udp check two expectations", "", "health_check: {type: udp, send: PING, expect: a, expect_hex: 4142}", "two spellings of one requirement"},
+		{"udp check bad expect hex", "", "health_check: {type: udp, send: PING, expect_hex: zz}", "expect_hex"},
+		{"tcp check sends nothing", "", "health_check: {type: tcp, send: PING}", "a tcp check only connects"},
+		{"send needs udp", "", "health_check: {type: http, send: PING}", "send and expect need type udp"},
+		{"path on a tcp check", "", "health_check: {type: tcp, path: /x}", "not used by type tcp"},
 	}
 	for _, tc := range cases {
 		_, err := Parse([]byte(fmt.Sprintf(base, tc.listener, tc.upstream)))

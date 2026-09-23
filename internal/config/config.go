@@ -2551,8 +2551,16 @@ type UpstreamTLS struct {
 
 // HealthCheck configures active health probing of an upstream.
 type HealthCheck struct {
-	// Type is http (GET path, expected_status) or grpc (the standard
-	// grpc.health.v1 Check over HTTP/2, needs h2c or https). Default http.
+	// Type is http (GET path, expected_status), grpc (the standard
+	// grpc.health.v1 Check over HTTP/2, needs h2c or https), tcp (the
+	// connect succeeds) or udp (a datagram is sent and an answer comes
+	// back). Default http.
+	//
+	// The last two are for the pools a layer 4 listener uses, where
+	// there is no request to make. tcp proves the port accepts; udp has
+	// to prove more than that, because a UDP socket accepts nothing and
+	// a closed port is only sometimes reported -- so a udp check sends
+	// something the service answers, and silence is the failure.
 	Type string `yaml:"type"`
 	// GRPCService is the service name asked in a grpc check. Default ""
 	// (the server as a whole).
@@ -2576,6 +2584,19 @@ type HealthCheck struct {
 	// anywhere in it. Both may be set; both must hold.
 	BodyContains string `yaml:"body_contains"`
 	BodyRegex    string `yaml:"body_regex"`
+	// Send is what a udp probe sends, as text; SendHex the same as
+	// hexadecimal, for the services whose smallest question is not text
+	// (a DNS query, a RADIUS request, a game server's ping). Exactly one
+	// is required for type udp: a probe that sends nothing learns
+	// nothing, because a UDP service answers a question and there is no
+	// handshake to observe instead.
+	Send    string `yaml:"send"`
+	SendHex string `yaml:"send_hex"`
+	// Expect requires the answer to contain this text, ExpectHex the
+	// same as hexadecimal. Both empty accepts any answer at all, which
+	// is already much more than silence proves.
+	Expect    string `yaml:"expect"`
+	ExpectHex string `yaml:"expect_hex"`
 }
 
 // UpstreamTimeout bounds each phase of an upstream exchange.

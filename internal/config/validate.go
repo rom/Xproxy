@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
@@ -1614,11 +1615,46 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			if len(hc.GRPCService) > 253 || strings.ContainsAny(hc.GRPCService, " /\r\n") {
 				v.errf("%s.health_check.grpc_service: %q is not a service name", p, hc.GRPCService)
 			}
+		case "tcp":
+			// A connect probe. Nothing is sent, so nothing about the
+			// service behind the port is proved -- only that something
+			// is listening, which for a relayed protocol this proxy does
+			// not speak is often all there is to know.
+			if hc.Send != "" || hc.SendHex != "" || hc.Expect != "" || hc.ExpectHex != "" {
+				v.errf("%s.health_check: send and expect need type udp; a tcp check only connects", p)
+			}
+		case "udp":
+			if (hc.Send == "") == (hc.SendHex == "") {
+				v.errf("%s.health_check: type udp needs exactly one of send or send_hex; a probe that sends nothing is answered by nothing", p)
+			}
+			if hc.SendHex != "" {
+				if _, err := hex.DecodeString(hc.SendHex); err != nil {
+					v.errf("%s.health_check.send_hex: %v", p, err)
+				}
+			}
+			if hc.Expect != "" && hc.ExpectHex != "" {
+				v.errf("%s.health_check: expect and expect_hex are two spellings of one requirement; set one", p)
+			}
+			if hc.ExpectHex != "" {
+				if _, err := hex.DecodeString(hc.ExpectHex); err != nil {
+					v.errf("%s.health_check.expect_hex: %v", p, err)
+				}
+			}
 		default:
-			v.errf("%s.health_check.type: must be http or grpc", p)
+			v.errf("%s.health_check.type: must be http, grpc, tcp or udp", p)
 		}
-		if !strings.HasPrefix(hc.Path, "/") {
-			v.errf("%s.health_check.path: must start with /", p)
+		if hc.Type == "http" || hc.Type == "grpc" {
+			if !strings.HasPrefix(hc.Path, "/") {
+				v.errf("%s.health_check.path: must start with /", p)
+			}
+		} else if hc.Path != DefaultHealthCheckPath {
+			v.errf("%s.health_check.path: not used by type %s", p, hc.Type)
+		}
+		if hc.Type != "udp" && (hc.Send != "" || hc.SendHex != "" || hc.Expect != "" || hc.ExpectHex != "") && hc.Type != "tcp" {
+			v.errf("%s.health_check: send and expect need type udp", p)
+		}
+		if len(hc.Send) > 4096 || len(hc.SendHex) > 8192 || len(hc.Expect) > 4096 || len(hc.ExpectHex) > 8192 {
+			v.errf("%s.health_check: send and expect are limited to 4096 bytes", p)
 		}
 		if hc.Interval < Duration(500_000_000) {
 			v.errf("%s.health_check.interval: must be at least 500ms", p)
@@ -1636,6 +1672,9 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			if st < 100 || st > 599 {
 				v.errf("%s.health_check.expected_status: %d is not an HTTP status", p, st)
 			}
+		}
+		if hc.GRPCService != "" && hc.Type != "grpc" && hc.Type != "http" {
+			v.errf("%s.health_check.grpc_service: only for type grpc", p)
 		}
 		if (hc.BodyContains != "" || hc.BodyRegex != "") && hc.Type != "http" {
 			v.errf("%s.health_check: body_contains and body_regex need type http", p)
