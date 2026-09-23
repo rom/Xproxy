@@ -238,6 +238,8 @@ type Listener struct {
 	SSH *SSHListener `yaml:"ssh"`
 	// Telnet configures a kind: telnet listener.
 	Telnet *TelnetListener `yaml:"telnet"`
+	// VNC configures a kind: vnc listener.
+	VNC *VNCListener `yaml:"vnc"`
 	// FTP configures a kind: ftp listener.
 	FTP *FTPListener `yaml:"ftp"`
 	// Syslog configures a kind: syslog listener.
@@ -551,6 +553,113 @@ var DefaultTelnetOptions = []string{
 	"echo", "suppress-go-ahead", "binary", "terminal-type", "naws",
 	"terminal-speed", "end-of-record", "timing-mark", "status",
 }
+
+// VNCListener is a VNC gateway: the proxy is an RFB server to the
+// client and an RFB client to the target, terminating the handshake of
+// RFC 6143 on both legs.
+//
+// The reason it is not a tcp listener: RFB's whole policy surface is
+// in the handshake. Which security type is used, whether the session
+// is encrypted and how, what the desktop is called -- all of it is
+// negotiated in the first few hundred bytes, and a proxy that does not
+// sit in that negotiation cannot decide any of it, nor record what
+// follows.
+type VNCListener struct {
+	// Upstream is the pool of targets. Required.
+	Upstream string `yaml:"upstream"`
+	// SecurityTypes are the RFB security types a client may use, by
+	// name. Default is the ones this proxy mediates: none, vncauth and
+	// vencrypt. A type not listed is refused.
+	SecurityTypes []string `yaml:"security_types"`
+	// VeNCryptSubtypes are the VeNCrypt subtypes offered when
+	// vencrypt is in SecurityTypes. Default x509-vnc and x509-none,
+	// which are the ones with a certificate to check.
+	VeNCryptSubtypes []string `yaml:"vencrypt_subtypes"`
+	// Password is a file holding the VNC password this proxy answers
+	// its own vncauth challenge with. Without it, vncauth towards the
+	// client is refused: a challenge nobody can answer is not
+	// authentication.
+	PasswordFile string `yaml:"password_file"`
+	// UpstreamPasswordFile is the password this proxy uses towards the
+	// target, when the target asks for vncauth.
+	UpstreamPasswordFile string `yaml:"upstream_password_file"`
+	// TLSMode says what the listener's tls section is for.
+	//
+	// negotiated (the default) leaves the socket plain and presents
+	// the certificate inside RFB, which is what VeNCrypt does and what
+	// a modern viewer offers by itself. wrap makes the socket TLS from
+	// the first byte, with RFB inside it, which is what a viewer
+	// reaching an stunnel-wrapped port expects.
+	//
+	// A port is one or the other and cannot be both: the first byte a
+	// client sends is either a TLS record or "RFB 003.008".
+	TLSMode string `yaml:"tls_mode"`
+	// UpstreamSecurity is the security type to prefer towards the
+	// target, by name. Default is the strongest the target offers
+	// among the ones this proxy mediates.
+	UpstreamSecurity string `yaml:"upstream_security"`
+	// UpstreamTLSMode is none or vencrypt. Default none.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS pins the CA and name for the target's leg.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// SSH reaches the target through an SSH connection this proxy
+	// makes, so the RFB never crosses the network in clear. This is
+	// the usual way a VNC server is reached safely, done by the
+	// gateway rather than by every operator.
+	SSH *VNCOverSSH `yaml:"ssh"`
+	// ViewOnly drops the client's pointer and keyboard messages, so a
+	// session can be watched and not driven.
+	ViewOnly bool `yaml:"view_only"`
+	// Recording writes the RFB stream to a file.
+	Recording *SessionRecording `yaml:"recording"`
+	// MFA asks for a login name and a one-time code before the target
+	// is dialled.
+	MFA *MFAPolicy `yaml:"mfa"`
+	// IdleTimeout is no traffic in either direction. Default 5m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole session however active. Default 0.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// HandshakeTimeout bounds the negotiation before the session
+	// begins. Default 30s: a peer that never finishes the handshake is
+	// a connection held open for nothing.
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+	// MaxConnections bounds sessions on this listener. Default 200.
+	MaxConnections int `yaml:"max_connections"`
+	// ProxyProtocol sends a PROXY protocol v2 header to the target.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs.
+	AllowClients []string `yaml:"allow_clients"`
+}
+
+// VNCOverSSH reaches a VNC target through an SSH connection the
+// gateway makes itself.
+type VNCOverSSH struct {
+	// User is the login on the SSH host. Required.
+	User string `yaml:"user"`
+	// KeyFile is the private key the gateway authenticates with.
+	// Required.
+	KeyFile string `yaml:"key_file"`
+	// KnownHosts pins the SSH host keys. Required: an unpinned tunnel
+	// authenticates nothing, which is the whole reason for the tunnel.
+	KnownHosts string `yaml:"known_hosts"`
+	// Address is the SSH host, host:port. Default is the upstream
+	// endpoint's host with port 22.
+	Address string `yaml:"address"`
+	// Target is what to reach from the SSH host, host:port. Default
+	// 127.0.0.1:5900, which is where a VNC server bound to loopback
+	// is.
+	Target string `yaml:"target"`
+}
+
+// DefaultVNCSecurityTypes are the types this proxy mediates: it can
+// complete the handshake on both legs, so it can record the session
+// and decide the rest.
+var DefaultVNCSecurityTypes = []string{"none", "vncauth", "vencrypt"}
+
+// DefaultVeNCryptSubtypes are the ones with a certificate to check.
+// The anonymous ones encrypt without authenticating, which stops a
+// reader and not an active attacker.
+var DefaultVeNCryptSubtypes = []string{"x509-vnc", "x509-none"}
 
 // SSHListener is an SSH bastion: the proxy is an SSH server to the
 // client and an SSH client to the target, with its own host key, its

@@ -141,6 +141,13 @@ type Stats struct {
 	SSHBytesIn             atomic.Uint64
 	SSHBytesOut            atomic.Uint64
 	SFTPRequests           atomic.Uint64
+	VNCSessions            atomic.Uint64
+	VNCSessionsOpen        atomic.Int64
+	VNCRejected            atomic.Uint64
+	VNCRefused             atomic.Uint64
+	VNCRecorded            atomic.Uint64
+	VNCMFAOK               atomic.Uint64
+	VNCMFAFailed           atomic.Uint64
 	TelnetSessions         atomic.Uint64
 	TelnetSessionsOpen     atomic.Int64
 	TelnetRejected         atomic.Uint64
@@ -362,6 +369,13 @@ type Snapshot struct {
 	SSHBytesIn             uint64            `json:"ssh_bytes_in"`
 	SSHBytesOut            uint64            `json:"ssh_bytes_out"`
 	SFTPRequests           uint64            `json:"sftp_requests"`
+	VNCSessions            uint64            `json:"vnc_sessions"`
+	VNCSessionsOpen        int64             `json:"vnc_sessions_open"`
+	VNCRejected            uint64            `json:"vnc_rejected"`
+	VNCRefused             uint64            `json:"vnc_refused"`
+	VNCRecorded            uint64            `json:"vnc_recorded"`
+	VNCMFAOK               uint64            `json:"vnc_mfa_ok"`
+	VNCMFAFailed           uint64            `json:"vnc_mfa_failed"`
 	TelnetSessions         uint64            `json:"telnet_sessions"`
 	TelnetSessionsOpen     int64             `json:"telnet_sessions_open"`
 	TelnetRejected         uint64            `json:"telnet_rejected"`
@@ -548,6 +562,13 @@ func (s *Stats) snapshot() Snapshot {
 		SSHBytesIn:             s.SSHBytesIn.Load(),
 		SSHBytesOut:            s.SSHBytesOut.Load(),
 		SFTPRequests:           s.SFTPRequests.Load(),
+		VNCSessions:            s.VNCSessions.Load(),
+		VNCSessionsOpen:        s.VNCSessionsOpen.Load(),
+		VNCRejected:            s.VNCRejected.Load(),
+		VNCRefused:             s.VNCRefused.Load(),
+		VNCRecorded:            s.VNCRecorded.Load(),
+		VNCMFAOK:               s.VNCMFAOK.Load(),
+		VNCMFAFailed:           s.VNCMFAFailed.Load(),
 		TelnetSessions:         s.TelnetSessions.Load(),
 		TelnetSessionsOpen:     s.TelnetSessionsOpen.Load(),
 		TelnetRejected:         s.TelnetRejected.Load(),

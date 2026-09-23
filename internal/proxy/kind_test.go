@@ -20,6 +20,7 @@ var sections = map[string]string{
 	"dns":     `dns: {upstreams: ["127.0.0.1:53"]}`,
 	"ssh":     "ssh: {upstream: u, host_keys: [/dev/null], authorized_keys: /dev/null, upstream_key_file: /dev/null, upstream_known_hosts: /dev/null}",
 	"telnet":  "telnet: {upstream: u}",
+	"vnc":     "vnc: {upstream: u, security_types: [none]}",
 	"smtp":    "smtp: {upstream: u}",
 	"mqtt":    "mqtt: {upstream: u}",
 	"ftp":     "ftp: {upstream: u}",

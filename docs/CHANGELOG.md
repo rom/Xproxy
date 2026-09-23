@@ -328,6 +328,66 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A VNC gateway** (`kind: vnc`, in xgate), speaking RFB on both legs.
+  The proxy is an RFB server to the viewer and an RFB client to the
+  desktop, terminating the handshake of RFC 6143 on each -- which is
+  what makes everything below possible, since RFB settles its whole
+  policy surface in the first few hundred bytes and a relay that does
+  not sit in that negotiation can decide none of it.
+  - **Versions 3.3, 3.7 and 3.8, independently on each leg.** A 3.3
+    viewer reaches a 3.8 desktop through here and the other way round.
+    A version nobody defines -- Apple's 3.889, anything above 3.8 --
+    is treated as the highest defined version at or below it.
+  - **The security types with a published specification**: `none`,
+    `vncauth`, `vencrypt` and the older anonymous `tls`, each completed
+    on both legs. `security_types` is what a viewer may use, and a
+    viewer that picks something outside the list is refused rather than
+    obliged. The vendors' own types (RealVNC's `ra2*` and `rsa-aes*`,
+    `tight`, `ultra`, `mslogon2`, `ard`, `sasl`, `md5`, `xvp`) are a
+    configuration error rather than a setting that quietly does
+    nothing, and `docs/CONFIG.md` says so in a table with what to do
+    instead. UltraVNC's DSM plugins are a separate case again: they
+    wrap the socket before RFB starts, so a VNC-aware listener cannot
+    read even the version string, and the documented answer is a
+    `kind: tcp` listener that relays the bytes without a recording.
+  - **The two credentials are separate.** What a person proves to the
+    gateway is not the desktop's password: `password_file` is what the
+    gateway's own `vncauth` challenge is checked against, and
+    `upstream_password_file` what it answers the desktop's with. The
+    shared VNC password of a machine never has to be given to the
+    people who use it. A password file anyone else can read is refused
+    at load.
+  - **Three ways to encrypt the leg.** VeNCrypt negotiated inside RFB
+    with an `x509-*` subtype, which is what a modern viewer offers by
+    itself; `tls_mode: wrap` for a socket that is TLS from the first
+    byte, which is what a viewer pointed at an `stunnel` port expects;
+    and `ssh`, where the gateway opens an SSH connection of its own and
+    reaches the desktop through it, with the host keys pinned. The
+    first two are alternatives and asking for both on one port is a
+    configuration error: the first byte a client sends is either a TLS
+    record or an RFB version string.
+  - **A second factor**, carried the only way RFB allows. There is no
+    prompt in the protocol and no terminal to draw one on, so the code
+    arrives in VeNCrypt's plain credential: the username is the person
+    and the password field is the code, inside the TLS tunnel. `mfa`
+    therefore requires a plain subtype, which validation says at load
+    and defaults fill in, and a wrong code is answered with a failed
+    security result before the desktop is dialled rather than a
+    connection that closes for no stated reason.
+  - **`view_only`**, which drops the key, pointer and cut-text messages
+    so a session is watched and not driven. It frames the client's
+    stream to do it, because an RFB message is only as long as its type
+    says; a message type the gateway cannot frame ends the session
+    rather than breaking the promise.
+  - **A session recording** of the server-to-client stream, in the same
+    asciicast v2 container the other recordings use, named
+    `*.rfb.cast`. It is not a video: the event data is the protocol
+    stream, so replaying it needs a player that speaks RFB. That is the
+    deliberate choice -- decoding at capture time would mean
+    understanding every encoding a server might pick and silently
+    losing whatever it did not, while a decoder written against this
+    file later loses nothing.
+
 - **A telnet gateway** (`kind: telnet`, in xgate), for the equipment
   that speaks nothing else. The proxy is a telnet server to the client
   and a telnet client to the target, reading the NVT protocol of RFC

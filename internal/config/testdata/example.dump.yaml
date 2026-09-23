@@ -19,6 +19,7 @@ server:
           mqtt: null
           ssh: null
           telnet: null
+          vnc: null
           ftp: null
           syslog: null
         - name: public
@@ -59,6 +60,7 @@ server:
           mqtt: null
           ssh: null
           telnet: null
+          vnc: null
           ftp: null
           syslog: null
     limits:

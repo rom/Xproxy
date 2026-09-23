@@ -873,6 +873,192 @@ Counters: `syslog_received`, `syslog_forwarded`, `syslog_dropped`,
 `syslog_queue_dropped`, `syslog_send_failed`, `syslog_connections`,
 `syslog_rejected`. Refusals are `syslog_denied` for the ban triggers.
 
+### server.listeners[].vnc (kind: vnc)
+
+A `kind: vnc` listener is a VNC gateway: the proxy is an RFB server to
+the client and an RFB client to the target, terminating the handshake
+of RFC 6143 on both legs.
+
+**Why this is not a `tcp` listener.** RFB's whole policy surface is in
+the handshake. Which security type is used, whether the session is
+encrypted and how, what the desktop is called — all of it is settled in
+the first few hundred bytes. A proxy that does not sit in that
+negotiation cannot decide any of it, and cannot record what follows.
+
+Terminating both legs is also what separates the two credentials. What
+a person proves to the gateway is not the desktop's password: the
+gateway opens the target's leg with its own, so the shared VNC password
+of a machine never has to be given to the people who use it.
+
+#### What is supported
+
+**Protocol versions.** 3.3, 3.7 and 3.8, on either leg and
+independently: a 3.3 client can reach a 3.8 server through here. A
+client announcing a version nobody defines (Apple's 3.889, or anything
+above 3.8) is treated as the highest defined version at or below it.
+Below 3.3 is refused.
+
+The versions differ in one place that matters to a gateway: before 3.8,
+a successful `none` carries no `SecurityResult` at all (RFC 6143
+§7.1.3). Each leg follows the rule of the version settled on that leg,
+so a 3.3 viewer is not sent four bytes it would read as the start of
+the desktop's dimensions, and a 3.7 target is not waited on for a
+message it will never send.
+
+**Security types.** Only the ones with a published specification are
+mediated — that is, completed on both legs, which is what makes the
+session recordable:
+
+| Type | Name | What it is | Status |
+|------|------|-----------|--------|
+| 1 | `none` | No authentication | Mediated |
+| 2 | `vncauth` | The DES challenge of RFC 6143 §7.2.2 | Mediated |
+| 19 | `vencrypt` | The open TLS and X.509 negotiation | Mediated |
+| 18 | `tls` | Anonymous-TLS, VeNCrypt's predecessor | Mediated, warned about |
+
+`tls` is warned about because it is anonymous Diffie-Hellman with no
+certificate to check: it stops a reader and not an active attacker.
+`vencrypt` with an X.509 subtype is the one to use.
+
+**VeNCrypt subtypes**: `x509-none`, `x509-vnc`, `x509-plain`,
+`tls-none`, `tls-vnc`, `tls-plain`. The `tls-*` ones are warned about
+for the same reason. The bare `plain` subtype (no TLS at all) is
+refused: it would send the credential in clear.
+
+**What is not supported, and why.** These are the vendors' own, with no
+published specification to write against:
+
+| Type | Name | Vendor |
+|------|------|--------|
+| 5, 6 | `ra2`, `ra2ne` | RealVNC |
+| 129, 130, 133 | `rsa-aes`, `rsa-aes-ne`, `rsa-aes-256` | RealVNC |
+| 16 | `tight` | TightVNC |
+| 17, 113 | `ultra`, `mslogon2` | UltraVNC |
+| 30 | `ard` | Apple |
+| 20, 21, 22 | `sasl`, `md5`, `xvp` | others |
+
+Naming one in `security_types` is a configuration error rather than a
+setting that quietly does nothing. A gateway cannot sit in the middle
+of a handshake it cannot complete, and reimplementing a cipher from
+guesswork is worse than not having it: it would look like support while
+being wrong.
+
+**UltraVNC's DSM plugin encryption is a separate case.** It is not a
+security type at all — the plugin wraps the whole connection before RFB
+begins, so this listener cannot even read the version string. There is
+nothing to configure here. An estate that needs it uses a `kind: tcp`
+listener, which relays the bytes without looking at them: the
+connection works, the access log records who reached which target, and
+there is no recording, because the stream is encrypted with keys this
+proxy does not hold.
+
+#### Options
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The pool of targets |
+| `security_types` | list | `[none, vncauth, vencrypt]` | The types a client may use, by name |
+| `vencrypt_subtypes` | list | `[x509-vnc, x509-none]` | The subtypes offered when `vencrypt` is in use |
+| `password_file` | string | none | The password this gateway answers its own `vncauth` challenge with. Required if `vncauth` is offered, and refused if anyone but the proxy user can read it |
+| `upstream_password_file` | string | none | The password this gateway uses towards the target |
+| `upstream_security` | string | strongest available | The type to use towards the target, by name |
+| `tls_mode` | string | `negotiated` | What the listener's `tls` section is for: `negotiated` presents the certificate inside RFB, `wrap` makes the socket itself TLS. See below |
+| `upstream_tls_mode` | string | `none` | `none` or `vencrypt` |
+| `upstream_tls` | object | none | CA and name for the target's leg |
+| `ssh` | object | none | Reach the target through an SSH connection the gateway makes; see below |
+| `view_only` | bool | `false` | Drop the client's key, pointer and cut-text messages, so a session is watched and not driven |
+| `recording` | object | none | As `server.listeners[].ssh.recording`; see below for the format |
+| `mfa` | object | none | See below: it needs `x509-plain` |
+| `idle_timeout` | duration | `5m` | No traffic in either direction |
+| `session_timeout` | duration | `0` | Bound on a whole session however active |
+| `handshake_timeout` | duration | `30s` | Bound on the negotiation before the session begins |
+| `max_connections` | int | `200` | Sessions on this listener |
+| `proxy_protocol` | bool | `false` | PROXY protocol v2 header to the target |
+| `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+
+#### VNC over TLS, and VNC over SSH
+
+Three ways to stop the session crossing a network in clear. The two
+that encrypt the client's leg are alternatives; the third is the
+target's leg and composes with either.
+
+- **VeNCrypt**, negotiated inside RFB (`tls_mode: negotiated`, the
+  default). The socket carries RFB from the first byte, and the
+  certificate in the listener's `tls` section is presented inside the
+  handshake. This is the one a modern viewer offers by itself, and the
+  `x509-*` subtypes are the ones with a certificate to check. The
+  security type `tls` (18) works the same way, with no certificate
+  checked.
+- **A socket that is TLS from the first byte** (`tls_mode: wrap`). The
+  client connects with TLS and speaks RFB inside it, which is what a
+  viewer reaching a `stunnel`-wrapped port does.
+
+  `wrap` together with the `vencrypt` or `tls` security type is a
+  configuration error rather than two layers: the first byte a client
+  sends is either a TLS record or `RFB 003.008`, so a port is one or
+  the other. An estate with both kinds of viewer uses one listener for
+  each, which is what the viewers are already pointed at.
+- **`ssh`**, for the target's leg. The gateway opens an SSH connection
+  and reaches the VNC server through it, so the RFB never crosses the
+  network in clear even when the server itself speaks only RFB. This is
+  the usual `ssh -L` arrangement, done once by the gateway rather than
+  by every operator.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ssh.user` | string | required | The login on the SSH host |
+| `ssh.key_file` | string | required | The private key the gateway authenticates with |
+| `ssh.known_hosts` | string | required | Pins the SSH host keys. An unpinned tunnel authenticates nothing, which is the whole reason for the tunnel |
+| `ssh.address` | string | the endpoint's host, port 22 | The SSH host |
+| `ssh.target` | string | `127.0.0.1:5900` | What to reach from the SSH host |
+
+An operator who prefers to tunnel themselves still can: `ssh -L` to the
+`kind: ssh` bastion and point the viewer at the forwarded port. That
+needs nothing here. The `ssh` section is for doing it once, centrally,
+so the recording and the policy still apply.
+
+#### The second factor
+
+`mfa` needs a VeNCrypt **plain** subtype, and validation refuses the
+section without one. The reason is in the protocol: a DES challenge
+proves knowledge of one shared desktop password and says nothing about
+who is holding it, so there is nothing to look an enrolment up by. The
+plain subtypes are the only place RFB carries a user name. The name
+identifies the person and the password field carries their one-time
+code, both inside the TLS tunnel.
+
+`x509-plain` is added to `vencrypt_subtypes` automatically when `mfa`
+is configured and no plain subtype is listed.
+
+The code is checked inside the handshake, before the security result is
+sent: a wrong code is a failed authentication the viewer can show,
+rather than a session that is told it succeeded and then closes. The
+desktop is not dialled either way. A viewer that authenticates with a
+type carrying no name — where one is also offered — is refused for the
+same reason: there is nothing to look an enrolment up by.
+
+#### The recording
+
+The file holds the server-to-client RFB stream — what was on the screen
+— with the timing of it, in the asciicast v2 container the other
+recordings use, named `*.rfb.cast`. Its header carries
+`XPROXY_PROTOCOL: rfb`, the framebuffer size and the RFB version, and
+the first mark names the desktop, both versions and both security
+types.
+
+**It is not a video.** The event data is the protocol stream, so
+replaying it needs a player that speaks RFB rather than a terminal.
+Recording the stream is what keeps the cost bounded and loses nothing:
+a decoder can be written against this file afterwards, and one that
+decoded at capture time would have to understand every encoding a
+server might choose and would silently lose whatever it did not.
+
+Counters: `vnc_sessions`, `vnc_sessions_open`, `vnc_rejected`,
+`vnc_refused`, `vnc_recorded`, `vnc_mfa_ok`, `vnc_mfa_failed`. Every
+session writes one `vnc` access line with both versions, both security
+types, the desktop name and size, and how it ended. Refusals are
+`vnc_denied` deny events, so bans apply.
+
 ### server.listeners[].telnet (kind: telnet)
 
 A `kind: telnet` listener is a telnet gateway: the proxy is a telnet

@@ -2695,6 +2695,14 @@
         },
         "tls": {
           "$ref": "#/$defs/TLS"
+        },
+        "vnc": {
+          "description": "VNC configures a kind: vnc listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VNCListener"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -5961,6 +5969,144 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "VNCListener": {
+      "description": "VNCListener is a VNC gateway: the proxy is an RFB server to the client and an RFB client to the target, terminating the handshake of RFC 6143 on both legs. The reason it is not a tcp listener: RFB's whole policy surface is in the handshake. Which security type is used, whether the session is encrypted and how, what the desktop is called -- all of it is negotiated in the first few hundred bytes, and a proxy that does not sit in that negotiation cannot decide any of it, nor record what follows.",
+      "type": "object",
+      "properties": {
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "handshake_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds sessions on this listener. Default 200.",
+          "type": "integer"
+        },
+        "mfa": {
+          "description": "MFA asks for a login name and a one-time code before the target is dialled.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MFAPolicy"
+            }
+          ]
+        },
+        "password_file": {
+          "description": "Password is a file holding the VNC password this proxy answers its own vncauth challenge with. Without it, vncauth towards the client is refused: a challenge nobody can answer is not authentication.",
+          "type": "string"
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header to the target.",
+          "type": "boolean"
+        },
+        "recording": {
+          "description": "Recording writes the RFB stream to a file.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SessionRecording"
+            }
+          ]
+        },
+        "security_types": {
+          "description": "SecurityTypes are the RFB security types a client may use, by name. Default is the ones this proxy mediates: none, vncauth and vencrypt. A type not listed is refused.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "ssh": {
+          "description": "SSH reaches the target through an SSH connection this proxy makes, so the RFB never crosses the network in clear. This is the usual way a VNC server is reached safely, done by the gateway rather than by every operator.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VNCOverSSH"
+            }
+          ]
+        },
+        "tls_mode": {
+          "description": "TLSMode says what the listener's tls section is for. negotiated (the default) leaves the socket plain and presents the certificate inside RFB, which is what VeNCrypt does and what a modern viewer offers by itself. wrap makes the socket TLS from the first byte, with RFB inside it, which is what a viewer reaching an stunnel-wrapped port expects. A port is one or the other and cannot be both: the first byte a client sends is either a TLS record or \"RFB 003.008\".",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream is the pool of targets. Required.",
+          "type": "string"
+        },
+        "upstream_password_file": {
+          "description": "UpstreamPasswordFile is the password this proxy uses towards the target, when the target asks for vncauth.",
+          "type": "string"
+        },
+        "upstream_security": {
+          "description": "UpstreamSecurity is the security type to prefer towards the target, by name. Default is the strongest the target offers among the ones this proxy mediates.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS pins the CA and name for the target's leg.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_tls_mode": {
+          "description": "UpstreamTLSMode is none or vencrypt. Default none.",
+          "type": "string"
+        },
+        "vencrypt_subtypes": {
+          "description": "VeNCryptSubtypes are the VeNCrypt subtypes offered when vencrypt is in SecurityTypes. Default x509-vnc and x509-none, which are the ones with a certificate to check.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "view_only": {
+          "description": "ViewOnly drops the client's pointer and keyboard messages, so a session can be watched and not driven.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "VNCOverSSH": {
+      "description": "VNCOverSSH reaches a VNC target through an SSH connection the gateway makes itself.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "description": "Address is the SSH host, host:port. Default is the upstream endpoint's host with port 22.",
+          "type": "string"
+        },
+        "key_file": {
+          "description": "KeyFile is the private key the gateway authenticates with. Required.",
+          "type": "string"
+        },
+        "known_hosts": {
+          "description": "KnownHosts pins the SSH host keys. Required: an unpinned tunnel authenticates nothing, which is the whole reason for the tunnel.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Target is what to reach from the SSH host, host:port. Default 127.0.0.1:5900, which is where a VNC server bound to loopback is.",
+          "type": "string"
+        },
+        "user": {
+          "description": "User is the login on the SSH host. Required.",
+          "type": "string"
         }
       },
       "additionalProperties": false
