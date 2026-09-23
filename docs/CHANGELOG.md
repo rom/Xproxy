@@ -388,6 +388,32 @@ Open findings of the earlier rounds:
     losing whatever it did not, while a decoder written against this
     file later loses nothing.
 
+- **TightVNC's security type 16 and Apple Remote Desktop's type 30**,
+  on both legs, which with the two above covers the vendors' types
+  that have a public description good enough to write against.
+  - **Tight is a negotiation rather than a cipher**: a list of tunnels
+    and a list of authentications, of which the two ends pick one
+    each. This gateway offers no tunnels and refuses a target that
+    offers only tunnels, because a tunnel is another protocol wrapped
+    around this one -- a session it could neither read nor record. It
+    offers no-auth and, with a `password_file`, the DES challenge.
+    Tight's block after `ServerInit` is read and dropped from a
+    target's leg and sent empty to a Tight client: what is advertised
+    there is TightVNC's extensions, file transfer among them, and a
+    gateway that cannot see inside them has no business passing them
+    through. The one case where a Tight target sends no security
+    result at all -- when it asks for no authentication -- is handled
+    rather than waited on.
+  - **ARD** is Diffie-Hellman over a prime the server chooses, MD5 of
+    the shared secret as an AES-128 key, and a credential blob in ECB.
+    Apple's own servers use a 512 bit prime, so the warning says what
+    that is worth; in the server role this gateway generates 1024 bits
+    instead. Its credential carries a name, so it carries a factor.
+    Parameters that fix the shared secret -- a generator or public
+    value of 1, a public value at or above the modulus, an even
+    modulus, a prime shorter than Apple's own -- are refused on both
+    legs rather than turned into a key.
+
 - **RealVNC's RSA-AES, security types 129, 130 and 133**, on both legs
   of the VNC gateway. Each end sends an RSA public key, each seals a
   random under the other's, the session keys are hashed out of the two
@@ -545,6 +571,19 @@ Open findings of the earlier rounds:
   recording landed.
 
 ### Fixed (1.4, tests)
+
+- **A sixth flaky test, of a different shape: `TestExport` set the
+  batch size and the flush interval against each other.** The trace
+  exporter flushes when the batch is full *or* when the interval
+  fires, and the test asked for a batch of two spans with a 50ms
+  interval, then asserted that exactly one push happened carrying
+  both. The two spans are finished microseconds apart, so almost
+  always they filled the batch first -- but a ticker that fired
+  between them pushed the first span alone, and the assertion on the
+  push count failed. It now sets an interval long enough that the
+  batch is the only thing that flushes, which is what the test is
+  about; the interval path was never what it was checking, and the
+  flush on `Stop` it also exercises is unaffected.
 
 - **Five tests raced the goroutine that records what they assert on.**
   `CountStatus` is called from `logAccess`, which runs once the response
