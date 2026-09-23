@@ -116,6 +116,11 @@ type Stats struct {
 	FTPRejected            atomic.Uint64
 	FTPAuthFailed          atomic.Uint64
 	FTPTransfers           atomic.Uint64
+	FTPScanned             atomic.Uint64
+	FTPScanBlocked         atomic.Uint64
+	FTPRecorded            atomic.Uint64
+	FTPMFAOK               atomic.Uint64
+	FTPMFAFailed           atomic.Uint64
 	SyslogReceived         atomic.Uint64
 	SyslogForwarded        atomic.Uint64
 	SyslogDropped          atomic.Uint64
@@ -136,7 +141,24 @@ type Stats struct {
 	SSHBytesIn             atomic.Uint64
 	SSHBytesOut            atomic.Uint64
 	SFTPRequests           atomic.Uint64
+	VNCSessions            atomic.Uint64
+	VNCSessionsOpen        atomic.Int64
+	VNCRejected            atomic.Uint64
+	VNCRefused             atomic.Uint64
+	VNCRecorded            atomic.Uint64
+	VNCMFAOK               atomic.Uint64
+	VNCMFAFailed           atomic.Uint64
+	TelnetSessions         atomic.Uint64
+	TelnetSessionsOpen     atomic.Int64
+	TelnetRejected         atomic.Uint64
+	TelnetRefused          atomic.Uint64
+	TelnetOptionsRefused   atomic.Uint64
+	TelnetRecorded         atomic.Uint64
+	TelnetMFAOK            atomic.Uint64
+	TelnetMFAFailed        atomic.Uint64
 	SFTPRefused            atomic.Uint64
+	SFTPScanned            atomic.Uint64
+	SFTPScanBlocked        atomic.Uint64
 	MFAVerified            atomic.Uint64
 	MFAFailed              atomic.Uint64
 	YARAMatches            atomic.Uint64
@@ -322,6 +344,11 @@ type Snapshot struct {
 	FTPRejected            uint64            `json:"ftp_rejected"`
 	FTPAuthFailed          uint64            `json:"ftp_auth_failed"`
 	FTPTransfers           uint64            `json:"ftp_transfers"`
+	FTPScanned             uint64            `json:"ftp_scanned"`
+	FTPScanBlocked         uint64            `json:"ftp_scan_blocked"`
+	FTPRecorded            uint64            `json:"ftp_recorded"`
+	FTPMFAOK               uint64            `json:"ftp_mfa_ok"`
+	FTPMFAFailed           uint64            `json:"ftp_mfa_failed"`
 	SyslogReceived         uint64            `json:"syslog_received"`
 	SyslogForwarded        uint64            `json:"syslog_forwarded"`
 	SyslogDropped          uint64            `json:"syslog_dropped"`
@@ -342,7 +369,24 @@ type Snapshot struct {
 	SSHBytesIn             uint64            `json:"ssh_bytes_in"`
 	SSHBytesOut            uint64            `json:"ssh_bytes_out"`
 	SFTPRequests           uint64            `json:"sftp_requests"`
+	VNCSessions            uint64            `json:"vnc_sessions"`
+	VNCSessionsOpen        int64             `json:"vnc_sessions_open"`
+	VNCRejected            uint64            `json:"vnc_rejected"`
+	VNCRefused             uint64            `json:"vnc_refused"`
+	VNCRecorded            uint64            `json:"vnc_recorded"`
+	VNCMFAOK               uint64            `json:"vnc_mfa_ok"`
+	VNCMFAFailed           uint64            `json:"vnc_mfa_failed"`
+	TelnetSessions         uint64            `json:"telnet_sessions"`
+	TelnetSessionsOpen     int64             `json:"telnet_sessions_open"`
+	TelnetRejected         uint64            `json:"telnet_rejected"`
+	TelnetRefused          uint64            `json:"telnet_refused"`
+	TelnetOptionsRefused   uint64            `json:"telnet_options_refused"`
+	TelnetRecorded         uint64            `json:"telnet_recorded"`
+	TelnetMFAOK            uint64            `json:"telnet_mfa_ok"`
+	TelnetMFAFailed        uint64            `json:"telnet_mfa_failed"`
 	SFTPRefused            uint64            `json:"sftp_refused"`
+	SFTPScanned            uint64            `json:"sftp_scanned"`
+	SFTPScanBlocked        uint64            `json:"sftp_scan_blocked"`
 	MFAVerified            uint64            `json:"mfa_verified"`
 	MFAFailed              uint64            `json:"mfa_failed"`
 	YARAMatches            uint64            `json:"yara_matches"`
@@ -493,6 +537,11 @@ func (s *Stats) snapshot() Snapshot {
 		FTPRejected:            s.FTPRejected.Load(),
 		FTPAuthFailed:          s.FTPAuthFailed.Load(),
 		FTPTransfers:           s.FTPTransfers.Load(),
+		FTPScanned:             s.FTPScanned.Load(),
+		FTPScanBlocked:         s.FTPScanBlocked.Load(),
+		FTPRecorded:            s.FTPRecorded.Load(),
+		FTPMFAOK:               s.FTPMFAOK.Load(),
+		FTPMFAFailed:           s.FTPMFAFailed.Load(),
 		SyslogReceived:         s.SyslogReceived.Load(),
 		SyslogForwarded:        s.SyslogForwarded.Load(),
 		SyslogDropped:          s.SyslogDropped.Load(),
@@ -513,7 +562,24 @@ func (s *Stats) snapshot() Snapshot {
 		SSHBytesIn:             s.SSHBytesIn.Load(),
 		SSHBytesOut:            s.SSHBytesOut.Load(),
 		SFTPRequests:           s.SFTPRequests.Load(),
+		VNCSessions:            s.VNCSessions.Load(),
+		VNCSessionsOpen:        s.VNCSessionsOpen.Load(),
+		VNCRejected:            s.VNCRejected.Load(),
+		VNCRefused:             s.VNCRefused.Load(),
+		VNCRecorded:            s.VNCRecorded.Load(),
+		VNCMFAOK:               s.VNCMFAOK.Load(),
+		VNCMFAFailed:           s.VNCMFAFailed.Load(),
+		TelnetSessions:         s.TelnetSessions.Load(),
+		TelnetSessionsOpen:     s.TelnetSessionsOpen.Load(),
+		TelnetRejected:         s.TelnetRejected.Load(),
+		TelnetRefused:          s.TelnetRefused.Load(),
+		TelnetOptionsRefused:   s.TelnetOptionsRefused.Load(),
+		TelnetRecorded:         s.TelnetRecorded.Load(),
+		TelnetMFAOK:            s.TelnetMFAOK.Load(),
+		TelnetMFAFailed:        s.TelnetMFAFailed.Load(),
 		SFTPRefused:            s.SFTPRefused.Load(),
+		SFTPScanned:            s.SFTPScanned.Load(),
+		SFTPScanBlocked:        s.SFTPScanBlocked.Load(),
 		MFAVerified:            s.MFAVerified.Load(),
 		MFAFailed:              s.MFAFailed.Load(),
 		YARAMatches:            s.YARAMatches.Load(),

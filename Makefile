@@ -229,6 +229,8 @@ install: build
 	install -D -m 0644 deploy/logrotate/xgate $(DESTDIR)/etc/logrotate.d/xgate
 	install -D -m 0644 deploy/logrotate/xrelay $(DESTDIR)/etc/logrotate.d/xrelay
 	install -D -m 0640 -b deploy/config/xproxy.yaml $(DESTDIR)/etc/xproxy/xproxy.yaml
+	install -D -m 0640 -b deploy/config/xgate.yaml $(DESTDIR)/etc/xproxy/xgate.yaml
+	install -D -m 0640 -b deploy/config/xrelay.yaml $(DESTDIR)/etc/xproxy/xrelay.yaml
 	install -D -m 0644 deploy/sysusers/xproxy.conf $(DESTDIR)/usr/lib/sysusers.d/xproxy.conf
 	install -D -m 0644 deploy/tmpfiles/xproxy-cluster.conf $(DESTDIR)/usr/lib/tmpfiles.d/xproxy-cluster.conf
 	install -D -m 0644 deploy/tmpfiles/xproxy-config.conf $(DESTDIR)/usr/lib/tmpfiles.d/xproxy-config.conf

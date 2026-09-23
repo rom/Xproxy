@@ -1625,6 +1625,14 @@
             "type": "string"
           }
         },
+        "icap": {
+          "description": "ICAP hands transferred files to a scanning service.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TransferICAP"
+            }
+          ]
+        },
         "idle_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
@@ -1646,6 +1654,14 @@
           "description": "MaxFileBytes bounds one transfer in either direction. 0 is no bound. The connection is cut when it is passed, because a transfer cannot be un-sent.",
           "type": "integer"
         },
+        "mfa": {
+          "description": "MFA asks for a second factor after the password is accepted, on the control channel, before any other command is allowed. An FTP client has no prompt of its own, so the code is taken the only way the protocol allows: as the argument of ACCT, or appended to the password.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MFAPolicy"
+            }
+          ]
+        },
         "proxy_protocol": {
           "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the target.",
           "type": "boolean"
@@ -1653,6 +1669,14 @@
         "read_only": {
           "description": "ReadOnly refuses every command that changes the server: STOR, STOU, APPE, DELE, RNFR, RNTO, MKD, RMD, SITE, ALLO.",
           "type": "boolean"
+        },
+        "recording": {
+          "description": "Recording writes the control channel -- every command and every reply -- to a file per session, with a note where each transfer happened. The transferred bytes are not in it: a recording is what was done, and a copy of every file moved through the proxy is a second copy of the data to look after.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SessionRecording"
+            }
+          ]
         },
         "require_tls": {
           "description": "RequireTLS refuses every command but the ones that get to TLS until the control connection is encrypted. Defaults on wherever TLS is reachable: a control connection in clear carries the password.",
@@ -2661,8 +2685,24 @@
             }
           ]
         },
+        "telnet": {
+          "description": "Telnet configures a kind: telnet listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TelnetListener"
+            }
+          ]
+        },
         "tls": {
           "$ref": "#/$defs/TLS"
+        },
+        "vnc": {
+          "description": "VNC configures a kind: vnc listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VNCListener"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -4338,6 +4378,14 @@
             "type": "string"
           }
         },
+        "icap": {
+          "description": "ICAP hands written files to a scanning service. SFTP has no whole-file transfer: a file is a handle, a run of writes at offsets, and a close. So the proxy holds the writes rather than forwarding them, answers the client itself, scans what the file turned out to be when the handle is closed, and only then replays the writes to the server. A file the scanner refuses never reaches it, at the cost of holding it in memory until the close -- bounded by the service's max_body, past which body_limit_action decides.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TransferICAP"
+            }
+          ]
+        },
         "max_file_bytes": {
           "description": "MaxFileBytes bounds what one open file may be written. 0 is no bound. It is counted per handle, from the highest offset a write reaches, so a client cannot walk past it by writing out of order.",
           "type": "integer"
@@ -4672,7 +4720,7 @@
           "description": "Recording writes what a session showed, and optionally what was typed into it, to a file per channel.",
           "allOf": [
             {
-              "$ref": "#/$defs/SSHRecording"
+              "$ref": "#/$defs/SessionRecording"
             }
           ]
         },
@@ -4776,7 +4824,7 @@
           "description": "Recording replaces the listener's, which is how one entry is recorded and another is not. A principal that should not be recorded where the listener is sets enabled: false.",
           "allOf": [
             {
-              "$ref": "#/$defs/SSHRecording"
+              "$ref": "#/$defs/SessionRecording"
             }
           ]
         },
@@ -4828,41 +4876,6 @@
           "items": {
             "type": "string"
           }
-        }
-      },
-      "additionalProperties": false
-    },
-    "SSHRecording": {
-      "description": "SSHRecording records an interactive session to a file that can be replayed. A bastion's access log says a session happened; it cannot say what was done in it, because what was done is a stream of control sequences inside the channel. This writes that stream, in the asciicast v2 format, so the question \"what did they actually run\" has an answer that is watched rather than reconstructed. The files hold everything the session showed, which on an administrative session is a list of everything worth having: keys printed, configuration read, tokens echoed. They are treated the way the capture files are — the proxy user's alone, in a directory the operator names — and they are a reason to keep that directory as carefully as the credentials it will end up holding.",
-      "type": "object",
-      "properties": {
-        "commands": {
-          "description": "Commands records exec sessions too, not only the ones with a terminal. Default true: a command run without a pty is still a command run on the target.",
-          "type": "boolean"
-        },
-        "directory": {
-          "description": "Directory is where the files are written. Required. It must exist: the proxy does not create it, because where these files live is a decision to make rather than to inherit.",
-          "type": "string"
-        },
-        "enabled": {
-          "description": "Enabled is how a principal turns off a listener's recording; it defaults to true wherever the section is present.",
-          "type": "boolean"
-        },
-        "file_prefix": {
-          "description": "FilePrefix begins each file name. Default \"session\".",
-          "type": "string"
-        },
-        "input": {
-          "description": "Input records what was typed as well as what was shown. Default false, and it warns: a terminal's input stream carries what the screen never showed, which includes every password typed into a sudo or a su prompt. Recording output is watching over a shoulder; recording input is a keylogger, and the difference matters both to the people recorded and to whoever holds the files.",
-          "type": "boolean"
-        },
-        "max_file_bytes": {
-          "description": "MaxFileBytes bounds one recording. Past it the session goes on unrecorded and the file says so, rather than one command that prints for an hour filling a disk. Default 33554432.",
-          "type": "integer"
-        },
-        "max_files": {
-          "description": "MaxFiles keeps this many recordings, removing the oldest this listener wrote. Default 1000. It bounds what the proxy leaves behind; anything that must be kept belongs somewhere the proxy does not prune.",
-          "type": "integer"
         }
       },
       "additionalProperties": false
@@ -5145,6 +5158,41 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SessionRecording": {
+      "description": "SessionRecording records an interactive session to a file that can be replayed. A bastion's access log says a session happened; it cannot say what was done in it, because what was done is a stream of control sequences inside the channel. This writes that stream, in the asciicast v2 format, so the question \"what did they actually run\" has an answer that is watched rather than reconstructed. The files hold everything the session showed, which on an administrative session is a list of everything worth having: keys printed, configuration read, tokens echoed. They are treated the way the capture files are — the proxy user's alone, in a directory the operator names — and they are a reason to keep that directory as carefully as the credentials it will end up holding.",
+      "type": "object",
+      "properties": {
+        "commands": {
+          "description": "Commands records exec sessions too, not only the ones with a terminal. Default true: a command run without a pty is still a command run on the target.",
+          "type": "boolean"
+        },
+        "directory": {
+          "description": "Directory is where the files are written. Required. It must exist: the proxy does not create it, because where these files live is a decision to make rather than to inherit.",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Enabled is how a principal turns off a listener's recording; it defaults to true wherever the section is present.",
+          "type": "boolean"
+        },
+        "file_prefix": {
+          "description": "FilePrefix begins each file name. Default \"session\".",
+          "type": "string"
+        },
+        "input": {
+          "description": "Input records what was typed as well as what was shown. Default false, and it warns: a terminal's input stream carries what the screen never showed, which includes every password typed into a sudo or a su prompt. Recording output is watching over a shoulder; recording input is a keylogger, and the difference matters both to the people recorded and to whoever holds the files.",
+          "type": "boolean"
+        },
+        "max_file_bytes": {
+          "description": "MaxFileBytes bounds one recording. Past it the session goes on unrecorded and the file says so, rather than one command that prints for an hour filling a disk. Default 33554432.",
+          "type": "integer"
+        },
+        "max_files": {
+          "description": "MaxFiles keeps this many recordings, removing the oldest this listener wrote. Default 1000. It bounds what the proxy leaves behind; anything that must be kept belongs somewhere the proxy does not prune.",
+          "type": "integer"
         }
       },
       "additionalProperties": false
@@ -5519,6 +5567,80 @@
       },
       "additionalProperties": false
     },
+    "TelnetListener": {
+      "description": "TelnetListener is a telnet gateway: the proxy is a telnet server to the client and a telnet client to the target, reading the NVT protocol of RFC 854 in both directions. The reason it is not a tcp listener: telnet's options are commands escaped into the byte stream, so a proxy that does not parse them cannot tell a window size from the characters a person typed. Every control this listener has needs that parse -- a session recording that holds what was seen rather than what was negotiated, an option policy, and a second factor asked for before the target is dialled at all. Telnet carries everything in clear. Wrapping the listener in TLS (the tls section, as telnets does on 992) is the only thing that changes that, and validation says so when it is left off.",
+      "type": "object",
+      "properties": {
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_options": {
+          "description": "AllowOptions are the telnet options a session may negotiate, by the names in docs/CONFIG.md. Default is the set an interactive session needs and nothing else. An option this proxy has no name for is always refused: one whose effect it cannot name is one it cannot hold to a policy.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "banner": {
+          "description": "Banner replaces what the proxy says before the target is dialled. A banner naming the equipment is a banner that saves an attacker a question.",
+          "type": "string"
+        },
+        "deny_options": {
+          "description": "DenyOptions removes from AllowOptions, for changing one thing without restating the list.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds sessions on this listener. Default 1000.",
+          "type": "integer"
+        },
+        "max_subnegotiation": {
+          "description": "MaxSubnegotiation bounds one subnegotiation. Default 4096.",
+          "type": "integer"
+        },
+        "mfa": {
+          "description": "MFA asks for a login name and a one-time code before the target is dialled. Telnet has no authentication of its own for a proxy to read, so this is a prompt the proxy writes and reads itself; the target's own login happens afterwards, unchanged.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MFAPolicy"
+            }
+          ]
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header with the client address to the target.",
+          "type": "boolean"
+        },
+        "recording": {
+          "description": "Recording writes the session -- what the target showed, and optionally what was typed -- to a file.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SessionRecording"
+            }
+          ]
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "upstream": {
+          "description": "Upstream is the pool of targets. Required.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "TokenIntrospection": {
       "description": "TokenIntrospection is an RFC 7662 introspection endpoint.",
       "type": "object",
@@ -5585,6 +5707,25 @@
         },
         "trust_incoming": {
           "description": "TrustIncoming honours the sampled flag of an incoming traceparent. Off (the default) the incoming trace id is continued for correlation but the sampling decision stays local, so a client cannot force every request into the exporter.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TransferICAP": {
+      "description": "TransferICAP scans the files a session moves (RFC 3507), for the kinds that move files rather than requests: ftp and sftp. A transfer is not an HTTP message, so the file is wrapped in the request or the response a scanner expects, which is what every ICAP scanner is built to read; the URL it sees names the real file, so a log at the scanner points at something an operator can find. Scanning holds the file: a verdict that arrives after the bytes is not a control. What that costs differs by protocol, and is written down under each listener.",
+      "type": "object",
+      "properties": {
+        "downloads": {
+          "description": "Downloads scans the files a client fetches through RESPMOD. Default false, because a download doubles the bytes on the wire and most deployments trust what their own server already holds.",
+          "type": "boolean"
+        },
+        "service": {
+          "description": "Service names an entry in icap.services. Required.",
+          "type": "string"
+        },
+        "uploads": {
+          "description": "Uploads scans the files a client sends through REQMOD. Default true: a file arriving on a server is the direction that matters most.",
           "type": "boolean"
         }
       },
@@ -5828,6 +5969,144 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "VNCListener": {
+      "description": "VNCListener is a VNC gateway: the proxy is an RFB server to the client and an RFB client to the target, terminating the handshake of RFC 6143 on both legs. The reason it is not a tcp listener: RFB's whole policy surface is in the handshake. Which security type is used, whether the session is encrypted and how, what the desktop is called -- all of it is negotiated in the first few hundred bytes, and a proxy that does not sit in that negotiation cannot decide any of it, nor record what follows.",
+      "type": "object",
+      "properties": {
+        "allow_clients": {
+          "description": "AllowClients restricts clients to these CIDRs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "handshake_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds sessions on this listener. Default 200.",
+          "type": "integer"
+        },
+        "mfa": {
+          "description": "MFA asks for a login name and a one-time code before the target is dialled.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MFAPolicy"
+            }
+          ]
+        },
+        "password_file": {
+          "description": "Password is a file holding the VNC password this proxy answers its own vncauth challenge with. Without it, vncauth towards the client is refused: a challenge nobody can answer is not authentication.",
+          "type": "string"
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header to the target.",
+          "type": "boolean"
+        },
+        "recording": {
+          "description": "Recording writes the RFB stream to a file.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SessionRecording"
+            }
+          ]
+        },
+        "security_types": {
+          "description": "SecurityTypes are the RFB security types a client may use, by name. Default is the ones this proxy mediates: none, vncauth and vencrypt. A type not listed is refused.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "ssh": {
+          "description": "SSH reaches the target through an SSH connection this proxy makes, so the RFB never crosses the network in clear. This is the usual way a VNC server is reached safely, done by the gateway rather than by every operator.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VNCOverSSH"
+            }
+          ]
+        },
+        "tls_mode": {
+          "description": "TLSMode says what the listener's tls section is for. negotiated (the default) leaves the socket plain and presents the certificate inside RFB, which is what VeNCrypt does and what a modern viewer offers by itself. wrap makes the socket TLS from the first byte, with RFB inside it, which is what a viewer reaching an stunnel-wrapped port expects. A port is one or the other and cannot be both: the first byte a client sends is either a TLS record or \"RFB 003.008\".",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream is the pool of targets. Required.",
+          "type": "string"
+        },
+        "upstream_password_file": {
+          "description": "UpstreamPasswordFile is the password this proxy uses towards the target, when the target asks for vncauth.",
+          "type": "string"
+        },
+        "upstream_security": {
+          "description": "UpstreamSecurity is the security type to prefer towards the target, by name. Default is the strongest the target offers among the ones this proxy mediates.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS pins the CA and name for the target's leg.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_tls_mode": {
+          "description": "UpstreamTLSMode is none or vencrypt. Default none.",
+          "type": "string"
+        },
+        "vencrypt_subtypes": {
+          "description": "VeNCryptSubtypes are the VeNCrypt subtypes offered when vencrypt is in SecurityTypes. Default x509-vnc and x509-none, which are the ones with a certificate to check.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "view_only": {
+          "description": "ViewOnly drops the client's pointer and keyboard messages, so a session can be watched and not driven.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "VNCOverSSH": {
+      "description": "VNCOverSSH reaches a VNC target through an SSH connection the gateway makes itself.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "description": "Address is the SSH host, host:port. Default is the upstream endpoint's host with port 22.",
+          "type": "string"
+        },
+        "key_file": {
+          "description": "KeyFile is the private key the gateway authenticates with. Required.",
+          "type": "string"
+        },
+        "known_hosts": {
+          "description": "KnownHosts pins the SSH host keys. Required: an unpinned tunnel authenticates nothing, which is the whole reason for the tunnel.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Target is what to reach from the SSH host, host:port. Default 127.0.0.1:5900, which is where a VNC server bound to loopback is.",
+          "type": "string"
+        },
+        "user": {
+          "description": "User is the login on the SSH host. Required.",
+          "type": "string"
         }
       },
       "additionalProperties": false

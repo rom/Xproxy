@@ -236,6 +236,10 @@ type Listener struct {
 	MQTT *MQTTListener `yaml:"mqtt"`
 	// SSH configures a kind: ssh listener.
 	SSH *SSHListener `yaml:"ssh"`
+	// Telnet configures a kind: telnet listener.
+	Telnet *TelnetListener `yaml:"telnet"`
+	// VNC configures a kind: vnc listener.
+	VNC *VNCListener `yaml:"vnc"`
 	// FTP configures a kind: ftp listener.
 	FTP *FTPListener `yaml:"ftp"`
 	// Syslog configures a kind: syslog listener.
@@ -437,7 +441,225 @@ type FTPListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+	// Recording writes the control channel -- every command and every
+	// reply -- to a file per session, with a note where each transfer
+	// happened. The transferred bytes are not in it: a recording is
+	// what was done, and a copy of every file moved through the proxy
+	// is a second copy of the data to look after.
+	Recording *SessionRecording `yaml:"recording"`
+	// ICAP hands transferred files to a scanning service.
+	ICAP *TransferICAP `yaml:"icap"`
+	// MFA asks for a second factor after the password is accepted, on
+	// the control channel, before any other command is allowed. An FTP
+	// client has no prompt of its own, so the code is taken the only
+	// way the protocol allows: as the argument of ACCT, or appended to
+	// the password.
+	MFA *MFAPolicy `yaml:"mfa"`
 }
+
+// TransferICAP scans the files a session moves (RFC 3507), for the
+// kinds that move files rather than requests: ftp and sftp.
+//
+// A transfer is not an HTTP message, so the file is wrapped in the
+// request or the response a scanner expects, which is what every ICAP
+// scanner is built to read; the URL it sees names the real file, so a
+// log at the scanner points at something an operator can find.
+//
+// Scanning holds the file: a verdict that arrives after the bytes is
+// not a control. What that costs differs by protocol, and is written
+// down under each listener.
+type TransferICAP struct {
+	// Service names an entry in icap.services. Required.
+	Service string `yaml:"service"`
+	// Uploads scans the files a client sends through REQMOD. Default
+	// true: a file arriving on a server is the direction that matters
+	// most.
+	Uploads *bool `yaml:"uploads"`
+	// Downloads scans the files a client fetches through RESPMOD.
+	// Default false, because a download doubles the bytes on the wire
+	// and most deployments trust what their own server already holds.
+	Downloads bool `yaml:"downloads"`
+}
+
+// ScansUploads reports whether what a client sends is scanned.
+func (f *TransferICAP) ScansUploads() bool { return f != nil && (f.Uploads == nil || *f.Uploads) }
+
+// ScansDownloads reports whether what a client fetches is scanned.
+func (f *TransferICAP) ScansDownloads() bool { return f != nil && f.Downloads }
+
+// TelnetListener is a telnet gateway: the proxy is a telnet server to
+// the client and a telnet client to the target, reading the NVT
+// protocol of RFC 854 in both directions.
+//
+// The reason it is not a tcp listener: telnet's options are commands
+// escaped into the byte stream, so a proxy that does not parse them
+// cannot tell a window size from the characters a person typed. Every
+// control this listener has needs that parse -- a session recording
+// that holds what was seen rather than what was negotiated, an option
+// policy, and a second factor asked for before the target is dialled
+// at all.
+//
+// Telnet carries everything in clear. Wrapping the listener in TLS
+// (the tls section, as telnets does on 992) is the only thing that
+// changes that, and validation says so when it is left off.
+type TelnetListener struct {
+	// Upstream is the pool of targets. Required.
+	Upstream string `yaml:"upstream"`
+	// Banner replaces what the proxy says before the target is
+	// dialled. A banner naming the equipment is a banner that saves an
+	// attacker a question.
+	Banner string `yaml:"banner"`
+	// AllowOptions are the telnet options a session may negotiate, by
+	// the names in docs/CONFIG.md. Default is the set an interactive
+	// session needs and nothing else. An option this proxy has no name
+	// for is always refused: one whose effect it cannot name is one it
+	// cannot hold to a policy.
+	AllowOptions []string `yaml:"allow_options"`
+	// DenyOptions removes from AllowOptions, for changing one thing
+	// without restating the list.
+	DenyOptions []string `yaml:"deny_options"`
+	// MaxSubnegotiation bounds one subnegotiation. Default 4096.
+	MaxSubnegotiation int `yaml:"max_subnegotiation"`
+	// Recording writes the session -- what the target showed, and
+	// optionally what was typed -- to a file.
+	Recording *SessionRecording `yaml:"recording"`
+	// MFA asks for a login name and a one-time code before the target
+	// is dialled. Telnet has no authentication of its own for a proxy
+	// to read, so this is a prompt the proxy writes and reads itself;
+	// the target's own login happens afterwards, unchanged.
+	MFA *MFAPolicy `yaml:"mfa"`
+	// IdleTimeout is no traffic in either direction. Default 5m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole session however active. Default 0,
+	// no bound.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// MaxConnections bounds sessions on this listener. Default 1000.
+	MaxConnections int `yaml:"max_connections"`
+	// ProxyProtocol sends a PROXY protocol v2 header with the client
+	// address to the target.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs.
+	AllowClients []string `yaml:"allow_clients"`
+}
+
+// DefaultTelnetOptions are what an interactive session needs: the
+// echo and go-ahead negotiation every client does, the terminal type
+// and size a full screen program reads, and end-of-record for the line
+// mode equipment that uses it. Everything else -- the environment
+// options that carry variables to the target, the authentication and
+// encryption options nothing implements the same way twice, X display
+// forwarding -- is left out, and can be added by name.
+var DefaultTelnetOptions = []string{
+	"echo", "suppress-go-ahead", "binary", "terminal-type", "naws",
+	"terminal-speed", "end-of-record", "timing-mark", "status",
+}
+
+// VNCListener is a VNC gateway: the proxy is an RFB server to the
+// client and an RFB client to the target, terminating the handshake of
+// RFC 6143 on both legs.
+//
+// The reason it is not a tcp listener: RFB's whole policy surface is
+// in the handshake. Which security type is used, whether the session
+// is encrypted and how, what the desktop is called -- all of it is
+// negotiated in the first few hundred bytes, and a proxy that does not
+// sit in that negotiation cannot decide any of it, nor record what
+// follows.
+type VNCListener struct {
+	// Upstream is the pool of targets. Required.
+	Upstream string `yaml:"upstream"`
+	// SecurityTypes are the RFB security types a client may use, by
+	// name. Default is the ones this proxy mediates: none, vncauth and
+	// vencrypt. A type not listed is refused.
+	SecurityTypes []string `yaml:"security_types"`
+	// VeNCryptSubtypes are the VeNCrypt subtypes offered when
+	// vencrypt is in SecurityTypes. Default x509-vnc and x509-none,
+	// which are the ones with a certificate to check.
+	VeNCryptSubtypes []string `yaml:"vencrypt_subtypes"`
+	// Password is a file holding the VNC password this proxy answers
+	// its own vncauth challenge with. Without it, vncauth towards the
+	// client is refused: a challenge nobody can answer is not
+	// authentication.
+	PasswordFile string `yaml:"password_file"`
+	// UpstreamPasswordFile is the password this proxy uses towards the
+	// target, when the target asks for vncauth.
+	UpstreamPasswordFile string `yaml:"upstream_password_file"`
+	// TLSMode says what the listener's tls section is for.
+	//
+	// negotiated (the default) leaves the socket plain and presents
+	// the certificate inside RFB, which is what VeNCrypt does and what
+	// a modern viewer offers by itself. wrap makes the socket TLS from
+	// the first byte, with RFB inside it, which is what a viewer
+	// reaching an stunnel-wrapped port expects.
+	//
+	// A port is one or the other and cannot be both: the first byte a
+	// client sends is either a TLS record or "RFB 003.008".
+	TLSMode string `yaml:"tls_mode"`
+	// UpstreamSecurity is the security type to prefer towards the
+	// target, by name. Default is the strongest the target offers
+	// among the ones this proxy mediates.
+	UpstreamSecurity string `yaml:"upstream_security"`
+	// UpstreamTLSMode is none or vencrypt. Default none.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS pins the CA and name for the target's leg.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// SSH reaches the target through an SSH connection this proxy
+	// makes, so the RFB never crosses the network in clear. This is
+	// the usual way a VNC server is reached safely, done by the
+	// gateway rather than by every operator.
+	SSH *VNCOverSSH `yaml:"ssh"`
+	// ViewOnly drops the client's pointer and keyboard messages, so a
+	// session can be watched and not driven.
+	ViewOnly bool `yaml:"view_only"`
+	// Recording writes the RFB stream to a file.
+	Recording *SessionRecording `yaml:"recording"`
+	// MFA asks for a login name and a one-time code before the target
+	// is dialled.
+	MFA *MFAPolicy `yaml:"mfa"`
+	// IdleTimeout is no traffic in either direction. Default 5m.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole session however active. Default 0.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// HandshakeTimeout bounds the negotiation before the session
+	// begins. Default 30s: a peer that never finishes the handshake is
+	// a connection held open for nothing.
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+	// MaxConnections bounds sessions on this listener. Default 200.
+	MaxConnections int `yaml:"max_connections"`
+	// ProxyProtocol sends a PROXY protocol v2 header to the target.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// AllowClients restricts clients to these CIDRs.
+	AllowClients []string `yaml:"allow_clients"`
+}
+
+// VNCOverSSH reaches a VNC target through an SSH connection the
+// gateway makes itself.
+type VNCOverSSH struct {
+	// User is the login on the SSH host. Required.
+	User string `yaml:"user"`
+	// KeyFile is the private key the gateway authenticates with.
+	// Required.
+	KeyFile string `yaml:"key_file"`
+	// KnownHosts pins the SSH host keys. Required: an unpinned tunnel
+	// authenticates nothing, which is the whole reason for the tunnel.
+	KnownHosts string `yaml:"known_hosts"`
+	// Address is the SSH host, host:port. Default is the upstream
+	// endpoint's host with port 22.
+	Address string `yaml:"address"`
+	// Target is what to reach from the SSH host, host:port. Default
+	// 127.0.0.1:5900, which is where a VNC server bound to loopback
+	// is.
+	Target string `yaml:"target"`
+}
+
+// DefaultVNCSecurityTypes are the types this proxy mediates: it can
+// complete the handshake on both legs, so it can record the session
+// and decide the rest.
+var DefaultVNCSecurityTypes = []string{"none", "vncauth", "vencrypt"}
+
+// DefaultVeNCryptSubtypes are the ones with a certificate to check.
+// The anonymous ones encrypt without authenticating, which stops a
+// reader and not an active attacker.
+var DefaultVeNCryptSubtypes = []string{"x509-vnc", "x509-none"}
 
 // SSHListener is an SSH bastion: the proxy is an SSH server to the
 // client and an SSH client to the target, with its own host key, its
@@ -571,7 +793,7 @@ type SSHListener struct {
 	AllowFileTransferCommands *bool `yaml:"allow_file_transfer_commands"`
 	// Recording writes what a session showed, and optionally what was
 	// typed into it, to a file per channel.
-	Recording *SSHRecording `yaml:"recording"`
+	Recording *SessionRecording `yaml:"recording"`
 	// MFA requires a second factor after the key or the password: the
 	// client is told authentication partially succeeded and must then
 	// answer a keyboard-interactive prompt with a one-time code.
@@ -587,7 +809,7 @@ type SSHListener struct {
 	AllowClients []string `yaml:"allow_clients"`
 }
 
-// SSHRecording records an interactive session to a file that can be
+// SessionRecording records an interactive session to a file that can be
 // replayed.
 //
 // A bastion's access log says a session happened; it cannot say what
@@ -602,7 +824,7 @@ type SSHListener struct {
 // the capture files are — the proxy user's alone, in a directory the
 // operator names — and they are a reason to keep that directory as
 // carefully as the credentials it will end up holding.
-type SSHRecording struct {
+type SessionRecording struct {
 	// Enabled is how a principal turns off a listener's recording; it
 	// defaults to true wherever the section is present.
 	Enabled *bool `yaml:"enabled"`
@@ -689,6 +911,17 @@ type SFTPPolicy struct {
 	// MaxPacketSize bounds one SFTP packet. Default 262144, a little
 	// over the 32 KiB read and write sizes clients use.
 	MaxPacketSize int `yaml:"max_packet_size"`
+	// ICAP hands written files to a scanning service.
+	//
+	// SFTP has no whole-file transfer: a file is a handle, a run of
+	// writes at offsets, and a close. So the proxy holds the writes
+	// rather than forwarding them, answers the client itself, scans
+	// what the file turned out to be when the handle is closed, and
+	// only then replays the writes to the server. A file the scanner
+	// refuses never reaches it, at the cost of holding it in memory
+	// until the close -- bounded by the service's max_body, past which
+	// body_limit_action decides.
+	ICAP *TransferICAP `yaml:"icap"`
 }
 
 // MQTTListener is a protocol-aware MQTT proxy for 3.1.1 and 5.0. It
@@ -4175,7 +4408,7 @@ type SSHPolicy struct {
 	// Recording replaces the listener's, which is how one entry is
 	// recorded and another is not. A principal that should not be
 	// recorded where the listener is sets enabled: false.
-	Recording *SSHRecording `yaml:"recording"`
+	Recording *SessionRecording `yaml:"recording"`
 	// Deny refuses this principal outright, which is how a key stays in
 	// authorized_keys while the person it belongs to is off.
 	Deny bool `yaml:"deny"`

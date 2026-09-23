@@ -491,6 +491,10 @@ var (
 	// Uploads are the transfers whose bytes travel towards the server,
 	// which are the ones a size bound and a rule set read.
 	Uploads = map[string]bool{"STOR": true, "STOU": true, "APPE": true}
+	// Secret are the verbs whose argument is a credential. A session
+	// recording keeps the command and drops the argument: a recording
+	// an operator cannot safely keep is one that gets turned off.
+	Secret = map[string]bool{"PASS": true, "ACCT": true}
 )
 
 // Known is every verb this proxy is willing to relay. A verb outside it

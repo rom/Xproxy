@@ -2292,6 +2292,599 @@ A message the relay cannot parse is refused, not forwarded: its facility, severi
 On a delimited stream a message over the bound is dropped and the connection carries on \[u2014] the reader skips to the next line ending, so one long line does not cost every record behind it. On a counted stream it ends the connection, because refusing to read the octets a frame declared leaves the reader at an offset nobody knows.
 .PP
 Counters: \fBsyslog_received\fR, \fBsyslog_forwarded\fR, \fBsyslog_dropped\fR, \fBsyslog_refused\fR, \fBsyslog_rate_limited\fR, \fBsyslog_redacted\fR, \fBsyslog_queue_dropped\fR, \fBsyslog_send_failed\fR, \fBsyslog_connections\fR, \fBsyslog_rejected\fR. Refusals are \fBsyslog_denied\fR for the ban triggers.
+.SS "server.listeners[].vnc (kind: vnc)"
+.PP
+A \fBkind: vnc\fR listener is a VNC gateway: the proxy is an RFB server to the client and an RFB client to the target, terminating the handshake of RFC 6143 on both legs.
+.PP
+\fBWhy this is not a \fBtcp\fR listener.\fR RFB\(aqs whole policy surface is in the handshake. Which security type is used, whether the session is encrypted and how, what the desktop is called \[u2014] all of it is settled in the first few hundred bytes. A proxy that does not sit in that negotiation cannot decide any of it, and cannot record what follows.
+.PP
+Terminating both legs is also what separates the two credentials. What a person proves to the gateway is not the desktop\(aqs password: the gateway opens the target\(aqs leg with its own, so the shared VNC password of a machine never has to be given to the people who use it.
+.SS "What is supported"
+.PP
+\fBProtocol versions.\fR 3.3, 3.7 and 3.8, on either leg and independently: a 3.3 client can reach a 3.8 server through here. A client announcing a version nobody defines (Apple\(aqs 3.889, or anything above 3.8) is treated as the highest defined version at or below it. Below 3.3 is refused.
+.PP
+The versions differ in one place that matters to a gateway: before 3.8, a successful \fBnone\fR carries no \fBSecurityResult\fR at all (RFC 6143 \[u00A7]7.1.3). Each leg follows the rule of the version settled on that leg, so a 3.3 viewer is not sent four bytes it would read as the start of the desktop\(aqs dimensions, and a 3.7 target is not waited on for a message it will never send.
+.PP
+\fBSecurity types.\fR Only the ones with a published specification are mediated \[u2014] that is, completed on both legs, which is what makes the session recordable:
+.PP
+.TS
+allbox;
+lbw(0.6i) lbw(0.9i) lbw(1.5i) lbx
+lw(0.6i) lw(0.9i) lw(1.5i) lx.
+T{
+Type
+T}	T{
+Name
+T}	T{
+What it is
+T}	T{
+Status
+T}
+T{
+1
+T}	T{
+\fBnone\fR
+T}	T{
+No authentication
+T}	T{
+Mediated
+T}
+T{
+2
+T}	T{
+\fBvncauth\fR
+T}	T{
+The DES challenge of RFC 6143 \[u00A7]7.2.2
+T}	T{
+Mediated
+T}
+T{
+19
+T}	T{
+\fBvencrypt\fR
+T}	T{
+The open TLS and X.509 negotiation
+T}	T{
+Mediated
+T}
+T{
+18
+T}	T{
+\fBtls\fR
+T}	T{
+Anonymous\-TLS,\: VeNCrypt\(aqs predecessor
+T}	T{
+Mediated,\: warned about
+T}
+.TE
+.PP
+\fBtls\fR is warned about because it is anonymous Diffie\-Hellman with no certificate to check: it stops a reader and not an active attacker. \fBvencrypt\fR with an X.509 subtype is the one to use.
+.PP
+\fBVeNCrypt subtypes\fR: \fBx509\-none\fR, \fBx509\-vnc\fR, \fBx509\-plain\fR, \fBtls\-none\fR, \fBtls\-vnc\fR, \fBtls\-plain\fR. The \fBtls\-*\fR ones are warned about for the same reason. The bare \fBplain\fR subtype (no TLS at all) is refused: it would send the credential in clear.
+.PP
+\fBWhat is not supported, and why.\fR These are the vendors\(aq own, with no published specification to write against:
+.PP
+.TS
+allbox;
+lbw(0.6i) lbw(0.9i) lbx
+lw(0.6i) lw(0.9i) lx.
+T{
+Type
+T}	T{
+Name
+T}	T{
+Vendor
+T}
+T{
+5,\: 6
+T}	T{
+\fBra2\fR,\: \fBra2ne\fR
+T}	T{
+RealVNC
+T}
+T{
+129,\: 130,\: 133
+T}	T{
+\fBrsa\-\:aes\fR,\: \fBrsa\-\:aes\-\:ne\fR,\: \fBrsa\-\:aes\-\:256\fR
+T}	T{
+RealVNC
+T}
+T{
+16
+T}	T{
+\fBtight\fR
+T}	T{
+TightVNC
+T}
+T{
+17,\: 113
+T}	T{
+\fBultra\fR,\: \fBmslogon2\fR
+T}	T{
+UltraVNC
+T}
+T{
+30
+T}	T{
+\fBard\fR
+T}	T{
+Apple
+T}
+T{
+20,\: 21,\: 22
+T}	T{
+\fBsasl\fR,\: \fBmd5\fR,\: \fBxvp\fR
+T}	T{
+others
+T}
+.TE
+.PP
+Naming one in \fBsecurity_types\fR is a configuration error rather than a setting that quietly does nothing. A gateway cannot sit in the middle of a handshake it cannot complete, and reimplementing a cipher from guesswork is worse than not having it: it would look like support while being wrong.
+.PP
+\fBUltraVNC\(aqs DSM plugin encryption is a separate case.\fR It is not a security type at all \[u2014] the plugin wraps the whole connection before RFB begins, so this listener cannot even read the version string. There is nothing to configure here. An estate that needs it uses a \fBkind: tcp\fR listener, which relays the bytes without looking at them: the connection works, the access log records who reached which target, and there is no recording, because the stream is encrypted with keys this proxy does not hold.
+.SS "Options"
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.1i) lbx
+lw(1.2i) lw(0.9i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The pool of targets
+T}
+T{
+\fBsecurity_\:types\fR
+T}	T{
+list
+T}	T{
+\fB[none,\: vncauth,\: vencrypt]\fR
+T}	T{
+The types a client may use,\: by name
+T}
+T{
+\fBvencrypt_\:subtypes\fR
+T}	T{
+list
+T}	T{
+\fB[x509\-\:vnc,\: x509\-\:none]\fR
+T}	T{
+The subtypes offered when \fBvencrypt\fR is in use
+T}
+T{
+\fBpassword_\:file\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The password this gateway answers its own \fBvncauth\fR challenge with. Required if \fBvncauth\fR is offered,\: and refused if anyone but the proxy user can read it
+T}
+T{
+\fBupstream_\:password_\:file\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The password this gateway uses towards the target
+T}
+T{
+\fBupstream_\:security\fR
+T}	T{
+string
+T}	T{
+strongest available
+T}	T{
+The type to use towards the target,\: by name
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+string
+T}	T{
+\fBnegotiated\fR
+T}	T{
+What the listener\(aqs \fBtls\fR section is for: \fBnegotiated\fR presents the certificate inside RFB,\: \fBwrap\fR makes the socket itself TLS. See below
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+string
+T}	T{
+\fBnone\fR
+T}	T{
+\fBnone\fR or \fBvencrypt\fR
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+CA and name for the target\(aqs leg
+T}
+T{
+\fBssh\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Reach the target through an SSH connection the gateway makes;\: see below
+T}
+T{
+\fBview_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Drop the client\(aqs key,\: pointer and cut\-text messages,\: so a session is watched and not driven
+T}
+T{
+\fBrecording\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+As \fBserver.\:listeners[].\:ssh.\:recording\fR;\: see below for the format
+T}
+T{
+\fBmfa\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+See below: it needs \fBx509\-\:plain\fR
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+No traffic in either direction
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Bound on a whole session however active
+T}
+T{
+\fBhandshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Bound on the negotiation before the session begins
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB200\fR
+T}	T{
+Sessions on this listener
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+PROXY protocol v2 header to the target
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+CIDRs a client must come from
+T}
+.TE
+.SS "VNC over TLS, and VNC over SSH"
+.PP
+Three ways to stop the session crossing a network in clear. The two that encrypt the client\(aqs leg are alternatives; the third is the target\(aqs leg and composes with either.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBVeNCrypt\fR, negotiated inside RFB (\fBtls_mode: negotiated\fR, the default). The socket carries RFB from the first byte, and the certificate in the listener\(aqs \fBtls\fR section is presented inside the handshake. This is the one a modern viewer offers by itself, and the \fBx509\-*\fR subtypes are the ones with a certificate to check. The security type \fBtls\fR (18) works the same way, with no certificate checked.
+.PP
+.ti -3n
+\(bu
+\fBA socket that is TLS from the first byte\fR (\fBtls_mode: wrap\fR). The client connects with TLS and speaks RFB inside it, which is what a viewer reaching a \fBstunnel\fR\-wrapped port does.
+.PP
+\fBwrap\fR together with the \fBvencrypt\fR or \fBtls\fR security type is a configuration error rather than two layers: the first byte a client sends is either a TLS record or \fBRFB 003.008\fR, so a port is one or the other. An estate with both kinds of viewer uses one listener for each, which is what the viewers are already pointed at.
+.PP
+.ti -3n
+\(bu
+\fB\fBssh\fR\fR, for the target\(aqs leg. The gateway opens an SSH connection and reaches the VNC server through it, so the RFB never crosses the network in clear even when the server itself speaks only RFB. This is the usual \fBssh \-L\fR arrangement, done once by the gateway rather than by every operator.
+.RE
+.PP
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.7i) lbw(1.1i) lbx
+lw(0.8i) lw(0.7i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBssh.\:user\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The login on the SSH host
+T}
+T{
+\fBssh.\:key_\:file\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The private key the gateway authenticates with
+T}
+T{
+\fBssh.\:known_\:hosts\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+Pins the SSH host keys. An unpinned tunnel authenticates nothing,\: which is the whole reason for the tunnel
+T}
+T{
+\fBssh.\:address\fR
+T}	T{
+string
+T}	T{
+the endpoint\(aqs host,\: port 22
+T}	T{
+The SSH host
+T}
+T{
+\fBssh.\:target\fR
+T}	T{
+string
+T}	T{
+\fB127.\:0.\:0.\:1:\:5900\fR
+T}	T{
+What to reach from the SSH host
+T}
+.TE
+.PP
+An operator who prefers to tunnel themselves still can: \fBssh \-L\fR to the \fBkind: ssh\fR bastion and point the viewer at the forwarded port. That needs nothing here. The \fBssh\fR section is for doing it once, centrally, so the recording and the policy still apply.
+.SS "The second factor"
+.PP
+\fBmfa\fR needs a VeNCrypt \fBplain\fR subtype, and validation refuses the section without one. The reason is in the protocol: a DES challenge proves knowledge of one shared desktop password and says nothing about who is holding it, so there is nothing to look an enrolment up by. The plain subtypes are the only place RFB carries a user name. The name identifies the person and the password field carries their one\-time code, both inside the TLS tunnel.
+.PP
+\fBx509\-plain\fR is added to \fBvencrypt_subtypes\fR automatically when \fBmfa\fR is configured and no plain subtype is listed.
+.PP
+The code is checked inside the handshake, before the security result is sent: a wrong code is a failed authentication the viewer can show, rather than a session that is told it succeeded and then closes. The desktop is not dialled either way. A viewer that authenticates with a type carrying no name \[u2014] where one is also offered \[u2014] is refused for the same reason: there is nothing to look an enrolment up by.
+.SS "The recording"
+.PP
+The file holds the server\-to\-client RFB stream \[u2014] what was on the screen \[u2014] with the timing of it, in the asciicast v2 container the other recordings use, named \fB*.rfb.cast\fR. Its header carries \fBXPROXY_PROTOCOL: rfb\fR, the framebuffer size and the RFB version, and the first mark names the desktop, both versions and both security types.
+.PP
+\fBIt is not a video.\fR The event data is the protocol stream, so replaying it needs a player that speaks RFB rather than a terminal. Recording the stream is what keeps the cost bounded and loses nothing: a decoder can be written against this file afterwards, and one that decoded at capture time would have to understand every encoding a server might choose and would silently lose whatever it did not.
+.PP
+Counters: \fBvnc_sessions\fR, \fBvnc_sessions_open\fR, \fBvnc_rejected\fR, \fBvnc_refused\fR, \fBvnc_recorded\fR, \fBvnc_mfa_ok\fR, \fBvnc_mfa_failed\fR. Every session writes one \fBvnc\fR access line with both versions, both security types, the desktop name and size, and how it ended. Refusals are \fBvnc_denied\fR deny events, so bans apply.
+.SS "server.listeners[].telnet (kind: telnet)"
+.PP
+A \fBkind: telnet\fR listener is a telnet gateway: the proxy is a telnet server to the client and a telnet client to the target, reading the NVT protocol of RFC 854 in both directions.
+.PP
+\fBTelnet carries everything in clear.\fR The session, every password typed into the target\(aqs own login, and the one\-time code if this listener asks for one all cross the network as plain bytes. Wrapping the listener in TLS (a \fBtls\fR section, which is what \fBtelnets\fR on 992 is) is the only thing that changes that, and validation warns every time it is left off. This listener exists because the equipment that speaks only telnet exists, not because telnet is acceptable.
+.PP
+\fBWhy this is not a \fBtcp\fR listener.\fR Telnet\(aqs options are commands escaped into the byte stream: \fBIAC\fR (255) begins one, \fBIAC IAC\fR is a literal 255, and everything else is data. A proxy that does not parse that cannot tell a window\-size negotiation from the characters a person typed \[u2014] which it has to, to record the session as it was seen, to decide which options a client may turn on, and to write a prompt of its own into the stream before the target is dialled.
+.PP
+.TS
+allbox;
+lbw(1.5i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.5i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The pool of targets
+T}
+T{
+\fBbanner\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+What the proxy says before the target is dialled. A banner naming the equipment is one that saves an attacker a question
+T}
+T{
+\fBallow_\:options\fR
+T}	T{
+list
+T}	T{
+see below
+T}	T{
+The telnet options a session may negotiate,\: by name
+T}
+T{
+\fBdeny_\:options\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Removed from \fBallow_\:options\fR,\: for changing one thing without restating the list
+T}
+T{
+\fBmax_\:subnegotiation\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+Bound on one subnegotiation;\: 64..1048576. A peer that sends \fBIAC SB\fR and never sends \fBIAC SE\fR is cut off here rather than allowed to grow a buffer
+T}
+T{
+\fBrecording\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+As \fBserver.\:listeners[].\:ssh.\:recording\fR
+T}
+T{
+\fBmfa\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+As \fBserver.\:listeners[].\:ssh.\:mfa\fR;\: see below for how the code is asked for
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+No traffic in either direction
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Bound on a whole session however active;\: 0 is no bound
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+Sessions on this listener
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header with the client address to the target
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+CIDRs a client must come from
+T}
+.TE
+.PP
+\fBOptions.\fR The default list is what an interactive session needs and nothing else: \fBecho\fR, \fBsuppress\-go\-ahead\fR, \fBbinary\fR, \fBterminal\-type\fR, \fBnaws\fR, \fBterminal\-speed\fR, \fBend\-of\-record\fR, \fBtiming\-mark\fR, \fBstatus\fR.
+.PP
+The others this proxy can name, none of them on by default:
+.PP
+.TS
+allbox;
+lbw(1.5i) lbx
+lw(1.5i) lx.
+T{
+Option
+T}	T{
+Why it is not default
+T}
+T{
+\fBenviron\fR,\: \fBnew\-\:environ\fR
+T}	T{
+Carry variables of the client\(aqs choosing to the target,\: which is how a login shell is given a different \fBPATH\fR. Validation warns when either is allowed
+T}
+T{
+\fBx\-\:display\fR
+T}	T{
+Names an X display the target will try to reach,\: which is a connection back out of the estate
+T}
+T{
+\fBauthentication\fR
+T}	T{
+Negotiated differently by every implementation that has it;\: the proxy would relay it without understanding it
+T}
+T{
+\fBencryption\fR
+T}	T{
+Would encrypt the session end to end \[u2014] a session this proxy can no longer record or hold to a policy
+T}
+T{
+\fBlinemode\fR,\: \fBflow\-\:control\fR
+T}	T{
+Accepted if you name them;\: left out because the default is character\-at\-a\-time,\: which is what a recording wants
+T}
+.TE
+.PP
+An option this proxy has no name for is always refused, whatever the lists say: one whose effect it cannot name is one it cannot hold to a policy. A refusal is answered to the side that asked (\fBWILL\fR and \fBWONT\fR are declined with \fBDONT\fR, \fBDO\fR and \fBDONT\fR with \fBWONT\fR) rather than dropped, because a refusal the asker never hears is a negotiation that repeats forever. Each one writes a \fBtelnet_option_refused\fR line and a mark in the recording, so an operator asked why a terminal behaves oddly can see that the proxy is why.
+.PP
+\fBThe second factor.\fR Telnet has no authentication for a proxy to read, so \fBmfa\fR is a prompt the proxy writes into the stream and an answer it reads back, before the target is dialled at all \[u2014] a client that cannot answer never reaches the equipment. It asks for a login name, then for a code, with the code not echoed. The name is only what the enrolment is looked up by: the target\(aqs own login happens afterwards and is untouched, and whether the two names agree is the target\(aqs business rather than this proxy\(aqs. A name with no enrolment is refused where \fBrequire_enrolment\fR is on.
+.PP
+While the proxy is asking its own questions it agrees to no options: anything the client negotiates then is declined, since the only thing at the far end so far is the proxy.
+.PP
+\fBThe recording\fR is the asciicast v2 format the ssh bastion writes, so the same player replays it. \fBnaws\fR gives it the window size, and a resize during the session is recorded as one. \fBinput: true\fR records what was typed as well as what was shown, and on telnet that means every password typed into the target\(aqs own login \[u2014] which the proxy does not otherwise see. The warning that applies to the bastion applies here more strongly.
+.PP
+Counters: \fBtelnet_sessions\fR, \fBtelnet_sessions_open\fR, \fBtelnet_rejected\fR, \fBtelnet_refused\fR, \fBtelnet_options_refused\fR, \fBtelnet_recorded\fR, \fBtelnet_mfa_ok\fR, \fBtelnet_mfa_failed\fR. Every session writes one \fBtelnet\fR access line with the client, the name the factor was checked against, the target, how it ended and how many options were refused. Refusals are \fBtelnet_denied\fR deny events, so bans apply.
 .SS "server.listeners[].ftp (kind: ftp)"
 .PP
 A \fBkind: ftp\fR listener is a protocol\-aware FTP proxy: the proxy is an FTP server to the client and an FTP client to the target, and it is one end of every data connection as well.
@@ -2545,8 +3138,82 @@ T}
 A control line that is not exactly CRLF\-terminated is refused, and so is one carrying a telnet \fBIAC\fR. Each of them is a way for the proxy and the target to disagree about where a command ends, which is how one command becomes two: the proxy reads \fBNOOP\fR and the target reads \fBNOOP\fR and the \fBDELE\fR hidden after a bare newline.
 .PP
 Only the side that arranged a data connection may use it: a passive connection has to come from the client\(aqs own address, an active one from the target\(aqs. \fBPROT P\fR is terminated on both sides rather than tunnelled, so a protected transfer is still a transfer this proxy can hold to \fBmax_file_bytes\fR and to its rules. \fBCCC\fR is refused: clearing the control channel after \fBAUTH TLS\fR puts the rest of the session, including every path, back in clear on the wire.
+.SS "server.listeners[].ftp.recording"
 .PP
-Counters: \fBftp_sessions\fR, \fBftp_sessions_open\fR, \fBftp_transfers\fR, \fBftp_refused\fR, \fBftp_rejected\fR, \fBftp_auth_failed\fR. Every session writes an \fBftp\fR access line and every transfer an \fBftp_transfer\fR line with the command, the path, the octets and whether it was cut. Refusals are \fBftp_denied\fR for the ban triggers.
+Writes the control channel \-\- every command and every reply \-\- to one file per session, in the asciicast v2 format the ssh bastion uses, so the same player replays it. The fields are the ones documented under \fBserver.listeners[].ssh.recording\fR: \fBenabled\fR, \fBdirectory\fR, \fBfile_prefix\fR, \fBmax_file_bytes\fR, \fBmax_files\fR. (\fBinput\fR and \fBcommands\fR are ssh\(aqs and are ignored here: an ftp dialogue has one stream, and the proxy already sees both halves of it.)
+.PP
+The file is opened when the login is accepted, so a connection that never authenticates writes none. \fBPASS\fR and \fBACCT\fR arguments are written as \fB<redacted>\fR: a recording an operator cannot safely keep is one that gets turned off. The transferred bytes are not in the file either \-\- each transfer leaves a one\-line mark saying what moved, how much and how it ended \-\- because a copy of every file that crossed the proxy is a second copy of the data to look after.
+.SS "server.listeners[].ftp.icap"
+.PP
+Hands transferred files to a scanning service (RFC 3507) named in \fBicap.services\fR.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(0.9i) lbx
+lw(1.0i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBservice\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The name of an entry in \fBicap.\:services\fR. Validation refuses a name that is not there
+T}
+T{
+\fBuploads\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Scan \fBSTOR\fR,\: \fBSTOU\fR and \fBAPPE\fR through REQMOD
+T}
+T{
+\fBdownloads\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Scan \fBRETR\fR through RESPMOD. Off by default because it doubles the bytes on the wire and most deployments trust what their own server already holds
+T}
+.TE
+.PP
+A transfer is not an HTTP message, so the file is wrapped in the one a scanner expects: a \fBPUT\fR for an upload, a \fBGET\fR and its response for a download, with the \fBftp://\fR URL of the real file so the scanner\(aqs own log names something findable, the client address in \fBX\-Client\-IP\fR and the login in \fBX\-Authenticated\-User\fR. Directory listings are not sent: they are not files.
+.PP
+Scanning means holding the file until the service answers, because a verdict that arrives after the bytes have gone is not a control. The service\(aqs own \fBmax_body\fR, \fBbody_limit_action\fR and \fBfail\fR apply exactly as they do to an HTTP body: a file past \fBmax_body\fR is refused, or passed unscanned with a warning in the security log where \fBbody_limit_action: bypass\fR says so; a service that cannot be reached refuses the transfer unless \fBfail: open\fR, which also logs. A blocked transfer is cut and the client gets \fB426\fR naming the reason.
+.SS "server.listeners[].ftp.mfa"
+.PP
+Asks for a second factor after the target accepts the password, on the control channel, before any other command is allowed. The fields are the ones documented under \fBserver.listeners[].ssh.mfa\fR.
+.PP
+FTP has no prompt of its own, so the code is taken the only two ways the protocol allows:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fB\fBACCT\fR\fR, which RFC 959 defines for exactly this. The proxy answers the accepted password with \fB332\fR and takes the code as the argument of the \fBACCT\fR that follows. \fBACCT\fR is added to the relayed commands automatically when this section is present.
+.PP
+.ti -3n
+\(bu
+\fBAppended to the password\fR, after a comma: \fBPASS secret,123456\fR. The proxy takes the code off and the target sees only the password. This needs nothing of the client at all, which is what most one\-time\-password FTP deployments rely on.
+.RE
+.PP
+.PP
+Until the factor is verified the session is not logged in: every command but \fBACCT\fR, \fBQUIT\fR, \fBNOOP\fR, \fBFEAT\fR, \fBHELP\fR, \fBSTAT\fR, \fBSYST\fR and \fBREIN\fR is refused with \fB530\fR. A user with no enrolment is refused where \fBrequire_enrolment\fR is on, because an optional second factor is one an attacker can decline by using an account that never enrolled. Wrong codes count against \fBmax_errors\fR and feed the ban triggers, since a client working through codes is doing what one working through passwords does.
+.PP
+Validation warns when \fBmfa\fR is set with \fBtls_mode: none\fR: the code then crosses the network in clear beside the password it is meant to back up.
+.PP
+Counters: \fBftp_sessions\fR, \fBftp_sessions_open\fR, \fBftp_transfers\fR, \fBftp_refused\fR, \fBftp_rejected\fR, \fBftp_auth_failed\fR, \fBftp_scanned\fR, \fBftp_scan_blocked\fR, \fBftp_recorded\fR, \fBftp_mfa_ok\fR, \fBftp_mfa_failed\fR. Every session writes an \fBftp\fR access line and every transfer an \fBftp_transfer\fR line with the command, the path, the octets and whether it was cut; a finished recording writes \fBftp_recording\fR with the file and its size. Refusals are \fBftp_denied\fR for the ban triggers, and a refused factor is \fBftp_mfa_failed\fR.
 .SS "server.listeners[].ssh (kind: ssh)"
 .PP
 A \fBkind: ssh\fR listener is an SSH bastion: the proxy is an SSH server to the client and an SSH client to the target, with its own host key, its own authentication and its own credential onwards.
@@ -3270,7 +3937,74 @@ T}
 .PP
 A path that climbs above its own root after cleaning (\fB../../etc/shadow\fR) is refused rather than matched: what it means depends on a working directory the proxy cannot see, and a check on a path whose meaning is unknown is not a check. Absolute paths always work, so nothing legitimate needs the other form.
 .PP
-Every session writes one \fBssh\fR line to the access log (client, user, authentication method, principal, target, channels, refusals, duration) and each inspected SFTP request writes one \fBsftp\fR line with the operation and the path. Counters: \fBssh_sessions\fR, \fBssh_sessions_open\fR, \fBssh_channels\fR, \fBssh_refused\fR, \fBssh_rejected\fR, \fBssh_auth_failed\fR, \fBssh_bytes_in\fR, \fBssh_bytes_out\fR, \fBsftp_requests\fR, \fBsftp_refused\fR; the matching \fBxproxy_ssh_*\fR and \fBxproxy_sftp_*\fR metrics. Refusals and failed authentication are \fBssh_denied\fR deny events, so bans apply.
+##### server.listeners[].ssh.sftp.icap
+.PP
+Hands written files to a scanning service (RFC 3507) named in \fBicap.services\fR.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(0.9i) lbx
+lw(1.0i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBservice\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The name of an entry in \fBicap.\:services\fR. Validation refuses a name that is not there
+T}
+T{
+\fBuploads\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Scan what the client writes
+T}
+T{
+\fBdownloads\fR
+T}	T{
+bool
+T}	T{
+refused here
+T}	T{
+See below: SFTP has nothing to scan a download at
+T}
+.TE
+.PP
+\fBA scanned upload is held, not forwarded.\fR SFTP has no whole\-file transfer: a file is an \fBopen\fR, a run of \fBwrite\fRs at offsets, and a \fBclose\fR. A scanner wants the file. So the proxy answers each \fBwrite\fR itself with a success status, keeps the packets, assembles what the file turns out to be, and asks the service only when the handle is closed. A clean file\(aqs writes are then replayed to the server in the order the client made them, and the \fBclose\fR is forwarded; a refused file\(aqs writes are dropped and the \fBclose\fR is answered with a failure. The file never reaches the server.
+.PP
+Three consequences worth knowing before turning it on:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+The file is in memory until the \fBclose\fR, bounded by the service\(aqs \fBmax_body\fR. Past that, \fBbody_limit_action\fR decides: \fBreject\fR refuses the write, \fBbypass\fR releases what was held and stops holding, with a warning in the security log naming the path.
+.PP
+.ti -3n
+\(bu
+The success a client sees for a \fBwrite\fR is the proxy\(aqs, not the server\(aqs. A server that would have refused the write for its own reasons \[u2014] no space, no permission \[u2014] says so at the \fBclose\fR instead, which is where a client that checks only the final status will see it anyway.
+.PP
+.ti -3n
+\(bu
+The \fBopen\fR is forwarded when it happens, so a refused file can leave an empty file behind. The proxy does not remove it: that would be a write it was never asked to make.
+.RE
+.PP
+.PP
+\fBDownloads are not scanned here, and the section refuses to pretend otherwise.\fR A download in SFTP is a run of \fBread\fRs at offsets that the client stops making when it has what it wants; there is no packet that means "the file is finished", so there is no point to scan at. Scanning one would mean the proxy fetching the whole file itself and serving the client\(aqs reads from that copy, which is a different feature with different costs. \fBdownloads: true\fR is a configuration error here rather than a setting that quietly does nothing. The \fBftp\fR listener, where a \fBRETR\fR is one whole\-file transfer, does scan downloads.
+.PP
+Every session writes one \fBssh\fR line to the access log (client, user, authentication method, principal, target, channels, refusals, duration) and each inspected SFTP request writes one \fBsftp\fR line with the operation and the path; the \fBclose\fR of a scanned file carries a \fBscan\fR field saying how many bytes were released or why they were blocked. Counters: \fBssh_sessions\fR, \fBssh_sessions_open\fR, \fBssh_channels\fR, \fBssh_refused\fR, \fBssh_rejected\fR, \fBssh_auth_failed\fR, \fBssh_bytes_in\fR, \fBssh_bytes_out\fR, \fBsftp_requests\fR, \fBsftp_refused\fR, \fBsftp_scanned\fR, \fBsftp_scan_blocked\fR; the matching \fBxproxy_ssh_*\fR and \fBxproxy_sftp_*\fR metrics. Refusals and failed authentication are \fBssh_denied\fR deny events, so bans apply, and a file the scanner refuses is an \fBsftp_icap\fR observation on the ban ladder.
 .SS "server.listeners[].h3"
 .PP
 .TS

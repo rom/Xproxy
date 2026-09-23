@@ -3,6 +3,7 @@ package proxy
 import (
 	"errors"
 	"net/netip"
+	"sort"
 
 	"github.com/rom/xproxy/internal/apiinv"
 	"github.com/rom/xproxy/internal/cache"
@@ -55,12 +56,27 @@ func (s *Server) Filters() []FilterStatus {
 	return []FilterStatus{}
 }
 
-// ICAP lists the configured ICAP services.
+// ICAP lists the configured scanning services. They belong to the
+// engine rather than to a data plane, so every daemon reports its own
+// -- a bastion that scans sftp writes has services to report and no
+// plane to ask.
 func (s *Server) ICAP() []icap.Status {
-	if pl := s.planeOrNil(); pl != nil {
-		return pl.ICAP()
+	rt := s.rt.Load()
+	out := make([]icap.Status, 0, len(rt.icap))
+	for _, svc := range rt.icap {
+		out = append(out, svc.Status())
 	}
-	return []icap.Status{}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// ICAPService implements Host: a scanning service by name, from the
+// generation serving now.
+func (s *Server) ICAPService(name string) *icap.Service {
+	if name == "" {
+		return nil
+	}
+	return s.rt.Load().icap[name]
 }
 
 // GeoIP reports the country database, and whether one is configured.

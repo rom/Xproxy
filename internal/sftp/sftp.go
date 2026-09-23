@@ -100,6 +100,17 @@ func (p Packet) Encode() []byte {
 	return append(out, p.Body...)
 }
 
+// Clone copies a packet's body, for a caller that keeps a packet
+// rather than forwarding it. ReadPacket allocates each body today, so
+// this is not strictly needed; the documented contract is that a
+// reader does not keep a packet's bytes past the packet, and a proxy
+// that holds writes to replay them at a close keeps them for a long
+// time. Honouring the contract costs a copy of what is already in
+// memory and survives a change to how packets are read.
+func (p Packet) Clone() Packet {
+	return Packet{Type: p.Type, Body: append([]byte(nil), p.Body...)}
+}
+
 // Name is the packet type's name, for logs and for the deny list.
 func (p Packet) Name() string { return TypeName(p.Type) }
 
@@ -277,6 +288,16 @@ func ParseHandleReply(p Packet) (id uint32, handle string, err error) {
 
 // StatusPacket builds a status reply, which is how a refusal is spelled
 // to a client without ending the session.
+// StatusID is the request id a STATUS answers, or zero when the packet
+// is too short to carry one. A proxy that sends requests of its own
+// needs this to tell its answers from the client's.
+func StatusID(p Packet) uint32 {
+	if p.Type != STATUS || len(p.Body) < 4 {
+		return 0
+	}
+	return binary.BigEndian.Uint32(p.Body)
+}
+
 func StatusPacket(id uint32, code uint32, message string) Packet {
 	body := make([]byte, 0, 16+len(message))
 	body = binary.BigEndian.AppendUint32(body, id)

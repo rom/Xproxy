@@ -326,6 +326,211 @@ Open findings of the earlier rounds:
   defaults. A request that does not fit is refused with 503 before it
   is read.
 
+### Added (1.4)
+
+- **A VNC gateway** (`kind: vnc`, in xgate), speaking RFB on both legs.
+  The proxy is an RFB server to the viewer and an RFB client to the
+  desktop, terminating the handshake of RFC 6143 on each -- which is
+  what makes everything below possible, since RFB settles its whole
+  policy surface in the first few hundred bytes and a relay that does
+  not sit in that negotiation can decide none of it.
+  - **Versions 3.3, 3.7 and 3.8, independently on each leg.** A 3.3
+    viewer reaches a 3.8 desktop through here and the other way round.
+    A version nobody defines -- Apple's 3.889, anything above 3.8 --
+    is treated as the highest defined version at or below it.
+  - **The security types with a published specification**: `none`,
+    `vncauth`, `vencrypt` and the older anonymous `tls`, each completed
+    on both legs. `security_types` is what a viewer may use, and a
+    viewer that picks something outside the list is refused rather than
+    obliged. The vendors' own types (RealVNC's `ra2*` and `rsa-aes*`,
+    `tight`, `ultra`, `mslogon2`, `ard`, `sasl`, `md5`, `xvp`) are a
+    configuration error rather than a setting that quietly does
+    nothing, and `docs/CONFIG.md` says so in a table with what to do
+    instead. UltraVNC's DSM plugins are a separate case again: they
+    wrap the socket before RFB starts, so a VNC-aware listener cannot
+    read even the version string, and the documented answer is a
+    `kind: tcp` listener that relays the bytes without a recording.
+  - **The two credentials are separate.** What a person proves to the
+    gateway is not the desktop's password: `password_file` is what the
+    gateway's own `vncauth` challenge is checked against, and
+    `upstream_password_file` what it answers the desktop's with. The
+    shared VNC password of a machine never has to be given to the
+    people who use it. A password file anyone else can read is refused
+    at load.
+  - **Three ways to encrypt the leg.** VeNCrypt negotiated inside RFB
+    with an `x509-*` subtype, which is what a modern viewer offers by
+    itself; `tls_mode: wrap` for a socket that is TLS from the first
+    byte, which is what a viewer pointed at an `stunnel` port expects;
+    and `ssh`, where the gateway opens an SSH connection of its own and
+    reaches the desktop through it, with the host keys pinned. The
+    first two are alternatives and asking for both on one port is a
+    configuration error: the first byte a client sends is either a TLS
+    record or an RFB version string.
+  - **A second factor**, carried the only way RFB allows. There is no
+    prompt in the protocol and no terminal to draw one on, so the code
+    arrives in VeNCrypt's plain credential: the username is the person
+    and the password field is the code, inside the TLS tunnel. `mfa`
+    therefore requires a plain subtype, which validation says at load
+    and defaults fill in, and a wrong code is answered with a failed
+    security result before the desktop is dialled rather than a
+    connection that closes for no stated reason.
+  - **`view_only`**, which drops the key, pointer and cut-text messages
+    so a session is watched and not driven. It frames the client's
+    stream to do it, because an RFB message is only as long as its type
+    says; a message type the gateway cannot frame ends the session
+    rather than breaking the promise.
+  - **A session recording** of the server-to-client stream, in the same
+    asciicast v2 container the other recordings use, named
+    `*.rfb.cast`. It is not a video: the event data is the protocol
+    stream, so replaying it needs a player that speaks RFB. That is the
+    deliberate choice -- decoding at capture time would mean
+    understanding every encoding a server might pick and silently
+    losing whatever it did not, while a decoder written against this
+    file later loses nothing.
+
+- **A telnet gateway** (`kind: telnet`, in xgate), for the equipment
+  that speaks nothing else. The proxy is a telnet server to the client
+  and a telnet client to the target, reading the NVT protocol of RFC
+  854 in both directions — which it has to, because telnet's options
+  are commands escaped into the byte stream, so a proxy that does not
+  parse them cannot tell a window size from the characters a person
+  typed.
+  - **An option policy.** A session may negotiate the options named in
+    `allow_options`, defaulting to what an interactive session needs
+    and nothing else. An option the proxy has no name for is always
+    refused, whatever the list says. A refusal is answered to the side
+    that asked, because one the asker never hears is a negotiation that
+    repeats forever, and it writes a log line and a mark in the
+    recording so an operator asked why a terminal behaves oddly can see
+    that the proxy is why. Validation warns about the options that
+    carry something to the target rather than describing the terminal:
+    `environ` and `new-environ` hand it variables, `x-display` names a
+    connection back out of the estate, `encryption` would make the
+    session one the proxy can no longer record.
+  - **A session recording**, in the same asciicast v2 the bastion
+    writes, sized from `naws` and resized when the window is.
+  - **A second factor before the target is dialled.** Telnet has no
+    authentication for a proxy to read, so this is a prompt the proxy
+    writes into the stream and an answer it reads back: a login name,
+    then a code that is not echoed. A client that cannot answer never
+    reaches the equipment. The name is only what the enrolment is
+    looked up by; the target's own login happens afterwards, untouched.
+  - Telnet carries all of this in clear, so validation warns every time
+    the listener has no `tls` section. The listener exists because the
+    equipment does, not because telnet is acceptable.
+
+- **The ftp relay records, scans and can ask for a second factor.**
+  Three sections, each the same shape as its equivalent elsewhere, so
+  an operator who has configured the bastion has configured this:
+  - `ftp.recording` writes the control channel -- every command, every
+    reply, a mark per transfer -- as asciicast v2, replayable in the
+    same player as an ssh session. `PASS` and `ACCT` arguments are
+    redacted and the transferred bytes stay out: a recording an
+    operator cannot safely keep is one that gets turned off, and a copy
+    of every file that crossed the proxy is a second copy of the data
+    to look after. The login exchange is held in memory until the
+    login succeeds and then written into the file, so the file names
+    the person and a connection that never authenticates writes none.
+  - `ftp.icap` hands `STOR`, `STOU` and `APPE` to a scanner through
+    REQMOD, and `RETR` through RESPMOD where `downloads: true`. The
+    file is wrapped in the HTTP message a scanner expects, with the
+    `ftp://` URL of the real file so the scanner's log names something
+    findable. The transfer is held until the verdict arrives, because
+    one that comes after the bytes is not a control; the service's own
+    `max_body`, `body_limit_action` and `fail` apply as they do to an
+    HTTP body, and both of the ways a file can go unscanned say so in
+    the log. Listings are not sent: they are not files.
+  - `ftp.mfa` asks for a code after the password, by the two routes the
+    protocol allows -- as the argument of `ACCT` after a `332`, or
+    appended to the password after a comma for clients that have no
+    `ACCT` of their own. Until it is verified the session is not logged
+    in. The code never reaches the target.
+- **The sftp bastion scans what is written.** `sftp.icap` names a
+  service, and a scanned upload is held rather than forwarded: SFTP has
+  no whole-file transfer to hand a scanner — a file is an `open`, a run
+  of `write`s at offsets and a `close` — so the proxy answers each
+  write itself, assembles the file, asks the service at the close, and
+  only then replays the writes to the server in the order the client
+  made them. A file the scanner refuses never reaches the server; the
+  close is answered with a failure instead. The cost is written down
+  rather than discovered: the file is in memory until the close under
+  the service's `max_body`, the write statuses a client sees are the
+  proxy's rather than the server's, and the `open` that was already
+  forwarded can leave an empty file behind. Downloads are refused as a
+  configuration error, not silently ignored: a download in SFTP is a
+  run of reads with no packet that means the file is finished, so there
+  is no point to scan at.
+- **ICAP services belong to the engine rather than to the HTTP data
+  plane.** The kinds that hand a file to a scanner are not all in the
+  daemon that has a plane -- ftp is in xrelay, sftp in xgate -- so one
+  `icap.services` list now serves whichever daemon reads it, through
+  `Host.ICAPService`. `/v1/icap` reports them in every daemon. A
+  section naming a service that does not exist is refused at load
+  rather than at the first file it tries to scan.
+
+### Changed (1.4)
+
+- **Session recording is a package of its own** (`internal/sessionrec`),
+  lifted out of the ssh bastion: the policy, the file, the byte bound,
+  the prune and the truncation mark are the same wherever a session is
+  recorded, and only what a session is made of differs. `ssh` runs on
+  it unchanged; `ftp`, `telnet` and the graphical gates use it too.
+  `config.SSHRecording` is `config.SessionRecording` accordingly — the
+  `recording:` key and every field under it are untouched.
+
+### Fixed (1.4)
+
+- **Two sessions for one person in the same millisecond lost one
+  recording.** The file name carries the time only to the millisecond
+  and the person, and the file is created with `O_EXCL`, so the second
+  session's `open` failed and it ran unrecorded — on a busy bastion,
+  which is exactly when the recording is wanted. A suffix is added for
+  as long as the name is taken. Found by testing the recorder on its
+  own once it was a package; it had been in the ssh recorder since
+  recording landed.
+
+### Fixed (1.4, tests)
+
+- **Five tests raced the goroutine that records what they assert on.**
+  `CountStatus` is called from `logAccess`, which runs once the response
+  body has gone out, so a client can have its whole response before the
+  counter moves; the capture file is likewise written after the exchange
+  is counted. `TestWriteMetrics` and
+  `TestCaptureWritesTheDecryptedExchange` read both the instant the
+  request returned, won that race on an idle machine and lost it under
+  load — one run in six with the suite contending for four cores. They
+  wait for the value now, through a shared `eventually` helper.
+  `TestRunStartsReloadsAndStops` was the same shape a level up: `apply`
+  reloads the server and then records what it applied, so a reload that
+  has taken effect is not yet a reload that is in the history, and the
+  test read the history the moment the generation moved.
+  `TestAgentAppliesAndReports` was the fourth: the fleet agent writes
+  `Applied` inside `apply` and the loop counts the failure once `apply`
+  has returned the error, so a status carrying the failed digest is not
+  yet a status with the failure counted, and the test waited for the
+  first and asserted the second. `TestURLSpec` was the fifth: `install`
+  counts a reload and `fetch` writes the cache file after it, so a
+  refresh that has been counted has not yet reached the disk. The
+  behaviour all five were testing is correct: metrics, captures, the
+  history, the failure count and the cache are written after the thing
+  they describe has happened, by design.
+
+### Packaging (1.4)
+
+- **The RPM ships all three daemons.** The spec predates the split and
+  packaged only `xproxy`, so the packaged path had no way to run a
+  bastion or a relay at all: `xproxy-xgate` and `xproxy-xrelay` are new
+  subpackages, each with its binary, unit and socket, logrotate entry,
+  manual page, example configuration and its own log and state
+  directories. Both depend on the base package, which owns `/etc/xproxy`
+  and the users. The two `tmpfiles.d` entries the source install has
+  always shipped are packaged too — without them a packaged host has
+  neither the configuration directory the three share nor the cluster
+  socket directory.
+- `deploy/config/xgate.yaml` and `deploy/config/xrelay.yaml` are new:
+  the units have always named those paths, and nothing created them.
+  `make install` lays them down beside `xproxy.yaml`.
+
 ### Fixed (1.4)
 
 Three regressions the split introduced, found by re-reading the carve

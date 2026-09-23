@@ -1,7 +1,6 @@
 package http
 
 import (
-	"sort"
 	"time"
 
 	"github.com/rom/xproxy/internal/apiinv"
@@ -10,7 +9,6 @@ import (
 	"github.com/rom/xproxy/internal/filters/botscore"
 	"github.com/rom/xproxy/internal/filters/sensitive"
 	"github.com/rom/xproxy/internal/geoip"
-	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/waf"
@@ -108,17 +106,6 @@ func (rt *runtime) routePaths() map[string]string {
 
 // Filters lists the configured middleware instances.
 func (s *engine) Filters() []proxy.FilterStatus { return s.rt.Load().filterStatus() }
-
-// ICAP lists the configured ICAP services, by name.
-func (s *engine) ICAP() []icap.Status {
-	rt := s.rt.Load()
-	out := make([]icap.Status, 0, len(rt.icap))
-	for _, svc := range rt.icap {
-		out = append(out, svc.Status())
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
-}
 
 // GeoIP reports the country database, and whether one is configured.
 func (s *engine) GeoIP() (geoip.Status, bool) {

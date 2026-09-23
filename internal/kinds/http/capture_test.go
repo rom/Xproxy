@@ -126,13 +126,27 @@ func TestCaptureWritesTheDecryptedExchange(t *testing.T) {
 	_ = resp.Body.Close()
 	waitCapture(t, s, 1)
 
-	got := captureBytes(t, dir)
-	for _, want := range []string{
+	// The exchange is counted before its bytes reach the file, so the
+	// flush waitCapture does can still run ahead of the writer. Wait for
+	// the content itself, not for the counter.
+	wants := []string{
 		"POST /api/things HTTP/1.1",
 		"X-Trace: keep-me",
 		"name=widget",     // the request body the upstream got
 		"HTTP/1.1 200 OK", // the response the client got
-	} {
+	}
+	var got string
+	eventually(t, 10*time.Second, "the exchange to reach the capture file", func() bool {
+		s.Capture().Flush()
+		got = captureBytes(t, dir)
+		for _, want := range wants {
+			if !strings.Contains(got, want) {
+				return false
+			}
+		}
+		return true
+	})
+	for _, want := range wants {
 		if !strings.Contains(got, want) {
 			t.Errorf("capture does not contain %q:\n%s", want, got)
 		}

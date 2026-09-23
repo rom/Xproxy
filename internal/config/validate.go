@@ -7,11 +7,14 @@ import (
 	"github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/rfb"
 	"github.com/rom/xproxy/internal/syslog"
+	"github.com/rom/xproxy/internal/telnet"
 	"github.com/rom/xproxy/internal/tmpl"
 	"github.com/rom/xproxy/internal/yara"
 	"mime"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"crypto/tls"
@@ -63,6 +66,52 @@ type validator struct {
 	// fileCheck is true when file existence should be verified. Tests turn
 	// this off.
 	fileCheck bool
+	// icapNames is every service icap.services defines, so a section
+	// that names one is told at load rather than at the first file it
+	// tries to scan.
+	icapNames map[string]bool
+}
+
+// transferICAP checks a scanning section on a kind that moves files.
+// downloads says whether this kind can scan them at all: sftp cannot,
+// because a download there is a run of reads at offsets with no end to
+// scan at.
+func (v *validator) transferICAP(p string, c *TransferICAP, readOnly, downloads bool) {
+	if c.Service == "" {
+		v.errf("%s.service: required", p)
+	} else {
+		v.icapRef(p+".service", c.Service)
+	}
+	if !downloads && c.Downloads {
+		v.errf("%s.downloads: not available here; a download is a run of reads at offsets with no end to scan at", p)
+	}
+	scansDown := downloads && c.ScansDownloads()
+	if !c.ScansUploads() && !scansDown {
+		v.errf("%s: nothing is scanned, so the service would never be asked", p)
+	}
+	if readOnly && c.ScansUploads() && !scansDown {
+		v.warnf("%s: read_only is set, so there are no uploads to scan", p)
+	}
+}
+
+// icapRef checks that a section names a service that exists. A name
+// that does not is a scanner nobody notices is missing until a file
+// goes past unscanned, or a session fails, depending on which way the
+// service was told to fail.
+func (v *validator) icapRef(p, name string) {
+	if v.icapNames[name] {
+		return
+	}
+	if len(v.icapNames) == 0 {
+		v.errf("%s: %q, but no icap.services are configured", p, name)
+		return
+	}
+	have := make([]string, 0, len(v.icapNames))
+	for n := range v.icapNames {
+		have = append(have, n)
+	}
+	sort.Strings(have)
+	v.errf("%s: no icap service named %q; configured: %s", p, name, strings.Join(have, ", "))
 }
 
 func (v *validator) errf(format string, args ...interface{}) {
@@ -88,7 +137,12 @@ func ValidateNoFiles(c *Config) error {
 }
 
 func validate(c *Config, files bool) error {
-	v := &validator{fileCheck: files}
+	v := &validator{fileCheck: files, icapNames: map[string]bool{}}
+	if c.ICAP != nil {
+		for i := range c.ICAP.Services {
+			v.icapNames[c.ICAP.Services[i].Name] = true
+		}
+	}
 	v.config(c)
 	c.advice = v.advice
 	if len(v.problems) == 0 {
@@ -604,6 +658,24 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.ssh: required for kind ssh", p)
 			} else {
 				v.sshListener(p+".ssh", ln.SSH)
+			}
+		case "vnc":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a vnc listener takes only address, vnc and tls", p)
+			}
+			if ln.VNC == nil {
+				v.errf("%s.vnc: required for kind vnc", p)
+			} else {
+				v.vncListener(p+".vnc", ln.VNC, ln.TLS != nil)
+			}
+		case "telnet":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a telnet listener takes only address, telnet and tls", p)
+			}
+			if ln.Telnet == nil {
+				v.errf("%s.telnet: required for kind telnet", p)
+			} else {
+				v.telnetListener(p+".telnet", ln.Telnet, ln.TLS != nil)
 			}
 		case "ftp":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
@@ -3127,7 +3199,7 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 		v.sftpPolicy(p+".sftp", h.SFTP, reqs["subsystem"], len(h.Principals) > 0)
 	}
 	if h.Recording != nil {
-		v.sshRecording(p+".recording", h.Recording, reqs)
+		v.sessionRecording(p+".recording", h.Recording, reqs)
 	}
 	for i, c := range h.AllowClients {
 		if _, err := netip.ParsePrefix(c); err != nil {
@@ -3204,6 +3276,9 @@ func (v *validator) sftpPolicy(p string, s *SFTPPolicy, subsystemAllowed, hasPri
 			v.warnf("%s.yara: read_only already refuses every write, so nothing reaches these rules", p)
 		}
 	}
+	if s.ICAP != nil {
+		v.transferICAP(p+".icap", s.ICAP, s.ReadOnly, false)
+	}
 }
 
 // sftpTemplateOK checks the {user} and {principal} substitutions in a
@@ -3233,10 +3308,10 @@ func sftpTemplateOK(pattern string) error {
 	}
 }
 
-// sshRecording validates a session recording section. reqs is what the
+// sessionRecording validates a session recording section. reqs is what the
 // session may ask for, because a recording of requests nobody may make
 // is a directory that stays empty.
-func (v *validator) sshRecording(p string, r *SSHRecording, reqs map[string]bool) {
+func (v *validator) sessionRecording(p string, r *SessionRecording, reqs map[string]bool) {
 	if r.Enabled != nil && !*r.Enabled {
 		// Turned off here. Nothing is written, so nothing else in the
 		// section has to make sense, and saying more would be telling
@@ -3259,6 +3334,13 @@ func (v *validator) sshRecording(p string, r *SSHRecording, reqs map[string]bool
 	}
 	if r.Input {
 		v.warnf("%s.input: the input stream carries what the screen never showed, including every password typed into a sudo or su prompt", p)
+	}
+	// reqs is the ssh request policy, and nil for a kind whose sessions
+	// are not made of ssh channel requests: an ftp control channel is
+	// always recordable, so there is nothing here that could make the
+	// section write nothing.
+	if reqs == nil {
+		return
 	}
 	recordsShell := reqs["shell"]
 	recordsExec := reqs["exec"] && (r.Commands == nil || *r.Commands)
@@ -3355,7 +3437,7 @@ func (v *validator) sshPolicy(p string, s *SSHPolicy, h *SSHListener) {
 		for rt := range reqs {
 			merged[rt] = true
 		}
-		v.sshRecording(p+".recording", s.Recording, merged)
+		v.sessionRecording(p+".recording", s.Recording, merged)
 	}
 	if s.SFTP != nil && h.SFTP == nil && h.AllowFileTransferCommands != nil && *h.AllowFileTransferCommands {
 		v.warnf("%s.sftp: the listener's allow_file_transfer_commands is true, so scp and rsync move files past every path and operation rule set here", p)
@@ -5371,6 +5453,194 @@ func (v *validator) when(p, src string, r *Route) {
 }
 
 // ftpListener validates a kind: ftp listener.
+// vncListener checks a VNC gateway.
+func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
+	if c.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	mediated, wantsTLS, wantsPassword := false, false, false
+	for _, name := range c.SecurityTypes {
+		n := strings.ToLower(strings.TrimSpace(name))
+		t, ok := rfb.SecurityByName(n)
+		if !ok {
+			v.errf("%s.security_types: %q is not a security type this proxy can name; see docs/CONFIG.md", p, name)
+			continue
+		}
+		switch {
+		case rfb.Mediated[t]:
+			mediated = true
+			if t == rfb.SecVeNCrypt || t == rfb.SecTLS {
+				wantsTLS = true
+			}
+			if t == rfb.SecVNCAuth {
+				wantsPassword = true
+			}
+		case rfb.Proprietary[t]:
+			v.errf("%s.security_types: %q is a vendor's own type with no published specification, so this gateway cannot sit in the middle of it; see docs/CONFIG.md for what to do instead", p, n)
+		default:
+			v.errf("%s.security_types: %q is not mediated by this gateway", p, n)
+		}
+		if n == "tls" {
+			v.warnf("%s.security_types: the tls type is anonymous Diffie-Hellman with no certificate to check, so it stops a reader and not an active attacker; vencrypt with an x509 subtype is the one to use", p)
+		}
+	}
+	if !mediated {
+		v.errf("%s.security_types: no type left that this gateway can complete, so no client could connect", p)
+	}
+	if wantsTLS && !hasTLS {
+		v.errf("%s.security_types: vencrypt and tls need the listener's tls section, since there is no certificate to present without one", p)
+	}
+	switch c.TLSMode {
+	case "negotiated":
+		if hasTLS && !wantsTLS {
+			v.warnf("%s.tls_mode: negotiated presents the certificate inside RFB, but no security type uses one; set tls_mode: wrap for a socket that is TLS from the first byte, or drop the tls section", p)
+		}
+	case "wrap":
+		if !hasTLS {
+			v.errf("%s.tls_mode: wrap needs the listener's tls section: there is no certificate to wrap the socket with", p)
+		}
+		if wantsTLS {
+			v.errf("%s.tls_mode: wrap and the vencrypt or tls security type are two encryptions of the same leg, and a port can only be one of them: the first byte a client sends is either a TLS record or an RFB version string. Use one listener for each", p)
+		}
+	default:
+		v.errf("%s.tls_mode: must be negotiated or wrap", p)
+	}
+	if wantsPassword && c.PasswordFile == "" {
+		v.errf("%s.password_file: required with the vncauth security type; a challenge nobody can answer is not authentication", p)
+	}
+	if c.PasswordFile != "" {
+		v.file(p+".password_file", c.PasswordFile)
+	}
+	if c.UpstreamPasswordFile != "" {
+		v.file(p+".upstream_password_file", c.UpstreamPasswordFile)
+	}
+	for _, name := range c.VeNCryptSubtypes {
+		n := strings.ToLower(strings.TrimSpace(name))
+		if _, ok := rfb.SubtypeByName(n); !ok {
+			v.errf("%s.vencrypt_subtypes: %q is not a VeNCrypt subtype", p, name)
+			continue
+		}
+		if n == "plain" {
+			v.errf("%s.vencrypt_subtypes: the bare plain subtype sends the credential with no TLS around it; use x509-plain", p)
+		}
+		if strings.HasPrefix(n, "tls-") {
+			v.warnf("%s.vencrypt_subtypes: %s is anonymous TLS with no certificate to check; the x509 subtypes are the ones that authenticate the gateway", p, n)
+		}
+	}
+	if c.UpstreamSecurity != "" {
+		t, ok := rfb.SecurityByName(strings.ToLower(strings.TrimSpace(c.UpstreamSecurity)))
+		if !ok || !rfb.Mediated[t] {
+			v.errf("%s.upstream_security: %q is not a type this gateway can use towards a target", p, c.UpstreamSecurity)
+		}
+	}
+	switch c.UpstreamTLSMode {
+	case "none", "vencrypt":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none or vencrypt", p)
+	}
+	if c.MFA != nil {
+		v.mfaPolicy(p+".mfa", c.MFA)
+		// A factor needs a name to look an enrolment up by, and RFB
+		// carries one in exactly one place.
+		if !hasPlain(c.VeNCryptSubtypes) {
+			v.errf("%s.mfa: needs a plain VeNCrypt subtype (x509-plain), which is the only place RFB carries a user name; a DES challenge proves a shared desktop password and says nothing about who holds it", p)
+		}
+	}
+	if c.SSH != nil {
+		q := p + ".ssh"
+		if c.SSH.User == "" {
+			v.errf("%s.user: required", q)
+		}
+		if c.SSH.KeyFile == "" {
+			v.errf("%s.key_file: required", q)
+		} else {
+			v.file(q+".key_file", c.SSH.KeyFile)
+		}
+		if c.SSH.KnownHosts == "" {
+			v.errf("%s.known_hosts: required; an unpinned tunnel authenticates nothing, which is the whole reason for the tunnel", q)
+		} else {
+			v.file(q+".known_hosts", c.SSH.KnownHosts)
+		}
+	}
+	if c.Recording != nil {
+		v.sessionRecording(p+".recording", c.Recording, nil)
+	}
+	if c.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be positive", p)
+	}
+	for i, cidr := range c.AllowClients {
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, cidr, err)
+		}
+	}
+}
+
+// telnetListener checks a telnet gateway.
+func (v *validator) telnetListener(p string, c *TelnetListener, hasTLS bool) {
+	if c.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	if !hasTLS {
+		v.warnf("%s: telnet carries the session, every password typed into the target's own login, and the second factor if one is asked for, in clear; add a tls section (telnets) or keep this listener off any network a stranger can reach", p)
+	}
+	seen := map[string]bool{}
+	for _, list := range [][]string{c.AllowOptions, c.DenyOptions} {
+		for i, name := range list {
+			n := strings.ToLower(strings.TrimSpace(name))
+			if _, ok := telnet.OptionByName(n); !ok {
+				v.errf("%s: %q is not an option this proxy can name, so no policy can be written about it; see docs/CONFIG.md for the list", p, name)
+				continue
+			}
+			if seen[n] && i >= 0 {
+				continue
+			}
+			seen[n] = true
+		}
+	}
+	// The options that carry something to the target rather than
+	// describing the terminal are worth saying out loud.
+	for _, risky := range []struct{ name, why string }{
+		{"environ", "carries variables of the client's choosing to the target, which is how a login shell is given a different PATH"},
+		{"new-environ", "carries variables of the client's choosing to the target, which is how a login shell is given a different PATH"},
+		{"x-display", "names an X display the target will try to reach, which is a connection back out of the estate"},
+		{"authentication", "is negotiated differently by every implementation that has it, and this proxy relays it without understanding it"},
+		{"encryption", "would encrypt the session end to end, which is a session this proxy can no longer record or hold to a policy"},
+	} {
+		for _, name := range c.AllowOptions {
+			if strings.EqualFold(strings.TrimSpace(name), risky.name) && !hasDeny(c.DenyOptions, risky.name) {
+				v.warnf("%s.allow_options: %s %s", p, risky.name, risky.why)
+			}
+		}
+	}
+	if c.MaxSubnegotiation < 64 || c.MaxSubnegotiation > 1<<20 {
+		v.errf("%s.max_subnegotiation: must be 64..1048576", p)
+	}
+	if c.MaxConnections < 1 {
+		v.errf("%s.max_connections: must be positive", p)
+	}
+	if c.Recording != nil {
+		v.sessionRecording(p+".recording", c.Recording, nil)
+	}
+	if c.MFA != nil {
+		v.mfaPolicy(p+".mfa", c.MFA)
+	}
+	for i, cidr := range c.AllowClients {
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, cidr, err)
+		}
+	}
+}
+
+// hasDeny reports whether a name is in the deny list.
+func hasDeny(deny []string, name string) bool {
+	for _, d := range deny {
+		if strings.EqualFold(strings.TrimSpace(d), name) {
+			return true
+		}
+	}
+	return false
+}
+
 func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 	if f.Upstream == "" {
 		v.errf("%s.upstream: required", p)
@@ -5483,6 +5753,18 @@ func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 		if _, err := netip.ParsePrefix(c); err != nil {
 			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
 		}
+	}
+	if f.Recording != nil {
+		v.sessionRecording(p+".recording", f.Recording, nil)
+	}
+	if f.MFA != nil {
+		v.mfaPolicy(p+".mfa", f.MFA)
+		if f.TLSMode == "none" {
+			v.warnf("%s.mfa: without tls_mode the code crosses the network in clear beside the password it is meant to back up", p)
+		}
+	}
+	if f.ICAP != nil {
+		v.transferICAP(p+".icap", f.ICAP, f.ReadOnly, true)
 	}
 }
 

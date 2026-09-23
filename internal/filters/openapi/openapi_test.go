@@ -319,8 +319,19 @@ func TestURLSpec(t *testing.T) {
 	if v := filtertest.Run(f, r, nil).Request; v.Deny || g.Reloads.Load() != 1 {
 		t.Fatalf("background refresh: %+v reloads %d", v, g.Reloads.Load())
 	}
-	if data, _ := os.ReadFile(cache); !strings.Contains(string(data), "/ping") {
-		t.Fatal("cache not updated")
+	// install counts the reload and fetch writes the cache after it, so
+	// a refresh that has been counted is not yet one that has reached
+	// the disk. Wait for the file rather than for the counter.
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		data, _ := os.ReadFile(cache)
+		if strings.Contains(string(data), "/ping") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("cache not updated: %s", data)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	// A provider error keeps the description and counts a failure.
 	set("not: [valid", `"v3"`)

@@ -288,14 +288,14 @@ func applyDefaults(c *Config) {
 				h.AllowSubsystems = append([]string(nil), DefaultSSHSubsystems...)
 			}
 			sftpDefaults(h.SFTP)
-			sshRecordingDefaults(h.Recording)
+			sessionRecordingDefaults(h.Recording)
 			// A principal's own sftp section is the same section and
 			// gets the same defaults; without this it would fail
 			// validation on a packet size nobody wrote.
 			for j := range h.Principals {
 				if pp := h.Principals[j].Policy; pp != nil {
 					sftpDefaults(pp.SFTP)
-					sshRecordingDefaults(pp.Recording)
+					sessionRecordingDefaults(pp.Recording)
 				}
 			}
 			if h.MFA != nil {
@@ -341,6 +341,56 @@ func applyDefaults(c *Config) {
 				yaraDefaults(f.YARA)
 				f.YARA.Directions = []string{"client"}
 			}
+			if f.Recording != nil {
+				sessionRecordingDefaults(f.Recording)
+			}
+			if f.MFA != nil {
+				mfaDefaults(f.MFA)
+			}
+		}
+		if c := s.Listeners[i].VNC; c != nil {
+			if len(c.SecurityTypes) == 0 {
+				c.SecurityTypes = append([]string(nil), DefaultVNCSecurityTypes...)
+			}
+			if len(c.VeNCryptSubtypes) == 0 {
+				c.VeNCryptSubtypes = append([]string(nil), DefaultVeNCryptSubtypes...)
+			}
+			setStr(&c.TLSMode, "negotiated")
+			setStr(&c.UpstreamTLSMode, "none")
+			if c.UpstreamTLS != nil {
+				setStr(&c.UpstreamTLS.MinVersion, "1.2")
+			}
+			setInt(&c.MaxConnections, 200)
+			setDur(&c.IdleTimeout, 5*time.Minute)
+			setDur(&c.HandshakeTimeout, 30*time.Second)
+			if c.SSH != nil {
+				setStr(&c.SSH.Target, "127.0.0.1:5900")
+			}
+			if c.Recording != nil {
+				sessionRecordingDefaults(c.Recording)
+			}
+			if c.MFA != nil {
+				mfaDefaults(c.MFA)
+				// A factor needs a name to look an enrolment up by, and
+				// a plain subtype is the only place RFB carries one.
+				if len(c.VeNCryptSubtypes) > 0 && !hasPlain(c.VeNCryptSubtypes) {
+					c.VeNCryptSubtypes = append(c.VeNCryptSubtypes, "x509-plain")
+				}
+			}
+		}
+		if n := s.Listeners[i].Telnet; n != nil {
+			if len(n.AllowOptions) == 0 {
+				n.AllowOptions = append([]string(nil), DefaultTelnetOptions...)
+			}
+			setInt(&n.MaxSubnegotiation, 4096)
+			setInt(&n.MaxConnections, 1000)
+			setDur(&n.IdleTimeout, 5*time.Minute)
+			if n.Recording != nil {
+				sessionRecordingDefaults(n.Recording)
+			}
+			if n.MFA != nil {
+				mfaDefaults(n.MFA)
+			}
 		}
 		if g := s.Listeners[i].Syslog; g != nil {
 			if g.UDP == nil {
@@ -374,11 +424,16 @@ func applyDefaults(c *Config) {
 			}
 		}
 		ln := &s.Listeners[i]
-		if ln.Kind == "tcp" || ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ssh" || ln.Kind == "ftp" || ln.Kind == "syslog" {
-			// No HTTP protocol defaults on a non-HTTP listener; a dns,
-			// smtp or mqtt listener with TLS still gets the TLS
-			// defaults.
-			if (ln.Kind == "dns" || ln.Kind == "smtp" || ln.Kind == "mqtt" || ln.Kind == "ftp" || ln.Kind == "syslog") && ln.TLS != nil {
+		// Only the two kinds that speak HTTP take the HTTP protocol
+		// defaults. This is written as what does rather than as what
+		// does not, because the list of kinds that do not grows every
+		// time one is added and a kind left off it silently acquires
+		// h1 and h2 it cannot serve.
+		if ln.Kind != "" && ln.Kind != "http" && ln.Kind != "forward" {
+			// A kind whose TLS is the engine's to terminate still
+			// takes the TLS defaults. ssh carries its own transport
+			// security and has no tls section at all.
+			if ln.TLS != nil {
 				setStr(&ln.TLS.MinVersion, "1.2")
 				setStr(&ln.TLS.ClientAuth, "none")
 			}
@@ -1072,10 +1127,21 @@ func mfaDefaults(m *MFAPolicy) {
 	setInt(&m.MaxUsers, 10000)
 }
 
-// yaraDefaults fills a YARA policy wherever it is used.
-// sshRecordingDefaults fills one recording section, the listener's or a
+// hasPlain reports whether a subtype list carries one that sends a
+// username: the only place RFB has a name to look an enrolment up by.
+func hasPlain(subs []string) bool {
+	for _, s := range subs {
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "plain", "tls-plain", "x509-plain":
+			return true
+		}
+	}
+	return false
+}
+
+// sessionRecordingDefaults fills one recording section, the listener's or a
 // principal's.
-func sshRecordingDefaults(r *SSHRecording) {
+func sessionRecordingDefaults(r *SessionRecording) {
 	if r == nil {
 		return
 	}

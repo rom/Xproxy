@@ -23,6 +23,7 @@ import (
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/sessionrec"
 	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -765,7 +766,7 @@ func (se *session) channel(nc cssh.NewChannel) {
 	}
 	<-serverDone
 	<-reqDone
-	st.rec.close(se)
+	closeSSHRecording(st.rec, se)
 }
 
 // sshChannel is what one channel's requests settle: the terminal the
@@ -773,7 +774,7 @@ func (se *session) channel(nc cssh.NewChannel) {
 type sshChannel struct {
 	term       string
 	cols, rows int
-	rec        *sshRecording
+	rec        *sessionrec.Recording
 }
 
 func (se *session) refuse(nc cssh.NewChannel, what, detail string, reason cssh.RejectionReason, msg string) {
@@ -875,7 +876,7 @@ func (se *session) answerRequest(clientCh, upCh cssh.Channel, r *cssh.Request, s
 	case "window-change":
 		if cols, rows, ok := sshWindowChange(r.Payload); ok {
 			st.cols, st.rows = cols, rows
-			st.rec.resize(cols, rows)
+			st.rec.Resize(cols, rows)
 		}
 	}
 	// The mode is chosen before the request is forwarded. The
@@ -932,10 +933,10 @@ func (se *session) startRecording(st *sshChannel, r *cssh.Request) {
 	if r.Type == "exec" {
 		command = textsafe.Clip256(sshStringPayload(r.Payload))
 	}
-	if !rec.records(r.Type == "exec") {
+	if !records(rec, r.Type == "exec") {
 		return
 	}
-	f, err := rec.open(se, st.cols, st.rows, st.term, command)
+	f, err := openSSHRecording(rec, se, st.cols, st.rows, st.term, command)
 	if err != nil {
 		se.sshRecordFailed(err)
 		return
@@ -945,14 +946,14 @@ func (se *session) startRecording(st *sshChannel, r *cssh.Request) {
 
 // pipe copies a channel's data and its extended (stderr) data both
 // ways, and half-closes so the far side sees the end of input.
-func (se *session) pipe(clientCh, upCh cssh.Channel, rec *sshRecording) {
+func (se *session) pipe(clientCh, upCh cssh.Channel, rec *sessionrec.Recording) {
 	// The client to target direction is not waited for. A client that
 	// runs a command without closing its input never sends EOF, so
 	// waiting for it would mean waiting for the client rather than for
 	// the command; it ends when the channel is closed.
 	var toTarget io.Writer = upCh
-	if rec != nil && rec.r.cfg.Input {
-		toTarget = sshRecordWriter{dst: upCh, rec: rec, input: true}
+	if rec != nil && se.policy.recorder.Config().Input {
+		toTarget = sessionrec.Writer{Dst: upCh, Rec: rec, Input: true}
 	}
 	go func() {
 		defer safe.Guard("ssh data to target")
@@ -967,8 +968,8 @@ func (se *session) pipe(clientCh, upCh cssh.Channel, rec *sshRecording) {
 	// out stderr would be missing exactly the errors.
 	var toClient, toClientErr io.Writer = clientCh, clientCh.Stderr()
 	if rec != nil {
-		toClient = sshRecordWriter{dst: clientCh, rec: rec}
-		toClientErr = sshRecordWriter{dst: clientCh.Stderr(), rec: rec}
+		toClient = sessionrec.Writer{Dst: clientCh, Rec: rec}
+		toClientErr = sessionrec.Writer{Dst: clientCh.Stderr(), Rec: rec}
 	}
 	go func() {
 		defer wg.Done()

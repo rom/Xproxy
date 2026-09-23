@@ -238,6 +238,13 @@ func (tg *targetSSH) sftp(ch cssh.Channel) {
 // and the client key that may use it.
 func bastion(t *testing.T, extra string) (*proxy.Server, string, cssh.Signer, *targetSSH) {
 	t.Helper()
+	return bastionWith(t, extra, "")
+}
+
+// bastionWith is bastion with sections outside the listener too, for
+// the icap services a policy refers to.
+func bastionWith(t *testing.T, extra, top string) (*proxy.Server, string, cssh.Signer, *targetSSH) {
+	t.Helper()
 	dir := t.TempDir()
 	hostKeyPath, hostSigner, _ := sshKey(t, dir, "host")
 	targetHostKeyPath, targetHostSigner, _ := sshKey(t, dir, "target_host")
@@ -277,7 +284,8 @@ logging: {access: {enabled: false}}
 upstreams:
   - name: hosts
     endpoints: [{address: %s}]
-`, hostKeyPath, authorized, upKeyPath, known, extra, tg.addr())
+%s
+`, hostKeyPath, authorized, upKeyPath, known, extra, tg.addr(), top)
 	s := proxytest.Start(t, yaml)
 	return s, s.Addrs()["bastion"], clientSigner, tg
 }
@@ -1142,6 +1150,28 @@ func sftpWriteReq(t *testing.T, ch cssh.Channel, id uint32, handle string, offse
 	body = binary.BigEndian.AppendUint32(body, uint32(len(data)))
 	body = append(body, data...)
 	if _, err := ch.Write(sftpPacket(6, body)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sftpCloseReq closes a handle.
+func sftpCloseReq(t *testing.T, ch cssh.Channel, id uint32, handle string) {
+	t.Helper()
+	body := binary.BigEndian.AppendUint32(nil, id)
+	body = append(body, sftpStr(handle)...)
+	if _, err := ch.Write(sftpPacket(4, body)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sftpReadReq reads from a handle.
+func sftpReadReq(t *testing.T, ch cssh.Channel, id uint32, handle string, offset uint64, n uint32) {
+	t.Helper()
+	body := binary.BigEndian.AppendUint32(nil, id)
+	body = append(body, sftpStr(handle)...)
+	body = binary.BigEndian.AppendUint64(body, offset)
+	body = binary.BigEndian.AppendUint32(body, n)
+	if _, err := ch.Write(sftpPacket(5, body)); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -299,6 +299,24 @@ an identifier from the access log to the upstream.
   written, per file rather than per stream — because the whole
   difference between reading a file and deleting a tree happens in
   there
+- `kind: telnet`: a telnet gateway, for the equipment that speaks
+  nothing else. The NVT protocol of RFC 854 is parsed in both
+  directions, because telnet's options are commands escaped into the
+  byte stream: an option outside `allow_options` is refused to the
+  side that asked and never reaches the other, the session is recorded
+  as asciicast v2, and a second factor can be asked for — a prompt the
+  proxy writes and an answer it reads, with the code not echoed —
+  before the target is dialled
+- `kind: vnc`: a VNC gateway that terminates RFB on both legs, which is
+  what lets it decide anything: **which security type** a viewer may
+  use (the specified ones only — the vendors' own are a configuration
+  error, with the reason in the docs), **whose credential opens the
+  desktop** (the gateway's, never the viewer's), **whether the session
+  can be driven or only watched**, and what the **recording** holds.
+  Versions 3.3 to 3.8 on each leg independently; VeNCrypt with X.509,
+  a TLS-wrapped socket, or an SSH tunnel the gateway opens itself with
+  the host key pinned; MFA carried in VeNCrypt's plain credential,
+  which is the only place RFB names a person
 
 **Extensibility and platforms**
 

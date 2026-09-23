@@ -873,6 +873,281 @@ Counters: `syslog_received`, `syslog_forwarded`, `syslog_dropped`,
 `syslog_queue_dropped`, `syslog_send_failed`, `syslog_connections`,
 `syslog_rejected`. Refusals are `syslog_denied` for the ban triggers.
 
+### server.listeners[].vnc (kind: vnc)
+
+A `kind: vnc` listener is a VNC gateway: the proxy is an RFB server to
+the client and an RFB client to the target, terminating the handshake
+of RFC 6143 on both legs.
+
+**Why this is not a `tcp` listener.** RFB's whole policy surface is in
+the handshake. Which security type is used, whether the session is
+encrypted and how, what the desktop is called — all of it is settled in
+the first few hundred bytes. A proxy that does not sit in that
+negotiation cannot decide any of it, and cannot record what follows.
+
+Terminating both legs is also what separates the two credentials. What
+a person proves to the gateway is not the desktop's password: the
+gateway opens the target's leg with its own, so the shared VNC password
+of a machine never has to be given to the people who use it.
+
+#### What is supported
+
+**Protocol versions.** 3.3, 3.7 and 3.8, on either leg and
+independently: a 3.3 client can reach a 3.8 server through here. A
+client announcing a version nobody defines (Apple's 3.889, or anything
+above 3.8) is treated as the highest defined version at or below it.
+Below 3.3 is refused.
+
+The versions differ in one place that matters to a gateway: before 3.8,
+a successful `none` carries no `SecurityResult` at all (RFC 6143
+§7.1.3). Each leg follows the rule of the version settled on that leg,
+so a 3.3 viewer is not sent four bytes it would read as the start of
+the desktop's dimensions, and a 3.7 target is not waited on for a
+message it will never send.
+
+**Security types.** Only the ones with a published specification are
+mediated — that is, completed on both legs, which is what makes the
+session recordable:
+
+| Type | Name | What it is | Status |
+|------|------|-----------|--------|
+| 1 | `none` | No authentication | Mediated |
+| 2 | `vncauth` | The DES challenge of RFC 6143 §7.2.2 | Mediated |
+| 19 | `vencrypt` | The open TLS and X.509 negotiation | Mediated |
+| 18 | `tls` | Anonymous-TLS, VeNCrypt's predecessor | Mediated, warned about |
+
+`tls` is warned about because it is anonymous Diffie-Hellman with no
+certificate to check: it stops a reader and not an active attacker.
+`vencrypt` with an X.509 subtype is the one to use.
+
+**VeNCrypt subtypes**: `x509-none`, `x509-vnc`, `x509-plain`,
+`tls-none`, `tls-vnc`, `tls-plain`. The `tls-*` ones are warned about
+for the same reason. The bare `plain` subtype (no TLS at all) is
+refused: it would send the credential in clear.
+
+**What is not supported, and why.** These are the vendors' own, with no
+published specification to write against:
+
+| Type | Name | Vendor |
+|------|------|--------|
+| 5, 6 | `ra2`, `ra2ne` | RealVNC |
+| 129, 130, 133 | `rsa-aes`, `rsa-aes-ne`, `rsa-aes-256` | RealVNC |
+| 16 | `tight` | TightVNC |
+| 17, 113 | `ultra`, `mslogon2` | UltraVNC |
+| 30 | `ard` | Apple |
+| 20, 21, 22 | `sasl`, `md5`, `xvp` | others |
+
+Naming one in `security_types` is a configuration error rather than a
+setting that quietly does nothing. A gateway cannot sit in the middle
+of a handshake it cannot complete, and reimplementing a cipher from
+guesswork is worse than not having it: it would look like support while
+being wrong.
+
+**UltraVNC's DSM plugin encryption is a separate case.** It is not a
+security type at all — the plugin wraps the whole connection before RFB
+begins, so this listener cannot even read the version string. There is
+nothing to configure here. An estate that needs it uses a `kind: tcp`
+listener, which relays the bytes without looking at them: the
+connection works, the access log records who reached which target, and
+there is no recording, because the stream is encrypted with keys this
+proxy does not hold.
+
+#### Options
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The pool of targets |
+| `security_types` | list | `[none, vncauth, vencrypt]` | The types a client may use, by name |
+| `vencrypt_subtypes` | list | `[x509-vnc, x509-none]` | The subtypes offered when `vencrypt` is in use |
+| `password_file` | string | none | The password this gateway answers its own `vncauth` challenge with. Required if `vncauth` is offered, and refused if anyone but the proxy user can read it |
+| `upstream_password_file` | string | none | The password this gateway uses towards the target |
+| `upstream_security` | string | strongest available | The type to use towards the target, by name |
+| `tls_mode` | string | `negotiated` | What the listener's `tls` section is for: `negotiated` presents the certificate inside RFB, `wrap` makes the socket itself TLS. See below |
+| `upstream_tls_mode` | string | `none` | `none` or `vencrypt` |
+| `upstream_tls` | object | none | CA and name for the target's leg |
+| `ssh` | object | none | Reach the target through an SSH connection the gateway makes; see below |
+| `view_only` | bool | `false` | Drop the client's key, pointer and cut-text messages, so a session is watched and not driven |
+| `recording` | object | none | As `server.listeners[].ssh.recording`; see below for the format |
+| `mfa` | object | none | See below: it needs `x509-plain` |
+| `idle_timeout` | duration | `5m` | No traffic in either direction |
+| `session_timeout` | duration | `0` | Bound on a whole session however active |
+| `handshake_timeout` | duration | `30s` | Bound on the negotiation before the session begins |
+| `max_connections` | int | `200` | Sessions on this listener |
+| `proxy_protocol` | bool | `false` | PROXY protocol v2 header to the target |
+| `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+
+#### VNC over TLS, and VNC over SSH
+
+Three ways to stop the session crossing a network in clear. The two
+that encrypt the client's leg are alternatives; the third is the
+target's leg and composes with either.
+
+- **VeNCrypt**, negotiated inside RFB (`tls_mode: negotiated`, the
+  default). The socket carries RFB from the first byte, and the
+  certificate in the listener's `tls` section is presented inside the
+  handshake. This is the one a modern viewer offers by itself, and the
+  `x509-*` subtypes are the ones with a certificate to check. The
+  security type `tls` (18) works the same way, with no certificate
+  checked.
+- **A socket that is TLS from the first byte** (`tls_mode: wrap`). The
+  client connects with TLS and speaks RFB inside it, which is what a
+  viewer reaching a `stunnel`-wrapped port does.
+
+  `wrap` together with the `vencrypt` or `tls` security type is a
+  configuration error rather than two layers: the first byte a client
+  sends is either a TLS record or `RFB 003.008`, so a port is one or
+  the other. An estate with both kinds of viewer uses one listener for
+  each, which is what the viewers are already pointed at.
+- **`ssh`**, for the target's leg. The gateway opens an SSH connection
+  and reaches the VNC server through it, so the RFB never crosses the
+  network in clear even when the server itself speaks only RFB. This is
+  the usual `ssh -L` arrangement, done once by the gateway rather than
+  by every operator.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ssh.user` | string | required | The login on the SSH host |
+| `ssh.key_file` | string | required | The private key the gateway authenticates with |
+| `ssh.known_hosts` | string | required | Pins the SSH host keys. An unpinned tunnel authenticates nothing, which is the whole reason for the tunnel |
+| `ssh.address` | string | the endpoint's host, port 22 | The SSH host |
+| `ssh.target` | string | `127.0.0.1:5900` | What to reach from the SSH host |
+
+An operator who prefers to tunnel themselves still can: `ssh -L` to the
+`kind: ssh` bastion and point the viewer at the forwarded port. That
+needs nothing here. The `ssh` section is for doing it once, centrally,
+so the recording and the policy still apply.
+
+#### The second factor
+
+`mfa` needs a VeNCrypt **plain** subtype, and validation refuses the
+section without one. The reason is in the protocol: a DES challenge
+proves knowledge of one shared desktop password and says nothing about
+who is holding it, so there is nothing to look an enrolment up by. The
+plain subtypes are the only place RFB carries a user name. The name
+identifies the person and the password field carries their one-time
+code, both inside the TLS tunnel.
+
+`x509-plain` is added to `vencrypt_subtypes` automatically when `mfa`
+is configured and no plain subtype is listed.
+
+The code is checked inside the handshake, before the security result is
+sent: a wrong code is a failed authentication the viewer can show,
+rather than a session that is told it succeeded and then closes. The
+desktop is not dialled either way. A viewer that authenticates with a
+type carrying no name — where one is also offered — is refused for the
+same reason: there is nothing to look an enrolment up by.
+
+#### The recording
+
+The file holds the server-to-client RFB stream — what was on the screen
+— with the timing of it, in the asciicast v2 container the other
+recordings use, named `*.rfb.cast`. Its header carries
+`XPROXY_PROTOCOL: rfb`, the framebuffer size and the RFB version, and
+the first mark names the desktop, both versions and both security
+types.
+
+**It is not a video.** The event data is the protocol stream, so
+replaying it needs a player that speaks RFB rather than a terminal.
+Recording the stream is what keeps the cost bounded and loses nothing:
+a decoder can be written against this file afterwards, and one that
+decoded at capture time would have to understand every encoding a
+server might choose and would silently lose whatever it did not.
+
+Counters: `vnc_sessions`, `vnc_sessions_open`, `vnc_rejected`,
+`vnc_refused`, `vnc_recorded`, `vnc_mfa_ok`, `vnc_mfa_failed`. Every
+session writes one `vnc` access line with both versions, both security
+types, the desktop name and size, and how it ended. Refusals are
+`vnc_denied` deny events, so bans apply.
+
+### server.listeners[].telnet (kind: telnet)
+
+A `kind: telnet` listener is a telnet gateway: the proxy is a telnet
+server to the client and a telnet client to the target, reading the NVT
+protocol of RFC 854 in both directions.
+
+**Telnet carries everything in clear.** The session, every password
+typed into the target's own login, and the one-time code if this
+listener asks for one all cross the network as plain bytes. Wrapping
+the listener in TLS (a `tls` section, which is what `telnets` on 992
+is) is the only thing that changes that, and validation warns every
+time it is left off. This listener exists because the equipment that
+speaks only telnet exists, not because telnet is acceptable.
+
+**Why this is not a `tcp` listener.** Telnet's options are commands
+escaped into the byte stream: `IAC` (255) begins one, `IAC IAC` is a
+literal 255, and everything else is data. A proxy that does not parse
+that cannot tell a window-size negotiation from the characters a person
+typed — which it has to, to record the session as it was seen, to
+decide which options a client may turn on, and to write a prompt of its
+own into the stream before the target is dialled.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The pool of targets |
+| `banner` | string | none | What the proxy says before the target is dialled. A banner naming the equipment is one that saves an attacker a question |
+| `allow_options` | list | see below | The telnet options a session may negotiate, by name |
+| `deny_options` | list | `[]` | Removed from `allow_options`, for changing one thing without restating the list |
+| `max_subnegotiation` | int | `4096` | Bound on one subnegotiation; 64..1048576. A peer that sends `IAC SB` and never sends `IAC SE` is cut off here rather than allowed to grow a buffer |
+| `recording` | object | none | As `server.listeners[].ssh.recording` |
+| `mfa` | object | none | As `server.listeners[].ssh.mfa`; see below for how the code is asked for |
+| `idle_timeout` | duration | `5m` | No traffic in either direction |
+| `session_timeout` | duration | `0` | Bound on a whole session however active; 0 is no bound |
+| `max_connections` | int | `1000` | Sessions on this listener |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
+| `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+
+**Options.** The default list is what an interactive session needs and
+nothing else: `echo`, `suppress-go-ahead`, `binary`, `terminal-type`,
+`naws`, `terminal-speed`, `end-of-record`, `timing-mark`, `status`.
+
+The others this proxy can name, none of them on by default:
+
+| Option | Why it is not default |
+|--------|-----------------------|
+| `environ`, `new-environ` | Carry variables of the client's choosing to the target, which is how a login shell is given a different `PATH`. Validation warns when either is allowed |
+| `x-display` | Names an X display the target will try to reach, which is a connection back out of the estate |
+| `authentication` | Negotiated differently by every implementation that has it; the proxy would relay it without understanding it |
+| `encryption` | Would encrypt the session end to end — a session this proxy can no longer record or hold to a policy |
+| `linemode`, `flow-control` | Accepted if you name them; left out because the default is character-at-a-time, which is what a recording wants |
+
+An option this proxy has no name for is always refused, whatever the
+lists say: one whose effect it cannot name is one it cannot hold to a
+policy. A refusal is answered to the side that asked (`WILL` and `WONT`
+are declined with `DONT`, `DO` and `DONT` with `WONT`) rather than
+dropped, because a refusal the asker never hears is a negotiation that
+repeats forever. Each one writes a `telnet_option_refused` line and a
+mark in the recording, so an operator asked why a terminal behaves
+oddly can see that the proxy is why.
+
+**The second factor.** Telnet has no authentication for a proxy to
+read, so `mfa` is a prompt the proxy writes into the stream and an
+answer it reads back, before the target is dialled at all — a client
+that cannot answer never reaches the equipment. It asks for a login
+name, then for a code, with the code not echoed. The name is only what
+the enrolment is looked up by: the target's own login happens
+afterwards and is untouched, and whether the two names agree is the
+target's business rather than this proxy's. A name with no enrolment is
+refused where `require_enrolment` is on.
+
+While the proxy is asking its own questions it agrees to no options:
+anything the client negotiates then is declined, since the only thing
+at the far end so far is the proxy.
+
+**The recording** is the asciicast v2 format the ssh bastion writes, so
+the same player replays it. `naws` gives it the window size, and a
+resize during the session is recorded as one. `input: true` records
+what was typed as well as what was shown, and on telnet that means
+every password typed into the target's own login — which the proxy does
+not otherwise see. The warning that applies to the bastion applies here
+more strongly.
+
+Counters: `telnet_sessions`, `telnet_sessions_open`, `telnet_rejected`,
+`telnet_refused`, `telnet_options_refused`, `telnet_recorded`,
+`telnet_mfa_ok`, `telnet_mfa_failed`. Every session writes one `telnet`
+access line with the client, the name the factor was checked against,
+the target, how it ended and how many options were refused. Refusals
+are `telnet_denied` deny events, so bans apply.
+
 ### server.listeners[].ftp (kind: ftp)
 
 A `kind: ftp` listener is a protocol-aware FTP proxy: the proxy is an
@@ -943,11 +1218,90 @@ so a protected transfer is still a transfer this proxy can hold to
 control channel after `AUTH TLS` puts the rest of the session, including
 every path, back in clear on the wire.
 
+#### server.listeners[].ftp.recording
+
+Writes the control channel -- every command and every reply -- to one
+file per session, in the asciicast v2 format the ssh bastion uses, so
+the same player replays it. The fields are the ones documented under
+`server.listeners[].ssh.recording`: `enabled`, `directory`,
+`file_prefix`, `max_file_bytes`, `max_files`. (`input` and `commands`
+are ssh's and are ignored here: an ftp dialogue has one stream, and the
+proxy already sees both halves of it.)
+
+The file is opened when the login is accepted, so a connection that
+never authenticates writes none. `PASS` and `ACCT` arguments are
+written as `<redacted>`: a recording an operator cannot safely keep is
+one that gets turned off. The transferred bytes are not in the file
+either -- each transfer leaves a one-line mark saying what moved, how
+much and how it ended -- because a copy of every file that crossed the
+proxy is a second copy of the data to look after.
+
+#### server.listeners[].ftp.icap
+
+Hands transferred files to a scanning service (RFC 3507) named in
+`icap.services`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `service` | string | required | The name of an entry in `icap.services`. Validation refuses a name that is not there |
+| `uploads` | bool | `true` | Scan `STOR`, `STOU` and `APPE` through REQMOD |
+| `downloads` | bool | `false` | Scan `RETR` through RESPMOD. Off by default because it doubles the bytes on the wire and most deployments trust what their own server already holds |
+
+A transfer is not an HTTP message, so the file is wrapped in the one a
+scanner expects: a `PUT` for an upload, a `GET` and its response for a
+download, with the `ftp://` URL of the real file so the scanner's own
+log names something findable, the client address in `X-Client-IP` and
+the login in `X-Authenticated-User`. Directory listings are not sent:
+they are not files.
+
+Scanning means holding the file until the service answers, because a
+verdict that arrives after the bytes have gone is not a control. The
+service's own `max_body`, `body_limit_action` and `fail` apply exactly
+as they do to an HTTP body: a file past `max_body` is refused, or
+passed unscanned with a warning in the security log where
+`body_limit_action: bypass` says so; a service that cannot be reached
+refuses the transfer unless `fail: open`, which also logs. A blocked
+transfer is cut and the client gets `426` naming the reason.
+
+#### server.listeners[].ftp.mfa
+
+Asks for a second factor after the target accepts the password, on the
+control channel, before any other command is allowed. The fields are
+the ones documented under `server.listeners[].ssh.mfa`.
+
+FTP has no prompt of its own, so the code is taken the only two ways
+the protocol allows:
+
+- **`ACCT`**, which RFC 959 defines for exactly this. The proxy answers
+  the accepted password with `332` and takes the code as the argument
+  of the `ACCT` that follows. `ACCT` is added to the relayed commands
+  automatically when this section is present.
+- **Appended to the password**, after a comma: `PASS secret,123456`.
+  The proxy takes the code off and the target sees only the password.
+  This needs nothing of the client at all, which is what most
+  one-time-password FTP deployments rely on.
+
+Until the factor is verified the session is not logged in: every
+command but `ACCT`, `QUIT`, `NOOP`, `FEAT`, `HELP`, `STAT`, `SYST` and
+`REIN` is refused with `530`. A user with no enrolment is refused where
+`require_enrolment` is on, because an optional second factor is one an
+attacker can decline by using an account that never enrolled. Wrong
+codes count against `max_errors` and feed the ban triggers, since a
+client working through codes is doing what one working through
+passwords does.
+
+Validation warns when `mfa` is set with `tls_mode: none`: the code then
+crosses the network in clear beside the password it is meant to back
+up.
+
 Counters: `ftp_sessions`, `ftp_sessions_open`, `ftp_transfers`,
-`ftp_refused`, `ftp_rejected`, `ftp_auth_failed`. Every session writes
-an `ftp` access line and every transfer an `ftp_transfer` line with the
-command, the path, the octets and whether it was cut. Refusals are
-`ftp_denied` for the ban triggers.
+`ftp_refused`, `ftp_rejected`, `ftp_auth_failed`, `ftp_scanned`,
+`ftp_scan_blocked`, `ftp_recorded`, `ftp_mfa_ok`, `ftp_mfa_failed`.
+Every session writes an `ftp` access line and every transfer an
+`ftp_transfer` line with the command, the path, the octets and whether
+it was cut; a finished recording writes `ftp_recording` with the file
+and its size. Refusals are `ftp_denied` for the ban triggers, and a
+refused factor is `ftp_mfa_failed`.
 
 ### server.listeners[].ssh (kind: ssh)
 
@@ -1202,14 +1556,64 @@ directory the proxy cannot see, and a check on a path whose meaning is
 unknown is not a check. Absolute paths always work, so nothing legitimate
 needs the other form.
 
+##### server.listeners[].ssh.sftp.icap
+
+Hands written files to a scanning service (RFC 3507) named in
+`icap.services`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `service` | string | required | The name of an entry in `icap.services`. Validation refuses a name that is not there |
+| `uploads` | bool | `true` | Scan what the client writes |
+| `downloads` | bool | refused here | See below: SFTP has nothing to scan a download at |
+
+**A scanned upload is held, not forwarded.** SFTP has no whole-file
+transfer: a file is an `open`, a run of `write`s at offsets, and a
+`close`. A scanner wants the file. So the proxy answers each `write`
+itself with a success status, keeps the packets, assembles what the
+file turns out to be, and asks the service only when the handle is
+closed. A clean file's writes are then replayed to the server in the
+order the client made them, and the `close` is forwarded; a refused
+file's writes are dropped and the `close` is answered with a failure.
+The file never reaches the server.
+
+Three consequences worth knowing before turning it on:
+
+- The file is in memory until the `close`, bounded by the service's
+  `max_body`. Past that, `body_limit_action` decides: `reject` refuses
+  the write, `bypass` releases what was held and stops holding, with a
+  warning in the security log naming the path.
+- The success a client sees for a `write` is the proxy's, not the
+  server's. A server that would have refused the write for its own
+  reasons — no space, no permission — says so at the `close` instead,
+  which is where a client that checks only the final status will see it
+  anyway.
+- The `open` is forwarded when it happens, so a refused file can leave
+  an empty file behind. The proxy does not remove it: that would be a
+  write it was never asked to make.
+
+**Downloads are not scanned here, and the section refuses to pretend
+otherwise.** A download in SFTP is a run of `read`s at offsets that the
+client stops making when it has what it wants; there is no packet that
+means "the file is finished", so there is no point to scan at. Scanning
+one would mean the proxy fetching the whole file itself and serving the
+client's reads from that copy, which is a different feature with
+different costs. `downloads: true` is a configuration error here rather
+than a setting that quietly does nothing. The `ftp` listener, where a
+`RETR` is one whole-file transfer, does scan downloads.
+
 Every session writes one `ssh` line to the access log (client, user,
 authentication method, principal, target, channels, refusals, duration) and each
 inspected SFTP request writes one `sftp` line with the operation and the
-path. Counters: `ssh_sessions`, `ssh_sessions_open`, `ssh_channels`,
-`ssh_refused`, `ssh_rejected`, `ssh_auth_failed`, `ssh_bytes_in`,
-`ssh_bytes_out`, `sftp_requests`, `sftp_refused`; the matching
-`xproxy_ssh_*` and `xproxy_sftp_*` metrics. Refusals and failed
-authentication are `ssh_denied` deny events, so bans apply.
+path; the `close` of a scanned file carries a `scan` field saying how
+many bytes were released or why they were blocked. Counters:
+`ssh_sessions`, `ssh_sessions_open`, `ssh_channels`, `ssh_refused`,
+`ssh_rejected`, `ssh_auth_failed`, `ssh_bytes_in`, `ssh_bytes_out`,
+`sftp_requests`, `sftp_refused`, `sftp_scanned`, `sftp_scan_blocked`;
+the matching `xproxy_ssh_*` and `xproxy_sftp_*` metrics. Refusals and
+failed authentication are `ssh_denied` deny events, so bans apply, and
+a file the scanner refuses is an `sftp_icap` observation on the ban
+ladder.
 
 ### server.listeners[].h3
 

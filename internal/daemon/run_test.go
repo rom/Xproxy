@@ -170,10 +170,28 @@ func TestRunStartsReloadsAndStops(t *testing.T) {
 	}
 
 	// Roll back to the generation recorded at start: the header goes.
-	if b, err := c.Raw("/v1/history"); err != nil {
-		t.Fatal(err)
-	} else if err := json.Unmarshal(b, &entries); err != nil || len(entries) < 2 {
-		t.Fatalf("history after the reload: %s (%v)", b, err)
+	//
+	// The history entry is written after the generation is live --
+	// apply reloads the server and then records what it applied, which
+	// is the right order -- so a reload that has taken effect is not
+	// yet a reload that is in the history. Wait for the entry rather
+	// than for the generation.
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		b, err := c.Raw("/v1/history")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(b, &entries); err != nil {
+			t.Fatalf("history: %s (%v)", b, err)
+		}
+		if len(entries) >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the reload never reached the history: %s", b)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	oldest := entries[len(entries)-1]
 	if err := c.Do("POST", "/v1/rollback?id="+oldest.ID, nil, nil); err != nil {
