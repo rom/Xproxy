@@ -462,7 +462,7 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 		return
 	}
 	if r.ProtoMajor == 2 {
-		f.connectH2(w, r, p, dst, ip, user, start)
+		f.connectH2(w, r, p, dst, host, ips, ip, user, start)
 		return
 	}
 	rc := http.NewResponseController(w)
@@ -523,7 +523,8 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 // response body the other, flushed per write. The stream is bounded by
 // the idle timeout on the destination side and by the client closing
 // its half.
-func (f *forwardServer) connectH2(w http.ResponseWriter, r *http.Request, p *forwardPolicy, dst net.Conn, ip netip.Addr, user string, start time.Time) {
+func (f *forwardServer) connectH2(w http.ResponseWriter, r *http.Request, p *forwardPolicy, dst net.Conn,
+	host string, ips []netip.Addr, ip netip.Addr, user string, start time.Time) {
 	h := f.host
 	rc := http.NewResponseController(w)
 	h.Counters().ForwardTunnels.Add(1)
@@ -537,6 +538,17 @@ func (f *forwardServer) connectH2(w http.ResponseWriter, r *http.Request, p *for
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if err := rc.Flush(); err != nil {
+		return
+	}
+	if f.mitm != nil && f.mitm.wants(host, ips) {
+		// An HTTP/2 CONNECT stream is a full-duplex byte stream just like a
+		// hijacked HTTP/1 connection. Adapt it to net.Conn so interception
+		// cannot be bypassed by selecting h2 on the outer proxy connection.
+		client := &h2StreamConn{body: r.Body, w: w, rc: rc}
+		in, out, reason := f.intercept(client, dst, host, ip, user)
+		h.Counters().ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
+		h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+		f.log(r, ip, user, r.Host, http.StatusOK, in, out, start, reason)
 		return
 	}
 	idle := p.cfg.IdleTimeout.D()
@@ -588,6 +600,40 @@ func (f *forwardServer) connectH2(w http.ResponseWriter, r *http.Request, p *for
 	h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 	f.log(r, ip, user, r.Host, http.StatusOK, n, out, start, "")
 }
+
+// h2StreamConn presents an HTTP/2 CONNECT request and response body as the
+// net.Conn expected by the TLS interceptor. Response writes are flushed so
+// handshake records are not retained by net/http's response buffering.
+type h2StreamConn struct {
+	body io.ReadCloser
+	w    http.ResponseWriter
+	rc   *http.ResponseController
+}
+
+func (c *h2StreamConn) Read(p []byte) (int, error) { return c.body.Read(p) }
+func (c *h2StreamConn) Close() error               { return c.body.Close() }
+func (c *h2StreamConn) LocalAddr() net.Addr        { return h2StreamAddr("proxy") }
+func (c *h2StreamConn) RemoteAddr() net.Addr       { return h2StreamAddr("client") }
+func (c *h2StreamConn) SetDeadline(t time.Time) error {
+	if err := c.rc.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return c.rc.SetWriteDeadline(t)
+}
+func (c *h2StreamConn) SetReadDeadline(t time.Time) error  { return c.rc.SetReadDeadline(t) }
+func (c *h2StreamConn) SetWriteDeadline(t time.Time) error { return c.rc.SetWriteDeadline(t) }
+func (c *h2StreamConn) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	if err == nil {
+		err = c.rc.Flush()
+	}
+	return n, err
+}
+
+type h2StreamAddr string
+
+func (a h2StreamAddr) Network() string { return "h2" }
+func (a h2StreamAddr) String() string  { return string(a) }
 
 // plain relays an absolute-URI http request through the checked dialer
 // and copies the response back, bounded by max_response_bytes.
