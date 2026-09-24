@@ -141,6 +141,10 @@ func (v *tvars) Resolve(name, arg string) (string, bool) {
 				return vals[0], true
 			}
 		}
+	case "capture":
+		if st != nil {
+			return st.capture(arg)
+		}
 	case "cert":
 		if r != nil && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 			return certField(r.TLS.PeerCertificates[0], arg)

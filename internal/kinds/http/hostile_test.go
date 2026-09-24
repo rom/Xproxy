@@ -142,6 +142,9 @@ func TestTemplateVarsResolveEveryName(t *testing.T) {
 		cr: &compiledRoute{cfg: &config.Route{Tenant: "acme"}},
 	}
 	full := &tvars{r: r, st: st, status: 404, reason: "not_found"}
+	if got, ok := full.Resolve("capture", "leader"); got != "first" || !ok {
+		t.Errorf("capture(leader) = %q, %v, want first, true", got, ok)
+	}
 	for name, want := range map[string]string{
 		"client_ip": "198.51.100.9", "request_id": "rid", "host": "shop.test",
 		"route": "api", "upstream": "pool-a", "tenant": "acme", "country": "SE",
