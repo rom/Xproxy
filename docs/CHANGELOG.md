@@ -512,6 +512,30 @@ Open findings of the earlier rounds:
   access log line carries `view`. Twelve deliberate weakenings were each
   caught by the tests.
 
+- **The target's own host certificate** (`upstream_known_hosts`).
+
+  The bastion read only the plain entries of its `known_hosts` file, so a
+  target presenting a **host certificate** was refused -- and signing each
+  new host key with a host CA is exactly how an estate that rebuilds
+  machines avoids editing that file everywhere. An `@cert-authority` line
+  is now honoured, with the certificate checked as OpenSSH checks it: the
+  signature against that authority, that it is a host certificate and not
+  a user one, the validity window, and that its principals cover the host
+  being reached. An authority is trusted only for the hosts its own line
+  names.
+
+  `@revoked` also does what it says now. It was being read as "not a
+  trusted entry", which is silence: a key listed as revoked *and* trusted
+  elsewhere in the file was accepted on the other line. It is a refusal
+  before any other line is consulted, and for a certificate it covers the
+  key inside it and the authority that signed it -- one line takes back
+  every certificate that CA ever issued. A file that trusts nothing at all
+  fails at bind rather than refusing every session afterwards.
+
+  Ten deliberate weakenings were each caught, three after a test was added
+  for an authority scoped to another host and one duplicate check removed:
+  revocation was decided in two places, so neither was covered on its own.
+
 - **Which WAF rules are noise on this traffic, measured** (`xproxyctl waf`,
   `GET /v1/waf`).
 

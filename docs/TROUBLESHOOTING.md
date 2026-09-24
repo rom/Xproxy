@@ -2911,6 +2911,29 @@ that can carry one — and an `sftp_server` rule with
 `enforce_sftp_policy: true` is how an exec of the sftp server binary is
 held to it.
 
+**The bastion cannot reach a target whose host key is signed by a CA.**
+`known_hosts` needs an `@cert-authority` line naming that CA and the hosts
+it signs for; a plain entry trusts one key and says nothing about a
+certificate. The refusal names what failed — `no authorities for hostname`
+means no `@cert-authority` line covers the host being dialled, and
+`ssh: principal "x" not in the set of valid principals` means the
+certificate was signed for another name. The principal checked is the
+host without the port, as OpenSSH does it, so a certificate for
+`db1.example.net` covers `db1.example.net:22` and `db1.example.net:2222`
+alike.
+
+**A revoked key is still being accepted.** Check the marker: it is
+`@revoked`, and a line without the `@` is read as a host pattern. A
+correct `@revoked` line refuses that key before any other line in the file
+is consulted, and for a certificate it also refuses the key inside it and
+the authority that signed it.
+
+**The listener will not bind: "no host keys in the file".** The
+`known_hosts` file holds no plain entry and no `@cert-authority` line —
+only revocations, comments or nothing. That is refused at bind rather than
+at the first session, because a file that trusts nothing refuses every
+target.
+
 **Port forwarding is refused.** Two separate gates: `direct-tcpip` must
 be in `allow_channels`, and the destination must be in `forward`.
 Validation refuses one without the other, so a listener that allows the

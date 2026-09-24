@@ -536,6 +536,22 @@ func (se *session) sftpYARAReport(f *sftpFile) {
 // known_hosts file. The file is read once, at build time: a bastion
 // that re-reads it per connection would accept a key added between two
 // connections of the same session.
+//
+// Three kinds of line are honoured, which is what the file means:
+//
+//   - A plain entry trusts that key for those hosts.
+//   - An "@cert-authority" entry trusts a *certificate authority* for
+//     them, so a target presenting a host certificate that CA signed is
+//     accepted without its own key being listed. That is how an estate
+//     that rebuilds machines avoids editing known_hosts everywhere, and
+//     without it such a target is simply refused.
+//   - A "revoked" entry refuses that key outright, before any other line
+//     is consulted. A revoked key that another line still trusts is the
+//     case the marker exists for.
+//
+// The certificate itself is checked by the library: the signature, the
+// validity window and whether the principals cover the host being
+// reached. Nothing here re-implements that.
 func knownHostsCallback(path string) (cssh.HostKeyCallback, error) {
 	raw, err := os.ReadFile(path) //nolint:gosec // a path from the configuration
 	if err != nil {
@@ -545,7 +561,8 @@ func knownHostsCallback(path string) (cssh.HostKeyCallback, error) {
 		hosts []string
 		key   string
 	}
-	var entries []entry
+	var entries, authorities []entry
+	revoked := map[string]bool{}
 	for len(raw) > 0 {
 		marker, hosts, key, _, rest, err := cssh.ParseKnownHosts(raw)
 		if errors.Is(err, io.EOF) {
@@ -555,33 +572,91 @@ func knownHostsCallback(path string) (cssh.HostKeyCallback, error) {
 			return nil, err
 		}
 		raw = rest
-		if marker == "revoked" {
-			// A revoked key is one to refuse, and this loader has no
-			// way to express that beyond not accepting it. Treating it
-			// as a trusted entry would be the opposite of what the file
-			// says, so it is dropped.
-			continue
+		e := entry{hosts: hosts, key: string(key.Marshal())}
+		switch marker {
+		case "revoked":
+			revoked[e.key] = true
+		case "cert-authority":
+			authorities = append(authorities, e)
+		default:
+			entries = append(entries, e)
 		}
-		entries = append(entries, entry{hosts: hosts, key: string(key.Marshal())})
 	}
-	if len(entries) == 0 {
+	if len(entries) == 0 && len(authorities) == 0 {
 		return nil, errors.New("no host keys in the file")
 	}
-	return func(hostname string, remote net.Addr, key cssh.PublicKey) error {
-		want := string(key.Marshal())
-		addr := remote.String()
-		for _, e := range entries {
-			if e.key != want {
-				continue
+	// A host pattern matches the name dialled, the address behind it, or
+	// the name with the port this session used. It is the same tolerance
+	// the plain entries have always had here, and a certificate's own
+	// principal list is checked separately by the library.
+	covers := func(hosts []string, hostname, addr string) bool {
+		for _, h := range hosts {
+			if h == hostname || h == addr || strings.HasPrefix(hostname, h+":") {
+				return true
 			}
-			for _, h := range e.hosts {
-				if h == hostname || h == addr || strings.HasPrefix(hostname, h+":") {
-					return nil
-				}
+		}
+		return false
+	}
+	return func(hostname string, remote net.Addr, key cssh.PublicKey) error {
+		addr := remote.String()
+		cert, isCert := key.(*cssh.Certificate)
+		// Revocation first, and for a certificate it covers the
+		// certificate's own key and the authority that signed it: one
+		// line then takes back a credential or every credential an
+		// authority ever issued.
+		for _, k := range revokedKeys(key, cert, isCert) {
+			if revoked[k] {
+				return fmt.Errorf("host key for %s is revoked in known_hosts (%s)", hostname, cssh.FingerprintSHA256(key))
+			}
+		}
+		if isCert {
+			checker := &cssh.CertChecker{
+				// Revocation is decided above, for the certificate's key
+				// and for this authority alike, so there is one place
+				// that says what a revoked line means.
+				IsHostAuthority: func(auth cssh.PublicKey, address string) bool {
+					k := string(auth.Marshal())
+					for _, a := range authorities {
+						if a.key == k && covers(a.hosts, hostname, address) {
+							return true
+						}
+					}
+					return false
+				},
+			}
+			// CheckHostKey verifies the signature, that this is a host
+			// certificate rather than a user one, the validity window and
+			// that the principals cover the address being reached.
+			if err := checker.CheckHostKey(hostname, remote, cert); err != nil {
+				return fmt.Errorf("host certificate for %s: %w", hostname, err)
+			}
+			return nil
+		}
+		want := string(key.Marshal())
+		for _, e := range entries {
+			if e.key == want && covers(e.hosts, hostname, addr) {
+				return nil
 			}
 		}
 		return fmt.Errorf("host key for %s is not in known_hosts (%s)", hostname, cssh.FingerprintSHA256(key))
 	}, nil
+}
+
+// revokedKeys are the keys a revocation line could name for this
+// credential: the key itself, and for a certificate the key inside it and
+// the authority that signed it.
+func revokedKeys(key cssh.PublicKey, cert *cssh.Certificate, isCert bool) []string {
+	out := []string{string(key.Marshal())}
+	if !isCert {
+		return out
+	}
+	if cert.Key != nil {
+		out = append(out, string(cert.Key.Marshal()))
+	}
+	if cert.SignatureKey != nil {
+		out = append(out, string(cert.SignatureKey.Marshal()))
+	}
+	return out
 }
 
 // copyBounded copies without the large buffer io.Copy would allocate

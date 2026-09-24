@@ -2394,6 +2394,21 @@ credential the client never holds, so a key that leaves the estate is
 not a key that opens a server in it. `upstream_known_hosts` is what makes
 the bastion the one place that can notice a machine in the middle.
 
+**Host certificates.** An estate that rebuilds machines signs each new
+host key with a host CA precisely so that nobody has to edit
+`known_hosts` everywhere, and an `@cert-authority` line is how the file
+says so. The certificate is then checked as OpenSSH checks it: the
+signature against that authority, that it is a **host** certificate
+rather than a user one, its validity window, and that its principals
+cover the host being reached (the name without the port, as OpenSSH
+does). An authority is trusted only for the hosts its own line names.
+
+**Revocation wins.** `@revoked` refuses the key it names whatever else
+the file says — the case the marker exists for is a key that is still
+listed as trusted somewhere — and for a certificate it covers the key
+inside it and the authority that signed it.
+
+
 An ssh listener takes `address` and `ssh` and no `tls`: SSH carries its
 own transport security. Bans and the global connection limits apply at
 accept. Changing the `ssh` section rebinds the listener on reload, and
@@ -2433,7 +2448,7 @@ the credentials are read then — not per connection, so a key added to
 | `remote_forward` | bool | `false` | Accept `tcpip-forward`, which asks the target to listen on the client's behalf and turns the session into an inbound path |
 | `upstream_user` | name | the authenticated name | The account on the target |
 | `upstream_key_file` | path | required | The private key the proxy authenticates to the target with |
-| `upstream_known_hosts` | path | required unless insecure | OpenSSH known_hosts the target's key is checked against. `revoked` entries are not trusted |
+| `upstream_known_hosts` | path | required unless insecure | OpenSSH known_hosts the target's key is checked against, read once at bind. All three kinds of line are honoured: a plain entry trusts that key, an `@cert-authority` entry trusts a host CA (so a target presenting a host certificate that CA signed is accepted without its own key being listed), and an `@revoked` entry refuses the key it names before any other line is consulted — including the authority, which takes back every certificate that CA ever signed. A file that trusts nothing is a bind error |
 | `upstream_insecure_host_key` | bool | `false` | Accept any host key from the target. Refused unless `allow_insecure` is also set, and warned about: it is the one setting here that leaves nothing to notice a machine in the middle |
 | `recording` | object | none | Record what a session showed, to a file per channel; see below |
 | `mfa` | object | none | Require a second factor after the key or the password; see below |

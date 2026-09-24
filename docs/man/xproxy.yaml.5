@@ -4595,6 +4595,10 @@ The two connections are the point. A jump host that forwards the stream cannot s
 .PP
 It also means the target never sees the client\(aqs key. The client authenticates to the proxy; the proxy authenticates to the target with a credential the client never holds, so a key that leaves the estate is not a key that opens a server in it. \fBupstream_known_hosts\fR is what makes the bastion the one place that can notice a machine in the middle.
 .PP
+\fBHost certificates.\fR An estate that rebuilds machines signs each new host key with a host CA precisely so that nobody has to edit \fBknown_hosts\fR everywhere, and an \fB@cert\-authority\fR line is how the file says so. The certificate is then checked as OpenSSH checks it: the signature against that authority, that it is a \fBhost\fR certificate rather than a user one, its validity window, and that its principals cover the host being reached (the name without the port, as OpenSSH does). An authority is trusted only for the hosts its own line names.
+.PP
+\fBRevocation wins.\fR \fB@revoked\fR refuses the key it names whatever else the file says \[u2014] the case the marker exists for is a key that is still listed as trusted somewhere \[u2014] and for a certificate it covers the key inside it and the authority that signed it.
+.PP
 An ssh listener takes \fBaddress\fR and \fBssh\fR and no \fBtls\fR: SSH carries its own transport security. Bans and the global connection limits apply at accept. Changing the \fBssh\fR section rebinds the listener on reload, and the credentials are read then \[u2014] not per connection, so a key added to \fBauthorized_keys\fR takes effect on reload rather than mid\-session.
 .PP
 .TS
@@ -4896,7 +4900,7 @@ path
 T}	T{
 required unless insecure
 T}	T{
-OpenSSH known_hosts the target\(aqs key is checked against. \fBrevoked\fR entries are not trusted
+OpenSSH known_hosts the target\(aqs key is checked against,\: read once at bind. All three kinds of line are honoured: a plain entry trusts that key,\: an \fB@cert\-\:authority\fR entry trusts a host CA (so a target presenting a host certificate that CA signed is accepted without its own key being listed),\: and an \fB@revoked\fR entry refuses the key it names before any other line is consulted \[u2014] including the authority,\: which takes back every certificate that CA ever signed. A file that trusts nothing is a bind error
 T}
 T{
 \fBupstream_\:insecure_\:host_\:key\fR
