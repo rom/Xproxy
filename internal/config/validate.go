@@ -433,6 +433,21 @@ func (v *validator) config(c *Config) {
 				}
 			}
 		}
+		if n := c.Server.Listeners[i].NTP; n != nil && n.Upstream != "" {
+			if !upstreams[n.Upstream] {
+				v.errf("server.listeners[%d].ntp.upstream: unknown upstream %q", i, n.Upstream)
+			} else if endpoints := endpointsOf(c, n.Upstream); endpoints > 0 && endpoints < 3 {
+				// Two sources can disagree and neither can be shown to
+				// be the wrong one. Three is where a relay can say which
+				// clock to stop believing, which is the whole reason for
+				// comparing them.
+				v.warnf("server.listeners[%d].ntp.upstream %q has %d server(s): with fewer than three, a disagreement can be reported but the wrong clock cannot be identified",
+					i, n.Upstream, endpoints)
+			}
+		}
+		if k := c.Server.Listeners[i].NTSKE; k != nil && k.Upstream != "" && !upstreams[k.Upstream] {
+			v.errf("server.listeners[%d].ntske.upstream: unknown upstream %q", i, k.Upstream)
+		}
 		if h := c.Server.Listeners[i].SSH; h != nil && h.Upstream != "" && !upstreams[h.Upstream] {
 			v.errf("server.listeners[%d].ssh.upstream: unknown upstream %q", i, h.Upstream)
 		}
@@ -791,6 +806,24 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.modbusListener(p+".modbus", ln.Modbus, ln.TLS != nil)
 			}
+		case "ntp":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: an ntp listener takes only address and ntp: the time service is UDP, and its TLS is the ntske listener's", p)
+			}
+			if ln.NTP == nil {
+				v.errf("%s.ntp: required for kind ntp", p)
+			} else {
+				v.ntpListener(p+".ntp", ln.NTP)
+			}
+		case "ntske":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an ntske listener takes only address and ntske", p)
+			}
+			if ln.NTSKE == nil {
+				v.errf("%s.ntske: required for kind ntske", p)
+			} else {
+				v.ntskeListener(p+".ntske", ln.NTSKE, ln.Address)
+			}
 		case "syslog":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
 				v.errf("%s: a syslog listener takes only address, syslog and tls", p)
@@ -812,6 +845,12 @@ func (v *validator) server(s *Server) {
 		}
 		if ln.Modbus != nil && ln.Kind != "modbus" {
 			v.errf("%s.modbus: set on a %s listener (kind: modbus)", p, ln.Kind)
+		}
+		if ln.NTP != nil && ln.Kind != "ntp" {
+			v.errf("%s.ntp: set on a %s listener (kind: ntp)", p, ln.Kind)
+		}
+		if ln.NTSKE != nil && ln.Kind != "ntske" {
+			v.errf("%s.ntske: set on a %s listener (kind: ntske)", p, ln.Kind)
 		}
 		if ln.FTP != nil && ln.Kind != "ftp" {
 			v.errf("%s.ftp: set on a %s listener (kind: ftp)", p, ln.Kind)
@@ -2346,7 +2385,7 @@ var denyReasons = map[string]bool{
 	"account_abuse": true, "api_abuse": true, "honeytoken": true, "scim": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
-	"modbus_denied": true,
+	"modbus_denied": true, "ntp_denied": true, "ntske_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -7566,4 +7605,279 @@ func (v *validator) threatIntel(t *ThreatIntel) {
 	if challenges && !v.hasChallenge {
 		v.errf("threat_intel: a list asks for a challenge and there is no challenge section, so there is nothing to challenge with")
 	}
+}
+
+// ntpListener checks the NTP and NTS gateway.
+//
+// Two things shape the checks. Every bound here is one a device on the
+// other side will not check for itself -- a clock is believed absolutely
+// -- and several of the settings are ones that turn a control off, so
+// those are warnings rather than silence: an estate should be able to
+// find out from validation that its time gateway is not comparing its
+// sources.
+func (v *validator) ntpListener(p string, n *NTPListener) {
+	switch n.Mode {
+	case "", "reverse", "forward":
+	default:
+		v.errf("%s.mode: must be reverse or forward", p)
+	}
+	if n.Upstream == "" {
+		v.errf("%s.upstream: required: a time gateway with no server has nothing to forward to", p)
+	}
+	for i, ver := range n.Versions {
+		switch {
+		case ver == 5:
+			v.errf("%s.versions[%d]: version 5 is not a version this parser reads; allow_version5 forwards it as opaque bytes", p, i)
+		case ver < 1 || ver > 4:
+			v.errf("%s.versions[%d]: %d is not an NTP version", p, i, ver)
+		case ver <= 2:
+			v.warnf("%s.versions[%d] is %d, which has no mode field of its own: accept it only where a device is known to need it", p, i, ver)
+		}
+	}
+	symmetric := false
+	for i, m := range n.Modes {
+		switch m {
+		case "client", "server":
+		case "symmetric_active", "symmetric_passive", "broadcast":
+			symmetric = true
+		case "control", "private":
+			v.errf("%s.modes[%d]: %q is not a time service mode and is always refused: mode 6 is the control protocol and mode 7 the private one monlist belongs to", p, i, m)
+		default:
+			v.errf("%s.modes[%d]: %q is not a mode", p, i, m)
+		}
+	}
+	if symmetric && len(n.Peers) == 0 {
+		v.errf("%s.peers: required when a symmetric or broadcast mode is accepted: those modes are relationships between named peers, not requests from whoever asks", p)
+	}
+	v.ntpCIDRs(p+".allow_clients", n.AllowClients)
+	v.ntpCIDRs(p+".deny_clients", n.DenyClients)
+	v.ntpCIDRs(p+".allow_servers", n.AllowServers)
+	v.ntpCIDRs(p+".peers", n.Peers)
+	v.ntpCIDRs(p+".manycast_responders", n.ManycastResponders)
+	if n.AllowManycast && len(n.ManycastResponders) == 0 {
+		v.errf("%s.manycast_responders: required with allow_manycast: manycast without a list of responders is an answer from whoever replies first", p)
+	}
+	if n.AllowVersion5 {
+		v.warnf("%s.allow_version5 forwards version 5 packets as opaque bytes: they are not parsed, so no rule here applies to them", p)
+	}
+	if a := n.Auth; a != nil {
+		ids := map[int]bool{}
+		for i := range a.Keys {
+			k := &a.Keys[i]
+			q := fmt.Sprintf("%s.auth.keys[%d]", p, i)
+			if k.ID < 1 || k.ID > 65535 {
+				v.errf("%s.id: must be between 1 and 65535", q)
+			} else if ids[k.ID] {
+				v.errf("%s.id: duplicate %d", q, k.ID)
+			}
+			ids[k.ID] = true
+			switch k.Algorithm {
+			case "", "aes-cmac":
+			case "md5", "sha1":
+				if !a.AllowLegacyAlgorithms {
+					v.errf("%s.algorithm: %s needs auth.allow_legacy_algorithms: RFC 8573 replaced it because the construction is a broken hash with a length extension", q, k.Algorithm)
+				} else {
+					v.warnf("%s.algorithm is %s, which RFC 8573 replaced with AES-CMAC: keep it only for a device that cannot be taught another", q, k.Algorithm)
+				}
+			default:
+				v.errf("%s.algorithm: must be aes-cmac, md5 or sha1", q)
+			}
+			switch {
+			case k.KeyFile == "":
+				v.errf("%s.key_file: required", q)
+			case !strings.HasPrefix(k.KeyFile, "/"):
+				v.errf("%s.key_file: must be an absolute path", q)
+			default:
+				v.file(q+".key_file", k.KeyFile)
+			}
+		}
+		if a.Require && len(a.Keys) == 0 && (n.NTS == nil || !n.NTS.Require) {
+			v.errf("%s.auth.require: needs keys, or nts.require: a listener that demands authentication it cannot check refuses every packet", p)
+		}
+		if a.ProbeKeyID != 0 && !ids[a.ProbeKeyID] {
+			v.errf("%s.auth.probe_key_id: %d is not one of the keys", p, a.ProbeKeyID)
+		}
+	}
+	if s := n.NTS; s != nil {
+		switch s.Mode {
+		case "", "passthrough", "off":
+		default:
+			v.errf("%s.nts.mode: must be passthrough or off", p)
+		}
+		if s.Require && s.Mode == "off" {
+			v.errf("%s.nts: require with mode off refuses every packet: NTS cannot be required by a listener that is not passing it", p)
+		}
+	}
+	if e := n.Extensions; e != nil {
+		if e.Max != 0 && (e.Max < 1 || e.Max > 32) {
+			v.errf("%s.extensions.max: must be between 1 and 32", p)
+		}
+		if e.AllowUnknown {
+			v.warnf("%s.extensions.allow_unknown forwards fields this relay cannot read, which is every field Autokey defined and anything else a sender invents", p)
+		}
+		if e.RefuseAmbiguousMAC != nil && !*e.RefuseAmbiguousMAC {
+			v.warnf("%s.extensions.refuse_ambiguous_mac is off, so a packet whose tail is both a MAC and an extension field is forwarded on this relay's reading of it (RFC 7822 cannot tell them apart)", p)
+		}
+	}
+	if q := n.Quality; q != nil {
+		if q.CompareSources != nil && !*q.CompareSources {
+			v.warnf("%s.quality.compare_sources is off, so nothing here notices a server that is reachable, synchronised and wrong -- which is the failure a relay can catch and a client cannot", p)
+		}
+		if d := q.ProbeInterval.D(); q.ProbeInterval != 0 && (d < time.Second || d > time.Hour) {
+			v.errf("%s.quality.probe_interval: must be between 1s and 1h", p)
+		}
+		for _, f := range []struct {
+			key string
+			val Duration
+		}{{"max_disagreement", q.MaxDisagreement}, {"max_offset", q.MaxOffset}, {"max_delay", q.MaxDelay},
+			{"max_root_delay", q.MaxRootDelay}, {"max_root_dispersion", q.MaxRootDispersion}} {
+			if f.val < 0 || f.val > Duration(time.Hour) {
+				v.errf("%s.quality.%s: must be between 0 and 1h", p, f.key)
+			}
+		}
+		if q.MaxStratum < 0 || q.MaxStratum > 16 {
+			v.errf("%s.quality.max_stratum: must be between 0 and 16", p)
+		}
+		for _, f := range []struct {
+			key string
+			val int
+		}{{"healthy_after", q.HealthyAfter}, {"unhealthy_after", q.UnhealthyAfter}} {
+			if f.val < 0 || f.val > 100 {
+				v.errf("%s.quality.%s: must be between 0 and 100", p, f.key)
+			}
+		}
+		switch q.OnAllSuspect {
+		case "", "pass":
+		case "refuse":
+			v.warnf("%s.quality.on_all_suspect is refuse, so this listener stops answering when no server can be trusted: that is a deliberate outage rather than a wrong clock, and it has to be the estate's choice", p)
+		default:
+			v.errf("%s.quality.on_all_suspect: must be pass or refuse", p)
+		}
+		if q.RefuseUnsynchronised != nil && !*q.RefuseUnsynchronised {
+			v.warnf("%s.quality.refuse_unsynchronised is off, so an answer from a server that says its own clock is not synchronised is passed to the clients", p)
+		}
+	}
+	if h := n.Holdover; h != nil && (h.MaxDuration < 0 || h.MaxDuration > Duration(24*time.Hour)) {
+		v.errf("%s.holdover.max_duration: must be between 0 and 24h", p)
+	}
+	if l := n.Learn; l != nil && l.Enabled {
+		if l.File == "" {
+			v.errf("%s.learn.file: required when learning is enabled", p)
+		} else if !strings.HasPrefix(l.File, "/") {
+			v.errf("%s.learn.file: must be an absolute path", p)
+		}
+		if l.Interval != 0 && (l.Interval.D() < 10*time.Second || l.Interval.D() > 24*time.Hour) {
+			v.errf("%s.learn.interval: must be between 10s and 24h", p)
+		}
+		if l.MaxSubjects != 0 && (l.MaxSubjects < 16 || l.MaxSubjects > 1_000_000) {
+			v.errf("%s.learn.max_subjects: must be between 16 and 1000000", p)
+		}
+		if !l.Enforce {
+			v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: turn enforce on, or take the learning section out, once the lists are written", p)
+		}
+	}
+	if tr := n.Trace; tr != nil {
+		if tr.File == "" {
+			v.errf("%s.trace.file: required", p)
+		} else if !strings.HasPrefix(tr.File, "/") {
+			v.errf("%s.trace.file: must be an absolute path", p)
+		}
+		if tr.MaxBytes != 0 && (tr.MaxBytes < 1<<20 || tr.MaxBytes > 64<<30) {
+			v.errf("%s.trace.max_bytes: must be between 1MiB and 64GiB", p)
+		}
+	}
+	if n.MaxPacketBytes != 0 && (n.MaxPacketBytes < 48 || n.MaxPacketBytes > 9000) {
+		v.errf("%s.max_packet_bytes: must be between 48, the header, and 9000", p)
+	}
+	if n.MaxExtensions != 0 && (n.MaxExtensions < 1 || n.MaxExtensions > 32) {
+		v.errf("%s.max_extensions: must be between 1 and 32", p)
+	}
+	for _, f := range []struct {
+		key string
+		val int
+	}{{"max_associations", n.MaxAssociations}, {"max_outstanding", n.MaxOutstanding}} {
+		if f.val != 0 && (f.val < 16 || f.val > 1_000_000) {
+			v.errf("%s.%s: must be between 16 and 1000000", p, f.key)
+		}
+	}
+	if d := n.IdleTimeout; d != 0 && (d < Duration(time.Second) || d > Duration(24*time.Hour)) {
+		v.errf("%s.idle_timeout: must be between 1s and 24h", p)
+	}
+	if d := n.RequestTimeout; d != 0 && (d < Duration(100*time.Millisecond) || d > Duration(time.Minute)) {
+		v.errf("%s.request_timeout: must be between 100ms and 1m", p)
+	}
+	for _, f := range []struct {
+		key string
+		val int
+	}{{"rate_limit", n.RateLimit}, {"rate_burst", n.RateBurst},
+		{"prefix_rate_limit", n.PrefixRateLimit}, {"prefix_rate_burst", n.PrefixRateBurst}} {
+		if f.val < 0 || f.val > 1_000_000 {
+			v.errf("%s.%s: must be between 0 and 1000000", p, f.key)
+		}
+	}
+	if n.RatePrefixLength < 0 || n.RatePrefixLength > 128 {
+		v.errf("%s.rate_prefix_length: must be between 0 and 128", p)
+	}
+	// The advice.
+	if len(n.AllowClients) == 0 && len(n.DenyClients) == 0 {
+		v.warnf("%s.allow_clients is empty, so any client that can reach this listener gets the time from it: an open NTP port is also an amplifier, and the modes that amplify are refused here but the traffic still arrives", p)
+	}
+	if n.RateLimit == 0 && n.PrefixRateLimit == 0 {
+		v.warnf("%s has no rate limit, so one client can spend the servers' whole answer budget: a poll is once a minute and a flood is thousands a second", p)
+	}
+}
+
+// ntpCIDRs checks a list of networks.
+func (v *validator) ntpCIDRs(what string, list []string) {
+	for i, s := range list {
+		if _, err := netip.ParsePrefix(s); err != nil {
+			v.errf("%s[%d]: %q is not a network in CIDR form", what, i, s)
+		}
+	}
+}
+
+// ntskeListener checks the NTS key establishment relay.
+func (v *validator) ntskeListener(p string, k *NTSKEListener, address string) {
+	if k.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.ntpCIDRs(p+".allow_clients", k.AllowClients)
+	v.ntpCIDRs(p+".deny_clients", k.DenyClients)
+	for i, n := range k.ServerNames {
+		if !hostPatternOK(n) {
+			v.errf("%s.server_names[%d]: %q is not a valid host pattern", p, i, n)
+		}
+	}
+	if k.MaxConnections != 0 && (k.MaxConnections < 1 || k.MaxConnections > 65536) {
+		v.errf("%s.max_connections: must be between 1 and 65536", p)
+	}
+	if k.MaxConcurrentHandshakes != 0 && (k.MaxConcurrentHandshakes < 1 || k.MaxConcurrentHandshakes > 4096) {
+		v.errf("%s.max_concurrent_handshakes: must be between 1 and 4096", p)
+	}
+	if d := k.HandshakeTimeout; d != 0 && (d < Duration(time.Second) || d > Duration(time.Minute)) {
+		v.errf("%s.handshake_timeout: must be between 1s and 1m", p)
+	}
+	if d := k.IdleTimeout; d != 0 && (d < Duration(time.Second) || d > Duration(10*time.Minute)) {
+		v.errf("%s.idle_timeout: must be between 1s and 10m", p)
+	}
+	if k.MaxBytes != 0 && (k.MaxBytes < 1024 || k.MaxBytes > 1<<30) {
+		v.errf("%s.max_bytes: must be between 1024 and 1GiB", p)
+	}
+	if !k.ALPNRequired() {
+		v.warnf("%s.require_alpn is off, so a connection to this port that is not an NTS client is relayed anyway: the application protocol is the only thing the handshake shows that says what a connection is for", p)
+	}
+	if _, port, err := net.SplitHostPort(address); err == nil && port != "4460" && port != "0" {
+		v.warnf("%s is on port %s rather than 4460: a client that found this service through a server's own key establishment record will look for 4460", p, port)
+	}
+}
+
+// endpointsOf is how many endpoints a named pool has, for the advice that
+// depends on it.
+func endpointsOf(c *Config, name string) int {
+	for i := range c.Upstreams {
+		if c.Upstreams[i].Name == name {
+			return len(c.Upstreams[i].Endpoints)
+		}
+	}
+	return 0
 }

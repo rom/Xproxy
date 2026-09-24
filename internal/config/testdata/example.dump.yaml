@@ -27,6 +27,8 @@ server:
           ftp: null
           syslog: null
           modbus: null
+          ntp: null
+          ntske: null
         - name: public
           address: :443
           protocols:
@@ -73,6 +75,8 @@ server:
           ftp: null
           syslog: null
           modbus: null
+          ntp: null
+          ntske: null
     limits:
         max_header_bytes: 65536
         max_body_bytes: 10485760

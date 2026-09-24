@@ -4,10 +4,19 @@ Xproxy is a security proxy that terminates protocols rather than
 forwarding bytes. It is an HTTP/1.1, HTTP/2 and HTTP/3 reverse proxy
 and load balancer with a web application firewall, a ban list, rate
 limiting and load shedding at its core — and, around that core, the
-other protocols an estate actually runs: SMTP and submission, MQTT, an
-SSH bastion with SFTP inspection, DNS over UDP, TCP, TLS, HTTPS and
-QUIC, SOCKS5 and MASQUE on a forward proxy, and layer 4 passthrough
-where terminating would be wrong.
+other protocols an estate actually runs:
+
+- **the edge**: DNS over UDP, TCP, TLS, HTTPS and QUIC; a forward proxy
+  speaking CONNECT, SOCKS5 and MASQUE with optional TLS interception;
+  layer 4 TCP and QUIC passthrough and a generic datagram relay, where
+  terminating would be wrong;
+- **the bastion**: an SSH jump host with SFTP inspection, and telnet,
+  VNC and RDP gateways that terminate the protocol, record the session
+  and can ask for a second factor;
+- **the relay**: SMTP and submission, MQTT, FTP with the data channel
+  mediated, a syslog relay that re-emits every record, Modbus in both
+  directions for equipment that cannot be patched, and an NTP and NTS
+  time gateway that compares its sources rather than believing one.
 
 It is not one binary but three, split by who is on the other end of the
 socket: **xproxy** faces the internet, **xgate** faces people, **xrelay**
@@ -47,6 +56,16 @@ once, and never pass on what you could not read.**
   exactly the reply the client would read differently.
 - An unimplemented extended-CONNECT protocol is answered `501`, not
   quietly turned into a TCP tunnel.
+- A Modbus RTU frame has no delimiters, so its length is computed from
+  the function code and proved by the checksum; a frame that cannot be
+  measured is refused rather than guessed at, because the device behind
+  it will read those bytes somehow.
+- An NTP packet is forty-eight octets of header and then extension
+  fields, a MAC, both or neither — and RFC 7822 cannot always tell the
+  last field from a MAC. The relay reads it the way every
+  implementation does *and says the reading was a choice*, which a
+  policy can then refuse, because that ambiguity is two peers
+  disagreeing about what was said.
 
 The same rule is why terminating is the default. A jump host that
 forwards an SSH stream cannot tell a shell from a port forward, so the
@@ -75,7 +94,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -84,7 +103,7 @@ the HTTP data plane: it is an error naming the daemon that serves it.
 client ──▶ listener (accept limits, bans) ──▶ admission pipeline ──▶ route action ──▶ upstream pool
        http | tcp | udp | forward | dns         concurrency, host and       proxy, redirect,      balancer, health,
         smtp | mqtt | ftp | syslog | modbus     path checks, route match,   respond, honeypot,    ejection, retries,
-        ssh | telnet | vnc | rdp                country, ACL, challenge,    static files          affinity, mirror
+        ntp | ntske | ssh | telnet | vnc | rdp  country, ACL, challenge,    static files          affinity, mirror
                                                 shedding, rate limits,
                                                 body limit, filters
                                                 (auth, MFA, WAF, YARA,
@@ -128,12 +147,23 @@ an identifier from the access log to the upstream.
   expression, method, header and cookie conditions, priority and gRPC
   service or method; redirects, static responses, path rewriting,
   header operations, per route timeouts and body limits
-- Upstream pools with round robin, weighted, least connections and
-  consistent hashing; active HTTP or gRPC health checks, passive outlier
-  ejection, a circuit breaker with half open probing, concurrency
-  limits with a bounded queue, retries on connection errors and chosen
-  statuses, signed cookie affinity, canary endpoints selected by header,
-  cookie or share
+- Upstream pools with round robin, weighted, least connections,
+  consistent hashing, power-of-two-choices and latency-aware balancing;
+  active HTTP, gRPC or datagram health checks, passive outlier ejection,
+  a circuit breaker with half open probing, concurrency limits with a
+  bounded queue, retries on connection errors and chosen statuses within
+  a **retry budget**, **hedged requests** for the tail, signed cookie
+  affinity, canary endpoints selected by header, cookie or share
+- Endpoints from static addresses, hostnames re-resolved on a timer, DNS
+  SRV records, or a **Consul** registry; **Unix domain sockets** as
+  endpoints; priority tiers with a backup pool and locality preference
+  that spills over rather than pinning; **drain** and maintenance state
+  per endpoint, a connection age bound, a per-endpoint connection limit,
+  slow start for a cold instance, and an explicit address-family policy
+  for dual-stack endpoints (**Happy Eyeballs**, or restricted on purpose)
+- **Transparent interception** where the network does the redirecting:
+  `IP_TRANSPARENT` with the original destination read from the socket, so
+  a layer 4 listener can front traffic that was never addressed to it
 - Response caching with per route key policies, `Vary` and conditional
   requests; gzip, brotli and zstd compression of eligible responses,
   negotiated with the client; request mirroring
@@ -143,6 +173,17 @@ an identifier from the access log to the upstream.
   single page application fallback, confined to the root
 - gRPC: errors answered as gRPC statuses, `grpc-timeout` honoured,
   trailers relayed, per code counters
+- The gateway behaviours a modern client expects, each with a policy
+  rather than a default: **Early Hints** (103) from a route's own list or
+  an upstream's, **early data** accepted, refused or accepted only for
+  safe methods (a 0-RTT request is replayable by definition), HTTP/2 and
+  HTTP/3 **priority** signals honoured or ignored deliberately, a
+  **trailers** policy per route, and a **Range** policy that bounds how
+  many ranges a request may ask for and how small they may be, because a
+  thousand one-byte ranges is an amplifier rather than a download
+- **API version routing**: a version taken from the path, a header, a
+  query parameter or a media type, so one route set can front several
+  API versions and the inventory knows which is which
 
 **Defence**
 
@@ -164,7 +205,14 @@ an identifier from the access log to the upstream.
   fingerprint, header, cookie, token claim) with reject or tarpit; CIDR
   allow and deny lists; trusted proxy handling for forwarded addresses
 - API inventory discovered from traffic, with shadow, zombie and
-  superseded endpoints against OpenAPI descriptions
+  superseded endpoints against OpenAPI descriptions; **API abuse
+  detection** per identity over a window — distinct objects touched,
+  consecutive identifiers, the share of requests refused — which is what
+  enumeration looks like when every single request is allowed
+- **Threat intelligence lists**: imported CIDR and JA4 lists with an
+  action each (log, challenge, deny), refreshed on disk, with routes
+  that can be exempt from them — because a feed nobody can exempt is a
+  feed that eventually blocks the payment provider
 - Origin lock: per request signatures the origin verifies, mutual TLS
   and network rules so an application accepts only proxied traffic
 - Sensitive data detection in both directions: cards, identity numbers,
@@ -177,8 +225,17 @@ an identifier from the access log to the upstream.
   parameters, size bounds) and virtual patches that block a published
   vulnerability by request shape, with counters and expiry
 - Web application firewall on the bundled OWASP Core Rule Set through
-  Coraza: block or detect per route, custom rules and exclusions,
-  bounded request and response inspection
+  Coraza: block or detect per route, custom rules, plugins and
+  exclusions, bounded request and response inspection, the encodings a
+  body can hide in decoded before the rules run, **learning mode** that
+  proposes exclusions from real traffic, per-rule statistics with a
+  **measured confidence** so a rule's own history decides whether it
+  blocks, and gradual enforcement by block share or canary client
+- **XML and SOAP bodies**: entity expansion, external entities and
+  nesting bounded before the application's parser sees them, with schema
+  validation where a schema exists; **GraphQL** depth, breadth,
+  complexity and introspection bounds; **OpenAPI** descriptions used as
+  an allow list, read from a file or a URL and re-read when they change
 - Ban list: repeated denies of any category become escalating temporary
   bans dropped at accept, persisted across restarts, shared across a
   cluster and managed from the CLI; triggers aggregate by network or
@@ -196,7 +253,7 @@ an identifier from the access log to the upstream.
 - Bot classification from JA3 and JA4 fingerprints, headers and
   behaviour, with log, challenge and deny thresholds; country policy
   from a local MaxMind or CSV database
-- Honeypot routes with a hundred and forty-two built-in decoys — from
+- Honeypot routes with 138 built-in decoys — from
   a WordPress login to a cloud metadata document, a container registry
   catalogue, a Werkzeug debugger, an IP camera, a Postfix `main.cf`, a
   broker ACL file and an `authorized_keys` — that mark probing
@@ -210,21 +267,71 @@ an identifier from the access log to the upstream.
 **Identity**
 
 - JWT validation at the edge with JWKS rotation, algorithm allow lists
-  and claim forwarding
+  and claim forwarding; OAuth 2.0 token introspection (RFC 7662) for the
+  opaque tokens a JWT check cannot see inside, with a bounded cache
+- **Sender-constrained tokens**, so a stolen bearer token is not enough:
+  DPoP proof of possession (RFC 9449) with a replay window, and
+  certificate-bound access tokens (RFC 8705) checked against the
+  client certificate on the connection
 - OpenID Connect login (the authorization code flow) with sealed
   session cookies, required claims, identity headers for applications
-  and logout through the provider
-- HTTP Basic authentication from a file of PBKDF2 hashes, and LDAP
-  bind against a directory
+  and logout through the provider, front channel included
+- SAML 2.0 as a service provider: the web browser single sign-on
+  profile in a deliberately narrow shape — one unencrypted assertion,
+  exclusive canonicalization, SHA-256 and above, the signing key from
+  the configuration — because every widened option in a SAML
+  implementation is a signature-wrapping bug waiting to be found
+- HTTP Basic authentication from a file of PBKDF2 hashes, LDAP bind
+  against a directory, API keys with scopes and a lifecycle, and client
+  certificate identity passed to applications as RFC 9440's
+  `Client-Cert` or Envoy's `X-Forwarded-Client-Cert` — your choice, and
+  neither by default
+- **WebAuthn** as a relying party: passkeys for registration and
+  authentication, with attestation parsed and deliberately not trusted
+  (it identifies a model, not a person)
+- **SCIM 2.0** provisioning, so an identity provider can create and
+  disable the second-factor enrolments and API keys this proxy holds
+  rather than somebody doing it by hand
 - A second factor shared by every protocol that can ask for one: TOTP
-  against one enrolment file, asked for over keyboard-interactive on
-  the SSH bastion and through a filter in front of a web application.
-  One implementation on purpose — a second factor that means different
-  things on different ports is not a second factor, because the weakest
-  door decides. A code is spent when used, every failure gets the same
-  answer, and guessing is bounded by a lockout
+  against one enrolment file, over keyboard-interactive on the SSH
+  bastion, in a prompt the telnet gateway writes, in VeNCrypt's plain
+  credential on the VNC gateway, carried in the password field on the
+  RDP gateway (which has nowhere else to ask) and stripped before the
+  password travels on, before an FTP session is brokered, and through a
+  filter in front of a web application. One implementation on purpose —
+  a second factor that means different things on different ports is not
+  a second factor, because the weakest door decides. A code is spent
+  when used, every failure gets the same answer, and guessing is bounded
+  by a lockout
+- **Authorisation as one policy**: every authenticating filter answers
+  "who"; `authz` answers "what may they do", deciding on the subject,
+  groups, scopes and claims those filters verified — default deny, first
+  match wins, and nothing a client sent can reach a rule
 
-**Other listener kinds**
+**Every listener kind**
+
+`kind: http` is the pipeline above. The others reuse its accept limits,
+bans, logs, upstream pools and management plane, and each reads its own
+protocol so that a policy can be written in that protocol's own terms:
+
+| Kind | Daemon | Protocol | What it decides about |
+|------|--------|----------|-----------------------|
+| `http` | `xproxy` | HTTP/1.1, HTTP/2, HTTP/3 | Hosts, paths, methods, headers, bodies: routes, filters, the WAF, the cache |
+| `tcp` | `xproxy` | TLS and QUIC passthrough | The server name, without terminating; YARA over the bytes |
+| `udp` | `xproxy` | Any datagram protocol | Who may send, how large, how often, how long a session lives |
+| `forward` | `xproxy` | CONNECT, SOCKS5, MASQUE, TLS interception | Destinations, credentials, and the plaintext inside a tunnel when asked |
+| `dns` | `xproxy` | DNS over UDP, TCP, TLS, HTTPS, QUIC | Names, answers, response policy zones, tunnelling |
+| `ssh` | `xgate` | SSH and SFTP | Channels, commands, forwards, paths, file operations; recording, MFA |
+| `telnet` | `xgate` | Telnet (RFC 854 NVT) | Options in both directions; recording, MFA |
+| `vnc` | `xgate` | RFB 3.3–3.8, VeNCrypt, vendor security types | Security type, whose credential opens the desktop, view-only, the picture's bounds; recording, MFA |
+| `rdp` | `xgate` | RDP over TLS, NLA, or the protocol's own encryption | Channels, devices, the connection sequence; recording, MFA |
+| `smtp` | `xrelay` | SMTP and submission | Commands, where a message ends, TLS and authentication, bounds |
+| `mqtt` | `xrelay` | MQTT 3.1.1 and 5.0 | Topics and filters, client identifiers, retained messages, wills |
+| `ftp` | `xrelay` | FTP and FTPS | Commands, paths, extensions, and the data connection itself |
+| `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
+| `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules |
+| `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
+| `ntske` | `xrelay` | NTS key establishment (TLS on 4460) | The application protocol, the server name, the handshakes in flight |
 
 - `kind: tcp`: layer 4 TLS and QUIC passthrough routed by server name
   without terminating TLS, with PROXY protocol v2 to TCP upstreams and
@@ -251,14 +358,22 @@ an identifier from the access log to the upstream.
   key is refused if anybody but its owner can read it, and
   `bypass_hosts` names what is never decrypted at all
 - `kind: dns`: a DNS proxy over UDP, TCP, TLS, HTTPS and **QUIC** with
-  DNSSEC validation, a cache, block lists, sinkholes, client allow lists,
-  per client rate limits and **tunnelling detection** — query entropy,
+  DNSSEC validation, aggressive NSEC caching, a cache that can serve
+  stale and prefetch what is about to expire, block lists, sinkholes,
+  client allow lists, per client rate limits, DNS cookies, an
+  EDNS-client-subnet policy, **split-horizon views** that answer the
+  same name differently by client network, **DNS64** for IPv6-only
+  clients, **response policy zones** read from the zone files a feed
+  publishes (the QNAME trigger and the five actions, with the
+  unsupported triggers refused by name rather than silently ignored), an
+  answer policy that screens upstream answers for rebinding and
+  metadata ranges, and **tunnelling detection** — query entropy,
   subdomain cardinality, TXT share, NXDOMAIN rate and encoded bytes,
   measured per client per registered domain, with several required to
-  agree before anything is called exfiltration; it advertises its own encrypted endpoints
-  through RFC 9462 discovery so clients upgrade themselves, and answers
-  the SVCB and HTTPS records for the names it fronts, which is the other
-  half of Encrypted Client Hello
+  agree before anything is called exfiltration. It advertises its own
+  encrypted endpoints through RFC 9462 discovery so clients upgrade
+  themselves, and answers the SVCB and HTTPS records for the names it
+  fronts, which is the other half of Encrypted Client Hello
 - `kind: smtp`: SMTP and submission with STARTTLS or implicit TLS,
   where the proxy decides where every command and every message ends and
   writes each one out again. `CHUNKING` is never relayed, a bare newline
@@ -270,6 +385,14 @@ an identifier from the access log to the upstream.
   and a deny list by overlap — which is what stops a device asking for
   `#`. The will goes through the publish policy at CONNECT, the only
   moment there is
+- `kind: ftp`: an FTP proxy that is actually in the middle. FTP puts
+  every transfer on a second connection whose address one side
+  announces to the other, so a proxy that forwards that reply has told
+  the client to go round it; this one rewrites the address and is one
+  end of both connections. Commands, paths, extensions, a bound on a
+  transfer and YARA over uploads; AUTH TLS both ways. **`PORT` is
+  refused by default** — it asks the proxy to connect to an address the
+  client names, which is the bounce attack
 - `kind: syslog`: a syslog relay that reads what it forwards. Almost
   every field in a record is written by the sender and believed by the
   collector, and a message whose text carries a newline becomes two
@@ -299,14 +422,27 @@ an identifier from the access log to the upstream.
   mode**, because nobody knows what a plant's Modbus traffic is — run it
   for a week and the file it writes is the rule set to start from
 
-- `kind: ftp`: an FTP proxy that is actually in the middle. FTP puts
-  every transfer on a second connection whose address one side
-  announces to the other, so a proxy that forwards that reply has told
-  the client to go round it; this one rewrites the address and is one
-  end of both connections. Commands, paths, extensions, a bound on a
-  transfer and YARA over uploads; AUTH TLS both ways. **`PORT` is
-  refused by default** — it asks the proxy to connect to an address the
-  client names, which is the bounce attack
+- `kind: ntp` and `kind: ntske`: an NTP and NTS security gateway, in
+  **both directions**. A time packet is 48 octets, has no session and is
+  believed absolutely — the device on the other side steps its clock to
+  whatever it is told — so this reads every one: the version, the mode,
+  the extension fields, and what a server's answer says about the time in
+  it. Modes 6 and 7, the control protocol and the private one `monlist`
+  belongs to, are refused from the first octet and never reach a server;
+  NTPv5 is a different packet format and is never parsed as if it were
+  this one. **What a relay can do that a client cannot is compare**: it
+  probes every server with its own transactions and refuses to pass on an
+  answer from one that disagrees with its peers or says not to trust its
+  own clock — the case every other check passes. Pre-shared keys are
+  AES-CMAC (RFC 8573; the legacy algorithms need an exception and Autokey
+  is refused), NTS is passed through whole with a **downgrade to plain
+  NTP refused**, and key establishment is a listener of its own on 4460
+  where a connection that does not offer `ntske/1` is not an NTS client.
+  Rate limits answer with the protocol's own kiss-o'-death rather than a
+  drop, every expiry is on the monotonic clock because this is the relay
+  for the protocol that moves the wall clock, and learning mode writes
+  out the client, version and mode lists nobody could have written from
+  the inventory
 - `kind: ssh`: an SSH bastion. The proxy is an SSH server to the client
   and an SSH client to the target, so every channel and every request
   inside the session is a decision: `direct-tcpip` only to listed
@@ -370,10 +506,6 @@ an identifier from the access log to the upstream.
 
 **Extensibility and platforms**
 
-- **Authorisation as one policy**: every authenticating filter answers
-  "who"; `authz` answers "what may they do", deciding on the subject,
-  groups, scopes and claims those filters verified — default deny,
-  first match wins, and nothing a client sent can reach a rule
 - **gRPC message inspection**: the framing, a bound on one message
   rather than the whole stream, the protobuf structure (nesting depth,
   field count) and patterns over the strings inside — without a schema,
@@ -414,6 +546,10 @@ an identifier from the access log to the upstream.
 - An expression language for routes and header operations: `when`
   conditions over addresses, headers, cookies, query parameters,
   patterns, captures and the time of day, checked at load
+- A **structured maintenance gate** (a window, the clients exempt from
+  it, the page it serves) and **traffic shadowing** to a candidate
+  upstream with the two responses diffed, so a migration is measured
+  before it is switched
 - Shell completion for bash, zsh and fish, manual pages and a JSON
   schema of the configuration that gives editors completion and inline
   documentation
@@ -457,9 +593,11 @@ curl -i http://127.0.0.1:8080/
 and the web GUI; [docs/USAGE.md](docs/USAGE.md) has a worked example for
 every feature above, and [examples/](examples/) has complete
 configurations — a three daemon estate with a shared ban list, a
-submission proxy, an MQTT fleet, an SSH bastion, an encrypted resolver,
-an egress proxy with SOCKS5 and MASQUE, YARA rules, honeypots — each one
-validated by a test that runs on every build.
+submission proxy, an MQTT fleet, an FTP intake, a syslog relay, a Modbus
+policy in front of a production line, an NTP and NTS time gateway, an SSH
+bastion with RDP, VNC and telnet gateways beside it, an encrypted
+resolver, an egress proxy with SOCKS5 and MASQUE, YARA rules, honeypots —
+each one validated by a test that runs on every build.
 
 ## Documentation
 
@@ -472,7 +610,7 @@ validated by a test that runs on every build.
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Triage, a symptom index, the stages a request can die at, the timeout ladder, a section per subsystem, emergency procedures, every deny reason and what to collect for a bug report |
 | [docs/SETUP.md](docs/SETUP.md) | Installation on Fedora |
 | [docs/SETUP_MACOS.md](docs/SETUP_MACOS.md) | Installation on macOS |
-| [examples/](examples/) | WAF rules, block lists, filters, a WebAssembly module, rewriting and routing examples, all validated by tests |
+| [examples/](examples/) | Complete configurations per deployment — the three-daemon estate, the bastion, the mail and IoT relays, the operational-technology gateways, the encrypted resolver, the egress proxy — with WAF rules, block lists, filters, a WebAssembly module and rewriting examples beside them, all validated by tests |
 | [docs/HARDENING_MACOS.md](docs/HARDENING_MACOS.md) | Host hardening on macOS |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The split into three daemons, the kind registry and the roster, components, request path, data flows |
 | [docs/SECURITY.md](docs/SECURITY.md) | Security posture, controls, secure development, reporting |
@@ -506,8 +644,9 @@ engine with the Core Rule Set, bbolt for ban state, quic-go for HTTP/3,
 wazero for WebAssembly, and `golang.org/x/crypto` for the SSH bastion.
 
 Everything else is written here rather than pulled in, and the reason is
-usually the same. The SMTP, MQTT, FTP, syslog, SFTP and MASQUE parsers, the TOTP
-implementation and the YARA engine are all first-party: a protocol this
+usually the same. The DNS, SMTP, MQTT, FTP, syslog, SFTP, Modbus, NTP,
+RFB, RDP, NTLM, telnet and MASQUE parsers, the AES-CMAC and TOTP
+implementations and the YARA engine are all first-party: a protocol this
 proxy *decides* is a protocol it has to read the same way twice, and
 linking libyara alone would have meant `CGO_ENABLED=1` and a C parser in
 the data plane.

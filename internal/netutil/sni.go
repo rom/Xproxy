@@ -99,93 +99,55 @@ func handshakeBytes(b []byte) ([]byte, error) {
 // fragmented handshake message is copied. An empty name with a nil error
 // means a ClientHello without SNI.
 func ClientHelloSNI(b []byte) (string, error) {
-	h, err := handshakeBytes(b)
+	ext, err := helloExtensions(b)
 	if err != nil {
 		return "", err
 	}
-	// version(2) random(32) session id length(1): the length octet is read
-	// immediately below, so 34 bytes are not enough — 35 are.
-	if len(h) < 35 {
-		return "", ErrNotTLS
-	}
-	p := 34
-	sidLen := int(h[p])
-	p++
-	if p+sidLen > len(h) {
-		return "", ErrNotTLS
-	}
-	p += sidLen
-	if p+2 > len(h) {
-		return "", ErrNotTLS
-	}
-	csLen := int(binary.BigEndian.Uint16(h[p:]))
-	p += 2
-	if p+csLen > len(h) {
-		return "", ErrNotTLS
-	}
-	p += csLen
-	if p+1 > len(h) {
-		return "", ErrNotTLS
-	}
-	cmLen := int(h[p])
-	p++
-	if p+cmLen > len(h) {
-		return "", ErrNotTLS
-	}
-	p += cmLen
-	if p == len(h) {
-		return "", nil // no extensions
-	}
-	if p+2 > len(h) {
-		return "", ErrNotTLS
-	}
-	extLen := int(binary.BigEndian.Uint16(h[p:]))
-	p += 2
-	if p+extLen > len(h) {
-		return "", ErrNotTLS
-	}
-	ext := h[p : p+extLen]
-	for len(ext) >= 4 {
-		typ := binary.BigEndian.Uint16(ext[0:2])
-		l := int(binary.BigEndian.Uint16(ext[2:4]))
-		ext = ext[4:]
-		if l > len(ext) {
-			return "", ErrNotTLS
-		}
-		body := ext[:l]
-		ext = ext[l:]
-		if typ != 0 { // server_name
-			continue
+	name := ""
+	var bad error
+	if err := eachExtension(ext, func(typ uint16, body []byte) bool {
+		if typ != extServerName {
+			return true
 		}
 		if len(body) < 2 {
-			return "", ErrNotTLS
+			bad = ErrNotTLS
+			return false
 		}
 		listLen := int(binary.BigEndian.Uint16(body[0:2]))
 		body = body[2:]
 		if listLen > len(body) {
-			return "", ErrNotTLS
+			bad = ErrNotTLS
+			return false
 		}
 		for len(body) >= 3 {
 			nameType := body[0]
 			nl := int(binary.BigEndian.Uint16(body[1:3]))
 			body = body[3:]
 			if nl > len(body) {
-				return "", ErrNotTLS
+				bad = ErrNotTLS
+				return false
 			}
 			if nameType == 0 {
-				name := strings.TrimSuffix(strings.ToLower(string(body[:nl])), ".")
-				// The name becomes a layer 4 routing key, so it must have
-				// one spelling: an empty label would miss its own route's
-				// table and fall through to tcp.default (see
+				n := strings.TrimSuffix(strings.ToLower(string(body[:nl])), ".")
+				// The name becomes a layer 4 routing key, so it must
+				// have one spelling: an empty label would miss its own
+				// route's table and fall through to tcp.default (see
 				// labelsNonEmpty).
-				if name == "" || len(name) > 253 || !labelsNonEmpty(name) || strings.ContainsAny(name, " \x00/\\") {
-					return "", ErrNotTLS
+				if n == "" || len(n) > 253 || !labelsNonEmpty(n) || strings.ContainsAny(n, " \x00/\\") {
+					bad = ErrNotTLS
+					return false
 				}
-				return name, nil
+				name = n
+				return false
 			}
 			body = body[nl:]
 		}
-		return "", nil
+		return false
+	}); err != nil {
+		return "", err
 	}
-	return "", nil
+	if bad != nil {
+		return "", bad
+	}
+	return name, nil
 }

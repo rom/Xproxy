@@ -3021,6 +3021,120 @@ record a plant is asked for, and it is a line per request — a scan of a
 thousand registers a second is a thousand lines a second, which is why
 it is a choice rather than a default.
 
+## NTP and NTS gateway
+
+**Clients get no answer at all.** A datagram cannot be refused, so
+everything this listener will not forward is a drop — look at
+`ntp_dropped` and then at the refusal reasons, which name it exactly. The
+usual causes, in order: `client_not_allowed` (`allow_clients`),
+`version_not_allowed` (a device speaking version 2 on a listener whose
+profile is 3 and 4), `mode_not_allowed`, `rate_limit`, and
+`nts_required`/`auth_required` on a listener that demands one of them.
+
+**A device says the time is unavailable, and the servers are fine.** The
+answer was refused on the way back, which is the half of the policy that
+is about responses. `unsynchronised` and `unsynchronised_stratum` are the
+server saying so itself — by the leap indicator and by stratum 16, which
+are two separate statements. `stratum_too_high`, `root_delay`,
+`root_dispersion`, `delay` and `offset` are the bounds in `quality`.
+Every one of them names the server in the security event.
+
+**One source is marked suspect and the others are not.** That is the
+comparison working: the relay probes every server, takes the median of
+three or more, and names the one that is too far from it. Read
+`ntp_disagreements` and the `ntp_clock_disagreement` events, which carry
+both offsets. With exactly two sources neither can be called wrong, so
+both are marked and the event says that — which is why fewer than three
+sources warns at validation.
+
+**Everything is suspect and the clients still get answers.** By design:
+`quality.on_all_suspect` is `pass` by default, because a time gateway that
+stops answering stops every clock behind it, and that is an outage of its
+own. Set it to `refuse` deliberately, knowing what it does, and watch
+`ntp_holdover_expired` for how long a source has been unusable.
+
+**`ntp_unsolicited` is climbing.** An answer arrived whose origin
+timestamp matches no request the relay sent. The origin timestamp is the
+only thing in NTP that ties an answer to a question, so these are dropped.
+Three causes worth telling apart: a server that answers late, after the
+request timed out; a server using interleaved mode on a listener with
+`interleaved: false`; and somebody spraying answers at the relay, which
+the connected sockets already make hard and this makes visible.
+
+**Interleaved mode.** A server's answer echoes its own previous transmit
+timestamp rather than the client's. It is supported and counted
+(`ntp_interleaved`); turning it off with `interleaved: false` means those
+answers cannot be told from unsolicited ones and are dropped as such.
+
+**Mode 6 and mode 7 packets show up in the refusals.** `control_mode` and
+`private_mode`, and they never reach a server. Mode 7 is where `monlist`
+lives, so a burst of them is somebody looking for an amplifier: the ban
+trigger on `ntp_denied` is what answers that.
+
+**Version 5 is refused.** Its packet format is not version 4's, so it is
+never parsed with the version 4 parser. `allow_version5: true` forwards it
+as opaque bytes on a transaction socket of its own, and it is counted
+(`ntp_version5`); nothing in the policy applies to it, because nothing in
+it is read.
+
+**`ambiguous_mac` refusals.** RFC 7822 cannot always tell an extension
+field from a MAC: a 20 or 24-octet tail can be both. The relay reads it as
+a MAC — which is what every implementation does — and refuses the packet,
+because the server behind it may read it the other way and then the two
+disagree about what was said. `extensions: {refuse_ambiguous_mac: false}`
+forwards it on the relay's reading and warns.
+
+**`unknown_extension` refusals.** A field type this relay does not know is
+a field it cannot decide about, and that includes every field Autokey (RFC
+5906) defined — a protocol this build does not implement. `allow_unknown`
+forwards them and warns.
+
+**Authentication fails and the key looks right.** `auth_failed` carries
+the reason: a key identifier nobody holds, an algorithm the listener does
+not accept (`md5` and `sha1` need `allow_legacy_algorithms`), or a digest
+that does not verify. A digest of the wrong length for the key's algorithm
+is refused rather than compared, because the length comes from the
+algorithm and not from the packet. A key file is read as hexadecimal when
+it looks like hexadecimal and as ASCII otherwise, so a file with a stray
+character in it becomes a different key and every packet fails.
+
+**`nts_stripped` refusals.** The request carried NTS fields and the answer
+did not. That is a downgrade from authenticated time to plain time, and it
+is never passed on silently — it is the one thing an NTS deployment cannot
+tolerate being quiet about. Check whether the pool holds a server without
+NTS, or whether something is rewriting packets between the relay and it.
+
+**Key establishment refusals (`kind: ntske`).** `alpn_not_offered` is a
+connection to 4460 that did not offer `ntske/1`, which means it is not an
+NTS client — the only thing a relay can tell from a handshake it does not
+terminate. `not_tls` is a scan. `server_name_not_allowed` is a name
+outside `server_names`. `handshake_limit` is
+`max_concurrent_handshakes`, and a client that cannot get a slot is
+refused rather than queued, because a queue here is a queue of TLS
+handshakes. `no_hello` and `incomplete_hello` are a client that connected
+and said nothing or half a hello.
+
+**The clients' offsets are worse through the gateway than direct.** They
+will be, by half the difference between the forward and reverse path:
+`(forward − reverse delay) / 2`. That is what a relay costs, and no
+implementation removes it. Keep the path symmetric if you can, and where
+the accuracy matters put a time server near its consumers rather than a
+relay in front of a distant one. The same reason is why a one-way data
+diode cannot carry NTP or NTS at all: the protocol needs the round trip.
+
+**Associations and memory.** An association is a client address *and
+port*: a client that changes its source port (which RFC 9109 allows, and
+which chrony does) becomes a new association, and a thousand devices
+behind one NAT are a thousand associations. `max_associations` bounds them
+and `idle_timeout` forgets them; `max_outstanding` bounds the requests
+waiting for an answer, which is a separate table because a client may have
+several in flight and an answer may arrive after its association moved.
+
+**Timeouts that fire when the clock is set.** They do not, and that is
+deliberate: every expiry, rate limit and timeout in this listener — and in
+the datagram relay beside it — is measured on the monotonic clock, because
+this is the host whose wall clock is guaranteed to move.
+
 ## FTP proxy
 
 **Transfers hang, or the client reports "cannot open data connection".**
@@ -4209,6 +4323,8 @@ innocent.
 | `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command, environment variable, file transfer helper or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
 | `modbus_denied` | The Modbus relay: a frame the policy refused -- a function code, a unit identifier, a register range or a value outside what a rule allows, a write on a `read_only` listener, a role that is missing or not allowed -- or a client outside `allow_clients`, a frame it could not read, or an answer from the device it would not pass on (`reason` says which, and the event carries the unit, the function, the address and the rule) | yes |
+| `ntp_denied` | The NTP gateway: a client outside `allow_clients`, a version or mode the profile does not accept (including modes 6 and 7, which are the control and private protocols rather than time), a packet it could not read, a rate limit, missing or failed authentication, or an answer from a server that the quality rules refuse -- unsynchronised, too far down the tree, too dispersed, or stripped of the NTS fields the request carried (`detail` says which) | yes |
+| `ntske_denied` | NTS key establishment: a connection that did not offer the `ntske/1` application protocol (so it is not an NTS client), one that is not TLS at all, a server name outside `server_names`, a client outside `allow_clients`, or a handshake past the bound on how many may be in flight | yes |
 | `telnet_denied` | The telnet gateway: a client outside `allow_clients`, a refused option, a failed factor, or a session it could not open (`detail` says which) | yes |
 | `vnc_denied` | The VNC gateway: a security type outside the policy, a failed VNC authentication or factor, a target that offered nothing mediable, a client outside `allow_clients`, or a bound on the picture -- a framebuffer, a rectangle or a clipboard transfer past what `bounds` allows (`what` says which, and `detail` carries the numbers) | yes |
 | `rdp_denied` | The RDP gateway: a refused channel or device, a failed factor, a connection sequence it could not read, or a client outside `allow_clients` (`detail` says which) | yes |
@@ -4263,6 +4379,8 @@ actually being refused. What each kind can say:
 | `ftp` | `client_refused`, `banned`, `max_connections`, `auth_failed`, `identity_refused`, `mfa_required`, `mfa_failed`, the command and path policy (`unknown_command`, `command_refused`, `path_refused`, `read_only`, `active_refused`, `no_data_connection`), the path shapes it will not guess about (`path_separator`, `path_control`, `path_encoding`), the commands that are half a decision (`rest_invalid`, `rest_unscannable`, `rename_out_of_order`), TLS (`tls_required`, `auth_refused`, `ccc_refused`, `tls_pipelined`), the data channel (`bounce_refused`, `malformed_address`, `data_stranger`, `upstream_address`, `transfer_cut`) and the line discipline (`line_too_long`, `malformed_line`, `malformed_command`) |
 | `syslog` | `sender_refused`, `max_connections`, `rate_limit`, `too_large`, `framing`, `malformed`, the message policy (`facility`, `severity`, `pattern`) and `queue_full` when the collector is behind |
 | `modbus` | `client_not_allowed`, `max_connections`, `rate_limit`, `queue_full`, the session's own locks (`tls_handshake`, `no_client_certificate`, `no_role`, `role_not_allowed`, `security_requires_tls`), the framing (`framing`, `frame_too_large`, `malformed`), the policy (`read_only`, `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`, `value_out_of_range`, `value_masked_write`, `coil_set_not_allowed`, `coil_clear_not_allowed`), the routing (`no_route_for_unit`) and what the device answered (`malformed_response`, `response_unit_mismatch`) |
+| `ntp` | `banned`, `client_not_allowed`, `rate_limit`, `max_associations`, `outstanding_full`, the dispatch (`control_mode`, `private_mode`, `version5`, `version`, `version_not_allowed`, `mode_not_allowed`), the association shape (`not_a_peer`, `broadcast_not_allowed`), the packet (`malformed`, `packet_too_large`, `too_many_extensions`, `unknown_extension`, `ambiguous_mac`), the identity it demanded (`nts_required`, `auth_required`, `auth_failed`), the egress (`no_server`, `server_not_allowed`) and what the server answered (`malformed_response`, `unsolicited`, `response_mode`, `kiss_of_death`, `unsynchronised`, `unsynchronised_stratum`, `stratum_too_high`, `root_delay`, `root_dispersion`, `delay`, `offset`, `nts_stripped`, `auth_stripped`) |
+| `ntske` | `banned`, `client_not_allowed`, `max_connections`, `handshake_limit`, and what the handshake said (`not_tls`, `no_hello`, `incomplete_hello`, `hello_too_large`, `alpn_not_offered`, `server_name_not_allowed`) |
 
 Two things are deliberately *not* in this family. Refusals by the
 server-wide accept path — `server.limits.max_connections`,

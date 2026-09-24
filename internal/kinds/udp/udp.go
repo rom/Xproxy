@@ -59,20 +59,29 @@ type session struct {
 	up       *net.UDPConn
 	pool     *upstream.Pool
 	endpoint *upstream.Endpoint
-	start    time.Time
-	// last is the unix nanoseconds of the last datagram either way. The
-	// read loop and the endpoint's pump both touch it, and the sweeper
-	// reads it, so it is an atomic rather than a plain field.
+	// start carries a monotonic reading, and every elapsed time in this
+	// session is measured from it.
+	start time.Time
+	// last is the nanoseconds since start of the last datagram either
+	// way. The read loop and the endpoint's pump both touch it and the
+	// sweeper reads it, so it is an atomic rather than a plain field --
+	// and it is an elapsed time rather than a wall-clock one, because a
+	// host whose clock is set (by the time daemon, by an operator, by
+	// the NTP gateway two listeners over) would otherwise expire every
+	// session at once or none of them ever.
 	last                atomic.Int64
 	in, out             atomic.Int64
 	dgramsIn, dgramsOut atomic.Int64
 	ended               atomic.Bool
 }
 
-func (s *session) touch() { s.last.Store(time.Now().UnixNano()) }
+func (s *session) touch() { s.last.Store(int64(time.Since(s.start))) }
 
+// idleFor is how long since the last datagram, on the monotonic clock:
+// now and start both carry monotonic readings, so the subtraction is
+// immune to the wall clock moving underneath it.
 func (s *session) idleFor(now time.Time) time.Duration {
-	return now.Sub(time.Unix(0, s.last.Load()))
+	return now.Sub(s.start) - time.Duration(s.last.Load())
 }
 
 func newServer(engine proxy.Host, cfg config.Listener, pc net.PacketConn) (*server, error) {

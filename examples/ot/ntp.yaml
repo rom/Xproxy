@@ -1,0 +1,213 @@
+# Time, which everything else depends on.
+#
+# A time packet is 48 octets, has no session, carries no identity, and is
+# believed absolutely: the device on the other side steps its clock to
+# whatever it is told. Every certificate's validity, every log line's
+# order and every "what happened first" in an investigation rests on it.
+#
+# Three listeners:
+#   plant   — reverse: the estate's devices ask this, it forwards to the
+#             local time servers (UDP 123)
+#   egress  — forward: the local time servers reach the outside world
+#             through this, with the destinations bounded
+#   ke      — NTS key establishment (TCP 4460, ALPN ntske/1)
+#
+# What this gateway can do that a client cannot is compare: it measures
+# every server the same way and refuses to pass on an answer from one
+# that disagrees with its peers. A server that is reachable, synchronised,
+# authenticated and wrong is the case every other check passes.
+#
+# Validate: xrelay -config examples/ot/ntp.yaml -validate
+version: 1
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # Reverse: the plant's devices ask here.
+    # ---------------------------------------------------------------
+    - name: plant
+      address: "10.30.0.10:123"
+      kind: ntp
+      ntp:
+        upstream: local_clocks
+
+        # The control network. An open NTP port is also an amplifier:
+        # the modes that amplify are refused here whatever the list
+        # says, but the traffic still arrives and still costs.
+        allow_clients:
+          - "10.30.0.0/16"       # the plant
+          - "10.31.0.0/16"       # the office
+        deny_clients:
+          - "10.30.9.0/24"       # the guest network
+
+        # Version 4 is the protocol; version 3 is the profile the older
+        # PLCs and the print server speak. Versions 1 and 2 are not
+        # accepted unless a device is identified as needing them.
+        versions: [3, 4]
+
+        # Client and server only. The symmetric modes are peer
+        # relationships, broadcast has no round trip to measure, and
+        # modes 6 and 7 -- the control protocol and the private one
+        # monlist belongs to -- are always refused and cannot be named.
+        modes: [client, server]
+
+        # A poll is once a minute. A flood is thousands a second, and a
+        # client that is told to slow down in the protocol's own words
+        # does; one whose packet is dropped simply asks again.
+        rate_limit: 20
+        rate_burst: 40
+        prefix_rate_limit: 200
+        prefix_rate_burst: 400
+        rate_prefix_length: 24
+        kod:
+          on_rate_limit: true
+          on_deny: false
+          forward: true
+
+        # What is required of an answer. These are about responses: a
+        # client's stratum and dispersion are fields the protocol does
+        # not ask it to fill in.
+        quality:
+          compare_sources: true
+          probe_interval: 64s
+          max_disagreement: 100ms
+          max_root_dispersion: 1s
+          max_root_delay: 500ms
+          max_stratum: 10
+          max_delay: 500ms
+          refuse_unsynchronised: true
+          healthy_after: 3
+          unhealthy_after: 3
+          # pass keeps the clocks running while the log says every
+          # source is suspect. refuse would stop them, which is an
+          # outage of its own and has to be a deliberate choice.
+          on_all_suspect: pass
+
+        # How long a source whose time cannot be verified is still used.
+        holdover:
+          max_duration: 1h
+
+        # Symmetric authentication for the devices that have it. AES-CMAC
+        # per RFC 8573; the legacy algorithms need an explicit exception,
+        # and Autokey is not implemented at all.
+        auth:
+          require: false
+          keys:
+            - {id: 7, algorithm: aes-cmac, key_file: /etc/xproxy/ntp/key7.hex}
+          probe_key_id: 7
+
+        # A field this relay cannot read is a field it cannot decide
+        # about, and the tail that RFC 7822 cannot tell from a MAC is a
+        # packet two implementations will read differently.
+        extensions:
+          allow_unknown: false
+          refuse_ambiguous_mac: true
+          max: 8
+
+        interleaved: true
+        max_associations: 20000
+        max_outstanding: 4096
+        idle_timeout: 30m
+        request_timeout: 2s
+        max_packet_bytes: 1280
+
+        # A line per packet is a line per poll: with a thousand devices
+        # polling every minute that is sixteen lines a second, which is
+        # why it is a choice rather than a default.
+        log_packets: false
+        alert_on_deny: true
+
+    # ---------------------------------------------------------------
+    # Forward: the estate's own time servers reach the outside through
+    # here, and the destinations are bounded whatever DNS says.
+    # ---------------------------------------------------------------
+    - name: egress
+      address: "10.30.0.10:1230"
+      kind: ntp
+      ntp:
+        mode: forward
+        upstream: public_clocks
+        allow_clients: ["10.30.10.0/24"]   # the local time servers only
+        # The egress list: a pool whose name starts resolving somewhere
+        # new does not quietly become a new destination.
+        allow_servers:
+          - "162.159.200.0/24"   # a public pool's range
+          - "17.253.0.0/16"
+        versions: [4]
+        modes: [client, server]
+        rate_limit: 10
+        rate_burst: 20
+        nts:
+          mode: passthrough
+          require: false
+        quality:
+          compare_sources: true
+          probe_interval: 300s
+          max_disagreement: 250ms
+          max_root_dispersion: 2s
+          max_stratum: 4
+          refuse_unsynchronised: true
+        # An afternoon's trace while somebody works out which of the
+        # public servers is the slow one.
+        trace:
+          file: /var/log/xproxy/ntp-egress.jsonl
+          max_bytes: 104857600
+          requests: true
+          responses: true
+
+    # ---------------------------------------------------------------
+    # NTS key establishment: TLS on 4460 with the ALPN ntske/1, relayed
+    # to the servers whose keys they are. It is not terminated here --
+    # doing that honestly needs the cookie keys the time servers hold.
+    # ---------------------------------------------------------------
+    - name: ke
+      address: "10.30.0.10:4460"
+      kind: ntske
+      ntske:
+        upstream: ke_servers
+        allow_clients: ["10.30.0.0/16", "10.31.0.0/16"]
+        server_names: ["time.plant.example"]
+        require_alpn: true
+        max_connections: 512
+        max_concurrent_handshakes: 32
+        handshake_timeout: 10s
+        idle_timeout: 30s
+        max_bytes: 65536
+        log_sessions: true
+
+upstreams:
+  # Three sources, because three is what lets a comparison name the
+  # wrong clock: with two, all it can say is that they disagree.
+  - name: local_clocks
+    endpoints:
+      - {address: "10.30.10.21:123"}
+      - {address: "10.30.10.22:123"}
+      - {address: "10.30.10.23:123"}
+  - name: public_clocks
+    endpoints:
+      - {address: "162.159.200.1:123"}
+      - {address: "162.159.200.123:123"}
+      - {address: "17.253.14.251:123"}
+  - name: ke_servers
+    endpoints:
+      - {address: "10.30.10.21:4460"}
+      - {address: "10.30.10.22:4460"}
+
+bans:
+  triggers:
+    # A device does not probe protocol versions or modes. Something
+    # walking them is either broken or looking for an amplifier.
+    - name: ntp-abuse
+      reasons: [ntp_denied]
+      threshold: 10
+      window: 10m
+      duration: 1h
+    # A connection to the key establishment port that is not an NTS
+    # client is a scan.
+    - name: ntske-abuse
+      reasons: [ntske_denied]
+      threshold: 5
+      window: 10m
+      duration: 1h
+
+logging:
+  access: {enabled: true}

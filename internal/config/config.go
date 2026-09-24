@@ -272,6 +272,10 @@ type Listener struct {
 	Syslog *SyslogListener `yaml:"syslog"`
 	// Modbus configures a kind: modbus listener.
 	Modbus *ModbusListener `yaml:"modbus"`
+	// NTP configures a kind: ntp listener.
+	NTP *NTPListener `yaml:"ntp"`
+	// NTSKE configures a kind: ntske listener.
+	NTSKE *NTSKEListener `yaml:"ntske"`
 }
 
 // ModbusListener is a Modbus relay that reads every frame.
@@ -603,6 +607,404 @@ func (m *ModbusListener) Pending() int {
 		return 1
 	}
 	return 16
+}
+
+// NTPListener is an NTP and NTS security gateway.
+//
+// A time packet is small, has no session, carries no identity and is
+// believed absolutely: the device on the other side will step its clock
+// to whatever it is told, and a clock is what every certificate, every
+// log line and every ordering of events in a plant depends on. So the
+// three jobs on this port are kept apart deliberately:
+//
+//   - forwarding time packets, which is what this listener does;
+//   - authenticating them, which belongs to whoever holds the key --
+//     symmetric keys this listener can check, NTS it deliberately cannot;
+//   - keeping an accurate clock, which is the local time daemon's job.
+//     A relay that tried to be a time source would be one nobody
+//     calibrated.
+//
+// What it can do that a client cannot is compare. It sees every server
+// the estate has, measures each the same way, and refuses to pass on an
+// answer from one that disagrees with its peers or says not to trust it.
+//
+// It works in both directions. A *reverse* listener fronts the estate's
+// own time servers: the devices point at it and it forwards to them,
+// which is where the allow lists, the version profile and the audit trail
+// live. A *forward* listener is the controlled egress towards servers
+// somewhere else, where `allow_servers` bounds the destinations and the
+// quality rules are the estate's protection against what the internet
+// answers.
+type NTPListener struct {
+	// Mode is reverse (the default: clients here, servers upstream) or
+	// forward (this listener is the estate's egress to servers
+	// elsewhere).
+	Mode string `yaml:"mode"`
+	// Upstream is the pool of time servers. Required.
+	Upstream string `yaml:"upstream"`
+	// Versions are the protocol versions accepted, as numbers. Default
+	// 4 and 3: version 4 is the protocol, version 3 is the legacy
+	// profile a plant still has devices on. Versions 1 and 2 are only
+	// accepted when they are named, because a version 1 packet has no
+	// mode field and accepting one by default would be guessing what it
+	// is.
+	Versions []int `yaml:"versions"`
+	// Modes are the association modes accepted: client, server,
+	// symmetric_active, symmetric_passive, broadcast. Default client
+	// and server. The symmetric modes and broadcast are relationships
+	// rather than requests and are only ever between named peers.
+	// Modes 6 (control) and 7 (private, which monlist belongs to) are
+	// always refused and cannot be named.
+	Modes []string `yaml:"modes"`
+	// AllowVersion5 forwards NTPv5 packets as opaque bytes, on a
+	// transaction socket of its own. It is off by default: version 5 is
+	// experimental and its packet format is not version 4's, so it is
+	// never parsed with the version 4 parser.
+	AllowVersion5 bool `yaml:"allow_version5"`
+	// Peers are the networks a symmetric or broadcast association may
+	// come from. A symmetric association is a relationship in which each
+	// end accepts the other's time, so it is never open to whoever asks.
+	Peers []string `yaml:"peers"`
+	// AllowManycast opts into manycast discovery, whose responders are
+	// the addresses this listener will accept an answer from. It is a
+	// separate switch from broadcast because it is a separate
+	// mechanism: bounded discovery rather than an unsolicited stream.
+	AllowManycast      bool     `yaml:"allow_manycast"`
+	ManycastResponders []string `yaml:"manycast_responders"`
+	// AllowClients and DenyClients are the networks a client may ask
+	// from. Deny is evaluated first. An empty allow list allows every
+	// client the deny list does not refuse, which validation advises
+	// against: an open NTP port is an amplifier.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// AllowServers bounds the addresses this listener will send to,
+	// whatever the pool resolves to. It is the egress policy: a pool
+	// whose name starts resolving somewhere new does not quietly become
+	// a new destination, and an NTS key exchange that names another
+	// server cannot move the time traffic outside this list.
+	AllowServers []string `yaml:"allow_servers"`
+	// Auth is symmetric authentication: the pre-shared keys and whether
+	// a packet without one is refused.
+	Auth *NTPAuth `yaml:"auth"`
+	// NTS is how Network Time Security is handled.
+	NTS *NTPNTS `yaml:"nts"`
+	// Extensions bounds the extension fields a packet may carry.
+	Extensions *NTPExtensions `yaml:"extensions"`
+	// Quality is what the listener requires of a server's answer, and
+	// how it compares the servers with each other.
+	Quality *NTPQuality `yaml:"quality"`
+	// Holdover bounds how long a server whose time cannot be verified
+	// is still used.
+	Holdover *NTPHoldover `yaml:"holdover"`
+	// KoD is the kiss-o'-death policy: the protocol's own way of saying
+	// "not now".
+	KoD *NTPKoD `yaml:"kod"`
+	// Interleaved accepts interleaved mode, where a server's answer
+	// echoes its own previous transmit timestamp rather than the
+	// client's. Default true: it is how a server gives a client a
+	// hardware-quality transmit timestamp, and a relay that refused it
+	// would be refusing the most accurate exchange there is.
+	Interleaved *bool `yaml:"interleaved"`
+	// Learn records what actually asks this listener for the time and
+	// writes it out as an allow list, a version profile and a mode
+	// profile.
+	Learn *NTPLearn `yaml:"learn"`
+	// Trace writes one line per packet for as long as it is enabled.
+	Trace *NTPTrace `yaml:"trace"`
+	// MaxPacketBytes bounds one packet. Default 1280. A time packet is
+	// 48 octets plus its extension fields; NTS makes it a few hundred.
+	MaxPacketBytes int `yaml:"max_packet_bytes"`
+	// MaxExtensions bounds the extension fields in one packet. Default
+	// 8.
+	MaxExtensions int `yaml:"max_extensions"`
+	// MaxAssociations bounds the client associations held. Default
+	// 16384. An association is a client address and port, so the bound
+	// is also what stops a flood of forged sources filling the table.
+	MaxAssociations int `yaml:"max_associations"`
+	// MaxOutstanding bounds the requests waiting for an answer, which is
+	// a separate table from the associations on purpose: a client may
+	// have several in flight, and an answer may arrive after its
+	// association moved to another server.
+	MaxOutstanding int `yaml:"max_outstanding"`
+	// IdleTimeout forgets an association that has said nothing. Default
+	// 30m, which is longer than any sane poll interval.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// RequestTimeout is how long a server has to answer. Default 3s.
+	RequestTimeout Duration `yaml:"request_timeout"`
+	// RateLimit and RateBurst bound packets a second from one client
+	// address; PrefixRateLimit and PrefixRateBurst do the same for a
+	// network, because a subnet asking in unison is one problem rather
+	// than many. RatePrefixLength is the network they are counted by:
+	// default /24 for IPv4 and /56 for IPv6.
+	RateLimit        int `yaml:"rate_limit"`
+	RateBurst        int `yaml:"rate_burst"`
+	PrefixRateLimit  int `yaml:"prefix_rate_limit"`
+	PrefixRateBurst  int `yaml:"prefix_rate_burst"`
+	RatePrefixLength int `yaml:"rate_prefix_length"`
+	// LogPackets writes an access line per packet rather than per
+	// association. It is the record an estate asked to show who asked
+	// for the time and what they were told, and it is a line per poll.
+	LogPackets bool `yaml:"log_packets"`
+	// AlertOnDeny writes a security event for every refusal. Default
+	// true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+}
+
+// NTPAuth is symmetric authentication with pre-shared keys.
+//
+// RFC 8573 makes AES-CMAC the algorithm: the older construction is MD5
+// over the key followed by the packet, which is a length-extension shape
+// with a broken hash in it. The legacy algorithms are therefore an
+// explicit exception rather than a default, because a device from 2006
+// cannot be taught a new one and pretending otherwise ends with no
+// authentication at all rather than weak authentication somebody knows
+// about. Autokey (RFC 5906) is not implemented and will not be.
+type NTPAuth struct {
+	// Require refuses a packet that carries no authentication this
+	// listener can check. NTS counts as authentication for this
+	// purpose -- and the listener says plainly that it has not verified
+	// it, because only the party holding the key can.
+	Require bool `yaml:"require"`
+	// AllowLegacyAlgorithms accepts a key whose algorithm is md5 or
+	// sha1. It warns.
+	AllowLegacyAlgorithms bool `yaml:"allow_legacy_algorithms"`
+	// ProbeKeyID is the key the listener signs its own monitoring
+	// probes with, for a server that requires authentication.
+	ProbeKeyID int `yaml:"probe_key_id"`
+	// Keys are the shared keys, by identifier.
+	Keys []NTPKey `yaml:"keys"`
+}
+
+// NTPKey is one pre-shared key.
+type NTPKey struct {
+	// ID is the key identifier the packet carries: 1 to 65535.
+	ID int `yaml:"id"`
+	// Algorithm is aes-cmac (the default), md5 or sha1.
+	Algorithm string `yaml:"algorithm"`
+	// KeyFile holds the key, as hexadecimal or as the ASCII a
+	// ntp.keys file uses. Owner-readable only.
+	KeyFile string `yaml:"key_file"`
+}
+
+// NTPNTS is how Network Time Security is handled.
+//
+// The time exchanges are UDP 123 with authentication in extension
+// fields; the key establishment is TLS on TCP 4460 with the ALPN
+// "ntske/1", and it is a listener of its own (kind: ntske). This section
+// is about the time side.
+type NTPNTS struct {
+	// Mode is passthrough (the default) or off. Pass-through forwards
+	// NTS-protected packets whole and unaltered, which is the only
+	// honest thing a relay that does not hold the keys can do with them:
+	// the authentication is between the client and the server, and every
+	// visible NTS field is readable by anybody on the path and proves
+	// nothing. Termination is deliberately absent rather than
+	// approximated -- it needs real key derivation from the TLS
+	// exporter, cookie keys shared with the server, and rotation with
+	// overlap, and an implementation that faked any of it would be
+	// telling clients their time was authenticated when it was not.
+	Mode string `yaml:"mode"`
+	// Require refuses a packet that carries no NTS fields. It is how a
+	// listener says "this estate is NTS only", and it is the setting
+	// that makes the no-downgrade rule visible: an answer that arrives
+	// without NTS fields for a request that had them is refused, never
+	// passed on as plain NTP.
+	Require bool `yaml:"require"`
+}
+
+// NTPExtensions bounds the extension fields a packet may carry.
+type NTPExtensions struct {
+	// AllowUnknown forwards a field whose type this relay does not
+	// know. Off by default: a relay cannot decide about an instruction
+	// it cannot read, and that includes every field Autokey defined.
+	AllowUnknown bool `yaml:"allow_unknown"`
+	// RefuseAmbiguousMAC refuses a packet whose tail is both a valid
+	// MAC and a valid extension field -- the ambiguity RFC 7822
+	// documents and cannot remove. Default true: a packet whose meaning
+	// depends on which reading the receiver picks is a packet two
+	// implementations will disagree about.
+	RefuseAmbiguousMAC *bool `yaml:"refuse_ambiguous_mac"`
+	// Max is the number of fields one packet may carry. Default 8.
+	Max int `yaml:"max"`
+}
+
+// NTPQuality is what the listener requires of a server's answer, and how
+// it compares the servers with each other.
+//
+// Every bound here is about *responses*. A client's request carries a
+// stratum, a root delay and a root dispersion too, and they mean nothing
+// -- the protocol does not ask a client to fill them in -- so a listener
+// that applied these to requests would be refusing clients for empty
+// fields.
+type NTPQuality struct {
+	// CompareSources runs the monitor: the listener sends its own
+	// probes to every server, measures each the same way, and compares
+	// them. Default true, because a server that is reachable,
+	// synchronised, authenticated and wrong is the case every other
+	// check passes.
+	CompareSources *bool `yaml:"compare_sources"`
+	// ProbeInterval is how often each server is measured. Default 64s,
+	// which is an ordinary poll interval.
+	ProbeInterval Duration `yaml:"probe_interval"`
+	// MaxDisagreement is how far apart two sources may be before the
+	// listener says so. Default 100ms.
+	MaxDisagreement Duration `yaml:"max_disagreement"`
+	// MaxOffset and MaxDelay refuse an answer whose measured offset or
+	// round trip is past them. 0 disables each.
+	MaxOffset Duration `yaml:"max_offset"`
+	MaxDelay  Duration `yaml:"max_delay"`
+	// MaxRootDelay and MaxRootDispersion refuse an answer whose own
+	// statement of its error is past them: the server's uncertainty,
+	// as the server reports it.
+	MaxRootDelay      Duration `yaml:"max_root_delay"`
+	MaxRootDispersion Duration `yaml:"max_root_dispersion"`
+	// MaxStratum refuses an answer from too far down the tree. 0 leaves
+	// the protocol's own bound of 15.
+	MaxStratum int `yaml:"max_stratum"`
+	// RefuseUnsynchronised refuses an answer from a server that says
+	// its own clock is not synchronised -- by the leap indicator or by
+	// stratum 16, which are two separate statements. Default true.
+	RefuseUnsynchronised *bool `yaml:"refuse_unsynchronised"`
+	// HealthyAfter and UnhealthyAfter are the hysteresis: how many
+	// probes in a row it takes to change a server's state. Default 3
+	// each, because one slow answer on a busy network is not a fault
+	// and a relay that moved every client on one sample would be an
+	// outage generator with a health check attached.
+	HealthyAfter   int `yaml:"healthy_after"`
+	UnhealthyAfter int `yaml:"unhealthy_after"`
+	// OnAllSuspect is what happens when no server is usable: pass (the
+	// default -- keep forwarding and keep saying so) or refuse. A
+	// blanket fail-closed here stops the plant's clocks, which is
+	// itself an outage, so it is a decision an estate makes in writing.
+	OnAllSuspect string `yaml:"on_all_suspect"`
+}
+
+// NTPHoldover bounds how long a server whose time cannot be verified is
+// still used.
+type NTPHoldover struct {
+	// MaxDuration is how long a server may stay unverifiable before the
+	// listener says the holdover has expired. 0 disables the bound.
+	MaxDuration Duration `yaml:"max_duration"`
+}
+
+// NTPKoD is the kiss-o'-death policy: a stratum-0 answer whose four
+// reference identifier octets are a code. It is the protocol's own way of
+// saying "not now", and a client that gets one backs off.
+type NTPKoD struct {
+	// OnRateLimit answers a rate-limited client with a RATE kiss rather
+	// than dropping its packet. Default true: a drop teaches a client
+	// nothing and it asks again.
+	OnRateLimit *bool `yaml:"on_rate_limit"`
+	// OnDeny answers a policy refusal with a DENY kiss. Default false:
+	// a refusal usually should not tell the client what the policy is.
+	OnDeny bool `yaml:"on_deny"`
+	// Forward passes a server's own kiss-o'-death on to the client.
+	// Default true: the client is the thing that has to back off.
+	Forward *bool `yaml:"forward"`
+}
+
+// NTPLearn records what asks this listener for the time.
+type NTPLearn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when
+	// enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten. Default 5m; it is also
+	// written at shutdown.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the observations held: one per client,
+	// version and mode. Default 8192.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false.
+	Enforce bool `yaml:"enforce"`
+}
+
+// NTPTrace writes one JSON object per packet.
+type NTPTrace struct {
+	// File is the trace file. Required.
+	File string `yaml:"file"`
+	// MaxBytes bounds it. Default 104857600 (100 MiB); at the bound the
+	// trace says it stopped and stops.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// Requests and Responses select the directions traced. Default
+	// both.
+	Requests  *bool `yaml:"requests"`
+	Responses *bool `yaml:"responses"`
+}
+
+// Alerts says whether a refusal writes a security event.
+func (n *NTPListener) Alerts() bool {
+	return n == nil || n.AlertOnDeny == nil || *n.AlertOnDeny
+}
+
+// InterleavedAllowed says whether an interleaved answer is accepted.
+func (n *NTPListener) InterleavedAllowed() bool {
+	return n == nil || n.Interleaved == nil || *n.Interleaved
+}
+
+// NTSKEListener is NTS key establishment: TLS on TCP 4460 with the ALPN
+// "ntske/1" (RFC 8915).
+//
+// It is a listener of its own because it is a different port, a different
+// transport and a different security property from the time service, and
+// because running one without the other should be something a deployment
+// writes down.
+//
+// It relays rather than terminates. The TLS session is between the client
+// and the key establishment server, so this listener reads the one thing
+// the handshake shows in the clear -- the server name and the application
+// protocol the client offers -- refuses anything that is not an NTS
+// client, and hands the rest to the pool. Terminating it would mean
+// deriving the NTS keys from the TLS exporter, holding the cookie keys the
+// time servers use, and rotating them with overlap; none of that is
+// faked here.
+type NTSKEListener struct {
+	// Upstream is the pool of key establishment servers. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a client may
+	// connect from. Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// ServerNames is the allow list of server names a client may ask
+	// for. Empty accepts any name, including none.
+	ServerNames []string `yaml:"server_names"`
+	// RequireALPN refuses a connection that does not offer "ntske/1".
+	// Default true: a connection to this port that is not an NTS client
+	// is something else entirely, and this is the only port where that
+	// can be told from the handshake alone.
+	RequireALPN *bool `yaml:"require_alpn"`
+	// MaxConnections bounds live sessions. Default 256.
+	MaxConnections int `yaml:"max_connections"`
+	// MaxConcurrentHandshakes bounds the handshakes in flight, because
+	// a TLS handshake is the expensive part of NTS and a flood of them
+	// is the denial of service this port has. Default 32.
+	MaxConcurrentHandshakes int `yaml:"max_concurrent_handshakes"`
+	// HandshakeTimeout bounds how long a client has to get through the
+	// handshake. Default 10s.
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+	// IdleTimeout closes a session that says nothing. Default 30s: a
+	// key establishment is a handshake and a short exchange, not a
+	// session anybody holds open.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// MaxBytes bounds one session's traffic each way. Default 65536.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// LogSessions writes an access line per session.
+	LogSessions bool `yaml:"log_sessions"`
+	// AlertOnDeny writes a security event for every refusal. Default
+	// true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+}
+
+// Alerts says whether a refusal writes a security event.
+func (k *NTSKEListener) Alerts() bool {
+	return k == nil || k.AlertOnDeny == nil || *k.AlertOnDeny
+}
+
+// ALPNRequired says whether a client must offer the NTS key
+// establishment protocol.
+func (k *NTSKEListener) ALPNRequired() bool {
+	return k == nil || k.RequireALPN == nil || *k.RequireALPN
 }
 
 // SyslogListener is a syslog relay that reads what it forwards.

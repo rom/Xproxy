@@ -22,7 +22,7 @@ the shape. Decision records are in [AMR.md](AMR.md); requirements in
  +----------v----------+  +----------v----------+  +------------v----------+
  |       xproxy        |  |        xgate        |  |        xrelay         |
  |  http tcp udp       |  |   ssh telnet        |  | smtp mqtt ftp syslog  |
- |  forward dns        |  |   vnc rdp           |  | modbus                |
+ |  forward dns        |  |   vnc rdp           |  | modbus ntp ntske      |
  |  user: xproxy       |  |  user: xgate        |  |  user: xrelay         |
  +--+---------------+--+  +--+---------------+--+  +--+----------------+---+
     |               |        |               |        |                |
@@ -81,7 +81,8 @@ authority a cluster peer has by design.
 ```
 cmd/xproxy          edge daemon: links the http, forward, tcp and dns kinds
 cmd/xgate           gate daemon: links the ssh, telnet, vnc and rdp kinds
-cmd/xrelay          relay daemon: links the smtp, mqtt, ftp, syslog and modbus kinds
+cmd/xrelay          relay daemon: links the smtp, mqtt, ftp, syslog, modbus,
+                    ntp and ntske kinds
 cmd/xproxyctl       management CLI and TUI (talks to any of the three)
 cmd/xproxy-admin    web GUI process (users, sessions, embedded assets)
 cmd/xproxy-fleet    fleet controller
@@ -105,6 +106,9 @@ internal/kinds/ftp     kind: ftp -- control and data channel mediation
 internal/kinds/syslog  kind: syslog -- RFC 5424 and RFC 3164 relay
 internal/kinds/modbus  kind: modbus -- Modbus/TCP, RTU and ASCII relay with a
                        policy in the protocol's own terms, in both directions
+internal/kinds/ntp     kind: ntp -- NTP and NTS gateway: policy, source
+                       comparison, learning, traces
+internal/kinds/ntske   kind: ntske -- NTS key establishment relay on 4460
 internal/kinds/telnet  kind: telnet -- NVT option policy, recording, MFA
 internal/kinds/vnc     kind: vnc -- RFB handshake mediation, recording, MFA
 internal/kinds/rdp     kind: rdp -- connection sequence mediation, channel
@@ -146,7 +150,8 @@ internal/geoip      MaxMind DB reader and CSV prefix table
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/dns        DNS wire codec, cache, block list, resolver, servers
 internal/smtp internal/mqtt internal/ftp internal/syslog internal/sftp
-internal/modbus     the wire codecs of the relay and gate protocols
+internal/modbus internal/ntp
+                    the wire codecs of the relay and gate protocols
 internal/masque internal/mitm internal/grpcmsg internal/asciicast
                     the wire formats the kinds above are built on
 internal/ingress    Kubernetes ingress controller
@@ -192,7 +197,7 @@ cmd/xrelay ─┘             metrics, ingress, listener, paths, version}
     │
     └─ blank imports of its own kinds, and nothing else:
          kinds/{http,tcp,udp,dns,forward} | kinds/{ssh,telnet,vnc,rdp} |
-         kinds/{smtp,mqtt,ftp,syslog,modbus}
+         kinds/{smtp,mqtt,ftp,syslog,modbus,ntp,ntske}
 
 kinds/<k> -> {proxy, config, listener, and that protocol's wire package}
 proxy     -> {listener, router, upstream, limits, netutil, tlsconf, logging,
@@ -228,7 +233,7 @@ So the binary is split by who is on the other end of the socket:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske` |
 
 One repository, one module, one version and one configuration format;
 three programs, three users, three systemd units, three sandboxes, three
@@ -1002,9 +1007,10 @@ templating, an operation policy and YARA over what is written. Sessions
 are recorded to asciicast files (`internal/asciicast`) bounded by count
 and size, and a second factor can be demanded after the key.
 
-### The relay: SMTP, MQTT, FTP, syslog, Modbus
+### The relay: SMTP, MQTT, FTP, syslog, Modbus, NTP
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus}`) share a shape:
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,ntp,ntske}`)
+share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
 
@@ -1034,7 +1040,24 @@ that protocol's own terms, and bounds what a peer may say.
   and can authorise by the role in a client certificate (Modbus/TCP
   Security).
 
-All five reach the engine through `Host` alone, which is why they link
+- `ntp` is the time gateway, and the one kind whose interesting half is
+  not the forwarding: it probes every server in the pool with its own
+  transactions, compares them with each other, and can refuse an answer
+  from a source that disagrees with its peers or says not to trust it. Its
+  policy is version, mode, client and extension-field shaped; its
+  refusals are drops, because a datagram has no reply that means no,
+  except the kiss-o'-death the protocol defines for "slow down". It keeps
+  two tables apart on purpose -- the association's chosen server and the
+  outstanding requests -- and measures every expiry on the monotonic
+  clock, because it is the relay for the protocol that moves the wall
+  clock.
+- `ntske` is NTS key establishment, TCP 4460, relayed rather than
+  terminated: it reads the server name and the application protocol from
+  the ClientHello, refuses what is not an NTS client, bounds the
+  handshakes in flight, and leaves the cryptography to the servers whose
+  keys it is.
+
+All seven reach the engine through `Host` alone, which is why they link
 into `xrelay` and nowhere else.
 
 ### WebAssembly filters

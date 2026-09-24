@@ -128,7 +128,7 @@ and paths a real crawler would only learn from a decoy that names them.
 Check the access log for 404s first — the paths already being probed are
 the paths worth answering, and the log tells you which they are.
 
-**The decoys.** The build carries 142 of them (`xproxyctl honeypot`
+**The decoys.** The build carries 138 of them (`xproxyctl honeypot`
 lists the names; [CONFIG.md](CONFIG.md#routeshoneypot) tables them with
 a typical bait path each). They cover PHP and WordPress, leaked files,
 secrets and build files, cloud metadata, platform consoles and

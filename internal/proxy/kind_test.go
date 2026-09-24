@@ -28,6 +28,8 @@ var sections = map[string]string{
 	"ftp":     "ftp: {upstream: u}",
 	"syslog":  "syslog: {upstream: u}",
 	"modbus":  "modbus: {upstream: u}",
+	"ntp":     "ntp: {upstream: u}",
+	"ntske":   "ntske: {upstream: u}",
 }
 
 // TestUnlinkedKindRefused is the guarantee the three-binary split rests
