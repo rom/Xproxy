@@ -6666,6 +6666,90 @@ never locks in.
 `low`, `normal` (default), `high` or `critical`. Put health checks, login
 and payment on `critical` or `high`; search, feeds and exports on `low`.
 
+### routes[].client_priority
+
+`ignore` (default) or `lower`: what to do with a client's RFC 9218
+`Priority` request header.
+
+A client knows things about its own requests that this proxy cannot see —
+that one fetch is a prefetch for a page nobody has asked for yet, that
+another is blocking the render — and RFC 9218 is how it says so: a
+`Priority` field carrying an urgency from 0 (most urgent) to 7, default 3,
+and an `i` flag for a response that can be used as it arrives.
+
+With `lower`, a stated urgency above the default moves the request **down**
+the shedding order: 4 or 5 gives up one class, 6 or 7 goes to `low`, and
+0 to 3 change nothing. It can only ever lower. A header that could raise a
+request's class would be a promotion anybody can ask for, and the first
+thing a client under pressure would do is claim urgency 0 — which would
+make shedding protect whoever asked loudest instead of whatever the
+operator called important. Lowering is safe in a way raising is not,
+because it can only cost the client that asked for it.
+
+The header is forwarded to the upstream unchanged either way, and a
+malformed one is ignored rather than refused: a hint that only ever lowers
+its own request is not worth failing a request over. `priority_urgency`
+appears in the access log when a request stated one, with
+`priority_class` beside it when it changed the class. Nothing sheds
+without a `shedding` section, and validation says so.
+
+### routes[].early_hints
+
+`pass` (default) or `strip`: what to do with the upstream's 1xx
+informational responses, of which 103 Early Hints (RFC 8297) is the one in
+use. A 103 lets a server tell the browser which stylesheets and scripts to
+start fetching while the real response is still being assembled.
+
+`pass` relays them, which is what a browser wants. `strip` drops them, for
+a deployment whose clients or middleboxes mishandle them.
+
+At most eight informational responses are relayed per exchange either way:
+each one is a header block the upstream can make this proxy write to the
+client, and a flood of them is a response that never ends.
+
+A 1xx is not the final status, and this proxy no longer records it as one —
+before, a response preceded by 103 was logged with status 103 and reached
+the client only because `net/http` sent an implicit 200 with the
+accumulated headers.
+
+### routes[].early_data
+
+`safe_methods` (default), `allow` or `reject`: what to do with a request
+that arrived as unconfirmed TLS 1.3 early data.
+
+Early data saves a round trip and gives up what a completed handshake
+provided: an attacker who captured those bytes can send them again, and the
+server cannot tell the copy from the original. RFC 8470 is how the hops say
+so — the request carries `Early-Data: 1` while it is unconfirmed, and a
+server that cannot decide whether a replay is safe answers **425 Too
+Early**, which tells the client to send it again on the finished
+connection.
+
+`safe_methods` serves `GET`, `HEAD`, `OPTIONS` and `TRACE` and answers 425
+to everything else, which is RFC 8470's advice for a proxy: this one cannot
+know what a second `POST` would do. `reject` answers 425 to all of it, for
+a route where even a repeated read matters. `allow` passes it through, and
+validation says what that means.
+
+This proxy's own TLS server never accepts early data, so the header only
+arrives from a terminator in front — and only from a peer inside
+`trusted_proxies` does it count. A client's own `Early-Data: 1` decides
+nothing and is removed before the upstream sees it, because the upstream
+cannot tell the proxy's copy from the client's. `early_data` appears in the
+access log for a request that arrived on it, and a refusal is logged as
+`early_data`.
+
+### routes[].trailers
+
+`pass` (default) or `strip`: the fields an upstream sends after the body —
+a checksum, a signature, gRPC's status.
+
+`strip` removes both the announcement and the fields. An announced trailer
+with nothing behind it leaves a client waiting for a field that never
+arrives, so the two go together. It is refused on a gRPC route: gRPC
+carries its status in the trailers, and a route that strips them answers
+every call with no status at all.
+
 ## maintenance
 
 Present means the maintenance gate is available; `enabled` is the state

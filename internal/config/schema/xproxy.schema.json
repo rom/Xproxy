@@ -4123,6 +4123,10 @@
           "description": "ClientCertHeaders states the client's TLS certificate to the backend: none (the default), rfc9440 (Client-Cert and Client-Cert-Chain, RFC 9440) or xfcc (Envoy's X-Forwarded-Client-Cert). Whatever this says, a client's own copy of any of those headers is removed from every request that did not arrive from a peer inside trusted_proxies: the backend cannot tell the proxy's header from the client's, so a client that can send one chooses its own identity.",
           "type": "string"
         },
+        "client_priority": {
+          "description": "ClientPriority says what to do with a client's RFC 9218 Priority header: ignore (default) or lower, which lets a stated urgency above the default move this request down the shedding order. It can only ever lower: a header that could raise a request's class would be a promotion anybody can ask for, and shedding would then protect whoever claimed urgency rather than whatever the operator called important.",
+          "type": "string"
+        },
         "compress": {
           "description": "Compress overrides the compression section for this route: false turns it off, true requires the section.",
           "type": "boolean"
@@ -4166,6 +4170,14 @@
               "$ref": "#/$defs/RouteDoH"
             }
           ]
+        },
+        "early_data": {
+          "description": "EarlyData says what to do with a request that arrived as unconfirmed TLS early data, which a terminating proxy in front marks with Early-Data: 1 (RFC 8470): safe_methods (default) answers 425 Too Early to anything but a safe method, reject answers 425 to all of it, allow passes it through. Early data can be replayed by whoever captured it, and this proxy cannot know what a second POST would do.",
+          "type": "string"
+        },
+        "early_hints": {
+          "description": "EarlyHints says what to do with the upstream's 1xx informational responses, of which 103 Early Hints (RFC 8297) is the one in use: pass (default) relays them to the client, strip drops them.",
+          "type": "string"
         },
         "error_pages": {
           "description": "ErrorPages overrides the server's error pages for this route.",
@@ -4356,6 +4368,10 @@
         },
         "timeouts": {
           "$ref": "#/$defs/RouteTimeouts"
+        },
+        "trailers": {
+          "description": "Trailers says what to do with the response's trailers: pass (default) or strip. gRPC carries its status in them, so a gRPC route cannot strip them.",
+          "type": "string"
         },
         "upstream": {
           "type": "string"

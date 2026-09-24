@@ -3500,6 +3500,39 @@ Under attack, a full table is the design working. In ordinary traffic it
 means a key that never repeats — a header value with a timestamp in it,
 a path with an id — and the fix is the key, not the bound.
 
+## Early hints, early data and trailers
+
+**Clients get a 425 on POSTs and nothing else changed.** A terminating
+proxy in front started sending `Early-Data: 1`, which means those requests
+arrived in the TLS handshake and can be replayed by whoever captured them.
+That is `early_data: safe_methods` -- the default -- doing what RFC 8470
+asks of a proxy, and the client is expected to send the request again on the
+finished connection. If the route can genuinely take a replay, set
+`early_data: allow` on it; if even a repeated read matters, `reject`. Note
+that the marker counts only from a peer inside `trusted_proxies`.
+
+**The access log shows status 103.** It should not any more: a 1xx is
+recorded as informational and the final status is what the line carries. A
+103 in that field means an older build.
+
+**Early hints do not reach the browser.** Three places to look. The route
+may have `early_hints: strip`. There may be more than eight of them from
+the upstream, and the ninth onwards are dropped on purpose. Or the client
+is not HTTP/1.1 or later -- `net/http` does not relay informational
+responses to an HTTP/1.0 client.
+
+**A client waits forever for a trailer.** Something announced one and sent
+nothing: either an upstream bug, or a proxy in the chain that removed the
+fields and left the announcement. This proxy removes both together, and
+`trailers: strip` is refused on a gRPC route because the status lives
+there.
+
+**Requests are shed that used to be served.** Check whether the route has
+`client_priority: lower` and the client sends `Priority: u=6` or `u=7`. The
+client is asking to be shed first, and on that route the answer is yes. The
+access log carries `priority_urgency`, and `priority_class` when it changed
+the class.
+
 ## Deny reasons and details
 
 **One refusal has three spellings, and they are not interchangeable.**
@@ -3547,6 +3580,7 @@ innocent.
 | `webtransport` | A WebTransport session on a route without `webtransport` | no |
 | `cors` | The route's CORS policy | no |
 | `maintenance` | The maintenance gate | no |
+| `early_data` | A request that arrived as unconfirmed TLS early data on a route that will not take one (425 Too Early, RFC 8470) | no (the client did nothing wrong; it retries on the finished connection) |
 | `policy` | The route's positive-security policy | no |
 | `virtual_patch` | A virtual patch (`detail` is the patch id) | no |
 | `waf` | A WAF rule | yes |

@@ -17059,6 +17059,38 @@ T}
 .SS "routes[].priority_class"
 .PP
 \fBlow\fR, \fBnormal\fR (default), \fBhigh\fR or \fBcritical\fR. Put health checks, login and payment on \fBcritical\fR or \fBhigh\fR; search, feeds and exports on \fBlow\fR.
+.SS "routes[].client_priority"
+.PP
+\fBignore\fR (default) or \fBlower\fR: what to do with a client\(aqs RFC 9218 \fBPriority\fR request header.
+.PP
+A client knows things about its own requests that this proxy cannot see \[u2014] that one fetch is a prefetch for a page nobody has asked for yet, that another is blocking the render \[u2014] and RFC 9218 is how it says so: a \fBPriority\fR field carrying an urgency from 0 (most urgent) to 7, default 3, and an \fBi\fR flag for a response that can be used as it arrives.
+.PP
+With \fBlower\fR, a stated urgency above the default moves the request \fBdown\fR the shedding order: 4 or 5 gives up one class, 6 or 7 goes to \fBlow\fR, and 0 to 3 change nothing. It can only ever lower. A header that could raise a request\(aqs class would be a promotion anybody can ask for, and the first thing a client under pressure would do is claim urgency 0 \[u2014] which would make shedding protect whoever asked loudest instead of whatever the operator called important. Lowering is safe in a way raising is not, because it can only cost the client that asked for it.
+.PP
+The header is forwarded to the upstream unchanged either way, and a malformed one is ignored rather than refused: a hint that only ever lowers its own request is not worth failing a request over. \fBpriority_urgency\fR appears in the access log when a request stated one, with \fBpriority_class\fR beside it when it changed the class. Nothing sheds without a \fBshedding\fR section, and validation says so.
+.SS "routes[].early_hints"
+.PP
+\fBpass\fR (default) or \fBstrip\fR: what to do with the upstream\(aqs 1xx informational responses, of which 103 Early Hints (RFC 8297) is the one in use. A 103 lets a server tell the browser which stylesheets and scripts to start fetching while the real response is still being assembled.
+.PP
+\fBpass\fR relays them, which is what a browser wants. \fBstrip\fR drops them, for a deployment whose clients or middleboxes mishandle them.
+.PP
+At most eight informational responses are relayed per exchange either way: each one is a header block the upstream can make this proxy write to the client, and a flood of them is a response that never ends.
+.PP
+A 1xx is not the final status, and this proxy no longer records it as one \[u2014] before, a response preceded by 103 was logged with status 103 and reached the client only because \fBnet/http\fR sent an implicit 200 with the accumulated headers.
+.SS "routes[].early_data"
+.PP
+\fBsafe_methods\fR (default), \fBallow\fR or \fBreject\fR: what to do with a request that arrived as unconfirmed TLS 1.3 early data.
+.PP
+Early data saves a round trip and gives up what a completed handshake provided: an attacker who captured those bytes can send them again, and the server cannot tell the copy from the original. RFC 8470 is how the hops say so \[u2014] the request carries \fBEarly\-Data: 1\fR while it is unconfirmed, and a server that cannot decide whether a replay is safe answers \fB425 Too Early\fR, which tells the client to send it again on the finished connection.
+.PP
+\fBsafe_methods\fR serves \fBGET\fR, \fBHEAD\fR, \fBOPTIONS\fR and \fBTRACE\fR and answers 425 to everything else, which is RFC 8470\(aqs advice for a proxy: this one cannot know what a second \fBPOST\fR would do. \fBreject\fR answers 425 to all of it, for a route where even a repeated read matters. \fBallow\fR passes it through, and validation says what that means.
+.PP
+This proxy\(aqs own TLS server never accepts early data, so the header only arrives from a terminator in front \[u2014] and only from a peer inside \fBtrusted_proxies\fR does it count. A client\(aqs own \fBEarly\-Data: 1\fR decides nothing and is removed before the upstream sees it, because the upstream cannot tell the proxy\(aqs copy from the client\(aqs. \fBearly_data\fR appears in the access log for a request that arrived on it, and a refusal is logged as \fBearly_data\fR.
+.SS "routes[].trailers"
+.PP
+\fBpass\fR (default) or \fBstrip\fR: the fields an upstream sends after the body \[u2014] a checksum, a signature, gRPC\(aqs status.
+.PP
+\fBstrip\fR removes both the announcement and the fields. An announced trailer with nothing behind it leaves a client waiting for a field that never arrives, so the two go together. It is refused on a gRPC route: gRPC carries its status in the trailers, and a route that strips them answers every call with no status at all.
 .SH "maintenance"
 .PP
 Present means the maintenance gate is available; \fBenabled\fR is the state at start and the runtime toggle (\fBPOST /v1/maintenance\fR, \fBxproxyctl maintenance on|off\fR) overrides it and survives reloads. While it is on, every request is answered with \fBstatus\fR and \fBRetry\-After\fR except an allowlisted client and a route with \fBmaintenance: false\fR (health and status endpoints). The gate runs right after routing, before authentication, rate limits and filters.

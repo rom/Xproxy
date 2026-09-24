@@ -44,6 +44,9 @@ and "refused" are different promises.
 | 9111 | HTTP Caching | Partial | The response cache honours `Cache-Control`, `Vary`, `Age` and freshness; it does not implement shared-cache revalidation with `stale-while-revalidate` (RFC 5861) |
 | 9112 | HTTP/1.1 | Full | Framing is decided once, in one parser; a message with both `Content-Length` and `Transfer-Encoding`, an obfuscated `chunked`, or a second framing header is refused rather than resolved |
 | 9113 | HTTP/2 | Full | Through Go's `net/http2`, with the proxy's own bounds on concurrent streams and header size |
+| 9218 | Extensible Prioritization Scheme for HTTP | Partial | A client's `Priority` urgency may move its own request down the load-shedding order on a route that reads it, and never up; the field is forwarded unchanged. Stream reprioritisation frames are not implemented — the proxy does not schedule the upstream's streams |
+| 8297 | An HTTP Status Code for Indicating Hints (103 Early Hints) | Full | Relayed to the client, at most eight informational responses per exchange, or stripped per route |
+| 8470 | Using Early Data in HTTP | Full | A request a terminating proxy marked `Early-Data: 1` is answered 425 Too Early unless the route says otherwise; a client's own marker decides nothing and is not forwarded. This proxy's own TLS server does not accept early data |
 | 7541 | HPACK | Full | With HTTP/2 |
 | 8441 | Bootstrapping WebSockets with HTTP/2 | Full | Extended `CONNECT`; the `:protocol` pseudo-header is claimed whole on a forward listener, and an unimplemented value is answered `501` rather than falling through to a TCP tunnel |
 | 6265 | HTTP State Management (cookies) | Full | Including the `__Host-` and `__Secure-` prefixes for the cookies this proxy issues |

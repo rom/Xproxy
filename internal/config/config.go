@@ -3216,6 +3216,30 @@ type Route struct {
 	// PriorityClass is low, normal, high or critical (never shed). Default
 	// normal.
 	PriorityClass string `yaml:"priority_class"`
+	// ClientPriority says what to do with a client's RFC 9218 Priority
+	// header: ignore (default) or lower, which lets a stated urgency
+	// above the default move this request down the shedding order. It
+	// can only ever lower: a header that could raise a request's class
+	// would be a promotion anybody can ask for, and shedding would then
+	// protect whoever claimed urgency rather than whatever the operator
+	// called important.
+	ClientPriority string `yaml:"client_priority"`
+	// EarlyHints says what to do with the upstream's 1xx informational
+	// responses, of which 103 Early Hints (RFC 8297) is the one in use:
+	// pass (default) relays them to the client, strip drops them.
+	EarlyHints string `yaml:"early_hints"`
+	// EarlyData says what to do with a request that arrived as
+	// unconfirmed TLS early data, which a terminating proxy in front
+	// marks with Early-Data: 1 (RFC 8470): safe_methods (default) answers
+	// 425 Too Early to anything but a safe method, reject answers 425 to
+	// all of it, allow passes it through. Early data can be replayed by
+	// whoever captured it, and this proxy cannot know what a second POST
+	// would do.
+	EarlyData string `yaml:"early_data"`
+	// Trailers says what to do with the response's trailers: pass
+	// (default) or strip. gRPC carries its status in them, so a gRPC
+	// route cannot strip them.
+	Trailers string `yaml:"trailers"`
 	// Challenge gates unverified clients with the browser challenge.
 	Challenge *RouteChallenge `yaml:"challenge"`
 	// JWT requires or accepts a validated token from a provider.

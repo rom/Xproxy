@@ -400,6 +400,10 @@ routes:
       webtransport: false
       waf: null
       priority_class: high
+      client_priority: ""
+      early_hints: ""
+      early_data: ""
+      trailers: ""
       challenge:
         mode: always
         level: 0.5
@@ -469,6 +473,10 @@ routes:
         block_percent: null
         block_cidrs: []
       priority_class: normal
+      client_priority: ""
+      early_hints: ""
+      early_data: ""
+      trailers: ""
       challenge: null
       jwt:
         provider: idp
@@ -533,6 +541,10 @@ routes:
       webtransport: false
       waf: null
       priority_class: critical
+      client_priority: ""
+      early_hints: ""
+      early_data: ""
+      trailers: ""
       challenge: null
       jwt: null
       icap: null
@@ -596,6 +608,10 @@ routes:
       webtransport: false
       waf: null
       priority_class: normal
+      client_priority: ""
+      early_hints: ""
+      early_data: ""
+      trailers: ""
       challenge: null
       jwt: null
       icap:
@@ -664,6 +680,10 @@ routes:
       webtransport: false
       waf: null
       priority_class: normal
+      client_priority: ""
+      early_hints: ""
+      early_data: ""
+      trailers: ""
       challenge:
         mode: load
         level: 0.5
@@ -731,6 +751,10 @@ routes:
         block_percent: null
         block_cidrs: []
       priority_class: normal
+      client_priority: ""
+      early_hints: ""
+      early_data: ""
+      trailers: ""
       challenge: null
       jwt: null
       icap: null

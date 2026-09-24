@@ -492,6 +492,35 @@ func (v *validator) config(c *Config) {
 		default:
 			v.errf("routes[%d].priority_class: must be low, normal, high or critical", i)
 		}
+		switch c.Routes[i].ClientPriority {
+		case "", "ignore", "lower":
+		default:
+			v.errf("routes[%d].client_priority: must be ignore or lower", i)
+		}
+		switch c.Routes[i].EarlyHints {
+		case "", "pass", "strip":
+		default:
+			v.errf("routes[%d].early_hints: must be pass or strip", i)
+		}
+		switch c.Routes[i].EarlyData {
+		case "", "safe_methods", "allow", "reject":
+		default:
+			v.errf("routes[%d].early_data: must be safe_methods, allow or reject", i)
+		}
+		if c.Routes[i].EarlyData == "allow" && len(c.TrustedProxies) > 0 {
+			v.warnf("routes[%d].early_data: allow accepts a request that can be replayed by whoever captured it; only the route knows whether that is safe", i)
+		}
+		switch c.Routes[i].Trailers {
+		case "", "pass", "strip":
+		default:
+			v.errf("routes[%d].trailers: must be pass or strip", i)
+		}
+		if c.Routes[i].Trailers == "strip" && c.Routes[i].GRPC != nil {
+			v.errf("routes[%d].trailers: gRPC carries its status in the trailers, so they cannot be stripped", i)
+		}
+		if c.Routes[i].ClientPriority == "lower" && c.Shedding == nil {
+			v.warnf("routes[%d].client_priority: nothing sheds without server.shedding, so a client's urgency changes nothing", i)
+		}
 		if ri := c.Routes[i].ICAP; ri != nil {
 			p := fmt.Sprintf("routes[%d].icap", i)
 			if c.ICAP == nil {

@@ -442,6 +442,57 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **The four HTTP gateway controls the batch asked for, and one real bug
+  among them** (`routes[].early_hints`, `early_data`, `trailers`,
+  `client_priority`).
+
+  *Early Hints (RFC 8297) went through and the status did not.* A 1xx is
+  informational: it does not end the header phase, and the real status
+  still follows. The response writer recorded it as the status and marked
+  the response written, so the final header was dropped -- and the client
+  still saw 200, because `net/http` sends an implicit one with the
+  accumulated headers when the body is written. Every record of such an
+  exchange was wrong: the access log said 103 for a page that returned 200,
+  and so did everything downstream of the recorded status. Now a 1xx is
+  relayed and the final status is the one recorded, with a test that reads
+  the access line rather than the client's view, because the client's view
+  was the half that already looked right. At most eight informational
+  responses are relayed per exchange: each is a header block an upstream
+  can make this proxy write. `early_hints: strip` drops them where clients
+  or middleboxes mishandle them.
+
+  *Early data (RFC 8470).* A request that arrived in the TLS handshake can
+  be replayed by whoever captured it. `early_data` decides what that means
+  per route: `safe_methods` (the default) serves GET, HEAD, OPTIONS and
+  TRACE and answers 425 Too Early to everything else, which is the RFC's
+  own advice for a proxy that cannot know what a second POST would do;
+  `reject` answers 425 to all of it; `allow` passes it through. The marker
+  counts only from a peer inside `trusted_proxies`, and a client's own is
+  removed before the upstream sees it -- the upstream cannot tell the
+  proxy's copy from the client's, which is the whole reason the field is
+  a hop's statement rather than a request's.
+
+  *Trailers.* `trailers: strip` removes the announcement and the fields
+  both, because an announced trailer with nothing behind it leaves a client
+  waiting. It has to happen at the end of the body rather than on the
+  response header: the transport fills the trailer map after everything
+  that inspects a response has run, and the reverse proxy forwards whatever
+  is in it, announced or not. Refused on a gRPC route, which carries its
+  status there.
+
+  *Priorities (RFC 9218).* `client_priority: lower` reads a client's
+  `Priority` urgency and may move that request **down** the shedding order
+  -- 4 or 5 gives up a class, 6 or 7 goes to `low` -- and never up. A header
+  that could raise a class would be a promotion anybody can ask for, and
+  the first thing a client under pressure would do is claim urgency 0,
+  which would make shedding protect whoever asked loudest rather than
+  whatever the operator called important. Lowering is safe in a way raising
+  is not, because it can only cost the client that asked. A malformed field
+  is ignored rather than refused, and the field is forwarded either way.
+
+  Thirteen deliberate weakenings of the four controls were each caught by
+  the tests.
+
 - **The other answer to a stolen bearer token: the certificate it names**
   (`jwt.providers[].certificate_binding`; RFC 8705 section 3).
 
