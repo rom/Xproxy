@@ -1311,6 +1311,37 @@ the clients disagree and the schema is the one that is wrong.
 past the visit budget. A legitimate query does not; a generated one
 might, and should be simplified.
 
+**`graphql` refuses with `get_mutation`.** A mutation or subscription
+arrived by GET, which the GraphQL over HTTP specification does not allow
+and no option here permits: a GET is what a link, an image tag, a
+prefetch and a crawler all produce, so a mutation reachable that way is
+one anybody can fire from another origin with the browser attaching the
+cookies. Send it by POST. A client that uses GET for everything is a
+client to fix, not a bound to relax.
+
+**`graphql` refuses with `unnamed` or `operation`.**
+`require_operation_name` is on (possibly because `allow_operations` is
+set, which implies it) and the client sent an anonymous operation; or the
+operation's name is not on the list. `xproxyctl` does not enumerate the
+names — the security log line carries the detail, and the client's own
+query is the other half. Adding a name to the list is a deliberate act;
+that is the point of the list.
+
+**`graphql` refuses with `persisted`.** The request carried no query
+text, only a hash the origin would look up, and `persisted: deny` says an
+unreadable query is not an allowed one. If persisted queries are how the
+clients work, this is the wrong setting for that route: nothing here can
+bound a document it cannot see, and the bound has to live at the origin
+instead.
+
+**A `graphql` complexity refusal disagrees with the query's own
+arithmetic.** Variables are read now, so `friends(first: $n)` costs what
+the request says `n` is — but only when the request carries it as a whole
+non-negative number. A variable with a schema default the filter never
+sees, or one the client omits, is scored as `max_list`, which is usually
+the surprise. The other half is that a larger literal beside a smaller
+variable still wins.
+
 **`account_guard` blocks a real user.** `xproxyctl accounts` shows the
 ladder state per key. Counts keyed on the account belong to the person
 being attacked, not the attacker, which is why no built-in class blocks

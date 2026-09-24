@@ -5710,11 +5710,31 @@ Bounds GraphQL requests (`POST` with `application/json` or
 `application/graphql`, `GET` with `query`) before they reach the API:
 depth (nesting of selection sets, fragments expanded, a fragment cycle
 fails), complexity (each field costs 1 times the product of the list
-arguments of its ancestors; a variable in a list argument counts as
-`max_list`), aliases, operations per batch, query size and
-introspection. Nothing is executed or forwarded to a schema. Denials are
-400 with a GraphQL `errors` body and the detail `depth`, `complexity`,
-`aliases`, `batch`, `size`, `syntax` or `introspection`.
+arguments of its ancestors), breadth, directives, aliases, operations per
+batch, query size and introspection — and what the operation *is*: a
+mutation, a subscription, an operation nobody named, or one this filter
+cannot read at all. Nothing is executed or forwarded to a schema. Denials
+are 400 with a GraphQL `errors` body and the detail `depth`,
+`complexity`, `root_fields`, `directives`, `aliases`, `batch`, `size`,
+`syntax`, `introspection`, `get_mutation`, `mutation`, `subscription`,
+`unnamed`, `operation` or `persisted`.
+
+**A mutation may not arrive by GET**, whatever the options say. The
+GraphQL over HTTP specification reserves GET for queries, and the reason
+is that a GET is what a link, an image tag, a prefetch and a crawler all
+produce: a mutation reachable that way is a mutation anybody can fire
+from another origin with the browser attaching the cookies. No
+configuration makes that safe, so there is no option to allow it
+(`get_mutation`).
+
+**Only the selected operation is measured.** A document may carry a
+client's whole query file and select one with `operationName`; only that
+one runs, so judging the request by the others would refuse a client for
+queries it did not send. With no `operationName` the server picks, so
+every operation in the document is measured. What the *document* contains
+is still policy: a mutation sitting beside the selected query is a
+mutation the server could run, so `mutations`, `subscriptions`,
+`allow_operations` and `require_operation_name` look at all of them.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -5725,7 +5745,24 @@ introspection. Nothing is executed or forwarded to a schema. Denials are
 | `max_query_bytes` | int | `65536` | Query text and body size (256 to 16 MiB) |
 | `introspection` | bool | `true` | `false` refuses `__schema` and `__type` |
 | `list_args` | list | `[first, last, limit]` | Arguments whose integer value multiplies the cost of the fields below |
-| `max_list` | int | `1000` | Cap of one multiplier, and the value assumed for a variable. It bounds the cost model, not the page size: `first: 1000000` is scored as `max_list`, because a client can move the number into a variable whose value this filter never sees. The page size itself belongs to the origin, or to an `openapi` route policy |
+| `max_list` | int | `1000` | Cap of one multiplier, and the value assumed for a variable the request does not carry. It bounds the cost model, not the page size: `first: 1000000` is scored as `max_list`. The page size itself belongs to the origin, or to an `openapi` route policy |
+| `max_root_fields` | int | `20` | Top-level fields of an operation. Depth says nothing about breadth: two hundred root fields are two hundred resolvers at depth one |
+| `max_directives` | int | `100` | Directives in the query text. A directive is evaluated per field it decorates, so a field carrying a thousand `@include`s is a thousand evaluations before anything resolves. The count is of the text rather than the expansion, because that is the number an operator can look at their own query and predict |
+| `mutations` | `allow`, `deny` | `allow` | `deny` makes the endpoint read-only |
+| `subscriptions` | `allow`, `deny` | `allow` | `deny` refuses subscription operations |
+| `require_operation_name` | bool | `false` | Refuse an operation with no name (`unnamed`) |
+| `allow_operations` | list | any | The only operation names that may run (`operation`). It implies `require_operation_name`, because an anonymous operation is on no list and a list that let it through would be a list in name only. This is the strongest control here for a closed client set: the queries are known, so anything else is not a query this API serves |
+| `persisted` | `allow`, `deny` | `allow` | What to do with a request that carries no query text — a persisted query the origin looks up by hash. There is nothing to parse and nothing to measure, so every bound above walks past it. `allow` is the default because the origin only runs documents it already has, which is usually the safest thing a client can send; `deny` is for a deployment whose API is reached through this filter and not otherwise, where an unreadable query should not be an allowed one (`persisted`) |
+
+**Variables are read.** A pagination argument given as a variable —
+`friends(first: $count)` with `{"count": 10}` in the request — is a real
+number the server will use, and scoring it as `max_list` refuses a query
+that costs nothing. That is how a complexity bound ends up switched off by
+the operator it kept annoying. A variable the request does not carry, or
+carries as something that is not a whole non-negative number (a string, a
+null, a fraction, a negative), or that has a schema default this filter
+never sees, is still the worst case; and a literal larger than the
+variable still wins.
 
 ### Kind `upload_guard`
 

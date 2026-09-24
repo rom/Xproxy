@@ -35,6 +35,17 @@ filters:
       max_aliases: 10
       max_batch: 1
       introspection: false
+      # Breadth and directives: depth says nothing about either.
+      max_root_fields: 15
+      max_directives: 50
+      # This API is read through the gateway and written through another
+      # route, so nothing here mutates.
+      mutations: deny
+      subscriptions: deny
+      # A query nobody named cannot be judged against a list, and a
+      # persisted query cannot be judged at all.
+      require_operation_name: true
+      persisted: deny
   # gRPC calls are length-prefixed protobuf inside the body. Routing
   # them by path reads the envelope; this reads the messages, which is
   # where a bound on one message, on how deeply it nests and on how

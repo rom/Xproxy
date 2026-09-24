@@ -478,6 +478,52 @@ Open findings of the earlier rounds:
   `discovery`, the sinkhole addresses -- are not, which is why
   `sinkhole_ipv4: 0.0.0.0` still works inside a denied range.
 
+- **The GraphQL filter judges what an operation is, not only what it
+  costs** (`mutations`, `subscriptions`, `allow_operations`,
+  `require_operation_name`, `persisted`, `max_root_fields`,
+  `max_directives`).
+
+  - **A mutation could arrive by GET.** The operation type was parsed and
+    thrown away, so nothing separated a query from a mutation. The
+    GraphQL over HTTP specification reserves GET for queries, and the
+    reason is that a GET is what a link, an image tag, a prefetch and a
+    crawler all produce: a mutation reachable that way is a mutation
+    anybody can fire from another origin with the browser attaching the
+    cookies. It is refused unconditionally (`get_mutation`) -- there is no
+    option, because no configuration makes it safe. Beside it,
+    `mutations: deny` and `subscriptions: deny` make an endpoint
+    read-only outright.
+  - **Operation names were invisible.** `require_operation_name` refuses
+    an anonymous operation and `allow_operations` names the only ones
+    that may run, which is the strongest control here for a closed client
+    set: the queries are known, so anything else is not a query this API
+    serves. The list implies the name requirement, because an anonymous
+    operation is on no list and a list that let it through would be a
+    list in name only.
+  - **A persisted query walked past every bound.** A request with no
+    query text -- the origin looks the document up by hash -- had nothing
+    to parse and nothing to measure, and the filter returned Continue.
+    `persisted: deny` refuses it. `allow` stays the default, because an
+    origin that only runs documents it already has is usually the safest
+    thing a client can send.
+  - **Breadth and directives were unbounded.** `max_root_fields` (20)
+    bounds an operation's top-level selection, which is the breadth a
+    depth bound says nothing about, and `max_directives` (100) bounds the
+    directives in the query text, since a directive is evaluated per
+    field it decorates.
+  - **Only the selected operation is measured now.** A document may carry
+    a client's whole query file and select one with `operationName`; only
+    that one runs, so judging the request by the others refused clients
+    for queries they did not send. What the document *contains* is still
+    policy, so the mutation sitting beside the selected query is still
+    caught.
+  - **Variables are read.** `friends(first: $count)` with `{"count": 10}`
+    in the request is ten things, and scoring it as `max_list` refused a
+    query that costs nothing -- which is how a complexity bound ends up
+    switched off by the operator it kept annoying. A variable the request
+    does not carry, or carries as anything but a whole non-negative
+    number, is still the worst case, and a larger literal still wins.
+
 - **The OpenAPI filter enforces the parts of a description it was reading
   as documentation** (`require_security`, `read_only`, and form bodies).
 

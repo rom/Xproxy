@@ -14796,12 +14796,16 @@ The walk follows \fBproperties\fR, array \fBitems\fR, \fBadditionalProperties\fR
 \fBallow\fR is the default because a client that GETs an object and PUTs it back sends the server\(aqs own fields, and a great many REST clients are written exactly that way. \fBlog\fR lets the request through and records \fBopenapi_read_only\fR in the access log with the properties, which is how to find out whether \fBdeny\fR would break the clients before turning it on. \fBdeny\fR answers 400 with detail \fBread_only:body.<field>\fR.
 .SS "Kind \fBgraphql\fR"
 .PP
-Bounds GraphQL requests (\fBPOST\fR with \fBapplication/json\fR or \fBapplication/graphql\fR, \fBGET\fR with \fBquery\fR) before they reach the API: depth (nesting of selection sets, fragments expanded, a fragment cycle fails), complexity (each field costs 1 times the product of the list arguments of its ancestors; a variable in a list argument counts as \fBmax_list\fR), aliases, operations per batch, query size and introspection. Nothing is executed or forwarded to a schema. Denials are 400 with a GraphQL \fBerrors\fR body and the detail \fBdepth\fR, \fBcomplexity\fR, \fBaliases\fR, \fBbatch\fR, \fBsize\fR, \fBsyntax\fR or \fBintrospection\fR.
+Bounds GraphQL requests (\fBPOST\fR with \fBapplication/json\fR or \fBapplication/graphql\fR, \fBGET\fR with \fBquery\fR) before they reach the API: depth (nesting of selection sets, fragments expanded, a fragment cycle fails), complexity (each field costs 1 times the product of the list arguments of its ancestors), breadth, directives, aliases, operations per batch, query size and introspection \[u2014] and what the operation \fIis\fR: a mutation, a subscription, an operation nobody named, or one this filter cannot read at all. Nothing is executed or forwarded to a schema. Denials are 400 with a GraphQL \fBerrors\fR body and the detail \fBdepth\fR, \fBcomplexity\fR, \fBroot_fields\fR, \fBdirectives\fR, \fBaliases\fR, \fBbatch\fR, \fBsize\fR, \fBsyntax\fR, \fBintrospection\fR, \fBget_mutation\fR, \fBmutation\fR, \fBsubscription\fR, \fBunnamed\fR, \fBoperation\fR or \fBpersisted\fR.
+.PP
+\fBA mutation may not arrive by GET\fR, whatever the options say. The GraphQL over HTTP specification reserves GET for queries, and the reason is that a GET is what a link, an image tag, a prefetch and a crawler all produce: a mutation reachable that way is a mutation anybody can fire from another origin with the browser attaching the cookies. No configuration makes that safe, so there is no option to allow it (\fBget_mutation\fR).
+.PP
+\fBOnly the selected operation is measured.\fR A document may carry a client\(aqs whole query file and select one with \fBoperationName\fR; only that one runs, so judging the request by the others would refuse a client for queries it did not send. With no \fBoperationName\fR the server picks, so every operation in the document is measured. What the \fIdocument\fR contains is still policy: a mutation sitting beside the selected query is a mutation the server could run, so \fBmutations\fR, \fBsubscriptions\fR, \fBallow_operations\fR and \fBrequire_operation_name\fR look at all of them.
 .PP
 .TS
 allbox;
-lbw(1.4i) lbw(0.6i) lbw(0.8i) lbx
-lw(1.4i) lw(0.6i) lw(0.8i) lx.
+lbw(1.4i) lbw(0.7i) lbw(0.8i) lbx
+lw(1.4i) lw(0.7i) lw(0.8i) lx.
 T{
 Option
 T}	T{
@@ -14881,9 +14885,74 @@ int
 T}	T{
 \fB1000\fR
 T}	T{
-Cap of one multiplier,\: and the value assumed for a variable. It bounds the cost model,\: not the page size: \fBfirst:\: 1000000\fR is scored as \fBmax_\:list\fR,\: because a client can move the number into a variable whose value this filter never sees. The page size itself belongs to the origin,\: or to an \fBopenapi\fR route policy
+Cap of one multiplier,\: and the value assumed for a variable the request does not carry. It bounds the cost model,\: not the page size: \fBfirst:\: 1000000\fR is scored as \fBmax_\:list\fR. The page size itself belongs to the origin,\: or to an \fBopenapi\fR route policy
+T}
+T{
+\fBmax_\:root_\:fields\fR
+T}	T{
+int
+T}	T{
+\fB20\fR
+T}	T{
+Top\-level fields of an operation. Depth says nothing about breadth: two hundred root fields are two hundred resolvers at depth one
+T}
+T{
+\fBmax_\:directives\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+Directives in the query text. A directive is evaluated per field it decorates,\: so a field carrying a thousand \fB@include\fRs is a thousand evaluations before anything resolves. The count is of the text rather than the expansion,\: because that is the number an operator can look at their own query and predict
+T}
+T{
+\fBmutations\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR
+T}	T{
+\fBallow\fR
+T}	T{
+\fBdeny\fR makes the endpoint read\-only
+T}
+T{
+\fBsubscriptions\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR
+T}	T{
+\fBallow\fR
+T}	T{
+\fBdeny\fR refuses subscription operations
+T}
+T{
+\fBrequire_\:operation_\:name\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse an operation with no name (\fBunnamed\fR)
+T}
+T{
+\fBallow_\:operations\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The only operation names that may run (\fBoperation\fR). It implies \fBrequire_\:operation_\:name\fR,\: because an anonymous operation is on no list and a list that let it through would be a list in name only. This is the strongest control here for a closed client set: the queries are known,\: so anything else is not a query this API serves
+T}
+T{
+\fBpersisted\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR
+T}	T{
+\fBallow\fR
+T}	T{
+What to do with a request that carries no query text \[u2014] a persisted query the origin looks up by hash. There is nothing to parse and nothing to measure,\: so every bound above walks past it. \fBallow\fR is the default because the origin only runs documents it already has,\: which is usually the safest thing a client can send;\: \fBdeny\fR is for a deployment whose API is reached through this filter and not otherwise,\: where an unreadable query should not be an allowed one (\fBpersisted\fR)
 T}
 .TE
+.PP
+\fBVariables are read.\fR A pagination argument given as a variable \[u2014] \fBfriends(first: $count)\fR with \fB{"count": 10}\fR in the request \[u2014] is a real number the server will use, and scoring it as \fBmax_list\fR refuses a query that costs nothing. That is how a complexity bound ends up switched off by the operator it kept annoying. A variable the request does not carry, or carries as something that is not a whole non\-negative number (a string, a null, a fraction, a negative), or that has a schema default this filter never sees, is still the worst case; and a literal larger than the variable still wins.
 .SS "Kind \fBupload_guard\fR"
 .PP
 Inspects file uploads before the application stores them: multipart bodies (and, with \fBraw_uploads\fR, any other body of a write request) are buffered up to \fBmax_total_bytes\fR, every file part is checked and the body is replayed to the upstream unchanged. Checks, in order: file count, the form field, the file name (no path separators, control characters or traversal, at most \fBmax_filename_length\fR), the extension chain (\fBinvoice.pdf.exe\fR has two; a denied extension anywhere in the chain refuses, and with an allow list an unexpected extension before the last one, \fBphoto.html.jpg\fR, refuses too, while \fBreport.2024.pdf\fR passes), the size, the content (PE, ELF and Mach\-O images, \fB#!\fR scripts, PHP, JSP and ASP tags are refused whatever the name, unless \fBdeny_executables\fR is off), and the bytes against the extension\(aqs family and the declared media type (a PNG named \fB.jpg\fR, a PDF declared as an image). Denials answer 400, 413 or 415 with reason \fBupload\fR, a detail \fBcheck:filename\fR and a JSON body; the access log carries \fBupload_files\fR and \fBupload_bytes\fR. Malware scanning stays with ICAP.

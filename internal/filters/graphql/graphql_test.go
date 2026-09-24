@@ -54,7 +54,7 @@ func TestBounds(t *testing.T) {
 	ok(`{ me { friends { posts { title } } } }`)                          // depth 3
 	denied(`{ me { friends { posts { comments { text } } } } }`, "depth") // depth 4
 	denied(`{ me { friends(first: 100) { name } } }`, "complexity")       // 1 + 1 + 100
-	denied(`{ me { friends(first: $n) { name } } }`, "complexity")        // variable: worst case
+	denied(`{ me { friends(first: $n) { name } } }`, "complexity")        // the request says n is 50
 	ok(`{ a: me { name } b: me { name } }`)                               // 2 aliases
 	denied(`{ a: me { name } b: me { name } c: me { name } }`, "aliases") // 3 aliases
 	denied(`{ __schema { types { name } } }`, "introspection")
