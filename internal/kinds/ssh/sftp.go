@@ -277,6 +277,13 @@ func (f *sftpFiles) bind(id uint32, handle string, g *streamscan.Guard) {
 	f.open[handle] = file
 }
 
+// forget removes an OPEN which the server answered without a handle.
+func (f *sftpFiles) forget(id uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.pending, id)
+}
+
 // file returns the record for a handle, or nil when the proxy never saw
 // the open it came from.
 func (f *sftpFiles) file(handle string) *sftpFile {
@@ -335,6 +342,10 @@ func (se *session) relaySFTP(clientCh, upCh cssh.Channel, p *sftpPolicy) {
 				if id, handle, err := sftpwire.ParseHandleReply(pkt); err == nil {
 					files.bind(id, handle, p.yara)
 				}
+			} else if pkt.Type == sftpwire.STATUS {
+				// An OPEN which failed is answered with STATUS rather than
+				// HANDLE. It must not occupy a pending slot forever.
+				files.forget(sftpwire.StatusID(pkt))
 			}
 			// A reply to a write this proxy replayed is the answer to a
 			// request the client already had an answer for. Passing it
@@ -371,7 +382,7 @@ func (se *session) relaySFTP(clientCh, upCh cssh.Channel, p *sftpPolicy) {
 			}
 			reason := p.check(req)
 			if reason == "" {
-				reason = se.sftpWrite(p, files, req)
+				reason = se.sftpWrite(p, files, req, svc != nil)
 			}
 			if reason != "" {
 				se.refused.Add(1)
@@ -471,11 +482,11 @@ func (se *session) sftpName(files *sftpFiles, r sftpwire.Request) string {
 // sftpWrite applies what only a write can be judged on: how much of a
 // file it makes, and what is in it. It returns the reason to refuse, or
 // empty.
-func (se *session) sftpWrite(p *sftpPolicy, files *sftpFiles, r sftpwire.Request) string {
+func (se *session) sftpWrite(p *sftpPolicy, files *sftpFiles, r sftpwire.Request, scan bool) string {
 	if r.Type != sftpwire.WRITE {
 		return ""
 	}
-	if p.maxFile <= 0 && p.yara == nil {
+	if p.maxFile <= 0 && p.yara == nil && !scan {
 		return ""
 	}
 	f := files.file(r.Handle)
