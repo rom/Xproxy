@@ -213,8 +213,17 @@ func (tg *targetFTP) serve(c net.Conn) {
 			tg.stored = string(b)
 			tg.mu <- struct{}{}
 			write("226 transfer complete\r\n")
-		case "DELE", "MKD", "RMD", "RNFR", "RNTO":
+		case "DELE", "MKD", "RMD", "RNTO":
 			write("250 done\r\n")
+		case "RNFR":
+			// RFC 959: a rename waits for the RNTO, which is what 350
+			// says. A server answering 250 here would be claiming it had
+			// renamed something to nothing.
+			write("350 ready for the new name\r\n")
+		case "REST":
+			write("350 restarting at " + arg + "\r\n")
+		case "MLST":
+			write("250-Listing " + arg + "\r\n type=file;size=23; " + arg + "\r\n250 End\r\n")
 		case "SIZE":
 			write(fmt.Sprintf("213 %d\r\n", len(tg.content)))
 		case "AUTH":

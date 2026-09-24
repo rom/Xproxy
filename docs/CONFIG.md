@@ -1834,11 +1834,68 @@ becomes two: the proxy reads `NOOP` and the target reads `NOOP` and the
 
 Only the side that arranged a data connection may use it: a passive
 connection has to come from the client's own address, an active one from
-the target's. `PROT P` is terminated on both sides rather than tunnelled,
-so a protected transfer is still a transfer this proxy can hold to
-`max_file_bytes` and to its rules. `CCC` is refused: clearing the
-control channel after `AUTH TLS` puts the rest of the session, including
-every path, back in clear on the wire.
+the target's. The address in a passive reply is *not* used: the proxy
+dials the target it already has a control connection to, with the port
+from the reply, so a server that answers with somebody else's address
+cannot redirect it. `PROT P` is terminated on both sides rather than
+tunnelled, so a protected transfer is still a transfer this proxy can
+hold to `max_file_bytes` and to its rules. `CCC` is refused twice over:
+it is not in the default `commands` list, and a listener whose operator
+adds it still gets a 534, because clearing the control channel after
+`AUTH TLS` puts the rest of the session, including every path, back in
+clear on the wire.
+
+##### The commands that are only half a decision
+
+Two FTP commands mean nothing on their own, and a proxy that read each
+command in isolation would hold a policy over both halves and miss what
+the pair does.
+
+**`REST`** sets a byte offset for the next transfer. `REST 1000` then
+`STOR /pub/x` is not an upload of the bytes that arrive: it is an edit of
+a file at an offset, and the bytes that arrive are a fragment. Two
+consequences, both of which this proxy acts on:
+
+- A scanner sees what crosses the proxy. With an offset, that is a
+  fragment, so `yara` or `icap` rules that would match the whole file
+  never see it -- upload the first half, `REST` to the middle, upload the
+  second, and each half passes. A resumed transfer on a listener with
+  either is refused with 451 (`rest_unscannable`): the proxy cannot scan
+  bytes it will never be shown, and pretending otherwise would be a hole
+  in the rule set rather than a limitation of it.
+- `max_file_bytes` is about the file, so the offset counts towards it. A
+  resumed upload of ten bytes at offset sixty is seventy bytes against
+  the bound, not ten.
+
+The marker must be a plain non-negative decimal (RFC 3659 lets a server
+define its own marker format, which is a value this proxy cannot reason
+about and will not carry), it is bounded at 2^40, and it is spent by the
+transfer it was for -- refused or not -- and cleared by any command
+outside the transfer setup (`PASV`, `EPSV`, `PORT`, `EPRT`, `TYPE`,
+`MODE`, `STRU`, `PBSZ`, `PROT`), which is what a server does too.
+
+**`RNFR`** names a file to rename and `RNTO` the new name. An `RNTO`
+without an `RNFR` the server accepted with 350 is half a decision, so it
+is refused with 503 (`rename_out_of_order`) rather than forwarded -- and
+an `RNFR` the path policy refused never reaches the server, so the
+`RNTO` that would have completed it is refused too. Anything in between
+breaks the pair, as RFC 959 requires.
+
+##### Path shapes the proxy will not guess about
+
+A path argument is refused outright, before the allow and deny lists are
+consulted, when the proxy and the server would read it differently.
+Each of these is a way for the path the policy matched and the path the
+server opened to be two different files:
+
+| Refused | Reason | Why |
+|---------|--------|-----|
+| A backslash anywhere | `path_separator` | A separator on a Windows server and an ordinary character in a pattern here, so `/srv/exports\..\..\etc` is inside the allowed tree as far as this proxy can tell and outside it as far as the server is concerned. There is no escaping that works for both |
+| A control character | `path_control` | Not part of a name anybody needs, and a carriage return is the first half of a command the server reads and the proxy did not (a telnet `IAC` is already refused by the line reader) |
+| Bytes that are not valid UTF-8 | `path_encoding` | An overlong sequence decodes to `/` on a lenient decoder and is not a separator to a strict one; a truncated one is a different name depending on who reads it. `OPTS UTF8 ON` is relayed, and matching is on bytes either way, so a path that is valid UTF-8 means the same thing on both sides |
+
+Paths in other scripts are unaffected: this refuses the shapes that
+cannot be compared, not everything above ASCII.
 
 #### server.listeners[].ftp.recording
 

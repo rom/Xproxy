@@ -442,6 +442,50 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **The two FTP commands that are only half a decision.** A proxy that
+  reads FTP one command at a time can hold a policy over each command and
+  still miss what a pair of them does.
+
+  `REST 1000` then `STOR /pub/x` is not an upload of the bytes that
+  arrive: it is an edit of a file at an offset, and the bytes that arrive
+  are a fragment. **A scanner only sees what crosses the proxy**, so
+  `yara` and `icap` rules that would match the whole file never saw it --
+  upload the first half, `REST` to the middle, upload the second, and
+  each half passed. A resumed transfer on a listener with either is
+  refused now (451, `rest_unscannable`), because the proxy cannot scan
+  bytes it will never be shown and pretending otherwise is a hole in the
+  rule set rather than a limitation of it. And `max_file_bytes` counts
+  the offset, so it is a bound on the file rather than on one transfer:
+  ten bytes at offset sixty is seventy against the bound. The marker
+  itself must be a plain non-negative decimal (RFC 3659 allows a
+  server-defined format, which is a value this proxy cannot reason about
+  and will not carry), is bounded, and is spent by the transfer it was
+  for -- refused or not.
+
+  `RNTO` without an `RNFR` the server accepted with 350 is half a
+  rename, and it was relayed. It is refused now (503,
+  `rename_out_of_order`), which also means an `RNFR` the path policy
+  turned down cannot be followed by an `RNTO` the server would have
+  completed against some other pending rename.
+
+- **Path shapes an FTP proxy and its server would read differently.** A
+  path argument is refused before the allow and deny lists are
+  consulted when the two ends cannot agree on what it names: a backslash
+  (a separator on a Windows server, an ordinary character in a pattern
+  here, so `/srv/exports\..\..\etc` is inside the allowed tree as far as
+  the proxy can tell), a control character, and bytes that are not valid
+  UTF-8 (an overlong sequence decodes to `/` on a lenient decoder and is
+  not a separator to a strict one). Each has a reason of its own.
+  Paths in other scripts are unaffected -- this is about the shapes that
+  cannot be compared, not about everything above ASCII.
+
+  Also written down rather than left to be rediscovered: the address in a
+  passive reply is not used. The proxy dials the target it already has a
+  control connection to, with the port from the reply, so a server that
+  answers with somebody else's address cannot redirect it. And `CCC` is
+  refused twice over -- it is not in the default `commands` list, and a
+  listener whose operator adds it still gets a 534.
+
 - **A recording can be read without being run.** A gate session's
   recording is the bytes the session sent, which is what makes it a
   record -- and a terminal is an interpreter of exactly those bytes, so

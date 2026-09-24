@@ -4003,7 +4003,68 @@ T}
 .PP
 A control line that is not exactly CRLF\-terminated is refused, and so is one carrying a telnet \fBIAC\fR. Each of them is a way for the proxy and the target to disagree about where a command ends, which is how one command becomes two: the proxy reads \fBNOOP\fR and the target reads \fBNOOP\fR and the \fBDELE\fR hidden after a bare newline.
 .PP
-Only the side that arranged a data connection may use it: a passive connection has to come from the client\(aqs own address, an active one from the target\(aqs. \fBPROT P\fR is terminated on both sides rather than tunnelled, so a protected transfer is still a transfer this proxy can hold to \fBmax_file_bytes\fR and to its rules. \fBCCC\fR is refused: clearing the control channel after \fBAUTH TLS\fR puts the rest of the session, including every path, back in clear on the wire.
+Only the side that arranged a data connection may use it: a passive connection has to come from the client\(aqs own address, an active one from the target\(aqs. The address in a passive reply is \fInot\fR used: the proxy dials the target it already has a control connection to, with the port from the reply, so a server that answers with somebody else\(aqs address cannot redirect it. \fBPROT P\fR is terminated on both sides rather than tunnelled, so a protected transfer is still a transfer this proxy can hold to \fBmax_file_bytes\fR and to its rules. \fBCCC\fR is refused twice over: it is not in the default \fBcommands\fR list, and a listener whose operator adds it still gets a 534, because clearing the control channel after \fBAUTH TLS\fR puts the rest of the session, including every path, back in clear on the wire.
+.PP
+##### The commands that are only half a decision
+.PP
+Two FTP commands mean nothing on their own, and a proxy that read each command in isolation would hold a policy over both halves and miss what the pair does.
+.PP
+\fB\fBREST\fR\fR sets a byte offset for the next transfer. \fBREST 1000\fR then \fBSTOR /pub/x\fR is not an upload of the bytes that arrive: it is an edit of a file at an offset, and the bytes that arrive are a fragment. Two consequences, both of which this proxy acts on:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+A scanner sees what crosses the proxy. With an offset, that is a fragment, so \fByara\fR or \fBicap\fR rules that would match the whole file never see it \-\- upload the first half, \fBREST\fR to the middle, upload the second, and each half passes. A resumed transfer on a listener with either is refused with 451 (\fBrest_unscannable\fR): the proxy cannot scan bytes it will never be shown, and pretending otherwise would be a hole in the rule set rather than a limitation of it.
+.PP
+.ti -3n
+\(bu
+\fBmax_file_bytes\fR is about the file, so the offset counts towards it. A resumed upload of ten bytes at offset sixty is seventy bytes against the bound, not ten.
+.RE
+.PP
+.PP
+The marker must be a plain non\-negative decimal (RFC 3659 lets a server define its own marker format, which is a value this proxy cannot reason about and will not carry), it is bounded at 2^40, and it is spent by the transfer it was for \-\- refused or not \-\- and cleared by any command outside the transfer setup (\fBPASV\fR, \fBEPSV\fR, \fBPORT\fR, \fBEPRT\fR, \fBTYPE\fR, \fBMODE\fR, \fBSTRU\fR, \fBPBSZ\fR, \fBPROT\fR), which is what a server does too.
+.PP
+\fB\fBRNFR\fR\fR names a file to rename and \fBRNTO\fR the new name. An \fBRNTO\fR without an \fBRNFR\fR the server accepted with 350 is half a decision, so it is refused with 503 (\fBrename_out_of_order\fR) rather than forwarded \-\- and an \fBRNFR\fR the path policy refused never reaches the server, so the \fBRNTO\fR that would have completed it is refused too. Anything in between breaks the pair, as RFC 959 requires.
+.PP
+##### Path shapes the proxy will not guess about
+.PP
+A path argument is refused outright, before the allow and deny lists are consulted, when the proxy and the server would read it differently. Each of these is a way for the path the policy matched and the path the server opened to be two different files:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.0i) lbx
+lw(1.0i) lw(1.0i) lx.
+T{
+Refused
+T}	T{
+Reason
+T}	T{
+Why
+T}
+T{
+A backslash anywhere
+T}	T{
+\fBpath_\:separator\fR
+T}	T{
+A separator on a Windows server and an ordinary character in a pattern here,\: so \fB/\:srv/\:exports\e.\:.\:\e.\:.\:\eetc\fR is inside the allowed tree as far as this proxy can tell and outside it as far as the server is concerned. There is no escaping that works for both
+T}
+T{
+A control character
+T}	T{
+\fBpath_\:control\fR
+T}	T{
+Not part of a name anybody needs,\: and a carriage return is the first half of a command the server reads and the proxy did not (a telnet \fBIAC\fR is already refused by the line reader)
+T}
+T{
+Bytes that are not valid UTF\-8
+T}	T{
+\fBpath_\:encoding\fR
+T}	T{
+An overlong sequence decodes to \fB/\fR on a lenient decoder and is not a separator to a strict one;\: a truncated one is a different name depending on who reads it. \fBOPTS UTF8 ON\fR is relayed,\: and matching is on bytes either way,\: so a path that is valid UTF\-8 means the same thing on both sides
+T}
+.TE
+.PP
+Paths in other scripts are unaffected: this refuses the shapes that cannot be compared, not everything above ASCII.
 .SS "server.listeners[].ftp.recording"
 .PP
 Writes the control channel \-\- every command and every reply \-\- to one file per session, in the asciicast v2 format the ssh bastion uses, so the same player replays it. The fields are the ones documented under \fBserver.listeners[].ssh.recording\fR: \fBenabled\fR, \fBdirectory\fR, \fBfile_prefix\fR, \fBmax_file_bytes\fR, \fBmax_files\fR. (\fBinput\fR and \fBcommands\fR are ssh\(aqs and are ignored here: an ftp dialogue has one stream, and the proxy already sees both halves of it.)
