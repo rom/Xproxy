@@ -2393,6 +2393,14 @@ recordings use, named `*.rfb.cast`. Its header carries
 the first mark names the desktop, both versions and both security
 types.
 
+With `recording.input` the viewer's own stream is kept as well, as
+asciicast `i` events beside the `o` ones: every key and pointer event,
+the clipboard writes and the encoding and format negotiations. It is off
+by default for the same reason a terminal's keystroke recording is, and
+a message the policy refused is written as a mark rather than as bytes —
+a replay then shows that the viewer tried and the gateway said no, which
+is the part an investigation is looking for.
+
 **It is not a video.** The event data is the protocol stream, so
 replaying it needs a player that speaks RFB rather than a terminal.
 Recording the stream is what keeps the cost bounded and loses nothing:
@@ -2676,6 +2684,13 @@ recordings use, named `*.rdp.cast`. Its header carries
 `XPROXY_PROTOCOL: rdp` and the security protocol of the desktop's leg,
 the first mark names the session and the channels it was granted, and
 every refused device is marked where it happened.
+
+With `recording.input` the client's own stream is kept as well, as
+asciicast `i` events beside the `o` ones. On this protocol that is more
+than keystrokes and pointer moves: the virtual channels ride the same
+stream, so it is also what a redirected drive carried. It is off by
+default, and a unit the policy dropped is written as a mark rather than
+as bytes — the refusal is in the file, the refused bytes are not.
 
 **It is not a video.** The event data is the protocol stream, so
 replaying it needs a player that speaks RDP rather than a terminal.
@@ -3319,7 +3334,7 @@ reads as a command line. `asciinema play` and `cat` do not. See
 | `enabled` | bool | `true` | Present so a principal can turn a listener's recording off; there is no reason to write it as `true` |
 | `directory` | path | required | Where the files go. It must exist: the proxy does not create it, because where these files live is a decision to make rather than to inherit |
 | `file_prefix` | name | `session` | Begins each file name, which is then the time and the login, and always ends `.cast` |
-| `input` | bool | `false` | Record what was typed as well as what was shown. It warns, and the warning is the point: a terminal's input stream carries what the screen never showed, which includes every password typed into a `sudo` or `su` prompt |
+| `input` | bool | `false` | Record what was typed as well as what was shown, as asciicast `i` events beside the `o` ones. It warns, and the warning is the point: a terminal's input stream carries what the screen never showed, which includes every password typed into a `sudo` or `su` prompt. On the graphical gates (`vnc`, `rdp`) it means the viewer's or client's own stream -- every key and pointer event, and on RDP the channel traffic a file would leave through -- and a message or unit the policy refused is written as a mark rather than as bytes, so a replay shows that the client tried and the gateway said no |
 | `max_file_bytes` | int | `33554432` | Bounds one recording, counted in session bytes; 4096..4294967296. Past it the session carries on and the file says it stopped |
 | `max_files` | int | `1000` | Recordings this listener keeps, removing the oldest it wrote. It bounds what the proxy leaves behind; anything that must be kept belongs somewhere the proxy does not prune |
 | `commands` | bool | `true` | Record `exec` sessions too, not only the ones with a terminal |

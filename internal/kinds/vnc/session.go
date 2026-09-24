@@ -129,6 +129,26 @@ func (se *session) openRecording() {
 		se.upVersion, rfb.SecurityName(se.upSec)))
 }
 
+// recordInput keeps what the viewer sent, and only where the policy
+// asked for it. The two directions of a graphical session are not
+// symmetrical: the server-to-client stream is the picture, which is what
+// a recording is usually for, and the client-to-server stream is every
+// key and every pointer move -- the same argument as a terminal's
+// keystroke recording, and the same answer. A message the policy refused
+// is recorded as a mark rather than as bytes, so a replay shows that the
+// viewer tried and the gateway said no.
+func (se *session) recordInput(m rfb.ClientMessage, refused string) {
+	cfg := se.t.recorder.Config()
+	if cfg == nil || !cfg.Input {
+		return
+	}
+	if refused != "" {
+		se.rec.Mark("xproxy: refused client message " + rfb.ClientMessageName(m.Type) + ": " + refused)
+		return
+	}
+	se.rec.In(m.Bytes)
+}
+
 func (se *session) closeRecording() {
 	res := se.rec.Close()
 	if res.File == "" {
