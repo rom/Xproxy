@@ -48,6 +48,12 @@ func fetchedAt(g *guard, when time.Time) {
 	g.fetched.seen[testClient] = when
 }
 
+func TestDeclaresBufferedBody(t *testing.T) {
+	if !filter.BuffersBody("form_guard") {
+		t.Fatal("form_guard must charge the process-wide buffered-body budget")
+	}
+}
+
 func TestHiddenField(t *testing.T) {
 	g := build(t, filter.Options{"fields": []any{"contact_reason", "website"}})
 
