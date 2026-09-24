@@ -1718,6 +1718,26 @@ type TCPListener struct {
 	// MaxConnections bounds open connections on this listener (in
 	// addition to the global limits). Default 10000.
 	MaxConnections int `yaml:"max_connections"`
+	// Transparent makes the upstream connection carry the client's own
+	// source address, for an upstream that must see the client and has
+	// no PROXY protocol to read it from.
+	Transparent bool `yaml:"transparent"`
+	// OriginalDestination takes the target from the socket rather than
+	// from routes or default: a transparently intercepted connection was
+	// addressed to some service and a routing rule put it on this
+	// listener, so which upstream is not a configuration question.
+	//
+	// With it, allow_destinations is required: a listener that dials
+	// whatever the firewall hands it, with nothing to say where that may
+	// be, is a relay to anywhere for anyone who can reach the port.
+	OriginalDestination bool `yaml:"original_destination"`
+	// AllowDestinations are the CIDRs an original destination may be in,
+	// and DestinationPorts the ports; empty ports allow any.
+	AllowDestinations []string `yaml:"allow_destinations"`
+	DestinationPorts  []int    `yaml:"destination_ports"`
+	// ConnectTimeout bounds the dial to an original destination, which
+	// has no upstream pool to take a timeout from. Default 10s.
+	ConnectTimeout Duration `yaml:"connect_timeout"`
 	// QUIC also relays QUIC (UDP on the same address): the ClientHello
 	// of each flow is read from the Initial packet and routed by server
 	// name to the same upstreams. Default false.

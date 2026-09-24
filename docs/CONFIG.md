@@ -113,6 +113,11 @@ accept as on every listener.
 | `max_connections` | int | `10000` | Open connections on this listener; also bounds QUIC flows |
 | `quic` | bool | `false` | Also relay QUIC: UDP on the same address, the ClientHello read from the version 1 Initial packet (decrypted with the Initial keys every observer can derive), the flow routed by server name to the same upstreams and every later datagram of that client address forwarded unread; not with `proxy_protocol` |
 | `quic_idle_timeout` | duration | `30s` | End a QUIC flow with no datagrams either way; at most 1h |
+| `connect_timeout` | duration | `10s` | Bound on the dial to an original destination, which has no pool to take one from |
+| `transparent` | bool | `false` | Dial the upstream **as the client**: `IP_TRANSPARENT` on the outgoing socket and a bind to the client's address, so an upstream with no PROXY protocol still sees who is calling. Linux, and needs `CAP_NET_ADMIN`; see below |
+| `original_destination` | bool | `false` | Take the destination from the socket rather than from `routes` or `default`, for a transparently intercepted connection. Linux; requires `allow_destinations` |
+| `allow_destinations` | list | `[]` | CIDRs an original destination may be in. Required with `original_destination`, and an empty list allows nothing |
+| `destination_ports` | list of int | `[]` (any) | Ports an original destination may have |
 | `yara` | object | none | Apply YARA rules to the bytes of each connection; see below |
 
 Endpoints are picked with the upstream's balancer (hash on the client
@@ -138,6 +143,62 @@ flows are keyed by client address, so a client that migrates to a new
 address starts a new flow (its first packet is not an Initial and is
 dropped; the client falls back or retries); QUIC versions other than 1
 are dropped. Changing a tcp listener needs a restart.
+
+#### Transparent interception
+
+Two socket tricks for the deployment where the client does not know the
+proxy is there. Both are **Linux only** and refused at load elsewhere,
+and `transparent` needs `CAP_NET_ADMIN`, which is checked at load rather
+than discovered on the first connection.
+
+**`original_destination`** answers "which upstream" from the socket. The
+client dialled some service and a routing rule put the packets on this
+listener, so there is no configuration question to answer:
+
+- With **TPROXY** the socket keeps the original destination as its own
+  local address.
+- With **iptables REDIRECT** the kernel rewrote it, and the original is
+  read with `getsockopt SO_ORIGINAL_DST`.
+
+The proxy reads REDIRECT's first and falls back to the local address, so
+it covers both without an operator having to tell it which rule they
+wrote — and keep that in step with the firewall. The option is read for
+**IPv4** only; IPv6 interception is done with TPROXY in practice, where
+the destination is the socket's own address and no option is read at all.
+An IPv6 REDIRECT therefore falls through to that path, reads the
+listener's own address, and is refused by the loop check below rather
+than relayed somewhere wrong — incomplete in the safe direction.
+
+Three checks run before such a connection is relayed, cheapest first:
+
+1. **There is a destination to read.** Without one the connection arrived
+   by some other route (`no_original_destination`).
+2. **It is not this listener's own address.** A firewall rule that sends
+   a listener's port to itself makes a loop that consumes descriptors
+   until the process dies, from one client packet. This is the only place
+   in the proxy with a destination it did not choose, so it is the only
+   place that needs the check; it counts in `tcp_errors` and warns in the
+   error log, because the client did nothing wrong and an operator
+   hunting a misconfiguration should not have to find it in a deny log
+   full of real refusals (`destination_loop`).
+3. **It is inside `allow_destinations`** (and `destination_ports`, when
+   set). An empty policy allows nothing, so forgetting the list means
+   "nothing works" rather than "everything does"; it is required at load
+   for the same reason (`destination_not_allowed`, a `tcp_no_route` deny
+   event, so bans apply).
+
+**`transparent`** makes the upstream see the client's own address, for a
+service that needs it and has no PROXY protocol to read it from: the
+outgoing socket gets `IP_TRANSPARENT` (and `IP_FREEBIND`, because the
+address being bound is not this machine's) and binds the client's
+address.
+
+The return traffic then has to be routed back to this host, which is the
+firewall's business and not something the proxy can check — so the
+listener **warns at load**, because without it every connection fails in
+a way that looks exactly like a dead upstream. `transparent` together
+with `proxy_protocol` is refused: the upstream would be told the client's
+address twice, in the header and in the source, and the two can disagree.
 
 #### server.listeners[].tcp.yara
 

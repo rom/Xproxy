@@ -442,6 +442,36 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Transparent interception: `original_destination` and
+  `transparent`.** For the deployment where the client does not know the
+  proxy is there, and a routing rule puts its packets on a listener that
+  was not the address it dialled.
+
+  `original_destination` answers "which upstream" from the socket, since
+  there is no configuration question to answer: `SO_ORIGINAL_DST` for an
+  iptables REDIRECT, falling back to the socket's own local address for
+  TPROXY, so both work without an operator having to tell the proxy which
+  rule they wrote and keep that in step with the firewall.
+  `transparent` dials the upstream **as the client** —
+  `IP_TRANSPARENT` and a bind to the client's address — for a service
+  that needs to see who is calling and has no PROXY protocol to read it
+  from.
+
+  The part worth reading is the loop check. This is the only place in the
+  proxy with a destination it did not choose, and a firewall rule that
+  sends a listener's port to itself makes a loop that consumes
+  descriptors until the process dies, from **one client packet**. So
+  before every dial: there is a destination to read, it is not this
+  listener's own address, and it is inside `allow_destinations` — which
+  is required, and whose empty value allows nothing, so forgetting it
+  fails closed rather than making an open relay.
+
+  Both are Linux only and refused elsewhere rather than silently doing
+  nothing; `transparent` checks at load that the process may actually set
+  the option, because otherwise every connection fails in a way that
+  looks like a dead upstream — and warns that the return traffic must be
+  routed back, which the proxy cannot check and which fails the same way.
+
 - **Two balancers that read what the endpoints are doing.** `least_conn`
   scans every endpoint and takes the best, which has a failure mode of
   its own: every proxy in a fleet sees the same best endpoint at the same

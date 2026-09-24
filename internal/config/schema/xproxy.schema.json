@@ -5685,9 +5685,27 @@
       "description": "TCPListener routes raw connections to upstream pools. TLS connections are routed by the server name of the ClientHello (peeked, never terminated); other connections and unmatched names go to the default upstream when one is set and are closed otherwise.",
       "type": "object",
       "properties": {
+        "allow_destinations": {
+          "description": "AllowDestinations are the CIDRs an original destination may be in, and DestinationPorts the ports; empty ports allow any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "connect_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
         "default": {
           "description": "Default is the upstream for connections without a matching SNI (including non-TLS ones).",
           "type": "string"
+        },
+        "destination_ports": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
         },
         "idle_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
@@ -5704,6 +5722,10 @@
         "max_connections": {
           "description": "MaxConnections bounds open connections on this listener (in addition to the global limits). Default 10000.",
           "type": "integer"
+        },
+        "original_destination": {
+          "description": "OriginalDestination takes the target from the socket rather than from routes or default: a transparently intercepted connection was addressed to some service and a routing rule put it on this listener, so which upstream is not a configuration question. With it, allow_destinations is required: a listener that dials whatever the firewall hands it, with nothing to say where that may be, is a relay to anywhere for anyone who can reach the port.",
+          "type": "boolean"
         },
         "proxy_protocol": {
           "description": "ProxyProtocol sends a PROXY protocol v2 header to the upstream with the client address.",
@@ -5728,6 +5750,10 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "transparent": {
+          "description": "Transparent makes the upstream connection carry the client's own source address, for an upstream that must see the client and has no PROXY protocol to read it from.",
+          "type": "boolean"
         },
         "yara": {
           "description": "YARA applies rules to the bytes of each connection. It does not apply to QUIC flows: those are encrypted, and a rule over ciphertext matches nothing.",

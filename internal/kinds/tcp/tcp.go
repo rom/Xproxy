@@ -35,6 +35,9 @@ type server struct {
 	yara   *streamscan.Guard // when the listener scans the bytes it relays
 	cons   map[net.Conn]struct{}
 	done   chan struct{}
+	// allowDst are the destinations an intercepted connection may be
+	// relayed to, parsed once; see intercept.go.
+	allowDst []netip.Prefix
 }
 
 const (
@@ -59,6 +62,15 @@ const (
 
 func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server, error) {
 	t := &server{engine: engine, cfg: cfg, ln: ln, cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
+	if cfg.TCP != nil {
+		for _, c := range cfg.TCP.AllowDestinations {
+			pfx, err := netip.ParsePrefix(c)
+			if err != nil {
+				return nil, err
+			}
+			t.allowDst = append(t.allowDst, pfx)
+		}
+	}
 	if cfg.TCP != nil && cfg.TCP.YARA != nil {
 		g, err := streamscan.New(cfg.TCP.YARA)
 		if err != nil {
@@ -233,6 +245,10 @@ func (t *server) handle(client net.Conn) {
 		}
 	}
 	_ = client.SetReadDeadline(time.Time{})
+	if t.cfg.TCP.OriginalDestination {
+		t.intercepted(client, clientIP, start, sni, buf)
+		return
+	}
 	upName, ok := t.resolve(sni)
 	if !ok {
 		s.Counters().TCPRejected.Add(1)
@@ -316,12 +332,7 @@ func (t *server) finish(client net.Conn, ip netip.Addr, start time.Time, sni, up
 // cannot be paused without the peer noticing, so what a match decides
 // is whether the connection continues.
 func (t *server) spliceScanned(client, up net.Conn, ip netip.Addr, sni string) (in, out int64, end string) {
-	limits := relay.Limits{
-		Idle:     t.cfg.TCP.IdleTimeout.D(),
-		Lifetime: t.cfg.TCP.SessionTimeout.D(),
-		BytesIn:  t.cfg.TCP.MaxBytesIn,
-		BytesOut: t.cfg.TCP.MaxBytesOut,
-	}
+	limits := t.relayLimits()
 	if t.yara == nil {
 		return relay.Bounded(client, up, limits, nil, nil)
 	}

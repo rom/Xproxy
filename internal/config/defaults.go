@@ -130,6 +130,7 @@ func applyDefaults(c *Config) {
 			setDur(&t.IdleTimeout, 10*time.Minute)
 			setInt(&t.MaxConnections, 10000)
 			setDur(&t.QUICIdleTimeout, 30*time.Second)
+			setDur(&t.ConnectTimeout, 10*time.Second)
 			if t.YARA != nil {
 				yaraDefaults(t.YARA)
 			}

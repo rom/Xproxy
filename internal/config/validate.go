@@ -13,6 +13,7 @@ import (
 	"github.com/rom/xproxy/internal/syslog"
 	"github.com/rom/xproxy/internal/telnet"
 	"github.com/rom/xproxy/internal/tmpl"
+	"github.com/rom/xproxy/internal/transparent"
 	"github.com/rom/xproxy/internal/yara"
 	"mime"
 	"path/filepath"
@@ -2918,7 +2919,10 @@ func (v *validator) filter(i int, f *FilterConfig, seen map[string]bool) {
 // tcpListener validates an L4 listener; upstream references are checked
 // after the upstreams are known (see validate).
 func (v *validator) tcpListener(p string, t *TCPListener) {
-	if len(t.Routes) == 0 && t.Default == "" {
+	// An intercepting listener takes its destination from the socket, so
+	// it needs no route and may not have one; transparentTCP below says
+	// so the other way round.
+	if len(t.Routes) == 0 && t.Default == "" && !t.OriginalDestination {
 		v.errf("%s: routes or default is required", p)
 	}
 	seen := map[string]bool{}
@@ -2958,6 +2962,10 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	if t.QUICIdleTimeout <= 0 || t.QUICIdleTimeout > Duration(time.Hour) {
 		v.errf("%s.quic_idle_timeout: must be positive and at most 1h", p)
 	}
+	if t.ConnectTimeout <= 0 || t.ConnectTimeout > Duration(2*time.Minute) {
+		v.errf("%s.connect_timeout: must be positive and at most 2m", p)
+	}
+	v.transparentTCP(p, t)
 	if t.YARA != nil {
 		v.yaraPolicy(p+".yara", t.YARA)
 		if t.QUIC {
@@ -3020,6 +3028,54 @@ func (v *validator) connectionRate(p string, r *ConnectionRate, sr *SourceRate) 
 	if sr.IPv6Prefix > 96 {
 		v.warnf("%s.ipv6_prefix: /%d counts single addresses, and a single attacker is normally given a /64 or more, "+
 			"so this bounds nothing while filling the table", q, sr.IPv6Prefix)
+	}
+}
+
+// transparentTCP validates the interception settings of a layer 4
+// listener: the two socket tricks, and the destination policy without
+// which the second is an open relay.
+func (v *validator) transparentTCP(p string, t *TCPListener) {
+	if (t.Transparent || t.OriginalDestination) && !transparent.Available() {
+		v.errf("%s: transparent and original_destination need Linux (IP_TRANSPARENT and SO_ORIGINAL_DST)", p)
+	}
+	if t.OriginalDestination {
+		if len(t.Routes) > 0 || t.Default != "" {
+			v.errf("%s.original_destination: the destination comes from the socket, so routes and default would be ignored; remove them", p)
+		}
+		if len(t.AllowDestinations) == 0 {
+			v.errf("%s.allow_destinations: required with original_destination, or the listener relays to anywhere "+
+				"for anyone who can reach the port", p)
+		}
+		if t.QUIC {
+			v.errf("%s.quic: a QUIC flow has no original destination to read; the option is for the stream half", p)
+		}
+	} else if len(t.AllowDestinations) > 0 || len(t.DestinationPorts) > 0 {
+		v.errf("%s: allow_destinations and destination_ports are for original_destination, which is not set", p)
+	}
+	for i, c := range t.AllowDestinations {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_destinations[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+	for i, port := range t.DestinationPorts {
+		if port < 1 || port > 65535 {
+			v.errf("%s.destination_ports[%d]: %d is not a port", p, i, port)
+		}
+	}
+	if t.Transparent {
+		// The capability is a property of the process, not of the file,
+		// so this is the one check that has to be made at load: a
+		// listener that cannot set the option would fail every dial
+		// with something that looks like a dead upstream.
+		if err := transparent.Check(); err != nil {
+			v.errf("%s.transparent: this process cannot set IP_TRANSPARENT (%v); it needs CAP_NET_ADMIN", p, err)
+		}
+		v.warnf("%s.transparent: the upstream will see the client's address, so the return traffic must be routed back to "+
+			"this host by the firewall; without that every connection fails in a way that looks like a dead upstream", p)
+		if t.ProxyProtocol {
+			v.errf("%s.transparent: with proxy_protocol as well, the upstream is told the client's address twice, "+
+				"in the header and in the source; set one", p)
+		}
 	}
 }
 

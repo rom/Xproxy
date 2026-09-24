@@ -379,8 +379,8 @@ A \fBkind: tcp\fR listener forwards connections at layer 4. TLS connections are 
 .PP
 .TS
 allbox;
-lbw(1.2i) lbw(1.0i) lbw(0.8i) lbx
-lw(1.2i) lw(1.0i) lw(0.8i) lx.
+lbw(1.3i) lbw(1.0i) lbw(0.8i) lbx
+lw(1.3i) lw(1.0i) lw(0.8i) lx.
 T{
 Key
 T}	T{
@@ -481,6 +481,51 @@ T}	T{
 End a QUIC flow with no datagrams either way;\: at most 1h
 T}
 T{
+\fBconnect_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+Bound on the dial to an original destination,\: which has no pool to take one from
+T}
+T{
+\fBtransparent\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Dial the upstream \fBas the client\fR: \fBIP_\:TRANSPARENT\fR on the outgoing socket and a bind to the client\(aqs address,\: so an upstream with no PROXY protocol still sees who is calling. Linux,\: and needs \fBCAP_\:NET_\:ADMIN\fR;\: see below
+T}
+T{
+\fBoriginal_\:destination\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Take the destination from the socket rather than from \fBroutes\fR or \fBdefault\fR,\: for a transparently intercepted connection. Linux;\: requires \fBallow_\:destinations\fR
+T}
+T{
+\fBallow_\:destinations\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+CIDRs an original destination may be in. Required with \fBoriginal_\:destination\fR,\: and an empty list allows nothing
+T}
+T{
+\fBdestination_\:ports\fR
+T}	T{
+list of int
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Ports an original destination may have
+T}
+T{
 \fByara\fR
 T}	T{
 object
@@ -494,6 +539,32 @@ T}
 Endpoints are picked with the upstream\(aqs balancer (hash on the client address for \fBhash\fR), dial failures try the next endpoint and feed outlier ejection; active health checks run as configured on the upstream \[u2014] for a pool with no HTTP behind it, \fBhealth_check.type: tcp\fR is the probe that fits.
 .PP
 \fBA server that speaks first is relayed.\fR The listener waits about a second for a ClientHello before deciding there is not one, so SSH, SMTP, FTP, MySQL and PostgreSQL \[u2014] all of which greet the client before it says anything \[u2014] reach their client rather than deadlocking against a peek that is waiting for bytes the client is waiting to be greeted before sending. Every connection writes one \fBtcp\fR line to the access log with the name, upstream, endpoint, bytes and duration (\fBproto: quic\fR for QUIC flows). Counters: \fBtcp_connections\fR, \fBtcp_rejected\fR, \fBtcp_errors\fR, \fBtcp_bounded\fR (ended by \fBsession_timeout\fR or a byte bound rather than by a peer; the access log\(aqs \fBclosed\fR field says which), \fBtcp_bytes_in\fR, \fBtcp_bytes_out\fR, \fBquic_flows\fR, \fBquic_rejected\fR, \fBquic_flows_open\fR; \fBxproxy_tcp_*\fR and \fBxproxy_quic_*\fR metrics. QUIC flows are keyed by client address, so a client that migrates to a new address starts a new flow (its first packet is not an Initial and is dropped; the client falls back or retries); QUIC versions other than 1 are dropped. Changing a tcp listener needs a restart.
+.SS "Transparent interception"
+.PP
+Two socket tricks for the deployment where the client does not know the proxy is there. Both are \fBLinux only\fR and refused at load elsewhere, and \fBtransparent\fR needs \fBCAP_NET_ADMIN\fR, which is checked at load rather than discovered on the first connection.
+.PP
+\fB\fBoriginal_destination\fR\fR answers "which upstream" from the socket. The client dialled some service and a routing rule put the packets on this listener, so there is no configuration question to answer:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+With \fBTPROXY\fR the socket keeps the original destination as its own local address.
+.PP
+.ti -3n
+\(bu
+With \fBiptables REDIRECT\fR the kernel rewrote it, and the original is read with \fBgetsockopt SO_ORIGINAL_DST\fR.
+.RE
+.PP
+.PP
+The proxy reads REDIRECT\(aqs first and falls back to the local address, so it covers both without an operator having to tell it which rule they wrote \[u2014] and keep that in step with the firewall. The option is read for \fBIPv4\fR only; IPv6 interception is done with TPROXY in practice, where the destination is the socket\(aqs own address and no option is read at all. An IPv6 REDIRECT therefore falls through to that path, reads the listener\(aqs own address, and is refused by the loop check below rather than relayed somewhere wrong \[u2014] incomplete in the safe direction.
+.PP
+Three checks run before such a connection is relayed, cheapest first:
+.PP
+1. \fBThere is a destination to read.\fR Without one the connection arrived by some other route (\fBno_original_destination\fR). 2. \fBIt is not this listener\(aqs own address.\fR A firewall rule that sends a listener\(aqs port to itself makes a loop that consumes descriptors until the process dies, from one client packet. This is the only place in the proxy with a destination it did not choose, so it is the only place that needs the check; it counts in \fBtcp_errors\fR and warns in the error log, because the client did nothing wrong and an operator hunting a misconfiguration should not have to find it in a deny log full of real refusals (\fBdestination_loop\fR). 3. \fBIt is inside \fBallow_destinations\fR\fR (and \fBdestination_ports\fR, when set). An empty policy allows nothing, so forgetting the list means "nothing works" rather than "everything does"; it is required at load for the same reason (\fBdestination_not_allowed\fR, a \fBtcp_no_route\fR deny event, so bans apply).
+.PP
+\fB\fBtransparent\fR\fR makes the upstream see the client\(aqs own address, for a service that needs it and has no PROXY protocol to read it from: the outgoing socket gets \fBIP_TRANSPARENT\fR (and \fBIP_FREEBIND\fR, because the address being bound is not this machine\(aqs) and binds the client\(aqs address.
+.PP
+The return traffic then has to be routed back to this host, which is the firewall\(aqs business and not something the proxy can check \[u2014] so the listener \fBwarns at load\fR, because without it every connection fails in a way that looks exactly like a dead upstream. \fBtransparent\fR together with \fBproxy_protocol\fR is refused: the upstream would be told the client\(aqs address twice, in the header and in the source, and the two can disagree.
 .SS "server.listeners[].tcp.yara"
 .PP
 YARA rules over the bytes a layer 4 listener relays. The engine is a subset of the language implemented in Go \[u2014] this proxy links no C library into the data plane, and \fBCGO_ENABLED=0\fR is a property worth more here than the last few features of the grammar. What is supported:
