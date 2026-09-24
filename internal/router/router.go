@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/rom/xproxy/internal/config"
@@ -312,8 +313,13 @@ func (r *Router) MatchRequest(host, path, method string, grpc bool, hdr http.Hea
 func (t *hostTable) match(path, method string, grpc bool, hdr http.Header, env expr.Env) *Route {
 	for i := range t.entries {
 		e := &t.entries[i]
+		var captures []string
 		if e.regex != nil {
-			if !strings.HasPrefix(path, e.path) || !e.regex.MatchString(path) {
+			if !strings.HasPrefix(path, e.path) {
+				continue
+			}
+			captures = e.regex.FindStringSubmatch(path)
+			if captures == nil {
 				continue
 			}
 		} else if !prefixMatch(path, e.path) {
@@ -328,12 +334,43 @@ func (t *hostTable) match(path, method string, grpc bool, hdr http.Header, env e
 		if len(e.conds) > 0 && !condsHold(e.conds, hdr) {
 			continue
 		}
-		if e.when != nil && (env == nil || !e.when.Eval(env)) {
+		whenEnv := env
+		if env != nil && len(captures) > 0 {
+			whenEnv = captureEnv{Env: env, values: captures, names: e.regex.SubexpNames()}
+		}
+		if e.when != nil && (whenEnv == nil || !e.when.Eval(whenEnv)) {
 			continue
 		}
 		return e.route
 	}
 	return nil
+}
+
+// captureEnv exposes the current candidate's path-regex groups while a when
+// expression is evaluated. The selected route has not yet been returned, so
+// the request environment cannot contain these captures itself.
+type captureEnv struct {
+	expr.Env
+	values []string
+	names  []string
+}
+
+func (e captureEnv) Resolve(name, arg string) (string, bool) {
+	if name != "capture" {
+		return e.Env.Resolve(name, arg)
+	}
+	if n, err := strconv.Atoi(arg); err == nil {
+		if n >= 0 && n < len(e.values) {
+			return e.values[n], true
+		}
+		return "", false
+	}
+	for i, captureName := range e.names {
+		if captureName == arg && i < len(e.values) {
+			return e.values[i], true
+		}
+	}
+	return "", false
 }
 
 // prefixMatch reports whether path is under prefix at a segment boundary.
