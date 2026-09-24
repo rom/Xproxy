@@ -68,6 +68,7 @@ type reqState struct {
 	upSpan     *tracing.Span      // client span of the upstream exchange
 	propagate  bool
 	cache      string // hit, miss or bypass on a cached route
+	hadCookie  bool   // the client sent a cookie before request filters mutated the headers
 	encoding   string // gzip when the proxy compressed the response
 	canary     bool   // the response came from a canary endpoint
 	cacheKey   string
@@ -114,7 +115,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rt.inFlight.Add(1)
 	defer rt.inFlight.Add(-1)
 	rw := &responseWriter{ResponseWriter: w}
-	st := &reqState{id: newRequestID(), start: time.Now()}
+	st := &reqState{id: newRequestID(), start: time.Now(), hadCookie: r.Header.Get("Cookie") != ""}
 	rw.st = st
 	st.h3srv = h.h3
 	st.clientIP = netutil.ClientIP(r, rt.trusted)
@@ -701,7 +702,7 @@ admitted:
 	default:
 		if rc := cr.cfg.Cache; rc != nil {
 			if c := s.cache.Load(); c != nil {
-				if key := cacheKey(rc, r, st.host, st.path); key != "" {
+				if key := cacheKey(rc, r, st.host, st.path, st.hadCookie); key != "" {
 					if e, ok := c.Get(key, r.Header); ok {
 						s.serveCached(rw, r, st, cr, e)
 						return

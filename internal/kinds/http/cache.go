@@ -16,7 +16,7 @@ import (
 
 // cacheKey builds the primary key for a request under a route policy, or
 // "" when the request is not cacheable at all.
-func cacheKey(rc *config.RouteCache, r *http.Request, host, path string) string {
+func cacheKey(rc *config.RouteCache, r *http.Request, host, path string, hadCookie bool) string {
 	ok := false
 	for _, m := range rc.Methods {
 		if m == r.Method {
@@ -34,7 +34,10 @@ func cacheKey(rc *config.RouteCache, r *http.Request, host, path string) string 
 	if r.URL.RawPath != "" || r.URL.Path != path {
 		return ""
 	}
-	if !rc.Cookies && r.Header.Get("Cookie") != "" {
+	// Request filters may remove authentication cookies before this lookup.
+	// Preserve the cache isolation decision made from the client request while
+	// also refusing cookies introduced or retained by a filter.
+	if !rc.Cookies && (hadCookie || r.Header.Get("Cookie") != "") {
 		return ""
 	}
 	query := ""
