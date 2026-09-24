@@ -34,6 +34,7 @@ did not build it" and "it does not apply" are different promises again.
 - [Industrial control](#industrial-control)
 - [Time](#time)
 - [Secure Shell and file transfer](#secure-shell-and-file-transfer)
+- [Remote desktop and terminal access](#remote-desktop-and-terminal-access)
 - [Proxying and forwarding](#proxying-and-forwarding)
 - [Identity, tokens and authentication](#identity-tokens-and-authentication)
 - [Content, encoding and data formats](#content-encoding-and-data-formats)
@@ -226,6 +227,35 @@ not settled.
 | 8709 | Ed25519 and Ed448 Public Key Algorithms for SSH | Full | Ed25519 |
 | `draft-ietf-secsh-filexfer-02` | SSH File Transfer Protocol, version 3 | Full | SFTP is a draft, not an RFC. Version 3 is what every deployed client speaks; a client negotiating higher is refused rather than guessed at |
 
+## Remote desktop and terminal access
+
+The three protocols a gateway terminates so that a session can be held
+to a policy and recorded. Telnet's options are commands escaped into the
+data, RFB settles everything worth deciding in its handshake, and RDP
+settles it in the connection sequence: a relay that did not parse them
+could decide none of it.
+
+| RFC | Title | Status | Notes |
+|-----|-------|--------|-------|
+| 854 | Telnet Protocol Specification | Full | The NVT in both directions: `IAC` framing, `IAC IAC` as a literal 255, and a bound on one subnegotiation, so a peer that opens `IAC SB` and never closes it is cut off rather than allowed to grow a buffer |
+| 855 | Telnet Option Specifications | Full | The negotiation itself. An option this proxy has no name for is refused whatever the configuration's lists say -- one whose effect it cannot name is one it cannot hold to a policy -- and every refusal is answered to the side that asked (`WILL` and `WONT` declined with `DONT`, `DO` and `DONT` with `WONT`) rather than dropped, because a refusal the asker never hears is a negotiation that repeats for ever |
+| 856 | Telnet Binary Transmission | Full | In the default option set |
+| 857 | Telnet Echo Option | Full | In the default option set |
+| 858 | Telnet Suppress Go Ahead Option | Full | In the default option set |
+| 859 | Telnet Status Option | Full | In the default option set |
+| 860 | Telnet Timing Mark Option | Full | In the default option set |
+| 885 | Telnet End of Record Option | Full | In the default option set |
+| 1073 | Telnet Window Size Option | Full | In the default option set; the subnegotiation is read, so a recording holds the size the terminal actually had |
+| 1079 | Telnet Terminal Speed Option | Full | In the default option set |
+| 1091 | Telnet Terminal-Type Option | Full | In the default option set |
+| 1096 | Telnet X Display Location Option | Partial | Negotiable only where a configuration names it: it tells the target an X display to reach, which is a connection back out of the estate |
+| 1184 | Telnet Linemode Option | Partial | Negotiable only where a configuration names it; the default is character-at-a-time, which is what a recording wants |
+| 1372 | Telnet Remote Flow Control Option | Partial | Negotiable only where a configuration names it |
+| 1408 / 1572 | Telnet Environment Option, Telnet Environment Option (new) | Partial | Negotiable only where a configuration names it, and validation warns when it is: they carry variables of the client's choosing to the target, which is how a login shell is given a different `PATH` |
+| 2941 | Telnet Authentication Option | Refused | Every implementation that has it negotiates it differently, so the gateway would be relaying a mechanism it does not understand between two ends that each believe it was checked |
+| 2946 | Telnet Encryption Option | Refused | It would encrypt the session end to end, which is a session this gateway can no longer record, hold to a policy or ask a second factor for. Wrapping the listener in TLS is the supported way to stop a reader, and validation warns whenever it is left off |
+| 6143 | The Remote Framebuffer Protocol | Partial | Versions 3.3, 3.7 and 3.8, on each leg independently and with the handshake terminated on both, so a 3.3 viewer can reach a 3.8 desktop through here; below 3.3 is refused and a version nobody defines (Apple's 3.889) is read as the highest defined version at or below it. `none` and the DES challenge of section 7.2.2 are mediated, as is VeNCrypt with its X.509 subtypes; the bare `plain` subtype is refused because it would send the credential in clear. The framebuffer messages themselves are relayed rather than decoded, with the declared picture bounded against the bytes that carry it -- nothing is decompressed to check, which is what keeps an image protocol from being the cheapest place to aim a decompression bomb |
+
 ## Proxying and forwarding
 
 | RFC | Title | Status | Notes |
@@ -325,6 +355,9 @@ not mistaken for an omission:
 | Modbus over Serial Line v1.02 | Modbus Organization | RTU and ASCII framing, tunnelled over TCP the way every Modbus gateway does it |
 | Modbus/TCP Security v21 | Modbus Organization | TLS with mutual authentication and the role extension under the Modbus arc; see the industrial control section for what is and is not taken from it |
 | SFTP version 3 | `draft-ietf-secsh-filexfer-02` | |
+| RDP (MS-RDPBCGR) | Microsoft | The connection sequence, the channel list, the device announcement and the credential packet are terminated on both legs; the session's own graphics, input and capability traffic is relayed unread, so the version of RDP does not matter. A channel that was not both announced and granted cannot be used, which is where file transfer and port redirection are switched off |
+| CredSSP over NTLMv2 (MS-CSSP, MS-NLMP) | Microsoft | Towards the desktop only, with the gateway's own credential: network level authentication proves a credential before the connection sequence starts, so a client asking for it is answered with TLS -- the downgrade every remote desktop gateway performs, and the only way a gateway can check anything about a credential at all |
+| RFB vendor security types | TightVNC, Apple, UltraVNC, RealVNC | Types 16, 30, 113, 129, 130 and 133 are reimplemented from the shapes their own sources and the public reimplementations agree on, each warned about at load, and interoperability against the real servers is not verified by this project's tests. They exist because the desktops exist: reaching one through a gateway that records the session, asks for a factor and holds the policy is better than reaching it directly. What each is worth cryptographically is stated in CONFIG.md rather than implied by its name |
 | Encrypted Client Hello | `draft-ietf-tls-esni` | Version `0xfe0d` |
 | X25519MLKEM768 | `draft-kwiatkowski-tls-ecdhe-mlkem`, FIPS 203 | |
 | pcapng | `draft-ietf-opsawg-pcapng` | The capture file format |
