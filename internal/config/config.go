@@ -4827,6 +4827,55 @@ type JWTProvider struct {
 	// endpoint (RFC 7662): opaque tokens always, signed tokens too with
 	// always. A provider may have introspection alone, without keys.
 	Introspection *TokenIntrospection `yaml:"introspection"`
+	// DPoP requires the client to prove it holds the key the token is
+	// bound to (RFC 9449).
+	DPoP *DPoP `yaml:"dpop"`
+}
+
+// DPoP is demonstrating proof of possession, RFC 9449.
+//
+// A bearer token is a password: whoever holds it is whoever it says. That
+// is why a token stolen from a log, a browser's storage, a proxy's cache
+// or a crash dump is as good as the original — nothing about the request
+// says it came from the client the token was issued to.
+//
+// DPoP adds that. The client keeps a key pair, the authorization server
+// records the public key's thumbprint in the token (cnf.jkt), and every
+// request carries a small JWT signed with the private key over this
+// method, this URI and this moment. A stolen token without the key
+// produces no proof, and a proof captured from one request does not fit
+// another.
+type DPoP struct {
+	// Mode is off (default), allow or require.
+	//
+	// allow verifies a proof whenever the access token says it is bound
+	// to a key, and refuses a bound token presented without one — which
+	// is the replay this exists to stop — while leaving an ordinary
+	// bearer token alone. It therefore costs nothing to turn on.
+	//
+	// require additionally refuses an access token that carries no
+	// cnf.jkt: on that route, only sender-constrained tokens are
+	// accepted.
+	Mode string `yaml:"mode"`
+	// Algorithms allowed in a proof, from the asymmetric set (RS*, PS*,
+	// ES*, EdDSA). Default ES256, ES384, ES512, PS256, PS384, PS512,
+	// EdDSA. Nothing symmetric is permitted: a proof the verifier could
+	// have written itself proves nothing about the client.
+	Algorithms []string `yaml:"algorithms"`
+	// MaxAge is how old a proof's iat may be. Default 60s. The provider's
+	// clock_skew is allowed on top, in both directions.
+	MaxAge Duration `yaml:"max_age"`
+	// ReplayEntries bounds the table of spent proof identifiers. Default
+	// 65536. The identifiers come from clients, so the bound is a
+	// decision rather than an accident.
+	ReplayEntries int `yaml:"replay_entries"`
+	// ExternalURL is the scheme and authority the client sees, for the
+	// htu comparison, when this proxy is behind another one that
+	// terminates TLS. Without it the scheme comes from the connection and
+	// the authority from the Host header — never from X-Forwarded-Proto,
+	// because a client that can set that header could otherwise choose
+	// which URI its proof has to match.
+	ExternalURL string `yaml:"external_url"`
 }
 
 // TokenIntrospection is an RFC 7662 introspection endpoint.

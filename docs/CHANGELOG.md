@@ -478,6 +478,41 @@ Open findings of the earlier rounds:
   `discovery`, the sinkhole addresses -- are not, which is why
   `sinkhole_ipv4: 0.0.0.0` still works inside a denied range.
 
+- **A stolen access token is no longer enough where the authorization
+  server bound it to a key** (`jwt.providers[].dpop`, RFC 9449).
+
+  A bearer token is a password: whoever holds it is whoever it says. That
+  is the whole of its security model, and it is why a token stolen from a
+  log, a browser's storage, a proxy's cache or a crash dump is as good as
+  the original -- nothing about the request says it came from the client
+  the token was issued to.
+
+  DPoP adds the missing part, and this proxy now verifies it. The client
+  keeps a key pair, the authorization server records the public key's
+  thumbprint in the token as `cnf.jkt`, and every request carries a small
+  JWT signed with the private key over *this* method, *this* URI and
+  *this* moment. Six things are checked, in the order that makes each
+  meaningful: the proof is a `dpop+jwt` with an asymmetric algorithm from
+  the allow list and no private material in its key; its signature
+  verifies under the key it embeds; `htm` and `htu` match the request
+  (method exactly, URI without query or fragment, scheme from the
+  connection and never from `X-Forwarded-Proto`); `iat` is inside the
+  window and the `jti` has not been seen; **the RFC 7638 thumbprint of
+  that key equals the token's `cnf.jkt`**, read from claims this proxy has
+  already verified; and `ath` is the hash of the access token it came
+  with.
+
+  `mode: allow` costs nothing to turn on -- it never refuses an ordinary
+  bearer token, and it closes the replay hole for every token that was
+  constrained; `require` takes constrained tokens only. The `jti` is spent
+  last, after every other check holds, so a proof refused for another
+  reason does not consume the identifier a correct retry would use, and
+  the replay table is bounded because the identifiers come from clients.
+  The `Authorization: DPoP` scheme is read as well as `Bearer`, since a
+  server that reads only `Bearer ` does not see a sender-constrained token
+  at all, and the proof is removed before forwarding: it is a signed
+  statement about this hop.
+
 - **A client can no longer send its own certificate identity, and the
   proxy states the real one in RFC 9440's form**
   (`routes[].client_cert_headers`).

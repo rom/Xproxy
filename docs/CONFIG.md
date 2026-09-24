@@ -5158,6 +5158,78 @@ accepted.
 | `introspection.cache_ttl` | duration | `60s` | How long an answer (positive or negative) is kept, bounded by the token's `exp`; at most 65536 entries per provider; `0` caches nothing |
 | `introspection.timeout` | duration | `3s` | Per call, 100ms to 30s |
 | `introspection.always` | bool | `false` | Introspect signed tokens too, for revocation |
+| `dpop` | object | none | Demonstrating proof of possession (RFC 9449); see below |
+| `dpop.mode` | `off`, `allow`, `require` | `off` | `allow` verifies a proof whenever the token says it is bound to a key and refuses a bound token presented without one; `require` also refuses a token that is not bound |
+| `dpop.algorithms` | list | `[ES256, ES384, ES512, PS256, PS384, PS512, EdDSA]` | Allowed proof algorithms, from the asymmetric set; nothing symmetric is permitted |
+| `dpop.max_age` | duration | `60s` | How old a proof's `iat` may be; `clock_skew` is allowed on top, in both directions; at most 10m |
+| `dpop.replay_entries` | int | `65536` | Bound on the table of spent proof identifiers |
+| `dpop.external_url` | URL | none | The scheme and authority the client sees, for the `htu` comparison, when another proxy terminates TLS in front |
+
+#### jwt.providers[].dpop: proof of possession
+
+A bearer token is a password: whoever holds it is whoever it says. That is
+the whole of its security model, and it is why a token stolen from a log,
+a browser's storage, a proxy's cache or a crash dump is as good as the
+original — nothing about the request says it came from the client the
+token was issued to.
+
+DPoP (RFC 9449) adds the missing part. The client keeps a key pair, the
+authorization server records the public key's thumbprint in the token as
+`cnf.jkt`, and every request carries a small JWT — the proof — signed with
+the private key over *this* method, *this* URI and *this* moment. A stolen
+token without the key produces no proof, and a proof captured from one
+request does not fit another.
+
+What is checked, in this order, because each step is only meaningful once
+the one before it holds:
+
+1. The proof is a JWT with `typ: dpop+jwt` and an algorithm from
+   `dpop.algorithms`. Nothing symmetric and no `none`: a proof the
+   verifier could have written itself proves nothing about the client. A
+   key carrying private material is refused too — that is a client that
+   has sent its secret.
+2. Its signature verifies under the key embedded in its own header. On its
+   own that proves nothing, since anybody can generate a key; step 5 is
+   why it matters.
+3. `htm` and `htu` match the request. The method is compared exactly
+   (HTTP methods are case-sensitive); the URI is compared without query or
+   fragment, as RFC 9449 section 4.3 says, because the query is not what a
+   replay changes. The scheme comes from the connection and the authority
+   from the `Host` header — never from `X-Forwarded-Proto`, since a client
+   that can set that header could otherwise choose which URI its proof has
+   to match. Behind another terminating proxy, `dpop.external_url` says
+   what the client sees.
+4. `iat` is within `max_age` (plus `clock_skew`, both ways) and the `jti`
+   has not been seen. Together they bound replay to a window and then
+   remove it. The `jti` is spent *last*, once everything else holds, so a
+   proof refused for another reason does not consume the identifier a
+   correct retry would use.
+5. The RFC 7638 thumbprint of the embedded key equals the token's
+   `cnf.jkt`. This is the step the rest exists for: it ties the key that
+   signed the proof to the key the authorization server bound the token
+   to. The claims are read from a token **this proxy has already
+   verified** — reading `cnf` from an unverified token would let an
+   attacker write their own thumbprint into it.
+6. `ath` equals the base64url SHA-256 of the access token, so a proof
+   cannot be moved between two tokens the same client holds.
+
+`mode: allow` costs nothing to turn on: it never refuses an ordinary
+bearer token, and it closes the replay hole for every token the
+authorization server did constrain. `require` is the stricter statement
+that this route takes constrained tokens only.
+
+With DPoP on, the `Authorization: DPoP <token>` scheme RFC 9449 defines is
+read as well as `Bearer` — a server that reads only `Bearer ` does not see
+a sender-constrained token at all. The proof is removed before forwarding:
+it is a signed statement about *this* hop, and a backend verifying it
+against its own URI would fail.
+
+Refusals are 401 with `WWW-Authenticate: DPoP error="invalid_dpop_proof",
+algs="..."`, or `error="invalid_token"` when the problem is the token
+rather than the proof (`dpop_missing`, `dpop_unbound`). The access log
+carries `dpop_jkt` with the thumbprint that was proved. The details are
+`dpop_proof`, `dpop_binding`, `dpop_replay`, `dpop_missing` and
+`dpop_unbound`.
 
 A provider whose key set has never loaded (for example the JWKS URL is
 unreachable at start) rejects tokens with 503 and `Retry-After` until a

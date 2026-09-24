@@ -1150,9 +1150,45 @@ to the cause:
 | `issuer`, `audience` | The claim does not match the configuration. Absence also fails — deliberately |
 | `algorithm` | The token's algorithm is not in the allowed list (`none` never is) |
 | `keys_unavailable` | The key set never loaded. 503, not 401, because it is the proxy's problem |
+| `dpop_missing` | The token says it is bound to a key (`cnf.jkt`) and no `DPoP` header came with it |
+| `dpop_unbound` | `dpop.mode: require` and the token carries no `cnf.jkt` at all |
+| `dpop_binding` | The proof is valid and signed by a *different* key than the token names |
+| `dpop_replay` | That proof's `jti` has been used inside its window |
+| `dpop_proof` | The proof itself: the type, the algorithm, the signature, `htm`, `htu`, `iat`, `ath`, or its shape |
 
 `keys_unavailable` is the one to escalate: check `jwks_url`,
 `jwks_ca_file` and egress from the proxy to the provider.
+
+**Every request fails with `dpop_proof` after `dpop` went on.** Four
+causes, in the order worth checking. The client's proof signs the URI *it*
+used and this process compares it with the URI *it* saw: behind another
+TLS-terminating proxy those differ, and `dpop.external_url` is the answer
+— the scheme is deliberately never taken from `X-Forwarded-Proto`, because
+a client that can set that header could otherwise choose which URI its
+proof has to match. The client's clock may be outside `max_age` plus
+`clock_skew` in either direction. The proof's algorithm may not be in
+`dpop.algorithms` (the default list has no RS256 in it). Or the client is
+not sending `ath`, which RFC 9449 requires beside an access token.
+
+**`dpop_binding` for one client only.** That client's proof verifies and
+names a key the token was not issued for. Either it is using a different
+key than the one it registered at the token endpoint — a key rotation on
+its side that the authorization server has not seen — or the token is not
+that client's. The security log's `dpop_jkt` is absent on a refusal and
+present on success, so comparing a working client's value with the token's
+`cnf.jkt` settles which.
+
+**`dpop_missing` where the client does send a proof.** The proof travels in
+the `DPoP` header and the token in `Authorization`. A load balancer or
+service mesh in front that strips unknown headers takes the proof with it.
+Check what reaches this proxy, not what the client sent.
+
+**A client's requests stop working under load with `dpop_replay`.** Either
+it is reusing one `jti`, which is a client bug (the identifier is meant to
+be fresh per request), or a retry is re-sending the same proof after a
+timeout — which is the same thing from the proxy's side, and correct to
+refuse. `replay_entries` does not cause this: over its bound the table
+drops entries, which loses protection rather than adding refusals.
 
 **Introspection accepts nothing.** A missing `iss` or `aud` in the
 introspection response fails, the same as on the JWT path. If your

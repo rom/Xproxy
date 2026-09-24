@@ -4187,6 +4187,47 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 	v.dnsTunnel(p+".tunnel_detection", d.TunnelDetection)
 }
 
+// dpop checks a proof-of-possession policy.
+//
+// The algorithm list is the part worth refusing at load: a symmetric
+// algorithm in it is a policy that verifies proofs the verifier could have
+// written itself, which is proof of nothing and reads as if it were.
+func (v *validator) dpop(p string, d *DPoP, source string) {
+	if d == nil {
+		return
+	}
+	switch d.Mode {
+	case "", "off", "allow", "require":
+	default:
+		v.errf("%s.mode: must be off, allow or require", p)
+	}
+	for i, a := range d.Algorithms {
+		switch a {
+		case "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA":
+		default:
+			v.errf("%s.algorithms[%d]: %q is not an asymmetric JWS algorithm", p, i, a)
+		}
+	}
+	if d.MaxAge < 0 || d.MaxAge > Duration(10*time.Minute) {
+		v.errf("%s.max_age: must be between 0 and 10m", p)
+	}
+	if d.ReplayEntries < 0 || d.ReplayEntries > 10_000_000 {
+		v.errf("%s.replay_entries: must be between 0 and 10000000", p)
+	}
+	if d.ExternalURL != "" {
+		if u, err := url.Parse(d.ExternalURL); err != nil || u.Scheme == "" || u.Host == "" {
+			v.errf("%s.external_url: must be an absolute URL", p)
+		}
+	}
+	// A proof binds the token in the Authorization header, and RFC 9449
+	// puts it there under its own scheme. A provider reading the token
+	// from a cookie or another header is a provider whose tokens no client
+	// library will send a proof for.
+	if d.Mode != "" && d.Mode != "off" && source != "" && source != "bearer" {
+		v.warnf("%s: proof of possession is defined for the Authorization header (RFC 9449), and this provider reads its token from %q", p, source)
+	}
+}
+
 // dnsAnswerPolicy checks the answer screen. An answer policy that denies
 // nothing is the one shape worth refusing at load: it reads like
 // rebinding protection and is not, and an operator who wrote the section
@@ -4725,6 +4766,7 @@ func (v *validator) jwt(j *JWT, seen map[string]bool) {
 		if p.ClockSkew < 0 || p.ClockSkew > Duration(600_000_000_000) {
 			v.errf("%s.clock_skew: must be between 0 and 10m", pp)
 		}
+		v.dpop(pp+".dpop", p.DPoP, p.Source)
 		switch {
 		case p.Source == "bearer":
 		case strings.HasPrefix(p.Source, "header:") && headerNameOK(p.Source[7:]):

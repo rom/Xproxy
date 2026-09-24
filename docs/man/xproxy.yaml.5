@@ -13097,7 +13097,76 @@ T}	T{
 T}	T{
 Introspect signed tokens too,\: for revocation
 T}
+T{
+\fBdpop\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Demonstrating proof of possession (RFC 9449);\: see below
+T}
+T{
+\fBdpop.\:mode\fR
+T}	T{
+\fBoff\fR,\: \fBallow\fR,\: \fBrequire\fR
+T}	T{
+\fBoff\fR
+T}	T{
+\fBallow\fR verifies a proof whenever the token says it is bound to a key and refuses a bound token presented without one;\: \fBrequire\fR also refuses a token that is not bound
+T}
+T{
+\fBdpop.\:algorithms\fR
+T}	T{
+list
+T}	T{
+\fB[ES256,\: ES384,\: ES512,\: PS256,\: PS384,\: PS512,\: EdDSA]\fR
+T}	T{
+Allowed proof algorithms,\: from the asymmetric set;\: nothing symmetric is permitted
+T}
+T{
+\fBdpop.\:max_\:age\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+How old a proof\(aqs \fBiat\fR may be;\: \fBclock_\:skew\fR is allowed on top,\: in both directions;\: at most 10m
+T}
+T{
+\fBdpop.\:replay_\:entries\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Bound on the table of spent proof identifiers
+T}
+T{
+\fBdpop.\:external_\:url\fR
+T}	T{
+URL
+T}	T{
+none
+T}	T{
+The scheme and authority the client sees,\: for the \fBhtu\fR comparison,\: when another proxy terminates TLS in front
+T}
 .TE
+.SS "jwt.providers[].dpop: proof of possession"
+.PP
+A bearer token is a password: whoever holds it is whoever it says. That is the whole of its security model, and it is why a token stolen from a log, a browser\(aqs storage, a proxy\(aqs cache or a crash dump is as good as the original \[u2014] nothing about the request says it came from the client the token was issued to.
+.PP
+DPoP (RFC 9449) adds the missing part. The client keeps a key pair, the authorization server records the public key\(aqs thumbprint in the token as \fBcnf.jkt\fR, and every request carries a small JWT \[u2014] the proof \[u2014] signed with the private key over \fIthis\fR method, \fIthis\fR URI and \fIthis\fR moment. A stolen token without the key produces no proof, and a proof captured from one request does not fit another.
+.PP
+What is checked, in this order, because each step is only meaningful once the one before it holds:
+.PP
+1. The proof is a JWT with \fBtyp: dpop+jwt\fR and an algorithm from \fBdpop.algorithms\fR. Nothing symmetric and no \fBnone\fR: a proof the verifier could have written itself proves nothing about the client. A key carrying private material is refused too \[u2014] that is a client that has sent its secret. 2. Its signature verifies under the key embedded in its own header. On its own that proves nothing, since anybody can generate a key; step 5 is why it matters. 3. \fBhtm\fR and \fBhtu\fR match the request. The method is compared exactly (HTTP methods are case\-sensitive); the URI is compared without query or fragment, as RFC 9449 section 4.3 says, because the query is not what a replay changes. The scheme comes from the connection and the authority from the \fBHost\fR header \[u2014] never from \fBX\-Forwarded\-Proto\fR, since a client that can set that header could otherwise choose which URI its proof has to match. Behind another terminating proxy, \fBdpop.external_url\fR says what the client sees. 4. \fBiat\fR is within \fBmax_age\fR (plus \fBclock_skew\fR, both ways) and the \fBjti\fR has not been seen. Together they bound replay to a window and then remove it. The \fBjti\fR is spent \fIlast\fR, once everything else holds, so a proof refused for another reason does not consume the identifier a correct retry would use. 5. The RFC 7638 thumbprint of the embedded key equals the token\(aqs \fBcnf.jkt\fR. This is the step the rest exists for: it ties the key that signed the proof to the key the authorization server bound the token to. The claims are read from a token \fBthis proxy has already verified\fR \[u2014] reading \fBcnf\fR from an unverified token would let an attacker write their own thumbprint into it. 6. \fBath\fR equals the base64url SHA\-256 of the access token, so a proof cannot be moved between two tokens the same client holds.
+.PP
+\fBmode: allow\fR costs nothing to turn on: it never refuses an ordinary bearer token, and it closes the replay hole for every token the authorization server did constrain. \fBrequire\fR is the stricter statement that this route takes constrained tokens only.
+.PP
+With DPoP on, the \fBAuthorization: DPoP <token>\fR scheme RFC 9449 defines is read as well as \fBBearer\fR \[u2014] a server that reads only \fBBearer \fR does not see a sender\-constrained token at all. The proof is removed before forwarding: it is a signed statement about \fIthis\fR hop, and a backend verifying it against its own URI would fail.
+.PP
+Refusals are 401 with \fBWWW\-Authenticate: DPoP error="invalid_dpop_proof", algs="..."\fR, or \fBerror="invalid_token"\fR when the problem is the token rather than the proof (\fBdpop_missing\fR, \fBdpop_unbound\fR). The access log carries \fBdpop_jkt\fR with the thumbprint that was proved. The details are \fBdpop_proof\fR, \fBdpop_binding\fR, \fBdpop_replay\fR, \fBdpop_missing\fR and \fBdpop_unbound\fR.
 .PP
 A provider whose key set has never loaded (for example the JWKS URL is unreachable at start) rejects tokens with 503 and \fBRetry\-After\fR until a fetch succeeds; a fetch that returns no keys keeps the previous set.
 .SS "routes[].jwt"
