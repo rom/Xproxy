@@ -34,6 +34,10 @@ type discoverer struct {
 	lookup Lookup
 	pool   *Pool
 
+	// consul is the client for type consul, whose blocking queries make
+	// the loop below wait on the agent rather than on a ticker.
+	consul *consulClient
+
 	mu          sync.Mutex
 	last        time.Time
 	lastErr     string
@@ -61,14 +65,22 @@ type DiscoveryStatus struct {
 	Errors       uint64    `json:"errors"`
 }
 
-func newDiscoverer(cfg *config.Discovery, p *Pool) *discoverer {
+func newDiscoverer(cfg *config.Discovery, p *Pool) (*discoverer, error) {
 	d := &discoverer{cfg: *cfg, pool: p, refresh: make(chan struct{}, 1)}
+	if cfg.Type == "consul" {
+		c, err := newConsulClient(*cfg)
+		if err != nil {
+			return nil, err
+		}
+		d.consul = c
+		return d, nil
+	}
 	if cfg.Type == "http" {
 		// A dedicated client: no environment proxy, a bounded per-request
 		// timeout applied in resolve, connections not pooled across the long
 		// resolution interval.
 		d.httpClient = &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
-		return d
+		return d, nil
 	}
 	if cfg.Resolver != "" {
 		addr := cfg.Resolver
@@ -79,7 +91,7 @@ func newDiscoverer(cfg *config.Discovery, p *Pool) *discoverer {
 	} else {
 		d.lookup = net.DefaultResolver
 	}
-	return d
+	return d, nil
 }
 
 func (d *discoverer) status() *DiscoveryStatus {
@@ -92,6 +104,18 @@ func (d *discoverer) status() *DiscoveryStatus {
 // resolve performs one resolution and returns the endpoint specs sorted
 // by address.
 func (d *discoverer) resolve(ctx context.Context) ([]endpointSpec, error) {
+	if d.consul != nil {
+		// A blocking query is meant to hang, so the bound is the wait
+		// plus a margin for the round trip rather than the resolution
+		// timeout, which is about a request that should answer at once.
+		ctx, cancel := context.WithTimeout(ctx, d.consul.wait+d.cfg.Timeout.D())
+		defer cancel()
+		specs, err := d.consul.resolve(ctx, d.cfg.Port, d.cfg.Weight, d.cfg.Canary)
+		if err != nil {
+			return nil, err
+		}
+		return finalizeSpecs(specs, "consul service "+d.consul.service)
+	}
 	ctx, cancel := context.WithTimeout(ctx, d.cfg.Timeout.D())
 	defer cancel()
 	if d.cfg.Type == "http" {
@@ -192,6 +216,10 @@ func (d *discoverer) once(ctx context.Context) {
 // run re-resolves on the interval until ctx ends.
 func (d *discoverer) run(ctx context.Context) {
 	defer d.pool.wg.Done()
+	if d.consul != nil {
+		d.runBlocking(ctx)
+		return
+	}
 	t := time.NewTicker(d.cfg.Interval.D())
 	defer t.Stop()
 	for {
@@ -202,6 +230,34 @@ func (d *discoverer) run(ctx context.Context) {
 		case <-d.refresh:
 		}
 		d.once(ctx)
+	}
+}
+
+// runBlocking is the loop for a discovery whose resolution waits on the
+// registry instead of on a ticker: it asks again as soon as an answer
+// arrives, because the answer only arrives when something changed.
+//
+// The interval becomes the pause after a failure. Without one, an agent
+// that is down or answering 403 would be asked again immediately and for
+// ever, which is a loop against somebody else's machine.
+func (d *discoverer) runBlocking(ctx context.Context) {
+	for {
+		before := d.errors.Load()
+		d.once(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if d.errors.Load() == before {
+			// The query answered. Ask again at once: the next answer is
+			// the next change.
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(d.cfg.Interval.D()):
+		case <-d.refresh:
+		}
 	}
 }
 

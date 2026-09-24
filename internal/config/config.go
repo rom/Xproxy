@@ -2633,8 +2633,9 @@ type Endpoint struct {
 type Discovery struct {
 	// Type is dns (A and AAAA records of Name, each with Port), srv (SRV
 	// records of Name; targets and ports come from the records, the lowest
-	// priority group is used and record weights become endpoint weights)
-	// or http (Name is a URL polled on the interval; see Format).
+	// priority group is used and record weights become endpoint weights),
+	// http (Name is a URL polled on the interval; see Format) or consul
+	// (a Consul agent asked about a service; see Consul).
 	Type string `yaml:"type"`
 	// Name is the DNS name to resolve (for srv the full _service._proto
 	// name), or, for type http, the registry URL to poll.
@@ -2663,6 +2664,50 @@ type Discovery struct {
 	// Timeout of one resolution and of the initial synchronous one at
 	// start. Default 5s.
 	Timeout Duration `yaml:"timeout"`
+	// Consul configures type consul.
+	Consul *ConsulDiscovery `yaml:"consul"`
+}
+
+// ConsulDiscovery asks a Consul agent which instances of a service are
+// healthy, and -- this being the point of a native type rather than a
+// polled URL -- uses Consul's blocking queries, so a change is learned
+// when it happens rather than at the next interval.
+//
+// A blocking query is an ordinary request that the agent holds open until
+// something changes or the wait expires, and answers with an index the
+// next request carries. The effect is a long poll: an instance that goes
+// away is out of the pool in about the time it takes Consul to notice,
+// instead of up to an interval later. The interval is still there as the
+// period between attempts when the agent is unreachable, and as a
+// ceiling on how long one query may be held.
+type ConsulDiscovery struct {
+	// Address is the agent, host:port. Default 127.0.0.1:8500 -- a
+	// Consul deployment runs an agent on every node, and asking the
+	// local one is both faster and what survives a partition.
+	Address string `yaml:"address"`
+	// Service is the name to ask about. Required.
+	Service string `yaml:"service"`
+	// Tag narrows it to the instances carrying that tag, which is how a
+	// Consul estate usually separates environments or versions.
+	Tag string `yaml:"tag"`
+	// Datacenter asks about another datacenter than the agent's own.
+	Datacenter string `yaml:"datacenter"`
+	// TokenFile holds the ACL token, sent as X-Consul-Token. A token is
+	// a credential, so it lives in a file the proxy user can read and
+	// not in this document -- which is dumped by the management API and
+	// kept in the configuration history.
+	TokenFile string `yaml:"token_file"`
+	// TLS reaches an agent over HTTPS. Without it the scheme is http,
+	// which for a local agent over loopback is the usual arrangement.
+	TLS *UpstreamTLS `yaml:"tls"`
+	// AllowStale lets the agent answer from its own state without asking
+	// a server, which is faster and may be a moment behind. Off by
+	// default: a load balancer acting on stale membership sends traffic
+	// to an instance that has gone.
+	AllowStale bool `yaml:"allow_stale"`
+	// Wait is how long one blocking query may be held open. Default 5m,
+	// which is Consul's own; the agent adds jitter of its own accord.
+	Wait Duration `yaml:"wait"`
 }
 
 // Canary routes selected requests to the pool's canary endpoints: those

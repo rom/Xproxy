@@ -7288,11 +7288,11 @@ T}
 T{
 \fBtype\fR
 T}	T{
-\fBdns\fR,\: \fBsrv\fR,\: \fBhttp\fR
+\fBdns\fR,\: \fBsrv\fR,\: \fBhttp\fR,\: \fBconsul\fR
 T}	T{
 \fBdns\fR
 T}	T{
-\fBdns\fR resolves the A and AAAA records of \fBname\fR,\: one endpoint per address on \fBport\fR;\: \fBsrv\fR resolves SRV records,\: uses the lowest priority group,\: and takes target,\: port and weight from each record;\: \fBhttp\fR polls the registry URL in \fBname\fR on the interval (see \fBformat\fR)
+\fBdns\fR resolves the A and AAAA records of \fBname\fR,\: one endpoint per address on \fBport\fR;\: \fBsrv\fR resolves SRV records,\: uses the lowest priority group,\: and takes target,\: port and weight from each record;\: \fBhttp\fR polls the registry URL in \fBname\fR on the interval (see \fBformat\fR);\: \fBconsul\fR asks a Consul agent about a service with \fBblocking queries\fR \[u2014] see below
 T}
 T{
 \fBname\fR
@@ -7375,7 +7375,110 @@ T}	T{
 T}	T{
 Bound on one resolution,\: including the synchronous first one at start and reload;\: a failed resolution keeps the previous endpoint set and is counted in \fBxproxyctl upstreams\fR
 T}
+T{
+\fBconsul\fR
+T}	T{
+object
+T}	T{
+required for \fBconsul\fR
+T}	T{
+See below
+T}
 .TE
+.SS "upstreams[].discovery.consul"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(1.0i) lbw(0.9i) lbx
+lw(1.1i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBservice\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+The Consul service to ask about
+T}
+T{
+\fBaddress\fR
+T}	T{
+host:port
+T}	T{
+\fB127.\:0.\:0.\:1:\:8500\fR
+T}	T{
+The agent. A Consul deployment runs one on every node,\: and asking the local one is both faster and what survives a partition
+T}
+T{
+\fBtag\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Only the instances carrying that tag,\: which is how a Consul estate usually separates environments or versions
+T}
+T{
+\fBdatacenter\fR
+T}	T{
+name
+T}	T{
+the agent\(aqs own
+T}	T{
+Ask about another datacenter
+T}
+T{
+\fBtoken_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+File holding the ACL token,\: sent as \fBX\-\:Consul\-\:Token\fR. A token is a credential,\: so it lives in a file rather than in this document,\: which the management API dumps and the history keeps;\: the file must not be readable by more than its owner
+T}
+T{
+\fBtls\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Reach the agent over HTTPS (CA,\: server name,\: pins \[u2014] as \fBupstreams[].\:tls\fR). Without it the scheme is \fBhttp\fR,\: which over loopback to a local agent is the usual arrangement
+T}
+T{
+\fBallow_\:stale\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Let the agent answer from its own state without asking a server. Faster,\: and may be a moment behind,\: so it warns: a balancer acting on stale membership sends traffic to an instance that has gone
+T}
+T{
+\fBwait\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How long one blocking query may be held open;\: 1s to 10m
+T}
+.TE
+.PP
+\fBWhy a type of its own rather than \fBhttp\fR with \fBformat: consul\fR.\fR The polled form is still there and still works. What this adds is Consul\(aqs \fBblocking query\fR: the agent holds the request open until the answer changes and returns an index the next request carries, so the proxy learns about an instance that went away in about the time Consul takes to notice it, instead of up to a polling interval later. For a load balancer that gap is the whole point \[u2014] a polled registry keeps sending traffic to a machine that is already gone for as long as the interval lasts.
+.PP
+The loop therefore waits on the agent rather than on a ticker: after an answer it asks again at once, because the next answer \fIis\fR the next change. \fBinterval\fR becomes the pause after a \fBfailure\fR \[u2014] without one, an agent that is down or answering 403 would be asked again immediately and forever, which is a loop against somebody else\(aqs machine. An index that goes backwards (a Consul server restart) resets to 1 rather than blocking against an index that will never be reached.
+.PP
+Only instances whose checks all pass are used, and the check is made here as well as asked for in the query: the filter in the query is the agent\(aqs opinion, and this one is the proxy\(aqs. \fBWeights.Passing\fR becomes the endpoint weight, and a blank service address falls back to the node\(aqs.
 .SS "upstreams[].health_check"
 .PP
 .TS

@@ -161,6 +161,12 @@ func validAddr(addr string) bool {
 	return err == nil && n >= 1 && n <= 65535
 }
 
+// joinHostPort is net.JoinHostPort with a numeric port, which is what
+// every registry record carries.
+func joinHostPort(host string, port int) string {
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
 func clampWeight(w int) int {
 	if w < 1 {
 		return 1

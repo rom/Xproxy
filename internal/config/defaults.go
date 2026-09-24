@@ -122,6 +122,10 @@ func applyDefaults(c *Config) {
 
 	for i := range c.Upstreams {
 		c.Upstreams[i].NodeZone = s.Zone
+		if d := c.Upstreams[i].Discovery; d != nil && d.Consul != nil {
+			setStr(&d.Consul.Address, "127.0.0.1:8500")
+			setDur(&d.Consul.Wait, 5*time.Minute)
+		}
 	}
 	for i := range s.Listeners {
 		setStr(&s.Listeners[i].Kind, "http")

@@ -297,7 +297,11 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 	p.eps.Store(&eps)
 	p.bal.Store(&balHolder{b: p.newBalancer(eps)})
 	if cfg.Discovery != nil {
-		p.disc = newDiscoverer(cfg.Discovery, p)
+		disc, err := newDiscoverer(cfg.Discovery, p)
+		if err != nil {
+			return nil, fmt.Errorf("upstream %s: %w", cfg.Name, err)
+		}
+		p.disc = disc
 	}
 	if cfg.CircuitBreaker != nil {
 		p.breaker = newBreaker(cfg.CircuitBreaker, p.now)

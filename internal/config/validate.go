@@ -1467,8 +1467,45 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			if d.Resolver != "" {
 				v.errf("%s.resolver: only for dns and srv discovery", dp)
 			}
+		case "consul":
+			if c := d.Consul; c == nil {
+				v.errf("%s.consul: required for type consul", dp)
+			} else {
+				if c.Service == "" {
+					v.errf("%s.consul.service: required", dp)
+				}
+				if _, _, err := net.SplitHostPort(c.Address); err != nil {
+					v.errf("%s.consul.address: %q must be host:port", dp, c.Address)
+				}
+				if c.TokenFile != "" && !strings.HasPrefix(c.TokenFile, "/") {
+					v.errf("%s.consul.token_file: must be an absolute path", dp)
+				}
+				if c.TokenFile != "" {
+					v.file(dp+".consul.token_file", c.TokenFile)
+					if st, err := os.Stat(c.TokenFile); err == nil && st.Mode().Perm()&0o077 != 0 {
+						v.errf("%s.consul.token_file: %s is readable by more than its owner (mode %04o); "+
+							"an ACL token is a credential", dp, c.TokenFile, st.Mode().Perm())
+					}
+				}
+				if c.Wait < Duration(time.Second) || c.Wait > Duration(10*time.Minute) {
+					v.errf("%s.consul.wait: must be between 1s and 10m", dp)
+				}
+				if c.TLS != nil {
+					v.upstreamTLS(dp+".consul.tls", c.TLS)
+				}
+				if c.AllowStale {
+					v.warnf("%s.consul.allow_stale: the agent answers from its own state, which may be a moment behind; "+
+						"a balancer acting on stale membership sends traffic to an instance that has gone", dp)
+				}
+			}
+			if d.Name != "" {
+				v.errf("%s.name: not used by type consul; the service is consul.service", dp)
+			}
+			if d.Resolver != "" {
+				v.errf("%s.resolver: only for dns and srv discovery", dp)
+			}
 		default:
-			v.errf("%s.type: must be dns, srv or http", dp)
+			v.errf("%s.type: must be dns, srv, http or consul", dp)
 		}
 		if d.Interval < Duration(time.Second) || d.Interval > Duration(time.Hour) {
 			v.errf("%s.interval: must be between 1s and 1h", dp)

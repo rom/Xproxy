@@ -442,6 +442,33 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Consul as a discovery type of its own, with blocking queries.**
+  Discovery already reached Consul by polling its HTTP API
+  (`type: http, format: consul`), and DNS A/AAAA and SRV were already
+  there. What polling cannot do is notice quickly: a registry asked every
+  thirty seconds keeps sending traffic to a machine that is already gone
+  for up to thirty seconds.
+
+  `type: consul` uses Consul's **blocking query** — the agent holds the
+  request open until the answer changes and returns an index the next
+  request carries — so an instance that goes away leaves the pool in about
+  the time Consul takes to notice. The loop therefore waits on the agent
+  rather than on a ticker, and `interval` becomes the pause after a
+  **failure**: without one, an agent that is down or answering 403 would
+  be asked again immediately and forever, which is a loop against somebody
+  else's machine. An index that goes backwards, which a Consul server
+  restart produces, resets rather than blocking on an index that will
+  never be reached.
+
+  It also spells the ordinary things: the URL is built from a service
+  name, the agent defaults to the local one (which is where a Consul
+  deployment puts it, and what survives a partition), and the ACL token
+  comes from a **file** — a token in the configuration is a credential in
+  the management API's output and in the configuration history. Only
+  instances whose checks all pass are used, checked here as well as asked
+  for in the query: the filter in the query is the agent's opinion, this
+  one is the proxy's.
+
 - **Transparent interception: `original_destination` and
   `transparent`.** For the deployment where the client does not know the
   proxy is there, and a routing rule puts its packets on a listener that

@@ -3017,7 +3017,7 @@ beyond the first is gated by `retry_budget` when one is set.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `type` | `dns`, `srv`, `http` | `dns` | `dns` resolves the A and AAAA records of `name`, one endpoint per address on `port`; `srv` resolves SRV records, uses the lowest priority group, and takes target, port and weight from each record; `http` polls the registry URL in `name` on the interval (see `format`) |
+| `type` | `dns`, `srv`, `http`, `consul` | `dns` | `dns` resolves the A and AAAA records of `name`, one endpoint per address on `port`; `srv` resolves SRV records, uses the lowest priority group, and takes target, port and weight from each record; `http` polls the registry URL in `name` on the interval (see `format`); `consul` asks a Consul agent about a service with **blocking queries** — see below |
 | `name` | DNS name or URL | required | The name to resolve; for `srv` the full `_service._proto.domain` name; for `http` the registry URL to GET |
 | `port` | int | required for `dns` | Endpoint port for `dns`, and the default port for `http` entries that omit one |
 | `format` | `list`, `consul` | `list` | Response shape for `http`: `list` is a JSON array of `{address｜host,port, weight?, canary?}`; `consul` is the Consul `/v1/health/service` response (only instances whose checks all pass are used, `Weights.Passing` becomes the weight, a blank service address falls back to the node address) |
@@ -3027,6 +3027,42 @@ beyond the first is gated by `retry_budget` when one is set.
 | `weight` | int | `1` | Weight of discovered endpoints that do not carry their own (`dns`, and `http` `list` entries without a `weight`) |
 | `canary` | bool | `false` | Mark discovered endpoints as canaries (needs the pool's `canary` section) |
 | `timeout` | duration | `5s` | Bound on one resolution, including the synchronous first one at start and reload; a failed resolution keeps the previous endpoint set and is counted in `xproxyctl upstreams` |
+| `consul` | object | required for `consul` | See below |
+
+#### upstreams[].discovery.consul
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `service` | name | required | The Consul service to ask about |
+| `address` | host:port | `127.0.0.1:8500` | The agent. A Consul deployment runs one on every node, and asking the local one is both faster and what survives a partition |
+| `tag` | string | none | Only the instances carrying that tag, which is how a Consul estate usually separates environments or versions |
+| `datacenter` | name | the agent's own | Ask about another datacenter |
+| `token_file` | path | none | File holding the ACL token, sent as `X-Consul-Token`. A token is a credential, so it lives in a file rather than in this document, which the management API dumps and the history keeps; the file must not be readable by more than its owner |
+| `tls` | object | none | Reach the agent over HTTPS (CA, server name, pins — as `upstreams[].tls`). Without it the scheme is `http`, which over loopback to a local agent is the usual arrangement |
+| `allow_stale` | bool | `false` | Let the agent answer from its own state without asking a server. Faster, and may be a moment behind, so it warns: a balancer acting on stale membership sends traffic to an instance that has gone |
+| `wait` | duration | `5m` | How long one blocking query may be held open; 1s to 10m |
+
+**Why a type of its own rather than `http` with `format: consul`.** The
+polled form is still there and still works. What this adds is Consul's
+**blocking query**: the agent holds the request open until the answer
+changes and returns an index the next request carries, so the proxy
+learns about an instance that went away in about the time Consul takes to
+notice it, instead of up to a polling interval later. For a load balancer
+that gap is the whole point — a polled registry keeps sending traffic to
+a machine that is already gone for as long as the interval lasts.
+
+The loop therefore waits on the agent rather than on a ticker: after an
+answer it asks again at once, because the next answer *is* the next
+change. `interval` becomes the pause after a **failure** — without one,
+an agent that is down or answering 403 would be asked again immediately
+and forever, which is a loop against somebody else's machine. An index
+that goes backwards (a Consul server restart) resets to 1 rather than
+blocking against an index that will never be reached.
+
+Only instances whose checks all pass are used, and the check is made here
+as well as asked for in the query: the filter in the query is the agent's
+opinion, and this one is the proxy's. `Weights.Passing` becomes the
+endpoint weight, and a blank service address falls back to the node's.
 
 ### upstreams[].health_check
 
