@@ -40,10 +40,11 @@ type Stats struct {
 	ruleCount    atomic.Int64
 	rulesDropped bound.Notice
 
-	learning atomic.Pointer[learnConfig]
-	shards   [learnShards]learnShard
-	entries  atomic.Int64
-	dropped  bound.Notice
+	learning   atomic.Pointer[learnConfig]
+	shards     [learnShards]learnShard
+	entries    atomic.Int64
+	learnBytes atomic.Int64
+	dropped    bound.Notice
 
 	// schemaViolations counts JSON body schema violations (blocked or
 	// detected); anomaly is the behavioural detector.
@@ -58,6 +59,14 @@ const maxRules = 8192
 // maxLearnEntries bounds the learning table when the configuration sets
 // no max_entries.
 const maxLearnEntries = 10000
+
+// maxLearnTargetBytes rejects attacker-controlled variable names that would
+// make a single learning key unexpectedly large. maxLearnBytes additionally
+// bounds the aggregate target data retained by the process-wide table.
+const (
+	maxLearnTargetBytes = 256
+	maxLearnBytes       = 4 << 20
+)
 
 // learnShards is the number of independently locked learning tables.
 const learnShards = 16
@@ -164,6 +173,7 @@ func (s *Stats) Reset() {
 		sh.mu.Unlock()
 	}
 	s.entries.Store(0)
+	s.learnBytes.Store(0)
 	s.schemaViolations.Store(0)
 	s.anomaly.reset()
 	s.started.Store(s.now().UnixNano())
@@ -305,6 +315,10 @@ func (s *Stats) learn(cfg *learnConfig, m types.MatchedRule, in *instance, now t
 		if k := md.Key(); k != "" {
 			target += ":" + k
 		}
+		if len(target) > maxLearnTargetBytes {
+			s.dropped.Hit(nil, "waf learning target too large; observation dropped", "table", "waf_learning", "max_bytes", maxLearnTargetBytes)
+			continue
+		}
 		key := learnKey{rule: m.Rule().ID(), target: target, route: in.info.Route}
 		sh := &s.shards[key.shard()]
 		sh.mu.Lock()
@@ -313,6 +327,11 @@ func (s *Stats) learn(cfg *learnConfig, m types.MatchedRule, in *instance, now t
 			if s.entries.Load() >= int64(cfg.maxEntries) {
 				sh.mu.Unlock()
 				s.dropped.Hit(nil, "waf learning table full; new (rule, target, route) entries are dropped", "table", "waf_learning", "max", cfg.maxEntries)
+				continue
+			}
+			if !reserveBytes(&s.learnBytes, int64(len(target)), maxLearnBytes) {
+				sh.mu.Unlock()
+				s.dropped.Hit(nil, "waf learning memory budget exhausted; observation dropped", "table", "waf_learning", "max_bytes", maxLearnBytes)
 				continue
 			}
 			e = &learnEntry{clients: map[string]struct{}{}, message: m.Message()}
@@ -329,6 +348,19 @@ func (s *Stats) learn(cfg *learnConfig, m types.MatchedRule, in *instance, now t
 			e.sample = trimURI(md.Value())
 		}
 		sh.mu.Unlock()
+	}
+}
+
+// reserveBytes atomically charges n bytes against limit.
+func reserveBytes(used *atomic.Int64, n, limit int64) bool {
+	for {
+		old := used.Load()
+		if n < 0 || old > limit-n {
+			return false
+		}
+		if used.CompareAndSwap(old, old+n) {
+			return true
+		}
 	}
 }
 
