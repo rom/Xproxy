@@ -708,6 +708,37 @@ func TestVNCAuthIsCheckedHereAndAnsweredThere(t *testing.T) {
 	waitFor(t, "the refusal of the first attempt", func() bool { return s.Stats().VNCRefused > 0 })
 }
 
+// VeNCrypt's VNC subtypes run the same challenge as the outer vncauth
+// security type and therefore must not be usable with its known empty key.
+func TestVeNCryptVNCRequiresAGatewayPassword(t *testing.T) {
+	dir := t.TempDir()
+	cert, key := testutil.WriteCert(t, dir, "gate.test")
+	for _, subtype := range []string{"x509-vnc", "tls-vnc"} {
+		t.Run(subtype, func(t *testing.T) {
+			yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: desktops
+      address: "127.0.0.1:0"
+      kind: vnc
+      vnc: {upstream: screens, security_types: [vencrypt], vencrypt_subtypes: [%s]}
+      tls: {certificates: [{cert_file: %s, key_file: %s}]}
+upstreams:
+  - name: screens
+    endpoints: [{address: 127.0.0.1:5900}]
+`, subtype, cert, key)
+			_, err := config.Parse([]byte(yaml))
+			if err == nil {
+				t.Fatal("VNC-authenticated VeNCrypt was accepted without password_file")
+			}
+			if !strings.Contains(err.Error(), "password_file") {
+				t.Fatalf("error %q does not identify the missing password", err)
+			}
+		})
+	}
+}
+
 // answer reads a vncauth challenge and answers it with password.
 func (cl *client) answer(password string) {
 	cl.t.Helper()

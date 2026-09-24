@@ -165,6 +165,11 @@ func (se *session) clientAuth() string {
 // the client's to learn: whatever the client proves here, the gateway
 // opens the target's leg with its own credential.
 func (se *session) clientVNCAuth() string {
+	if se.t.password == "" {
+		se.t.engine.Counters().VNCRefused.Add(1)
+		se.t.deny(se.ip, "vnc_auth_unconfigured", "")
+		return se.finishClientAuth(false, "authentication is not configured")
+	}
 	challenge := make([]byte, rfb.ChallengeSize)
 	if _, err := rand.Read(challenge); err != nil {
 		return "rand"
