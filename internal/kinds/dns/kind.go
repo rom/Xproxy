@@ -62,7 +62,7 @@ func build(su *proxy.Setup) (proxy.Instance, error) {
 		if err != nil {
 			return nil, err
 		}
-		q, err := wire.NewDoQ(d, pc, su.TLS, su.Host.Limits().IdleTimeout.D(), lc.DNS.MaxInFlight)
+		q, err := wire.NewDoQ(d, pc, su.TLS, su.Host.Limits().IdleTimeout.D(), lc.DNS.MaxInFlight, su.Host.ConnLimiter())
 		if err != nil {
 			_ = pc.Close()
 			return nil, err

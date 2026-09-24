@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/safe"
 )
 
@@ -70,12 +71,27 @@ type DoQServer struct {
 // config is the listener's, with the DoQ ALPN added — a DoQ client and
 // a DoT client are the same client with a different transport, so they
 // share a certificate.
-func NewDoQ(s *Server, pc net.PacketConn, tc *tls.Config, idle time.Duration, maxStreams int) (*DoQServer, error) {
-	if s == nil || pc == nil || tc == nil {
+func NewDoQ(s *Server, pc net.PacketConn, tc *tls.Config, idle time.Duration, maxStreams int, limiter *limits.ConnLimiter) (*DoQServer, error) {
+	if s == nil || pc == nil || tc == nil || limiter == nil {
 		return nil, errors.New("doq: incomplete options")
 	}
 	q := &DoQServer{s: s, done: make(chan struct{})}
-	q.tr = &quic.Transport{Conn: pc}
+	q.tr = &quic.Transport{
+		Conn: pc,
+		// Require Retry so a spoofed Initial cannot allocate handshake state.
+		VerifySourceAddress: func(net.Addr) bool { return true },
+		// Apply the same ban and connection limits as every TCP and HTTP/3
+		// listener. The context ends when the QUIC connection closes.
+		ConnContext: func(ctx context.Context, info *quic.ClientInfo) (context.Context, error) {
+			client := addrOfDoQ(info.RemoteAddr)
+			release, reason := limiter.Admit(client)
+			if release == nil {
+				return ctx, fmt.Errorf("refused: %s", reason)
+			}
+			context.AfterFunc(ctx, release)
+			return ctx, nil
+		},
+	}
 	conf := tc.Clone()
 	// A DoQ connection must not be mistaken for HTTP/3 or anything
 	// else: the ALPN is the only thing separating them on one port.
@@ -97,6 +113,21 @@ func NewDoQ(s *Server, pc net.PacketConn, tc *tls.Config, idle time.Duration, ma
 	}
 	q.ln = ln
 	return q, nil
+}
+
+func addrOfDoQ(a net.Addr) netip.Addr {
+	if a == nil {
+		return netip.Addr{}
+	}
+	if ua, ok := a.(*net.UDPAddr); ok {
+		if ip, ok := netip.AddrFromSlice(ua.IP); ok {
+			return ip.Unmap()
+		}
+	}
+	if ap, err := netip.ParseAddrPort(a.String()); err == nil {
+		return ap.Addr().Unmap()
+	}
+	return netip.Addr{}
 }
 
 // Addr is the listening address.
