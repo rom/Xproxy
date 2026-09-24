@@ -242,6 +242,38 @@ func TestSIEMSinkFailuresAndStatus(t *testing.T) {
 	}
 }
 
+func TestSIEMSinkMemoryLimits(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "request", 0)
+
+	// An individual encoded record is rejected before it can be retained.
+	s := &siemSink{cfg: config.SIEM{Format: "json"}, queue: make(chan []byte, 300), log: log}
+	s.emit(slog.LevelInfo, "access", make([]byte, maxSIEMRecordBytes+1), rec)
+	if len(s.queue) != 0 || s.dropped.Load() != 1 || s.queuedBytes.Load() != 0 {
+		t.Fatalf("oversized record retained: queued=%d dropped=%d bytes=%d", len(s.queue), s.dropped.Load(), s.queuedBytes.Load())
+	}
+
+	// Record count alone cannot admit more than the aggregate byte budget.
+	record := make([]byte, maxSIEMRecordBytes)
+	for range maxSIEMQueueBytes/maxSIEMRecordBytes + 1 {
+		s.emit(slog.LevelInfo, "access", record, rec)
+	}
+	if got := s.queuedBytes.Load(); got != maxSIEMQueueBytes {
+		t.Fatalf("queued bytes = %d, want %d", got, maxSIEMQueueBytes)
+	}
+	if len(s.queue) != maxSIEMQueueBytes/maxSIEMRecordBytes || s.dropped.Load() != 2 {
+		t.Fatalf("memory budget not enforced: queued=%d dropped=%d", len(s.queue), s.dropped.Load())
+	}
+
+	// A full count-bounded channel rolls its byte reservation back.
+	s = &siemSink{cfg: config.SIEM{Format: "json"}, queue: make(chan []byte, 1), log: log}
+	s.emit(slog.LevelInfo, "access", []byte("first"), rec)
+	s.emit(slog.LevelInfo, "access", []byte("second"), rec)
+	if got := s.queuedBytes.Load(); got != int64(len("first")) {
+		t.Fatalf("queued bytes after full channel = %d", got)
+	}
+}
+
 func TestSyslogCEF(t *testing.T) {
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
