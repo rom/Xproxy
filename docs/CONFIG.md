@@ -2012,7 +2012,13 @@ the credentials are read then — not per connection, so a key added to
 | `upstream` | upstream | required | The pool of target hosts, picked with the upstream's balancer |
 | `host_keys` | list of paths | required | The bastion's own host keys, OpenSSH or PEM. Clients pin these |
 | `authorized_keys` | path | | OpenSSH authorized_keys of the clients that may connect. Options in the file are ignored; the policy lives here. A line that does not parse fails the load rather than silently shortening the list |
-| `trusted_user_ca_keys` | path | | OpenSSH public keys, one per line, that may sign user certificates. A client offering a certificate is accepted when the signature verifies, the validity window covers now and the principal list names the login it is connecting as; without this key a certificate is refused rather than treated as a plain key |
+| `trusted_user_ca_keys` | path | | OpenSSH public keys, one per line, that may sign user certificates. A client offering a certificate is accepted when the signature verifies, the validity window covers now and the principal list names the login it is connecting as; without this key a certificate is refused rather than treated as a plain key. What else the certificate says is read too: see below |
+| `revoked_keys` | path | | Public keys, in authorized_keys format, refused whatever else says otherwise: the key itself, a certificate carrying it, and every certificate signed by it. It is the one list that overrides the CA, which is what makes a certificate revocable before it expires |
+| `max_certificate_lifetime` | duration | `0` (none) | Refuse a user certificate whose validity window is longer than this, and any that never expires. The point of certificates over `authorized_keys` is that they expire; a CA issuing for a year has made a credential nobody can take back for a year |
+| `max_forwards` | int | `8` | Port forwards one connection may hold open at once. A session that may forward at all can otherwise open one per descriptor the proxy has |
+| `max_sessions_per_principal` | int | `0` (none) | Connections one principal (or, with no `principals`, one login) may hold at once. `max_sessions` is the whole fleet's: a bound of a thousand is a thousand for one key as much as for everybody |
+| `rekey_bytes` | int | `0` | Bytes before the transport agrees a fresh key; the crypto library's own threshold when unset. A bastion session lasts a working day on one key otherwise |
+| `allow_shell_syntax` | bool | `false` | Let an `exec` command carry shell operators. See below: `allow_commands` is a list of patterns, and a pattern is a weak thing to hold a shell to |
 | `users_file` | path | | A users file (as in `forward.auth`) for password authentication. Warned about on its own: a bastion behind one guessable secret is one guess from the estate |
 | `banner` | string | none | Sent before authentication. A legal notice belongs here; a version string does not |
 | `server_version` | string | `SSH-2.0-xproxy` | The identification string; must begin with `SSH-2.0-` |
@@ -2087,6 +2093,61 @@ An entry that brings its own `sftp` section to a listener that has none
 also inherits the default that section implies: file transfer helpers
 are refused for that principal, because `scp` beside a careful `sftp`
 policy is the policy with a door next to it.
+
+##### What the certificate says, beyond the signature
+
+A user certificate is not only a signature over a key and a list of
+principals. It carries the CA's own restrictions, and a gateway that
+checks the signature and ignores the rest is a gateway where those
+restrictions do not exist. All of these are enforced:
+
+- **`source-address`**, the critical option naming the networks the
+  certificate may be used from. It is enforced here because it is the
+  one option whose check needs the client's address, which is why the
+  Go library deliberately leaves it to the caller. A list this gateway
+  cannot parse refuses the certificate rather than being treated as
+  absent.
+- **`force-command`**, the critical option fixing what the session runs.
+  The client's command is *replaced* by it, as OpenSSH does — a
+  certificate issued to run one thing is issued for a reason — and a
+  `shell` request becomes that command too. Both are written to the
+  security log as `ssh_force_command`, with what was asked and what ran.
+- **The extensions are permissions, and their absence is a denial.**
+  `permit-pty`, `permit-port-forwarding`, `permit-agent-forwarding`,
+  `permit-X11-forwarding`. A certificate made with `ssh-keygen -O clear
+  -O permit-pty` grants a terminal and nothing else, whatever this
+  listener's `allow_channels` and `allow_requests` would otherwise
+  allow. A certificate issued the ordinary way carries all five, so
+  nothing changes for one.
+- **Any other critical option refuses the certificate.** A critical
+  option is critical: the CA meant it to be honoured or the credential
+  refused, so an option this gateway does not implement must not be
+  quietly ignored.
+
+Both policies apply and the narrower wins: the CA says what this
+credential may do, the listener says what anybody may do here. A session
+authenticated by a plain key is restricted by the listener alone.
+
+##### `allow_commands` is patterns, and a shell is not
+
+`allow_commands` is a list of RE2 patterns over the command line, and a
+pattern is a weak thing to hold a shell to: `^journalctl .*$` matches
+`journalctl -u x; rm -rf /` exactly as happily as what it was written
+for. So the line is read the way a shell would split it *first*, and one
+carrying an operator — `;` `&` `|` `<` `>` a backquote, a `$(`, a brace,
+a glob, a control character, an unbalanced quote — is refused with
+`shell_syntax` before any pattern is tried.
+
+This is deliberately crude and deliberately broad. A bastion does not
+need to know what a line would do; it needs to know that the line is a
+command with arguments, which is the only shape a list of patterns can be
+written against. `allow_shell_syntax: true` turns the check off for a
+listener that genuinely needs shell syntax, and warns, because the
+patterns then have to be written knowing it.
+
+The strong form of a command policy is `force-command` on the
+certificate: the CA fixes the command and the client's own is replaced,
+so there is no line to pattern-match at all.
 
 #### server.listeners[].ssh.recording
 

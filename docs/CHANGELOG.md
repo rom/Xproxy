@@ -442,6 +442,67 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **What the SSH certificate authority said is now enforced.** A user
+  certificate is not only a signature over a key and a list of
+  principals; it carries the CA's own restrictions, and the gateway
+  checked the signature and ignored the rest. So:
+
+  - **`source-address` did nothing.** A certificate the CA restricted to
+    one network was accepted from anywhere. It is the one critical
+    option x/crypto/ssh deliberately leaves to the caller -- checking it
+    needs the client's address, which `CheckCert` does not have -- and
+    the caller was not doing it. A list the gateway cannot parse refuses
+    the certificate rather than being treated as absent.
+  - **The extensions did nothing.** They are permissions and their
+    absence is a denial: a certificate made with `ssh-keygen -O clear -O
+    permit-pty` grants a terminal and nothing else, and this gateway was
+    giving it everything the listener allowed. `permit-pty`,
+    `permit-port-forwarding`, `permit-agent-forwarding` and
+    `permit-X11-forwarding` are each read now, and each has a refusal
+    reason of its own.
+  - **`force-command` did nothing**, because the library refuses any
+    critical option the caller has not declared support for -- so a
+    certificate carrying one was refused outright rather than honoured.
+    It is declared and implemented now: the client's command is
+    replaced, a `shell` request becomes that command, and both are
+    logged as `ssh_force_command` with what was asked and what ran.
+    Nothing else is declared, so an option this gateway does not
+    implement still refuses the certificate, which is what "critical"
+    means.
+
+  With them: `revoked_keys`, the one list that overrides the CA -- a key
+  there is refused whether it is offered plainly, carried by a
+  certificate, or the authority that signed one -- and
+  `max_certificate_lifetime`, because the point of certificates over
+  `authorized_keys` is that they expire and a CA issuing for a year has
+  made a credential nobody can take back for a year.
+
+  **A CA-only bastion did not load.** Two validation checks disagreed:
+  one allowed `authorized_keys`, `users_file` or `trusted_user_ca_keys`
+  and the other, earlier and the one an operator meets first, allowed
+  only the first two. A fleet that had moved to certificates -- which is
+  the point of moving -- could not configure this listener at all. The
+  test for the certificate policy is what found it.
+
+- **`allow_commands` is patterns, and a shell is not.** `^journalctl
+  .*$` matches `journalctl -u x; rm -rf /` exactly as happily as what it
+  was written for, and that pattern is in this repository's own example.
+  An `exec` command line is now read the way a shell would split it
+  before any pattern is tried, and one carrying an operator -- `;`, `&`,
+  a pipe, a redirection, a backquote, a `$(`, a brace, a glob, a control
+  character, an unbalanced quote -- is refused with `shell_syntax`.
+  Deliberately crude and deliberately broad: a bastion does not need to
+  know what a line would do, it needs to know the line is a command with
+  arguments, which is the only shape a pattern can be written against.
+  `allow_shell_syntax: true` turns it off and warns.
+
+- **Three bounds a bastion did not have.** `max_sessions_per_principal`,
+  because `max_sessions` is the whole fleet's and a robot looping
+  connections could take the bastion from the people; `max_forwards`,
+  because a session that may forward at all could open one per
+  descriptor the process has; and `rekey_bytes`, because a bastion
+  session lasts a working day and was spending it on one key.
+
 - **The two FTP commands that are only half a decision.** A proxy that
   reads FTP one command at a time can hold a policy over each command and
   still miss what a pair of them does.

@@ -299,6 +299,7 @@ func applyDefaults(c *Config) {
 			setInt(&h.MaxAuthTries, 3)
 			setInt(&h.MaxSessions, 1000)
 			setInt(&h.MaxChannels, 16)
+			setInt(&h.MaxForwards, 8)
 			setDur(&h.HandshakeTimeout, 30*time.Second)
 			setDur(&h.IdleTimeout, 30*time.Minute)
 			if len(h.AllowChannels) == 0 {

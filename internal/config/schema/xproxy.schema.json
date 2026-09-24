@@ -4926,6 +4926,10 @@
             "type": "string"
           }
         },
+        "allow_shell_syntax": {
+          "description": "AllowShellSyntax lets an exec command carry shell metacharacters. Default false. allow_commands is a list of regular expressions over the command line, and a regular expression is a weak thing to hold a shell to: \"^journalctl .*$\" matches \"journalctl -u x; rm -rf /\" exactly as happily as it matches what it was written for. So the command line is read as a shell would split it first, and one carrying an operator -- a semicolon, a pipe, an ampersand, a redirection, a backquote, a $( -- is refused before any pattern is tried. A listener that genuinely needs shell syntax sets this and writes its patterns accordingly.",
+          "type": "boolean"
+        },
         "allow_subsystems": {
           "description": "AllowSubsystems are the subsystems a client may start. Default [sftp].",
           "type": "array",
@@ -4969,12 +4973,25 @@
           "description": "MaxAuthTries bounds authentication attempts per connection. Default 3.",
           "type": "integer"
         },
+        "max_certificate_lifetime": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
         "max_channels": {
           "description": "MaxChannels bounds open channels per connection. Default 16.",
           "type": "integer"
         },
+        "max_forwards": {
+          "description": "MaxForwards bounds the port forwards one session may hold open at once. Default 8. A session that may forward at all can otherwise open one per file descriptor the proxy has.",
+          "type": "integer"
+        },
         "max_sessions": {
           "description": "MaxSessions bounds connections on this listener. Default 1000.",
+          "type": "integer"
+        },
+        "max_sessions_per_principal": {
+          "description": "MaxSessionsPerPrincipal bounds the sessions one principal may hold at once, which max_sessions cannot: a listener bounded at five hundred is five hundred for one key as much as for the fleet. Default 0, no bound.",
           "type": "integer"
         },
         "mfa": {
@@ -5004,9 +5021,17 @@
             }
           ]
         },
+        "rekey_bytes": {
+          "description": "RekeyBytes is how many bytes pass before the transport agrees a fresh key. Default 0, which leaves the crypto library's own threshold (1 GiB, or 1 \u003c\u003c 32 for a 64 bit block cipher).",
+          "type": "integer"
+        },
         "remote_forward": {
           "description": "RemoteForward accepts tcpip-forward, which asks the target to listen on the client's behalf. Default false: it turns a session into an inbound path.",
           "type": "boolean"
+        },
+        "revoked_keys": {
+          "description": "RevokedKeys is a file of public keys, in authorized_keys format, that are refused whatever else says otherwise: the key itself, a certificate whose key it is, and a certificate signed by it. It is the one list that overrides the CA, which is what makes a certificate revocable before it expires.",
+          "type": "string"
         },
         "server_version": {
           "description": "ServerVersion is the identification string, which must begin with \"SSH-2.0-\". Default \"SSH-2.0-xproxy\".",

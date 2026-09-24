@@ -259,24 +259,52 @@ func (t *server) principalFor(user string, key cssh.PublicKey) (*sshPrincipal, b
 // question of policy: it is in authorized_keys, or it is a certificate
 // signed by a trusted user CA that is valid now and names the login the
 // client is connecting as.
-func (t *server) acceptKey(c cssh.ConnMetadata, key cssh.PublicKey) (string, error) {
+func (t *server) acceptKey(c cssh.ConnMetadata, key cssh.PublicKey) (string, certDecision, error) {
+	var none certDecision
 	cert, isCert := key.(*cssh.Certificate)
+	if t.revoked[string(key.Marshal())] {
+		return "", none, fmt.Errorf("the key offered for %q is revoked", c.User())
+	}
 	if !isCert {
 		if t.keys[string(key.Marshal())] {
-			return "publickey", nil
+			return "publickey", none, nil
 		}
-		return "", fmt.Errorf("unknown public key for %q", c.User())
+		return "", none, fmt.Errorf("unknown public key for %q", c.User())
+	}
+	// A revocation covers the certificate's own key and the CA that
+	// signed it, so one line takes back either a credential or every
+	// credential an authority ever issued.
+	if t.revoked[string(cert.Key.Marshal())] {
+		return "", none, fmt.Errorf("the certificate offered for %q is revoked", c.User())
+	}
+	if cert.SignatureKey != nil && t.revoked[string(cert.SignatureKey.Marshal())] {
+		return "", none, fmt.Errorf("the authority that signed the certificate for %q is revoked", c.User())
 	}
 	if len(t.caKeys) == 0 {
-		return "", fmt.Errorf("a certificate was offered for %q and no user CA is configured", c.User())
+		return "", none, fmt.Errorf("a certificate was offered for %q and no user CA is configured", c.User())
 	}
 	checker := &cssh.CertChecker{
 		IsUserAuthority: func(auth cssh.PublicKey) bool { return t.caKeys[string(auth.Marshal())] },
+		// A critical option is critical: the CA meant it to be honoured
+		// or the credential refused. CheckCert rejects any option not
+		// named here, which is the behaviour to want -- an option this
+		// gateway does not implement must not be quietly ignored -- so
+		// the list is exactly what it does implement. source-address is
+		// not in it because the library skips that one itself, leaving
+		// it to the caller who has the client's address.
+		SupportedCriticalOptions: []string{"force-command"},
 	}
-	// CheckCert verifies the signature, the validity window, the
-	// critical options and that the principal list covers this login.
+	// CheckCert verifies the signature, the validity window, that every
+	// critical option is one it knows, and that the principal list covers
+	// this login. What it deliberately leaves out is source-address,
+	// which needs the client's address, and it says nothing about the
+	// extensions -- so the rest is here.
 	if err := checker.CheckCert(c.User(), cert); err != nil {
-		return "", fmt.Errorf("certificate for %q: %w", c.User(), err)
+		return "", none, fmt.Errorf("certificate for %q: %w", c.User(), err)
 	}
-	return "certificate", nil
+	d, err := t.checkCertificate(c, cert)
+	if err != nil {
+		return "", none, fmt.Errorf("certificate for %q: %w", c.User(), err)
+	}
+	return "certificate", d, nil
 }

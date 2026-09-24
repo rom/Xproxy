@@ -3442,8 +3442,12 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 	for i, f := range h.HostKeys {
 		v.file(fmt.Sprintf("%s.host_keys[%d]", p, i), f)
 	}
-	if h.AuthorizedKeys == "" && h.UsersFile == "" {
-		v.errf("%s: authorized_keys or users_file is required; a bastion that authenticates nobody forwards everybody", p)
+	// Three ways to authenticate, not two: a fleet that has moved to
+	// certificates has no authorized_keys to write, which is the point
+	// of moving. The check below repeats this because it is the one an
+	// operator reading the file finds first.
+	if h.AuthorizedKeys == "" && h.UsersFile == "" && h.TrustedUserCAKeys == "" {
+		v.errf("%s: authorized_keys, users_file or trusted_user_ca_keys is required; a bastion that authenticates nobody forwards everybody", p)
 	}
 	if h.AuthorizedKeys != "" {
 		v.file(p+".authorized_keys", h.AuthorizedKeys)
@@ -3555,6 +3559,7 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 	if h.TrustedUserCAKeys != "" {
 		v.file(p+".trusted_user_ca_keys", h.TrustedUserCAKeys)
 	}
+	v.sshCertPolicy(p, h)
 	if h.AuthorizedKeys == "" && h.UsersFile == "" && h.TrustedUserCAKeys == "" {
 		// Stated again here because trusted_user_ca_keys is the third
 		// way to authenticate and the earlier check knows only two.
@@ -6035,6 +6040,42 @@ func (v *validator) vncPixels(p string, c *VNCListener) {
 	}
 	if c.PixelStream == VNCPixelsOpaque && (b.MaxRectanglesPerUpdate > 0 || b.MaxEncodedRectangle > 0 || b.MaxDecodeRatio > 0) {
 		v.warnf("%s: max_rectangles_per_update, max_encoded_rectangle and max_decode_ratio need the pixel stream read, and pixel_stream is opaque, so they do nothing here. max_framebuffer_pixels and max_cut_text still apply", q)
+	}
+}
+
+// sshCertPolicy checks what the listener says about certificates, the
+// bounds on what one session may hold, and the two knobs that make a
+// command policy weaker than it looks.
+func (v *validator) sshCertPolicy(p string, h *SSHListener) {
+	if h.RevokedKeys != "" {
+		v.file(p+".revoked_keys", h.RevokedKeys)
+	}
+	switch life := h.MaxCertificateLifetime.D(); {
+	case life < 0:
+		v.errf("%s.max_certificate_lifetime: must not be negative", p)
+	case life > 0 && h.TrustedUserCAKeys == "":
+		v.warnf("%s.max_certificate_lifetime: set with no trusted_user_ca_keys, so no certificate ever reaches it", p)
+	case life > 0 && life < time.Minute:
+		v.errf("%s.max_certificate_lifetime: %s is shorter than any certificate is issued for", p, life)
+	}
+	if h.MaxForwards < 0 {
+		v.errf("%s.max_forwards: must not be negative", p)
+	}
+	if h.MaxSessionsPerPrincipal < 0 {
+		v.errf("%s.max_sessions_per_principal: must not be negative", p)
+	}
+	if h.MaxSessionsPerPrincipal > 0 && h.MaxSessions > 0 && h.MaxSessionsPerPrincipal > h.MaxSessions {
+		v.errf("%s.max_sessions_per_principal: %d is more than max_sessions (%d), so it can never apply",
+			p, h.MaxSessionsPerPrincipal, h.MaxSessions)
+	}
+	switch {
+	case h.RekeyBytes < 0:
+		v.errf("%s.rekey_bytes: must not be negative", p)
+	case h.RekeyBytes > 0 && h.RekeyBytes < 1<<20:
+		v.errf("%s.rekey_bytes: %d would rekey every few packets; a megabyte is the smallest useful threshold", p, h.RekeyBytes)
+	}
+	if h.AllowShellSyntax && len(h.AllowCommands) > 0 {
+		v.warnf("%s.allow_shell_syntax: allow_commands is a list of regular expressions over the command line, and with shell syntax allowed one of them can match a line the shell will read as two commands (\"^journalctl .*$\" matches \"journalctl -u x; rm -rf /\"). Write the patterns knowing that, or leave the operators refused", p)
 	}
 }
 

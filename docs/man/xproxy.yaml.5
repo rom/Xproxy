@@ -4153,8 +4153,8 @@ An ssh listener takes \fBaddress\fR and \fBssh\fR and no \fBtls\fR: SSH carries 
 .PP
 .TS
 allbox;
-lbw(1.2i) lbw(0.9i) lbw(1.4i) lbx
-lw(1.2i) lw(0.9i) lw(1.4i) lx.
+lbw(1.3i) lbw(0.9i) lbw(1.4i) lbx
+lw(1.3i) lw(0.9i) lw(1.4i) lx.
 T{
 Key
 T}	T{
@@ -4198,7 +4198,61 @@ path
 T}	T{
 
 T}	T{
-OpenSSH public keys,\: one per line,\: that may sign user certificates. A client offering a certificate is accepted when the signature verifies,\: the validity window covers now and the principal list names the login it is connecting as;\: without this key a certificate is refused rather than treated as a plain key
+OpenSSH public keys,\: one per line,\: that may sign user certificates. A client offering a certificate is accepted when the signature verifies,\: the validity window covers now and the principal list names the login it is connecting as;\: without this key a certificate is refused rather than treated as a plain key. What else the certificate says is read too: see below
+T}
+T{
+\fBrevoked_\:keys\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+Public keys,\: in authorized_keys format,\: refused whatever else says otherwise: the key itself,\: a certificate carrying it,\: and every certificate signed by it. It is the one list that overrides the CA,\: which is what makes a certificate revocable before it expires
+T}
+T{
+\fBmax_\:certificate_\:lifetime\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (none)
+T}	T{
+Refuse a user certificate whose validity window is longer than this,\: and any that never expires. The point of certificates over \fBauthorized_\:keys\fR is that they expire;\: a CA issuing for a year has made a credential nobody can take back for a year
+T}
+T{
+\fBmax_\:forwards\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+Port forwards one connection may hold open at once. A session that may forward at all can otherwise open one per descriptor the proxy has
+T}
+T{
+\fBmax_\:sessions_\:per_\:principal\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+Connections one principal (or,\: with no \fBprincipals\fR,\: one login) may hold at once. \fBmax_\:sessions\fR is the whole fleet\(aqs: a bound of a thousand is a thousand for one key as much as for everybody
+T}
+T{
+\fBrekey_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Bytes before the transport agrees a fresh key;\: the crypto library\(aqs own threshold when unset. A bastion session lasts a working day on one key otherwise
+T}
+T{
+\fBallow_\:shell_\:syntax\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Let an \fBexec\fR command carry shell operators. See below: \fBallow_\:commands\fR is a list of patterns,\: and a pattern is a weak thing to hold a shell to
 T}
 T{
 \fBusers_\:file\fR
@@ -4543,6 +4597,39 @@ A denied principal never reaches the target: the refusal is at authentication, b
 A principal\(aqs \fBrecording\fR replaces the listener\(aqs, which is how one entry is recorded and another is not; \fBrecording: {enabled: false}\fR is how a principal is spared where the listener records.
 .PP
 An entry that brings its own \fBsftp\fR section to a listener that has none also inherits the default that section implies: file transfer helpers are refused for that principal, because \fBscp\fR beside a careful \fBsftp\fR policy is the policy with a door next to it.
+.PP
+##### What the certificate says, beyond the signature
+.PP
+A user certificate is not only a signature over a key and a list of principals. It carries the CA\(aqs own restrictions, and a gateway that checks the signature and ignores the rest is a gateway where those restrictions do not exist. All of these are enforced:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fB\fBsource\-address\fR\fR, the critical option naming the networks the certificate may be used from. It is enforced here because it is the one option whose check needs the client\(aqs address, which is why the Go library deliberately leaves it to the caller. A list this gateway cannot parse refuses the certificate rather than being treated as absent.
+.PP
+.ti -3n
+\(bu
+\fB\fBforce\-command\fR\fR, the critical option fixing what the session runs. The client\(aqs command is \fIreplaced\fR by it, as OpenSSH does \[u2014] a certificate issued to run one thing is issued for a reason \[u2014] and a \fBshell\fR request becomes that command too. Both are written to the security log as \fBssh_force_command\fR, with what was asked and what ran.
+.PP
+.ti -3n
+\(bu
+\fBThe extensions are permissions, and their absence is a denial.\fR \fBpermit\-pty\fR, \fBpermit\-port\-forwarding\fR, \fBpermit\-agent\-forwarding\fR, \fBpermit\-X11\-forwarding\fR. A certificate made with \fBssh\-keygen \-O clear \-O permit\-pty\fR grants a terminal and nothing else, whatever this listener\(aqs \fBallow_channels\fR and \fBallow_requests\fR would otherwise allow. A certificate issued the ordinary way carries all five, so nothing changes for one.
+.PP
+.ti -3n
+\(bu
+\fBAny other critical option refuses the certificate.\fR A critical option is critical: the CA meant it to be honoured or the credential refused, so an option this gateway does not implement must not be quietly ignored.
+.RE
+.PP
+.PP
+Both policies apply and the narrower wins: the CA says what this credential may do, the listener says what anybody may do here. A session authenticated by a plain key is restricted by the listener alone.
+.PP
+##### \fBallow_commands\fR is patterns, and a shell is not
+.PP
+\fBallow_commands\fR is a list of RE2 patterns over the command line, and a pattern is a weak thing to hold a shell to: \fB^journalctl .*$\fR matches \fBjournalctl \-u x; rm \-rf /\fR exactly as happily as what it was written for. So the line is read the way a shell would split it \fIfirst\fR, and one carrying an operator \[u2014] \fB;\fR \fB&\fR \fB|\fR \fB<\fR \fB>\fR a backquote, a \fB$(\fR, a brace, a glob, a control character, an unbalanced quote \[u2014] is refused with \fBshell_syntax\fR before any pattern is tried.
+.PP
+This is deliberately crude and deliberately broad. A bastion does not need to know what a line would do; it needs to know that the line is a command with arguments, which is the only shape a list of patterns can be written against. \fBallow_shell_syntax: true\fR turns the check off for a listener that genuinely needs shell syntax, and warns, because the patterns then have to be written knowing it.
+.PP
+The strong form of a command policy is \fBforce\-command\fR on the certificate: the CA fixes the command and the client\(aqs own is replaced, so there is no line to pattern\-match at all.
 .SS "server.listeners[].ssh.recording"
 .PP
 The access log says a session happened. It cannot say what was done in it, because what was done is a stream of control sequences inside the channel. This writes that stream to a file per channel, in the asciicast v2 format, so "what did they actually run" is a question with an answer that is watched rather than reconstructed:

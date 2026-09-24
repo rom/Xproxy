@@ -952,6 +952,47 @@ type SSHListener struct {
 	// to it. A certificate that has expired, is not yet valid, or does
 	// not list the name the client is connecting as is refused.
 	TrustedUserCAKeys string `yaml:"trusted_user_ca_keys"`
+	// MaxCertificateLifetime refuses a user certificate whose validity
+	// window is longer than this. Default 0, no bound.
+	//
+	// The point of certificates over authorized_keys is that they
+	// expire; a CA that issues for a year has made a credential nobody
+	// can take back for a year, and a bastion is entitled to say how
+	// soon. A certificate with no expiry at all is refused whenever
+	// this is set.
+	MaxCertificateLifetime Duration `yaml:"max_certificate_lifetime"`
+	// RevokedKeys is a file of public keys, in authorized_keys format,
+	// that are refused whatever else says otherwise: the key itself, a
+	// certificate whose key it is, and a certificate signed by it. It is
+	// the one list that overrides the CA, which is what makes a
+	// certificate revocable before it expires.
+	RevokedKeys string `yaml:"revoked_keys"`
+	// MaxForwards bounds the port forwards one session may hold open at
+	// once. Default 8. A session that may forward at all can otherwise
+	// open one per file descriptor the proxy has.
+	MaxForwards int `yaml:"max_forwards"`
+	// MaxSessionsPerPrincipal bounds the sessions one principal may hold
+	// at once, which max_sessions cannot: a listener bounded at five
+	// hundred is five hundred for one key as much as for the fleet.
+	// Default 0, no bound.
+	MaxSessionsPerPrincipal int `yaml:"max_sessions_per_principal"`
+	// RekeyBytes is how many bytes pass before the transport agrees a
+	// fresh key. Default 0, which leaves the crypto library's own
+	// threshold (1 GiB, or 1 << 32 for a 64 bit block cipher).
+	RekeyBytes int64 `yaml:"rekey_bytes"`
+	// AllowShellSyntax lets an exec command carry shell metacharacters.
+	// Default false.
+	//
+	// allow_commands is a list of regular expressions over the command
+	// line, and a regular expression is a weak thing to hold a shell to:
+	// "^journalctl .*$" matches "journalctl -u x; rm -rf /" exactly as
+	// happily as it matches what it was written for. So the command line
+	// is read as a shell would split it first, and one carrying an
+	// operator -- a semicolon, a pipe, an ampersand, a redirection, a
+	// backquote, a $( -- is refused before any pattern is tried. A
+	// listener that genuinely needs shell syntax sets this and writes
+	// its patterns accordingly.
+	AllowShellSyntax bool `yaml:"allow_shell_syntax"`
 	// Principals give one key or one certificate principal its own
 	// policy. Without them the listener's policy is the same for
 	// everyone who gets past authentication, which is the policy a jump

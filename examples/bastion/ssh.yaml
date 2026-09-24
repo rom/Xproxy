@@ -75,7 +75,36 @@ server:
         # signs a principal into a certificate with a lifetime, and the
         # bastion checks the signature, the window and that the
         # principal list covers the login.
+        #
+        # What else the certificate says is read too. source-address
+        # restricts it to a network, force-command fixes what the
+        # session runs (and the client's own command is replaced by it),
+        # and the extensions are permissions whose absence is a denial:
+        # a certificate issued with "-O clear -O permit-pty" gets a
+        # terminal and no port forward, whatever allow_channels says.
         trusted_user_ca_keys: /etc/xproxy/ssh/user_ca.pub
+
+        # A certificate cannot be un-issued, so the estate needs a way
+        # to take one back before it expires. A key here is refused
+        # whatever the CA says; the CA's own key here takes back
+        # everything it ever signed.
+        revoked_keys: /etc/xproxy/ssh/revoked_keys
+
+        # The point of certificates is that they expire. A CA issuing
+        # for a year has made a credential nobody can take back for a
+        # year, so this listener will not take one.
+        max_certificate_lifetime: 12h
+
+        # max_sessions is the fleet's. This is one person's, so the
+        # delivery robot looping connections cannot take the bastion
+        # from the on-call engineer.
+        max_sessions_per_principal: 8
+        # A session that may forward at all can otherwise open one
+        # forward per descriptor this process has.
+        max_forwards: 8
+        # One key for a whole working day is one key for a whole working
+        # day of recorded traffic.
+        rekey_bytes: 1073741824
 
         # One policy for everyone in authorized_keys means the delivery
         # robot may run what the on-call engineer may run. Each entry
@@ -113,6 +142,13 @@ server:
           # Last, and naming no key: what everyone else gets.
           - name: staff
             policy:
+              # A pattern over a command line is a weak policy: this one
+              # would match "journalctl -u x; rm -rf /" as happily as
+              # what it was written for. The gateway refuses a line
+              # carrying a shell operator before any pattern is tried,
+              # which is what makes the list mean what it looks like it
+              # means. The strong form is force-command on the
+              # certificate, where there is no line to match at all.
               allow_commands: ["^(uptime|df -h|journalctl .*)$"]
 
         # Where a port forward may go. Without this list direct-tcpip
