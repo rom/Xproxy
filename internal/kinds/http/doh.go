@@ -26,7 +26,12 @@ func (s *engine) doh(rw *responseWriter, r *http.Request, st *reqState, cr *comp
 		s.plainStatus(rw, r, status)
 		return
 	}
-	resp := srv.Handle(query, st.clientIP, true)
+	resp, admitted := srv.HandleLimited(query, st.clientIP, true)
+	if !admitted {
+		st.denied = "doh:busy"
+		s.plainStatus(rw, r, http.StatusServiceUnavailable)
+		return
+	}
 	if resp == nil {
 		// Dropped by policy (banned, rate limited, malformed): nothing
 		// to say to the client beyond the status.

@@ -410,6 +410,29 @@ func (s *Server) Handle(query []byte, client netip.Addr, tcp bool) []byte {
 	return s.handle(query, client, tcp, proto)
 }
 
+// HandleLimited answers one query after applying the listener's shared
+// max-in-flight limit. admitted is false when every worker slot is busy.
+// Callers that are not one of the listener's own socket loops must use this
+// entry point so every transport shares the configured bound.
+func (s *Server) HandleLimited(query []byte, client netip.Addr, tcp bool) (resp []byte, admitted bool) {
+	proto := "udp"
+	if tcp {
+		proto = "tcp"
+	}
+	return s.handleLimited(query, client, tcp, proto)
+}
+
+func (s *Server) handleLimited(query []byte, client netip.Addr, tcp bool, proto string) (resp []byte, admitted bool) {
+	select {
+	case s.sem <- struct{}{}:
+	default:
+		s.drop()
+		return nil, false
+	}
+	defer func() { <-s.sem }()
+	return s.handle(query, client, tcp, proto), true
+}
+
 func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string) []byte {
 	start := time.Now()
 	s.Queries.Add(1)

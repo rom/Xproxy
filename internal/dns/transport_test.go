@@ -299,3 +299,20 @@ func TestHandleDirectly(t *testing.T) {
 		}
 	}
 }
+
+// TestHandleLimited shares the listener's admission bound with callers that
+// do not enter through its UDP, TCP, or native DoH serving loops.
+func TestHandleLimited(t *testing.T) {
+	s := New("limited", nil, nil, 1, 1, &Policy{}, Hooks{})
+	s.sem <- struct{}{}
+	if resp, admitted := s.HandleLimited(nil, netip.Addr{}, true); admitted || resp != nil {
+		t.Fatalf("busy listener returned admitted=%t response=%x", admitted, resp)
+	}
+	if got := s.Dropped.Load(); got != 1 {
+		t.Fatalf("busy listener counted %d drops, want 1", got)
+	}
+	<-s.sem
+	if _, admitted := s.HandleLimited(nil, netip.Addr{}, true); !admitted {
+		t.Fatal("free listener did not admit a query")
+	}
+}

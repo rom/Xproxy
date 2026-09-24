@@ -103,15 +103,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
 		client = ap.Addr().Unmap()
 	}
-	select {
-	case s.sem <- struct{}{}:
-	default:
-		s.drop()
+	resp, admitted := s.handleLimited(query, client, true, "doh")
+	if !admitted {
 		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 		return
 	}
-	resp := s.handle(query, client, true, "doh")
-	<-s.sem
 	if resp == nil {
 		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 		return
