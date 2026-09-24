@@ -224,7 +224,13 @@ func setCookie(t *testing.T, v filter.Verdict, name string) *http.Cookie {
 // sets the session, and the next request carries the claims upstream.
 func TestLoginRoundTrip(t *testing.T) {
 	o := newOP(t)
-	f := build(t, o, nil)
+	o.claims.Store(map[string]any{
+		"roles": []any{"staff", "contractors"},
+		"scope": "read write", "department": "engineering",
+	})
+	f := build(t, o, filter.Options{
+		"groups_claim": "roles", "attr_claims": []any{"department"},
+	})
 
 	v := run(f, get("/page?x=1"))
 	if !v.Deny || v.Status != http.StatusFound || v.Detail != "login" {
@@ -269,6 +275,15 @@ func TestLoginRoundTrip(t *testing.T) {
 	sess := setCookie(t, v, "XPOIDC")
 	if !sess.HttpOnly || sess.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("session cookie is not HttpOnly/Lax: %+v", sess)
+	}
+	var session session
+	if err := f.open(sess.Value, "session", &session); err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	attrs := f.attrsOf(&session)
+	if strings.Join(attrs.Groups, ",") != "staff,contractors" ||
+		strings.Join(attrs.Scopes, ",") != "read,write" || attrs.Claims["department"] != "engineering" {
+		t.Fatalf("authorization claims were not retained in the session: %+v", attrs)
 	}
 	if cleared := setCookie(t, v, "XPOIDC_state"); cleared.MaxAge >= 0 {
 		t.Fatal("the state cookie was not cleared")
