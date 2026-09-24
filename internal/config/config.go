@@ -1365,6 +1365,16 @@ type DNSListener struct {
 	// UpstreamCAFile pins the CA of tls:// and https:// upstreams.
 	// Default: system pool.
 	UpstreamCAFile string `yaml:"upstream_ca_file"`
+	// UpstreamResumption keeps TLS session tickets for encrypted
+	// upstreams, so a reconnect resumes instead of running a full
+	// handshake. Default true.
+	//
+	// It is most of the cost of DoT and DoQ on a resolver that
+	// reconnects whenever an idle connection is dropped. Nothing is
+	// replayable: the client sends no early data, and DoQ keeps 0-RTT
+	// off. Turn it off for an upstream whose tickets are broken, or for
+	// a policy that forbids resumption.
+	UpstreamResumption *bool `yaml:"upstream_resumption"`
 	// Timeout bounds one upstream attempt. Default 2s.
 	Timeout Duration `yaml:"timeout"`
 	// AllowClients restricts clients to these CIDRs (others get

@@ -55,9 +55,16 @@ type Resolver struct {
 	dialer  net.Dialer
 	tlsConf *tls.Config
 	client  *http.Client
-	// Failures counts upstream attempts that did not answer.
-	Failures atomic.Uint64
+	// Failures counts upstream attempts that did not answer, and
+	// Resumed the encrypted connections that resumed a session instead
+	// of running a full handshake.
+	Failures, Resumed atomic.Uint64
 }
+
+// upstreamSessions bounds the session tickets held for encrypted
+// upstreams. A resolver has a handful of them, and a ticket is only
+// worth keeping while its upstream is still the one configured.
+const upstreamSessions = 32
 
 // ParseUpstream validates one upstream string: host:port, tls://host:port,
 // quic://host:port or https://host[:port]/path.
@@ -128,12 +135,51 @@ func NewResolverTLS(servers []string, timeout time.Duration, caFile string) (*Re
 		}
 		tc.RootCAs = pool
 	}
+	// One session cache for every encrypted upstream. A reconnect then
+	// resumes instead of running a full handshake, which is most of the
+	// cost of DoT and DoQ on a resolver that reconnects whenever its
+	// idle connection is dropped.
+	//
+	// Go keys the cache by the server name, so two upstreams never see
+	// each other's tickets, and the Go client never sends early data --
+	// so the replay window 0-RTT opens is not opened here. The QUIC
+	// dialler keeps Allow0RTT false for the same reason.
+	tc.ClientSessionCache = tls.NewLRUClientSessionCache(upstreamSessions)
 	r.tlsConf = tc
 	r.client = &http.Client{Timeout: timeout, Transport: &http.Transport{
 		TLSClientConfig: tc, Proxy: nil, ForceAttemptHTTP2: true, MaxIdleConns: 8, MaxIdleConnsPerHost: 4,
 		IdleConnTimeout: 90 * time.Second, ResponseHeaderTimeout: timeout, DisableCompression: true,
 	}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects not followed") }}
 	return r, nil
+}
+
+// SetSessionResumption turns the session cache for encrypted upstreams
+// on or off. Off means every DoT, DoH and DoQ connection runs a full
+// handshake: the reason to want that is an upstream whose tickets are
+// broken, or a policy that forbids resumption, not security here -- the
+// Go client sends no early data, so nothing is replayable.
+func (r *Resolver) SetSessionResumption(on bool) {
+	if r.tlsConf == nil {
+		return
+	}
+	switch {
+	case on && r.tlsConf.ClientSessionCache == nil:
+		r.tlsConf.ClientSessionCache = tls.NewLRUClientSessionCache(upstreamSessions)
+	case !on:
+		r.tlsConf.ClientSessionCache = nil
+	}
+	if r.client != nil {
+		// The HTTP transport holds the same config, and a ticket already
+		// cached would otherwise still be offered.
+		r.client.CloseIdleConnections()
+	}
+}
+
+// SessionResumption reports whether encrypted upstreams keep session
+// tickets. It is what a listener's own test asks, and what the status
+// reports, rather than each of them reaching into the TLS config.
+func (r *Resolver) SessionResumption() bool {
+	return r != nil && r.tlsConf != nil && r.tlsConf.ClientSessionCache != nil
 }
 
 // Servers lists the upstreams as configured.
@@ -340,6 +386,9 @@ func (r *Resolver) exchangeTLS(ctx context.Context, s *upstreamServer, query []b
 			if err := tconn.HandshakeContext(ctx); err != nil {
 				_ = raw.Close()
 				return nil, err
+			}
+			if tconn.ConnectionState().DidResume {
+				r.Resumed.Add(1)
 			}
 			c = tconn
 			attempt++ // a fresh connection is not retried

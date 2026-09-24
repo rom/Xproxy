@@ -2044,6 +2044,25 @@ a second listener.
 do not contain the clients, or the clients reach this resolver through a
 forwarder whose address is what the view sees.
 
+## DNS upstream resumption
+
+**`upstream_resumed` stays at zero with `tls://` or `quic://`
+upstreams.** Either the connection is never dropped (resumption only
+shows when a redial happens) or the upstream issues no session tickets,
+which some resolvers do not. Neither is a fault: a connection that stays
+up costs nothing to resume. `upstream_resumption` in `xproxyctl dns`
+says whether tickets are kept at all — `false` there means
+`upstream_resumption: false` is set on the listener.
+
+**A DoH upstream never reports a resumption.** It happens inside the
+HTTP transport, which does not tell the caller, so nothing is counted for
+`https://` upstreams. The resumption still happens.
+
+**Turning resumption off changes nothing immediately.** The idle
+connections already open keep their sessions until they are dropped; the
+setting applies to the next dial. A reload that changes it closes the
+idle HTTP connections, so a DoH upstream picks it up at once.
+
 ## DNS aggressive NSEC caching
 
 **`queries_nsec` is zero although `aggressive_nsec` is on.** Nothing has

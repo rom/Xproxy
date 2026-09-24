@@ -150,6 +150,9 @@ func dnsPolicy(cfg *config.DNSListener) (*wire.Policy, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.UpstreamResumption != nil {
+		resolver.SetSessionResumption(*cfg.UpstreamResumption)
+	}
 	// cache is optional in the type; parsing fills it in, but a
 	// configuration assembled another way (a translator, a test) may
 	// leave it nil, and a nil dereference here would take the process

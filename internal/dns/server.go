@@ -223,14 +223,19 @@ type Status struct {
 	FormErr      uint64   `json:"formerr"`
 	Upstreams    []string `json:"upstreams"`
 	UpstreamFail uint64   `json:"upstream_failures"`
-	Encrypted    bool     `json:"encrypted"`
-	DoHPath      string   `json:"doh_path,omitempty"`
-	QueriesUDP   uint64   `json:"queries_udp"`
-	QueriesTCP   uint64   `json:"queries_tcp"`
-	QueriesDoT   uint64   `json:"queries_dot"`
-	QueriesDoH   uint64   `json:"queries_doh"`
-	QueriesDoQ   uint64   `json:"queries_doq"`
-	QueriesLocal uint64   `json:"queries_local"`
+	// UpstreamResumed counts encrypted upstream connections that
+	// resumed a TLS session instead of running a full handshake, and
+	// UpstreamResumption reports whether they may.
+	UpstreamResumed    uint64 `json:"upstream_resumed"`
+	UpstreamResumption bool   `json:"upstream_resumption"`
+	Encrypted          bool   `json:"encrypted"`
+	DoHPath            string `json:"doh_path,omitempty"`
+	QueriesUDP         uint64 `json:"queries_udp"`
+	QueriesTCP         uint64 `json:"queries_tcp"`
+	QueriesDoT         uint64 `json:"queries_dot"`
+	QueriesDoH         uint64 `json:"queries_doh"`
+	QueriesDoQ         uint64 `json:"queries_doq"`
+	QueriesLocal       uint64 `json:"queries_local"`
 	// Views are the split-horizon views in order, and QueriesViewed the
 	// queries one of them answered.
 	Views         []string `json:"views,omitempty"`
@@ -350,6 +355,8 @@ func (s *Server) Status() Status {
 		if p.Resolver != nil {
 			st.Upstreams = p.Resolver.Servers()
 			st.UpstreamFail = p.Resolver.Failures.Load()
+			st.UpstreamResumed = p.Resolver.Resumed.Load()
+			st.UpstreamResumption = p.Resolver.SessionResumption()
 		}
 		if t := p.Tunnel; t != nil {
 			ts := t.Snapshot()

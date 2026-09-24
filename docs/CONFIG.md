@@ -591,6 +591,7 @@ browsers should use it) side by side.
 |-----|------|---------|-------------|
 | `upstreams` | list | required | Resolvers tried in turn, rotating the first choice per query: `host:port` (UDP, TCP on truncation), `tls://host:port` (DNS over TLS, connections reused), `quic://host:port` (DNS over QUIC, RFC 9250, connection reused, id 0), `https://host[:port]/path` (DNS over HTTPS, POST `application/dns-message` with id 0) |
 | `upstream_ca_file` | path | system pool | Pins the CA of `tls://` and `https://` upstreams; the host in the upstream string is the name verified |
+| `upstream_resumption` | bool | `true` | Keep TLS session tickets for encrypted upstreams, so a reconnect resumes instead of running a full handshake. That handshake is most of what DoT and DoQ cost a resolver whose idle connection is dropped between queries. Nothing is replayable: the client offers no early data and DoQ keeps 0-RTT off. Turn it off for an upstream whose tickets are broken, or for a policy that forbids resumption. `upstream_resumed` counts the connections that resumed (`xproxy_dns_upstream_resumed_total`); DoH resumption happens inside the HTTP transport and is not counted separately |
 | `timeout` | duration | `2s` | One upstream attempt; at most 30s |
 | `allow_clients` | list of CIDR | `[]` (any) | Other clients get REFUSED |
 | `block` | list | `[]` | `name` blocks the name and its subdomains, `*.suffix` subdomains only, `=name` that name only |

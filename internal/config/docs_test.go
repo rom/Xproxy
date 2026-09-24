@@ -101,8 +101,8 @@ func TestRFCReferenceIsWellFormed(t *testing.T) {
 		t.Skip("docs not available:", err)
 	}
 	text := string(doc)
-	statuses := map[string]int{"Full": 0, "Partial": 0, "Refused": 0}
-	row := regexp.MustCompile(`(?m)^\| ([0-9]{3,5}|[0-9]{3,5} / [0-9]{3,5}|` + "`[^`]+`" + `|[A-Za-z][^|]*) \| ([^|]*) \| (Full|Partial|Refused|See above)[^|]* \|`)
+	statuses := map[string]int{"Full": 0, "Partial": 0, "Refused": 0, "Not applicable": 0}
+	row := regexp.MustCompile(`(?m)^\| ([0-9]{3,5}|[0-9]{3,5} / [0-9]{3,5}|` + "`[^`]+`" + `|[A-Za-z][^|]*) \| ([^|]*) \| (Full|Partial|Refused|Not applicable|See above)[^|]* \|`)
 	rows := row.FindAllStringSubmatch(text, -1)
 	if len(rows) < 80 {
 		t.Fatalf("docs/RFC.md has %d status rows; the document is a table of them", len(rows))
@@ -117,12 +117,15 @@ func TestRFCReferenceIsWellFormed(t *testing.T) {
 			t.Errorf("docs/RFC.md defines the status %q and never uses it", word)
 		}
 	}
-	// The document promises a reason for every refusal, so a "Refused"
-	// row with an empty note is a promise it did not keep.
-	refused := regexp.MustCompile(`(?m)^\|[^|]*\|[^|]*\| Refused \|([^|]*)\|`)
-	for _, m := range refused.FindAllStringSubmatch(text, -1) {
-		if len(strings.TrimSpace(m[1])) < 20 {
-			t.Errorf("a Refused row gives no reason: %q", strings.TrimSpace(m[0]))
+	// The document promises a reason for every refusal and for every
+	// row it calls inapplicable, so one with an empty note is a promise
+	// it did not keep.
+	for _, status := range []string{"Refused", "Not applicable"} {
+		re := regexp.MustCompile(`(?m)^\|[^|]*\|[^|]*\| ` + status + ` \|([^|]*)\|`)
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			if len(strings.TrimSpace(m[1])) < 20 {
+				t.Errorf("a %s row gives no reason: %q", status, strings.TrimSpace(m[0]))
+			}
 		}
 	}
 	// Every heading in the contents list exists as a heading.

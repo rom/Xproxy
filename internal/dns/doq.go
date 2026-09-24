@@ -301,6 +301,9 @@ func (r *Resolver) quicConn(ctx context.Context, s *upstreamServer) (*quic.Conn,
 	if err != nil {
 		return nil, fmt.Errorf("doq dial %s: %w", s.addr, err)
 	}
+	if conn.ConnectionState().TLS.DidResume {
+		r.Resumed.Add(1)
+	}
 	s.mu.Lock()
 	if s.quic != nil {
 		// Another goroutine won the race; keep one connection.

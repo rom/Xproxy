@@ -512,6 +512,35 @@ Open findings of the earlier rounds:
   access log line carries `view`. Twelve deliberate weakenings were each
   caught by the tests.
 
+- **Encrypted DNS upstreams resume their sessions**
+  (`server.listeners[].dns.upstream_resumption`, default on).
+
+  A resolver's DoT and DoQ connections do not last: the upstream's idle
+  timeout is usually shorter than the gap between queries for a quiet
+  name, so the connection is dropped and the next query dials again. Each
+  of those dials was a full handshake -- which on DoQ is most of what the
+  transport costs. The client now keeps session tickets, so a redial
+  resumes. Nothing is replayable by it: the Go client offers no early
+  data, and the DoQ dialler keeps `Allow0RTT` false. Tickets are cached
+  per upstream name, so two upstreams never see each other's.
+
+  `upstream_resumed` counts the connections that resumed and
+  `upstream_resumption` reports whether they may
+  (`xproxy_dns_upstream_resumed_total`); DoH resumption happens inside
+  the HTTP transport, which does not report it. Six deliberate weakenings
+  were each caught, two after the tests were extended -- the DoQ counter
+  and the listener's own switch.
+
+- **RFC 9156 (QNAME minimisation) is documented as not applicable**, with
+  the reason, and RFC.md gains that status word: minimisation is what
+  keeps the root and the TLD from seeing a whole name while a *recursive*
+  resolver walks the delegation chain, and this listener is a validating
+  forwarder -- one upstream is asked the question and does the recursion.
+  There is no chain here to walk. "We did not build it" and "it does not
+  apply" are different promises, and the table now says which one this is;
+  a row with either status and no reason fails the test that reads the
+  document.
+
 - **SSH command policy reads the command instead of matching it**
   (`server.listeners[].ssh.command_rules`, `internal/sshcmd`).
 

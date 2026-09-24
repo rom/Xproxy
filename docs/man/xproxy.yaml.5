@@ -1213,8 +1213,8 @@ With \fBtls\fR (certificates only, no ACME) the listener is encrypted: no plain 
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(1.0i) lbw(0.9i) lbx
-lw(1.0i) lw(1.0i) lw(0.9i) lx.
+lbw(1.1i) lbw(1.0i) lbw(0.9i) lbx
+lw(1.1i) lw(1.0i) lw(0.9i) lx.
 T{
 Key
 T}	T{
@@ -1241,6 +1241,15 @@ T}	T{
 system pool
 T}	T{
 Pins the CA of \fBtls:\:/\:/\fR and \fBhttps:\:/\:/\fR upstreams;\: the host in the upstream string is the name verified
+T}
+T{
+\fBupstream_\:resumption\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Keep TLS session tickets for encrypted upstreams,\: so a reconnect resumes instead of running a full handshake. That handshake is most of what DoT and DoQ cost a resolver whose idle connection is dropped between queries. Nothing is replayable: the client offers no early data and DoQ keeps 0\-RTT off. Turn it off for an upstream whose tickets are broken,\: or for a policy that forbids resumption. \fBupstream_\:resumed\fR counts the connections that resumed (\fBxproxy_\:dns_\:upstream_\:resumed_\:total\fR);\: DoH resumption happens inside the HTTP transport and is not counted separately
 T}
 T{
 \fBtimeout\fR

@@ -218,6 +218,28 @@ func TestDoQUpstream(t *testing.T) {
 	if _, err := r.Exchange(ctx, q2, qEnd2, qu2, false); err != nil {
 		t.Fatalf("second exchange: %v", err)
 	}
+	// And a connection that has gone away is dialled again, resuming the
+	// session rather than running a full handshake: a QUIC handshake is
+	// the expensive half of DoQ, and a resolver loses its connection
+	// whenever the upstream's idle timeout is shorter than the gap
+	// between queries.
+	srv := r.servers[0]
+	srv.mu.Lock()
+	conn := srv.quic
+	srv.mu.Unlock()
+	srv.dropQUIC(conn)
+	_ = conn.CloseWithError(doqNoError, "")
+	q3 := mustQuery(t, 44, "c.example.test", TypeA)
+	qu3, qEnd3, err := ParseQuestion(q3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Exchange(ctx, q3, qEnd3, qu3, false); err != nil {
+		t.Fatalf("exchange after the connection was dropped: %v", err)
+	}
+	if r.Resumed.Load() == 0 {
+		t.Error("the redialled DoQ connection did not resume a session")
+	}
 }
 
 func TestParseQUICUpstream(t *testing.T) {

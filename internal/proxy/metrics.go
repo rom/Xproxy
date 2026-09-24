@@ -288,6 +288,7 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_dns_servfail_total", "DNS queries answered SERVFAIL (no upstream answer).", l, float64(d.ServFail))
 		e.Counter("xproxy_dns_truncated_total", "DNS answers truncated for UDP clients.", l, float64(d.Truncated))
 		e.Counter("xproxy_dns_upstream_failures_total", "DNS upstream attempts without an answer.", l, float64(d.UpstreamFail))
+		e.Counter("xproxy_dns_upstream_resumed_total", "Encrypted DNS upstream connections that resumed a TLS session instead of a full handshake.", l, float64(d.UpstreamResumed))
 		// Per transport, which is how an operator sees an encrypted
 		// rollout happening: the plaintext share is the number that has
 		// to fall.
