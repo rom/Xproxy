@@ -41,6 +41,28 @@ server:
         # for, which is what makes its security events attributable and
         # bannable. respond never refuses a client that has no cookies.
         cookies: respond
+        # Split horizon: the same name, a different answer by who asked.
+        # Order is the policy -- the laboratory is inside 10.0.0.0/8 too,
+        # so it is listed first or it never matches.
+        views:
+          - name: lab
+            clients: [10.9.0.0/16]
+            records:
+              - {name: app.example.com, type: a, address: 10.9.0.20, ttl: 60}
+          - name: estate
+            clients: [10.0.0.0/8, 192.168.0.0/16]
+            records:
+              - {name: app.example.com, type: a, address: 10.0.5.10}
+              - {name: app.example.com, type: aaaa, address: "2001:db8::5"}
+              - {name: app.example.com, type: txt, text: "owner=platform"}
+          # The guest network is held to a stricter list than the staff
+          # network, and sinkholed rather than told NXDOMAIN so that a
+          # captive portal has somewhere to answer.
+          - name: guest
+            clients: [192.168.50.0/24]
+            block: ["*.social.example", "tracker.example"]
+            block_action: sinkhole
+            sinkhole_ipv4: 192.0.2.1
 management:
   socket: /run/xproxy/mgmt.sock
 logging:

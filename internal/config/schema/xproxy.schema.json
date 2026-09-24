@@ -1264,7 +1264,7 @@
           ]
         },
         "records": {
-          "description": "Records are SVCB and HTTPS records this resolver answers itself, most usefully the ECH configuration of a name this proxy terminates.",
+          "description": "Records are records this resolver answers itself: SVCB and HTTPS (most usefully the ECH configuration of a name this proxy terminates), and A, AAAA, TXT and PTR.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/DNSRecord"
@@ -1300,6 +1300,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "views": {
+          "description": "Views answer the same name differently by who asked: split horizon. The first view whose networks contain the client wins; a client in none of them gets this listener's own records and block list.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DNSView"
+          }
         }
       },
       "additionalProperties": false
@@ -1322,7 +1329,11 @@
       "type": "object",
       "properties": {
         "type": {
-          "description": "Type is https (default) or svcb.",
+          "description": "Type is https (default), svcb, a, aaaa, txt or ptr. a and aaaa are what a split-horizon view needs: the same name answered with an internal address inside the estate and left to the upstream everywhere else. A name in this set is answered authoritatively for the types it holds and NODATA for the ones it does not, and is never forwarded -- an upstream answer would contradict the local one.",
+          "type": "string"
+        },
+        "address": {
+          "description": "Address is the address of an a or aaaa record.",
           "type": "string"
         },
         "name": {
@@ -1342,6 +1353,10 @@
         },
         "target": {
           "description": "Target is the endpoint name; \".\" means the owner name itself.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Text is the string of a txt record, or the target name of a ptr record.",
           "type": "string"
         },
         "ttl": {
@@ -1441,6 +1456,51 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DNSView": {
+      "description": "DNSView is a client-scoped answer set on a dns listener: split horizon. One name with two answers is an ordinary requirement -- a private address inside the estate and a public one outside, a laboratory network pointed at the test system, a guest network held to a stricter list. A view decides only what this resolver settles before it asks anything: the records it answers itself and the names it refuses. It has no upstream of its own on purpose: two views with different upstreams would answer the same question differently out of one shared cache, and a cache per view is a second resolver -- which is a second listener, said plainly, rather than hidden inside a view.",
+      "type": "object",
+      "properties": {
+        "block": {
+          "description": "Block, BlockFile and BlockAction replace the listener's block list and what a block answers; empty keeps them.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "block_action": {
+          "type": "string"
+        },
+        "block_file": {
+          "type": "string"
+        },
+        "clients": {
+          "description": "Clients are the networks this view serves. Required: a view that matched everybody would be the listener's own policy with another name.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name identifies the view in the access log (as `view`) and in the status view.",
+          "type": "string"
+        },
+        "records": {
+          "description": "Records replace the listener's own record set while this view is selected; empty keeps it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DNSRecord"
+          }
+        },
+        "sinkhole_ipv4": {
+          "description": "SinkholeIPv4 and SinkholeIPv6 replace the sinkhole addresses of this view's own block_action.",
+          "type": "string"
+        },
+        "sinkhole_ipv6": {
+          "type": "string"
         }
       },
       "additionalProperties": false

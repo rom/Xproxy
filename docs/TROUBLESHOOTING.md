@@ -1983,6 +1983,34 @@ serves; compare it with the `ech` value here. A mismatch means clients
 fall back to the public name on every attempt, which looks healthy and
 encrypts nothing.
 
+## DNS views (split horizon)
+
+**A client gets the wrong view's answer.** The first view whose networks
+contain the client wins, so a narrow network listed after a wide one that
+contains it never matches. Put `10.9.0.0/16` before `10.0.0.0/8`. The
+access log line carries `view`, which says which one answered.
+
+**A client in a view still gets the public answer.** The view has no
+record for that name, so the listener's own set answers and, failing that,
+the upstream does. A view replaces the record set rather than adding to it:
+a name that both sets should answer has to be in both.
+
+**One client's answer reached another.** It cannot come from the cache: a
+local answer is never cached and a block is decided before the cache is
+read. What looks like it usually is not a view at all — check whether the
+name is in the listener's `records` as well, and whether the client's
+address is what you think it is (`client_ip` in the access log is the
+address the query came from, which behind a forwarder is the forwarder).
+
+**A view with an upstream of its own is refused.** It is not a supported
+shape, for the reason in CONFIG.md: two views with different upstreams
+answering out of one cache would answer the same question differently. Use
+a second listener.
+
+**`queries_viewed` is zero.** No query matched a view. Either the networks
+do not contain the clients, or the clients reach this resolver through a
+forwarder whose address is what the view sees.
+
 ## DNS tunnel detection
 
 **Nothing is ever detected.** Check `tracked` in `xproxyctl status`: if

@@ -1394,10 +1394,15 @@ type DNSListener struct {
 	// _dns.resolver.arpa (RFC 9462), so a client handed this address by
 	// DHCP can upgrade itself from plaintext DNS.
 	Discovery []DNSDesignated `yaml:"discovery"`
-	// Records are SVCB and HTTPS records this resolver answers itself,
-	// most usefully the ECH configuration of a name this proxy
-	// terminates.
+	// Records are records this resolver answers itself: SVCB and HTTPS
+	// (most usefully the ECH configuration of a name this proxy
+	// terminates), and A, AAAA, TXT and PTR.
 	Records []DNSRecord `yaml:"records"`
+	// Views answer the same name differently by who asked: split
+	// horizon. The first view whose networks contain the client wins; a
+	// client in none of them gets this listener's own records and block
+	// list.
+	Views []DNSView `yaml:"views"`
 	// TunnelDetection watches for data leaving inside the query names.
 	TunnelDetection *DNSTunnel `yaml:"tunnel_detection"`
 	// AnswerPolicy screens where an upstream answer points, which is
@@ -1577,8 +1582,20 @@ type DNSDesignated struct {
 type DNSRecord struct {
 	// Name the record is published for.
 	Name string `yaml:"name"`
-	// Type is https (default) or svcb.
+	// Type is https (default), svcb, a, aaaa, txt or ptr.
+	//
+	// a and aaaa are what a split-horizon view needs: the same name
+	// answered with an internal address inside the estate and left to
+	// the upstream everywhere else. A name in this set is answered
+	// authoritatively for the types it holds and NODATA for the ones it
+	// does not, and is never forwarded -- an upstream answer would
+	// contradict the local one.
 	Type string `yaml:"type"`
+	// Address is the address of an a or aaaa record.
+	Address string `yaml:"address"`
+	// Text is the string of a txt record, or the target name of a ptr
+	// record.
+	Text string `yaml:"text"`
 	// Priority 0 makes it an alias record, which takes no parameters.
 	Priority int `yaml:"priority"`
 	// Target is the endpoint name; "." means the owner name itself.
@@ -1588,6 +1605,40 @@ type DNSRecord struct {
 	// Params are service parameters in presentation form:
 	// {alpn: "h2,h3", port: "443", ech: "AEr+DQ...", ipv4hint: "..."}.
 	Params map[string]string `yaml:"params"`
+}
+
+// DNSView is a client-scoped answer set on a dns listener: split
+// horizon. One name with two answers is an ordinary requirement -- a
+// private address inside the estate and a public one outside, a
+// laboratory network pointed at the test system, a guest network held to
+// a stricter list.
+//
+// A view decides only what this resolver settles before it asks anything:
+// the records it answers itself and the names it refuses. It has no
+// upstream of its own on purpose: two views with different upstreams
+// would answer the same question differently out of one shared cache,
+// and a cache per view is a second resolver -- which is a second
+// listener, said plainly, rather than hidden inside a view.
+type DNSView struct {
+	// Name identifies the view in the access log (as `view`) and in the
+	// status view.
+	Name string `yaml:"name"`
+	// Clients are the networks this view serves. Required: a view that
+	// matched everybody would be the listener's own policy with another
+	// name.
+	Clients []string `yaml:"clients"`
+	// Records replace the listener's own record set while this view is
+	// selected; empty keeps it.
+	Records []DNSRecord `yaml:"records"`
+	// Block, BlockFile and BlockAction replace the listener's block
+	// list and what a block answers; empty keeps them.
+	Block       []string `yaml:"block"`
+	BlockFile   string   `yaml:"block_file"`
+	BlockAction string   `yaml:"block_action"`
+	// SinkholeIPv4 and SinkholeIPv6 replace the sinkhole addresses of
+	// this view's own block_action.
+	SinkholeIPv4 string `yaml:"sinkhole_ipv4"`
+	SinkholeIPv6 string `yaml:"sinkhole_ipv6"`
 }
 
 // DNSSEC configures validation on a dns listener: answers are fetched

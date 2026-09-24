@@ -997,25 +997,88 @@ really serves.
 
 #### server.listeners[].dns.records
 
-SVCB and HTTPS records (RFC 9460) this resolver answers itself, without
-asking an upstream. The reason this exists is ECH: a client cannot
-encrypt its ClientHello until it has read the `ech` parameter from an
-HTTPS record, so an estate running its own resolver publishes it here.
+Records this resolver answers itself, without asking an upstream. Two
+things need them: ECH — a client cannot encrypt its ClientHello until it
+has read the `ech` parameter from an HTTPS record, so an estate running
+its own resolver publishes it here — and split horizon, where a name
+resolves to an internal address for the clients a view covers.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required | The name the record is published for |
-| `type` | `https`, `svcb` | `https` | Record type |
-| `priority` | int | `0` | 0 is an alias record (no parameters); 1 and up are service records, lowest first |
-| `target` | name | `.` | The endpoint name; `.` means the owner name itself |
+| `type` | `https`, `svcb`, `a`, `aaaa`, `txt`, `ptr` | `https` | Record type |
+| `address` | IP | required for `a`, `aaaa` | The address. The family must match the type: an `a` record holding an IPv6 address is one no client can read, so it is a load error |
+| `text` | string | required for `txt`, `ptr` | The string of a `txt` record (1 to 255 bytes, one character string), or the name a `ptr` record points to |
+| `priority` | int | `0` | `svcb`/`https` only: 0 is an alias record (no parameters); 1 and up are service records, lowest first |
+| `target` | name | `.` | `svcb`/`https` only: the endpoint name; `.` means the owner name itself |
 | `ttl` | int | `300` | Seconds |
-| `params` | mapping | `{}` | Service parameters in presentation form: `alpn: "h3,h2"`, `port: "443"`, `ech: "AEr+DQ..."` (the value `xproxyctl ech keygen` prints), `ipv4hint`, `ipv6hint`, `dohpath`, `mandatory`, `no-default-alpn`, or `keyNNNNN` for one this build does not name |
+| `params` | mapping | `{}` | `svcb`/`https` only: service parameters in presentation form: `alpn: "h3,h2"`, `port: "443"`, `ech: "AEr+DQ..."` (the value `xproxyctl ech keygen` prints), `ipv4hint`, `ipv6hint`, `dohpath`, `mandatory`, `no-default-alpn`, or `keyNNNNN` for one this build does not name |
+
+`target`, `params` and `priority` belong to `svcb` and `https` records and
+`address`/`text` to the others; a record mixing them is a load error rather
+than a record that loads ignoring half of itself.
 
 A name listed here is **owned**: it is answered from this set and never
 forwarded, and a type it does not have gets NOERROR with no answers
 rather than an upstream lookup, because a forwarded answer would
 contradict the local one. Answers carry the AA bit. `queries_local`
 counts them and `xproxyctl dns` lists the names.
+
+#### server.listeners[].dns.views
+
+Split horizon: the same name answered differently by who asked.
+
+One name with two answers is an ordinary requirement rather than a trick.
+`app.example.com` is a private address from inside the estate and a public
+one from outside; a laboratory network resolves a name to the test system
+while everybody else reaches production; a guest network is held to a
+stricter block list than the staff network. Without views the answer is two
+resolvers on two addresses and a routing decision somewhere else.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required | Identifies the view in the access log (as `view`) and in `xproxyctl dns` |
+| `clients` | list of CIDR | required | The networks this view serves. **The first view whose networks contain the client wins**, so the order of the list is the policy. A view with no networks is refused: one that matched everybody would be the listener's own policy under another name |
+| `records` | list | the listener's | Replaces the listener's record set while this view is selected (same shape as `dns.records`) |
+| `block`, `block_file` | list, path | the listener's | Replaces the listener's block list |
+| `block_action` | `nxdomain`, `refuse`, `sinkhole` | the listener's | What a block answers in this view |
+| `sinkhole_ipv4`, `sinkhole_ipv6` | IP | the listener's | The addresses of this view's own `block_action` |
+
+A view must change something — records, a block list or a block action —
+or it is a section an operator wrote expecting something for it, and that
+is a load error.
+
+**A view has no upstream of its own, on purpose.** Two views with
+different upstreams would answer the same question differently out of one
+shared cache, and a cache per view is a second resolver with a second
+memory — which is a second listener, said plainly in the configuration,
+rather than hidden inside a view. So a view decides only what this
+resolver settles before it asks anything: the records it answers itself
+and the names it refuses. That is also why the cache cannot leak one
+view's answer to another client — a local answer is never cached, and a
+block is decided before the cache is read.
+
+```yaml
+views:
+  # Order matters: the laboratory is inside 10.0.0.0/8 too.
+  - name: lab
+    clients: [10.9.0.0/16]
+    records:
+      - {name: app.example.com, type: a, address: 10.9.0.20}
+  - name: estate
+    clients: [10.0.0.0/8, 192.168.0.0/16]
+    records:
+      - {name: app.example.com, type: a, address: 10.0.5.10}
+      - {name: app.example.com, type: aaaa, address: "2001:db8::5"}
+  - name: guest
+    clients: [192.168.50.0/24]
+    block_file: /etc/xproxy/guest-blocklist.txt
+    block_action: sinkhole
+    sinkhole_ipv4: 192.0.2.1
+```
+
+`queries_viewed` counts the queries a view answered, and the access log
+line carries `view` for them (and nothing for a client in no view).
 
 #### server.listeners[].dns.dnssec
 

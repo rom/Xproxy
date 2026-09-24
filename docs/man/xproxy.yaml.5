@@ -1902,7 +1902,7 @@ T}
 Entries are advertised in the order listed: the first gets priority 1, which is what a client prefers. The verification is the point \[u2014] a record that names a certificate this endpoint cannot present makes clients fall back to plaintext, so the name has to be one the listener really serves.
 .SS "server.listeners[].dns.records"
 .PP
-SVCB and HTTPS records (RFC 9460) this resolver answers itself, without asking an upstream. The reason this exists is ECH: a client cannot encrypt its ClientHello until it has read the \fBech\fR parameter from an HTTPS record, so an estate running its own resolver publishes it here.
+Records this resolver answers itself, without asking an upstream. Two things need them: ECH \[u2014] a client cannot encrypt its ClientHello until it has read the \fBech\fR parameter from an HTTPS record, so an estate running its own resolver publishes it here \[u2014] and split horizon, where a name resolves to an internal address for the clients a view covers.
 .PP
 .TS
 allbox;
@@ -1929,11 +1929,29 @@ T}
 T{
 \fBtype\fR
 T}	T{
-\fBhttps\fR,\: \fBsvcb\fR
+\fBhttps\fR,\: \fBsvcb\fR,\: \fBa\fR,\: \fBaaaa\fR,\: \fBtxt\fR,\: \fBptr\fR
 T}	T{
 \fBhttps\fR
 T}	T{
 Record type
+T}
+T{
+\fBaddress\fR
+T}	T{
+IP
+T}	T{
+required for \fBa\fR,\: \fBaaaa\fR
+T}	T{
+The address. The family must match the type: an \fBa\fR record holding an IPv6 address is one no client can read,\: so it is a load error
+T}
+T{
+\fBtext\fR
+T}	T{
+string
+T}	T{
+required for \fBtxt\fR,\: \fBptr\fR
+T}	T{
+The string of a \fBtxt\fR record (1 to 255 bytes,\: one character string),\: or the name a \fBptr\fR record points to
 T}
 T{
 \fBpriority\fR
@@ -1942,7 +1960,7 @@ int
 T}	T{
 \fB0\fR
 T}	T{
-0 is an alias record (no parameters);\: 1 and up are service records,\: lowest first
+\fBsvcb\fR/\:\fBhttps\fR only: 0 is an alias record (no parameters);\: 1 and up are service records,\: lowest first
 T}
 T{
 \fBtarget\fR
@@ -1951,7 +1969,7 @@ name
 T}	T{
 \fB.\fR
 T}	T{
-The endpoint name;\: \fB.\fR means the owner name itself
+\fBsvcb\fR/\:\fBhttps\fR only: the endpoint name;\: \fB.\fR means the owner name itself
 T}
 T{
 \fBttl\fR
@@ -1969,11 +1987,116 @@ mapping
 T}	T{
 \fB{}\fR
 T}	T{
-Service parameters in presentation form: \fBalpn:\: "h3,\:h2"\fR,\: \fBport:\: "443"\fR,\: \fBech:\: "AEr+DQ.\:.\:.\:"\fR (the value \fBxproxyctl ech keygen\fR prints),\: \fBipv4hint\fR,\: \fBipv6hint\fR,\: \fBdohpath\fR,\: \fBmandatory\fR,\: \fBno\-\:default\-\:alpn\fR,\: or \fBkeyNNNNN\fR for one this build does not name
+\fBsvcb\fR/\:\fBhttps\fR only: service parameters in presentation form: \fBalpn:\: "h3,\:h2"\fR,\: \fBport:\: "443"\fR,\: \fBech:\: "AEr+DQ.\:.\:.\:"\fR (the value \fBxproxyctl ech keygen\fR prints),\: \fBipv4hint\fR,\: \fBipv6hint\fR,\: \fBdohpath\fR,\: \fBmandatory\fR,\: \fBno\-\:default\-\:alpn\fR,\: or \fBkeyNNNNN\fR for one this build does not name
 T}
 .TE
 .PP
+\fBtarget\fR, \fBparams\fR and \fBpriority\fR belong to \fBsvcb\fR and \fBhttps\fR records and \fBaddress\fR/\fBtext\fR to the others; a record mixing them is a load error rather than a record that loads ignoring half of itself.
+.PP
 A name listed here is \fBowned\fR: it is answered from this set and never forwarded, and a type it does not have gets NOERROR with no answers rather than an upstream lookup, because a forwarded answer would contradict the local one. Answers carry the AA bit. \fBqueries_local\fR counts them and \fBxproxyctl dns\fR lists the names.
+.SS "server.listeners[].dns.views"
+.PP
+Split horizon: the same name answered differently by who asked.
+.PP
+One name with two answers is an ordinary requirement rather than a trick. \fBapp.example.com\fR is a private address from inside the estate and a public one from outside; a laboratory network resolves a name to the test system while everybody else reaches production; a guest network is held to a stricter block list than the staff network. Without views the answer is two resolvers on two addresses and a routing decision somewhere else.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.0i) lbw(1.1i) lbx
+lw(1.0i) lw(1.0i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+Identifies the view in the access log (as \fBview\fR) and in \fBxproxyctl dns\fR
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+required
+T}	T{
+The networks this view serves. \fBThe first view whose networks contain the client wins\fR,\: so the order of the list is the policy. A view with no networks is refused: one that matched everybody would be the listener\(aqs own policy under another name
+T}
+T{
+\fBrecords\fR
+T}	T{
+list
+T}	T{
+the listener\(aqs
+T}	T{
+Replaces the listener\(aqs record set while this view is selected (same shape as \fBdns.\:records\fR)
+T}
+T{
+\fBblock\fR,\: \fBblock_\:file\fR
+T}	T{
+list,\: path
+T}	T{
+the listener\(aqs
+T}	T{
+Replaces the listener\(aqs block list
+T}
+T{
+\fBblock_\:action\fR
+T}	T{
+\fBnxdomain\fR,\: \fBrefuse\fR,\: \fBsinkhole\fR
+T}	T{
+the listener\(aqs
+T}	T{
+What a block answers in this view
+T}
+T{
+\fBsinkhole_\:ipv4\fR,\: \fBsinkhole_\:ipv6\fR
+T}	T{
+IP
+T}	T{
+the listener\(aqs
+T}	T{
+The addresses of this view\(aqs own \fBblock_\:action\fR
+T}
+.TE
+.PP
+A view must change something \[u2014] records, a block list or a block action \[u2014] or it is a section an operator wrote expecting something for it, and that is a load error.
+.PP
+\fBA view has no upstream of its own, on purpose.\fR Two views with different upstreams would answer the same question differently out of one shared cache, and a cache per view is a second resolver with a second memory \[u2014] which is a second listener, said plainly in the configuration, rather than hidden inside a view. So a view decides only what this resolver settles before it asks anything: the records it answers itself and the names it refuses. That is also why the cache cannot leak one view\(aqs answer to another client \[u2014] a local answer is never cached, and a block is decided before the cache is read.
+.PP
+.RS 4
+.nf
+.ft CR
+views:
+  # Order matters: the laboratory is inside 10.0.0.0/8 too.
+  \- name: lab
+    clients: [10.9.0.0/16]
+    records:
+      \- {name: app.example.com, type: a, address: 10.9.0.20}
+  \- name: estate
+    clients: [10.0.0.0/8, 192.168.0.0/16]
+    records:
+      \- {name: app.example.com, type: a, address: 10.0.5.10}
+      \- {name: app.example.com, type: aaaa, address: "2001:db8::5"}
+  \- name: guest
+    clients: [192.168.50.0/24]
+    block_file: /etc/xproxy/guest\-blocklist.txt
+    block_action: sinkhole
+    sinkhole_ipv4: 192.0.2.1
+.ft
+.fi
+.RE
+.PP
+\fBqueries_viewed\fR counts the queries a view answered, and the access log line carries \fBview\fR for them (and nothing for a client in no view).
 .SS "server.listeners[].dns.dnssec"
 .PP
 With the section present the listener is a validating resolver in front of its upstreams: every upstream query carries the DO bit, and each answer is checked before it reaches the client or the cache. Positive answers need a verified RRSIG on every RRset, chained through DNSKEY and DS records up to a trust anchor; negative answers need a verified NSEC or NSEC3 proof (NXDOMAIN, NODATA, wildcard, opt\-out); an insecure delegation proven by the parent makes answers below it insecure. The outcome shapes the answer: secure answers carry AD when the client set AD or DO, bogus answers become SERVFAIL (a \fBdns_bogus\fR security event) unless the client set CD, insecure and indeterminate answers pass without AD. Clients without DO never receive RRSIG, NSEC or NSEC3 records. Algorithms 5, 7, 8, 10, 13, 14 and 15 and DS digests 1, 2 and 4 are supported; a zone signed only with others counts as insecure (RFC 4035). DNSKEY and DS lookups go to the same upstreams and are cached per zone until the shorter of their TTL and signature validity, bounded to 10000 zones. \fBxproxyctl dns\fR shows secure, insecure, bogus and indeterminate counts, the key cache size and lookups.

@@ -4519,29 +4519,62 @@ func (v *validator) dnsDiscovery(p string, d *DNSListener) {
 	}
 }
 
-// dnsRecords checks the locally served SVCB and HTTPS records.
+// dnsRecords checks the records this resolver answers itself.
 func (v *validator) dnsRecords(p string, d *DNSListener) {
-	for i := range d.Records {
-		r := &d.Records[i]
+	v.dnsRecordSet(p, d.Records)
+	v.dnsViews(p, d)
+}
+
+func (v *validator) dnsRecordSet(p string, recs []DNSRecord) {
+	for i := range recs {
+		r := &recs[i]
 		rp := fmt.Sprintf("%s.records[%d]", p, i)
 		if r.Name == "" || !hostPatternOK(strings.ToLower(strings.TrimSuffix(r.Name, "."))) {
 			v.errf("%s.name: %q is not a name", rp, r.Name)
+		}
+		if r.TTL < 0 || r.TTL > 604800 {
+			v.errf("%s.ttl: must be between 0 and 604800", rp)
 		}
 		switch r.Type {
 		case "", "https":
 			r.Type = "https"
 		case "svcb":
+		case "a", "aaaa":
+			// The address family has to match the type, or the record is
+			// one no client can read.
+			switch addr, err := netip.ParseAddr(r.Address); {
+			case err != nil:
+				v.errf("%s.address: %q is not an address", rp, r.Address)
+			case r.Type == "a" && !addr.Unmap().Is4():
+				v.errf("%s.address: %q is not an IPv4 address, which an a record needs", rp, r.Address)
+			case r.Type == "aaaa" && addr.Unmap().Is4():
+				v.errf("%s.address: %q is not an IPv6 address, which an aaaa record needs", rp, r.Address)
+			}
+			v.dnsRecordNoSVCB(rp, r)
+			continue
+		case "txt":
+			if r.Text == "" || len(r.Text) > 255 {
+				v.errf("%s.text: a txt record needs a string of 1 to 255 bytes", rp)
+			}
+			v.dnsRecordNoSVCB(rp, r)
+			continue
+		case "ptr":
+			if r.Text == "" || !hostPatternOK(strings.ToLower(strings.TrimSuffix(r.Text, "."))) {
+				v.errf("%s.text: a ptr record needs the name it points to", rp)
+			}
+			v.dnsRecordNoSVCB(rp, r)
+			continue
 		default:
-			v.errf("%s.type: must be https or svcb", rp)
+			v.errf("%s.type: must be https, svcb, a, aaaa, txt or ptr", rp)
+		}
+		if r.Address != "" || r.Text != "" {
+			v.errf("%s: address and text belong to a, aaaa, txt and ptr records", rp)
 		}
 		if r.Priority < 0 || r.Priority > 65535 {
 			v.errf("%s.priority: must be between 0 and 65535", rp)
 		}
 		if r.Priority == 0 && len(r.Params) > 0 {
 			v.errf("%s: priority 0 is an alias record and takes no params", rp)
-		}
-		if r.TTL < 0 || r.TTL > 604800 {
-			v.errf("%s.ttl: must be between 0 and 604800", rp)
 		}
 		if r.Target != "" && r.Target != "." && !hostPatternOK(strings.ToLower(strings.TrimSuffix(r.Target, "."))) {
 			v.errf("%s.target: %q is not a name", rp, r.Target)
@@ -4551,6 +4584,61 @@ func (v *validator) dnsRecords(p string, d *DNSListener) {
 				v.errf("%s.params.%s: %v", rp, name, err)
 			}
 		}
+	}
+}
+
+// dnsRecordNoSVCB refuses the SVCB fields on a record type that has none,
+// so a record that reads as if it carried parameters does not load
+// ignoring them.
+func (v *validator) dnsRecordNoSVCB(rp string, r *DNSRecord) {
+	if r.Target != "" || len(r.Params) > 0 || r.Priority != 0 {
+		v.errf("%s: target, params and priority belong to svcb and https records", rp)
+	}
+}
+
+// dnsViews checks the split-horizon views.
+func (v *validator) dnsViews(p string, d *DNSListener) {
+	seen := map[string]bool{}
+	for i := range d.Views {
+		w := &d.Views[i]
+		vp := fmt.Sprintf("%s.views[%d]", p, i)
+		if !nameRE.MatchString(w.Name) {
+			v.errf("%s.name: %q is not a name", vp, w.Name)
+		}
+		if seen[w.Name] {
+			v.errf("%s.name: %q is used twice", vp, w.Name)
+		}
+		seen[w.Name] = true
+		if len(w.Clients) == 0 {
+			v.errf("%s.clients: at least one network is required; a view that matched everybody is this listener's own policy under another name", vp)
+		}
+		for j, c := range w.Clients {
+			if _, err := netip.ParsePrefix(c); err != nil {
+				v.errf("%s.clients[%d]: %q is not a CIDR", vp, j, c)
+			}
+		}
+		switch w.BlockAction {
+		case "", "nxdomain", "refuse", "sinkhole":
+		default:
+			v.errf("%s.block_action: must be nxdomain, refuse or sinkhole", vp)
+		}
+		for _, pair := range [][2]string{{"sinkhole_ipv4", w.SinkholeIPv4}, {"sinkhole_ipv6", w.SinkholeIPv6}} {
+			if pair[1] == "" {
+				continue
+			}
+			if _, err := netip.ParseAddr(pair[1]); err != nil {
+				v.errf("%s.%s: %q is not an address", vp, pair[0], pair[1])
+			}
+		}
+		if w.BlockFile != "" {
+			v.file(vp+".block_file", w.BlockFile)
+		}
+		// A view that changes nothing is a section an operator wrote
+		// expecting something for it.
+		if len(w.Records) == 0 && len(w.Block) == 0 && w.BlockFile == "" && w.BlockAction == "" {
+			v.errf("%s: a view must change something: records, block, block_file or block_action", vp)
+		}
+		v.dnsRecordSet(vp, w.Records)
 	}
 }
 

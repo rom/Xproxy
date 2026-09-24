@@ -442,6 +442,40 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Split horizon: the same name answered by who asked**
+  (`server.listeners[].dns.views`), and the record types it needed
+  (`dns.records` now takes `a`, `aaaa`, `txt` and `ptr`).
+
+  One name with two answers is an ordinary requirement:
+  `app.example.com` is a private address from inside the estate and a
+  public one from outside, a laboratory network resolves a name to the
+  test system, a guest network is held to a stricter list. The resolver
+  could not do any of it, for a simple reason -- its local record set held
+  only SVCB and HTTPS records, so it could not answer an A record at all.
+  It can now, along with AAAA, TXT and PTR, and a record whose address
+  does not match its type (an `a` holding an IPv6 address) is a load error
+  rather than a record silently skipped when a client asks for it.
+
+  A view selects the records this resolver answers itself, the names it
+  refuses, and what a refusal answers. The first view whose networks
+  contain the client wins, so the order of the list is the policy, and a
+  view that matched everybody is refused because that is the listener's
+  own policy under another name.
+
+  **A view has no upstream of its own, deliberately**, and CONFIG.md says
+  why: two views with different upstreams would answer the same question
+  differently out of one shared cache, and a cache per view is a second
+  resolver with a second memory -- which is a second listener, said plainly
+  in the configuration rather than hidden inside a view. It is also what
+  makes the feature safe without touching the cache: a view decides only
+  what happens before the cache is read, a local answer is never cached,
+  and a test asks both clients in both orders to prove neither can see the
+  other's answer.
+
+  `queries_viewed` counts them, `xproxyctl dns` lists the views, and the
+  access log line carries `view`. Twelve deliberate weakenings were each
+  caught by the tests.
+
 - **XML bodies get what JSON already had** (`xml_guard` filter,
   `internal/xmlsafe`).
 

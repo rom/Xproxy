@@ -65,6 +65,10 @@ type Policy struct {
 	Cookies string
 	// CookieLifetime is how long a server cookie stays valid. Default 1h.
 	CookieLifetime time.Duration
+	// Views answer the same name differently by who asked: see views.go.
+	// The first view whose networks contain the client wins; a client in
+	// none of them gets the listener's own records and block list.
+	Views []*View
 }
 
 // staleSeconds is the TTL a stale answer carries, in seconds.
@@ -136,8 +140,10 @@ type Server struct {
 	Queries, Hits, Blocked, Refused, Dropped, ServFail, Truncated, FormErr atomic.Uint64
 	// Per transport counters.
 	UDP, TCP, DoT, DoH, DoQ atomic.Uint64
-	// Local counts answers served from the local record set.
-	Local atomic.Uint64
+	// Local counts answers served from the local record set, and Viewed
+	// the queries a split-horizon view answered rather than the
+	// listener's own policy.
+	Local, Viewed atomic.Uint64
 	// Tunnels counts detections and TunnelBlocked the queries refused
 	// because of one.
 	Tunnels, TunnelBlocked atomic.Uint64
@@ -214,6 +220,10 @@ type Status struct {
 	QueriesDoH   uint64   `json:"queries_doh"`
 	QueriesDoQ   uint64   `json:"queries_doq"`
 	QueriesLocal uint64   `json:"queries_local"`
+	// Views are the split-horizon views in order, and QueriesViewed the
+	// queries one of them answered.
+	Views         []string `json:"views,omitempty"`
+	QueriesViewed uint64   `json:"queries_viewed"`
 	// AnswerDenied and AnswerStripped report the answer policy, and
 	// ECSStripped the client subnet options removed.
 	AnswerDenied   uint64 `json:"answer_denied"`
@@ -292,9 +302,11 @@ func (s *Server) Status() Status {
 		QueriesUDP: s.UDP.Load(), QueriesTCP: s.TCP.Load(), QueriesDoT: s.DoT.Load(), QueriesDoH: s.DoH.Load(), QueriesDoQ: s.DoQ.Load(), QueriesLocal: s.Local.Load(),
 		AnswerDenied: s.AnswerDenied.Load(), AnswerStripped: s.AnswerStripped.Load(), ECSStripped: s.ECSStripped.Load(),
 		Stale: s.Stale.Load(), Prefetched: s.Prefetched.Load(),
-		CookiesIssued: s.CookiesIssued.Load(), CookiesVerified: s.CookiesVerified.Load(), CookiesRefused: s.CookiesRefused.Load()}
+		CookiesIssued: s.CookiesIssued.Load(), CookiesVerified: s.CookiesVerified.Load(), CookiesRefused: s.CookiesRefused.Load(),
+		QueriesViewed: s.Viewed.Load()}
 	if p != nil {
 		st.LocalNames = p.Local.Names()
+		st.Views = p.ViewNames()
 	}
 	if s.Encrypted {
 		st.DoHPath = s.DoHPath
@@ -624,29 +636,37 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		s.refuse("any_over_udp")
 		return s.finish(a, q, "any_truncated", Truncate(Reply(query, qEnd, h, RcodeNoError), qEnd))
 	}
+	// Which answers this client gets: a view's, where one covers it.
+	// Everything a view decides happens here, before anything is asked
+	// upstream, which is what lets the cache stay shared (views.go).
+	ans := p.answersFor(p.viewFor(client))
+	a.view = ans.view
+	if ans.view != "" {
+		s.Viewed.Add(1)
+	}
 	// A name this resolver owns is answered from the local set and
 	// never forwarded: an upstream answer would contradict it, and for
 	// the discovery name there is no upstream that could answer
 	// truthfully at all.
-	if recs, owned := p.Local.Lookup(q); owned {
+	if recs, owned := ans.local.Lookup(q); owned {
 		s.Local.Add(1)
 		return s.finish(a, q, "local",
 			s.fit(a, query, qEnd, h, AnswerLocal(query, qEnd, h, q, recs), len(query)))
 	}
-	if p.Block != nil && p.Block.Match(q.Name) {
+	if ans.block != nil && ans.block.Match(q.Name) {
 		s.Blocked.Add(1)
 		s.refuse("blocked")
 		if s.hooks.Event != nil {
-			s.hooks.Event(client, "dns_blocked", a.verified, "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
+			s.hooks.Event(client, "dns_blocked", a.verified, "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto, "view", ans.view)
 		}
 		var resp []byte
-		switch p.BlockAction {
+		switch ans.action {
 		case "refuse":
 			resp = Reply(query, qEnd, h, RcodeRefused)
 		case "sinkhole":
-			addr := p.Sinkhole4
+			addr := ans.sinkhole4
 			if q.Type == TypeAAAA {
-				addr = p.Sinkhole6
+				addr = ans.sinkhole6
 			}
 			resp = Sinkhole(query, qEnd, h, q, addr, p.SinkholeTTL)
 		default:
@@ -1013,6 +1033,8 @@ type asked struct {
 	verified bool
 	// cookie is the COOKIE option value the answer carries, or nil.
 	cookie []byte
+	// view is the split-horizon view that answered, or "".
+	view string
 }
 
 func (s *Server) finish(a *asked, q Question, source string, resp []byte) []byte {
@@ -1041,8 +1063,12 @@ func (s *Server) finish(a *asked, q Question, source string, resp []byte) []byte
 		}
 	}
 	if p != nil && p.LogQueries && s.hooks.Access != nil {
-		s.hooks.Access("listener", s.Name, "client_ip", client.String(), "proto", proto, "name", q.Name, "type", TypeName(q.Type),
-			"rcode", rcode, "source", source, "bytes", len(resp), "duration_ms", float64(time.Since(start).Microseconds())/1000)
+		attrs := []any{"listener", s.Name, "client_ip", client.String(), "proto", proto, "name", q.Name, "type", TypeName(q.Type),
+			"rcode", rcode, "source", source, "bytes", len(resp), "duration_ms", float64(time.Since(start).Microseconds()) / 1000}
+		if a.view != "" {
+			attrs = append(attrs, "view", a.view)
+		}
+		s.hooks.Access(attrs...)
 	}
 	return resp
 }
