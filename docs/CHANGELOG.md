@@ -442,6 +442,65 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **xproxy-replay: the player the recordings were waiting for**, and the
+  bug it found.
+
+  The VNC and RDP gateways record the protocol stream rather than a
+  video, deliberately: decoding at capture time would mean implementing
+  every encoding a desktop might choose and silently losing the rest. The
+  documentation said a decoder could be written against the file
+  afterwards. Writing it showed that it could not: the events went through
+  `json.Marshal`, which replaces every byte that is not valid UTF-8 with
+  the replacement character, so a graphical recording was lossy from the
+  first pixel and no player could ever have read one.
+
+  So a recorder whose stream is binary now says so in the header
+  (`XPROXY_ENCODING: base64`) and writes the data base64, and every reader
+  here decodes it. The `vnc` recorder also writes the pixel format the
+  desktop announced, since the handshake that carried it happens before
+  the recording starts and a player cannot read the stream without it.
+  `xproxyctl session show` and `play` refuse those files and name the
+  program that reads them, instead of printing base64 at a terminal.
+
+  `xproxy-replay` is that program, and it reads everything the gateways
+  write. A terminal session replays with its timing through the same
+  escape-sequence filter `xproxyctl session play` uses. An RFB recording
+  is decoded -- Raw, CopyRect, RRE, CoRRE, Hextile, TRLE and ZRLE, which
+  is what RFC 6143 specifies, with the desktop-size and cursor
+  pseudo-encodings read to keep the stream in step -- into PNG frames,
+  into one self-contained page that plays them with no network at all, or
+  into the screen as it was at one moment. An RDP recording's framing,
+  channels and marks are read and its graphics are not, which it says.
+
+  Tight and the vendors' own encodings are not decoded, and that is the
+  point of saying so: they are not in RFC 6143, Tight carries JPEG and its
+  own compression streams, and a player that guessed would be inventing a
+  picture inside an investigation. Such a rectangle stops the decoding, is
+  counted, and is named in the output.
+
+  Shipped as a sixth binary, in the base RPM, with `xproxy-replay`(8).
+
+- **Both directions of a graphical session are recordable.** The `vnc`
+  and `rdp` gateways recorded the picture -- the server-to-client stream
+  -- and nothing else, while the ssh and telnet gateways have always been
+  able to keep the other half behind `recording.input`. Now all four
+  behave the same way: with `input: true` a graphical recording carries
+  the viewer's or client's own stream as asciicast `i` events beside the
+  `o` ones, which on RFB is every key, pointer, clipboard and negotiation
+  message and on RDP is also the virtual channel traffic a redirected
+  drive would carry.
+
+  A message or unit the policy refused is written as a **mark** rather
+  than as bytes. That is the useful half of the pair: the refused bytes
+  are not in the file, and the fact that the viewer tried -- and which
+  rule said no -- is. `view_only` dropping a key event and a channel
+  nobody granted carrying a file both read the same way in a replay.
+
+  It stays off by default, for the reason the terminal keystroke
+  recording is off by default: an input stream is a keylogger, and the
+  difference matters to the people recorded and to whoever holds the
+  files.
+
 - **Time: an NTP and NTS security gateway** (`kind: ntp` and
   `kind: ntske`, `internal/ntp`, `internal/kinds/ntp`,
   `internal/kinds/ntske`; RFC 5905, 4330, 7822, 8573, 8915, 9109, and

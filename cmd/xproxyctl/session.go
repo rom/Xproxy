@@ -180,6 +180,14 @@ func replay(name string, raw, errOut io.Writer, mode termsafe.Mode, withInput bo
 		_, _ = fmt.Fprintln(errOut, "error:", err)
 		return 1
 	}
+	// A graphical session's recording is a protocol stream, not text.
+	// Writing it to a terminal would be bytes on somebody's screen and
+	// nothing they could read, so it is refused here and the program that
+	// does decode it is named.
+	if proto := rd.Header.Env["XPROXY_PROTOCOL"]; proto == "rfb" || proto == "rdp" {
+		_, _ = fmt.Fprintf(errOut, "%s holds a %s stream, which a terminal cannot show: use xproxy-replay\n", name, proto)
+		return 1
+	}
 	// The filter writes to the terminal directly rather than through the
 	// tool's own control-character stripper: it is the stronger policy of
 	// the two, and in Safe mode it has to be able to emit the sequences

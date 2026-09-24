@@ -1,0 +1,133 @@
+.\" Generated from Markdown by internal/manpage; do not edit.
+.TH XPROXY\-REPLAY 8 "" "Xproxy" "System administration"
+.nh
+.ad l
+.SH "NAME"
+.PP
+xproxy\-replay \- read and show a recorded session
+.SH "SYNOPSIS"
+.PP
+\fBxproxy\-replay\fR [\fB\-summary\fR] [\fB\-html\fR \fIFILE\fR] [\fB\-png\fR \fIDIR\fR] [\fB\-at\fR \fIDURATION\fR] [\fB\-every\fR \fIN\fR] [\fB\-max\-frames\fR \fIN\fR] [\fB\-speed\fR \fIN\fR] [\fB\-input\fR] [\fB\-plain\fR] \fIFILE\fR
+.SH "DESCRIPTION"
+.PP
+\fBxproxy\-replay\fR reads a session recording written by \fBxgate\fR(8) \[u2014] the SSH, telnet, VNC and RDP gateways \[u2014] or by \fBxrelay\fR(8)\(aqs FTP relay, and shows it.
+.PP
+A recording of a session made of text is replayed to the terminal, with the escape sequences that reach outside the replay filtered out: a recording carries whatever the far end sent, and handing that straight to a reviewer\(aqs terminal is the one way reading a recording can hurt.
+.PP
+A recording of a graphical session is a protocol stream rather than a video, which is the deliberate trade the gateways make: decoding at capture time would mean implementing every encoding a desktop might choose and silently losing the rest. This program is the decoder written against the file afterwards. For RFB (\fB*.rfb.cast\fR) it rebuilds the framebuffer and can write PNG frames or one self\-contained page that plays them. For RDP (\fB*.rdp.cast\fR) it reads the framing, the channels and the marks, and says plainly that the graphics are not decoded rather than drawing something nobody sent.
+.PP
+It opens no sockets, runs nothing, and writes only where it is told.
+.SH "OPTIONS"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbx
+lw(0.9i) lx.
+T{
+Option
+T}	T{
+Description
+T}
+T{
+\fB\-\:summary\fR
+T}	T{
+Print what the stream did \[u2014] every rectangle with its encoding and size,\: the totals,\: and every mark \[u2014] instead of replaying it.
+T}
+T{
+\fB\-\:html\fR \fIFILE\fR
+T}	T{
+Write one self\-contained page that plays the session: the frames,\: the recorded timing,\: and the marks beside them. No network,\: no scripts from anywhere else.
+T}
+T{
+\fB\-\:png\fR \fIDIR\fR
+T}	T{
+Write one PNG per framebuffer update into a directory that must already exist.
+T}
+T{
+\fB\-\:at\fR \fIDURATION\fR
+T}	T{
+With \fB\-\:png\fR,\: write only the screen as it was at that point of the session.
+T}
+T{
+\fB\-\:every\fR \fIN\fR
+T}	T{
+Keep one frame in this many updates.
+T}
+T{
+\fB\-\:max\-\:frames\fR \fIN\fR
+T}	T{
+Stop after this many frames. Default 2000: a session of ten thousand updates is not a page anything opens.
+T}
+T{
+\fB\-\:speed\fR \fIN\fR
+T}	T{
+Multiply the recorded timing when replaying a session of text.
+T}
+T{
+\fB\-\:input\fR
+T}	T{
+Include what the client sent,\: where the recording holds it (\fBrecording.\:input\fR).
+T}
+T{
+\fB\-\:plain\fR
+T}	T{
+Drop every escape sequence rather than keeping the ones that draw.
+T}
+T{
+\fB\-\:version\fR
+T}	T{
+Print the version and exit.
+T}
+.TE
+.SH "ENCODINGS"
+.PP
+Decoded: Raw, CopyRect, RRE, CoRRE, Hextile, TRLE and ZRLE, which is what RFC 6143 specifies, with the desktop\-size and last\-rect pseudo\-encodings and the two cursor ones read to keep the stream in step.
+.PP
+Not decoded: Tight and the vendors\(aq own. They are not in RFC 6143, Tight carries JPEG and its own compression streams, and a player that guessed would be inventing a picture inside an investigation. Such a rectangle stops the decoding, is counted, and is named in the output.
+.SH "EXIT STATUS"
+.PP
+0 on success, 1 on an error, 2 on a usage mistake.
+.SH "EXAMPLES"
+.PP
+Replay a bastion session as it happened:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxy\-replay /var/log/xgate/rec/session\-20260101\-120000\-alice.cast
+.ft
+.fi
+.RE
+.PP
+What a VNC session\(aqs stream did, without drawing it:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxy\-replay \-summary session\-20260101\-120000\-alice.rfb.cast
+.ft
+.fi
+.RE
+.PP
+A page a reviewer can open with no network:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxy\-replay \-html /tmp/session.html session\-20260101\-120000\-alice.rfb.cast
+.ft
+.fi
+.RE
+.PP
+The screen as it was twelve seconds in:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxy\-replay \-at 12s \-png /tmp/frames session\-20260101\-120000\-alice.rfb.cast
+.ft
+.fi
+.RE
+.SH "SEE ALSO"
+.PP
+\fBxproxyctl\fR(8), \fBxgate\fR(8), \fBxrelay\fR(8), \fBxproxy.yaml\fR(5)

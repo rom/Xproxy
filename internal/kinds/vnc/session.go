@@ -2,6 +2,7 @@ package vnc
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -11,6 +12,7 @@ import (
 	cssh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
+	"github.com/rom/xproxy/internal/asciicast"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/rfb"
 	"github.com/rom/xproxy/internal/sessionrec"
@@ -113,6 +115,17 @@ func (se *session) openRecording() {
 			"XPROXY_PROTOCOL": "rfb",
 			"XPROXY_STREAM":   "rfb-server-to-client",
 			"XPROXY_RFB":      se.upVersion.String(),
+			// The pixel format the desktop announced, as hex. A player
+			// cannot read the stream without it -- the recording starts
+			// after the handshake, so the ServerInit that carried it is
+			// not in the file -- and a player that guessed would draw a
+			// picture nobody sent.
+			"XPROXY_PIXEL_FORMAT": hex.EncodeToString(se.si.PixelFormat[:]),
+			"XPROXY_DESKTOP":      textsafe.Clip64(se.desktop),
+			// The stream is bytes, not text, so the events are
+			// base64: JSON cannot hold a byte that is not valid UTF-8,
+			// and a pixel is any byte at all.
+			asciicast.EnvEncoding: asciicast.EncodingBase64,
 		},
 		Tag: who,
 		Ext: ".rfb.cast",

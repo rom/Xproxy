@@ -668,10 +668,14 @@ describes it, validation refuses what cannot work, and
   for a bounded window with `xproxyctl capture start` and redacted so
   the file does not carry the headers that should not be on disk
 - **Session recording and replay** on every gateway that terminates an
-  interactive protocol: asciicast v2 files, one per channel, output by
-  default and keystrokes only where a configuration says so, with
-  every control sequence filtered on the way out so replaying a
-  recording cannot drive the reviewer's terminal
+  interactive protocol: asciicast v2 files, one per channel, the screen
+  by default and the client's own stream only where a configuration says
+  so, with every control sequence filtered on the way out so replaying a
+  recording cannot drive the reviewer's terminal. The graphical ones hold
+  the protocol stream, and `xproxy-replay` decodes it: RFB into frames or
+  one self-contained page, RDP into the timeline of what the session did,
+  and in both cases a plain statement of what it could not decode rather
+  than a picture nobody sent
 - Shell completion for bash, zsh and fish, manual pages and a JSON
   schema of the configuration that gives editors completion and inline
   documentation
@@ -780,7 +784,7 @@ and referenced by routes, in the order the route lists them:
 **From source.** Go 1.25 or newer, no cgo, no C toolchain:
 
 ```sh
-make build      # bin/{xproxy,xgate,xrelay,xproxyctl,xproxy-admin,xproxy-fleet}, static and stripped
+make build      # bin/{xproxy,xgate,xrelay,xproxyctl,xproxy-admin,xproxy-fleet,xproxy-replay}, static and stripped
 make check      # fmt, vet, race tests, lint — what CI runs
 sudo make install                 # PREFIX=/usr/local: binaries, units, man pages,
                                   # completions, the JSON schema, Grafana and Prometheus assets
@@ -930,6 +934,7 @@ script:
 | Identity | `mfa`, `apikey`, `htpasswd` |
 | Records | `tail`, `session` (list, show, play), `capture` (start, stop, status), `reopen-logs` |
 | Views | `tui` — a full screen terminal view; the web GUI is `xproxy-admin`, with viewer and operator roles, validated configuration editing, graphs and live logs |
+| Recordings | `xproxy-replay` reads a session file and shows it: a terminal session replayed with its timing, a VNC one decoded into frames or one self-contained page, an RDP one as the timeline of what it did. It needs no daemon and opens no sockets |
 
 Four JSON log streams (access, error, security, audit) go to files,
 journald or syslog with per-stream redaction; a request identifier ties
