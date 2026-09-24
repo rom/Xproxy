@@ -120,6 +120,7 @@ install -D -m 0755 bin/xproxy        %{buildroot}%{_bindir}/xproxy
 install -D -m 0755 bin/xgate         %{buildroot}%{_bindir}/xgate
 install -D -m 0755 bin/xrelay        %{buildroot}%{_bindir}/xrelay
 install -D -m 0755 bin/xproxyctl     %{buildroot}%{_bindir}/xproxyctl
+install -D -m 0755 bin/xproxy-replay %{buildroot}%{_bindir}/xproxy-replay
 install -D -m 0755 bin/xproxy-admin  %{buildroot}%{_bindir}/xproxy-admin
 install -D -m 0755 bin/xproxy-fleet  %{buildroot}%{_bindir}/xproxy-fleet
 install -d -m 0750 %{buildroot}%{_sharedstatedir}/xproxy-fleet
@@ -161,6 +162,7 @@ install -D -m 0644 docs/man/xproxy.8      %{buildroot}%{_mandir}/man8/xproxy.8
 install -D -m 0644 docs/man/xgate.8      %{buildroot}%{_mandir}/man8/xgate.8
 install -D -m 0644 docs/man/xrelay.8     %{buildroot}%{_mandir}/man8/xrelay.8
 install -D -m 0644 docs/man/xproxyctl.8   %{buildroot}%{_mandir}/man8/xproxyctl.8
+install -D -m 0644 docs/man/xproxy-replay.8 %{buildroot}%{_mandir}/man8/xproxy-replay.8
 install -D -m 0644 docs/man/xproxy-fleet.8 %{buildroot}%{_mandir}/man8/xproxy-fleet.8
 install -D -m 0644 docs/man/xproxy.yaml.5 %{buildroot}%{_mandir}/man5/xproxy.yaml.5
 install -D -m 0644 internal/config/schema/xproxy.schema.json %{buildroot}%{_datadir}/xproxy/xproxy.schema.json
@@ -249,8 +251,10 @@ fi
 %doc %{_docdir}/%{name}
 %{_bindir}/xproxy
 %{_bindir}/xproxyctl
+%{_bindir}/xproxy-replay
 %{_mandir}/man8/xproxy.8*
 %{_mandir}/man8/xproxyctl.8*
+%{_mandir}/man8/xproxy-replay.8*
 %{_mandir}/man5/xproxy.yaml.5*
 %dir %{_datadir}/xproxy
 %{_datadir}/xproxy/xproxy.schema.json

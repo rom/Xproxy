@@ -15,6 +15,7 @@ configuration patterns and reading the logs. Installation is covered in
 | `xrelay` | The relay: `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp` and `ntske` listeners |
 | `xproxyctl` | Control tool talking to a daemon's Unix socket |
 | `xproxy-admin` | Web GUI: a separate process serving a browser interface over the same socket |
+| `xproxy-replay` | Reads a session recording and shows it: a terminal session replayed with its timing, a VNC one decoded into frames or one self-contained page, an RDP one as the timeline of what it did. It opens no sockets and needs no daemon |
 
 ### The three daemons
 
@@ -3352,6 +3353,51 @@ operator cannot trust is not a record.
 
 The same filtering is on everything `xproxyctl` prints, since most of
 what its tables carry came off the network as well.
+
+### Showing a graphical session: xproxy-replay
+
+A VNC or RDP recording is not text and not a video: it is the protocol
+stream the desktop sent, which is the trade the gateways make on purpose
+-- decoding at capture time would mean implementing every encoding a
+desktop might choose and silently losing the rest. `xproxy-replay` is the
+decoder written against the file afterwards, and it also replays the text
+recordings, so one program reads everything the gateways write:
+
+```sh
+xproxy-replay session-20260924T101500-alice.cast              # a terminal session
+xproxy-replay -summary session-20260924T101500-alice.rfb.cast # what the stream did
+xproxy-replay -html /tmp/s.html s.rfb.cast                    # a page that plays it
+xproxy-replay -png /tmp/frames s.rfb.cast                     # one PNG per update
+xproxy-replay -at 12s -png /tmp s.rfb.cast                    # the screen at 12s
+```
+
+The summary is the timeline: every rectangle with its position, size,
+encoding and byte count, the totals per encoding, and every mark the
+gateway left -- a refused key event, a refused device, the point where a
+recording was cut off at `max_file_bytes`. It answers "what happened in
+this session" without rendering anything.
+
+The page is self-contained: the frames are in it as data, the timing is
+the session's, the marks are listed beside it, and it loads nothing from
+anywhere. A reviewer can keep it next to the recording on a machine with
+no network and it still plays.
+
+**What is decoded, and what is not.** Raw, CopyRect, RRE, CoRRE,
+Hextile, TRLE and ZRLE -- what RFC 6143 specifies -- with the
+desktop-size and cursor pseudo-encodings read to keep the stream in step.
+Tight and the vendors' own encodings are not decoded: they are not in
+RFC 6143, Tight carries JPEG and its own compression streams, and a
+player that guessed would be inventing a picture inside an investigation.
+A rectangle in one of those stops the decoding, is counted, and is named
+in the output. RDP's graphics are not decoded at all, by the same
+argument; its framing, channels and marks are, so `-summary` still says
+what the session did.
+
+**The event data is base64** where the stream is binary, and the header
+says so (`XPROXY_ENCODING: base64`). That is why `xproxyctl session show`
+refuses those files and names this program instead: a protocol stream
+written to a terminal is bytes on somebody's screen, and JSON cannot hold
+a byte that is not valid UTF-8 without losing it.
 
 `input: false` is the default and stays that way unless you mean it: a
 terminal's input stream carries what the screen never showed, which

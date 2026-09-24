@@ -46,6 +46,7 @@ build:
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxyctl ./cmd/xproxyctl
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-admin ./cmd/xproxy-admin
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-fleet ./cmd/xproxy-fleet
+	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-replay ./cmd/xproxy-replay
 
 test:
 	$(GO) test -count=1 -tags $(CORAZATAGS) ./...
@@ -147,7 +148,7 @@ build-darwin: export CGO_ENABLED = 0
 build-darwin:
 	@for a in $(DARWIN_ARCHS); do \
 	  mkdir -p $(BIN)/darwin-$$a; \
-	  for c in xproxy xproxyctl xproxy-admin xproxy-fleet; do \
+	  for c in xproxy xproxyctl xproxy-admin xproxy-fleet xproxy-replay; do \
 	    GOOS=darwin GOARCH=$$a $(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/darwin-$$a/$$c ./cmd/$$c || exit 1; \
 	  done; \
 	done
@@ -212,6 +213,7 @@ install: build
 	install -D -m 0755 $(BIN)/xproxyctl $(DESTDIR)$(PREFIX)/bin/xproxyctl
 	install -D -m 0755 $(BIN)/xproxy-admin $(DESTDIR)$(PREFIX)/bin/xproxy-admin
 	install -D -m 0755 $(BIN)/xproxy-fleet $(DESTDIR)$(PREFIX)/bin/xproxy-fleet
+	install -D -m 0755 $(BIN)/xproxy-replay $(DESTDIR)$(PREFIX)/bin/xproxy-replay
 	install -D -m 0644 deploy/systemd/xproxy-fleet.service $(DESTDIR)/etc/systemd/system/xproxy-fleet.service
 	install -D -m 0644 docs/man/xproxy-fleet.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxy-fleet.8
 	install -D -m 0644 deploy/systemd/xproxy-admin.service $(DESTDIR)/etc/systemd/system/xproxy-admin.service
@@ -238,6 +240,7 @@ install: build
 	install -D -m 0644 docs/man/xgate.8 $(DESTDIR)$(PREFIX)/share/man/man8/xgate.8
 	install -D -m 0644 docs/man/xrelay.8 $(DESTDIR)$(PREFIX)/share/man/man8/xrelay.8
 	install -D -m 0644 docs/man/xproxyctl.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxyctl.8
+	install -D -m 0644 docs/man/xproxy-replay.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxy-replay.8
 	install -D -m 0644 docs/man/xproxy.yaml.5 $(DESTDIR)$(PREFIX)/share/man/man5/xproxy.yaml.5
 	install -D -m 0644 internal/config/schema/xproxy.schema.json $(DESTDIR)$(PREFIX)/share/xproxy/xproxy.schema.json
 	install -D -m 0644 deploy/grafana/xproxy-overview.json $(DESTDIR)$(PREFIX)/share/xproxy/grafana/xproxy-overview.json

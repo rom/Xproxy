@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/asciicast"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sessionrec"
@@ -46,6 +47,10 @@ func (se *session) openRecording() {
 			"XPROXY_PROTOCOL": "rdp",
 			"XPROXY_STREAM":   "rdp-server-to-client",
 			"XPROXY_SECURITY": rdp.ProtocolName(se.upProtocol),
+			// The stream is bytes, not text, so the events are
+			// base64: JSON cannot hold a byte that is not valid UTF-8,
+			// and a pixel is any byte at all.
+			asciicast.EnvEncoding: asciicast.EncodingBase64,
 		},
 		Tag: who,
 		Ext: ".rdp.cast",

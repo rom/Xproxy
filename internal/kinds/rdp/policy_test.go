@@ -1,6 +1,9 @@
 package rdp_test
 
 import (
+	"errors"
+	"github.com/rom/xproxy/internal/asciicast"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -326,15 +329,17 @@ func TestTheRecordingHoldsTheStream(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("%d recordings, want 1", len(files))
 	}
-	body, err := os.ReadFile(files[0])
+	head, err := os.ReadFile(files[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(body)
-	for _, want := range []string{"PIXELS-FOR-THE-RECORD", "rdp-server-to-client", "XPROXY_PROTOCOL"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("the recording does not carry %q", want)
+	for _, want := range []string{"rdp-server-to-client", "XPROXY_PROTOCOL", "XPROXY_ENCODING"} {
+		if !strings.Contains(string(head), want) {
+			t.Errorf("the recording's header does not carry %q", want)
 		}
+	}
+	if _, text := readCast(t, files[0]); !strings.Contains(text, "PIXELS-FOR-THE-RECORD") {
+		t.Errorf("the recording does not carry the stream:\n%s", text)
 	}
 }
 
@@ -369,12 +374,13 @@ func TestTheRecordingHoldsBothDirectionsWhenAsked(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("%d recordings, want 1", len(files))
 	}
-	body, err := os.ReadFile(files[0])
-	if err != nil {
-		t.Fatal(err)
+	kinds, text := readCast(t, files[0])
+	for _, want := range []string{"o", "i", "m"} {
+		if !kinds[want] {
+			t.Errorf("the recording holds no %q event: %s", want, text)
+		}
 	}
-	text := string(body)
-	for _, want := range []string{`"o"`, `"i"`, "KEYSTROKES", "refused client unit"} {
+	for _, want := range []string{"KEYSTROKES", "refused client unit"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the recording does not carry %q:\n%s", want, text)
 		}
@@ -382,6 +388,35 @@ func TestTheRecordingHoldsBothDirectionsWhenAsked(t *testing.T) {
 	if strings.Contains(text, "SMUGGLED") {
 		t.Error("a refused unit was recorded as if it had been forwarded")
 	}
+}
+
+// readCast reads a recording the way a player does: the events of a
+// graphical session are base64, because the stream is bytes.
+func readCast(t *testing.T, path string) (map[string]bool, string) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	rd, err := asciicast.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds, text := map[string]bool{}, &strings.Builder{}
+	for {
+		ev, err := rd.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		kinds[ev.Kind] = true
+		text.WriteString(ev.Data)
+		text.WriteString("\n")
+	}
+	return kinds, text.String()
 }
 
 // Settings that would quietly do nothing, or that this gateway cannot

@@ -2404,7 +2404,13 @@ a replay then shows that the viewer tried and the gateway said no, which
 is the part an investigation is looking for.
 
 **It is not a video.** The event data is the protocol stream, so
-replaying it needs a player that speaks RFB rather than a terminal.
+replaying it needs a player that speaks RFB rather than a terminal:
+`xproxy-replay`(8), which is shipped with the product and decodes what
+RFC 6143 specifies. The data is base64 inside the container, because a
+pixel is any byte at all and JSON cannot hold one that is not valid
+UTF-8; the header says so with `XPROXY_ENCODING: base64`, and the pixel
+format the desktop announced is in it too, since the handshake that
+carried it happened before the recording began.
 Recording the stream is what keeps the cost bounded and loses nothing:
 a decoder can be written against this file afterwards, and one that
 decoded at capture time would have to understand every encoding a
@@ -2696,6 +2702,11 @@ as bytes — the refusal is in the file, the refused bytes are not.
 
 **It is not a video.** The event data is the protocol stream, so
 replaying it needs a player that speaks RDP rather than a terminal.
+`xproxy-replay`(8) reads these files: it decodes the framing, the
+channels and the marks and prints the timeline, and it says plainly that
+the graphics are not decoded rather than drawing something nobody sent.
+The data is base64 inside the container (`XPROXY_ENCODING: base64`),
+because a graphics order is any byte at all.
 That is the deliberate choice: decoding at capture time would mean
 implementing every graphics encoding a desktop might choose — and
 silently losing whatever was not implemented — while a decoder written

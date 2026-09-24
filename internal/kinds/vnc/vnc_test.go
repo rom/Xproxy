@@ -6,7 +6,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"github.com/rom/xproxy/internal/asciicast"
 	"io"
 	"net"
 	"os"
@@ -886,15 +888,20 @@ func TestTheRecordingHoldsTheStream(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("%d recordings, want 1", len(files))
 	}
-	body, err := os.ReadFile(files[0])
+	// The header is read as JSON and the events through the reader: the
+	// stream is binary, so the file carries it base64 and grepping the
+	// raw file would be testing the container rather than the recording.
+	head, err := os.ReadFile(files[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(body)
-	for _, want := range []string{"PIXELS-FOR-THE-RECORD", "rfb-server-to-client", "lathe-hmi", "1024"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("the recording does not carry %q:\n%s", want, text)
+	for _, want := range []string{"rfb-server-to-client", "lathe-hmi", "1024", "XPROXY_PIXEL_FORMAT"} {
+		if !strings.Contains(string(head), want) {
+			t.Errorf("the recording's header does not carry %q:\n%s", want, head)
 		}
+	}
+	if _, text := readCast(t, files[0]); !strings.Contains(text, "PIXELS-FOR-THE-RECORD") {
+		t.Errorf("the recording does not carry the stream:\n%s", text)
 	}
 }
 
@@ -924,12 +931,16 @@ func TestTheRecordingHoldsBothDirectionsWhenAsked(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("%d recordings, want 1", len(files))
 	}
-	body, err := os.ReadFile(files[0])
-	if err != nil {
-		t.Fatal(err)
+	// The events are read the way a player reads them, which is also
+	// what proves the stream survived the file: a graphical recording is
+	// bytes, so it is written base64 and a reader decodes it.
+	kinds, text := readCast(t, files[0])
+	for _, want := range []string{"o", "i", "m"} {
+		if !kinds[want] {
+			t.Errorf("the recording holds no %q event: %s", want, text)
+		}
 	}
-	text := string(body)
-	for _, want := range []string{`"o"`, `"i"`, "refused client message key-event: view_only", "PIXELS"} {
+	for _, want := range []string{"refused client message key-event: view_only", "PIXELS"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the recording does not carry %q:\n%s", want, text)
 		}
@@ -948,10 +959,39 @@ func TestTheRecordingHoldsBothDirectionsWhenAsked(t *testing.T) {
 	if len(files2) != 1 {
 		t.Fatalf("%d recordings, want 1", len(files2))
 	}
-	body2, _ := os.ReadFile(files2[0])
-	if strings.Contains(string(body2), `"i"`) {
-		t.Errorf("input was recorded where the policy did not ask for it:\n%s", body2)
+	kinds2, text2 := readCast(t, files2[0])
+	if kinds2["i"] {
+		t.Errorf("input was recorded where the policy did not ask for it:\n%s", text2)
 	}
+}
+
+// readCast reads a recording and returns which event kinds it holds and
+// the data of all of them, decoded.
+func readCast(t *testing.T, path string) (map[string]bool, string) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	rd, err := asciicast.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds, text := map[string]bool{}, &strings.Builder{}
+	for {
+		ev, err := rd.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		kinds[ev.Kind] = true
+		text.WriteString(ev.Data)
+		text.WriteString("\n")
+	}
+	return kinds, text.String()
 }
 
 // A client outside allow_clients never reaches the handshake.

@@ -14,6 +14,7 @@
 package asciicast
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,6 +37,24 @@ type Header struct {
 	Command   string            `json:"command,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
 }
+
+// EnvEncoding is the header field that says how the event data is
+// written, and EncodingBase64 is the one value it can take.
+//
+// A terminal session is text, so its events are written as the JSON
+// strings they are. A protocol stream is not: a pixel, a length or a
+// checksum is any byte at all, and JSON cannot hold a byte that is not
+// valid UTF-8 -- it becomes the replacement character, which is
+// irreversible. A recording of a graphical session written that way is a
+// file nobody can decode afterwards, whatever player they write. So a
+// recorder whose stream is binary says so in the header and writes the
+// data base64, and every reader here decodes it. It is no longer a file
+// an ordinary asciicast player can show, which is true of these
+// recordings anyway: they need a player that speaks the protocol.
+const (
+	EnvEncoding    = "XPROXY_ENCODING"
+	EncodingBase64 = "base64"
+)
 
 // Event kinds. Output is what the session printed, Input what was
 // typed, Resize a new terminal size and Marker a note the recorder
@@ -61,6 +80,10 @@ type Writer struct {
 	// characters in the file where the session had one character.
 	carry map[string][]byte
 	err   error
+	// b64 writes the data of o and i events as base64, for a stream of
+	// bytes rather than of text. It comes from the header, so the file
+	// says how to read itself.
+	b64 bool
 }
 
 // NewWriter writes the header and returns a writer for the events.
@@ -83,13 +106,17 @@ func NewWriter(w io.Writer, h Header) (*Writer, error) {
 	if _, err := w.Write(append(line, '\n')); err != nil {
 		return nil, err
 	}
-	return &Writer{w: w, start: time.Now(), carry: map[string][]byte{}}, nil
+	return &Writer{w: w, start: time.Now(), carry: map[string][]byte{},
+		b64: h.Env[EnvEncoding] == EncodingBase64}, nil
 }
 
 // Event records bytes of one kind. The data is the session's, not this
-// package's: it is written as the JSON string it is, and bytes that are
-// not valid UTF-8 become the replacement character, which is the most
-// a text format can say about them.
+// package's: in a text recording it is written as the JSON string it is,
+// and bytes that are not valid UTF-8 become the replacement character,
+// which is the most a text format can say about them. In a binary
+// recording -- one whose header names the base64 encoding -- it is
+// written as base64 and nothing is lost, because a protocol stream has
+// no character boundaries to preserve and no reader that wants them.
 func (w *Writer) Event(kind string, data []byte) error {
 	if w == nil || len(data) == 0 {
 		return nil
@@ -98,6 +125,9 @@ func (w *Writer) Event(kind string, data []byte) error {
 	defer w.mu.Unlock()
 	if w.err != nil {
 		return w.err
+	}
+	if w.b64 {
+		return w.write(kind, base64.StdEncoding.EncodeToString(data))
 	}
 	if c := w.carry[kind]; len(c) > 0 {
 		data = append(append([]byte(nil), c...), data...)

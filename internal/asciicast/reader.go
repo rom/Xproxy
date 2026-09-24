@@ -2,6 +2,7 @@ package asciicast
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,6 +39,9 @@ type Reader struct {
 	Header Header
 	sc     *bufio.Scanner
 	n      int
+	// b64 decodes the data of o and i events, for a recording of a
+	// protocol stream. The header says which kind of file this is.
+	b64 bool
 }
 
 // NewReader reads the header. A file whose first line is not one is
@@ -58,7 +62,7 @@ func NewReader(r io.Reader) (*Reader, error) {
 	if h.Version != Version {
 		return nil, fmt.Errorf("asciicast: version %d, expected %d", h.Version, Version)
 	}
-	return &Reader{Header: h, sc: sc}, nil
+	return &Reader{Header: h, sc: sc, b64: h.Env[EnvEncoding] == EncodingBase64}, nil
 }
 
 // Next returns the next event, or io.EOF at the end.
@@ -97,6 +101,16 @@ func (r *Reader) Next() (Event, error) {
 		data, ok := raw[2].(string)
 		if !ok {
 			return Event{}, fmt.Errorf("asciicast: line %d: the data is not a string", r.n+1)
+		}
+		if r.b64 && (kind == Output || kind == Input) {
+			// A binary recording's data is base64. A line that is not
+			// decodable is a damaged file, and saying so is better than
+			// handing a caller bytes it never held.
+			b, err := base64.StdEncoding.DecodeString(data)
+			if err != nil {
+				return Event{}, fmt.Errorf("asciicast: line %d: the data is not base64: %w", r.n+1, err)
+			}
+			data = string(b)
 		}
 		return Event{At: time.Duration(at * float64(time.Second)), Kind: kind, Data: data}, nil
 	}
