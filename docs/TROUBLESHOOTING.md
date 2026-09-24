@@ -1793,6 +1793,144 @@ using this listener at all, which is a network policy question rather
 than a detector one: block outbound 853 and the known DoH endpoints, or
 serve the discovery records so clients upgrade to this resolver instead.
 
+## DNS serve-stale and prefetch
+
+**`xproxyctl dns` shows `stale` climbing.** The listener is answering
+from expired entries because the upstream resolvers are not answering.
+That is `serve_stale` doing its job and it is also an outage: the
+answers are out of date and getting older. Check `upstream_failures` in
+the same view and the upstreams themselves. `source=stale` in the access
+log names the queries affected.
+
+**A name that changed address keeps resolving to the old one for up to
+30 seconds after the upstream came back.** That is `stale_ttl`: a stale
+answer is served with a short TTL so the client comes back soon, and
+until it does the client's own cache holds what it was given. Nothing is
+wrong; lower `stale_ttl` if 30 seconds is too long for a failover, at
+the cost of more queries during an outage.
+
+**A stale answer was not served even though the entry should still be in
+the window.** Three reasons, in order of likelihood. The entry was
+evicted: the cache is an LRU and a stale entry occupies a slot like any
+other, so a busy resolver with a small `max_entries` loses the least
+recently used ones first. The window had passed — `serve_stale` is
+measured from expiry, not from the last query. Or the upstream *did*
+answer, with SERVFAIL, on a listener with `dnssec` on: that is not
+treated as an outage, because with validation on a SERVFAIL is the code
+for an answer that was *rejected*, and standing in for it with an
+expired answer of our own would hand the client exactly what validation
+refused.
+
+**Prefetch does not seem to do anything.** It only fires on a query for
+an entry that is already in the cache and already past
+`prefetch_threshold` of its TTL — a name queried once per hour with a
+five minute TTL is never in that state and is not what the setting is
+for. `xproxy_dns_prefetch_total` counts the refreshes started; if it is
+zero on a busy resolver, raise `prefetch_threshold` (0.1 is the default,
+0.5 the maximum) or check that the names in question are actually being
+re-queried before they expire.
+
+**Upstream traffic went up after turning prefetch on.** Some increase is
+the point: a refreshed entry is an upstream query that used to happen on
+a client's clock instead. A large increase means `prefetch_threshold` is
+too high for the TTLs in play — refreshing an entry with half its life
+left does twice the upstream traffic for the same coverage.
+
+## DNS cookies
+
+**A client stopped resolving after `cookies: require` went on.** That is
+the setting doing what it says. Two shapes, and the refusal reason tells
+them apart. `cookie_missing` (REFUSED) is a client that sends no COOKIE
+option at all — most stub resolvers — and there is nothing to invite it
+back with. `cookie_required` (BADCOOKIE) is a client that sent one and
+should be retrying with what it was handed; a client stuck in a loop of
+those is one that is not storing the server cookie, which is a bug at its
+end. Either way, `require` belongs on a listener whose clients are known;
+`respond` gets the verification benefit without refusing anybody.
+
+**Rcode 7 in a capture where BADCOOKIE was expected.** That is
+BADCOOKIE. Rcode 23 does not fit in the four bits the header has, so RFC
+6891 keeps the low four there (7) and the high eight in the OPT record's
+TTL. `dig` and `kdig` reassemble it; a tool that reads only the header
+says YXRRSET. The access log says 23.
+
+**`cookies_verified` stays at zero on a busy listener.** Either the
+clients do not implement cookies, or they are not sending back what they
+were given. Check `cookies_issued` in the same view: issued climbing with
+verified flat is clients that ignore the cookie; both flat means no
+client is asking for one.
+
+**Bans still do not fire for UDP clients.** A security event from a bare
+UDP datagram is attributed to nobody on purpose — counting it towards a
+ban would let anybody have a third party banned by spoofing them — so it
+is aggregated into one `dns security events from unverified sources are
+aggregated` warning instead. Cookies are what change that: a UDP query
+carrying one this listener issued has completed a round trip, so its
+events are attributed and drive bans like a TCP client's. If bans matter
+for UDP clients, `cookies: respond` is the prerequisite.
+
+**Every client had to redo the exchange after a restart or a failover.**
+The cookie secret is per listener and per process and is never written
+anywhere, so a restart invalidates the cookies it issued and two nodes
+do not accept each other's. The cost is one BADCOOKIE round trip per
+client, once. It is not worth engineering around.
+
+**Answers got bigger, or a name that used to fit in a datagram now
+truncates.** Putting a cookie into a response means rebuilding the
+message, which loses the upstream's name compression. The cookie's own
+space is reserved before the truncation decision, so the datagram is
+never oversize — the answer is a little smaller than it could have been
+instead. On a listener where this matters, `cookies: off`.
+
+## DNS answer policy and the client subnet
+
+**A name that works everywhere else returns NXDOMAIN here.** Look for
+`dns_answer_denied` in the security log: it names the address that
+tripped the screen. If the address is one this network really uses, the
+fix is `answer_policy.allow` (a range) or `answer_policy.allow_names` (a
+name), not turning the screen off. The common honest cases are an
+internal zone served from private space, a name that points at a host on
+the carrier NAT range `100.64.0.0/10`, and a split-horizon name whose
+public half is what this client needed — that last one is what
+`action: strip` is for.
+
+**The screen never fires, on a network where it should.** Two causes.
+The section may deny nothing that the answers actually contain: check
+what the name resolves to with `kdig` against the upstream directly
+rather than through the proxy. Or the answers are coming out of the
+cache from before the policy was added — the screen does run on cache
+hits, and drops the entry when it fires, so this only looks like a miss
+for names whose entries predate the reload *and* are not being queried.
+`xproxyctl dns purge` settles it either way.
+
+**The whole answer went away and the client needed one address of it.**
+That is `nxdomain` or `refuse` on a name with both a public and a
+private address. `action: strip` keeps the public one. The stripped form
+is what the cache stores, so the removed address does not reappear on
+the next query.
+
+**A validating client calls a stripped answer bogus.** It is not bogus,
+it is unsigned: a signature over a record set one member short does not
+verify, so the RRSIGs of a set that lost records are removed with them.
+A client that must validate every answer and a listener that rewrites
+answers are two incompatible requirements; use `nxdomain` there, or
+exempt the name.
+
+**Sinkhole answers are not screened, and 0.0.0.0 is a denied range.**
+Deliberately: `records`, `discovery` and `sinkhole_ipv4` are this
+proxy's own answers, and screening them would have a sinkhole refuse
+itself.
+
+**Geolocated names resolve to the wrong region after an upgrade.**
+`ecs: strip` is the default now: the client's EDNS Client Subnet option
+is not forwarded, because the cache here is keyed by the question alone
+and a per-subnet answer would be served to every client. The upstream
+resolver still adds its own option describing this proxy, so the answers
+are the ones nearest the *proxy*. That is correct for a resolver serving
+one site and wrong for one serving many; `ecs: forward` restores the old
+behaviour and accepts that a client can then choose what the cache
+holds. `xproxy_dns_ecs_stripped_total` counts the queries affected.
+
 ## Forward proxy, layer 4 and QUIC
 
 **`CONNECT` refused with `forward_denied`.** The destination is not in
@@ -3113,6 +3251,7 @@ innocent.
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
 | `udp_denied` | The datagram relay: a client outside `allow_clients`, a datagram over `max_datagram_bytes`, the rate limit, or a session table that is full (`detail` says which). A datagram is dropped rather than answered, because a reply to a forged source is traffic aimed at whoever was named | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
+| `dns_answer_denied` | An upstream answer pointed into a range `answer_policy` denies (rebinding, a metadata endpoint), or had such records stripped | yes |
 | `dns_tunnel` | A client's queries under one domain agreed on enough tunnelling signals, or a query was refused during the cooldown after that | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
 | `yara` | A YARA rule fired on a layer 4 stream with `action: close` | yes |
@@ -3164,7 +3303,7 @@ actually being refused. What each kind can say:
 | `tcp` | `max_connections`, `no_route`, `banned`, and for an intercepting listener `destination_not_allowed` and `no_original_destination`; QUIC flows add `quic_max_flows` |
 | `udp` | `client_not_allowed`, `datagram_too_large`, `rate_limit`, `max_sessions`, `max_sessions_per_ip`, `banned`, `upstream_datagram_too_large` |
 | `forward` | the destination policy (`not_allowed`, `deny`, `private`, `host`, `port`, `resolve`), the request shape (`not_absolute`, `scheme`, `authority`), `auth`, `tunnel_limit`, interception (`sni_mismatch`, `upstream_tls`, `client_tls`), SOCKS UDP (`udp_malformed`, `udp_unsolicited`, `udp_wrong_source`, `udp_peer_table_full`, `udp_disabled`) and MASQUE (`masque_target`, `masque_session_limit`, `masque_context`, `masque_spoofed`, `masque_unsolicited`) |
-| `dns` | `workers_busy` (`max_in_flight`), `rate_limit`, `banned`, `malformed`, `client_not_allowed`, `blocked`, `tunnel`, `any_over_udp`, `formerr`, `opcode` |
+| `dns` | `workers_busy` (`max_in_flight`), `rate_limit`, `banned`, `malformed`, `client_not_allowed`, `blocked`, `tunnel`, `any_over_udp`, `formerr`, `opcode`, `answer_denied`, `answer_stripped`, `cookie_required`, `cookie_missing`, `cookie_malformed` |
 | `ssh` | `client_not_allowed`, `max_sessions`, `max_sessions_per_principal`, `max_forwards`, `auth_failed`, `mfa_failed`, `mfa_not_enrolled`, the channel and request policy (`channel_refused`, `request_refused`, `subsystem_refused`, `env_refused`, `command_refused`, `shell_syntax`, `file_transfer_refused`, `forward_refused`, `remote_forward_refused`), what the certificate did not grant (`cert_no_port_forwarding`, `cert_pty_refused`, `cert_X11_forwarding_refused`, `cert_agent_forwarding_refused`), and SFTP (`sftp_refused`, `sftp_malformed`, `sftp_identity_refused`, `sftp_icap`) |
 | `telnet` | `client_refused`, `banned`, `option_refused`, `subnegotiation_refused`, `malformed`, `mfa_failed`, `prompt` |
 | `vnc` | `client_refused`, `banned`, `version`, `auth_failed`, `mfa_failed`, `view_only`, the security negotiation (`security_not_offered`, `security_not_usable`, `security_not_mediated`, `subtype_not_offered`, `vencrypt_subtype_not_mediated`, `tight_auth_not_offered`), the variants' own parameters (`tls`, `mslogon_parameters`, `ard_parameters`, `rsaaes_key`, `rsaaes_random`, `rsaaes_transcript`), and the picture (`framebuffer_too_large`, `rectangle_too_large`, `rectangle_outside_framebuffer`, `too_many_rectangles`, `encoded_rectangle_too_large`, `decode_ratio`, `cut_text_too_large`, `unframable`, `pixel_format`, `pixel_format_changed`, `resize_refused`, `resize_too_large`, `clipboard_to_client`, `clipboard_to_target`, and `encoding_<name>` for each encoding taken out of a client's list) |

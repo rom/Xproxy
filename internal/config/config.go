@@ -1400,6 +1400,82 @@ type DNSListener struct {
 	Records []DNSRecord `yaml:"records"`
 	// TunnelDetection watches for data leaving inside the query names.
 	TunnelDetection *DNSTunnel `yaml:"tunnel_detection"`
+	// AnswerPolicy screens where an upstream answer points, which is
+	// what a name list cannot do: rebinding and the cloud metadata
+	// endpoint are good names pointing somewhere they should not.
+	AnswerPolicy *DNSAnswerPolicy `yaml:"answer_policy"`
+	// Cookies is what this listener does with DNS cookies (RFC 7873):
+	// off, respond (the default) or require.
+	//
+	// A UDP datagram proves nothing about where it came from, and
+	// everything unpleasant about an open resolver follows from that: an
+	// answer sent to an address that did not ask, a small question
+	// drawing a large reply for somebody else's link, a cache poisoned
+	// by a race the attacker enters with no packets of their own to
+	// lose, and a security event recorded against an address chosen by
+	// whoever sent the packet. A cookie makes the client prove it can
+	// receive what it asked for, which is the one thing underneath all
+	// of them.
+	//
+	// respond answers a client that sent a cookie with one and never
+	// refuses a query for the want of one, so a client that has never
+	// heard of cookies is unaffected. require refuses a UDP query
+	// without a valid cookie, which is the amplification defence and
+	// also breaks every client that does not implement them: it belongs
+	// on a listener whose clients are known.
+	Cookies string `yaml:"cookies"`
+	// CookieLifetime is how long a server cookie stays valid before the
+	// client has to take a fresh one. Default 1h; a cookie past half its
+	// life is replaced in the answer, so a client that keeps asking
+	// never reaches the end of one.
+	CookieLifetime Duration `yaml:"cookie_lifetime"`
+	// ECS is what happens to a client's EDNS Client Subnet option on
+	// the way upstream: strip (the default) or forward.
+	//
+	// strip, because the cache is keyed by the question and nothing
+	// else. An answer tailored to one client's subnet would be stored
+	// for every client of the listener, so a client that chooses the
+	// subnet chooses what the next thousand are told. Forward it only
+	// where the clients of this listener are one network.
+	ECS string `yaml:"ecs"`
+}
+
+// DNSAnswerPolicy screens the addresses an upstream answer carries.
+//
+// A block list decides by name, and the name is the part an attacker
+// picks last: blocking one costs them a registration. The address is
+// what they cannot move, because it is where they want the client to
+// go, and two attacks live entirely there.
+//
+// DNS rebinding answers a name the attacker owns with a public address
+// while the page loads and with 127.0.0.1 a moment later, and a browser
+// keeps calling the two one origin. The cloud metadata endpoint at
+// 169.254.169.254 hands instance credentials to any process that can
+// make an HTTP request, so a name resolving there turns "fetch this
+// URL" into "read my keys". Neither is a name a list could hold.
+type DNSAnswerPolicy struct {
+	// DenyPrivate denies every range RFC 6890 calls not globally
+	// reachable, and the IPv4-mapped IPv6 range with them. Default
+	// true: a section written at all is written to deny these.
+	DenyPrivate *bool `yaml:"deny_private"`
+	// Deny are further CIDRs to refuse, in either family.
+	Deny []string `yaml:"deny"`
+	// Allow are carved back out of the denied set: the ranges this
+	// network really does resolve names into. An operator writes
+	// deny_private and names their own /16 here rather than
+	// enumerating what is left of RFC 6890.
+	Allow []string `yaml:"allow"`
+	// AllowNames are the names allowed to point into a denied range,
+	// in the forms block takes. A split-horizon zone belongs here;
+	// both the name asked for and the owner name of the record are
+	// matched, so exempting either end of a CNAME is enough.
+	AllowNames []string `yaml:"allow_names"`
+	// Action is nxdomain (default), refuse, servfail or strip. strip
+	// removes the denied records and keeps the rest, for a name that
+	// legitimately has a public address as well as an internal one;
+	// what is left may be an empty answer, which is the correct thing
+	// to say.
+	Action string `yaml:"action"`
 }
 
 // DNSTunnel configures detection of data leaving inside DNS queries.
@@ -1544,6 +1620,29 @@ type DNSCache struct {
 	// NegativeTTL caches NXDOMAIN and empty answers. Default 60s; 0
 	// disables.
 	NegativeTTL Duration `yaml:"negative_ttl"`
+	// ServeStale keeps an expired entry this much longer so it can be
+	// served when the upstream has nothing (RFC 8767). Default 0, which
+	// keeps nothing; 1h is a reasonable window.
+	//
+	// It is the difference between a resolver outage taking the network
+	// with it and a resolver outage nobody notices for an hour. The
+	// answer is out of date by definition, and a name almost always
+	// still resolves where it did a minute ago -- while a client that
+	// cannot be told anything cannot reach the upstream itself either.
+	ServeStale Duration `yaml:"serve_stale"`
+	// StaleTTL is the TTL a stale answer carries, so the client comes
+	// back soon rather than keeping an answer this resolver already
+	// knows is old. Default 30s, which is what RFC 8767 recommends.
+	StaleTTL Duration `yaml:"stale_ttl"`
+	// Prefetch refreshes a nearly expired entry when a query arrives
+	// for it, instead of making one client per TTL wait for the
+	// upstream. Default false.
+	Prefetch bool `yaml:"prefetch"`
+	// PrefetchThreshold is the share of the TTL that must be left for a
+	// query to start a refresh. Default 0.1; at most 0.5, because
+	// refreshing an entry with half its life left is a resolver doing
+	// twice the upstream traffic for nothing.
+	PrefetchThreshold float64 `yaml:"prefetch_threshold"`
 }
 
 // DNSRateLimit is a per client token bucket.

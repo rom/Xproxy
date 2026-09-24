@@ -16,7 +16,31 @@ server:
         block_action: sinkhole
         sinkhole_ipv4: 10.255.255.254
         dnssec: {enabled: true}
-        cache: {max_entries: 50000, max_ttl: 6h}
+        cache:
+          max_entries: 50000
+          max_ttl: 6h
+          # An upstream outage should not take the network with it: an
+          # expired answer is worth more than a SERVFAIL for an hour.
+          serve_stale: 1h
+          # And the names in use stay current without a client waiting
+          # for the upstream once per TTL.
+          prefetch: true
+        # Where an answer may point. A block list cannot express this:
+        # rebinding and the cloud metadata endpoint are ordinary names
+        # answering an address they have no business answering.
+        answer_policy:
+          deny_private: true
+          allow: [10.0.0.0/8]          # this network's own range
+          allow_names: ["corp.example.net"]
+          action: nxdomain
+        # The client's subnet is not forwarded: the cache is keyed by
+        # the question alone, so a per-subnet answer would be served to
+        # every client of this listener.
+        ecs: strip
+        # A cookie makes a UDP client prove it can receive what it asked
+        # for, which is what makes its security events attributable and
+        # bannable. respond never refuses a client that has no cookies.
+        cookies: respond
 management:
   socket: /run/xproxy/mgmt.sock
 logging:
@@ -24,4 +48,4 @@ logging:
 bans:
   action: drop
   triggers:
-    - {name: dns-abuse, reasons: [dns_blocked, dns_bogus], threshold: 50, window: 1m, duration: 1h}
+    - {name: dns-abuse, reasons: [dns_blocked, dns_bogus, dns_answer_denied], threshold: 50, window: 1m, duration: 1h}

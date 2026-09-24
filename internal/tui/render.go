@@ -274,6 +274,20 @@ func renderOverview(d Data, sty Style, w int) []string {
 		if t := l.Tunnel; t != nil {
 			out = append(out, fmt.Sprintf("  %-12s tunnel %s detections %d blocked %d tracked %d evicted %d", "", t.Action, t.Detections, t.Blocked, t.Tracked, t.Evicted))
 		}
+		// Only when the screen has something to say: a line of zeroes on
+		// every listener would push the ones that matter off the pane.
+		if l.AnswerDenied+l.AnswerStripped+l.ECSStripped > 0 {
+			out = append(out, fmt.Sprintf("  %-12s answers denied %d stripped %d, client subnet stripped %d", "", l.AnswerDenied, l.AnswerStripped, l.ECSStripped))
+		}
+		// A resolver running on expired answers is in an outage, so this
+		// line appears the moment one does.
+		if l.Stale+l.Prefetched > 0 {
+			out = append(out, fmt.Sprintf("  %-12s stale %d prefetched %d", "", l.Stale, l.Prefetched))
+		}
+		if l.CookiesIssued+l.CookiesVerified+l.CookiesRefused > 0 {
+			out = append(out, fmt.Sprintf("  %-12s cookies issued %d verified %d refused %d", "",
+				l.CookiesIssued, l.CookiesVerified, l.CookiesRefused))
+		}
 	}
 	if d.Series != nil && len(d.Series.Points) > 1 {
 		out = append(out, "", "  "+sparkRow("req/s", seriesValues(d.Series, "requests"), w-12, sty))

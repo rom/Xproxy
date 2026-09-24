@@ -212,3 +212,17 @@ groups:
         annotations:
           summary: "Challenge verifications on {{ $labels.instance }} fail five times more often than they pass"
           description: "Automation hammering the challenge or a broken CAPTCHA provider configuration (site key, secret, verify_url); the security log names the failure class."
+      - alert: XproxyDNSAnswerDenied
+        expr: sum by (instance) (rate(xproxy_dns_answer_denied_total[15m])) > 0
+        for: 15m
+        labels: {severity: warn}
+        annotations:
+          summary: "DNS answers on {{ $labels.instance }} are pointing into denied ranges"
+          description: "answer_policy refused an upstream answer: a name resolving to loopback, private space or a cloud metadata endpoint. That is DNS rebinding or a server-side request forgery attempt, or an internal zone that needs answer_policy.allow_names. The dns_answer_denied security event names the address."
+      - alert: XproxyDNSServingStale
+        expr: sum by (instance) (rate(xproxy_dns_stale_total[10m])) > 0
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "DNS answers on {{ $labels.instance }} are being served past their TTL"
+          description: "serve_stale is answering from expired entries because the upstream resolvers are not answering (RFC 8767). The resolver is up and the answers are getting older; check xproxy_dns_upstream_failures_total and the upstreams themselves."

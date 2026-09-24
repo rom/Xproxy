@@ -442,6 +442,122 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A DNS answer is now screened by where it points, not only by the
+  name that was asked.** The block list decides by name, and the name is
+  the part an attacker picks last: blocking one costs them a
+  registration. Two attacks live entirely in that gap, and neither is a
+  name a list can hold. DNS rebinding answers a name the attacker owns
+  with a public address while the page loads and `127.0.0.1` a second
+  later, and the browser keeps treating the two as one origin, so the
+  page reads whatever is listening on the loopback interface of the
+  machine that opened it. The cloud metadata endpoint at
+  `169.254.169.254` hands instance credentials to any process that can
+  make an HTTP request, so a name resolving there turns "fetch this URL
+  for me" into "read my keys".
+
+  `dns.answer_policy` screens the answer section of every upstream reply
+  *and of every cache hit*, before the answer is cached and before it is
+  sent. `deny_private` stands for the twenty-three ranges RFC 6890 calls
+  not globally reachable plus `::ffff:0:0/96`, and an address is unmapped
+  before it is tested, so an AAAA record holding `::ffff:127.0.0.1` --
+  which is not inside `::1/128` and which every socket API connects to
+  `127.0.0.1` anyway -- is caught either way. `allow` carves ranges back
+  out for the network that really does resolve names into private space,
+  and `allow_names` exempts a name at either end of a CNAME. The action
+  is `nxdomain`, `refuse`, `servfail` or `strip`; `strip` keeps the
+  public address of a name that also has an internal one, drops the
+  RRSIGs of any set it shortened (a signature over a set one record short
+  does not verify, and a client would call the answer bogus rather than
+  short), and is what the cache then stores. The refusing actions cache
+  nothing at all, so the screen is re-applied to the next query rather
+  than frozen into the cache. A denied answer is a `dns_answer_denied`
+  security event naming the address, a ban reason, and
+  `xproxy_dns_answer_denied_total`; a stripped one counts
+  `xproxy_dns_answer_stripped_total` and is not a refusal. Only the
+  answer section is screened, and the proxy's own answers -- `records`,
+  `discovery`, the sinkhole addresses -- are not, which is why
+  `sinkhole_ipv4: 0.0.0.0` still works inside a denied range.
+
+- **A DNS listener answers and requires DNS cookies** (`dns.cookies`,
+  `dns.cookie_lifetime`; RFC 7873 with RFC 9018's server cookie layout).
+
+  A UDP datagram proves nothing about where it came from, and everything
+  unpleasant about an open resolver follows from that: an answer sent to
+  an address that did not ask, a small question drawing a large reply for
+  somebody else's link, a cache poisoned by a race the attacker enters
+  with no packets of their own to lose, and a security event recorded
+  against an address chosen by whoever sent the packet. A cookie fixes
+  the one thing underneath all of them -- it makes the client prove it
+  can *receive* what it asked for.
+
+  `respond` (the default) answers a client that sent a cookie with one
+  and never refuses a query for the want of one, so a client that has
+  never heard of cookies is unaffected. `require` answers a UDP query
+  without a valid cookie with BADCOOKIE and a fresh cookie, so a
+  cookie-aware client retries once and succeeds while nothing is looked
+  up for the first attempt -- the whole saving; a client that sends no
+  option at all gets REFUSED, because there is nothing to echo, which
+  breaks most stub resolvers and is warned about at load on a listener
+  with no `allow_clients`. Stream transports are exempt from `require`,
+  since the handshake is the proof a cookie exists to provide, but they
+  still hand one out so a client can collect it over TCP and use it over
+  UDP.
+
+  The part that matters beyond amplification: **a verified cookie makes a
+  UDP client's security events attributable.** Events from a bare
+  datagram are aggregated and attributed to nobody, because counting them
+  towards a ban would let anybody have a third party banned by spoofing
+  them. A UDP query carrying a cookie this listener issued has completed
+  a round trip, so `dns_blocked` and `dns_tunnel` from it drive bans like
+  a TCP client's. Cookies are the prerequisite for the ban ladder working
+  over UDP at all.
+
+  The server cookie binds the client's eight bytes to the client's
+  address under a per-listener secret that is never written anywhere, so
+  a cookie replayed from another address does not verify, a restart costs
+  each client one round trip, and two cluster nodes do not accept each
+  other's. `cookie_lifetime` is an hour by default and a cookie past half
+  its life is replaced in the answer, so a client that keeps asking never
+  reaches the end of one. BADCOOKIE is written as RFC 6891 requires -- the
+  low four bits of rcode 23 in the header and the high eight in the OPT
+  record -- and logged as 23.
+
+- **A DNS listener can ride out an upstream outage and refresh what is in
+  use before it expires** (`dns.cache.serve_stale`,
+  `dns.cache.stale_ttl`, `dns.cache.prefetch`,
+  `dns.cache.prefetch_threshold`).
+
+  `serve_stale` (RFC 8767) keeps an expired entry that much longer and
+  serves it when the upstream has nothing to say, which is the
+  difference between a resolver outage taking the network with it and
+  one nobody notices for an hour. The answer is out of date by
+  definition, and a name almost always still resolves where it did a
+  minute ago -- while a client that cannot be told anything cannot reach
+  the upstream itself either. A stale answer carries `stale_ttl` (30
+  seconds, RFC 8767's recommendation) rather than the TTL the zone
+  published, so the client comes back soon; it is counted as
+  `xproxy_dns_stale_total` and logged with `source=stale`, so a resolver
+  running on expired answers says so rather than being discovered later.
+  A stale entry is never a cache hit: the upstream is asked first every
+  time. "Nothing to say" means no answer at all, and a SERVFAIL when
+  `dnssec` is off -- with validation on, a SERVFAIL is the code for an
+  answer that was *rejected*, and standing in for it with an expired
+  answer of our own would hand the client, as a last resort, exactly
+  what validation refused.
+
+  `prefetch` refreshes an entry when a query arrives for it and less
+  than `prefetch_threshold` of its TTL is left, so a popular name is
+  answered from the cache continuously instead of one client per TTL
+  waiting for the upstream; that client is answered from the cache and
+  waits for nothing. The claim lives on the cache entry, so a burst of
+  queries for the same nearly-expired name starts one refresh and not a
+  hundred -- the stampede the feature exists to prevent and would
+  otherwise cause. Refreshes have a budget of their own (64 at a time)
+  rather than a share of `max_in_flight`, since a resolver that answered
+  clients more slowly because it was busy refreshing would have it
+  backwards, and a refresh belongs to nobody: it raises no security
+  event against the client whose query happened to trigger it.
+
 - **What the SSH certificate authority said is now enforced.** A user
   certificate is not only a signature over a key and a list of
   principals; it carries the CA's own restrictions, and the gateway
@@ -1385,6 +1501,24 @@ Open findings of the earlier rounds:
   rather than at the first file it tries to scan.
 
 ### Changed (1.4)
+
+- **A DNS listener no longer forwards a client's EDNS Client Subnet
+  option** (`dns.ecs`, default `strip`). The option exists for a
+  recursive resolver telling a content network which network a query is
+  really for, and this listener is not one: it forwards to a resolver
+  that adds its own option describing this proxy, which is the correct
+  thing for that resolver to describe. Forwarding the client's instead
+  broke the cache, whose key here is the question and nothing else -- so
+  an answer tailored to one client's subnet was stored for every client
+  of the listener, and a client that could choose the subnet could
+  choose what the next thousand were told, with no spoofing and no race
+  in it. The rest of the OPT record is kept: a cookie or padding the
+  client sent still goes upstream, because dropping the record wholesale
+  would forward a different query than the one that was asked.
+  `ecs: forward` restores the previous behaviour for a listener whose
+  clients are one network, and `xproxy_dns_ecs_stripped_total` counts
+  what was removed. With `dnssec` on the option was already gone, since
+  validation replaces the OPT record with one of its own.
 
 - **Session recording is a package of its own** (`internal/sessionrec`),
   lifted out of the ssh bastion: the policy, the file, the byte bound,
