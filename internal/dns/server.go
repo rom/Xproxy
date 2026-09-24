@@ -368,20 +368,35 @@ func (s *Server) Status() Status {
 
 // Serve runs the UDP and TCP loops until Shutdown. On an encrypted
 // listener it also runs the DoH http server behind the ALPN demultiplexer.
+// Every goroutine is registered while holding the lock Shutdown takes
+// before it waits, and Serve starts nothing once Shutdown has run: a
+// WaitGroup whose Add races its Wait counts one thing or the other
+// depending on the scheduler, and a listener stopped the moment it
+// started is exactly when that happens.
 func (s *Server) Serve() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-s.done:
+		// Shutdown ran first. There is nothing to start, and starting
+		// now would add to a WaitGroup somebody is already waiting on.
+		return
+	default:
+	}
 	if s.udp != nil {
 		s.wg.Add(1)
 		go s.serveUDP()
 	}
 	if s.tcp != nil {
 		if s.Encrypted {
-			s.doh = newChanListener(s.tcp.Addr())
-			s.dohSrv = &http.Server{Handler: s, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+			doh := newChanListener(s.tcp.Addr())
+			srv := &http.Server{Handler: s, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 				WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 16 << 10}
+			s.doh, s.dohSrv = doh, srv
 			s.wg.Add(1)
 			go func() {
 				defer s.wg.Done()
-				_ = s.dohSrv.Serve(s.doh)
+				_ = srv.Serve(doh)
 			}()
 		}
 		s.wg.Add(1)
@@ -516,15 +531,21 @@ func (s *Server) track(c net.Conn, add bool) {
 func (s *Server) Shutdown(ctx context.Context) {
 	s.once.Do(func() {
 		close(s.done)
+		// The same lock Serve registers under, so the DoH server this
+		// reads is either fully built or not there at all, and any Add
+		// has happened before the wait below.
+		s.mu.Lock()
+		dohSrv, doh := s.dohSrv, s.doh
+		s.mu.Unlock()
 		if s.udp != nil {
 			_ = s.udp.Close()
 		}
 		if s.tcp != nil {
 			_ = s.tcp.Close()
 		}
-		if s.dohSrv != nil {
-			_ = s.dohSrv.Shutdown(ctx)
-			_ = s.doh.Close()
+		if dohSrv != nil {
+			_ = dohSrv.Shutdown(ctx)
+			_ = doh.Close()
 		}
 	})
 	finished := make(chan struct{})

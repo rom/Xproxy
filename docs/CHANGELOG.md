@@ -512,6 +512,52 @@ Open findings of the earlier rounds:
   access log line carries `view`. Twelve deliberate weakenings were each
   caught by the tests.
 
+- **A set of byte ranges is a decision, not a relay**
+  (`routes[].ranges`, RFC 9110 section 14).
+
+  A `Range` header is a small request asking for a large answer, and a set
+  of ranges is a small request asking for many: each range costs the origin
+  a read and the response a multipart part, so a header naming two hundred
+  of them asks one machine to assemble a response dozens of times the size
+  of the resource, from a packet. That is the oldest amplification bug in
+  HTTP, and until now this proxy relayed the header and left it to the
+  origin.
+
+  RFC 9110 section 14.2 puts the decision exactly where a gateway can make
+  it: a server **may** coalesce ranges that overlap or are separated by a
+  gap smaller than the overhead of another part, "regardless of the order
+  in which the corresponding byte-range-spec appeared", and one that will
+  not satisfy a set may ignore the header and serve the whole
+  representation. So a route with the section rewrites the set rather than
+  inventing a rule -- the same bytes, fewer parts -- and what is still over
+  `max_ranges` (4 by default) is either dropped, which serves the whole
+  representation, or refused with 416 and `Accept-Ranges: bytes` so the
+  client can ask again for fewer.
+
+  What it does not do is guess. Another range unit is passed through, since
+  an origin ignores a unit it does not implement and this proxy has nothing
+  to say about one it cannot read. A value that is not a range set -- a
+  spec with no dash, a descending range, more specs than are worth reading
+  -- is dropped once, here, so this proxy and the origin read the request
+  the same way. A suffix range (`-500`) is kept as it is, because how it
+  overlaps `0-99` depends on a length the proxy does not know; the largest
+  suffix covers the smaller ones and nothing else about them is assumed.
+
+  `ranges` and `ranges_sent` appear in the access log, and
+  `xproxy_ranges_total` counts what was dropped and what was refused.
+  Twenty-five deliberate weakenings were each caught.
+
+- **Fixed: a DNS listener stopped the moment it started raced its own
+  WaitGroup.** `Serve` registered each goroutine with `wg.Add` outside any
+  lock while `Shutdown` called `wg.Wait`, and it published the DoH server
+  where `Shutdown` read it unsynchronised. A listener that starts and stops
+  at once -- which is what a test does, and what a reload of a
+  misconfigured listener does -- then counted one thing or the other by the
+  scheduler's whim. Every goroutine is now registered under the lock
+  `Shutdown` takes before it waits, and `Serve` after a `Shutdown` starts
+  nothing at all. Found by a new test doing exactly that, which fails under
+  the race detector on the old code.
+
 - **Encrypted DNS upstreams resume their sessions**
   (`server.listeners[].dns.upstream_resumption`, default on).
 
