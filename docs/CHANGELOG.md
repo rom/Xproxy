@@ -442,6 +442,57 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Two balancers that read what the endpoints are doing.** `least_conn`
+  scans every endpoint and takes the best, which has a failure mode of
+  its own: every proxy in a fleet sees the same best endpoint at the same
+  moment and they all send to it together, so the herd moves from one
+  endpoint to the next.
+
+  `p2c` takes two endpoints at random and uses the better of those. One
+  comparison avoids the worst endpoint, and the randomness means two
+  proxies rarely agree, so load spreads instead of sloshing. `ewma`
+  weighs endpoints by the smoothed time to first byte the pool already
+  keeps for outlier detection, times the queue a request would join: an
+  endpoint answering slowly gets less work **long before** it is slow
+  enough to fail a check or be ejected, which is the difference between
+  shedding load away from a struggling machine and waiting for it to
+  break. An endpoint with no sample yet costs nothing, so a recovered one
+  is tried rather than starved by the fact that nothing is known about
+  it.
+
+- **Tiers: priority, backup and locality.** `endpoints[].priority` makes
+  the endpoints of the lowest priority number that has an available
+  member carry the traffic, with the next tier taking over when it has
+  nothing left and handing it back when it returns — so a **backup
+  endpoint is simply one in a later tier** rather than a special kind of
+  endpoint, and a retry that has used up a tier falls to the next.
+
+  `locality: {prefer_zone: true}` prefers the endpoints in this node's
+  own `server.zone`, which keeps traffic off the links between sites. It
+  is a **preference, not a pin**: an estate that pinned traffic to one
+  zone would lose the service when the zone lost it, which is the
+  opposite of what zones are for, so the remote endpoints take over when
+  the local ones are gone. `min_local` is how many local endpoints must
+  be available before the remote ones are ignored, so a zone down to one
+  surviving endpoint does not take the whole load alone; and an endpoint
+  with **no zone is local to every zone**, because "somewhere unknown" is
+  not a reason to send traffic across a site.
+
+  Tiering leaves the other endpoints out of the choice rather than
+  shortening the list the balancer sees, which matters for `hash`:
+  shortening it would move every key, while leaving endpoints out moves
+  only theirs.
+
+- **A dual-stack policy: `address_family` and `fallback_delay`.** A name
+  with both an A and an AAAA record has two ways to be reached, and the
+  broken one costs a connect timeout on every request that tries it
+  first. The default races the families as RFC 8305 describes, with the
+  second held back 300ms; `ipv4` or `ipv6` dials that family only, for
+  the estate where one is the only one that works — naming it means a
+  name that also has the other kind of record cannot quietly use the
+  family the policy meant to exclude, which is the failure a mere
+  preference would hide.
+
 - **Drain an endpoint, or put a whole pool in maintenance.** Taking a
   backend out of service meant stopping it and letting the proxy find
   out, which loses the requests in flight on it and the ones that arrive

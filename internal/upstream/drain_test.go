@@ -218,3 +218,83 @@ func TestRetireIgnoresAForeignConnection(t *testing.T) {
 		t.Fatal("a connection the pool never wrapped was treated as aged")
 	}
 }
+
+// An endpoint at its own concurrency bound is passed over, and the pool's
+// other endpoints take the work. Holding work for one endpoint while
+// others are idle is the opposite of balancing.
+func TestEndpointConcurrencyBound(t *testing.T) {
+	c := testCfg("round_robin", "127.0.0.1:9001")
+	c.Endpoints[0].MaxConnections = 1
+	c.Endpoints = append(c.Endpoints, config.Endpoint{Address: "127.0.0.1:9002", Weight: 1})
+	p, err := NewPool(c, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bounded *Endpoint
+	for _, e := range p.endpoints() {
+		if e.Address == "127.0.0.1:9001" {
+			bounded = e
+		}
+	}
+	if bounded == nil {
+		t.Fatal("endpoint missing")
+	}
+	if bounded.maxActive != 1 {
+		t.Fatalf("the endpoint's bound is %d, want 1", bounded.maxActive)
+	}
+	p.Begin(bounded) // one in flight: the bound is reached
+	for i := 0; i < 10; i++ {
+		e, _ := p.Pick("", "", nil, CanaryAny)
+		if e == nil {
+			t.Fatal("no endpoint offered while one is free")
+		}
+		if e == bounded {
+			t.Fatal("an endpoint at its bound was picked")
+		}
+	}
+	p.End(bounded, false, 0)
+	seen := false
+	for i := 0; i < 10; i++ {
+		if e, _ := p.Pick("", "", nil, CanaryAny); e == bounded {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("the endpoint never came back after its work finished")
+	}
+}
+
+// The pool-wide default applies to every endpoint, and an endpoint that
+// names its own replaces it: the small instance beside large ones is the
+// case this exists for.
+func TestPoolWideEndpointBoundAndOverride(t *testing.T) {
+	c := testCfg("round_robin", "127.0.0.1:9001")
+	c.MaxConnectionsPerEndpoint = 4
+	c.Endpoints = append(c.Endpoints, config.Endpoint{Address: "127.0.0.1:9002", Weight: 1, MaxConnections: 1})
+	p, err := NewPool(c, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int64{"127.0.0.1:9001": 4, "127.0.0.1:9002": 1}
+	for _, st := range p.Stats() {
+		if st.MaxActive != want[st.Address] {
+			t.Errorf("%s max_active %d, want %d", st.Address, st.MaxActive, want[st.Address])
+		}
+	}
+}
+
+// When every endpoint is at its bound the pool offers nothing, which is
+// what the pool's queue and circuit breaker are there to answer.
+func TestEveryEndpointAtItsBoundOffersNothing(t *testing.T) {
+	c := testCfg("round_robin", "127.0.0.1:9001")
+	c.MaxConnectionsPerEndpoint = 1
+	p, err := NewPool(c, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := p.endpoints()[0]
+	p.Begin(e)
+	if got, _ := p.Pick("", "", nil, CanaryAny); got != nil {
+		t.Fatalf("offered %s with every endpoint at its bound", got.Address)
+	}
+}

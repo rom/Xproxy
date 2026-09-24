@@ -163,6 +163,12 @@ func (m *Metrics) PerRouteEnabled() bool { return m.PerRoute == nil || *m.PerRou
 type Server struct {
 	Listeners []Listener `yaml:"listeners"`
 	Limits    Limits     `yaml:"limits"`
+	// Zone names the failure domain this node is in -- an availability
+	// zone, a rack, a site. It is what an upstream's locality policy
+	// compares an endpoint's zone against, so a node prefers the
+	// endpoints beside it. Empty means the node does not know where it
+	// is, and a locality policy then prefers nothing.
+	Zone string `yaml:"zone"`
 	// Normalization checks and canonicalises the request target before
 	// routing and analysis.
 	Normalization Normalization `yaml:"normalization"`
@@ -2415,6 +2421,34 @@ type Upstream struct {
 	// endpoints and discovered ones coexist; a pool needs at least one
 	// of the two.
 	Discovery *Discovery `yaml:"discovery"`
+	// Locality prefers the endpoints in this node's own zone.
+	Locality *Locality `yaml:"locality"`
+	// AddressFamily decides which of a dual-stack endpoint's addresses
+	// may be dialled: any (the default), ipv4 or ipv6.
+	//
+	// With any, the two families are raced as RFC 8305 describes -- the
+	// first family is tried, and after FallbackDelay the other is tried
+	// in parallel, with whichever connects first winning. That is what
+	// keeps a host whose IPv6 route is broken from costing a connect
+	// timeout on every request, and it is the default because an estate
+	// that has just turned IPv6 on should not have to know about it.
+	//
+	// ipv4 or ipv6 is for the estate where one family is the only one
+	// that works: it dials that family only, so a name with both kinds
+	// of record does not silently use the one the policy meant to
+	// exclude.
+	AddressFamily string `yaml:"address_family"`
+	// FallbackDelay is how long the second family is held back in the
+	// race. Default 300ms, the value RFC 8305 recommends; a negative
+	// value disables the race, so the families are tried in order.
+	// Ignored when AddressFamily names one family.
+	FallbackDelay Duration `yaml:"fallback_delay"`
+	// NodeZone is server.zone, copied here when defaults are applied so
+	// that a pool knows where it is running without being handed the
+	// whole configuration. It is not a key of its own: an upstream's
+	// zone is the node's, and two answers to that question would be one
+	// too many.
+	NodeZone string `yaml:"-"`
 	// MaxConnectionAge bounds how long one upstream connection is kept,
 	// so that a pool's traffic follows its endpoints rather than
 	// sticking to whichever ones were there when the connections were
@@ -2550,6 +2584,21 @@ type Endpoint struct {
 	// upstreams[].max_connections_per_endpoint sets it for a whole pool
 	// at once.
 	MaxConnections int `yaml:"max_connections"`
+	// Priority tiers the endpoint. The pool uses the endpoints of the
+	// lowest priority number that has an available member and ignores
+	// the rest; when every endpoint of that tier is unavailable, the
+	// next tier takes the traffic. 0 is the first tier.
+	//
+	// It is how a failover pool is written: the endpoints that should
+	// carry the traffic at priority 0, the ones that should carry it
+	// only when those are gone at priority 1. A backup endpoint is
+	// simply one in a later tier.
+	Priority int `yaml:"priority"`
+	// Zone names the failure domain this endpoint is in, for a pool with
+	// a locality policy. An endpoint with no zone is neutral: it is
+	// preferred wherever the node is, because "somewhere unknown" is not
+	// a reason to send traffic across a site.
+	Zone string `yaml:"zone"`
 	// Drain takes the endpoint out of rotation while leaving it in the
 	// pool: no new work, and what is already running finishes. It is
 	// the declarative form of what the management API sets, for a
@@ -2708,6 +2757,26 @@ type HealthCheck struct {
 	// is already much more than silence proves.
 	Expect    string `yaml:"expect"`
 	ExpectHex string `yaml:"expect_hex"`
+}
+
+// Locality prefers the endpoints in the node's own zone (server.zone)
+// over the ones elsewhere, which is what keeps traffic off the links
+// between sites and away from their latency -- while still using the
+// other sites when this one has nothing left.
+//
+// It is expressed as a preference rather than a restriction on purpose:
+// an estate that pinned traffic to one zone would lose a service
+// entirely when that zone lost it, which is the opposite of what zones
+// are for.
+type Locality struct {
+	// PreferZone turns the preference on. Without server.zone set there
+	// is nothing to compare against, and validation says so.
+	PreferZone bool `yaml:"prefer_zone"`
+	// MinLocal is how many endpoints of this node's own zone must be
+	// available before the others are ignored. Below it the pool uses
+	// every endpoint, so a zone with one surviving endpoint does not
+	// take the whole load alone. Default 1.
+	MinLocal int `yaml:"min_local"`
 }
 
 // UpstreamTimeout bounds each phase of an upstream exchange.

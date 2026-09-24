@@ -86,6 +86,7 @@ server:
         max_buffered_body_bytes: 536870912
         connection_rate: null
         connection_rate_per_source: null
+    zone: ""
     normalization:
         reject_control_chars: null
         reject_invalid_utf8: null
@@ -224,13 +225,20 @@ upstreams:
           weight: 1
           canary: false
           max_connections: 0
+          priority: 0
+          zone: ""
           drain: false
         - address: 10.0.1.11:8080
           weight: 1
           canary: false
           max_connections: 0
+          priority: 0
+          zone: ""
           drain: false
       discovery: null
+      locality: null
+      address_family: ""
+      fallback_delay: 0s
       max_connection_age: 0s
       max_connections_per_endpoint: 0
       maintenance: false
@@ -292,13 +300,20 @@ upstreams:
           weight: 1
           canary: false
           max_connections: 0
+          priority: 0
+          zone: ""
           drain: false
         - address: 10.0.2.11:8443
           weight: 1
           canary: false
           max_connections: 0
+          priority: 0
+          zone: ""
           drain: false
       discovery: null
+      locality: null
+      address_family: ""
+      fallback_delay: 0s
       max_connection_age: 0s
       max_connections_per_endpoint: 0
       maintenance: false

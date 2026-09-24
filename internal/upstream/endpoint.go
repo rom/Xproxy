@@ -38,6 +38,10 @@ type Endpoint struct {
 	// once; 0 is no bound. Set when the endpoint is built and not
 	// changed afterwards, so it needs no atomic.
 	maxActive int64
+	// priority tiers the endpoint and zone names its failure domain;
+	// see tiers.go.
+	priority  int
+	zone      string
 	ejectedNS atomic.Int64 // passive ejection expiry, unix nanos; 0 = none
 	active    atomic.Int64 // in-flight requests
 	failures  atomic.Int64 // consecutive passive failures
@@ -63,6 +67,14 @@ func (e *Endpoint) Available(now time.Time) bool {
 		return false
 	}
 	if !e.healthy.Load() {
+		return false
+	}
+	// At its own bound the endpoint is passed over rather than queued
+	// behind: the pool has other endpoints, and holding work for this
+	// one while they are idle is the opposite of balancing. When every
+	// endpoint is at its bound the caller sees an empty pool, which is
+	// what the pool's own queue and circuit breaker are for.
+	if e.maxActive > 0 && e.active.Load() >= e.maxActive {
 		return false
 	}
 	if until := e.ejectedNS.Load(); until != 0 {
@@ -126,7 +138,10 @@ type Stats struct {
 	// work, and what is running finishes.
 	Draining bool `json:"draining,omitempty"`
 	// MaxActive is the endpoint's own concurrency bound, 0 for none.
-	MaxActive int64  `json:"max_active,omitempty"`
+	MaxActive int64 `json:"max_active,omitempty"`
+	// Priority is the endpoint's tier and Zone its failure domain.
+	Priority  int    `json:"priority,omitempty"`
+	Zone      string `json:"zone,omitempty"`
 	Active    int64  `json:"active"`
 	Requests  uint64 `json:"requests"`
 	Errors    uint64 `json:"errors"`
@@ -179,6 +194,8 @@ func (e *Endpoint) stats(now time.Time) Stats {
 		Healthy:          e.healthy.Load(),
 		Draining:         e.draining.Load(),
 		MaxActive:        e.maxActive,
+		Priority:         e.priority,
+		Zone:             e.zone,
 		Ejected:          e.ejectedNS.Load() > now.UnixNano(),
 		Active:           e.active.Load(),
 		Requests:         e.requests.Load(),

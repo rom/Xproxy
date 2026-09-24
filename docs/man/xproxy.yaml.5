@@ -186,6 +186,15 @@ T}	T{
 Value of the \fBServer\fR response header. Empty removes it.
 T}
 T{
+\fBzone\fR
+T}	T{
+name
+T}	T{
+\fB""\fR
+T}	T{
+The failure domain this node is in \[u2014] an availability zone,\: a rack,\: a site. It is what an upstream\(aqs \fBlocality\fR policy compares an endpoint\(aqs \fBzone\fR against,\: so a node prefers the endpoints beside it. Empty means the node does not know where it is,\: and a locality policy then prefers nothing
+T}
+T{
 \fBerror_\:pages\fR
 T}	T{
 object
@@ -6597,11 +6606,11 @@ T}
 T{
 \fBbalancer\fR
 T}	T{
-\fBround_\:robin\fR,\: \fBweighted\fR,\: \fBleast_\:conn\fR,\: \fBhash\fR
+\fBround_\:robin\fR,\: \fBweighted\fR,\: \fBleast_\:conn\fR,\: \fBhash\fR,\: \fBp2c\fR,\: \fBewma\fR
 T}	T{
 \fBround_\:robin\fR
 T}	T{
-
+See below for the last two
 T}
 T{
 \fBhash_\:on\fR
@@ -6619,7 +6628,34 @@ list
 T}	T{
 required,\: at least one
 T}	T{
-\fB{address:\: host:\:port,\: weight:\: 1.\:.\:1000,\: canary:\: bool,\: drain:\: bool,\: max_\:connections:\: int}\fR;\: \fBcanary\fR marks the endpoints the \fBcanary\fR policy selects,\: \fBdrain\fR takes one out of rotation and \fBmax_\:connections\fR bounds what is in flight to it. An address may instead be \fBunix:\:/\:path/\:to/\:socket\fR \[u2014] see below
+\fB{address:\: host:\:port,\: weight:\: 1.\:.\:1000,\: canary:\: bool,\: drain:\: bool,\: max_\:connections:\: int,\: priority:\: 0.\:.\:99,\: zone:\: name}\fR;\: \fBcanary\fR marks the endpoints the \fBcanary\fR policy selects,\: \fBdrain\fR takes one out of rotation,\: \fBmax_\:connections\fR bounds what is in flight to it,\: and \fBpriority\fR and \fBzone\fR tier it \[u2014] see below. An address may instead be \fBunix:\:/\:path/\:to/\:socket\fR
+T}
+T{
+\fBlocality\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+\fB{prefer_\:zone:\: bool,\: min_\:local:\: int}\fR: prefer the endpoints of this node\(aqs own \fBserver.\:zone\fR
+T}
+T{
+\fBaddress_\:family\fR
+T}	T{
+\fBany\fR,\: \fBipv4\fR,\: \fBipv6\fR
+T}	T{
+\fBany\fR
+T}	T{
+Which of a dual\-stack endpoint\(aqs addresses may be dialled. \fBany\fR races the two families as RFC 8305 describes
+T}
+T{
+\fBfallback_\:delay\fR
+T}	T{
+duration
+T}	T{
+\fB300ms\fR
+T}	T{
+How long the second family is held back in that race;\: at most 10s,\: and a negative value tries the families in order instead
 T}
 T{
 \fBmax_\:connections_\:per_\:endpoint\fR
@@ -6883,6 +6919,64 @@ T}	T{
 Sends staggered copies of a slow idempotent request to other endpoints and keeps the first usable answer;\: see below
 T}
 .TE
+.SS "Dual\-stack endpoints: the race, and restricting it"
+.PP
+An endpoint name with both an A and an AAAA record has two ways to be reached, and the one that is broken costs a connect timeout on every request that tries it first. With \fBaddress_family: any\fR (the default) the families are \fBraced\fR as RFC 8305 describes: the first is tried, the other follows after \fBfallback_delay\fR (300ms, the value the RFC recommends), and whichever connects first wins. An estate that has just turned IPv6 on does not have to know about any of this.
+.PP
+\fBipv4\fR or \fBipv6\fR dials that family \fBonly\fR. It is for the estate where one family is the only one that works, and naming it means a name that also has the other kind of record cannot quietly use the family the policy meant to exclude \[u2014] which is the failure a preference would hide.
+.PP
+A negative \fBfallback_delay\fR turns the race off, so the families are tried in order; naming one family makes the delay meaningless and warns.
+.SS "Two balancers that read what the endpoints are doing"
+.PP
+\fBleast_conn\fR scans every endpoint and takes the best, which has a failure mode of its own: every proxy in a fleet sees the same "best" endpoint at the same moment and they all send to it together, so the herd moves from one endpoint to the next.
+.PP
+\fB\fBp2c\fR\fR \[u2014] power of two choices \[u2014] takes two endpoints at random and uses the better of those, by in\-flight count per unit of weight. One comparison is enough to avoid the worst endpoint, and the randomness means two proxies rarely agree on where to send, so load spreads instead of sloshing. It is the one to reach for when the endpoints are equal and the load varies, and it is the one that fits a pool with no responses to measure \[u2014] a layer 4 relay\(aqs.
+.PP
+\fB\fBewma\fR\fR weighs endpoints by the smoothed time to first byte the pool already keeps for outlier detection, times the queue a request would join: an estimate of how long a request sent now would take. An endpoint answering slowly gets less work \fBlong before\fR it is slow enough to fail a health check or be ejected, which is the difference between shedding load away from a struggling machine and waiting for it to break.
+.PP
+An endpoint with no latency sample yet costs nothing, so a new or recovered one is tried rather than starved by the fact that nothing is known about it; \fBslow_start\fR is what keeps that from being a flood. On a quiet pool, where nothing distinguishes the endpoints, both balancers spread uniformly rather than settling on the first.
+.SS "Tiers: priority, backup and locality"
+.PP
+\fBendpoints[].priority\fR tiers a pool. The endpoints of the \fBlowest priority number that has an available member\fR carry the traffic and the rest are ignored; when that tier has nothing left, the next one takes over, and hands it back when the first returns. A retry that has used up a tier falls to the next one too.
+.PP
+That is how a failover pool is written, and a \fBbackup endpoint is simply one in a later tier\fR \[u2014] not a special kind of endpoint:
+.PP
+.RS 4
+.nf
+.ft CR
+upstreams:
+  \- name: app
+    endpoints:
+      \- {address: "10.0.1.10:8080"}               # priority 0
+      \- {address: "10.0.1.11:8080"}
+      \- {address: "10.9.9.9:8080", priority: 1}   # only when both are gone
+.ft
+.fi
+.RE
+.PP
+\fBlocality\fR prefers the endpoints in this node\(aqs own \fBserver.zone\fR over the ones elsewhere, which keeps traffic off the links between sites and away from their latency:
+.PP
+.RS 4
+.nf
+.ft CR
+server:
+  zone: east
+upstreams:
+  \- name: app
+    locality: {prefer_zone: true, min_local: 2}
+    endpoints:
+      \- {address: "10.0.1.10:8080", zone: east}
+      \- {address: "10.0.1.11:8080", zone: east}
+      \- {address: "10.1.1.10:8080", zone: west}
+.ft
+.fi
+.RE
+.PP
+It is a \fBpreference, not a pin\fR. An estate that pinned traffic to one zone would lose the service when the zone lost it, which is the opposite of what zones are for \[u2014] so when the local endpoints are gone, the others take the traffic. \fBmin_local\fR is how many local endpoints must be available before the remote ones are ignored: below it everything is used, so a zone down to one surviving endpoint does not take the whole load alone.
+.PP
+An endpoint with \fBno zone is local to every zone\fR: "somewhere unknown" is not a reason to send traffic across a site. \fBprefer_zone\fR without \fBserver.zone\fR is refused at load \[u2014] there would be nothing to compare against \[u2014] and a pool where no endpoint names a zone warns, because it would prefer nothing.
+.PP
+Tiering is applied by leaving the other endpoints out of the choice rather than by shortening the list the balancer sees, which matters for \fBhash\fR: shortening it would move every key, while leaving endpoints out moves only theirs.
 .SS "Taking something out of rotation: drain and maintenance"
 .PP
 Draining is \fBnot\fR the same as unhealthy, and the difference is the point. An unhealthy endpoint is one the proxy found broken; a drained one is one a person decided to stop sending work to. So it is set from outside \[u2014] \fBxproxyctl drain POOL [ADDRESS]\fR, \fBPOST /v1/drain\fR, the GUI \[u2014] and it \fBsurvives a reload\fR, because a reload builds new pools and an operator who drained a machine to patch it did not mean "until the next configuration change".

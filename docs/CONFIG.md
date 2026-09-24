@@ -57,6 +57,7 @@ on the first line of the file to enable it.
 | `listeners` | list | required, at least one | See below |
 | `limits` | object | | Global protections |
 | `server_header` | string | `""` | Value of the `Server` response header. Empty removes it. |
+| `zone` | name | `""` | The failure domain this node is in — an availability zone, a rack, a site. It is what an upstream's `locality` policy compares an endpoint's `zone` against, so a node prefers the endpoints beside it. Empty means the node does not know where it is, and a locality policy then prefers nothing |
 | `error_pages` | object | none | Replace the proxy's plain status bodies (denials, unknown routes, upstream failures, static misses) with documents; see "server.error_pages" below |
 | `session_tickets` | object | none (keys per process, rotated by the Go runtime) | Derive the TLS session ticket keys of every TLS listener from a shared secret file so that a ticket issued by one node resumes on every node; see "server.session_tickets" below. Changing the section needs a restart |
 | `shutdown_timeout` | duration | `30s` | Drain time on stop, and the minimum an old generation is kept for after a reload. A generation still serving a request when it expires is kept until that request ends, so a long upload or an SSE stream is not cut; a hard cap of ten times this (at least five minutes) bounds one that never ends |
@@ -2676,9 +2677,12 @@ Memory: at most 64 x 8192 buckets per policy.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | |
-| `balancer` | `round_robin`, `weighted`, `least_conn`, `hash` | `round_robin` | |
+| `balancer` | `round_robin`, `weighted`, `least_conn`, `hash`, `p2c`, `ewma` | `round_robin` | See below for the last two |
 | `hash_on` | `client_ip`, `header:<Name>`, `cookie:<Name>` | `client_ip` | For `hash`; missing input falls back to the client address |
-| `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000, canary: bool, drain: bool, max_connections: int}`; `canary` marks the endpoints the `canary` policy selects, `drain` takes one out of rotation and `max_connections` bounds what is in flight to it. An address may instead be `unix:/path/to/socket` — see below |
+| `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000, canary: bool, drain: bool, max_connections: int, priority: 0..99, zone: name}`; `canary` marks the endpoints the `canary` policy selects, `drain` takes one out of rotation, `max_connections` bounds what is in flight to it, and `priority` and `zone` tier it — see below. An address may instead be `unix:/path/to/socket` |
+| `locality` | object | none | `{prefer_zone: bool, min_local: int}`: prefer the endpoints of this node's own `server.zone` |
+| `address_family` | `any`, `ipv4`, `ipv6` | `any` | Which of a dual-stack endpoint's addresses may be dialled. `any` races the two families as RFC 8305 describes |
+| `fallback_delay` | duration | `300ms` | How long the second family is held back in that race; at most 10s, and a negative value tries the families in order instead |
 | `max_connections_per_endpoint` | int | `0` (none) | Default for every endpoint's own `max_connections` |
 | `max_connection_age` | duration | `0` (none) | How long one upstream connection is kept; at least 1s, at most 24h. See below |
 | `maintenance` | bool | `false` | Take the whole pool out of rotation: it offers no endpoint, so a route over it answers as it does when everything is unhealthy |
@@ -2708,6 +2712,107 @@ Memory: at most 64 x 8192 buckets per policy.
 | `retry_on` | list | `[]` | Response statuses treated as a failed attempt: `5xx`, `500`, `502`, `503`, `504`, `429`. The response is discarded, the endpoint marked as failed for outlier ejection, and the next endpoint tried within the `retries` budget; the last attempt's response is returned as it is. Needs `retries` above 0 |
 | `retry_budget` | object | none | Caps retries (and hedged copies) against live traffic so a struggling pool is not buried under a retry storm; see below. Without it, every retry `retries` allows is sent |
 | `hedge` | object | none | Sends staggered copies of a slow idempotent request to other endpoints and keeps the first usable answer; see below |
+
+#### Dual-stack endpoints: the race, and restricting it
+
+An endpoint name with both an A and an AAAA record has two ways to be
+reached, and the one that is broken costs a connect timeout on every
+request that tries it first. With `address_family: any` (the default) the
+families are **raced** as RFC 8305 describes: the first is tried, the
+other follows after `fallback_delay` (300ms, the value the RFC
+recommends), and whichever connects first wins. An estate that has just
+turned IPv6 on does not have to know about any of this.
+
+`ipv4` or `ipv6` dials that family **only**. It is for the estate where
+one family is the only one that works, and naming it means a name that
+also has the other kind of record cannot quietly use the family the
+policy meant to exclude — which is the failure a preference would hide.
+
+A negative `fallback_delay` turns the race off, so the families are tried
+in order; naming one family makes the delay meaningless and warns.
+
+#### Two balancers that read what the endpoints are doing
+
+`least_conn` scans every endpoint and takes the best, which has a failure
+mode of its own: every proxy in a fleet sees the same "best" endpoint at
+the same moment and they all send to it together, so the herd moves from
+one endpoint to the next.
+
+**`p2c`** — power of two choices — takes two endpoints at random and uses
+the better of those, by in-flight count per unit of weight. One
+comparison is enough to avoid the worst endpoint, and the randomness
+means two proxies rarely agree on where to send, so load spreads instead
+of sloshing. It is the one to reach for when the endpoints are equal and
+the load varies, and it is the one that fits a pool with no responses to
+measure — a layer 4 relay's.
+
+**`ewma`** weighs endpoints by the smoothed time to first byte the pool
+already keeps for outlier detection, times the queue a request would
+join: an estimate of how long a request sent now would take. An endpoint
+answering slowly gets less work **long before** it is slow enough to fail
+a health check or be ejected, which is the difference between shedding
+load away from a struggling machine and waiting for it to break.
+
+An endpoint with no latency sample yet costs nothing, so a new or
+recovered one is tried rather than starved by the fact that nothing is
+known about it; `slow_start` is what keeps that from being a flood. On a
+quiet pool, where nothing distinguishes the endpoints, both balancers
+spread uniformly rather than settling on the first.
+
+#### Tiers: priority, backup and locality
+
+`endpoints[].priority` tiers a pool. The endpoints of the **lowest
+priority number that has an available member** carry the traffic and the
+rest are ignored; when that tier has nothing left, the next one takes
+over, and hands it back when the first returns. A retry that has used up
+a tier falls to the next one too.
+
+That is how a failover pool is written, and a **backup endpoint is simply
+one in a later tier** — not a special kind of endpoint:
+
+```yaml
+upstreams:
+  - name: app
+    endpoints:
+      - {address: "10.0.1.10:8080"}               # priority 0
+      - {address: "10.0.1.11:8080"}
+      - {address: "10.9.9.9:8080", priority: 1}   # only when both are gone
+```
+
+`locality` prefers the endpoints in this node's own `server.zone` over
+the ones elsewhere, which keeps traffic off the links between sites and
+away from their latency:
+
+```yaml
+server:
+  zone: east
+upstreams:
+  - name: app
+    locality: {prefer_zone: true, min_local: 2}
+    endpoints:
+      - {address: "10.0.1.10:8080", zone: east}
+      - {address: "10.0.1.11:8080", zone: east}
+      - {address: "10.1.1.10:8080", zone: west}
+```
+
+It is a **preference, not a pin**. An estate that pinned traffic to one
+zone would lose the service when the zone lost it, which is the opposite
+of what zones are for — so when the local endpoints are gone, the others
+take the traffic. `min_local` is how many local endpoints must be
+available before the remote ones are ignored: below it everything is
+used, so a zone down to one surviving endpoint does not take the whole
+load alone.
+
+An endpoint with **no zone is local to every zone**: "somewhere unknown"
+is not a reason to send traffic across a site. `prefer_zone` without
+`server.zone` is refused at load — there would be nothing to compare
+against — and a pool where no endpoint names a zone warns, because it
+would prefer nothing.
+
+Tiering is applied by leaving the other endpoints out of the choice
+rather than by shortening the list the balancer sees, which matters for
+`hash`: shortening it would move every key, while leaving endpoints out
+moves only theirs.
 
 #### Taking something out of rotation: drain and maintenance
 

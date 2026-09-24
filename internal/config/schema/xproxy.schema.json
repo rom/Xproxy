@@ -1544,8 +1544,16 @@
           "description": "MaxConnections bounds the requests or connections in flight to this endpoint at once. Past it the endpoint is passed over as if it were unavailable, and the pool's other endpoints take the work; when every endpoint is at its bound the caller sees what it sees when every endpoint is unhealthy. It is for the endpoint that cannot take what the pool can give it: a small instance beside large ones, a database-bound service with a connection pool of its own, a machine that answers slowly under load rather than refusing. 0 is no bound, and upstreams[].max_connections_per_endpoint sets it for a whole pool at once.",
           "type": "integer"
         },
+        "priority": {
+          "description": "Priority tiers the endpoint. The pool uses the endpoints of the lowest priority number that has an available member and ignores the rest; when every endpoint of that tier is unavailable, the next tier takes the traffic. 0 is the first tier. It is how a failover pool is written: the endpoints that should carry the traffic at priority 0, the ones that should carry it only when those are gone at priority 1. A backup endpoint is simply one in a later tier.",
+          "type": "integer"
+        },
         "weight": {
           "type": "integer"
+        },
+        "zone": {
+          "description": "Zone names the failure domain this endpoint is in, for a pool with a locality policy. An endpoint with no zone is neutral: it is preferred wherever the node is, because \"somewhere unknown\" is not a reason to send traffic across a site.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -2778,6 +2786,21 @@
               "$ref": "#/$defs/VNCListener"
             }
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Locality": {
+      "description": "Locality prefers the endpoints in the node's own zone (server.zone) over the ones elsewhere, which is what keeps traffic off the links between sites and away from their latency -- while still using the other sites when this one has nothing left. It is expressed as a preference rather than a restriction on purpose: an estate that pinned traffic to one zone would lose a service entirely when that zone lost it, which is the opposite of what zones are for.",
+      "type": "object",
+      "properties": {
+        "min_local": {
+          "description": "MinLocal is how many endpoints of this node's own zone must be available before the others are ignored. Below it the pool uses every endpoint, so a zone with one surviving endpoint does not take the whole load alone. Default 1.",
+          "type": "integer"
+        },
+        "prefer_zone": {
+          "description": "PreferZone turns the preference on. Without server.zone set there is nothing to compare against, and validation says so.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -5363,6 +5386,10 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "zone": {
+          "description": "Zone names the failure domain this node is in -- an availability zone, a rack, a site. It is what an upstream's locality policy compares an endpoint's zone against, so a node prefers the endpoints beside it. Empty means the node does not know where it is, and a locality policy then prefers nothing.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -6052,6 +6079,10 @@
         "name"
       ],
       "properties": {
+        "address_family": {
+          "description": "AddressFamily decides which of a dual-stack endpoint's addresses may be dialled: any (the default), ipv4 or ipv6. With any, the two families are raced as RFC 8305 describes -- the first family is tried, and after FallbackDelay the other is tried in parallel, with whichever connects first winning. That is what keeps a host whose IPv6 route is broken from costing a connect timeout on every request, and it is the default because an estate that has just turned IPv6 on should not have to know about it. ipv4 or ipv6 is for the estate where one family is the only one that works: it dials that family only, so a name with both kinds of record does not silently use the one the policy meant to exclude.",
+          "type": "string"
+        },
         "affinity": {
           "description": "Affinity enables signed cookie session affinity.",
           "allOf": [
@@ -6100,6 +6131,11 @@
             "$ref": "#/$defs/Endpoint"
           }
         },
+        "fallback_delay": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
         "h2c": {
           "description": "H2C speaks HTTP/2 without TLS to http endpoints (gRPC backends). Default false.",
           "type": "boolean"
@@ -6124,6 +6160,14 @@
           "allOf": [
             {
               "$ref": "#/$defs/Hedge"
+            }
+          ]
+        },
+        "locality": {
+          "description": "Locality prefers the endpoints in this node's own zone.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Locality"
             }
           ]
         },

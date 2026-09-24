@@ -1399,9 +1399,19 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		}
 	}
 	switch u.Balancer {
-	case "round_robin", "weighted", "least_conn", "hash":
+	case "round_robin", "weighted", "least_conn", "hash", "p2c":
+	case "ewma":
+		// The latency it reads is the same smoothed time to first byte
+		// outlier detection uses, and it is recorded per response. A
+		// pool that never sees a response -- a layer 4 relay's -- has
+		// nothing for this balancer to read, and p2c is the one that
+		// reads what such a pool does have.
+		if u.HealthCheck != nil && (u.HealthCheck.Type == "tcp" || u.HealthCheck.Type == "udp") {
+			v.warnf("%s.balancer: ewma weighs endpoints by the time to first byte of a response, which a pool checked with "+
+				"type %s has none of; p2c reads the in-flight count instead", p, u.HealthCheck.Type)
+		}
 	default:
-		v.errf("%s.balancer: must be round_robin, weighted, least_conn or hash", p)
+		v.errf("%s.balancer: must be round_robin, weighted, least_conn, hash, p2c or ewma", p)
 	}
 	if u.Balancer == "hash" {
 		switch {
@@ -1477,6 +1487,17 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			v.errf("%s.canary: set without a canary section", dp)
 		}
 	}
+	switch u.AddressFamily {
+	case "", "any", "ipv4", "ipv6":
+	default:
+		v.errf("%s.address_family: must be any, ipv4 or ipv6", p)
+	}
+	if u.FallbackDelay > Duration(10*time.Second) {
+		v.errf("%s.fallback_delay: at most 10s; it is the pause before the second address family is tried, not a timeout", p)
+	}
+	if u.FallbackDelay != 0 && (u.AddressFamily == "ipv4" || u.AddressFamily == "ipv6") {
+		v.warnf("%s.fallback_delay: address_family %s dials one family, so there is no second one to hold back", p, u.AddressFamily)
+	}
 	if u.MaxConnectionAge < 0 || u.MaxConnectionAge > Duration(24*time.Hour) {
 		v.errf("%s.max_connection_age: must not be negative and at most 24h", p)
 	}
@@ -1495,6 +1516,20 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		case u.Scheme == "https":
 			v.warnf("%s.max_connection_age: an https pool may negotiate HTTP/2, and the age applies only to HTTP/1.1 connections, "+
 				"which carry one exchange at a time; on a connection carrying many streams it is ignored", p)
+		}
+	}
+	if l := u.Locality; l != nil {
+		if l.MinLocal < 0 || l.MinLocal > 1000 {
+			v.errf("%s.locality.min_local: must be 0..1000", p)
+		}
+		switch {
+		case !l.PreferZone && l.MinLocal > 0:
+			v.errf("%s.locality.min_local: set without prefer_zone, which is the thing it qualifies", p)
+		case l.PreferZone && u.NodeZone == "":
+			v.errf("%s.locality.prefer_zone: needs server.zone, or there is nothing for an endpoint's zone to be compared against", p)
+		case l.PreferZone && !v.anyEndpointZone(u):
+			v.warnf("%s.locality.prefer_zone: no endpoint of this pool names a zone, and an endpoint with no zone is local to every "+
+				"zone, so this prefers nothing", p)
 		}
 	}
 	if u.MaxConnectionsPerEndpoint < 0 {
@@ -1540,6 +1575,12 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		}
 		if e.MaxConnections < 0 {
 			v.errf("%s.max_connections: must not be negative", ep)
+		}
+		if e.Priority < 0 || e.Priority > 99 {
+			v.errf("%s.priority: must be 0..99", ep)
+		}
+		if e.Zone != "" && !nameRE.MatchString(e.Zone) {
+			v.errf("%s.zone: %q is not a name", ep, e.Zone)
 		}
 	}
 	if sockets > 0 {
@@ -2926,6 +2967,21 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	if t.QUIC && t.ProxyProtocol {
 		v.errf("%s.quic: the PROXY protocol header cannot be sent on a datagram flow; disable proxy_protocol or quic", p)
 	}
+}
+
+// anyEndpointZone reports whether any endpoint of a pool names a zone,
+// including the ones discovery will produce (which cannot be known, so a
+// discovery section counts as "maybe").
+func (v *validator) anyEndpointZone(u *Upstream) bool {
+	if u.Discovery != nil {
+		return true
+	}
+	for _, e := range u.Endpoints {
+		if e.Zone != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // connectionRate validates an accept rate wherever one is set: on

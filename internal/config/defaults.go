@@ -120,6 +120,9 @@ func applyDefaults(c *Config) {
 	setStr(&c.Server.Normalization.Unicode, "off")
 	connectionRateDefaults(l.ConnectionRate, l.ConnectionRatePerSource)
 
+	for i := range c.Upstreams {
+		c.Upstreams[i].NodeZone = s.Zone
+	}
 	for i := range s.Listeners {
 		setStr(&s.Listeners[i].Kind, "http")
 		connectionRateDefaults(s.Listeners[i].ConnectionRate, s.Listeners[i].ConnectionRatePerSource)

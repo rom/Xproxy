@@ -21,6 +21,15 @@ import (
 
 // Pool is a named, load balanced set of endpoints with a shared transport.
 type Pool struct {
+	// tiered is set when any endpoint names a priority or the pool has a
+	// locality policy, so the ordinary pool pays nothing for either;
+	// zone, preferZone and minLocal are the locality policy itself. See
+	// tiers.go.
+	tiered     bool
+	preferZone bool
+	minLocal   int
+	zone       string
+
 	// Retired counts connections closed for outliving
 	// max_connection_age.
 	Retired atomic.Uint64
@@ -102,6 +111,10 @@ func (p *Pool) newBalancer(eps []*Endpoint) balancer {
 		return &leastConn{}
 	case "hash":
 		return newRing(eps)
+	case "p2c":
+		return newP2C()
+	case "ewma":
+		return newEWMA()
 	default:
 		return &roundRobin{}
 	}
@@ -113,6 +126,20 @@ func (p *Pool) newEndpoint(address string, weight int, canary, discovered bool) 
 	ep := &Endpoint{Address: address, Weight: weight, Canary: canary, Discovered: discovered, index: p.nextIndex, slowStart: p.Cfg.SlowStart.D()}
 	if path, ok := SocketPath(address); ok {
 		ep.socket, ep.urlHost = path, urlAuthority(path)
+	}
+	// The per endpoint policy: the pool's default, then whatever the
+	// endpoint's own entry says. A discovered endpoint matches no entry
+	// and keeps the pool's default, which is the only sensible reading --
+	// nothing in a registry record says how much this one can take.
+	ep.maxActive = int64(p.Cfg.MaxConnectionsPerEndpoint)
+	for _, ec := range p.Cfg.Endpoints {
+		if ec.Address != address {
+			continue
+		}
+		if ec.MaxConnections > 0 {
+			ep.maxActive = int64(ec.MaxConnections)
+		}
+		ep.priority, ep.zone = ec.Priority, ec.Zone
 	}
 	p.nextIndex++
 	// Without active checks every endpoint starts healthy. With checks,
@@ -255,6 +282,14 @@ func (p *Pool) Status() PoolStatus {
 // checks and Stop to release resources.
 func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 	p := &Pool{Name: cfg.Name, Cfg: cfg, Scheme: cfg.Scheme, log: log.With("upstream", cfg.Name), now: time.Now, randFloat: rand.Float64}
+	for _, e := range cfg.Endpoints {
+		if e.Priority != 0 {
+			p.tiered = true
+		}
+	}
+	if l := cfg.Locality; l != nil && l.PreferZone {
+		p.tiered, p.preferZone, p.minLocal, p.zone = true, true, max(l.MinLocal, 1), cfg.NodeZone
+	}
 	eps := make([]*Endpoint, 0, len(cfg.Endpoints))
 	for _, e := range cfg.Endpoints {
 		eps = append(eps, p.newEndpoint(e.Address, e.Weight, e.Canary, false))
@@ -305,7 +340,14 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 			return nil, fmt.Errorf("upstream %s: %w", cfg.Name, err)
 		}
 	}
-	dialer := &net.Dialer{Timeout: cfg.Timeouts.Connect.D(), KeepAlive: 30 * time.Second}
+	dialer := &net.Dialer{Timeout: cfg.Timeouts.Connect.D(), KeepAlive: 30 * time.Second,
+		FallbackDelay: cfg.FallbackDelay.D()}
+	// The network the dialler is given decides which of a dual-stack
+	// endpoint's addresses may be used. "tcp" tries both, racing them as
+	// RFC 8305 describes; "tcp4" and "tcp6" are for the estate where one
+	// family is the only one that works, and naming it means a name with
+	// both kinds of record cannot quietly use the other.
+	family := familyNetwork(cfg.AddressFamily)
 	// A socket endpoint's URL carries a synthetic authority, so the
 	// dialler is the one place that knows a request is going to a path
 	// rather than to a host. Anything that is not a known authority is
@@ -317,6 +359,15 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 		}
 	}
 	dial := dialer.DialContext
+	if family != "tcp" {
+		inner := dial
+		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			if network == "tcp" { // a socket endpoint's "unix" is left alone
+				network = family
+			}
+			return inner(ctx, network, address)
+		}
+	}
 	if len(sockets) > 0 {
 		inner := dial
 		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -539,6 +590,9 @@ func (p *Pool) Pick(hashKey, cookie string, exclude map[*Endpoint]bool, mode Can
 	}
 	now := p.now()
 	eps := p.endpoints()
+	// Tiering first: priority and locality decide which endpoints are
+	// candidates at all, and the balancer then chooses among those.
+	exclude = p.tierExclude(eps, exclude, now)
 	if p.aff != nil && cookie != "" {
 		if i := p.aff.verify(cookie, now); i >= 0 {
 			if e := p.byIndex(eps, i); e != nil && available(e, exclude, now) {
@@ -705,4 +759,16 @@ func (p *Pool) Stats() []Stats {
 		out = append(out, e.stats(now))
 	}
 	return out
+}
+
+// familyNetwork maps an address_family to the network a dialler takes.
+func familyNetwork(family string) string {
+	switch family {
+	case "ipv4":
+		return "tcp4"
+	case "ipv6":
+		return "tcp6"
+	default:
+		return "tcp"
+	}
 }
