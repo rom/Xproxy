@@ -797,6 +797,61 @@ Open findings of the earlier rounds:
   all of them, plus where a version is stripped before the backend sees
   it and how an old one is deprecated and then held.
 
+- **The file a DNS threat feed actually ships**
+  (`server.listeners[].dns.rpz`, `draft-vixie-dns-rpz`).
+
+  Response policy zones. `block` and `block_file` take a flat list of
+  names, which is what an operator writes by hand; a feed publishes a
+  zone file, where the policy is in the records -- one file saying "this
+  name does not exist", "this one answers 10.0.0.1" and "this one is an
+  exception" -- and it is transferred and diffed by tools that exist
+  already. Until now a subscription had to be converted by an hourly
+  script somebody wrote once and nobody owns, and the conversion threw
+  away everything but the names.
+
+  The QNAME trigger and the five actions are implemented -- `CNAME .` for
+  NXDOMAIN, `CNAME *.` for NODATA, `rpz-passthru.` for an exception,
+  `rpz-drop.` for no answer at all, `rpz-tcp-only.` for truncated over
+  UDP -- plus local data (A, AAAA, TXT, and a CNAME the client resolves
+  itself). Matching is what a zone lookup does: the name, then a wildcard
+  on each parent, longest first, so `good.bank.example CNAME
+  rpz-passthru.` is an exception for that host while `*.bank.example
+  CNAME .` still denies everything else below it. Zones are ordered, and
+  that is the feature: the estate's own exception zone goes in front of a
+  subscription and nothing below can take an exception back. A zone's
+  `action` overrides every rule in it, which is how a new feed is tried
+  out (`passthru`) before it is trusted -- validation says out loud that
+  such a zone blocks nothing.
+
+  **The triggers it does not implement fail the load by name**:
+  `rpz-client-ip`, `rpz-ip`, `rpz-nsdname` and `rpz-nsip` select on the
+  client, on the addresses inside an answer and on the name servers of
+  the delegation -- the last two needing the resolver to police a path
+  this one forwards. A zone whose rules half apply is a policy the
+  operator believes is working, so `ignore_unsupported: true` is what
+  loads such a zone without them, counting what it skipped and saying so
+  in the advice; where an answer's addresses are the concern,
+  `answer_policy` screens them already and by range rather than by feed.
+
+  A zone that cannot be read or parsed fails the load and the reload; a
+  file that disappears or stops parsing *after* the load keeps the rules
+  already read and says so in the error log, because a feed rewritten in
+  place must not empty the policy for the moment that takes. Files are
+  re-read on their own (`refresh`, 5m by default, `0` for never) and only
+  one whose size or modification time moved is read again. Every decision
+  writes a security event with the zone, the rule and the action, and a
+  deny event under the new `dns_rpz` reason, which a ban trigger can name:
+  a client walking a feed's names is one to stop at the edge rather than
+  answer NXDOMAIN to a thousand times. `rpz_matched`, `rpz_passthru` and
+  the per-zone rule counts are in `xproxyctl dns`
+  (`xproxy_dns_rpz_total{result}`, `xproxy_dns_rpz_rules`).
+
+  Thirty-three deliberate weakenings were each caught, five only after
+  the tests were extended -- among them the one that changed the code: a
+  `$ORIGIN` moved part way down a file was taking *itself* off the rules
+  instead of the zone's own name, which turned a rule for `evil.sub` into
+  a rule for `evil`.
+
 - **Fixed: a DNS listener stopped the moment it started raced its own
   WaitGroup.** `Serve` registered each goroutine with `wg.Add` outside any
   lock while `Shutdown` called `wg.Wait`, and it published the DoH server

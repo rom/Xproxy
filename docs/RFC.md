@@ -285,6 +285,7 @@ not mistaken for an omission:
 | Encrypted Client Hello | `draft-ietf-tls-esni` | Version `0xfe0d` |
 | X25519MLKEM768 | `draft-kwiatkowski-tls-ecdhe-mlkem`, FIPS 203 | |
 | pcapng | `draft-ietf-opsawg-pcapng` | The capture file format |
+| DNS Response Policy Zones | `draft-vixie-dns-rpz` (ISC) | The QNAME trigger and the five policy actions -- NXDOMAIN, NODATA, PASSTHRU, DROP, TCP-only -- plus local data, read from zone files in the master format a feed publishes. The `rpz-client-ip`, `rpz-ip`, `rpz-nsdname` and `rpz-nsip` triggers are refused by name at load: the last two need the resolver to police a delegation path this one forwards, and where an answer's addresses are the concern `answer_policy` screens them by range. `ignore_unsupported` loads such a zone without those rules and counts them |
 | WebTransport over HTTP/3 | W3C and `draft-ietf-webtrans-http3` | |
 | OpenID Connect Core 1.0 | OpenID Foundation | |
 | SAML 2.0 Core, Bindings and Profiles | OASIS | As a service provider: the web browser single sign-on profile with the HTTP Redirect binding for requests and HTTP POST for responses. A deliberately narrow profile -- one unencrypted assertion, exclusive canonicalization, SHA-256 and above, the signing key from the configuration -- and no single logout. [CONFIG.md](CONFIG.md) lists every refusal and the reason for it |

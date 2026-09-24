@@ -2319,7 +2319,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
-	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
+	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true, "dns_rpz": true,
 	"account_abuse": true, "api_abuse": true, "honeytoken": true, "scim": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
@@ -4551,6 +4551,49 @@ func (v *validator) dnsRecords(p string, d *DNSListener) {
 	v.dnsViews(p, d)
 	v.dns64(p+".dns64", d.DNS64)
 	v.dnssecAggressive(p+".dnssec", d.DNSSEC)
+	v.dnsRPZ(p+".rpz", d.RPZ)
+}
+
+// dnsRPZ checks the response policy zones. The file itself is read at
+// load by the resolver, which is where a broken zone fails; what is
+// checked here is what a file cannot say.
+func (v *validator) dnsRPZ(p string, r *DNSRPZ) {
+	if r == nil {
+		return
+	}
+	if len(r.Zones) == 0 {
+		v.errf("%s.zones: no zones, so the section does nothing; list them or drop it", p)
+	}
+	if r.Refresh != nil && *r.Refresh != 0 && r.Refresh.D() < 10*time.Second {
+		v.errf("%s.refresh: must be at least 10s, or 0 for never; a feed nobody rewrites that often is a feed this would only stat", p)
+	}
+	seen := map[string]bool{}
+	for i := range r.Zones {
+		z := &r.Zones[i]
+		q := fmt.Sprintf("%s.zones[%d]", p, i)
+		if !nameRE.MatchString(z.Name) {
+			v.errf("%s.name: %q is not a valid name", q, z.Name)
+		} else if seen[z.Name] {
+			v.errf("%s.name: duplicate %q", q, z.Name)
+		}
+		seen[z.Name] = true
+		if z.File == "" {
+			v.errf("%s.file: required", q)
+		} else {
+			v.file(q+".file", z.File)
+		}
+		switch z.Action {
+		case "", dns.RPZZoneAction, dns.RPZNXDomain, dns.RPZNoData, dns.RPZPassthru, dns.RPZDrop, dns.RPZTCPOnly:
+		default:
+			v.errf("%s.action: must be zone, nxdomain, nodata, passthru, drop or tcp_only", q)
+		}
+		if z.Action == dns.RPZPassthru {
+			v.warnf("%s.action is passthru, so every rule in this zone becomes an exception and the zone blocks nothing", q)
+		}
+		if z.IgnoreUnsupported {
+			v.warnf("%s.ignore_unsupported is on, so the rules of this zone that use an address or name-server trigger are skipped: xproxyctl dns says how many", q)
+		}
+	}
 }
 
 func (v *validator) dnsRecordSet(p string, recs []DNSRecord) {

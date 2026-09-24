@@ -1125,6 +1125,110 @@ views:
 (`xproxy_dns_viewed_total`), and the access log line carries `view` for
 them (and nothing for a client in no view).
 
+#### server.listeners[].dns.rpz
+
+Response policy zones: the file format a DNS threat feed actually ships
+in.
+
+`block` and `block_file` take a flat list of names, which is what an
+operator writes by hand. A feed publishes a zone file instead, and the
+policy is in the records — so one file says "this name does not exist",
+"this one answers 10.0.0.1" and "this one is an exception", and the file
+is transferred and diffed by tools that already exist. Reading it here
+means a subscription is dropped in rather than converted every hour by a
+script somebody wrote once and nobody owns.
+
+```yaml
+server:
+  listeners:
+    - name: resolver
+      kind: dns
+      address: "0.0.0.0:53"
+      dns:
+        upstreams: ["tls://1.1.1.1:853"]
+        rpz:
+          # How often a zone file's size and modification time are
+          # checked. 0 means never, and then a reload picks a feed up.
+          refresh: 5m
+          zones:
+            # Order is the policy: the first zone with a rule for the
+            # name decides, so the estate's own exceptions go first and
+            # nothing below can take them back.
+            - name: our-own
+              file: /etc/xproxy/rpz/exceptions.rpz
+            - name: malware-feed
+              file: /var/lib/xproxy/rpz/malware.rpz
+            - name: new-feed
+              file: /var/lib/xproxy/rpz/trial.rpz
+              # Every rule of this zone becomes this action, which is how
+              # a feed is tried out before it is trusted.
+              action: passthru
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `refresh` | duration | `5m` | How often a zone file's size and modification time are checked; at least 10s, or `0` for never |
+| `zones[].name` | name | required, unique | Identifies the zone in the access log, the security log and `xproxyctl dns` |
+| `zones[].file` | path | required | The zone file, in the master format a feed publishes |
+| `zones[].action` | `zone`, `nxdomain`, `nodata`, `passthru`, `drop`, `tcp_only` | `zone` | Replaces every rule's own action; `zone` honours the file |
+| `zones[].ignore_unsupported` | bool | `false` | Load a zone that carries a trigger this resolver does not implement, skipping those rules and counting them |
+
+**The records, and what each one means.** A rule is written as the name
+with the zone's own name after it (`evil.example.rpz.local` in a zone
+whose origin is `rpz.local`), and that suffix comes off before the rule
+is matched:
+
+| Record | Action |
+|--------|--------|
+| `CNAME .` | NXDOMAIN: the name does not exist |
+| `CNAME *.` | NODATA: it exists and has nothing of the type asked for |
+| `CNAME rpz-passthru.` | An exception: the query is answered normally |
+| `CNAME rpz-drop.` | No answer at all, counted as a drop |
+| `CNAME rpz-tcp-only.` | Truncated over UDP, so the client retries over TCP; refused if it is already TCP |
+| `A`, `AAAA`, `TXT` | Local data: this answer instead of the upstream's |
+| `CNAME name.example.` | Local data: the CNAME is answered, and the client resolves the target itself |
+
+A wildcard rule (`*.evil.example…`) covers the names *under* one and not
+the name itself, and matching is what a zone lookup does: the name, then
+a wildcard on each parent, longest first. So `good.bank.example CNAME
+rpz-passthru.` is an exception for that host while `*.bank.example CNAME
+.` still denies everything else below it — and, as in any zone, a rule
+without a wildcard covers that one name and nothing under it.
+
+`$ORIGIN` and `$TTL` are read, an `SOA` and `NS` records say whose zone
+it is rather than being rules, and the zone's apex carries neither. A
+record continued over lines in parentheses is refused rather than half
+read: a feed writes one record per line, and a reader that guesses at the
+rest applies a rule nobody wrote. A file with neither an `$ORIGIN` nor an
+SOA owner of its own — which a plain download of a feed sometimes is — is
+read as a list of absolute names.
+
+**The triggers this does not implement**, and a zone carrying one fails
+the load naming it: `rpz-client-ip`, `rpz-ip`, `rpz-nsdname` and
+`rpz-nsip` select on the client, on the addresses inside an answer, and
+on the name servers of the delegation — the last two needing the resolver
+to police a path this one forwards. `ignore_unsupported: true` loads such
+a zone without those rules and counts them (`xproxyctl dns` shows the
+tally), which is a decision to make deliberately rather than a default,
+because a policy that half applies is one the operator believes is
+working. Where the addresses in an answer are the concern,
+`answer_policy` screens them already, and by range rather than by feed.
+
+A zone file that cannot be read or parsed **fails the load**, and so
+does a reload: a policy zone that silently matches nothing is worse than
+none, because the operator believes the feed is in force. A file that
+disappears or stops parsing *after* the load keeps the rules already
+read and says so in the error log, since a feed being rewritten in place
+must not empty the policy for the moment that takes.
+
+Every decision writes a security event (`dns_rpz`, with the zone, the
+rule and the action) and a deny event under the `dns_rpz` reason, which a
+ban trigger can name: a client walking a feed's names is one to stop at
+the edge. `rpz_matched` and `rpz_passthru` are in `xproxyctl dns` with
+the zones, their rule counts and when each was read
+(`xproxy_dns_rpz_total{result="acted"|"passthru"}`,
+`xproxy_dns_rpz_rules`).
+
 #### server.listeners[].dns.dnssec
 
 With the section present the listener is a validating resolver in front
@@ -4319,7 +4423,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

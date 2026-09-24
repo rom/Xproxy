@@ -350,7 +350,9 @@ func (r LocalRecord) Rdata() ([]byte, error) {
 			return nil, errors.New("a TXT string longer than 255 bytes")
 		}
 		return append([]byte{byte(len(r.Text))}, r.Text...), nil
-	case TypePTR:
+	case TypePTR, TypeCNAME:
+		// Both carry a name and nothing else: a PTR's target, and the
+		// name a policy zone's local data points at.
 		return packName(r.Text)
 	default:
 		return r.SVCB.Encode()

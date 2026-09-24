@@ -1316,6 +1316,14 @@
             "$ref": "#/$defs/DNSRecord"
           }
         },
+        "rpz": {
+          "description": "RPZ are response policy zones: the file format a DNS threat feed ships in, where the policy is in the records rather than in a key per behaviour.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/DNSRPZ"
+            }
+          ]
+        },
         "sinkhole_ipv4": {
           "description": "SinkholeIPv4 and SinkholeIPv6 answer A and AAAA for blocked names with block_action sinkhole. Default 0.0.0.0 and ::.",
           "type": "string"
@@ -1357,6 +1365,48 @@
           "items": {
             "$ref": "#/$defs/DNSView"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "DNSRPZ": {
+      "description": "DNSView is a client-scoped answer set on a dns listener: split horizon. One name with two answers is an ordinary requirement -- a private address inside the estate and a public one outside, a laboratory network pointed at the test system, a guest network held to a stricter list. A view decides only what this resolver settles before it asks anything: the records it answers itself and the names it refuses. It has no upstream of its own on purpose: two views with different upstreams would answer the same question differently out of one shared cache, and a cache per view is a second resolver -- which is a second listener, said plainly, rather than hidden inside a view. DNSRPZ configures response policy zones read from zone files. Zones are tried in order, so a local exception zone goes in front of a subscription.",
+      "type": "object",
+      "properties": {
+        "refresh": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "zones": {
+          "description": "Zones are the policy zones, in order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DNSRPZZone"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "DNSRPZZone": {
+      "description": "DNSRPZZone is one zone file.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action replaces every rule's own action: nxdomain, nodata, passthru, drop, tcp_only, or \"zone\" (the default) to honour what the file says. An override is how a new feed is tried out.",
+          "type": "string"
+        },
+        "file": {
+          "description": "File is the zone file, in the master format a feed publishes.",
+          "type": "string"
+        },
+        "ignore_unsupported": {
+          "description": "IgnoreUnsupported loads a zone that carries a trigger this resolver does not implement (rpz-ip, rpz-client-ip, rpz-nsdname, rpz-nsip), skipping those rules and counting them. Without it such a zone fails the load, because a policy that half applies is worse than one that does not load.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Name identifies the zone in the access log, the security log and the status view.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -1519,7 +1569,6 @@
       "additionalProperties": false
     },
     "DNSView": {
-      "description": "DNSView is a client-scoped answer set on a dns listener: split horizon. One name with two answers is an ordinary requirement -- a private address inside the estate and a public one outside, a laboratory network pointed at the test system, a guest network held to a stricter list. A view decides only what this resolver settles before it asks anything: the records it answers itself and the names it refuses. It has no upstream of its own on purpose: two views with different upstreams would answer the same question differently out of one shared cache, and a cache per view is a second resolver -- which is a second listener, said plainly, rather than hidden inside a view.",
       "type": "object",
       "properties": {
         "block": {

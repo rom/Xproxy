@@ -2170,6 +2170,160 @@ views:
 .RE
 .PP
 \fBqueries_viewed\fR counts the queries a view answered (\fBxproxy_dns_viewed_total\fR), and the access log line carries \fBview\fR for them (and nothing for a client in no view).
+.SS "server.listeners[].dns.rpz"
+.PP
+Response policy zones: the file format a DNS threat feed actually ships in.
+.PP
+\fBblock\fR and \fBblock_file\fR take a flat list of names, which is what an operator writes by hand. A feed publishes a zone file instead, and the policy is in the records \[u2014] so one file says "this name does not exist", "this one answers 10.0.0.1" and "this one is an exception", and the file is transferred and diffed by tools that already exist. Reading it here means a subscription is dropped in rather than converted every hour by a script somebody wrote once and nobody owns.
+.PP
+.RS 4
+.nf
+.ft CR
+server:
+  listeners:
+    \- name: resolver
+      kind: dns
+      address: "0.0.0.0:53"
+      dns:
+        upstreams: ["tls://1.1.1.1:853"]
+        rpz:
+          # How often a zone file's size and modification time are
+          # checked. 0 means never, and then a reload picks a feed up.
+          refresh: 5m
+          zones:
+            # Order is the policy: the first zone with a rule for the
+            # name decides, so the estate's own exceptions go first and
+            # nothing below can take them back.
+            \- name: our\-own
+              file: /etc/xproxy/rpz/exceptions.rpz
+            \- name: malware\-feed
+              file: /var/lib/xproxy/rpz/malware.rpz
+            \- name: new\-feed
+              file: /var/lib/xproxy/rpz/trial.rpz
+              # Every rule of this zone becomes this action, which is how
+              # a feed is tried out before it is trusted.
+              action: passthru
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.0i) lbw(1.0i) lbx
+lw(1.2i) lw(1.0i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrefresh\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How often a zone file\(aqs size and modification time are checked;\: at least 10s,\: or \fB0\fR for never
+T}
+T{
+\fBzones[].\:name\fR
+T}	T{
+name
+T}	T{
+required,\: unique
+T}	T{
+Identifies the zone in the access log,\: the security log and \fBxproxyctl dns\fR
+T}
+T{
+\fBzones[].\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The zone file,\: in the master format a feed publishes
+T}
+T{
+\fBzones[].\:action\fR
+T}	T{
+\fBzone\fR,\: \fBnxdomain\fR,\: \fBnodata\fR,\: \fBpassthru\fR,\: \fBdrop\fR,\: \fBtcp_\:only\fR
+T}	T{
+\fBzone\fR
+T}	T{
+Replaces every rule\(aqs own action;\: \fBzone\fR honours the file
+T}
+T{
+\fBzones[].\:ignore_\:unsupported\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Load a zone that carries a trigger this resolver does not implement,\: skipping those rules and counting them
+T}
+.TE
+.PP
+\fBThe records, and what each one means.\fR A rule is written as the name with the zone\(aqs own name after it (\fBevil.example.rpz.local\fR in a zone whose origin is \fBrpz.local\fR), and that suffix comes off before the rule is matched:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbx
+lw(1.0i) lx.
+T{
+Record
+T}	T{
+Action
+T}
+T{
+\fBCNAME .\fR
+T}	T{
+NXDOMAIN: the name does not exist
+T}
+T{
+\fBCNAME *.\fR
+T}	T{
+NODATA: it exists and has nothing of the type asked for
+T}
+T{
+\fBCNAME rpz\-\:passthru.\fR
+T}	T{
+An exception: the query is answered normally
+T}
+T{
+\fBCNAME rpz\-\:drop.\fR
+T}	T{
+No answer at all,\: counted as a drop
+T}
+T{
+\fBCNAME rpz\-\:tcp\-\:only.\fR
+T}	T{
+Truncated over UDP,\: so the client retries over TCP;\: refused if it is already TCP
+T}
+T{
+\fBA\fR,\: \fBAAAA\fR,\: \fBTXT\fR
+T}	T{
+Local data: this answer instead of the upstream\(aqs
+T}
+T{
+\fBCNAME name.\:example.\fR
+T}	T{
+Local data: the CNAME is answered,\: and the client resolves the target itself
+T}
+.TE
+.PP
+A wildcard rule (\fB*.evil.example\[u2026]\fR) covers the names \fIunder\fR one and not the name itself, and matching is what a zone lookup does: the name, then a wildcard on each parent, longest first. So \fBgood.bank.example CNAME rpz\-passthru.\fR is an exception for that host while \fB*.bank.example CNAME .\fR still denies everything else below it \[u2014] and, as in any zone, a rule without a wildcard covers that one name and nothing under it.
+.PP
+\fB$ORIGIN\fR and \fB$TTL\fR are read, an \fBSOA\fR and \fBNS\fR records say whose zone it is rather than being rules, and the zone\(aqs apex carries neither. A record continued over lines in parentheses is refused rather than half read: a feed writes one record per line, and a reader that guesses at the rest applies a rule nobody wrote. A file with neither an \fB$ORIGIN\fR nor an SOA owner of its own \[u2014] which a plain download of a feed sometimes is \[u2014] is read as a list of absolute names.
+.PP
+\fBThe triggers this does not implement\fR, and a zone carrying one fails the load naming it: \fBrpz\-client\-ip\fR, \fBrpz\-ip\fR, \fBrpz\-nsdname\fR and \fBrpz\-nsip\fR select on the client, on the addresses inside an answer, and on the name servers of the delegation \[u2014] the last two needing the resolver to police a path this one forwards. \fBignore_unsupported: true\fR loads such a zone without those rules and counts them (\fBxproxyctl dns\fR shows the tally), which is a decision to make deliberately rather than a default, because a policy that half applies is one the operator believes is working. Where the addresses in an answer are the concern, \fBanswer_policy\fR screens them already, and by range rather than by feed.
+.PP
+A zone file that cannot be read or parsed \fBfails the load\fR, and so does a reload: a policy zone that silently matches nothing is worse than none, because the operator believes the feed is in force. A file that disappears or stops parsing \fIafter\fR the load keeps the rules already read and says so in the error log, since a feed being rewritten in place must not empty the policy for the moment that takes.
+.PP
+Every decision writes a security event (\fBdns_rpz\fR, with the zone, the rule and the action) and a deny event under the \fBdns_rpz\fR reason, which a ban trigger can name: a client walking a feed\(aqs names is one to stop at the edge. \fBrpz_matched\fR and \fBrpz_passthru\fR are in \fBxproxyctl dns\fR with the zones, their rule counts and when each was read (\fBxproxy_dns_rpz_total{result="acted"|"passthru"}\fR, \fBxproxy_dns_rpz_rules\fR).
 .SS "server.listeners[].dns.dnssec"
 .PP
 With the section present the listener is a validating resolver in front of its upstreams: every upstream query carries the DO bit, and each answer is checked before it reaches the client or the cache. Positive answers need a verified RRSIG on every RRset, chained through DNSKEY and DS records up to a trust anchor; negative answers need a verified NSEC or NSEC3 proof (NXDOMAIN, NODATA, wildcard, opt\-out); an insecure delegation proven by the parent makes answers below it insecure. The outcome shapes the answer: secure answers carry AD when the client set AD or DO, bogus answers become SERVFAIL (a \fBdns_bogus\fR security event) unless the client set CD, insecure and indeterminate answers pass without AD. Clients without DO never receive RRSIG, NSEC or NSEC3 records. Algorithms 5, 7, 8, 10, 13, 14 and 15 and DS digests 1, 2 and 4 are supported; a zone signed only with others counts as insecure (RFC 4035). DNSKEY and DS lookups go to the same upstreams and are cached per zone until the shorter of their TTL and signature validity, bounded to 10000 zones. \fBxproxyctl dns\fR shows secure, insecure, bogus and indeterminate counts, the key cache size and lookups.
@@ -9863,7 +10017,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

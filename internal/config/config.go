@@ -1435,6 +1435,10 @@ type DNSListener struct {
 	// client in none of them gets this listener's own records and block
 	// list.
 	Views []DNSView `yaml:"views"`
+	// RPZ are response policy zones: the file format a DNS threat feed
+	// ships in, where the policy is in the records rather than in a key
+	// per behaviour.
+	RPZ *DNSRPZ `yaml:"rpz"`
 	// TunnelDetection watches for data leaving inside the query names.
 	TunnelDetection *DNSTunnel `yaml:"tunnel_detection"`
 	// AnswerPolicy screens where an upstream answer points, which is
@@ -1677,6 +1681,48 @@ type DNS64 struct {
 // would answer the same question differently out of one shared cache,
 // and a cache per view is a second resolver -- which is a second
 // listener, said plainly, rather than hidden inside a view.
+// DNSRPZ configures response policy zones read from zone files. Zones
+// are tried in order, so a local exception zone goes in front of a
+// subscription.
+type DNSRPZ struct {
+	// Refresh is how often a zone file's size and modification time are
+	// checked. Unset takes 5m; 0 means never, and then a reload is what
+	// picks a feed up.
+	Refresh *Duration `yaml:"refresh"`
+	// Zones are the policy zones, in order.
+	Zones []DNSRPZZone `yaml:"zones"`
+}
+
+// RefreshInterval is the configured interval or the default.
+func (r *DNSRPZ) RefreshInterval() time.Duration {
+	if r == nil {
+		return 0
+	}
+	if r.Refresh == nil {
+		return 5 * time.Minute
+	}
+	return r.Refresh.D()
+}
+
+// DNSRPZZone is one zone file.
+type DNSRPZZone struct {
+	// Name identifies the zone in the access log, the security log and
+	// the status view.
+	Name string `yaml:"name"`
+	// File is the zone file, in the master format a feed publishes.
+	File string `yaml:"file"`
+	// Action replaces every rule's own action: nxdomain, nodata,
+	// passthru, drop, tcp_only, or "zone" (the default) to honour what
+	// the file says. An override is how a new feed is tried out.
+	Action string `yaml:"action"`
+	// IgnoreUnsupported loads a zone that carries a trigger this
+	// resolver does not implement (rpz-ip, rpz-client-ip, rpz-nsdname,
+	// rpz-nsip), skipping those rules and counting them. Without it such
+	// a zone fails the load, because a policy that half applies is worse
+	// than one that does not load.
+	IgnoreUnsupported bool `yaml:"ignore_unsupported"`
+}
+
 type DNSView struct {
 	// Name identifies the view in the access log (as `view`) and in the
 	// status view.

@@ -72,6 +72,9 @@ type Policy struct {
 	// DNS64 answers an AAAA query for an IPv4-only name with the address
 	// embedded in a translation prefix (RFC 6147). nil disables it.
 	DNS64 *DNS64
+	// RPZ are the response policy zones in force, read from zone files
+	// (rpz.go). nil disables them.
+	RPZ *RPZ
 	// Views answer the same name differently by who asked: see views.go.
 	// The first view whose networks contain the client wins; a client in
 	// none of them gets the listener's own records and block list.
@@ -158,6 +161,9 @@ type Server struct {
 	// Tunnels counts detections and TunnelBlocked the queries refused
 	// because of one.
 	Tunnels, TunnelBlocked atomic.Uint64
+	// RPZMatched counts the queries a response policy zone decided and
+	// RPZPassthru the ones a zone's own exception let through.
+	RPZMatched, RPZPassthru atomic.Uint64
 	// AnswerDenied counts answers refused for where they pointed and
 	// AnswerStripped those that had records removed; ECSStripped counts
 	// the queries whose client subnet option was not forwarded.
@@ -199,6 +205,8 @@ const (
 	DropBanned = "banned"
 	// DropRateLimit is the per-client query rate.
 	DropRateLimit = "rate_limit"
+	// DropRPZ is a response policy zone rule whose action is drop.
+	DropRPZ = "rpz_drop"
 )
 
 // refuse records one refusal by reason, for the operational counters.
@@ -240,6 +248,14 @@ type Status struct {
 	// queries one of them answered.
 	Views         []string `json:"views,omitempty"`
 	QueriesViewed uint64   `json:"queries_viewed"`
+	// RPZZones are the response policy zones in force, RPZMatched the
+	// queries they decided and RPZPassthru the ones an exception let
+	// through.
+	RPZZones    []RPZStatus `json:"rpz_zones,omitempty"`
+	RPZMatched  uint64      `json:"rpz_matched"`
+	RPZPassthru uint64      `json:"rpz_passthru"`
+	// RPZWatching reports whether the zone files are being re-read.
+	RPZWatching bool `json:"rpz_watching"`
 	// QueriesSynthesised counts the AAAA answers DNS64 built from an A
 	// record, and QueriesNSEC the NXDOMAIN answers taken from a
 	// validated NSEC gap; DenialsHeld is the size of that store.
@@ -303,13 +319,23 @@ func (s *Server) Apply(p *Policy, cacheEntries int) {
 	if old != nil && old.Resolver != nil && old.Resolver != p.Resolver {
 		old.Resolver.Close() // idle encrypted connections of the previous policy
 	}
+	if old != nil && old.RPZ != nil && old.RPZ != p.RPZ {
+		// The previous policy's zone files are no longer the policy, so
+		// nothing should still be re-reading them.
+		old.RPZ.Stop()
+	}
 }
 
 // Close releases the policy's resolver connections (after Shutdown).
 func (s *Server) Close() {
-	if p := s.policy.Load(); p != nil && p.Resolver != nil {
+	p := s.policy.Load()
+	if p == nil {
+		return
+	}
+	if p.Resolver != nil {
 		p.Resolver.Close()
 	}
+	p.RPZ.Stop()
 }
 
 // Purge empties the cache.
@@ -332,11 +358,14 @@ func (s *Server) Status() Status {
 		Stale: s.Stale.Load(), Prefetched: s.Prefetched.Load(),
 		CookiesIssued: s.CookiesIssued.Load(), CookiesVerified: s.CookiesVerified.Load(), CookiesRefused: s.CookiesRefused.Load(),
 		QueriesViewed: s.Viewed.Load(), QueriesSynthesised: s.Synthesised.Load(),
-		QueriesNSEC: s.NSECDenied.Load()}
+		QueriesNSEC: s.NSECDenied.Load(),
+		RPZMatched:  s.RPZMatched.Load(), RPZPassthru: s.RPZPassthru.Load()}
 	if p != nil {
 		st.LocalNames = p.Local.Names()
 		st.Views = p.ViewNames()
 		st.DenialsHeld = p.Denials.Len()
+		st.RPZZones = p.RPZ.Status()
+		st.RPZWatching = p.RPZ.Refreshing()
 	}
 	if s.Encrypted {
 		st.DoHPath = s.DoHPath
@@ -726,6 +755,15 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 			resp = Reply(query, qEnd, h, RcodeNXDomain)
 		}
 		return s.finish(a, q, "blocked", resp)
+	}
+	// A response policy zone, after the operator's own block list and
+	// before anything is asked: the point of a policy zone is that the
+	// query does not reach the name the feed named.
+	if hit, ok := p.RPZ.Match(q.Name); ok {
+		s.RPZMatched.Add(1)
+		if resp, handled := s.applyRPZ(a, client, proto, query, qEnd, h, q, hit, tcp); handled {
+			return resp
+		}
 	}
 	// A domain this client was caught tunnelling under stays refused
 	// for the cooldown. It is checked here rather than after the answer

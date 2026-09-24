@@ -1986,6 +1986,61 @@ serves; compare it with the `ech` value here. A mismatch means clients
 fall back to the public name on every attempt, which looks healthy and
 encrypts nothing.
 
+## DNS response policy zones
+
+**The listener will not start: "rule … uses the rpz-ip trigger".** The
+zone carries a trigger this resolver does not implement — `rpz-ip`,
+`rpz-client-ip`, `rpz-nsdname` or `rpz-nsip`. That is deliberate: a zone
+whose rules half apply is a policy you believe is working. Either use a
+feed's QNAME-only file, or set `ignore_unsupported: true` on that zone to
+load it without those rules (`xproxyctl dns` then shows how many were
+skipped), and screen the addresses in answers with `answer_policy`
+instead.
+
+**The listener will not start: "no rules".** The file parsed and held
+nothing — usually an `$ORIGIN` that does not match the rules' own suffix,
+so every rule was read as the zone apex, or a file that is only an SOA.
+Check the first rule by hand: a rule for `evil.example` in a zone whose
+origin is `rpz.local` is written `evil.example.rpz.local`.
+
+**A name the feed lists still resolves.** Three things, in order. Is a
+zone *earlier* in the list letting it through? An exception zone in front
+of a subscription is the whole point of the ordering, and
+`xproxyctl dns` shows the per-zone match counts. Is the rule a plain name
+where a wildcard was meant? `evil.example CNAME .` covers that name and
+nothing under it; `*.evil.example` covers what is under it and not the
+name. And is the zone's own suffix what this resolver thinks it is —
+`$ORIGIN`, the SOA's owner, or nothing at all, in which case the rules
+are read as absolute names.
+
+**Everything resolves although the zone is loaded.** Look at `action` on
+the zone: `passthru` turns every rule into an exception, which is how a
+feed is tried out, and validation says so at load. `rpz_passthru` in
+`xproxyctl dns` counts what it let through.
+
+**A client gets no answer at all and times out.** A `rpz-drop.` rule, or
+a zone with `action: drop`. It is counted as a drop (`dns_dropped`, reason
+`rpz_drop`) rather than a refusal, because no packet was sent. Use
+`nxdomain` instead where a client needs to be told.
+
+**A name answers over TCP but not UDP.** A `rpz-tcp-only.` rule: the UDP
+answer is truncated so the client retries over TCP, which is what makes a
+spoofed source unable to follow. A client that ignores the truncation
+sees a timeout.
+
+**A feed was rewritten and nothing changed.** `refresh` is the interval at
+which each file's size and modification time are checked (5m by default,
+`0` for never), so a feed replaced in place is picked up within it. A
+rewrite that kept both — the same bytes and a preserved timestamp — is not
+a change; touch the file. A re-read that fails leaves the rules already
+in force and logs the error, so look for that warning before assuming the
+new file is loaded.
+
+**`xproxyctl dns` shows fewer rules than the file has lines.** Comments,
+the SOA and NS records and the apex are not rules, and a duplicate owner
+replaces the earlier rule rather than adding one. A wildcard rule and its
+bare name are two rules, as they are two names.
+
 ## DNS64
 
 **Nothing is synthesised.** Four things to check, in order. `clients` may
@@ -4031,6 +4086,7 @@ innocent.
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
 | `udp_denied` | The datagram relay: a client outside `allow_clients`, a datagram over `max_datagram_bytes`, the rate limit, or a session table that is full (`detail` says which). A datagram is dropped rather than answered, because a reply to a forged source is traffic aimed at whoever was named | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
+| `dns_rpz` | A response policy zone acted: `detail` carries the zone, the rule and the action (`nxdomain`, `nodata`, `passthru`, `drop`, `tcp_only`, `local`) | yes |
 | `dns_answer_denied` | An upstream answer pointed into a range `answer_policy` denies (rebinding, a metadata endpoint), or had such records stripped | yes |
 | `dns_tunnel` | A client's queries under one domain agreed on enough tunnelling signals, or a query was refused during the cooldown after that | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
