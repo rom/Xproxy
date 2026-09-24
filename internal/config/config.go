@@ -1020,6 +1020,16 @@ type SSHListener struct {
 	// open, because scp moves files without touching the sftp
 	// subsystem at all.
 	AllowFileTransferCommands *bool `yaml:"allow_file_transfer_commands"`
+	// CommandRules read the file transfer families structurally and
+	// hold each to what it may actually do, instead of to a pattern
+	// over its command line. See SSHCommandRule.
+	//
+	// A rule is what makes allow_file_transfer_commands a decision
+	// rather than a switch: instead of "scp and rsync, yes or no", a
+	// rule says which direction, which paths and whether recursion,
+	// and the command is read the way the program reads it before that
+	// is applied.
+	CommandRules []SSHCommandRule `yaml:"command_rules"`
 	// Recording writes what a session showed, and optionally what was
 	// typed into it, to a file per channel.
 	Recording *SessionRecording `yaml:"recording"`
@@ -5320,15 +5330,33 @@ type SSHPrincipal struct {
 // have its own copy of. Every field is optional: unset means the
 // listener's value.
 type SSHPolicy struct {
-	UpstreamUser    string      `yaml:"upstream_user"`
-	AllowChannels   []string    `yaml:"allow_channels"`
-	AllowRequests   []string    `yaml:"allow_requests"`
-	AllowSubsystems []string    `yaml:"allow_subsystems"`
-	AllowCommands   []string    `yaml:"allow_commands"`
-	AllowEnv        []string    `yaml:"allow_env"`
-	Forward         []string    `yaml:"forward"`
-	RemoteForward   *bool       `yaml:"remote_forward"`
-	SFTP            *SFTPPolicy `yaml:"sftp"`
+	UpstreamUser    string   `yaml:"upstream_user"`
+	AllowChannels   []string `yaml:"allow_channels"`
+	AllowRequests   []string `yaml:"allow_requests"`
+	AllowSubsystems []string `yaml:"allow_subsystems"`
+	AllowCommands   []string `yaml:"allow_commands"`
+	// CommandRules hold the command families this gateway can read the
+	// meaning of -- scp, rsync, the sftp server binary and git's
+	// transport commands -- to what they actually ask for, instead of
+	// to a pattern over their command line.
+	//
+	// A pattern is a weak boundary for these. "^scp -t /srv/incoming$"
+	// is somebody writing "uploads into that directory only", and
+	// "scp -f /srv/incoming" (the other direction, the same words),
+	// "scp -rt /srv/incoming" (bundled flags), "/usr/bin/scp -t
+	// /srv/incoming" (a path) and "scp -t /srv/incoming/../../etc/ssh"
+	// each walk past it. A rule says the direction, whether recursion
+	// is allowed and which paths are in reach, and the command is read
+	// the way the program reads it before that is applied.
+	//
+	// With any rule present, a command of a family named by no rule is
+	// refused: a positive model for the commands that move files, while
+	// everything else stays with allow_commands.
+	CommandRules  []SSHCommandRule `yaml:"command_rules"`
+	AllowEnv      []string         `yaml:"allow_env"`
+	Forward       []string         `yaml:"forward"`
+	RemoteForward *bool            `yaml:"remote_forward"`
+	SFTP          *SFTPPolicy      `yaml:"sftp"`
 	// Recording replaces the listener's, which is how one entry is
 	// recorded and another is not. A principal that should not be
 	// recorded where the listener is sets enabled: false.
@@ -5336,6 +5364,45 @@ type SSHPolicy struct {
 	// Deny refuses this principal outright, which is how a key stays in
 	// authorized_keys while the person it belongs to is off.
 	Deny bool `yaml:"deny"`
+}
+
+// SSHCommandRule is what one command family may do. The family is read
+// structurally, so every field is a statement about the command's
+// meaning rather than about its spelling.
+type SSHCommandRule struct {
+	// Command is the family: scp, rsync, sftp_server or git.
+	Command string `yaml:"command"`
+	// Directions are the file movements allowed, as "upload" (files
+	// onto the target) and "download" (files off it). It is the
+	// movement and not the program's own verb: a git fetch is
+	// "upload-pack" because the sense is the server's, and it is a
+	// download here. Required except for sftp_server, whose direction
+	// the sftp policy decides.
+	Directions []string `yaml:"directions"`
+	// Paths are the paths in reach, as the sftp policy's patterns
+	// ("/srv/incoming/**"). Empty means every path, which is a
+	// deliberate choice to have to make.
+	Paths []string `yaml:"paths"`
+	// DenyPaths are refused whatever Paths says.
+	DenyPaths []string `yaml:"deny_paths"`
+	// Recursive allows scp -r. Default false: a recursive copy into a
+	// directory is a different permission from a file into it.
+	Recursive bool `yaml:"recursive"`
+	// Delete allows the rsync options that remove files at the far end
+	// (--delete and its family, --remove-source-files, --force).
+	// Default false.
+	Delete bool `yaml:"delete"`
+	// EnforceSFTPPolicy relays an approved exec of the sftp server
+	// binary through the sftp policy, which is what makes allowing it
+	// safe: the channel carries the same protocol the subsystem does,
+	// so the same path, operation and scanning rules apply. Required
+	// for a sftp_server rule, and refused without an sftp section.
+	EnforceSFTPPolicy bool `yaml:"enforce_sftp_policy"`
+}
+
+// SSHCommandFamilies are the families a rule may name.
+var SSHCommandFamilies = map[string]bool{
+	"scp": true, "rsync": true, "sftp_server": true, "git": true,
 }
 
 // SSHDeniedEnv are the variables no allow list can admit. Each one is a
@@ -5347,9 +5414,6 @@ var SSHDeniedEnv = []string{
 	"TMPDIR", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_EXTERNAL_DIFF", "PATH",
 }
 
-// DefaultSSHEnv is what a client may set when allow_env says nothing: a
-// terminal type and a locale, which is what an interactive session
-// needs and all it needs.
 // DefaultFTPCommands is every command this proxy can read the effect
 // of, which is the set it can hold to a policy. A verb outside it is
 // refused: applying a policy to an argument nobody understands is not
@@ -5368,6 +5432,9 @@ var DefaultFTPCommands = []string{
 // substitution the operator cannot predict the value of is not one.
 var SFTPPathVars = map[string]bool{"user": true, "principal": true}
 
+// DefaultSSHEnv is what a client may set when allow_env says nothing: a
+// terminal type and a locale, which is what an interactive session
+// needs and all it needs.
 var DefaultSSHEnv = []string{"TERM", "LANG", "LC_*"}
 
 // SSHFileTransferCommands are the exec commands that move files past an

@@ -2426,6 +2426,7 @@ the credentials are read then — not per connection, so a key added to
 | `allow_commands` | list of RE2 | `[]` (any) | An `exec` command must match one, anchored as written. Every allowed exec is a security event with the command line |
 | `allow_env` | list | `TERM, LANG, LC_*` | Environment variables a client may set, as names or as prefixes ending in `*`. Everything else is refused with the request. The loader and interpreter variables (`LD_*`, `DYLD_*`, `BASH_ENV`, `ENV`, `SHELLOPTS`, `IFS`, `PS4`, `PERL5OPT`, `PERL5LIB`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONHOME`, `RUBYOPT`, `NODE_OPTIONS`, `GLIBC_TUNABLES`, `GCONV_PATH`, `LOCPATH`, `TMPDIR`, `GIT_SSH*`, `PATH` and their kin) are refused whatever this says, and naming one fails the load: each is a way to run code before the command the policy approved |
 | `allow_file_transfer_commands` | bool | `false` with an `sftp` section, `true` without | Accept `exec` commands that are file transfer helpers: `scp`, `rsync`, `sftp-server`, `internal-sftp`, `lftp`, `rclone`. They move files without ever opening the `sftp` subsystem, so every path and operation rule there is off their path; setting this beside an `sftp` section warns, because it is exactly the bypass that section exists to close. Every word of the command is read, not only the first, each with any directory part removed and a `VAR=value` prefix skipped, so a wrapper (`env scp -t`, `sudo rsync`, `sh -c "scp …"`) is refused too |
+| `command_rules` | list | `[]` | Hold the file transfer families to what they *mean* rather than to a pattern: the direction, recursion, deletions and the paths in reach, read the way `scp`, `rsync`, the sftp server and `git` read their own arguments. See below |
 | `principals` | list | `[]` | Per-key policy; see below. Empty means the listener's own policy applies to everyone |
 | `forward` | list | `[]` | Destinations `direct-tcpip` may reach: `host:port`, `*.suffix:port`, `10.0.0.0/8:port`, `*` for any port. Required when `direct-tcpip` is allowed, and refused without it: a forward with no destination policy is a tunnel to anything the target can reach |
 | `remote_forward` | bool | `false` | Accept `tcpip-forward`, which asks the target to listen on the client's behalf and turns the session into an inbound path |
@@ -2466,9 +2467,10 @@ matches every key, which is how a list ends in a default. It must be the
 last entry, because an entry after it could never be reached.
 
 The policy object takes `upstream_user`, `allow_channels`,
-`allow_requests`, `allow_subsystems`, `allow_commands`, `allow_env`,
-`forward`, `remote_forward` and `sftp`, each meaning what it means on
-the listener and each falling back to the listener when unset, plus:
+`allow_requests`, `allow_subsystems`, `allow_commands`, `command_rules`,
+`allow_env`, `forward`, `remote_forward` and `sftp`, each meaning what it
+means on the listener and each falling back to the listener when unset,
+plus:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -2540,6 +2542,118 @@ patterns then have to be written knowing it.
 The strong form of a command policy is `force-command` on the
 certificate: the CA fixes the command and the client's own is replaced,
 so there is no line to pattern-match at all.
+
+##### server.listeners[].ssh.command_rules
+
+A pattern is a weak boundary, and for the commands that move files it is
+the wrong shape of statement. `^scp -t /srv/incoming$` is somebody
+writing *"uploads into that directory, nothing else"*, and each of these
+is past it:
+
+| The line | What a pattern misses |
+|----------|-----------------------|
+| `scp -f /srv/incoming` | The other direction, spelled with the same words |
+| `scp -rt /srv/incoming` | Bundled flags, so the pattern does not match — and recursion is a different permission |
+| `/usr/bin/scp -t /srv/incoming` | A path, so the pattern does not match |
+| `scp  -t  /srv/incoming` | Two spaces |
+| `scp -t /srv/incoming/../../etc/ssh` | A path inside `/srv/incoming` to a pattern, `/etc` to the target |
+| `LD_PRELOAD=/tmp/x.so scp -t /srv/incoming` | An environment the `allow_env` policy never sees, because it is a shell assignment and not an `env` request |
+
+Tighten the pattern against any one of them and it is still wrong about
+the next. What the policy means to say is a statement about the
+command's *meaning*, so that is what a rule says: the direction, whether
+recursion is allowed, whether deletions are, and which paths are in
+reach. The command line is split the way a shell splits it, the options
+are read the way the program reads them, and the rule is applied to
+that.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | `scp`, `rsync`, `sftp_server`, `git` | required | The family this rule decides. One rule per family; a second is a load error, since which of the two was silent would be the policy |
+| `directions` | list of `upload`, `download` | required (not for `sftp_server`) | The file movements allowed. `upload` puts files **on** the target, `download` takes them **off** it — the movement, not the program's own verb: a git fetch is `upload-pack` because that name is the server's, and it is a `download` here |
+| `paths` | list | `[]` (every path) | The paths in reach, as the `sftp` policy's patterns (`/srv/incoming/**`). Absolute; a relative pattern is a load error, because the path it is matched against is resolved from the root |
+| `deny_paths` | list | `[]` | Refused whatever `paths` says |
+| `recursive` | bool | `false` | Allow `scp -r`. Only scp takes it |
+| `delete` | bool | `false` | Allow the rsync options that remove files at the far end: `--delete` and its family, `--remove-source-files`, `--force`. Only rsync has them |
+| `enforce_sftp_policy` | bool | `false` | Relay an approved exec of the sftp server binary through the `sftp` policy. Required for a `sftp_server` rule and refused for the others |
+
+```yaml
+sftp: {read_only: true, allow_paths: ["/srv/data/**"]}
+command_rules:
+  # The deployment robot puts artefacts in one directory and takes
+  # nothing out. No recursion: a file is a file.
+  - command: scp
+    directions: [upload]
+    paths: ["/srv/incoming/**"]
+    deny_paths: ["/srv/incoming/keys/**"]
+  # Backups pull, and may not delete what they pull from.
+  - command: rsync
+    directions: [download]
+    paths: ["/srv/data/**"]
+  # Clones and fetches, no pushes.
+  - command: git
+    directions: [download]
+    paths: ["/srv/git/**"]
+  # And the sftp server binary run as a command is the sftp subsystem
+  # under another name, so it is allowed only inspected.
+  - command: sftp_server
+    enforce_sftp_policy: true
+```
+
+**With any rule present, a family named by no rule is refused.** A rule
+for scp must not quietly leave rsync to the patterns, so the families
+this gateway can read are a positive model once the list exists
+(`command_no_rule`). Everything else — every command with no parser here
+— stays with `allow_commands` exactly as before.
+
+**A rule allows what `allow_file_transfer_commands: false` refuses.**
+That switch is "scp and rsync, yes or no"; a rule is "scp, uploads, into
+this directory", which is the decision an operator wanted to make. So a
+rule wins over the blanket refusal for the family it names, and over
+`allow_commands` too: a command a rule allows is not also pattern
+matched, because the rule is the narrower statement.
+
+**A line that cannot be read is refused, never guessed at**
+(`command_syntax`): a substitution, an unbalanced quote, an option no
+version of the program takes. This applies to the families the rules
+cover even where `allow_shell_syntax` is on — `scp -t $(cat /etc/x)` is
+refused as an scp whose words cannot be trusted — while a command of no
+family keeps whatever behaviour that setting gives it.
+
+**A wrapper is not read through.** `env scp -t /etc`, `sudo rsync`,
+`sh -c "scp -t /etc"`: the command is `env`, `sudo` and `sh`, so no rule
+covers it and the blanket check refuses it as it did before. A rule is
+never a way to reach scp through something else.
+
+What each refusal is counted and logged as:
+
+| Label | What it means |
+|-------|---------------|
+| `command_direction` | The movement the rule does not allow (`scp -f` where only uploads are allowed, a push where only fetches are) |
+| `command_path` | A path outside `paths`, inside `deny_paths`, above its own root, or a glob whose expansion cannot be proven inside an allowed subtree |
+| `command_recursive` | `scp -r` without `recursive: true` |
+| `command_delete` | An rsync option that removes files, without `delete: true` |
+| `command_server` | Not the far side of a client's transfer at all: an scp with neither `-t` nor `-f`, an rsync with no `--server` (which would dial out of the target) |
+| `command_env` | A `VAR=value` assignment in front of a transfer command |
+| `command_no_rule` | A family this gateway reads, with no rule of its own |
+| `command_syntax` | A transfer line that could not be read as one simple command |
+
+Two honest limits, because a boundary that is believed to be somewhere
+it is not is worse than a narrow one:
+
+- **rsync's file list is inside rsync's own protocol.** In server mode
+  the arguments carry the transfer root and the options; which files
+  move is negotiated afterwards, in a stream this gateway relays but
+  does not parse. So an rsync rule decides the direction, the deletions
+  and the root — and everything under that root is in reach of the
+  transfer. Where a per-file rule is the requirement, `sftp` is the
+  protocol that can carry one.
+- **A glob is the target shell's to expand.** `scp -f /srv/data/*` is
+  admitted only when `paths` covers a whole subtree that contains the
+  directory the pattern sits in (`/srv/data/**`), since a shell's `*`
+  does not cross a `/`. With a single-level pattern, or with any
+  `deny_paths` — which a glob cannot be proven clear of — it is refused.
+  Globs need `allow_shell_syntax` to reach a rule at all.
 
 #### server.listeners[].ssh.recording
 

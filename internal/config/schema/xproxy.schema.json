@@ -5143,6 +5143,50 @@
       },
       "additionalProperties": false
     },
+    "SSHCommandRule": {
+      "description": "SSHCommandRule is what one command family may do. The family is read structurally, so every field is a statement about the command's meaning rather than about its spelling.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "Command is the family: scp, rsync, sftp_server or git.",
+          "type": "string"
+        },
+        "delete": {
+          "description": "Delete allows the rsync options that remove files at the far end (--delete and its family, --remove-source-files, --force). Default false.",
+          "type": "boolean"
+        },
+        "deny_paths": {
+          "description": "DenyPaths are refused whatever Paths says.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "directions": {
+          "description": "Directions are the file movements allowed, as \"upload\" (files onto the target) and \"download\" (files off it). It is the movement and not the program's own verb: a git fetch is \"upload-pack\" because the sense is the server's, and it is a download here. Required except for sftp_server, whose direction the sftp policy decides.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enforce_sftp_policy": {
+          "description": "EnforceSFTPPolicy relays an approved exec of the sftp server binary through the sftp policy, which is what makes allowing it safe: the channel carries the same protocol the subsystem does, so the same path, operation and scanning rules apply. Required for a sftp_server rule, and refused without an sftp section.",
+          "type": "boolean"
+        },
+        "paths": {
+          "description": "Paths are the paths in reach, as the sftp policy's patterns (\"/srv/incoming/**\"). Empty means every path, which is a deliberate choice to have to make.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recursive": {
+          "description": "Recursive allows scp -r. Default false: a recursive copy into a directory is a different permission from a file into it.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "SSHListener": {
       "description": "SSHListener is an SSH bastion: the proxy is an SSH server to the client and an SSH client to the target, with its own host key, its own authentication and its own credential onwards. The two connections are the point. A jump host that forwards the stream cannot see which channel is a shell and which is a port forward, so the only policy it can hold is \"may connect\". Here every channel and every request inside the session is a decision: a service account can be given sftp to one directory and nothing else, and a port forward to a database is a rule rather than an assumption. It also means the target never sees the client's key. The client authenticates to the proxy; the proxy authenticates to the target with a credential the client never holds, so a key that leaves the estate is not a key that opens a server in it.",
       "type": "object",
@@ -5207,6 +5251,13 @@
         "banner": {
           "description": "Banner is sent before authentication. A legal notice belongs here; a version string does not.",
           "type": "string"
+        },
+        "command_rules": {
+          "description": "CommandRules read the file transfer families structurally and hold each to what it may actually do, instead of to a pattern over its command line. See SSHCommandRule. A rule is what makes allow_file_transfer_commands a decision rather than a switch: instead of \"scp and rsync, yes or no\", a rule says which direction, which paths and whether recursion, and the command is read the way the program reads it before that is applied.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SSHCommandRule"
+          }
         },
         "forward": {
           "description": "Forward are the destinations direct-tcpip channels may reach: \"host:port\", \"*.suffix:port\", \"10.0.0.0/8:port\", with \"*\" for any port. Empty refuses every forward even when the channel type is allowed, because a forward with no destination policy is a tunnel to anywhere the target can reach.",
@@ -5376,6 +5427,13 @@
           "type": "array",
           "items": {
             "type": "string"
+          }
+        },
+        "command_rules": {
+          "description": "CommandRules hold the command families this gateway can read the meaning of -- scp, rsync, the sftp server binary and git's transport commands -- to what they actually ask for, instead of to a pattern over their command line. A pattern is a weak boundary for these. \"^scp -t /srv/incoming$\" is somebody writing \"uploads into that directory only\", and \"scp -f /srv/incoming\" (the other direction, the same words), \"scp -rt /srv/incoming\" (bundled flags), \"/usr/bin/scp -t /srv/incoming\" (a path) and \"scp -t /srv/incoming/../../etc/ssh\" each walk past it. A rule says the direction, whether recursion is allowed and which paths are in reach, and the command is read the way the program reads it before that is applied. With any rule present, a command of a family named by no rule is refused: a positive model for the commands that move files, while everything else stays with allow_commands.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SSHCommandRule"
           }
         },
         "deny": {

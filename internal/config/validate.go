@@ -3588,6 +3588,7 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 	if len(h.AllowCommands) > 0 && !reqs["exec"] {
 		v.errf("%s.allow_commands: set without exec in allow_requests, so nothing would ever match it", p)
 	}
+	v.sshCommandRules(p, h.CommandRules, h.SFTP != nil, reqs["exec"])
 	for i, d := range h.Forward {
 		if err := sshForwardOK(d); err != nil {
 			v.errf("%s.forward[%d]: %q: %v", p, i, d, err)
@@ -3860,6 +3861,8 @@ func (v *validator) sshPolicy(p string, s *SSHPolicy, h *SSHListener) {
 	if s.SFTP != nil {
 		v.sftpPolicy(p+".sftp", s.SFTP, reqs["subsystem"] || sliceHas(h.AllowRequests, "subsystem"), len(h.Principals) > 0)
 	}
+	v.sshCommandRules(p, s.CommandRules, s.SFTP != nil || h.SFTP != nil,
+		reqs["exec"] || sliceHas(h.AllowRequests, "exec"))
 	if s.Recording != nil {
 		merged := map[string]bool{}
 		for _, rt := range h.AllowRequests {
@@ -6895,6 +6898,82 @@ func (v *validator) rdpListener(p string, c *RDPListener, hasTLS bool) {
 	for i, cidr := range c.AllowClients {
 		if _, err := netip.ParsePrefix(cidr); err != nil {
 			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, cidr, err)
+		}
+	}
+}
+
+// sshCommandRules checks the structured command rules of one policy.
+// hasSFTP says whether an sftp section applies here (the policy's own
+// or the listener's), and execAllowed whether exec can happen at all.
+func (v *validator) sshCommandRules(p string, rules []SSHCommandRule, hasSFTP, execAllowed bool) {
+	if len(rules) == 0 {
+		return
+	}
+	if !execAllowed {
+		v.errf("%s.command_rules: set without exec in allow_requests, so no command ever reaches them", p)
+	}
+	seen := map[string]bool{}
+	for i, r := range rules {
+		q := fmt.Sprintf("%s.command_rules[%d]", p, i)
+		if !SSHCommandFamilies[r.Command] {
+			v.errf("%s.command: %q is not a family this proxy can read; one of scp, rsync, sftp_server, git", q, r.Command)
+			continue
+		}
+		if seen[r.Command] {
+			v.errf("%s.command: %q has a rule already; one rule decides a family, and two would leave which one silent", q, r.Command)
+		}
+		seen[r.Command] = true
+		dirs := map[string]bool{}
+		for j, d := range r.Directions {
+			switch strings.ToLower(d) {
+			case "upload", "download":
+				if dirs[strings.ToLower(d)] {
+					v.errf("%s.directions[%d]: %q listed twice", q, j, d)
+				}
+				dirs[strings.ToLower(d)] = true
+			default:
+				v.errf("%s.directions[%d]: %q is not a direction; upload puts files on the target, download takes them off it", q, j, d)
+			}
+		}
+		if r.Command == "sftp_server" {
+			if len(r.Directions) > 0 {
+				v.errf("%s.directions: an sftp_server rule takes none; which way files may move is the sftp policy's decision (read_only), and saying it twice is two answers", q)
+			}
+			if !r.EnforceSFTPPolicy {
+				v.errf("%s.enforce_sftp_policy: an sftp_server rule needs it. An exec of the sftp server binary is the sftp subsystem under another name, so allowing it without inspecting it hands this session every path rule the subsystem is held to", q)
+			}
+			if !hasSFTP {
+				v.errf("%s: enforce_sftp_policy with no sftp section to enforce", q)
+			}
+		} else {
+			if len(dirs) == 0 {
+				v.errf("%s.directions: required, or the rule allows nothing and the family is simply refused", q)
+			}
+			if r.EnforceSFTPPolicy {
+				v.errf("%s.enforce_sftp_policy: only an sftp_server rule can be relayed through the sftp policy; %s speaks its own protocol", q, r.Command)
+			}
+		}
+		if r.Recursive && r.Command != "scp" {
+			v.errf("%s.recursive: only scp takes -r; %s recurses by what it transfers, not by a flag this can read", q, r.Command)
+		}
+		if r.Delete && r.Command != "rsync" {
+			v.errf("%s.delete: only rsync has options that remove files at the far end", q)
+		}
+		for _, l := range []struct {
+			key  string
+			list []string
+		}{{"paths", r.Paths}, {"deny_paths", r.DenyPaths}} {
+			for j, path := range l.list {
+				switch {
+				case path == "" || strings.ContainsRune(path, 0):
+					v.errf("%s.%s[%d]: must be a path", q, l.key, j)
+				case !strings.HasPrefix(path, "/"):
+					v.errf("%s.%s[%d]: %q must be absolute; a relative pattern is matched against a path this gateway resolves from the root, so it would never match", q, l.key, j, path)
+				}
+			}
+		}
+		if len(r.Paths) == 0 && r.Command != "sftp_server" && len(dirs) > 0 {
+			v.warnf("%s.paths: empty, so every path on the target is in reach of this %s rule", q, r.Command)
 		}
 	}
 }

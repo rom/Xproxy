@@ -110,6 +110,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server
 		Forward:         h.Forward,
 		RemoteForward:   &h.RemoteForward,
 		SFTP:            h.SFTP,
+		CommandRules:    h.CommandRules,
 	}, nil)
 	if err != nil {
 		return nil, err
@@ -968,21 +969,33 @@ func (se *session) answerRequest(clientCh, upCh cssh.Channel, r *cssh.Request, s
 			se.refuseRequest(r, "shell_syntax", reason+" in "+textsafe.Clip256(cmd))
 			return true
 		}
-		if !se.policy.transfers && fileTransferCommand(cmd) {
-			// scp and rsync move files without ever opening the
-			// sftp subsystem, so every path and operation rule
-			// there is simply not on their path. Refusing them is
-			// what makes an sftp policy mean anything.
-			se.refuseRequest(r, "file_transfer_refused", textsafe.Clip256(cmd))
+		// The structured rules come next, and where one covers the
+		// command they are the decision: a rule that says "scp, uploads
+		// only, into this directory" is a narrower statement than the
+		// two blanket gates below, which is the point of writing it.
+		switch se.structuredCommand(clientCh, upCh, r, cmd) {
+		case cmdAnswered:
 			return true
+		case cmdStop:
+			return false
+		case cmdAllowed:
+		default:
+			if !se.policy.transfers && fileTransferCommand(cmd) {
+				// scp and rsync move files without ever opening the
+				// sftp subsystem, so every path and operation rule
+				// there is simply not on their path. Refusing them is
+				// what makes an sftp policy mean anything.
+				se.refuseRequest(r, "file_transfer_refused", textsafe.Clip256(cmd))
+				return true
+			}
+			if !se.commandAllowed(cmd) {
+				se.refuseRequest(r, "command_refused", textsafe.Clip256(cmd))
+				return true
+			}
+			t.engine.Logs().SecurityEvent(context.Background(), "allow", "ssh_exec",
+				"listener", t.cfg.Name, "client_ip", se.ip.String(), "user", textsafe.Clip64(se.user),
+				"target", se.target, "command", textsafe.Clip256(cmd))
 		}
-		if !se.commandAllowed(cmd) {
-			se.refuseRequest(r, "command_refused", textsafe.Clip256(cmd))
-			return true
-		}
-		t.engine.Logs().SecurityEvent(context.Background(), "allow", "ssh_exec",
-			"listener", t.cfg.Name, "client_ip", se.ip.String(), "user", textsafe.Clip64(se.user),
-			"target", se.target, "command", textsafe.Clip256(cmd))
 	}
 	switch r.Type {
 	case "pty-req":

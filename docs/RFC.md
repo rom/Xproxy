@@ -176,7 +176,7 @@ standards, and 3.1.1 is also ISO/IEC 20922:2016.
 | 4251 | SSH Protocol Architecture | Full | Through `golang.org/x/crypto/ssh` |
 | 4252 | SSH Authentication Protocol | Full | Public key and password, with RFC 4252 partial success when a second factor is required |
 | 4253 | SSH Transport Layer Protocol | Full | |
-| 4254 | SSH Connection Protocol | Full | Every channel type and every session request is a policy decision, not a relay |
+| 4254 | SSH Connection Protocol | Full | Every channel type and every session request is a policy decision, not a relay. An `exec` command line is split the way a POSIX shell splits one simple command, and the transfer families (scp, rsync, the sftp server, git's transport verbs) are read the way each program reads its own arguments, so a rule decides on what the command means |
 | 4256 | Generic Message Exchange Authentication (keyboard-interactive) | Full | How the one-time code is asked for |
 | 8332 | Use of RSA Keys with SHA-256 and SHA-512 | Full | |
 | 8709 | Ed25519 and Ed448 Public Key Algorithms for SSH | Full | Ed25519 |
