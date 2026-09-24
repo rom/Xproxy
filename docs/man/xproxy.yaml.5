@@ -4489,12 +4489,12 @@ The access log says a session happened. It cannot say what was done in it, becau
 .RS 4
 .nf
 .ft CR
-asciinema play /var/log/xproxy/sessions/session\-20260921\-143022.100\-alice.cast
+xproxyctl session show /var/log/xproxy/sessions/session\-20260921\-143022.100\-alice.cast
 .ft
 .fi
 .RE
 .PP
-The format is line oriented, so a recording cut short by a crash or by \fBmax_file_bytes\fR still plays up to where it stops, and it is text, so the usual tools work on it. It is a stream, not a transcript: what the person saw is what a terminal makes of it, which means reading one is replaying it.
+The format is line oriented, so a recording cut short by a crash or by \fBmax_file_bytes\fR still plays up to where it stops, and it is text, so the usual tools work on it. It is a stream, not a transcript: what the person saw is what a terminal makes of it, which means \fBreading one is replaying it\fR \[u2014] a terminal is an interpreter, and the bytes in the file were written by the person recorded. \fBxproxyctl session show\fR, \fBshow \-safe\fR and \fBplay\fR read one with the sequences that reach outside the replay taken out: the clipboard writes, the title changes, and the device reports a terminal answers on its own input, which a shell then reads as a command line. \fBasciinema play\fR and \fBcat\fR do not. See USAGE.md.
 .PP
 .TS
 allbox;

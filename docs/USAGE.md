@@ -2901,14 +2901,57 @@ the asciicast v2 format:
           max_files: 2000
 ```
 
-`asciinema play` replays a file; the format is line oriented, so one cut
-short by a crash or by the bound still plays up to where it stops. The
-header carries the terminal size, the login and the target, and for an
-`exec` the command; a `window-change` becomes a resize event; stderr is
-recorded with stdout, because a terminal does not keep them apart and a
-recording without stderr is missing exactly the errors. An `sftp`
+`xproxyctl session` reads one back; the format is line oriented, so one
+cut short by a crash or by the bound still plays up to where it stops.
+The header carries the terminal size, the login and the target, and for
+an `exec` the command; a `window-change` becomes a resize event; stderr
+is recorded with stdout, because a terminal does not keep them apart and
+a recording without stderr is missing exactly the errors. An `sftp`
 channel is not recorded — it is not a terminal, and its own log line
 already says what each request did.
+
+### Reading a recording without running it
+
+**A recording is a program for a terminal, and the person recorded
+wrote it.** That is not a flaw in the format; it is what a faithful
+record of a terminal session *is*. A terminal is an interpreter of
+exactly those bytes, and some of what it will do on request reaches
+outside the window a replay is drawn in:
+
+- `OSC 52` writes the reviewer's clipboard, and waits to be pasted.
+- `OSC 0`, `OSC 2` and `OSC 7` retitle the window and change what it
+  says the working directory is; `OSC 8` makes a hyperlink whose text
+  and target need not agree.
+- The device reports — `CSI c`, `CSI n`, `DECRQSS`, the window
+  manipulation sequences — make the terminal **write back on its own
+  input**. What a terminal writes on its input, a shell reads as a
+  command line. This is the one that turns reading a log into running
+  one.
+- The mouse and focus reporting modes make the terminal send on every
+  movement; `CSI t` resizes and moves the window.
+- A bidirectional override reorders a line, so what is on the screen and
+  what is in the file disagree.
+
+So read one with the tool rather than with `cat` or a player:
+
+```sh
+xproxyctl session list /var/log/xproxy/sessions
+xproxyctl session show /var/log/xproxy/sessions/ssh-alice-20260924T101500.cast
+xproxyctl session show -safe FILE      # keep the colours, name the rest
+xproxyctl session play -speed 2 FILE   # with the timing it had
+```
+
+`show` keeps the text and drops every sequence, which is what reading a
+session wants. `-safe` keeps the ones that draw inside the window —
+colour, cursor movement, erasing — and writes the rest out in a form no
+terminal acts on, so a sequence the session sent appears as
+`\e]52;c;cHduZWQ=\x07` rather than silently doing something or silently
+going missing. `play` is `-safe` by default. The file is never
+rewritten: what is on disk is what happened, because a record an
+operator cannot trust is not a record.
+
+The same filtering is on everything `xproxyctl` prints, since most of
+what its tables carry came off the network as well.
 
 `input: false` is the default and stays that way unless you mean it: a
 terminal's input stream carries what the screen never showed, which

@@ -442,6 +442,53 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A recording can be read without being run.** A gate session's
+  recording is the bytes the session sent, which is what makes it a
+  record -- and a terminal is an interpreter of exactly those bytes, so
+  the person recorded has written a program for the terminal of the
+  person who reviews it. Some of what a terminal will do on request
+  reaches outside the window: `OSC 52` writes the reviewer's clipboard
+  and waits for it to be pasted, `OSC 0` and `OSC 7` retitle the window
+  and its working directory, `OSC 8` makes a hyperlink whose text and
+  target need not agree, and the device reports -- `CSI c`, `CSI n`,
+  `DECRQSS`, the window manipulation sequences -- make the terminal write
+  back **on its own input**, which in a shell is a command line. That
+  last one turns reading a log into running one. Until now the only way
+  to read a recording was a player, and a player is the thing that
+  interprets it.
+
+  `xproxyctl session list|show|play` reads one instead. `show` keeps the
+  text and drops every sequence, which is what reading a session wants;
+  `-safe` (the default for `play`) keeps the sequences that draw inside
+  the window -- colour, cursor movement, erasing -- and writes the rest
+  out inert, so a clipboard write appears as `\e]52;c;cHduZWQ=\x07`
+  rather than silently happening or silently going missing. A CSI
+  sequence is forwarded only when its final byte is one that draws, so
+  the reports are refused by construction rather than by a list of known
+  bad ones; the private modes are checked by number, because the mouse
+  and focus reporting modes make a terminal send rather than draw.
+
+  The filter is a state machine held across writes, since a sequence
+  split over two reads is exactly the one a filter matching on whole
+  strings would forward, and the test drives every split point of a
+  hostile sequence. The bidirectional overrides, isolates, zero width
+  characters and a stray byte order mark are named (`\u202e`) rather
+  than passed on: the screen disagreeing with the file is the Trojan
+  Source class, and a session recording is a good place for it.
+
+  The file is never rewritten. Sanitising at capture would make the
+  record less than a record; the filter belongs between the file and the
+  reader, which is the only other place it can be.
+
+  The same policy now covers the two paths that had a narrower version of
+  it. Everything `xproxyctl` prints goes through it (it filtered the C0
+  controls before, one writer per call, which left the eight bit C1
+  forms -- `0x9b` is CSI -- and the bidirectional overrides, and could
+  not see a sequence split across two writes). `textsafe.Clip`, which
+  guards every log field a peer chose, gained the same two groups, so a
+  user name carrying `0x9b` is no longer an escape sequence in a log line
+  with no ESC anywhere in it.
+
 - **The VNC gateway reads the picture, and bounds it.** The pixel stream
   was forwarded without being read, which meant the gateway could hold a
   policy about who connected and none about what arrived. What arrives,

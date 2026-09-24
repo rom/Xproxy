@@ -584,12 +584,11 @@ var (
 	).Replace(hostileText)
 )
 
-// TestTerminalSafeWriter covers the filter itself: one byte in, one
-// byte out, so a table's columns still line up, and nothing a terminal
-// acts on survives.
+// TestTerminalSafeWriter covers the filter itself: nothing a terminal
+// acts on survives, and everything that is text does.
 func TestTerminalSafeWriter(t *testing.T) {
 	var buf bytes.Buffer
-	w := terminalSafe{&buf}
+	w := newTerminalSafe(&buf)
 	in := make([]byte, 0, 256)
 	for i := 0; i < 256; i++ {
 		in = append(in, byte(i))
@@ -598,27 +597,21 @@ func TestTerminalSafeWriter(t *testing.T) {
 	if err != nil || n != len(in) {
 		t.Fatalf("write: %d %v", n, err)
 	}
-	got := buf.Bytes()
-	if len(got) != len(in) {
-		t.Fatalf("%d bytes in, %d out", len(in), len(got))
+	got := buf.String()
+	// The layout and the printable ASCII survive; nothing else does. The
+	// carriage return arrives as a newline, because a carriage return
+	// with no newline overwrites the line already on the screen, which
+	// is how text is hidden from a reader.
+	want := "\t\n\n"
+	for c := byte(0x20); c < 0x7f; c++ {
+		want += string(c)
 	}
-	for i := range got {
-		switch {
-		case in[i] == '\n' || in[i] == '\t':
-			if got[i] != in[i] {
-				t.Errorf("byte %#x was changed to %#x", in[i], got[i])
-			}
-		case in[i] < 0x20 || in[i] == 0x7f:
-			if got[i] != '?' {
-				t.Errorf("byte %#x came through as %#x", in[i], got[i])
-			}
-		default:
-			if got[i] != in[i] {
-				t.Errorf("byte %#x was changed to %#x", in[i], got[i])
-			}
-		}
+	if got != want {
+		t.Errorf("every byte from 0 to 255 came back as %q, want %q", got, want)
 	}
-	// UTF-8 text survives whole.
+	// UTF-8 text survives whole, including the scripts and the emoji
+	// that are the reason this is not a filter on everything above
+	// ASCII.
 	buf.Reset()
 	const text = "hällö 你好 \U0001f600"
 	if _, err := w.Write([]byte(text)); err != nil {
@@ -627,11 +620,22 @@ func TestTerminalSafeWriter(t *testing.T) {
 	if buf.String() != text {
 		t.Errorf("UTF-8 text came back as %q", buf.String())
 	}
+	// The characters that make the screen disagree with the bytes go
+	// too, which a byte-for-byte filter could not have caught.
+	for _, r := range []rune{0x202e, 0x200b, 0x009b, 0xfeff} {
+		buf.Reset()
+		if _, err := w.Write([]byte("a" + string(r) + "b")); err != nil {
+			t.Fatal(err)
+		}
+		if buf.String() != "ab" {
+			t.Errorf("%U came back in %q", r, buf.String())
+		}
+	}
 	// A write split across an escape sequence is still filtered.
 	buf.Reset()
 	_, _ = w.Write([]byte("a\x1b"))
 	_, _ = w.Write([]byte("[2Jb"))
-	if buf.String() != "a?[2Jb" {
+	if buf.String() != "ab" {
 		t.Errorf("a split escape came back as %q", buf.String())
 	}
 }

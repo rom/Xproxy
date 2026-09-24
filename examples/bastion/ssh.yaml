@@ -123,8 +123,15 @@ server:
         remote_forward: false
 
         # What the session showed, in asciicast v2, one file per
-        # channel: "asciinema play" replays it. The access log says a
-        # session happened; this says what was done in it.
+        # channel: "xproxyctl session show FILE" reads it back. The
+        # access log says a session happened; this says what was done in
+        # it.
+        #
+        # Read it with that rather than with a player or with cat: the
+        # file holds the bytes the session sent, a terminal is an
+        # interpreter of exactly those, and a recorded session can set
+        # the reviewer's clipboard or ask their terminal for a report it
+        # answers on its own input.
         #
         # input is left off. A terminal's input stream carries what the
         # screen never showed, which includes every password typed into

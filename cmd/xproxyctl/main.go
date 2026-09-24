@@ -71,6 +71,7 @@ import (
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/sandbox"
 	"github.com/rom/xproxy/internal/secret"
+	"github.com/rom/xproxy/internal/termsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tui"
 	"github.com/rom/xproxy/internal/upstream"
@@ -81,32 +82,37 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// terminalSafe filters the control characters a terminal acts on out of
-// everything the tool prints. Most of what these tables carry came off
-// the network — a ban target and its reason, an endpoint discovered by
-// DNS, a path the API inventory learned from a request, a cluster
-// peer's node id and last error, a certificate's subject, a honeypot
-// hit — and an operator reading it should not be handing their terminal
-// to whoever supplied it. Newline and tab are kept, because the layout
-// is made of them; every other C0 byte and DEL becomes '?', one for
-// one, so columns still line up. Bytes above 0x7f are left alone, so
-// UTF-8 text arrives intact.
-type terminalSafe struct{ w io.Writer }
+// terminalSafe filters what a terminal acts on out of everything the
+// tool prints. Most of what these tables carry came off the network — a
+// ban target and its reason, an endpoint discovered by DNS, a path the
+// API inventory learned from a request, a cluster peer's node id and
+// last error, a certificate's subject, a honeypot hit — and an operator
+// reading it should not be handing their terminal to whoever supplied
+// it.
+//
+// It is termsafe's Plain policy: newline and tab kept because the layout
+// is made of them, every escape sequence dropped, and with them the
+// characters that make the screen disagree with the bytes — the C1
+// controls in their 8 bit form, the bidirectional overrides, the zero
+// width joiners. The tool prints no escape sequences of its own, so
+// nothing of its own is lost.
+//
+// One writer per stream, not one per call: a sequence split across two
+// writes is exactly the one a filter with no memory would pass through.
+type terminalSafe struct{ f *termsafe.Filter }
 
-func (t terminalSafe) Write(p []byte) (int, error) {
-	clean := make([]byte, len(p))
-	for i, b := range p {
-		if b < 0x20 && b != '\n' && b != '\t' || b == 0x7f {
-			clean[i] = '?'
-			continue
-		}
-		clean[i] = b
-	}
-	return t.w.Write(clean)
+func newTerminalSafe(w io.Writer) terminalSafe {
+	return terminalSafe{f: termsafe.New(w, termsafe.Plain)}
 }
 
+func (t terminalSafe) Write(p []byte) (int, error) { return t.f.Write(p) }
+
 func run(args []string, out, errOut io.Writer) int {
-	out, errOut = terminalSafe{out}, terminalSafe{errOut}
+	// raw is stdout before the control-character stripper. Only the
+	// session replay uses it, because the filter it applies is the
+	// stronger of the two and has to emit the sequences that draw.
+	raw := out
+	out, errOut = newTerminalSafe(out), newTerminalSafe(errOut)
 	fs := flag.NewFlagSet("xproxyctl", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	socket := fs.String("socket", paths.Socket, "management socket")
@@ -761,6 +767,8 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_, _ = fmt.Fprintf(out, "maintenance: %s\n", onOff(st.On))
 		return 0
+	case "session":
+		return sessionCmd(fs.Args()[1:], raw, out, errOut, *asJSON)
 	case "capture":
 		cfs := flag.NewFlagSet("capture", flag.ContinueOnError)
 		cfs.SetOutput(errOut)

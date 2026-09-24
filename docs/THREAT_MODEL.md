@@ -218,6 +218,23 @@ data plane does not trust it more than any other socket client.
 | Binary replacement | `ProtectSystem=strict`; SELinux `xproxy_exec_t`; RPM verification in 1.0 |
 | A daemon started as root keeps the privileges every other control assumes it dropped | The daemon refuses to start as uid 0 unless `-allow-root` is given, and says so in the security log on every start when it is. The shipped unit runs as `User=xproxy` with socket activation for the privileged ports, so root buys nothing |
 
+## Boundary 5: A recorded session to whoever reads it
+
+A gate session's recording is the bytes the session sent, which is what
+makes it a record. A terminal is an interpreter of exactly those bytes,
+so the person recorded has written a program for the terminal of the
+person who reviews it.
+
+| Threat | Mitigation |
+|--------|------------|
+| A recorded session writes the reviewer's clipboard (`OSC 52`) and waits for it to be pasted | `xproxyctl session show` and `play` filter the desktop's own sequences: OSC, DCS, APC, PM and SOS are never forwarded in a form a terminal acts on, in either view |
+| A device report (`CSI c`, `CSI n`, `DECRQSS`, window manipulation) makes the reviewer's terminal write on its own input, which a shell reads as a command line | The same filter. The sequences a terminal answers are the ones it refuses by name, and a CSI sequence is forwarded only when its final byte is one that draws |
+| The window title, working directory or a hyperlink is rewritten under the reviewer | OSC is never forwarded; the recording's own title is filtered before it is printed, in the listing and in the JSON form |
+| A bidirectional override or a zero width character makes the screen disagree with the file, so a command reads as something it is not | The overrides, isolates, zero width characters and a stray byte order mark are named (`\u202e`) rather than passed on, in the replay and in every log field (`textsafe.Clip`) |
+| A sequence split across two reads slips past a filter that matches on whole strings | The filter is a state machine held across writes, and the test drives every split point of a hostile sequence |
+| A recording is read with `cat`, `asciinema play` or a browser player instead | Not mitigated by the proxy: those paths interpret the file. Documented in CONFIG.md and USAGE.md, and the tool that ships is the safe one. A recording is JSON-escaped on disk, so `cat` of the file itself shows `\u001b` rather than acting on it; a *player* is what decodes it |
+| The proxy sanitises the recording at capture instead, and loses the record | Deliberately not done. The file holds what happened; the filter is between the file and the reader, which is the only place it can be without making the record less than a record |
+
 ## Residual risks and accepted limitations
 
 | Risk | Status |
@@ -236,6 +253,7 @@ data plane does not trust it more than any other socket client.
 | Attacks spread over many addresses to stay under per address thresholds (rented ranges, residential proxy pools) | Ban triggers with `aggregate: net` count per client network and ban the allocation; `aggregate: ja4` counts per TLS client fingerprint across networks and bans the tool; `min_sources` demands several distinct addresses first; the same aggregates serve `rate_limits[].key` (`client_net`, `ja4`) and `account_guard` campaign detection |
 | An attacker can get a shared NAT address banned | Accepted; `exempt_cidrs` for known shared egress, `reject` action and short durations reduce impact; bans never apply to exempt ranges |
 | `WriteTimeout` may cut long downloads | Operator tunes per deployment; 1.0 adds per route write deadlines |
+| An operator replays a recording with a tool that is not `xproxyctl session` | Accepted and documented: any player interprets the file, which is what a player is. The mitigation is that the product ships a reader that does not, and says so where the recording is configured |
 | Certificate private keys readable by the service user | Inherent in a single process design (AMR-005); mitigated by file modes, SELinux and no shell in the unit |
 
 ## Out of scope

@@ -2040,14 +2040,20 @@ asciicast v2 format, so "what did they actually run" is a question with
 an answer that is watched rather than reconstructed:
 
 ```
-asciinema play /var/log/xproxy/sessions/session-20260921-143022.100-alice.cast
+xproxyctl session show /var/log/xproxy/sessions/session-20260921-143022.100-alice.cast
 ```
 
 The format is line oriented, so a recording cut short by a crash or by
 `max_file_bytes` still plays up to where it stops, and it is text, so
 the usual tools work on it. It is a stream, not a transcript: what the
-person saw is what a terminal makes of it, which means reading one is
-replaying it.
+person saw is what a terminal makes of it, which means **reading one is
+replaying it** — a terminal is an interpreter, and the bytes in the file
+were written by the person recorded. `xproxyctl session show`, `show
+-safe` and `play` read one with the sequences that reach outside the
+replay taken out: the clipboard writes, the title changes, and the
+device reports a terminal answers on its own input, which a shell then
+reads as a command line. `asciinema play` and `cat` do not. See
+[USAGE.md](USAGE.md#reading-a-recording-without-running-it).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
