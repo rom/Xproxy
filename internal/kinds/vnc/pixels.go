@@ -164,6 +164,7 @@ func (se *session) framedToTarget() string {
 		if end != "" {
 			return end
 		}
+		se.recordInput(m, drop)
 		if drop != "" {
 			se.dropped(drop)
 			continue

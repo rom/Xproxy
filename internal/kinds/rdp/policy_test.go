@@ -338,6 +338,52 @@ func TestTheRecordingHoldsTheStream(t *testing.T) {
 	}
 }
 
+// Both directions are recordable, and they are not the same decision.
+// The desktop's stream is the picture; the client's is every keystroke
+// and every pointer move, and on this protocol it also carries the
+// channel traffic a file would leave through -- so it is recorded only
+// where a configuration asked for it, and a unit the policy dropped is a
+// mark rather than bytes.
+func TestTheRecordingHoldsBothDirectionsWhenAsked(t *testing.T) {
+	dir := t.TempDir()
+	cert, key, pool := certs(t)
+	d := startDesktop(t, &desktop{protocol: rdp.ProtocolSSL, tlsCfg: serverTLS(t, cert, key), shown: []byte("PIXELS")})
+	s, addr := gateway(t, d, "        upstream_security: tls\n"+
+		"        upstream_tls: {ca_file: "+cert+", server_name: gate.test}\n"+
+		"        channels: {allow: [rdpsnd]}\n"+
+		"        recording: {directory: "+dir+", input: true}\n"+
+		"      tls: {certificates: [{cert_file: "+cert+", key_file: "+key+"}]}")
+	cl := dial(t, addr)
+	cl.negotiate(rdp.ProtocolSSL, pool)
+	cl.conference("rdpdr", "rdpsnd")
+	cl.update()
+	// One unit on the granted channel, recorded as input; one on the
+	// channel the policy refused, recorded as a mark.
+	cl.send(cl.ids[1], []byte("KEYSTROKES"))
+	cl.send(cl.ids[0], []byte("SMUGGLED"))
+	waitFor(t, "the refusal to be counted", func() bool { return s.Stats().RDPChannelsRefused >= 1 })
+	_ = cl.c.Close()
+
+	waitFor(t, "the recording to be finished", func() bool { return s.Stats().RDPRecorded == 1 })
+	files, _ := filepath.Glob(filepath.Join(dir, "*.rdp.cast"))
+	if len(files) != 1 {
+		t.Fatalf("%d recordings, want 1", len(files))
+	}
+	body, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{`"o"`, `"i"`, "KEYSTROKES", "refused client unit"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the recording does not carry %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "SMUGGLED") {
+		t.Error("a refused unit was recorded as if it had been forwarded")
+	}
+}
+
 // Settings that would quietly do nothing, or that this gateway cannot
 // honour, are refused at load.
 func TestTheConfigurationIsChecked(t *testing.T) {

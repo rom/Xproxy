@@ -47,6 +47,16 @@ type PDU struct {
 	Body     []byte
 }
 
+// Kind names the framing this unit arrived in, for a log line or a
+// recording mark. RDP has two and tells them apart by the first octet,
+// so saying which one a refusal applied to is saying something real.
+func (p PDU) Kind() string {
+	if p.FastPath {
+		return "fast-path"
+	}
+	return "tpkt"
+}
+
 // ReadPDU reads one PDU of either framing.
 func ReadPDU(r io.Reader) (PDU, error) {
 	var head [4]byte

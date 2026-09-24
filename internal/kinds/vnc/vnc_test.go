@@ -898,6 +898,62 @@ func TestTheRecordingHoldsTheStream(t *testing.T) {
 	}
 }
 
+// Both directions of a graphical session are recordable, and they are
+// not the same decision. The picture is what a recording is usually
+// for; the client's own stream is every key and every pointer move, so
+// it is recorded only where a configuration asked for it -- and a
+// message the policy refused is a mark rather than bytes, because what
+// an investigation wants to see is that the viewer tried.
+func TestTheRecordingHoldsBothDirectionsWhenAsked(t *testing.T) {
+	dir := t.TempDir()
+	tg := startTarget(t, &target{desktop: "lathe-hmi", shown: rawUpdate([]byte("PIXELS"))})
+	s, addr := gateway(t, tg, "        security_types: [none]\n        view_only: true\n"+
+		"        recording: {directory: "+dir+", input: true}")
+	cl := dial(t, addr)
+	cl.open(true)
+	cl.read(len(tg.shown))
+	// An update request is forwarded and recorded as input; a key event
+	// is refused by view_only and recorded as a mark.
+	cl.write([]byte{3, 0, 0, 0, 0, 0, 4, 0, 3, 0})
+	cl.write([]byte{4, 1, 0, 0, 0, 0, 0, 'A'})
+	waitFor(t, "the refusal to be counted", func() bool { return s.Stats().VNCRefused >= 1 })
+	_ = cl.c.Close()
+
+	waitFor(t, "the recording to be finished", func() bool { return s.Stats().VNCRecorded == 1 })
+	files, _ := filepath.Glob(filepath.Join(dir, "*.rfb.cast"))
+	if len(files) != 1 {
+		t.Fatalf("%d recordings, want 1", len(files))
+	}
+	body, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{`"o"`, `"i"`, "refused client message key-event: view_only", "PIXELS"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the recording does not carry %q:\n%s", want, text)
+		}
+	}
+	// And with input off, the same session records one direction only.
+	dir2 := t.TempDir()
+	tg2 := startTarget(t, &target{shown: rawUpdate([]byte("PIXELS"))})
+	s2, addr2 := gateway(t, tg2, "        security_types: [none]\n        recording: {directory: "+dir2+"}")
+	cl2 := dial(t, addr2)
+	cl2.open(true)
+	cl2.read(len(tg2.shown))
+	cl2.write([]byte{3, 0, 0, 0, 0, 0, 4, 0, 3, 0})
+	_ = cl2.c.Close()
+	waitFor(t, "the second recording to be finished", func() bool { return s2.Stats().VNCRecorded == 1 })
+	files2, _ := filepath.Glob(filepath.Join(dir2, "*.rfb.cast"))
+	if len(files2) != 1 {
+		t.Fatalf("%d recordings, want 1", len(files2))
+	}
+	body2, _ := os.ReadFile(files2[0])
+	if strings.Contains(string(body2), `"i"`) {
+		t.Errorf("input was recorded where the policy did not ask for it:\n%s", body2)
+	}
+}
+
 // A client outside allow_clients never reaches the handshake.
 func TestAClientOutsideTheAllowListIsRefused(t *testing.T) {
 	tg := startTarget(t, &target{})

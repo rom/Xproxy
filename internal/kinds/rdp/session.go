@@ -61,6 +61,26 @@ func (se *session) openRecording() {
 		strings.Join(se.granted, ",")))
 }
 
+// recordInput keeps what the client sent, and only where the policy
+// asked for it. On a remote desktop that stream is every keystroke and
+// every pointer move -- a keylogger by another name, which is why it is
+// off unless a configuration says otherwise -- and it is also the
+// channel traffic, which is where a file leaves through a redirected
+// drive. A unit the policy dropped is recorded as a mark rather than as
+// bytes: a replay then shows that the client tried and the gateway
+// refused, which is the part an investigation is looking for.
+func (se *session) recordInput(pdu rdp.PDU, refused bool) {
+	cfg := se.t.recorder.Config()
+	if cfg == nil || !cfg.Input {
+		return
+	}
+	if refused {
+		se.rec.Mark("xproxy: refused client unit " + pdu.Kind())
+		return
+	}
+	se.rec.In(pdu.Raw)
+}
+
 func (se *session) closeRecording() {
 	res := se.rec.Close()
 	if res.File == "" {
@@ -174,6 +194,7 @@ func (se *session) pumpToTarget() string {
 		if reason != "" {
 			return reason
 		}
+		se.recordInput(pdu, drop)
 		if drop {
 			continue
 		}
