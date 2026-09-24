@@ -1,6 +1,7 @@
 package forward
 
 import (
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
 	"fmt"
@@ -127,6 +128,77 @@ routes: []
 	yaml = strings.Replace(yaml, "EXTRA", extra, 1)
 	s := proxytest.Start(t, yaml)
 	return s, s.Addrs()["fwd"]
+}
+
+// TestSOCKS5TLSBoundary ensures protocol detection happens inside listener
+// TLS. In particular, a client certificate requirement must cover SOCKS just
+// as it covers HTTP on the shared port.
+func TestSOCKS5TLSBoundary(t *testing.T) {
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	serverCert, serverKey := ca.Issue(t, dir, "proxy.test")
+	clientCert, clientKey := ca.Issue(t, dir, "client.test")
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: fwd
+      address: "127.0.0.1:0"
+      kind: forward
+      tls:
+        certificates: [{cert_file: %s, key_file: %s}]
+        client_auth: require
+        client_ca_file: %s
+      forward: {socks5: true}
+logging:
+  access: {enabled: false}
+upstreams:
+  - name: unused
+    endpoints: [{address: 127.0.0.1:1}]
+routes: []
+`, serverCert, serverKey, ca.Path)
+	s := proxytest.Start(t, yaml)
+	addr := s.Addrs()["fwd"]
+
+	// A raw SOCKS greeting must encounter TLS rather than the SOCKS parser.
+	raw, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = raw.SetDeadline(time.Now().Add(5 * time.Second))
+	_, _ = raw.Write([]byte{5, 1, 0})
+	var reply [2]byte
+	if _, err := io.ReadFull(raw, reply[:]); err == nil && reply == [2]byte{5, 0} {
+		_ = raw.Close()
+		t.Fatal("plaintext SOCKS greeting bypassed listener TLS")
+	}
+	_ = raw.Close()
+
+	// An authenticated TLS client still reaches the SOCKS parser.
+	pair, err := tls.LoadX509KeyPair(clientCert, clientKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(ca.CertPEM)
+	c, err := tls.Dial("tcp", addr, &tls.Config{
+		Certificates: []tls.Certificate{pair}, RootCAs: pool,
+		ServerName: "proxy.test", MinVersion: tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := c.Write([]byte{5, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(c, reply[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply != [2]byte{5, 0} {
+		t.Fatalf("SOCKS greeting reply = %v", reply)
+	}
 }
 
 // TestSOCKS5Connect is the end to end case: a client speaks SOCKS5 to
