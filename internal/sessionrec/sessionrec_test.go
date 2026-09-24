@@ -123,6 +123,31 @@ func TestTheByteBoundStopsTheFileAndSaysSo(t *testing.T) {
 	}
 }
 
+// Resize events are chosen by the peer just like session input. They must
+// consume the bound too, or window-change requests can grow one recording
+// forever without sending any terminal data.
+func TestTheByteBoundStopsResizeEvents(t *testing.T) {
+	p, _ := policy(t, func(c *config.SessionRecording) { c.MaxFileBytes = 16 })
+	rec, err := p.Open(Header{Tag: "bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		rec.Resize(80, 24)
+	}
+	res := rec.Close()
+	if !res.Truncated {
+		t.Error("resize events did not stop at the recording bound")
+	}
+	body, _ := os.ReadFile(res.File)
+	if got := strings.Count(string(body), `, "r",`); got != 3 {
+		t.Errorf("recorded %d resize events, want 3 within the bound", got)
+	}
+	if !strings.Contains(string(body), "max_file_bytes") {
+		t.Errorf("the file does not say why it stopped:\n%s", body)
+	}
+}
+
 // A recorder prunes what it wrote and nothing else: a file another
 // process put in the directory is not this one's to delete.
 func TestPruningKeepsTheCountAndTouchesNothingElse(t *testing.T) {
