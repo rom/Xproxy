@@ -4384,6 +4384,25 @@ and survive reloads; `POST /v1/waf/reset` clears them.
 | `min_hits` | int | `5` | Matches before a proposal appears; 1 to 1000000 |
 | `max_entries` | int | `10000` | Bound on distinct (rule, variable, route) entries; further ones are counted as dropped; 100 to 1000000 |
 
+**Which rules are noise on *this* traffic** is a question the statistics
+can answer, and the rule set cannot. Beside each rule's matches,
+`xproxyctl waf` shows `ALONE` and `AGREED`: how many of those matches
+happened with no other attack rule matching the same request, and the
+share where at least one other did.
+
+It is a measurement, not a verdict. A rule that only ever fires alone is
+either the one thing noticing something or the one thing crying wolf, and
+which of those it is takes a person — but a rule set has hundreds of rules
+and this says which few are worth that person's afternoon. The CRS's
+paranoia level is a statement about how aggressive a rule is; this is a
+statement about what it did here.
+
+The scoring and reporting rules are left out of the arithmetic on both
+sides: rule 949110 evaluating the anomaly score is the rule set's own
+bookkeeping, not a second opinion about the request. And the exclusion
+proposals are ordered by the same number, least agreement first: an
+exclusion for a rule nothing ever agreed with is the safest one to write.
+
 ### waf.anomaly
 
 The rules judge one request at a time. Anomaly detection judges

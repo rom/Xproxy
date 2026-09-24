@@ -512,6 +512,30 @@ Open findings of the earlier rounds:
   access log line carries `view`. Twelve deliberate weakenings were each
   caught by the tests.
 
+- **Which WAF rules are noise on this traffic, measured** (`xproxyctl waf`,
+  `GET /v1/waf`).
+
+  Beside each rule's matches the statistics now carry `alone` -- the
+  matches where no other attack rule matched the same request -- and
+  `agreement`, the share where at least one other did. A rule set has
+  hundreds of rules and a false positive hunt has an afternoon; this says
+  which few rules fire on their own, which is where that afternoon goes.
+
+  It is a measurement of this traffic, deliberately not a verdict about
+  the rule: a rule that only ever fires alone is either the one thing
+  noticing something or the one thing crying wolf, and which of those it
+  is takes a person. The CRS's paranoia level says how aggressive a rule
+  is; this says what it did here. The scoring and reporting rules (949110
+  and its kin) are excluded from the arithmetic on both sides, because the
+  rule set's own bookkeeping is not a second opinion.
+
+  The learned exclusion proposals carry the same number and are ordered by
+  it, least agreement first: an exclusion for a rule nothing ever agreed
+  with is the safest one to write. Twelve deliberate weakenings were each
+  caught, two after the ordering test was made to discriminate -- hit count
+  and agreement happened to agree in the first version of it, which proved
+  nothing.
+
 - **Imported threat intelligence** (`threat_intel`, `routes[].threat_intel`).
 
   Named lists of client addresses and TLS fingerprints, read from files,

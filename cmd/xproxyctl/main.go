@@ -1592,9 +1592,13 @@ func cmdWAF(c *mgmt.Client, args []string, asJSON bool, out, errOut io.Writer) i
 		if len(rep.Rules) == 0 {
 			_, _ = fmt.Fprintln(out, "no rule matches recorded")
 		} else {
-			_, _ = fmt.Fprintln(tw, "RULE	MATCHES	BLOCKS	DETECTS	SEVERITY	LAST-SEEN	MESSAGE")
+			// AGREED is the share of this rule's matches where another
+			// attack rule matched the same request. A busy rule nothing
+			// ever agreed with is where to look first.
+			_, _ = fmt.Fprintln(tw, "RULE	MATCHES	BLOCKS	DETECTS	ALONE	AGREED	SEVERITY	LAST-SEEN	MESSAGE")
 			for _, r := range rep.Rules {
-				_, _ = fmt.Fprintf(tw, "%d	%d	%d	%d	%s	%s	%s\n", r.ID, r.Matches, r.Blocks, r.Detects, dash(r.Severity), r.LastSeen.Local().Format(time.RFC3339), r.Message)
+				_, _ = fmt.Fprintf(tw, "%d	%d	%d	%d	%d	%.0f%%	%s	%s	%s\n", r.ID, r.Matches, r.Blocks, r.Detects,
+					r.Alone, r.Agreement*100, dash(r.Severity), r.LastSeen.Local().Format(time.RFC3339), r.Message)
 			}
 			_ = tw.Flush()
 		}
@@ -1604,9 +1608,10 @@ func cmdWAF(c *mgmt.Client, args []string, asJSON bool, out, errOut io.Writer) i
 			_, _ = fmt.Fprintln(out, "no exclusion proposals")
 			return 0
 		}
-		_, _ = fmt.Fprintln(tw, "RULE	TARGET	ROUTE	HITS	CLIENTS	LAST-SEEN	MESSAGE")
+		_, _ = fmt.Fprintln(tw, "RULE	TARGET	ROUTE	HITS	CLIENTS	AGREED	LAST-SEEN	MESSAGE")
 		for _, p := range rep.Learning.Proposals {
-			_, _ = fmt.Fprintf(tw, "%d	%s	%s	%d	%d	%s	%s\n", p.Rule, p.Target, dash(p.Route), p.Hits, p.Clients, p.LastSeen.Local().Format(time.RFC3339), p.Message)
+			_, _ = fmt.Fprintf(tw, "%d	%s	%s	%d	%d	%.0f%%	%s	%s\n", p.Rule, p.Target, dash(p.Route), p.Hits, p.Clients,
+				p.Agreement*100, p.LastSeen.Local().Format(time.RFC3339), p.Message)
 		}
 		_ = tw.Flush()
 		_, _ = fmt.Fprintln(out, "review the directives with: xproxyctl waf exclusions")

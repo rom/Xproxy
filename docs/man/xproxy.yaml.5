@@ -10181,6 +10181,12 @@ T}	T{
 Bound on distinct (rule,\: variable,\: route) entries;\: further ones are counted as dropped;\: 100 to 1000000
 T}
 .TE
+.PP
+\fBWhich rules are noise on \fIthis\fR traffic\fR is a question the statistics can answer, and the rule set cannot. Beside each rule\(aqs matches, \fBxproxyctl waf\fR shows \fBALONE\fR and \fBAGREED\fR: how many of those matches happened with no other attack rule matching the same request, and the share where at least one other did.
+.PP
+It is a measurement, not a verdict. A rule that only ever fires alone is either the one thing noticing something or the one thing crying wolf, and which of those it is takes a person \[u2014] but a rule set has hundreds of rules and this says which few are worth that person\(aqs afternoon. The CRS\(aqs paranoia level is a statement about how aggressive a rule is; this is a statement about what it did here.
+.PP
+The scoring and reporting rules are left out of the arithmetic on both sides: rule 949110 evaluating the anomaly score is the rule set\(aqs own bookkeeping, not a second opinion about the request. And the exclusion proposals are ordered by the same number, least agreement first: an exclusion for a rule nothing ever agreed with is the safest one to write.
 .SS "waf.anomaly"
 .PP
 The rules judge one request at a time. Anomaly detection judges clients: every WAF protected request is attributed to its client address, and at the end of each window a client with at least \fBmin_requests\fR becomes a feature vector (request rate, share of requests that matched a rule, share that ended in an error or a deny, spread over distinct paths). The population\(aqs mean and variance per feature form a baseline that follows drift across windows; a client whose largest positive z\-score against the previous baseline reaches \fBthreshold\fR is flagged and its next requests get \fBaction\fR, until a later window scores it normal or it stays away for three windows. A window with fewer than eight scored clients updates nothing, so a quiet site never flags its only visitor. Flags, the baseline and the counters show under \fBxproxyctl waf anomalies\fR and \fBGET /v1/waf\fR.
