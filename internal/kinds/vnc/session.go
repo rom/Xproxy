@@ -2,10 +2,8 @@ package vnc
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"time"
@@ -153,7 +151,14 @@ func (se *session) closeRecording() {
 // pumpToClient copies what the target showed, recording it. The
 // recording is this direction only: it is what was on the screen,
 // which is what a recording of a graphical session is for.
+//
+// A framed listener reads the picture and bounds it. An opaque one
+// copies bytes, which is what a desktop that must use the tight
+// encoding needs and what leaves the bounds unenforceable.
 func (se *session) pumpToClient() string {
+	if se.t.px.framed {
+		return se.framedToClient()
+	}
 	buf := make([]byte, 64<<10)
 	for {
 		if se.t.v.IdleTimeout > 0 {
@@ -172,74 +177,13 @@ func (se *session) pumpToClient() string {
 	}
 }
 
-// pumpToTarget copies what the client sent, applying view_only. The
-// client's messages are framed by type, so dropping the two that drive
-// the desktop is a matter of reading the first byte and knowing how
-// long the message is.
-func (se *session) pumpToTarget() string {
-	if !se.t.v.ViewOnly {
-		return se.copyPlain()
-	}
-	return se.copyViewOnly()
-}
-
-func (se *session) copyPlain() string {
-	buf := make([]byte, 32<<10)
-	for {
-		if se.t.v.IdleTimeout > 0 {
-			_ = se.client.SetReadDeadline(time.Now().Add(se.t.v.IdleTimeout.D()))
-		}
-		n, err := se.client.Read(buf)
-		if n > 0 {
-			if _, werr := se.up.Write(buf[:n]); werr != nil {
-				return "write"
-			}
-		}
-		if err != nil {
-			return endReason(err)
-		}
-	}
-}
-
-// Client-to-server message types (RFC 6143 section 7.5) and their
-// fixed lengths. Only the two that drive the desktop are dropped; the
-// rest describe what the client wants to see and are harmless.
-const (
-	msgSetPixelFormat      = 0
-	msgSetEncodings        = 2
-	msgFramebufferUpdateRq = 3
-	msgKeyEvent            = 4
-	msgPointerEvent        = 5
-	msgClientCutText       = 6
-)
-
-// copyViewOnly forwards everything but the messages that drive the
-// desktop. It has to frame the stream to do that, because a client
-// message is only as long as its type says.
-func (se *session) copyViewOnly() string {
-	r := newFramer(se.client)
-	for {
-		if se.t.v.IdleTimeout > 0 {
-			_ = se.client.SetReadDeadline(time.Now().Add(se.t.v.IdleTimeout.D()))
-		}
-		msg, err := r.next()
-		if err != nil {
-			return endReason(err)
-		}
-		switch msg[0] {
-		case msgKeyEvent, msgPointerEvent, msgClientCutText:
-			// Dropped: this session is watched, not driven. Cut text
-			// goes with them, since pasting into the desktop is
-			// driving it.
-			se.t.engine.Counters().VNCRefused.Add(1)
-			se.t.engine.Counters().Refuse("vnc", "view_only")
-			continue
-		}
-		if _, err := se.up.Write(msg); err != nil {
-			return "write"
-		}
-	}
-}
+// pumpToTarget copies what the client sent, applying the policy. This
+// direction is always framed, whatever pixel_stream says: a message is
+// only as long as its type says, so framing is what lets a gateway drop
+// one and forward the next -- and a message type whose length it does
+// not know, which is where the vendors put file transfer, cannot be
+// forwarded at all without losing the stream after it.
+func (se *session) pumpToTarget() string { return se.framedToTarget() }
 
 // endReason names why a copy stopped. A timeout is the idle deadline
 // rather than a peer hanging up, and the two are worth telling apart
@@ -250,77 +194,6 @@ func endReason(err error) string {
 		return "idle"
 	}
 	return "closed"
-}
-
-// framer reads whole client-to-server messages, which is what dropping
-// one of them requires: a message is only as long as its type says,
-// and a proxy that guessed would cut one in half.
-type framer struct {
-	r   io.Reader
-	buf []byte
-}
-
-func newFramer(r io.Reader) *framer { return &framer{r: r, buf: make([]byte, 0, 4096)} }
-
-// maxCutText bounds a client's cut text, which is the one client
-// message with a length a peer chooses.
-const maxCutText = 1 << 20
-
-func (f *framer) next() ([]byte, error) {
-	var head [1]byte
-	if _, err := io.ReadFull(f.r, head[:]); err != nil {
-		return nil, err
-	}
-	switch head[0] {
-	case msgSetPixelFormat:
-		return f.fixed(head[0], 20)
-	case msgFramebufferUpdateRq:
-		return f.fixed(head[0], 10)
-	case msgKeyEvent:
-		return f.fixed(head[0], 8)
-	case msgPointerEvent:
-		return f.fixed(head[0], 6)
-	case msgSetEncodings:
-		// One byte padding, a count, then that many four byte values.
-		b, err := f.fixed(head[0], 4)
-		if err != nil {
-			return nil, err
-		}
-		n := binary.BigEndian.Uint16(b[2:4])
-		rest := make([]byte, int(n)*4)
-		if _, err := io.ReadFull(f.r, rest); err != nil {
-			return nil, err
-		}
-		return append(b, rest...), nil
-	case msgClientCutText:
-		b, err := f.fixed(head[0], 8)
-		if err != nil {
-			return nil, err
-		}
-		n := binary.BigEndian.Uint32(b[4:8])
-		if n > maxCutText {
-			return nil, fmt.Errorf("vnc: cut text of %d bytes, over the bound", n)
-		}
-		rest := make([]byte, n)
-		if _, err := io.ReadFull(f.r, rest); err != nil {
-			return nil, err
-		}
-		return append(b, rest...), nil
-	}
-	// A message type this proxy does not know the length of cannot be
-	// framed, so it cannot be dropped selectively either. view_only is
-	// a promise, so the session ends rather than the promise breaking.
-	return nil, fmt.Errorf("vnc: client message type %d has no known length", head[0])
-}
-
-// fixed reads a message of a known total length, head included.
-func (f *framer) fixed(typ byte, total int) ([]byte, error) {
-	out := make([]byte, total)
-	out[0] = typ
-	if _, err := io.ReadFull(f.r, out[1:]); err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // askFactor checks the second factor before the target is dialled.

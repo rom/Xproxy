@@ -5979,10 +5979,62 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 	if c.MaxConnections < 1 {
 		v.errf("%s.max_connections: must be positive", p)
 	}
+	v.vncPixels(p, c)
 	for i, cidr := range c.AllowClients {
 		if _, err := netip.ParsePrefix(cidr); err != nil {
 			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, cidr, err)
 		}
+	}
+}
+
+// vncPixels checks the pixel stream mode, the clipboard direction and
+// the bounds on what a desktop may declare.
+func (v *validator) vncPixels(p string, c *VNCListener) {
+	switch c.PixelStream {
+	case VNCPixelsFramed:
+	case VNCPixelsOpaque:
+		v.warnf("%s.pixel_stream: opaque forwards the desktop's picture without reading it, so only max_framebuffer_pixels applies and a rectangle that declares more than it carries is not refused. It is the setting for a desktop that must use the tight encoding; framed is the one that bounds what a viewer is asked to allocate", p)
+	default:
+		v.errf("%s.pixel_stream: must be framed or opaque", p)
+	}
+	switch c.Clipboard {
+	case VNCClipboardBoth, VNCClipboardToClient, VNCClipboardToTarget, VNCClipboardNone:
+	default:
+		v.errf("%s.clipboard: must be both, to_client, to_target or none", p)
+	}
+	b := c.Bounds
+	if b == nil {
+		return
+	}
+	q := p + ".bounds"
+	// 640x480 is the smallest desktop anything serves; a bound under it
+	// is a listener where nothing can connect, which is worth saying at
+	// load rather than discovering per session.
+	if b.MaxFramebufferPixels < 0 {
+		v.errf("%s.max_framebuffer_pixels: must not be negative", q)
+	} else if b.MaxFramebufferPixels > 0 && b.MaxFramebufferPixels < 640*480 {
+		v.errf("%s.max_framebuffer_pixels: %d is smaller than a 640x480 desktop, so no session could start", q, b.MaxFramebufferPixels)
+	}
+	if b.MaxRectanglesPerUpdate < 0 {
+		v.errf("%s.max_rectangles_per_update: must not be negative", q)
+	} else if b.MaxRectanglesPerUpdate > 0 && b.MaxRectanglesPerUpdate < 16 {
+		v.errf("%s.max_rectangles_per_update: %d is fewer than an ordinary screen redraw, which is tens", q, b.MaxRectanglesPerUpdate)
+	}
+	if b.MaxEncodedRectangle < 0 {
+		v.errf("%s.max_encoded_rectangle: must not be negative", q)
+	} else if b.MaxEncodedRectangle > 0 && b.MaxEncodedRectangle < 64<<10 {
+		v.errf("%s.max_encoded_rectangle: %d is smaller than one tile of a raw update", q, b.MaxEncodedRectangle)
+	}
+	if b.MaxDecodeRatio < 0 {
+		v.errf("%s.max_decode_ratio: must not be negative", q)
+	} else if b.MaxDecodeRatio > 0 && b.MaxDecodeRatio < 4 {
+		v.errf("%s.max_decode_ratio: %d would refuse ordinary compression; a screen of flat colour compresses far better than fourfold", q, b.MaxDecodeRatio)
+	}
+	if b.MaxCutText < 0 {
+		v.errf("%s.max_cut_text: must not be negative", q)
+	}
+	if c.PixelStream == VNCPixelsOpaque && (b.MaxRectanglesPerUpdate > 0 || b.MaxEncodedRectangle > 0 || b.MaxDecodeRatio > 0) {
+		v.warnf("%s: max_rectangles_per_update, max_encoded_rectangle and max_decode_ratio need the pixel stream read, and pixel_stream is opaque, so they do nothing here. max_framebuffer_pixels and max_cut_text still apply", q)
 	}
 }
 

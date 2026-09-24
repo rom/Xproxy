@@ -422,7 +422,15 @@ func (se *session) upstreamHandshake(ci rfb.ClientInit) string {
 	if err != nil {
 		return "upstream_init"
 	}
+	se.si = si
 	se.desktop, se.width, se.height = si.Name, si.Width, si.Height
+	// The desktop's own size is the first number a viewer allocates
+	// from, so it is bounded before it is forwarded: a client that
+	// never sees 65535x65535 never makes room for it.
+	if err := se.t.px.limits.CheckFramebuffer(si.Width, si.Height); err != nil {
+		se.pixelDeny("framebuffer_too_large", err)
+		return "framebuffer_too_large"
+	}
 	if _, err := se.client.Write(si.Encode()); err != nil {
 		return "write"
 	}

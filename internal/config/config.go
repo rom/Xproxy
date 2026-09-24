@@ -642,6 +642,37 @@ type VNCListener struct {
 	// ViewOnly drops the client's pointer and keyboard messages, so a
 	// session can be watched and not driven.
 	ViewOnly bool `yaml:"view_only"`
+	// PixelStream says whether the gateway reads the desktop's picture.
+	//
+	// framed (the default) reads every message the desktop sends and
+	// every rectangle inside it, which is what makes Bounds possible:
+	// an image protocol's numbers are the viewer's allocations, and a
+	// gateway that forwards them unread cannot refuse one that is a
+	// bomb. It also decides what a client may ask for, because framing
+	// needs every encoding in play to be one the gateway can measure,
+	// so the encodings it cannot are removed from the client's list and
+	// the desktop never uses them -- tight among them.
+	//
+	// opaque forwards the desktop's bytes without reading them, which
+	// is what a listener that must have tight sets. Only the announced
+	// framebuffer size is then bounded; the rest of Bounds cannot be.
+	// The client's own messages are framed either way, because that is
+	// what lets a gateway refuse one and forward the next.
+	PixelStream string `yaml:"pixel_stream"`
+	// Bounds bound what the desktop may ask the viewer to allocate.
+	Bounds *VNCBounds `yaml:"bounds"`
+	// Clipboard says which way a clipboard transfer may travel: both
+	// (the default), to_client, to_target or none. A bastion whose
+	// sessions are recorded usually wants to_client at most: a
+	// clipboard into the desktop is an upload with no name and no size
+	// in the log.
+	Clipboard string `yaml:"clipboard"`
+	// AllowResize lets a client ask the desktop to change size
+	// (SetDesktopSize). Default true. The size asked for is bounded by
+	// Bounds.MaxFramebufferPixels whatever this says, because a client
+	// asking a desktop to allocate a framebuffer is the same attack in
+	// the other direction.
+	AllowResize *bool `yaml:"allow_resize"`
 	// Recording writes the RFB stream to a file.
 	Recording *SessionRecording `yaml:"recording"`
 	// MFA asks for a login name and a one-time code before the target
@@ -662,6 +693,54 @@ type VNCListener struct {
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
 }
+
+// VNCBounds bound the pixel stream: what the desktop may declare, and
+// therefore what the viewer at the other end is asked to allocate.
+//
+// Image protocols are where a decompression bomb is cheapest to send. A
+// rectangle's header is twelve bytes and says how many pixels it
+// covers; a viewer sizes its decode buffer from that. A desktop that
+// says 4096x4096 in twelve bytes of zlib is asking for sixty-four
+// megabytes, and it can ask again immediately. None of these bounds
+// requires decompressing anything: they compare what was declared with
+// what arrived.
+//
+// A zero field is no bound.
+type VNCBounds struct {
+	// MaxFramebufferPixels bounds the desktop size, in pixels: the one
+	// the target announces, the one a resize changes it to, and the one
+	// a client asks for. Default 33177600, which is 7680x4320.
+	MaxFramebufferPixels int `yaml:"max_framebuffer_pixels"`
+	// MaxRectanglesPerUpdate bounds one framebuffer update's
+	// rectangles. Default 4096. A thousand one-pixel rectangles cost
+	// the viewer a thousand decode calls for one screen.
+	MaxRectanglesPerUpdate int `yaml:"max_rectangles_per_update"`
+	// MaxEncodedRectangle bounds one rectangle's encoded payload in
+	// bytes. Default 16777216.
+	MaxEncodedRectangle int `yaml:"max_encoded_rectangle"`
+	// MaxDecodeRatio bounds the declared picture over the bytes that
+	// carry it, for the compressed encodings. Default 1000: a
+	// thousandfold is past any real screen and well short of what a
+	// bomb needs to be worth sending.
+	MaxDecodeRatio int `yaml:"max_decode_ratio"`
+	// MaxCutText bounds one clipboard transfer in either direction, in
+	// bytes. Default 1048576.
+	MaxCutText int `yaml:"max_cut_text"`
+}
+
+// VNCClipboard directions.
+const (
+	VNCClipboardBoth     = "both"
+	VNCClipboardToClient = "to_client"
+	VNCClipboardToTarget = "to_target"
+	VNCClipboardNone     = "none"
+)
+
+// VNCPixelStream modes.
+const (
+	VNCPixelsFramed = "framed"
+	VNCPixelsOpaque = "opaque"
+)
 
 // VNCOverSSH reaches a VNC target through an SSH connection the
 // gateway makes itself.

@@ -1219,6 +1219,10 @@ proxy does not hold.
 | `upstream_tls` | object | none | CA and name for the target's leg |
 | `ssh` | object | none | Reach the target through an SSH connection the gateway makes; see below |
 | `view_only` | bool | `false` | Drop the client's key, pointer and cut-text messages, so a session is watched and not driven |
+| `pixel_stream` | string | `framed` | `framed` reads the desktop's picture and applies `bounds`; `opaque` forwards it unread, which is what a desktop that must use the `tight` encoding needs. See below |
+| `bounds` | object | see below | What the desktop may ask the viewer to allocate |
+| `clipboard` | string | `both` | Which way a clipboard transfer may travel: `both`, `to_client`, `to_target` or `none` |
+| `allow_resize` | bool | `true` | Let a client ask the desktop to change size. The size asked for is bounded by `bounds.max_framebuffer_pixels` whatever this says |
 | `recording` | object | none | As `server.listeners[].ssh.recording`; see below for the format |
 | `mfa` | object | none | See below: it needs `x509-plain` |
 | `idle_timeout` | duration | `5m` | No traffic in either direction |
@@ -1227,6 +1231,82 @@ proxy does not hold.
 | `max_connections` | int | `200` | Sessions on this listener |
 | `proxy_protocol` | bool | `false` | PROXY protocol v2 header to the target |
 | `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+
+#### Reading the picture: `pixel_stream` and `bounds`
+
+An image protocol's numbers are the viewer's allocations. A
+`ServerInit` says the desktop is so many pixels wide and high, and the
+viewer allocates a framebuffer from it; a rectangle's twelve byte
+header says how much of the screen it covers, and the viewer sizes a
+decode buffer from that. A desktop that says 4096x4096 in twelve bytes
+of zlib is not sending a picture, it is asking the machine on somebody's
+desk for sixty-four megabytes, and it can ask again immediately. This is
+what makes an image protocol the cheapest place to aim a decompression
+bomb.
+
+With `pixel_stream: framed` (the default) the gateway reads every
+message the desktop sends and every rectangle inside it, so it can
+refuse one. Nothing is decompressed to do this: each bound compares what
+was declared with what arrived.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `bounds.max_framebuffer_pixels` | int | `33177600` (7680x4320) | The desktop size in pixels: the one the target announces, the one a resize changes it to, and the one a client asks for |
+| `bounds.max_rectangles_per_update` | int | `4096` | Rectangles in one framebuffer update. A thousand one-pixel rectangles cost the viewer a thousand decode calls for one screen |
+| `bounds.max_encoded_rectangle` | int | `16777216` | One rectangle's encoded payload, in bytes |
+| `bounds.max_decode_ratio` | int | `1000` | The declared picture over the bytes that carry it, for the compressed encodings. A thousandfold is past any real screen |
+| `bounds.max_cut_text` | int | `1048576` | One clipboard transfer, in either direction |
+
+A zero is no bound. Two checks apply whatever `bounds` says: a
+rectangle must lie inside the framebuffer it belongs to (a viewer
+writes a rectangle's pixels at the offset the rectangle gives, and one
+reaching past the end is a write past the end of the buffer the viewer
+made for it), and a pixel format must be 8, 16 or 32 bits, because every
+length in the picture is measured in whole pixels.
+
+**Framing decides what a client may ask for.** A gateway can only frame
+an encoding whose payload length it can compute, so the encodings it
+cannot are removed from the client's `SetEncodings` list and the desktop
+never uses one. What survives: `raw`, `copyrect`, `rre`, `corre`,
+`hextile`, `zlib`, `zrle`, the cursor and desktop-size pseudo-encodings,
+the compression and quality hints, `fence`, continuous updates and the
+extended clipboard. What is removed: **`tight`** and `trle`, whose
+lengths depend on a filter, a palette size and a pixel width that is not
+the pixel format's; `cursor-with-alpha`; and anything unregistered. A
+client asks for every encoding it has, so a filtered list still leaves a
+session that draws -- `zrle` is the usual survivor, and `raw` is added
+if nothing else is left.
+
+A listener that must have `tight` sets `pixel_stream: opaque`. The
+desktop's bytes are then forwarded unread: `max_framebuffer_pixels` and
+`max_cut_text` still apply, and the three bounds that need the stream
+read do not. Validation warns, because that is the trade.
+
+The **client's** messages are framed either way. A message is only as
+long as its type says, so framing is what lets a gateway drop one and
+forward the next -- which is how `view_only` and `clipboard` work -- and
+a message type whose length the gateway does not know cannot be
+forwarded at all without losing the stream after it. **That is why a
+file transfer cannot cross this gateway**: TightVNC's and UltraVNC's
+transfers are client messages 252 and 255, whose lengths are the
+vendors' own, so a session that sends one ends. It is a consequence of
+framing rather than a rule, which is the strongest kind.
+
+One restriction comes with framing: a `SetPixelFormat` is allowed before
+the first framebuffer update request and refused after it. RFB has no
+message that says "the next rectangle is in the new format", so a
+gateway that kept framing past a mid-stream change would be guessing
+where the rectangles are. Viewers that re-negotiate colour depth
+automatically (TigerVNC's automatic mode) need a fixed depth configured,
+or `pixel_stream: opaque`.
+
+Every refusal on this path is counted under
+`xproxy_refusals_total{kind="vnc"}` with a reason of its own
+(`framebuffer_too_large`, `decode_ratio`, `too_many_rectangles`,
+`encoded_rectangle_too_large`, `rectangle_outside_framebuffer`,
+`unframable`, `cut_text_too_large`, `resize_refused`,
+`pixel_format_changed`) and logged as a `vnc_denied` security event with
+the numbers that caused it.
 
 #### VNC over TLS, and VNC over SSH
 

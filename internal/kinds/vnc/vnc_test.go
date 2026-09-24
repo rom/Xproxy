@@ -39,6 +39,10 @@ type target struct {
 	// shown is written to the client once the handshake is done, so a
 	// test has something to see at the far end.
 	shown []byte
+	// width and height are the desktop this target announces. Zero
+	// means 1024x768, which every test but the ones about the
+	// framebuffer bound wants.
+	width, height uint16
 	// serverTLS is the certificate this target presents when it offers
 	// VeNCrypt, which is how the gateway's own leg gets encrypted.
 	serverTLS *tls.Config
@@ -60,6 +64,25 @@ type target struct {
 	gotUser, gotPass string
 }
 
+// rawUpdate wraps bytes as a one rectangle raw framebuffer update, so a
+// target can show something a framing gateway will pass on. The gateway
+// reads the picture now, and arbitrary bytes are not a picture: the
+// payload becomes the pixels of a rectangle one row high, padded to
+// whole pixels at the target's 32 bits each.
+func rawUpdate(payload []byte) []byte {
+	for len(payload)%4 != 0 {
+		payload = append(payload, ' ')
+	}
+	w := len(payload) / 4
+	out := []byte{0, 0, 0, 1} // framebuffer update, one rectangle
+	out = binary.BigEndian.AppendUint16(out, 0)
+	out = binary.BigEndian.AppendUint16(out, 0)
+	out = binary.BigEndian.AppendUint16(out, uint16(w))
+	out = binary.BigEndian.AppendUint16(out, 1)
+	out = binary.BigEndian.AppendUint32(out, 0) // raw
+	return append(out, payload...)
+}
+
 func startTarget(t *testing.T, tg *target) *target {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -77,7 +100,7 @@ func startTarget(t *testing.T, tg *target) *target {
 		tg.desktop = "lab-console"
 	}
 	if tg.shown == nil {
-		tg.shown = []byte("FRAMEBUFFER-ONE")
+		tg.shown = rawUpdate([]byte("FRAMEBUFFER-ONE"))
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
@@ -166,7 +189,11 @@ func (tg *target) session(c net.Conn) {
 	tg.mu.Lock()
 	tg.init = ci
 	tg.mu.Unlock()
-	si := rfb.ServerInit{Width: 1024, Height: 768, Name: tg.desktop}
+	w, h := tg.width, tg.height
+	if w == 0 {
+		w, h = 1024, 768
+	}
+	si := rfb.ServerInit{Width: w, Height: h, Name: tg.desktop}
 	si.PixelFormat[0] = 32
 	if _, err := c.Write(si.Encode()); err != nil {
 		return
@@ -816,7 +843,7 @@ func TestAnUnframeableMessageEndsAViewOnlySession(t *testing.T) {
 // protocol stream, not a terminal.
 func TestTheRecordingHoldsTheStream(t *testing.T) {
 	dir := t.TempDir()
-	tg := startTarget(t, &target{desktop: "lathe-hmi", shown: []byte("PIXELS-FOR-THE-RECORD")})
+	tg := startTarget(t, &target{desktop: "lathe-hmi", shown: rawUpdate([]byte("PIXELS-FOR-THE-RECORD"))})
 	s, addr := gateway(t, tg, "        security_types: [none]\n        recording: {directory: "+dir+"}")
 	cl := dial(t, addr)
 	cl.open(true)

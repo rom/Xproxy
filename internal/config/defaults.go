@@ -386,6 +386,24 @@ func applyDefaults(c *Config) {
 			setInt(&c.MaxConnections, 200)
 			setDur(&c.IdleTimeout, 5*time.Minute)
 			setDur(&c.HandshakeTimeout, 30*time.Second)
+			setStr(&c.PixelStream, VNCPixelsFramed)
+			setStr(&c.Clipboard, VNCClipboardBoth)
+			if c.AllowResize == nil {
+				t := true
+				c.AllowResize = &t
+			}
+			// The bounds apply whether or not the section is written,
+			// because a listener with no bounds is the case they exist
+			// for. The section is filled in so the dump and the
+			// management view show the numbers in force.
+			if c.Bounds == nil {
+				c.Bounds = &VNCBounds{}
+			}
+			setInt(&c.Bounds.MaxFramebufferPixels, 33177600)
+			setInt(&c.Bounds.MaxRectanglesPerUpdate, 4096)
+			setInt(&c.Bounds.MaxEncodedRectangle, 16<<20)
+			setInt(&c.Bounds.MaxDecodeRatio, 1000)
+			setInt(&c.Bounds.MaxCutText, 1<<20)
 			if c.SSH != nil {
 				setStr(&c.SSH.Target, "127.0.0.1:5900")
 			}

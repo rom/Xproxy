@@ -53,8 +53,10 @@ type server struct {
 	password   string
 	upPassword string
 	recorder   *sessionrec.Policy
-	mfaGuard   *mfa.Guard
-	ssh        *sshDialer
+	// px is the policy over the pixel stream, built once.
+	px       pixelPolicy
+	mfaGuard *mfa.Guard
+	ssh      *sshDialer
 	// rsaKey is this listener's own key for the rsa-aes types.
 	rsaKey *rsa.PrivateKey
 
@@ -111,6 +113,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 		}
 	}
 	t.recorder = sessionrec.New(c.Recording)
+	t.px = newPixelPolicy(c)
 	if c.MFA != nil {
 		store, err := mfa.Load(c.MFA.File)
 		if err != nil {
@@ -265,15 +268,20 @@ type session struct {
 	// recording's title.
 	desktop       string
 	width, height uint16
-	rec           *sessionrec.Recording
-	pool          *upstream.Pool
-	ep            *upstream.Endpoint
+	// si is the target's ServerInit, whose pixel format is what every
+	// length in the picture is measured in.
+	si rfb.ServerInit
+	// px is this session's state on the two pump goroutines.
+	px   *pixels
+	rec  *sessionrec.Recording
+	pool *upstream.Pool
+	ep   *upstream.Endpoint
 }
 
 func (t *server) handle(client net.Conn) {
 	s := t.engine
 	start := time.Now()
-	se := &session{t: t, client: client, ip: netutil.AddrOf(client.RemoteAddr().String())}
+	se := &session{t: t, client: client, ip: netutil.AddrOf(client.RemoteAddr().String()), px: newPixels()}
 	s.Counters().VNCSessions.Add(1)
 	s.Counters().VNCSessionsOpen.Add(1)
 	defer s.Counters().VNCSessionsOpen.Add(-1)

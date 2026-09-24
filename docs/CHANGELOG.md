@@ -442,6 +442,68 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **The VNC gateway reads the picture, and bounds it.** The pixel stream
+  was forwarded without being read, which meant the gateway could hold a
+  policy about who connected and none about what arrived. What arrives,
+  in an image protocol, is a series of numbers that are the viewer's
+  allocations: a `ServerInit` says the desktop is so many pixels and the
+  viewer allocates a framebuffer from it; a rectangle's twelve byte
+  header says how much of the screen it covers and the viewer sizes a
+  decode buffer from that. A desktop saying 4096x4096 in twelve bytes of
+  zlib is asking the machine on somebody's desk for sixty-four
+  megabytes, and it can ask again immediately.
+
+  `bounds` is the policy: `max_framebuffer_pixels`,
+  `max_rectangles_per_update`, `max_encoded_rectangle`,
+  `max_decode_ratio` and `max_cut_text`, all on by default. Nothing is
+  decompressed to apply them -- each one compares what a rectangle
+  declared with what arrived -- and two checks apply whatever `bounds`
+  says: a rectangle must lie inside its framebuffer (a viewer writes a
+  rectangle's pixels at the offset the rectangle gives, so one reaching
+  past the end is a write past the end of the buffer the viewer made),
+  and a pixel format must be 8, 16 or 32 bits, because every length in
+  the picture is a whole number of pixels.
+
+  **Framing decides what a client may ask for.** The gateway can only
+  frame an encoding whose payload length it can compute, so the ones it
+  cannot are removed from the viewer's `SetEncodings` and the desktop
+  never uses one: `tight` and `trle` (whose lengths depend on a filter, a
+  palette size and a pixel width that is not the pixel format's),
+  `cursor-with-alpha`, and anything unregistered. A viewer asks for every
+  encoding it has, so a filtered list still draws; `zrle` is the usual
+  survivor and `raw`, which RFB makes mandatory, is added if nothing else
+  is left. `pixel_stream: opaque` is the escape hatch for a desktop that
+  must have Tight, and it gives up the three bounds that need the stream
+  read. Validation warns, because that is the trade.
+
+  The client's messages are now framed too, whatever `pixel_stream`
+  says, which is what `view_only` already needed and what the new
+  `clipboard` policy (`both`, `to_client`, `to_target`, `none`) and
+  `allow_resize` need. **A file transfer cannot cross this gateway**, and
+  not because a rule forbids it: TightVNC's and UltraVNC's transfers are
+  client messages 252 and 255, whose lengths are the vendors' own, and a
+  gateway that forwarded a message whose length it does not know could
+  not find the message after it. It is a consequence of framing rather
+  than a rule.
+
+  The picture is written onward as it is read, in 64 KiB pieces, rather
+  than assembled and then forwarded: a full screen update is tens of
+  megabytes, and a gateway holding one per session would be a proxy an
+  operator could run out of memory by connecting to it. The test for
+  that is a truncated megabyte rectangle, most of which has already left
+  when the read fails.
+
+  One restriction comes with framing: a `SetPixelFormat` is allowed
+  before the first update request and refused after it, because RFB has
+  no message that says "the next rectangle is in the new format" and a
+  gateway that kept framing past a mid-stream change would be guessing
+  where the rectangles are. Viewers that re-negotiate colour depth by
+  themselves need a fixed depth, or an opaque listener. Every refusal on
+  this path has a reason of its own in
+  `xproxy_refusals_total{kind="vnc"}` and a `vnc_denied` event carrying
+  the numbers that caused it, because a bound that fires without saying
+  which one and by how much is a bound nobody can tune.
+
 - **A refusal reason per protocol, not one number per protocol.** HTTP
   had twenty-two named refusal counters behind
   `xproxy_denied_total{reason}`; every other protocol had one aggregate
