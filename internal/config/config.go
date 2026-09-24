@@ -3355,6 +3355,9 @@ type Route struct {
 	// whoever captured it, and this proxy cannot know what a second POST
 	// would do.
 	EarlyData string `yaml:"early_data"`
+	// Ranges bounds byte range requests on this route. Without the
+	// section a Range header is relayed as it arrived.
+	Ranges *RouteRanges `yaml:"ranges"`
 	// Trailers says what to do with the response's trailers: pass
 	// (default) or strip. gRPC carries its status in them, so a gRPC
 	// route cannot strip them.
@@ -3855,6 +3858,35 @@ type ErrorPages struct {
 	// replaced by the matching page (typically 502, 503, 504). Default
 	// none: upstream bodies pass through.
 	InterceptUpstream []int `yaml:"intercept_upstream"`
+}
+
+// RouteRanges bounds byte range requests (RFC 9110 section 14).
+//
+// A Range header is a small request that asks for a large answer, and a
+// set of ranges is a small request that asks for many: each range costs
+// the origin a read and the response a multipart part, so a few hundred
+// of them in one header is the oldest amplification bug in HTTP. RFC 9110
+// section 14.2 leaves the decision to the server, which may coalesce
+// overlapping and adjacent ranges in any order, or ignore a set it will
+// not satisfy -- so this rewrites the set rather than inventing a rule:
+// the same bytes, fewer parts.
+type RouteRanges struct {
+	// MaxRanges is how many ranges a set may still hold after
+	// coalescing. Default 4, which is a resuming download or a media
+	// player seeking; 0 means the default, and up to 1024 is accepted
+	// for a route that really serves such clients.
+	MaxRanges int `yaml:"max_ranges"`
+	// Coalesce merges overlapping and adjacent ranges into the fewest
+	// that cover the same bytes, and sorts them. Default true. It is
+	// explicitly a server's right (RFC 9110 section 14.2), and it is what
+	// turns most oversized sets into one range rather than a refusal.
+	Coalesce *bool `yaml:"coalesce"`
+	// Action is what happens to a set still over MaxRanges after that:
+	// ignore (default) drops the header, so the whole representation is
+	// served, which is what RFC 9110 permits a server that will not
+	// satisfy the set to do; refuse answers 416 with Accept-Ranges, so a
+	// client can ask again for fewer.
+	Action string `yaml:"action"`
 }
 
 // Redirect is a static redirect action. To may use the request variables

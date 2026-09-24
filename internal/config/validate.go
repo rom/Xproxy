@@ -510,6 +510,19 @@ func (v *validator) config(c *Config) {
 		if c.Routes[i].EarlyData == "allow" && len(c.TrustedProxies) > 0 {
 			v.warnf("routes[%d].early_data: allow accepts a request that can be replayed by whoever captured it; only the route knows whether that is safe", i)
 		}
+		if rg := c.Routes[i].Ranges; rg != nil {
+			switch rg.Action {
+			case "", "ignore", "refuse":
+			default:
+				v.errf("routes[%d].ranges.action: must be ignore or refuse", i)
+			}
+			if rg.MaxRanges < 0 || rg.MaxRanges > 1024 {
+				v.errf("routes[%d].ranges.max_ranges: must be between 0 (the default of 4) and 1024", i)
+			}
+			if rg.Coalesce != nil && !*rg.Coalesce {
+				v.warnf("routes[%d].ranges.coalesce: off, so a set of overlapping ranges is counted as it arrived rather than as the bytes it asks for; RFC 9110 section 14.2 allows the merge, and without it a client that overlaps its ranges is refused for asking twice for the same bytes", i)
+			}
+		}
 		switch c.Routes[i].Trailers {
 		case "", "pass", "strip":
 		default:

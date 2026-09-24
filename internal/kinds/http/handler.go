@@ -459,6 +459,29 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Byte ranges (RFC 9110 section 14). A set of ranges is a small
+	// request asking for many answers, and the gateway is where it can be
+	// judged before the origin assembles any of them.
+	if cr.ranges != nil {
+		switch outcome, value, asked := cr.ranges.apply(r.Header.Get("Range")); outcome {
+		case rangeKeep:
+		case rangeRewrite:
+			st.extra = append(st.extra, "ranges", asked, "ranges_sent", value)
+			r.Header.Set("Range", value)
+		case rangeDrop:
+			st.extra = append(st.extra, "ranges", asked, "ranges_sent", "none")
+			r.Header.Del("Range")
+			s.stats.RangesDropped.Add(1)
+		case rangeDeny:
+			st.extra = append(st.extra, "ranges", asked)
+			st.denied = "ranges"
+			s.stats.RangesRefused.Add(1)
+			rangeDenied(rw)
+			s.plainStatus(rw, r, http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+	}
+
 	// Adaptive load shedding by priority class. A client's RFC 9218
 	// urgency may move this request down the order on a route that reads
 	// it, and never up: see priority.go.

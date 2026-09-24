@@ -17765,6 +17765,91 @@ Early data saves a round trip and gives up what a completed handshake provided: 
 \fBsafe_methods\fR serves \fBGET\fR, \fBHEAD\fR, \fBOPTIONS\fR and \fBTRACE\fR and answers 425 to everything else, which is RFC 8470\(aqs advice for a proxy: this one cannot know what a second \fBPOST\fR would do. \fBreject\fR answers 425 to all of it, for a route where even a repeated read matters. \fBallow\fR passes it through, and validation says what that means.
 .PP
 This proxy\(aqs own TLS server never accepts early data, so the header only arrives from a terminator in front \[u2014] and only from a peer inside \fBtrusted_proxies\fR does it count. A client\(aqs own \fBEarly\-Data: 1\fR decides nothing and is removed before the upstream sees it, because the upstream cannot tell the proxy\(aqs copy from the client\(aqs. \fBearly_data\fR appears in the access log for a request that arrived on it, and a refusal is logged as \fBearly_data\fR.
+.SS "routes[].ranges"
+.PP
+Bounds byte range requests (RFC 9110 section 14). Without the section a \fBRange\fR header is relayed as it arrived.
+.PP
+A \fBRange\fR header is a small request asking for a large answer, and a \fIset\fR of ranges is a small request asking for many: each range costs the origin a read and the response a multipart part, so a header naming two hundred of them asks one machine to assemble a response dozens of times the size of the resource from a packet. That is the oldest amplification bug in HTTP, and the gateway is where it can be judged \[u2014] before any of that work is done.
+.PP
+RFC 9110 section 14.2 leaves the decision here: a server \fBmay\fR coalesce ranges that overlap or are separated by a gap smaller than the overhead of another part, "regardless of the order in which the corresponding byte\-range\-spec appeared", and a server that will not satisfy a range set may ignore the header and answer the whole representation. So this rewrites the set rather than inventing a rule: the same bytes, fewer parts.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.8i) lbw(0.8i) lbx
+lw(0.9i) lw(0.8i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmax_\:ranges\fR
+T}	T{
+int
+T}	T{
+\fB4\fR
+T}	T{
+How many ranges a set may still hold \fBafter\fR coalescing;\: 0 means the default,\: up to 1024
+T}
+T{
+\fBcoalesce\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Merge overlapping and adjacent ranges into the fewest that cover the same bytes,\: and sort them. Off,\: a set is counted as it arrived,\: so a client that overlaps its ranges is refused for asking twice for the same bytes (validation says so)
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBignore\fR,\: \fBrefuse\fR
+T}	T{
+\fBignore\fR
+T}	T{
+What happens to a set still over the bound: \fBignore\fR drops the header,\: so the whole representation is served,\: which is what RFC 9110 permits;\: \fBrefuse\fR answers \fB416\fR with \fBAccept\-\:Ranges:\: bytes\fR,\: so a client can ask again for fewer
+T}
+.TE
+.PP
+.RS 4
+.nf
+.ft CR
+routes:
+  \- name: downloads
+    paths: ["/downloads/"]
+    upstream: files
+    ranges: {max_ranges: 4}
+  \- name: media
+    paths: ["/media/"]
+    upstream: files
+    # A player seeks; it does not ask for a hundred pieces at once.
+    ranges: {max_ranges: 8, action: refuse}
+.ft
+.fi
+.RE
+.PP
+What is not guessed at:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBAnother unit is left alone.\fR \fBRange: items=0\-9\fR is passed through: an origin that does not implement a unit ignores the header, and this proxy has nothing to say about a unit it cannot read.
+.PP
+.ti -3n
+\(bu
+\fBA header that is not a range set is dropped\fR, once, here \[u2014] a malformed value, a spec with no dash, a descending range, more specs than are worth reading (256). RFC 9110 says a recipient that cannot parse the header ignores it; deciding that in one place is what keeps this proxy and the origin reading the request the same way.
+.PP
+.ti -3n
+\(bu
+\fBA suffix range is kept as it is.\fR \fB\-500\fR means the last 500 bytes, and how that overlaps \fB0\-99\fR depends on a length this proxy does not know. The largest suffix covers the smaller ones; nothing else about them is assumed.
+.RE
+.PP
+.PP
+\fBranges\fR and \fBranges_sent\fR appear in the access log for a request the policy acted on, a refusal is logged as \fBranges\fR, and \fBxproxy_ranges_total{result="dropped"|"refused"}\fR counts them (\fBranges_dropped\fR and \fBranges_refused\fR in \fBxproxyctl status\fR).
 .SS "routes[].trailers"
 .PP
 \fBpass\fR (default) or \fBstrip\fR: the fields an upstream sends after the body \[u2014] a checksum, a signature, gRPC\(aqs status.

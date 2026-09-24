@@ -2044,6 +2044,40 @@ a second listener.
 do not contain the clients, or the clients reach this resolver through a
 forwarder whose address is what the view sees.
 
+## Byte ranges
+
+**A client's `Range` header does not reach the upstream.** A route with a
+`ranges` section decides it. Three things it can do, and the access log
+says which: `ranges_sent` carries the value forwarded, or `none` when the
+header was dropped. A dropped header means the set was still over
+`max_ranges` after coalescing and `action` is `ignore` (the default), so
+the whole representation is served — which is what RFC 9110 permits a
+server that will not satisfy a set to do. `ranges_dropped` counts them.
+
+**A download manager gets the whole file instead of the part it asked
+for.** The same thing: it asked for more ranges than the route allows.
+Raise `max_ranges` for that route, or set `action: refuse` so the client
+is told (416) rather than handed a body it did not want. Refusing is the
+better answer for a route whose clients can adapt; ignoring is the better
+answer for a route whose clients cannot.
+
+**416 where the resource exists.** `action: refuse` with a set over the
+bound answers 416 with `Accept-Ranges: bytes`, which tells the client
+ranges are supported and this set was not. It is not the origin's 416
+about an unsatisfiable range; `ranges_refused` counts the proxy's.
+
+**The upstream receives a different set from the one the client sent.**
+That is the coalescing, and it is deliberate: overlapping and adjacent
+ranges are merged and the set is sorted, which RFC 9110 section 14.2
+allows explicitly and which is what turns most oversized sets into one
+range rather than a refusal. The bytes asked for are the same. `coalesce:
+false` turns it off, and then a client that overlaps its ranges is
+counted as asking for each of them.
+
+**A `Range` header with another unit is passed through.** `items=0-9`
+is not this proxy's to interpret: an origin ignores a unit it does not
+implement. Only `bytes=` is read.
+
 ## DNS upstream resumption
 
 **`upstream_resumed` stays at zero with `tls://` or `quic://`

@@ -25,20 +25,24 @@ type Stats struct {
 	BytesIn      atomic.Uint64
 	BytesOut     atomic.Uint64
 
-	DeniedACL           atomic.Uint64
-	DeniedRateLimit     atomic.Uint64
-	Tarpitted           atomic.Uint64
-	TarpitOverflow      atomic.Uint64
-	DeniedConcurrency   atomic.Uint64
-	DeniedBodySize      atomic.Uint64
-	DeniedBodyBudget    atomic.Uint64
-	SecurityTxt         atomic.Uint64
-	DeniedURILength     atomic.Uint64
-	DeniedNoRoute       atomic.Uint64
-	DeniedWebSocket     atomic.Uint64
-	DeniedBadHost       atomic.Uint64
-	DeniedBan           atomic.Uint64
-	Shed                atomic.Uint64
+	DeniedACL         atomic.Uint64
+	DeniedRateLimit   atomic.Uint64
+	Tarpitted         atomic.Uint64
+	TarpitOverflow    atomic.Uint64
+	DeniedConcurrency atomic.Uint64
+	DeniedBodySize    atomic.Uint64
+	DeniedBodyBudget  atomic.Uint64
+	SecurityTxt       atomic.Uint64
+	DeniedURILength   atomic.Uint64
+	DeniedNoRoute     atomic.Uint64
+	DeniedWebSocket   atomic.Uint64
+	DeniedBadHost     atomic.Uint64
+	DeniedBan         atomic.Uint64
+	Shed              atomic.Uint64
+	// RangesDropped counts requests whose Range header the range policy
+	// removed, RangesRefused the ones it answered 416.
+	RangesDropped       atomic.Uint64
+	RangesRefused       atomic.Uint64
 	Challenged          atomic.Uint64
 	DeniedWAF           atomic.Uint64
 	DeniedJWT           atomic.Uint64
@@ -467,6 +471,8 @@ type Snapshot struct {
 	ClusterPeers           int               `json:"cluster_peers"`
 	ClusterConnected       int               `json:"cluster_connected"`
 	Shed                   uint64            `json:"shed"`
+	RangesDropped          uint64            `json:"ranges_dropped"`
+	RangesRefused          uint64            `json:"ranges_refused"`
 	LoadLevel              float64           `json:"load_level"`
 	UpstreamLatencyMS      float64           `json:"upstream_latency_ms"`
 	SheddingClasses        []string          `json:"shedding_classes"`
@@ -529,6 +535,8 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedBadHost:          s.DeniedBadHost.Load(),
 		DeniedBan:              s.DeniedBan.Load(),
 		Shed:                   s.Shed.Load(),
+		RangesDropped:          s.RangesDropped.Load(),
+		RangesRefused:          s.RangesRefused.Load(),
 		DeniedWAF:              s.DeniedWAF.Load(),
 		DeniedJWT:              s.DeniedJWT.Load(),
 		DeniedICAP:             s.DeniedICAP.Load(),

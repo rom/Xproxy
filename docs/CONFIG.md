@@ -7069,6 +7069,65 @@ cannot tell the proxy's copy from the client's. `early_data` appears in the
 access log for a request that arrived on it, and a refusal is logged as
 `early_data`.
 
+### routes[].ranges
+
+Bounds byte range requests (RFC 9110 section 14). Without the section a
+`Range` header is relayed as it arrived.
+
+A `Range` header is a small request asking for a large answer, and a *set*
+of ranges is a small request asking for many: each range costs the origin
+a read and the response a multipart part, so a header naming two hundred
+of them asks one machine to assemble a response dozens of times the size
+of the resource from a packet. That is the oldest amplification bug in
+HTTP, and the gateway is where it can be judged — before any of that work
+is done.
+
+RFC 9110 section 14.2 leaves the decision here: a server **may** coalesce
+ranges that overlap or are separated by a gap smaller than the overhead of
+another part, "regardless of the order in which the corresponding
+byte-range-spec appeared", and a server that will not satisfy a range set
+may ignore the header and answer the whole representation. So this rewrites
+the set rather than inventing a rule: the same bytes, fewer parts.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `max_ranges` | int | `4` | How many ranges a set may still hold **after** coalescing; 0 means the default, up to 1024 |
+| `coalesce` | bool | `true` | Merge overlapping and adjacent ranges into the fewest that cover the same bytes, and sort them. Off, a set is counted as it arrived, so a client that overlaps its ranges is refused for asking twice for the same bytes (validation says so) |
+| `action` | `ignore`, `refuse` | `ignore` | What happens to a set still over the bound: `ignore` drops the header, so the whole representation is served, which is what RFC 9110 permits; `refuse` answers **416** with `Accept-Ranges: bytes`, so a client can ask again for fewer |
+
+```yaml
+routes:
+  - name: downloads
+    paths: ["/downloads/"]
+    upstream: files
+    ranges: {max_ranges: 4}
+  - name: media
+    paths: ["/media/"]
+    upstream: files
+    # A player seeks; it does not ask for a hundred pieces at once.
+    ranges: {max_ranges: 8, action: refuse}
+```
+
+What is not guessed at:
+
+- **Another unit is left alone.** `Range: items=0-9` is passed through:
+  an origin that does not implement a unit ignores the header, and this
+  proxy has nothing to say about a unit it cannot read.
+- **A header that is not a range set is dropped**, once, here — a
+  malformed value, a spec with no dash, a descending range, more specs
+  than are worth reading (256). RFC 9110 says a recipient that cannot
+  parse the header ignores it; deciding that in one place is what keeps
+  this proxy and the origin reading the request the same way.
+- **A suffix range is kept as it is.** `-500` means the last 500 bytes,
+  and how that overlaps `0-99` depends on a length this proxy does not
+  know. The largest suffix covers the smaller ones; nothing else about
+  them is assumed.
+
+`ranges` and `ranges_sent` appear in the access log for a request the
+policy acted on, a refusal is logged as `ranges`, and
+`xproxy_ranges_total{result="dropped"|"refused"}` counts them
+(`ranges_dropped` and `ranges_refused` in `xproxyctl status`).
+
 ### routes[].trailers
 
 `pass` (default) or `strip`: the fields an upstream sends after the body —

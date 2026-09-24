@@ -403,6 +403,7 @@ routes:
       client_priority: ""
       early_hints: ""
       early_data: ""
+      ranges: null
       trailers: ""
       challenge:
         mode: always
@@ -476,6 +477,7 @@ routes:
       client_priority: ""
       early_hints: ""
       early_data: ""
+      ranges: null
       trailers: ""
       challenge: null
       jwt:
@@ -544,6 +546,7 @@ routes:
       client_priority: ""
       early_hints: ""
       early_data: ""
+      ranges: null
       trailers: ""
       challenge: null
       jwt: null
@@ -611,6 +614,7 @@ routes:
       client_priority: ""
       early_hints: ""
       early_data: ""
+      ranges: null
       trailers: ""
       challenge: null
       jwt: null
@@ -683,6 +687,7 @@ routes:
       client_priority: ""
       early_hints: ""
       early_data: ""
+      ranges: null
       trailers: ""
       challenge:
         mode: load
@@ -754,6 +759,7 @@ routes:
       client_priority: ""
       early_hints: ""
       early_data: ""
+      ranges: null
       trailers: ""
       challenge: null
       jwt: null
