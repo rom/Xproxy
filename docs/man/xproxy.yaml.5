@@ -3175,6 +3175,779 @@ A message the relay cannot parse is refused, not forwarded: its facility, severi
 On a delimited stream a message over the bound is dropped and the connection carries on \[u2014] the reader skips to the next line ending, so one long line does not cost every record behind it. On a counted stream it ends the connection, because refusing to read the octets a frame declared leaves the reader at an offset nobody knows.
 .PP
 Counters: \fBsyslog_received\fR, \fBsyslog_forwarded\fR, \fBsyslog_dropped\fR, \fBsyslog_refused\fR, \fBsyslog_rate_limited\fR, \fBsyslog_redacted\fR, \fBsyslog_queue_dropped\fR, \fBsyslog_send_failed\fR, \fBsyslog_connections\fR, \fBsyslog_rejected\fR. Refusals are \fBsyslog_denied\fR for the ban triggers.
+.SS "server.listeners[].modbus (kind: modbus)"
+.PP
+A \fBkind: modbus\fR listener is a Modbus relay that reads every frame and decides about it.
+.PP
+Modbus is the protocol that runs the plant floor and has no security properties at all: no authentication, no integrity, no session. A frame says which device it is for, what to do and where, and the device does it. The devices cannot be fixed \[u2014] they are a decade old, the vendor is gone, and the process they run does not stop \[u2014] so the only place a policy can exist is in the path.
+.PP
+It works in both directions:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBreverse\fR (the default): masters connect here and the relay dials the devices. This is how a PLC that cannot be patched gets an allow list, a read\-only historian, a value bound on a setpoint and an audit trail.
+.PP
+.ti -3n
+\(bu
+\fBforward\fR: the plant\(aqs masters use this listener as the controlled egress to reach devices elsewhere, and the \fBroutes\fR say which destination each unit identifier may reach at all. A unit no route claims is refused with a gateway exception rather than sent somewhere invented.
+.RE
+.PP
+.PP
+All three framings, in either direction: Modbus/TCP (MBAP), and the two serial framings every "Modbus gateway" ever sold tunnels over TCP \[u2014] Modbus RTU and Modbus ASCII. \fBframing\fR is what arrives, \fBupstream_framing\fR is what leaves, and setting them differently makes this listener a protocol converter, which is what a serial device behind a terminal server needs.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.2i) lbx
+lw(1.2i) lw(0.9i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmode\fR
+T}	T{
+enum
+T}	T{
+\fBreverse\fR
+T}	T{
+\fBreverse\fR (masters connect here) or \fBforward\fR (this is the plant\(aqs egress). \fBforward\fR requires \fBroutes\fR or an \fBupstream\fR
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required unless every destination is a route
+T}	T{
+The device pool a frame goes to when no route claims its unit identifier
+T}
+T{
+\fBframing\fR
+T}	T{
+enum
+T}	T{
+\fBtcp\fR
+T}	T{
+What arrives from the master: \fBtcp\fR (MBAP),\: \fBrtu\fR or \fBascii\fR
+T}
+T{
+\fBupstream_\:framing\fR
+T}	T{
+enum
+T}	T{
+\fBframing\fR
+T}	T{
+What the relay writes to the device
+T}
+T{
+\fBroutes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Unit identifier to pool,\: below
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+enum
+T}	T{
+\fBimplicit\fR with \fBtls\fR,\: else \fBnone\fR
+T}	T{
+\fBimplicit\fR is Modbus/\:TCP Security: TLS from the first octet,\: conventionally on port 802
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+enum
+T}	T{
+\fBnone\fR
+T}	T{
+\fBnone\fR or \fBimplicit\fR towards the device
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Verification of the device
+T}
+T{
+\fBsecurity\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+The Modbus/\:TCP Security role policy,\: below
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Networks a master may connect from. Empty warns: this listener reaches a PLC
+T}
+T{
+\fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+Refused whatever the allow list says
+T}
+T{
+\fBunits\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Unit identifiers the listener accepts at all,\: as \fB3\fR or \fB1\-\:16\fR
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse every function code that changes anything,\: for every client,\: before any rule is read. A rule cannot override it
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The policy,\: in order,\: first match wins. Below
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+enum
+T}	T{
+\fBdeny\fR
+T}	T{
+What happens to a frame no rule matched
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+enum
+T}	T{
+\fBexception\fR
+T}	T{
+How a refusal is answered: \fBexception\fR (the master reads it as the device\(aqs own refusal),\: \fBdrop\fR (no answer,\: which a master reads as a timeout) or \fBclose\fR
+T}
+T{
+\fBlearn\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Learning mode,\: below
+T}
+T{
+\fBtrace\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+The frame trace,\: below
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+Live sessions;\: past it a connection is closed and counted
+T}
+T{
+\fBmax_\:pending\fR
+T}	T{
+int
+T}	T{
+\fB16\fR MBAP,\: \fB1\fR serial
+T}	T{
+Requests one session may have outstanding towards a device
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB120s\fR
+T}	T{
+Close a session that says nothing
+T}
+T{
+\fBrequest_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+How long the device has to answer one request
+T}
+T{
+\fBconnect_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Dialling the device
+T}
+T{
+\fBmax_\:frame_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB260\fR
+T}	T{
+One ADU;\: 8..260. The specification\(aqs longest is 260
+T}
+T{
+\fBrate_\:limit\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+Requests a second per client address
+T}
+T{
+\fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fBrate_\:limit\fR
+T}	T{
+What one master may ask at once
+T}
+T{
+\fBlog_\:frames\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+An access line per frame rather than per session: the audit trail a plant is asked for. Off warns
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header to the device
+T}
+.TE
+.PP
+\fB\fBroutes[]\fR\fR send a unit identifier to a pool of its own, which is what a gateway multiplexing several devices onto one address does:
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(1.0i) lbx
+lw(0.9i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+Identifies the route in the logs and the counters
+T}
+T{
+\fBunits\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+The unit identifiers this route claims: \fB5\fR or \fB1\-\:16\fR
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required
+T}	T{
+The pool they go to
+T}
+T{
+\fBframing\fR
+T}	T{
+enum
+T}	T{
+\fBupstream_\:framing\fR
+T}	T{
+Override the framing for this route,\: so one listener can front a Modbus/\:TCP PLC and a serial device at once
+T}
+T{
+\fBunit_\:override\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+Rewrite the unit identifier sent to the device. A gateway that presents unit 5 to a device answering only to unit 1 needs it
+T}
+.TE
+.PP
+\fB\fBsecurity\fR\fR is Modbus/TCP Security (the Modbus Organization\(aqs MB\-TCP\-Security specification): TLS with mutual authentication, and authorisation by the role the client certificate carries.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(1.0i) lbx
+lw(0.9i) lw(0.6i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmode\fR
+T}	T{
+enum
+T}	T{
+\fBoff\fR
+T}	T{
+\fBoff\fR,\: \fBallow\fR (a role is read when the client presents one,\: and rules naming a role only match then) or \fBrequire\fR (a client with no usable role is refused). \fBrequire\fR is what the specification describes;\: \fBallow\fR is the migration
+T}
+T{
+\fBrole_\:source\fR
+T}	T{
+enum
+T}	T{
+\fBextension\fR
+T}	T{
+\fBextension\fR is the x.509 extension under the Modbus arc,\: \fB1.\:3.\:6.\:1.\:4.\:1.\:50316.\:802.\:1\fR,\: which is what the specification defines. \fBcn\fR and \fBou\fR read the subject instead and warn
+T}
+T{
+\fBroles\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any the rules name)
+T}	T{
+The allow list of role names
+T}
+T{
+\fBrequire_\:client_\:cert\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR with \fBmode:\: require\fR
+T}	T{
+Refuse a connection presenting no client certificate
+T}
+.TE
+.PP
+\fB\fBrules[]\fR\fR decide each frame. Every selector that is set must match; a rule with no selectors matches everything, which is how the last rule in a list is written.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(1.1i) lbx
+lw(1.0i) lw(0.7i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+In the logs,\: the counters and the learning report
+T}
+T{
+\fBaction\fR
+T}	T{
+enum
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR logs and counts and then keeps looking,\: which is how a rule is tried on live traffic before it decides anything
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Networks the master is in
+T}
+T{
+\fBroles\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Modbus/\:TCP Security roles. A rule naming a role never matches a session that has none
+T}
+T{
+\fBunits\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Unit identifiers,\: as numbers or ranges
+T}
+T{
+\fBfunctions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Function codes by name (\fBread_\:holding_\:registers\fR) or number
+T}
+T{
+\fBaccess\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+What the code does: \fBread\fR,\: \fBwrite\fR,\: \fBdiagnostic\fR,\: \fBidentify\fR or \fBvendor\fR. The durable way to write "no writing" without listing every code that writes
+T}
+T{
+\fBaddresses\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Register or coil ranges the request may name,\: as \fB0\-\:999\fR. A request whose range is not \fBentirely\fR inside one of them does not match: splitting a read is not the relay\(aqs decision
+T}
+T{
+\fBwrite_\:addresses\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The write half of function code 23,\: and every writing code when set,\: so one rule can allow a wide read and a narrow write
+T}
+T{
+\fBmax_\:quantity\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (the protocol\(aqs own bound)
+T}	T{
+Registers or coils one request may name;\: 0..2000
+T}
+T{
+\fBvalues\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Bound what may be written,\: below
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+When the rule is in force,\: below
+T}
+T{
+\fBcomment\fR
+T}	T{
+string
+T}	T{
+
+T}	T{
+Carried into the logs when the rule decides,\: for the change record a plant keeps
+T}
+.TE
+.PP
+\fB\fBvalues[]\fR\fR is the deep inspection a plant actually needs: a setpoint register that may hold 0 to 100 and nothing else.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.6i) lbw(0.9i) lbx
+lw(1.0i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBregisters\fR
+T}	T{
+range
+T}	T{
+every address the rule covers
+T}	T{
+The address range this bound applies to,\: as \fB400\-\:499\fR or a single address
+T}
+T{
+\fBmin\fR,\: \fBmax\fR
+T}	T{
+int
+T}	T{
+required unless \fBcoils\fR is set
+T}	T{
+Bound each 16\-bit value written into that range,\: inclusive
+T}
+T{
+\fBsigned\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Read the value as a signed 16\-bit integer,\: which is how most setpoints are encoded
+T}
+T{
+\fBcoils\fR
+T}	T{
+bool
+T}	T{
+
+T}	T{
+Bound a coil write instead: \fBtrue\fR allows setting a coil in the range,\: \fBfalse\fR allows only clearing it. "This client may stop the pump but not start it"
+T}
+.TE
+.PP
+\fB\fBschedule\fR\fR limits a rule to a time window. A rule with no schedule is always in force, so "these rules during the shift and those outside it" is written as the scheduled rules first and the unscheduled ones after them.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.9i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdays\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (every day)
+T}	T{
+\fBmon\fR,\: \fBtue\fR,\: \fBwed\fR,\: \fBthu\fR,\: \fBfri\fR,\: \fBsat\fR,\: \fBsun\fR
+T}
+T{
+\fBfrom\fR,\: \fBto\fR
+T}	T{
+\fBHH:\:MM\fR
+T}	T{
+
+T}	T{
+The window in \fBtimezone\fR. A \fBto\fR before its \fBfrom\fR spans midnight,\: which is how a night shift is written
+T}
+T{
+\fBtimezone\fR
+T}	T{
+IANA name
+T}	T{
+\fBUTC\fR
+T}	T{
+A schedule in the host\(aqs local time is a schedule that moves when somebody fixes the host\(aqs time zone
+T}
+.TE
+.PP
+\fB\fBlearn\fR\fR records what actually crosses the listener \[u2014] the clients, the roles, the units, the function codes, the address ranges and the values written \[u2014] and writes it out as a rule set to start from. Nobody knows what a plant\(aqs Modbus traffic is: the drawings say what it was meant to be, the traffic says what the integrator left behind. Run it for a week and the file is the answer.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.9i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Turn the recording on
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+required when enabled
+T}	T{
+Where the report is written,\: as YAML. Replaced atomically,\: owner readable only
+T}
+T{
+\fBinterval\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How often it is rewritten;\: 10s..24h. It is also written at shutdown
+T}
+T{
+\fBmax_\:subjects\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Observations held: one per client,\: role,\: unit and function code. Past it the oldest goes and the drops are counted,\: in the report
+T}
+T{
+\fBenforce\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Keep the policy in force while learning. Off \[u2014] the default \[u2014] means this listener records and decides nothing,\: which is the only honest way to find out what a policy would have broken,\: and warns so it is not left on by accident
+T}
+.TE
+.PP
+\fB\fBtrace\fR\fR writes one JSON object per frame for as long as it is enabled: the engineer\(aqs tool for "what is this master actually doing". It is a different thing from the audit log, which answers "who was refused and why", keeps forever and is shipped off the machine.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.6i) lbw(1.0i) lbx
+lw(1.0i) lw(0.6i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The trace file,\: one object per line
+T}
+T{
+\fBmax_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB104857600\fR (100 MiB)
+T}	T{
+1MiB..64GiB. At the bound the trace writes one line saying it stopped and then stops,\: rather than filling the disk the plant\(aqs historian is also on
+T}
+T{
+\fBinclude_\:data\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Write the frame\(aqs data bytes as hex. That is process data,\: and it warns
+T}
+T{
+\fBrequests\fR,\: \fBresponses\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+The directions traced
+T}
+.TE
+.SS "What the relay decides, and in what order"
+.PP
+1. The client address, against \fBdeny_clients\fR then \fBallow_clients\fR. 2. TLS and the role, when \fBsecurity\fR asks for one. A role can only come from a certificate and a certificate can only come from TLS, so a listener asking for roles without TLS refuses every session and says \fBsecurity_requires_tls\fR rather than leaving a mystery. 3. The frame, whole. A frame that does not parse is refused: a relay that forwarded what it could not read would be forwarding what it could not decide about, and the device behind it will read those bytes somehow. 4. \fBread_only\fR, which no rule can override. 5. \fBunits\fR. 6. The rules, in order. The first \fBallow\fR or \fBdeny\fR decides; an \fBobserve\fR rule records and the search continues. A frame that matches no rule takes \fBdefault_action\fR. 7. The value bounds of the rule that matched. A value outside them is refused \fBby that rule\fR rather than falling through to a later rule that would permit it, because a bound that can be escaped by writing another rule underneath it is not a bound.
+.SS "Architectural decisions"
+.PP
+\fBRequests are serialised towards each device.\fR A Modbus slave has one scan. A relay that pipelined into it would be turning a policy engine into a load generator, so each session holds one connection per route and one request in flight at a time, with \fBmax_pending\fR bounding the queue behind it. A master whose queue is full is answered with exception 06 (server busy), which is the protocol\(aqs own way of saying what happened. The serial framings default to \fBmax_pending: 1\fR because they have no transaction identifier: a second request in flight could not be told from the first.
+.PP
+\fBA forwarded frame keeps its bytes.\fR The frame that reaches the device is the frame that arrived, byte for byte, and the answer that reaches the master is the answer that arrived. The relay re\-encodes only when it must \[u2014] the framings differ, or \fBunit_override\fR rewrote the identifier \[u2014] because re\-encoding a frame is how a relay and a device come to disagree about what was said. The MBAP transaction identifier is the one exception in the other direction: the master\(aqs own value is put back on the answer, whatever the relay used towards the device, because that is the field the master matches on.
+.PP
+\fBA refusal is Modbus, not a disconnection.\fR \fBdeny_response: exception\fR answers with the exception a master already understands \[u2014] illegal function for a code the policy does not permit, illegal data address for a range it does not, illegal data value for a value outside a bound, gateway path unavailable for a unit with no route \[u2014] so a master\(aqs diagnostics say something true and the session carries on. \fBdrop\fR and \fBclose\fR are there for the cases where a master must not learn anything from the answer.
+.PP
+\fBThe device\(aqs own answer is checked too.\fR A response the relay cannot parse, or one answering for a different unit identifier, is not handed to the master: the two would read the same bytes differently, which is the whole class of bug this relay exists to prevent. The master gets exception 04 (server failure) and the event is logged.
+.PP
+\fBLearning is observe\-only unless it says otherwise.\fR \fBlearn.enforce\fR defaults to false, and validation warns while it is off, because a learning run left on by accident is a relay that decides nothing.
+.PP
+Counters: \fBmodbus_sessions\fR, \fBmodbus_sessions_open\fR, \fBmodbus_requests\fR, \fBmodbus_responses\fR, \fBmodbus_denied\fR, \fBmodbus_would_deny\fR, \fBmodbus_exceptions\fR, \fBmodbus_malformed\fR, \fBmodbus_refused\fR, \fBmodbus_rejected\fR, \fBmodbus_rate_limited\fR, \fBmodbus_queue_full\fR, \fBmodbus_upstream_failed\fR, \fBmodbus_traced\fR, \fBmodbus_learned\fR. Refusals are \fBmodbus_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBno_client_certificate\fR, \fBno_role\fR, \fBrole_not_allowed\fR, \fBsecurity_requires_tls\fR, \fBframing\fR, \fBframe_too_large\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBresponse_unit_mismatch\fR, \fBno_route_for_unit\fR, \fBmax_connections\fR, \fBrate_limit\fR, \fBqueue_full\fR, \fBread_only\fR, \fBread_only_unknown_function\fR, \fBunit_not_allowed\fR, \fBrule_deny\fR, \fBno_rule\fR, \fBvalue_out_of_range\fR, \fBvalue_masked_write\fR, \fBcoil_set_not_allowed\fR, \fBcoil_clear_not_allowed\fR. A selector that does not match is not a refusal of its own: the frame falls through to the next rule, and to \fBno_rule\fR if none matches.
 .SS "server.listeners[].vnc (kind: vnc)"
 .PP
 A \fBkind: vnc\fR listener is a VNC gateway: the proxy is an RFB server to the client and an RFB client to the target, terminating the handshake of RFC 6143 on both legs.
@@ -10017,7 +10790,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

@@ -29,8 +29,8 @@ const (
 	// a second factor and belong to a named principal.
 	RoleGate Role = "gate"
 	// RoleRelay is xrelay: machine to machine and operational
-	// technology. Syslog, SMTP, MQTT, FTP. No humans, no recordings,
-	// and a policy written in the protocol's own terms.
+	// technology. Syslog, SMTP, MQTT, FTP, Modbus. No humans, no
+	// recordings, and a policy written in the protocol's own terms.
 	RoleRelay Role = "relay"
 )
 
@@ -62,6 +62,7 @@ var roster = map[string]Role{
 	"mqtt":    RoleRelay,
 	"ftp":     RoleRelay,
 	"syslog":  RoleRelay,
+	"modbus":  RoleRelay,
 }
 
 // RoleOf returns the daemon that serves a kind, and whether the kind is

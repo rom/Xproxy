@@ -21,8 +21,8 @@ the shape. Decision records are in [AMR.md](AMR.md); requirements in
             | accept                 | accept                   | accept
  +----------v----------+  +----------v----------+  +------------v----------+
  |       xproxy        |  |        xgate        |  |        xrelay         |
- |  http tcp forward   |  |        ssh          |  | smtp mqtt ftp syslog  |
- |        dns          |  |                     |  |                       |
+ |  http tcp udp       |  |   ssh telnet        |  | smtp mqtt ftp syslog  |
+ |  forward dns        |  |   vnc rdp           |  | modbus                |
  |  user: xproxy       |  |  user: xgate        |  |  user: xrelay         |
  +--+---------------+--+  +--+---------------+--+  +--+----------------+---+
     |               |        |               |        |                |
@@ -80,8 +80,8 @@ authority a cluster peer has by design.
 
 ```
 cmd/xproxy          edge daemon: links the http, forward, tcp and dns kinds
-cmd/xgate           gate daemon: links the ssh kind
-cmd/xrelay          relay daemon: links the smtp, mqtt, ftp and syslog kinds
+cmd/xgate           gate daemon: links the ssh, telnet, vnc and rdp kinds
+cmd/xrelay          relay daemon: links the smtp, mqtt, ftp, syslog and modbus kinds
 cmd/xproxyctl       management CLI and TUI (talks to any of the three)
 cmd/xproxy-admin    web GUI process (users, sessions, embedded assets)
 cmd/xproxy-fleet    fleet controller
@@ -103,6 +103,8 @@ internal/kinds/smtp    kind: smtp -- mail and submission with STARTTLS
 internal/kinds/mqtt    kind: mqtt -- broker front end with a topic policy
 internal/kinds/ftp     kind: ftp -- control and data channel mediation
 internal/kinds/syslog  kind: syslog -- RFC 5424 and RFC 3164 relay
+internal/kinds/modbus  kind: modbus -- Modbus/TCP, RTU and ASCII relay with a
+                       policy in the protocol's own terms, in both directions
 internal/kinds/telnet  kind: telnet -- NVT option policy, recording, MFA
 internal/kinds/vnc     kind: vnc -- RFB handshake mediation, recording, MFA
 internal/kinds/rdp     kind: rdp -- connection sequence mediation, channel
@@ -144,7 +146,7 @@ internal/geoip      MaxMind DB reader and CSV prefix table
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/dns        DNS wire codec, cache, block list, resolver, servers
 internal/smtp internal/mqtt internal/ftp internal/syslog internal/sftp
-                    the wire codecs of the relay and gate protocols
+internal/modbus     the wire codecs of the relay and gate protocols
 internal/masque internal/mitm internal/grpcmsg internal/asciicast
                     the wire formats the kinds above are built on
 internal/ingress    Kubernetes ingress controller
@@ -189,7 +191,8 @@ cmd/xgate  ─┼─> daemon -> {proxy, mgmt, config, logging, sandbox, fleet,
 cmd/xrelay ─┘             metrics, ingress, listener, paths, version}
     │
     └─ blank imports of its own kinds, and nothing else:
-         kinds/{tcp,dns,forward} | kinds/ssh | kinds/{smtp,mqtt,ftp,syslog}
+         kinds/{http,tcp,udp,dns,forward} | kinds/{ssh,telnet,vnc,rdp} |
+         kinds/{smtp,mqtt,ftp,syslog,modbus}
 
 kinds/<k> -> {proxy, config, listener, and that protocol's wire package}
 proxy     -> {listener, router, upstream, limits, netutil, tlsconf, logging,
@@ -223,9 +226,9 @@ So the binary is split by who is on the other end of the socket:
 
 | Daemon | Faces | Listener kinds |
 |--------|-------|----------------|
-| `xproxy` | the open internet | `http`, `forward`, `tcp`, `dns` |
-| `xgate` | people | `ssh` |
-| `xrelay` | machines | `smtp`, `mqtt`, `ftp`, `syslog` |
+| `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
+| `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus` |
 
 One repository, one module, one version and one configuration format;
 three programs, three users, three systemd units, three sandboxes, three
@@ -999,9 +1002,9 @@ templating, an operation policy and YARA over what is written. Sessions
 are recorded to asciicast files (`internal/asciicast`) bounded by count
 and size, and a second factor can be demanded after the key.
 
-### The relay: SMTP, MQTT, FTP, syslog
+### The relay: SMTP, MQTT, FTP, syslog, Modbus
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog}`) share a shape:
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus}`) share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
 
@@ -1021,8 +1024,17 @@ that protocol's own terms, and bounds what a peer may say.
 - `syslog` parses RFC 5424 and the RFC 3164 records most estates still
   send, over UDP, TCP and TLS, with bounds on every field and a policy
   over the facilities and severities a sender may claim.
+- `modbus` is the one that has to work in both directions, because a
+  plant has masters inside it and devices inside it: `reverse` fronts the
+  equipment, `forward` is the plant's controlled egress, and the policy —
+  unit identifier, function code, register range, value — is the same
+  either way. It reads MBAP and the two serial framings tunnelled over
+  TCP, bridges between them, serialises requests towards each device
+  because a slave has one scan, refuses in the protocol's own exceptions,
+  and can authorise by the role in a client certificate (Modbus/TCP
+  Security).
 
-All four reach the engine through `Host` alone, which is why they link
+All five reach the engine through `Host` alone, which is why they link
 into `xrelay` and nowhere else.
 
 ### WebAssembly filters

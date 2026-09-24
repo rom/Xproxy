@@ -152,6 +152,21 @@ type Stats struct {
 	FTPRecorded            atomic.Uint64
 	FTPMFAOK               atomic.Uint64
 	FTPMFAFailed           atomic.Uint64
+	ModbusSessions         atomic.Uint64
+	ModbusSessionsOpen     atomic.Int64
+	ModbusRequests         atomic.Uint64
+	ModbusResponses        atomic.Uint64
+	ModbusDenied           atomic.Uint64
+	ModbusWouldDeny        atomic.Uint64
+	ModbusExceptions       atomic.Uint64
+	ModbusMalformed        atomic.Uint64
+	ModbusRefused          atomic.Uint64
+	ModbusRejected         atomic.Uint64
+	ModbusRateLimited      atomic.Uint64
+	ModbusQueueFull        atomic.Uint64
+	ModbusUpstreamFailed   atomic.Uint64
+	ModbusTraced           atomic.Uint64
+	ModbusLearned          atomic.Uint64
 	SyslogReceived         atomic.Uint64
 	SyslogForwarded        atomic.Uint64
 	SyslogDropped          atomic.Uint64
@@ -306,118 +321,137 @@ type Snapshot struct {
 	SCIMRequests uint64 `json:"scim_requests"`
 	SCIMDenied   uint64 `json:"scim_denied"`
 	// BufferedBody is the process-wide buffered-body budget.
-	BufferedBody           bodybudget.Stats   `json:"buffered_body"`
-	DeniedURILength        uint64             `json:"denied_uri_length"`
-	DeniedNoRoute          uint64             `json:"denied_no_route"`
-	DeniedWebSocket        uint64             `json:"denied_websocket"`
-	DeniedBadHost          uint64             `json:"denied_bad_host"`
-	DeniedBan              uint64             `json:"denied_ban"`
-	DeniedWAF              uint64             `json:"denied_waf"`
-	DeniedJWT              uint64             `json:"denied_jwt"`
-	DeniedICAP             uint64             `json:"denied_icap"`
-	DeniedFilter           uint64             `json:"denied_filter"`
-	DeniedGeo              uint64             `json:"denied_geo"`
-	DeniedPolicy           uint64             `json:"denied_policy"`
-	DeniedVirtualPatch     uint64             `json:"denied_virtual_patch"`
-	DeniedNormalization    uint64             `json:"denied_normalization"`
-	DeniedMaintenance      uint64             `json:"denied_maintenance"`
-	DeniedSensitive        uint64             `json:"denied_sensitive_data"`
-	DeniedAccount          uint64             `json:"denied_account_abuse"`
-	SensitiveFindings      uint64             `json:"sensitive_findings"`
-	AccountBlocks          uint64             `json:"account_blocks"`
-	AccountCampaigns       uint64             `json:"account_campaigns"`
-	AccountBlocksActive    int                `json:"account_blocks_active"`
-	HoneypotHits           uint64             `json:"honeypot_hits"`
-	HoneytokenHits         uint64             `json:"honeytoken_hits"`
-	HandshakesRefused      uint64             `json:"handshakes_refused"`
-	KeyExchange            map[string]uint64  `json:"key_exchange"`
-	KeyExchangePQ          uint64             `json:"key_exchange_post_quantum"`
-	Degraded               uint64             `json:"degraded"`
-	Deceived               uint64             `json:"deceived"`
-	StaticServed           uint64             `json:"static_served"`
-	StaticNotFound         uint64             `json:"static_not_found"`
-	Compressed             uint64             `json:"compressed"`
-	CompressedRawBytes     uint64             `json:"compressed_raw_bytes"`
-	MirrorSent             uint64             `json:"mirror_sent"`
-	GRPCStatus             [17]uint64         `json:"grpc_status"`
-	DNSQueries             uint64             `json:"dns_queries"`
-	DNSCacheHits           uint64             `json:"dns_cache_hits"`
-	DNSCacheEntries        int                `json:"dns_cache_entries"`
-	DNSBlocked             uint64             `json:"dns_blocked"`
-	DNSRefused             uint64             `json:"dns_refused"`
-	DNSDropped             uint64             `json:"dns_dropped"`
-	DNSServFail            uint64             `json:"dns_servfail"`
-	DNSTunnels             uint64             `json:"dns_tunnels"`
-	DNSTunnelBlocked       uint64             `json:"dns_tunnel_blocked"`
-	DNSTunnelTracked       int                `json:"dns_tunnel_tracked"`
-	MirrorDropped          uint64             `json:"mirror_dropped"`
-	MirrorSkipped          uint64             `json:"mirror_skipped"`
-	MirrorFailed           uint64             `json:"mirror_failed"`
-	MirrorDiffMatch        uint64             `json:"mirror_diff_match"`
-	MirrorDiffStatus       uint64             `json:"mirror_diff_status"`
-	MirrorDiffHeader       uint64             `json:"mirror_diff_header"`
-	MirrorDiffBody         uint64             `json:"mirror_diff_body"`
-	HoneypotMarked         int                `json:"honeypot_marked"`
-	TCPConnections         uint64             `json:"tcp_connections"`
-	TCPRejected            uint64             `json:"tcp_rejected"`
-	TCPErrors              uint64             `json:"tcp_errors"`
-	TCPBounded             uint64             `json:"tcp_bounded"`
-	TCPBytesIn             uint64             `json:"tcp_bytes_in"`
-	TCPBytesOut            uint64             `json:"tcp_bytes_out"`
-	QUICFlows              uint64             `json:"quic_flows"`
-	QUICRejected           uint64             `json:"quic_rejected"`
-	QUICFlowsOpen          int                `json:"quic_flows_open"`
-	UDPSessions            uint64             `json:"udp_sessions"`
-	UDPSessionsOpen        int64              `json:"udp_sessions_open"`
-	UDPDatagramsIn         uint64             `json:"udp_datagrams_in"`
-	UDPDatagramsOut        uint64             `json:"udp_datagrams_out"`
-	UDPBytesIn             uint64             `json:"udp_bytes_in"`
-	UDPBytesOut            uint64             `json:"udp_bytes_out"`
-	UDPDropped             uint64             `json:"udp_dropped"`
-	UDPRejected            uint64             `json:"udp_rejected"`
-	UDPErrors              uint64             `json:"udp_errors"`
-	ForwardRequests        uint64             `json:"forward_requests"`
-	ForwardTunnels         uint64             `json:"forward_tunnels"`
-	ForwardTunnelsOpen     int64              `json:"forward_tunnels_open"`
-	ForwardDenied          uint64             `json:"forward_denied"`
-	ForwardAuthFailed      uint64             `json:"forward_auth_failed"`
-	ForwardRejected        uint64             `json:"forward_rejected"`
-	ForwardErrors          uint64             `json:"forward_errors"`
-	ForwardSOCKS           uint64             `json:"forward_socks"`
-	MasqueUDP              uint64             `json:"masque_udp"`
-	MasqueIP               uint64             `json:"masque_ip"`
-	MasqueOpen             int64              `json:"masque_open"`
-	MasqueDropped          uint64             `json:"masque_dropped"`
-	SMTPSessions           uint64             `json:"smtp_sessions"`
-	SMTPSessionsOpen       int64              `json:"smtp_sessions_open"`
-	SMTPMessages           uint64             `json:"smtp_messages"`
-	SMTPRefused            uint64             `json:"smtp_refused"`
-	SMTPRejected           uint64             `json:"smtp_rejected"`
-	SMTPTLSUpgrades        uint64             `json:"smtp_tls_upgrades"`
-	SMTPProtocolErrors     uint64             `json:"smtp_protocol_errors"`
-	SMTPBytesIn            uint64             `json:"smtp_bytes_in"`
-	MQTTSessions           uint64             `json:"mqtt_sessions"`
-	MQTTSessionsOpen       int64              `json:"mqtt_sessions_open"`
-	MQTTPublished          uint64             `json:"mqtt_published"`
-	MQTTSubscribed         uint64             `json:"mqtt_subscribed"`
-	MQTTRefused            uint64             `json:"mqtt_refused"`
-	MQTTRejected           uint64             `json:"mqtt_rejected"`
-	MQTTProtocolErrors     uint64             `json:"mqtt_protocol_errors"`
-	SSHSessions            uint64             `json:"ssh_sessions"`
-	SSHSessionsOpen        int64              `json:"ssh_sessions_open"`
-	SSHChannels            uint64             `json:"ssh_channels"`
-	SSHRefused             uint64             `json:"ssh_refused"`
-	FTPSessions            uint64             `json:"ftp_sessions"`
-	FTPSessionsOpen        int64              `json:"ftp_sessions_open"`
-	FTPRefused             uint64             `json:"ftp_refused"`
-	FTPRejected            uint64             `json:"ftp_rejected"`
-	FTPAuthFailed          uint64             `json:"ftp_auth_failed"`
-	FTPTransfers           uint64             `json:"ftp_transfers"`
-	FTPScanned             uint64             `json:"ftp_scanned"`
-	FTPScanBlocked         uint64             `json:"ftp_scan_blocked"`
-	FTPRecorded            uint64             `json:"ftp_recorded"`
-	FTPMFAOK               uint64             `json:"ftp_mfa_ok"`
-	FTPMFAFailed           uint64             `json:"ftp_mfa_failed"`
+	BufferedBody        bodybudget.Stats  `json:"buffered_body"`
+	DeniedURILength     uint64            `json:"denied_uri_length"`
+	DeniedNoRoute       uint64            `json:"denied_no_route"`
+	DeniedWebSocket     uint64            `json:"denied_websocket"`
+	DeniedBadHost       uint64            `json:"denied_bad_host"`
+	DeniedBan           uint64            `json:"denied_ban"`
+	DeniedWAF           uint64            `json:"denied_waf"`
+	DeniedJWT           uint64            `json:"denied_jwt"`
+	DeniedICAP          uint64            `json:"denied_icap"`
+	DeniedFilter        uint64            `json:"denied_filter"`
+	DeniedGeo           uint64            `json:"denied_geo"`
+	DeniedPolicy        uint64            `json:"denied_policy"`
+	DeniedVirtualPatch  uint64            `json:"denied_virtual_patch"`
+	DeniedNormalization uint64            `json:"denied_normalization"`
+	DeniedMaintenance   uint64            `json:"denied_maintenance"`
+	DeniedSensitive     uint64            `json:"denied_sensitive_data"`
+	DeniedAccount       uint64            `json:"denied_account_abuse"`
+	SensitiveFindings   uint64            `json:"sensitive_findings"`
+	AccountBlocks       uint64            `json:"account_blocks"`
+	AccountCampaigns    uint64            `json:"account_campaigns"`
+	AccountBlocksActive int               `json:"account_blocks_active"`
+	HoneypotHits        uint64            `json:"honeypot_hits"`
+	HoneytokenHits      uint64            `json:"honeytoken_hits"`
+	HandshakesRefused   uint64            `json:"handshakes_refused"`
+	KeyExchange         map[string]uint64 `json:"key_exchange"`
+	KeyExchangePQ       uint64            `json:"key_exchange_post_quantum"`
+	Degraded            uint64            `json:"degraded"`
+	Deceived            uint64            `json:"deceived"`
+	StaticServed        uint64            `json:"static_served"`
+	StaticNotFound      uint64            `json:"static_not_found"`
+	Compressed          uint64            `json:"compressed"`
+	CompressedRawBytes  uint64            `json:"compressed_raw_bytes"`
+	MirrorSent          uint64            `json:"mirror_sent"`
+	GRPCStatus          [17]uint64        `json:"grpc_status"`
+	DNSQueries          uint64            `json:"dns_queries"`
+	DNSCacheHits        uint64            `json:"dns_cache_hits"`
+	DNSCacheEntries     int               `json:"dns_cache_entries"`
+	DNSBlocked          uint64            `json:"dns_blocked"`
+	DNSRefused          uint64            `json:"dns_refused"`
+	DNSDropped          uint64            `json:"dns_dropped"`
+	DNSServFail         uint64            `json:"dns_servfail"`
+	DNSTunnels          uint64            `json:"dns_tunnels"`
+	DNSTunnelBlocked    uint64            `json:"dns_tunnel_blocked"`
+	DNSTunnelTracked    int               `json:"dns_tunnel_tracked"`
+	MirrorDropped       uint64            `json:"mirror_dropped"`
+	MirrorSkipped       uint64            `json:"mirror_skipped"`
+	MirrorFailed        uint64            `json:"mirror_failed"`
+	MirrorDiffMatch     uint64            `json:"mirror_diff_match"`
+	MirrorDiffStatus    uint64            `json:"mirror_diff_status"`
+	MirrorDiffHeader    uint64            `json:"mirror_diff_header"`
+	MirrorDiffBody      uint64            `json:"mirror_diff_body"`
+	HoneypotMarked      int               `json:"honeypot_marked"`
+	TCPConnections      uint64            `json:"tcp_connections"`
+	TCPRejected         uint64            `json:"tcp_rejected"`
+	TCPErrors           uint64            `json:"tcp_errors"`
+	TCPBounded          uint64            `json:"tcp_bounded"`
+	TCPBytesIn          uint64            `json:"tcp_bytes_in"`
+	TCPBytesOut         uint64            `json:"tcp_bytes_out"`
+	QUICFlows           uint64            `json:"quic_flows"`
+	QUICRejected        uint64            `json:"quic_rejected"`
+	QUICFlowsOpen       int               `json:"quic_flows_open"`
+	UDPSessions         uint64            `json:"udp_sessions"`
+	UDPSessionsOpen     int64             `json:"udp_sessions_open"`
+	UDPDatagramsIn      uint64            `json:"udp_datagrams_in"`
+	UDPDatagramsOut     uint64            `json:"udp_datagrams_out"`
+	UDPBytesIn          uint64            `json:"udp_bytes_in"`
+	UDPBytesOut         uint64            `json:"udp_bytes_out"`
+	UDPDropped          uint64            `json:"udp_dropped"`
+	UDPRejected         uint64            `json:"udp_rejected"`
+	UDPErrors           uint64            `json:"udp_errors"`
+	ForwardRequests     uint64            `json:"forward_requests"`
+	ForwardTunnels      uint64            `json:"forward_tunnels"`
+	ForwardTunnelsOpen  int64             `json:"forward_tunnels_open"`
+	ForwardDenied       uint64            `json:"forward_denied"`
+	ForwardAuthFailed   uint64            `json:"forward_auth_failed"`
+	ForwardRejected     uint64            `json:"forward_rejected"`
+	ForwardErrors       uint64            `json:"forward_errors"`
+	ForwardSOCKS        uint64            `json:"forward_socks"`
+	MasqueUDP           uint64            `json:"masque_udp"`
+	MasqueIP            uint64            `json:"masque_ip"`
+	MasqueOpen          int64             `json:"masque_open"`
+	MasqueDropped       uint64            `json:"masque_dropped"`
+	SMTPSessions        uint64            `json:"smtp_sessions"`
+	SMTPSessionsOpen    int64             `json:"smtp_sessions_open"`
+	SMTPMessages        uint64            `json:"smtp_messages"`
+	SMTPRefused         uint64            `json:"smtp_refused"`
+	SMTPRejected        uint64            `json:"smtp_rejected"`
+	SMTPTLSUpgrades     uint64            `json:"smtp_tls_upgrades"`
+	SMTPProtocolErrors  uint64            `json:"smtp_protocol_errors"`
+	SMTPBytesIn         uint64            `json:"smtp_bytes_in"`
+	MQTTSessions        uint64            `json:"mqtt_sessions"`
+	MQTTSessionsOpen    int64             `json:"mqtt_sessions_open"`
+	MQTTPublished       uint64            `json:"mqtt_published"`
+	MQTTSubscribed      uint64            `json:"mqtt_subscribed"`
+	MQTTRefused         uint64            `json:"mqtt_refused"`
+	MQTTRejected        uint64            `json:"mqtt_rejected"`
+	MQTTProtocolErrors  uint64            `json:"mqtt_protocol_errors"`
+	SSHSessions         uint64            `json:"ssh_sessions"`
+	SSHSessionsOpen     int64             `json:"ssh_sessions_open"`
+	SSHChannels         uint64            `json:"ssh_channels"`
+	SSHRefused          uint64            `json:"ssh_refused"`
+	FTPSessions         uint64            `json:"ftp_sessions"`
+	FTPSessionsOpen     int64             `json:"ftp_sessions_open"`
+	FTPRefused          uint64            `json:"ftp_refused"`
+	FTPRejected         uint64            `json:"ftp_rejected"`
+	FTPAuthFailed       uint64            `json:"ftp_auth_failed"`
+	FTPTransfers        uint64            `json:"ftp_transfers"`
+	FTPScanned          uint64            `json:"ftp_scanned"`
+	FTPScanBlocked      uint64            `json:"ftp_scan_blocked"`
+	FTPRecorded         uint64            `json:"ftp_recorded"`
+	FTPMFAOK            uint64            `json:"ftp_mfa_ok"`
+	FTPMFAFailed        uint64            `json:"ftp_mfa_failed"`
+	// The Modbus relay: sessions, the frames it decided about, and what
+	// it decided. ModbusWouldDeny counts the frames a policy would have
+	// refused while learning mode was observing rather than enforcing,
+	// which is the number that says whether a policy is ready.
+	ModbusSessions         uint64             `json:"modbus_sessions"`
+	ModbusSessionsOpen     int64              `json:"modbus_sessions_open"`
+	ModbusRequests         uint64             `json:"modbus_requests"`
+	ModbusResponses        uint64             `json:"modbus_responses"`
+	ModbusDenied           uint64             `json:"modbus_denied"`
+	ModbusWouldDeny        uint64             `json:"modbus_would_deny"`
+	ModbusExceptions       uint64             `json:"modbus_exceptions"`
+	ModbusMalformed        uint64             `json:"modbus_malformed"`
+	ModbusRefused          uint64             `json:"modbus_refused"`
+	ModbusRejected         uint64             `json:"modbus_rejected"`
+	ModbusRateLimited      uint64             `json:"modbus_rate_limited"`
+	ModbusQueueFull        uint64             `json:"modbus_queue_full"`
+	ModbusUpstreamFailed   uint64             `json:"modbus_upstream_failed"`
+	ModbusTraced           uint64             `json:"modbus_traced"`
+	ModbusLearned          uint64             `json:"modbus_learned"`
 	SyslogReceived         uint64             `json:"syslog_received"`
 	SyslogForwarded        uint64             `json:"syslog_forwarded"`
 	SyslogDropped          uint64             `json:"syslog_dropped"`
@@ -655,6 +689,21 @@ func (s *Stats) snapshot() Snapshot {
 		FTPRecorded:            s.FTPRecorded.Load(),
 		FTPMFAOK:               s.FTPMFAOK.Load(),
 		FTPMFAFailed:           s.FTPMFAFailed.Load(),
+		ModbusSessions:         s.ModbusSessions.Load(),
+		ModbusSessionsOpen:     s.ModbusSessionsOpen.Load(),
+		ModbusRequests:         s.ModbusRequests.Load(),
+		ModbusResponses:        s.ModbusResponses.Load(),
+		ModbusDenied:           s.ModbusDenied.Load(),
+		ModbusWouldDeny:        s.ModbusWouldDeny.Load(),
+		ModbusExceptions:       s.ModbusExceptions.Load(),
+		ModbusMalformed:        s.ModbusMalformed.Load(),
+		ModbusRefused:          s.ModbusRefused.Load(),
+		ModbusRejected:         s.ModbusRejected.Load(),
+		ModbusRateLimited:      s.ModbusRateLimited.Load(),
+		ModbusQueueFull:        s.ModbusQueueFull.Load(),
+		ModbusUpstreamFailed:   s.ModbusUpstreamFailed.Load(),
+		ModbusTraced:           s.ModbusTraced.Load(),
+		ModbusLearned:          s.ModbusLearned.Load(),
 		SyslogReceived:         s.SyslogReceived.Load(),
 		SyslogForwarded:        s.SyslogForwarded.Load(),
 		SyslogDropped:          s.SyslogDropped.Load(),

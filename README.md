@@ -73,18 +73,18 @@ estate — and binds only the kinds of its own role:
 
 | Daemon | Faces | Listener kinds |
 |--------|-------|----------------|
-| `xproxy` | the open internet | `http`, `forward`, `tcp`, `dns` |
-| `xgate` | people | `ssh` |
-| `xrelay` | machines | `smtp`, `mqtt`, `ftp`, `syslog` |
+| `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
+| `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
 
 ```
 client ──▶ listener (accept limits, bans) ──▶ admission pipeline ──▶ route action ──▶ upstream pool
-       http | tcp | forward | dns | smtp        concurrency, host and       proxy, redirect,      balancer, health,
-         | mqtt | ftp | syslog | ssh            path checks, route match,   respond, honeypot,    ejection, retries,
-                                                country, ACL, challenge,    static files          affinity, mirror
+       http | tcp | udp | forward | dns         concurrency, host and       proxy, redirect,      balancer, health,
+        smtp | mqtt | ftp | syslog | modbus     path checks, route match,   respond, honeypot,    ejection, retries,
+        ssh | telnet | vnc | rdp                country, ACL, challenge,    static files          affinity, mirror
                                                 shedding, rate limits,
                                                 body limit, filters
                                                 (auth, MFA, WAF, YARA,
@@ -279,6 +279,26 @@ an identifier from the access log to the upstream.
   TLS on one address. The two ends are configured separately, so it is
   also a **secure upgrade**: clear UDP in from something that cannot be
   taught TLS, RFC 5425 TLS out
+- `kind: modbus`: a Modbus relay that reads every frame, **in both
+  directions**. Modbus has no authentication, no integrity and no
+  session — a frame says which device it is for, what to do and where,
+  and the device does it — so the only place a policy can exist is in the
+  path, written in the protocol's own terms: unit identifier, function
+  code, register range, value. `reverse` fronts equipment that cannot be
+  patched; `forward` is the plant's controlled egress, where the routes
+  are the only destinations that exist. MBAP and the two serial framings
+  every Modbus gateway tunnels over TCP, bridged in any combination.
+  `read_only` that no rule can override, ordered rules over clients,
+  roles, units, function codes, access classes, address ranges and
+  quantities, **value bounds** a setpoint must stay inside (and coil
+  bounds that say which way a coil may be driven), and **schedules** for
+  the maintenance window. Refusals are the protocol's own exceptions, so
+  the master carries on and its diagnostics say something true.
+  **Modbus/TCP Security** for the devices that have it: TLS with mutual
+  authentication and the role in the client certificate. And **learning
+  mode**, because nobody knows what a plant's Modbus traffic is — run it
+  for a week and the file it writes is the rule set to start from
+
 - `kind: ftp`: an FTP proxy that is actually in the middle. FTP puts
   every transfer on a second connection whose address one side
   announces to the other, so a proxy that forwards that reply has told

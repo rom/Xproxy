@@ -26,6 +26,7 @@ server:
           rdp: null
           ftp: null
           syslog: null
+          modbus: null
         - name: public
           address: :443
           protocols:
@@ -71,6 +72,7 @@ server:
           rdp: null
           ftp: null
           syslog: null
+          modbus: null
     limits:
         max_header_bytes: 65536
         max_body_bytes: 10485760

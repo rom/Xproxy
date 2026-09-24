@@ -31,6 +31,7 @@ did not build it" and "it does not apply" are different promises again.
 - [DNS](#dns)
 - [Mail](#mail)
 - [Messaging](#messaging)
+- [Industrial control](#industrial-control)
 - [Secure Shell and file transfer](#secure-shell-and-file-transfer)
 - [Proxying and forwarding](#proxying-and-forwarding)
 - [Identity, tokens and authentication](#identity-tokens-and-authentication)
@@ -173,6 +174,18 @@ standards, and 3.1.1 is also ISO/IEC 20922:2016.
 | MQTT 3.1.1 (OASIS, ISO/IEC 20922) | Full | Framing, CONNECT, PUBLISH, SUBSCRIBE and UNSUBSCRIBE parsed; everything else relayed |
 | MQTT 5.0 (OASIS) | Full | Property blocks are stepped over rather than interpreted: nothing in them is a policy decision here, and parsing what it does not use is how a proxy grows bugs |
 
+## Industrial control
+
+Modbus is not an IETF protocol either. The application protocol and the
+serial line specification are the Modbus Organization's, as is the
+security one, and none of the three has an RFC.
+
+| Specification | Status | Notes |
+|---------------|--------|-------|
+| Modbus Application Protocol v1.1b3 | Full | Every public function code -- 1 to 24 and 43 -- parsed as request and response, with the specification's own bounds enforced: the quantity limits, the byte counts, the single-coil values, the file record shapes, the MEI types, and a range that runs past the address space. Function codes 65 to 72 and 100 to 110 are recognised as user-defined and can be named in a rule; anything else is refused rather than forwarded |
+| Modbus over Serial Line v1.02 | Full, as tunnelled over TCP | RTU and ASCII framing, in both directions. RTU has no delimiters, so a frame's length is computed per function code and direction and the CRC is the check that it ended where the device will think it did; the inter-frame silence of a real serial line has no equivalent on a stream, so a shape whose length cannot be computed -- a CANopen request, a response to a request that was not made -- is refused rather than guessed at |
+| Modbus/TCP Security v21 (MB-TCP-Security) | Partial | TLS with mutual authentication on the listener and towards the device, and authorisation by the role in the client certificate's x.509 extension under the Modbus arc, `1.3.6.1.4.1.50316.802.1`. The role-to-object-list mapping in the specification's appendix is not read from the certificate: the rules in the configuration are richer than it (function codes, register ranges, value bounds, schedules) and are where a plant's policy actually lives |
+
 ## Secure Shell and file transfer
 
 | RFC | Title | Status | Notes |
@@ -281,6 +294,9 @@ not mistaken for an omission:
 |---------------|-------|-------|
 | PROXY protocol v1 and v2 | HAProxy | Inbound from trusted peers, outbound to upstreams |
 | MQTT 3.1.1 and 5.0 | OASIS (3.1.1 also ISO/IEC 20922) | |
+| Modbus Application Protocol v1.1b3 | Modbus Organization | The `modbus` listener kind |
+| Modbus over Serial Line v1.02 | Modbus Organization | RTU and ASCII framing, tunnelled over TCP the way every Modbus gateway does it |
+| Modbus/TCP Security v21 | Modbus Organization | TLS with mutual authentication and the role extension under the Modbus arc; see the industrial control section for what is and is not taken from it |
 | SFTP version 3 | `draft-ietf-secsh-filexfer-02` | |
 | Encrypted Client Hello | `draft-ietf-tls-esni` | Version `0xfe0d` |
 | X25519MLKEM768 | `draft-kwiatkowski-tls-ecdhe-mlkem`, FIPS 203 | |

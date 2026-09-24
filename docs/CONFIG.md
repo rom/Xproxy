@@ -1522,6 +1522,235 @@ Counters: `syslog_received`, `syslog_forwarded`, `syslog_dropped`,
 `syslog_queue_dropped`, `syslog_send_failed`, `syslog_connections`,
 `syslog_rejected`. Refusals are `syslog_denied` for the ban triggers.
 
+### server.listeners[].modbus (kind: modbus)
+
+A `kind: modbus` listener is a Modbus relay that reads every frame and
+decides about it.
+
+Modbus is the protocol that runs the plant floor and has no security
+properties at all: no authentication, no integrity, no session. A frame
+says which device it is for, what to do and where, and the device does
+it. The devices cannot be fixed — they are a decade old, the vendor is
+gone, and the process they run does not stop — so the only place a policy
+can exist is in the path.
+
+It works in both directions:
+
+- **reverse** (the default): masters connect here and the relay dials the
+  devices. This is how a PLC that cannot be patched gets an allow list, a
+  read-only historian, a value bound on a setpoint and an audit trail.
+- **forward**: the plant's masters use this listener as the controlled
+  egress to reach devices elsewhere, and the `routes` say which
+  destination each unit identifier may reach at all. A unit no route
+  claims is refused with a gateway exception rather than sent somewhere
+  invented.
+
+All three framings, in either direction: Modbus/TCP (MBAP), and the two
+serial framings every "Modbus gateway" ever sold tunnels over TCP —
+Modbus RTU and Modbus ASCII. `framing` is what arrives, `upstream_framing`
+is what leaves, and setting them differently makes this listener a
+protocol converter, which is what a serial device behind a terminal
+server needs.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | enum | `reverse` | `reverse` (masters connect here) or `forward` (this is the plant's egress). `forward` requires `routes` or an `upstream` |
+| `upstream` | upstream | required unless every destination is a route | The device pool a frame goes to when no route claims its unit identifier |
+| `framing` | enum | `tcp` | What arrives from the master: `tcp` (MBAP), `rtu` or `ascii` |
+| `upstream_framing` | enum | `framing` | What the relay writes to the device |
+| `routes` | list | `[]` | Unit identifier to pool, below |
+| `tls_mode` | enum | `implicit` with `tls`, else `none` | `implicit` is Modbus/TCP Security: TLS from the first octet, conventionally on port 802 |
+| `upstream_tls_mode` | enum | `none` | `none` or `implicit` towards the device |
+| `upstream_tls` | object | | Verification of the device |
+| `security` | object | | The Modbus/TCP Security role policy, below |
+| `allow_clients` | list of CIDR | `[]` (any) | Networks a master may connect from. Empty warns: this listener reaches a PLC |
+| `deny_clients` | list of CIDR | `[]` | Refused whatever the allow list says |
+| `units` | list | `[]` (any) | Unit identifiers the listener accepts at all, as `3` or `1-16` |
+| `read_only` | bool | `false` | Refuse every function code that changes anything, for every client, before any rule is read. A rule cannot override it |
+| `rules` | list | `[]` | The policy, in order, first match wins. Below |
+| `default_action` | enum | `deny` | What happens to a frame no rule matched |
+| `deny_response` | enum | `exception` | How a refusal is answered: `exception` (the master reads it as the device's own refusal), `drop` (no answer, which a master reads as a timeout) or `close` |
+| `learn` | object | | Learning mode, below |
+| `trace` | object | | The frame trace, below |
+| `max_connections` | int | `64` | Live sessions; past it a connection is closed and counted |
+| `max_pending` | int | `16` MBAP, `1` serial | Requests one session may have outstanding towards a device |
+| `idle_timeout` | duration | `120s` | Close a session that says nothing |
+| `request_timeout` | duration | `5s` | How long the device has to answer one request |
+| `connect_timeout` | duration | `5s` | Dialling the device |
+| `max_frame_bytes` | int | `260` | One ADU; 8..260. The specification's longest is 260 |
+| `rate_limit` | int | `0` (none) | Requests a second per client address |
+| `rate_burst` | int | `rate_limit` | What one master may ask at once |
+| `log_frames` | bool | `false` | An access line per frame rather than per session: the audit trail a plant is asked for. Off warns |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header to the device |
+
+**`routes[]`** send a unit identifier to a pool of its own, which is what
+a gateway multiplexing several devices onto one address does:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required | Identifies the route in the logs and the counters |
+| `units` | list | required | The unit identifiers this route claims: `5` or `1-16` |
+| `upstream` | upstream | required | The pool they go to |
+| `framing` | enum | `upstream_framing` | Override the framing for this route, so one listener can front a Modbus/TCP PLC and a serial device at once |
+| `unit_override` | int | none | Rewrite the unit identifier sent to the device. A gateway that presents unit 5 to a device answering only to unit 1 needs it |
+
+**`security`** is Modbus/TCP Security (the Modbus Organization's
+MB-TCP-Security specification): TLS with mutual authentication, and
+authorisation by the role the client certificate carries.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | enum | `off` | `off`, `allow` (a role is read when the client presents one, and rules naming a role only match then) or `require` (a client with no usable role is refused). `require` is what the specification describes; `allow` is the migration |
+| `role_source` | enum | `extension` | `extension` is the x.509 extension under the Modbus arc, `1.3.6.1.4.1.50316.802.1`, which is what the specification defines. `cn` and `ou` read the subject instead and warn |
+| `roles` | list | `[]` (any the rules name) | The allow list of role names |
+| `require_client_cert` | bool | `true` with `mode: require` | Refuse a connection presenting no client certificate |
+
+**`rules[]`** decide each frame. Every selector that is set must match; a
+rule with no selectors matches everything, which is how the last rule in
+a list is written.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required | In the logs, the counters and the learning report |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `clients` | list of CIDR | `[]` (any) | Networks the master is in |
+| `roles` | list | `[]` (any) | Modbus/TCP Security roles. A rule naming a role never matches a session that has none |
+| `units` | list | `[]` (any) | Unit identifiers, as numbers or ranges |
+| `functions` | list | `[]` (any) | Function codes by name (`read_holding_registers`) or number |
+| `access` | list | `[]` (any) | What the code does: `read`, `write`, `diagnostic`, `identify` or `vendor`. The durable way to write "no writing" without listing every code that writes |
+| `addresses` | list | `[]` (any) | Register or coil ranges the request may name, as `0-999`. A request whose range is not **entirely** inside one of them does not match: splitting a read is not the relay's decision |
+| `write_addresses` | list | `[]` | The write half of function code 23, and every writing code when set, so one rule can allow a wide read and a narrow write |
+| `max_quantity` | int | `0` (the protocol's own bound) | Registers or coils one request may name; 0..2000 |
+| `values` | list | `[]` | Bound what may be written, below |
+| `schedule` | object | | When the rule is in force, below |
+| `comment` | string | | Carried into the logs when the rule decides, for the change record a plant keeps |
+
+**`values[]`** is the deep inspection a plant actually needs: a setpoint
+register that may hold 0 to 100 and nothing else.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `registers` | range | every address the rule covers | The address range this bound applies to, as `400-499` or a single address |
+| `min`, `max` | int | required unless `coils` is set | Bound each 16-bit value written into that range, inclusive |
+| `signed` | bool | `false` | Read the value as a signed 16-bit integer, which is how most setpoints are encoded |
+| `coils` | bool | | Bound a coil write instead: `true` allows setting a coil in the range, `false` allows only clearing it. "This client may stop the pump but not start it" |
+
+**`schedule`** limits a rule to a time window. A rule with no schedule is
+always in force, so "these rules during the shift and those outside it"
+is written as the scheduled rules first and the unscheduled ones after
+them.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `days` | list | `[]` (every day) | `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` |
+| `from`, `to` | `HH:MM` | | The window in `timezone`. A `to` before its `from` spans midnight, which is how a night shift is written |
+| `timezone` | IANA name | `UTC` | A schedule in the host's local time is a schedule that moves when somebody fixes the host's time zone |
+
+**`learn`** records what actually crosses the listener — the clients, the
+roles, the units, the function codes, the address ranges and the values
+written — and writes it out as a rule set to start from. Nobody knows what
+a plant's Modbus traffic is: the drawings say what it was meant to be,
+the traffic says what the integrator left behind. Run it for a week and
+the file is the answer.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the recording on |
+| `file` | path | required when enabled | Where the report is written, as YAML. Replaced atomically, owner readable only |
+| `interval` | duration | `5m` | How often it is rewritten; 10s..24h. It is also written at shutdown |
+| `max_subjects` | int | `8192` | Observations held: one per client, role, unit and function code. Past it the oldest goes and the drops are counted, in the report |
+| `enforce` | bool | `false` | Keep the policy in force while learning. Off — the default — means this listener records and decides nothing, which is the only honest way to find out what a policy would have broken, and warns so it is not left on by accident |
+
+**`trace`** writes one JSON object per frame for as long as it is
+enabled: the engineer's tool for "what is this master actually doing". It
+is a different thing from the audit log, which answers "who was refused
+and why", keeps forever and is shipped off the machine.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `file` | path | required | The trace file, one object per line |
+| `max_bytes` | int | `104857600` (100 MiB) | 1MiB..64GiB. At the bound the trace writes one line saying it stopped and then stops, rather than filling the disk the plant's historian is also on |
+| `include_data` | bool | `false` | Write the frame's data bytes as hex. That is process data, and it warns |
+| `requests`, `responses` | bool | `true` | The directions traced |
+
+#### What the relay decides, and in what order
+
+1. The client address, against `deny_clients` then `allow_clients`.
+2. TLS and the role, when `security` asks for one. A role can only come
+   from a certificate and a certificate can only come from TLS, so a
+   listener asking for roles without TLS refuses every session and says
+   `security_requires_tls` rather than leaving a mystery.
+3. The frame, whole. A frame that does not parse is refused: a relay that
+   forwarded what it could not read would be forwarding what it could not
+   decide about, and the device behind it will read those bytes somehow.
+4. `read_only`, which no rule can override.
+5. `units`.
+6. The rules, in order. The first `allow` or `deny` decides; an `observe`
+   rule records and the search continues. A frame that matches no rule
+   takes `default_action`.
+7. The value bounds of the rule that matched. A value outside them is
+   refused **by that rule** rather than falling through to a later rule
+   that would permit it, because a bound that can be escaped by writing
+   another rule underneath it is not a bound.
+
+#### Architectural decisions
+
+**Requests are serialised towards each device.** A Modbus slave has one
+scan. A relay that pipelined into it would be turning a policy engine
+into a load generator, so each session holds one connection per route and
+one request in flight at a time, with `max_pending` bounding the queue
+behind it. A master whose queue is full is answered with exception 06
+(server busy), which is the protocol's own way of saying what happened.
+The serial framings default to `max_pending: 1` because they have no
+transaction identifier: a second request in flight could not be told from
+the first.
+
+**A forwarded frame keeps its bytes.** The frame that reaches the device
+is the frame that arrived, byte for byte, and the answer that reaches the
+master is the answer that arrived. The relay re-encodes only when it must
+— the framings differ, or `unit_override` rewrote the identifier — because
+re-encoding a frame is how a relay and a device come to disagree about
+what was said. The MBAP transaction identifier is the one exception in
+the other direction: the master's own value is put back on the answer,
+whatever the relay used towards the device, because that is the field the
+master matches on.
+
+**A refusal is Modbus, not a disconnection.** `deny_response: exception`
+answers with the exception a master already understands — illegal function
+for a code the policy does not permit, illegal data address for a range
+it does not, illegal data value for a value outside a bound, gateway path
+unavailable for a unit with no route — so a master's diagnostics say
+something true and the session carries on. `drop` and `close` are there
+for the cases where a master must not learn anything from the answer.
+
+**The device's own answer is checked too.** A response the relay cannot
+parse, or one answering for a different unit identifier, is not handed to
+the master: the two would read the same bytes differently, which is the
+whole class of bug this relay exists to prevent. The master gets
+exception 04 (server failure) and the event is logged.
+
+**Learning is observe-only unless it says otherwise.** `learn.enforce`
+defaults to false, and validation warns while it is off, because a
+learning run left on by accident is a relay that decides nothing.
+
+Counters: `modbus_sessions`, `modbus_sessions_open`, `modbus_requests`,
+`modbus_responses`, `modbus_denied`, `modbus_would_deny`,
+`modbus_exceptions`, `modbus_malformed`, `modbus_refused`,
+`modbus_rejected`, `modbus_rate_limited`, `modbus_queue_full`,
+`modbus_upstream_failed`, `modbus_traced`, `modbus_learned`. Refusals are
+`modbus_denied` for the ban triggers, and the fine-grained reason is in
+the refusal counters: `client_not_allowed`, `tls_handshake`,
+`no_client_certificate`, `no_role`, `role_not_allowed`,
+`security_requires_tls`, `framing`, `frame_too_large`, `malformed`,
+`malformed_response`, `response_unit_mismatch`, `no_route_for_unit`,
+`max_connections`, `rate_limit`, `queue_full`, `read_only`,
+`read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`,
+`value_out_of_range`, `value_masked_write`, `coil_set_not_allowed`,
+`coil_clear_not_allowed`. A selector that does not match is not a refusal
+of its own: the frame falls through to the next rule, and to `no_rule` if
+none matches.
+
 ### server.listeners[].vnc (kind: vnc)
 
 A `kind: vnc` listener is a VNC gateway: the proxy is an RFB server to
@@ -4423,7 +4652,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

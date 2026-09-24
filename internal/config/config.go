@@ -270,6 +270,339 @@ type Listener struct {
 	FTP *FTPListener `yaml:"ftp"`
 	// Syslog configures a kind: syslog listener.
 	Syslog *SyslogListener `yaml:"syslog"`
+	// Modbus configures a kind: modbus listener.
+	Modbus *ModbusListener `yaml:"modbus"`
+}
+
+// ModbusListener is a Modbus relay that reads every frame.
+//
+// Modbus has no authentication, no integrity and no session. A frame
+// says which device it is for, what to do and where, and the device does
+// it -- which is why it still runs plants built before the word firewall
+// meant anything, and why the only place a policy can exist is between
+// the master and the slave.
+//
+// So this listener is a policy enforcement point written in Modbus's own
+// terms: the unit identifier, the function code, the register range and
+// the value being written. It works in both directions. A *reverse*
+// listener fronts the devices: masters connect to it and it dials the
+// PLC, which is how a device that cannot be patched gets an allow list
+// and an audit trail. A *forward* listener is the other way round: it is
+// the egress a plant's masters use to reach a slave somewhere else, and
+// the routes decide which destination each unit identifier is allowed to
+// reach.
+type ModbusListener struct {
+	// Mode is reverse (the default: masters connect here and the
+	// listener dials the devices) or forward (this listener is the
+	// controlled egress a plant's masters use to reach devices
+	// elsewhere). The frame handling is the same; what differs is which
+	// side the policy is written about, and forward requires the routes
+	// to name every destination that may be reached.
+	Mode string `yaml:"mode"`
+	// Upstream is the device pool a frame goes to when no route claims
+	// its unit identifier. Required in reverse mode; in forward mode a
+	// default is optional, because a forward listener with no route for
+	// a unit is usually a mistake rather than a default.
+	Upstream string `yaml:"upstream"`
+	// Framing is what arrives from the master: tcp (MBAP, the default),
+	// rtu or ascii. The serial framings are here because every "Modbus
+	// gateway" ever sold tunnels them over TCP, and a relay that could
+	// not read them would be a relay the estate goes around.
+	Framing string `yaml:"framing"`
+	// UpstreamFraming is what this listener writes to the device.
+	// Default: the same as Framing. Setting them differently makes this
+	// a protocol converter, which is what a serial device behind a
+	// terminal server needs.
+	UpstreamFraming string `yaml:"upstream_framing"`
+	// Routes send a unit identifier to a pool of its own, which is what
+	// a gateway multiplexing several devices onto one address does, and
+	// what a forward listener uses to say which destinations may be
+	// reached at all.
+	Routes []ModbusRoute `yaml:"routes"`
+	// TLSMode is implicit (Modbus/TCP Security, which is TLS from the
+	// first octet on port 802) or none. Default implicit when the
+	// listener has a tls section.
+	TLSMode string `yaml:"tls_mode"`
+	// UpstreamTLSMode is none or implicit: whether this listener speaks
+	// Modbus/TCP Security to the device.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the device when upstream_tls_mode is not
+	// none.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// Security is the Modbus/TCP Security role policy.
+	Security *ModbusSecurity `yaml:"security"`
+	// AllowClients and DenyClients are the networks a master may
+	// connect from. Deny is evaluated first. An empty allow list allows
+	// every client the deny list does not refuse, which validation
+	// advises against on a listener that reaches a PLC.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// Units is the shorthand allow list of unit identifiers, written as
+	// numbers or "1-16" ranges. Empty allows every unit the rules do.
+	Units []string `yaml:"units"`
+	// ReadOnly refuses every function code that changes anything, for
+	// every client, before any rule is read. It is the shorthand for the
+	// commonest requirement in a plant -- a historian that must never
+	// write -- and it cannot be overridden by a rule, because a
+	// read-only listener that could be written through by one rule is
+	// not a read-only listener.
+	ReadOnly bool `yaml:"read_only"`
+	// Rules decide each frame, in order, first match wins. A frame that
+	// matches no rule takes DefaultAction.
+	Rules []ModbusRule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow: what happens to a
+	// frame no rule matched. Allow with no rules is a relay that only
+	// watches, which is what learning mode is for.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused request is answered: exception (the
+	// default, an illegal-function or illegal-address exception the
+	// master understands), drop (no answer at all, which a master reads
+	// as a timeout) or close (end the connection).
+	DenyResponse string `yaml:"deny_response"`
+	// Learn records what actually crosses this listener -- the clients,
+	// the roles, the units, the function codes, the address ranges and
+	// the value ranges -- and writes it out as a rule set to start from.
+	Learn *ModbusLearn `yaml:"learn"`
+	// Trace writes one line per frame for as long as it is enabled: the
+	// engineer's tool for "what is this master actually doing".
+	Trace *ModbusTrace `yaml:"trace"`
+	// MaxConnections bounds live sessions. Default 64, which is more
+	// masters than a plant usually has and fewer than a scan can open.
+	MaxConnections int `yaml:"max_connections"`
+	// MaxPending bounds the requests one session may have outstanding.
+	// Default 1 for the serial framings, where the protocol has no
+	// transaction identifier and a second request in flight cannot be
+	// told from the first; 16 for MBAP.
+	MaxPending int `yaml:"max_pending"`
+	// IdleTimeout closes a session that says nothing. Default 120s.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// RequestTimeout bounds how long the device has to answer one
+	// request. Default 5s.
+	RequestTimeout Duration `yaml:"request_timeout"`
+	// ConnectTimeout bounds dialling the device. Default 5s.
+	ConnectTimeout Duration `yaml:"connect_timeout"`
+	// MaxFrameBytes bounds one frame. Default 260, the longest ADU the
+	// specification has; a smaller value is a tighter bound on a
+	// listener whose devices only speak short frames.
+	MaxFrameBytes int `yaml:"max_frame_bytes"`
+	// RateLimit and RateBurst bound requests per second per client
+	// address. Zero disables them. A PLC's scan budget is finite and a
+	// master that asks faster than the device can answer is an outage.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// LogFrames writes an access line per frame rather than per
+	// session. It is the audit trail a plant is asked for, and it is a
+	// line per request: a scan of a thousand registers a second is a
+	// thousand lines a second, which is why it is a choice.
+	LogFrames bool `yaml:"log_frames"`
+	// AlertOnDeny writes a security event for every refusal. Default
+	// true. Turning it off keeps the counters and loses the record,
+	// which is a decision to make deliberately on a listener whose
+	// refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// ProxyProtocol sends a PROXY protocol v2 header to the device, so
+	// a device or a collector behind this listener sees the master's
+	// address rather than the relay's.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+}
+
+// ModbusRoute sends a range of unit identifiers to one pool.
+type ModbusRoute struct {
+	// Name identifies the route in the logs and the counters.
+	Name string `yaml:"name"`
+	// Units are the unit identifiers this route claims: numbers or
+	// "1-16" ranges. Required.
+	Units []string `yaml:"units"`
+	// Upstream is the pool they go to. Required.
+	Upstream string `yaml:"upstream"`
+	// Framing overrides the listener's upstream framing for this route,
+	// which is how one listener fronts a TCP PLC and a serial device
+	// behind a terminal server at once.
+	Framing string `yaml:"framing"`
+	// UnitOverride rewrites the unit identifier sent to the device.
+	// A gateway that presents unit 5 and speaks to a device that
+	// answers only to unit 1 needs it; 0 leaves the identifier alone.
+	UnitOverride *int `yaml:"unit_override"`
+}
+
+// ModbusSecurity is the Modbus/TCP Security policy (MB-TCP-Security
+// v21): TLS with mutual authentication, and authorisation by the role
+// the client certificate carries.
+type ModbusSecurity struct {
+	// Mode is off (the default), allow (a role is read when the client
+	// presents one and rules that name a role only match then) or
+	// require (a client with no usable role is refused). require is
+	// what the specification describes; allow is the migration.
+	Mode string `yaml:"mode"`
+	// RoleSource is extension (the default: the x.509 extension under
+	// the Modbus arc, 1.3.6.1.4.1.50316.802.1, which is what the
+	// specification defines), cn or ou. The subject fields are a
+	// documented compromise for an authority that cannot issue the
+	// extension yet: a subject field says who a certificate is for, so
+	// using it as a role means trusting whoever issues certificates to
+	// keep to a naming convention.
+	RoleSource string `yaml:"role_source"`
+	// Roles is the allow list of role names. Empty accepts any role the
+	// rules name.
+	Roles []string `yaml:"roles"`
+	// RequireClientCert refuses a connection that presents no client
+	// certificate. Default true when mode is require.
+	RequireClientCert *bool `yaml:"require_client_cert"`
+}
+
+// ModbusRule decides frames. Every selector that is set must match, and
+// a rule with no selectors matches everything -- which is how the last
+// rule in a list is written.
+type ModbusRule struct {
+	// Name identifies the rule in the logs, the counters and the
+	// learning report. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. observe logs and counts the
+	// frame and then keeps looking, which is how a rule is tried out on
+	// live traffic before it decides anything.
+	Action string `yaml:"action"`
+	// Clients are the networks the master is in.
+	Clients []string `yaml:"clients"`
+	// Roles are the Modbus/TCP Security roles this rule covers. A rule
+	// naming a role never matches a session that has none.
+	Roles []string `yaml:"roles"`
+	// Units are the unit identifiers: numbers or ranges.
+	Units []string `yaml:"units"`
+	// Functions are function codes by name (read_holding_registers) or
+	// by number.
+	Functions []string `yaml:"functions"`
+	// Access matches what the function code does: read, write,
+	// diagnostic, identify or vendor. It is the durable way to write
+	// "no writing" without listing every code that writes.
+	Access []string `yaml:"access"`
+	// Addresses are the register or coil ranges the request may name,
+	// as "0-999" or single numbers. A request whose range is not
+	// entirely inside one of them does not match.
+	Addresses []string `yaml:"addresses"`
+	// WriteAddresses apply to the write half of function code 23 and to
+	// every writing function code when set, so one rule can allow a
+	// wide read and a narrow write.
+	WriteAddresses []string `yaml:"write_addresses"`
+	// MaxQuantity bounds the registers or coils one request may name.
+	// 0 leaves the protocol's own bound.
+	MaxQuantity int `yaml:"max_quantity"`
+	// Values bound what may be written, which is the deep inspection a
+	// plant actually needs: a setpoint register that may hold 0 to 100
+	// and nothing else.
+	Values []ModbusValueRule `yaml:"values"`
+	// Schedule limits the rule to a time window. A rule with no
+	// schedule is always in force, so "these rules during the shift and
+	// those outside it" is written as scheduled rules first and
+	// unscheduled ones after them.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+	// Comment is carried into the logs when the rule decides, for the
+	// change record a plant keeps.
+	Comment string `yaml:"comment"`
+}
+
+// ModbusValueRule bounds the values a write may carry.
+type ModbusValueRule struct {
+	// Registers is the address range this bound applies to, as "400-499"
+	// or a single address. Empty applies it to every address the rule
+	// covers.
+	Registers string `yaml:"registers"`
+	// Min and Max bound each 16-bit value written into that range,
+	// inclusive. Both are required.
+	Min *int `yaml:"min"`
+	Max *int `yaml:"max"`
+	// Signed reads the value as a signed 16-bit integer, which is how
+	// most setpoints are actually encoded.
+	Signed bool `yaml:"signed"`
+	// Coils, when set, bounds a coil write instead: true allows setting
+	// a coil in the range, false allows only clearing it.
+	Coils *bool `yaml:"coils"`
+}
+
+// ModbusSchedule is when a rule is in force. The times are local to the
+// named zone, so a shift that starts at six starts at six whatever the
+// host's clock is set to.
+type ModbusSchedule struct {
+	// Days are mon, tue, wed, thu, fri, sat, sun. Empty means every
+	// day.
+	Days []string `yaml:"days"`
+	// From and To are "HH:MM" in Timezone. A window whose To is before
+	// its From spans midnight, which is how a night shift is written.
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
+	// Timezone is an IANA name. Default UTC, because a schedule in the
+	// host's local time is a schedule that moves when somebody fixes
+	// the host's time zone.
+	Timezone string `yaml:"timezone"`
+}
+
+// ModbusLearn records what crosses the listener and writes it out as a
+// rule set to start from.
+//
+// It exists because nobody knows what a plant's Modbus traffic actually
+// is. The drawings say what it was meant to be; the traffic says what
+// the integrator left behind. Run this for a week and the file is the
+// answer, written as rules that can be pasted in.
+type ModbusLearn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when
+	// enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten. Default 5m; it is also
+	// written when the listener shuts down.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the observations held: one per client, role,
+	// unit and function code seen. Default 8192; past it the oldest is
+	// dropped and the drops are counted, because a learning run that
+	// quietly stopped learning is worse than one that says so.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false:
+	// a learning run is normally observe-only, and saying so here is
+	// what stops one being left on by accident.
+	Enforce bool `yaml:"enforce"`
+}
+
+// ModbusTrace writes one line per frame.
+type ModbusTrace struct {
+	// File is the trace file, one JSON object per line. Required.
+	File string `yaml:"file"`
+	// MaxBytes bounds it. Default 104857600 (100 MiB); at the bound the
+	// trace stops and says so rather than filling the disk a plant's
+	// historian is also on.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// IncludeData writes the frame's data bytes as hex. Off by default:
+	// a trace is usually about who asked for what, and the data is
+	// process data.
+	IncludeData bool `yaml:"include_data"`
+	// Requests and Responses select the directions traced. Default
+	// both.
+	Requests  *bool `yaml:"requests"`
+	Responses *bool `yaml:"responses"`
+}
+
+// Advice reports whether this listener's frames are logged at all.
+func (m *ModbusListener) Logs() bool { return m != nil && m.LogFrames }
+
+// Alerts says whether a refusal writes a security event.
+func (m *ModbusListener) Alerts() bool {
+	return m == nil || m.AlertOnDeny == nil || *m.AlertOnDeny
+}
+
+// Pending is the outstanding-request bound, with the default that
+// depends on the framing: a serial framing has no transaction
+// identifier, so a second request in flight cannot be told from the
+// first.
+func (m *ModbusListener) Pending() int {
+	if m == nil {
+		return 1
+	}
+	if m.MaxPending > 0 {
+		return m.MaxPending
+	}
+	if m.Framing == "rtu" || m.Framing == "ascii" {
+		return 1
+	}
+	return 16
 }
 
 // SyslogListener is a syslog relay that reads what it forwards.
