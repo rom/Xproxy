@@ -2794,6 +2794,85 @@ use `xproxyctl rotate` so the old key stays in the ring.
 once in place of a code, at which point it is spent for good; re-enrol
 the user afterwards with `xproxyctl mfa enrol` and replace their line.
 
+## SAML single sign-on
+
+**Every login ends at the consumer service with `signature`.** The
+response did not verify against `idp_cert_file`. Three causes, in order
+of likelihood. The provider rotated its signing certificate — export it
+again, or point `idp_metadata_file` at the file the provider publishes
+and let the proxy read it. The certificate configured is the encryption
+certificate rather than the signing one: providers publish both, and
+only a `KeyDescriptor` with `use="signing"` (or none) is read from
+metadata. Or the provider signs the response and `signed_element` asks
+for the assertion — set `signed_element: response`, or `either` if the
+provider is inconsistent. `KeyInfo` in the document is never consulted,
+so "the response carries its own certificate" is not a reason it should
+have worked.
+
+**`profile` on every login.** The response is outside the accepted
+profile, and the proxy's log line says which part. The three that come
+up in practice: the provider encrypts assertions (turn that off for this
+service provider — TLS already covers the hop, and this profile does not
+decrypt); it signs with SHA-1 (raise it to SHA-256); or it emits a
+transform this profile does not take, which for a provider that offers a
+choice means selecting exclusive canonicalization with the
+enveloped-signature transform. A document type declaration in the
+response is also `profile`, and there is nothing to configure: no
+identity provider needs one.
+
+**`refused`, with a good signature.** A check that is not about the
+signature failed, and the warning in the error log names it: another
+audience (`entity_id` here must be exactly what the provider has as the
+service provider's entity ID), another `Destination` or `Recipient`
+(`external_url` + `acs_path` must be exactly the consumer URL registered
+at the provider — a trailing slash or a port is a different URL), an
+expired window (check the clocks; `clock_skew` is 30 seconds by default),
+or a name identifier format outside `name_id_formats`.
+
+**`state_missing` on a login that looked fine.** The browser did not send
+the state cookie back to the consumer service. It is `SameSite=Lax`,
+which a top-level POST from the provider does carry, so the usual cause
+is a different host: the login started on `app.example.com` and the
+provider posts to `www.app.example.com`, or `cookie_domain` is set to
+something the consumer path is not under. It is also what a response
+nobody asked for looks like — a provider configured for
+provider-initiated single sign-on will always land here, because this
+profile has no state to bind such a response to.
+
+**`replay` on a second attempt.** The same assertion was presented twice:
+a reloaded consumer page, a browser retry, or an actual replay. The
+assertion identifier is remembered until the assertion would have expired
+anyway. Start the login again rather than reloading; a reload of a POST
+cannot succeed by design.
+
+**Logins loop: the provider sends the browser back and it starts
+again.** The session cookie is not coming back, or it is expiring
+immediately. It is `Secure`, so on a plaintext listener no browser
+returns it; and the session is capped by the assertion, so a provider
+issuing assertions valid for one minute gives one-minute sessions
+whatever `session_ttl` says. `xproxyctl filters` shows `accepted` rising
+with `logins` if the responses are being accepted, which separates "the
+login fails" from "the session does not stick".
+
+**The provider rejects the authentication request.** Compare what it
+expects with `/saml/metadata` from this proxy, which is generated from the
+running configuration: the entity ID, the consumer URL and the binding.
+The request is unsigned — it carries no secret, and the response is
+checked against this proxy's own state whatever the request looked like —
+so a provider configured to require signed requests must have that
+turned off for this service provider.
+
+**Signing out here does not sign out at the provider.** It cannot:
+single logout is not implemented (see CONFIG.md for why). `logout_path`
+forgets the session at this proxy; the provider's own sign-out page ends
+the session there. Keep `session_ttl` short if that gap matters, and note
+that the provider's `SessionNotOnOrAfter` already caps it.
+
+**The log says the identity provider certificate has expired.** It is a
+warning, not a refusal: a pinned key is its own trust anchor, so
+signatures still verify. It is there because nothing else would mention
+it and because the provider is about to rotate.
+
 ## YARA scanning
 
 **The listener will not start and names a line in the rule file.** The

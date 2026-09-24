@@ -1,0 +1,84 @@
+# Filters example: SAML 2.0 single sign-on for a browser application.
+#
+# A request without a session is redirected to the identity provider; the
+# provider posts a signed response back to acs_path, which verifies it
+# against the provider's signing certificate and checks the issuer,
+# destination, audience, recipient, both condition windows, the subject
+# confirmation and the status before setting an encrypted session cookie.
+# Later requests carry the chosen attributes to the application as headers.
+#
+# Point the provider at https://intranet.example.com/saml/metadata, which
+# this configuration serves: it names the entity ID, the consumer URL and
+# the POST binding. idp_metadata_file is the file the provider publishes,
+# and the entity ID, the sign-on endpoint and the signing certificate are
+# read from it; name them individually instead if the provider hands out
+# no metadata.
+#
+# Set external_url. Without it the consumer URL is derived from the
+# request, and the URL the provider is told to post the assertion to
+# should not depend on a header.
+#
+# Not implemented on purpose (see docs/CONFIG.md): encrypted assertions,
+# provider-initiated sign-on, single logout. logout_path forgets the
+# session here; the provider's own page ends the session there.
+# Validate: xproxy -config examples/filters/saml-sso.yaml -validate
+version: 1
+server:
+  listeners:
+    # Terminate TLS here in production (server.listeners[].tls, or
+    # acme): the session cookie is Secure, so no browser returns it over
+    # plain http and every login would loop.
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+filters:
+  - name: sso
+    kind: saml_sp
+    options:
+      entity_id: https://intranet.example.com/saml/metadata
+      idp_metadata_file: /etc/xproxy/saml/idp-metadata.xml
+      idp_cert_file: /etc/xproxy/saml/idp-signing.pem
+      cookie_secret_file: /etc/xproxy/saml.cookie
+      external_url: https://intranet.example.com
+      # The assertion must be signed; accept `response` or `either` only
+      # if the provider signs the envelope instead.
+      signed_element: assertion
+      request_name_id_format: urn:oasis:names:tc:SAML:2.0:nameid-format:persistent
+      name_id_formats:
+        - urn:oasis:names:tc:SAML:2.0:nameid-format:persistent
+      session_ttl: 8h
+      max_assertion_age: 1h
+      forward_headers:
+        X-Remote-User: nameid
+        X-Remote-Email: mail
+        X-Remote-Name: displayName
+      # Groups an authz policy can decide on, and one attribute every
+      # login must carry with this value.
+      groups_attribute: groups
+      require_attributes:
+        employeeStatus: active
+      log_attributes: [mail]
+  # Who may do what, decided once on the identity the filter above
+  # verified. It runs after the login filter, never before it.
+  - name: intranet-policy
+    kind: authz
+    options:
+      default: deny
+      forward_groups_header: X-Remote-Groups
+      rules:
+        - {name: staff, allow: true, groups: [staff, contractors]}
+rate_limits:
+  # Slow a login flood without touching signed-in traffic, keyed by the
+  # identity once there is one.
+  - {name: logins, key: identity:saml, rate: 2, burst: 20}
+upstreams:
+  - name: intranet
+    endpoints: [{address: "10.0.5.10:8080"}]
+routes:
+  - name: intranet
+    hosts: [intranet.example.com]
+    filters: [sso, intranet-policy]
+    rate_limits: [logins]
+    upstream: intranet

@@ -199,8 +199,17 @@ HAProxy's specification, versions 1 and 2, both implemented.
 | 7518 | JSON Web Algorithms | Partial | The signature algorithms a token may use; `none` is refused, and a key's type must match the algorithm |
 | 7638 | JSON Web Key Thumbprint | Full | Key identification |
 | 8725 | JSON Web Token Best Current Practices | Full | Issuer, audience, expiry and algorithm pinned rather than read from the token |
-| 6749 | The OAuth 2.0 Authorization Framework | Partial | The authorization code flow, as a relying party. PKCE (RFC 7636) is not implemented: the flow runs server side with a client secret and a state cookie |
+| 6749 | The OAuth 2.0 Authorization Framework | Partial | The authorization code flow, as a relying party, with PKCE, a nonce and a state cookie |
 | 7662 | OAuth 2.0 Token Introspection | Full | |
+| 7636 | Proof Key for Code Exchange | Full | The `oidc` filter sends `code_challenge` with `S256` and the verifier from its state cookie |
+| 9449 | OAuth 2.0 Demonstrating Proof of Possession (DPoP) | Full | The proof, its claims, the RFC 7638 thumbprint and the `cnf.jkt` binding, with a bounded replay cache for `jti` |
+| 8693 | OAuth 2.0 Token Exchange | Partial | As a client: a verified token is exchanged for one the backend can use, narrowed by audience, resource or scope. This proxy is not an exchange endpoint |
+| 8707 | Resource Indicators for OAuth 2.0 | Full | The `resource` parameter of an exchange |
+| 9440 | Client-Cert HTTP Header Fields | Full | `Client-Cert` and `Client-Cert-Chain` as RFC 8941 byte sequences, sent to the upstream and stripped from an untrusted peer |
+| 8941 | Structured Field Values for HTTP | Partial | The byte sequence form the client certificate headers use |
+| 8949 | Concise Binary Object Representation (CBOR) | Partial | The canonical (CTAP2) subset a WebAuthn attestation and COSE key use; indefinite lengths, tags, floats and duplicate keys are refused |
+| 9052 | CBOR Object Signing and Encryption (COSE) | Partial | `COSE_Key` for ES256/384/512, EdDSA, RS256 and PS256, as WebAuthn credentials carry them |
+| 4051 | Additional XML Security Uniform Resource Identifiers | Partial | The signature and digest algorithm identifiers the SAML profile accepts, including ECDSA as concatenated `r` and `s` |
 | 4226 | HOTP: An HMAC-Based One-Time Password Algorithm | Full | Checked against every vector in appendix D |
 | 6238 | TOTP: Time-Based One-Time Password Algorithm | Full | Checked against every vector in appendix B, for all three hashes |
 | 4511 | Lightweight Directory Access Protocol (LDAP): The Protocol | Full | Bind and search, as a client |
@@ -211,7 +220,9 @@ HAProxy's specification, versions 1 and 2, both implemented.
 
 OpenID Connect Core 1.0 is an OpenID Foundation specification rather
 than an RFC; the discovery document, the authorization code flow, the
-ID token checks and front-channel logout are implemented.
+ID token checks and front-channel logout are implemented. SAML 2.0 and
+WebAuthn are not RFCs either; both are in the table at the end of this
+document, with the parts of each that are implemented.
 
 ## Content, encoding and data formats
 
@@ -261,13 +272,17 @@ not mistaken for an omission:
 | pcapng | `draft-ietf-opsawg-pcapng` | The capture file format |
 | WebTransport over HTTP/3 | W3C and `draft-ietf-webtrans-http3` | |
 | OpenID Connect Core 1.0 | OpenID Foundation | |
+| SAML 2.0 Core, Bindings and Profiles | OASIS | As a service provider: the web browser single sign-on profile with the HTTP Redirect binding for requests and HTTP POST for responses. A deliberately narrow profile -- one unencrypted assertion, exclusive canonicalization, SHA-256 and above, the signing key from the configuration -- and no single logout. [CONFIG.md](CONFIG.md) lists every refusal and the reason for it |
+| XML Signature Syntax and Processing | W3C | Verification only, of one enveloped signature per element: one `Reference` naming its own parent, the enveloped-signature transform and canonicalization and no other, no `KeyInfo` trust. No signature generation |
+| Exclusive XML Canonicalization 1.0 | W3C | Full, without comments, including an `InclusiveNamespaces` prefix list. The inclusive canonicalization of `REC-xml-c14n-20010315` is refused rather than approximated |
+| Web Authentication (WebAuthn) level 2 | W3C | Registration and authentication as a relying party; attestation is parsed but deliberately not verified (it identifies a model, not a person) |
 | Content Security Policy, CORS | W3C and WHATWG Fetch | The response header policy and the CORS policy |
 | Prometheus exposition format | Prometheus project | `/metrics` |
 | OpenTelemetry Protocol (OTLP) | CNCF | Traces, metrics and logs |
 | YARA | VirusTotal | A documented subset; see [CONFIG.md](CONFIG.md) for exactly which |
 | ModSecurity SecLang, OWASP CRS | Coraza, OWASP | The WAF rule language |
 | XCLIENT | Postfix | The SMTP extension that tells a mail server the real client |
-| `X-Forwarded-Client-Cert` | Envoy | The client certificate identity passed to the upstream; RFC 9440's `Client-Cert` field is not implemented |
+| `X-Forwarded-Client-Cert` | Envoy | One of the two forms of client certificate identity passed to the upstream; RFC 9440's `Client-Cert` is the other; `client_cert_headers` chooses, and the default is to send neither |
 | OpenSSH file formats | OpenSSH | `authorized_keys`, `known_hosts`, private keys |
 | WebAssembly, WASI preview 1 | W3C, Bytecode Alliance | The filter ABI |
 | Gateway API, Ingress | Kubernetes SIG Network | The ingress translator |

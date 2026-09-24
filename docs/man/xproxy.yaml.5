@@ -7135,7 +7135,7 @@ T}
 T{
 \fBidentity:\:<kind>\fR
 T}	T{
-the verified identity of one kind: \fBjwt\fR (the \fBsub\fR claim),\: \fBoidc\fR (the session subject),\: \fBapi_\:key\fR (the key id),\: \fBbasic\fR (the user) or \fBldap\fR (the user)
+the verified identity of one kind: \fBjwt\fR (the \fBsub\fR claim),\: \fBoidc\fR (the session subject),\: \fBsaml\fR (the session name identifier),\: \fBapi_\:key\fR (the key id),\: \fBbasic\fR (the user) or \fBldap\fR (the user)
 T}	T{
 client address
 T}
@@ -14333,6 +14333,310 @@ T}
 .TE
 .PP
 The access log carries \fBoidc_user\fR for requests with a session and \fBflow: <name>:login\fR, \fBlogin_complete\fR, \fBlogout\fR or \fBfrontchannel_logout\fR for the flow steps. Sessions record the ID token\(aqs \fBsid\fR claim when the provider sends one; a logout at the proxy revokes it as well, so other browsers sharing that provider session end too.
+.SS "Kind \fBsaml_sp\fR"
+.PP
+Logs browsers in as a SAML 2.0 service provider and keeps the result in an encrypted, HttpOnly, SameSite Lax session cookie. A request without a session is redirected to the identity provider with an authentication request (HTTP Redirect binding, deflated); the provider posts the signed response back to \fBacs_path\fR (HTTP POST binding), where it is verified against the configured signing key and checked whole before a cookie is set and the browser is sent back to the page it asked for. Requests with a session carry the listed attributes to the upstream as headers (client supplied values of those headers are always removed) and the cookie is stripped upstream. \fBmetadata_path\fR serves this service provider\(aqs metadata for the provider to import.
+.PP
+\fBThe profile is deliberately narrow, and the narrowness is the feature.\fR Web single sign\-on breaks in one place \[u2014] the reader that verifies a signature and the reader that consumes the assertion disagreeing about what was signed \[u2014] so everything that lets one document mean two things is refused rather than ignored:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+A document type declaration, an entity declaration, any entity reference but the five XML predefines, a processing instruction, a CDATA section, a name outside ASCII, an undeclared prefix, a duplicate attribute. There is no external entity resolution to disable, because there is no entity resolution.
+.PP
+.ti -3n
+\(bu
+An encrypted assertion, attribute or name identifier (\fBEncryptedAssertion\fR and friends). XML Encryption in a responder has been a decryption oracle more than once, and TLS already covers the hop the response takes. The refusal names itself, so a provider configured to encrypt is a clear message rather than a mystery.
+.PP
+.ti -3n
+\(bu
+More than one assertion in a response, and two elements sharing an \fBID\fR. Those are the shapes signature wrapping needs.
+.PP
+.ti -3n
+\(bu
+Any signature in the document that does not verify, including one nothing would have read.
+.PP
+.ti -3n
+\(bu
+A signature whose single \fBReference\fR is not \fB#\fR plus the \fBID\fR of the element the signature is enveloped in; more than one reference; a transform other than the enveloped\-signature transform followed by exclusive canonicalization; a canonicalization other than \fBxml\-exc\-c14n#\fR; SHA\-1, HMAC or DSA.
+.PP
+.ti -3n
+\(bu
+A response with no \fBInResponseTo\fR, so provider\-initiated ("unsolicited") single sign\-on is not supported: there is no state to bind it to.
+.PP
+.ti -3n
+\(bu
+A bearer subject confirmation carrying \fBNotBefore\fR, a condition this profile does not understand, an attribute value wrapped in markup, a timestamp with no zone.
+.RE
+.PP
+.PP
+What it accepts, it accepts completely: the issuer, \fBDestination\fR, \fBInResponseTo\fR on both the envelope and the subject confirmation, the \fBRecipient\fR, the audience, both condition windows, the confirmation window, the provider\(aqs session bound, the status code, the name identifier format, and a one\-time check on the assertion identifier. The signing key comes from the configuration; \fBKeyInfo\fR in the document is not read at all, so a response signed by a key it carries is simply an unverifiable response.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(1.1i) lbw(1.0i) lbx
+lw(1.1i) lw(1.1i) lw(1.0i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBentity_\:id\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+This service provider\(aqs identifier,\: and the audience every assertion must name
+T}
+T{
+\fBidp_\:metadata_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+The provider\(aqs metadata document;\: \fBidp_\:entity_\:id\fR,\: \fBidp_\:sso_\:url\fR and the signing certificates are read from it. An explicit option below wins over it,\: so a stale endpoint can be corrected in place. Read at load with the same strict parser as an assertion;\: its own signature is not checked,\: because a file an operator installed is configuration,\: not network input
+T}
+T{
+\fBidp_\:entity_\:id\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The issuer every response and assertion must name
+T}
+T{
+\fBidp_\:sso_\:url\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+Where the authentication request goes (\fBhttps:\:/\:/\fR,\: plain \fBhttp:\:/\:/\fR only with \fBallow_\:http\fR)
+T}
+T{
+\fBidp_\:cert_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+PEM certificates (at most eight) whose public keys verify signatures. An expired certificate is warned about at load and still trusted: a pinned key is its own trust anchor,\: and there is no chain to expire
+T}
+T{
+\fBcookie_\:secret_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+32 or more random bytes or a keyring,\: created \fB0600\fR if absent;\: sessions survive reloads and restarts while the key stays,\: and \fBxproxyctl rotate\-\:secret\fR keeps sessions sealed under the kept keys
+T}
+T{
+\fBacs_\:path\fR
+T}	T{
+path
+T}	T{
+\fB/\:saml/\:acs\fR
+T}	T{
+The assertion consumer service. Register \fBexternal_\:url\fR + path at the provider. Only \fBPOST\fR with a form body is accepted: a response in a query string is a response in a browser history,\: a proxy log and a \fBReferer\fR
+T}
+T{
+\fBmetadata_\:path\fR
+T}	T{
+path
+T}	T{
+\fB/\:saml/\:metadata\fR
+T}	T{
+Serves \fBapplication/\:samlmetadata+xml\fR describing this service provider
+T}
+T{
+\fBlogout_\:path\fR
+T}	T{
+path
+T}	T{
+\fB/\:saml/\:logout\fR
+T}	T{
+Clears the session here and redirects to \fBlogout_\:redirect\fR. There is no single logout binding: see the note below
+T}
+T{
+\fBlogout_\:redirect\fR
+T}	T{
+path
+T}	T{
+\fB/\fR
+T}	T{
+A path on this host
+T}
+T{
+\fBexternal_\:url\fR
+T}	T{
+URL
+T}	T{
+derived
+T}	T{
+\fBscheme:\:/\:/\:host\fR the browser reaches the proxy on. Set it. Unset,\: it is derived from the request: \fBHost\fR,\: the listener\(aqs own TLS,\: and \fBX\-\:Forwarded\-\:Proto\fR only from a peer inside \fBtrusted_\:proxies\fR \[u2014] any client can send that header,\: and the URL derived from it is the one the provider is told to post the assertion to
+T}
+T{
+\fBcookie_\:name\fR
+T}	T{
+token
+T}	T{
+\fBXPSAML\fR
+T}	T{
+The state cookie is \fB<cookie_\:name>_\:state\fR,\: ten minutes
+T}
+T{
+\fBcookie_\:domain\fR
+T}	T{
+string
+T}	T{
+host only
+T}	T{
+
+T}
+T{
+\fBsession_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB8h\fR
+T}	T{
+1m to 720h. The session never outlives the assertion: the earliest of the condition window,\: the confirmation window and \fBSessionNotOnOrAfter\fR caps it
+T}
+T{
+\fBclock_\:skew\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Tolerance on every timestamp;\: 0 to 5m
+T}
+T{
+\fBmax_\:assertion_\:age\fR
+T}	T{
+duration
+T}	T{
+\fB1h\fR
+T}	T{
+How old an assertion may be whatever windows it declares,\: and the ceiling on a session;\: 1m to 24h
+T}
+T{
+\fBsigned_\:element\fR
+T}	T{
+\fBassertion\fR,\: \fBresponse\fR,\: \fBeither\fR
+T}	T{
+\fBassertion\fR
+T}	T{
+What the signature must cover. \fBeither\fR accepts a signature on one or the other;\: a response with neither signed is never accepted,\: whatever this says
+T}
+T{
+\fBname_\:id_\:formats\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Accepted \fBNameID\fR formats;\: a login with another is refused
+T}
+T{
+\fBrequest_\:name_\:id_\:format\fR
+T}	T{
+URN
+T}	T{
+none
+T}	T{
+The format the authentication request asks for
+T}
+T{
+\fBforce_\:authn\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Ask the provider to re\-authenticate rather than reuse its own session
+T}
+T{
+\fBforward_\:headers\fR
+T}	T{
+map
+T}	T{
+\fB{}\fR
+T}	T{
+Header name to attribute name,\: or to \fBnameid\fR,\: \fBnameid_\:format\fR or \fBsession_\:index\fR (for example \fBX\-\:Remote\-\:User:\: nameid\fR)
+T}
+T{
+\fBrequire_\:attributes\fR
+T}	T{
+map
+T}	T{
+\fB{}\fR
+T}	T{
+Attribute to required value;\: a login whose assertion differs is refused with 403 and detail \fBattribute:\:<name>\fR
+T}
+T{
+\fBgroups_\:attribute\fR
+T}	T{
+string
+T}	T{
+\fBgroups\fR
+T}	T{
+The attribute carrying the groups an \fBauthz\fR policy may decide on
+T}
+T{
+\fBpolicy_\:attributes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Attributes recorded on the identity for a policy to read
+T}
+T{
+\fBlog_\:attributes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Attributes copied to the access log as \fBsaml_\:<name>\fR
+T}
+T{
+\fBreplay_\:max\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Bound of the one\-time assertion identifier table;\: entries expire with the assertions they refuse,\: and over the bound the soonest to expire is dropped
+T}
+T{
+\fBallow_\:http\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Permit a plain \fBhttp:\:/\:/\fR endpoint and external URL (tests)
+T}
+.TE
+.PP
+The session cookie carries only the attributes something names \[u2014] a header, a log field, a policy, a requirement, the groups \[u2014] because a cookie is four kilobytes and an assertion can carry far more. It is sealed under both entity identifiers, so two filters sharing one \fBcookie_secret_file\fR cannot open each other\(aqs sessions and a login through a lenient provider does not satisfy a stricter one.
+.PP
+The access log carries \fBsaml_user\fR for requests with a session and \fBflow: <name>:login\fR, \fBlogin_complete\fR, \fBlogout\fR or \fBmetadata\fR for the flow steps. Login and logout redirects are not security events; a refused response is, with reason \fB<filter name>\fR and a detail (\fBsignature\fR, \fBrefused\fR, \fBprofile\fR, \fBprovider_status\fR, \fBreplay\fR, \fBstate_missing\fR, \fBstate_invalid\fR, \fBrelay_state\fR, \fBattribute:<name>\fR), and counts towards ban triggers.
+.PP
+\fBSingle logout is not implemented, on purpose.\fR \fBlogout_path\fR clears the session at this proxy; signing out at the provider is the provider\(aqs own page. A SAML logout request arrives as a cross\-site POST or redirect carrying a name identifier, which is a way to sign other people out, and the response half needs a signed document sent \fIto\fR a provider \[u2014] a different set of machinery for a feature whose safe part (forgetting the session here) needs none of it. Sessions are short and the provider\(aqs own \fBSessionNotOnOrAfter\fR caps them.
+.PP
+\fBRelay state is not the binding.\fR The filter sends a digest of its own state cookie as \fBRelayState\fR and refuses a response that returns a different one, but the binding that matters is \fBInResponseTo\fR against the request identifier sealed in that cookie, checked on both the response element and the subject confirmation. A provider that drops \fBRelayState\fR entirely still works.
 .SS "Kind \fBwasm\fR"
 .PP
 Runs a WebAssembly module per request in a sandbox. The module follows the ABI in EXTENDING.md (exports \fBxproxy_abi_version\fR, \fBxproxy_alloc\fR, \fBxproxy_on_request\fR, optionally \fBxproxy_on_response\fR; imports \fBget\fR, \fBset_header\fR, \fBremove_header\fR, \fBdeny\fR, \fBlog\fR, \fBlog_attr\fR from module \fBxproxy\fR). It is read and compiled at load and on reload; a broken module or a wrong ABI version is a load error.
@@ -15605,7 +15909,7 @@ T{
 T}	T{
 list
 T}	T{
-Which filter verified the identity: \fBoidc\fR,\: \fBldap\fR,\: \fBapi_\:key\fR,\: \fBbasic\fR,\: \fBjwt\fR,\: \fBmfa\fR
+Which filter verified the identity: \fBoidc\fR,\: \fBsaml\fR,\: \fBldap\fR,\: \fBapi_\:key\fR,\: \fBbasic\fR,\: \fBjwt\fR,\: \fBmfa\fR
 T}
 T{
 \fBclaims\fR

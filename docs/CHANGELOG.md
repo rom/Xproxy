@@ -442,6 +442,69 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A SAML 2.0 service provider, with a profile narrow enough to be
+  readable** (`saml_sp` filter, `internal/saml`).
+
+  The last identity protocol this proxy could not speak, and the one that
+  needed the most deciding. SAML's failure mode is not the crypto: it is
+  that a response is an XML document, and XML gives an attacker a dozen
+  ways to make the reader that verifies the signature and the reader that
+  consumes the assertion disagree about what was signed. Signature
+  wrapping is the whole family. So the answer here is not a more careful
+  check on a general parser — it is a parser and a profile with no room
+  for the ambiguity.
+
+  The XML reader refuses a document type declaration, an entity
+  declaration, any entity reference but the five predefines, a processing
+  instruction, a CDATA section, a name outside ASCII, an undeclared
+  prefix and a duplicate attribute. There is no external entity
+  resolution to turn off, because there is no entity resolution. It keeps
+  prefixes as written, because Exclusive Canonical XML renders them and
+  the signature is over that rendering — a parser that resolves prefixes
+  away (`encoding/xml` does) cannot reproduce the bytes the signer
+  hashed, which is why this one exists.
+
+  The signature profile is one `Reference` whose URI is `#` plus the `ID`
+  of the element the signature is enveloped in, the enveloped-signature
+  transform followed by exclusive canonicalization and nothing else,
+  SHA-256 and above, RSA or ECDSA (as the concatenated `r` and `s` of RFC
+  4051, not the ASN.1 sequence), and the key from the configuration.
+  `KeyInfo` is not read at all. Wrapping is answered structurally rather
+  than by a check: every signature in the document must verify, each
+  against its own parent, a response may carry exactly one assertion, and
+  two elements sharing an `ID` refuse the document.
+
+  Encryption is refused by name. XML Encryption in a SAML responder has
+  been a decryption oracle more than once, TLS already covers the hop,
+  and a provider configured to encrypt should get a message saying so
+  rather than "no assertion found".
+
+  Everything else is checked completely: the issuer, `Destination`,
+  `InResponseTo` on the envelope *and* on the subject confirmation, the
+  `Recipient`, the audience, both condition windows, the confirmation
+  window, `SessionNotOnOrAfter`, the status code, the name identifier
+  format, `max_assertion_age` over all of it, and a bounded one-time
+  table on the assertion identifier — an assertion is a bearer credential
+  until it expires, so the same one twice is not a second login. A
+  session never outlives the earliest expiry the assertion declared.
+  Provider-initiated sign-on is not supported and single logout is not
+  implemented, both on purpose and both documented with the reason.
+
+  Around it: the HTTP Redirect binding for requests, the POST binding for
+  responses (only `POST` with a form body, because a response in a query
+  string is a response in a browser history and a `Referer`), a metadata
+  endpoint, a metadata reader so the provider can be named by the file it
+  publishes, and the same encrypted session cookie as `oidc`, sealed
+  under both entity identifiers.
+
+  Every check is pinned by a test that fails when the check is removed:
+  thirty-nine deliberate weakenings of the package were each caught,
+  including four that were caught only after the tests were extended for
+  them. The canonical form itself is asserted against bytes written out
+  from the specification by hand, because a wrong canonicalizer agrees
+  with itself, and it found the first real bug: the default namespace
+  rendered where no element used it.
+
 - **A DNS answer is now screened by where it points, not only by the
   name that was asked.** The block list decides by name, and the name is
   the part an attacker picks last: blocking one costs them a

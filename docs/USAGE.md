@@ -1811,6 +1811,50 @@ the session at the proxy and at the provider. Put `basic_auth` or JWT
 in front of API paths instead; the OIDC filter is for people with
 browsers.
 
+### Browser login with SAML 2.0
+
+For the identity providers that speak SAML and not OpenID Connect, which
+in an enterprise is most of the older ones:
+
+```yaml
+filters:
+  - name: sso
+    kind: saml_sp
+    options:
+      entity_id: https://intranet.example.com/saml/metadata
+      idp_metadata_file: /etc/xproxy/saml/idp-metadata.xml
+      cookie_secret_file: /etc/xproxy/saml.cookie
+      external_url: https://intranet.example.com
+      forward_headers: {X-Remote-User: nameid, X-Remote-Email: mail}
+      groups_attribute: groups
+      session_ttl: 8h
+routes:
+  - name: intranet
+    hosts: [intranet.example.com]
+    upstream: intranet
+    filters: [sso]
+```
+
+Import `https://intranet.example.com/saml/metadata` at the provider — the
+proxy serves it from the running configuration — and point
+`idp_metadata_file` at the metadata the provider publishes, which is where
+its entity ID, its sign-on endpoint and its signing certificate come
+from. The flow is the same shape as OpenID Connect's: the first visit
+bounces through the provider, the signed response arrives at
+`/saml/acs`, and the browser then carries an encrypted cookie while the
+application receives the user in a header.
+
+What is different is how much of SAML this accepts. The profile is
+deliberately narrow — one unencrypted assertion per response, exclusive
+canonicalization, SHA-256 and above, the signing key from the
+configuration and never from the document, no provider-initiated sign-on
+and no single logout — because SAML's failure mode is a document that
+means one thing to the code checking the signature and another to the
+code reading the assertion. [CONFIG.md](CONFIG.md) lists every refusal
+with its reason, and it is worth reading before configuring the provider:
+a provider set to encrypt assertions, or to sign with SHA-1, is refused
+rather than accommodated.
+
 ### JWT validation
 
 ```yaml
@@ -4166,7 +4210,7 @@ where something changed.
 Filters are middleware instances attached to routes; the built-in kinds
 are `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`,
 `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`,
-`bot_score`, `oidc` and `wasm` (`xproxyctl filters` lists what the binary has;
+`bot_score`, `oidc`, `saml_sp` and `wasm` (`xproxyctl filters` lists what the binary has;
 [EXTENDING.md](EXTENDING.md) shows how to add one).
 
 ```yaml
@@ -4249,7 +4293,8 @@ the key id (`api_key`).
 ### Authorisation: from an identity to a policy (filter)
 
 Every authenticating filter here answers "who": `basic_auth`,
-`ldap_auth`, `api_key`, `oidc`, the JWT filter, client certificates.
+`ldap_auth`, `api_key`, `oidc`, `saml_sp`, the JWT filter, client
+certificates.
 None of them answers "what may they do", so each grew its own small
 allow list — required scopes on the key, a required group on the
 directory bind, required claims on the session. An allow list per
@@ -4304,8 +4349,10 @@ that allowed from one that never matched.
 
 What feeds it: `oidc` records groups from `groups_claim` (default
 `groups`), scopes from the token's `scope` and whatever `attr_claims`
-names; `ldap_auth` records the directory's own groups from `group_attr`;
-`api_key` records the key's scopes. Every filter records the subject, so
+names; `saml_sp` records the assertion's groups from `groups_attribute`
+and whatever `policy_attributes` names; `ldap_auth` records the
+directory's own groups from `group_attr`; `api_key` records the key's
+scopes. Every filter records the subject, so
 `subjects` and `kinds` work whatever authenticated.
 
 ### Upload protection (filter)

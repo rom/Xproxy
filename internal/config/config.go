@@ -2295,8 +2295,9 @@ type Limits struct {
 	// MaxBufferedBodyBytes is the process-wide ceiling on request bodies
 	// held in memory at once by the features that materialise one
 	// (upload_guard, sensitive_data, account_guard, openapi, graphql,
-	// body_rewrite, wasm, the WAF's body inspection, a virtual patch's
-	// body pattern, a mirrored request). Default 512 MiB; 0 is
+	// body_rewrite, wasm, the SAML assertion consumer endpoint, the WAF's
+	// body inspection, a virtual patch's body pattern, a mirrored
+	// request). Default 512 MiB; 0 is
 	// unbounded.
 	//
 	// Each of those is bounded per request, and the product was the real

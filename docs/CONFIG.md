@@ -3211,7 +3211,7 @@ Keys:
 | `cookie:<name>` | value of the cookie (256 bytes), a session or device identifier | client address |
 | `jwt:<claim>` | a string, number or boolean claim of the bearer token in `Authorization`, read without verification (the value only names a bucket; the `jwt` route setting still rejects a forged token) | client address |
 | `identity` | the identity a preceding auth filter verified this request against, preferring `oidc`, `jwt`, `api_key` then `basic`; unlike `jwt:<claim>` it cannot be spoofed, because the filter proved it. Evaluated after the filter chain, so the limiter sees the authenticated principal | client address (unauthenticated) |
-| `identity:<kind>` | the verified identity of one kind: `jwt` (the `sub` claim), `oidc` (the session subject), `api_key` (the key id), `basic` (the user) or `ldap` (the user) | client address |
+| `identity:<kind>` | the verified identity of one kind: `jwt` (the `sub` claim), `oidc` (the session subject), `saml` (the session name identifier), `api_key` (the key id), `basic` (the user) or `ldap` (the user) | client address |
 
 The fallback keeps a limit from being avoided by omitting the
 identifier; rotating it still buys fresh buckets, so pair an identifier
@@ -5609,6 +5609,121 @@ token's `sid` claim when the provider sends one; a logout at the proxy
 revokes it as well, so other browsers sharing that provider session
 end too.
 
+### Kind `saml_sp`
+
+Logs browsers in as a SAML 2.0 service provider and keeps the result in
+an encrypted, HttpOnly, SameSite Lax session cookie. A request without a
+session is redirected to the identity provider with an authentication
+request (HTTP Redirect binding, deflated); the provider posts the signed
+response back to `acs_path` (HTTP POST binding), where it is verified
+against the configured signing key and checked whole before a cookie is
+set and the browser is sent back to the page it asked for. Requests with
+a session carry the listed attributes to the upstream as headers (client
+supplied values of those headers are always removed) and the cookie is
+stripped upstream. `metadata_path` serves this service provider's
+metadata for the provider to import.
+
+**The profile is deliberately narrow, and the narrowness is the
+feature.** Web single sign-on breaks in one place — the reader that
+verifies a signature and the reader that consumes the assertion
+disagreeing about what was signed — so everything that lets one document
+mean two things is refused rather than ignored:
+
+- A document type declaration, an entity declaration, any entity
+  reference but the five XML predefines, a processing instruction, a
+  CDATA section, a name outside ASCII, an undeclared prefix, a duplicate
+  attribute. There is no external entity resolution to disable, because
+  there is no entity resolution.
+- An encrypted assertion, attribute or name identifier (`EncryptedAssertion`
+  and friends). XML Encryption in a responder has been a decryption
+  oracle more than once, and TLS already covers the hop the response
+  takes. The refusal names itself, so a provider configured to encrypt
+  is a clear message rather than a mystery.
+- More than one assertion in a response, and two elements sharing an
+  `ID`. Those are the shapes signature wrapping needs.
+- Any signature in the document that does not verify, including one
+  nothing would have read.
+- A signature whose single `Reference` is not `#` plus the `ID` of the
+  element the signature is enveloped in; more than one reference; a
+  transform other than the enveloped-signature transform followed by
+  exclusive canonicalization; a canonicalization other than
+  `xml-exc-c14n#`; SHA-1, HMAC or DSA.
+- A response with no `InResponseTo`, so provider-initiated ("unsolicited")
+  single sign-on is not supported: there is no state to bind it to.
+- A bearer subject confirmation carrying `NotBefore`, a condition this
+  profile does not understand, an attribute value wrapped in markup, a
+  timestamp with no zone.
+
+What it accepts, it accepts completely: the issuer, `Destination`,
+`InResponseTo` on both the envelope and the subject confirmation, the
+`Recipient`, the audience, both condition windows, the confirmation
+window, the provider's session bound, the status code, the name
+identifier format, and a one-time check on the assertion identifier. The
+signing key comes from the configuration; `KeyInfo` in the document is
+not read at all, so a response signed by a key it carries is simply an
+unverifiable response.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `entity_id` | string | required | This service provider's identifier, and the audience every assertion must name |
+| `idp_metadata_file` | path | | The provider's metadata document; `idp_entity_id`, `idp_sso_url` and the signing certificates are read from it. An explicit option below wins over it, so a stale endpoint can be corrected in place. Read at load with the same strict parser as an assertion; its own signature is not checked, because a file an operator installed is configuration, not network input |
+| `idp_entity_id` | string | required | The issuer every response and assertion must name |
+| `idp_sso_url` | URL | required | Where the authentication request goes (`https://`, plain `http://` only with `allow_http`) |
+| `idp_cert_file` | path | required | PEM certificates (at most eight) whose public keys verify signatures. An expired certificate is warned about at load and still trusted: a pinned key is its own trust anchor, and there is no chain to expire |
+| `cookie_secret_file` | path | required | 32 or more random bytes or a keyring, created `0600` if absent; sessions survive reloads and restarts while the key stays, and `xproxyctl rotate-secret` keeps sessions sealed under the kept keys |
+| `acs_path` | path | `/saml/acs` | The assertion consumer service. Register `external_url` + path at the provider. Only `POST` with a form body is accepted: a response in a query string is a response in a browser history, a proxy log and a `Referer` |
+| `metadata_path` | path | `/saml/metadata` | Serves `application/samlmetadata+xml` describing this service provider |
+| `logout_path` | path | `/saml/logout` | Clears the session here and redirects to `logout_redirect`. There is no single logout binding: see the note below |
+| `logout_redirect` | path | `/` | A path on this host |
+| `external_url` | URL | derived | `scheme://host` the browser reaches the proxy on. Set it. Unset, it is derived from the request: `Host`, the listener's own TLS, and `X-Forwarded-Proto` only from a peer inside `trusted_proxies` — any client can send that header, and the URL derived from it is the one the provider is told to post the assertion to |
+| `cookie_name` | token | `XPSAML` | The state cookie is `<cookie_name>_state`, ten minutes |
+| `cookie_domain` | string | host only | |
+| `session_ttl` | duration | `8h` | 1m to 720h. The session never outlives the assertion: the earliest of the condition window, the confirmation window and `SessionNotOnOrAfter` caps it |
+| `clock_skew` | duration | `30s` | Tolerance on every timestamp; 0 to 5m |
+| `max_assertion_age` | duration | `1h` | How old an assertion may be whatever windows it declares, and the ceiling on a session; 1m to 24h |
+| `signed_element` | `assertion`, `response`, `either` | `assertion` | What the signature must cover. `either` accepts a signature on one or the other; a response with neither signed is never accepted, whatever this says |
+| `name_id_formats` | list | any | Accepted `NameID` formats; a login with another is refused |
+| `request_name_id_format` | URN | none | The format the authentication request asks for |
+| `force_authn` | bool | `false` | Ask the provider to re-authenticate rather than reuse its own session |
+| `forward_headers` | map | `{}` | Header name to attribute name, or to `nameid`, `nameid_format` or `session_index` (for example `X-Remote-User: nameid`) |
+| `require_attributes` | map | `{}` | Attribute to required value; a login whose assertion differs is refused with 403 and detail `attribute:<name>` |
+| `groups_attribute` | string | `groups` | The attribute carrying the groups an `authz` policy may decide on |
+| `policy_attributes` | list | `[]` | Attributes recorded on the identity for a policy to read |
+| `log_attributes` | list | `[]` | Attributes copied to the access log as `saml_<name>` |
+| `replay_max` | int | `65536` | Bound of the one-time assertion identifier table; entries expire with the assertions they refuse, and over the bound the soonest to expire is dropped |
+| `allow_http` | bool | `false` | Permit a plain `http://` endpoint and external URL (tests) |
+
+The session cookie carries only the attributes something names — a
+header, a log field, a policy, a requirement, the groups — because a
+cookie is four kilobytes and an assertion can carry far more. It is
+sealed under both entity identifiers, so two filters sharing one
+`cookie_secret_file` cannot open each other's sessions and a login
+through a lenient provider does not satisfy a stricter one.
+
+The access log carries `saml_user` for requests with a session and
+`flow: <name>:login`, `login_complete`, `logout` or `metadata` for the
+flow steps. Login and logout redirects are not security events; a
+refused response is, with reason `<filter name>` and a detail
+(`signature`, `refused`, `profile`, `provider_status`, `replay`,
+`state_missing`, `state_invalid`, `relay_state`, `attribute:<name>`),
+and counts towards ban triggers.
+
+**Single logout is not implemented, on purpose.** `logout_path` clears
+the session at this proxy; signing out at the provider is the provider's
+own page. A SAML logout request arrives as a cross-site POST or redirect
+carrying a name identifier, which is a way to sign other people out, and
+the response half needs a signed document sent *to* a provider — a
+different set of machinery for a feature whose safe part (forgetting the
+session here) needs none of it. Sessions are short and the provider's own
+`SessionNotOnOrAfter` caps them.
+
+**Relay state is not the binding.** The filter sends a digest of its own
+state cookie as `RelayState` and refuses a response that returns a
+different one, but the binding that matters is `InResponseTo` against the
+request identifier sealed in that cookie, checked on both the response
+element and the subject confirmation. A provider that drops `RelayState`
+entirely still works.
+
 ### Kind `wasm`
 
 Runs a WebAssembly module per request in a sandbox. The module follows
@@ -6099,7 +6214,7 @@ Each rule:
 | `subjects` | list | The name the authenticating filter recorded |
 | `groups` | list | Any of these; compared without case, as directories treat them |
 | `scopes` | list | **All** of these. A credential carrying two of three does not satisfy it |
-| `kinds` | list | Which filter verified the identity: `oidc`, `ldap`, `api_key`, `basic`, `jwt`, `mfa` |
+| `kinds` | list | Which filter verified the identity: `oidc`, `saml`, `ldap`, `api_key`, `basic`, `jwt`, `mfa` |
 | `claims` | map | Each named claim must equal the given value |
 | `networks` | list of CIDR | The client address |
 | `not_subjects`, `not_groups`, `not_networks` | list | "Everybody but". Separate keys rather than a `!` prefix, because a group name can begin with anything |

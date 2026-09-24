@@ -1056,6 +1056,38 @@ that keeps state and session ciphertexts apart. Redirects are
 `Verdict.Silent` denies: sent as responses without the security
 bookkeeping of a refusal.
 
+### SAML single sign-on
+
+The `saml_sp` filter kind (`internal/filters/samlsp`) has the same shape
+as the OIDC one -- a state machine over three paths plus a metadata
+endpoint, with the same sealed cookies -- over a different protocol
+package. A request without a session gets a 302 to the provider's
+sign-on endpoint carrying a deflated `AuthnRequest`; the request
+identifier, the return URL and an expiry travel in a short lived state
+cookie, and a digest of that cookie goes out as `RelayState`. The
+provider posts the response back to `acs_path`, where
+`saml.Policy.Accept` verifies and checks it, the assertion identifier is
+spent in a bounded one-time table, and the session is sealed under both
+entity identifiers with an expiry no later than the earliest the
+assertion declared.
+
+`internal/saml` is where the protocol lives, in three layers. `xml.go`
+is a strict XML reader and an Exclusive Canonical XML writer: it keeps
+namespace prefixes as written, because a signature is over the
+canonical rendering and a parser that resolves prefixes away (as
+`encoding/xml` does) cannot reproduce the bytes the signer hashed. It
+has no entity resolution, so there is nothing to disable. `dsig.go`
+verifies signatures under one narrow profile: one `Reference` naming the
+element the signature is enveloped in, the enveloped-signature transform
+and canonicalization and nothing else, SHA-256 and above, keys from the
+configuration. Signature wrapping is answered by structure rather than
+by a check -- every signature in the document must verify, a response may
+carry exactly one assertion, and two elements sharing an `ID` refuse the
+document -- so the element the verifier covered and the element the
+caller reads are the same element by construction. `sp.go` is the
+service provider: the request, the metadata, the response checks and the
+replay table. `internal/saml/samltest` is a signing provider for tests.
+
 ### Static files
 
 A `static` route (`internal/kinds/http/static.go`) holds an `os.Root` opened
