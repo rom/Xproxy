@@ -303,12 +303,39 @@ func TestNTPRelay(t *testing.T) {
 	if len(raw) != wire.HeaderLen {
 		t.Errorf("the answer is %d octets, want the header's %d", len(raw), wire.HeaderLen)
 	}
-	sn := s.Stats()
-	if sn.NTPRequests != 1 || sn.NTPForwarded != 1 || sn.NTPAnswered != 1 || sn.NTPDenied != 0 {
-		t.Fatalf("counters: %+v", struct{ R, F, A, D uint64 }{sn.NTPRequests, sn.NTPForwarded, sn.NTPAnswered, sn.NTPDenied})
+	// The counters, once they have caught up: "forwarded" is counted
+	// after the packet is on its way, so a server on the same host can
+	// answer -- and the answer can reach this client -- before that
+	// counter is incremented. Waiting for it is the test's job rather
+	// than the data path's; a counter that had to be raised before the
+	// send would be counting a forward that may still fail.
+	sn := awaitCounters(t, s, func(sn proxy.Snapshot) bool {
+		return sn.NTPRequests == 1 && sn.NTPForwarded == 1 && sn.NTPAnswered == 1
+	}, "one request forwarded and answered")
+	if sn.NTPDenied != 0 {
+		t.Errorf("denied %d", sn.NTPDenied)
 	}
 	if sn.NTPAssociations != 1 {
 		t.Errorf("associations %d", sn.NTPAssociations)
+	}
+}
+
+// awaitCounters waits for the counters to satisfy a condition, because a
+// counter written after the packet it describes is not readable the
+// instant the packet arrives somewhere else.
+func awaitCounters(t *testing.T, s *proxy.Server, ok func(proxy.Snapshot) bool, what string) proxy.Snapshot {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		sn := s.Stats()
+		if ok(sn) {
+			return sn
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("counters never showed %s: requests %d forwarded %d answered %d denied %d dropped %d",
+				what, sn.NTPRequests, sn.NTPForwarded, sn.NTPAnswered, sn.NTPDenied, sn.NTPDropped)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -448,9 +475,11 @@ func TestNTPRateLimitAnswersAKiss(t *testing.T) {
 	if kiss.KissCode() != "RATE" {
 		t.Errorf("kiss code %q", kiss.KissCode())
 	}
-	if s.Stats().NTPKissSent == 0 || s.Stats().NTPRateLimited == 0 {
-		t.Errorf("counters: kisses %d rate limited %d", s.Stats().NTPKissSent, s.Stats().NTPRateLimited)
-	}
+	// The kiss is counted after it is sent, so the client can hold it
+	// before the counter moves.
+	awaitCounters(t, s, func(sn proxy.Snapshot) bool {
+		return sn.NTPKissSent > 0 && sn.NTPRateLimited > 0
+	}, "a kiss sent and a rate limit counted")
 }
 
 // The server-quality rules, which are about answers and not about

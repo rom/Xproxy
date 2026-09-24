@@ -2774,6 +2774,21 @@ Open findings of the earlier rounds:
 
 ### Changed (1.4)
 
+- **Every list of listener kinds now says all sixteen of them.** The
+  kinds arrived one release at a time and the documentation that
+  enumerates them did not always follow: the `kind:` row in CONFIG.md
+  stopped at `rdp`, the `proxy_protocol` row named seven kinds of the
+  eleven that read a header, README's per-kind prose ran in a different
+  order from its own tables, the roadmap still listed the remote access
+  and operational technology kinds as candidates after they had shipped,
+  and the `xgate` and `xrelay` unit files described a daemon with fewer
+  listeners than it serves. All of them are the current set now, with
+  the socket unit saying how a datagram listener is activated
+  (`ListenDatagram`, which is what a time gateway on UDP 123 needs) and
+  THREAT_MODEL.md carrying the two entries the operational technology
+  kinds bring: a write to equipment that has no authentication to
+  bypass, and a time service used as an amplifier.
+
 - **A DNS listener no longer forwards a client's EDNS Client Subnet
   option** (`dns.ecs`, default `strip`). The option exists for a
   recursive resolver telling a content network which network a query is

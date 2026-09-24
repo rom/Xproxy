@@ -1,6 +1,6 @@
-# xgate, the gate daemon: the SSH bastion and its SFTP mediation. Pairs
-# with xgate.socket for socket activation so the service never needs root
-# or CAP_NET_BIND_SERVICE.
+# xgate, the gate daemon: the SSH bastion and its SFTP mediation, and the
+# telnet, VNC and RDP gateways. Pairs with xgate.socket for socket
+# activation so the service never needs root or CAP_NET_BIND_SERVICE.
 #
 # Install:  cp xgate.service xgate.socket /etc/systemd/system/
 #           systemctl daemon-reload && systemctl enable --now xgate.socket
